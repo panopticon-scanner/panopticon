@@ -2351,6 +2351,60 @@ class TestASetPlusEAtTheStepsTopLevel(unittest.TestCase):
                               self.job("%s || true\n", shell)[0][1])
 
 
+class TestAParentRefusalKeepsAChildScriptsReach(unittest.TestCase):
+    """#2423: a parent that carries on past a failed child still respects
+    the child's own `-e` inside the script it runs."""
+
+    FETCH = TestASetPlusEAtTheStepsTopLevel.FETCH
+    CHECK = TestASetPlusEAtTheStepsTopLevel.CHECK
+    USE = TestASetPlusEAtTheStepsTopLevel.USE
+    INLINE_USE = USE.replace("\n", "; ").rstrip("; ")
+    job = TestASetPlusEAtTheStepsTopLevel.job
+
+    def test_set_plus_e_bounds_its_refusal_to_the_child_command(self):
+        inside = "set +e\nsh -ec '%s; " + self.INLINE_USE + "'\necho done\n"
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell, use="inside"):
+                self.assertEqual([], self.job(inside, shell, use=""))
+            with self.subTest(shell=shell, use="outside"):
+                found = self.job(inside, shell)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("runs after a `set +e`", found[0][1])
+
+    def test_a_no_errexit_template_bounds_its_refusal_to_the_child_command(self):
+        inside = "sh -ec '%s; " + self.INLINE_USE + "'\necho done\n"
+        for shell in ("bash {0}", "sh {0}"):
+            with self.subTest(shell=shell, use="inside"):
+                self.assertEqual([], self.job(inside, shell, use=""))
+            with self.subTest(shell=shell, use="outside"):
+                found = self.job(inside, shell)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("runs under `shell: %s`" % shell, found[0][1])
+
+    def test_a_piped_groups_refusal_keeps_the_childs_own_reach(self):
+        child = "sh -ec '%s; " + self.INLINE_USE + "'"
+        body = "{\n" + child + "\n} | cat\n"
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell, use="inside"):
+                self.assertEqual([], self.job(body, shell, use=""))
+            with self.subTest(shell=shell, use="outside"):
+                found = self.job(body, shell)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("ends a group that is piped", found[0][1])
+
+    def test_a_child_without_errexit_remains_refused(self):
+        child = "sh -c '%s; " + self.INLINE_USE + "'"
+        for prefix, suffix, shell in (
+                ("set +e\n", "\necho done\n", None),
+                ("", "\necho done\n", "sh {0}"),
+                ("{\n", "\n} | cat\n", None),
+                ("{\n", "\n} | cat\n", "sh")):
+            with self.subTest(prefix=prefix, shell=shell):
+                found = self.job(prefix + child + suffix, shell, use="")
+                self.assertEqual(1, len(found), found)
+                self.assertIn("inside the script `sh` runs", found[0][1])
+
+
 class TestAPipedCheckGatesOnlyUnderPipefail(unittest.TestCase):
     """#2338: a pipeline's status is its LAST command's unless `pipefail`
     holds, so a check piped into another command (`CHECK | tee log`) stops

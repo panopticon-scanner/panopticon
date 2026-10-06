@@ -234,8 +234,10 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
         if top:
             out.append(statement)
             continue
-        why = (_UNGATED % shell if not stops
-               else None if on[index] or index == last else _RUNS_ON % shell)
+        why = (Reach(None, _UNGATED % shell) if stops is False and (on[index] or index == last)
+               else _UNGATED % shell if not stops
+               else _RUNS_ON % shell if not (on[index] or index == last)
+               else None)
         out.append((Unsure if stops is None else Inlined)(
             statement.stages, statement.separator, region,
             (why, why or (None if fails[index] else _PIPED % shell))))
@@ -311,18 +313,15 @@ def step_credit(flat, shell=None):
     whose `shell:` is `shell`. An explicit `(None, None)` retains pipefail-on
     state for enclosing status walks. `swallowed` reads the pair last.
 
-    `flattened` credits a script handed on only as far as the command that
-    runs it, and the step's own shell decides the rest: its `-e`, for that
-    command and for a check written at the top alike, and its pipefail, for
-    a check piped at the top (`flattened` asks it of the command) -- each as
-    the `shell:` starts it (`seed`) and a `set` moves it, read the way
-    `_errexit_states` reads a child script. Without pipefail a piped check's
-    status is lost to the command after it. Where `-e` is off, a failure
-    stops the step only in its last command or through an `||` branch that
-    exits. Ahead of `&&`, failure reaches only its list; `Reach` bounds that
-    list, `_LOST` bounds an unread list to its command, and
-    `conditional_reach` bounds a skipped conditional check to paths that
-    require it. A check ending a group answers as `_stops_step` says.
+    `flattened` bounds a handed script's credit at its carrier; the step's shell
+    decides whether that carrier stops it using `shell:`'s initial `-e` and
+    pipefail and each `set` read by `_errexit_states`. Without pipefail a piped
+    check's status is lost to the next command. With `-e` off, failure stops the
+    step only in its last command or through an exiting `||` branch. Ahead of
+    `&&`, failure reaches only its list: `Reach` bounds that list, `_LOST` an
+    unread list to its command, and an inherited step refusal to the handed
+    script's carrier. `conditional_reach` bounds skipped conditional checks; a
+    check ending a group answers as `_stops_step` says.
 
     The guard has no model of an exit status or a trap, so four readings
     here are fail-closed, and bash stops the step on each (review N-1): with
@@ -346,6 +345,7 @@ def step_credit(flat, shell=None):
                    else stops if stops is None or isinstance(stops, str)
                    else Reach(at[stops] - inner) if stops >= 0
                    else _SET_E if errexit else _NO_E % shell)
+            why = Reach(index - inner, why) if inner < index and type(why) is str else why
             why = reach(why, stmts, path_map.get(position, ()), at, index, inner, on, fails)
             piped = why if inner < index or fails[position] else _NO_PIPEFAIL
             if why or piped or fails[position]:

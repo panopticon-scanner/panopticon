@@ -410,8 +410,18 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
     measuring_uses = credit is not _UNMEASURED
     if credit is _UNMEASURED:
         credit = None
-    if isinstance(statement, Inlined) and statement.credit[stage is not statement.stages[-1]]:
-        return statement.credit[stage is not statement.stages[-1]]
+    inherited_child_reach = False
+    if isinstance(statement, Inlined):
+        own = statement.credit[stage is not statement.stages[-1]]
+        outer = credit[stage is not statement.stages[-1]] if credit else None
+        # `flattened` uses an unbounded base Reach when the child gates its own
+        # remainder but its parent does not stop on the child's status. A later
+        # step-level Reach supplies the carrier boundary; every other local
+        # refusal remains stronger and is returned unchanged.
+        inherited_child_reach = (type(own) is Reach and own.span is None
+                                 and isinstance(outer, Reach))
+        if own and not inherited_child_reach:
+            return own
     if statement.separator == "&":
         return _DETACHED
     if statement.separator == "||":
@@ -457,7 +467,9 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
     if conditional(head) or conditional(stage.argv):
         return "is an `if`/`while` test, which errexit does not apply to"
     why = credit[stage is not statement.stages[-1]] if credit else None
-    piped_end = _piped_group_end(stmts, index) if why is None or isinstance(why, Reach) else None
+    piped_end = (_piped_group_end(stmts, index)
+                 if not inherited_child_reach
+                 and (why is None or isinstance(why, Reach)) else None)
     function_end = _piped_function_end(stmts, index) if piped_end is None else None
     if function_end is not None:
         # The definition is not itself piped. `step_credit`'s pipeline slot

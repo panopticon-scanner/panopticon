@@ -7,6 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Child scripts keep their own failure reach when the parent shell carries on (#2423,
+  #2331).** A check inside `sh -ec 'CHECK; USE'` now clears that child's later use even when the
+  step has run `set +e`, starts from a no-errexit `shell:` template, or pipes the child's enclosing
+  group without pipefail. The parent's refusal remains bounded to the command that runs the child,
+  so a use after it is still reported; a child without its own `-e` remains reported too.
 - **Workflow guard reads a printer's `$X` and a `$CMD` through the step's values (#2468, #2600,
   #2601, #2331).** Where the step assigns a name one literal no shell expands, `echo "$X" | sh`
   weighs that text as its program (`X='curl … | sh'` reports as its literal twin), and a `$CMD`
