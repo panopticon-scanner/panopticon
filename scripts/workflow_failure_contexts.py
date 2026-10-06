@@ -370,12 +370,12 @@ def _stage_shape(stage, cases):
             at += 1
             continue
         if word == "{":
-            braces.append(("open", words[prefix:]))
+            braces.append((at, "open", words[prefix:]))
             _move_case_depth(cases, 1)
             at += 1
             continue
         if word == "}":
-            braces.append(("close", None))
+            braces.append((at, "close", None))
             _move_case_depth(cases, -1)
             prefix = at + 1
             at += 1
@@ -426,8 +426,10 @@ def _stage_shape(stage, cases):
     remaining_closes -= paired
     _move_case_depth(cases, 1, hidden_opens)
     hidden_prefix = words[prefix:] if transition or prefix else stage.argv
-    events = ([("close", None)] * remaining_closes
-              + [("open", hidden_prefix)] * hidden_opens + braces)
+    before = [(event, context) for position, event, context in braces if position < prefix]
+    after = [(event, context) for position, event, context in braces if position >= prefix]
+    events = ([("close", None)] * remaining_closes + before
+              + [("open", hidden_prefix)] * hidden_opens + after)
     return _StageShape(events, plain_arm or any(case.plain for case in cases),
                        leading_arm, has_command)
 

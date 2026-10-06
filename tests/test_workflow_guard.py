@@ -2989,6 +2989,9 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
             ("x01", "child",
              "if false; then { :; } else ! { echo pre; %s; } && "
              + self.INLINE_USE + "; fi"),
+            ("x02", "child",
+             "if false; then { :; } else ! ( echo pre; %s ) && "
+             + self.INLINE_USE + "; fi"),
             ("x03", "step",
              "if false; then ( : ) else ! { echo pre; %s; } && "
              + self.INLINE_USE + "; fi"),
