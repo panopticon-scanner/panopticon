@@ -2991,6 +2991,40 @@ class TestJobsDashXHandsItsWordsOn(unittest.TestCase):
                 self.assertEqual([], defects(script))
 
 
+class TestAStdoutAliasInAnySpelling(unittest.TestCase):
+    """#2744 (reader half): `printf 'ool\\nsh t' | tee ALIAS | sh` after a download writes the text
+    twice into the pipe and the doubled text spells `sh tool`, so the download runs; #2478 refused
+    `/dev/stdout` and `/dev/fd/1` as pass-throughs (`_Quiet` beside the download, rv40), and the
+    same operand spelled `//dev/stdout`, `/dev//fd/1` or `/proc/self/fd/1` read as a plain-file
+    pass-through, CLEAN. `shell_reader._STDOUT_ALIASES` now answers `in` with repeated slashes
+    collapsed and knows `/proc/self/fd/1`. `tee /dev/stderr 2>&1` (rr35) is the printers' half:
+    the reader exposes `Stage.stderr_to_pipe` for it and this pin keeps `main`'s CLEAN until
+    `workflow_printers._passes_through` asks it."""
+
+    DOUBLED = "printf 'ool\\nsh t' | tee %s | sh\n"
+
+    def test_the_spellings_of_standard_output_are_refused_as_pass_throughs(self):
+        # bash 5.2.21 and 3.2.57 and dash run the download for `//dev/stdout` and `/dev//fd/1`
+        # (FR x4; `main` CLEAN); `/proc/self/fd/1` is Linux's, the runner's (no `/proc` here).
+        for alias in ("//dev/stdout", "/dev//fd/1", "/proc/self/fd/1", "/dev/stdout"):
+            with self.subTest(alias=alias):
+                found = defects(GET + self.DOUBLED % alias)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("pipes `sh` its program from `tee`"), found)
+                self.assertIsInstance(found[0][1], wg.Idle)
+
+    def test_the_controls_read_as_they_did(self):
+        # A plain file passes the text through unchanged (FR x4, reported as the download it runs);
+        # `/dev/stderr` without `2>&1` never reaches the pipe (F- x4, CLEAN); with `2>&1` it does
+        # (FR x4) and stays CLEAN here, the printers' half of #2744.
+        found = defects(GET + "printf 'sh tool\\n' | tee out.txt | sh\n")
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("fetches %stool -> tool and running it under `sh`" % URL), found)
+        for alias in ("/dev/stderr", "/dev/stderr 2>&1"):
+            with self.subTest(alias=alias):
+                self.assertEqual([], defects(GET + self.DOUBLED % alias))
+
+
 class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
     """#2342 handed the reader bash's text, so `eval "sh \\$(echo tool)"` is
     `sh $(echo tool)`: a shell whose only operand is a value whose OUTPUT

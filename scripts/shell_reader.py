@@ -95,11 +95,13 @@ from shell_command import (CONDITIONS as CONDITIONS, KEYWORDS as KEYWORDS,
 # whether a heredoc is the SCRIPT of the interpreter in front of it (#1839).
 # A here-string is a body the second question reads too (`sh <<< '...'`,
 # #2293) -- expanding unless `lex` spelled its word -- and never the first's.
+# `stderr_to_pipe` says descriptor 2 finally feeds the next stage (`2>&1` under a
+# pipe), where `/dev/stderr` is the pipe's own mouth (#2744).
 Stage = collections.namedtuple(
     "Stage", "argv writes reads heredoc substitutions stdout_writes "
              "group_open group_close stdin_from_pipe stdout_to_pipe pipe_input_fds "
-             "stdin_heredoc",
-    defaults=(0, 0, True, True, ("0",), None))
+             "stdin_heredoc stderr_to_pipe",
+    defaults=(0, 0, True, True, ("0",), None, False))
 # One `;`/`&&`/`||`/newline-separated statement: its pipeline stages in order,
 # and the separator that FOLLOWS it -- which is where a shell says whether the
 # command's exit status is allowed to matter (`... || true`, `... &`).
@@ -123,7 +125,18 @@ _BLANK = "\ue004"
 # Put where a quote opens or a backslash escapes, outside quotes (`_split`): a word is an
 # assignment only where nothing before its operator was quoted so (`_stage`'s `quoted`, #2480).
 _QUOTED_AT = "\ue005"
-_STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
+class _StdoutAliases(tuple):
+    """The spellings of this process's standard output, asked with `in`: the listed ones as
+    written, and any spelling of them with repeated slashes collapsed (`//dev/stdout`,
+    `/dev//fd/1`), as the kernel reads a path (#2744). `/dev/stderr` and its twins are not
+    here: they are standard output only where the stage's own `2>&1` makes them so
+    (`Stage.stderr_to_pipe`), which is the consumer's to ask."""
+
+    def __contains__(self, word):
+        return tuple.__contains__(self, re.sub(r"/{2,}", "/", str(word)))
+
+
+_STDOUT_ALIASES = _StdoutAliases(("/dev/stdout", "/dev/fd/1", "/proc/self/fd/1"))
 
 
 # --- reading the shell -------------------------------------------------------
@@ -575,7 +588,7 @@ def _stage(text, context):
                  substitutions, [stdout] if stdout is not None else [], group_open,
                  group_close, pipe_inputs["0"], pipe_outputs["1"],
                  tuple(fd for fd, connected in pipe_inputs.items() if connected),
-                 stdin[:2] if stdin else None)
+                 stdin[:2] if stdin else None, pipe_outputs.get("2", False))
 
 
 def statements(script):
