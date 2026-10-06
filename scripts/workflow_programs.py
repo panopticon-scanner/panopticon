@@ -180,7 +180,7 @@ def _after_dash_c(argv):
         if owed:                                # an option's value, not an option word
             owed -= 1
             continue
-        long = long_option(token, argv[0])
+        long = long_option(argv, position)
         if long is None and token.startswith("-") and not token.startswith("--") and "c" in token:
             return _past_options(argv, position)
         # An option word the shell refuses BEFORE the cluster exits before the string is read, as
@@ -237,7 +237,7 @@ def candidates(argv):
                 [word] if shell_reader.yields_words(word) else [])
         elif word in ("-", "--") or word[:1] not in ("-", "+"):
             break                               # the options end: a program, or `-`/`--`
-        elif (long := long_option(word, argv[0])) or word[:2] == "--":
+        elif (long := long_option(argv, at)) or word[:2] == "--":
             if _refused_long(argv, at):         # `bash --bogus $X '…'` runs nothing (#2616)
                 break
             owed = long in LONG_VALUE_OPTIONS    # `bash -rcfile FILE $X '…'`: the FILE is its value
@@ -546,7 +546,7 @@ def _options(argv, depth):
                 value_option = value_option or options
                 continue                    # the walk goes on as if absent
             return (answer, reader) if value_option else (None, None)
-        long = long_option(token, argv[0])
+        long = long_option(argv, at - 1)
         if long or token[:2] in ("--", "++"):
             # A long option, in either spelling (#2616): bash refuses one outside its table, or
             # one that prints and exits, before it reads stdin; `--rcfile FILE` takes the next

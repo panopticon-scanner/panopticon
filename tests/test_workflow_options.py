@@ -139,15 +139,20 @@ class TestALongOptionOfTheShell(unittest.TestCase):
         self.assertFalse(wo._refused_long(["bash", "-norc"], 1))
         self.assertFalse(wo._refused_long(["zsh", "--bogus"], 1))
         self.assertFalse(wo._refused_long(["bash", "--"], 1))
-        # Both spellings bash takes; the one-dash one only for `bash` and `sh`.
-        self.assertEqual("--login", wo.long_option("--login", "bash"))
-        self.assertEqual("--login", wo.long_option("-login", "bash"))
-        self.assertEqual("--login", wo.long_option("-login", "/bin/sh"))
-        self.assertIsNone(wo.long_option("-login", "dash"))
-        self.assertIsNone(wo.long_option("-login", "zsh"))
-        self.assertEqual("--login", wo.long_option("--login", "dash"))
+        # Both spellings bash takes; the one-dash one only for `bash` and `sh`, in the leading run.
+        self.assertEqual("--login", wo.long_option(["bash", "--login"], 1))
+        self.assertEqual("--login", wo.long_option(["bash", "-login"], 1))
+        self.assertEqual("--login", wo.long_option(["/bin/sh", "-login"], 1))
+        self.assertEqual("--login", wo.long_option(["bash", "--norc", "-login"], 2))
+        self.assertEqual("--login", wo.long_option(["bash", "-rcfile", "/dev/null", "-login"], 3))
+        self.assertIsNone(wo.long_option(["bash", "-e", "-help"], 2))          # the letters `-h -e -l -p`
+        self.assertIsNone(wo.long_option(["bash", "-c", "-help"], 2))
+        self.assertEqual("--help", wo.long_option(["bash", "-e", "--help"], 2))  # refused after `-e`
+        self.assertIsNone(wo.long_option(["dash", "-login"], 1))
+        self.assertIsNone(wo.long_option(["zsh", "-login"], 1))
+        self.assertEqual("--login", wo.long_option(["dash", "--login"], 1))
         for word in ("-bogus", "-e", "-rcfile=/dev/null", "-", "--", "--rcfile=f"):
-            self.assertIsNone(wo.long_option(word, "bash"), word)
+            self.assertIsNone(wo.long_option(["bash", word], 1), word)
         self.assertFalse(wo._refused(["bash", "-login"], 1))
         self.assertFalse(wo._refused_name(["bash", "-noediting"], 1))
 
@@ -184,6 +189,31 @@ class TestALongOptionOfTheShell(unittest.TestCase):
                        "bash -c -login '%s'\n" % PIPE, "bash -c --login '%s'\n" % PIPE):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
+
+    def test_the_one_dash_spelling_holds_in_the_leading_run_alone(self):
+        # #2858 round 2 (B1): bash parses one-dash long names only while every word before is a
+        # long option (or its FILE); after a short-option word the word is a letter cluster, and
+        # `-help` is `-h -e -l -p`, all valid, so the heredoc or the string runs: FR on bash
+        # 5.2.21 and 3.2.57 (forge, gt2.sh), rc 0. `sh -e -help`: FR where `sh` is bash, dash rc 2.
+        for runner in ("bash -e -help", "bash -s -help", "bash -o errexit -help", "bash -ehelp",
+                       "bash -e -s -help", "bash --norc -e -help", "bash -rcfile /dev/null -e -help",
+                       "sh -e -help", "bash -e -posix", "bash -e -verbose",
+                       "bash --norc -login", "bash -login -norc", "bash -rcfile /dev/null -login"):
+            with self.subTest(runner=runner):
+                self.assertTrue(any(STREAM in why for why in defects(body(runner, PIPE))), runner)
+        for script in ("bash -c -help '%s'\n" % PIPE, "bash -x -help -c '%s'\n" % PIPE,
+                       "bash -s -c -help '%s'\n" % PIPE, "X=-e\nbash $X -help <<'EOF'\n%s\nEOF\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertTrue(defects(script), script)
+        # -- -- -- --: `-help` alone prints and exits; a two-dash word off the leading run is an
+        # error (rc 1); `-login` after `-c` is `-l -o gin`, refused (rc 2); a value glued on (rc 2).
+        for script in (body("bash -help", PIPE), body("bash -e --help", PIPE), "bash -c -login '%s'\n" % PIPE,
+                       body("bash --rcfile=/dev/null -e", PIPE)):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script), script)
+        # Fail-closed, reported though nothing runs: `bash -e -login` (`-o gin`, rc 1), `bash -e
+        # -norc` (rc 1), `bash -e -noediting` (rc 1) -- the letters' own refusals are not all in
+        # the table, and a check behind them is never credited.
 
     def test_a_long_option_that_prints_and_exits_reads_no_stdin_and_runs_no_string(self):
         # `--version`, `--help`, `--dump-strings` and `--dump-po-strings` (`LONG_EXITS`) print

@@ -15,7 +15,9 @@ evidence exposed.
   `sh -cs true`, `sh -c -s true` ran it; no check in it counts, since the string may eat stdin
   first and bash never reads it); the word after a lone `-` is the script FILE
   (`bash - /dev/null`); a shell's long options have a table, in both spellings bash takes
-  (`--login`, `-login`: #2864) -- `--rcfile FILE` and `--init-file FILE` are skipped whole, and a
+  (`--login`, `-login`: #2864), the one-dash one in the leading run of long options alone (after
+  `-e`, `-help` is the letters `-h -e -l -p`, and the heredoc runs) -- `--rcfile FILE` and
+  `--init-file FILE` are skipped whole, and a
   word outside the table or with a value glued on is a refusal, as every two-dash word is to dash
   (`bash --rcfile /dev/null <<'EOF'` and `bash -norc <<'EOF'` ran the heredoc and read CLEAN;
   `bash --bogus` ran nothing and was reported); at the step's own level a measured shell's refused

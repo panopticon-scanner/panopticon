@@ -59,7 +59,10 @@ SET_OPTION_NAMES = ("allexport", "braceexpand", "emacs", "errexit", "errtrace", 
                     "verbose", "vi", "xtrace")
 SHELL_OPTION_NAMES = SET_OPTION_NAMES + ("interactive", "stdin", "debug")
 # A shell's LONG options, where bash reads them (#2616), in EITHER spelling bash takes -- two
-# dashes or one (`--login`, `-login`; `long_option` reads both): the two that take a FILE
+# dashes anywhere among its options, one dash only in the LEADING run of long options (`-login`,
+# `--norc -login`, `-rcfile f -login`; after a short-option word `-help` is the letters `-h -e -l
+# -p`, and `bash -e -help <<'EOF'` runs the heredoc: #2858 round 2) -- `long_option` reads both:
+# the two that take a FILE
 # (`--rcfile f`, `--init-file f`), measured to run the program after it on bash 5.2.21 and 3.2.57;
 # the flags, the UNION of the two versions' lists (5.2's `--pretty-print`, 3.2's `--protected`),
 # read ON as the letters are; and the five that run nothing (`LONG_EXITS`): four print and exit
@@ -77,18 +80,39 @@ LONG_OPTIONS = ("--debug", "--debugger", "--login", "--noediting", "--noprofile"
 _LONG = re.compile(r"-{1,2}([a-z][a-z-]*)")
 
 
-def long_option(word, shell=None):
-    """The `--name` a word spells, where it is one of `LONG_OPTIONS` or `LONG_VALUE_OPTIONS`: in
-    bash's two-dash spelling for any shell, and in its one-dash spelling (`-login`) only for a
-    `shell` that is `bash` or `sh`, which may be bash -- to dash a one-dash word is a cluster of
-    letters (`dash -login` fails at `-g`), and zsh and ksh are not measured. None for any other
-    word: a letter cluster, a word with a value glued on, `-`, `--`, or a name not written as
-    itself (a `str` subclass)."""
+def long_option(argv, at):
+    """The `--name` the word `argv[at]` spells, where it is one of `LONG_OPTIONS` or
+    `LONG_VALUE_OPTIONS`: in bash's two-dash spelling for any shell, and in its one-dash spelling
+    (`-login`) only for a shell that is `bash` or `sh`, which may be bash, and only while the words
+    before it are long options too (`_leading`): bash parses the one-dash names in that leading run
+    alone, and after a short-option word `-help` is the letters `-h -e -l -p` (#2858 round 2). To
+    dash a one-dash word is a cluster of letters (`dash -login` fails at `-g`), and zsh and ksh
+    are not measured. None for any other word: a letter cluster, a word with a value glued on,
+    `-`, `--`, or a name not written as itself (a `str` subclass)."""
+    word = argv[at]
     found = _LONG.fullmatch(word) if type(word) is str else None
-    if found and word[1] != "-" and (shell is None or os.path.basename(shell) not in ("bash", "sh")):
+    if not found:
         return None
-    name = "--" + found[1] if found else None
+    if word[1] != "-" and (os.path.basename(argv[0]) not in ("bash", "sh") or not _leading(argv, at)):
+        return None
+    name = "--" + found[1]
     return name if name in LONG_OPTIONS or name in LONG_VALUE_OPTIONS else None
+
+
+def _leading(argv, at):
+    """Whether every word before `argv[at]` is a long option, in either spelling, or the FILE
+    one takes -- the leading run in which bash reads one-dash long names."""
+    owed = 0
+    for i in range(1, at):
+        if owed:
+            owed -= 1
+            continue
+        word = argv[i]
+        name = long_option(argv, i)
+        if name is None and not (type(word) is str and word[:2] == "--" and word != "--"):
+            return False
+        owed = name in LONG_VALUE_OPTIONS
+    return True
 
 
 def _refused_name(argv, at):
@@ -104,7 +128,7 @@ def _refused_name(argv, at):
     of that; a value written as itself that is no name (`-`, `/dev/stdin`) is a refusal (#2606)."""
     if type(argv[0]) is not str or os.path.basename(argv[0]) not in _MEASURED_SHELLS:
         return False
-    if long_option(argv[at], argv[0]):
+    if long_option(argv, at):
         return False                            # `-noediting` is a long option, not `-o editing`
     value = at
     for letter in argv[at][1:]:
@@ -121,13 +145,14 @@ def _dash_s(argv, at):
     true`, `sh -c -o pipefail -s true`, #2647); an `-s` after the string is a parameter (`sh -c
     true -s`). Values owed by `o`/`O` and a long option's FILE are skipped, as the shell skips them."""
     owed = 0
-    for word in argv[at:]:
+    for i in range(at, len(argv)):
+        word = argv[i]
         if owed:
             owed -= 1
             continue
         if word in ("-", "--") or word[:1] not in ("-", "+"):
             return False
-        if (long := long_option(word, argv[0])) or word[:2] in ("--", "++"):
+        if (long := long_option(argv, i)) or word[:2] in ("--", "++"):
             owed = long in LONG_VALUE_OPTIONS
             continue
         if "s" in word[1:]:
@@ -154,13 +179,13 @@ def _refused_long(argv, at):
     `_MEASURED_SHELLS`."""
     if type(argv[0]) is not str or os.path.basename(argv[0]) not in _MEASURED_SHELLS:
         return False
-    word, name = argv[at], long_option(argv[at], argv[0])
+    word, name = argv[at], long_option(argv, at)
     if os.path.basename(argv[0]) == "dash":
         return word[:2] == "--" and word != "--"
     if name:                                    # `bash -rcfile` with no FILE after it: rc 2
         return name in LONG_EXITS or name in LONG_VALUE_OPTIONS and at + 1 >= len(argv)
     glued = _LONG.fullmatch(word.split("=", 1)[0]) if "=" in word else None
-    return word[:2] == "--" and word != "--" or bool(glued and long_option(word.split("=", 1)[0], argv[0]))
+    return word[:2] == "--" and word != "--" or bool(glued and long_option([*argv[:at], word.split("=", 1)[0]], at))
 
 
 def _refused(argv, at):
@@ -182,7 +207,7 @@ def _refused(argv, at):
     `X` is empty, so a word holding an expansion is never a refusal."""
     if type(argv[0]) is not str or os.path.basename(argv[0]) not in _MEASURED_SHELLS:
         return False                            # a `str` subclass is a name not written
-    if long_option(argv[at], argv[0]):
+    if long_option(argv, at):
         return False                            # `-login` is `--login`, no cluster of letters
     letters = argv[at][1:]
     return letters.isalpha() and any(letter not in SHELL_OPTIONS for letter in letters)
@@ -203,8 +228,8 @@ def _past_options(argv, at):
         if _refused(argv, at) or _refused_name(argv, at):
             return []                           # the shell exits before the program
         at += 1 + sum(letter in VALUE_OPTIONS for letter in argv[at][1:])
-        if at >= len(argv) or argv[at].startswith("--") and argv[at] != "--" or long_option(argv[at], argv[0]):
-            return []                           # a long option after `-c`, either spelling: refused
+        if at >= len(argv) or argv[at].startswith("--") and argv[at] != "--":
+            return []                           # a two-dash word after `-c`: refused (`-help` is letters)
         if argv[at] in ("-", "--"):
             return argv[at + 1:at + 2]
         if not argv[at].startswith(("-", "+")):
