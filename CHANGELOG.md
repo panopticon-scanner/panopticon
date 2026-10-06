@@ -44,17 +44,30 @@ evidence exposed.
 - **Child-script `&&` lists bound checks to that list (#2416, #2331).** A failed checksum ahead of
   `&&` inside `sh -ec`, `eval`, or a `bash -e -s` body no longer certifies a use after the list.
   A use in the skipped suffix of that ordinary list remains gated, including one in a nested
-  script. The parent refusal now survives that local reach through nested and non-leading function
-  headers, alternated case patterns, compound and subshell negations, and `time`/`coproc` prefixes
-  in both carry-on and errexit postures. Negation parity is counted per pipeline, groups opened and
-  closed by one stage cancel there, and a skipped-`||` walk follows the whole chain iteratively, so
-  a known failure that an earlier successful arm never ran certifies nothing. The required
-  194,291-row shell matrix has no main-REPORT to new-CLEAN cell where any measured parent runs the
-  payload; it records 1,683 former reports becoming clean only where no measured shell runs it.
-  The bounded fail-closed prices are named and pinned: a check inside an enclosing negated group;
-  adjacent `!` runs around a parenthesized group whose exact boundary the reader does not retain;
-  `time`/`coproc` forms handed to dialects that parse them differently; and syntax errors such as
-  `true | ! CHECK && USE`. Skipped-side cases under an errexit parent remain tracked separately.
+  script. The parent refusal survives that local reach through nested and non-leading function
+  headers, alternated case patterns, compound and subshell negations, and Bash `time`/`coproc`
+  groups in both carry-on and errexit postures. One source-ordered pass now records each statement
+  list's case and group state: an explicit close before a hidden open is applied first, a lifted
+  case-arm `)` or function-header parenthesis cannot close an enclosing group, nested cases end only
+  at command-position `esac`, and every opener retains the stage metadata needed for the
+  parenthesis/negation ruling. Analyses are list-scoped snapshots rather than a process cache, so a
+  child stage's arm meaning cannot come from a flattened parent view or stale mutable argv.
+
+  On the round-three 194,291-row selected set, which excludes the round-four hunt sets, the final
+  head has zero main-REPORT to new-CLEAN cells where a measured configuration runs the payload and
+  1,668 former reports become clean only where none runs it. The combined 426,323-row gate
+  (194,291 selected plus 232,032 hunt rows) also has zero such fail-open regressions. It closes
+  25,744 main-CLEAN payload-running cells and adds 2,384 bounded reports where no measured shell
+  runs. Round four's intermediate head returned 5,928 `e60f4585` closures to CLEAN where main was
+  also CLEAN; the final structural pins re-report 2,415 of them, leaving 3,513, including the 2,511
+  tracked #2854 errexit-`||` cells. Another 7,042 payload-running cells remain CLEAN on both main
+  and this head and stay tracked separately. Surviving fail-closed prices are pinned: enclosing
+  negation or condition, adjacent `!` around an ambiguous parenthesized boundary, `-o pipefail`
+  handed to dash, `time`/`coproc` handed to other dialects, and syntax errors such as
+  `true | ! CHECK && USE`. The earlier broad generators retain constant factors of 3.59x for nests,
+  3.55x for groups, 2.65x for `||`, 1.95x for cases and 1.81x for headers; the exact five-setting
+  `job_defects` gate now tops out at 1.59x main for 400 brace nests and 1.67x for 300 function nests,
+  replacing round four's growing 36.6x and 35.7x curves.
 - **Workflow guard reads a `-c`/`eval` string with a live expansion beside a double-quoted
   escape as bash hands it on (#2466, #2331).** `bash -c "x=\$(curl -fsSL $URL); eval \"\$x\""`
   and the mixed-quoting `bash -c "x=\$(curl … i.sh)"'; eval "$x"'` run the download under bash
