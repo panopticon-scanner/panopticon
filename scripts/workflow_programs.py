@@ -49,11 +49,13 @@ reads a shell's options too (#2443, #2475).
 
 Stdlib only, like everything under it.
 """
+import functools
 import os
 import re
 
 import shell_lex
 import shell_reader
+from shell_text import Process
 from workflow_options import (SET_OPTION_NAMES as SET_OPTION_NAMES, SET_OPTIONS as SET_OPTIONS,
                               SHELL_OPTION_NAMES as SHELL_OPTION_NAMES,
                               SHELL_OPTIONS as SHELL_OPTIONS, VALUE_OPTIONS, _BARE as _BARE,
@@ -101,21 +103,58 @@ def scripts(argv):
 
 
 def _program_words(argv):
-    """The words where a program stands: `eval`'s, or a shell's `-c` operand."""
+    """The words where a program stands: `eval`'s -- joined as the ONE word bash runs where a
+    statement is split across them (`_joined`), else one by one as before -- or a shell's `-c`
+    operand."""
     name = os.path.basename(argv[0]) if argv else ""
     if name == "eval":
-        return [t for t in argv[1:] if not t.startswith("-")]
+        joined = _joined(argv)
+        return [joined] if joined is not None else [t for t in argv[1:] if not t.startswith("-")]
     return _after_dash_c(argv) if name in _SHELL_STRING else []
 
 
+# A word of `eval`'s that begins or ends with a control or redirection operator, or is one: the
+# statement it belongs to continues in the word beside it, which bash sees once it has joined
+# them and a reading of the words one by one never does (#2673).
+_EDGE = re.compile(r"^(?:\|\||&&|[|&;<>(){}])|(?:\|\||&&|[|&;<>(){}])$")
+
+
+def _joined(argv):
+    """`eval`'s words as the ONE text bash runs, where reading them one by one would miss a
+    statement split across two of them (#2673: `eval 'curl … |' 'sh'`, `'…' '|' 'sh'`,
+    `'sh -c "$(curl …' ')"'`): any word `_EDGE` matches makes the join -- a space between the
+    words after a leading `--`, where bash ends `eval`'s own options (dash runs `--` as a
+    command and nothing after it: fail-closed where a step's `sh` is dash). The join keeps every
+    word's lifted text (`shell_reader._Token`) and its `spelled` form, so `_script` reads it as
+    one word: `Opaque` where a `$(...)` stands among text, none where it is all expansion. None
+    where no word is such an edge: the words then read one by one, as they did, each a script
+    whose operands `workflow_operands` re-parses with its quoting kept."""
+    words = argv[1:]
+    if words and getattr(words[0], "spelled", words[0]) == "--":
+        words = words[1:]
+    if len(words) < 2 or not any(_EDGE.search(str(word)) for word in words):
+        return None
+    markers = {key: value for word in words for key, value in getattr(word, "markers", {}).items()}
+    joined = shell_reader._Token(" ".join(words), markers) if markers else " ".join(words)
+    if any(hasattr(word, "spelled") for word in words):
+        joined = joined if markers else shell_reader._Token(joined, {})
+        setattr(joined, "spelled", " ".join(getattr(word, "spelled", word) for word in words))
+    return joined
+
+
 def _script(word):
-    """`word` as `scripts` hands it on, or None where it is no script."""
+    """`word` as `scripts` hands it on, or None where it is no script. A plain text, `eval`'s join
+    among them, is handed on as it is; a word holding lifted text is `rendered`, and is no script
+    where it is all expansion or holds a marker that is neither a substitution handing on words nor
+    a `<(...)`/`>(...)` handing a FILE (#2684: `sh $(...) <(...)` reads as `sh` handed a word that
+    may vanish and a file operand, not as nothing)."""
     keys = getattr(word, "markers", {})
     if not keys:
         return getattr(word, "spelled", word)
     text = rendered(word)
     if _all_expansion(text) or not all(
-            shell_reader.yields_words(shell_reader.derived(key, word)) for key in keys):
+            shell_reader.yields_words(shell_reader.derived(key, word))
+            or isinstance(keys[key][1], Process) for key in keys):
         return None
     try:
         shell_reader.statements(text)
@@ -388,24 +427,10 @@ def _stdin_details(argv, depth):
     if not argv:
         return None, None, argv
     kind, reader = _options(argv, depth)
-    found = scripts(argv)
+    found = _eval_words(argv) if os.path.basename(argv[0]) == "eval" else scripts(argv)
     if found:
-        # bash's `eval` joins ALL of its own words -- `-`-prefixed ones too
-        # -- into ONE string before running it (`eval bash -s x.sh` is
-        # `bash -s x.sh`, still reading stdin, not `bash x.sh` alone); a
-        # shell's `-c` STRING is already one word, `_after_dash_c`'s own.
-        # `scripts()`'s OWN join drops `-`-words for its literal-text
-        # callers, a filter wrong for this join (review R1-I2) -- re-join
-        # eval's words here instead of using `scripts()`'s filtered list. A
-        # leading `--` is dropped first: bash's `eval` ends its own options
-        # there (`eval -- bash -s` reads stdin), but dash's runs `--` as a
-        # command and nothing runs -- fail-closed where a step's `sh` is dash.
-        is_eval = os.path.basename(argv[0]) == "eval"
-        words = [t for t in (argv[1:] if is_eval else found) if not shell_reader.is_marker(t)]
-        if is_eval and words and getattr(words[0], "spelled", words[0]) == "--":
-            words = words[1:]
-        text = " ".join(getattr(t, "spelled", t) for t in words)
-        parsed = shell_reader.statements(text)
+        text = " ".join(getattr(t, "spelled", t) for t in found)
+        parsed = _parsed(text)
         if len(parsed) == 1 and len(parsed[0].stages) == 1:
             inner = shell_reader.command(parsed[0].stages[0].argv)
             if depth >= 64:                    # bounded: past 64 strings, fail-closed
@@ -417,6 +442,44 @@ def _stdin_details(argv, depth):
                                     and kind == SHELL_PROGRAM and reader else None)
                 return inherited[0], inherited_reader, inherited[2]
     return kind, reader, argv
+
+
+def _eval_words(argv):
+    """The words `_stdin_details` joins for `eval`: bash joins ALL of its own words -- `-`-prefixed
+    ones too -- into ONE string before running it (`eval bash -s x.sh` is `bash -s x.sh`, still
+    reading stdin, not `bash x.sh` alone), so `scripts()`'s filtered list is wrong for this join
+    (review R1-I2). A leading `--` is dropped first: bash's `eval` ends its own options there
+    (`eval -- bash -s` reads stdin), but dash's runs `--` as a command and nothing runs --
+    fail-closed where a step's `sh` is dash. A word holding lifted text is `rendered` (#2683: `"sh
+    $(echo -s)"` is `sh -s`, one printer spelling it, and `"sh $(cat f)"` is `sh $(...)`, a word
+    that may vanish, not dropped whole; #2764: `"$(echo 'sh')"` is `sh`), and one that is all
+    expansion once rendered, or whose rendering the reader refuses (`cat <<$(a b)`, #2486), is
+    dropped, as every such word was: `eval "$(cat x)"` names no shell (#2483 reports the word,
+    never the body)."""
+    words = argv[1:]
+    if words and getattr(words[0], "spelled", words[0]) == "--":
+        words = words[1:]
+    out = []
+    for word in words:
+        if getattr(word, "markers", None):
+            text = rendered(word)
+            try:
+                if _all_expansion(text) or not _parsed(text):
+                    continue
+            except shell_lex.Unreadable:
+                continue                    # a rendering the reader refuses is no word (#2486)
+            out.append(text)
+        else:
+            out.append(word)
+    return out
+
+
+@functools.lru_cache(maxsize=1024)
+def _parsed(text):
+    """`shell_reader.statements(text)`, kept: an `eval` chain is asked at every one of its levels
+    and the walk below reads up to 64 of them each time, so the same suffix is parsed many times
+    over (final review F1: two hundred `eval`s). Read only, never mutated, by `_stdin_details`."""
+    return shell_reader.statements(text)
 
 
 def _options(argv, depth):
@@ -541,6 +604,16 @@ def stdin_scripts(argv, stage, before=None, shell=None):
         text.reader = reader if len(readings) == 1 else None
         setattr(text, "bound", stdin_command(argv)[0] if kind == VALUE_PROGRAM else None)
         out.append(text)
+    # A FILE program beside a heredoc (#2764): the FILE is the program, and where its one
+    # statement's command is a shell reading stdin (`bash <(echo 'sh') <<'EOF'`, `source <(echo
+    # sh) <<'EOF'`), the heredoc is THAT shell's program -- read as shell, no reader (#2500).
+    if filed is not None and stage.stdin_heredoc is not None and not stage.stdin_heredoc[1]:
+        parsed = shell_reader.statements(filed)
+        if len(parsed) == 1 and len(parsed[0].stages) == 1 and _stdin(
+                shell_reader.command(parsed[0].stages[0].argv), 1)[0] in (SHELL_PROGRAM, VALUE_PROGRAM):
+            text = Stdin(stage.stdin_heredoc[0])
+            setattr(text, "bound", None)
+            out.append(text)
     return out
 
 

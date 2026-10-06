@@ -448,14 +448,17 @@ class TestTheProgramAfterDashC(unittest.TestCase):
                 argv = shell_reader.statements(script)[0].stages[0].argv
                 self.assertEqual((None, None), workflow_programs.dynamic_program(argv))
 
-    def test_a_process_substitution_is_neither_an_opaque_script_nor_a_dynamic_program(self):
+    def test_a_process_substitution_is_a_file_in_an_opaque_script_and_no_dynamic_program(self):
         # `shell_reader.yields_words`: a `<(...)` hands a file, not words. A
-        # string holding one beside a `$(...)` is no script at all, where its
-        # twin with the `$(...)` alone is read opaque (#2486), the one
-        # printer's text written in (#2487) ...
+        # string holding one beside a `$(...)` is read opaque since #2684, the
+        # file rendered `$(...)` as an operand (bash runs `tool` there), as its
+        # twin with the `$(...)` alone is (#2486), the one printer's text
+        # written in (#2487) ...
         for script in ('sh -c "sh $(echo tool) <(echo x)" x', 'eval "sh $(echo tool) <(echo x)"'):
             with self.subTest(script=script):
-                self.assertEqual([], self.program(script))
+                found = self.program(script)
+                self.assertEqual(["sh tool $(...)"], found)
+                self.assertIsInstance(found[0], workflow_programs.Opaque)
         found = self.program('sh -c "sh $(echo tool)" x')
         self.assertEqual(["sh tool"], found)
         self.assertIsInstance(found[0], workflow_programs.Opaque)
