@@ -7,6 +7,13 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader: a wrapper that execs cannot run a builtin, and `jobs -x` runs its words
+  (#2670, #2836; #2608, #2733).** `env eval '…'`, `sudo eval '…'`, `nice`/`nohup`/`exec`/`setsid`
+  and their kin in front of `eval` (a heredoc or pipe on it too) were reported though every shell
+  exits 127 and runs nothing: the wrapper stays the command word now, so nothing behind it is a
+  program (`command eval` and `time eval` at a pipeline's head run it and read as they did; the
+  external `time` of a later stage still over-reports). And `jobs -x curl … | sh` ran the pipe
+  under bash and read CLEAN: the walk now hands the words behind `jobs -x` on as the command.
 - **Workflow reader: an array literal's word carries its `elements` (the array-literal
   cluster, #2772, #2783, #2784, #2812; reader half).** A folded `NAME=(…)` / `NAME+=(…)` word,
   and the `NAME=` opener where a statement that only assigns is still handed unfolded, now carry

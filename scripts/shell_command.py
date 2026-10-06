@@ -84,6 +84,15 @@ _DEFAULTS = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([^{}$`'\"\\]+)\}")
 # `workflow_programs._FOREIGN` and `workflow_fetch.FETCHERS` by test.
 _OPTIONAL = re.compile(r"\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*(?::?[-+=]([^{}$`'\"\\\s]*))?\})")
 _INTERPRETERS = ("python", "python3", "perl", "ruby", "node", "php", "pwsh")
+# The names bash and dash have only as BUILTINS, no file of their name on any PATH: a wrapper
+# that execs its command (`env`, `sudo`, `nice`, `nohup`, `exec`, `setsid`, `timeout`, `xargs` and
+# the rest of `WRAPPERS` bar `command`) finds none and runs nothing, rc 127 (#2670). `time` stays
+# read through: the keyword at a pipeline's head runs the builtin, and this walk cannot tell the
+# external `time` of a later stage from it (fail-closed: `echo x | time eval …` over-reports).
+_BUILTIN_ONLY = ("eval", "source", ".", "set", "export", "readonly", "declare", "typeset", "local",
+                 "unset", "shift", "exit", "return", "break", "continue", "cd", "trap", "wait",
+                 "alias", "unalias", "shopt", "exec", "builtin", "command")
+_EXECS = tuple(w for w in WRAPPERS if w not in ("command", "time"))
 _FETCHERS = ("curl", "wget")
 OPTIONAL_NEXT = (*_SHELLS, *WRAPPERS, *_INTERPRETERS, *_FETCHERS)
 
@@ -130,6 +139,10 @@ def _command_result(argv, optional=True):
         if argv[0] == "builtin" and len(argv) > 1 and not heads and _NAME.match(argv[1]):
             argv.pop(0)                         # `builtin eval …` runs the builtin (#2665), as `command` does
             continue
+        if (argv[0] == "jobs" and len(argv) > 2 and not heads and argv[1][:1] == "-"
+                and argv[1][1:].isalpha() and "x" in argv[1]):
+            del argv[:2]                        # `jobs -x WORDS` runs WORDS in the step's shell (#2836)
+            continue
         # A function header is not a command: `f() { curl ... ; }` and its
         # `f () {` spelling both put a name where the command was expected,
         # which is where a long step keeps its download. A `case` arm pattern
@@ -164,6 +177,9 @@ def _command_result(argv, optional=True):
         inner, reason = unwrap(argv, head, has_substitution)
         if reason:
             return argv, "`%s` %s" % (head, reason), heads
+        if head in _EXECS and inner and os.path.basename(inner[0]) in _BUILTIN_ONLY:
+            heads.pop()                         # `env eval …`: not found, nothing runs (#2670)
+            break
         behind = (head, argv) if appended else None
         appended = appended or head == "xargs"
         argv = inner

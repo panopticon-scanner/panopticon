@@ -1035,7 +1035,7 @@ class TestWhereTheBaseReadingStands(unittest.TestCase):
         # backquote spells `history` (FR FR F- FR each; dash has no `set -o history`). The base:
         # the hand-off and the check inside `$CMD`'s script; and so here, where a mark took the
         # table's `sh` and read CLEAN.
-        for lines in ("CMD=sh\njobs -x {read,} {C,}MD <<< true", "CMD=sh\njobs -x eval CMD=true",
+        for lines in ("CMD=sh\njobs -x eval CMD=true",
                       "CMD=sh\njobs -x declare CMD=true", "CMD=sh\n'jobs' -x eval CMD=true",
                       "CMD=sh\nset -o history\nhistory -s 'CMD=true'\nfc -s",
                       "set -o history\nCMD=true\nCMD=sh\nfc -s sh=true",
@@ -1053,6 +1053,14 @@ class TestWhereTheBaseReadingStands(unittest.TestCase):
         # `jobs -x`). The base: the hand-off and the stream; and so here.
         script = "CMD=true\njobs -x eval CMD=sh\n" + body("$CMD")
         self.assertSaid([HANDED % "$CMD", STREAM], defects(script))
+        # #2836: the reader hands the words behind `jobs -x` on as the command, so a brace
+        # pattern there reads as its top-level twin does -- refused loud as a pattern the guard
+        # cannot follow -- in place of the hand-off the `jobs` command word used to keep.
+        rerun = GET + "CMD=sh\njobs -x {read,} {C,}MD <<< true\n" + body("$CMD", CHECK, USE)
+        twin = GET + "CMD=sh\n{read,} {C,}MD <<< true\n" + body("$CMD", CHECK, USE)
+        self.assertEqual(defects(twin), defects(rerun))
+        self.assertEqual(1, len(defects(rerun)), defects(rerun))
+        self.assertTrue(defects(rerun)[0].startswith("cannot read command: `{read,}` is a pattern"))
 
     def test_a_word_led_by_a_history_character_keeps_the_hand_off(self):
         # `CMD=true`, `CMD=sh`, `!-2`: bash reruns `CMD=true` and runs the download under a
