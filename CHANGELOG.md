@@ -7,6 +7,15 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Codex read broker passes through a search-only directory (#2839).** `_open` opened every
+  component from `/` read-only, so a review root under a directory that grants `--x` and not `r`
+  (`drwx--x--x`, a per-tenant parent) refused every `read_file`, `search` and `list_files` -- and
+  the scope binding before them -- although the kernel let the path be traversed. Directories the
+  walk only passes through are now opened for search alone (`O_PATH` on Linux, `O_SEARCH` where
+  CPython exposes it; macOS from 3.13), with `O_DIRECTORY | O_NOFOLLOW` kept on every step so a
+  symlink component still fails, and the last component still opened to read. Without either flag
+  the walk is the old read-only one and such a root still fails closed. The hard-link rule (#1642)
+  is untouched.
 - **Workflow guard reads a printer's `$X` and a `$CMD` through the step's values (#2468, #2600,
   #2601, #2331).** Where the step assigns a name one literal no shell expands, `echo "$X" | sh`
   weighs that text as its program (`X='curl … | sh'` reports as its literal twin), and a `$CMD`

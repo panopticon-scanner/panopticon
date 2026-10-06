@@ -219,7 +219,11 @@ Codex exposes only the bounded MCP tools `read_file`, `search`, and `list_files`
 `skill/scripts/codex_read_tools.py`. Each launch binds `PANOPTICON_ENTRY_ID` to its row in the
 loop's `PANOPTICON_READ_SCOPE` file: exact `scope.files` and `scope.reads`, or descendants of
 `scope.dirs` for setup. Escaping paths, symlinks outside the scope, and missing or malformed grants
-are denied. So is a **hard link** inside a directory grant: a regular file that only `scope.dirs`
+are denied. Directories above a grant are only passed through: the broker opens them for search
+alone (`O_PATH` on Linux, `O_SEARCH` where CPython exposes it — macOS from 3.13), so a review root
+under a directory that grants `--x` and not `r` is readable; on an interpreter with neither flag the
+walk stays read-only and such a root fails closed (#2839). A **hard link** inside a directory grant
+is denied too: a regular file that only `scope.dirs`
 admits is refused when it carries more than one link (`st_nlink` > 1, read off the open descriptor),
 because a link planted in the granted subtree can name an inode outside it and the link IS the file.
 Exact grants are not narrowed this way — a file `scope.files` or `scope.reads` names is the one the
