@@ -439,10 +439,10 @@ class _StatementAnalysis:
 
     def __init__(self, stmts):
         self.leading_arms = {}
-        self.opened = {}
+        self.opened: dict[int, list[tuple[object, _EnclosingContext]]] = {}
         self.plain_arms = []
-        self.enclosing = []
-        cases = []
+        self.enclosing: list[_GroupFrame | None] = []
+        cases: list[_CaseState] = []
         top = None
         for index, statement in enumerate(stmts):
             self.enclosing.append(top)
