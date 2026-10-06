@@ -850,17 +850,18 @@ class TestADynamicProgramWordALiteralShell(unittest.TestCase):
                 self.assertEqual(1, len(found), found)
                 self.assertTrue(found[0][1].startswith("hands a script to `%s` inside" % runner),
                                 found)
-        # Where a shell reads the stdin -- `-s` before the value -- or the handed script holds a
-        # `-c` string, that script or the printer speaks first, as it always has: each answers as
-        # on `main`, which reads them. CLEAN: `-s` before the value, inside `$(...)` and through a
-        # printer, though with `X=-c` every shell runs the word (rc 0) -- `main`'s reading, a gap
-        # filed under #2608; and a `-c` string whose word after it no shell runs (rc 0, nothing
-        # downloaded).
+        # Where the handed script holds a `-c` string, that script speaks first, as it always
+        # has: CLEAN, a `-c` string whose word after it no shell runs (rc 0, nothing downloaded).
+        # `-s` before the value read CLEAN on `main` too, inside `$(...)` and through a printer,
+        # though with `X=-c` every shell runs the word (rc 0, both bashes and dash: forge) -- a gap
+        # filed under #2608, closed by #2858 round 4: after `-s` the `$X` may be `-c`, so no shell
+        # is sure to read the stdin, and the value's own sentence speaks.
+        self.assertEqual([], defects("X=-c\nx=$(sh $X -c 'echo hi' '%s')\n" % PIPE))
         for script in ("X=-c\nx=$(sh -s $X '%s' <<'EOF'\necho hi\nEOF\n)\n" % PIPE,
-                       "X=-c\necho \"$Y\" | sh -s $X '%s'\n" % PIPE,
-                       "X=-c\nx=$(sh $X -c 'echo hi' '%s')\n" % PIPE):
+                       "X=-c\necho \"$Y\" | sh -s $X '%s'\n" % PIPE):
             with self.subTest(script=script):
-                self.assertEqual([], defects(script))
+                found = defects(script)
+                self.assertTrue(found and found[0][1].startswith("passes `sh` `$X`"), found)
         # The `-c` string's own reason where it fetches, `main`'s sentence (bash 5.2.21 runs it,
         # rc 0; bash 3.2.57 refuses `${X,}`, rc 1; dash too, rc 2); and a `$` command word's `-c`,
         # at the step's own level and inside `$(...)`, whose stdin no shell reads (every shell runs
@@ -1178,7 +1179,8 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
       `main`'s own gaps for a literal stdin shell, read as `main` reads them,
       each filed under #2331 too and reported behind a string: options that
       keep it from running its program (`bash -n -s`, `bash -t -s`,
-      `bash -s -c true` and `bash --version` until #2647, `bash -o $X -s` with `X=noexec`,
+      `bash -s -c true` and `bash --version` until #2647, `bash -o $X -s` with `X=noexec` until
+      #2858's round 4,
       and `SHELLOPTS=noexec bash -s` under a dash step); a subshell's
       `|| true`; a check in a function called under `|| true` or never called,
       or ahead of `&&` in a `-e` body; a body that reads the rest of itself
@@ -2341,10 +2343,15 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # running, and `bash - /dev/null` runs that FILE: every shell runs the download.
         self.assert_reported([
             (stdin_step("bash $X -c 'sh'", pre="X=-n\n"), 2, UNGATED % "bash"),
-            (stdin_step("bash /dev/null -c 'sh'"), 1, UNGATED % "bash"),
-            (stdin_step("bash x.sh -ec 'sh -e'", self.ECHOED, pre=": > x.sh\n"), 1,
-             UNGATED % "bash"),
             (stdin_step("eval 'bash - /dev/null'"), 1, "with nothing verifying what arrived")])
+        # A FILE ahead of the `-c` ends the options (#2858 round 4): bash runs the FILE, `-c 'sh'`
+        # its parameters, so no string runs and the heredoc is its data -- the check is never
+        # read and the use runs unverified (FR on both bashes as the child, forge), and a download
+        # in the body never runs (-- --): read as `bash - /dev/null` is.
+        self.assert_reported([(script, 1, "with nothing verifying what arrived") for script in (
+            stdin_step("bash /dev/null -c 'sh'"), stdin_step("bash x.sh -ec 'sh -e'", self.ECHOED, pre=": > x.sh\n"))])
+        self.assert_clean(["bash /dev/null -c 'sh' <<'EOF'\n%s\nEOF\n" % PIPE,
+                           ": > x.sh\nbash x.sh -ec 'sh -e' <<'EOF'\n%s\nEOF\n" % PIPE])
         # No longer a gap (#2654): the word after a lone `-` is the script FILE, and the heredoc
         # its data -- the check is never read, behind `eval` or not; FR FR FR FR on each.
         self.assert_reported([(stdin_step("bash - /dev/null"), 1, "with nothing verifying what arrived")])
@@ -2384,6 +2391,11 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # `<>` on descriptor 0 gives the reader `/dev/null` (rc 0, every shell)
         reported.append((stdin_step("eval 'bash -s <>/dev/null'"), 1, UNGATED % "eval"))
         gaps.append(GET + "bash -s <<'EOF' <>/dev/null\n%s\nEOF\n" % CHECK + USE)
+        # No longer a gap (#2858 round 4): an `-o` name that may expand credits no check, since it
+        # may be `noexec` -- the literal twin is reported too (-T, rc 0, on both bashes: forge).
+        noexec_twin = stdin_step("bash -o $X -s", CHECK, pre="X=noexec\n")
+        gaps.remove(noexec_twin)
+        reported.append((noexec_twin, 1, UNGATED % "bash"))
         self.assert_reported(reported)
         self.assert_reported((script, 1, "inside a function") for script in fixed)
         self.assert_reported((script, 1, "ends a group that hands its failure")

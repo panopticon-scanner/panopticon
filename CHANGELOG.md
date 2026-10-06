@@ -32,13 +32,26 @@ evidence exposed.
   reader-forms docstring; and after a short option `-version` and `-noprofile` are the letters
   bash reads (a mid-cluster `o` takes the next word as its name, and with none is accepted
   silently), `n` among them. A measured shell's `n` letter, `-o noexec` (a cluster's `o` takes the
-  next word: `-eo noexec`) and `-D`/`+D` (strings printed, nothing run) at the step's own level now
-  read as "the program never runs" -- the LAST state of the option run, since a later `+n` or `+o
-  noexec` turns it back off and `bash -n +n -s` runs: the body is not the shell's program, no check
-  in it counts, a use after is reported, and a download in the body stays CLEAN (nothing runs).
-  `-t` runs one command and is read on; `SHELLOPTS=noexec` is unchanged. A word that may expand to
-  nothing (`X=; bash $X -login`) holds the leading run of long options, as bash does, and an exit
-  after it may be letters that run, so it is read as the step's own text with no check credited.
+  next word, in order: `-eo noexec`, `-Oo extglob noexec`) and `-D`/`+D` (strings printed,
+  nothing run) at the step's own level now read as "the program never runs" -- the LAST state of a
+  run of literal option words, since a later `+n` or `+o noexec` turns it back off and `bash -n +n
+  -s` runs: the body is not the shell's program, no check in it counts, a use after is reported,
+  and a download in the body stays CLEAN (nothing runs). `-t` runs one command and is read on;
+  `SHELLOPTS=noexec` is unchanged. A word that may EXPAND -- an option word, a long option's FILE
+  or an `-o`/`-O` name (`$X`, `${X:-}`, `$(true)`) -- may vanish, so the next word is the FILE (`X=;
+  bash --rcfile $X --version <<'EOF'` runs the heredoc), or spell `+n`, a `+o` name or `--rcfile`
+  itself (`X=+n; bash -n $X -s`, `X=--rcfile; bash $X -K -s` run it): it holds the leading run of
+  long options, as bash does, and nothing at or after it is sure -- no refusal, exit or noexec
+  there clears, a `-c` cluster after it leaves the heredoc the program (`X=-s; sh $X -c true` runs
+  it under dash), and no check in the body is credited (`X=noexec; bash -o $X -s` ran the use past
+  a check never read). The `-c` string is looked for in every reading of such a word -- gone,
+  itself, a long option taking a FILE, a short option -- each read as written, so a refusal or an
+  exit holds within its reading alone (`X=; bash --rcfile $X -nor -c P` runs `P`, `-nor` the rc
+  file; `X=-e; bash $X -rcfile P` runs `P`); and in every reading an option's value is skipped
+  before a `--` ends anything (`bash -rcfile -- -login -c P` runs `P`, `--` the rc file) and an
+  operand ends the search (`bash x.sh -c P` runs `x.sh`, `P` its parameter). The price, fail-closed: where nothing runs in any reading measured (`X=;
+  bash -e $X -login`, `X=; bash $X -version`, `X=; bash $X -c true`) the step is reported, and so
+  is a use after a check in `bash -s "$X" <<'EOF'`.
 - **Workflow guard: a long option that prints and exits runs nothing (#2616, #2331).** `--version`,
   `--help`, `--dump-strings` and `--dump-po-strings`, in either spelling, print and exit before bash
   reads stdin or a `-c` string: `bash --version <<'EOF' CHECK EOF; USE` ran the use past a check

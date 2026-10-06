@@ -252,15 +252,82 @@ class TestALongOptionOfTheShell(unittest.TestCase):
         # Where `$X` may spell a short option instead, the one-dash word after may be LETTERS
         # that run (`X=-e; bash $X -help`: FR): an exit after such a word is read as the step's
         # own text with no check credited, reported either way (`X=` alone: nothing runs, -- --,
-        # the fail-closed price); an exit whose letters hold `n`/`D` runs nothing under either
-        # reading (`$X -version`: CLEAN with a download, reported with a check and a use after).
+        # the fail-closed price). Round 4 (B1, shape C): nothing after an expansion clears, since
+        # it may be `--rcfile` and take the next word as its FILE -- `X=--rcfile; bash $X -version`
+        # runs the heredoc (FR on both bashes) -- so `X=; bash $X -version` (-- --, rc 0) and
+        # `X=; bash -e $X -login` (-- --, rc 1) are reported too, fail-closed.
         self.assertTrue(any(STREAM in why for why in defects("X=-e\n" + body("bash $X -help", PIPE))))
         self.assertTrue(any(STREAM in why for why in defects("X=\n" + body("bash $X -help", PIPE))))
-        self.assertEqual([], defects("X=\n" + body("bash $X -version", PIPE)))
+        for script in ("X=\n" + body("bash $X -version", PIPE), "X=\n" + body("bash -e $X -login", PIPE)):
+            with self.subTest(script=script):
+                self.assertTrue(any(STREAM in why for why in defects(script)), script)
+        # With a check and a use: -T (`X=`: the version printed, the use unverified) -- reported by
+        # the value's own sentence, since any word after `$X` may be the program.
         found = defects("X=\n" + GET + body("bash $X -version", CHECK) + USE)
-        self.assertTrue(any(UNVERIFIED in why for why in found), found)
-        # After a literal short option the run is over, `$X` or not: `-login` is letters, refused.
-        self.assertEqual([], defects("X=\n" + body("bash -e $X -login", PIPE)))
+        self.assertTrue(found and found[0].startswith("passes `bash` `$X`"), found)
+
+    def test_after_an_expansion_in_the_option_run_nothing_is_sure(self):
+        # #2858 round 4 (B1): a word that may expand -- an option word, a long option's FILE or an
+        # `-o` name -- may vanish, so the NEXT word is the FILE, or spell `+n`, a `+o` name or
+        # `--rcfile` itself; nothing at or after it clears, and no check in the body is credited.
+        # Every row runs the heredoc: FR on bash 5.2.21 and 3.2.57 (forge, gt2.sh) unless noted.
+        rows = (
+            # (A) an expansion as a FILE option's value: with `X=` the next word is the rc file
+            ("X=\n", "bash --rcfile $X --version"), ("X=\n", "bash -rcfile $X -help"),
+            ("X=\n", "bash --norc --rcfile $X -n -s"), ("X=\n", "bash --rcfile $X -K -s"),
+            ("X=\n", "bash --init-file $X --bogus"), ("X=\n", "bash --rcfile ${X:-} -D"),
+            ("", "bash --rcfile $(true) -n"),
+            ("X=\n", "sh --rcfile $X --version"),            # FR where `sh` is bash; dash rc 2 (seat)
+            ("X=\n", "sudo bash --rcfile $X --version"),     # the seat's matrix, `sudo` stubbed
+            ("X=\n", "env bash --rcfile $X -n -s"), ("X=\n", "timeout 5 bash --rcfile $X -K -s"),
+            # (B) an expansion that may be `+n` or a `+o` name after noexec (dash too)
+            ("X=+n\n", "bash -n $X -s"), ("X=noexec\n", "bash -n +o $X -s"), ("X=+n\n", "dash -n $X -s"),
+            ("X=+n\n", "sh -n $X -s"), ("X=+n\n", "env bash -n $X -s"), ("X=+n\n", "bash -eo noexec $X -help"),
+            # (C) an expansion that may itself be `--rcfile`, taking the next word as its FILE
+            ("X=--rcfile\n", "bash $X -K -s"), ("X=--rcfile\n", "bash $X -version"), ("X=--rcfile\n", "bash $X +D"),
+            ("X=--init-file\n", "sh $X -dump-strings"),      # FR where `sh` is bash; dash rc 2 (seat)
+            ("X=--rcfile\n", "env bash $X -K -s"), ("X=--rcfile\n", "timeout 5 bash $X -version"))
+        for pre, runner in rows:
+            with self.subTest(runner=pre + runner):
+                self.assertTrue(any(STREAM in why for why in defects(pre + body(runner, PIPE))), runner)
+        # The `-c` path: with `X=` the next word is the rc file and the string runs (FR, both
+        # bashes) -- `-help`, and the words that would take `-c` as a value were nothing shifted
+        # (`-nor`'s `o`, `--rcfile`, `--`), or end the leading run (`-e`, then `-login` is long).
+        for words in ("--rcfile $X -help", "--rcfile $X -nor", "--rcfile $X -- ", "--rcfile $X --rcfile",
+                      "--rcfile $X -e -login", "--init-file $X -no", "--rcfile $X -e -rcfile /dev/null"):
+            with self.subTest(words=words):
+                script = "X=\nbash %s -c '%s'\n" % (words, PIPE)
+                self.assertTrue(any(STREAM in why for why in defects(script)), script)
+        # Every cluster carrying `c` after an expansion hands its operand on, a long name's letters
+        # too: `X=-e; bash $X -rcfile 'P'` runs `P` (`-r -c -f ...` after `-e`: FR, both bashes).
+        with self.subTest(script="X=-e; bash $X -rcfile P"):
+            self.assertTrue(any(STREAM in why for why in defects("X=-e\nbash $X -rcfile '%s'\n" % PIPE)))
+        # A `-c` cluster after an expansion clears nothing in the stdin walk: with `X=` the `-e` is
+        # the rc file and `-norc` / `-rcfile /dev/null` are long options, so bash reads the heredoc
+        # (FR); and `X=-s; sh $X -c true` runs the string THEN the heredoc under dash (FR, F4).
+        for pre, runner in (("X=\n", "bash --rcfile $X -e -norc"), ("X=\n", "bash --rcfile $X -e -rcfile /dev/null"),
+                            ("X=-s\n", "sh $X -c true"), ("X=-s\n", "dash $X -c true")):
+            with self.subTest(runner=pre + runner):
+                self.assertTrue(any(STREAM in why for why in defects(pre + body(runner, PIPE))), runner)
+        # With a check in the body and a use after, -T on every shell (the use runs unverified):
+        # `-rcfile /dev/null` is the rc file and `/dev/null` the script, `-n` stays on with `X=`,
+        # `-o` takes `noexec` (F3, the seat's round 4), the `O` and `o` of `-Oo` take a word each (F1).
+        for pre, runner in (("X=\n", "bash --rcfile $X -rcfile /dev/null"), ("X=\n", "bash -n $X -s"),
+                            ("X=noexec\n", "bash -o $X -s"), ("", "bash -o ${X:-noexec}"),
+                            ("", "bash -Oo extglob noexec")):
+            with self.subTest(runner=pre + runner):
+                found = defects(pre + GET + body(runner, CHECK) + USE)
+                self.assertTrue(found, (runner, found))
+        # Honest clears, nothing expands: -- -- on each (rc 0, 2, 0, 0).
+        for script in (body("bash --rcfile /dev/null --version", PIPE), body("bash -K -s", PIPE),
+                       body("bash -n -s", PIPE), body("bash -Oo extglob noexec", PIPE)):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script), script)
+        # The price, fail-closed: bash runs only the string here in every reading measured (`X=`,
+        # `X=-s`: -- --, rc 0), but after `$X` the `-c` may be a FILE with an `-s` to follow.
+        for pre in ("X=\n", "X=-s\n"):
+            with self.subTest(pre=pre):
+                self.assertTrue(any(STREAM in why for why in defects(pre + body("bash $X -c true", PIPE))))
 
     def test_a_run_of_one_dash_long_options_costs_what_the_walk_does(self):
         # #2858 round 3 (B3): `_run` is one pass per argv, kept by identity -- twenty and ten

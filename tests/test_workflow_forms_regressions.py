@@ -552,11 +552,17 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
         for script, expected in rows:
             with self.subTest(script=script):
                 self.assertEqual(expected, forms.stdin_program(self.argv(script)))
-        # A literal file, an ended option list and a literal `-c` remain files
-        # or strings. The literal `-s` must-trip remains a stdin program.
-        for script in ("sh file.sh", "sh -- $X file.sh", "sh $X -c 'cat' file.sh"):
+        # A literal file and an ended option list remain files. The literal `-s`
+        # must-trip remains a stdin program. A literal `-c` after the value is no
+        # longer sure (#2858 round 4): `X=-s; sh $X -c 'true' file.sh <<'EOF'` runs
+        # the heredoc after the string under dash (FR, forge); with `'cat'` the
+        # string eats it first (-- --), which the reader cannot tell -- fail-closed,
+        # as `dash -s -c 'cat'` is read.
+        for script in ("sh file.sh", "sh -- $X file.sh"):
             with self.subTest(script=script):
                 self.assertIsNone(forms.stdin_program(self.argv(script)))
+        self.assertEqual(forms.SHELL_PROGRAM,
+                         forms.stdin_program(self.argv("sh $X -c 'cat' file.sh")))
         self.assertEqual(forms.SHELL_PROGRAM,
                          forms.stdin_program(self.argv("sh -s file.sh")))
 

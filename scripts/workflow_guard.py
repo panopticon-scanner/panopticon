@@ -108,10 +108,15 @@ live, so a change that catches one fails there and edits this list.
   nothing (#2443); `--rcfile FILE` is skipped whole, a lone `-` before a word makes that word the
   script (#2654), a `-c` beside `-s` wins for bash but not for dash, which runs the string and
   then reads stdin (`sh -s -c true`, #2647), and `-n`, `-o noexec` and `-D` read the body and run
-  none of it, so a use after is unverified (`bash -n -s`). Behind a string an inner shell's refusal is read
-  on, `-O`'s shopt names have no table, and no refusal is read as stopping the step: a use after
-  `bash -oo pipefail -c P` or `bash -K <<'EOF'` is reported though the step stops. Because zsh runs twenty of bash's
-  refused letters and ksh
+  none of it, so a use after is unverified (`bash -n -s`). After a word in the option run that may
+  expand nothing is sure (#2858): no refusal, exit, noexec or `-c` there clears, the `-c` string is
+  looked for in every reading of it, and no check in the body counts. Still open: `--pretty-print`
+  (bash 5.2 prints and runs nothing), a value right after `-c` (`Y=-c; bash -login -c $Y P` and `X=-c;
+  bash -e -rcfile $X P` run `P`), `set -n` inside the body, and `$*` before a one-dash option (read
+  as a pattern, so taken for the script FILE). Behind a string an inner
+  shell's refusal is read on, `-O`'s shopt names have no table, and no refusal is read as stopping
+  the step: a use after `bash -oo pipefail -c P` or `bash -K <<'EOF'` is reported though the step
+  stops. Because zsh runs twenty of bash's refused letters and ksh
   runs `-G`, those read on; so does a word after a shell whose name is itself a word. KEPT: binding
   two spellings of one path means EVALUATING the shell, which the reader does not do by design; the
   fleet puts its variables in the URL and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).

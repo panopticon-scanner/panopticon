@@ -57,12 +57,13 @@ import shell_lex
 import shell_reader
 from shell_text import Process
 from workflow_options import (LONG_VALUE_OPTIONS, SET_OPTION_NAMES as SET_OPTION_NAMES, _dash_s, long_option,
-                              SET_OPTIONS as SET_OPTIONS,
+                              SET_OPTIONS as SET_OPTIONS, _credited, _run,
                               SHELL_OPTION_NAMES as SHELL_OPTION_NAMES,
                               SHELL_OPTIONS as SHELL_OPTIONS, VALUE_OPTIONS, _BARE as _BARE,
                               _MEASURED_SHELLS as _MEASURED_SHELLS, _VALUE as _VALUE,
-                              _before_operand, _may_spell_option, _past_options,
-                              _long_word, _refused, _refused_long, _refused_name, _value, _void)
+                              _before_operand, _dash_c_operand, _in_every_reading, _may_spell_option,
+                              _past_options, _long_word, _refused as _refused, _refused_long,
+                              _refused_name as _refused_name, _value, _void)
 from workflow_printers import (ANY as ANY, Named as Named, _PRINTERS as _PRINTERS, _piped as _piped,
                                file_operand as file_operand, handed as handed, operand, rendered,
                                printed as printed, producer as producer, spellings as spellings,
@@ -165,35 +166,11 @@ def _script(word):
 
 
 def _after_dash_c(argv):
-    """The script operand of a shell's `-c`, wherever the flag was clustered.
-
-    `sh -ec`, `bash -lc`, `bash -euc` are the ordinary CI idiom, not an
-    obfuscation, and a short-option cluster carrying a lowercase `c` IS `-c`:
-    no shell spells anything else that way. Requiring `-c` as its own token
-    let every clustered spelling through. The script is the first operand
-    after the options, which need not be the next word: `_past_options`.
-    """
-    owed = 0
-    for position, token in enumerate(argv[1:], start=1):
-        if token == "--":
-            break
-        if owed:                                # an option's value, not an option word
-            owed -= 1
-            continue
-        long = long_option(argv, position)
-        if long is None and token.startswith("-") and not token.startswith("--") and "c" in token:
-            return _past_options(argv, position)
-        # An option word the shell refuses BEFORE the cluster exits before the string is read, as
-        # one after it does (#2606, #2616: `bash -o pipefial -c P`); `--rcfile FILE` is skipped whole.
-        if long or token[:2] == "--":
-            if _refused_long(argv, position):
-                return []
-            owed = long in LONG_VALUE_OPTIONS
-        elif token[:1] in ("-", "+"):
-            if _refused(argv, position) or _refused_name(argv, position):
-                return []
-            owed = sum(letter in VALUE_OPTIONS for letter in token[1:])
-    return []
+    """The script operand of a shell's `-c`, wherever the flag was clustered (`sh -ec`, `bash -lc`,
+    `bash -euc`: a short-option cluster carrying a lowercase `c` IS `-c`, the ordinary CI idiom): the
+    first operand after the options, which need not be the next word (`_dash_c_operand`) -- in every
+    reading of a word in the option run that may expand (`_in_every_reading`, #2858 round 4)."""
+    return _in_every_reading(argv, _dash_c_operand)
 
 
 def candidates(argv):
@@ -452,7 +429,7 @@ def _stdin_details(argv, depth):
     """`_stdin` plus the command whose answer an enclosing string inherits (#2599)."""
     if not argv:
         return None, None, argv
-    kind, reader = _options(argv, depth)
+    kind, reader = _credited(argv, *_options(argv, depth))
     found = _eval_words(argv) if os.path.basename(argv[0]) == "eval" else scripts(argv)
     if found:
         text = " ".join(getattr(t, "spelled", t) for t in found)
@@ -545,7 +522,7 @@ def _options(argv, depth):
                 reader = None               # ... but it may name a FILE: no check counts
                 value_option = value_option or options
                 continue                    # the walk goes on as if absent
-            return (answer, reader) if value_option else (None, None)
+            return (answer, reader) if value_option or shell and _run(argv)[1] < at - 1 else (None, None)
         if word := _long_word(argv, at - 1):
             # A long option, in either spelling (#2616): refused or printing and exiting, nothing
             # runs; after a `$X` it may be letters that run (#2858 r3); `--rcfile FILE` skips its FILE.
@@ -559,14 +536,14 @@ def _options(argv, depth):
         if parameters and shell_reader.dynamic(token, shell_reader.has_substitution):
             return answer, reader           # `bash -s -$X -c x`: `$X` may spell `-c sh` first
         if (shell or value) and "c" in letters:
-            # The program is the `-c` string -- for bash. dash runs the string and THEN, with an
-            # `-s` among its options, reads stdin as a program too (`_dash_s`, #2647 round 1), so
-            # for `dash`, and for `sh`, which may be dash, the body is the program -- the step's
-            # own text, with no check in it credited (`()`): the string may eat stdin first
-            # (`dash -s -c 'cat'`), and bash never reads it. After bash's own `-s` the reader is
-            # kept: a stdin shell the string names reads the body as the holder's.
-            if shell and name in ("sh", "dash") and (parameters or _dash_s(argv, at - 1)):
-                return answer, ()
+            # The program is the `-c` string -- for bash. dash runs it and THEN, with an `-s` among
+            # its options, reads stdin (`_dash_s`, #2647), so for `dash` and `sh` the body is the
+            # program, the step's own text with no check credited (`()`): the string may eat stdin
+            # first, and bash never reads it. So too after a word that may expand, where the
+            # cluster may be a FILE or a long name (`X=; bash --rcfile $X -e -norc` runs, #2858).
+            # After bash's own `-s` the reader is kept: a stdin shell the string names reads it.
+            if shell and (at > _run(argv)[1] or name in ("sh", "dash") and (parameters or _dash_s(argv, at - 1))):
+                return answer, None if at > _run(argv)[1] else ()
             return None, reader if parameters else None
         if (shell or value) and "s" in letters:
             if value:
