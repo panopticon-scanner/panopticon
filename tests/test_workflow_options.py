@@ -8,6 +8,7 @@ program, a `sha256sum` whose `-c` fails, and the step run as GitHub runs it (`-e
 `-o pipefail`): FR fetched and ran, F- fetched only, -- neither, +chk the check ran. Every row's four
 columns agree unless a comment says otherwise.
 """
+import time
 import unittest
 
 import shell_reader
@@ -693,6 +694,21 @@ class TestAClearingRuleFiresOnlyOnSureInput(unittest.TestCase):
                        body('bash - "$(true)"', PIPE)):
             with self.subTest(script=script):
                 self.assertTrue(defects(script), script)
+
+    def test_the_one_word_scan_is_linear(self):
+        # CodeQL on eb6da4e0 (high): `_ONE_WORD` could split a `$NAME` beside text two ways inside a
+        # default, so a failing match backtracked exponentially -- `'${X:-' + '0$A' * 24 + '@}'` took
+        # 1.2 s and doubled with each repetition. The scan reads each token once: CodeQL's shape, with
+        # and without `}`, and the defaults that blew up return at once at 10,000 repetitions.
+        class Kept(str):
+            kept = True
+        for shape, one in (("${{A-$A" + "0$A" * 10000, False), ("${{A-$A" + "0$A" * 10000 + "}", False),
+                           ("${X:-" + "0$A" * 10000 + "@}", False), ("${X:-" + "0$A" * 10000, False),
+                           ("${X:-" + "0$A" * 10000 + "}", True)):
+            with self.subTest(shape=shape[:8], end=shape[-2:]):
+                start = time.perf_counter()
+                self.assertEqual(one, wo._one_word(Kept(shape)))
+                self.assertLess(time.perf_counter() - start, 1.0)
 
     def test_a_literal_after_a_lone_dash_is_the_file_and_a_value_after_dash_c_dash_dash_may_vanish(self):
         # -- (127346, rc 127 x4): a literal `-` after a lone `-` is the FILE named `-`.

@@ -378,16 +378,44 @@ def _value_after_dash_c(argv, at):
 # The quoted forms proven to be exactly one word (#2858 round 8, an allowlist): text, `"$X"`,
 # `"${X}"`, `"$1"`, `"$*"`, `"${A[*]}"`, `"$#"` and kin, and `"${X:-…}"`/`"${X:=…}"` whose default
 # is text or such a `$Y`. Anything else -- `@`, `${!X}` (with `X=@`, `"$@"`), `${#X}`, `${X%…}` -- is not.
-_ONE_WORD = re.compile(r"(?:[^$`\\]|\$(?:[A-Za-z_]\w*|[0-9#?$*!-])|\$\{(?:[A-Za-z_]\w*(?:\[\*\])?|[0-9]+|[*#?])\}"
-                       r"|\$\{[A-Za-z_]\w*:?[-=](?:[^$`\\{}!@]|\$[A-Za-z_]\w*|\$\{[A-Za-z_]\w*\})*\})*")
+# Read by a scan, one token at a time, not one regular expression: a `$NAME` beside text could be
+# split two ways there, and a failing match backtracked exponentially (CodeQL).
+_ONE_PARAMETER = re.compile(r"\$(?:[A-Za-z_]\w*|[0-9#?$*!-])|\$\{(?:[A-Za-z_]\w*(?:\[\*\])?|[0-9]+|[*#?])\}")
+_ONE_DEFAULT = re.compile(r"\$\{[A-Za-z_]\w*:?[-=]")
+_DEFAULT_PARAMETER = re.compile(r"\$[A-Za-z_]\w*|\$\{[A-Za-z_]\w*\}")
 
 
 def _one_word(word):
     """Whether `word` is a quoted expansion that is always exactly ONE word (#2858 rounds 7-8): every
-    `$` of it quoted (`shell_reader.kept`) and nothing in it but forms `_ONE_WORD` allows. `"$@"`,
-    `"${A[@]}"` and `"${!X}"` may be no word or several, and an unknown form is read as they are: as
-    an expansion like `$X` (`bash --rcfile "$@" -nor -c P` runs `P` with no parameters)."""
-    return bool(getattr(word, "kept", False)) and bool(_ONE_WORD.fullmatch(str(word)))
+    `$` of it quoted (`shell_reader.kept`) and nothing in it but the forms the allowlist above names.
+    `"$@"`, `"${A[@]}"` and `"${!X}"` may be no word or several, and an unknown form is read as they
+    are: as an expansion like `$X` (`bash --rcfile "$@" -nor -c P` runs `P` with no parameters)."""
+    if not getattr(word, "kept", False):
+        return False
+    text, at = str(word), 0
+    while at < len(text):
+        if text[at] not in "$`\\":
+            at += 1
+            continue
+        found = _ONE_PARAMETER.match(text, at) if text[at] == "$" else None
+        if found:
+            at = found.end()
+            continue
+        found = _ONE_DEFAULT.match(text, at) if text[at] == "$" else None
+        if not found:
+            return False
+        at = found.end()
+        while at < len(text) and text[at] != "}":   # the default: text or a plain `$Y`
+            if text[at] in "`\\{!@":
+                return False
+            found = _DEFAULT_PARAMETER.match(text, at) if text[at] == "$" else None
+            if text[at] == "$" and not found:
+                return False
+            at = found.end() if found else at + 1
+        if at >= len(text):
+            return False
+        at += 1
+    return True
 
 
 def _literal(word):
