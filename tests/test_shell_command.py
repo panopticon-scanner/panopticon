@@ -67,7 +67,26 @@ class TestTheCommandLayersOwnReadings(unittest.TestCase):
         # #2665
         for script, argv in (("builtin eval 'x'", ["eval", "x"]), ("builtin command eval 'x'", ["eval", "x"]),
                              ("builtin export T=1", ["export", "T=1"]), ("builtin T=1", ["builtin", "T=1"]),
-                             ("sudo builtin eval 'x'", ["builtin", "eval", "x"])):
+                             ("sudo builtin eval 'x'", ["sudo", "builtin", "eval", "x"])):   # #2670: not found
             with self.subTest(script=script):
                 stage = shell_reader.statements(script)[0].stages[0]
                 self.assertEqual(argv, [str(w) for w in shell_command.command(stage.argv)])
+
+    def test_an_exec_wrapper_before_a_builtin_only_name_stays_the_command(self):
+        # #2670 / #2836
+        for script, argv, wrappers in (("env eval 'x'", ["env", "eval", "x"], []),
+                                       ("sudo -u root eval 'x'", ["sudo", "-u", "root", "eval", "x"], []),
+                                       ("env X=1 set -e", ["env", "X=1", "set", "-e"], []),
+                                       ("env sh -c 'x'", ["sh", "-c", "x"], ["env"]),
+                                       ("command eval 'x'", ["eval", "x"], ["command"]),
+                                       ("time eval 'x'", ["eval", "x"], ["time"]),
+                                       ("jobs -x sh tool", ["sh", "tool"], []),
+                                       ("jobs -lx curl u", ["curl", "u"], []),
+                                       ("jobs -l", ["jobs", "-l"], []),
+                                       ("jobs -x", ["jobs", "-x"], [])):
+            with self.subTest(script=script):
+                stage = shell_reader.statements(script)[0].stages[0]
+                self.assertEqual(argv, [str(w) for w in shell_command.command(stage.argv)])
+                self.assertEqual(wrappers, [str(w) for w in shell_command.wrapper_words(stage.argv)])
+        self.assertTrue(set(shell_command._EXECS) >= {"env", "sudo", "nice", "nohup", "exec", "setsid", "xargs", "timeout"})
+        self.assertNotIn("command", shell_command._EXECS)

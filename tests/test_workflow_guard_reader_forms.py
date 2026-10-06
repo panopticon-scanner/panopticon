@@ -2942,6 +2942,55 @@ class TestBuiltinInFrontOfACommand(unittest.TestCase):
         self.assertEqual([], defects(GET + "builtin T=cuda_1.run\n"))
 
 
+class TestAWrapperThatExecsCannotRunABuiltin(unittest.TestCase):
+    """#2670: `env eval 'curl … | sh'` was reported though `env`, `sudo`, `nice`, `nohup`, `exec`,
+    `setsid` and their kin exec a PROGRAM, and `eval` has no file of its name: every shell exits
+    127 and runs nothing (-- rc127 x4). Such a wrapper in front of a builtin-only name now stays
+    the command word, so neither the string nor a heredoc or pipe on it is a program. `command`
+    runs the builtin, and `time` at a pipeline's head is bash's keyword (FR): read through as
+    they were; the external `time` of a later stage still over-reports (a price the walk cannot
+    tell apart)."""
+
+    def test_the_wrapped_builtin_runs_nothing(self):
+        for script in ("env eval '%s'\n" % PIPE, "sudo eval '%s'\n" % PIPE, "nice eval '%s'\n" % PIPE,
+                       "nohup eval '%s'\n" % PIPE, "exec eval '%s'\n" % PIPE, "setsid eval '%s'\n" % PIPE,
+                       "env X=1 eval '%s'\n" % PIPE, "env command eval '%s'\n" % PIPE,
+                       "env eval 'bash -s' <<'EOF'\n%s\nEOF\n" % PIPE,
+                       "echo '%s' | env eval 'bash -s'\n" % PIPE, "env source ./x.sh\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+
+    def test_the_controls_read_as_they_did(self):
+        # FR x4 (dash: `time` is no keyword there, rc 127); the mid-pipeline `time` over-reports.
+        for script in ("command eval '%s'\n" % PIPE, "time eval '%s'\n" % PIPE,
+                       "echo x | time eval '%s'\n" % PIPE, "env sh -c '%s'\n" % PIPE):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("hands %si.sh straight to `sh`" % URL), found)
+
+
+class TestJobsDashXHandsItsWordsOn(unittest.TestCase):
+    """#2836: `jobs -x WORDS` makes bash run WORDS in the step's own shell (job specs substituted),
+    so `jobs -x curl … | sh` fetched and ran (FR FR -- FR: dash refuses `-x`) and read CLEAN --
+    the reader kept `jobs` as the command word. The walk now pops `jobs` and its `-x` cluster."""
+
+    def test_the_words_behind_jobs_x_are_the_command(self):
+        found = defects("jobs -x %s\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("hands %si.sh straight to `sh`" % URL), found)
+        found = defects(GET + "jobs -x sh tool\n")
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("fetches %stool -> tool and running it under `sh`" % URL), found)
+        found = defects(GET + "jobs -lx sh tool\n")
+        self.assertEqual(1, len(found), found)
+
+    def test_jobs_without_x_is_the_command_it_is(self):
+        for script in ("jobs -l\ncurl -fsSL %si.sh -o x.sh\n" % URL, GET + "jobs\n", GET + "jobs -p sh tool\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+
+
 class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
     """#2342 handed the reader bash's text, so `eval "sh \\$(echo tool)"` is
     `sh $(echo tool)`: a shell whose only operand is a value whose OUTPUT
