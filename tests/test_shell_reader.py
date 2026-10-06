@@ -923,6 +923,22 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
             with self.subTest(script=script):
                 self.assertIn([['echo', 'a']], argvs(script))
 
+    def test_an_unterminated_quoted_heredoc_is_refused(self):
+        # #2692: quotes make the delimiter literal, but do not let an `EOF`
+        # prefix end its body. Bash 3.2, Bash 5.2 and dash all take every
+        # remaining line as data, so reading one as code would invent a
+        # command none of them runs. Keep the historical unquoted reading in
+        # the test above; only this quoted, unambiguous case fails closed.
+        for last in ("EOF; echo hidden\n", "EOF \necho hidden\n"):
+            with self.subTest(last=last):
+                with self.assertRaisesRegex(
+                        shell_lex.Unreadable, "quoted heredoc.*no exact terminator"):
+                    shell_reader.statements("cat <<'EOF'\nx\n" + last)
+
+        # An exact delimiter still ends the body and exposes following code.
+        self.assertIn([['echo', 'visible']],
+                      argvs("cat <<'EOF'\nx\nEOF\necho visible\n"))
+
     def test_a_delimiter_bash_parses_to_spell_is_refused(self):
         # Bash spells `<<$(a b)` by parsing the word, and the reader parses
         # no expansions: a body ended at a guessed spelling (`$`) swallows
@@ -991,14 +1007,16 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
                 self.assertIn([['echo', 'a']], argvs(script))
         self.assertEqual("it's", stage("cat 3<\\\n<EOF\nit's\nEOF\n").heredoc)
         # Only the operator folds, as before: `\` before a word quotes it,
-        # `<\` + newline + a word is a file on stdin, and a `\`-newline in
-        # '...' is the word's own, which no line ends -- nor does bash, which
-        # runs nothing below it.
+        # and `<\` + newline + a word is a file on stdin. A `\`-newline in
+        # '...' is the word's own, which no line can end -- nor does bash,
+        # which runs nothing below it, so #2692 now refuses that quoted body.
         self.assertEqual(("it's $x", False),
                          stage("cat <<\\EOF\nit's $x\nEOF\n").stdin_heredoc)
         self.assertEqual([[['cat']], [['echo', 'a']]], argvs("cat <\\\nf\necho a\n"))
         self.assertIsNone(stage("cat <\\\nf\n").stdin_heredoc)
-        self.assertNotIn([['echo', 'a']], argvs("cat <<'E\\\nOF'\nit's\nEOF\necho a\n"))
+        with self.assertRaisesRegex(
+                shell_lex.Unreadable, "quoted heredoc.*no exact terminator"):
+            argvs("cat <<'E\\\nOF'\nit's\nEOF\necho a\n")
 
     def test_every_heredoc_on_a_line_is_filed_under_its_descriptor(self):
         # #2128: a second heredoc on the line was read as `<` of a file named
@@ -1339,11 +1357,30 @@ class TestDoubleQuoteEscapesInAProgram(unittest.TestCase):
             with self.subTest(written=written):
                 self.assertEqual(spelled, stage("eval " + written).argv[1].spelled)
 
-    def test_a_word_bash_expands_or_single_quotes_is_as_it_was(self):
-        # A live `$URL` or `$(...)` beside the escape expands at the outer
-        # level, so the text the shell gets is not known; '\$' keeps it.
-        for script in ('bash -c "x=\\$(curl $URL)"', 'bash -c "\\$x $(date)"',
-                       "eval 'x=\\$(curl u)'", 'bash -c "curl -fsSL \\"$URL\\" | sh"'):
+    def test_a_live_expansion_beside_the_escape_is_carried_as_the_value_it_is(self):
+        # #2466: a live `$URL` or `$(...)` beside the escape expands at the OUTER level, so the
+        # text the shell gets is not known in full -- but the structure around it is, and a `$`
+        # word is one the reader already carries as a value: the backslashes go as before, the
+        # live word stays as written, and a lifted substitution keeps its marker in `spelled`.
+        word = stage('bash -c "x=\\$(curl $URL); eval \\"\\$x\\""').argv[2]
+        self.assertEqual('x=\\$(curl $URL); eval "\\$x"', word)
+        self.assertEqual('x=$(curl $URL); eval "$x"', word.spelled)
+        inner = shell_reader.statements(word.spelled)
+        self.assertEqual(["curl $URL"], inner[0].stages[0].substitutions)
+        self.assertEqual(["eval", "$x"], inner[1].stages[0].argv)
+        word = stage('bash -c "\\$x $(date)"').argv[2]
+        self.assertEqual(word.markers, word.spelled.markers)
+        self.assertEqual("$x $(...)", shell_reader.readable(word.spelled))
+        self.assertEqual("\\$x $(...)", shell_reader.readable(word))
+        # The mixed-quoting spelling: a single-quoted `$x` beside it is the inner shell's too.
+        word = stage('bash -c "x=\\$(curl u)"\'; eval "$x"\'').argv[2]
+        self.assertEqual('x=$(curl u); eval "$x"', word.spelled)
+
+    def test_a_word_with_no_double_quoted_escape_is_as_it_was(self):
+        # A single-quoted `\$` reaches the shell with its backslash, and a `\"` or `\\` is
+        # shlex's to drop: none is spelled, so each reads as written, as before #2342.
+        for script in ("eval 'x=\\$(curl u)'", 'bash -c "curl -fsSL \\"$URL\\" | sh"',
+                       'bash -c "echo $HOME"', 'bash -c "x=\\\\$(curl u)"'):
             with self.subTest(script=script):
                 self.assertFalse(hasattr(stage(script).argv[-1], "spelled"))
 

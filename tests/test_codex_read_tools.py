@@ -1,4 +1,5 @@
 """Offline Codex MCP boundary tests: no host process, home writes, or network."""
+import contextlib
 import io
 import json
 import os
@@ -590,6 +591,106 @@ def test_the_repository_checkout_itself_is_listable_under_production_caps():
         relative = os.path.relpath(line, root)
         for segment in relative.split(os.sep)[:-1]:
             assert not read_tools._excluded_dir(segment), (segment, relative)
+
+
+# --- #2839: a directory the walk only passes through needs search, not read --
+# `_open` used to open every component from `/` O_RDONLY, so a review root
+# under a directory that grants `--x` and not `r` (`drwx--x--x`, a per-tenant
+# parent) refused every call although the kernel let the path be traversed.
+# Mode 0311 gives a directory's OWNER search without read, so no second
+# account is needed; uid 0 ignores mode bits, so the 0311 cases skip there.
+
+_NOT_ROOT = getattr(os, "geteuid", lambda: 0)() != 0
+
+
+@contextlib.contextmanager
+def _search_only_ancestor(tmp_path):
+    """<tmp>/outer/root/a.py with `outer` at 0311 inside the block, 0755 after,
+    so pytest can remove the tree. Yields (root, a.py)."""
+    outer = tmp_path.resolve() / "outer"
+    root = outer / "root"
+    root.mkdir(parents=True)
+    target = root / "a.py"
+    target.write_text("needle = 1\n", encoding="utf-8")
+    os.chmod(outer, 0o311)
+    try:
+        yield str(root), str(target)
+    finally:
+        os.chmod(outer, 0o755)
+
+
+def _calls(root, target):
+    """One answer per tool, each under the grant kind the tool needs."""
+    by_dir = read_tools.Reader({"files": [], "dirs": [root], "reads": []}, root)
+    by_file = read_tools.Reader({"files": [target], "dirs": [], "reads": []}, root)
+    return {"list_files": by_dir.call("list_files", {"pattern": "*"}),
+            "search": by_dir.call("search", {"pattern": "needle"}),
+            "read_file": by_file.call("read_file", {"path": target})}
+
+
+def test_the_traversal_flag_is_the_platform_search_only_open():
+    # O_PATH where Linux offers it, else O_SEARCH where CPython exposes it
+    # (macOS from 3.13), else None -- and the fallback is the read-only walk.
+    if hasattr(os, "O_PATH"):
+        assert read_tools.TRAVERSAL_FLAG == os.O_PATH
+    elif hasattr(os, "O_SEARCH"):
+        assert read_tools.TRAVERSAL_FLAG == os.O_SEARCH
+    else:
+        assert read_tools.TRAVERSAL_FLAG is None
+
+
+@pytest.mark.skipif(not _NOT_ROOT, reason="mode bits do not bind uid 0")
+@pytest.mark.skipif(read_tools.TRAVERSAL_FLAG is None,
+                    reason="no search-only open flag on this interpreter")
+def test_a_search_only_ancestor_does_not_refuse_the_grant(tmp_path):
+    with _search_only_ancestor(tmp_path) as (root, target):
+        answers = _calls(root, target)
+        for name, result in answers.items():
+            assert result["isError"] is False, (name, body(result))
+        assert body(answers["list_files"]).splitlines() == [target]
+        assert body(answers["search"]) == "%s:1:needle = 1" % target
+        assert body(answers["read_file"]) == "%s:1:needle = 1" % target
+        # The binding reads the scope file through the same walk, and the run
+        # folder lives under the review root: it has to resolve too.
+        scope_path = os.path.join(root, ".panopticon", "runs", "t", "read-scope.json")
+        os.makedirs(os.path.dirname(scope_path))
+        with open(scope_path, "w", encoding="utf-8") as handle:
+            json.dump({"e1": {"files": [target], "dirs": [], "reads": []}}, handle)
+        reader = read_tools.load_reader(
+            env={"PANOPTICON_ENTRY_ID": "e1", "PANOPTICON_READ_SCOPE": scope_path}, cwd=root)
+        assert reader.call("read_file", {"path": target})["isError"] is False
+
+
+@pytest.mark.skipif(not _NOT_ROOT, reason="mode bits do not bind uid 0")
+def test_without_a_search_only_flag_such_a_root_still_fails_closed(tmp_path, monkeypatch):
+    # The fallback branch, on every leg: the read-only walk refuses the root
+    # (as before #2839) and keeps working where every ancestor is readable.
+    monkeypatch.setattr(read_tools, "TRAVERSAL_FLAG", None)
+    with _search_only_ancestor(tmp_path) as (root, target):
+        for name, result in _calls(root, target).items():
+            assert result["isError"] is True, name
+            assert "Permission denied" in body(result) and "needle" not in body(result)
+        os.chmod(os.path.dirname(root), 0o755)
+        for name, result in _calls(root, target).items():
+            assert result["isError"] is False, (name, body(result))
+
+
+@pytest.mark.parametrize("flagless", [False, True])
+def test_a_symlinked_ancestor_is_refused_on_both_walks(tmp_path, monkeypatch, flagless):
+    # What the traversal flag must not loosen: O_DIRECTORY | O_NOFOLLOW stay on
+    # every step, so a link standing where a directory should be fails the
+    # walk whether the component is opened for search or for read.
+    if flagless:
+        monkeypatch.setattr(read_tools, "TRAVERSAL_FLAG", None)
+    base = tmp_path.resolve()
+    real = base / "real"
+    (real / "root").mkdir(parents=True)
+    (real / "root" / "a.py").write_text("private outside content\n", encoding="utf-8")
+    (base / "link").symlink_to(real, target_is_directory=True)
+    root = str(base / "link" / "root")
+    for name, result in _calls(root, os.path.join(root, "a.py")).items():
+        assert result["isError"] is True, name
+        assert "private outside content" not in body(result)
 
 
 # --- N-I1: one maintenance point for what a walk prunes ---------------------

