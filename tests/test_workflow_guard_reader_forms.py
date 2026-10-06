@@ -579,6 +579,96 @@ class TestADestinationAndItsUseMeetUnderEitherReading(unittest.TestCase):
         self.assertEqual(([":", "}"], ["${D:-tool"]), ([str(w) for w in stage.argv], [str(w) for w in stage.writes]))
 
 
+class TestMainsReadingStaysAtEveryComparison(unittest.TestCase):
+    """PR #2856 round 7, the coordinator's ruling on round 6: at every place a name is compared --
+    a destination, a use, a carrier's source, its gained name, a value's flow -- `main`'s reading
+    of a blank-holding `${…}` stays a candidate and the whole reading is only added, so it can
+    add matches and never remove one `main` makes (`shell_tokens.argv_readings` and its kin, at
+    one changed line per site). B3: `<>` reads on descriptor 0 alone. B5: a step that spells
+    U+E004, the reader's mark, is read exactly as `main` reads it. Rows are the round-6 seat's;
+    truth b5e b5p b3e b3p de b5n b3n dn (R ran the payload, f fetched only)."""
+
+    REPORT = (
+        "wget -q -O ${D:-tool } %stool\nsh ${D:-tool  }" % URL,                         # B1 T101a RRRRRRRR
+        "wget -q --output-document=${D:-tool } %stool\nsh ${D:-tool  }" % URL,          # B1 T401a RRRRRRRR
+        "wget -q -O ${D:-tool y} %stool\nsh ${D:-tool y}" % URL,                        # B1, a second word
+        "curl -fsSL %stool -o tool\ncat tool > ${E:-t2 }\nsh ${E:-t2 }" % URL,          # B2 G51a RRRRfRRf
+        "wget -q -O ${D:-tool } %stool\ncat ${D:-tool } > ${E:-t2 }\nsh ${E:-t2 }" % URL,  # B2 Hk1a
+        "curl -fsSL %stool 1<> tool\nsh tool" % URL,                                    # B3 N01a RRRRRRRR
+        'curl -fsSL %stool 1<> "tool"\nsh tool' % URL,                                  # B3 N10a
+        "curl -fsSL %stool 1<> ${D:-tool }\nsh tool" % URL,                             # B3 D0701 RRRRfRRf
+        "wget -q -O ${D:-tool } %stool\nF=${D:-tool }\nsh $F" % URL,                    # B4 RRRRRRRR
+        "wget -q -O ${D:-tool } %stool\nfor f in ${D:-tool }; do sh $f; done" % URL,     # B4 V1a1
+        "wget -q -O${D:-tool } %stool\nfor f in ${D:-tool }; do sh $f; done" % URL,      # B4 X4a1
+        "wget -q -O\ue004tool %stool\nsh \ue004tool" % URL,                              # B5 RRRRRRRR
+        "curl -fsSLo tool %stool\n${W:-sudo -E} bash tool" % URL,                        # h08 (round 4's F9)
+        "curl -fsSLo tool %stool\n${RUN:-sh ./tool}" % URL,                             # h09
+        "curl -fsSLo tool %stool\nX=1\n${X:+sh tool}" % URL,                            # h10
+        "curl -fsSLo tool %stool\n${X:=bash tool}" % URL,                               # h11
+        "curl -fsSLo tool %stool\nCMD=${CMD:-sh tool}; $CMD" % URL)                     # h20
+    # B3's control: `2<> tool` opens a file nothing writes the download to, and nothing runs it.
+    CLEAN = ("curl -fsSL %stool 2<> tool\nsh tool" % URL,)
+
+    def test_each_row_main_reports_still_reports(self):
+        for row in self.REPORT:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_the_diamond_on_another_descriptor_runs_nothing(self):
+        for row in self.CLEAN:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(row + "\necho done\n", shell))
+
+    def test_a_use_of_the_destinations_other_reading_is_no_copy(self):
+        # The note "(as X, copied from it earlier)" names a copy, never the destination's own other
+        # reading (the seat's MUS mutant, which dropped that guard, passed every test).
+        found = wg.job_defects([("step", "wget -q -O ${D:-tool } %stool\nsh ${D:-tool }\n" % URL)])
+        self.assertTrue(found)
+        self.assertNotIn("copied from it earlier", str(found))
+
+    def test_every_comparison_site_asks_for_mains_reading(self):
+        # Each site's union is one changed line; a mutant that drops one leaves its entry off this
+        # list. Each entry is (helper, the function asking, the word it asked about first): the
+        # step exercises a use, a carrier and its gained name `t2`, a loop's and `set --`'s
+        # bindings, an assignment, a called body's use (`sh`) and the call's arguments (`./*`).
+        import collections
+        import sys
+        import shell_tokens
+        asked = collections.Counter()
+        originals = {name: getattr(shell_tokens, name)
+                     for name in ("argv_readings", "stage_readings", "statement_readings", "readings")}
+
+        def first(value):
+            words = getattr(value, "argv", None) or getattr(value, "stages", None) or value
+            return str(words[0] if isinstance(words, list) and words else words)[:12]
+
+        def counting(name):
+            def helper(*args):
+                asked[(name, sys._getframe(1).f_code.co_name, first(args[0]))] += 1
+                return originals[name](*args)
+            return helper
+        try:
+            for name in originals:
+                setattr(wg.shell_reader, name, counting(name))
+            step = ("wget -q -O ${D:-tool } %stool\nmv ${D:-tool } t2\nfor f in ${D:-x }; do :; done\n"
+                    "set -- ${D:-x }\nF=${D:-x }\nf() { :; sh ${D:-tool }; }\nf ./*\nsh ${D:-tool }\n" % URL)
+            wg.job_defects([("step", step)])
+        finally:
+            for name, helper in originals.items():
+                setattr(wg.shell_reader, name, helper)
+        seen = {(name, caller, word) for name, caller, word in asked}
+        for site in (("argv_readings", "uses", "sh"), ("statement_readings", "uses", None),
+                     ("readings", "uses", "t2"), ("stage_readings", "uses", "for"),
+                     ("stage_readings", "uses", "set"), ("argv_readings", "_function_use", "sh"),
+                     ("argv_readings", "_function_use", "./*"), ("stage_readings", "_function_use", None),
+                     ("argv_readings", "record", None), ("readings", "_assign", None)):
+            with self.subTest(site=site):
+                self.assertTrue(any(name == site[0] and caller == site[1] and site[2] in (None, word)
+                                    for name, caller, word in seen), sorted(seen))
+
+
 class TestTheClosedRowsTheSeatAskedPinned(unittest.TestCase):
     """The #2856 seat's round-1 note 2: a comment line between `|` and `sh`, `${X:-sh -c}`
     inside `eval`, a `-c` string and a heredoc, `sh <> tool`, and the two-line check gate,

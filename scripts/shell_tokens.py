@@ -56,18 +56,51 @@ def kept(word):
 
 
 def derived(text, *sources):
-    """Carry provenance through an explicit substring/path transformation -- and a destination's
-    whole `${…}` word (`shell_reader.readings`) through a value cut from the end of its glued
-    option (`--output-document=${D:-tool`) or a directory joined in front of it."""
+    """Carry provenance through an explicit substring/path transformation -- and a word's two
+    readings (`readings`, #2856): a destination's whole `${…}` word through a value cut from the
+    end of its glued option (`--output-document=${D:-tool`) or a directory joined in front of it,
+    and `main`'s pieces through a value cut from the end of a word read whole (`F=${D:-tool }`'s
+    `${D:-tool }` keeps `${D:-tool`, which `main` assigned)."""
     markers = {key: value for source in sources
                for key, value in _markers(source).items() if key in text}
     made = _Token(text, markers) if markers else text
     for source in sources:
-        whole, cut = getattr(source, "whole", None), len(str(source)) - len(text)
+        whole, pieces, cut = getattr(source, "whole", None), getattr(source, "pieces", None), len(str(source)) - len(text)
         if whole is not None and (str(source).endswith(text) or text.endswith(str(source))):
             made = made if isinstance(made, _Token) else _Token(made, {})
             setattr(made, "whole", whole[cut:] if cut >= 0 else text[:-cut] + whole)
+        elif pieces and 0 < cut < len(pieces[0]) and str(source).endswith(text) and str(source)[:cut] == pieces[0][:cut]:
+            made = made if isinstance(made, _Token) else _Token(made, {})
+            setattr(made, "pieces", [pieces[0][cut:], *pieces[1:]])
     return made
+
+
+def readings(word):
+    """The spelling a word holding a bare blank has besides its own (#2856): the whole `${…}`
+    word a destination read as `main` read it was split from, or `main`'s first piece of a word
+    read whole -- so a destination and a use meet whichever way each was read."""
+    pieces = getattr(word, "pieces", None)
+    other = getattr(word, "whole", None) or (pieces[0] if pieces else None)
+    return {other} if other is not None else set()
+
+
+def argv_readings(argv):
+    """`argv`, and beside it the argv `main` read where a word holds a bare-blank `${…}`: each such
+    word as the pieces `main` split it into. The coordinator's union (#2856 round 7): at every
+    comparison `main`'s reading stays a candidate, and the whole reading only adds matches."""
+    split = [piece for word in argv for piece in (getattr(word, "pieces", None) or [word])]
+    return [argv, split] if len(split) != len(argv) else [argv]
+
+
+def stage_readings(stage):
+    """`stage`, and its twin holding `main`'s argv where that differs (`argv_readings`)."""
+    return [stage._replace(argv=argv) for argv in argv_readings(stage.argv)]
+
+
+def statement_readings(statement):
+    """`statement`, and its twin with every stage read as `main` read it (`stage_readings`)."""
+    twin = statement._replace(stages=[stage_readings(stage)[-1] for stage in statement.stages])
+    return [statement, twin] if twin != statement else [statement]
 
 
 class _Parse:

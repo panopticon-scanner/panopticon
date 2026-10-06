@@ -56,10 +56,11 @@ from shell_quote import ansi_c
 from shell_text import (_lift_substitutions, join_continuations as join_continuations,
                         without_comments as without_comments)
 from shell_tokens import (_Expanded as _Expanded, _Parse as _Parse, _Token as _Token,
-                          _markers as _markers, derived as derived,
+                          _markers as _markers, argv_readings as argv_readings, derived as derived,
                           has_substitution as has_substitution, is_arm as is_arm,
                           is_marker as is_marker, kept as kept, readable as readable,
-                          yields_words as yields_words)
+                          readings as readings, stage_readings as stage_readings,
+                          statement_readings as statement_readings, yields_words as yields_words)
 from shell_wrappers import (WRAPPERS as WRAPPERS, Defaulted as Defaulted,
                             Rewritten as Rewritten, dynamic as dynamic, unwrap as unwrap)
 from shell_command import (CONDITIONS as CONDITIONS, KEYWORDS as KEYWORDS,
@@ -294,7 +295,7 @@ def _split(text, context):
             # it is not scanned to the same end again (#2756 fix round, B3): once the outer
             # one is known to hold no blank, so is every one inside it.
             scanned = end or scanned
-            marked = _bare_blanks(text[i:end]) if end else None
+            marked = _bare_blanks(text[i:end]) if end and getattr(context, "blanks", True) else None
             if marked is not None:
                 # An unquoted `${X:-bash -s}` is one word to the reader as to bash, which
                 # expands it whole and only then splits the words (#2731): its bare blanks are
@@ -502,15 +503,6 @@ def _split_default(word, context):
     return [first, *pieces[1:]]
 
 
-def readings(word):
-    """The spelling a word holding a bare blank has besides its own (#2856 round 6): the whole
-    `${…}` word a destination read as `main` read it was split from, or `main`'s first piece of
-    a word read whole -- so a destination and a use meet whichever way each was read."""
-    pieces = getattr(word, "pieces", None)
-    other = getattr(word, "whole", None) or (pieces[0] if pieces else None)
-    return {other} if other is not None else set()
-
-
 def _defaulted(argv, context):
     """A fetcher's or `tee`'s unquoted `${…}` operands holding a blank -- the destinations a
     command names -- split as `main` read them (`_split_default`), in place."""
@@ -572,8 +564,8 @@ def _stage(text, context):
         # The words `main` read where one `${…}` holds a bare blank (#2731 reads it whole).
         pieces = [context.token(context.restore_arithmetic(piece.replace(MARK, "").replace(
             QUOTED, "").replace(QUOTED_DOLLAR, "")).replace(_ESCAPED, "\\"))
-            for piece in raw.split(_BLANK) if piece] if _BLANK in raw else None
-        raw = raw.replace(_BLANK, " ")          # the blanks of one `${…}` word (#2731)
+            for piece in raw.split(_BLANK) if piece] if _BLANK in raw and getattr(context, "blanks", True) else None
+        raw = raw.replace(_BLANK, " ") if getattr(context, "blanks", True) else raw
         plain = context.restore_arithmetic(
             raw.replace(MARK, "").replace(QUOTED, "").replace(QUOTED_DOLLAR, ""))
         raw, word = raw.replace(_ESCAPED, "\\"), context.token(plain.replace(_ESCAPED, "\\"))
@@ -629,7 +621,7 @@ def _stage(text, context):
                 setattr(word, "pieces", pieces)
                 word, *extra = _split_default(word, context)
                 argv.extend(extra)
-            if op in ("<", "<>", "<<<"):    # `<>` opens the file for reading too (#2657)
+            if op in ("<", "<<<") or op == "<>" and number == "0":   # `<>`: fd 0 reads (#2657)
                 spelled = op == "<<<" and entry and entry[0] == "heredoc"
                 word = entry[1][0] if spelled else word     # `lex` spelled it
                 reads.append(word)
@@ -682,6 +674,7 @@ def statements(script):
     """Every statement in a `run:` script, in order, as parsed stages; in a
     lifted substitution's text, each heredoc where its marker stands (#2336)."""
     context = _Parse(script)
+    context.blanks = _BLANK not in script   # a step spelling the mark reads as `main` (#2856 r7)
     text = lex(script, lambda *heredoc: context.new("heredoc", heredoc))
     for marker, (kind, value) in getattr(script, "heredocs", {}).items():
         text = text.replace(marker, context.new(kind, value))
