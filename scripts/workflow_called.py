@@ -23,7 +23,7 @@ import os
 from shell_command import _ASSIGNMENT, _heads
 from shell_tokens import is_arm
 from shell_wrappers import WRAPPERS
-from workflow_values import emptied, record
+from workflow_values import _deduped, emptied, record
 
 _DEPTH = 8          # calls followed inside a body, in all
 
@@ -32,9 +32,11 @@ def _head(argv):
     """The word a statement's command starts with, past the keywords, assignments, function
     header (`_heads`) and `case` arm in front of it, or None where a wrapper stands there:
     `env f` runs no shell function."""
+    if argv and is_arm(argv[0]):
+        argv = argv[1:]                 # `x) f;;`, `x) { f; };;`: the arm stands before all
     rest = argv[len(list(_heads(argv))):]
-    if rest and is_arm(rest[0]):
-        rest = rest[1:]                 # `x) f;;`: the call stands behind the arm (r3 seat)
+    while rest and str(rest[0]) in ("time", "eval"):
+        rest = rest[1:]                 # `time f`, `eval f`: bash runs the function (r3 seat)
     word = str(rest[0]) if rest else ""
     return None if not word or os.path.basename(word) in WRAPPERS else word
 
@@ -81,7 +83,10 @@ def _carry(table, stmts, head, close):
             if name in local:
                 continue
             if name in after:
-                before[name] = after[name]
+                # The carry never drops the caller's own candidates: past the candidate cap
+                # the table holds the stand-in alone (or the stand-in and what came after),
+                # which a use reads as nothing (the r3 seat's B1).
+                before[name] = _deduped(before.get(name, []) + after[name])
             else:
                 before.pop(name, None)
 
