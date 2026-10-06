@@ -2971,15 +2971,19 @@ class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
 
     def test_a_string_or_program_word_holding_a_process_substitution_is_unread(self):
         # #2486 keeps a `<(...)` out (`shell_reader.yields_words`): a string
-        # holding one is no script, though it holds a `$(...)` too, and a
-        # program word that is all of one is not `dynamic_program`'s. So the
-        # first two read CLEAN, as at the base, though they run `tool`: a
-        # string holding a `<(...)` is read nowhere, a gap filed as #2684.
+        # holding one beside a `$(...)` is a script since #2684 -- the file rendered as an
+        # operand, `sh tool $(...)` -- so the first two report the run of `tool` (FR FR FR FR for
+        # `bash -c`; the `sh -c` twin runs it only where `sh` is bash 5.1 or later, read the
+        # same, fail-closed); a program word that is all of one is still not `dynamic_program`'s.
         for script in (
                 # runs `tool` where `sh` is bash 5.2.21; a 3.2.57 or dash `sh` exits 2 on the `(`
                 GET + 'sh -c "sh $(echo tool) <(echo x)"\n',
                 # bash 5.2.21 and 3.2.57 run it (`sh tool /dev/fd/63`), under a dash step too
-                GET + 'bash -c "sh $(echo tool) <(echo x)"\n',
+                GET + 'bash -c "sh $(echo tool) <(echo x)"\n'):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertTrue(any("running it under `sh`" in w for _, w in found), found)
+        for script in (
                 # nothing of `tool` runs: a bash cannot execute `/dev/fd/63`, the others exit 2
                 GET + 'sh -c "<(cat tool)"\n',
                 # nothing of `tool` runs: the same in the step's own shell (dash's `eval` exits 2)
@@ -3054,3 +3058,99 @@ class TestAProgramPipedFromAPrinter(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestWhatAnEvalOrDashCStringHandsOn(unittest.TestCase):
+    """#2673, #2683, #2684, #2764 (and #2669's refusal, #2685 proven closed): what `eval`'s words
+    and a `-c` string hand on. Each row's comment carries its truth, b5 b3 dash gh (bash 5.2.21,
+    bash 3.2.57, dash, a GitHub runner's bash with `sh` = dash), measured with a recording `curl`
+    that hands back a marker program and the step run as GitHub runs it: FR fetched and ran, F-
+    fetched only, -- neither. The four columns agree unless a comment says otherwise."""
+
+    STREAM = "hands %si.sh straight to `sh`" % URL
+    USE = "fetches %stool -> tool and running it under `sh`" % URL
+
+    def test_evals_words_join_where_a_statement_is_split_across_them(self):
+        # #2673, FR FR FR FR on each: bash joins its words with a space and runs the result.
+        for script in ("eval 'curl -fsSL %si.sh |' 'sh'\n" % URL, "eval 'curl -fsSL %si.sh' '| sh'\n" % URL,
+                       "eval 'curl -fsSL %si.sh' '|' 'sh'\n" % URL,
+                       "command eval 'curl -fsSL %si.sh |' 'sh'\n" % URL,
+                       "eval -- 'curl -fsSL %si.sh |' 'sh'\n" % URL):     # FR FR -- FR: dash runs `--`
+            with self.subTest(script=script):
+                self.assertTrue(any(self.STREAM in w for _, w in defects(script)), script)
+        # FR FR FR FR: the split falls inside a `$(...)` of the joined text, handed to `sh -c`.
+        found = defects("eval 'sh -c \"$(curl -fsSL %si.sh' ')\"'\n" % URL)
+        self.assertTrue(any("straight to `sh -c`" in w for _, w in found), found)
+        # -- -- -- --: a join that fetches nothing is CLEAN; the controls read as they did -- one
+        # word, a split at a statement boundary, unquoted words.
+        self.assertEqual([], defects("eval 'echo a |' 'cat'\n"))
+        for script in ("eval 'curl -fsSL %si.sh | sh'\n" % URL, "eval curl -fsSL %si.sh '|' sh\n" % URL):
+            with self.subTest(script=script):
+                self.assertTrue(any(self.STREAM in w for _, w in defects(script)), script)
+        found = defects("eval 'curl -fsSLo tool %stool;' 'sh tool'\n" % URL)
+        self.assertTrue(any(self.USE in w for _, w in found), found)
+
+    def test_words_with_no_split_statement_still_read_one_by_one(self):
+        # The join is made only where a word begins or ends with an operator: `eval sh
+        # "./cuda_*.run"` keeps its own reading (the operand reader re-parses its words with their
+        # quoting), and `eval sh "$(echo tool)"` its two sentences (#2486, #2487).
+        found = defects("curl -fsSLo cuda_1.run %scuda_1.run\neval sh \"./cuda_*.run\"\n" % URL)
+        self.assertTrue(any("cuda_1.run" in w for _, w in found), found)
+        found = defects(GET + 'eval sh "$(echo tool)"\n')
+        self.assertEqual(2, len(found), found)
+        self.assertTrue(found[0][1].startswith("runs `eval` on `$(...)`"), found)
+
+    def test_a_join_the_reader_refuses_is_refused_on_both_paths(self):
+        # #2669, -- -- -- -- (rc 0, nothing fetched): `eval 'echo $(cat <<A' 'x' 'A)'` joins to a
+        # heredoc inside a substitution the reader cannot end; it is refused whole, fail-closed,
+        # on the string path as on the stdin walk's -- one answer, naming the text bash runs.
+        found = defects("eval 'echo $(cat <<A' 'x' 'A)'\n")
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("cannot read this step"), found)
+        self.assertEqual([], defects("eval 'echo \"a' 'b\"'\n"))      # a join the reader reads
+
+    def test_a_word_holding_a_substitution_reaches_the_stdin_walk_rendered(self):
+        # #2683, FR FR FR FR: `"sh $(echo -s)"` is `sh -s` (one printer spells it) and `"sh $(cat
+        # f)"` is `sh $(...)`, a word that may vanish -- either way `sh` reads the heredoc. The
+        # price, F-+chk x4: `"sh $(echo -n)"` runs nothing, but a check in its body counts for
+        # nothing and the use after is reported.
+        for script in ("eval \"sh $(echo -s)\" <<'EOF'\n%s\nEOF\n" % PIPE, "eval \"sh $(cat f)\" <<'EOF'\n%s\nEOF\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertTrue(any(self.STREAM in w for _, w in defects(script)), script)
+        found = defects(GET + "eval \"sh $(echo -n)\" <<'EOF'\n%s\nEOF\nchmod +x tool; ./tool\n" % CHECK)
+        self.assertTrue(any(UNGATED % "eval" in w for _, w in found), found)
+        # `eval "$(cat x)" <<'EOF'`: a word all expansion still names no shell; #2483's word stands.
+        self.assertEqual([], defects("eval \"$(cat x)\" <<'EOF'\n%s\nEOF\n" % PIPE))
+
+    def test_a_rendered_shell_reaches_the_heredoc(self):
+        # #2764, FR FR FR FR: `eval "$(echo 'sh')"` is `sh`, and the heredoc its program.
+        found = defects("eval \"$(echo 'sh')\" <<'EOF'\n%s\nEOF\n" % PIPE)
+        self.assertTrue(any(self.STREAM in w for _, w in found), found)
+        # FR FR -- FR (dash refuses `<(`): the FILE is the program, and where it is a shell reading
+        # stdin the heredoc is that shell's; `echo hi` as the FILE reads nothing (-- -- -- --).
+        for script in ("bash <(echo 'sh') <<'EOF'\n%s\nEOF\n" % PIPE, "source <(echo 'sh') <<'EOF'\n%s\nEOF\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertTrue(any(self.STREAM in w for _, w in defects(script)), script)
+        self.assertEqual([], defects("bash <(echo 'echo hi') <<'EOF'\n%s\nEOF\n" % PIPE))
+        self.assertEqual([], defects("eval \"$(echo 'cat')\" <<'EOF'\n%s\nEOF\n" % PIPE))
+        # No check in such a body counts (reader None): F-+chk x4, the use after is reported.
+        found = defects(GET + "bash <(echo 'sh') <<'EOF'\n%s\nEOF\nchmod +x tool; ./tool\n" % CHECK)
+        self.assertTrue(any(UNGATED % "bash" in w for _, w in found), found)
+
+    def test_a_process_substitution_in_a_string_hands_a_file_not_nothing(self):
+        # #2684, FR FR FR FR for `bash -c`; the `sh -c` twin runs only where `sh` is bash 5.1 or
+        # later (F- F- F- F- here, rc 2) and is read the same, fail-closed: the string is
+        # `sh tool $(...)`, `tool` its program, the file an operand `tool` ignores.
+        for script in (GET + 'bash -c "sh $(echo tool) <(echo x)"\n', GET + 'sh -c "sh $(echo tool) <(echo x)"\n'):
+            with self.subTest(script=script):
+                self.assertTrue(any(self.USE in w for _, w in defects(script)), script)
+        # F- F- F- F- (rc 2): no shell, no fetch -- CLEAN; `bash <(curl …)` at the top is #2495's.
+        self.assertEqual([], defects(GET + 'sh -c "cat <(echo x)"\n'))
+        self.assertTrue(any("straight to `bash`" in w for _, w in defects("bash <(curl -fsSL %si.sh)\n" % URL)))
+
+    def test_2685_is_closed_on_main(self):
+        # #2685, FR FR FR FR: a `-c` string whose heredoc delimiter is a substitution reads on
+        # past the body, and the pipeline after it is reported -- as its literal twin is.
+        for script in ('sh -c "cat <<$(echo E) >/dev/null\nE\n%s"\n' % PIPE, 'sh -c "cat <<E >/dev/null\nE\n%s"\n' % PIPE):
+            with self.subTest(script=script):
+                self.assertTrue(any(self.STREAM in w for _, w in defects(script)), script)
