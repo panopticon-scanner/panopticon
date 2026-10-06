@@ -120,14 +120,15 @@ def _run(argv):
         return hit[2]
     bash = type(argv[0]) is str and os.path.basename(argv[0]) in ("bash", "sh")
     leading, expansion, end = 1, len(argv), len(argv)
-    in_run, noexec, dumps, owed, string = True, False, False, 0, False
+    in_run, noexec, dumps, owed, string, filed = True, False, False, 0, False, False
     for i in range(1, len(argv)):
         word = argv[i]
         if string and not owed and word[:1] not in ("-", "+"):
             end = i                             # the `-c` string itself: the options end at it
             break
-        if not _literal(word) and expansion == len(argv):
+        if not _literal(word) and expansion == len(argv) and not (filed and getattr(word, "kept", False)):
             expansion = i                       # may vanish, or spell any word: nothing after is sure
+        filed = False                           # a quoted `"$X"` FILE is one word, the FILE (round 6)
         if owed:                                # a long option's FILE or an `o`'s name
             owed -= 1
             if in_run:
@@ -147,7 +148,7 @@ def _run(argv):
         if name or word[:2] in ("--", "++"):
             if in_run:
                 leading = i + 1
-            owed = name in LONG_VALUE_OPTIONS
+            owed = filed = name in LONG_VALUE_OPTIONS
             continue
         in_run = False
         letters = word[1:]
@@ -179,19 +180,14 @@ def _credited(argv, kind, reader):
 def _long_word(argv, at):
     """What the stdin walk does with the long option word `argv[at]` at the step's own level:
     None where it is no long word; "void" where the shell refuses it or prints and exits, running
-    nothing (`_refused_long`); "text" where it stands at or after a word that may expand (`_run`,
-    #2858 round 4) and would refuse or exit, or spells letters holding `n`/`D` -- the word may be
-    a FILE the expansion left it to be (`X=--rcfile; bash $X -version` runs), the letters, or the
-    exit, so the body is the step's own text with no check counting; "file" where the next word is
-    its FILE; "on" otherwise."""
+    nothing (`_refused_long`) -- never at or after a word that may expand (`_run`, #2858 round 4),
+    which may make it a FILE (`X=--rcfile; bash $X -version` runs) or letters, so the walk reads
+    on; "file" where the next word is its FILE; "on" otherwise."""
     name = long_option(argv, at)
     word = argv[at]
     if name is None and not (type(word) is str and word[:2] in ("--", "++")):
         return None
-    if at >= _run(argv)[1]:                     # after an expansion nothing is sure
-        if name is None or name in LONG_EXITS or word[1] != "-" and ("n" in word or "D" in word):
-            return "text"
-    elif _refused_long(argv, at):
+    if at < _run(argv)[1] and _refused_long(argv, at):    # after an expansion nothing is sure
         return "void"
     return "file" if name in LONG_VALUE_OPTIONS else "on"
 
@@ -281,7 +277,8 @@ def _in_every_reading(argv, walk):
     found: list = []
     for reading in _READINGS:                   # the words the options end at stay as written
         words = [argv[0]] + [part for at, word in enumerate(argv[1:], start=1) for part in (
-            (word,) if reading is None or at >= end or _literal(word) else reading)]
+            (word,) if reading is None or at >= end or _literal(word)
+            or not reading and getattr(word, "kept", False) else reading)]   # `"$X"` never vanishes
         for word in walk(words):
             if any(word is mine for mine in argv) and not any(word is seen for seen in found):
                 found.append(word)
@@ -296,8 +293,9 @@ def _dash_c_operand(argv):
     `--` too (`bash -rcfile -- -c P` runs `P`: the `--` is the rc file). Past an operand -- the
     FILE -- every later word is the FILE's parameter, and a FILE may hand its parameters to a shell
     (`printf 'exec bash "$@"' > w.sh; bash w.sh -c P` runs `P`, and `eval "$4"` runs `P` after `-o
-    pipefial`): there no word refuses, exits, owes a value or ends the search, and every cluster
-    carrying `c` hands on its operand as `main` reads it (#2858 round 5)."""
+    pipefial`): there no word refuses, exits, owes a value or ends the search, before the cluster
+    carrying `c` or after it (`_past_options`' `past`, round 6), and its operand is handed on as
+    `main` reads it (#2858 round 5) -- for what it runs alone (`_sure_string`)."""
     owed, past = 0, False
     for position, token in enumerate(argv[1:], start=1):
         if owed and not past:                   # an option's value, not an option word
@@ -307,7 +305,7 @@ def _dash_c_operand(argv):
             break
         long = long_option(argv, position)
         if long is None and token.startswith("-") and not token.startswith("--") and "c" in token:
-            return _past_options(argv, position)
+            return _past_options(argv, position, past)
         if past:
             continue                            # the FILE's parameter: nothing bash refuses
         if long or token[:2] == "--":
@@ -321,6 +319,21 @@ def _dash_c_operand(argv):
         else:
             past = True                         # an operand: the FILE, its parameters after it
     return []
+
+
+def _sure_string(argv, word):
+    """Whether the shell `argv[0]` surely RUNS `word`, the `-c` string `_after_dash_c` found (#2858
+    round 6): no word in its option run may expand, the run keeps no `-n`, `-o noexec` or `-D`
+    (`_run`), and the run ends at the string -- the cluster before any operand. Else the string
+    is read for what it runs, and a check in it counts for nothing, as in a stdin body no shell is
+    sure to read: past an operand it is the FILE's parameter (`bash /dev/null -- -c '<check>'`
+    runs no check), after an expansion it may be the FILE or `--version`'s (`X=-s; bash $X -- -c
+    '<check>'`), and under noexec the shell reads it and runs none of it."""
+    _, expansion, nothing, end = _run(argv)
+    if expansion < len(argv) or nothing:
+        return False
+    at = end + (argv[end:end + 1] in (["-"], ["--"]))
+    return at < len(argv) and argv[at] is word
 
 
 def _literal(word):
@@ -377,7 +390,7 @@ def _refused(argv, at):
     return letters.isalpha() and any(letter not in SHELL_OPTIONS for letter in letters)
 
 
-def _past_options(argv, at):
+def _past_options(argv, at, past=False):
     """The first operand after `argv[at]`, the cluster that carries `-c`.
 
     Bash and dash read on through the option words after `-c` (#2332): `sh -c -e P`, `bash -c -x P`
@@ -386,13 +399,18 @@ def _past_options(argv, at):
     program even if it begins with `-`; a `--long` word after `-c` is one both shells refuse, and
     nothing runs. So is a word of letters one of which the shell in hand refuses (`sh -c -K P`, `sh
     -cK P`, `_refused`): it exits before it reads `P`, so no program is handed over (#2475), and an
-    `-o` whose value is no option NAME is one too (`_refused_name`, #2560).
+    `-o` whose value is no option NAME is one too (`_refused_name`, #2560). Past an operand (`past`)
+    the words are the FILE's parameters, which no shell parses: none refuses or exits and a long one
+    takes no value, so the first that is no option word is the one handed on (`echo 'eval "$4"' >
+    w.sh; bash w.sh -c -o - P` runs `P`, #2858 round 6).
     """
     while True:
-        if _refused(argv, at) or _refused_name(argv, at):
+        if not past and (_refused(argv, at) or _refused_name(argv, at)):
             return []                           # the shell exits before the program
-        at += 1 + sum(letter in VALUE_OPTIONS for letter in argv[at][1:])
-        if at >= len(argv) or argv[at].startswith("--") and argv[at] != "--" or long_option(argv, at):
+        at += 1 + (argv[at][:2] != "--" and sum(letter in VALUE_OPTIONS for letter in argv[at][1:]))
+        if at >= len(argv):
+            return []
+        if not past and (argv[at].startswith("--") and argv[at] != "--" or long_option(argv, at)):
             return []                           # a long option after `-c`: refused
         if argv[at] in ("-", "--"):
             return argv[at + 1:at + 2]

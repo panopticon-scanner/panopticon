@@ -63,7 +63,7 @@ from workflow_options import (LONG_VALUE_OPTIONS, SET_OPTION_NAMES as SET_OPTION
                               _MEASURED_SHELLS as _MEASURED_SHELLS, _VALUE as _VALUE,
                               _before_operand, _dash_c_operand, _in_every_reading, _may_spell_option,
                               _past_options, _long_word, _refused as _refused, _refused_long,
-                              _refused_name as _refused_name, _value, _void)
+                              _refused_name as _refused_name, _sure_string, _value, _void)
 from workflow_printers import (ANY as ANY, Named as Named, _PRINTERS as _PRINTERS, _piped as _piped,
                                file_operand as file_operand, handed as handed, operand, rendered,
                                printed as printed, producer as producer, spellings as spellings,
@@ -101,7 +101,25 @@ def scripts(argv):
     parse left to reach another. A text so rendered that the reader refuses is none, as before
     #2486: `eval "cat <<$(a b) …"` takes its delimiter from what `a b` prints, and `cat <<$(...)` is
     no spelling to end the body at, so the string is unread and the rest of the step read."""
-    return [script for script in map(_script, _program_words(argv)) if script is not None]
+    shell = bool(argv) and os.path.basename(argv[0]) in _SHELL_STRING
+    out = []
+    for word in _program_words(argv):
+        script = _script(word)
+        if script is not None and shell and not _sure_string(argv, word):
+            if isinstance(script, Opaque):      # read for what it runs: no check in it counts
+                setattr(script, "reader", None)
+            else:
+                script = Handed(script)
+        if script is not None:
+            out.append(script)
+    return out
+
+
+class Handed(str):
+    """A `-c` string `scripts` hands on that the shell is not sure to run (`_sure_string`, #2858
+    round 6): read for what it runs, with no `reader` under whose `-e` a check in it counts, as
+    `workflow_forms.flattened` reads a stdin body no shell is sure to read (`Stdin`)."""
+    reader = None
 
 
 def _program_words(argv):
@@ -322,7 +340,8 @@ def stdin_program(argv):
     #2606) or a long option outside its table (`bash --bogus`, #2616) -- runs nothing, as
     `_past_options` reads one after a `-c` (#2475); behind a string an inner shell's is read ON,
     fail-closed (#2500). A `--rcfile FILE` is skipped whole (#2616); a lone `-` with a word after
-    it is bash's end of options, and that word the script FILE (`bash - /dev/null`, #2654); after
+    it is bash's end of options, and that word the script FILE (`bash - /dev/null`, #2654) -- unless
+    a word before it may expand, as `-s` (`X=-s; bash $X - x.sh`, #2858 round 6); after
     `-s` the options are still read, and a `c` among them puts the program in the string (`bash -s
     -c true`, #2647), where `--`, `-` or an operand leaves it on stdin. A stdin operand after an
     option owed a value ends the walk there for another interpreter: python's `-O` takes no value,
@@ -506,7 +525,8 @@ def _options(argv, depth):
         if token in _STDIN_OPERANDS:
             # A lone `-` ends a shell's options as `--` does, and the word after it, if any, is
             # the script FILE: `bash - /dev/null` runs the file and stdin is its data (#2654).
-            if token == "-" and shell and options and not parameters and at < len(argv):
+            # After a word that may expand, which may be `-s`, it keeps stdin (#2858 round 6).
+            if token == "-" and shell and options and not parameters and at < len(argv) and _run(argv)[1] > at - 1:
                 return None, None
             return answer, reader
         if token == "--":
@@ -528,8 +548,6 @@ def _options(argv, depth):
             # runs; after a `$X` it may be letters that run (#2858 r3); `--rcfile FILE` skips its FILE.
             if shell and not depth and word == "void":
                 return None, None
-            if shell and not depth and word == "text":
-                return answer, ()
             at += word == "file"
             continue
         letters = token[1:]

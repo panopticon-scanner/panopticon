@@ -447,6 +447,100 @@ class TestDashReadsStdinAfterItsDashCString(unittest.TestCase):
         self.assertEqual((), wp.stdin_scripts(argv, stage)[0].reader)
 
 
+class TestADashCStringTheShellIsNotSureToRun(unittest.TestCase):
+    """#2858 round 6: past the FILE operand no word refuses or exits, after the cluster carrying `c`
+    too; a `-c` string found past an operand, after a word that may expand, or under noexec is read
+    for what it runs and no check in it counts; after a word that may expand a lone `-` keeps stdin.
+    Truth from the round-5 seat's quick table (q-numbers: touch marks under bash 5.2.21 and 3.2.57
+    with `sh` as dash, and `sh` as each bash) and its matrix (row ids), or the forge (`gt2.sh`, both
+    child bashes) where a comment says so: P the payload ran, T the unverified tool ran."""
+
+    UNGATED = "inside the script `bash` runs, and the step does not stop when that script fails"
+    EVAL_LAST = "echo 'for a; do :; done; eval \"$a\"' > w.sh\n"
+
+    def test_past_the_file_no_word_after_the_cluster_refuses_or_exits(self):
+        # P x4 on each (q01, q02, q05-q10, q19c, q82, q83): the words after the cluster are the
+        # FILE's parameters, which bash never parses, and the FILE evaluates the last.
+        for tail in ("-c -o -", "-co x1", "-c -e -o /dev/stdin", "-c -o ''", "-c -o pipefial", "-c -K",
+                     "-c --version"):
+            with self.subTest(tail=tail):
+                found = defects(self.EVAL_LAST + "bash w.sh %s '%s'\n" % (tail, PIPE))
+                self.assertTrue(any(STREAM in why for why in found), found)
+        for script in ("echo 'eval \"$4\"' > w.sh\nbash w.sh -c -o - '%s'\n" % PIPE,
+                       self.EVAL_LAST + "sh w.sh -c +o 1 '%s'\n" % PIPE,
+                       self.EVAL_LAST + body("bash w.sh -c -o - 'sh'", PIPE),
+                       body("bash -s x -c -o - '%s'" % PIPE, 'for a; do :; done; eval "$a"'),
+                       # -- x4 (rc 2): the FILE is not the guard's to know -- REPORTED, as on `main`.
+                       "echo 'exec bash \"$@\"' > w.sh\nbash w.sh -c -o - '%s'\n" % PIPE,
+                       "echo 'exec sh \"$@\"' > w.sh\nbash w.sh -c -o - '%s'\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertTrue(any(STREAM in why for why in defects(script)), script)
+
+    def test_a_check_in_a_string_no_shell_is_sure_to_run_counts_for_nothing(self):
+        # T x4 on each (q20-q27, q30-q32, q86): the check never runs, and `./tool` runs unverified
+        # -- past an operand, after a word that may expand, or after a FILE option's misread FILE.
+        for runner in ("bash /dev/null -- -c", ": > w.sh\nbash w.sh -- -c", "bash -s x -- -c",
+                       "X=-s\nbash $X -- -c", "X=/dev/null\nbash $X -c -K", "X=--version\nbash $X -- -c",
+                       ": > w.sh\nbash --rcfile -c w.sh -c", "X=--rcfile\nbash $X -rcfile /dev/null -c",
+                       "X=\nbash $X --version -c", "bash /dev/null --version -c", "bash /dev/null -c",
+                       "X=\nbash $X -help -c",
+                       # Under noexec the shell reads the string and runs none of it: the tool runs
+                       # in every shell, both child bashes (forge) -- credited before round 6.
+                       "bash -n -c", "bash -o noexec -c", "bash -D -c", "bash -nc", "sh -n -c"):
+            with self.subTest(runner=runner):
+                found = defects(GET + '%s "%s"\n' % (runner, CHECK) + USE)
+                self.assertTrue(any("tool" in why and ("inside the script" in why or UNVERIFIED in why)
+                                    for why in found), found)
+        self.assertTrue(any(self.UNGATED in why for why in defects(GET + 'bash /dev/null -c "%s"\n' % CHECK + USE)))
+        # +chk x4 (rc 1, q28; forge for the others): the shell surely runs it, and the step stops.
+        for runner in ("bash -c", "bash -e -c", "bash -n +n -c", "bash --norc -c"):
+            with self.subTest(runner=runner):
+                self.assertEqual([], defects(GET + '%s "%s"\n' % (runner, CHECK) + USE))
+        # The price (q29, +chk x4): a FILE that runs its last parameter runs the check, but the
+        # guard cannot see the FILE, so the use is reported.
+        self.assertTrue(defects(GET + self.EVAL_LAST + 'bash w.sh -- -c "%s"\n' % CHECK + USE))
+
+    def test_after_an_expansion_a_lone_dash_keeps_stdin_the_program(self):
+        # P x4 on each (q40-q43, q46-q48, q49d-h): `X` may be `-s`, and the words after the `-` are
+        # its parameters; quoted, `"$X"` is the same one word (forge).
+        for script in ("X=-s\n" + body("bash $X - -c true", PIPE), "X=-s\n" + body("sh $X - -c true", PIPE),
+                       "X=-s\n" + body("dash $X - -c true", PIPE), "X=s\n" + body("bash -$X - -c true", PIPE),
+                       "X=-s\n" + body("bash $X - /dev/null", PIPE), "X=-s\n" + body("bash $X - x.sh", PIPE),
+                       "X=-s\n" + body("sh $X - /dev/null", PIPE), "X=-s\n" + body("bash $X -e - x.sh", PIPE),
+                       "X=-s\n" + body("bash -e $X - x.sh", PIPE), "X=-s\n" + body("bash $X -o errexit - x.sh", PIPE),
+                       "X=-s\n" + body("bash --norc $X - x.sh", PIPE), "X=-s\n" + body("bash ${X:-} - x.sh", PIPE),
+                       "X=-s\n" + body('bash "$X" - -c true', PIPE),
+                       # The control (q44): the literal `-s` reports, as before.
+                       body("bash -s - -c true", PIPE),
+                       # The price, fail-closed (q45, rc 127): `X=` runs the FILE `-c`, nothing else.
+                       "X=\n" + body("bash $X - -c true", PIPE)):
+            with self.subTest(script=script):
+                self.assertTrue(any(STREAM in why for why in defects(script)), script)
+
+    def test_each_reading_and_an_operand_after_an_expansion_decide_a_row(self):
+        # The `--rcfile` reading alone finds the string (matrix 49014, 49049: P x4; 66849: dash
+        # refuses `-rcfile`, rc 2, and `sh` as bash runs P).
+        for script in ("X='-rcfile'\nbash -$X -nor -c '%s'\n" % PIPE, "X='-rcfile'\nbash -$X -- -c '%s'\n" % PIPE,
+                       "X='-rcfile'\nsh -$X -nor -c '%s'\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertTrue(any(STREAM in why for why in defects(script)), script)
+        # An operand after a word that may expand keeps stdin (matrix 22908, 48836, 48846: P x4).
+        for script in ("X=\n" + body("bash --rcfile $X -e -init-file /dev/null", PIPE),
+                       "X='s'\n" + body("bash -$X x.sh -c true", PIPE), "X='s'\n" + body("bash -$X -- -c true", PIPE)):
+            with self.subTest(script=script):
+                self.assertTrue(any(STREAM in why for why in defects(script)), script)
+
+    def test_a_quoted_expansion_is_one_word_and_never_vanishes(self):
+        # -- x4 (matrix 21652, 28132: rc 2; forge: `--version`, rc 0): `"$X"` is `--rcfile`'s FILE
+        # whatever it holds, so `-rcfile` wants a FILE and `--version` prints and exits.
+        for script in ("X=\n" + body('bash --rcfile "$X" -rcfile', PIPE), "X=\n" + body('sh --rcfile "$X" -rcfile', PIPE),
+                       "X=\n" + body('bash --rcfile "$X" --version', PIPE)):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+        # P x4 (forge): the string after it runs.
+        self.assertTrue(any(STREAM in why for why in defects("X=\nbash --rcfile \"$X\" -c '%s'\n" % PIPE)))
+
+
 class TestAnOptionValueTheShellRefuses(unittest.TestCase):
     """#2606 (and #2603's letter half in the same walk): a measured shell exits 2 before it reads
     stdin at a `-o` name outside its table, at a `-o` value that is no name at all, and at a
