@@ -7,6 +7,14 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`scripts/shell_reader.py` splits its command layer into `scripts/shell_command.py` (reader
+  lane).** A pure move at the reader's size (699 of 700 lines): the keywords, assignment and
+  function-header spellings a statement may open with, the shells and the default or optional `$`
+  words that may stand for one, and the `_command_result` walk behind `command`,
+  `command_as_written`, `unresolved_wrapper`, `wrapper_words`, `negated` and `conditional` now
+  live in the new module, byte for byte; the reader imports every name back under its own, so no
+  caller moved, and the new module imports nothing from the reader. No verdict changes: every
+  `job_defects` answer the guard's test suite produces is identical before and after.
 - **Child scripts keep their own failure reach when the parent shell carries on (#2423,
   #2331).** A check inside `sh -ec 'CHECK; USE'` now clears that child's later use even when the
   step has run `set +e`, starts from a no-errexit `shell:` template, or pipes the child's enclosing
