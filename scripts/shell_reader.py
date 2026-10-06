@@ -161,6 +161,13 @@ def _split(text, context):
     # of `^(x|y)$`, and ending it at that `|` left the `)` closing a group
     # nothing had opened -- the unbalanced count #2334 reads as a lost list.
     cond, at_head = 0, True
+    # `! { ... }`: bash negates the GROUP's status, and errexit is off for every command inside
+    # a negated compound, so each statement the group holds is read under the `!` (#2664, the
+    # fix round: the `{`-ends-its-statement step above stranded the `!` on `{` alone). One
+    # entry per open `{` group, True where a `!` stood before it; `carried` says the current
+    # statement's first word is the carried `!`, which the `case` probe below looks past.
+    negations: list[bool] = []
+    carried = False
 
     def end_stage():
         nonlocal header_words, header_live, word_start, redirect_target, at_head
@@ -170,12 +177,27 @@ def _split(text, context):
         redirect_target, at_head = False, True
 
     def end_statement(separator):
-        nonlocal cond
+        nonlocal cond, carried, word_start
         end_stage()
         cond = 0
+        if carried and stages[0].split() == ["!", "}"]:
+            stages[0] = stages[0].replace("!", "", 1)   # the close is read bare (`_closes`)
         if any(s.strip() for s in stages):
             statements.append((list(stages), separator))
+        bang = False
+        for word in (" ".join(stages).split() if any("{" in s or "}" in s for s in stages) else ()):
+            if word == "{":
+                negations.append(bang)
+                bang = False
+            elif word == "}" and negations:
+                negations.pop()
+            elif word == "!":
+                bang = True
         del stages[:]
+        carried = any(negations)
+        if carried:
+            buf.append("! ")
+            word_start = len(buf)
 
     def close_case():
         """Close a literal `esac` before an operator following it (#2610)."""
@@ -230,7 +252,7 @@ def _split(text, context):
                     words = shlex.split("".join(buf))
                 except ValueError:
                     words = []
-                words = [w for w in words if w not in groups]
+                words = [w for w in words if w not in groups][carried:]
                 if len(words) == 3 and words[0] == "case" and words[-1] == "in":
                     end_statement(";")
                     cases.append("pattern")
@@ -246,7 +268,7 @@ def _split(text, context):
             # one (`f(){`) is the body's own word, so the body's first command on the
             # header's line is read as a command and not as the header's argument (#2664).
             header = _HEADER.match(text, i)
-            words = "".join(buf).split()
+            words = "".join(buf).split() if header else []
             if header and words and _NAME.fullmatch(words[-1]) and all(
                     w in KEYWORDS for w in words[:-1]):
                 if words[-2:-1] != ["function"]:

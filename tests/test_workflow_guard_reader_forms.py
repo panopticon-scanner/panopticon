@@ -31,6 +31,120 @@ def defects(script):
     return wg.job_defects([("step", script)])
 
 
+SHELLS = (None, "bash", "sh", "bash {0}", "sh {0}")
+
+
+def reported(script, shell=None):
+    """Whether the guard reports a job of one step running `script` under `shell:`."""
+    return bool(wg.job_defects([wg.Step("step", script, shell)]))
+
+
+def filled(row, check=CHECK, use="chmod +x tool && ./tool", payload="tool"):
+    """A hunt row -- `@C@` the check, `@U@` the use, `@P@` the payload path -- as a step."""
+    return (GET + row.replace("\\n", "\n").replace("@C@", check).replace("@U@", use)
+            .replace("@P@", payload) + "\necho done\n")
+
+
+class TestANegatedGroupHoldingAFunctionHeader(unittest.TestCase):
+    """PR #2855 fix round (B1). `! { f() { CHECK; }; f; }` ⏎ USE: bash negates the group's
+    status and runs every command in a negated compound with errexit off, so the check's
+    failure stops nothing and USE runs; every shell runs it (8 parents). The `{`-ends-its-
+    statement step of #2664 had stranded the `!` on `{` alone, so the check read as gated
+    (main REPORT -> CLEAN). The `!` is now carried onto every statement the group holds --
+    which also closes the own-line `! {` ⏎ `CHECK` ⏎ `}`, a hole of main's."""
+
+    ROWS = ("! { f() { @C@; }; f; }\n@U@", "! { f(){ @C@; }; f; }\n@U@",
+            "! {\nf() { @C@; }; f; }\n@U@", "! { @C@; }\n@U@", "! {\n@C@\n}\n@U@",
+            "bash -ec '! { f() { @C@; }; f; }; @U@'", "! { f() { @C@; }; f; } && @U@",
+            "! { f() { @C@; }; f; } || exit 1\n@U@", "! { :; f() { @C@; }; f; }\n@U@",
+            "true && ! { f() { @C@; }; f; }\n@U@", "( ! { f() { @C@; }; f; } )\n@U@",
+            "! { f() { @C@; }; f; } | cat\n@U@", "! { f() { :; }; f; @C@; }\n@U@",
+            "! {\nf() { @C@; }\nf\n}\n@U@", "g() { ! { @C@; }; }\ng\n@U@",
+            "g() {\n! { @C@; }\n}\ng\n@U@", "g() {\n! { f() { @C@; }; f; }\n}\ng\n@U@",
+            "g() { @C@; }\n! { g; }\n@U@")
+
+    def test_every_spelling_is_reported_under_every_shell_setting(self):
+        for row in self.ROWS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_the_group_without_a_bang_reads_as_it_did(self):
+        # Under `-e` the check's failure stops the step: CLEAN where bash is strict.
+        for row in ("{ f() { @C@; }; f; }\n@U@", "{ @C@; }\n@U@"):
+            for shell in (None, "bash", "sh"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(filled(row), shell))
+
+
+class TestACalledFunctionsAssignmentReachesTheUse(unittest.TestCase):
+    """PR #2855 fix round (B2), #2785. `T=/dev/null; f(){ :; T=tool; }; f; sh "$T"`: bash runs
+    the body at the call, so `sh` runs the download; every shell runs it. Before #2664 the
+    misread header made `T=tool` the step's own statement (REPORT by accident); with the header
+    read, the body was skipped and the table held `/dev/null` at the use (CLEAN). The call now
+    carries the body's assignments (`workflow_called.record_called`): sure where the call and
+    the body statement are, added otherwise; `local` dies with the call; `declare -g` and
+    `export` assign globally; a subshell body, a use before the call and a call before the
+    definition carry nothing, as bash runs none of them into the caller."""
+
+    ROWS = ('T=/dev/null; f(){ :; T=@P@; }; f; sh "$T"', 'T=/dev/null; f ( ) { :; T=@P@; }; f; sh "$T"',
+            'T=/dev/null; f() { :; T=@P@; }; f; sh "$T"', '{ f() { :; T=@P@; }; f; }; sh "$T"',
+            'T=/dev/null\ng ( )\n{\nT=@P@\n}\ng\nsh "$T"', 'f(){ :; T=@P@; }; f; sh "$T"',
+            'f(){\nT=@P@\n}\nf\nsh "$T"', 'f() { :; T=@P@; }; f; sh "$T"',
+            'T=/dev/null; if true; then f(){ :; T=@P@; }; fi; f; sh "$T"',
+            'T=/dev/null; for i in 1; do f(){ :; T=@P@; }; done; f; sh "$T"',
+            'T=/dev/null; { f() { :; T=@P@; }; }; f; sh "$T"',
+            'T=/dev/null; f() { :; T=@P@; }; { f; }; sh "$T"',
+            'f(){\ncurl -fsSLo tool.sh https://example.test/tool.sh\nT=tool.sh\n}\nf\nsh "$T"',
+            'T=/dev/null; f() { declare -g T=@P@; }; f; sh "$T"',
+            'T=/dev/null; f() { export T=@P@; }; f; sh "$T"',
+            'T=/dev/null; { f() { :; }; T=@P@; }; sh "$T"')
+    CONTROLS = ('T=/dev/null; f() { local T=@P@; }; f; sh "$T"', 'T=/dev/null; f() { T=@P@; }; sh "$T"; f',
+                'T=/dev/null; f() ( T=@P@ ); f; sh "$T"', 'T=/dev/null; f; f() { T=@P@; }; sh "$T"')
+
+    def test_every_spelling_is_reported_under_every_shell_setting(self):
+        for row in self.ROWS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_what_bash_never_carries_stays_clean(self):
+        for row in self.CONTROLS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(filled(row), shell))
+
+    def test_the_rows_of_2785(self):
+        # x1: the call sets `T=x`, so bash runs `sh x` (F- x4) -- CLEAN, where the head of
+        # #2768 reported a claim; x2 (its inverse), x27 (`declare -g`), s10 (the second
+        # call's body reads the first's assignment) and the `local` row run the download.
+        get = "curl -fsSLo cuda_1.run https://example.test/cuda_1.run\n"
+        self.assertFalse(reported(get + 'g() { T=x; }\nT=cuda_1.run\ng\nsh "$T" || :\n'))
+        for row in ('g() { T=cuda_1.run; }\nT=x\ng\nsh "$T"\n',
+                    'f() { declare -g T=cuda_1.run; }; T=x; f; sh "$T"\n',
+                    'f() { sh "$T" || :; T=cuda_1.run; }; T=a; f; f\n',
+                    'g() { local T=x; }\nT=cuda_1.run\ng\nsh "$T"\n'):
+            for shell in (None, "bash", "sh"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(get + row, shell))
+
+
+class TestEveryHeaderSpellingTheSeatAskedFor(unittest.TestCase):
+    """The #2855 seat's round-1 note 3: pins for `f( ){`, a tab before `{`, `function f(){`,
+    and a header after `else`, `elif`, `while`, `until`, `!`, `&&`, `||` or `;` -- each a
+    definition every shell takes, whose call runs the pipe."""
+
+    ROWS = ("f( ){ @C@; }\nf", "f ()\t{ @C@; }\nf", "function f(){ @C@; }\nf",
+            "if false; then :; else f(){ @C@; }; fi\nf", "if false; then :; elif f() { @C@; }; then :; fi\nf",
+            "while f(){ @C@; }; do break; done\nf", "until f(){ @C@; }; do :; done\nf",
+            "! f() { @C@; }\nf", "true && f(){ @C@; }\nf", "false || f() { @C@; }\nf", ":; f(){ @C@; }\nf")
+
+    def test_each_is_reported(self):
+        for row in self.ROWS:
+            with self.subTest(row=row):
+                self.assertTrue(reported(filled(row, check=PIPE)))
+
+
 class TestAUsePipedAfterACaseCompound(unittest.TestCase):
     """#2610: the stage after `esac |` reaches the operand walk."""
 

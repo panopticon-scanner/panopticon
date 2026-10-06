@@ -190,13 +190,25 @@ def negated(argv):
     reading it. Same family as `command()`: what stands in front of the
     command, rather than the command itself.
     """
-    for token in argv:
+    for token in _heads(argv):
         if token == "!":
             return True
-        if token in KEYWORDS or _ASSIGNMENT.match(token):
-            continue
-        return False
     return False
+
+
+def _heads(argv):
+    """The words that stand in front of the command, in order, stopping at the command: the
+    keywords, the assignments, and a function header (`g()`, `function g`) -- whose body's
+    first statement on the header's line runs under what stands before it (`g() { ! { CHECK`,
+    PR #2855's fix round), as `command()` reads past the header too."""
+    previous = None
+    for token in argv:
+        if token in KEYWORDS or _ASSIGNMENT.match(token) or _FUNCTION.match(token) or (
+                previous == "function" and _NAME.match(token)):
+            previous = token
+            yield token
+            continue
+        return
 
 
 def conditional(argv):
@@ -206,10 +218,7 @@ def conditional(argv):
     for its effect: errexit does not apply to a condition, so the script sails
     on past a mismatch exactly as `... || true` does.
     """
-    for token in argv:
+    for token in _heads(argv):
         if token in CONDITIONS:
             return True
-        if token in KEYWORDS or _ASSIGNMENT.match(token):
-            continue
-        return False
     return False

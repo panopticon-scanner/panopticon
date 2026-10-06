@@ -1090,6 +1090,39 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
             shell_reader.statements(script)
         self.assertLess(time.monotonic() - start, 10.0)
 
+    def test_a_statement_of_many_parentheses_reads_in_linear_time(self):
+        # #2664 fix round (B3): the function-header test at every `(` joined and split the
+        # whole buffer before `_HEADER` had matched, so one `(( 0 + (1) + … ))` statement
+        # grew about x4 per doubling (8,000 `(`: 1.6 s -> 6.3 s on the forge); the words are
+        # now computed only behind a match. The bound is loose (base: ~1.6 s there) so CI's
+        # shared runners, 6-9x slower, still pass; the pre-fix reading took over 40 s on them.
+        script = "(( 0" + "".join(" + (1)" for _ in range(8000)) + " ))\n"
+        start = time.monotonic()
+        shell_reader.statements(script)
+        self.assertLess(time.monotonic() - start, 20.0)
+
+    def test_a_negated_group_carries_its_bang_onto_every_statement_it_holds(self):
+        # #2664 fix round (B1): bash negates the GROUP's status and runs every command in a
+        # negated compound with errexit off, so each statement the group holds is read under
+        # the `!` -- the `{`-ends-its-statement step had stranded it on the `{` alone. The
+        # close is read bare, as `_closes` asks for it; a statement past the `}` is not negated.
+        argvs = [list(stage.argv) for st in shell_reader.statements(
+            "! { f() { CHECK; }; f; }\nUSE\n") for stage in st.stages]
+        self.assertEqual([["!", "{"], ["!", "f()", "{", "CHECK"], ["}"], ["!", "f"], ["}"],
+                          ["USE"]], argvs)
+        argvs = [list(stage.argv) for st in shell_reader.statements(
+            "! {\nCHECK\n}\nUSE\n") for stage in st.stages]
+        self.assertEqual([["!", "{"], ["!", "CHECK"], ["}"], ["USE"]], argvs)
+        # A `case` header inside the group is still found past the carried `!`.
+        argvs = [list(stage.argv) for st in shell_reader.statements(
+            "! {\ncase x in\nx) CHECK;;\nesac\n}\n") for stage in st.stages]
+        self.assertIn(["!", "case", "x", "in"], argvs)
+        self.assertTrue(any("CHECK" in argv for argv in argvs), argvs)
+        # Without the `!` nothing is carried.
+        argvs = [list(stage.argv) for st in shell_reader.statements(
+            "{ f() { CHECK; }; f; }\nUSE\n") for stage in st.stages]
+        self.assertEqual([["{"], ["f()", "{", "CHECK"], ["}"], ["f"], ["}"], ["USE"]], argvs)
+
     def test_a_heredoc_its_substitution_closes_over_is_read(self):
         # Bash 5.2 takes the body of a heredoc still pending when its `$(...)`
         # closes from the lines below -- a recovery it warns about, and one
