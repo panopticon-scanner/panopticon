@@ -44,7 +44,7 @@ each script found here in place of the command handed it -- a stdin one under it
 command word (`VALUE_PROGRAM`) or where it is `Opaque` -- its `unread_program` weighs the
 candidates, the unprinted and the dynamic program, and the guard takes `stdin_program` and
 `SHELL_PROGRAM` through it, `VALUE_PROGRAM`, `ANY`, `handed` and `stdin_command` directly. The
-option-letter tables below are read here and in `workflow_posture._errexit`, the one layer up that
+option-letter tables of `workflow_options` are read here and in `workflow_posture._errexit`, the one layer up that
 reads a shell's options too (#2443, #2475).
 
 Stdlib only, like everything under it.

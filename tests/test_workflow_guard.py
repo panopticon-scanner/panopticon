@@ -2581,7 +2581,7 @@ class TestASetsValuesAreCountedPerLetterAndCheckedByName(unittest.TestCase):
     answers `set: foo: invalid option name`, leaves errexit off and runs the
     download with the checksum failing (#2560's fail-open).
 
-    Values now count per letter, as `workflow_programs._past_options` and
+    Values now count per letter, as `workflow_options._past_options` and
     `stdin_program` already count them, and a `-o` value outside
     `SET_OPTION_NAMES` refuses the whole `set` as an unknown LETTER does
     (#2443): a `+e` in it still reads as off, and on a COMMAND LINE the shell

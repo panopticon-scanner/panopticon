@@ -305,7 +305,7 @@ class TestTheProgramAfterDashC(unittest.TestCase):
         # #2475: `sh -c -K P` and `sh -cK P` are refused outright -- bash
         # 3.2.57, 5.2.21 and dash all exit before they read `P` -- so the
         # step runs nothing and no program is handed over. The letters are
-        # bash's (`workflow_programs.SHELL_OPTIONS`), which is the union:
+        # bash's (`workflow_options.SHELL_OPTIONS`), which is the union:
         # dash takes fewer, and a letter dash alone refuses still runs.
         for spelling in ("sh -c -K", "sh -cK", "bash -c -Z -e", "bash -c -e -Z",
                          "bash -c -o pipefail -K", "sh -c -ex +Z"):

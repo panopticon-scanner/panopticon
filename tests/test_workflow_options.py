@@ -181,3 +181,17 @@ class TestAWordHoldingAProcessSubstitution(unittest.TestCase):
         self.assertTrue(any(STREAM in why for why in defects(body("bash $(true)", PIPE))))
         self.assertTrue(wp._hands_file(wg.shell_reader.statements("bash $(true)<(echo x)")[0].stages[0].argv[1]))
         self.assertFalse(wp._hands_file(wg.shell_reader.statements("bash $(true)")[0].stages[0].argv[1]))
+
+
+class TestTheOptionGrammarLivesInWorkflowOptions(unittest.TestCase):
+    """#2331 (PR #2850): the option tables, the refusal readers and the option-slot word readers
+    moved out of `workflow_programs` into `workflow_options`, byte for byte; `workflow_programs`
+    re-exports every name, so each is the same object through either module."""
+
+    def test_every_moved_name_is_the_same_object_through_either_module(self):
+        for name in ("SET_OPTIONS", "SHELL_OPTIONS", "VALUE_OPTIONS", "SET_OPTION_NAMES",
+                     "SHELL_OPTION_NAMES", "_MEASURED_SHELLS", "_refused", "_refused_name",
+                     "_past_options", "_VALUE", "_value", "_BARE", "_before_operand",
+                     "_may_spell_option"):
+            with self.subTest(name=name):
+                self.assertIs(getattr(wp, name), getattr(wo, name))

@@ -100,9 +100,16 @@ live, so a change that catches one fails there and edits this list.
   one set outside the step that runs nothing of what follows (`SUDO=echo` in `env:`) over-reports.
   A `-c`/`eval` string loses its double-quoted `\$` escapes as bash drops them, a live `$` word
   beside them carried as the value it is (#2342, #2466); one in a COMMAND-word position (`bash -c
-  "$CMD … | sh"`) is unread, as `$CMD … | sh` is at top level. An option letter the shell
-  in hand refuses reads as that refusal after `-c` and in `set`: `sh -c -K '…'` runs nothing and
-  `set -Z -e` sets nothing (#2443, #2475). Because zsh runs twenty of bash's refused letters and ksh
+  "$CMD … | sh"`) is unread, as `$CMD … | sh` is at top level. An option word a measured shell
+  refuses reads as that refusal -- a letter outside its table (`sh -c -K '…'`, `bash -K <<'EOF'`,
+  #2475, #2603), a `-o` name it does not take or a `-o` value that is no name (`bash -o pipefial`,
+  `sh -o -`, #2606), a long option outside its table or spelled `--name=value`, and any long option
+  under dash (#2616) -- before a `-c` cluster, after it and in the stdin walk, and `set -Z -e` sets
+  nothing (#2443); `--rcfile FILE` is skipped whole, a lone `-` before a word makes that word the
+  script (#2654), and a `-c` after `-s` wins (#2647). Behind a string an inner shell's refusal is
+  read on, `-O`'s shopt names have no table, and no refusal is read as stopping the step: a use
+  after `bash -oo pipefail -c P` is reported though nothing runs. Because zsh runs twenty of bash's
+  refused letters and ksh
   runs `-G`, those read on; so does a word after a shell whose name is itself a word. KEPT: binding
   two spellings of one path means EVALUATING the shell, which the reader does not do by design; the
   fleet puts its variables in the URL and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
