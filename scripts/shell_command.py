@@ -51,7 +51,7 @@ _SHELLS = ("sh", "bash", "dash", "ash", "ksh", "zsh")
 # A command word that is a parameter's default or alternate (#2337): `${X:-sh}`,
 # `"${X-bash}"`, `${X:=sh}`, `${X:+sh}`. Where it spells a shell it is read as
 # that shell, which bash runs wherever `X` leaves the word to it.
-_DEFAULTS = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([^{}$`'\"\\\s]+)\}")
+_DEFAULTS = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([^{}$`'\"\\]+)\}")
 # A command word that is ONE unquoted reference, with no default or one that
 # hands on (`$SUDO`, `${SUDO}`, `${SUDO:-}`, `${X:-sudo}`), in front of a name
 # the reader knows: an optional wrapper spelled by variable (#2472). Empty or
@@ -121,9 +121,10 @@ def _command_result(argv, optional=True):
         if dropped:
             del argv[:dropped]                  # bash drops them, or they hand on (#2472)
             continue
-        default = None if heads else _DEFAULTS.fullmatch(argv[0])
-        if default and os.path.basename(default[1]) in _SHELLS:
-            argv[0] = Defaulted(default[1])     # the NAME, marked as unwritten
+        default = None if heads or getattr(argv[0], "kept", False) else _DEFAULTS.fullmatch(argv[0])
+        if default and default[1].split() and os.path.basename(default[1].split()[0]) in _SHELLS:
+            name, *rest = default[1].split()    # bash splits an unquoted default (#2731)
+            argv[0:1] = [Defaulted(name), *rest]    # the NAME, marked as unwritten
         head = os.path.basename(argv[0])
         if heads and dynamic(argv[0], has_substitution):
             return argv, "has a dynamic command operand behind a wrapper", heads

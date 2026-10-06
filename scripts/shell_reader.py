@@ -50,8 +50,8 @@ import re
 import shlex
 
 from shell_lex import lex
-from shell_patterns import (MARK, QUOTED, QUOTED_DOLLAR, is_pattern, leads, patterned,
-                            shell_words as shell_words)
+from shell_patterns import (MARK, QUOTED, QUOTED_DOLLAR, _expansion_end, is_pattern, leads,
+                            patterned, shell_words as shell_words)
 from shell_quote import ansi_c
 from shell_text import (_lift_substitutions, join_continuations as join_continuations,
                         without_comments as without_comments)
@@ -108,7 +108,7 @@ Statement = collections.namedtuple("Statement", "stages separator")
 
 # The builtins whose words bash reads as assignments too: `declare -a a=(1 2)`.
 _DECLARATIONS = ("declare", "typeset", "local", "export", "readonly")
-_REDIRECT = re.compile(r"<<<|&>>|&>|>>|>\||>&|<&|>|<")
+_REDIRECT = re.compile(r"<<<|<>|&>>|&>|>>|>\||>&|<&|>|<")
 # The parentheses of a function header, as bash and dash read them: `()` or `( )`, and a
 # group's `{` with a header after it on the same line (#2664).
 _HEADER = re.compile(r"\([ \t]*\)")
@@ -117,6 +117,9 @@ _NESTED_CASE = re.compile(r"\s*case(?:\s|$)")
 # Put in place of the backslash of a `\$` or `` \` `` inside "..." (`_split`),
 # which bash drops and shlex keeps (#2342): a private-use character, as `MARK`.
 _ESCAPED = "\ue002"
+# Put in place of each blank inside an unquoted `${...}` (`_split`), which bash keeps as one
+# expansion before it splits the result, where shlex would split the braces apart (#2731).
+_BLANK = "\ue004"
 _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
 
 
@@ -207,6 +210,15 @@ def _split(text, context):
             buf.append(text[i + 1])
             i += 2
             continue
+        if text.startswith("${", i):
+            end = _expansion_end(text, i + 2)
+            if end and any(c.isspace() for c in text[i:end]):
+                # An unquoted `${X:-bash -s}` is one word to the reader as to bash, which
+                # expands it whole and only then splits the words (#2731): its blanks are
+                # marked past shlex, and `_command_result` splits a shell default as bash does.
+                buf.extend(_BLANK if c.isspace() else c for c in text[i:end])
+                i = end
+                continue
         # A case header ends at its `in`, even when its first arm shares
         # the line. Quoted/escaped words remain intact until shlex reads them.
         # The count asks the BUFFER, not the source text, whether a word just
@@ -309,6 +321,12 @@ def _split(text, context):
             i += 2 if combined else 1
             continue
         if ch in ";\n&|":
+            if ch == "\n" and stages and not "".join(buf).strip():
+                # A line ending in `|` or `|&` continues on the next, as every shell reads
+                # it (#2756): the stage it opened goes on past the newline (`&&` and `||`
+                # end their statement at the operator, so the next line is read already).
+                i += 1
+                continue
             pair = text[i:i + 2]
             separator = pair if pair in ("&&", "||") else ch
             # Inside the test they join its expressions, and a `]]` that the
@@ -431,6 +449,7 @@ def _stage(text, context):
             bodies[number] = body
 
     for raw in tokens:
+        raw = raw.replace(_BLANK, " ")          # the blanks of one `${…}` word (#2731)
         plain = context.restore_arithmetic(
             raw.replace(MARK, "").replace(QUOTED, "").replace(QUOTED_DOLLAR, ""))
         raw, word = raw.replace(_ESCAPED, "\\"), context.token(plain.replace(_ESCAPED, "\\"))
@@ -480,7 +499,7 @@ def _stage(text, context):
                     reads_body(number, None)
                     continue
                 op = "&>"                     # unnumbered >&file
-            if op in ("<", "<<<"):
+            if op in ("<", "<>", "<<<"):    # `<>` opens the file for reading too (#2657)
                 spelled = op == "<<<" and entry and entry[0] == "heredoc"
                 word = entry[1][0] if spelled else word     # `lex` spelled it
                 reads.append(word)

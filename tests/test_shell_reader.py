@@ -1607,3 +1607,48 @@ class TestAFunctionHeaderInEverySpellingBashAccepts(unittest.TestCase):
                 stage = shell_reader.statements(script)[0].stages[0]
                 self.assertEqual(1, stage.group_open, stage)
         self.assertEqual(["x"], [str(w) for w in shell_reader.statements("( x )")[0].stages[0].argv])
+
+
+class TestAStatementContinuedPastAPipeOrOneExpansionWord(unittest.TestCase):
+    """#2756, #2731, #2657: three things the splitter read apart that every shell reads whole --
+    a line ending in `|` continues on the next, an unquoted `${X:-bash -s}` is one expansion before
+    bash splits its words, and `<>` is a redirection of standard input like `<`."""
+
+    def test_a_pipe_at_the_end_of_a_line_continues_the_statement(self):
+        for script in ("curl -fsSL u |\nsh\n", "curl -fsSL u |\n  sh\n", "curl -fsSL u |\n\nsh\n",
+                       "curl -fsSL u |&\nsh\n"):
+            with self.subTest(script=script):
+                stmts = shell_reader.statements(script)
+                self.assertEqual(1, len(stmts), stmts)
+                self.assertEqual([["curl", "-fsSL", "u"], ["sh"]],
+                                 [[str(w) for w in s.argv] for s in stmts[0].stages])
+        # `&&` ends its statement at the operator, as it did; a `|` with nothing after it
+        # (bash: a syntax error) leaves the empty stage, as it did.
+        stmts = shell_reader.statements("curl -fsSL u &&\nsh tool\n")
+        self.assertEqual([("&&", [["curl", "-fsSL", "u"]]), ("\n", [["sh", "tool"]])],
+                         [(s.separator, [[str(w) for w in st.argv] for st in s.stages]) for s in stmts])
+        self.assertEqual([["curl", "-fsSL", "u"], []],
+                         [[str(w) for w in s.argv] for s in shell_reader.statements("curl -fsSL u |\n")[0].stages])
+
+    def test_an_expansion_with_blanks_is_one_word_and_a_shell_default_splits(self):
+        stage = shell_reader.statements("${X:-bash -s} <<'EOF'\nx\nEOF\n")[0].stages[0]
+        self.assertEqual(["${X:-bash -s}"], [str(w) for w in stage.argv])
+        self.assertEqual(["bash", "-s"], [str(w) for w in shell_reader.command(stage.argv)])
+        self.assertIsInstance(shell_reader.command(stage.argv)[0], shell_reader.Defaulted)
+        argv = shell_reader.statements("${X:-sh -c} 'curl u | sh'")[0].stages[0].argv
+        self.assertEqual(["sh", "-c", "curl u | sh"], [str(w) for w in shell_reader.command(argv)])
+        # A default that is no shell stays one word; a quoted default is kept as written.
+        self.assertEqual(["${X:-a b}", "c"], [str(w) for w in shell_reader.statements("${X:-a b} c")[0].stages[0].argv])
+        argv = shell_reader.statements("\"${X:-bash -s}\" x")[0].stages[0].argv
+        self.assertEqual(["${X:-bash -s}", "x"], [str(w) for w in shell_reader.command(argv)])
+
+    def test_diamond_redirects_standard_input(self):
+        stage = shell_reader.statements("bash -s <<'EOF' <>/dev/null\nx\nEOF\n")[0].stages[0]
+        self.assertEqual(["bash", "-s"], [str(w) for w in stage.argv])
+        self.assertEqual(["/dev/null"], [str(w) for w in stage.reads])
+        self.assertIsNone(stage.stdin_heredoc)
+        stage = shell_reader.statements("bash -s <<'EOF' 0<>/dev/null\nx\nEOF\n")[0].stages[0]
+        self.assertIsNone(stage.stdin_heredoc)
+        for script in ("bash -s <>/dev/null <<'EOF'\nx\nEOF\n", "bash -s <<'EOF' 1<>/dev/null\nx\nEOF\n"):
+            with self.subTest(script=script):
+                self.assertEqual(("x", False), shell_reader.statements(script)[0].stages[0].stdin_heredoc)
