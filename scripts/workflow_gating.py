@@ -409,6 +409,14 @@ _FUNCTION_BODY = ("is inside a function that has not run through a failure gate 
                   "use")
 
 
+def _failure_context(argv):
+    """Words around a command's status after a case arm or function header."""
+    words = argv[1:] if argv and shell_reader.is_arm(argv[0]) else argv
+    if _function_syntax(words)[0] is not None and "{" in words:
+        words = words[words.index("{") + 1:]
+    return words
+
+
 def _function_status(stmts, index, answer, errexit):
     """Bind definition-time credit to a proved call, preserving body reach."""
     function, carrier = _function_scope(stmts, index), index
@@ -442,8 +450,9 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
     Phrased to follow "the checksum that names <file>", because that is the
     sentence a reader gets when the check they wrote did not clear the fetch
     they wrote it for. What is read here is the shell right around the check
-    -- an `Inlined` statement's `credit` first, then its separator, `!` and
-    `if` -- and `credit` is the step's own answer for the statement, read
+    -- an `Inlined` statement's strong `credit` first, while a local `Reach`
+    still passes through its separator, `!`, `if` and function call -- and
+    `credit` is the step's own answer for the statement, read
     last: `step_credit`'s, the guard's `_SOFT_STEP` pair where the step
     carries `continue-on-error: true` (`job_defects`), or None where it has
     none. A `Reach` answer is a check ahead of `&&`, which still stops what
@@ -453,18 +462,25 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
     measuring_uses = credit is not _UNMEASURED
     if credit is _UNMEASURED:
         credit = None
-    inherited_child_reach = False
+    inherited_child_reach, local = False, None
+    head = _failure_context(statement.stages[0].argv if statement.stages else stage.argv)
+    stage_context = _failure_context(stage.argv)
     if isinstance(statement, Inlined):
         own = statement.credit[stage is not statement.stages[-1]]
         outer = credit[stage is not statement.stages[-1]] if credit else None
         # `flattened` uses an unbounded base Reach when the child gates its own
         # remainder but its parent does not stop on the child's status. A later
         # step-level Reach supplies the carrier boundary; every other local
-        # refusal remains stronger and is returned unchanged.
+        # refusal remains stronger and is returned unchanged. A bounded local
+        # Reach still needs its negation/condition and function call read below.
         inherited_child_reach = (type(own) is Reach and own.span is None
                                  and isinstance(outer, Reach))
         if own and not inherited_child_reach:
-            return own
+            if type(own) is Reach:
+                local = own
+            elif not (negated(head) or negated(stage_context)
+                      or conditional(head) or conditional(stage_context)):
+                return own
     if statement.separator == "&":
         return _DETACHED
     if statement.separator == "||":
@@ -504,12 +520,11 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
     # module's own remedy text recommends -- the checksum is the second stage
     # and its own argv says nothing about the test wrapped around it. Ask the
     # head as well as the stage, because a one-stage statement is both.
-    head = statement.stages[0].argv if statement.stages else stage.argv
-    if negated(head) or negated(stage.argv):
+    if negated(head) or negated(stage_context):
         return "is negated, so the failing path is the THEN branch"
-    if conditional(head) or conditional(stage.argv):
+    if conditional(head) or conditional(stage_context):
         return "is an `if`/`while` test, which errexit does not apply to"
-    why = credit[stage is not statement.stages[-1]] if credit else None
+    why = local or (credit[stage is not statement.stages[-1]] if credit else None)
     piped_end = (_piped_group_end(stmts, index)
                  if not inherited_child_reach
                  and (why is None or isinstance(why, Reach)) else None)

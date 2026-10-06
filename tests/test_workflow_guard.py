@@ -2503,6 +2503,39 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
     def test_a_direct_check_still_stops_eval(self):
         self.assertEqual([], self.job("eval '%s; " + self.INLINE_USE + "'\n", use=""))
 
+    def test_negation_and_conditions_override_a_childs_list_reach(self):
+        bodies = (
+            "bash -ec '! %s && " + self.INLINE_USE + "; echo more'\n",
+            "bash -ec 'if ! %s && " + self.INLINE_USE + "; then :; fi'\n",
+            "bash -e -s <<'EOF'\n! %s && " + self.INLINE_USE + "\necho more\nEOF\n",
+            "eval '! %s && " + self.INLINE_USE + "; echo more'\n",
+            "eval 'if ! %s && " + self.INLINE_USE + "; then :; fi'\n",
+            "sh -c '! %s && " + self.INLINE_USE + "; echo more'\n",
+            "bash -ec 'case one in one) ! %s && " + self.INLINE_USE + ";; esac; echo more'\n",
+            "bash -ec 'gate() { ! %s && " + self.INLINE_USE + "; }; gate; echo more'\n",
+        )
+        for shell in (None, "bash", "sh"):
+            for body in bodies:
+                with self.subTest(shell=shell, body=body):
+                    found = self.job(body, shell, use="")
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("the checksum that names /tmp/payload", found[0][1])
+                    self.assertTrue("is negated" in found[0][1]
+                                    or "is an `if`/`while` test" in found[0][1], found)
+
+    def test_a_brace_group_ahead_of_and_has_the_childs_local_reach(self):
+        body = "bash -ec '{ %s; } && echo checked; " + self.INLINE_USE + "'\n"
+        for shell in (None, "bash", "sh"):
+            with self.subTest(shell=shell):
+                self.reported(body, use="")
+
+    def test_a_function_returning_the_and_list_still_stops_the_child(self):
+        for shell in (None, "bash", "sh"):
+            for runner in ("bash", "sh"):
+                body = runner + " -ec 'f() { %s && echo checked; }; f; " + self.INLINE_USE + "'\n"
+                with self.subTest(shell=shell, runner=runner):
+                    self.assertEqual([], self.job(body, shell, use=""))
+
 
 class TestAPipedCheckGatesOnlyUnderPipefail(unittest.TestCase):
     """#2338: a pipeline's status is its LAST command's unless `pipefail`
