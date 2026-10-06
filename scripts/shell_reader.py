@@ -122,6 +122,25 @@ _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
 
 # --- reading the shell -------------------------------------------------------
 
+def _negated(text, context):
+    """`text`, a stage inside a `! { ... }` group, with the `!` that bash's errexit-off reading
+    of a negated compound gives every command in it, placed where `negated` reads it and the
+    control-kind readers do not: in front of the first command word, past the keywords and the
+    `case` arm that open the statement (`then ! CHECK`, `x) ! CHECK`), and nowhere on a
+    statement that is keywords alone (`}`, `fi`), a `for`/`case`/`select`/`function` header
+    whose next words are names, an `if`/`elif`/`while`/`until` whose condition errexit never
+    applied to, or one already negated (#2664, the second fix round)."""
+    for match in re.finditer(r"\S+", text):
+        word = match.group()
+        mark = context.pattern.match(word)
+        if word in KEYWORDS or mark and context.entries[mark.group()][0] == "arm":
+            if word in CONDITIONS or word in ("for", "case", "select", "function", "!"):
+                return text
+            continue
+        return text[:match.start()] + "! " + text[match.start():]
+    return text
+
+
 def _split(text, context):
     """[[stage text, ...], ...]: statements, each a list of pipeline stages.
 
@@ -164,10 +183,8 @@ def _split(text, context):
     # `! { ... }`: bash negates the GROUP's status, and errexit is off for every command inside
     # a negated compound, so each statement the group holds is read under the `!` (#2664, the
     # fix round: the `{`-ends-its-statement step above stranded the `!` on `{` alone). One
-    # entry per open `{` group, True where a `!` stood before it; `carried` says the current
-    # statement's first word is the carried `!`, which the `case` probe below looks past.
+    # entry per open `{` group, True where a `!` stood before it; `_negated` places the `!`.
     negations: list[bool] = []
-    carried = False
 
     def end_stage():
         nonlocal header_words, header_live, word_start, redirect_target, at_head
@@ -177,11 +194,11 @@ def _split(text, context):
         redirect_target, at_head = False, True
 
     def end_statement(separator):
-        nonlocal cond, carried, word_start
+        nonlocal cond
         end_stage()
         cond = 0
-        if carried and stages[0].split() == ["!", "}"]:
-            stages[0] = stages[0].replace("!", "", 1)   # the close is read bare (`_closes`)
+        if any(negations):
+            stages[0] = _negated(stages[0], context)
         if any(s.strip() for s in stages):
             statements.append((list(stages), separator))
         bang = False
@@ -194,10 +211,6 @@ def _split(text, context):
             elif word == "!":
                 bang = True
         del stages[:]
-        carried = any(negations)
-        if carried:
-            buf.append("! ")
-            word_start = len(buf)
 
     def close_case():
         """Close a literal `esac` before an operator following it (#2610)."""
@@ -252,7 +265,7 @@ def _split(text, context):
                     words = shlex.split("".join(buf))
                 except ValueError:
                     words = []
-                words = [w for w in words if w not in groups][carried:]
+                words = [w for w in words if w not in groups]
                 if len(words) == 3 and words[0] == "case" and words[-1] == "in":
                     end_statement(";")
                     cases.append("pattern")

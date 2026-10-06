@@ -82,10 +82,10 @@ class TestACalledFunctionsAssignmentReachesTheUse(unittest.TestCase):
     the body at the call, so `sh` runs the download; every shell runs it. Before #2664 the
     misread header made `T=tool` the step's own statement (REPORT by accident); with the header
     read, the body was skipped and the table held `/dev/null` at the use (CLEAN). The call now
-    carries the body's assignments (`workflow_called.record_called`): sure where the call and
-    the body statement are, added otherwise; `local` dies with the call; `declare -g` and
-    `export` assign globally; a subshell body, a use before the call and a call before the
-    definition carry nothing, as bash runs none of them into the caller."""
+    adds the body's assignments as UNSURE candidates beside the caller's own
+    (`workflow_called.record_called`, round 2's fail-closed direction: the sure carry read past
+    a `return`, a wrapper, a later redefinition and a stand-in); `local` dies with the call; a
+    subshell body, a use before the call and a call before the definition carry nothing."""
 
     ROWS = ('T=/dev/null; f(){ :; T=@P@; }; f; sh "$T"', 'T=/dev/null; f ( ) { :; T=@P@; }; f; sh "$T"',
             'T=/dev/null; f() { :; T=@P@; }; f; sh "$T"', '{ f() { :; T=@P@; }; f; }; sh "$T"',
@@ -115,18 +115,88 @@ class TestACalledFunctionsAssignmentReachesTheUse(unittest.TestCase):
                     self.assertFalse(reported(filled(row), shell))
 
     def test_the_rows_of_2785(self):
-        # x1: the call sets `T=x`, so bash runs `sh x` (F- x4) -- CLEAN, where the head of
-        # #2768 reported a claim; x2 (its inverse), x27 (`declare -g`), s10 (the second
-        # call's body reads the first's assignment) and the `local` row run the download.
+        # x1: the call sets `T=x`, so bash runs `sh x` (F- x4): reported all the same under the
+        # fail-closed carry, the one price PR #2855's round 2 named (the sure carry is #2785's
+        # own PR); x2 (its inverse), x27 (`declare -g`), s10 (the second call's body reads the
+        # first's assignment) and the `local` row run the download.
         get = "curl -fsSLo cuda_1.run https://example.test/cuda_1.run\n"
-        self.assertFalse(reported(get + 'g() { T=x; }\nT=cuda_1.run\ng\nsh "$T" || :\n'))
-        for row in ('g() { T=cuda_1.run; }\nT=x\ng\nsh "$T"\n',
+        for row in ('g() { T=x; }\nT=cuda_1.run\ng\nsh "$T" || :\n',
+                    'g() { T=cuda_1.run; }\nT=x\ng\nsh "$T"\n',
                     'f() { declare -g T=cuda_1.run; }; T=x; f; sh "$T"\n',
                     'f() { sh "$T" || :; T=cuda_1.run; }; T=a; f; f\n',
                     'g() { local T=x; }\nT=cuda_1.run\ng\nsh "$T"\n'):
             for shell in (None, "bash", "sh"):
                 with self.subTest(row=row, shell=shell):
                     self.assertTrue(reported(get + row, shell))
+
+
+class TheCarriedBangStandsBehindTheControlWords(unittest.TestCase):
+    """PR #2855 round 2 (B1). The carried `!` had become the first WORD the control-kind readers
+    saw, so `then`, `do`, `else`, `case` and an arm were never pushed and a branch assignment
+    read as sure: `T=P; ! { if false; then T=/dev/null; fi; }; sh "$T"` read CLEAN while every
+    shell runs `P`. The `!` now stands past the keywords that open a statement and past a `case`
+    arm, and not on a `for`/`case` header, a condition or a bare keyword; `! !` is one negation
+    (bash XORs: fail-closed); a short-circuit, a redirect-first statement and a `[[ ]]` inside
+    the group read under the `!` too."""
+
+    ROWS = ('T=@P@; ! { if false; then T=/dev/null; fi; }; sh "$T"',
+            'T=@P@; ! { for i in; do T=/dev/null; done; }; sh "$T"',
+            'T=@P@; ! { while false; do T=/dev/null; done; }; sh "$T"',
+            'T=@P@; ! { if true; then :; else T=/dev/null; fi; }; sh "$T"',
+            'T=@P@; ! {\nif false; then\nT=/dev/null\nfi\n}\nsh "$T"',
+            "! {\ncase x in\nx) @C@;;\nesac\n}\n@U@", "! {\nif true; then @C@; fi\n}\n@U@",
+            'T=@P@; g() { ! { if false; then T=/dev/null; fi; }; }; g; sh "$T"',
+            "! { ! @C@; }\n@U@", "! { [[ -f tool ]] && @C@; }\n@U@", "! { > log @C@; }\n@U@",
+            "! { @C@ || exit 1; }\n@U@", "! { @C@ && @U@; }", "! { @C@ || @U@; }")
+
+    def test_each_row_is_reported_under_every_shell_setting(self):
+        for row in self.ROWS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_the_bang_stands_past_the_keywords(self):
+        argvs = [list(st.stages[0].argv) for st in wg.shell_reader.statements(
+            "! {\ncase x in\nx) CHECK;;\nesac\nif false; then T=x; fi\n}\n")]
+        self.assertEqual(["case", "x", "in"], argvs[1])
+        self.assertEqual(["!", "CHECK"], argvs[2][1:])        # the arm marker first
+        self.assertEqual(["if", "false"], argvs[4])             # a condition: never under `!`
+        self.assertEqual(["then", "!", "T=x"], argvs[5])
+        self.assertEqual([["fi"], ["}"]], argvs[6:])
+
+
+class TestACallsEffectIsReadFailClosed(unittest.TestCase):
+    """PR #2855 round 2 (B2-B5): the sure carry replaced the caller's value past a `return` the
+    body takes, through a wrapper that never runs a function (`env f`, `timeout 5 f`), past a
+    later redefinition or `unset -f`, by a stand-in, and by a `declare -g` bash 3.2 and dash lack
+    -- each `T=P; …; sh "$T"` CLEAN while every shell runs `P`. A call now adds the body's
+    assignments unsure beside the caller's own, so each reports; the named price is `T=P; f() {
+    T=/dev/null; }; f; sh "$T"`, reported though no shell runs `P`."""
+
+    ROWS = ('T=@P@; f() { return; T=/dev/null; }; f; sh "$T"',
+            'T=@P@; f() { if true; then return; fi; T=/dev/null; }; f; sh "$T"',
+            'T=@P@; f() { [ -f x ] || return 0; T=/dev/null; }; f; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; env f || true; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; timeout 5 f || true; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; command f; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; if true; then f() { :; }; fi; f; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; true && f() { :; }; f; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; [ -n "$X" ] || f() { :; }; f; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; if true; then unset -f f; fi; f || :; sh "$T"',
+            'T=@P@; { f() { T=/dev/null; }; } | cat; f; sh "$T"',
+            'T=@P@; f(){ T=$1; }; f "$T"; sh "$T"', 'T=@P@; f(){ T=${X:-$T}; }; f; sh "$T"',
+            'T=@P@; f() { declare -g T=/dev/null; }; f; sh "$T"',
+            'T=@P@; f() { readonly T=/dev/null; }; f; sh "$T"',
+            'T=@P@; f() { declare -gx T=/dev/null; }; f; sh "$T"',
+            'T=@P@; if c; then f() { T=/dev/null; }; else f() { T=@P@; }; fi; f; sh "$T"',
+            'T=@P@; g() { T=/dev/null; }; f() { g; }; f; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; f; sh "$T"')
+
+    def test_each_row_is_reported_under_every_shell_setting(self):
+        for row in self.ROWS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
 
 
 class TestEveryHeaderSpellingTheSeatAskedFor(unittest.TestCase):

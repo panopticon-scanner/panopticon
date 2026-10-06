@@ -1113,11 +1113,12 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
         argvs = [list(stage.argv) for st in shell_reader.statements(
             "! {\nCHECK\n}\nUSE\n") for stage in st.stages]
         self.assertEqual([["!", "{"], ["!", "CHECK"], ["}"], ["USE"]], argvs)
-        # A `case` header inside the group is still found past the carried `!`.
+        # A `case` header inside the group is read bare and its arm stays first: the `!`
+        # stands behind them (round 2), where the control-kind readers do not see it.
         argvs = [list(stage.argv) for st in shell_reader.statements(
             "! {\ncase x in\nx) CHECK;;\nesac\n}\n") for stage in st.stages]
-        self.assertIn(["!", "case", "x", "in"], argvs)
-        self.assertTrue(any("CHECK" in argv for argv in argvs), argvs)
+        self.assertIn(["case", "x", "in"], argvs)
+        self.assertEqual(["!", "CHECK"], next(argv for argv in argvs if "CHECK" in argv)[1:])
         # Without the `!` nothing is carried.
         argvs = [list(stage.argv) for st in shell_reader.statements(
             "{ f() { CHECK; }; f; }\nUSE\n") for stage in st.stages]
