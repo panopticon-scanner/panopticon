@@ -7,6 +7,15 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`scripts/workflow_values.py` splits its reading half into `scripts/workflow_valued.py`
+  (values lane opener).** A pure move at the table's size (699 of 700 lines, with the lane's
+  values fixes still to land): `valued`, the candidate texts a word resolves to through the
+  table, and `valued_argvs`, an argv's candidate argvs, with the helpers only they share, the
+  reference spellings they match and the two bounds (`_CANDIDATES`, `_LONGEST`) now live in the
+  new module, byte for byte; values imports every name back under its own, so no caller moved,
+  and the new module imports nothing from values. No verdict changes: every `job_defects` /
+  `fetches` answer the guard and reader test files produce is identical in order before and
+  after.
 - **Workflow reader reads whole what every shell reads whole (#2756, #2731, #2657; #2733,
   #2608).** A line ending in `|` continues on the next (`curl … |` ⏎ `sh` ran the pipeline and
   read CLEAN, behind `eval` and in a printed or heredoc text too); an unquoted `${X:-bash -s}` is
