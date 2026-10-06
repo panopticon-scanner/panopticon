@@ -2483,6 +2483,7 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
 
     def test_a_use_inside_the_child_after_its_and_list_is_reported(self):
         for body in ("sh -ec '%s && echo checked; echo more; " + self.INLINE_USE + "'\n",
+                     "eval '%s && echo checked; " + self.INLINE_USE + "'\n",
                      "eval '%s && echo checked; true; " + self.INLINE_USE + "'\n",
                      "bash -e -s <<'EOF'\n%s && echo checked\necho more\n" + self.USE + "EOF\n"):
             with self.subTest(body=body):
@@ -2498,6 +2499,9 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
     def test_a_nested_script_in_the_list_is_inside_its_flat_reach(self):
         body = "sh -ec '%s && eval \"echo before; " + self.INLINE_USE + "\"; echo more'\n"
         self.assertEqual([], self.job(body, use=""))
+
+    def test_a_direct_check_still_stops_eval(self):
+        self.assertEqual([], self.job("eval '%s; " + self.INLINE_USE + "'\n", use=""))
 
 
 class TestAPipedCheckGatesOnlyUnderPipefail(unittest.TestCase):
