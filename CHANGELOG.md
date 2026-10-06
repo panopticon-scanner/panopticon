@@ -10,7 +10,10 @@ evidence exposed.
 - **Workflow guard: the stdin operand walk reads a shell's options as the shell does (#2647,
   #2654, #2616, #2606, #2603, #2592, #2331).** After `-s` bash keeps reading options, so a `-c`
   among them puts the program in the string and the heredoc is its data (`bash -s -c true` ran the
-  download past a check bash never read); the word after a lone `-` is the script FILE
+  download past a check bash never read) -- for bash alone: dash runs the string and THEN reads
+  stdin, so under `dash` and `sh` the heredoc is the program after all (`sh -s -c true <<'EOF'`,
+  `sh -cs true`, `sh -c -s true` ran it; no check in it counts, since the string may eat stdin
+  first and bash never reads it); the word after a lone `-` is the script FILE
   (`bash - /dev/null`); a shell's long options have a table, in both spellings bash takes
   (`--login`, `-login`: #2864) -- `--rcfile FILE` and `--init-file FILE` are skipped whole, and a
   word outside the table or with a value glued on is a refusal, as every two-dash word is to dash
@@ -26,6 +29,8 @@ evidence exposed.
   reads stdin or a `-c` string: `bash --version <<'EOF' CHECK EOF; USE` ran the use past a check
   bash never read and was credited with the check (CLEAN). The four are a refusal of the walk now,
   so the use after is reported as unverified; a download in the heredoc or the string stays CLEAN.
+  So do `--wordexp`, which expands stdin as words or is refused, and a FILE option with no file
+  after it (`bash -rcfile <<'EOF'`, rc 2).
 - **Workflow guard: what `eval`'s words and a `-c` string hand on (#2673, #2683, #2684, #2764,
   #2669, #2331).** `eval 'curl … |' 'sh'` ran the pipe and read CLEAN: `eval` joins its words before
   it runs them, and the guard read them one by one. Where a word begins or ends with an operator the

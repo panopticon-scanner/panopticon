@@ -10,6 +10,7 @@ columns agree unless a comment says otherwise.
 """
 import unittest
 
+import shell_reader
 import workflow_guard as wg
 import workflow_options as wo
 import workflow_programs as wp
@@ -126,9 +127,12 @@ class TestALongOptionOfTheShell(unittest.TestCase):
             "--debug", "--debugger", "--dump-po-strings", "--dump-strings", "--help", "--login",
             "--noediting", "--noprofile", "--norc", "--posix", "--pretty-print", "--protected",
             "--restricted", "--verbose", "--version", "--wordexp"})
-        self.assertEqual({"--help", "--version", "--dump-strings", "--dump-po-strings"}, set(wo.LONG_EXITS))
+        self.assertEqual({"--help", "--version", "--dump-strings", "--dump-po-strings", "--wordexp"},
+                         set(wo.LONG_EXITS))
         self.assertTrue(wo._refused_long(["bash", "--bogus"], 1))
         self.assertTrue(wo._refused_long(["bash", "--version"], 1))
+        self.assertTrue(wo._refused_long(["bash", "-rcfile"], 1))          # no FILE after it
+        self.assertFalse(wo._refused_long(["bash", "-rcfile", "/dev/null"], 1))
         self.assertTrue(wo._refused_long(["bash", "-rcfile=/dev/null"], 1))
         self.assertTrue(wo._refused_long(["dash", "--norc"], 1))
         self.assertFalse(wo._refused_long(["bash", "--norc"], 1))
@@ -159,11 +163,19 @@ class TestALongOptionOfTheShell(unittest.TestCase):
                        "bash -login -c '%s'\n" % PIPE, "bash -posix -c '%s'\n" % PIPE,
                        body("bash -norc", PIPE), body("bash -restricted", PIPE),
                        body("bash -rcfile /dev/null", PIPE), body("bash -init-file /dev/null", PIPE),
-                       "bash -norc -c '%s'\n" % PIPE, "bash -rcfile /dev/null -c '%s'\n" % PIPE):
+                       "bash -norc -c '%s'\n" % PIPE, "bash -rcfile /dev/null -c '%s'\n" % PIPE,
+                       # the round-1 seat's extent: more names, the `o`-bearing ones before a `-c`
+                       # (no value owed), a two-dash word after, wrappers, a path, `sh`
+                       body("bash -debug", PIPE), "bash -noprofile -c '%s'\n" % PIPE,
+                       "bash -verbose -c '%s'\n" % PIPE, body("bash -login --norc", PIPE),
+                       body("sudo bash -norc", PIPE), "env bash -posix -c '%s'\n" % PIPE,
+                       body("/bin/bash -norc", PIPE), body("sh -norc", PIPE), "sh -posix -c '%s'\n" % PIPE):
             with self.subTest(script=script):
                 self.assertTrue(any(STREAM in why for why in defects(script)), script)
-        found = defects("X=-c\nbash -rcfile /dev/null $X '%s'\n" % PIPE)
-        self.assertTrue(any("where it reads its options" in why for why in found), found)
+        for script in ("X=-c\nbash -rcfile /dev/null $X '%s'\n" % PIPE, "X=-c\nbash -login $X '%s'\n" % PIPE):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertTrue(any("where it reads its options" in why for why in found), found)
         # -- -- -- -- (rc 2) on each: a one-dash word that spells no long option is a letter
         # cluster (`-bogus` fails at `g`), dash reads every one-dash word so (`dash -login` fails
         # at `-g`), a value glued on is refused (rc 1), and a long option after a `-c` cluster is
@@ -188,11 +200,51 @@ class TestALongOptionOfTheShell(unittest.TestCase):
                 found = defects(GET + body(runner, CHECK) + USE)
                 self.assertTrue(any(UNVERIFIED in why for why in found), (runner, found))
         # -- -- -- -- (rc 0): a download in the heredoc or the string is never run.
+        # `--wordexp` expands stdin as words (bash 3.2) or is refused (5.2); `-rcfile` as the
+        # last word wants a FILE (rc 2): nothing runs under either.
         for script in (body("bash --version", PIPE), body("bash -version", PIPE), body("bash -help", PIPE),
-                       "bash --help -c '%s'\n" % PIPE, "bash --dump-strings -c '%s'\n" % PIPE):
+                       "bash --help -c '%s'\n" % PIPE, "bash --dump-strings -c '%s'\n" % PIPE,
+                       body("bash -wordexp", PIPE), "bash --wordexp -c '%s'\n" % PIPE, body("bash -rcfile", PIPE)):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
         self.assertEqual([], defects(GET + body("bash --norc", CHECK) + USE))     # the check counts
+
+
+class TestDashReadsStdinAfterItsDashCString(unittest.TestCase):
+    """#2647, round 1 (B2): bash's `-c` beside `-s` puts the program in the string alone, but dash
+    runs the string and THEN reads stdin as a program, so under `dash`, and under `sh`, which may
+    be dash, the heredoc is the program after all."""
+
+    def test_an_s_among_dashs_options_keeps_stdin_as_a_program(self):
+        # FR FR FR FR where `sh` is dash, rc 0 (where `sh` is bash: -- -- -- --, the string alone):
+        # before, after or in the `-c` cluster, with other options between, with parameters after.
+        for runner in ("sh -s -c true", "sh -s -e -c true", "dash -s -c true", "dash -s -e -c true",
+                       "sh -sc true", "sh -cs true", "sh -c -s true", "dash -c -s true",
+                       "sh -c -o pipefail -s true", "dash -s -c 'echo x' arg0"):
+            with self.subTest(runner=runner):
+                self.assertTrue(any(STREAM in why for why in defects(body(runner, PIPE))), runner)
+        # -- -- -- --: bash runs the string alone, and an `-s` AFTER the string is a parameter
+        # to dash too (`sh -c true -s`); `-c` alone reads no stdin.
+        for runner in ("bash -s -c true", "bash -sc true", "bash -cs true", "bash -c -s true",
+                       "sh -c true -s", "dash -c true -s", "sh -c true"):
+            with self.subTest(runner=runner):
+                self.assertEqual([], defects(body(runner, PIPE)), runner)
+
+    def test_the_body_is_read_but_no_check_in_it_counts(self):
+        # `dash -s -c true <<'EOF' CHECK EOF; USE`: dash reads the check and stops (F-+chk, rc 1);
+        # but `dash -s -c 'cat' <<'EOF' CHECK EOF; USE` runs the use unverified (FR, rc 0: the
+        # string ate stdin first), and under `sh`, where it is bash, the body is never read (FR).
+        # So the body is the step's own text, read, with no check in it credited -- the
+        # fail-closed price, as #2485's: the `true` row is over-reported, the others closed.
+        for runner in ("dash -s -c true", "dash -s -c 'cat'", "sh -s -c true", "sh -s -c 'cat'"):
+            with self.subTest(runner=runner):
+                found = defects(GET + body(runner, CHECK) + USE)
+                self.assertTrue(any("is inside the script" in why for why in found), (runner, found))
+        # A stdin shell the string names reads the body as the holder's, as before: `()`.
+        stage = shell_reader.statements("sh -s -c 'bash -s' <<'EOF'\necho hi\nEOF")[0].stages[-1]
+        argv = shell_reader.command(stage.argv)
+        self.assertEqual(wp.SHELL_PROGRAM, wp.stdin_program(argv))
+        self.assertEqual((), wp.stdin_scripts(argv, stage)[0].reader)
 
 
 class TestAnOptionValueTheShellRefuses(unittest.TestCase):

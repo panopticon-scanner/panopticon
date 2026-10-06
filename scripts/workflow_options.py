@@ -61,19 +61,19 @@ SHELL_OPTION_NAMES = SET_OPTION_NAMES + ("interactive", "stdin", "debug")
 # A shell's LONG options, where bash reads them (#2616), in EITHER spelling bash takes -- two
 # dashes or one (`--login`, `-login`; `long_option` reads both): the two that take a FILE
 # (`--rcfile f`, `--init-file f`), measured to run the program after it on bash 5.2.21 and 3.2.57;
-# the flags, the UNION of the two versions' lists (5.2's `--pretty-print`, 3.2's `--protected` and
-# `--wordexp`), read ON as the letters are; and the four that print and exit, running nothing
-# (`LONG_EXITS`: `bash --version <<'EOF'` reads no stdin, measured on both). A word outside the
+# the flags, the UNION of the two versions' lists (5.2's `--pretty-print`, 3.2's `--protected`),
+# read ON as the letters are; and the five that run nothing (`LONG_EXITS`): four print and exit
+# (`bash --version <<'EOF'` reads no stdin, measured on both), and `--wordexp` expands stdin as
+# words (3.2) or is refused (5.2). A FILE option as the last word is refused too. A word outside the
 # tables, or one with a value glued on (`--rcfile=f`, `-rcfile=f`: rc 2 and rc 1, nothing run), is
 # one bash refuses -- `bash: --bogus: invalid option`, rc 2, no stdin read -- and dash refuses every
 # long option (`Illegal option --`), so for a shell in `_MEASURED_SHELLS` such a word is a refusal
 # (`_refused_long`); zsh and ksh read on. A one-dash word that spells none of these is a letter
 # cluster, as bash reads it (`-bogus` is `-b -o gus`, refused at `g`).
 LONG_VALUE_OPTIONS = ("--rcfile", "--init-file")
-LONG_EXITS = ("--help", "--version", "--dump-strings", "--dump-po-strings")
+LONG_EXITS = ("--help", "--version", "--dump-strings", "--dump-po-strings", "--wordexp")
 LONG_OPTIONS = ("--debug", "--debugger", "--login", "--noediting", "--noprofile", "--norc",
-                "--posix", "--pretty-print", "--protected", "--restricted", "--verbose",
-                "--wordexp") + LONG_EXITS
+                "--posix", "--pretty-print", "--protected", "--restricted", "--verbose") + LONG_EXITS
 _LONG = re.compile(r"-{1,2}([a-z][a-z-]*)")
 
 
@@ -115,6 +115,27 @@ def _refused_name(argv, at):
     return False
 
 
+def _dash_s(argv, at):
+    """Whether an `s` stands in the `-c` cluster `argv[at]` or in a later option word before the
+    operand -- the string -- so dash reads stdin after the string (`sh -cs true`, `sh -c -s
+    true`, `sh -c -o pipefail -s true`, #2647); an `-s` after the string is a parameter (`sh -c
+    true -s`). Values owed by `o`/`O` and a long option's FILE are skipped, as the shell skips them."""
+    owed = 0
+    for word in argv[at:]:
+        if owed:
+            owed -= 1
+            continue
+        if word in ("-", "--") or word[:1] not in ("-", "+"):
+            return False
+        if (long := long_option(word, argv[0])) or word[:2] in ("--", "++"):
+            owed = long in LONG_VALUE_OPTIONS
+            continue
+        if "s" in word[1:]:
+            return True
+        owed = sum(letter in VALUE_OPTIONS for letter in word[1:])
+    return False
+
+
 def _literal(word):
     """Whether `word` is written as itself, with no expansion in it: a plain `str` -- no
     `Defaulted`, `Rewritten` or lifted-text token -- holding no `$`. Such a `-o` value outside
@@ -136,8 +157,8 @@ def _refused_long(argv, at):
     word, name = argv[at], long_option(argv[at], argv[0])
     if os.path.basename(argv[0]) == "dash":
         return word[:2] == "--" and word != "--"
-    if name:
-        return name in LONG_EXITS
+    if name:                                    # `bash -rcfile` with no FILE after it: rc 2
+        return name in LONG_EXITS or name in LONG_VALUE_OPTIONS and at + 1 >= len(argv)
     glued = _LONG.fullmatch(word.split("=", 1)[0]) if "=" in word else None
     return word[:2] == "--" and word != "--" or bool(glued and long_option(word.split("=", 1)[0], argv[0]))
 

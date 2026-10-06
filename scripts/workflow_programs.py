@@ -56,7 +56,7 @@ import re
 import shell_lex
 import shell_reader
 from shell_text import Process
-from workflow_options import (LONG_VALUE_OPTIONS, SET_OPTION_NAMES as SET_OPTION_NAMES, long_option,
+from workflow_options import (LONG_VALUE_OPTIONS, SET_OPTION_NAMES as SET_OPTION_NAMES, _dash_s, long_option,
                               SET_OPTIONS as SET_OPTIONS,
                               SHELL_OPTION_NAMES as SHELL_OPTION_NAMES,
                               SHELL_OPTIONS as SHELL_OPTIONS, VALUE_OPTIONS, _BARE as _BARE,
@@ -183,9 +183,8 @@ def _after_dash_c(argv):
         long = long_option(token, argv[0])
         if long is None and token.startswith("-") and not token.startswith("--") and "c" in token:
             return _past_options(argv, position)
-        # An option word the shell in hand refuses BEFORE the cluster exits before the string
-        # is read, as one after it does (#2606, #2616): `bash -o pipefial -c P`, `bash --bogus
-        # -c P`; a `--rcfile FILE`, in either spelling (`-rcfile`), is skipped whole.
+        # An option word the shell refuses BEFORE the cluster exits before the string is read, as
+        # one after it does (#2606, #2616: `bash -o pipefial -c P`); `--rcfile FILE` is skipped whole.
         if long or token[:2] == "--":
             if _refused_long(argv, position):
                 return []
@@ -465,7 +464,7 @@ def _stdin_details(argv, depth):
             inherited = _stdin_details(inner, depth + 1)
             if inherited[0] in (SHELL_PROGRAM, VALUE_PROGRAM):
                 # No check in an inherited body counts; only a holder reading it is its reader.
-                inherited_reader = () if inherited[0] == SHELL_PROGRAM and reader else None
+                inherited_reader = () if inherited[0] == SHELL_PROGRAM and reader is not None else None
                 return inherited[0], inherited_reader, inherited[2]
     return kind, reader, argv
 
@@ -514,10 +513,8 @@ def _options(argv, depth):
     name = os.path.basename(argv[0])
     shell = name in _SHELL_STRING
     foreign = name in _FOREIGN
-    # `<(...)`/`>(...)` are a `_value`-matching marker too (`readable` renders every substitution
-    # alike), but they never vanish -- a process substitution always substitutes a real path, never
-    # empty, never word-split away, unlike `$(...)`/backticks, whose OUTPUT may be (#2485's
-    # `$(true)`). `yields_words` is the one already here that tells them apart.
+    # `<(...)`/`>(...)` match `_value` too (`readable` renders every substitution alike) but never
+    # vanish: a real path, never empty or split away, unlike `$(...)`'s OUTPUT (#2485's `$(true)`).
     value = not shell and not foreign and _value(argv[0]) and not _hands_file(argv[0]) and (
         not shell_reader.has_substitution(argv[0]) or shell_reader.yields_words(argv[0]))
     if not (shell or foreign or value):
@@ -562,8 +559,14 @@ def _options(argv, depth):
         if parameters and shell_reader.dynamic(token, shell_reader.has_substitution):
             return answer, reader           # `bash -s -$X -c x`: `$X` may spell `-c sh` first
         if (shell or value) and "c" in letters:
-            # The program is the `-c` string. After the holder's own `-s` the reader is kept:
-            # a stdin shell the string names then reads the body as the holder's (`()`).
+            # The program is the `-c` string -- for bash. dash runs the string and THEN, with an
+            # `-s` among its options, reads stdin as a program too (`_dash_s`, #2647 round 1), so
+            # for `dash`, and for `sh`, which may be dash, the body is the program -- the step's
+            # own text, with no check in it credited (`()`): the string may eat stdin first
+            # (`dash -s -c 'cat'`), and bash never reads it. After bash's own `-s` the reader is
+            # kept: a stdin shell the string names reads the body as the holder's.
+            if shell and name in ("sh", "dash") and (parameters or _dash_s(argv, at - 1)):
+                return answer, ()
             return None, reader if parameters else None
         if (shell or value) and "s" in letters:
             if value:
@@ -591,8 +594,7 @@ def _options(argv, depth):
 
 
 def _hands_file(word):
-    """Whether `word` holds a `<(...)` or `>(...)`: bash always substitutes a real path for
-    one, so such a word never vanishes, whatever else it holds (#2592)."""
+    """Whether `word` holds a `<(...)`/`>(...)`: a real path always, so it never vanishes (#2592)."""
     return any(kind == "subst" and isinstance(value, Process)
                for kind, value in shell_reader._markers(word).values())
 
