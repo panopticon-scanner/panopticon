@@ -2921,14 +2921,138 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
                 self.assertEqual(1, len(found), found)
                 self.assertIn("is negated", found[0][1])
 
-    def test_non_bash_reserved_words_keep_the_dialect_fail_closed_answer(self):
-        for child in ("sh", "dash"):
-            with self.subTest(child=child):
-                body = ("set +e\n" + child + " -ec 'time ! %s && "
-                        + self.INLINE_USE + "; echo more'\necho parent\n")
+    def test_enclosing_conditions_keep_their_bounded_fail_closed_answer(self):
+        # PR #2849 pins both sides of M12.  The first payload runs after the
+        # condition; the second does not run, and is the bounded price of
+        # carrying the condition from its group opener to the checksum.
+        cases = (
+            ("if { echo pre; %s; }; then :; fi\n" + self.INLINE_USE + "\n", "runs"),
+            ("if { echo pre; %s && " + self.INLINE_USE + "; }; then :; fi\n",
+             "does-not-run"),
+        )
+        for body, truth in cases:
+            with self.subTest(truth=truth):
                 found = self.job(body, use="")
                 self.assertEqual(1, len(found), found)
-                self.assertIn("is negated", found[0][1])
+                self.assertIn("is an `if`/`while` test", found[0][1])
+
+    def test_non_bash_reserved_words_keep_the_dialect_fail_closed_answer(self):
+        scripts = (
+            "time ! %s && " + self.INLINE_USE + "; echo more",
+            "coproc worker { ! %s && " + self.INLINE_USE + "; }; wait",
+        )
+        for child in ("sh", "dash"):
+            for script in scripts:
+                with self.subTest(child=child, reserved=script.split()[0]):
+                    body = "set +e\n" + child + " -ec '" + script + "'\necho parent\n"
+                    found = self.job(body, use="")
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("is negated", found[0][1])
+
+    def test_non_bash_pipefail_option_keeps_the_dialect_fail_closed_answer(self):
+        # PR #2849 names this bounded price: dash rejects `-o pipefail` before
+        # running the script, while the cross-dialect reader reports its later use.
+        script = "%s && echo ok; " + self.INLINE_USE
+        for child in ("sh", "dash"):
+            with self.subTest(child=child):
+                body = "set +e\n" + child + " -eo pipefail -c '" + script + "'\n"
+                found = self.job(body, use="")
+                self.assertEqual(1, len(found), found)
+                self.assertIn("runs ahead of `&&`", found[0][1])
+
+    def round_five_job(self, script, posture):
+        """Run one matrix spelling at the step or in an errexit child."""
+        if posture == "step":
+            body = "set +e\n" + script + "\n"
+        else:
+            self.assertEqual("child", posture)
+            body = "set +e\nbash -ec '" + script + "'\necho parent\n"
+        return self.job(body, use="")
+
+    def test_b17_close_then_open_groups_are_applied_in_source_order(self):
+        cases = (
+            ("x01", "child",
+             "if false; then { :; } else ! { echo pre; %s; } && "
+             + self.INLINE_USE + "; fi"),
+            ("x03", "step",
+             "if false; then ( : ) else ! { echo pre; %s; } && "
+             + self.INLINE_USE + "; fi"),
+        )
+        for shape, posture, script in cases:
+            with self.subTest(shape=shape, posture=posture):
+                found = self.round_five_job(script, posture)
+                self.assertEqual(1, len(found), found)
+
+    def test_b18_case_arm_closes_do_not_cancel_enclosing_groups(self):
+        cases = (
+            ("w01", "child", "! { case x in x) :;; esac; %s; } && "
+             + self.INLINE_USE + "; echo more"),
+            ("w08", "step", "! { case x in x) :;; y) :;; esac; %s; } && "
+             + self.INLINE_USE + "; echo more"),
+        )
+        for shape, posture, script in cases:
+            with self.subTest(shape=shape, posture=posture):
+                found = self.round_five_job(script, posture)
+                self.assertEqual(1, len(found), found)
+
+    def test_b19_case_arm_prefixes_do_not_hide_group_negation(self):
+        cases = (
+            ("y01", "child", "case x in x) ! { echo pre; %s; } && "
+             + self.INLINE_USE + ";; esac"),
+            ("y03", "step", "case x in y) :;; x) ! { echo pre; %s; } && "
+             + self.INLINE_USE + ";; esac"),
+        )
+        for shape, posture, script in cases:
+            with self.subTest(shape=shape, posture=posture):
+                found = self.round_five_job(script, posture)
+                self.assertEqual(1, len(found), found)
+
+    def test_b20_nested_cases_and_esac_arguments_keep_case_depth(self):
+        cases = (
+            ("z01", "child", "f() { case x in y) case z in z) :;; esac;; "
+             "x) ! %s && " + self.INLINE_USE + ";; esac; }; f"),
+            ("f07", "step", "f() { case x in y) echo esac;; x) ! %s && "
+             + self.INLINE_USE + ";; esac; }; f"),
+        )
+        for shape, posture, script in cases:
+            with self.subTest(shape=shape, posture=posture):
+                found = self.round_five_job(script, posture)
+                self.assertEqual(1, len(found), found)
+
+    def test_b21_bang_patterns_do_not_cancel_command_negation(self):
+        script = ('f() { case "!" in y) :;; !) ! %s && '
+                  + self.INLINE_USE + ";; esac; }; f")
+        found = self.round_five_job(script, "child")
+        self.assertEqual(1, len(found), found)
+
+    def test_b22_enclosing_paren_openers_keep_their_context(self):
+        script = "! ( ! echo pre; %s ) && " + self.INLINE_USE + "; echo more"
+        found = self.round_five_job(script, "step")
+        self.assertEqual(1, len(found), found)
+
+    def test_round_five_nonrunning_payload_controls_stay_clean(self):
+        # Each check fails, but a later success, an even negation, or a known
+        # failure keeps the payload from running.  The bang in the k01 control
+        # is only a case pattern; it is not a command negation.
+        controls = (
+            ("B17", "child", "if false; then ! { :; } else { echo pre; %s; } && "
+             + self.INLINE_USE + "; fi"),
+            ("B18", "child", "! { case x in x) :;; esac; %s; echo post; } && "
+             + self.INLINE_USE + "; echo more"),
+            ("B19", "child", "case x in x) ! { echo pre; %s; echo post; } && "
+             + self.INLINE_USE + ";; esac"),
+            ("B20-z01", "step", "f() { case x in y) case z in z) :;; esac;; "
+             "x) ! ! %s && " + self.INLINE_USE + ";; esac; }; f"),
+            ("B20-f07", "child", "f() { case x in y) echo esac;; x) ! ! %s && "
+             + self.INLINE_USE + ";; esac; }; f"),
+            ("B21", "step", 'f() { case "!" in y) :;; !) %s && '
+             + self.INLINE_USE + ";; esac; }; f"),
+            ("B22", "child", "! ( ! echo pre; %s ) && false && "
+             + self.INLINE_USE + "; echo more"),
+        )
+        for blocker, posture, script in controls:
+            with self.subTest(blocker=blocker, posture=posture):
+                self.assertEqual([], self.round_five_job(script, posture))
 
     def test_long_or_lists_are_walked_iteratively(self):
         script = ("true || " + "false || " * 600 + "%s && "

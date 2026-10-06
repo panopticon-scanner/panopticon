@@ -339,13 +339,13 @@ def step_credit(flat, shell=None):
     path_map = paths(stmts)
     credit: dict[int, tuple] = {}
     for position, index in enumerate(at):
-        stops = _stops_step(stmts, position, on, fails)
+        stops, body = _stops_step(stmts, position, on, fails), flat[start:index]
         for inner in range(start, index + 1):
             why = (Reach(index - inner, _LOST) if stops is _LOST
                    else stops if stops is None or isinstance(stops, str)
                    else Reach(at[stops] - inner) if stops >= 0
                    else _SET_E if errexit else _NO_E % shell)
-            why = Reach(index - inner, why) if inner < index and type(why) is str and inlined_stops(flat, start, index, inner) else why
+            why = Reach(index - inner, why) if inner < index and type(why) is str and inlined_stops(body, 0, len(body), inner - start) else why
             why = reach(why, stmts, path_map.get(position, ()), at, index, inner, on, fails)
             piped = why if inner < index or fails[position] else _NO_PIPEFAIL
             if why or piped or fails[position]:

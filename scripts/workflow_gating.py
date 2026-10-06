@@ -310,7 +310,7 @@ def inlined_stops(stmts, start, carrier, index, on=None, fails=None):
     precomputed credit: it was derived while flattening the parent, whose
     posture is exactly what is being bounded.
     """
-    body = stmts[start:carrier]
+    body = stmts if start == 0 and carrier == len(stmts) else stmts[start:carrier]
     position = index - start
     if not 0 <= position < len(body) or not body[position].stages:
         return False
