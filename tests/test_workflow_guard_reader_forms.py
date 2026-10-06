@@ -333,6 +333,74 @@ class TestEveryHeaderSpellingTheSeatAskedFor(unittest.TestCase):
                 self.assertTrue(reported(filled(row, check=PIPE)))
 
 
+class TestTheEdgesOfTheDollarBraceWord(unittest.TestCase):
+    """PR #2856 fix round. B1: `$$` is bash's PID, read as the pair before anything the second
+    `$` could open -- `$${` had been read as `${`, taking a pipe or a use to the next `}` as
+    one word. B2: a download destination spelled as an unquoted default (`-o ${D:-tool }`,
+    `${D:=tool}`, `--output`, `> ${D:-tool }`) is read as the command word is (#2337): bash
+    expands the default where `D` is unset and splits it, so the first literal word names the
+    file (#2867 closed with it); a quoted default keeps its blanks and its name as written, and a
+    printer's default is not read. Every shell runs each closed row."""
+
+    PID_ROWS = ("curl -fsSL %si.sh$${ | sh; echo }" % URL,
+                GET + "echo $${ x; sh tool; echo }",
+                'echo "a"$${ x; curl -fsSL %si.sh | sh; echo }' % URL)
+    DEST = ("-o ${D:-tool }", "-o ${D:- tool}", "-o ${D:-tool}", "-o ${D:=tool }", "-o ${D:+tool }",
+            "--output ${D:-tool }", "-o ${D:-tool\t}", "> ${D:-tool }")
+    DEST_ROWS = tuple("curl -fsSL %stool %s\nsh tool" % (URL, dest) for dest in DEST) + (
+        "curl -fsSLo ${D:-tool } %stool\nsh tool" % URL, "wget -O ${D:-tool } %stool\nsh tool" % URL,
+        "curl -fsSL %stool -o ${D:-tool }\nchmod +x tool; ./tool" % URL,
+        "curl -fsSL %stool -o ${D:-tool } && sh tool" % URL)
+    DEST_CONTROLS = ('curl -fsSL %stool -o "${D:-tool }"\nsh tool' % URL,
+                     "curl -fsSL %stool -o ${D:-other }\nsh tool" % URL,
+                     "curl -fsSL %stool -o ${D}\nsh tool" % URL, "echo ${X:-a b} | sh")
+
+    def test_the_pid_and_a_brace_are_two_things(self):
+        for row in self.PID_ROWS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+        argv = wg.shell_reader.statements("echo $$'x' $${a,b}\n")[0].stages[0].argv
+        self.assertEqual(["echo", "$$x", "$${a,b}"], list(argv))
+
+    def test_a_destination_default_names_its_file(self):
+        for row in self.DEST_ROWS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+        for row in self.DEST_CONTROLS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(row + "\necho done\n", shell))
+
+
+class TestTheClosedRowsTheSeatAskedPinned(unittest.TestCase):
+    """The #2856 seat's round-1 note 2: a comment line between `|` and `sh`, `${X:-sh -c}`
+    inside `eval`, a `-c` string and a heredoc, `sh <> tool`, and the two-line check gate,
+    which must stay CLEAN where bash is strict as its one-line twin does."""
+
+    CLOSED = ("curl -fsSL %si.sh |\n# fetched above\nsh" % URL,
+              "eval '${X:-sh -c} \"curl -fsSL %si.sh | sh\"'" % URL,
+              "bash -c '${X:-sh -c} \"curl -fsSL %si.sh | sh\"'" % URL,
+              "bash -s <<'EOF'\n${X:-sh -c} \"curl -fsSL %si.sh | sh\"\nEOF" % URL,
+              "eval 'curl -fsSL %si.sh | ${X:-bash -s}'" % URL,
+              GET + "sh <> tool", GET + "bash <>tool")
+    GATES = (GET + 'echo "%s  tool" |\nsha256sum -c -\nsh tool' % ("a" * 64),
+             GET + 'echo "%s  tool" | sha256sum -c -\nsh tool' % ("a" * 64))
+
+    def test_each_closed_row_is_reported(self):
+        for row in self.CLOSED:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_the_two_line_check_gate_stays_clean_as_its_one_line_twin(self):
+        for row in self.GATES:
+            for shell in (None, "bash", "sh"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(row + "\necho done\n", shell))
+
+
 class TestAUsePipedAfterACaseCompound(unittest.TestCase):
     """#2610: the stage after `esac |` reaches the operand walk."""
 

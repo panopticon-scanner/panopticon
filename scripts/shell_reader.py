@@ -183,6 +183,7 @@ def _split(text, context):
     # of `^(x|y)$`, and ending it at that `|` left the `)` closing a group
     # nothing had opened -- the unbalanced count #2334 reads as a lost list.
     cond, at_head = 0, True
+    scanned = 0                     # past every `${` whose blank-free expansion was scanned
     # `! { ... }`: bash negates the GROUP's status, and errexit is off for every command inside
     # a negated compound, so each statement the group holds is read under the `!` (#2664, the
     # fix round: the `{`-ends-its-statement step above stranded the `!` on `{` alone). One
@@ -235,6 +236,12 @@ def _split(text, context):
                 quote = None
             i += 1
             continue
+        if text.startswith("$$", i):
+            # Bash's PID, read as the pair before anything the second `$` could open: `$${`
+            # is the PID and a brace, `$$'x'` the PID and a quote (#2756 fix round, B1).
+            buf.append("$$")
+            i += 2
+            continue
         if ch in "'\"" or text.startswith("$'", i):
             quote, opened = text[i:i + 2] if ch == "$" else ch, len(buf)
             buf.append(quote)
@@ -245,8 +252,12 @@ def _split(text, context):
             buf.append(text[i + 1])
             i += 2
             continue
-        if text.startswith("${", i):
+        if text.startswith("${", i) and i >= scanned:
             end = _expansion_end(text, i + 2)
+            # A blank-free expansion is read on character by character, so a `${` nested in
+            # it is not scanned to the same end again (#2756 fix round, B3): once the outer
+            # one is known to hold no blank, so is every one inside it.
+            scanned = end or scanned
             if end and any(c.isspace() for c in text[i:end]):
                 # An unquoted `${X:-bash -s}` is one word to the reader as to bash, which
                 # expands it whole and only then splits the words (#2731): its blanks are
@@ -534,6 +545,11 @@ def _stage(text, context):
                     reads_body(number, None)
                     continue
                 op = "&>"                     # unnumbered >&file
+            default = None if getattr(word, "kept", False) else _DEFAULTS.fullmatch(word)
+            if default and default[1].split():
+                # `> ${D:-tool }`: the file an unquoted default names, as `_command_result`
+                # reads a fetcher's `-o ${D:-tool }` (#2756 fix round, B2; #2867).
+                word = Defaulted(default[1].split()[0])
             if op in ("<", "<>", "<<<"):    # `<>` opens the file for reading too (#2657)
                 spelled = op == "<<<" and entry and entry[0] == "heredoc"
                 word = entry[1][0] if spelled else word     # `lex` spelled it
