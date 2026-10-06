@@ -107,8 +107,7 @@ def scripts(argv):
     out = []
     for word in _program_words(argv):
         script = _script(word)
-        if (script is not None and shell and not isinstance(script, Opaque)   # an Opaque is never credited
-                and not _all_expansion(script) and not _sure_string(argv, word)):
+        if script is not None and shell and not _sure_string(argv, word):
             script = Handed(script)
         if script is not None:
             out.append(script)
@@ -528,7 +527,7 @@ def _options(argv, depth):
             # word after it is the FILE only where it is literal or one word: one that may vanish
             # (`X=; bash - $X`, `bash - "$@"`) ends the options as `--` does (round 7).
             if token == "-" and shell and options and not parameters and at < len(argv) and _run(argv)[1] > at - 1:
-                if _literal(argv[at]) or _one_word(argv[at]) or _hands_file(argv[at]):
+                if _literal(argv[at]) or _one_word(argv[at]):
                     return None, None
                 options = False
                 continue

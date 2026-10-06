@@ -76,9 +76,9 @@ SHELL_OPTION_NAMES = SET_OPTION_NAMES + ("interactive", "stdin", "debug")
 LONG_VALUE_OPTIONS = ("--rcfile", "--init-file")
 LONG_EXITS = ("--help", "--version", "--dump-strings", "--dump-po-strings", "--wordexp")
 # `--pretty-print` (5.2) prints the program bash reads from stdin or a FILE and runs none of it, and
-# 3.2 refuses it, so the stdin walk reads it as running nothing; a `-c` string after it still runs
-# under 5.2 (`bash --pretty-print -c P` runs `P`, both measured, #2858 round 7), so no string reader
-# refuses it.
+# 3.2 refuses it, so the stdin walk reads it as running nothing -- unless a later word may make the
+# shell interactive, which 5.2 obeys over it (`_never_interactive`, round 8); a `-c` string after it
+# still runs under 5.2 (`bash --pretty-print -c P` runs `P`, round 7), so no string reader refuses it.
 LONG_PRINTED = ("--pretty-print",)
 LONG_OPTIONS = ("--debug", "--debugger", "--login", "--noediting", "--noprofile", "--norc",
                 "--posix", "--pretty-print", "--protected", "--restricted", "--verbose") + LONG_EXITS
@@ -192,9 +192,20 @@ def _long_word(argv, at):
     word = argv[at]
     if name is None and not (type(word) is str and word[:2] in ("--", "++")):
         return None
-    if at < _run(argv)[1] and (_refused_long(argv, at) or name in LONG_PRINTED):  # sure before `$X`
-        return "void"
+    if at < _run(argv)[1] and (_refused_long(argv, at) or name in LONG_PRINTED and _never_interactive(argv, at)):
+        return "void"                           # sure before `$X`
     return "file" if name in LONG_VALUE_OPTIONS else "on"
+
+
+def _never_interactive(argv, at):
+    """Whether no word after `argv[at]` in the option run may make the shell interactive, which turns
+    `--pretty-print` off (bash 5.2 runs the heredoc under `-i`, #2858 round 8): the run holds no
+    word that may expand, and no later `-` cluster carries an `i` (`-i`, `-il`, `-si`; `+i` turns
+    it off). Sure only then -- an allowlist, as every clearing rule here is."""
+    _, expansion, _, end = _run(argv)
+    return expansion >= len(argv) and not any(
+        word[:1] == "-" and word[1:2] != "-" and "i" in word[1:] and not long_option(argv, k)
+        for k, word in enumerate(argv[at + 1:end], start=at + 1))
 
 
 def _runs_nothing(argv, at):
@@ -359,17 +370,24 @@ def _value_after_dash_c(argv, at):
     `Y=-e` run `P`, measured; #2858 round 7), and it stands where the shell reads its options."""
     found = _past_options(argv, at)
     k = next((i for i in range(at + 1, len(argv)) if found and argv[i] is found[0]), None)
-    if k is None or argv[k - 1] in ("-", "--") or not _value(argv[k]):
+    if k is None or not _value(argv[k]):      # after `-c --` too: it may vanish (round 8)
         return None
     return None if shell_reader.has_substitution(argv[k]) else k
 
 
+# The quoted forms proven to be exactly one word (#2858 round 8, an allowlist): text, `"$X"`,
+# `"${X}"`, `"$1"`, `"$*"`, `"${A[*]}"`, `"$#"` and kin, and `"${X:-…}"`/`"${X:=…}"` whose default
+# is text or such a `$Y`. Anything else -- `@`, `${!X}` (with `X=@`, `"$@"`), `${#X}`, `${X%…}` -- is not.
+_ONE_WORD = re.compile(r"(?:[^$`\\]|\$(?:[A-Za-z_]\w*|[0-9#?$*!-])|\$\{(?:[A-Za-z_]\w*(?:\[\*\])?|[0-9]+|[*#?])\}"
+                       r"|\$\{[A-Za-z_]\w*:?[-=](?:[^$`\\{}!@]|\$[A-Za-z_]\w*|\$\{[A-Za-z_]\w*\})*\})*")
+
+
 def _one_word(word):
-    """Whether `word` is a quoted expansion that is always exactly ONE word (#2858 round 7): every `$`
-    of it quoted (`shell_reader.kept`) and no `@` in it -- `"$X"`, `"$*"`, `"${A[*]}"`, `"${X:-a}"`.
-    `"$@"`, `"${A[@]}"`, `"${@:1}"`, `"${!A[@]}"` and `"${A[@]:-}"` may be no word or several, so
-    they are expansions like `$X`: `bash --rcfile "$@" -nor -c P` runs `P` with no parameters."""
-    return bool(getattr(word, "kept", False)) and "@" not in str(word)
+    """Whether `word` is a quoted expansion that is always exactly ONE word (#2858 rounds 7-8): every
+    `$` of it quoted (`shell_reader.kept`) and nothing in it but forms `_ONE_WORD` allows. `"$@"`,
+    `"${A[@]}"` and `"${!X}"` may be no word or several, and an unknown form is read as they are: as
+    an expansion like `$X` (`bash --rcfile "$@" -nor -c P` runs `P` with no parameters)."""
+    return bool(getattr(word, "kept", False)) and bool(_ONE_WORD.fullmatch(str(word)))
 
 
 def _literal(word):

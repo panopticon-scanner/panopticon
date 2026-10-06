@@ -41,41 +41,46 @@ evidence exposed.
   unchanged. A word that may EXPAND -- an option word, a long option's FILE or an `-o`/`-O` name
   (`$X`, `${X:-}`, `$(true)`) -- may vanish, so the next word is the FILE (`X=; bash --rcfile $X
   --version <<'EOF'` runs the heredoc), or spell `+n`, a `+o` name or `--rcfile` itself (`X=+n; bash
-  -n $X -s`, `X=--rcfile; bash $X -K -s` run it); a quoted expansion that is always one word
-  (`"$X"`, `"$*"`, `"${A[*]}"`) never vanishes, so as a long option's FILE it is that FILE (`X=;
-  bash --rcfile "$X" --version` runs nothing), where an `@` form (`"$@"`, `"${A[@]}"`, `"${@:1}"`)
-  may be no word or several and is an expansion like `$X` (`bash --rcfile "$@" -nor -c P` runs `P`).
-  Such a word holds the leading run of long options, as bash does, and nothing at or after it is
-  sure -- no refusal, exit or noexec there clears, a `-c` cluster after it leaves the heredoc the
-  program (`X=-s; sh $X -c true` runs it under dash), and so does a lone `-` (`X=-s; bash $X - -c
-  true` runs it) -- and no check in the body is credited (`X=noexec; bash -o $X -s` ran the use past
-  a check never read). The `-c` string is looked for in every reading of such a word -- gone,
-  itself, a long option taking a FILE, a short option -- each read as written, so a refusal or an
-  exit holds within its reading alone (`X=; bash --rcfile $X -nor -c P` runs `P`, `-nor` the rc
-  file; `X=-e; bash $X -rcfile P` runs `P`); in every reading an option's value is skipped before a
-  `--` ends anything (`bash -rcfile -- -login -c P` runs `P`, `--` the rc file). A `-c` after an
-  operand is still read, as on main, since the FILE may hand its parameters to a shell (`printf
-  'exec bash "$@"' > w.sh; bash w.sh -c P` runs `P`): past that operand every word is the FILE's
-  parameter, before the cluster and after it, so nothing bash would refuse or exit on clears (`echo
-  'eval "$4"' > w.sh; bash w.sh -o pipefial -c P` and `bash w.sh -c -o - P` run `P`, as do
-  `--version`, `--help` and `--`). A `-c` string the shell is not sure to run -- found past an
-  operand, after a word that may expand, or under `-n`, `-o noexec` or `-D` -- is read for what it
-  runs, and no check in it is credited (`bash /dev/null -- -c '<check>'`, `X=-s; bash $X -- -c
-  '<check>'` and `bash -n -c '<check>'` ran the use past a check that never ran); `bash -c
-  '<check>'` keeps its credit. `--pretty-print` (bash 5.2) prints a heredoc or FILE program and runs
-  none of it, and 3.2 refuses it, so the stdin walk reads it as running nothing -- a check in the
-  body counts for nothing and a use after is reported (`bash -norc -pretty-print <<'EOF'`, as on
-  main) -- while a `-c` string after it still runs under 5.2 and is read. A parameter expansion
-  right after `-c` may be an option word or vanish (`Y=-c; bash -c $Y P`, `Y=` and `Y=-e` run `P`),
-  so it stands where the shell reads its options and the words after it are weighed, as after a `$X`
-  before the cluster. The price, fail-closed: where nothing runs in any reading measured (`X=; bash
-  -e $X -login`, `X=; bash $X -version`, `X=; bash $X -c true`, `X=; bash $X - -c true`, `Y=x; bash
-  -c $Y P`, `X=x.sh; bash - $X`, and `bash --rcfile "$@" -o pipefial -c P`, which ran nothing for
-  any value measured: 1,352 rows of the round-6 seat's hunt, 307 of them CLEAN on main) the step is
-  reported, and so is a use after a check in `bash -s "$X" <<'EOF'`, in a `-c` string behind an
-  expansion in the shell's own option run (`X=-e; bash $X -c '<check>'`, `${X:+-e}`, `-O "$X"`,
-  which run the check for every value), or in a string a FILE may run (`bash w.sh -- -c '<check>'`,
-  where `w.sh` evaluates its last parameter).
+  -n $X -s`, `X=--rcfile; bash $X -K -s` run it); a quoted expansion proven to be one word -- an
+  allowlist: `"$X"`, `"${X}"`, `"$*"`, `"${A[*]}"`, `"${X:-…}"` with a one-word default -- never
+  vanishes, so as a long option's FILE it is that FILE (`X=; bash --rcfile "$X" --version` runs
+  nothing), where any other form, an `@` form (`"$@"`, `"${A[@]}"`), an indirect one (`"${!X}"`,
+  which `X=@` makes `"$@"`) or an unknown operator, may be no word or several and is an expansion
+  like `$X` (`bash --rcfile "$@" -nor -c P` runs `P`). Such a word holds the leading run of long
+  options, as bash does, and nothing at or after it is sure -- no refusal, exit or noexec there
+  clears, a `-c` cluster after it leaves the heredoc the program (`X=-s; sh $X -c true` runs it
+  under dash), and so does a lone `-` (`X=-s; bash $X - -c true` runs it) -- and no check in the
+  body is credited (`X=noexec; bash -o $X -s` ran the use past a check never read). The `-c` string
+  is looked for in every reading of such a word -- gone, itself, a long option taking a FILE, a
+  short option -- each read as written, so a refusal or an exit holds within its reading alone (`X=;
+  bash --rcfile $X -nor -c P` runs `P`, `-nor` the rc file; `X=-e; bash $X -rcfile P` runs `P`); in
+  every reading an option's value is skipped before a `--` ends anything (`bash -rcfile -- -login -c
+  P` runs `P`, `--` the rc file). A `-c` after an operand is still read, as on main, since the FILE
+  may hand its parameters to a shell (`printf 'exec bash "$@"' > w.sh; bash w.sh -c P` runs `P`):
+  past that operand every word is the FILE's parameter, before the cluster and after it, so nothing
+  bash would refuse or exit on clears (`echo 'eval "$4"' > w.sh; bash w.sh -o pipefial -c P` and
+  `bash w.sh -c -o - P` run `P`, as do `--version`, `--help` and `--`). A `-c` string the shell is
+  not sure to run -- found past an operand, after a word that may expand, or under `-n`, `-o noexec`
+  or `-D` -- is read for what it runs, and no check in it is credited (`bash /dev/null -- -c
+  '<check>'`, `X=-s; bash $X -- -c '<check>'` and `bash -n -c '<check>'` ran the use past a check
+  that never ran); `bash -c '<check>'` keeps its credit. `--pretty-print` (bash 5.2) prints a
+  heredoc or FILE program and runs none of it, and 3.2 refuses it, so the stdin walk reads it as
+  running nothing where no later word may make the shell interactive (5.2 ignores it under `-i`:
+  `bash --pretty-print -i <<'EOF'` runs the heredoc) -- a check in the body counts for nothing and a
+  use after is reported (`bash -norc -pretty-print <<'EOF'`, as on main) -- while a `-c` string
+  after it still runs under 5.2 and is read. A parameter expansion right after `-c`, or after `-c
+  --` or `-c -`, may be an option word or vanish (`Y=-c; bash -c $Y P`, `Y=` and `Y=-e` run `P`, as
+  `Y=; bash -c -- $Y P` does), so it stands where the shell reads its options and the words after it
+  are weighed, as after a `$X` before the cluster. The price, fail-closed: where nothing runs in any
+  reading measured (`X=; bash -e $X -login`, `X=; bash $X -version`, `X=; bash $X -c true`, `X=;
+  bash $X - -c true`, `Y=x; bash -c $Y P`, `X=x.sh; bash - $X`, and `bash --rcfile "$@" -o pipefial
+  -c P`, which ran nothing for any value measured: 1,352 rows of the round-6 seat's hunt, 307 of
+  them CLEAN on main in a setting it now reports, 197 in every setting; so are the forms the
+  allowlist leaves out though they are one word, `"${#@}"`, `"${X@Q}"`, `X=*; "${!X}"`, and a quoted
+  `"$(...)"` after a lone `-`) the step is reported, and so is a use after a check in `bash -s "$X"
+  <<'EOF'`, in a `-c` string behind an expansion in the shell's own option run (`X=-e; bash $X -c
+  '<check>'`, `${X:+-e}`, `-O "$X"`, which run the check for every value), or in a string a FILE may
+  run (`bash w.sh -- -c '<check>'`, where `w.sh` evaluates its last parameter).
 - **Workflow guard: a long option that prints and exits runs nothing (#2616, #2331).** `--version`,
   `--help`, `--dump-strings` and `--dump-po-strings`, in either spelling, print and exit before bash
   reads stdin or a `-c` string: `bash --version <<'EOF' CHECK EOF; USE` ran the use past a check

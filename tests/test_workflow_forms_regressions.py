@@ -536,7 +536,9 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
         # `X=-c`, `X=-e` or `X=` bash 5.2.21 and 3.2.57 run `P` (forge, both child bashes), with
         # `X=x` nothing (rc 127) -- so it stands where the shell reads its options; was [].
         self.assertEqual(["P"], forms.candidates(self.argv("sh -c $X P"))[1])
-        self.assertEqual([], forms.candidates(self.argv("sh -c -- $X P"))[1])   # after `--`, the string
+        # And after `-c --` (round 8, the round-7 seat's F3): `$X` may vanish, making `P` the string
+        # -- `X=; sh -c -- $X P` runs `P` under dash and both bashes (135648); was [], a fail-open.
+        self.assertEqual(["P"], forms.candidates(self.argv("sh -c -- $X P"))[1])
 
     def test_every_o_before_a_stdin_program_takes_a_value(self):
         # `bash -oe pipefail <<'EOF'` reads its program from the heredoc.

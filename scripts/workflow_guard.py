@@ -110,16 +110,16 @@ live, so a change that catches one fails there and edits this list.
   then reads stdin (`sh -s -c true`, #2647), and `-n`, `-o noexec` and `-D` read the body and run
   none of it, so a use after is unverified (`bash -n -s`). After a word in the option run that may
   expand nothing is sure (#2858): no refusal, exit, noexec, `-c` or lone `-` beside it clears, the
-  `-c` string is looked for in every reading of it (`"$X"` never vanishes, `"$@"` may), and no check
-  counts in the body or that string, nor in one past an operand (the FILE's) or under noexec.
-  `--pretty-print` runs no stdin program, and a `$Y` after `-c` is an option-slot value. Open: a
-  value right after `-rcfile` (`X=-c; bash -e -rcfile $X P`), past the FILE a value, a second string
-  or a later word it hands on (`X=-c; bash w.sh $X P`, `bash w.sh -c true -c P`), a FILE after `--`
-  or one reading stdin, `X=c` in a cluster (`bash -$X P`), `set -n` or `set -o noexec` in the body
-  or a string, and `$*` before a one-dash option. Behind a string an inner refusal is read on, `-O`
-  names have no table, and no refusal is read as stopping the step: a use after `bash -oo pipefail
-  -c P` is reported though the step stops. zsh runs twenty letters bash refuses and ksh `-G`, so
-  those read on; so does a word after a shell whose name is itself a word. KEPT: binding
+  `-c` string is looked for in every reading of it (a quoted form proven one word never vanishes),
+  and no check counts in the body or that string, nor in one past an operand (the FILE's) or under
+  noexec. `--pretty-print` runs no stdin program unless a later word may be `-i`, and a `$Y` after
+  `-c` or `-c --` is an option-slot value. Open: `-c $(…)`, a check under dash's `+s - FILE`, past
+  the FILE a value, a second string or a later word it hands on (`bash w.sh -c true -c P`), a FILE
+  after `--` or one reading stdin, `X=c` in a cluster (`bash -$X P`), `set -n` or `set -o noexec` in
+  the body or a string, and `$*` before a one-dash option. Behind a string an inner refusal is read
+  on, `-O` names have no table, and no refusal is read as stopping the step: a use after `bash -oo
+  pipefail -c P` is reported though the step stops. zsh runs twenty letters bash refuses and ksh
+  `-G`, so those read on; so does a word after a shell whose name is itself a word. KEPT: binding
   two spellings of one path means EVALUATING the shell, which the reader does not do by design; the
   fleet puts its variables in the URL and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
 * directories on the runner's PATH not in `workflow_operands.PATH_DIRS` (#2308), `$HOME/.cargo/bin`
@@ -233,7 +233,7 @@ live, so a change that catches one fails there and edits this list.
   weighed joined as one text); a substitution's printer the readings disagree on stays unread
   (`sh -c "$(echo 'sh\ttool')"`: `Idle` beside a reported download, though a `shell: sh` step runs
   `sh tool`), and so do a `<(…)` that is not one printer (`sh <(echo a; echo 'sh tool')`) or that a
-  shell reads past `--`, past a long option that takes a value (`--rcfile f <(…)`, the same gap) or
+  shell reads past `--` or a lone `-`, past a long option that takes a value (`--rcfile f <(…)`) or
   on its stdin (`bash -- <(…)`, `bash < <(…)`), and an EXPANDING heredoc a `cat` prints into a
   `$(…)` (`eval "$(cat <<EOF … EOF)"`).
   A substitution heredoc body holding an apostrophe, unbalanced double quote, backquote, or bare

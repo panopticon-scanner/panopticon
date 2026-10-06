@@ -644,6 +644,67 @@ class TestAQuotedExpansionThatMayBeNoWordOrMany(unittest.TestCase):
         self.assertEqual([], defects("X=x.sh\n" + body('bash - "$X"', PIPE)))
 
 
+class TestAClearingRuleFiresOnlyOnSureInput(unittest.TestCase):
+    """#2858 round 8, the coordinator's ruling on the round-7 seat: a rule that CLEARS fires only on
+    input proven sure -- an allowlist, never a denylist. `--pretty-print` voids the stdin program
+    only where nothing later in the option run may make the shell interactive; `_one_word` allows
+    only the quoted forms proven to be one word. Truth from the round-7 seat's hunt (row ids) and
+    direct probes (z, w, a, n): touch marks under bash 5.2.21 and 3.2.57, `sh` as dash and as each
+    bash."""
+
+    def test_pretty_print_runs_the_heredoc_where_the_shell_may_be_interactive(self):
+        # P on 5.2 (b5, sh5; 3.2 refuses the option, rc 2): bash 5.2 ignores `--pretty-print` under
+        # `-i` and runs the heredoc -- 121640 (z01), z12 `-il`, z13 `-s -i`, w18 `-ri`, w19 `-o posix
+        # -i`, z06 `sh` where sh is bash 5.2, w01 `sudo`, and an `-i` an expansion may spell (z03,
+        # 121700).
+        for script in (body("bash --pretty-print -i", PIPE), body("bash --pretty-print -il", PIPE),
+                       body("bash --pretty-print -s -i", PIPE), body("bash --pretty-print -ri", PIPE),
+                       body("bash --pretty-print -o posix -i", PIPE), body("sh --pretty-print -i", PIPE),
+                       body("sudo bash --pretty-print -i", PIPE), "X=-i\n" + body("bash --pretty-print $X", PIPE),
+                       "Y=-i\n" + body('bash --pretty-print "$Y"', PIPE)):
+            with self.subTest(script=script):
+                self.assertTrue(any(STREAM in why for why in defects(script)), script)
+        # +chk, rc 1 on 5.2 (z19, 121641): the check runs and stops the step -- credited, as on main.
+        with self.subTest(row="z19"):
+            self.assertEqual([], defects(GET + body("bash --pretty-print -i", CHECK) + USE))
+        # -- (121638 rc 0/2, 121654 `+i` rc 0/2, z02 rc 2): nothing interactive after it, or the
+        # option refused after a short one, and the heredoc never runs.
+        for script in (body("bash --pretty-print", PIPE), body("bash --pretty-print +i", PIPE),
+                       body("bash -i --pretty-print", PIPE)):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+
+    def test_one_word_is_an_allowlist(self):
+        # P x4 (120923, 120949, 127438, a11): `"${!X}"` with `X=@` or `X='A[@]'` is no word or
+        # several, as `"$@"` is, and so is any form the allowlist does not name.
+        for script in ("X=@\nset --\nbash --rcfile \"${!X}\" -nor -c '%s'\n" % PIPE,
+                       "A=()\nX='A[@]'\nbash --rcfile \"${!X}\" -nor -c '%s'\n" % PIPE,
+                       "X=@\nset --\n" + body('bash - "${!X}"', PIPE),
+                       "X=@\nset --\n" + body('bash --rcfile "${!X%x}" -K', PIPE)):
+            with self.subTest(script=script):
+                self.assertTrue(any(STREAM in why for why in defects(script)), script)
+        # T x4 (z09): `-n` lands in the run, the check never runs, the use does.
+        with self.subTest(row="z09"):
+            self.assertTrue(any("tool" in why for why in defects(
+                "X=@\nset -- /dev/null -n\n" + GET + body('bash --rcfile "${!X}"', CHECK) + USE)))
+        # The price, fail-closed (z29 rc 2, a03 rc 127, n11 rc 127): a form outside the allowlist,
+        # or a quoted `"$(...)"` after a lone `-`, is read as `$X` even where it is one word.
+        for script in ("X=*\nset --\n" + body('bash --rcfile "${!X}" -K', PIPE), "set --\n" + body('bash - "${#@}"', PIPE),
+                       body('bash - "$(true)"', PIPE)):
+            with self.subTest(script=script):
+                self.assertTrue(defects(script), script)
+
+    def test_a_literal_after_a_lone_dash_is_the_file_and_a_value_after_dash_c_dash_dash_may_vanish(self):
+        # -- (127346, rc 127 x4): a literal `-` after a lone `-` is the FILE named `-`.
+        with self.subTest(row="127346"):
+            self.assertEqual([], defects(body("bash - -", PIPE)))
+        # P x4 (135648, 131856, 132172; main CLEAN too): with `Y` empty the next word is the string.
+        for script in ("Y=\nsh -c -- $Y '%s'\n" % PIPE, "Y=\nbash -c -- $Y '%s'\n" % PIPE,
+                       "Y=\nbash -c - $Y '%s'\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertTrue(defects(script), script)
+
+
 class TestAnOptionValueTheShellRefuses(unittest.TestCase):
     """#2606 (and #2603's letter half in the same walk): a measured shell exits 2 before it reads
     stdin at a `-o` name outside its table, at a `-o` value that is no name at all, and at a
