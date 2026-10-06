@@ -7,6 +7,15 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader reads whole what every shell reads whole (#2756, #2731, #2657; #2733,
+  #2608).** A line ending in `|` continues on the next (`curl … |` ⏎ `sh` ran the pipeline and
+  read CLEAN, behind `eval` and in a printed or heredoc text too); an unquoted `${X:-bash -s}` is
+  one expansion to the reader as to bash, which splits its words only after expanding it, so the
+  command layer reads a shell default's words as bash does (`${X:-bash -s} <<'EOF'` and
+  `${X:-sh -c} '…'` ran the download and read CLEAN; a quoted default keeps its fail-closed
+  reading); and `<>` redirects standard input as `<` does, so `bash -s <<'EOF' <>/dev/null` no
+  longer credits a check no shell reads. `&&` at a line's end, `${X:-bash} -s`, and `<>` before
+  the heredoc or on another descriptor read as they did.
 - **Workflow guard reads a function header in every spelling bash accepts (#2664, #2608).**
   `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after `then`, `do` or an opened `{`
   ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN: the reader knew a header only
