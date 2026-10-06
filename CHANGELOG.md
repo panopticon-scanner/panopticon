@@ -35,6 +35,18 @@ evidence exposed.
   are, a subshell body carries nothing); and the header test at every `(` had joined and
   split the whole buffer before the match, about x4 per doubling of one `(( … ))` statement,
   now computed only behind a match.
+- **Workflow guard: what `eval`'s words and a `-c` string hand on (#2673, #2683, #2684, #2764,
+  #2669, #2331).** `eval 'curl … |' 'sh'` ran the pipe and read CLEAN: `eval` joins its words before
+  it runs them, and the guard read them one by one. Where a word begins or ends with an operator the
+  words are now joined, with each word's lifted text kept, so a statement split across them reads as
+  written (a join the reader refuses is refused on this path as on the stdin walk's, one answer);
+  elsewhere they read one by one as they did. The stdin walk's own join renders a word holding a
+  `$(…)` instead of dropping it -- `eval "sh $(echo -s)"` is `sh -s`, `"sh $(cat f)"` a `sh`
+  handed a word that may vanish, `"$(echo 'sh')"` the shell `sh` -- so the heredoc each of them
+  reads is reported; a FILE program beside a heredoc (`bash <(echo 'sh') <<'EOF'`) hands the body
+  to the shell the FILE names; and a `-c` string holding a `<(…)` beside a `$(…)` is a script
+  after all, the file rendered as an operand (`bash -c "sh $(echo tool) <(echo x)"` ran `tool`
+  and read CLEAN). #2685 is already closed on main and pinned.
 - **Workflow guard: the shell option grammar moves to `scripts/workflow_options.py` (#2331).** A
   pure move out of `scripts/workflow_programs.py`, which stood at the 700-line ceiling: the option
   letter and name tables, the refusal readers (`_refused`, `_refused_name`), `_past_options` and the
