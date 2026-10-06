@@ -2788,6 +2788,46 @@ class TestALiveExpansionBesideAnEscape(unittest.TestCase):
                 self.assertIn("in this guard's conservative reading", found[0][1])
 
 
+class TestAFunctionHeaderGluedOrAfterAKeyword(unittest.TestCase):
+    """#2664 (MEDIUM): `f(){ curl … | sh; }` ⏎ `f` read CLEAN while every shell runs the pipe
+    -- a header written `f(){`, `f ( ) {`, or after `then`/`do`/`{` was read as a command and
+    the body's first command as its arguments. Bash evidence per row: each step from its own
+    file under bash 5.2.21 and 3.2.57 with `-e` and `-eo pipefail`, dash with `-e`, and 5.2.21
+    with `sh` = dash (b5 b3 dash gh), a mark-first `curl` stub whose payload marks when it
+    RUNS."""
+
+    STREAM = "hands %si.sh straight to `sh`" % URL
+
+    def test_the_six_rows_of_the_issue_are_reported(self):
+        # FR FR FR FR each; `main` CLEAN (the fail-open).
+        for script in ("f(){ %s; }\nf\n" % PIPE, "f ( ) { %s; }\nf\n" % PIPE,
+                       "if true; then f() { %s; }; fi\nf\n" % PIPE,
+                       "{ f() { %s; }; }\nf\n" % PIPE,
+                       "for i in 1; do f() { %s; }; done\nf\n" % PIPE):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(self.STREAM), found)
+        found = defects("g(){ %s; chmod +x tool; ./tool; }\ng\n" % GET.rstrip("\n"))
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("fetches %stool -> tool" % URL), found)
+
+    def test_the_controls_read_as_they_did(self):
+        # Reported on `main` too (FR x4; `function` is bash's, dash refuses it: -- rc2).
+        for script in ("f() { %s; }\nf\n" % PIPE, "function f { %s; }\nf\n" % PIPE,
+                       "f() ( %s; )\nf\n" % PIPE, "f()\n{ %s; }\nf\n" % PIPE,
+                       "install(){\n%s\n}\ninstall\n" % PIPE):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(self.STREAM), found)
+        # CLEAN: a body that runs nothing fetched (F- x4, -- x4).
+        for script in ("f(){ echo hi; }\nf\ncurl -fsSL %si.sh -o x.sh\n" % URL,
+                       "f ( ) { echo hi; }\nf\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+
+
 class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
     """#2342 handed the reader bash's text, so `eval "sh \\$(echo tool)"` is
     `sh $(echo tool)`: a shell whose only operand is a value whose OUTPUT

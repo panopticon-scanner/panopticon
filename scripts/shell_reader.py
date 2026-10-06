@@ -109,6 +109,10 @@ Statement = collections.namedtuple("Statement", "stages separator")
 # The builtins whose words bash reads as assignments too: `declare -a a=(1 2)`.
 _DECLARATIONS = ("declare", "typeset", "local", "export", "readonly")
 _REDIRECT = re.compile(r"<<<|&>>|&>|>>|>\||>&|<&|>|<")
+# The parentheses of a function header, as bash and dash read them: `()` or `( )`, and a
+# group's `{` with a header after it on the same line (#2664).
+_HEADER = re.compile(r"\([ \t]*\)")
+_BRACED_HEADER = re.compile(r"\{[ \t]+(?:function[ \t]+)?[A-Za-z_][A-Za-z0-9_-]*[ \t]*\([ \t]*\)")
 _NESTED_CASE = re.compile(r"\s*case(?:\s|$)")
 # Put in place of the backslash of a `\$` or `` \` `` inside "..." (`_split`),
 # which bash drops and shlex keeps (#2342): a private-use character, as `MARK`.
@@ -237,10 +241,19 @@ def _split(text, context):
                 cond, i = cond + 1, i + 1
                 buf.append(ch)
                 continue
-            # Preserve function headers: `f()` and `f ()` are not subshells.
-            if text[i:i + 2] == "()" and _NAME.fullmatch("".join(buf).strip()):
-                buf.append("()")
-                i += 2
+            # Preserve function headers: `f()`, `f ()` and `f ( )` are not subshells, nor
+            # after a keyword or an opened `{` (`then f() {`, `{ f() {`), and a `{` glued to
+            # one (`f(){`) is the body's own word, so the body's first command on the
+            # header's line is read as a command and not as the header's argument (#2664).
+            header = _HEADER.match(text, i)
+            words = "".join(buf).split()
+            if header and words and _NAME.fullmatch(words[-1]) and all(
+                    w in KEYWORDS for w in words[:-1]):
+                if words[-2:-1] != ["function"]:
+                    buf.append("()")        # after `function NAME` bash takes them as nothing
+                i = header.end()
+                if i < n and not text[i].isspace():
+                    text, n = text[:i] + " " + text[i:], n + 1
                 continue
             buf.append(" " + groups[0] + " ")
             word_start, redirect_target = len(buf), False
@@ -319,6 +332,13 @@ def _split(text, context):
             if arm_end and cases:
                 cases[-1] = "pattern"
             i += len(arm_end) if arm_end else len(separator)
+            continue
+        if ch == "{" and at_head and _BRACED_HEADER.match(text, i):
+            # `{ f() {`: the group's `{` is a statement of its own, as it is on a line of
+            # its own, so the first brace after the name is the body's (#2664).
+            buf.append(ch)
+            end_statement(";")
+            i += 1
             continue
         if ch.isspace() and len(buf) > word_start:
             redirect_target = False

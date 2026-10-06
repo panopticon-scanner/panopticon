@@ -756,10 +756,13 @@ class TestTheTableAtAStatement(unittest.TestCase):
                        'T=cuda_1.run; coproc { T=x; sh "$T"; }\nwait; sh "$T"',
                        'T=cuda_1.run; coproc W { T=x; }\nwait; sh "$T"',
                        'T=cuda_1.run; { f() { :; }; T=x; } &\nwait; sh "$T"',
-                       'T=cuda_1.run; {\n  f() {\n    :\n  }\n  T=x\n} &\nwait; sh "$T"',
-                       'T=cuda_1.run; { f() { :; T=x; }; }; sh "$T"'):
+                       'T=cuda_1.run; {\n  f() {\n    :\n  }\n  T=x\n} &\nwait; sh "$T"'):
             with self.subTest(script=script):
                 self.assertEqual(["cuda_1.run", "x"], at_use(script).scalars["T"])
+        # #2664: a header after a group's `{` on its line is read as on a line of its own, so
+        # the body's `T=x` is the function's, never run here (bash runs `cuda_1.run`).
+        self.assertEqual(["cuda_1.run"],
+                         at_use('T=cuda_1.run; { f() { :; T=x; }; }; sh "$T"').scalars["T"])
         self.assertEqual(["$arr", ""], at_use(z04).scalars["arr"])
         # A use in the same child sees what the child assigned before it as its own.
         for script in ('T=a; { T=x; sh "$T"; } &', 'T=a\n(\n  T=x\n  sh "$T"\n)',
@@ -788,13 +791,14 @@ class TestTheTableAtAStatement(unittest.TestCase):
                        'T=cuda_1.run; { echo {; T=x; }; sh "$T"',
                        # A list is not followed past a compound command (a limit).
                        'T=cuda_1.run; T=x && if c; then :; fi &\nwait; sh "$T"',
-                       'T=cuda_1.run; T=x && { :; } &\nwait; sh "$T"',
-                       # v02: a block nested in a one-line function's body inside a
-                       # forked group is taken to close that body (a limit: bash
-                       # runs `cuda_1.run`).
-                       'T=cuda_1.run; { f() { { :; }; }; T=x; } &\nwait; sh "$T"'):
+                       'T=cuda_1.run; T=x && { :; } &\nwait; sh "$T"'):
             with self.subTest(script=script):
                 self.assertEqual({"T": ["x"]}, at_use(script).scalars)
+        # v02: a block nested in a one-line function's body inside a forked group closed that
+        # body until #2664 read the group's `{` as its own statement; bash runs `cuda_1.run`,
+        # and the forked group leaves the step's `T` unsure.
+        self.assertEqual(["cuda_1.run", "x"], at_use(
+            'T=cuda_1.run; { f() { { :; }; }; T=x; } &\nwait; sh "$T"').scalars["T"])
         self.assertEqual({"T": ["a", "b", "c"], "U": ["d"]},
                          table("T=a; ( T=b; T=c; ); U=d").scalars)
 
@@ -905,10 +909,10 @@ class TestTheTableAtAStatement(unittest.TestCase):
                          ["cuda_1.run", "x"],
                      'T=cuda_1.run\nfunction g()\n{\n  T=x\n}\ng\nsh "$T"': ["cuda_1.run"]})
         # Limits: b2p, a one-line `function f {` after a `{`, is read to the group's
-        # `}` (bash runs `x`); k3, a `g ( )` header, is no definition (bash runs
-        # `cuda_1.run`).
+        # `}` (bash runs `x`). k3, a `g ( )` header, was no definition until #2664
+        # read it as `g ()`: bash runs `cuda_1.run`, and so does the table now.
         rows.update({'T=cuda_1.run; { function f { :; }; T=x; }\nsh "$T"': ["cuda_1.run"],
-                     'T=cuda_1.run\ng ( )\n{\n  T=x\n}\nsh "$T"': ["x"]})
+                     'T=cuda_1.run\ng ( )\n{\n  T=x\n}\nsh "$T"': ["cuda_1.run"]})
         for script, expected in rows.items():
             with self.subTest(script=script):
                 self.assertEqual(expected, at_use(script).scalars["T"])

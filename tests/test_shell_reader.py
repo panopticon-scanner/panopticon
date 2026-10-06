@@ -1561,3 +1561,49 @@ class TestTheHeredocIndexIsOneImplementation(unittest.TestCase):
 
     def test_shell_lex_lines_is_shell_heredoc_lines(self):
         self.assertIs(shell_lex._Lines, shell_heredoc._Lines)
+
+
+class TestAFunctionHeaderInEverySpellingBashAccepts(unittest.TestCase):
+    """#2664: a header written `f(){`, `f ( ) {`, or after `then`/`do`/`{` was read as a
+    command and the body's first command, on the same line, as its arguments -- every shell
+    runs `f(){ curl … | sh; }` ⏎ `f` and the guard read it CLEAN. The splitter now reads the
+    parentheses as a header wherever the words before them are keywords, and parts a `{` glued
+    to it, so the body's first command is a command of its own."""
+
+    def first(self, script):
+        return [str(w) for w in shell_reader.statements(script)[0].stages[0].argv]
+
+    def test_the_header_and_the_body_part(self):
+        for script, argv in (("f(){ x; }", ["f()", "{", "x"]),
+                             ("f ( ) { x; }", ["f", "()", "{", "x"]),
+                             ("f  (  ) { x; }", ["f", "()", "{", "x"]),
+                             ("install(){\nx\n}\n", ["install()", "{"])):
+            with self.subTest(script=script):
+                self.assertEqual(argv, self.first(script))
+        # After `then` and `do` the header is the second statement's; after a group's `{` it
+        # is too, the `{` a statement of its own as on a line of its own, so the first brace
+        # after the name is the body's (`workflow_function_calls._function_scope`).
+        for script, argv in (("if true; then f() { x; }; fi", ["then", "f()", "{", "x"]),
+                             ("for i in 1; do f(){ x; }; done", ["do", "f()", "{", "x"]),
+                             ("{ f() { x; }; }", ["f()", "{", "x"]),
+                             ("{ function f() { x; }; }", ["function", "f", "{", "x"])):
+            with self.subTest(script=script):
+                self.assertEqual(argv, [str(w) for w in
+                                        shell_reader.statements(script)[1].stages[0].argv])
+
+    def test_the_spellings_already_read_are_as_they_were(self):
+        for script, argv in (("f() { x; }", ["f()", "{", "x"]),
+                             ("f () { x; }", ["f", "()", "{", "x"]),
+                             ("function f { x; }", ["function", "f", "{", "x"]),
+                             ("f() ( x; )", ["f()", "x"]),
+                             ("f()\n{ x; }", ["f()"])):
+            with self.subTest(script=script):
+                self.assertEqual(argv, self.first(script))
+
+    def test_parentheses_that_are_no_header_stay_a_subshell(self):
+        # A name after a non-keyword word opens a subshell as before, and `( )` after none.
+        for script in ("echo f ( ) { x; }", "x=1 f() { x; }"):
+            with self.subTest(script=script):
+                stage = shell_reader.statements(script)[0].stages[0]
+                self.assertEqual(1, stage.group_open, stage)
+        self.assertEqual(["x"], [str(w) for w in shell_reader.statements("( x )")[0].stages[0].argv])
