@@ -1740,3 +1740,50 @@ class TestTheStdoutAliasTable(unittest.TestCase):
                                  ("echo hi 2>&1", True)):  # fd 1 feeds a next stage by default, as `stdout_to_pipe` says
             with self.subTest(script=script):
                 self.assertEqual(expected, shell_reader.statements(script)[0].stages[0].stderr_to_pipe)
+
+
+class TestAWordKeepsWhatStoodQuoted(unittest.TestCase):
+    """The quoting half of #2593, #2747 and #2769: a word whose quoting changes bash's reading of
+    it -- a `$`, a lifted substitution, a blank, a glob or brace character inside quotes or
+    behind a backslash -- carries `quoted_spans`, the ranges of its text that stood so, beside
+    everything it always carried; `bare` and `quoted_marker` answer the two questions the issues
+    ask. Additive: a plainly quoted literal name (`"sh"`) stays the `str` it was, and no verdict
+    moves until `workflow_programs` and `workflow_values` opt in."""
+
+    def word(self, script, at=-1):
+        return shell_reader.statements(script)[0].stages[0].argv[at]
+
+    def test_a_quoted_value_or_glob_is_not_bare_and_the_bare_twin_is(self):
+        for script, spans in (('sh "$X"', [(0, 2)]), ("sh '$T'", [(0, 2)]), ('sh "$p"', [(0, 2)]),
+                              ('sh "*.sh"', [(0, 4)]), ('sh "a b"', [(0, 3)]), ("sh a\\ b", [(1, 2)]),
+                              ("sh $'a b'", [(0, 3)]), ('sh "${X:-a b}"', [(0, 9)]),
+                              ('sh x"$Y"z', [(1, 3)])):
+            with self.subTest(script=script):
+                word = self.word(script)
+                self.assertEqual(spans, word.quoted_spans)
+                self.assertFalse(shell_reader.bare(word))
+        for script in ("sh $X", "sh $p", "sh *.sh", "sh a", '"sh" tool', "sh 'tool'"):
+            with self.subTest(script=script):
+                self.assertTrue(shell_reader.bare(self.word(script)))
+        # What the word always carried stays: `kept` (#2472), `quoted` (#2480), a pattern's lead.
+        self.assertTrue(getattr(self.word('sh "$X"'), "kept", False))
+        self.assertTrue(getattr(self.word('"X=1" sh', 0), "quoted", False))
+        self.assertIsInstance(self.word("sh *.sh"), shell_reader.Rewritten)
+        self.assertIs(type(self.word('"sh" tool', 0)), str)
+
+    def test_a_quoted_substitution_is_one_field(self):
+        quoted, bare = self.word('sh -c "$(true)"'), self.word("sh -c $(true)")
+        self.assertTrue(shell_reader.quoted_marker(quoted, next(iter(shell_reader._markers(quoted)))))
+        self.assertFalse(shell_reader.quoted_marker(bare, next(iter(shell_reader._markers(bare)))))
+        self.assertFalse(shell_reader.quoted_marker(bare, "no-such-key"))
+        mixed = self.word('sh -c "$(a)"$(b)')
+        keys = list(shell_reader._markers(mixed))
+        self.assertEqual([True, False], [shell_reader.quoted_marker(mixed, k) for k in keys])
+
+    def test_an_array_elements_quoting_travels_with_it(self):
+        argv = shell_reader.statements("a=('./cuda_*.run' x)")[0].stages[0].argv
+        elements = argv[0].elements
+        self.assertFalse(shell_reader.bare(elements[0]))
+        self.assertTrue(shell_reader.bare(elements[1]))
+        argv = shell_reader.statements('declare -a a=("my file" x)')[0].stages[0].argv
+        self.assertEqual([(0, 7)], argv[2].elements[0].quoted_spans)
