@@ -27,9 +27,11 @@ one forward pass, from the state it is in, and so does `lex`:
     here-strings   the word after a `<<<` outside `$(...)`, spelled as bash
                    hands it over, where nothing in it expands (`_string`)
 
-Two readings differ from bash. A `<<` with no terminator line below it is left as text rather
-than swallowing the rest of the script: bash runs nothing below it, so reading it as code can
-only report more. A heredoc inside `$(...)` is
+Two readings differ from bash. An unquoted `<<` with no terminator line below it is left as text
+rather than swallowing the rest of the script: bash runs nothing below it, so reading it as code
+can only report more. A quoted one outside a substitution is refused because its remaining body
+has one reading across Bash 3.2, Bash 5.2 and dash; `shell_heredoc` makes that decision. A heredoc
+inside `$(...)` is
 read in the text around it, as bash 5.2 reads it, and its marker goes with
 the substitution's text to the parse that reads it again (`shell_text.Lifted`,
 #2336). A delimiter bash has to PARSE to spell -- a `$(...)`, `${...}`,
