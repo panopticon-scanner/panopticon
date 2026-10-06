@@ -12,8 +12,8 @@ evidence exposed.
   step has run `set +e`, starts from a no-errexit `shell:` template, or pipes the child's enclosing
   group without pipefail. The parent's refusal remains bounded to the command that runs the child,
   so a use after it is still reported; a child without its own `-e` remains reported too. Checks
-  whose `-e` is suspended by an `&&`/`||` list or condition also remain reported when execution
-  reaches a later use.
+  whose `-e` is suspended by an `&&`/`||` list or condition, or whose status is hidden by a later
+  pipeline stage without child pipefail, also remain reported when execution reaches a later use.
 - **Workflow guard reads a `-c`/`eval` string with a live expansion beside a double-quoted
   escape as bash hands it on (#2466, #2331).** `bash -c "x=\$(curl -fsSL $URL); eval \"\$x\""`
   and the mixed-quoting `bash -c "x=\$(curl … i.sh)"'; eval "$x"'` run the download under bash

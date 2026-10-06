@@ -2392,6 +2392,18 @@ class TestAParentRefusalKeepsAChildScriptsReach(unittest.TestCase):
                 self.assertEqual(1, len(found), found)
                 self.assertIn("ends a group that is piped", found[0][1])
 
+    def test_a_piped_check_stays_refused_without_child_pipefail(self):
+        child = "sh -ec '%s | cat; " + self.INLINE_USE + "'"
+        for prefix, suffix, shell in (
+                ("set +e\n", "\necho done\n", None),
+                ("", "\necho done\n", "bash {0}"),
+                ("{\n", "\n} | cat\n", None),
+                ("{\n", "\n} | cat\n", "sh")):
+            with self.subTest(prefix=prefix, shell=shell):
+                found = self.job(prefix + child + suffix, shell, use="")
+                self.assertEqual(1, len(found), found)
+                self.assertIn("piped into a command whose status the pipeline takes", found[0][1])
+
     def test_an_and_or_list_suspends_the_childs_errexit(self):
         for operator in ("&&", "||"):
             child = "sh -ec '%s " + operator + " echo checked; " + self.INLINE_USE + "'"

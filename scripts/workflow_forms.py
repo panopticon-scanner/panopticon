@@ -240,7 +240,7 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
                else None)
         out.append((Unsure if stops is None else Inlined)(
             statement.stages, statement.separator, region,
-            (why, why or (None if fails[index] else _PIPED % shell))))
+            (why, why if fails[index] or type(why) is str or len(statement.stages) == 1 and why is not None else _PIPED % shell)))
     return out
 
 
