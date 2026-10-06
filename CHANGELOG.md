@@ -7,6 +7,13 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard: downloaded-use scope readers move to
+  `scripts/workflow_use_scopes.py`.** A pure move out of `scripts/workflow_uses.py`, which stood at
+  the 700-line ceiling: function ranges and removal, the compound/group walk whose assignments
+  live in another shell, and function-body bounds now live in a 159-line leaf. The old module
+  re-exports every moved name and falls to 558 lines. All 6,833 `job_defects` and
+  `fetch_exec_defects` calls made by the ten guard test families return byte-identical answers
+  before and after; no expectation moved.
 - **Workflow guard: what `eval`'s words and a `-c` string hand on (#2673, #2683, #2684, #2764,
   #2669, #2331).** `eval 'curl … |' 'sh'` ran the pipe and read CLEAN: `eval` joins its words before
   it runs them, and the guard read them one by one. Where a word begins or ends with an operator the
