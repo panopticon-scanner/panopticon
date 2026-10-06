@@ -21,6 +21,7 @@ Beside `scripts/workflow_values.py`, which is at its ceiling; imports nothing ab
 import os
 
 from shell_command import _ASSIGNMENT, _heads
+from shell_tokens import is_arm
 from shell_wrappers import WRAPPERS
 from workflow_values import emptied, record
 
@@ -28,10 +29,12 @@ _DEPTH = 8          # calls followed inside a body, in all
 
 
 def _head(argv):
-    """The word a statement's command starts with, past the keywords, assignments and
-    function header in front of it (`_heads`), or None where a wrapper stands there: `env f`
-    runs no shell function."""
+    """The word a statement's command starts with, past the keywords, assignments, function
+    header (`_heads`) and `case` arm in front of it, or None where a wrapper stands there:
+    `env f` runs no shell function."""
     rest = argv[len(list(_heads(argv))):]
+    if rest and is_arm(rest[0]):
+        rest = rest[1:]                 # `x) f;;`: the call stands behind the arm (r3 seat)
     word = str(rest[0]) if rest else ""
     return None if not word or os.path.basename(word) in WRAPPERS else word
 
@@ -42,7 +45,7 @@ def _calls(stmts, head, close):
     found = set()
     for statement in stmts[head:close + 1]:
         if len(statement.stages) == 1:
-            word = _head([str(w) for w in statement.stages[0].argv])
+            word = _head(list(statement.stages[0].argv))
             if word and not _ASSIGNMENT.match(word):
                 found.add(word)
     return found
@@ -58,8 +61,8 @@ def _carry(table, stmts, head, close):
         stage = statement.stages[-1] if statement.stages else None
         if stage is None:
             continue
-        argv = [str(word) for word in stage.argv]
-        word = _head(argv)
+        word = _head(list(stage.argv))
+        argv = [str(w) for w in stage.argv]
         name = os.path.basename(word) if word else ""
         words = [w for w in argv[argv.index(word) + 1:] if not w.startswith("-")] if word in argv else []
         if name in ("local", "declare", "typeset") and not any(
@@ -90,7 +93,7 @@ def record_called(table, stmts, position, starts):
     body calls, `_DEPTH` functions deep; a definition after the call is no function yet, and a
     subshell body reaches nothing. `starts` maps a definition's index to (name, head, close)."""
     stage = stmts[position].stages[0] if stmts[position].stages else None
-    head = _head([str(word) for word in stage.argv]) if stage else None
+    head = _head(list(stage.argv)) if stage else None
     if head is None:
         return
     defined: dict[str, list[tuple[int, int, int]]] = {}

@@ -190,7 +190,15 @@ class TestACallsEffectIsReadFailClosed(unittest.TestCase):
             'T=@P@; f() { declare -gx T=/dev/null; }; f; sh "$T"',
             'T=@P@; if c; then f() { T=/dev/null; }; else f() { T=@P@; }; fi; f; sh "$T"',
             'T=@P@; g() { T=/dev/null; }; f() { g; }; f; sh "$T"',
-            'T=@P@; f() { T=/dev/null; }; f; sh "$T"')
+            'T=@P@; f() { T=/dev/null; }; f; sh "$T"',
+            # A call inside a `case` arm, in five spellings (the round-3 seat's C91), and a
+            # non-matching arm, read fail-closed as a branch that does not run is.
+            'T=/dev/null; f(){ T=@P@; }; case x in x) f;; esac; sh "$T"',
+            'T=/dev/null; f(){ T=@P@; }; case x in x) f ;; esac; sh "$T"',
+            'T=/dev/null; f(){ T=@P@; }\ncase x in\nx) f;;\nesac\nsh "$T"',
+            'T=/dev/null; f(){ T=@P@; }; case x in x) :; f;; esac; sh "$T"',
+            'T=/dev/null; f(){ T=@P@; }\ncase x in\nx)\nf\n;;\nesac\nsh "$T"',
+            'T=/dev/null; f(){ T=@P@; }; case x in y) f;; esac; sh "$T"')
 
     def test_each_row_is_reported_under_every_shell_setting(self):
         for row in self.ROWS:

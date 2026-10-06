@@ -68,7 +68,9 @@ class TestWhatACallMayLeave(unittest.TestCase):
                        "f() { T=x; }\ncommand f\n", "f() { T=x; }\nnice f\n", "f() { T=x; }\nnohup f\n"):
             with self.subTest(script=script):
                 self.assertEqual({"T": ["old"]}, called(script))
-        # A keyword or a prefix assignment in front is not a wrapper: the function runs.
+        # A keyword, a prefix assignment or a `case` arm in front is not a wrapper: the
+        # function runs (the arm: the round-3 seat's C91).
+        self.assertEqual({"T": ["old", "x"]}, called("f() { T=x; }\ncase y in y) f;; esac\n", at=3))
         self.assertEqual({"T": ["old", "x"]}, called("f() { T=x; }\nif f; then :; fi\n", at=2))
         self.assertEqual({"T": ["old", "x"]}, called("f() { T=x; }\nX=1 f\n"))
 
