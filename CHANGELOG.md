@@ -39,25 +39,34 @@ evidence exposed.
   function, a later redefinition, a stand-in, a `declare -g` bash 3.2 and dash lack), so a call
   now adds what the body may assign as UNSURE candidates and keeps the caller's own
   (`scripts/workflow_called.py`; every definition before the call, and the functions the body
-  calls, eight deep; `local` dies with the call, a subshell body reaches nothing; `time` --
-  with `-p` or `--`, before a group, a `!`, an assignment or an `if` -- and `eval` run the
-  function; the arm of a one-line `case` is stepped past first; a function named like a
-  wrapper, `sudo() { … }; sudo x`, is the call bash makes of it, where `env f` with no `env`
-  function runs none) -- at one price: `T=P; f() { T=/dev/null; }; f; sh "$T"`, and #2785's
-  `g() { T=x; }; T=P; g; sh "$T"`, are reported though no shell runs `P`; the sure carry is
-  #2785's own PR. The value table's candidate cap moves with it, in the values lane
-  (`workflow_values._update`, two lines): past eight candidates a scalar now holds its first
-  candidate -- the last sure assignment's value -- beside the stand-in, never the stand-in
-  alone, which a use read as nothing; so the carried candidates, and any later update that
-  pushes them past the cap (the round-4 seat's 7-arm `uname` dispatcher with an OVERRIDE line
-  after it), still report wherever the first candidate is the payload, and `main`'s own x20
-  rows (`T=cuda_1.run` then eight conditional reassignments) report too, fail-closed (10
-  cells). Still a limit: a body that assigns its payload after eight other candidates of the
-  name loses it to the cap inside the body, as `main`, which reads no call, does too; and a
-  `case` whose header shares a one-line body's line (`g() { case x in x) f;; esac; }`) is not
-  read as one, `main`'s limit. And the header test at every `(` had joined and split the
-  whole buffer before the match, about x4 per doubling of one `(( … ))` statement, now
-  computed only behind a match.
+  calls, eight deep; `local` dies with the call, a subshell body reaches nothing, and a call
+  the step backgrounds (`f &`) carries nothing back -- a one-line `( f )` still does,
+  fail-closed; `time` -- one `-p`, then one `--`, before a group, a `!`, an assignment or an
+  `if` -- and `eval` (one `--`) run the function, as bash 5.2.21 reads them (bash 3.2.57 runs
+  neither `time --` spelling, dash no `time` call at all: read as calls, fail-closed); the arm
+  of a one-line `case` is stepped past first; a function named like a wrapper, `sudo() { … };
+  sudo x`, is the call bash makes of it, where `env f` with no `env` function runs none) -- at
+  one price: `T=P; f() { T=/dev/null; }; f; sh "$T"`, and #2785's `g() { T=x; }; T=P; g; sh
+  "$T"`, are reported though no shell runs `P`, as is a never-run decoy in a called body
+  (`if false; then T=P; fi`); the sure carry is #2785's own PR. The value table's candidate
+  cap moves with it, in the values lane (`workflow_values._update`): past eight candidates a
+  name now keeps eight beside the stand-in -- its own first, then what a call carried in
+  (marked by `_carry`), so the cap drops only what a call carried -- and an array keeps its
+  word-lists, never the stand-in alone, which a use reads as nothing; a call never pops a
+  caller's candidate. A payload anywhere among the caller's own eight, the round-4 seat's
+  7-arm `uname` and `$RUNNER_OS` dispatchers with an OVERRIDE line after them, an array past
+  the cap, and `main`'s own x20 rows where the payload is among the first eight all report --
+  true reports, every shell running the payload. Against the round-5 seat's 1,697 rows the
+  round-6 head closes 1,802 cells `main` leaves CLEAN and adds 531 fail-closed ones (166 since
+  the round-4 head, 57 since the round-5 head: the array rows under `sh`, where dash has no
+  arrays, and kept never-run decoys). Still a limit, `main`'s, filed as #2871: a payload that
+  is the ninth or later candidate the step itself gives the name is dropped (`T=x`, seven
+  conditional reassignments, then `[ -z "$NOPE" ] && T=P`; a `for` header's ninth word, which
+  every shell holds after the loop), as on `main`; a body that assigns its payload after eight of the caller's
+  candidates and its own loses it inside the body; and a `case` whose header shares a
+  one-line body's line (`g() { case x in x) f;; esac; }`) is not read as one. And the header
+  test at every `(` had joined and split the whole buffer before the match, about x4 per
+  doubling of one `(( … ))` statement, now computed only behind a match.
 - **Workflow guard: what `eval`'s words and a `-c` string hand on (#2673, #2683, #2684, #2764,
   #2669, #2331).** `eval 'curl … |' 'sh'` ran the pipe and read CLEAN: `eval` joins its words before
   it runs them, and the guard read them one by one. Where a word begins or ends with an operator the
