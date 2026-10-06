@@ -122,6 +122,50 @@ def stdin_step(runner, body=CHECK, form="heredoc", pre="", end="", fetched=True)
     return (GET if fetched else "") + pre + stdin + end + (USE if fetched else "")
 
 
+class TestAChildCheckAheadOfAnd(unittest.TestCase):
+    """#2653: a child shell's own ``-e`` is suspended ahead of ``&&``."""
+
+    BODY = CHECK + " && echo ok\necho done"
+    AHEAD = "runs ahead of `&&`, where the shell suspends `-e`"
+
+    @staticmethod
+    def reasons(script):
+        return [why for _step, why in defects(script)]
+
+    def test_each_child_errexit_spelling_reports_the_bounded_check(self):
+        rows = (
+            stdin_step("bash -e -s", self.BODY),
+            stdin_step("sh -e", self.BODY),
+            stdin_step("bash -es", self.BODY),
+            stdin_step("bash -s", "set -e\n" + self.BODY),
+            GET + "bash -ec '" + CHECK + " && echo ok; echo done'\n" + USE,
+        )
+        for script in rows:
+            with self.subTest(script=script):
+                found = self.reasons(script)
+                self.assertEqual(1, len(found), found)
+                self.assertIn(self.AHEAD, found[0])
+
+    def test_the_existing_errexit_controls_keep_their_verdicts(self):
+        reported = (
+            stdin_step("bash -s", self.BODY),
+            stdin_step("bash -e -s", CHECK + " || true\necho done"),
+            stdin_step("bash -e -s", "if " + CHECK + "; then echo ok; fi\necho done"),
+            stdin_step("bash -e -s", "! " + CHECK + "\necho done"),
+            stdin_step("bash -e -s", CHECK + " &\nwait\necho done"),
+            stdin_step("bash -s", CHECK + " && echo ok"),
+        )
+        for script in reported:
+            with self.subTest(script=script):
+                found = self.reasons(script)
+                self.assertEqual(1, len(found), found)
+        clean = (stdin_step("bash -e -s", CHECK + "\necho done"),
+                 stdin_step("bash -e -s", CHECK + " && echo ok"))
+        for script in clean:
+            with self.subTest(script=script):
+                self.assertEqual([], self.reasons(script))
+
+
 class TestAssignmentPrefixes(unittest.TestCase):
     """#2348: `A+=x`, `a[1]=x` and `arr=(a)` in front of a command are
     assignments, and bash runs the command behind them."""
