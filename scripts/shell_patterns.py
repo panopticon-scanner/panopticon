@@ -31,6 +31,10 @@ GLOB = "*?[{},"             # the characters it goes before
 # Put before each quote or backslash inside a marked `[...]` (`patterned`):
 # with the quotes gone, `leads` must not read `[a'-'c]` as the range `[a-c]`.
 QUOTED = "\ue001"
+# Put before each `$` a quote or a backslash covers (`patterned`): with the
+# quotes gone, `shell_reader._stage` must still tell `"$SUDO"`, a word bash
+# keeps empty, from `$SUDO`, one it drops (#2472).
+QUOTED_DOLLAR = "\ue003"
 # The members of a `[...]` that matches no `-`: letters, digits, `_` and `.`,
 # and ranges between two letters or digits (`leads`).
 _PLAIN = re.compile(r"(?:[A-Za-z0-9](?:-[A-Za-z0-9])?|[_.])+")
@@ -46,7 +50,8 @@ def patterned(text: str) -> str:
     review N-1 of #1793's follow-ups), and not the `[` right after a `$` no
     backslash takes, which opens `$[...]`. An arithmetic command's reach here
     escaped (`shell_lex.lex`), and a `$((...))` lifted. `QUOTED` goes before
-    each quote or backslash inside a marked `[...]`."""
+    each quote or backslash inside a marked `[...]`, `QUOTED_DOLLAR` before
+    each `$` a quote or a backslash covers (#2472)."""
     out, i, quote, dollar, bracket = [], 0, "", -2, -1
     while i < len(text):
         ch = text[i]
@@ -58,6 +63,8 @@ def patterned(text: str) -> str:
         size = 2 if ch == "\\" and quote != "'" or not quote and text.startswith("$'", i) else 1
         if bracket >= 0 and (size == 2 or not quote and ch in "'\""):
             out.append(QUOTED)
+        if quote and ch == "$" or size == 2 and text.startswith("\\$", i):
+            out.append(QUOTED_DOLLAR)
         if quote and size == 1 and ch == quote[-1]:
             quote = ""
         elif not quote and (ch in "'\"" or ch == "$" and size == 2):
