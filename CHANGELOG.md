@@ -14,9 +14,11 @@ evidence exposed.
   command layer reads a shell default's words as bash does, split at a blank no quote or
   backslash covers (`${X:-bash -s} <<'EOF'` and `${X:-sh -c} '…'` ran the download and read
   CLEAN; a quoted default keeps its fail-closed reading, and `${X:-"sh -c"}` or `${X:-sh\ -c}`
-  stays one word, `main`'s reading, naming no shell); and `<>` redirects standard input as `<` does, so `bash -s <<'EOF' <>/dev/null` no
-  longer credits a check no shell reads. `&&` at a line's end, `${X:-bash} -s`, and `<>` before
-  the heredoc or on another descriptor read as they did. The fix rounds closed what the seats
+  stays one word, `main`'s reading, naming no shell); and `<>` on descriptor 0 redirects
+  standard input as `<` does, so `bash -s <<'EOF' <>/dev/null` no longer credits a check no
+  shell reads, while on any other descriptor it is the write `main` read (`curl … 1<> tool` ⏎
+  `sh tool` reports). `&&` at a line's end, `${X:-bash} -s`, and `<>` before the heredoc read as
+  they did. The fix rounds closed what the seats
   found at the edges of the new `${…}` word: `$$` is bash's PID, read as the pair before
   anything the second `$` could open, in the splitter, the expansion scanner and the blank
   marker alike, so
@@ -30,29 +32,36 @@ evidence exposed.
   check, as on `main`), a blank-free `-o ${D:-tool}` as written -- because the name may be set
   where no shell text shows it (the workflow's `env:`, `$GITHUB_ENV`), and reading a default
   as its literal file could only clear a step `main` reports; #2867 (the blank-free twin,
-  CLEAN on `main`) stays open, its own PR. And a use that spells the same default meets that
-  destination as it did on `main`: the destination is filed under both readings, `main`'s
-  first piece and the whole word (`shell_reader.readings`), and `tee`'s operand is read as a
-  fetcher's, so `wget -q -O ${D:-tool } URL` ⏎ `sh ${D:-tool }`, the glued `-O${D:-tool }`
-  and `--output-document=`, `> ${D:-tool }`, `tee ${D:-tool }` ⏎ `sh < ${D:-tool }`, a `mv`
-  of it and the same inside `eval` or `bash -c` report again -- nothing resolved. A `${…}`
-  destination that spans a line (`-o ${D:-tool` ⏎ `}`) is one word now, as bash reads it, and
-  reports where `main`'s statement break left it CLEAN while the shells ran the payload. A
-  statement that is only a redirection is no stage, as `main` reads `> ${D:-tool}`: `main`
-  read `> ${D:-tool }` only because shlex left its `}` as a command word. New fail-closed
-  over-reports against `main` (64 cells in 20 of the round-5 seat's 2,693 rows, none run by a shell):
-  a CRLF after `|`; `|&` ⏎ `sh` and `source /dev/stdin <> tool` under `sh` alone; `sha256sum
-  ${F:- -c } sums`, whose check is lost (under the `{0}` templates the shells do run the
-  payload); `| ${V:-cat | sh}`; `bash -s <>tool <<'EOF'` in every setting and `bash -s
-  <<'EOF' <>${N:-/dev/null }` under `sh`, which inherit the `<` reads-list reading; `|` ⏎ `$$
-  sh`; an `IFS` the step sets, which the reader does not read (`IFS=:` before `-o ${D:-tool` ⏎
-  `}`, 17 cells); `$'…'` in a default under dash, which keeps its `$` (4); and a line-spanning
-  redirect target under dash, which does not split it (8). (`-o ${D:-tool } --output other` is
-  a correct report: curl pairs outputs with URLs in order and writes `tool`.) The unterminated
-  `${x` line stays quadratic on both trees, 2.6x slower here (`patterned`'s, pre-existing); and
-  one `${…}` word holding tens of thousands of blank-separated groups costs 2-2.5x base at
-  384 KB and 7-9x at 1.5 MB, shlex building it as one token -- what `main` pays for a
-  double-quoted word of the same length.
+  CLEAN on `main`) stays open, its own PR. Every comparison keeps `main`'s reading (round 7, the
+  coordinator's ruling): at a destination, a use, a carrier's source, its gained name and a
+  value's flow, `main`'s split of a blank-holding `${…}` stays a candidate and the whole word is
+  only added (`shell_reader.readings` and `argv_readings`, one changed line at each site), so a
+  match can be added and none `main` makes is lost -- `wget -q -O ${D:-tool } URL` ⏎ `sh
+  ${D:-tool  }`, the glued `-O${D:-tool }` and `--output-document=`, `> ${D:-tool }`, `tee
+  ${D:-tool }` ⏎ `sh < ${D:-tool }`, `cat tool > ${E:-t2 }` ⏎ `sh ${E:-t2 }`, `F=${D:-tool }` ⏎
+  `sh $F` and `for f in ${D:-tool }` report as on `main`. A destination is never resolved; a
+  value's default is, as the table resolves any `${T:-d}`, beside `main`'s unresolved piece
+  (`F=${D:-tool }` holds `tool ` and `${D:-tool`). A step that spells U+E004, the reader's
+  blank mark, is read exactly as `main` reads it, with no mark at all. A `${…}` destination that
+  spans a line (`-o ${D:-tool` ⏎ `}`) is one word now, as bash reads it, and reports where
+  `main`'s statement break left it CLEAN while the shells ran the payload. A statement that is
+  only a redirection is no stage, as `main` reads `> ${D:-tool}`: `main` read `> ${D:-tool }`
+  only because shlex left its `}` as a command word. New fail-closed over-reports against `main`
+  (439 cells in 117 of the round-6 seat's 8,039 rows, none run by a shell): a quoted or escaped
+  twin, where bash keeps the word whole and literal (`sh '${D:-tool }'`, `-O "${D:-tool }"`; 319
+  cells, 69 rows); a line-spanning `${…}` target, the ruled class, and under dash a redirect
+  target, which dash does not split (76, 35); round 1-4's named rows (35, 10) -- a CRLF after
+  `|`; `|&` ⏎ `sh` and `source /dev/stdin <> tool` under `sh` alone; `sha256sum ${F:- -c } sums`,
+  whose check is lost (under the `{0}` templates the shells do run the payload); `| ${V:-cat |
+  sh}`; `bash -s <>tool <<'EOF'` in every setting and `bash -s <<'EOF' <>${N:-/dev/null }`
+  under `sh`, which inherit the `<` reads-list reading; `|` ⏎ `$$ sh` -- an `IFS` the step sets,
+  which the reader does not read (5, 1); and `$'…'` in a default under dash, which keeps its `$`
+  (4, 2). (`-o ${D:-tool } --output other` is a correct report: curl pairs outputs with URLs in
+  order and writes `tool`.) The unterminated `${x` line stays quadratic on both trees, 2.6x
+  slower here (`patterned`'s, pre-existing); and one `${…}` word holding tens of thousands of
+  blank-separated groups costs 2-2.9x base at 384 KB (2.9x for `$$'\'` groups) and 7-9x at
+  1.5 MB, shlex building it as one token -- what `main` pays for a double-quoted word of the
+  same length.
 - **Workflow guard reads a function header in the spellings bash takes at a statement's head
   (#2664, #2608; #2785).** `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after
   `then`, `do` or an opened `{` ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN:
