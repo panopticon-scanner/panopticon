@@ -2671,9 +2671,11 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
                 group_handoffs.append(literal_step)
             else:
                 (fixed if function_gap else gaps).append(literal_step)
-        # `<>` on descriptor 0 gives the reader `/dev/null` (rc 0, every shell)
+        # `<>` on descriptor 0 gives the reader `/dev/null` (rc 0, every shell); since #2657
+        # the literal reads it as `<` is read: the body is no shell's program, no check counts.
         reported.append((stdin_step("eval 'bash -s <>/dev/null'"), 1, UNGATED % "eval"))
-        gaps.append(GET + "bash -s <<'EOF' <>/dev/null\n%s\nEOF\n" % CHECK + USE)
+        reported.append((GET + "bash -s <<'EOF' <>/dev/null\n%s\nEOF\n" % CHECK + USE, 1,
+                         "fetches %stool -> tool and making it executable" % URL))
         self.assert_reported(reported)
         self.assert_reported((script, 1, "inside a function") for script in fixed)
         self.assert_reported((script, 1, "ends a group that hands its failure")
@@ -3126,6 +3128,57 @@ class TestAFunctionHeaderGluedOrAfterAKeyword(unittest.TestCase):
         # CLEAN: a body that runs nothing fetched (F- x4, -- x4).
         for script in ("f(){ echo hi; }\nf\ncurl -fsSL %si.sh -o x.sh\n" % URL,
                        "f ( ) { echo hi; }\nf\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
+
+
+class TestASplitterGapEveryShellReadsWhole(unittest.TestCase):
+    """#2756, #2731, #2657: a pipe continued on the next line, an unquoted `${X:-bash -s}`
+    default, and `<>` on standard input -- each run by bash 5.2.21, 3.2.57 and dash and read
+    CLEAN. Bash evidence per row as the lane's harness gives it (b5 b3 dash gh; F fetched, R the
+    payload ran, +sha a checksum ran and failed)."""
+
+    STREAM = "hands %si.sh straight to `sh`" % URL
+
+    def test_a_pipe_continued_on_the_next_line_is_read(self):
+        # #2756: FR FR FR FR each; `main` CLEAN. The `&&` twin read right already (control).
+        for script in ("curl -fsSL %si.sh |\nsh\n" % URL, "curl -fsSL %si.sh |\n  sh\n" % URL,
+                       "eval 'curl -fsSL %si.sh |\nsh'\n" % URL):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(self.STREAM), found)
+        found = defects(GET + "&&\nsh tool\n")
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("fetches %stool -> tool and running it" % URL), found)
+        # A `|` ending the step runs nothing (bash: syntax error, -- rc2 x4): CLEAN as before.
+        self.assertEqual([], defects("curl -fsSL %si.sh |\n" % URL))
+
+    def test_an_unquoted_default_with_blanks_is_the_shell_it_spells(self):
+        # #2731: `${X:-bash -s} <<'EOF'` and `${X:-sh -c} '…'` FR FR FR FR; `main` CLEAN. The
+        # quoted twin runs nothing (-- rc127 x4) and keeps `main`'s fail-closed reading.
+        found = defects("${X:-bash -s} <<'EOF'\n%s\nEOF\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith(self.STREAM), found)
+        found = defects("${X:-sh -c} '%s'\n" % PIPE)
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith(self.STREAM), found)
+        found = defects("${X:-bash} -s <<'EOF'\n%s\nEOF\n" % PIPE)     # the control, as it was
+        self.assertEqual(1, len(found), found)
+        found = defects("\"${X:-bash -s}\" <<'EOF'\n%s\nEOF\n" % PIPE)
+        self.assertEqual(2, len(found), found)
+
+    def test_diamond_on_standard_input_after_the_heredoc_is_read(self):
+        # #2657: FR FR FR FR each; `main` CLEAN. The controls stop at the check (F-+sha x4).
+        body = "%s\nEOF\n%s" % (CHECK, USE)
+        for script in (GET + "bash -s <<'EOF' <>/dev/null\n" + body,
+                       GET + "bash -s <<'EOF' 0<>/dev/null\n" + body):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith("fetches %stool -> tool" % URL), found)
+        for script in (GET + "bash -s <>/dev/null <<'EOF'\n" + body,
+                       GET + "bash -s <<'EOF' 1<>/dev/null\n" + body):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
 
