@@ -7,6 +7,15 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`scripts/shell_reader.py` splits its statement splitter into `scripts/shell_split.py` (reader
+  lane, second split).** A pure move at the reader's size (662 of 700 lines, with the lane's own
+  fixes still to land): `_split`, the one quote-aware pass that cuts lexed text into statements
+  and pipeline stages, and the private-use marks it leaves in a stage's text for `_stage`
+  (`_ESCAPED`, `_BLANK`, `_QUOTED_AT`, `_QUOTE_END`, `_ESCAPE_AT`) with the header and redirection
+  spellings it matches now live in the new module, byte for byte; the reader imports every name
+  back under its own, so no caller moved, and the new module imports nothing from the reader. No
+  verdict changes: every `job_defects` / `fetches` answer the guard and reader test files produce
+  is identical in order before and after.
 - **Workflow reader: a word keeps what stood quoted (the quoting half of #2593, #2747, #2769;
   #2331, #2733).** The splitter now marks where a quote closes and where a backslash stands,
   and a word whose quoting changes bash's reading of it -- a `$`, a lifted substitution, a blank,
