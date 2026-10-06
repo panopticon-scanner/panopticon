@@ -290,19 +290,67 @@ class TestWhenAValueIsHeldAndEmptied(unittest.TestCase):
                 self.assertEqual(expected, at_use(script).scalars)
 
     def test_a_name_past_eight_candidates_keeps_eight_beside_the_stand_in(self):
-        # x20: past the cap the guard's reading without the table -- and, since PR #2855, the
-        # name's candidates beside it: its own first, then what a call carried in (round 6;
-        # round 5 kept only the first, which dropped a payload that was not first). Each moved
-        # from the stand-in alone; own candidates past eight are still dropped from the end.
+        # x20: past the cap main held the guard's reading without the table, `$T`, which a use
+        # reads as nothing. Since PR #2855 (round 7, the coordinator's ruling on #2871) the name
+        # keeps its first eight beside the cap's stand-in `PAST`, which a use reads as every
+        # download -- whatever was dropped, the ninth `8` here or `9` after the loop below.
         nine = "T=cuda_1.run" + "".join("; false && T=%d" % number for number in range(1, 9))
-        seven = ["cuda_1.run", "1", "2", "3", "4", "5", "6", "7", "$T"]
-        self.assertEqual({"T": seven}, table(nine).scalars)
-        self.assertEqual({"T": seven}, table(nine + "; false && T=9").scalars)
-        # A `for` past the cap: the stand-in stands (every shell holds `9` after the loop,
-        # which the first eight words miss -- the own-candidate price named above).
-        self.assertEqual("$T", table("for T in 1 2 3 4 5 6 7 8 9; do :; done").scalars["T"][-1])
+        eight = ["cuda_1.run", "1", "2", "3", "4", "5", "6", "7", wv.PAST]
+        self.assertEqual({"T": eight}, table(nine).scalars)
+        self.assertEqual({"T": eight}, table(nine + "; false && T=9").scalars)
+        self.assertEqual(wv.PAST, table("for T in 1 2 3 4 5 6 7 8 9; do :; done").scalars["T"][-1])
         append = "A=1; false && A=2; false && A=3; B=x; false && B=y; false && B=z; A+=$B"
-        self.assertEqual(["1x", "1y", "1z", "2x", "2y", "2z", "3x", "3y", "$A"], table(append).scalars["A"])
+        self.assertEqual(["1x", "1y", "1z", "2x", "2y", "2z", "3x", "3y", wv.PAST], table(append).scalars["A"])
+
+
+class TestTheStandInPastTheCap(unittest.TestCase):
+    """PR #2855 round 7 (#2871, the coordinator's ruling): every truncation -- a name's, a word's,
+    an argv's -- leaves the cap's stand-in `PAST`, which a use reads as every download the step
+    holds there (`workflow_uses._live`); a sure write or a sure `unset` ends it. The order of what
+    is kept carries no safety: it is the order bash assigns, the caller's own first."""
+
+    NINE = "T=a" + "".join("; false && T=%s" % c for c in "bcdefghi")
+
+    def test_a_maybe_write_keeps_it_and_a_sure_one_or_unset_ends_it(self):
+        self.assertEqual(["a", "b", "c", "d", "e", "f", "g", "h", wv.PAST], table(self.NINE).scalars["T"])
+        self.assertEqual(wv.PAST, table(self.NINE + "; false && T=P").scalars["T"][-1])
+        self.assertNotIn("P", table(self.NINE + "; false && T=P").scalars["T"])
+        self.assertEqual(["x"], table(self.NINE + "; T=x").scalars["T"])
+        self.assertNotIn("T", table(self.NINE + "; unset T").scalars)
+        self.assertEqual(["x", "$T"], table(self.NINE + "; T=x; false && read T").scalars["T"])
+
+    def test_an_array_past_the_cap_holds_it_at_every_key(self):
+        lists = table("declare -a A=(a0 a1)" + "".join("; false && A=(%s0 %s1)" % (c, c) for c in "bcdefgh")
+                      + "; false && A=(P0 P1)")
+        self.assertEqual([wv.PAST], lists.arrays["A"][-1])
+        self.assertEqual(9, len(lists.arrays["A"]))
+        for word in ("$A", "${A[0]}", "${A[1]}", "${A[7]}"):
+            with self.subTest(word=word):
+                self.assertIn(wv.PAST, wv.valued(word, lists))
+        self.assertIn(["sh", wv.PAST], wv.valued_argvs(["sh", "${A[@]}"], lists))
+
+    def test_a_word_built_from_it_is_it_whole(self):
+        values = table(self.NINE + '; U="./$T.run"; V=$U')
+        self.assertIn(wv.PAST, values.scalars["U"])
+        self.assertIn(wv.PAST, values.scalars["V"])
+        self.assertNotIn("./" + wv.PAST + ".run", values.scalars["U"])
+        self.assertEqual(wv.PAST, wv._as_word("x" + wv.PAST, "$X"))
+
+    def test_the_argv_cap_keeps_each_word_without_a_choice(self):
+        values = table("A=1; false && A=2; false && A=3; B=x; false && B=y; false && B=z")
+        argvs = wv.valued_argvs(["sh", "$A", "-c", "$B"], values)
+        self.assertEqual(["sh", "1", "-c", "x"], argvs[0])
+        self.assertEqual(["sh", wv.PAST, "-c", wv.PAST], argvs[-1])
+        self.assertEqual(9, len(argvs))
+        below = wv.valued_argvs(["sh", "$A", "$A"], table("A=1; false && A=2"))
+        self.assertEqual(4, len(below))                 # within the cap: no stand-in
+        self.assertFalse(any(wv.PAST in argv for argv in below))
+
+    def test_the_use_reads_it_as_a_bound_name(self):
+        name = wu._reference(wv.PAST)
+        self.assertTrue(name)
+        self.assertIn(name, wu._live({}, {}, "."))
+        self.assertIn(name, wu._live({}, {}, "sub"))
 
 
 class TestAValueTheTableCannotSee(unittest.TestCase):
@@ -516,7 +564,10 @@ class TestHowAWordResolves(unittest.TestCase):
         self.assertEqual(["aa", "ab", "ba", "bb"], wv.valued("$T$T", two))
         three = table("; ".join("%s=1; false && %s=2; false && %s=3" % (name, name, name)
                                 for name in "ABC"))
-        self.assertEqual(["111", "112", "113", "121", "122", "123", "131", "132"],
+        # PR #2855 round 7, on the coordinator's ruling ("every truncation leaves the stand-in";
+        # #2871): past the first eight the word holds the cap's stand-in, which a use reads as
+        # every download, where it was dropped in silence.
+        self.assertEqual(["111", "112", "113", "121", "122", "123", "131", "132", wv.PAST],
                          wv.valued("$A$B$C", three))
 
     def test_nothing_inside_a_lifted_substitution_is_matched(self):
@@ -750,8 +801,11 @@ class TestAnArrayLiteral(unittest.TestCase):
     def test_argvs_are_capped(self):
         values = table("T=a; false && T=b; false && T=c")
         argvs = wv.valued_argvs(["$T", "$T"], values)
-        self.assertEqual(8, len(argvs))
+        # PR #2855 round 7, on the coordinator's ruling ("every truncation leaves the stand-in";
+        # #2871): past the first eight one argv more, each word with a choice the stand-in.
+        self.assertEqual(9, len(argvs))
         self.assertEqual(["a", "a"], argvs[0])
+        self.assertEqual([wv.PAST, wv.PAST], argvs[-1])
 
 
 class TestTheTableAtAStatement(unittest.TestCase):

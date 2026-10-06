@@ -244,7 +244,7 @@ class TestTheCarryPastTheCandidateCap(unittest.TestCase):
         stmts = wg.shell_reader.statements('T=P; f() { if false; then %s; fi; }; f; sh "$T"\n' % self.NINE)
         table = workflow_uses.static_values(stmts, len(stmts) - 1).scalars["T"]
         self.assertEqual("P", table[0])
-        self.assertIn("$T", table)
+        self.assertIn(workflow_uses.PAST, table)        # round 7: the cap's stand-in, read as a use
 
 
 SEVEN_CARRIED = "T=a; T=b; T=c; T=d; T=e; T=f; T=g"
@@ -255,10 +255,9 @@ class TestACarriedNameLaterPushedPastTheCap(unittest.TestCase):
     so the NEXT unsure update of the name after the call pushed the table past the cap, and the
     stand-in alone read as nothing: `T=P; f() { if false; then T=a; … T=g; fi; }; f; false &&
     T=x; sh "$T"` went CLEAN while every parent runs `P`, as did the 7-arm `uname` dispatcher
-    with an OVERRIDE line after it. Past the cap a name now keeps eight candidates beside the
-    stand-in -- the caller's own first, what a call carried in after them (round 6;
-    `workflow_values._update`) -- so each reports, as do `main`'s own x20 rows where a shell
-    runs the payload. F1: `time` (one `-p`, then one `--`) and `eval` (one `--`), then a group, an
+    with an OVERRIDE line after it. Past the cap a name now keeps its first eight beside the
+    cap's stand-in, which a use reads as every download (round 7, `TestEveryCapLeavesItsStandIn`),
+    so each reports, as do `main`'s own x20 rows where a shell runs the payload. F1: `time` (one `-p`, then one `--`) and `eval` (one `--`), then a group, an
     assignment, a `!` or an `if`, reach the call; and a function named like a wrapper (`sudo() {
     … }; sudo x`) is the call bash makes of it."""
 
@@ -312,24 +311,25 @@ class TestACarriedNameLaterPushedPastTheCap(unittest.TestCase):
                 with self.subTest(row=row, shell=shell):
                     self.assertFalse(reported(filled(row), shell))
 
-    def test_past_the_cap_the_callers_own_stand_first(self):
-        # Round 6 (round 5 kept only the first candidate): the caller's `P` and `x`, then what
-        # the call carried in, eight in all, beside the stand-in.
+    def test_past_the_cap_the_first_eight_stand_beside_the_stand_in(self):
+        # Round 7: the first eight in the order bash assigns them, then the cap's stand-in, which
+        # the use reads as every download -- `x`, the ninth, is dropped and still reported.
         stmts = wg.shell_reader.statements(
             'T=P; f() { if false; then %s; fi; }; f; false && T=x; sh "$T"\n' % self.SEVEN)
-        self.assertEqual(["P", "x", "a", "b", "c", "d", "e", "f", "$T"],
+        self.assertEqual(["P", "a", "b", "c", "d", "e", "f", "g", workflow_uses.PAST],
                          workflow_uses.static_values(stmts, len(stmts) - 1).scalars["T"])
 
 
-class TestTheCapDropsOnlyWhatACallCarried(unittest.TestCase):
-    """PR #2855 round 5 (B1 and B2) and the ruling on it: past the cap a name kept only its first
-    candidate, so a payload anywhere else among the caller's own was dropped (`T=x; [ -z "$NOPE" ]
-    && T=P; f() { … six … }; f; false && T=y; sh "$T"` CLEAN while every shell runs `P`), and an
-    array past the cap kept nothing -- `_carry` even popped the caller's word-lists. Now the cap
-    drops only what a call carried in: the caller's own candidates come first, eight are kept
-    beside the stand-in, and an array keeps its word-lists. The rows are the round-5 seat's,
-    each with its ground truth (8 parents: every one runs the payload, or for an array both
-    bashes do; the honest clears run nothing)."""
+class TestAPayloadAnywhereAmongTheCandidatesReports(unittest.TestCase):
+    """PR #2855 round 5 (B1 and B2): past the cap a name kept only its first candidate, so a
+    payload anywhere else among the caller's own was dropped (`T=x; [ -z "$NOPE" ] && T=P; f() {
+    … six … }; f; false && T=y; sh "$T"` CLEAN while every shell runs `P`), and an array past the
+    cap kept nothing -- `_carry` even popped the caller's word-lists. Round 6 ordered the cap,
+    the caller's own first, which its seat broke three more ways; round 7 retired the ordering:
+    every cap leaves its stand-in, which a use reads as every download
+    (`TestEveryCapLeavesItsStandIn`). The rows are the round-5 seat's, each with its ground truth
+    (8 parents: every one runs the payload, or for an array both bashes do; the honest clears
+    run nothing)."""
 
     ALL_RUN = (  # Y06, Y20, L01, L04, L18, F02, F13, F24, E06
         'T=x; [ -z "$NOPE" ] && T=@P@; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; fi; }; f; false && T=y; sh "$T"',
@@ -363,11 +363,12 @@ class TestTheCapDropsOnlyWhatACallCarried(unittest.TestCase):
         'declare -a CMD=(sh @P@)\nf() {\n  if [ -n "${NOPE:-}" ]; then CMD=(a); CMD=(b); CMD=(c); CMD=(d); CMD=(e); CMD=(f); '
         'CMD=(g); CMD=(h); fi\n}\nf\n"${CMD[@]}"',
         'declare -a T=(@P@); ' + "; ".join("false && T=(%s)" % c for c in "abcdefgh") + '; sh "${T[0]}"')
-    NONE_RUN = (  # E01, E02, E05, and a call the step backgrounds: honest clears past the cap
+    NONE_RUN = (  # E01 (eight candidates), and a call the step backgrounds: honest clears
         'T=; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; sh "$T"',
-        'T=; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; false && T=y; sh "$T"',
-        'T=x; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; false && T=y; sh "$T"',
         'T=/dev/null; f() { T=@P@; }; f & sh "$T"')
+    PRICE = (  # E02, E05: nine candidates, none the payload -- the cap's price since round 7
+        'T=; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; false && T=y; sh "$T"',
+        'T=x; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; false && T=y; sh "$T"')
 
     def test_each_payload_row_is_reported(self):
         for rows, shells in ((self.ALL_RUN, SHELLS), (self.BASH_RUN, (None, "bash", "bash {0}"))):
@@ -382,18 +383,113 @@ class TestTheCapDropsOnlyWhatACallCarried(unittest.TestCase):
                 with self.subTest(row=row, shell=shell):
                     self.assertFalse(reported(filled(row), shell))
 
-    def test_the_callers_own_come_first_and_an_array_keeps_its_lists(self):
+    def test_the_price_past_the_cap_is_reported(self):
+        for row in self.PRICE:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_the_first_eight_stand_beside_the_stand_in_and_an_array_keeps_its_lists(self):
         def table(script):
             stmts = wg.shell_reader.statements(script + "\n")
             return workflow_uses.static_values(stmts, len(stmts) - 1)
         scalars = table('T=x; [ -z "$NOPE" ] && T=P; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; fi; }; f; '
                         'false && T=y; sh "$T"').scalars["T"]
-        self.assertEqual(["x", "P", "y"], scalars[:3])
-        self.assertEqual("$T", scalars[-1])
+        self.assertEqual(["x", "P", "a", "b", "c", "d", "e", "f", workflow_uses.PAST], scalars)
         values = table('declare -a T=(P); f() { if false; then T=(a); T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); '
                        'fi; }; f; sh "${T[0]}"')
         self.assertEqual(["P"], values.arrays["T"][0])
-        self.assertIn("$T", values.scalars["T"])
+        self.assertEqual([workflow_uses.PAST], values.arrays["T"][-1])
+
+
+class TestEveryCapLeavesItsStandIn(unittest.TestCase):
+    """PR #2855 round 7: the coordinator's ruling on round 6's three more cap edges -- B1, a stale
+    carried mark dropped the caller's own payload; B2, the stand-in took one of the eight slots;
+    B4, the word cap at the use put carried scalars ahead of an own `declare -a T=(P)` -- and on
+    #2871 (B3: a payload the step itself makes a name's ninth candidate, CLEAN on `main` too).
+    The ordering no longer carries safety: every truncation -- a name's (`_update`), a word's
+    (`valued`), an argv's (`valued_argvs`) -- leaves the cap's stand-in `PAST`, and a use holding
+    it reads as every download the step holds there, so it reports wherever an unverified one can
+    reach it; a sure write or a sure `unset` ends it. The price, pinned: a use of a name with nine
+    or more candidates reports where no shell runs a download. Rows are the round-6 seat's, with
+    its ground truth over 8 parents (all run the payload; the bash rows, both bashes), and the
+    row-level controls."""
+
+    ALL_RUN = (
+        # B1: DS01, and DS05, the installer shape.
+        'T=x; f() { if false; then T=@P@; fi; }; f; T=x; g() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; '
+        'fi; }; g; [ -z "${NOPE:-}" ] && T=@P@; sh "$T"',
+        'INSTALLER=/dev/null\nuse_default() {\n  if [ -n "${USE_DEFAULT:-}" ]; then INSTALLER=@P@; fi\n}\nuse_default\n'
+        'INSTALLER=/dev/null\ndetect_arch() {\n  case "$(uname -m)" in\n    i386) INSTALLER=a;;\n    armv7l) INSTALLER=b;;\n'
+        '    ppc64le) INSTALLER=c;;\n    s390x) INSTALLER=d;;\n    riscv64) INSTALLER=e;;\n    mips) INSTALLER=f;;\n'
+        '    sparc64) INSTALLER=g;;\n  esac\n}\ndetect_arch\nif [ "$(uname -s)" = Linux ]; then\n  INSTALLER=@P@\nfi\n'
+        'sh "$INSTALLER"',
+        # B2: DN10, and DM02, a `load()` helper and a seven-arm `uname -s` dispatcher.
+        'T=x; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; '
+        + "; ".join("false && T=%d" % number for number in range(1, 7)) + '; [ -z "${NOPE:-}" ] && T=@P@; sh "$T"',
+        'T=/dev/null; load() { if [ -n "${A:-}" ]; then T=custom-a; fi; if [ -n "${B:-}" ]; then T=custom-b; fi; }; '
+        'load; case "$(uname -s)" in Darwin) T=darwin.sh;; FreeBSD) T=freebsd.sh;; OpenBSD) T=openbsd.sh;; '
+        'NetBSD) T=netbsd.sh;; SunOS) T=sunos.sh;; AIX) T=aix.sh;; Linux) T=@P@;; esac; sh "$T"',
+        # B3: DC03, and DC18, a seven-arm dispatcher then an OVERRIDE line (CLEAN on `main`).
+        'f() { T=@P@; }; f; ' + "; ".join("false && T=%d" % number for number in range(1, 9)) + '; sh "$T"',
+        'T=/dev/null\nset_target() {\n  case "$(uname -s)" in\n    Darwin) T=a;;\n    FreeBSD) T=b;;\n'
+        '    OpenBSD) T=c;;\n    NetBSD) T=d;;\n    SunOS) T=e;;\n    AIX) T=f;;\n    Linux) T=@P@;;\n  esac\n}\n'
+        'set_target\n[ -n "${OVERRIDE:-}" ] && T=$OVERRIDE\nsh "$T"',
+        # #2871's two nine-candidate rows (CLEAN on `main`).
+        'for T in a b c d e f g h @P@; do :; done; sh "$T"',
+        'T=x; ' + "; ".join("false && T=%d" % number for number in range(1, 8)) + '; [ -z "$NOPE" ] && T=@P@; sh "$T"',
+        # The word cap (a ninth `$D/$N`) and the argv cap (a ninth `$S $T`), each run.
+        'D=/x; false && D=/y; [ -z "$NOPE" ] && D=/tmp; N=a; false && N=b; [ -z "$NOPE" ] && N=payload; '
+        'sh "$D/$N"',
+        'S=:; false && S=true; [ -z "$NOPE" ] && S=sh; T=a; false && T=b; [ -z "$NOPE" ] && T=@P@; $S "$T"',
+        # The stand-in reaches a use through a copy, a function body and a command word.
+        'for T in a b c d e f g h @P@; do :; done; U="$T"; sh "$U"',
+        'for T in a b c d e f g h @P@; do :; done; run() { sh "$T"; }; run',
+        'for T in a b c d e f g h @P@; do :; done; chmod +x "$T"; "$T"')
+    BASH_RUN = (  # B4: DM01; and DM06, the control with six decoys (dash has no `declare`)
+        'T=x; [ -z "${NOPE:-}" ] && declare -a T=(@P@); f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; '
+        'fi; }; f; sh "$T"',
+        'T=x; [ -z "${NOPE:-}" ] && declare -a T=(@P@); f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; fi; }; '
+        'f; sh "$T"')
+    PRICE = (  # nine candidates, none the payload: no shell runs a download, and each reports
+        'for T in a b c d e f g h i; do :; done; sh "$T"',
+        'T=x; ' + "; ".join("false && T=%d" % number for number in range(1, 9)) + '; sh "$T"')
+    NONE_RUN = (
+        'for T in a b c d e f g h; do :; done; sh "$T"',                  # eight: within the cap
+        'for T in a b c d e f g h @P@; do :; done; echo "$T"',            # nine, and no use
+        'for T in a b c d e f g h @P@; do :; done; T=/dev/null; sh "$T"',  # a sure write ends it
+        'for T in a b c d e f g h @P@; do :; done; unset T; sh "${T:-/dev/null}"',  # a sure unset
+        # F3: a body's call in a list it backgrounds is not followed (DK21), as at the top level,
+        # whose forked calls stay clear: DK01, DK04, DK17, and a group piped on.
+        'T=/dev/null; f() { T=@P@; }; g() { f & wait; }; g; sh "$T"',
+        'T=/dev/null; f() { T=@P@; }; f & wait; sh "$T"',
+        'T=/dev/null; f() { T=@P@; }; ( f ) & wait; sh "$T"',
+        'T=/dev/null; f() { T=@P@; }; if true; then f; fi & wait; sh "$T"',
+        'T=/dev/null; f() { T=@P@; }; { f; } | cat; sh "$T"')
+    # F3, named: `eval -p f` and `eval -- -- f` run no `f` (bash rejects `-p`; dash runs `--`),
+    # but the guard's `eval` reader keeps the words not led by `-` as the program bash runs,
+    # fail-closed, and the carry follows the call it reads there -- an over-report, bounded.
+    NAMED = ('T=/dev/null; f() { T=@P@; }; eval -p f 2> /dev/null || :; sh "$T"',
+             'T=/dev/null; f() { T=@P@; }; eval -- -- f 2> /dev/null || :; sh "$T"')
+
+    def test_each_payload_row_is_reported(self):
+        for rows, shells in ((self.ALL_RUN, SHELLS), (self.BASH_RUN, (None, "bash", "bash {0}"))):
+            for row in rows:
+                for shell in shells:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertTrue(reported(filled(row), shell))
+
+    def test_the_price_and_the_named_over_reports_are_reported(self):
+        for row in self.PRICE + self.NAMED:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_each_honest_clear_stays_clear(self):
+        for row in self.NONE_RUN:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(filled(row), shell))
 
 
 class TestEveryHeaderSpellingTheSeatAskedFor(unittest.TestCase):

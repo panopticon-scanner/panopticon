@@ -30,7 +30,7 @@ from workflow_programs import _SHELL_STRING, VALUE_PROGRAM, scripts
 # names, and its callers keep reaching them here.
 from workflow_values import (Values as Values, assigned as assigned, record as record,
                              valued as valued, valued_argvs as valued_argvs)
-from workflow_values import _as_word, _for_parts, _literals, emptied
+from workflow_values import PAST, _as_word, _for_parts, _literals, emptied
 
 
 INTERPRETERS = ("sh", "bash", "dash", "zsh", "ksh", "ash", "python", "python3",
@@ -80,14 +80,15 @@ def _active(bindings, word, directory):
 
 
 def _live(named, positional, directory):
-    """Bound names that still designate the file in `directory`."""
+    """Bound names that still designate the file in `directory`, and the name the cap's
+    stand-in reads (`workflow_values.PAST`, #2871), which designates every download."""
     bound = {
         name for name, binding in {**named, **positional}.items()
         if binding.absolute or binding.directory == directory
     }
     if "1" in bound:
         bound.update(("@", "*"))
-    return bound
+    return bound | {_reference(PAST)}
 
 
 def _from_operand(word, dest, directory, bindings):
@@ -393,7 +394,7 @@ def _function_use(stmts, definition, args, dest, directory, named, inherited, ta
     kinds = _control_kinds(body)
     for index, statement in enumerate(body):
         for position, stage in enumerate(statement.stages):
-            bound = _live(local_named, positional, here) if called else frozenset()
+            bound = _live(local_named if called else {}, positional, here)
             argv = command(stage.argv)
             if called and (answer := use(statement, position, stage, argv, dest, here, bound)):
                 return answer

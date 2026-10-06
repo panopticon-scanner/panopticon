@@ -10,15 +10,17 @@ later redefinition, a stand-in, a `declare -g` the shell lacks), so the carry is
 a call to a function whose body assigns NAME -- any definition of it before the call, and any
 function the body calls, to a bounded depth -- adds what the body may assign as UNSURE
 candidates at every later use and keeps the caller's own, so a use reads both and the guard
-reports where either is the download (`record_called`). What a call adds is marked carried,
-so the value table's cap drops it before any candidate the caller's own walk holds, for a
-scalar and an array alike (round 6). Not read as a call: a word behind a wrapper (`env f`,
-`timeout 5 f`, `command f`: none runs a shell function), unless the step defines a function
-of that name (`sudo() { … }; sudo x`). Not carried: a name the body makes `local` (it dies
-with the call in bash and dash alike), a subshell body (`f() ( T=x )`), and a call the step
-runs in a child the use is not in (`f &`; a one-line `( f )` is still carried, fail-closed).
-The one price, named in the CHANGELOG: `T=P; f() { T=/dev/null; }; f; sh "$T"` is reported
-though no shell runs `P`. The sure carry is #2785's own PR.
+reports where either is the download (`record_called`); past the value table's cap a use
+reads its stand-in as every download, whatever a call added (`workflow_values.PAST`, round 7).
+Not read as a call: a word behind a wrapper (`env f`, `timeout 5 f`, `command f`: none runs a
+shell function), unless the step defines a function of that name (`sudo() { … }; sudo x`).
+Not carried: a name the body makes `local` (it dies with the call in bash and dash alike), a
+subshell body (`f() ( T=x )`), and a call run in a child the use is not in -- the step's `f &`,
+or a body's call in a list it backgrounds (`g() { f & wait; }`); a one-line `( f )` is still
+carried, fail-closed. The prices, named in the CHANGELOG: `T=P; f() { T=/dev/null; }; f; sh
+"$T"` is reported though no shell runs `P`; and `eval -p f` or `eval -- -- f` reads as a call of
+`f`, since the guard's `eval` reader keeps the words not led by `-` as the program, though bash
+rejects `-p` and dash runs `--` as a command. The sure carry is #2785's own PR.
 
 Beside `scripts/workflow_values.py`, which is at its ceiling; imports nothing above it.
 """
@@ -26,7 +28,7 @@ import os
 
 from shell_command import _ASSIGNMENT, _heads
 from shell_tokens import is_arm
-from workflow_values import emptied, record
+from workflow_values import _deduped, emptied, record
 
 _DEPTH = 8          # calls followed inside a body, in all
 
@@ -56,10 +58,14 @@ def _head(argv):
 
 def _calls(stmts, head, close):
     """The functions the body `stmts[head:close + 1]` calls: a single-stage statement whose
-    head word is bare and no assignment."""
+    head word is bare and no assignment, in a list the body does not send to the background
+    (`g() { f & wait; }`: as at the top level, what the child assigns dies with it)."""
     found = set()
-    for statement in stmts[head:close + 1]:
-        if len(statement.stages) == 1:
+    for at in range(head, close + 1):
+        statement, end = stmts[at], at
+        while stmts[end].separator in ("&&", "||") and end < close:
+            end += 1
+        if len(statement.stages) == 1 and stmts[end].separator != "&":
             word = _head(list(statement.stages[0].argv))
             if word and not _ASSIGNMENT.match(word):
                 found.add(word)
@@ -90,18 +96,12 @@ def _carry(table, stmts, head, close):
             for w in words:
                 emptied(inner, w, False, name == "read")
         record(inner, stage, False)
-    # What the body adds goes after the caller's own candidates, never in place of one (a name
-    # the body overflows keeps the caller's in `after` too), and is marked carried, so the cap
-    # drops it before any of the caller's (`workflow_values._update`, PR #2855 round 6).
-    carried = vars(table).setdefault("carried", {})
+    # What the body adds goes after the caller's own candidates, never in place of one; past
+    # the cap a use reads the cap's stand-in, whatever the order (`workflow_values.PAST`).
     for kind in ("scalars", "arrays"):
         before, after = getattr(table, kind), getattr(inner, kind)
         for name in set(after) - local:
-            own = before.get(name, [])
-            added = [c for c in after[name] if c not in own]
-            marks = carried.setdefault(name, [])
-            marks.extend(c for c in added if c not in marks)
-            before[name] = own + added
+            before[name] = _deduped(before.get(name, []) + after[name])
 
 
 def record_called(table, stmts, position, starts):

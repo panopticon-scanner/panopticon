@@ -83,20 +83,19 @@ running its words, as main reads it, and the table resolves those words too:
 Walks: after a loop that ran to its end bash holds its last word and the
 table every word; a literal's glob is matched at the use, not where bash
 matched it; a header that may not run keeps the old candidates beside its
-stand-in. Caps: see `_CANDIDATES`; a brace word the table cannot expand --
-past 64 words, or with a reference inside a group (`{a,$X}`) or a braced one
-beside it (`{a,b}${X}`) -- gives its name the stand-in, a limit, not a
-price. Not read: the assignment `${T:=d}` makes, an operator expansion's
-value (`NAME=${URL##*/}` holds its own text, a plain word), an attribute an
-earlier declaration set rewriting a later assignment, a called body's SURE
-effect (#2785), a name bash sets itself (`cd`'s `PWD`, `BASH_REMATCH`, the
-numbers of a redirection's `{fd}`, `wait -p` and `coproc`), held only where
-the step assigned it too, and arithmetic -- `let T=5`, `((T++))` and an
-arithmetic `for`'s updates are not read, and `((T=x+1))` is read as its text
-beside the old value -- so a name built from a number the arithmetic changed
-holds the old number (`i=0; ((i++)); T=cuda_$i.run` holds `cuda_0.run`): a
-download named by the new number is missed, one named by the old
-over-reports.
+stand-in. Caps: see `_CANDIDATES`; a text past `_LONGEST` is dropped, as on
+main, not stood in for -- a limit (a word split from one may name a file); a
+brace word `_braced` cannot expand gives its name the stand-in, a limit. Not
+read: the assignment `${T:=d}` makes, an operator expansion's value
+(`NAME=${URL##*/}` holds its own text, a plain word), an attribute an earlier
+declaration set rewriting a later assignment, a called body's SURE effect
+(#2785), a name bash sets itself (`cd`'s `PWD`, `BASH_REMATCH`, the numbers
+of a redirection's `{fd}`, `wait -p` and `coproc`), held only where the step
+assigned it too, and arithmetic -- `let T=5`, `((T++))` and an arithmetic
+`for`'s updates are not read, and `((T=x+1))` is read as its text beside the
+old value -- so a name built from a number the arithmetic changed holds the
+old number (`i=0; ((i++)); T=cuda_$i.run` holds `cuda_0.run`): a download
+named by the new number is missed, one named by the old over-reports.
 
 Stdlib only, like everything under it.
 """
@@ -140,10 +139,12 @@ _REWRITING = frozenset("luiA")
 # array), and `mapfile`'s and `readarray`'s (`-u 3`).
 _READING = frozenset("adinNptu")
 _MAPPING = frozenset("dnOsuCc")
-# Caps, a price each: past `_CANDIDATES` a name keeps that many beside its stand-in (`_update`), a
-# word resolves to the first `_CANDIDATES` of its product, no text grows past `_LONGEST` (`T=$T$T`).
+# Caps, a price each: past `_CANDIDATES` a name, a word and an argv keep that many beside `PAST`, the
+# cap's stand-in (#2871), a value the table no longer bounds, which a use reads as every download
+# (`workflow_uses._live`) until a sure write or `unset`; a text past `_LONGEST` is dropped (`T=$T$T`).
 _CANDIDATES = 8
 _LONGEST = 4096
+PAST = "${__panopticon_past_the_cap}"
 
 
 @dataclass
@@ -192,17 +193,10 @@ def assigned(stage):
     behind a declaration, else handed UNFOLDED (`["a=", "sh", "tool"]`,
     #2348): an empty `NAME=` and the words up to the next one while groups
     remain -- and its brace words are expanded, as bash expands them before
-    it assigns (`a=({x,y}.run)` holds `x.run y.run`). A name set to
-    a value the table cannot see -- a subscripted literal (`a=([1]=x)`), a
-    literal still open where the stage ends (its later lines' words are not
-    gathered), an element's assignment (`a[1]=x`, `declare a[1]=x`), a
-    declaration with `-l`, `-u`, `-i`, `-A` or, not behind `export`, `-n` --
-    and a scalar the statement only may assign are `record`'s. The prices: a
-    folded literal is re-split on blanks; a quoted brace word is expanded; a
-    subshell's empty prefix assignment `( T= sh tool )` and its quoted value
-    `( T='(x y)' )` read as literals; and a `NAME=text` element of an open
-    unfolded literal is read as a scalar too, a `NAME[N]=text` one as an
-    element's assignment. A `for` header is `record`'s.
+    it assigns (`a=({x,y}.run)` holds `x.run y.run`). A name set to a value
+    the table cannot see (the module's "unseen"), a scalar the statement only
+    may assign, and a `for` header are `record`'s; the prices are the module's
+    (Quoting, Literals).
     """
     scalars, arrays = _assignments(stage)[:2]
     return scalars, arrays
@@ -311,12 +305,8 @@ def record(table, stage, certain):
     words of each candidate, and `$@`, `$*`, a lone `$(...)` or an array the
     table does not hold the stand-in; without `in` it walks `"$@"`. Where no
     word is written out, the loop may not run, so the words join the old
-    candidates, as an uncertain assignment's do. `printf -v NAME`, `getopts
-    OPTSTRING NAME`, `mapfile` and `readarray` are read as `read NAME`, a
-    `read` or `unset` behind `builtin` as the bare one (`_unread`), and after
-    `eval`, `source` or `.`, or a name taken from a value (`read "$n"`,
-    `export "$k=$v"`), every held name gains its stand-in, kept beside its
-    old candidates even where the statement is certain.
+    candidates, as an uncertain assignment's do. The commands that set a name
+    to a value the table cannot see are `_unread`'s.
     """
     scalars, arrays, _count, maybe, unseen = _assignments(stage)
     for name, (append, text) in scalars.items():
@@ -487,21 +477,24 @@ def _update(table, name, new, certain, array=False):
     """`name`'s scalar candidates -- or, `array`, its word-lists -- after it is
     assigned `new`: replaced where `certain`; else added to, with the "maybe
     unset" candidate, `""` or `[]`, where the name was not held at all. With
-    none the name holds its stand-in; past `_CANDIDATES` it keeps the first of
-    its own, then of what a call carried (`table.carried`), beside it (#2855)."""
+    none the name holds its stand-in; past `_CANDIDATES`, the first of them
+    beside `PAST`, which stays until a sure write (`_capped`, #2871)."""
     candidates = table.arrays if array else table.scalars
     if not certain:
         held = name in table.scalars or name in table.arrays
         new = candidates.get(name, []) + new + ([] if held else [[] if array else ""])
     kept = _deduped(new)
-    if not kept:
-        _unseen(table, name)
-    elif len(kept) > _CANDIDATES:           # the cap drops only what a call carried in, first
-        carried = getattr(table, "carried", {}).get(name, [])
-        candidates[name] = sorted(kept, key=lambda c: c in carried)[:_CANDIDATES]
-        table.scalars[name] = _deduped(table.scalars.get(name, []) + ["$" + name])
+    if kept:
+        candidates[name] = _capped(kept, [PAST] if array else PAST)
     else:
-        candidates[name] = kept
+        _unseen(table, name)
+
+
+def _capped(candidates, stand):
+    """The first `_CANDIDATES` of `candidates`, an iterable read no further than the cap needs,
+    and past them `stand`, the cap's stand-in (`PAST`, or an argv or word-list holding it)."""
+    kept = list(itertools.islice(candidates, _CANDIDATES + 1))
+    return kept if len(kept) <= _CANDIDATES else _deduped(kept[:_CANDIDATES] + [stand])
 
 
 def _unseen(table, name):
@@ -567,7 +560,8 @@ def valued(word, table):
 
     Each `$T`, `${T}`, `${T:-d}`, `${T-d}`, `${T:=d}` or `${T=d}`, whole or
     embedded, stands for a held name's candidates, left to right; the texts
-    are the first `_CANDIDATES` of their product, less any over `_LONGEST`.
+    are the first `_CANDIDATES` of their product, any over `_LONGEST` dropped,
+    beside `PAST` past them (`_capped`); one built from `PAST` is `PAST` whole.
     A name stands for every scalar candidate and word 0 of every word-list,
     and is unset in a word-list without one. A default stands where its name
     is unset, and for a held empty value under `:-` or `:=`, as bash reads
@@ -596,9 +590,10 @@ def valued(word, table):
     if not factors:
         return []
     factors.append([text[start:]])
-    combinations = itertools.islice(itertools.product(*factors), _CANDIDATES)
-    return [shell_reader.derived(_joined(parts), word, *parts) for parts in combinations
-            if sum(map(len, parts)) <= _LONGEST]
+    combinations = _capped(itertools.islice(itertools.product(*factors), _CANDIDATES + 1), None)
+    return [PAST if parts is None or any(PAST in part for part in parts)
+            else shell_reader.derived(_joined(parts), word, *parts)
+            for parts in combinations if sum(map(len, parts or ())) <= _LONGEST]
 
 
 def _joined(parts):
@@ -648,7 +643,8 @@ def _element(name, key, table):
     the stand-in a maybe `read -ra`, `mapfile`, `arr[1]=$(...)` or `eval`
     gives, or a literal's lone `$(...)` -- has no word past 0, so beside
     `arr=(x y)` a `${arr[1]}` reads `y` alone, without the stand-in (a limit:
-    the caller weighs the use as written first)."""
+    the caller weighs the use as written first). A word-list holding `PAST` gives
+    it for every key."""
     if name not in table.arrays:
         return []
     candidates = _lists(table, name)
@@ -657,14 +653,16 @@ def _element(name, key, table):
     # A subscript is arithmetic: a leading 0 is octal, so it, and a long one, stay unread.
     if len(key) > 9 or key.startswith("0") and key != "0":
         return []
-    return _deduped([words[int(key)] for words in candidates if int(key) < len(words)])
+    return _deduped([words[int(key)] if int(key) < len(words) else PAST for words in candidates
+                     if int(key) < len(words) or any(PAST in word for word in words)])
 
 
 def valued_argvs(argv, table):
     """The argvs `use()` must weigh BESIDE the stage's words as written
     (#2425, #2489, #2581): `[argv]` where no word resolves, else the first
     `_CANDIDATES` of the product of each word's `valued` texts (or the word
-    itself), a whole `${a[@]}` or `${a[*]}` SPLICED as each word-list's words.
+    itself), a whole `${a[@]}` or `${a[*]}` SPLICED as each word-list's words,
+    and past them one argv more, each word with a choice `PAST` (#2871).
     An empty text is dropped, as bash drops an unquoted empty expansion, and
     an argv left empty is not made. A text with `*`, `?`, `[` or an extglob
     group outside its references, or from a word bash expands as a pattern
@@ -685,14 +683,18 @@ def valued_argvs(argv, table):
         resolved = True
     if not resolved:
         return [argv]
-    combinations = itertools.islice(itertools.product(*choices), _CANDIDATES)
-    made = ([part for words in combination for part in words] for combination in combinations)
+    stand = [part for words in choices for part in (words[0] if len(words) == 1 else [PAST])]
+    made = _capped(([part for words in combination for part in words]
+                    for combination in itertools.product(*choices)), stand)
     return [words for words in made if words]
 
 
 def _as_word(text, word):
     """A substituted text as an argv word: a live pattern where bash globs its
-    text outside its references (a held `${OTHER##*/}` is a plain word)."""
+    text outside its references (a held `${OTHER##*/}` is a plain word); `PAST`
+    where it holds the cap's stand-in, which the use reads whole."""
+    if PAST in text:
+        return PAST
     if _GLOB.search(_REFERENCES.sub("", text)) or getattr(word, "lead", None) is not None:
         return live_pattern(text)
     return text
