@@ -37,9 +37,11 @@ evidence exposed.
   templates the shells do run it); `| ${V:-cat | sh}`; `bash -s <>tool <<'EOF'`, which
   inherits the `<` reads-list reading; `|&` and `source … <> tool` under `sh` alone; and from
   the second round, 48 cells in 14 rows -- `${D:-"tool x"}`, `D=other` with `${D:-tool}`,
-  `${D:+tool}` with `D` unset, `sh < ${F:-tool }` under `sh`, and `|` ⏎ `$$ sh` -- none of
-  which a shell runs. (`-o ${D:-tool } --output other` is a correct report: curl pairs
-  outputs with URLs in order and writes `tool`.)
+  `${D:+tool}` with `D` unset, `sh < ${F:-tool }` under `sh`, and `|` ⏎ `$$ sh` -- and from
+  the third, an escaped blank in a default (`-o ${D:-tool\ x}`), `sh <> ${F:-tool }` and
+  `bash <>${F:-tool }` under `sh`, and `-o ${D:-tool}` followed by `cd s; sh tool` under the
+  `{0}` templates -- none of which a shell runs. (`-o ${D:-tool } --output other` is a correct
+  report: curl pairs outputs with URLs in order and writes `tool`.)
 - **Workflow guard reads a function header in the spellings bash takes at a statement's head
   (#2664, #2608; #2785).** `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after
   `then`, `do` or an opened `{` ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN:
