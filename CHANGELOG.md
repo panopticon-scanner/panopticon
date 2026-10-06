@@ -31,16 +31,22 @@ evidence exposed.
   the own-line `! {` ⏎ `CHECK` ⏎ `}` form `main` missed; `! !` is read as one negation (bash
   XORs: fail-closed), and a short-circuit inside a negated group, a call in a branch that does
   not run or in a child, a call after `unset -f` and a prefix assignment are read under the `!`
-  too (185 hunt cells and 36 harness cells, fail-closed). A called function's assignment
+  too (214 hunt cells and 36 harness cells on the round-2 rows, 102 more on the round-3
+  families: 316 fail-closed cells in all). A called function's assignment
   (`T=/dev/null; f(){ :; T=tool; }; f; sh "$T"`) never reached the use, `main` reporting it only
   because the misread header made it the step's own statement; carrying the body's value out
   surely read past what the shells do (a `return` the body takes, a wrapper that runs no
   function, a later redefinition, a stand-in, a `declare -g` bash 3.2 and dash lack), so a call
   now adds what the body may assign as UNSURE candidates and keeps the caller's own
   (`scripts/workflow_called.py`; every definition before the call, and the functions the body
-  calls, eight deep; `local` dies with the call, a subshell body reaches nothing) -- at one
-  price: `T=P; f() { T=/dev/null; }; f; sh "$T"`, and #2785's `g() { T=x; }; T=P; g; sh "$T"`,
-  are reported though no shell runs `P`; the sure carry is #2785's own PR. And the header test
+  calls, eight deep; `local` dies with the call, a subshell body reaches nothing; `time f`
+  and `eval f` run the function; the arm of a one-line `case` is stepped past first) -- at
+  one price: `T=P; f() { T=/dev/null; }; f; sh "$T"`, and #2785's `g() { T=x; }; T=P; g; sh
+  "$T"`, are reported though no shell runs `P`; the sure carry is #2785's own PR. Past the
+  table's candidate cap (eight) the merge keeps the caller's own values beside the stand-in,
+  so eight or more body assignments still report; `main`'s own top-level cap (`T=cuda_1.run`
+  then eight conditional reassignments: the stand-in alone) stands, a named limit. And the
+  header test
   at every `(` had joined and split the whole buffer before the match, about x4 per doubling
   of one `(( … ))` statement, now computed only behind a match.
 - **Workflow guard: what `eval`'s words and a `-c` string hand on (#2673, #2683, #2684, #2764,
