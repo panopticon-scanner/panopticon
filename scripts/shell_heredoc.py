@@ -29,11 +29,17 @@ body is scanned only when its exact delimiter exists below it, which bounds
 that scan while still finding an earlier `EOF)` line. Bash 5.2 runs nothing
 past the first unterminated body either, but bash 3.2 can run code after that
 later `EOF)`; the exact-line bound keeps reading those bodies linear rather
-than quadratic in the heredocs queued.
+than quadratic in the heredocs queued. Outside a substitution, an unterminated
+QUOTED body has one unambiguous reading in Bash 3.2, Bash 5.2 and dash: every
+remaining line is data and no command in it runs, so it is refused instead of
+leaving those lines to be read as code. The historical unquoted reading stays
+unchanged.
 
 Stdlib only."""
 import bisect
 import re
+
+from shell_quote import Unreadable
 
 
 class _Lines:
@@ -52,6 +58,7 @@ class _Lines:
 
     def __init__(self, text: str, folded: bool):
         self.size = len(text)
+        self.folded = folded            # False is a quoted, verbatim body
         self.starts = [0] + [match.end() for match in re.finditer("\n", text)]
         self.unended = False            # a body in a substitution found no end
         self.texts: list[str] = []      # this reading's lines
@@ -103,6 +110,11 @@ class _Lines:
         else:
             keys, last = self.index(not raw)
             if last.get(word, -1) <= n:
+                if not self.folded and not sub:
+                    raise Unreadable("a quoted heredoc has no exact terminator line: "
+                                     "no supported shell runs its remaining body as "
+                                     "commands, so this guard refuses to read those lines "
+                                     "as code")
                 return None
             end = keys.index(word, n + 1)
         lines = [text[offset:]] + self.texts[n + 1:end] if end > n else []

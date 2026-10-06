@@ -5860,6 +5860,22 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
             with self.subTest(script=script):
                 self.flagged(script % self.PAYLOAD)
 
+    def test_an_unterminated_quoted_body_is_refused_not_read_as_code(self):
+        # #2692's differential row: Bash 3.2, Bash 5.2 and dash all treat the
+        # `EOF; ...` line as body text, as they do `EOF ` with trailing space.
+        # The guard must not manufacture a live pipeline out of either one.
+        for tail in ("EOF; %s\n" % self.PAYLOAD,
+                     "EOF \n%s\n" % self.PAYLOAD):
+            with self.subTest(tail=tail):
+                found = wg.job_defects([("step", "cat <<'EOF'\nx\n" + tail)])
+                self.assertEqual(1, len(found), found)
+                self.assertEqual("step", found[0][0])
+                self.assertIn("quoted heredoc has no exact terminator", found[0][1])
+                self.assertNotIn("straight to `sh`", found[0][1])
+
+        # With the exact line present, the same pipeline really is code.
+        self.flagged("cat <<'EOF'\nx\nEOF\n%s\n" % self.PAYLOAD)
+
     def test_a_continuation_inside_the_operator_is_gone(self):
         # #2291: to bash, `<\` + newline + `<EOF` is `<<EOF`, `<<\` + newline
         # + `-EOF` is `<<-EOF`, and `<\` + newline + `<< x` is `<<< x`; bash

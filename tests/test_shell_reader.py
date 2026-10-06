@@ -923,6 +923,22 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
             with self.subTest(script=script):
                 self.assertIn([['echo', 'a']], argvs(script))
 
+    def test_an_unterminated_quoted_heredoc_is_refused(self):
+        # #2692: quotes make the delimiter literal, but do not let an `EOF`
+        # prefix end its body. Bash 3.2, Bash 5.2 and dash all take every
+        # remaining line as data, so reading one as code would invent a
+        # command none of them runs. Keep the historical unquoted reading in
+        # the test above; only this quoted, unambiguous case fails closed.
+        for last in ("EOF; echo hidden\n", "EOF \necho hidden\n"):
+            with self.subTest(last=last):
+                with self.assertRaisesRegex(
+                        shell_lex.Unreadable, "quoted heredoc.*no exact terminator"):
+                    shell_reader.statements("cat <<'EOF'\nx\n" + last)
+
+        # An exact delimiter still ends the body and exposes following code.
+        self.assertIn([['echo', 'visible']],
+                      argvs("cat <<'EOF'\nx\nEOF\necho visible\n"))
+
     def test_a_delimiter_bash_parses_to_spell_is_refused(self):
         # Bash spells `<<$(a b)` by parsing the word, and the reader parses
         # no expansions: a body ended at a guessed spelling (`$`) swallows
@@ -991,14 +1007,16 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
                 self.assertIn([['echo', 'a']], argvs(script))
         self.assertEqual("it's", stage("cat 3<\\\n<EOF\nit's\nEOF\n").heredoc)
         # Only the operator folds, as before: `\` before a word quotes it,
-        # `<\` + newline + a word is a file on stdin, and a `\`-newline in
-        # '...' is the word's own, which no line ends -- nor does bash, which
-        # runs nothing below it.
+        # and `<\` + newline + a word is a file on stdin. A `\`-newline in
+        # '...' is the word's own, which no line can end -- nor does bash,
+        # which runs nothing below it, so #2692 now refuses that quoted body.
         self.assertEqual(("it's $x", False),
                          stage("cat <<\\EOF\nit's $x\nEOF\n").stdin_heredoc)
         self.assertEqual([[['cat']], [['echo', 'a']]], argvs("cat <\\\nf\necho a\n"))
         self.assertIsNone(stage("cat <\\\nf\n").stdin_heredoc)
-        self.assertNotIn([['echo', 'a']], argvs("cat <<'E\\\nOF'\nit's\nEOF\necho a\n"))
+        with self.assertRaisesRegex(
+                shell_lex.Unreadable, "quoted heredoc.*no exact terminator"):
+            argvs("cat <<'E\\\nOF'\nit's\nEOF\necho a\n")
 
     def test_every_heredoc_on_a_line_is_filed_under_its_descriptor(self):
         # #2128: a second heredoc on the line was read as `<` of a file named
