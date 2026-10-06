@@ -456,6 +456,7 @@ def _stage(text, context):
     pending = None
     literal: int | None = None          # where an array literal's words start
     words: list[str] = []               # argv with no literal folded
+    folds: list[tuple[int, list[str]]] = []     # each literal: its opener in `words`, its elements
 
     def take(word):
         substitutions.extend(value for kind, value in _markers(word).values()
@@ -496,8 +497,14 @@ def _stage(text, context):
             else:
                 group_close += 1
                 if literal is not None:
-                    argv[literal - 1:] = [context.token(
-                        "%s(%s)" % (argv[literal - 1], " ".join(argv[literal:])))]
+                    # The folded word carries its `elements`, the words as bash splits them
+                    # (markers and quoting kept), beside the text it always read as; a word
+                    # that only looks like a literal has none (the array-literal cluster).
+                    folded = context.token("%s(%s)" % (argv[literal - 1], " ".join(argv[literal:])))
+                    folded = folded if _markers(folded) else _Token(folded, {})
+                    setattr(folded, "elements", list(argv[literal:]))
+                    folds.append((len(words) - len(argv[literal:]) - 1, list(argv[literal:])))
+                    argv[literal - 1:] = [folded]
                 literal = None
             continue
         if entry and entry[0] == "redirect":
@@ -559,6 +566,9 @@ def _stage(text, context):
         argv.append(word)
         words.append(word)
     if all(word in KEYWORDS or _ASSIGNMENT.match(word) for word in argv):
+        for opener, elements in folds:  # the opener keeps the literal's `elements` too
+            words[opener] = _Token(words[opener], _markers(words[opener]))
+            setattr(words[opener], "elements", elements)
         argv = words        # it only assigns: an array of a command is read as run
     stdout, stdin = sinks.get("1"), bodies.get("0")
     return Stage(argv, writes, reads, stdin[0] if stdin and stdin[2] else heredoc,

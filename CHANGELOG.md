@@ -7,6 +7,13 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader: an array literal's word carries its `elements` (the array-literal
+  cluster, #2772, #2783, #2784, #2812; reader half).** A folded `NAME=(…)` / `NAME+=(…)` word,
+  and the `NAME=` opener where a statement that only assigns is still handed unfolded, now carry
+  the literal's words as bash splits them -- each a token of the same parse, markers and quoting
+  kept -- beside the text they always read as; a word that only looks like a literal (`T='(x y)'`,
+  a subshell's `T=`) carries none. Additive: nothing folds or unfolds differently and no verdict
+  moves; `workflow_values` reads `elements` only when the cluster's switch lands.
 - **Workflow reader reads what stands in front of a command as bash does (#2648, #2480;
   #2608, #2331).** `env SHELLOPTS=noexec bash -s <<'EOF'` around a check credited that check
   while the inner bash, started with `-n`, read the body and ran none of it (the download ran
