@@ -64,6 +64,30 @@ def _negation_count(words):
     return count
 
 
+def _is_negated_context(words, structure=None):
+    """Whether any pipeline around this command has an odd `!` parity.
+
+    Compound keywords separate pipelines: an outer `! { ...; }` never
+    cancels an inner `! command`.  Parenthesis positions do not survive the
+    reader, so a stage with a hidden group boundary and leading inversions is
+    conservatively negated when those inversions could sit on either side.
+    """
+    parities, count = [], 0
+    for word in words:
+        if word == "!":
+            count += 1
+        elif word not in shell_reader.KEYWORDS:
+            break
+        else:
+            parities.append(count % 2)
+            count = 0
+    parities.append(count % 2)
+    if any(parities):
+        return True
+    return bool(structure and structure.group_open > structure.group_close
+                and _negation_count(words))
+
+
 def _known_failure(statement):
     """Whether this one command certainly leaves a failing list status."""
     if len(statement.stages) != 1:
@@ -83,16 +107,19 @@ def _known_failure(statement):
 def _skippable_or(stmts, index):
     """Whether an earlier successful `||` path may skip this statement."""
     contexts = conditional_contexts(stmts)
-
-    def skipped(position, seen=()):
+    pending, seen = [index], set()
+    while pending:
+        position = pending.pop()
         if position in seen:
-            return False
-        return any(stmts[source].separator == "||" and
-                   (not _known_failure(stmts[source])
-                    or skipped(source, seen + (position,)))
-                   for source, _carrier in contexts.get(position, ()))
-
-    return skipped(index)
+            continue
+        seen.add(position)
+        for source, _carrier in contexts.get(position, ()):
+            if stmts[source].separator != "||":
+                continue
+            if not _known_failure(stmts[source]):
+                return True
+            pending.append(source)
+    return False
 
 
 def _function_body(words, bare=0):
@@ -108,7 +135,7 @@ def _function_body(words, bare=0):
                 and words[start + 1] in ("{", "(", "if", "while", "until", "for", "case"))
     if (name is None and start + 1 < len(words) and (explicit or bare)
             and (_function_syntax([words[start], "()"])[0] == words[start])):
-        return words[start + 1:], not explicit
+        return words[:start] + words[start + 1:], bool(bare)
     if name is None:
         return None
     if words[start] == "function":
@@ -119,7 +146,7 @@ def _function_body(words, bare=0):
         end = start + 2
     if end < len(words) and words[end] == "()":
         end += 1
-    return words[end:], False
+    return words[:start] + words[end:], False
 
 
 def _failure_context(argv, plain_arm=False, structure=None):
@@ -133,7 +160,7 @@ def _failure_context(argv, plain_arm=False, structure=None):
         if shell_reader.is_arm(words[0]):
             words = words[1:]
             continue
-        if (plain_arm and len(words) > 1 and
+        if (plain_arm and len(words) > 1 and words[0] not in shell_reader.KEYWORDS and
                 (words[1] in shell_reader.KEYWORDS
                  or _function_syntax(words[1:])[0] is not None)):
             words, plain_arm = words[1:], False
@@ -177,10 +204,30 @@ def _inside_unmarked_case(stmts, index):
     cases = []
     for statement in stmts[:index + 1]:
         for stage in statement.stages:
+            words = stage.argv
+            bare = min(stage.group_close, max(stage.group_open - stage.group_close, 0))
+            while True:
+                # A plain command may carry the word `case` as an argument.
+                # Only infer a reader-lifted bare function header when this
+                # stage also carries lifted parenthesis structure; an explicit
+                # `name()` header remains identifiable without it.
+                if (_function_syntax(words)[0] is None
+                        and not (stage.group_open or stage.group_close)):
+                    break
+                body = _function_body(words, bare)
+                if body is None:
+                    break
+                following, consumed = body
+                if following == words:
+                    break
+                words, bare = following, bare - consumed
+            if any(word == "case" for word in words[:next(
+                    (at for at, word in enumerate(words)
+                     if word not in shell_reader.KEYWORDS), len(words)
+            )]):
+                cases.append(False)
             for token in stage.argv:
-                if token == "case":
-                    cases.append(False)
-                elif shell_reader.is_arm(token) and cases:
+                if shell_reader.is_arm(token) and cases:
                     cases[-1] = True
                 elif token == "esac" and cases:
                     cases.pop()
@@ -193,6 +240,8 @@ def _enclosing_failure_contexts(stmts, index):
     for statement in stmts[:index]:
         for stage in statement.stages:
             opens, closes = _structural_groups(stage)
+            paired = min(opens, closes)
+            opens, closes = opens - paired, closes - paired
             for _close in range(min(closes, len(stack))):
                 stack.pop()
             if opens:

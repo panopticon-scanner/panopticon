@@ -49,11 +49,26 @@ class TestTheFailureContextSplit(unittest.TestCase):
     def test_gating_reexports_each_moved_object_by_identity(self):
         for name in ("_structural_groups", "conditional_contexts", "_negation_count",
                      "_known_failure", "_skippable_or", "_function_body",
-                     "_failure_context", "_inside_unmarked_case",
+                     "_failure_context", "_inside_unmarked_case", "_is_negated_context",
                      "_enclosing_failure_contexts"):
             with self.subTest(name=name):
                 self.assertIs(getattr(workflow_gating, name),
                               getattr(workflow_failure_contexts, name))
+
+    def test_a_four_word_case_header_is_all_header(self):
+        # Round-3 F1: changing the strip back from >= 4 to > 4 must trip a pin.
+        self.assertEqual([], workflow_failure_contexts._failure_context(
+            ["case", "subject", "in", "pattern"]
+        ))
+
+    def test_case_as_an_argument_does_not_open_an_unmarked_case(self):
+        # Round-3 F11: an argv operand is not the reserved word at command head.
+        for script in ("echo case", "printf %s case", "f(){ echo case;};f"):
+            with self.subTest(script=script):
+                statements = list(shell_reader.statements(script + "; CHECK"))
+                self.assertFalse(workflow_failure_contexts._inside_unmarked_case(
+                    statements, len(statements) - 1
+                ))
 
 
 class TestFetchParsing(unittest.TestCase):
@@ -2490,7 +2505,10 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
     def test_a_use_after_the_childs_and_list_is_reported(self):
         for body in ("sh -ec '%s && echo checked; echo more'\n",
                      "eval '%s && echo checked; true'\n",
-                     "bash -e -s <<'EOF'\n%s && echo checked\necho more\nEOF\n"):
+                     "bash -e -s <<'EOF'\n%s && echo checked\necho more\nEOF\n",
+                     "sh -e <<'EOF'\n%s && echo checked\necho more\nEOF\n",
+                     "bash -es <<'EOF'\n%s && echo checked\necho more\nEOF\n",
+                     "bash -s <<'EOF'\nset -e\n%s && echo checked\necho more\nEOF\n"):
             with self.subTest(body=body):
                 self.reported(body)
 
@@ -2625,11 +2643,17 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
 
     def test_an_ordinary_negation_overrides_outer_failure_credit(self):
         child = "bash -ec '! %s && " + self.INLINE_USE + "; echo more'\n"
-        for prefix, shell in (("set +e\n", None), ("", "bash {0}")):
+        for prefix, shell in (("set +e\n", None), ("set +e\n", "bash"),
+                              ("set +e\n", "sh"), ("set +o errexit\n", None),
+                              ("", "bash {0}"), ("", "sh {0}")):
             with self.subTest(prefix=prefix, shell=shell):
-                found = self.job(prefix + child, shell, use="")
+                found = self.job(prefix + child + "echo parent\n", shell, use="")
                 self.assertEqual(1, len(found), found)
                 self.assertIn("is negated", found[0][1])
+        for shell in (None, "sh"):
+            with self.subTest(carrier="pipe", shell=shell):
+                found = self.job("{\n" + child + "} | cat\necho parent\n", shell, use="")
+                self.assertEqual(1, len(found), found)
 
     def test_an_unbounded_child_reach_does_not_override_a_piped_group(self):
         body = ("{\nbash -ec '%s && eval \"echo a; echo b\" && echo done'\n} | cat\n"
@@ -2670,6 +2694,21 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
             "f() ( g() ( ! %s && " + self.INLINE_USE + " ); g ); f",
             "{ f() { ! %s && " + self.INLINE_USE + "; }; }; f",
         ))
+
+    def test_braceless_function_bodies_report_in_carry_on_postures(self):
+        scripts = (
+            "f() if ! %s && " + self.INLINE_USE + "; then :; fi; f",
+            "f() while ! %s && " + self.INLINE_USE + "; do break; done; f",
+            "f() for x in one; do ! %s && " + self.INLINE_USE + "; done; f",
+            "f() case x in x) ! %s && " + self.INLINE_USE + ";; esac; f",
+        )
+        for script in scripts:
+            for prefix, shell in (("set +e\n", None), ("", "bash {0}"),
+                                  ("", "sh {0}")):
+                with self.subTest(script=script, shell=shell):
+                    body = prefix + "bash -ec '" + script + "'\necho parent\n"
+                    found = self.job(body, shell, use="")
+                    self.assertEqual(1, len(found), found)
 
     def test_a_pipe_in_an_unmarked_case_pattern_is_not_a_pipeline(self):
         self.carry_on_reports((
@@ -2717,6 +2756,7 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
 
     def test_a_skipped_failure_in_an_or_chain_certifies_nothing(self):
         self.carry_on_reports((
+            "! ! true || %s && " + self.INLINE_USE + "; echo more",
             "true || false || %s && " + self.INLINE_USE + "; echo more",
             "true || ! true || %s && " + self.INLINE_USE + "; echo more",
             "true || ! ! true || %s && " + self.INLINE_USE + "; echo more",
@@ -2735,6 +2775,176 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
             "if true || false || %s && " + self.INLINE_USE + "; then :; fi",
             "while true || false || %s && " + self.INLINE_USE + "; do break; done",
         ))
+
+    def test_separate_pipeline_negations_never_cancel_each_other(self):
+        scripts = (
+            "! { ! %s && " + self.INLINE_USE + "; }",
+            "! ( ! %s && " + self.INLINE_USE + " )",
+            "! { ! { %s; }; }; " + self.INLINE_USE,
+        )
+        self.carry_on_reports(scripts)
+        for script in scripts:
+            for body in (script, "eval '" + script + "'"):
+                with self.subTest(body=body):
+                    found = self.job("set +e\n" + body + "\n", use="")
+                    self.assertEqual(1, len(found), found)
+
+    def test_a_closed_group_leaves_no_negation_on_a_later_check(self):
+        self.carry_on_reports((
+            "( ! false ); ! %s && " + self.INLINE_USE + "; echo more",
+            "! (true); ! %s && " + self.INLINE_USE + "; echo more",
+            "if ! (false); then :; fi; ! %s && " + self.INLINE_USE,
+        ))
+        for body in (
+            "set +e\nbash -ec '( ! false ); %s && " + self.INLINE_USE + "'\n",
+            "set +e\nbash -e -s <<'EOF'\n( ! false )\n%s && "
+            + self.INLINE_USE + "\nEOF\n",
+        ):
+            with self.subTest(body=body):
+                self.assertEqual([], self.job(body, use=""))
+
+    def test_stripping_a_header_preserves_its_enclosing_failure_context(self):
+        scripts = (
+            "! { f() { %s; }; f; }; " + self.INLINE_USE,
+            "if { f() { %s; }; f; }; then :; fi; " + self.INLINE_USE,
+            "while { f() { %s; }; f; }; do break; done; " + self.INLINE_USE,
+            "until { f() { %s; }; f; }; do break; done; " + self.INLINE_USE,
+            "if false; then :; elif { f() { %s; }; f; }; then :; fi; "
+            + self.INLINE_USE,
+            "! ( f() { %s; }; f ); " + self.INLINE_USE,
+            "! { case x in x) %s;; esac; }; " + self.INLINE_USE,
+        )
+        self.carry_on_reports(scripts)
+        for script in (scripts[0], scripts[-1]):
+            with self.subTest(level="step", script=script):
+                found = self.job("set +e\n" + script + "\n", use="")
+                self.assertEqual(1, len(found), found)
+
+    def test_a_subshell_around_a_function_does_not_consume_its_negation(self):
+        self.carry_on_reports((
+            "( f() { ! %s && " + self.INLINE_USE + "; }; f )",
+            "{ ( f() { ! %s && " + self.INLINE_USE + "; }; f ); }",
+        ))
+
+    def test_a_successful_definition_operand_may_skip_the_check_under_errexit(self):
+        script = "false || f() ( false ) || %s && " + self.INLINE_USE + "; echo more"
+        bodies = (
+            "bash -ec '" + script + "'\n",
+            "bash -e -s <<'EOF'\n" + script + "\nEOF\n",
+            "eval '" + script + "'\n",
+        )
+        for shell in (None, "bash", "sh"):
+            for body in bodies:
+                with self.subTest(shell=shell, body=body):
+                    found = self.job(body, shell, use="")
+                    self.assertEqual(1, len(found), found)
+
+    def test_failure_contexts_cross_child_forms_and_parent_postures(self):
+        script = "! { ! %s && " + self.INLINE_USE + "; }"
+        children = (
+            "bash -ec '" + script + "'\n",
+            "sh -ec '" + script + "'\n",
+            "dash -ec '" + script + "'\n",
+            "bash -c 'set -e; " + script + "'\n",
+            "sh -e <<'EOF'\n" + script + "\nEOF\n",
+            "bash -es <<'EOF'\n" + script + "\nEOF\n",
+            "bash -s <<'EOF'\nset -e\n" + script + "\nEOF\n",
+        )
+        for child in children:
+            postures = tuple(("set +e\n" + child + "echo parent\n", shell)
+                             for shell in (None, "bash", "sh")) + (
+                ("set +o errexit\n" + child + "echo parent\n", None),
+                (child + "echo parent\n", "bash {0}"),
+                (child + "echo parent\n", "sh {0}"),
+                ("{\n" + child + "} | cat\necho parent\n", None),
+            )
+            for body, shell in postures:
+                with self.subTest(child=child.splitlines()[0], shell=shell, body=body[:20]):
+                    found = self.job(body, shell, use="")
+                    self.assertEqual(1, len(found), found)
+
+    def test_errexit_parent_postures_keep_compound_closures(self):
+        scripts = (
+            "f() { g() if ! %s && " + self.INLINE_USE + "; then :; fi; g; }; f",
+            "f() { case x in x|y) ! %s && " + self.INLINE_USE + ";; esac; }; f",
+            "! { echo pre; %s; } && " + self.INLINE_USE + "; echo more",
+            "time ! %s && " + self.INLINE_USE + "; echo more",
+        )
+        for shell in (None, "bash", "sh"):
+            for script in scripts:
+                with self.subTest(shell=shell, script=script):
+                    found = self.job("bash -ec '" + script + "'\necho parent\n",
+                                     shell, use="")
+                    self.assertEqual(1, len(found), found)
+
+    def test_piped_child_list_forms_keep_the_parent_refusal(self):
+        script = "%s && eval \"echo a; echo b\" && echo done"
+        children = (
+            "bash -ec '" + script + "'\n",
+            "bash -c '" + script + "'\n",
+            "bash -e -s <<'EOF'\n" + script + "\nEOF\n",
+            "sh -ec '" + script + "'\n",
+        )
+        for shell in (None, "sh"):
+            for child in children:
+                with self.subTest(shell=shell, child=child.splitlines()[0]):
+                    found = self.job("{\n" + child + "} | cat\n", shell)
+                    self.assertEqual(1, len(found), found)
+
+    def test_parenthesized_negation_ambiguity_fails_closed(self):
+        # The reader drops the parenthesis position, so these two programs
+        # become the same stage.  The first runs the payload on all three
+        # shells; the second does not, and is the bounded fail-closed answer.
+        scripts = (
+            "! ( ! %s && " + self.INLINE_USE + " )",
+            "! ! ( %s && " + self.INLINE_USE + " )",
+        )
+        for child in ("bash", "sh", "dash"):
+            for script in scripts:
+                with self.subTest(child=child, script=script):
+                    body = "set +e\n" + child + " -ec '" + script + "'\necho parent\n"
+                    found = self.job(body, use="")
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn("is negated", found[0][1])
+
+    def test_bounded_fail_closed_negation_cases_remain_reported(self):
+        cases = (
+            ("set +e\n! {\n%s && " + self.INLINE_USE + "\n}\necho parent\n", ""),
+            ("set +e\nif ! {\n%s\n}; then exit 1; fi\n", self.USE),
+            ("set +e\n! { if true; then %s && " + self.INLINE_USE
+             + "; fi; }\necho parent\n", ""),
+            ("set +e\ntrue | ! %s && " + self.INLINE_USE + "; echo more\n", ""),
+        )
+        for body, use in cases:
+            with self.subTest(body=body):
+                found = self.job(body, use=use)
+                self.assertEqual(1, len(found), found)
+                self.assertIn("is negated", found[0][1])
+
+    def test_non_bash_reserved_words_keep_the_dialect_fail_closed_answer(self):
+        for child in ("sh", "dash"):
+            with self.subTest(child=child):
+                body = ("set +e\n" + child + " -ec 'time ! %s && "
+                        + self.INLINE_USE + "; echo more'\necho parent\n")
+                found = self.job(body, use="")
+                self.assertEqual(1, len(found), found)
+                self.assertIn("is negated", found[0][1])
+
+    def test_long_or_lists_are_walked_iteratively(self):
+        script = ("true || " + "false || " * 600 + "%s && "
+                  + self.INLINE_USE + "; echo more")
+        found = self.job("set +e\nbash -ec '" + script + "'\necho parent\n", use="")
+        self.assertEqual(1, len(found), found)
+
+    def test_same_pipeline_double_negations_remain_honest_clears(self):
+        for script in (
+            "! ! %s && " + self.INLINE_USE + "; echo more",
+            "X=1 ! %s && " + self.INLINE_USE + "; echo more",
+            "! ! %s; " + self.INLINE_USE,
+        ):
+            with self.subTest(script=script):
+                body = "set +e\nbash -ec '" + script + "'\n"
+                self.assertEqual([], self.job(body, use=""))
 
 
 class TestAPipedCheckGatesOnlyUnderPipefail(unittest.TestCase):
@@ -5906,6 +6116,32 @@ class TestCli(unittest.TestCase):
                 fh.write(self.WORKFLOW.replace(
                     "curl -fsSL https://example.test/i.sh | sh", "make test"))
             self.assertEqual(0, wg.main([path], out=lambda _line: None))
+
+    def test_a_long_or_list_does_not_hide_another_workflows_finding(self):
+        inline_use = TestASetPlusEAtTheStepsTopLevel.USE.replace(
+            "\n", "; "
+        ).rstrip("; ")
+        script = (TestASetPlusEAtTheStepsTopLevel.FETCH + "set +e\n"
+                  + "bash -ec 'true || " + "false || " * 600
+                  + TestASetPlusEAtTheStepsTopLevel.CHECK + " && " + inline_use
+                  + "; echo more'\necho parent\n")
+        workflow = (self.WORKFLOW[:self.WORKFLOW.index("      - name:")]
+                    + "      - name: long\n        run: |\n"
+                    + "".join("          " + line + "\n"
+                              for line in script.splitlines()))
+        with tempfile.TemporaryDirectory() as tmp:
+            long_path = os.path.join(tmp, "long.yml")
+            bad_path = os.path.join(tmp, "bad.yml")
+            with open(long_path, "w", encoding="utf-8") as fh:
+                fh.write(workflow)
+            with open(bad_path, "w", encoding="utf-8") as fh:
+                fh.write(self.WORKFLOW)
+            lines: list[str] = []
+            self.assertEqual(1, wg.main([long_path, bad_path], out=lines.append))
+        self.assertTrue(any(line.startswith("long.yml / b / long -- ") for line in lines),
+                        lines)
+        self.assertTrue(any(line.startswith("bad.yml / b / install -- ") for line in lines),
+                        lines)
 
     def test_unreadable_steps_are_named_and_a_clean_early_close_is_omitted(self):
         # A `shell_lex.Unreadable` escaped `main` as a traceback: it named no

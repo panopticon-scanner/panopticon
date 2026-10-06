@@ -40,6 +40,7 @@ from workflow_failure_contexts import (_enclosing_failure_contexts as _enclosing
                                        _failure_context as _failure_context,
                                        _function_body as _function_body,
                                        _inside_unmarked_case as _inside_unmarked_case,
+                                       _is_negated_context as _is_negated_context,
                                        _known_failure as _known_failure,
                                        _negation_count as _negation_count,
                                        _skippable_or as _skippable_or,
@@ -422,14 +423,16 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
         credit = None
     inherited_child_reach, local = False, None
     plain_arm = _inside_unmarked_case(stmts, index)
-    contexts = [_failure_context(item.argv, plain_arm, item)
+    contexts = [(_failure_context(item.argv, plain_arm, item), item)
                 for item in statement.stages]
     if not contexts:
-        contexts = [_failure_context(stage.argv, plain_arm, stage)]
+        contexts = [(_failure_context(stage.argv, plain_arm, stage), stage)]
     enclosing = _enclosing_failure_contexts(stmts, index)
-    is_negated = bool(sum(_negation_count(context)
-                          for context in contexts + enclosing) % 2)
-    is_conditional = any(conditional(context) for context in contexts)
+    is_negated = (any(_is_negated_context(context, item)
+                      for context, item in contexts)
+                  or any(_is_negated_context(context) for context in enclosing))
+    is_conditional = (any(conditional(context) for context, _item in contexts)
+                      or any(conditional(context) for context in enclosing))
     if isinstance(statement, Inlined):
         own = statement.credit[stage is not statement.stages[-1]]
         outer = credit[stage is not statement.stages[-1]] if credit else None
@@ -442,7 +445,7 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
                                  and isinstance(outer, Reach))
         if own and not inherited_child_reach:
             if type(own) is Reach and own.span is not None:
-                local = None if outer and _skippable_or(stmts, index) else own
+                local = None if _skippable_or(stmts, index) else own
             elif not (is_negated or is_conditional):
                 return own
     if statement.separator == "&":
