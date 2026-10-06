@@ -2279,15 +2279,17 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     def test_2500_mains_own_gaps_read_as_on_main(self):
         # `main`'s gaps, filed under #2331: CLEAN, as on `main`, though every shell runs the
         # download (rc 0), bar bash under `SHELLOPTS=noexec`, a variable it refuses (rc 1).
-        self.assert_clean([stdin_step("bash -n -s"), stdin_step("bash -o noexec -s"),
-                           stdin_step("bash -t -s", "echo start\n" + CHECK),
+        self.assert_clean([stdin_step("bash -t -s", "echo start\n" + CHECK),
                            stdin_step("SHELLOPTS=noexec bash -s"),
                            stdin_step("sh", pre="sh() { :; }\n")])
         # No longer gaps (#2647): after `-s` bash keeps reading options, and the `-c` puts the
-        # program in the string -- the heredoc is data, its check never read; and `--version`
-        # prints and exits, reading no stdin (`-version` too); FR FR FR FR on each.
+        # program in the string -- the heredoc is data, its check never read; `--version`
+        # prints and exits, reading no stdin (`-version` too); and `-n` / `-o noexec` read the
+        # body and run none of it (#2858 round 3: `bash -s -version` is the letters, `n` among
+        # them), so the check never runs; FR FR FR FR on each.
         self.assert_reported([(stdin_step(runner), 1, "with nothing verifying what arrived")
-                              for runner in ("bash -s -c true", "bash --version", "bash -version")])
+                              for runner in ("bash -s -c true", "bash --version", "bash -version",
+                                             "bash -n -s", "bash -o noexec -s", "bash -s -version")])
 
     def test_2500_a_name_made_to_run_something_else_is_reported_behind_a_string(self):
         # Class 4: a function (`eval() { :; }` too), an alias, a fake `sh` first on `PATH`, a

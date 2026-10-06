@@ -106,8 +106,9 @@ live, so a change that catches one fails there and edits this list.
   `sh -o -`, #2606), a long option outside its table or spelled `--name=value`, and any long option
   under dash (#2616) -- before a `-c` cluster, after it and in the stdin walk, and `set -Z -e` sets
   nothing (#2443); `--rcfile FILE` is skipped whole, a lone `-` before a word makes that word the
-  script (#2654), and a `-c` beside `-s` wins for bash but not for dash, which runs the string
-  and then reads stdin (`sh -s -c true`, #2647). Behind a string an inner shell's refusal is read
+  script (#2654), a `-c` beside `-s` wins for bash but not for dash, which runs the string and
+  then reads stdin (`sh -s -c true`, #2647), and `-n`, `-o noexec` and `-D` read the body and run
+  none of it, so a use after is unverified (`bash -n -s`). Behind a string an inner shell's refusal is read
   on, `-O`'s shopt names have no table, and no refusal is read as stopping the step: a use after
   `bash -oo pipefail -c P` or `bash -K <<'EOF'` is reported though the step stops. Because zsh runs twenty of bash's
   refused letters and ksh

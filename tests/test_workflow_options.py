@@ -215,6 +215,23 @@ class TestALongOptionOfTheShell(unittest.TestCase):
         # -norc` (rc 1), `bash -e -noediting` (rc 1) -- the letters' own refusals are not all in
         # the table, and a check behind them is never credited.
 
+    def test_a_shell_that_reads_its_program_and_runs_none_of_it(self):
+        # #2858 round 3: `-n` (noexec) and `-o noexec` read the heredoc and run nothing of it,
+        # rc 0 -- and after a short option `-version` and `-noprofile` are letters with `n` among
+        # them (a mid-cluster `o` with no word after it is accepted silently; with one, that word
+        # is its name: `bash -e -version -c P` -> `-c: invalid option name`, rc 2). With a check in
+        # the body and a use after: -T (the use runs unverified) on both bashes -- reported;
+        # with a download in the body: -- -- (nothing runs) -- CLEAN. `-D` prints strings, same.
+        for runner in ("bash -n -s", "bash -o noexec -s", "bash -s -version", "bash -e -version",
+                       "bash -e -noprofile", "bash -D", "bash -Ds", "sh -n", "dash -n"):
+            with self.subTest(runner=runner):
+                found = defects(GET + body(runner, CHECK) + USE)
+                self.assertTrue(any(UNVERIFIED in why for why in found), (runner, found))
+                self.assertEqual([], defects(body(runner, PIPE)), runner)
+        self.assertEqual([], defects("bash -e -version -c '%s'\n" % PIPE))     # `-c` is no name
+        # `-t` runs ONE command, so a download first in the body runs: read on, reported.
+        self.assertTrue(any(STREAM in why for why in defects(body("bash -t -s", PIPE))))
+
     def test_a_long_option_that_prints_and_exits_reads_no_stdin_and_runs_no_string(self):
         # `--version`, `--help`, `--dump-strings` and `--dump-po-strings` (`LONG_EXITS`) print
         # and exit before bash reads stdin or a `-c` string, in either spelling: with a check in

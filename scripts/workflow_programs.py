@@ -62,7 +62,7 @@ from workflow_options import (LONG_VALUE_OPTIONS, SET_OPTION_NAMES as SET_OPTION
                               SHELL_OPTIONS as SHELL_OPTIONS, VALUE_OPTIONS, _BARE as _BARE,
                               _MEASURED_SHELLS as _MEASURED_SHELLS, _VALUE as _VALUE,
                               _before_operand, _may_spell_option, _past_options,
-                              _refused, _refused_long, _refused_name, _value)
+                              _refused, _refused_long, _refused_name, _value, _void)
 from workflow_printers import (ANY as ANY, Named as Named, _PRINTERS as _PRINTERS, _piped as _piped,
                                file_operand as file_operand, handed as handed, operand, rendered,
                                printed as printed, producer as producer, spellings as spellings,
@@ -579,10 +579,10 @@ def _options(argv, depth):
         # another interpreter's, one where it ends so. Only a shell takes a
         # stdin operand for that value (and refuses `-o -`, rc 2): python's
         # `-O` takes none, so in `python3 -O - file.py` the `-` is stdin.
-        # A measured shell refuses a `-o` name outside its table, or a value
-        # that is no name at all, and exits before it reads stdin (#2606).
+        # A measured shell refuses a `-o` name outside its table, or a value that is no name
+        # at all, and exits before it reads stdin (#2606); `-n` reads it and runs none (#2858 r3).
         # Only at the step's own level: behind a string the inner shell is read ON (#2500).
-        if shell and not depth and (_refused(argv, at - 1) or _refused_name(argv, at - 1)):
+        if shell and not depth and _void(argv, at - 1):
             return None, None
         owed = (sum(letter in VALUE_OPTIONS for letter in letters) if shell or value
                 else int(bool(letters) and letters[-1] in VALUE_OPTIONS))

@@ -673,11 +673,14 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
 
         # The argv of a literal shell at the step's own level, whatever its options, a `-c` string
         # among them that names no shell reading stdin too.
-        for step in ("bash -s", "bash -e -s", "sudo bash -s", "bash -n -s"):
+        for step in ("bash -s", "bash -e -s", "sudo bash -s"):
             with self.subTest(step=step):
                 argv, program, reader = read(step)
                 self.assertIs(argv, reader)
                 self.assertEqual(forms.SHELL_PROGRAM, program)
+        # `bash -n -s`: read, never run (#2858 round 3) -- no program, as for a refused letter.
+        stage = shell_reader.statements("bash -n -s <<'EOF'\necho hi\nEOF")[0].stages[-1]
+        self.assertIsNone(forms.stdin_program(shell_reader.command(stage.argv)))
         # `bash -s -c 'echo hi'`: the `-c` after `-s` wins (#2647), the string is the program
         # and stdin its data, so no script is read off it -- -- -- -- --, bash never reads it.
         stage = shell_reader.statements("bash -s -c 'echo hi' <<'EOF'\necho hi\nEOF")[0].stages[-1]

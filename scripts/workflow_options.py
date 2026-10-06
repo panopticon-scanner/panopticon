@@ -115,6 +115,30 @@ def _leading(argv, at):
     return True
 
 
+def _runs_nothing(argv, at):
+    """Whether the option word `argv[at]` keeps a measured shell from running ANY of its program
+    though it reads it, exiting 0 (#2858 round 3): a cluster of letters holding `n` (noexec: `bash
+    -n -s <<'EOF'`, and `-version` after a short option, the letters `v e r s i o n`) or `D`
+    (`--dump-strings` by letter), or `-o noexec`. The stdin walk answers as for a refusal -- the
+    body is not the shell's program and no check in it counts -- so a use after is reported and
+    a download in the body is not: nothing runs. `-t` runs ONE command and is read on."""
+    if type(argv[0]) is not str or os.path.basename(argv[0]) not in _MEASURED_SHELLS:
+        return False
+    word = argv[at]
+    if type(word) is not str or long_option(argv, at):
+        return False
+    if word == "-o" and at + 1 < len(argv) and argv[at + 1] == "noexec":
+        return True
+    letters = word[1:]
+    return letters.isalpha() and (word[:1] == "-" and "n" in letters or word[:1] in "-+" and "D" in letters)
+
+
+def _void(argv, at):
+    """Whether the option word `argv[at]` leaves a measured shell no program to run at the step's
+    own level: refused outright (`_refused`, `_refused_name`) or read and never run (`_runs_nothing`)."""
+    return _refused(argv, at) or _refused_name(argv, at) or _runs_nothing(argv, at)
+
+
 def _refused_name(argv, at):
     """Whether the shell `argv[0]` refuses the `-o` VALUE in the option word
     `argv[at]`, running nothing: a name outside `SHELL_OPTION_NAMES`, handed
