@@ -32,6 +32,7 @@ import unittest
 from unittest import mock
 
 import shell_reader
+import workflow_failure_contexts
 import workflow_forms
 import workflow_gating
 import workflow_guard as wg
@@ -41,6 +42,18 @@ from workflow_forms import Fetch
 
 HEX = "a" * 64
 OTHER_HEX = "b" * 64
+
+
+class TestTheFailureContextSplit(unittest.TestCase):
+
+    def test_gating_reexports_each_moved_object_by_identity(self):
+        for name in ("_structural_groups", "conditional_contexts", "_negation_count",
+                     "_known_failure", "_skippable_or", "_function_body",
+                     "_failure_context", "_inside_unmarked_case",
+                     "_enclosing_failure_contexts"):
+            with self.subTest(name=name):
+                self.assertIs(getattr(workflow_gating, name),
+                              getattr(workflow_failure_contexts, name))
 
 
 class TestFetchParsing(unittest.TestCase):
