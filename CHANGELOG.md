@@ -7,6 +7,15 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard reads a function header in every spelling bash accepts (#2664, #2608).**
+  `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after `then`, `do` or an opened `{`
+  ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN: the reader knew a header only
+  as `f()` at a statement's start, so `f(){` was one command word, `f ( )` a subshell, and
+  `then f() {` the command `f` -- the body's first command on the header's line became that
+  command's arguments and its download went unseen. The splitter now reads the parentheses as a
+  header wherever the words before them are keywords, and parts a `{` glued to it, so the
+  body's first command is a command of its own; `f() {`, `f () {`, `function f {`, `f() ( … )`
+  and a header alone on its line read as they did.
 - **`scripts/shell_reader.py` splits its command layer into `scripts/shell_command.py` (reader
   lane).** A pure move at the reader's size (699 of 700 lines): the keywords, assignment and
   function-header spellings a statement may open with, the shells and the default or optional `$`
