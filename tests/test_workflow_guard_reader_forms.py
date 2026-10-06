@@ -447,6 +447,29 @@ class TestTheStepsContextReachesEveryDefault(unittest.TestCase):
             with self.subTest(shell=shell):
                 self.assertFalse(reported("curl -fsSL %stool -o ${D:-x }\nsh tool\necho done\n" % URL, shell))
 
+    def test_past_the_registrys_bound_no_default_resolves(self):
+        # Entry one past `_ENCLOSING_LIMIT` latches the reader: nothing more is filed and no
+        # default resolves in any parse after it, so a program filed nowhere can resolve
+        # nothing -- main's reading of every `${…}` destination (fail-closed), never a clear.
+        reader = wg.shell_reader
+        saved = reader._ENCLOSING_LIMIT, dict(reader._ENCLOSING), reader._LATCHED[0]
+        try:
+            reader._ENCLOSING.clear()
+            reader._LATCHED[0] = False
+            reader._ENCLOSING_LIMIT = 2
+            filler = "echo $a; echo $b; echo $c\n"                 # three texts: past the bound
+            self.assertTrue(reported(filler + "D=tool\neval 'curl -fsSL %stool -o ${D:-x }; sh tool'\n" % URL))
+            self.assertTrue(reader._LATCHED[0])
+            self.assertEqual(2, len(reader._ENCLOSING))
+            # Latched: the blank-free default reads as main (CLEAN), the blank-holding one as
+            # main's unresolved report -- nothing clears that main reports.
+            self.assertFalse(reported("curl -fsSL %stool -o ${D:-tool}\nsh tool\n" % URL))
+            self.assertTrue(reported("curl -fsSL %stool -o ${D:-tool }\nsh tool\n" % URL))
+        finally:
+            reader._ENCLOSING_LIMIT, reader._LATCHED[0] = saved[0], saved[2]
+            reader._ENCLOSING.clear()
+            reader._ENCLOSING.update(saved[1])
+
     def test_the_names_a_step_assigns(self):
         text = ("read -r D E <<'EOF'\nx\nEOF\nprintf -v Q tool; getopts o: G; : ${Z:=1}; eval W\\=2\n"
                 "for I in a; do :; done\nexport X=1 Y\nmapfile -t M\n")

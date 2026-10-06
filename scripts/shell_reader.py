@@ -461,13 +461,15 @@ _SETTERS = re.compile(r"\b(?:read|mapfile|readarray|getopts|printf[ \t]+-v|decla
                       r"|export|readonly)\b([^\n;|&)]*)")
 _NAME_WORDS = re.compile(r"(?<![\w$-])([A-Za-z_][A-Za-z0-9_]*)\b")
 _RESOLVING = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?-")
-# The texts a parse hands on as programs of their own -- a lifted `$(…)`, a heredoc body, a
-# word a shell may be handed (`bash -c '…'`, `eval '…'`) -- each with the names the step
-# around it assigns (`_register`): a parse of such a text inherits them (`statements`), all
-# of them, so a `${D:-x }` inside `eval` or `bash -c` is not resolved where `D=tool` stands
-# outside (the round-3 seat's B1). Keyed by the text, joined where one text recurs.
+# The texts a parse hands on as programs of their own (a lifted `$(…)`, a heredoc body, a word
+# a shell may be handed: `bash -c '…'`, `eval '…'`), each with the names the step around it
+# assigns (`_register`); a parse of such a text inherits them all (`statements`), so `${D:-x }`
+# inside `eval` is not resolved where `D=tool` stands outside (#2756 round 3). Keyed by text,
+# joined where a text recurs, never emptied (fail-closed). At `_ENCLOSING_LIMIT` entries it
+# latches (`_LATCHED`): nothing more is filed and no default resolves in any parse after.
 _ENCLOSING: dict[str, frozenset[str]] = {}
 _ENCLOSING_LIMIT = 20000
+_LATCHED = [False]
 
 
 def _assigned(text):
@@ -487,8 +489,9 @@ def _register(text, context):
     if "$" not in text:
         return
     assigned: frozenset[str] = getattr(context, "assigned", frozenset())
-    if len(_ENCLOSING) >= _ENCLOSING_LIMIT and text not in _ENCLOSING:
-        _ENCLOSING.clear()      # a bound, not a cache: the next step registers afresh
+    if text not in _ENCLOSING and len(_ENCLOSING) >= _ENCLOSING_LIMIT:
+        _LATCHED[0] = True      # past the bound nothing more is filed, and nothing resolves
+        return
     _ENCLOSING[text] = _ENCLOSING.get(text, frozenset()) | assigned
 
 
@@ -503,7 +506,7 @@ def _default_words(word, context):
     `main` did (#2756 fix rounds, B2 and B3; #2867)."""
     if getattr(word, "kept", False) or "${" not in word:
         return None
-    default = _DEFAULTS.fullmatch(word)
+    default = None if _LATCHED[0] else _DEFAULTS.fullmatch(word)
     resolving = _RESOLVING.match(word)
     if (default and default[1].split() and resolving and not context.pattern.search(word)
             and resolving.group(1) not in getattr(context, "assigned", ())):
