@@ -7,7 +7,9 @@ byte for byte: the letter and name tables bash, dash and `set` take (`SET_OPTION
 `_MEASURED_SHELLS`), the refusal readers over them (`_refused`, `_refused_name`) and the walk to the
 operand after a `-c` cluster (`_past_options`), and the three readers of a word where a shell reads
 its options -- a value that may spell one (`_value`), a word that may still stand before the program
-(`_before_operand`) and one that may spell an option once expanded (`_may_spell_option`). A leaf:
+(`_before_operand`) and one that may spell an option once expanded (`_may_spell_option`); and,
+from #2858 round 9, the certificate every clear and credit the stdin and string walks add asks for
+(`certified`, `Sure`, `_sure_shell`, `_cleared`), with `main`'s own walks as their floor. A leaf:
 it reads `shell_reader` and nothing above it. `workflow_programs` re-exports every name, so nothing
 that imported one from there moved.
 
@@ -58,10 +60,11 @@ SET_OPTION_NAMES = ("allexport", "braceexpand", "emacs", "errexit", "errtrace", 
                     "nounset", "onecmd", "physical", "pipefail", "posix", "privileged",
                     "verbose", "vi", "xtrace")
 SHELL_OPTION_NAMES = SET_OPTION_NAMES + ("interactive", "stdin", "debug")
-# A shell's LONG options, where bash reads them (#2616), in EITHER spelling bash takes -- two
-# dashes anywhere among its options, one dash only in the LEADING run of long options (`-login`,
-# `--norc -login`, `-rcfile f -login`; after a short-option word `-help` is the letters `-h -e -l
-# -p`, and `bash -e -help <<'EOF'` runs the heredoc: #2858 round 2) -- `long_option` reads both:
+# A shell's LONG options, where bash reads them (#2616), in EITHER spelling bash takes, and only in
+# the LEADING run of long options (`-login`, `--norc -login`, `-rcfile f -login`): after a short-option
+# word a two-dash one is refused (`bash -e --norc`: `--: invalid option`, measured on 5.2.21 and
+# 3.2.57, #2858 round 9) and `-help` is the letters `-h -e -l -p` (`bash -e -help <<'EOF'` runs the
+# heredoc: round 2) -- `long_option` reads both spellings, `_refused_long` the refusal:
 # the two that take a FILE
 # (`--rcfile f`, `--init-file f`), measured to run the program after it on bash 5.2.21 and 3.2.57;
 # the flags, the UNION of the two versions' lists (5.2's `--pretty-print`, 3.2's `--protected`),
@@ -75,10 +78,13 @@ SHELL_OPTION_NAMES = SET_OPTION_NAMES + ("interactive", "stdin", "debug")
 # cluster, as bash reads it (`-bogus` is `-b -o gus`, refused at `g`).
 LONG_VALUE_OPTIONS = ("--rcfile", "--init-file")
 LONG_EXITS = ("--help", "--version", "--dump-strings", "--dump-po-strings", "--wordexp")
-# `--pretty-print` (5.2) prints the program bash reads from stdin or a FILE and runs none of it, and
-# 3.2 refuses it, so the stdin walk reads it as running nothing -- unless a later word may make the
-# shell interactive, which 5.2 obeys over it (`_never_interactive`, round 8); a `-c` string after it
-# still runs under 5.2 (`bash --pretty-print -c P` runs `P`, round 7), so no string reader refuses it.
+# `--pretty-print` (5.2) prints the program bash reads from stdin or a FILE and runs none of it --
+# unless the run leaves the shell interactive, which 5.2 obeys over it (`--pretty-print -i` runs, `-i
+# +i` and `--rcfile -i` do not: `_state`, round 9) -- and 3.2 and dash refuse it; bash takes it only
+# in the leading run of long options (`bash -i --pretty-print` is refused). A login run sources
+# `~/.bash_profile` first, and an interactive one `~/.bashrc`, either of which may read stdin itself
+# (`_startup_free`). A `-c` string after it still runs under 5.2 (`bash --pretty-print -c P` runs `P`,
+# round 7), so no string reader refuses it.
 LONG_PRINTED = ("--pretty-print",)
 LONG_OPTIONS = ("--debug", "--debugger", "--login", "--noediting", "--noprofile", "--norc",
                 "--posix", "--pretty-print", "--protected", "--restricted", "--verbose") + LONG_EXITS
@@ -123,7 +129,7 @@ def _run(argv):
     hit = _RUNS.get(id(argv))
     if hit is not None and hit[0] is argv and hit[1] == len(argv):
         return hit[2]
-    bash = type(argv[0]) is str and os.path.basename(argv[0]) in ("bash", "sh")
+    bash = type(argv[0]) in (str, Sure) and os.path.basename(argv[0]) in ("bash", "sh")
     leading, expansion, end = 1, len(argv), len(argv)
     in_run, noexec, dumps, owed, string, filed = True, False, False, 0, False, False
     for i in range(1, len(argv)):
@@ -174,38 +180,131 @@ def _run(argv):
     return result
 
 
-def _credited(argv, kind, reader):
+def _credited(argv, kind, reader, shell=None):
     """(`kind`, the reader under whose `-e` a check in the body counts): `reader`, or None where the
     shell's option run holds a word that may expand (`_run`, #2858 round 4) -- `-o $X` may be `-o
     noexec`, `--rcfile $X` may hand the next word over as the FILE, `-s $X` may be `-n` -- so
-    whether the body runs at all is not the step's to say."""
-    return kind, (None if reader is argv and _run(argv)[1] < len(argv) else reader)
+    whether the body runs at all is not the step's to say. For a `shell` (its program kind) no
+    certificate covers (`_sure_shell`, round 9), never less than `main`'s walk read and no check
+    counted that it did not count (`_main_walk`); for one it covers, no check counted where the run
+    reads a startup file the step may have written (`_startup_free`) unless `main` counted it too."""
+    if reader is argv and _run(argv)[1] < len(argv):
+        reader = None
+    if shell and not (_sure_shell(argv) and _startup_free(argv)):
+        reads, counts = _main_walk(argv)
+        kind = kind or (shell if reads and not _sure_shell(argv) else None)
+        reader = None if reader is argv and not counts else reader
+    return kind, reader
+
+
+# What a measured shell reads as its program on standard input (`workflow_programs._options`).
+_STDIN_OPERANDS = ("-", "/dev/stdin", "/dev/fd/0")
+
+
+def _main_walk(argv):
+    """(whether the body is read as the program, whether a check in it counts): `main`'s stdin walk
+    for a shell at the step's own level, word for word as it stood at 7e9223e6, kept for a command
+    no certificate covers (#2858 round 9) -- the floor this module never reads below there."""
+    counts, value_option, options = True, False, True
+    rest = iter(argv[1:])
+    for token in rest:
+        if token in _STDIN_OPERANDS:
+            return True, counts
+        if token == "--":
+            options = False
+            continue
+        if not token.startswith(("-", "+")):
+            if _value(token) and (not shell_reader.has_substitution(token) or shell_reader.yields_words(token)):
+                counts, value_option = False, value_option or options
+                continue
+            return value_option, False
+        letters = "" if token[:2] in ("--", "++") else token[1:]
+        if "c" in letters:
+            return False, False
+        if "s" in letters:
+            return True, counts
+        for _ in range(sum(letter in VALUE_OPTIONS for letter in letters)):
+            next(rest, None)
+    return True, counts
 
 
 def _long_word(argv, at):
     """What the stdin walk does with the long option word `argv[at]` at the step's own level:
     None where it is no long word; "void" where the shell refuses it or prints and exits, running
-    nothing (`_refused_long`) -- never at or after a word that may expand (`_run`, #2858 round 4),
-    which may make it a FILE (`X=--rcfile; bash $X -version` runs) or letters, so the walk reads
-    on; "file" where the next word is its FILE; "on" otherwise."""
+    nothing (`_refused_long`), or prints the program and runs none of it (`--pretty-print` where
+    the run leaves the shell not interactive, `_state`) -- each only where `_cleared` holds (#2858
+    round 9: a sure shell, a literal run, no startup file before the print); "unsure" where one of
+    those would hold for a literal `bash` but `_cleared` does not, so the body is the program and no
+    check in it counts; "file" where the next word is its FILE; "on" otherwise. A word at or after
+    one that may expand is neither (`_run`, round 4): it may be a FILE (`X=--rcfile; bash $X
+    -version` runs) or letters, so the walk reads on."""
     name = long_option(argv, at)
     word = argv[at]
     if name is None and not (type(word) is str and word[:2] in ("--", "++")):
         return None
-    if at < _run(argv)[1] and (_refused_long(argv, at) or name in LONG_PRINTED and _never_interactive(argv, at)):
-        return "void"                           # sure before `$X`
+    printed = name in LONG_PRINTED and at < _run(argv)[1] and not _state(argv)[0]
+    if _refused_long(argv, at) or printed:
+        return "void" if _cleared(argv, at, printed) else "unsure"
     return "file" if name in LONG_VALUE_OPTIONS else "on"
 
 
-def _never_interactive(argv, at):
-    """Whether no word after `argv[at]` in the option run may make the shell interactive, which turns
-    `--pretty-print` off (bash 5.2 runs the heredoc under `-i`, #2858 round 8): the run holds no
-    word that may expand, and no later `-` cluster carries an `i` (`-i`, `-il`, `-si`; `+i` turns
-    it off). Sure only then -- an allowlist, as every clearing rule here is."""
-    _, expansion, _, end = _run(argv)
-    return expansion >= len(argv) and not any(
-        word[:1] == "-" and word[1:2] != "-" and "i" in word[1:] and not long_option(argv, k)
-        for k, word in enumerate(argv[at + 1:end], start=at + 1))
+_STATES: dict[int, tuple[list, int, tuple[bool, bool, bool]]] = {}
+
+
+def _state(argv):
+    """(interactive, login, no rc file) as the option run leaves them (#2858 round 9, rule 4), read
+    as bash and dash read it: each cluster's letters in order, the last `i` state winning (`-i +i`
+    is off, `+i -i` on), each `o`/`O` taking the next word as its value and a long FILE option the
+    next as its FILE (`--rcfile -i` holds no `-i`), `-o interactive` interactive, and nothing past
+    the run's end (`-s -- -i` hands `-i` on as a parameter). Meaningful where the run is literal,
+    which every reader of it asks first (`_cleared`); kept per argv, as `_run` is."""
+    hit = _STATES.get(id(argv))
+    if hit is not None and hit[0] is argv and hit[1] == len(argv):
+        return hit[2]
+    interactive = login = norc = False
+    owed: list[str] = []
+    for at in range(1, _run(argv)[3]):
+        word = argv[at]
+        if owed:
+            kind = owed.pop(0)
+            norc = norc or kind == "file" and word == "/dev/null"
+            interactive = interactive or kind == "o" and word == "interactive"
+            continue
+        name = long_option(argv, at)
+        if name or word[:2] in ("--", "++"):
+            login, norc = login or name == "--login", norc or name == "--norc"
+            owed = ["file"] if name in LONG_VALUE_OPTIONS else []
+            continue
+        for letter in word[1:]:
+            interactive = word[:1] == "-" if letter == "i" else interactive
+            login = login or letter == "l" and word[:1] == "-"
+            owed += [letter] if letter in VALUE_OPTIONS else []
+    if len(_STATES) > 256:
+        _STATES.clear()
+    _STATES[id(argv)] = (argv, len(argv), (interactive, login, norc))
+    return interactive, login, norc
+
+
+def _startup_free(argv):
+    """Whether the run reads no startup file the step may have written before its program (#2858
+    round 9, rule 4; measured on bash 5.2.21 and 3.2.57, where such a file may read stdin itself):
+    no login (`-l`, `--login`, `-login`: `~/.bash_profile`), and no interactive shell (`~/.bashrc`)
+    but with `--norc`, `-norc` or an rc FILE of `/dev/null`. A `BASH_ENV` or `ENV` the step sets is
+    `shadowed`'s to find; one the job's `env:` sets is a gap the guard names."""
+    interactive, login, norc = _state(argv)
+    return not login and (not interactive or norc)
+
+
+def _cleared(argv, at, startup=False):
+    """Whether a clear this PR adds fires at the option word `argv[at]` (#2858 round 9, the
+    literal-only ruling): the shell is surely itself (`_sure_shell`, rules 1 and 3), no word up to
+    `argv[at]` may expand (`_run`, rule 2), and -- for a clear that starts the shell (`startup`:
+    `--pretty-print`'s print, a lone `-`'s FILE, `-s -c`) -- the whole run is literal and reads no
+    startup file (`_startup_free`, rule 4). A refusal, an exit and noexec read none: `bash -l -n`
+    and `bash --login --version` run nothing, measured."""
+    expansion = _run(argv)[1]
+    return _sure_shell(argv) and at < expansion and (
+        not startup or expansion == len(argv) and _startup_free(argv))
 
 
 def _runs_nothing(argv, at):
@@ -218,8 +317,8 @@ def _runs_nothing(argv, at):
     as for a refusal -- the body is not the shell's program and no check in it counts -- so a use
     after is reported and a download in the body is not: nothing runs. `-t` runs ONE command and is
     read on."""
-    if type(argv[0]) is not str or os.path.basename(argv[0]) not in _MEASURED_SHELLS:
-        return False
+    if os.path.basename(argv[0]) not in _MEASURED_SHELLS:
+        return False                            # whether it is surely that shell: `_cleared`'s
     return type(argv[at]) is str and _run(argv)[2]   # the whole run's last state (`-n +n` runs)
 
 
@@ -240,7 +339,7 @@ def _refused_name(argv, at):
     expansion is read ON and fail-closed, as an option word that is not all letters is: `sh -c -o
     $X P` runs `P` wherever `X` holds a name the shell takes, and `${X:-pipefail}` is one spelling
     of that; a value written as itself that is no name (`-`, `/dev/stdin`) is a refusal (#2606)."""
-    if type(argv[0]) is not str or os.path.basename(argv[0]) not in _MEASURED_SHELLS:
+    if type(argv[0]) not in (str, Sure) or os.path.basename(argv[0]) not in _MEASURED_SHELLS:
         return False
     if long_option(argv, at) or at >= _run(argv)[1]:
         return False                            # `-noediting` is long; after `$X` nothing is sure
@@ -370,8 +469,8 @@ def _value_after_dash_c(argv, at):
     `Y=-e` run `P`, measured; #2858 round 7), and it stands where the shell reads its options."""
     found = _past_options(argv, at)
     k = next((i for i in range(at + 1, len(argv)) if found and argv[i] is found[0]), None)
-    if k is None or not _value(argv[k]):      # after `-c --` too: it may vanish (round 8)
-        return None
+    if k is None or not _value(argv[k]) or argv[k - 1] in ("-", "--") and _one_word(argv[k]):
+        return None                             # after `-c --` a `$Y` may vanish (round 8), a member never
     return None if shell_reader.has_substitution(argv[k]) else k
 
 
@@ -419,28 +518,53 @@ def _one_word(word):
 
 
 def _literal(word):
-    """Whether `word` is written as itself, with no expansion in it: a plain `str` -- no
-    `Defaulted`, `Rewritten` or lifted-text token -- holding no `$`. Such a `-o` value outside
-    the name table is a refusal whether it is a misspelt name or no name at all (`-`,
+    """Whether `word` is written as itself, with nothing in it a shell expands (#2858 round 9, rule 2):
+    a plain `str` or `Sure` word, which the reader leaves only for text no pattern, brace or lifted
+    substitution reaches -- it types an unquoted `*`, `?`, `[x]`, `{a,b}` or `@(x)` as `Rewritten`
+    (`/nonexistent*` may vanish under `nullglob`), and `"*"` or `\\*` as the plain `*` they are --
+    holding no `$` or backquote it could not lift (`${X:-${Y}}`, nested, stays plain) and not
+    beginning with a `~`, which it leaves plain quoted or not (`HOME=-i; bash ~`). Such a `-o` value
+    outside the name table is a refusal whether it is a misspelt name or no name at all (`-`,
     `/dev/stdin`: both bashes answer `invalid option name` and exit 2, #2606)."""
-    return type(word) is str and "$" not in word
+    return type(word) in (str, Sure) and "$" not in word and "`" not in word and word[:1] != "~"
+
+
+class Sure(str):
+    """A command word `certified` marks (#2858 round 9): written as itself, reached through literal
+    words, in a step that leaves it its own name. Read as the `str` it is everywhere but where a
+    clear or a credit this module adds asks for a shell that is surely itself (`_sure_shell`)."""
+
+
+# The spellings of a measured shell that are surely it once `certified`: by PATH, or in `/bin` or
+# `/usr/bin` -- not `./bash` or `~/bin/sh`, a file the step itself may have written.
+_SURE_SHELLS = _MEASURED_SHELLS + tuple(d + s for d in ("/bin/", "/usr/bin/") for s in _MEASURED_SHELLS)
+
+
+def _sure_shell(argv):
+    """Whether `argv[0]` is surely the measured shell it names (#2858 round 9, rules 1 and 3): a `Sure`
+    word, spelled as `_SURE_SHELLS` lists. Every clear and check credit this module adds asks it."""
+    return type(argv[0]) is Sure and argv[0] in _SURE_SHELLS
 
 
 def _refused_long(argv, at):
     """Whether the shell `argv[0]` refuses the long option word `argv[at]` outright, running
     nothing (#2616): for `bash`, and for `sh`, which may be bash (the fail-closed reading), a
-    two-dash word outside the tables, a word in either spelling with a value glued on
+    two-dash word outside the tables or past the leading run of long options, a word in either
+    spelling with a value glued on
     (`--rcfile=f`, `-rcfile=f`), or one of `LONG_EXITS`, which prints and exits; for `dash` any
     two-dash word (a one-dash one is a letter cluster to it, `_refused`'s). `--` is no option.
-    False for a name not written as itself, as `_refused` answers, and for every shell outside
-    `_MEASURED_SHELLS`."""
-    if type(argv[0]) is not str or os.path.basename(argv[0]) not in _MEASURED_SHELLS:
+    False for every shell outside `_MEASURED_SHELLS`; read by the name it spells, a `${X:-bash}` too,
+    since whether the shell is surely that one is every reader's own question (#2858 round 9:
+    `_cleared`, `_sure_shell`)."""
+    if os.path.basename(argv[0]) not in _MEASURED_SHELLS:
         return False
     word, name = argv[at], long_option(argv, at)
     if at >= _run(argv)[1]:
         return False                            # after `$X` the word may be its FILE: read on
     if os.path.basename(argv[0]) == "dash":
         return word[:2] == "--" and word != "--"
+    if word[:2] == "--" and word != "--" and at >= _run(argv)[0]:
+        return True                             # past the leading run: `bash -e --norc` is refused
     if name:                                    # `bash -rcfile` with no FILE after it: rc 2
         return name in LONG_EXITS or name in LONG_VALUE_OPTIONS and at + 1 >= len(argv)
     glued = _LONG.fullmatch(word.split("=", 1)[0]) if "=" in word else None
@@ -456,7 +580,8 @@ def _refused(argv, at):
     False for every other command word, which the walk then reads ON as it did before #2475: zsh and
     ksh, which RUN letters bash refuses, the unmeasured `ash`, and any word not WRITTEN as that name
     -- a `$X`, a lifted `$(echo sh)`, a pattern, or a `${X:-sh}` default read as the shell it spells
-    (`shell_wrappers.Defaulted`, #2337), every one of which is a `str` SUBCLASS here. The program
+    (`shell_wrappers.Defaulted`, #2337), every one of which is a `str` SUBCLASS here (`Sure` is
+    the one subclass written as itself: `certified`'s mark, #2858 round 9). The program
     such a command word is handed is #2337/#2344's own report, and a letter table cannot overrule
     it, because `X` may hold `zsh`.
 
@@ -464,7 +589,7 @@ def _refused(argv, at):
     dash and ksh refuse a digit or a brace (`-1`, `-I{}`, `-nw5`) but zsh
     RUNS `-1`, and all five run the program after `sh -c -u$X P` wherever
     `X` is empty, so a word holding an expansion is never a refusal."""
-    if type(argv[0]) is not str or os.path.basename(argv[0]) not in _MEASURED_SHELLS:
+    if type(argv[0]) not in (str, Sure) or os.path.basename(argv[0]) not in _MEASURED_SHELLS:
         return False                            # a `str` subclass is a name not written
     if long_option(argv, at) or at >= _run(argv)[1]:
         return False                            # `-login` is long; after `$X` nothing is sure

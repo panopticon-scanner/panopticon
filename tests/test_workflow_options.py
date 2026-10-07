@@ -721,6 +721,169 @@ class TestAClearingRuleFiresOnlyOnSureInput(unittest.TestCase):
                 self.assertTrue(defects(script), script)
 
 
+class TestAClearOrACreditNeedsASureShell(unittest.TestCase):
+    """#2858 round 9, the coordinator's literal-only ruling on the round-8 seat: a clear or a check
+    credit this guard's stdin and string walks add fires only for (1) a shell written as itself and
+    named as one (`bash`, `sh`, `dash`, by PATH or in `/bin` or `/usr/bin`), reached through literal
+    words; (2) an option run literal up to the deciding word; (3) a step that leaves the shell its
+    own name -- no function or alias of a shell's or a wrapper's name, no sourced file, no `eval` of
+    a word it does not spell, no `BASH_ENV`/`ENV`; (4) the state the shell itself computes, startup
+    files included. Anything else reads as main read it. Truth: the round-8 seat's hunts (row ids)
+    and direct cases (y..), touch marks under bash 5.2.21 and 3.2.57, `sh` as dash and as each bash;
+    and this round's forge probes, cited where they stand."""
+
+    def assert_reported(self, scripts):
+        for script in scripts:
+            with self.subTest(script=script):
+                self.assertTrue(defects(script), script)
+
+    def assert_clean(self, scripts):
+        for script in scripts:
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script), script)
+
+    def test_rule_1_a_shell_written_as_itself(self):
+        # P x4 (yh01 147164, yh03, yh09; main REPORTS): `SH='bash --rcfile'` makes `--pretty-print` the
+        # rc FILE and bash runs the heredoc -- no clear behind a command word that is not literal.
+        self.assert_reported(["SH='bash --rcfile'\n" + body("${SH:-bash} --pretty-print", PIPE),
+                              "SH='sudo bash --rcfile'\n" + body("${SH:-bash} --pretty-print", PIPE),
+                              "SH='bash --rcfile'\n" + body("${SH-/bin/bash} --pretty-print", PIPE)])
+        # T on b5 sh5 (147153; main CLEAN): behind such a word no check counts either.
+        self.assert_reported([GET + body("${SH:-bash} --pretty-print", CHECK) + USE])
+        # P x2 (bash 5.2.21, 3.2.57, this round: `S='bash -s'` runs `bash -s bash --version`, reading
+        # the heredoc): an optional `$S` the reader looks through is no literal wrapper; nor is a
+        # wrapper's word that may expand. A shell named by a path the step may write (`./bash`, the
+        # named price: rc 127 here) is not one either.
+        self.assert_reported([body("$S bash --version", PIPE), body('sudo -u "$U" bash -K', PIPE),
+                              body("./bash --version", PIPE), body("zsh --pretty-print", PIPE)])
+        # -- (rc 0, 2): the controls, literal, through a literal wrapper or an assignment.
+        self.assert_clean([body(c, PIPE) for c in ("bash --version", "sudo bash --version", "env bash -K",
+                                                   "/usr/bin/bash --version", "X=1 bash --version", "sh -o pipefial")])
+
+    def test_rule_2_a_literal_run(self):
+        # P x4 (160000 ym01, ym06, ym16, yk11, yl08; main REPORTS): after a lone `-` a word that may be
+        # no word -- a nested `${…}` the reader leaves plain, a pattern under `nullglob` -- leaves
+        # stdin the program; so does a `~` (`HOME=-i`, F5's tilde rows: main CLEAN too).
+        self.assert_reported(["X=\nY=\n" + body("bash - ${X:-${Y}}", PIPE), "A=()\ni=\n" + body("bash - ${A[${i}]}", PIPE),
+                              "set --\n" + body("bash - ${1:-${2}}", PIPE),
+                              "shopt -s nullglob\n" + body("bash - /nonexistent*", PIPE),
+                              "shopt -s nullglob\n" + body("dash - /nonexistent*", PIPE),
+                              "HOME=-i\n" + body("bash --pretty-print ~", PIPE)])
+        # The price (yl09, rc 127 x4): without `nullglob` the pattern stays the FILE, read as `$X` all the same.
+        self.assert_reported([body("bash - /nonexistent*", PIPE)])
+        # -- (ym09 rc 127, 127346): a quoted one-word form, and a literal word, are the FILE.
+        self.assert_clean(["X=\nY=\n" + body('bash - "${X:-${Y}}"', PIPE), body("bash - x.sh", PIPE)])
+
+    def test_rule_3_a_step_that_leaves_the_shell_its_name(self):
+        # P x4 (yg01 147490, yg04, yg02, yg07, yg08, yg09; main REPORTS): a function or alias of the
+        # shell's or a wrapper's name runs the heredoc whatever the words after it say.
+        shadows = ["bash() { command bash; }\n", "function sh { command sh; }\n",
+                   "alias bash='command bash -s --'\nshopt -s expand_aliases\n", "sudo() { bash; }\n",
+                   "env() { bash; }\n", "command() { bash; }\n", "eval 'bash() { command bash; }'\n",
+                   "printf 'bash() { command bash; }' > lib.sh\n. ./lib.sh\n",
+                   "printf 'exec env -u BASH_ENV bash -s' > e.sh\nexport BASH_ENV=$PWD/e.sh\n"]
+        runners = {"sudo() { bash; }\n": "sudo bash --version", "env() { bash; }\n": "env bash --version",
+                   "command() { bash; }\n": "command bash --version", "function sh { command sh; }\n": "sh --version"}
+        self.assert_reported([pre + body(runners.get(pre, "bash --version"), PIPE) for pre in shadows])
+        # P on b5 (this round: `BASH_ENV` runs before `--pretty-print` prints, and may read stdin).
+        self.assert_reported([shadows[-1] + body("bash --pretty-print", PIPE)])
+        # The marked inner parse: a string `eval` reads, and a `$(…)` the guard parses apart, are no
+        # surer than the step around them; without the function the `eval`'s string clears.
+        self.assert_reported([shadows[0] + "eval \"bash --version <<'EOF'\n%s\nEOF\"\n" % PIPE,
+                              shadows[0] + "x=$(bash --version <<'EOF'\n%s\nEOF\n)\n" % PIPE])
+        # The string #2500's walk parses itself takes the holder's certificate (`inner_command`): `eval
+        # 'bash -s -c true'` runs `true` and leaves the heredoc unread (-- x4), unless a `bash()` reads
+        # it (P x4); an `eval` of a word the guard does not spell may define anything.
+        self.assert_reported([shadows[0] + body("eval 'bash -s -c true'", PIPE), 'eval "$X"\n' + body("bash --version", PIPE)])
+        self.assert_clean(["eval \"bash --version <<'EOF'\n%s\nEOF\"\n" % PIPE, body("eval 'bash -s -c true'", PIPE)])
+        # The named over-report (yg03, -- x4): a function that hands its words on runs nothing here.
+        self.assert_reported(['bash() { command bash "$@"; }\n' + body("bash --version", PIPE)])
+        import workflow_sure as ws       # round 9's module: imported here, so RED-first collects this file
+        stmts = shell_reader.statements(shadows[0] + body("bash --version", PIPE))
+        self.assertEqual({"bash"}, ws.shadowed(stmts))
+        self.assertNotIsInstance(ws.certified(stmts)[-1].stages[0].argv[0], wo.Sure)
+
+    def test_rule_3_what_may_change_the_name_in_the_step_or_the_job(self):
+        # The coordinator's widened scope: a step that sets `PATH`, `SHELLOPTS` or `BASHOPTS`, exports a
+        # `BASH_FUNC_…` function, or uses `hash` or `enable` may change what `bash` names or runs before
+        # its options -- it reads as main, and main REPORTS each.
+        self.assert_reported([pre + body("bash --version", PIPE) for pre in (
+            'export PATH="$PWD/bin:$PATH"\n', "SHELLOPTS=xtrace\n", "export BASHOPTS=extglob\n",
+            "export 'BASH_FUNC_bash%%=() { command bash; }'\n", 'hash -p "$PWD/x" bash\n', "enable -n echo\n")])
+        # A job's earlier step that writes `$GITHUB_ENV` or `$GITHUB_PATH` sets `BASH_ENV` or `PATH` for
+        # every later one (`workflow_sure.uncertified`): no clear after it.
+        def job(*scripts):
+            return [why for _name, why in wg.job_defects([("s%d" % n, s) for n, s in enumerate(scripts)])]
+        later = body("bash --pretty-print", PIPE)
+        for before in ('echo "BASH_ENV=$PWD/e.sh" >> "$GITHUB_ENV"\n', 'echo "$PWD/bin" >> "$GITHUB_PATH"\n'):
+            with self.subTest(before=before):
+                self.assertTrue(job(before, later), before)
+        # (c) A write that may plant a shell or a wrapper where a later bare word finds it -- in the step
+        # or a step before it: a target named like one (a PATH directory main does not bind, `cp` to
+        # `/snap/bin`, a decompressed `bash.gz`), one not written as itself, an archive unpacked.
+        planted = ["curl -fsSLo ~/.cargo/bin/bash %sb\n" % URL, "cp tool /snap/bin/sh\n", "gunzip -f bash.gz\n",
+                   'curl -fsSLo "$OUT" %sb\n' % URL, "echo 'exec bash -s' > ~/.local/bin/sudo\n", "tar -xzf tools.tgz -C ~/bin\n"]
+        self.assert_reported([pre + body("bash --version", PIPE) for pre in planted])
+        for before in planted:
+            with self.subTest(job=before):
+                self.assertTrue(job(before, body("bash --version", PIPE)), before)
+        # -- the controls: a literal target named like no shell, before or in the step.
+        self.assert_clean(["curl -fsSLo tool %stool\n" % URL + body("bash --version", PIPE)])
+        self.assertEqual([], job("echo hi > notes.txt\n", body("bash --version", PIPE)))
+        # The same step text in two jobs, certified in one alone and in either order: a certificate is
+        # never written into a parse another job reads.
+        writer = 'echo "BASH_ENV=$PWD/e.sh" >> "$GITHUB_ENV"\n'
+        for order in ((False, True, False), (True, False, True)):
+            for tainted in order:
+                with self.subTest(order=order, tainted=tainted):
+                    self.assertEqual(tainted, bool(job(writer, later) if tainted else job("echo hi\n", later)))
+
+    def test_rule_4_the_state_the_shell_computes(self):
+        # T on b5 sh5 (yf08 141005, yf01, 140309, yj08, this round's `--rcfile -i`; main REPORTS on
+        # yf08's kin): `+i` after `-i`, an rc FILE spelled `-i`, an `-i` past `--` and a one-dash
+        # `-login` leave 5.2 printing the check, and the use runs.
+        self.assert_reported([GET + body("bash %s" % run, CHECK) + USE for run in (
+            "-norc --pretty-print -i +i", "--pretty-print -i +i", "--pretty-print --rcfile -i",
+            "--pretty-print --init-file -i", "--pretty-print -s -- -i", "--pretty-print -login")])
+        # +chk rc 1 on b5 sh5, rc 2 on b3 (yf12, yf13): interactive, the check runs -- credited, as on main.
+        self.assert_clean([GET + body("bash --pretty-print -i", CHECK) + USE,
+                           GET + body("bash --pretty-print +i -i", CHECK) + USE])
+        # P on b5 (this round): a login run sources a `~/.bash_profile` the step may have written,
+        # which may read stdin itself -- no clear; the named price where it is the runner's own.
+        self.assert_reported([body("bash --login --pretty-print", PIPE), body("bash --pretty-print -l", PIPE)])
+        # -- (bash 5.2.21 and 3.2.57, this round: `--: invalid option`, rc 1/2): a two-dash option after a
+        # short one is refused, and nothing runs.
+        self.assert_clean([body("bash -e --version", PIPE), body("bash -i --pretty-print", PIPE),
+                           body("bash -o pipefail --norc", PIPE)])
+        self.assertEqual((True, False, False), wo._state(["bash", "--pretty-print", "+i", "-i"]))
+        self.assertEqual((False, False, False), wo._state(["bash", "--pretty-print", "--rcfile", "-i"]))
+        self.assertEqual((False, False, False), wo._state(["bash", "--pretty-print", "-s", "--", "-i"]))
+        self.assertEqual((False, True, False), wo._state(["bash", "--pretty-print", "-login"]))
+
+    def test_a_mixed_word_a_member_after_dash_c_dash_dash_and_the_floor(self):
+        # P x2 (bash 5.2.21, 3.2.57, this round): `$(echo '-s ')<(…)` is `-s /dev/fd/63`, so bash
+        # reads the heredoc -- a mixed word is no sure FILE (#2592's clear is gone; its own
+        # `$(true)<(…)` row is the named over-report, as on main).
+        self.assert_reported([body("bash $(echo '-s ')<(echo 'echo x')", PIPE),
+                              "echo '%s' | bash $(true)<(echo 'echo x')\n" % PIPE])
+        # -- x4 (yeb; main CLEAN): a member after `-c --` is the string, never an option or nothing (F3).
+        self.assert_clean(["Y=\nbash -c -- \"$Y\" '%s'\n" % PIPE, "Y=\nsh -c - \"$Y\" '%s'\n" % PIPE])
+        # main's floor for a shell no certificate covers (`_main_walk`, `_dash_c_strings`,
+        # `_floor_candidates`): no less read than main read, and no check counted it did not count --
+        # main REPORTS each of these. P x4: `command bash` reads the heredoc whatever `-login -c` says;
+        # T x4: `bash() { :; }` runs nothing and the use runs unverified (main never counted the check:
+        # `-norc` is `-c` to it, `/dev/null` its FILE); `SH=true` does the same.
+        self.assert_reported(["bash() { command bash; }\n" + body("bash -login -c", PIPE),
+                              "bash() { :; }\n" + GET + body("bash -norc", CHECK) + USE,
+                              "bash() { :; }\n" + GET + body("bash --rcfile /dev/null", CHECK) + USE,
+                              GET + body("${SH:-bash} --rcfile /dev/null", CHECK) + USE,
+                              "${SH:-bash} -o -c '%s'\n" % PIPE, "${SH:-bash} --rcfile $X '%s'\n" % PIPE])
+        # The walk's own answer for a word no certificate covers, as a `$(…)`'s statement or a direct
+        # call sees it: main's -- the heredoc read, and no check counted.
+        self.assertEqual(wp.SHELL_PROGRAM, wp._stdin(["bash", "-login", "-c"], 0)[0])
+        self.assertIsNone(wp._stdin(["bash", "--rcfile", "/dev/null"], 0)[1])
+
+
 class TestAnOptionValueTheShellRefuses(unittest.TestCase):
     """#2606 (and #2603's letter half in the same walk): a measured shell exits 2 before it reads
     stdin at a `-o` name outside its table, at a `-o` value that is no name at all, and at a
@@ -758,18 +921,19 @@ class TestAnOptionValueTheShellRefuses(unittest.TestCase):
 
 
 class TestAWordHoldingAProcessSubstitution(unittest.TestCase):
-    """#2592: a word holding ANY `<(...)` or `>(...)` never vanishes -- bash substitutes a real
-    path for it whatever else it holds -- so it is a FILE operand, not a vanishing one."""
+    """#2592 read a word holding any `<(...)` as the FILE it names, since bash always substitutes a
+    real path for it. But a command substitution beside it may split an option off first --
+    `$(echo '-s ')<(…)` is `-s /dev/fd/63`, and bash reads the heredoc (#2858 round 9) -- so a mixed
+    word is no literal and reads as one that may vanish, as on main."""
 
-    def test_a_mixed_word_is_no_vanishing_operand(self):
-        # -- -- rc2 --: bash runs the `<(...)` path (dash refuses `<(`); the piped text is never
-        # bash's program, so the stream sentence is gone.
-        found = defects("echo '%s' | bash $(true)<(echo 'echo x')\n" % PIPE)
-        self.assertFalse(any(STREAM in why for why in found), found)
+    def test_a_mixed_word_may_vanish(self):
+        # P x2 (bash 5.2.21, 3.2.57; dash has no `<(`): the heredoc is bash's program.
+        found = defects(body("bash $(echo '-s ')<(echo 'echo x')", PIPE))
+        self.assertTrue(any(STREAM in why for why in found), found)
+        # -- -- rc2 -- (the named over-report, as on main): #2592's own row runs the path.
+        self.assertTrue(any(STREAM in why for why in defects("echo '%s' | bash $(true)<(echo 'echo x')\n" % PIPE)))
         # FR FR FR FR: a command substitution alone may vanish, and the body is read.
         self.assertTrue(any(STREAM in why for why in defects(body("bash $(true)", PIPE))))
-        self.assertTrue(wp._hands_file(wg.shell_reader.statements("bash $(true)<(echo x)")[0].stages[0].argv[1]))
-        self.assertFalse(wp._hands_file(wg.shell_reader.statements("bash $(true)")[0].stages[0].argv[1]))
 
 
 class TestTheOptionGrammarLivesInWorkflowOptions(unittest.TestCase):

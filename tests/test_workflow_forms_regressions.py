@@ -679,8 +679,10 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
     def test_a_stdin_scripts_reader_is_the_literal_shell_an_empty_tuple_or_none(self):
         # A stdin script's `reader` (`workflow_programs.Stdin`) is of three kinds, tabled below;
         # `stdin_program`'s answer is unchanged for each.
-        def read(step):
-            stage = shell_reader.statements(step + " <<'EOF'\necho hi\nEOF")[0].stages[-1]
+        import workflow_sure  # round 9's module: imported here, so RED-first collects this file
+
+        def read(step):     # a step's own statement, certified as `flattened` certifies it (#2858 round 9)
+            stage = workflow_sure.certified(shell_reader.statements(step + " <<'EOF'\necho hi\nEOF"))[0].stages[-1]
             argv = shell_reader.command(stage.argv)
             return argv, forms.stdin_program(argv), forms.stdin_scripts(argv, stage)[0].reader
 
@@ -691,12 +693,16 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
                 argv, program, reader = read(step)
                 self.assertIs(argv, reader)
                 self.assertEqual(forms.SHELL_PROGRAM, program)
-        # `bash -n -s`: read, never run (#2858 round 3) -- no program, as for a refused letter.
-        stage = shell_reader.statements("bash -n -s <<'EOF'\necho hi\nEOF")[0].stages[-1]
+        # `bash -n -s`: read, never run (#2858 round 3) -- no program, as for a refused letter --
+        # where the step leaves `bash` its own name (`workflow_sure.certified`, round 9); a word no
+        # certificate covers, as a direct call's, reads as main read it.
+        stmts = shell_reader.statements("bash -n -s <<'EOF'\necho hi\nEOF")
+        self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(shell_reader.command(stmts[0].stages[-1].argv)))
+        stage = workflow_sure.certified(stmts)[0].stages[-1]
         self.assertIsNone(forms.stdin_program(shell_reader.command(stage.argv)))
         # `bash -s -c 'echo hi'`: the `-c` after `-s` wins (#2647), the string is the program
         # and stdin its data, so no script is read off it -- -- -- -- --, bash never reads it.
-        stage = shell_reader.statements("bash -s -c 'echo hi' <<'EOF'\necho hi\nEOF")[0].stages[-1]
+        stage = workflow_sure.certified(shell_reader.statements("bash -s -c 'echo hi' <<'EOF'\necho hi\nEOF"))[0].stages[-1]
         argv = shell_reader.command(stage.argv)
         self.assertIsNone(forms.stdin_program(argv))
         self.assertEqual([], forms.stdin_scripts(argv, stage))
