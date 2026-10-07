@@ -2368,6 +2368,7 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
             if literal == "( bash -s":
                 group_handoffs.append(literal_step)
             elif literal == "bash -e -s" and " && echo ok" in body:
+                # PR #2849 moves #2416's released literal twin from gaps to reported.
                 bounded.append(literal_step)
             else:
                 (fixed if function_gap else gaps).append(literal_step)

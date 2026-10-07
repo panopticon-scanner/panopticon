@@ -2745,17 +2745,6 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
             + ";; esac; }; f",
         ))
 
-    def test_compound_negation_reaches_a_nonleading_check(self):
-        self.carry_on_reports((
-            "! { echo pre; %s; } && " + self.INLINE_USE + "; echo more",
-            "! ( echo pre; %s ) && " + self.INLINE_USE + "; echo more",
-            "if ! { echo pre; %s; } && " + self.INLINE_USE + "; then :; fi",
-            "while ! ( echo pre; %s ) && " + self.INLINE_USE + "; do break; done",
-        ))
-        body = ("set +e\neval '! { echo pre; %s; } && " + self.INLINE_USE
-                + "; echo more'\necho parent\n")
-        found = self.job(body, use="")
-        self.assertEqual(1, len(found), found)
 
     def test_bash_reserved_words_preserve_negation(self):
         self.carry_on_reports((
@@ -2765,22 +2754,6 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
             "coproc worker ( ! %s && " + self.INLINE_USE + " ); wait",
         ))
 
-    def test_step_level_compound_and_reserved_negations_are_reported(self):
-        # The B7/B8 repair also closes these step-level twins from the review
-        # note; keep their newly-visible failure context pinned outside a child.
-        for body in (
-            "! { echo pre; %s; } && " + self.INLINE_USE + "; echo more",
-            "! ( echo pre; %s ) && " + self.INLINE_USE + "; echo more",
-            "time ! %s && " + self.INLINE_USE + "; echo more",
-            "time -p ! %s && " + self.INLINE_USE + "; echo more",
-            "coproc { ! %s && " + self.INLINE_USE + "; }; wait",
-            "coproc worker { ! %s && " + self.INLINE_USE + "; }; wait",
-            "coproc worker ( ! %s && " + self.INLINE_USE + " ); wait",
-        ):
-            with self.subTest(body=body):
-                found = self.job("set +e\n" + body + "\n", use="")
-                self.assertEqual(1, len(found), found)
-                self.assertIn("is negated", found[0][1])
 
     def test_a_skipped_failure_in_an_or_chain_certifies_nothing(self):
         self.carry_on_reports((
@@ -2807,7 +2780,6 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
     def test_separate_pipeline_negations_never_cancel_each_other(self):
         scripts = (
             "! { ! %s && " + self.INLINE_USE + "; }",
-            "! ( ! %s && " + self.INLINE_USE + " )",
             "! { ! { %s; }; }; " + self.INLINE_USE,
         )
         self.carry_on_reports(scripts)
@@ -2891,19 +2863,6 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
                     found = self.job(body, shell, use="")
                     self.assertEqual(1, len(found), found)
 
-    def test_errexit_parent_postures_keep_compound_closures(self):
-        scripts = (
-            "f() { g() if ! %s && " + self.INLINE_USE + "; then :; fi; g; }; f",
-            "f() { case x in x|y) ! %s && " + self.INLINE_USE + ";; esac; }; f",
-            "! { echo pre; %s; } && " + self.INLINE_USE + "; echo more",
-            "time ! %s && " + self.INLINE_USE + "; echo more",
-        )
-        for shell in (None, "bash", "sh"):
-            for script in scripts:
-                with self.subTest(shell=shell, script=script):
-                    found = self.job("bash -ec '" + script + "'\necho parent\n",
-                                     shell, use="")
-                    self.assertEqual(1, len(found), found)
 
     def test_piped_child_list_forms_keep_the_parent_refusal(self):
         script = "%s && eval \"echo a; echo b\" && echo done"
@@ -2919,50 +2878,8 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
                     found = self.job("{\n" + child + "} | cat\n", shell)
                     self.assertEqual(1, len(found), found)
 
-    def test_parenthesized_negation_ambiguity_fails_closed(self):
-        # The reader drops the parenthesis position, so these two programs
-        # become the same stage.  The first runs the payload on all three
-        # shells; the second does not, and is the bounded fail-closed answer.
-        scripts = (
-            "! ( ! %s && " + self.INLINE_USE + " )",
-            "! ! ( %s && " + self.INLINE_USE + " )",
-        )
-        for child in ("bash", "sh", "dash"):
-            for script in scripts:
-                with self.subTest(child=child, script=script):
-                    body = "set +e\n" + child + " -ec '" + script + "'\necho parent\n"
-                    found = self.job(body, use="")
-                    self.assertEqual(1, len(found), found)
-                    self.assertIn("is negated", found[0][1])
 
-    def test_bounded_fail_closed_negation_cases_remain_reported(self):
-        cases = (
-            ("set +e\n! {\n%s && " + self.INLINE_USE + "\n}\necho parent\n", ""),
-            ("set +e\nif ! {\n%s\n}; then exit 1; fi\n", self.USE),
-            ("set +e\n! { if true; then %s && " + self.INLINE_USE
-             + "; fi; }\necho parent\n", ""),
-            ("set +e\ntrue | ! %s && " + self.INLINE_USE + "; echo more\n", ""),
-        )
-        for body, use in cases:
-            with self.subTest(body=body):
-                found = self.job(body, use=use)
-                self.assertEqual(1, len(found), found)
-                self.assertIn("is negated", found[0][1])
 
-    def test_enclosing_conditions_keep_their_bounded_fail_closed_answer(self):
-        # PR #2849 pins both sides of M12.  The first payload runs after the
-        # condition; the second does not run, and is the bounded price of
-        # carrying the condition from its group opener to the checksum.
-        cases = (
-            ("if { echo pre; %s; }; then :; fi\n" + self.INLINE_USE + "\n", "runs"),
-            ("if { echo pre; %s && " + self.INLINE_USE + "; }; then :; fi\n",
-             "does-not-run"),
-        )
-        for body, truth in cases:
-            with self.subTest(truth=truth):
-                found = self.job(body, use="")
-                self.assertEqual(1, len(found), found)
-                self.assertIn("is an `if`/`while` test", found[0][1])
 
     def test_non_bash_reserved_words_keep_the_dialect_fail_closed_answer(self):
         scripts = (
@@ -2997,46 +2914,8 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
             body = "set +e\nbash -ec '" + script + "'\necho parent\n"
         return self.job(body, use="")
 
-    def test_b17_close_then_open_groups_are_applied_in_source_order(self):
-        cases = (
-            ("x01", "child",
-             "if false; then { :; } else ! { echo pre; %s; } && "
-             + self.INLINE_USE + "; fi"),
-            ("x02", "child",
-             "if false; then { :; } else ! ( echo pre; %s ) && "
-             + self.INLINE_USE + "; fi"),
-            ("x03", "step",
-             "if false; then ( : ) else ! { echo pre; %s; } && "
-             + self.INLINE_USE + "; fi"),
-        )
-        for shape, posture, script in cases:
-            with self.subTest(shape=shape, posture=posture):
-                found = self.round_five_job(script, posture)
-                self.assertEqual(1, len(found), found)
 
-    def test_b18_case_arm_closes_do_not_cancel_enclosing_groups(self):
-        cases = (
-            ("w01", "child", "! { case x in x) :;; esac; %s; } && "
-             + self.INLINE_USE + "; echo more"),
-            ("w08", "step", "! { case x in x) :;; y) :;; esac; %s; } && "
-             + self.INLINE_USE + "; echo more"),
-        )
-        for shape, posture, script in cases:
-            with self.subTest(shape=shape, posture=posture):
-                found = self.round_five_job(script, posture)
-                self.assertEqual(1, len(found), found)
 
-    def test_b19_case_arm_prefixes_do_not_hide_group_negation(self):
-        cases = (
-            ("y01", "child", "case x in x) ! { echo pre; %s; } && "
-             + self.INLINE_USE + ";; esac"),
-            ("y03", "step", "case x in y) :;; x) ! { echo pre; %s; } && "
-             + self.INLINE_USE + ";; esac"),
-        )
-        for shape, posture, script in cases:
-            with self.subTest(shape=shape, posture=posture):
-                found = self.round_five_job(script, posture)
-                self.assertEqual(1, len(found), found)
 
     def test_b20_nested_cases_and_esac_arguments_keep_case_depth(self):
         cases = (
@@ -3056,21 +2935,7 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
         found = self.round_five_job(script, "child")
         self.assertEqual(1, len(found), found)
 
-    def test_b22_enclosing_paren_openers_keep_their_context(self):
-        script = "! ( ! echo pre; %s ) && " + self.INLINE_USE + "; echo more"
-        found = self.round_five_job(script, "step")
-        self.assertEqual(1, len(found), found)
 
-    def test_round_five_known_failure_inside_group_keeps_its_enclosing_negation(self):
-        # PR #2849: a later known failure suppresses an enclosing inversion only
-        # when it is outside that group; inside, the inversion makes USE run.
-        body = "set +e\n! { ! :; %s && false; } && " + self.INLINE_USE + "\n"
-        found = self.job(body, use="")
-        self.assertEqual(1, len(found), found)
-        self.assertIn("is negated", found[0][1])
-        outside = ("set +e\n! ( ! :; %s ) && false && "
-                   + self.INLINE_USE + "\n")
-        self.assertEqual([], self.job(outside, use=""))
 
     def test_round_five_structural_case_arm_closes_keep_command_negation(self):
         # PR #2849: the `)` closing the subshell is structural, not another
@@ -3081,34 +2946,14 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
         self.assertEqual(1, len(found), found)
         self.assertIn("is negated", found[0][1])
 
-    def test_round_five_paren_close_open_transitions_use_the_new_prefix(self):
-        # PR #2849: `else ! (` closes the then-group before opening a distinct,
-        # negated else-group even though both parenthesis markers share a stage.
-        body = ("set +e\nif false; then (\n :\n) else ! (\n :\n %s\n) && "
-                + self.INLINE_USE + "\nfi\n")
+
+    def test_round_five_coproc_group_keeps_its_async_refusal(self):
+        # PR #2849: outside an asynchronous group, its refusal is bounded at
+        # the close.  The local && list inside the coprocess remains gated.
+        body = "coproc worker { :; %s; }\n" + self.INLINE_USE + "\nwait\n"
         found = self.job(body, use="")
         self.assertEqual(1, len(found), found)
-        self.assertIn("is negated", found[0][1])
-        even = body.replace("else ! (", "else ! ! (")
-        self.assertEqual([], self.job(even, use=""))
-
-    def test_round_five_time_and_coproc_groups_keep_their_failure_context(self):
-        # PR #2849: these Bash reserved words precede explicit groups without
-        # turning `{` into an ordinary argument. A coprocess refusal is bounded
-        # at its group close, so a use inside CHECK's own && list still clears.
-        cases = (
-            ("time", "if time { :; %s; }; then :; fi\n" + self.INLINE_USE + "\n",
-             "is an `if`/`while` test"),
-            ("coproc", "coproc worker { :; %s; }\n" + self.INLINE_USE + "\nwait\n",
-             "runs asynchronously under `coproc`"),
-        )
-        for label, body, reason in cases:
-            with self.subTest(label=label):
-                found = self.job(body, use="")
-                self.assertEqual(1, len(found), found)
-                self.assertIn(reason, found[0][1])
-        self.assertEqual([], self.job("set +e\ntime %s && " + self.INLINE_USE + "\n",
-                                      use=""))
+        self.assertIn("runs asynchronously under `coproc`", found[0][1])
         self.assertEqual([], self.job("coproc worker { %s && " + self.INLINE_USE
                                       + "; }\nwait\n", use=""))
 
@@ -3129,18 +2974,12 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
         controls = (
             ("B17", "child", "if false; then ! { :; } else { echo pre; %s; } && "
              + self.INLINE_USE + "; fi"),
-            ("B18", "child", "! { case x in x) :;; esac; %s; echo post; } && "
-             + self.INLINE_USE + "; echo more"),
-            ("B19", "child", "case x in x) ! { echo pre; %s; echo post; } && "
-             + self.INLINE_USE + ";; esac"),
             ("B20-z01", "step", "f() { case x in y) case z in z) :;; esac;; "
              "x) ! ! %s && " + self.INLINE_USE + ";; esac; }; f"),
             ("B20-f07", "child", "f() { case x in y) echo esac;; x) ! ! %s && "
              + self.INLINE_USE + ";; esac; }; f"),
             ("B21", "step", 'f() { case "!" in y) :;; !) %s && '
              + self.INLINE_USE + ";; esac; }; f"),
-            ("B22", "child", "! ( ! echo pre; %s ) && false && "
-             + self.INLINE_USE + "; echo more"),
         )
         for blocker, posture, script in controls:
             with self.subTest(blocker=blocker, posture=posture):
@@ -3153,6 +2992,124 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
             ("child", self.job("set +e\nbash -ec '" + script + "'\necho parent\n",
                                use="")),
         )
+
+    def test_b32_ambiguity_fallback_stops_at_the_group_boundary(self):
+        # PR #2849: shell_reader retains only aggregate parenthesis counts for
+        # the first group.  Its check must use the parent's carry-on answer,
+        # while the ordinary && check just after that group keeps local reach.
+        fetch_a = self.FETCH.replace("payload", "a")
+        fetch_b = self.FETCH.replace("payload", "b")
+        check_a = self.CHECK.replace("payload", "a")
+        check_b = self.CHECK.replace("payload", "b")
+        use_a = self.INLINE_USE.replace("payload", "a")
+        use_b = self.INLINE_USE.replace("payload", "b")
+        body = (fetch_a + fetch_b + "set +e\n"
+                + "bash -ec '! { if true; then ( : ); fi; echo pre; "
+                + check_a + "; } && " + use_a + "; " + check_b + " && "
+                + use_b + "'\necho done\n")
+        found = wg.job_defects([wg.Step("step", body, None)])
+        self.assertEqual(1, len(found), found)
+        self.assertIn("/tmp/a runs after a `set +e`", found[0][1])
+        self.assertNotIn("/tmp/b", found[0][1])
+
+    def test_direct_hidden_group_ambiguity_keeps_mains_bounded_answer(self):
+        # PR #2849: direct checks keep main's conservative answer without
+        # assigning a hidden parenthesis to either adjacent `!`.  The answer
+        # reaches the ambiguous list suffix but not the ordinary list after it.
+        fetch_a = self.FETCH.replace("payload", "a")
+        fetch_b = self.FETCH.replace("payload", "b")
+        check_a = self.CHECK.replace("payload", "a")
+        check_b = self.CHECK.replace("payload", "b")
+        use_a = self.INLINE_USE.replace("payload", "a")
+        use_b = self.INLINE_USE.replace("payload", "b")
+        scripts = (
+            "! ( ! " + check_a + " && " + use_a + " )",
+            "! ( ! echo pre; " + check_a + " ) && " + use_a,
+            "if false; then ( : ) else ! ( echo fi; " + check_a + " ) && "
+            + use_a + "; fi",
+        )
+        for script in scripts:
+            with self.subTest(script=script):
+                body = (fetch_a + fetch_b + "set +e\n" + script + "\n"
+                        + check_b + " && " + use_b + "\n")
+                found = wg.job_defects([wg.Step("step", body, None)])
+                self.assertEqual(1, len(found), found)
+                self.assertIn("/tmp/a", found[0][1])
+                self.assertIn("hidden parenthesis order", found[0][1])
+                self.assertNotIn("/tmp/b", found[0][1])
+
+    def test_compound_contexts_fall_back_to_the_parent_answer(self):
+        # PR #2849: a compound negation or condition no longer exports a
+        # child-local Reach.  Both read with the carry-on parent's answer.
+        scripts = (
+            "! { echo pre; %s; } && " + self.INLINE_USE + "; echo more",
+            "if { echo pre; %s; }; then :; else " + self.INLINE_USE + "; fi",
+        )
+        for script in scripts:
+            with self.subTest(script=script):
+                found = self.round_five_job(script, "child")
+                self.assertEqual(1, len(found), found)
+                self.assertIn("runs after a `set +e`", found[0][1])
+
+    def test_b32_condition_group_ambiguity_uses_the_parent_answer(self):
+        # PR #2849: a hidden pair must not pop the enclosing condition frame
+        # and restore a child-local Reach for its later checksum.
+        script = ("if { if true; then ( : ); fi; echo pre; %s; }; "
+                  + "then :; else " + self.INLINE_USE + "; fi; echo more")
+        found = self.round_five_job(script, "child")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("runs after a `set +e`", found[0][1])
+
+    def test_b33_hidden_pair_arguments_use_the_parent_answer(self):
+        # PR #2849: `fi` is an argument here, not evidence that places either
+        # reader-hidden parenthesis.  The ambiguous list falls back to main.
+        script = ("if false; then ( :; ) else ! ( echo fi; %s ) && "
+                  + self.INLINE_USE + "; fi; echo more")
+        found = self.round_five_job(script, "child")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("runs after a `set +e`", found[0][1])
+
+    def test_b34_time_group_after_or_keeps_conditional_reach(self):
+        # PR #2849, set 32 t05: `true` skips the timed group, then its && use
+        # runs.  The reserved-word skip is needed to retain that list reach.
+        script = ("true || time { echo pre; %s; } && "
+                  + self.INLINE_USE + "; echo more")
+        for posture, found in self.round_six_jobs(script):
+            with self.subTest(posture=posture):
+                self.assertEqual(1, len(found), found)
+
+    def test_b35_child_coproc_never_exports_its_local_reach(self):
+        # PR #2849, set 31 a28: starting a coprocess succeeds immediately, so
+        # its following && use can run regardless of a check inside it.
+        script = "coproc { %s && echo ok; } && " + self.INLINE_USE + "; wait"
+        found = self.round_five_job(script, "child")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("runs asynchronously under `coproc`", found[0][1])
+
+    def test_b36_no_digest_refusal_precedes_context_gates(self):
+        # PR #2849, set 35: neither the coprocess gate nor the conservative
+        # group fallback may turn an unpinned checksum into a real check.
+        check = 'echo "$EXPECTED  /tmp/payload" | sha256sum -c -'
+        scripts = (
+            "set +e\ncoproc { " + check + " && " + self.INLINE_USE + "; }; wait\n",
+            "set +e\nbash -ec '! { echo pre; " + check + "; echo post; } || "
+            + self.INLINE_USE + "; echo more'\n",
+        )
+        for body in scripts:
+            with self.subTest(body=body):
+                found = wg.job_defects([wg.Step("step", self.FETCH + body, None)])
+                self.assertEqual(1, len(found), found)
+                self.assertIn("carries no digest", found[0][1])
+
+    def test_bare_nested_function_header_spends_its_hidden_pair(self):
+        # PR #2849, N01/D: without the bare-header adjustment, the nested
+        # function's local command negation is lost in both parent postures.
+        script = ("{ f() { g() ( ! %s && " + self.INLINE_USE
+                  + " ); g; }; f; }")
+        for posture, found in self.round_six_jobs(script):
+            with self.subTest(posture=posture):
+                self.assertEqual(1, len(found), found)
+                self.assertIn("is negated", found[0][1])
 
     def test_b25_coproc_bounds_only_a_proved_local_gate(self):
         rows = (
@@ -3185,117 +3142,16 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
             found = self.job(body, use="")
             self.assertEqual(1, len(found), found)
 
-    def test_b26_self_contained_hidden_groups_do_not_pop_their_parent(self):
-        rows = (
-            ("ti-p-s", "! ( if ( : ) then :; fi; echo pre; %s ) && "
-             + self.INLINE_USE + "; echo more"),
-            ("tl-b-s", "! { if false; then :; else ( : ) fi; echo pre; %s; } && "
-             + self.INLINE_USE + "; echo more"),
-            ("td-in", "! { echo pre; while ( false ) do ( %s; ) done; } && "
-             + self.INLINE_USE + "; echo more"),
-            ("te-b-n", "! {\nif false; then :; elif ( : ) then :; fi; echo pre; %s; } && "
-             + self.INLINE_USE + "; echo more"),
-            ("tu-p-n", "! (\nuntil ( : ) do :; done; echo pre; %s ) && "
-             + self.INLINE_USE + "; echo more"),
-            ("tw-b-n", "! {\nwhile ( false ) do :; done; echo pre; %s; } && "
-             + self.INLINE_USE + "; echo more"),
-            ("ti-a-n", "case x in x) ! {\nif ( : ) then :; fi; echo pre; %s; } && "
-             + self.INLINE_USE + ";; esac"),
-            ("ti-a-s", "case x in x) ! { if ( : ) then :; fi; %s; } && "
-             + self.INLINE_USE + ";; esac; echo more"),
-        )
-        for shape, script in rows:
-            for posture, found in self.round_six_jobs(script):
-                with self.subTest(shape=shape, posture=posture):
-                    self.assertEqual(1, len(found), found)
-        control = "{ if ( : ) then :; fi; echo pre; %s; } && " + self.INLINE_USE
-        self.assertEqual([], self.job(control + "\n", use=""))
 
-    def test_b27_nested_group_tails_keep_the_outer_and_list_start(self):
-        rows = (
-            ("k01", "! { echo pre; %s && { echo ok; }; } && "
-             + self.INLINE_USE + "; echo more"),
-            ("k04", "! { ! :; %s && { false; }; } && "
-             + self.INLINE_USE + "; echo more"),
-            ("k10", "! { echo pre; %s && for i in 1; do echo ok; done; } && "
-             + self.INLINE_USE + "; echo more"),
-            ("ig-bb", "! { { ! :; %s && false; }; } && " + self.INLINE_USE),
-            ("ig-bp", "! { ( ! :; %s && false ); } && " + self.INLINE_USE),
-        )
-        for shape, script in rows:
-            for posture, found in self.round_six_jobs(script):
-                with self.subTest(shape=shape, posture=posture):
-                    self.assertEqual(1, len(found), found)
 
-    def test_b28_each_same_stage_opener_keeps_its_own_prefix(self):
-        rows = (
-            ("m01", "{ ! { echo pre; %s; } && " + self.INLINE_USE
-             + "; echo post; }; echo more"),
-            ("m02", "( ! { echo pre; %s; } && " + self.INLINE_USE
-             + "; echo post ); echo more"),
-            ("m07", "{ f() { ! { echo pre; %s; } && " + self.INLINE_USE
-             + "; }; f; }; echo more"),
-            ("m17", "{ if ! { echo pre; %s; }; then " + self.INLINE_USE
-             + "; fi; echo post; }; echo more"),
-            ("s01", "( f() { ! { echo pre; %s; } && " + self.INLINE_USE
-             + "; }; f )"),
-        )
-        for shape, script in rows:
-            for posture, found in self.round_six_jobs(script):
-                with self.subTest(shape=shape, posture=posture):
-                    self.assertEqual(1, len(found), found)
-        controls = (
-            "{ { echo pre; %s; } && " + self.INLINE_USE + "; echo post; }; echo more",
-            "{ ! ! { echo pre; %s; } && " + self.INLINE_USE + "; echo post; }; echo more",
-        )
-        for script in controls:
-            with self.subTest(control=script):
-                self.assertEqual([], self.round_five_job(script, "child"))
 
-    def test_b29_closed_failure_contexts_cover_uses_that_can_run(self):
-        rows = (
-            ("j01", "! { echo pre; %s; echo post; }; " + self.INLINE_USE
-             + "; echo more"),
-            ("j03", "if { echo pre; %s; echo post; }; then :; fi; "
-             + self.INLINE_USE + "; echo more"),
-            ("N86", "! {\n%s\n" + self.INLINE_USE + "\n}"),
-            ("inside-before-conditional-close", "! { %s; " + self.INLINE_USE
-             + "; echo post; } && false"),
-        )
-        for shape, script in rows:
-            for posture, found in self.round_six_jobs(script):
-                with self.subTest(shape=shape, posture=posture):
-                    self.assertEqual(1, len(found), found)
-        controls = (
-            "! { case x in x) :;; esac; %s; echo post; } && " + self.INLINE_USE,
-            "case x in x) ! { echo pre; %s; echo post; } && "
-            + self.INLINE_USE + ";; esac",
-        )
-        for script in controls:
-            with self.subTest(control=script):
-                self.assertEqual([], self.round_five_job(script, "child"))
 
-    def test_b30_function_checks_read_the_call_sites_enclosing_context(self):
-        rows = (
-            ("G01r", "! {\nf() { %s; }; f; }\n" + self.INLINE_USE),
-            ("Q05", "! { :; f() { %s; }; f; }\n" + self.INLINE_USE),
-        )
-        for shape, script in rows:
-            for posture, found in self.round_six_jobs(script):
-                with self.subTest(shape=shape, posture=posture):
-                    self.assertEqual(1, len(found), found)
-        n44 = "set +e\nbash -ec '! {\nf() { %s; }; f; }; " + self.INLINE_USE + "'\n"
-        found = self.job(n44, use="")
-        self.assertEqual(1, len(found), found)
-        control = "set +e\nbash -ec 'f() { %s; }; f; " + self.INLINE_USE + "'\n"
-        self.assertEqual([], self.job(control, use=""))
 
     def test_round_six_structural_analysis_branches_are_behavior_pinned(self):
         clean = (
             "case x in x) ( X=1 ! %s ) && " + self.INLINE_USE + ";; esac",
             "f() { case x in x) :;; esac; X=1 ! %s && "
             + self.INLINE_USE + "; }; f",
-            "true && time { :; %s; } && " + self.INLINE_USE,
         )
         for script in clean:
             with self.subTest(verdict="clean", script=script):

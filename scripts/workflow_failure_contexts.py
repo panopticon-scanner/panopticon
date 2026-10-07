@@ -6,7 +6,7 @@ flat-module ceiling.  ``workflow_gating`` keeps compatibility imports for the
 callers that already name these helpers there.
 """
 import shell_reader
-from shell_reader import command
+from shell_reader import command, conditional
 from workflow_function_calls import _function_syntax, _known_status
 
 
@@ -16,10 +16,9 @@ def _structural_groups(stage):
     words, at = stage.argv, 0
     while at < len(words):
         token = words[at]
-        if token == "coproc":
+        if token == "time":
             at += 1
-            if (at + 1 < len(words) and words[at + 1] in ("{", "(")
-                    and _function_syntax([words[at], "()"])[0] == words[at]):
+            while at < len(words) and words[at].startswith("-"):
                 at += 1
             continue
         if token not in shell_reader.KEYWORDS:
@@ -77,9 +76,7 @@ def _is_negated_context(words, structure=None):
     """Whether any pipeline around this command has an odd `!` parity.
 
     Compound keywords separate pipelines: an outer `! { ...; }` never
-    cancels an inner `! command`.  Parenthesis positions do not survive the
-    reader, so a stage with a hidden group boundary and leading inversions is
-    conservatively negated when those inversions could sit on either side.
+    cancels an inner `! command`.
     """
     if structure is None:
         structure = getattr(words, "structure", None)
@@ -93,10 +90,7 @@ def _is_negated_context(words, structure=None):
             parities.append(count % 2)
             count = 0
     parities.append(count % 2)
-    if any(parities):
-        return True
-    return bool(structure and structure.group_open > structure.group_close
-                and _negation_count(words))
+    return any(parities)
 
 
 def _known_failure(statement):
@@ -147,11 +141,10 @@ def _function_body(words, bare=0):
     if (name is None and start + 1 < len(words) and (explicit or bare)
             and (_function_syntax([words[start], "()"])[0] == words[start])):
         # The reader removes the `()` from a bare function header.  When its
-        # aggregate parenthesis counts are the evidence for that header, spend
-        # that evidence once even if the following compound opener is visible;
-        # otherwise a later ordinary command can be mistaken for a second
-        # header in the same stage.
-        return words[:start] + words[start + 1:], bool(bare)
+        # aggregate parenthesis counts are the only evidence for that header,
+        # spend one pair.  A visible compound opener supplies the boundary
+        # without consuming a reader-hidden pair.
+        return words[:start] + words[start + 1:], not explicit
     if name is None:
         return None
     if words[start] == "function":
@@ -231,7 +224,6 @@ class _EnclosingContext(list):
 
     def __init__(self, words=(), structure=None, asynchronous=False):
         super().__init__(words)
-        self.closed_at = None
         self.structure = structure
         self.asynchronous = asynchronous
         self.through = None
@@ -241,25 +233,26 @@ class _GroupFrame:
     """Persistent structural stack node; snapshots stay O(1) while scanning."""
 
     __slots__ = ("carrier", "carrier_start", "closed", "context",
-                 "last_statement", "opened_at", "previous")
+                 "last_statement", "previous", "reach_barrier")
 
-    def __init__(self, context, previous, opened_at):
+    def __init__(self, context, previous):
         self.carrier = None
         self.carrier_start = None
         self.closed = False
         self.context = context
         self.last_statement = None
-        self.opened_at = opened_at
         self.previous = previous
+        self.reach_barrier = (bool(previous and previous.reach_barrier)
+                              or _is_negated_context(context) or conditional(context))
 
 
 class _StageShape:
     """Case-aware group events and arm state for one parser stage."""
 
-    __slots__ = ("continuation", "events", "has_command", "leading_arm", "plain_arm")
+    __slots__ = ("ambiguous", "events", "has_command", "leading_arm", "plain_arm")
 
-    def __init__(self, events, plain_arm, leading_arm, has_command, continuation=False):
-        self.continuation = continuation
+    def __init__(self, events, plain_arm, leading_arm, has_command, ambiguous=False):
+        self.ambiguous = ambiguous
         self.events = events
         self.plain_arm = plain_arm
         self.leading_arm = leading_arm
@@ -311,38 +304,13 @@ def _body_words(stage):
 _COMMAND_RESTARTS = ("then", "elif", "else", "do")
 
 
-def _self_contained_hidden_pairs(words, opens, closes):
-    """Hidden parenthesis pairs proved to open and close within one clause.
-
-    The reader keeps only aggregate parenthesis counts.  Compound-clause
-    boundaries still prove the open-before-close order in the common forms
-    below.  Consuming only those pairs prevents an inner `( command )` from
-    popping an already-open outer group.  Any surplus remains structural and
-    is handled conservatively by the ordinary close/open events.
-    """
-    available = min(opens, closes)
-    if not available:
-        return 0
-    pairs = 0
-    for start, ends in (("if", ("then",)), ("elif", ("then",)),
-                        ("while", ("do",)), ("until", ("do",)),
-                        ("then", ("elif", "else", "fi")),
-                        ("else", ("fi",)), ("do", ("done",))):
-        positions = [at for at, word in enumerate(words) if word == start]
-        for at in positions:
-            if any(end in words[at + 1:] for end in ends):
-                pairs += 1
-                break
-    return min(available, pairs)
-
-
 def _stage_shape(stage, cases):
     """Read case arms and explicit braces in their surviving source order.
 
-    Parentheses have no positions after ``shell_reader``.  Same-stage pairs
-    therefore cancel each other, while a surplus close precedes and a surplus
-    open precedes the surviving argv.  Case-arm closes are claimed first and
-    never allowed to consume a structural group.
+    Explicit braces keep their positions.  Parentheses do not, so a same-stage
+    hidden open/close pair is marked ambiguous and cancelled rather than given
+    a guessed order.  Case-arm closes are claimed first and never consume a
+    structural group; any remaining hidden surplus follows the explicit events.
     """
     words = _body_words(stage)
     remaining_closes = stage.group_close
@@ -393,14 +361,12 @@ def _stage_shape(stage, cases):
         if word == "{":
             braces.append((at, "open", words[segment:at + 1]))
             _move_case_depth(cases, 1)
-            segment = at + 1
             at += 1
             continue
         if word == "}":
             braces.append((at, "close", None))
             _move_case_depth(cases, -1)
             prefix = at + 1
-            segment = at + 1
             at += 1
             continue
         if word == "case" and at + 2 < len(words) and words[at + 2] == "in":
@@ -442,24 +408,22 @@ def _stage_shape(stage, cases):
     remaining_closes -= arm_closes
     _move_case_depth(cases, -1, remaining_closes - structural_leading)
     hidden_opens = stage.group_open
-    paired = _self_contained_hidden_pairs(words, hidden_opens, remaining_closes)
-    transition = (hidden_opens > paired and remaining_closes > paired
-                  and any(word in _COMMAND_RESTARTS for word in words))
-    if not transition:
-        paired = min(hidden_opens, remaining_closes)
+    # A hidden opener cannot be placed relative to leading inversions either:
+    # `! ( ! command )` and `! ! ( command )` collapse to the same argv.
+    # Treat that uncertainty like a same-stage hidden open/close pair instead
+    # of assigning either negation to the inner or outer pipeline.
+    ambiguous = bool(hidden_opens and (remaining_closes or _negation_count(words)))
+    paired = min(hidden_opens, remaining_closes)
     hidden_opens -= paired
     remaining_closes -= paired
     _move_case_depth(cases, 1, hidden_opens)
     before = [(event, context) for position, event, context in braces if position < prefix]
     after = [(event, context) for position, event, context in braces if position >= prefix]
-    post_restart = (transition or bool(before)
-                    or paired and words[:1] in (["then"], ["else"], ["do"]))
-    hidden_prefix = words[prefix:] if prefix and post_restart else stage.argv
-    events = ([("close", None)] * remaining_closes + before
-              + [("open", hidden_prefix)] * hidden_opens + after)
+    hidden_prefix = words[prefix:] if prefix and before else stage.argv
+    events = (before + after + [("close", None)] * remaining_closes
+              + [("open", hidden_prefix)] * hidden_opens)
     return _StageShape(events, plain_arm or any(case.plain for case in cases),
-                       leading_arm, has_command, words[:1] in (["then"], ["elif"],
-                                                               ["else"], ["do"]))
+                       leading_arm, has_command, ambiguous)
 
 
 class _StatementAnalysis:
@@ -470,29 +434,32 @@ class _StatementAnalysis:
         self.opened: dict[int, list[tuple[object, _EnclosingContext]]] = {}
         self.plain_arms = []
         self.enclosing: list[_GroupFrame | None] = []
+        self.reach_barriers = []
         cases: list[_CaseState] = []
         top = None
         for index, statement in enumerate(stmts):
             self.enclosing.append(top)
             plain_arm = False
+            barrier = bool(top and top.reach_barrier)
             for stage in statement.stages:
                 shape = _stage_shape(stage, cases)
+                if shape.ambiguous:
+                    barrier = True
+                    if top is not None:
+                        top.reach_barrier = True
                 self.leading_arms[id(stage)] = (stage, shape.leading_arm)
                 plain_arm = plain_arm or shape.plain_arm
                 if shape.has_command and top is not None:
-                    self._carry(top, index, index, stmts,
-                                continuation=shape.continuation)
+                    self._carry(top, index, index, stmts)
                 for event, prefix in shape.events:
                     if event == "close":
                         if top is not None:
                             closed, top = top, top.previous
                             closed.closed = True
-                            closed.context.closed_at = index
                             closed.context.through = closed.carrier
                             if top is not None and closed.carrier is not None:
                                 self._carry(top, closed.carrier_start,
-                                            index, stmts, closed.carrier,
-                                            closed.opened_at)
+                                            index, stmts, closed.carrier)
                         continue
                     context = _EnclosingContext(
                         _failure_context(prefix, shape.plain_arm, stage,
@@ -500,11 +467,31 @@ class _StatementAnalysis:
                         _coproc_prefix(prefix)
                     )
                     self.opened.setdefault(id(stage), []).append((stage, context))
-                    top = _GroupFrame(context, top, index)
+                    top = _GroupFrame(context, top)
+                    if shape.ambiguous:
+                        top.reach_barrier = True
+                    barrier = barrier or top.reach_barrier
                 if shape.has_command and top is not None:
-                    self._carry(top, index, index, stmts,
-                                continuation=shape.continuation)
+                    self._carry(top, index, index, stmts)
             self.plain_arms.append(plain_arm)
+            self.reach_barriers.append(barrier)
+        self.reach_barrier_ends: list[int | None] = [None] * len(self.reach_barriers)
+        through = None
+        for index in range(len(self.reach_barriers) - 1, -1, -1):
+            if not self.reach_barriers[index]:
+                through = None
+            elif through is None:
+                through = index
+            self.reach_barrier_ends[index] = through
+
+    def blocks_reach(self, index):
+        """Whether this list must fall back from a child-local reach."""
+        return index < len(self.reach_barriers) and self.reach_barriers[index]
+
+    def reach_barrier_end(self, index):
+        """Last statement in this conservative fallback's structural span."""
+        return (self.reach_barrier_ends[index]
+                if index < len(self.reach_barrier_ends) else None)
 
     def leading_arm(self, stage):
         """Whether this list's source walk placed an arm at ``stage``."""
@@ -517,15 +504,12 @@ class _StatementAnalysis:
                      if found is stage)
 
     @staticmethod
-    def _carry(frame, start, statement, stmts, carrier=None, group_start=None,
-               continuation=False):
+    def _carry(frame, start, statement, stmts, carrier=None):
         """Make one command the frame's tail, preserving its `&&`/`||` chain."""
         if frame.last_statement == statement:
             return
-        nested_join = (group_start is not None and group_start > 0
-                       and stmts[group_start - 1].separator in ("&&", "||"))
-        if (not nested_join and not continuation and (frame.last_statement is None
-                or stmts[frame.last_statement].separator not in ("&&", "||"))):
+        if (frame.last_statement is None
+                or stmts[frame.last_statement].separator not in ("&&", "||")):
             frame.carrier_start = start
         frame.carrier = statement if carrier is None else carrier
         frame.last_statement = statement
@@ -555,35 +539,10 @@ def _enclosing_failure_contexts(stmts, index, analysis=None):
     while top is not None:
         carries = (top.carrier_start is not None
                    and top.carrier_start <= index <= top.carrier)
-        closed_at = top.context.closed_at
-        unconditionally_followed = (closed_at is not None
-                                    and stmts[closed_at].separator not in ("&&", "||"))
-        if ((not top.closed or carries or unconditionally_followed)
+        if ((not top.closed or carries)
                 and (not known_after or top.carrier is not None
                      and top.carrier >= index + 1)):
             contexts.append(top.context)
-        top = top.previous
-    contexts.reverse()
-    return contexts
-
-
-def _bounded_enclosing_failure_contexts(stmts, index, analysis=None):
-    """Closed prefixes that suppress failure only through their own group.
-
-    A later successful tail can decide a group's `&&`/`||` status, so its
-    prefix cannot refuse every later use.  It still suppresses errexit for a
-    check and any use inside that group; callers bind the refusal at the close.
-    """
-    analysis = statement_analysis(stmts) if analysis is None else analysis
-    top = analysis.enclosing[index] if index < len(analysis.enclosing) else None
-    contexts = []
-    while top is not None:
-        carries = (top.carrier_start is not None
-                   and top.carrier_start <= index <= top.carrier)
-        closed_at = top.context.closed_at
-        if (top.closed and not carries and closed_at is not None
-                and stmts[closed_at].separator in ("&&", "||")):
-            contexts.append((top.context, closed_at))
         top = top.previous
     contexts.reverse()
     return contexts

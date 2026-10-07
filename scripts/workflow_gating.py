@@ -36,8 +36,7 @@ import collections
 
 import shell_reader
 from shell_reader import command, conditional, negated
-from workflow_failure_contexts import (_bounded_enclosing_failure_contexts as _bounded_enclosing_failure_contexts,
-                                       _enclosing_failure_contexts as _enclosing_failure_contexts,
+from workflow_failure_contexts import (_enclosing_failure_contexts as _enclosing_failure_contexts,
                                        _failure_context as _failure_context,
                                        _function_body as _function_body,
                                        _inside_unmarked_case as _inside_unmarked_case,
@@ -231,6 +230,8 @@ _BOUNDED_RESCUE = ("; a use in its own `||` rescue branch runs only after the ch
                    "and a use after that reach still runs")
 _CONDITIONAL = ("is reached only through the `&&`/`||` list before it, so it may be skipped "
                 "while that use still runs")
+_AMBIGUOUS_GROUP = ("is inside a compound list whose hidden parenthesis order this guard cannot "
+                    "place, so it cannot prove that the checksum gates that use")
 
 
 class RescueGate(Reach):
@@ -339,6 +340,8 @@ def inlined_stops(stmts, start, carrier, index, on=None, fails=None, analysis=No
     position = index - start
     if not 0 <= position < len(body) or not body[position].stages:
         return False
+    if analysis.blocks_reach(position):
+        return False
     statement = body[position]
     if isinstance(statement, Inlined):
         statement = statement._replace(credit=(None, None))
@@ -357,7 +360,10 @@ def inlined_reaches(flat, stmts, indexes, on, fails):
     `indexes` maps between them. Keep an existing refusal in either credit
     slot: parent posture and a pipeline without pipefail remain stronger.
     """
+    analysis = statement_analysis(stmts)
     for position, index in enumerate(indexes):
+        if analysis.blocks_reach(position):
+            continue
         stops = _stops_step(stmts, position, on, fails)
         why = (Reach(0, _LOST) if stops is _LOST
                else Reach(indexes[stops] - index)
@@ -402,7 +408,7 @@ _FUNCTION_BODY = ("is inside a function that has not run through a failure gate 
                   "use")
 
 
-def _function_status(stmts, index, answer, errexit, analysis=None):
+def _function_status(stmts, index, answer, errexit):
     """Bind definition-time credit to a proved call, preserving body reach."""
     function, carrier = _function_scope(stmts, index), index
     if function is None and isinstance(stmts[index], Inlined):
@@ -423,12 +429,6 @@ def _function_status(stmts, index, answer, errexit, analysis=None):
     call = _gating_function_call(stmts, name, close, errexit, returned)
     if call is None:
         return _FUNCTION_BODY
-    analysis = statement_analysis(stmts) if analysis is None else analysis
-    call_contexts = _enclosing_failure_contexts(stmts, call, analysis)
-    if any(_is_negated_context(context) for context in call_contexts):
-        return "is negated, so the failing path is the THEN branch"
-    if any(conditional(context) for context in call_contexts):
-        return "is an `if`/`while` test, which errexit does not apply to"
     body = answer if isinstance(answer, Reach) and not soft else close - index
     return FunctionStatusGate(
         call, body, answer if soft else None
@@ -464,12 +464,15 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED, analysis=None)
         contexts = [(_failure_context(stage.argv, plain_arm, stage,
                                       analysis.leading_arm(stage)), stage)]
     enclosing = _enclosing_failure_contexts(stmts, index, analysis)
-    bounded_enclosing = _bounded_enclosing_failure_contexts(stmts, index, analysis)
+    # A check written in this shell keeps main's exact brace/group answer.
+    # For a handed script, an enclosing compound is the ambiguous child-local
+    # proof that must fall back to the parent answer instead.
+    exact_enclosing = () if isinstance(statement, Inlined) else enclosing
     is_negated = (any(_is_negated_context(context, item)
                       for context, item in contexts)
-                  or any(_is_negated_context(context) for context in enclosing))
+                  or any(_is_negated_context(context) for context in exact_enclosing))
     is_conditional = (any(conditional(context) for context, _item in contexts)
-                      or any(conditional(context) for context in enclosing))
+                      or any(conditional(context) for context in exact_enclosing))
     opened = (context for _local, item in contexts for context in analysis.opened_contexts(item))
     async_spans = [max(0, (context.through if context.through is not None else index) - index)
                    for context in (*enclosing, *opened)
@@ -488,7 +491,6 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED, analysis=None)
         if own and not inherited_child_reach:
             if type(own) is Reach and own.span is not None:
                 local = None if _skippable_or(stmts, index) else own
-                async_local = local
             elif not (is_negated or is_conditional):
                 return own
         elif own is None:
@@ -560,22 +562,20 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED, analysis=None)
             start, through, stops = rescue
             outside = stops if isinstance(stops, Reach) else answer
             return RescueGate(start, through, outside)
-    answer = (_function_status(stmts, index, answer, errexit, analysis)
+    answer = (_function_status(stmts, index, answer, errexit)
               if measuring_uses else answer)
     if async_span is not None:
         inside = answer if async_local is _UNMEASURED else async_local
         if (inside is None or isinstance(inside, Reach)
                 and type(inside) is Reach and inside.span is not None):
-            outside = (answer if isinstance(statement, Inlined) and answer is not None
+            outside = (answer if answer is not None and not isinstance(answer, Reach)
                        else "runs asynchronously under `coproc`")
             answer = ContextGate(index + async_span, inside, outside)
-    if measuring_uses:
-        for context, through in bounded_enclosing:
-            if _is_negated_context(context):
-                reason = "is negated, so the failing path is the THEN branch"
-            elif conditional(context):
-                reason = "is an `if`/`while` test, which errexit does not apply to"
-            else:
-                continue
-            answer = ContextGate(through, reason, answer)
+    barrier_end = (analysis.reach_barrier_end(index)
+                   if not isinstance(statement, Inlined) else None)
+    if (measuring_uses and barrier_end is not None
+            and (answer is None or isinstance(answer, Reach))):
+        if isinstance(answer, Reach) and answer.span is not None:
+            barrier_end = max(barrier_end, index + answer.span)
+        answer = ContextGate(barrier_end, _AMBIGUOUS_GROUP, answer)
     return answer

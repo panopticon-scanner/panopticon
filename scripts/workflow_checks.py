@@ -10,7 +10,7 @@ import os
 import re
 
 from shell_reader import command, statements
-from workflow_forms import (STDOUT, Reach, at_directory, clears, regions, step_credit,
+from workflow_forms import (STDOUT, at_directory, clears, regions, step_credit,
                             statement_analysis, swallowed, working_directories)
 
 
@@ -103,9 +103,9 @@ def checks(stmts, credit=None, working=None, outer=None, path=(), scope=None,
             if not _has_check_flag(argv):
                 continue
             text = _checked_text(statement, position, stage, argv, written, here) or ""
-            why = swallowed(stmts, index, statement, stage, (credit or {}).get(index), analysis)
-            if (why is None or isinstance(why, Reach)) and not _DIGEST.search(text):
-                why = _NO_DIGEST
+            why = (_NO_DIGEST if not _DIGEST.search(text) else
+                   swallowed(stmts, index, statement, stage,
+                             (credit or {}).get(index), analysis))
             found.append((point, text, why))
         _record_writes(statement, written, here)
     return found
