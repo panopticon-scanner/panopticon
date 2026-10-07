@@ -3012,6 +3012,19 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
         self.assertIn("/tmp/a runs after a `set +e`", found[0][1])
         self.assertNotIn("/tmp/b", found[0][1])
 
+    def test_b32_ambiguous_child_keeps_mains_report_when_the_parent_is_clean(self):
+        # PR #2849: main reports both rows.  When the parent answer would clear,
+        # the hidden-pair fallback must retain that conservative baseline.
+        scripts = (
+            "! ( ! %s ); " + self.INLINE_USE,
+            "! ( ! %s && " + self.INLINE_USE + " )",
+        )
+        for script in scripts:
+            with self.subTest(script=script):
+                found = self.job("bash -ec '" + script + "'\n", use="")
+                self.assertEqual(1, len(found), found)
+                self.assertIn("hidden parenthesis order", found[0][1])
+
     def test_direct_hidden_group_ambiguity_keeps_mains_bounded_answer(self):
         # PR #2849: direct checks keep main's conservative answer without
         # assigning a hidden parenthesis to either adjacent `!`.  The answer

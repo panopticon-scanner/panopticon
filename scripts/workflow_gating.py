@@ -539,6 +539,12 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED, analysis=None)
     if is_conditional:
         return "is an `if`/`while` test, which errexit does not apply to"
     why = local or (credit[stage is not statement.stages[-1]] if credit else None)
+    if (isinstance(statement, Inlined) and analysis.blocks_reach(index)
+            and (why is None or isinstance(why, Reach))):
+        # Falling back to a clean parent must not clear a shape main refuses.
+        # Keep the ambiguity conservative; a real parent refusal stays more
+        # specific and wins through ``why`` above.
+        why = _AMBIGUOUS_GROUP
     piped_end = (_piped_group_end(stmts, index)
                  if not inherited_child_reach
                  and (why is None or isinstance(why, Reach)) else None)
