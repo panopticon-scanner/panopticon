@@ -59,7 +59,7 @@ from shell_tokens import (_Expanded as _Expanded, _Parse as _Parse, _Token as _T
 from shell_wrappers import (WRAPPERS as WRAPPERS, Defaulted as Defaulted,
                             Rewritten as Rewritten, dynamic as dynamic, unwrap as unwrap)
 from shell_command import (CONDITIONS as CONDITIONS, KEYWORDS as KEYWORDS,
-                           OPTIONAL_NEXT as OPTIONAL_NEXT, _ASSIGNMENT as _ASSIGNMENT,
+                           OPTIONAL_NEXT as OPTIONAL_NEXT, _ASSIGNMENT as _ASSIGNMENT, _CHECKERS,
                            _DEFAULTS as _DEFAULTS, _ENVIRONMENT as _ENVIRONMENT,
                            _FETCHERS as _FETCHERS, _FUNCTION as _FUNCTION,
                            _INTERPRETERS as _INTERPRETERS, _NAME as _NAME, _OPTIONAL as _OPTIONAL,
@@ -115,7 +115,8 @@ _ESCAPED = "\ue002"
 # expansion before it splits the result, where shlex would split the braces apart (#2731).
 _BLANK = "\ue004"
 _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
-_FD_SPELLINGS = re.compile(r"^/+(?:dev|proc/(?:thread-)?self)/+fd/")  # `//dev/fd/N`, `/proc/self/fd/N` (#2881)
+# The paths of N a carry reads as N, past slashes or a climb: `//dev/fd/N`, `../proc/thread-self/fd/N` (#2881)
+_FD_SPELLINGS = re.compile(r"^(?:/+|(?:\.\./+)+)(?:dev|proc/(?:thread-)?self)/+fd/")
 
 
 # --- reading the shell -------------------------------------------------------
@@ -461,9 +462,9 @@ def input_alias_fd(word):
     """Alias fd, ? for unresolved input, or None for a literal ordinary file."""
     if "$" in word or has_substitution(word):
         return "?"
-    word = os.path.normpath(word)
-    if word == "/dev/stdin":
-        return "0"
+    word = re.sub(r"^(?:/+|(?:\.\./)+)(?=dev/|proc/)", "/", os.path.normpath(word))     # `//dev/`, `../proc/`
+    if word in (std := ("/dev/stdin", "/dev/stdout", "/dev/stderr")):
+        return str(std.index(word))
     match = re.fullmatch(r"/dev/fd/([0-9]+)", word)
     if match:
         return match[1].lstrip("0") or "0"
@@ -587,9 +588,9 @@ def _stage(text, context):
             take(word)
             number = (fd.lstrip("0") or "0") if fd else ("0" if op.startswith("<") else "1")
             held = None if number == "0" else held      # a later redirection of fd 0 ends it
-            # A dup, a move or a path of N (`/dev/fd/N` in any spelling) carries what N holds onto its target,
-            # fd 0 too, until that is redirected again (`4<&3 <&4`, `</dev/fd/3 3<&-`, #2881); a source a value
-            # decides (`<&$FD`, `<"$P"`) carries every file held, fail-closed (round 4)
+            # A dup, a move or a path of N (`_FD_SPELLINGS`, `input_alias_fd`) carries what N holds onto
+            # its target, fd 0 too, until that is redirected again (`4<&3 <&4`, `</dev/fd/3 3<&-`, #2881);
+            # a source a value decides (`<&$FD`, `<"$P"`) carries every file held, fail-closed (round 4)
             moved = re.fullmatch(r"(\d+)-", word) if op in (">&", "<&") else None
             source = (moved[1] if moved else word) if moved or op in (">&", "<&") and _fd_or_close(word) else (
                 op != "<<<" and input_alias_fd(derived(_FD_SPELLINGS.sub("/dev/fd/", word), word)))
@@ -662,12 +663,12 @@ def _stage(text, context):
         words.append(word)
     if all(word in KEYWORDS or _ASSIGNMENT.match(word) for word in argv):
         argv = words        # it only assigns: an array of a command is read as run
-    # An interpreter -- one `find` runs too (`command_run`, round 4) -- or a command word the step's
-    # values decide (`$SH`) reads what `N<>` still holds open when its redirections end, on any
-    # descriptor, as `main` reads `N<` -- by a dup, a `/dev/fd` path in any spelling, a child program;
-    # any other command reads none of it, so no check is credited with a file it only holds (#2881 round 3).
-    if opened and (head := command_run(argv)) and ("$" in head[0] or has_substitution(
-            head[0]) or os.path.basename(head[0]) in (*_SHELLS, *_INTERPRETERS, "eval", "source", ".")):
+    # An interpreter -- one `find` runs too (`command_run`, round 4) -- or a command word the step's values
+    # decide (`$SH`, but not `$X/sha256sum`: a check is credited by its basename, round 5) reads what `N<>`
+    # still holds open when its redirections end, on any descriptor, as `main` reads `N<` -- by a dup, a path,
+    # a child program; no other command reads it, so no check is credited with a file it only holds (#2881).
+    if opened and (head := command_run(argv)) and (name := os.path.basename(head[0])) not in _CHECKERS and (
+            dynamic(head[0], has_substitution) or name in (*_SHELLS, *_INTERPRETERS, "eval", "source", ".")):
         reads.extend(file for file in dict.fromkeys(sum(opened.values(), ())) if file not in reads)
     # A check reads what `0<>` opened only where fd 0 still holds it (#2856 round 12, B5).
     reads, writes = credited_zero(argv, reads, writes, zero, held)
