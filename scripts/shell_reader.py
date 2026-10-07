@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 """As much of the POSIX shell as a guard over `run:` blocks has to read.
 
-Split out of `scripts/workflow_guard.py` (#1647 fix round 1), which asks two
-questions of a workflow step -- what does it download, and what checks the
-download -- and could answer neither while its input was a regex match over
-shell TEXT. Both questions need the same thing first: the commands, in order,
-with their arguments, their redirections, their heredocs and the commands
+Split out of `scripts/workflow_guard.py` (#1647 fix round 1), which asks two questions of a
+workflow step -- what does it download, and what checks the download -- and could answer neither
+while its input was a regex match over shell TEXT. Both questions need the same thing first: the
+commands, in order, with their arguments, their redirections, their heredocs and the commands
 hidden inside their substitutions.
 
-So this module reads shell, and nothing about supply chains lives here. The
-reading is deliberately partial -- no expansion, no arithmetic, no control
-flow -- and the rule on top is written to fail closed on what is missing (see
-that module's docstring). What IS handled, because each one hid a download
-from the guard until it was:
+So this module reads shell, and nothing about supply chains lives here. The reading is
+deliberately partial -- no expansion, no arithmetic, no control flow -- and the rule on top is
+written to fail closed on what is missing (see that module's docstring). What IS handled,
+because each one hid a download from the guard until it was:
 
     comments        `# curl ... | sh` in the prose explaining the rule
     continuations   a fetch written across four lines
@@ -31,13 +29,11 @@ from the guard until it was:
     patterns        `{sh,-c}` and `[s]h` are not expanded but marked: bash makes
                     words of them, so no command they may start is resolved
 
-The first three are settled on the TEXT, before any command is read, in the
-one quote-aware pass `scripts/shell_lex.py` makes the way bash does (#1793),
-and the substitutions are lifted out of it by `scripts/shell_text.py`.
-The wrappers' table, and the option grammar each one is read with, are
-`scripts/shell_wrappers.py`'s (#2227).
-The words a parse hands back, and the markers in them that say what was
-lifted out, are `scripts/shell_tokens.py`'s (#2628): split out at this
+The first three are settled on the TEXT, before any command is read, in the one quote-aware pass
+`scripts/shell_lex.py` makes the way bash does (#1793), and the substitutions are lifted out of
+it by `scripts/shell_text.py`. The wrappers' table, and the option grammar each one is read
+with, are `scripts/shell_wrappers.py`'s (#2227). The words a parse hands back, and the markers
+in them that say what was lifted out, are `scripts/shell_tokens.py`'s (#2628): split out at this
 module's size and imported back here, so no caller moved.
 
 Stdlib only. `statements(script)` is the entry point; `command(argv)` strips
@@ -73,28 +69,25 @@ from shell_command import (CONDITIONS as CONDITIONS, KEYWORDS as KEYWORDS,
                            negated as negated, unresolved_wrapper as unresolved_wrapper,
                            wrapper_words as wrapper_words)
 
-# One shell command: its argv, the files it redirects into / reads from, the
-# heredoc body attached to it, the command substitutions inside it -- the
-# `$(...)`, `<(...)` and backtick texts, which are commands in their own right
-# and where `eval "$(curl ...)"` hides its download -- and stdout_writes, the
-# final file sink of descriptor 1 after ordered redirects/duplications. `writes`
-# also carries an explicit OTHER fd (`2>err.log`) so the guard's file-tracking
-# stays correct; `stdout_writes` is the one a caller may call THE destination
-# (#1733). `&>word`/`&>>word` and the UNNUMBERED `>&word` land there too --
-# bash's `>word 2>&1` shorthand, a real file whatever `word` looks like. A
-# target beginning with `&` whose remainder IS a duplication or close (`&1`,
-# `&-`) -- `2>&1`, `>&2`, `>&-` -- lands in neither list.
-# Parse-local subshell markers leave argv alone; counts retain their boundaries
-# for the checksum handler without exposing marker tokens as commands.
-# `heredoc` is the body a caller may quote back (a `sha256sum -c` sums list;
-# of several, the one descriptor 0 reads if any -- `cat` and `-c` read stdin);
-# `stdin_heredoc` is the body descriptor 0 FINALLY reads, with the flag that
-# says whether it expanded -- `(body, expands)` or None. The two are different
-# questions: `sh 3<<EOF` writes a body nothing reads on stdin, `sh <<EOF 0<&3`
-# hands stdin somewhere else afterwards, and only the second question can say
-# whether a heredoc is the SCRIPT of the interpreter in front of it (#1839).
-# A here-string is a body the second question reads too (`sh <<< '...'`,
-# #2293) -- expanding unless `lex` spelled its word -- and never the first's.
+# One shell command: its argv, the files it redirects into / reads from, the heredoc body
+# attached to it, the command substitutions inside it -- the `$(...)`, `<(...)` and backtick
+# texts, which are commands in their own right and where `eval "$(curl ...)"` hides its download
+# -- and stdout_writes, the final file sink of descriptor 1 after ordered
+# redirects/duplications. `writes` also carries an explicit OTHER fd (`2>err.log`) so the
+# guard's file-tracking stays correct; `stdout_writes` is the one a caller may call THE
+# destination (#1733). `&>word`/`&>>word` and the UNNUMBERED `>&word` land there too -- bash's
+# `>word 2>&1` shorthand, a real file whatever `word` looks like. A target beginning with `&`
+# whose remainder IS a duplication or close (`&1`, `&-`) -- `2>&1`, `>&2`, `>&-` -- lands in
+# neither list. Parse-local subshell markers leave argv alone; counts retain their boundaries
+# for the checksum handler without exposing marker tokens as commands. `heredoc` is the body a
+# caller may quote back (a `sha256sum -c` sums list; of several, the one descriptor 0 reads if
+# any -- `cat` and `-c` read stdin); `stdin_heredoc` is the body descriptor 0 FINALLY reads,
+# with the flag that says whether it expanded -- `(body, expands)` or None. The two are
+# different questions: `sh 3<<EOF` writes a body nothing reads on stdin, `sh <<EOF 0<&3` hands
+# stdin somewhere else afterwards, and only the second question can say whether a heredoc is the
+# SCRIPT of the interpreter in front of it (#1839). A here-string is a body the second question
+# reads too (`sh <<< '...'`, #2293) -- expanding unless `lex` spelled its word -- and never the
+# first's.
 Stage = collections.namedtuple(
     "Stage", "argv writes reads heredoc substitutions stdout_writes "
              "group_open group_close stdin_from_pipe stdout_to_pipe pipe_input_fds "
@@ -192,12 +185,11 @@ def _bare_blanks(text, i):
 def _split(text, context):
     """[[stage text, ...], ...]: statements, each a list of pipeline stages.
 
-    Quote-aware by hand rather than by regex, because the whole defect being
-    fixed is a regex that could not tell a `|` inside a URL from a pipeline.
-    A `$'...'` whose escapes `shell_quote.ansi_c` decodes becomes the '...' of
-    the text bash makes of it, so `sh $'-c'` reads as `sh -c` (#2344); a
-    double-quoted `\\$` or `` \\` `` is marked for `_stage` (`_ESCAPED`), as
-    shlex, reading what is left, no longer knows the quote it was in.
+    Quote-aware by hand rather than by regex, because the whole defect being fixed is a regex
+    that could not tell a `|` inside a URL from a pipeline. A `$'...'` whose escapes
+    `shell_quote.ansi_c` decodes becomes the '...' of the text bash makes of it, so `sh $'-c'`
+    reads as `sh -c` (#2344); a double-quoted `\\$` or `` \\` `` is marked for `_stage`
+    (`_ESCAPED`), as shlex, reading what is left, no longer knows the quote it was in.
     """
     statements = []
     stages = []
@@ -206,27 +198,24 @@ def _split(text, context):
     cases: list[str] = []
     groups = (context.new("group", "("), context.new("group", ")"))
     word_start, redirect_target = 0, False
-    # A `case` header is exactly three words (`case`, the word, `in`), so the
-    # shlex probe below only has to run while the buffer can still BE one --
-    # `header_words` counts the words the buffer has closed, `header_live`
-    # goes false as soon as the first word is not `case` or a third word has
-    # gone by without a header, and both reset when the buffer does. Probing
-    # unconditionally re-split the WHOLE buffer on every whitespace character,
-    # which made `_split` quadratic: 42 KB of one statement took ~93 s against
-    # 0.02 s before the probe existed, from a `run:` block this module reads
-    # out of the TARGET repository (fix round on #1714, Critical 1).
+    # A `case` header is exactly three words (`case`, the word, `in`), so the shlex probe below
+    # only has to run while the buffer can still BE one -- `header_words` counts the words the
+    # buffer has closed, `header_live` goes false as soon as the first word is not `case` or a
+    # third word has gone by without a header, and both reset when the buffer does. Probing
+    # unconditionally re-split the WHOLE buffer on every whitespace character, which made
+    # `_split` quadratic: 42 KB of one statement took ~93 s against 0.02 s before the probe
+    # existed, from a `run:` block this module reads out of the TARGET repository (fix round on
+    # #1714, Critical 1).
     header_words, header_live = 0, True
-    # `[[ ... ]]` is ONE compound command: the `&&`, `||`, `(`, `)`, `<` and
-    # `>` in it are the conditional's operators, not list separators, subshells
-    # or redirections (#2441) -- split at them, `CHECK && [[ -f a || -f b ]] ||
-    # exit 1` lost the `|| exit 1` that ends the real list. `cond` is 0 outside
-    # one and, inside, 1 plus the `(` it holds open, so a `)` it did not open
-    # ends it where `shell_lex` does: a `case` arm's `[[)` is a pattern.
-    # `at_head` says every word this stage closed is a keyword or an assignment
-    # -- where bash reads `[[` as the conditional, not as `echo [[ a`'s word.
-    # The test ends with the STATEMENT, not with a stage: bash makes one word
-    # of `^(x|y)$`, and ending it at that `|` left the `)` closing a group
-    # nothing had opened -- the unbalanced count #2334 reads as a lost list.
+    # `[[ ... ]]` is ONE compound command: the `&&`, `||`, `(`, `)`, `<` and `>` in it are the
+    # conditional's operators, not list separators, subshells or redirections (#2441) -- split
+    # at them, `CHECK && [[ -f a || -f b ]] || exit 1` lost the `|| exit 1` that ends the real
+    # list. `cond` is 0 outside one and, inside, 1 plus the `(` it holds open, so a `)` it did
+    # not open ends it where `shell_lex` does: a `case` arm's `[[)` is a pattern. `at_head` says
+    # every word this stage closed is a keyword or an assignment -- where bash reads `[[` as the
+    # conditional, not as `echo [[ a`'s word. The test ends with the STATEMENT, not with a
+    # stage: bash makes one word of `^(x|y)$`, and ending it at that `|` left the `)` closing a
+    # group nothing had opened -- the unbalanced count #2334 reads as a lost list.
     cond, at_head = 0, True
     # `! { ... }`: bash negates the GROUP's status, and errexit is off for every command inside
     # a negated compound, so each statement the group holds is read under the `!` (#2664, the
@@ -427,14 +416,12 @@ def _split(text, context):
                 word_start, i = len(buf), i + 2
                 continue
             end_statement(separator)
-            # Every terminator that ENDS a case arm, not just `;;`: bash also
-            # spells it `;&` (fall through into the next arm's body) and `;;&`
-            # (resume matching at the next pattern). Reading only `;;` left
-            # the state at "body", so the next arm's `b)` was read as a group
-            # CLOSE and `b` became argv[0] -- shadowing the command behind it,
-            # which is how a `curl` in the second arm went unseen entirely
-            # (fix round on #1714, Critical 2). After any of the three the
-            # next word is a pattern again.
+            # Every terminator that ENDS a case arm, not just `;;`: bash also spells it `;&`
+            # (fall through into the next arm's body) and `;;&` (resume matching at the next
+            # pattern). Reading only `;;` left the state at "body", so the next arm's `b)` was
+            # read as a group CLOSE and `b` became argv[0] -- shadowing the command behind it,
+            # which is how a `curl` in the second arm went unseen entirely (fix round on #1714,
+            # Critical 2). After any of the three the next word is a pattern again.
             arm_end = next((t for t in (";;&", ";;", ";&")
                             if text.startswith(t, i)), None)
             if arm_end and cases:
