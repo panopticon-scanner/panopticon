@@ -525,7 +525,8 @@ def require_unenforced_ack(review_root, manifest, entries):
     the declared out_file. Current Claude/Kimi proof covers the write-tool
     surface; Bash writes are TOOL_POLICY_ENFORCED's. For a PROVEN boundary, only
     REFUTED plus --allow-unenforced records the gap; with no flag or at UNKNOWN no
-    ack is written, and only the posture line shows it. Delivery and transport stay separate.
+    ack is written, and only the posture line shows it. The gate never consults
+    delivery or the static self_write_delivery fact.
 
     On a host that does not declare it -- `--host generic`, the one
     claim-nothing value the CLI still accepts since #1621 retired gemini from

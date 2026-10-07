@@ -44,7 +44,7 @@ shell from a reviewer's.
 
 Known gap: **Bash-path artifact writes when `tool_policy_enforced` is not PROVEN (Claude/Kimi)**.
 Their current `artifact_write_guard` proof covers the write-tool surface. When tool policy is
-REFUTED and the operator passes `--allow-unenforced`, `unenforced-ack.json` preserves both the
+REFUTED and the operator passes `--allow-unenforced`, `unenforced-ack.json` preserves the
 PROVEN capability row, `write_guard_covers_bash: false`, and this named gap. For that
 PROVEN-boundary case, with no flag or with tool policy UNKNOWN, no acknowledgement is written; the
 gap appears only in the `tool_policy_enforced` posture line. Composed proof is a separate policy

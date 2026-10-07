@@ -235,6 +235,7 @@ class TestTheAckRecordsAShadowedOverride(unittest.TestCase):
         path = runio._pano(root, runio.HOST_CAPABILITIES)
         body = runio._load_json(path)
         body["self_write_delivery"] = value
+        body["capabilities"]["self_write_delivery"] = value
         body["capabilities"][hosts.ARTIFACT_WRITE_GUARD][
             "self_write_delivery"] = value
         runio._write_json(path, body)
