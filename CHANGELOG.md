@@ -7,21 +7,32 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
-- **Workflow reader reads a read-write descriptor as an input on its number (#2881, #2608).**
-  `curl … -o tool` ⏎ `sh 3<> tool <&3` ran the download and read CLEAN: the reader read `N<>
-  file` as a write alone, so a dup of N onto standard input (`sh 3<> tool 0<&3`, `3<> tool <&3
-  sh`, `bash -s 9<> tool <&9`) or a path to N (`sh /dev/fd/3 3<> tool`, `. /dev/stdin 3<> tool
-  0<&3`) gave the shell nothing it reads. It is an input on N too now, as `N< file` is. On #2856
-  round 9's 14,171 rows, against that head: 1,216 cells close where a shell runs the payload
-  (278 rows), none goes CLEAN where `main`, the base or #2856 reports and a shell runs it, and
-  274 are new fail-closed over-reports (107 rows), none run by a shell -- a dup before the open,
-  which bash rejects (`sh <&3 3<> tool`; 75 cells, 15 rows), a shell that holds the file open on
-  another descriptor and dups nothing onto its input (`sh 3<> tool`), as `main` already reports
-  `sh 3< tool` (25, 5), and dash, which takes no descriptor past 9, no `<&N-` move and no
-  `source` (174, 87). Still open, as on `main`: `cat 3<> tool <&3 | sh` -- a `cat` piped into a
-  shell is a use only where its words name the file, so `cat < tool | sh` reads CLEAN on `main`
-  too (54 cells, #2884) -- and a compound's redirect or pipe (`{ curl …; } 3<> tool >&3` ⏎ `sh
-  tool`), #2883.
+- **Workflow reader reads a read-write descriptor's file where a dup or a path reaches it
+  (#2881, #2608).** `curl … -o tool` ⏎ `sh 3<> tool <&3` ran the download and read CLEAN: the
+  reader read `N<> file` as a write alone, so a dup of N onto standard input (`sh 3<> tool
+  0<&3`, a move `<&3-`, `3<> tool <&3 sh`, `bash -s 9<> tool <&9`) or a path to N (`sh /dev/fd/3
+  3<> tool`, `. /dev/stdin 3<> tool 0<&3`) gave the shell nothing it reads. The file is now read
+  where such a dup or path reaches it, on any descriptor, and nowhere else: a check that holds a
+  digest file open on N is credited with what it reads, not that file, so `sha256sum tool |
+  sha256sum -c 3<> sums` checks the download against itself and the use stays reported, and a
+  check whose pinned digest arrives on standard input keeps it -- where a check reads `sums`
+  through such a dup or path (`sha256sum -c 3<> sums <&3`, `sha256sum -c /dev/fd/3 3<> sums`),
+  it verifies and gates the run. In my own measurement on #2856 round 9's 14,171 rows, against
+  that head: 1,216 cells close where a shell runs the payload (278 rows), none goes CLEAN where
+  `main`, the base or #2856 reports and a shell runs it, and 174 are new fail-closed
+  over-reports (87 rows), each under `sh`, where dash takes no descriptor past 9, no move and no
+  `source`. On the round-1 seat's 1,605 rows, against the base: 27 cells in 9 rows go CLEAN
+  where a shell runs the payload, each a pinned check reading its digest through such a dup or
+  path, which verifies (36 in 12 against `main`, where #2856 already credits `<>` on descriptor
+  0); and 1,025 cells in 502 rows over-report, none run by a shell -- under `sh`, dash's limits,
+  a descriptor past 9 (336 in 168), a leading-zero one (`<&03`, `03<>`: 300 in 150), a move
+  `<&3-` (298 in 149) and `source` (56 in 28); in bash too, a later redirection of standard
+  input or a dup that fails first, read as `main` reads two `<` redirections, both (`sh 3<> tool
+  <&3 < /dev/null`, `sh <&3 3<> tool <&3`: 25 in 5), and a non-shell interpreter fed the file
+  (`python3 3<> tool <&3`, `perl`: 10 in 2). Still open, as on `main`: `cat 3<> tool <&3 | sh`
+  -- a `cat` piped into a shell is a use only where its words name the file, so `cat < tool |
+  sh` reads CLEAN on `main` too (#2884) -- a compound's redirect or pipe (`{ curl …; } 3<> tool
+  >&3` ⏎ `sh tool`, #2883), and a check credited with a file it holds by `N<` (#2886).
 - **Workflow reader: a line ending in `|` continues, a command word's `${X:-bash -s}` is read
   whole, and `<>` opens its descriptor (#2756, #2731, #2657; #2733, #2608).** A line ending in
   `|` continues on the next (`curl … |` ⏎ `sh` ran the pipeline and read CLEAN, behind `eval`
