@@ -601,13 +601,13 @@ def _stage(text, context):
             moved = re.fullmatch(r"(\d+)-", word) if op in (">&", "<&") else None
             source = (moved[1] if moved else word) if moved or op in (">&", "<&") and _fd_or_close(word) else (
                 op != "<<<" and input_alias_fd(derived(_FD_SPELLINGS.sub("/dev/fd/", word), word)))
-            held = tuple(dict.fromkeys(sum(opened.values(), ()))) if source == "?" else opened.get(
+            carried = tuple(dict.fromkeys(sum(opened.values(), ()))) if source == "?" else opened.get(
                 (source or "-").lstrip("0") or "0", ())
             opened.pop(number, None)            # any redirection of N ends what `N<>` opened there
             if moved:
                 opened.pop(moved[1].lstrip("0") or "0", None)
-            if held:
-                opened[number] = held
+            if carried:
+                opened[number] = carried
             if op in (">&", "<&"):
                 if _fd_or_close(word):
                     source = word.lstrip("0") or "0"
@@ -635,7 +635,7 @@ def _stage(text, context):
                            bodies.get(source) if source and source != "?" else None)
             else:
                 if op == "<>":                 # open for reading too: what reads N reads it (#2881)
-                    opened[number] = (*held, word)
+                    opened[number] = (*carried, word)
                 writes.append(word)
                 sinks[number] = sinks.get("1") if word in _STDOUT_ALIASES else word
                 pipe_inputs[number] = False
