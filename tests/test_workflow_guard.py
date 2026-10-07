@@ -85,6 +85,19 @@ class TestTheFailureContextSplit(unittest.TestCase):
                                     workflow_failure_contexts._enclosing_failure_contexts(
                                         statements, 1, after)])
 
+    def test_each_explicit_opener_gets_only_its_own_prefix(self):
+        cases = (
+            ("{ ! { echo pre", ((), ("!", "{"))),
+            ("{ if ! { echo pre", ((), ("if", "!", "{"))),
+            ("{ f() { ! { echo pre", ((), (), ("!", "{"))),
+        )
+        for script, expected in cases:
+            with self.subTest(script=script):
+                statements = list(shell_reader.statements(script))
+                analysis = workflow_failure_contexts.statement_analysis(statements)
+                contexts = analysis.opened_contexts(statements[0].stages[0])
+                self.assertEqual(expected, tuple(tuple(context) for context in contexts))
+
 
 class TestFetchParsing(unittest.TestCase):
     """What the parser SEES. Each form is a way to spell the same act."""
@@ -3132,6 +3145,171 @@ class TestAnAndListInsideAChildHasLocalReach(unittest.TestCase):
         for blocker, posture, script in controls:
             with self.subTest(blocker=blocker, posture=posture):
                 self.assertEqual([], self.round_five_job(script, posture))
+
+    def round_six_jobs(self, script):
+        """Run a named round-six row at the step and in an errexit child."""
+        return (
+            ("step", self.job("set +e\n" + script + "\n", use="")),
+            ("child", self.job("set +e\nbash -ec '" + script + "'\necho parent\n",
+                               use="")),
+        )
+
+    def test_b25_coproc_bounds_only_a_proved_local_gate(self):
+        rows = (
+            ("c01", "coproc { %s && echo ok; " + self.INLINE_USE + "; }; wait"),
+            ("c02", "coproc worker { %s && echo ok; " + self.INLINE_USE + "; }; wait"),
+            ("c03", "coproc ( %s && echo ok; " + self.INLINE_USE + " ); wait"),
+            ("ce01", "eval 'coproc { %s && echo ok; " + self.INLINE_USE
+             + "; }; wait'"),
+        )
+        for shape, script in rows:
+            for posture, found in self.round_six_jobs(script):
+                with self.subTest(shape=shape, posture=posture):
+                    self.assertEqual(1, len(found), found)
+        top = "coproc { %s && echo ok; " + self.INLINE_USE + "; }; wait"
+        found = self.job(top + "\n", use="")
+        self.assertEqual(1, len(found), found)
+        for header in ("coproc {", "coproc worker {"):
+            body = ("{\nbash -ec '" + header + " %s && echo ok; "
+                    + self.INLINE_USE + "; }; wait'\n} | cat\n")
+            found = self.job(body, use="")
+            self.assertEqual(1, len(found), found)
+
+    def test_b25_coproc_errexit_mirror_stays_clean(self):
+        script = "coproc { %s; " + self.INLINE_USE + "; }; wait"
+        self.assertEqual([], self.job(script + "\n", use=""))
+        self.assertEqual([], self.job("set +e\nbash -ec '" + script
+                                      + "'\necho parent\n", use=""))
+        for body in ("set +e\n" + script + "\n",
+                     "set +e\nbash -c '" + script + "'\necho parent\n"):
+            found = self.job(body, use="")
+            self.assertEqual(1, len(found), found)
+
+    def test_b26_self_contained_hidden_groups_do_not_pop_their_parent(self):
+        rows = (
+            ("ti-p-s", "! ( if ( : ) then :; fi; echo pre; %s ) && "
+             + self.INLINE_USE + "; echo more"),
+            ("tl-b-s", "! { if false; then :; else ( : ) fi; echo pre; %s; } && "
+             + self.INLINE_USE + "; echo more"),
+            ("td-in", "! { echo pre; while ( false ) do ( %s; ) done; } && "
+             + self.INLINE_USE + "; echo more"),
+            ("te-b-n", "! {\nif false; then :; elif ( : ) then :; fi; echo pre; %s; } && "
+             + self.INLINE_USE + "; echo more"),
+            ("tu-p-n", "! (\nuntil ( : ) do :; done; echo pre; %s ) && "
+             + self.INLINE_USE + "; echo more"),
+            ("tw-b-n", "! {\nwhile ( false ) do :; done; echo pre; %s; } && "
+             + self.INLINE_USE + "; echo more"),
+            ("ti-a-n", "case x in x) ! {\nif ( : ) then :; fi; echo pre; %s; } && "
+             + self.INLINE_USE + ";; esac"),
+            ("ti-a-s", "case x in x) ! { if ( : ) then :; fi; %s; } && "
+             + self.INLINE_USE + ";; esac; echo more"),
+        )
+        for shape, script in rows:
+            for posture, found in self.round_six_jobs(script):
+                with self.subTest(shape=shape, posture=posture):
+                    self.assertEqual(1, len(found), found)
+        control = "{ if ( : ) then :; fi; echo pre; %s; } && " + self.INLINE_USE
+        self.assertEqual([], self.job(control + "\n", use=""))
+
+    def test_b27_nested_group_tails_keep_the_outer_and_list_start(self):
+        rows = (
+            ("k01", "! { echo pre; %s && { echo ok; }; } && "
+             + self.INLINE_USE + "; echo more"),
+            ("k04", "! { ! :; %s && { false; }; } && "
+             + self.INLINE_USE + "; echo more"),
+            ("k10", "! { echo pre; %s && for i in 1; do echo ok; done; } && "
+             + self.INLINE_USE + "; echo more"),
+            ("ig-bb", "! { { ! :; %s && false; }; } && " + self.INLINE_USE),
+            ("ig-bp", "! { ( ! :; %s && false ); } && " + self.INLINE_USE),
+        )
+        for shape, script in rows:
+            for posture, found in self.round_six_jobs(script):
+                with self.subTest(shape=shape, posture=posture):
+                    self.assertEqual(1, len(found), found)
+
+    def test_b28_each_same_stage_opener_keeps_its_own_prefix(self):
+        rows = (
+            ("m01", "{ ! { echo pre; %s; } && " + self.INLINE_USE
+             + "; echo post; }; echo more"),
+            ("m02", "( ! { echo pre; %s; } && " + self.INLINE_USE
+             + "; echo post ); echo more"),
+            ("m07", "{ f() { ! { echo pre; %s; } && " + self.INLINE_USE
+             + "; }; f; }; echo more"),
+            ("m17", "{ if ! { echo pre; %s; }; then " + self.INLINE_USE
+             + "; fi; echo post; }; echo more"),
+            ("s01", "( f() { ! { echo pre; %s; } && " + self.INLINE_USE
+             + "; }; f )"),
+        )
+        for shape, script in rows:
+            for posture, found in self.round_six_jobs(script):
+                with self.subTest(shape=shape, posture=posture):
+                    self.assertEqual(1, len(found), found)
+        controls = (
+            "{ { echo pre; %s; } && " + self.INLINE_USE + "; echo post; }; echo more",
+            "{ ! ! { echo pre; %s; } && " + self.INLINE_USE + "; echo post; }; echo more",
+        )
+        for script in controls:
+            with self.subTest(control=script):
+                self.assertEqual([], self.round_five_job(script, "child"))
+
+    def test_b29_closed_failure_contexts_cover_uses_that_can_run(self):
+        rows = (
+            ("j01", "! { echo pre; %s; echo post; }; " + self.INLINE_USE
+             + "; echo more"),
+            ("j03", "if { echo pre; %s; echo post; }; then :; fi; "
+             + self.INLINE_USE + "; echo more"),
+            ("N86", "! {\n%s\n" + self.INLINE_USE + "\n}"),
+            ("inside-before-conditional-close", "! { %s; " + self.INLINE_USE
+             + "; echo post; } && false"),
+        )
+        for shape, script in rows:
+            for posture, found in self.round_six_jobs(script):
+                with self.subTest(shape=shape, posture=posture):
+                    self.assertEqual(1, len(found), found)
+        controls = (
+            "! { case x in x) :;; esac; %s; echo post; } && " + self.INLINE_USE,
+            "case x in x) ! { echo pre; %s; echo post; } && "
+            + self.INLINE_USE + ";; esac",
+        )
+        for script in controls:
+            with self.subTest(control=script):
+                self.assertEqual([], self.round_five_job(script, "child"))
+
+    def test_b30_function_checks_read_the_call_sites_enclosing_context(self):
+        rows = (
+            ("G01r", "! {\nf() { %s; }; f; }\n" + self.INLINE_USE),
+            ("Q05", "! { :; f() { %s; }; f; }\n" + self.INLINE_USE),
+        )
+        for shape, script in rows:
+            for posture, found in self.round_six_jobs(script):
+                with self.subTest(shape=shape, posture=posture):
+                    self.assertEqual(1, len(found), found)
+        n44 = "set +e\nbash -ec '! {\nf() { %s; }; f; }; " + self.INLINE_USE + "'\n"
+        found = self.job(n44, use="")
+        self.assertEqual(1, len(found), found)
+        control = "set +e\nbash -ec 'f() { %s; }; f; " + self.INLINE_USE + "'\n"
+        self.assertEqual([], self.job(control, use=""))
+
+    def test_round_six_structural_analysis_branches_are_behavior_pinned(self):
+        clean = (
+            "case x in x) ( X=1 ! %s ) && " + self.INLINE_USE + ";; esac",
+            "f() { case x in x) :;; esac; X=1 ! %s && "
+            + self.INLINE_USE + "; }; f",
+            "true && time { :; %s; } && " + self.INLINE_USE,
+        )
+        for script in clean:
+            with self.subTest(verdict="clean", script=script):
+                self.assertEqual([], self.round_five_job(script, "step"))
+        report = (
+            "f() { case x in (esac) :;; x) ! %s && "
+            + self.INLINE_USE + ";; esac; }; f",
+            "f() { case case in y) :;; case) case y in y) ! %s && "
+            + self.INLINE_USE + ";; esac;; esac; }; f",
+        )
+        for script in report:
+            with self.subTest(verdict="report", script=script):
+                found = self.round_five_job(script, "step")
+                self.assertEqual(1, len(found), found)
 
     def test_long_or_lists_are_walked_iteratively(self):
         script = ("true || " + "false || " * 600 + "%s && "

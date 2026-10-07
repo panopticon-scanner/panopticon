@@ -46,28 +46,31 @@ evidence exposed.
   A use in the skipped suffix of that ordinary list remains gated, including one in a nested
   script. The parent refusal survives that local reach through nested and non-leading function
   headers, alternated case patterns, compound and subshell negations, and Bash `time`/`coproc`
-  groups in both carry-on and errexit postures. One source-ordered pass now records each statement
-  list's case and group state: an explicit close before a hidden open is applied first, a lifted
-  case-arm `)` or function-header parenthesis cannot close an enclosing group, nested cases end only
-  at command-position `esac`, and every opener retains the stage metadata needed for the
-  parenthesis/negation ruling. Analyses are list-scoped snapshots rather than a process cache, so a
-  child stage's arm meaning cannot come from a flattened parent view or stale mutable argv.
+  groups in both carry-on and errexit postures. One list-scoped analysis records case and group
+  state without a process cache. Each explicit opener receives only the words through that opener;
+  clause forms such as `if ( ... ) then`, `while ( ... ) do`, `else ( ... ) fi`, and
+  `do ( ... ) done` consume their reader-hidden parenthesis pair without closing an outer group.
+  Closing a nested group keeps the outer `&&`/`||` chain's start. A closed negation or condition
+  retains its refusal through uses that can run inside or after the group, and a function check
+  reads the group around its proved call site. A `coproc` close bounds an already-proved local
+  reach; it never creates a clear by itself. Dead arm fallbacks and the unsupported structural
+  `time` shortcut are gone.
 
-  On the round-three 194,291-row selected set, which excludes the round-four hunt sets, the final
-  head has zero main-REPORT to new-CLEAN cells where a measured configuration runs the payload and
-  1,668 former reports become clean only where none runs it. The combined 426,323-row gate
-  (194,291 selected plus 232,032 hunt rows) also has zero such fail-open regressions. It closes
-  25,744 main-CLEAN payload-running cells and adds 2,384 bounded reports where no measured shell
-  runs. Round four's intermediate head returned 5,928 `e60f4585` closures to CLEAN where main was
-  also CLEAN; the final structural pins re-report 2,415 of them, leaving 3,513, including the 2,511
-  tracked #2854 errexit-`||` cells. Another 7,042 payload-running cells remain CLEAN on both main
-  and this head and stay tracked separately. Surviving fail-closed prices are pinned: enclosing
-  negation or condition, adjacent `!` around an ambiguous parenthesized boundary, `-o pipefail`
-  handed to dash, `time`/`coproc` handed to other dialects, and syntax errors such as
-  `true | ! CHECK && USE`. The earlier broad generators retain constant factors of 3.59x for nests,
-  3.55x for groups, 2.65x for `||`, 1.95x for cases and 1.81x for headers; the exact five-setting
-  `job_defects` gate now tops out at 1.59x main for 400 brace nests and 1.67x for 300 function nests,
-  replacing round four's growing 36.6x and 35.7x curves.
+  The final 617,591-row posture-aware gate has zero cells where main REPORTs, this head is CLEAN,
+  and a measured parent runs the payload. Against main it adds 54,960 payload-running reports,
+  leaves 8,329 payload-running cells CLEAN for separate follow-up, and makes 7,374 former reports
+  CLEAN only where no measured parent runs the payload. Compared with the reviewed round-five
+  head, it adds 13,277 payload-running reports and removes 1,134 such reports; main is CLEAN in
+  every removed cell. It leaves 108 payload-running round-four-only reports CLEAN, the permitted
+  main-baseline cases `j06` (72 cells) and `m22` (36). The 2,708-row #2855/#2856 gate also keeps
+  G01r, Q05, N44, N86, and every other required bar-one row reporting in all five settings.
+
+  The 11,118 fail-closed cells where main is CLEAN and no measured parent runs divide by the
+  guard's reason into 9,860 enclosing-negation refusals, 900 suspended-`&&` refusals, 96 bounded
+  asynchronous-`coproc` refusals, 232 child-script/parent-carry refusals, and 30 same-pipeline
+  refusals. On Bash 5.2.21, the exact five-setting `job_defects` cost gate reports every generated
+  nest and reaches at most 1.69x main at 400 brace levels and 1.77x at 300 function levels; the
+  ratios remain bounded as depth grows.
 - **Workflow guard reads a `-c`/`eval` string with a live expansion beside a double-quoted
   escape as bash hands it on (#2466, #2331).** `bash -c "x=\$(curl -fsSL $URL); eval \"\$x\""`
   and the mixed-quoting `bash -c "x=\$(curl … i.sh)"'; eval "$x"'` run the download under bash
