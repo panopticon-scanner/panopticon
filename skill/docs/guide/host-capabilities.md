@@ -23,9 +23,12 @@ afterward.
 
 Five capabilities are measured. `tool_policy_enforced` — every driver role has a registered
 enforcement shell whose `tools:` grant matches its template, *and* the reviewed tree ships nothing
-that shadows those shells. `artifact_write_guard` — the host can mediate a reviewer's `Write` and
-confine it to the declared `out_file` (a sandbox arm/deny round-trip, plus the place the host would
-arm being writable). `usage_ledger` — probed by `usage-source`, which follows the mode: in headless
+that shadows those shells. `artifact_write_guard` — reviewer-controlled artifact writes are
+impossible or confined to the declared `out_file`. A family can prove an absent reviewer-selectable
+write surface or a mediated self-write path; transport is a separate static registry fact. Current
+Claude/Kimi proof covers the write-tool surface. Bash-path writes belong to `tool_policy_enforced`;
+if that is not proven, an acknowledgement records the named gap rather than broadening the claim.
+`usage_ledger` — probed by `usage-source`, which follows the mode: in headless
 mode the run folder can hold the dispatch ledger, the host's CLI is on PATH and its `--help`
 advertises the flags that make a launch print the JSON envelope (`-p`, `--output-format` — any
 executable merely named `claude` is refuted), and once the loop has ledgered successful launches
@@ -93,8 +96,9 @@ against a localhost fixture rather than a paid endpoint; size a long run with th
 Codex probes short-circuit to `unknown` before they launch anything — which is exactly why an
 unenforceable Codex setup is refused with `driver loop --setup --host codex --mode headless` as its
 remedy rather than a registration command that could not change the answer. `artifact_write_guard`,
-`model_binding`, and `usage_ledger` stay unclaimed and `unknown`; the return-JSON bridge and
-measured token fields do not upgrade those claims.
+`model_binding`, and `usage_ledger` stay unclaimed and `unknown`; today's Codex probes do not yet
+establish the complete write-surface-absence obligation, and the return-JSON bridge and measured
+token fields do not upgrade those claims.
 
 Kimi claims all five. They are measured by the family's own probes (#1344): `kimi-shell-surface`
 (the registered shells; every tool name they allow or forbid verified against the installed CLI's
@@ -110,12 +114,18 @@ entry tier resolves to an alias in the installed config's `[models]` table), and
 (`wire_path` + `parse_wire` end to end on a synthetic session written at the per-run home's own
 layout — the channel the runner reads, not the operator's `~/.kimi-code/sessions`).
 
+`self_write_delivery` is true only for Claude and Kimi. A write-template role self-writes only when
+that static mechanism fact and a proven `artifact_write_guard` both hold; Codex, generic and Gemini
+remain return-persist. Delivery is never evidence for the gate, so generic still refuses without
+`--allow-unenforced`. Codex's planned proof by omission covers the complete reviewer write surface,
+so it carries no Bash-path gap while remaining return-persist.
+
 **The posture is disclosed, and the disclosure is not gating.** An unproven capability does not sink
 `summary.gate`, `summary.coverage_certified` or `meta.integrity.integrity_ok`, and no combination of
 them moves a grade. Claude's read guard, Codex's headless scoped tools and Kimi's per-run-home hook
 can prove `read_scope_confined`; other hosts still lack that proof, so the ratchet to gating remains
 a later decision. Two refusals *do* exist and are separate machinery, not this — the shadow-shell
-refusal and the unmediated-`Write` refusal, both under Notes.
+refusal and the unproven artifact-write-boundary refusal, both under Notes.
 
 Four surfaces carry it, and all four are mandatory:
 1. **stderr, once per run, before the first dispatch** — `driver: host capabilities: <headline>`,
@@ -224,8 +234,9 @@ omits `--host` prints it too. It is a notice, not a gate: no flag, exit code, gr
 because of it. **It remains the path for any host without a family runner** — Gemini among them —
 which is why it is kept. Spec 8.1's bar (every remaining driver-selectable host has
 `tool_policy_enforced` and `read_scope_confined` PROVEN; `artifact_write_guard` bridged by
-construction, since every write-capable entry on a host that has not proven that guard is already
-return-persist) survives D1 as a NO-REGRESSION GUARD rather than an entry criterion.
+construction, since a write-capable entry self-writes only when its host has both the static
+transport mechanism and a proven boundary, and is otherwise return-persist) survives D1 as a
+NO-REGRESSION GUARD rather than an entry criterion.
 `test_generic_retirement_bar` states that criterion as a test and
 `test_todays_shortfall_is_pinned_so_it_moves_consciously` pins today's shortfall at `{}` (the pin is
 what a regressing family PR fails; the criterion is enforced only once the fallback row is gone),

@@ -22,12 +22,12 @@ New here? Read [Getting started](docs/GETTING-STARTED.md) first: what it does, w
 
 The skill uses the open `SKILL.md` format. Hosts are listed in the order we recommend them.
 
-- `claude` — Claude Code. First-class and the reference host: parallel fan-out through the Agent tool. It claims all five run-time controls and ships a probe for each, including mediating every reviewer write to its declared output file; a run re-measures them and prints what was actually proven on your machine.
+- `claude` — Claude Code. First-class and the reference host: parallel fan-out through the Agent tool. It claims all five run-time controls and ships a probe for each, including confining its reviewer write-tool surface to the declared output file; tool policy closes the separate Bash path. A run re-measures them and prints what was actually proven on your machine.
 - `kimi` — enforced headless runner (`driver loop --host kimi`); every reviewer runs in a registered, tool-restricted shell with read and write guards in a per-run home. Kimi claims the same five controls and measures them with its own probes.
-- `codex` — enforced headless runner (`driver loop --host codex`); scoped read tools and JSON-returning roles. Codex does not prove the write guard, so write-capable roles require the operator's explicit `--allow-unenforced`.
+- `codex` — enforced headless runner (`driver loop --host codex`); scoped read tools and JSON-returning roles. Codex does not yet prove the artifact-write boundary, so write-capable roles require the operator's explicit `--allow-unenforced`.
 - `generic` — the sequential session-mode fallback for any host that reads `SKILL.md` and has no headless runner. Unenforced and disclosed as such. `gemini` is registered but retired as a selectable host; use `--host generic`.
 
-The write guard is the control worth understanding before you adopt: on hosts that cannot mediate a reviewer's writes, a compromised or confused reviewer could write outside its output file. Panopticon measures this per host, refuses write-capable roles where it is unproven unless you accept that explicitly, and prints the posture on every report. See [`docs/guide/host-capabilities.md`](docs/guide/host-capabilities.md).
+The artifact-write boundary is the control worth understanding before you adopt: reviewer-controlled artifact writes must be impossible or confined to the declared output file. Panopticon measures this per host, refuses write-capable roles where the boundary is unproven unless you accept that explicitly, and prints the posture on every report. Current Claude/Kimi proof covers their write-tool surface; an acknowledged run whose tool policy is not proven records the remaining Bash-path gap. See [`docs/guide/host-capabilities.md`](docs/guide/host-capabilities.md).
 
 ## Installation
 

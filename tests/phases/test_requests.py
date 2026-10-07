@@ -76,8 +76,9 @@ class TestReviewerFileListsAreAbsolute(unittest.TestCase):
         os.makedirs(runio._pano(self.root))
         self.addCleanup(self._t.cleanup)
         self.manifest = {"run_id": "R", "security_mode": "standard", "host": "claude"}
-        # #1344 F4 (a): _cell_entry/_verify_entry now derive `delivery` from
-        # the host's proven write guard -- this class is about the #975 file
+        # #1344/#1622: _cell_entry/_verify_entry now derive `delivery` from
+        # the host's self-write fact and proven boundary. This class is about
+        # the #975 file
         # list/repo-root pin, not the bridge, so prove it PROVEN and keep
         # exercising the enforced/self-write path these tests were written for.
         write_host_evidence(self.root, {c: hosts.PROVEN for c in hosts.CAPABILITIES})
@@ -156,8 +157,9 @@ class TestBoundModel(unittest.TestCase):
 
 
 class TestDelivery(unittest.TestCase):
-    """#1344 F4 (a): delivery is DERIVED from the role's Write grant and the
-    host's proven write guard, in one place. It used to be a literal set at
+    """#1344/#1622: delivery is derived from the role's Write grant, the
+    host's static transport and its proven boundary, in one place. It was a
+    literal set at
     exactly one builder (the tool-advisor) while the two write-capable
     builders never set it -- so a host with no write guard got unguarded
     self-write.
@@ -170,11 +172,31 @@ class TestDelivery(unittest.TestCase):
                 hosts.ARTIFACT_WRITE_GUARD: {"state": guard, "by": "x", "detail": "x"},
                 hosts.USAGE_LEDGER: {"state": hosts.UNKNOWN, "by": None, "detail": "x"}}
 
-    def test_a_write_role_on_a_guarded_host_self_writes(self):
-        mode, prefix = requests.delivery("claude", self._evidence(hosts.PROVEN),
-                                         "domain-panel.md", "/abs/out.json")
-        self.assertIsNone(mode)
-        self.assertEqual("", prefix)
+    def test_claude_and_kimi_self_write_only_with_a_proven_boundary(self):
+        for host in ("claude", "kimi"):
+            with self.subTest(host=host):
+                mode, prefix = requests.delivery(
+                    host, self._evidence(hosts.PROVEN),
+                    "domain-panel.md", "/abs/out.json")
+                self.assertIsNone(mode)
+                self.assertEqual("", prefix)
+
+    def test_a_proven_boundary_without_self_write_transport_returns_json(self):
+        omission = hosts.HostSpec(
+            name="omission", claims=frozenset({hosts.ARTIFACT_WRITE_GUARD}))
+        with mock.patch.dict(hosts.HOSTS, {"omission": omission}):
+            mode, prefix = requests.delivery(
+                "omission", self._evidence(hosts.PROVEN),
+                "domain-panel.md", "/abs/out.json")
+        self.assertEqual("return_json", mode)
+        self.assertEqual(requests.RETURN_PERSIST_PREAMBLE
+                         % {"out_file": "/abs/out.json"}, prefix)
+
+    def test_codex_remains_return_json_until_its_family_claim_lands(self):
+        mode, _prefix = requests.delivery(
+            "codex", self._evidence(hosts.PROVEN),
+            "domain-panel.md", "/abs/out.json")
+        self.assertEqual("return_json", mode)
 
     def test_a_write_role_on_an_unguarded_host_is_bridged_with_the_preamble(self):
         for guard in (hosts.REFUTED, hosts.UNKNOWN):
@@ -208,6 +230,7 @@ class TestDelivery(unittest.TestCase):
         self.assertIn("/abs/out.json", prefix)
         self.assertIn("do NOT write", prefix)
         self.assertIn("final message", prefix)
+        self.assertNotIn("has not proven", prefix)
         self.assertTrue(prefix.endswith("\n\n"), "preamble must separate from the body")
 
 

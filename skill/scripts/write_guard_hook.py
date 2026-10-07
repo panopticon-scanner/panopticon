@@ -24,15 +24,15 @@ hook's job, not a hole: the hole would be a launch that grants Bash at all.
 
 THIS HOOK IS CLAUDE-ONLY BY CONSTRUCTION, not by omission: it is registered in
 ``.claude/settings.local.json`` as a Claude Code PreToolUse hook, so it cannot
-run for any other host. ``driver run`` therefore REFUSES to dispatch the
-write-capable reviewer roles on a host that cannot mediate Write (currently
-anything but ``claude``); ``--allow-unenforced`` accepts that residual risk
-explicitly and records it in the run's ``unenforced-ack.json``, which
+run for any other host. ``driver run`` REFUSES write-capable reviewer roles when
+the measured artifact-write boundary is unproven. Another family may prove that
+outcome differently. ``--allow-unenforced`` accepts the risk and records it in
+the run's ``unenforced-ack.json``, which
 ``synth.integrity`` reports as ``meta.integrity.unenforced_acknowledged``
 (#1519). An earlier version of this refusal lived in ``dispatch.py`` and was
 retired in run-10, and this docstring went on citing it after the fact -- a
 compensating control named in a docstring but absent from the code is worse
-than none, because it stops people looking. Full per-host write mediation is
+than none, because it stops people looking. Per-host boundary proofs are
 tracked as #1344.
 
 The matcher and ``_WRITE_TOOLS`` are derived from one source below so they can

@@ -84,8 +84,8 @@ def scope(files=(), dirs=(), reads=(), hard_linked=None):
 # It is PREPENDED by the builder, exactly as _verify_entry prepends the #975
 # repo-root pin -- spec 7.4 forbids editing the templates, and this edits none.
 RETURN_PERSIST_PREAMBLE = (
-    "DELIVERY: return-persist. This host has not proven it can confine your "
-    "Write to %(out_file)s, so do NOT write that file. Produce exactly the JSON "
+    "DELIVERY: return-persist. This entry is not authorized to self-write "
+    "%(out_file)s, so do NOT write that file. Produce exactly the JSON "
     "object the Output section below describes and return it as your final "
     "message; the controller persists it to that path after confirming it "
     "parses.\n\n")
@@ -95,29 +95,28 @@ def delivery(host, evidence, role_file, out_file):
     """(mode, prefix): how this entry's output reaches its out_file.
 
     `mode` is "return_json" -- the HOST persists what the agent returns -- or
-    None, meaning the agent self-writes under the write guard. `prefix` is the
+    None, meaning the agent self-writes under a proven boundary. `prefix` is the
     preamble to prepend to the prompt, or "".
 
     Three cases, derived rather than declared per builder:
       * the role's template grants no Write (advisor.md): return_json, no
         preamble -- the template already says "return", nothing to override;
-      * the template grants Write and the host has PROVEN artifact_write_guard:
-        self-write, exactly as today;
-      * the template grants Write and the guard is NOT proven (refuted or
-        unknown -- gemini, generic, or a claude run that took
-        --allow-unenforced): return_json WITH the preamble, because the
-        template's own instruction says "Write your findings to {out_file}" and
-        an agent that obeys it self-writes unguarded while the controller waits
-        for JSON that never comes.
+      * the template grants Write, the host has self-write transport, AND its
+        artifact_write_guard is PROVEN: self-write;
+      * otherwise: return_json WITH the preamble, because the
+        template's own instruction says "Write your findings to {out_file}";
+        it must be overridden while the controller waits for returned JSON.
 
-    This does NOT bypass require_unenforced_ack (spec 10). The shell still
-    grants Write, so an agent asked to return may still write; the gate is
-    the operator's acceptance of that, and it stays.
+    This does NOT bypass require_unenforced_ack (spec 10). Delivery is an
+    instruction and transport choice, not proof of the effective write
+    surface; the gate consumes the boundary capability independently.
     """
     allowed = dispatch.load_template(role_file)[0]["tool_policy"].get("allowed") or []
     if "Write" not in allowed:
         return "return_json", ""
-    if hosts.posture(host, evidence)[hosts.ARTIFACT_WRITE_GUARD] == hosts.PROVEN:
+    row = hosts.spec(host)
+    if (row and row.self_write_delivery
+            and hosts.posture(host, evidence)[hosts.ARTIFACT_WRITE_GUARD] == hosts.PROVEN):
         return None, ""
     return "return_json", RETURN_PERSIST_PREAMBLE % {"out_file": out_file}
 
@@ -513,22 +512,20 @@ def write_capable_roles():
 
 # Refreshed on every invocation rather than written once: these describe what
 # the CURRENT probe found, not what the operator agreed to. See the merge below.
-_ACK_DISCLOSURE = (hosts.TOOL_POLICY_ENFORCED, "tool_policy_detail")
+_ACK_DISCLOSURE = (hosts.TOOL_POLICY_ENFORCED, hosts.ARTIFACT_WRITE_GUARD,
+                   "tool_policy_detail", "gaps")
 
 
 def require_unenforced_ack(review_root, manifest, entries):
-    """Refuse to dispatch write-capable reviewers on a host that cannot mediate
-    Write, unless the operator accepted the risk explicitly (#1519, AGT-B1A).
+    """Refuse when the reviewer artifact-write boundary is not proven, unless
+    the operator accepted the risk explicitly (#1519, AGT-B1A; #1622).
 
-    The gate reads one capability: the host's ARTIFACT_WRITE_GUARD -- can its
-    hook mediate a reviewer's `Write` and confine it to the declared out_file?
-    That is a NARROWER question than whether the host enforces a reviewer tool
-    policy at all (TOOL_POLICY_ENFORCED), and it is the only one that matters
-    here: the write-guard is a Claude Code PreToolUse hook, so a host can
-    enforce a registered shell's tool list perfectly well and still have
-    nothing standing between a domain-panel `Write` and the filesystem. The
-    two questions were extensionally identical over today's hosts, which is
-    exactly why the distinction has to be written down.
+    The gate reads one capability: ARTIFACT_WRITE_GUARD, the safety outcome
+    that reviewer-controlled artifact writes are impossible or confined to
+    the declared out_file. Current Claude/Kimi proof covers the write-tool
+    surface; Bash-path writes are TOOL_POLICY_ENFORCED's surface and become a
+    named acknowledgement gap when it is unproven. The capability is separate
+    from static self_write_delivery, and delivery never bypasses this gate.
 
     On a host that does not declare it -- `--host generic`, the one
     claim-nothing value the CLI still accepts since #1621 retired gemini from
@@ -546,8 +543,8 @@ def require_unenforced_ack(review_root, manifest, entries):
     (synth.integrity.read_unenforced_ack, including its #493 plan-hash
     staleness binding); this restores its writer and the refusal.
 
-    Interim, per the approved 5.2 strategy: real per-host write mediation is
-    #1344. This makes the unenforced path loud again, not safe.
+    Per-host boundary proofs remain #1344. This makes the unproven path loud
+    again, not safe.
 
     I4, and it is a DISCLOSURE rather than a second gate: §7.3 promises that
     `--allow-unenforced` "papers over nothing ... and the ack file records the
@@ -576,12 +573,12 @@ def require_unenforced_ack(review_root, manifest, entries):
         allow and entries
         and posture[hosts.TOOL_POLICY_ENFORCED] == hosts.REFUTED)
     if posture[hosts.ARTIFACT_WRITE_GUARD] == hosts.PROVEN:
-        # The hook mediates Write for this host -- no write-guard risk to
-        # accept. The §7.3 override, if there was one, still gets recorded.
+        # This gate's posture is proven; any §7.3 override, including its
+        # separate Bash-path gap, still gets recorded.
         if not overrode_tool_policy:
             return None
         return _record_unenforced_ack(review_root, manifest, entries, evidence,
-                                      posture, guard_mediates=True)
+                                      posture)
     if not entries:
         return None                    # no cells declared: no risk to accept
     if not allow:
@@ -596,10 +593,10 @@ def require_unenforced_ack(review_root, manifest, entries):
                        if guarded else "")
         row = evidence.get(hosts.ARTIFACT_WRITE_GUARD) or {}
         raise runio.DriverError(
-            "%s is %s on host %r -- probe %s: %s. %s are granted Write, and "
-            "nothing would confine that Write to the declared out_file; a "
-            "write outside the reviewed tree is invisible to the clean-tree "
-            "check too. Re-run with --allow-unenforced to accept that "
+            "%s is %s on host %r -- probe %s: %s. %s use templates that request Write, and "
+            "this run has not proven that reviewer-controlled artifact writes "
+            "are impossible or confined to the declared out_file. Re-run with "
+            "--allow-unenforced to accept that unproven boundary "
             "explicitly (it is recorded in %s)%s."
             % (hosts.ARTIFACT_WRITE_GUARD, posture[hosts.ARTIFACT_WRITE_GUARD],
                manifest.get("host"), row.get("by") or "none ran",
@@ -607,11 +604,10 @@ def require_unenforced_ack(review_root, manifest, entries):
                ", ".join(sorted(write_capable_roles())), UNENFORCED_ACK,
                alternative))
     return _record_unenforced_ack(review_root, manifest, entries, evidence,
-                                  posture, guard_mediates=False)
+                                  posture)
 
 
-def _record_unenforced_ack(review_root, manifest, entries, evidence, posture,
-                           guard_mediates):
+def _record_unenforced_ack(review_root, manifest, entries, evidence, posture):
     """Write the ack, or ADD to one that is already there. Never overwrite.
 
     Additive by construction: a key the stored ack already carries is left
@@ -629,14 +625,17 @@ def _record_unenforced_ack(review_root, manifest, entries, evidence, posture,
         "plan_sha256": integrity_mod._plan_hash(entries),
         "roles": sorted(write_capable_roles()),
         "write_guard_covers_bash": False,
+        hosts.ARTIFACT_WRITE_GUARD: posture[hosts.ARTIFACT_WRITE_GUARD],
+        "gaps": list(hosts.write_boundary_gaps(manifest.get("host", "claude"), posture)),
+        "self_write_delivery": bool(getattr(hosts.spec(
+            manifest.get("host", "claude")), "self_write_delivery", False)),
         "note": ("Tool policy enforcement is REFUTED for this run and the "
                  "operator overrode the spec 7.3 refusal with "
-                 "--allow-unenforced. The host's write guard DOES mediate "
-                 "reviewer Write; the refuting detail is recorded below."
-                 if guard_mediates else
-                 "Reviewer Write is unmediated on this host: no registered "
-                 "shell, no PreToolUse hook. The operator accepted this with "
-                 "--allow-unenforced."),
+                 "--allow-unenforced. The artifact_write_guard posture remains "
+                 "PROVEN; refuting detail and any named gap are recorded below."
+                 if posture[hosts.ARTIFACT_WRITE_GUARD] == hosts.PROVEN else
+                 "The reviewer artifact-write boundary is unproven on this "
+                 "host. The operator accepted this with --allow-unenforced."),
         hosts.TOOL_POLICY_ENFORCED: posture[hosts.TOOL_POLICY_ENFORCED],
     }
     if posture[hosts.TOOL_POLICY_ENFORCED] == hosts.REFUTED:
