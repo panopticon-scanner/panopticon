@@ -10,55 +10,70 @@ evidence exposed.
 - **Workflow reader reads a read-write descriptor's file where an interpreter holds it, as `main`
   reads `N<` (#2881, #2608).** `curl … -o tool` ⏎ `sh 3<> tool <&3` ran the download and read
   CLEAN: the reader read `N<> file` as a write alone, so a dup of N onto standard input (`sh 3<>
-  tool 0<&3`, a move `<&3-`, a chain `4<&3 <&4`), a path to it in any spelling (`sh /dev/fd/3 3<>
-  tool`, `/proc/thread-self/fd/3`, `//dev/fd/3`, `/dev/stdout` with `1<>`, a path in a value) or a
-  child program (`sh -c 'sh <&3' 3<> tool`, `( sh <&3 ) 3<> tool`, `find /dev/null -exec sh
-  /dev/fd/3 \; 3<> tool`) gave the shell nothing it reads. An interpreter -- a shell, `python3`
-  and its kind, `eval`, `source` and `.`, the command a `find` runs behind `-exec`, `-execdir`,
-  `-ok` or `-okdir` (read as the guard reads it for a use), or a command word the step's values
-  decide (`SH=sh` ⏎ `$SH 3<> tool <&3`) -- now reads every file `N<>` still holds open when its
-  redirections end, on any descriptor, as `main` reads `N< file`. A dup, a move or an open of N's
-  path (`/dev/fd/N`, `/proc/self/fd/N`, in any spelling) carries what N holds to its target, and
-  one whose source a value decides (`<&$FD`, `<"$P"`) carries every file held, fail-closed; a
-  later redirection of N ends what N held, and only that (`sh 3<> tool </dev/fd/3 3<&-` and `FD=3`
-  ⏎ `sh 3<> tool <&$FD 3<&-` run the download). Any other command is credited with none of it, so
-  no check is credited with a file it only holds: `sha256sum tool | sha256sum -c 3<> sums` and
-  `sha256sum -c self 3<> sums <&3` check the download against itself, and the use stays reported.
-  On the round-3 seat's rows -- its own 989-row hunt and the 20,533 rows of the earlier seats'
-  hunts and #2856's round-10 seat -- none goes CLEAN where `main`, `5e58b019`, `f5a74db5`, #2856's
-  round 11 (`b7f53f19`) or round 2 reports and a shell runs the payload unverified, but for #2899
-  (158 cells, 32 rows, against `5e58b019`); #2856's own `<>` on standard input, which credited a
-  check after fd 0 was redirected again or one that names its own list (56 cells, 20 rows, against
-  `main`; its round-11 B5), closes with its round 12, folded here, which moves its own cells here
-  as there: on the round-3 seat's CZ rows 56 close and 22 over-report as `main` reads them, and on
-  #2856's rows 35 close and 70 clear. Against round 3, 1,280 cells close where a shell runs the
-  payload (256 rows: a path of N, 830 in 166; a dup a value decides, 120 in 24; the shell a `find`
-  runs, 330 in 66), and 100 over-report in 20 rows, none run by a shell and each reported by
-  `main` as `N<`: a zero-padded `/dev/fd/03`, which the kernel resolves to no descriptor (50, 10);
-  `find -ok`, which asks before it runs and is answered no (30, 6); and `sh -s /dev/fd/4 3<> tool
-  4</dev/fd/3 3<&-`, where the shell reads its input, not the operand (20, 4). The price below
-  counts each cell where the head reports, the earlier tree reads CLEAN and no shell runs the
-  payload, in the first of these classes it meets: a check (`sum -c`) no longer credited with a
-  file it holds; under `sh`, a row bash runs and dash does not (dash's limits: a move, then a
-  leading-zero descriptor, then `source`, then a descriptor past 9); a zero-padded `/dev/fd/03`;
-  `find -ok`; `sh -s` given a descriptor path; `xargs` given the file on its input; and the rest,
-  a shell that holds the file `N<>` opened and reads nothing of it, as `main` reads `sh 3< tool`.
-  Against round 2 on the round-2 seat's four hunts (2,556 rows), 757 cells in 270 rows: a check,
-  288 in 138; dash's `source`, 66 in 33, and a descriptor past 9, 56 in 28; `sh -s`, 5 in 1; and a
-  shell holding the file, 342 in 70. And where a shell runs a download that a pinned check
-  verifies first, 277 cells in 101 rows are reported (among them L11 and L12), as `main` reports
-  them, fail-closed. Against `main`, `5e58b019`, `f5a74db5` and #2856's round 11 alike on those
-  hunts, 7,078 cells close where a shell runs the payload (1,820 rows), and 2,687 over-report in
-  1,142 rows: dash's limits -- a move, 706 in 353; a leading-zero descriptor, 752 in 376;
-  `source`, 126 in 63; a descriptor past 9, 426 in 213 -- then a zero-padded `/dev/fd/03`, 100 in
-  20; `sh -s`, 20 in 4; `xargs`, 5 in 1; and a shell holding the file, 552 in 112. Still open, as
-  on `main`: dash's two-digit `N<>`, which dash reads as the word `N` and `<>` on standard input,
-  so `cat - 10<> tool | sh` runs the file under `sh` (#2903); `cat 3<> tool <&3 | sh` -- a `cat`
-  piped into a shell is a use only where its words name the file, so `cat < tool | sh` reads CLEAN
-  on `main` too (#2884); a compound's redirect or pipe (`{ curl …; } 3<> tool >&3` ⏎ `sh tool`,
-  #2883); a function call's redirect (`f() { sh; }; f < tool`, #2888); a check credited with a
-  file it holds by `N<` (#2886); and one credited with the sums on its standard input when it
-  reads something else (`sha256sum -c self < sums`, #2908).
+  tool 0<&3`, a move `<&3-`, a chain `4<&3 <&4`), a path to it (`sh /dev/fd/3 3<> tool`,
+  `/proc/thread-self/fd/3`, `//dev/fd/3`, a climb `../../dev/fd/3`, `/dev/stdout` with `1<>`, a
+  path in a value) or a child program (`sh -c 'sh <&3' 3<> tool`, `( sh <&3 ) 3<> tool`, `find
+  /dev/null -exec sh /dev/fd/3 \; 3<> tool`) gave the shell nothing it reads. An interpreter -- a
+  shell, `python3` and its kind, `eval`, `source` and `.`, the command a `find` runs behind
+  `-exec`, `-execdir`, `-ok` or `-okdir` (read as the guard reads it for a use), or a command word
+  the step's values decide (`SH=sh` ⏎ `$SH 3<> tool <&3`) but for a checksum tool, which the check
+  side credits by its basename (`$X/sha256sum`) -- now reads every file `N<>` still holds open when
+  its redirections end, on any descriptor, as `main` reads `N< file`. A dup, a move or an open of
+  N's path -- `/dev/fd/N`, `/proc/self/fd/N` or `/proc/thread-self/fd/N`, and `/dev/stdin`,
+  `/dev/stdout` or `/dev/stderr` for 0, 1 or 2, each past a run of slashes or a climb
+  (`//dev/fd/N`, `../../dev/stdout`) -- carries what N holds to its target, and one whose source a
+  value decides (`<&$FD`, `<"$P"`) carries every file held, fail-closed; a later redirection of N
+  ends what N held, and only that (`sh 3<> tool </dev/fd/3 3<&-` and `FD=3` ⏎ `sh 3<> tool <&$FD
+  3<&-` run the download). Any other command is credited with none of it, so no check is credited
+  with a file it only holds: `sha256sum tool | sha256sum -c 3<> sums`, `sha256sum -c self 3<> sums
+  <&3` and `X=/usr/bin` ⏎ `$X/sha256sum -c self 3<> sums` check the download against itself, and
+  the use stays reported. On the round-3 seat's rows -- its own 989-row hunt and the 20,533 rows of
+  the earlier seats' hunts and #2856's round-10 seat -- none goes CLEAN where `main`, `5e58b019`,
+  `f5a74db5`, #2856's round 11 (`b7f53f19`) or round 2 reports and a shell runs the payload
+  unverified, but for #2899 (158 cells, 32 rows, against `5e58b019`); #2856's own `<>` on standard
+  input, which credited a check after fd 0 was redirected again or one that names its own list (56
+  cells, 20 rows, against `main`; its round-11 B5), closes with its round 12, folded here, which
+  moves its own cells here as there: on the round-3 seat's CZ rows 56 close and 22 over-report as
+  `main` reads them, and on #2856's rows 35 close and 70 clear. Round 4's own numbers, against
+  round 3: 1,280 cells close where a shell runs the payload (256 rows: a path of N, 830 in 166; a
+  dup a value decides, 120 in 24; the shell a `find` runs, 330 in 66), and 100 over-report in 20
+  rows, none run by a shell and each reported by `main` as `N<`: a zero-padded `/dev/fd/03`, which
+  the kernel resolves to no descriptor (50, 10); `find -ok`, which asks before it runs and is
+  answered no (30, 6); and `sh -s /dev/fd/4 3<> tool 4</dev/fd/3 3<&-`, where the shell reads its
+  input, not the operand (20, 4). At round 4's head, the fold's CZ rows counted, 1,336 close and
+  122 over-report. The price below counts each cell where the head reports, the earlier tree reads
+  CLEAN and no shell runs the payload, in the first of these classes it meets: a check (`sum -c` or
+  `sum --check`) no longer credited with a file it holds; under `sh`, a row bash runs and dash does
+  not (dash's limits: a move, then a leading-zero descriptor, then `source`, then a descriptor past
+  9); a zero-padded `/dev/fd/03`; `find -ok`; `sh -s` given a descriptor path; `xargs` given the
+  file on its input; and the rest, a shell that holds the file `N<>` opened and reads nothing of
+  it, as `main` reads `sh 3< tool`. Against round 2 on the round-2 seat's four hunts (2,556 rows),
+  757 cells in 270 rows: a check, 288 in 138; dash's `source`, 66 in 33, and a descriptor past 9,
+  56 in 28; `sh -s`, 5 in 1; and a shell holding the file, 342 in 70. And where a shell runs a
+  download that a pinned check verifies first, 277 cells in 101 rows are reported (among them L11
+  and L12), as `main` reports them, fail-closed. Against `main`, `5e58b019`, `f5a74db5` and #2856's
+  round 11 alike on those hunts, 7,078 cells close where a shell runs the payload (1,820 rows), and
+  2,687 over-report in 1,142 rows: dash's limits -- a move, 706 in 353; a leading-zero descriptor,
+  752 in 376; `source`, 126 in 63; a descriptor past 9, 426 in 213 -- then a zero-padded
+  `/dev/fd/03`, 100 in 20; `sh -s`, 20 in 4; `xargs`, 5 in 1; and a shell holding the file, 552 in
+  112. Round 5, on the round-4 seat's 956-row hunt and its 22-row probe 0, against round 4's head:
+  521 cells close where a shell runs the payload unverified (117 rows: `/dev/stdout` or
+  `/dev/stderr` as the path of a held fd 1 or 2, 185 in 37; a climb, 240 in 48; a checksum tool
+  named through a value, 96 in 32), and 18 over-report in 6 rows, each a check (`$X/sha256sum -c
+  3<> sums 0<&3`) that reads its `N<>` file through a dup onto standard input, as `main` and the
+  literal `sha256sum` read it -- 9 cells where the pinned check verifies the download first, and 9
+  where nothing runs. On every row set of both seats, no cell goes CLEAN where `main` or a
+  reference tree reports and a shell runs the payload unverified, but #2899 and S08n, whose marks
+  vary from run to run (#2911), as at round 4. Named open, as ruled, though `main` reports its `N<`
+  twin: a symlink the step makes to a descriptor's path, which the reader reads as the file it
+  names (`ln -s /dev/fd/3 x` ⏎ `sh 3<> tool <x`, #2919). Still open, as on `main`: dash's two-digit
+  `N<>`, which dash reads as the word `N` and `<>` on standard input, so `cat - 10<> tool | sh`
+  runs the file under `sh` (#2903); `cat 3<> tool <&3 | sh` -- a `cat` piped into a shell is a use
+  only where its words name the file, so `cat < tool | sh` reads CLEAN on `main` too (#2884); a
+  compound's redirect or pipe (`{ curl …; } 3<> tool >&3` ⏎ `sh tool`, #2883); a function call's
+  redirect (`f() { sh; }; f < tool`, #2888); a check credited with a file it holds by `N<` (#2886);
+  and one credited with the sums on its standard input when it reads something else (`sha256sum -c
+  self < sums`, #2908).
 - **Workflow reader: a line ending in `|` continues, a command word's `${X:-bash -s}` is read
   whole, and `<>` opens its descriptor (#2756, #2731, #2657; #2733, #2608).** A line ending in
   `|` continues on the next (`curl … |` ⏎ `sh` ran the pipeline and read CLEAN, behind `eval`
