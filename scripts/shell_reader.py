@@ -596,14 +596,20 @@ def _stage(text, context):
             pending = None
             take(word)
             number = (fd.lstrip("0") or "0") if fd else ("0" if op.startswith("<") else "1")
+            # A dup or a move of N carries the file `N<>` opened there: onto fd 0 it is read, onto
+            # another descriptor it stays open there, as `4<&3 <&4` reads it (#2881)
+            moved = re.fullmatch(r"(\d+)-", word) if op in (">&", "<&") else None
+            held = opened.get((moved[1] if moved else word).lstrip("0") or "0") if moved or (
+                op in (">&", "<&") and _fd_or_close(word)) else None
             opened.pop(number, None)            # any redirection of N ends what `N<>` opened there
+            if moved:
+                opened.pop(moved[1].lstrip("0") or "0", None)
+            if held is not None:
+                if number == "0":
+                    reads.append(held)
+                else:
+                    opened[number] = held
             if op in (">&", "<&"):
-                moved = re.fullmatch(r"(\d+)-", word)
-                if number == "0" and (_fd_or_close(word) or moved):
-                    # fd 0 now reads the file `N<>` opened on N: a dup or a move onto it (#2881)
-                    held = opened.get((moved[1] if moved else word).lstrip("0") or "0")
-                    if held is not None:
-                        reads.append(held)
                 if _fd_or_close(word):
                     source = word.lstrip("0") or "0"
                     sinks[number] = None if word == "-" else sinks.get(source)

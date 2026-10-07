@@ -1358,6 +1358,23 @@ class TestAReadWriteDescriptorIsReadOnItsNumber(unittest.TestCase):
                 with self.subTest(use=use, shell=shell):
                     self.assertFalse(reported(GET + use + "\necho done\n", shell))
 
+    def test_a_dup_carries_the_file_to_another_descriptor(self):
+        # Round 2, the coordinator's note on the round-1 seat's DX rows: `4<&3` puts on 4 the file
+        # `3<>` opened on 3, so a later dup of 4 onto standard input reads it -- DX05, DX06 and DX14,
+        # every shell running the download, and so after 3 closes. The move `4<&3-` runs under bash
+        # alone (dash takes none); closed on 4 before the dup, nothing runs (ffffffff).
+        for use in ("sh 3<> tool 4<&3 <&4", "sh 3<> tool 4>&3 0<&4", "sh 4<> tool 3<&4 <&3",
+                    "sh 3<> tool 4<&3 3<&- <&4"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+        for shell in self.BASH:
+            with self.subTest(use="the move", shell=shell):
+                self.assertTrue(reported(GET + "sh 3<> tool 4<&3- <&4\necho done\n", shell))
+        for shell in SHELLS:
+            with self.subTest(use="closed on 4", shell=shell):
+                self.assertFalse(reported(GET + "sh 3<> tool 4<&3 4<&- <&4\necho done\n", shell))
+
     def test_a_check_is_credited_with_what_it_reads_alone(self):
         # Round 2, B1 (the round-1 seat's CF lead row, with a wrong digest): the check verifies its
         # standard input, the download's own fresh hash, and only holds `sums` open on 3 -- so the
