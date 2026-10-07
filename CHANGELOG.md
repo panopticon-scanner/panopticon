@@ -7,6 +7,8 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Codex model profiles move to GPT-6 (#2872).** Role defaults now use `gpt-6-luna` or
+  `gpt-6-sol`; set `PANOPTICON_MODEL_<ROLE>` to pin another installed model.
 - **Workflow guard: the stdin operand walk reads a shell's options as the shell does (#2647, #2654,
   #2616, #2606, #2603, #2331).** For a shell the step surely runs as itself (round 9's certificate,
   below), after `-s` bash keeps reading options, so a `-c` among them
