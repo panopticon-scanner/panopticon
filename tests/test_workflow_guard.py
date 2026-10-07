@@ -35,6 +35,7 @@ import shell_reader
 import workflow_forms
 import workflow_gating
 import workflow_guard as wg
+import workflow_options
 import workflow_programs
 # The download shape itself lives in the layer below the rule (#1697).
 from workflow_forms import Fetch
@@ -6192,14 +6193,16 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
         # included, and `_defects` is handed that walk's records instead of
         # reading them again (#2287): a text only `_defects` parsed would
         # raise past the catch. So the job reads nothing again, and each text
-        # once. A marker's prefix is minted per parse, so texts are compared
+        # once in each of its passes -- `main`'s and the second walk's (#2858
+        # round 11: `job_defects` unions their findings, so it reads a job
+        # twice). A marker's prefix is minted per parse, so texts are compared
         # without it.
         parsed = []
         job = [False]
         statements, defects = wg.statements, wg._defects
 
         def recorded(text):
-            parsed.append((job[0], re.sub(r"@@shell-[0-9a-f]+-", "@@", text)))
+            parsed.append((job[0], workflow_options._MAINS.get(), re.sub(r"@@shell-[0-9a-f]+-", "@@", text)))
             return statements(text)
 
         def marked(*args):
@@ -6220,10 +6223,12 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
                 mock.patch.object(wg, "_defects", marked):
             found = wg.job_defects(steps)
         self.assertFalse([why for _name, why in found if why.startswith("cannot read this")])
-        per_step = [text for inside, text in parsed if not inside]
-        self.assertEqual([], [text for inside, text in parsed if inside])
-        self.assertTrue(per_step)
-        self.assertEqual(sorted(set(per_step)), sorted(per_step))
+        self.assertEqual([], [text for inside, _main, text in parsed if inside])
+        for main in (True, False):
+            with self.subTest(main_pass=main):
+                per_step = [text for inside, pass_, text in parsed if not inside and pass_ is main]
+                self.assertTrue(per_step)
+                self.assertEqual(sorted(set(per_step)), sorted(per_step))
 
     def test_an_escaped_quote_inside_a_substitution_string(self):
         # COD-3636110933's remainder: `_closing` ended the nested "a\")b" at

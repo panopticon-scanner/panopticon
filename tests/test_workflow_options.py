@@ -10,6 +10,7 @@ columns agree unless a comment says otherwise.
 """
 import time
 import unittest
+from unittest import mock
 
 import shell_reader
 import workflow_guard as wg
@@ -1059,6 +1060,95 @@ class TestTheWalkJoinsMains(unittest.TestCase):
             with self.subTest(inside=inside):
                 step = "eval 'bash -s' <<'B0'\n%sB0\nbash -norc <<'B1'\n%s\nB1\n" % (GET, inside) + USE
                 self.assertTrue(defects(step), step)
+
+
+class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
+    """#2858 round 11, the coordinator's ruling on round 10's seat: monotone at the OUTPUT.
+    `job_defects` returns `main`'s findings -- a pass in which every join answers as `main` does
+    (`mains_answer`), nothing of this walk feeding it -- then this walk's not among them. Round 10's
+    seat found four consumers that read LESS when an added reading reached them: B1 `_on_stdin` and
+    annotate's `_complete`, B2 `substitution_script`, B3 a `()` reader's printers, B4 an added body's
+    `}` regrouping the first fold. Each row below is the seat's (`hunt.jsonl`, ids given): `main`
+    reports it RRRRR, this walk's own pass reads a cell CLEAN, and the job keeps `main`'s findings."""
+
+    SEAT = {"os000 (B1)": GET + "CMD=bash\n$CMD x -- -c cat < tool\n",
+            "su00 (B2)": "X='%s'\nout=$(bash -s x -- -c 'echo hi' <<EOF\n$X\nEOF\n)\n" % PIPE,
+            "nr02 (B3)": "bash x.sh -c \"echo 'curl -fsSLo tool %stool\\t' | sh\"\nCMD=$(echo true)\n"
+                         "{ %s\n$CMD <<'EOF'\n}\nEOF\n} | sh tool\n" % (URL, CHECK),
+            "cf00432 (B4)": "eval 'bash -s' <<'B0'\n%sB0\n{ %s\nsh -sc true <<'B1'\n}\nB1\n} | sh tool\n" % (GET, CHECK)}
+    SHELLS = (None, "bash", "sh", "bash {0}", "sh {0}")
+
+    @staticmethod
+    def argv(text):
+        return shell_reader.command(shell_reader.statements(text)[0].stages[-1].argv)
+
+    def test_the_main_pass_reads_as_main(self):
+        # Rows `main` reads CLEAN that this walk reports (#2616, #2864, #2647, a dynamic string only
+        # this walk finds): CLEAN in the main pass, nothing of the walk feeding it.
+        for script in (body("bash --rcfile /dev/null", PIPE), body("bash -norc", PIPE), "bash -norc -c '%s'\n" % PIPE,
+                       GET + body("bash -s -c true", CHECK) + USE, GET + 'bash -norc -c "$(cat tool)"\n'):
+            with self.subTest(script=script), wo.mains_answer():
+                self.assertEqual([], wg._job_defects([("step", script)]))
+        # The four joins answer as `main`'s code does there ...
+        with wo.mains_answer():
+            self.assertEqual([], wp.scripts(self.argv("bash -norc -c 'echo hi'")))
+            self.assertEqual((None, None), wp.dynamic_program(self.argv('bash -norc -c "$(cat tool)"')))
+            self.assertEqual((None, []), wp.candidates(self.argv("bash -rcfile /dev/null $X P")))
+            self.assertIsNone(wp.stdin_program(self.argv(body("bash --rcfile /dev/null", PIPE))))
+            argv = self.argv(body("bash -s -c true", CHECK))
+            self.assertIs(argv, wp.stdin_reader(argv))
+        # ... and the seat's rows keep `main`'s findings in it.
+        for name, script in self.SEAT.items():
+            with self.subTest(row=name), wo.mains_answer():
+                self.assertTrue(all(wg._job_defects([wg.Step("step", script, s)]) for s in self.SHELLS))
+
+    def test_the_job_holds_every_finding_of_mains(self):
+        for name, script in self.SEAT.items():
+            # The walk's own pass alone reads a cell CLEAN (round 10's blockers) ...
+            with self.subTest(row=name, walk_alone=True):
+                self.assertFalse(all(wg._job_defects([wg.Step("step", script, s)]) for s in self.SHELLS))
+            # ... the job holds every finding of `main`'s, under every setting.
+            for shell in self.SHELLS:
+                with self.subTest(row=name, shell=shell):
+                    with wo.mains_answer():
+                        mains = wg._job_defects([wg.Step("step", script, shell)])
+                    found = wg.job_defects([wg.Step("step", script, shell)])
+                    self.assertTrue(mains)
+                    self.assertEqual([], [finding for finding in mains if finding not in found])
+                    self.assertEqual(found[:len(mains)], mains)
+
+    def test_the_cached_readers_see_only_lists_no_statement_holds(self):
+        # F1 of round 10's review: `_run` and `long_option` keep their answers per argv object, so no
+        # list either reads may be rewritten after. None is: each is a copy -- `command()`'s, a
+        # reading's, the inner parse's -- never a statement's own `argv`, the list
+        # `workflow_annotate` rewrites in place. Every list the two read is checked against every
+        # statement's the job parsed, by identity.
+        seen, held = [], []
+        run, long_option, read, parsed = wo._run, wo.long_option, wg.read, wp._parsed
+
+        def seen_run(argv):
+            seen.append(argv)
+            return run(argv)
+
+        def seen_long(argv, at):
+            seen.append(argv)
+            return long_option(argv, at)
+
+        def held_statements(stmts):
+            held.extend(stage.argv for statement in stmts for stage in statement.stages)
+            return stmts
+
+        steps = ["CMD=bash\n" + body("$CMD -norc", PIPE), "SH=sh\n$SH -norc -c '%s'\n" % PIPE,
+                 'bash -c "bash -norc -s" <<\'EOF\'\n%s\nEOF\n' % PIPE, "eval 'eval bash --rcfile /dev/null' <<'EOF'\n%s\nEOF\n" % PIPE,
+                 body("bash " + " ".join(["-norc"] * 40), PIPE), "X=\nbash --rcfile $X -norc -c '%s'\n" % PIPE]
+        with mock.patch.object(wo, "_run", seen_run), mock.patch.object(wo, "long_option", seen_long), \
+                mock.patch.object(wg, "read", lambda script, shell=None: held_statements(read(script, shell))), \
+                mock.patch.object(wp, "_parsed", lambda text: held_statements(parsed(text))):
+            for step in steps:
+                wg.job_defects([("step", step)])
+        self.assertTrue(seen and held)
+        held_ids = {id(argv) for argv in held}
+        self.assertEqual([], [argv for argv in seen if id(argv) in held_ids])
 
 
 class TestTheOptionGrammarLivesInWorkflowOptions(unittest.TestCase):

@@ -17,10 +17,29 @@ imported one from there moved.
 
 Stdlib only, like everything under it.
 """
+import contextlib
+import contextvars
 import os
 import re
 
 import shell_reader
+
+
+# Set while the guard's main pass runs (`mains_answer`, #2858 round 11): every join of
+# `workflow_programs` then answers as `main`'s own code does, and nothing of this walk feeds it.
+_MAINS: contextvars.ContextVar[bool] = contextvars.ContextVar("mains_answer", default=False)
+
+
+@contextlib.contextmanager
+def mains_answer():
+    """The guard's main pass (`workflow_guard.job_defects`, #2858 round 11): while it holds, the four
+    joins of `workflow_programs` -- `_stdin_details`, `scripts`, `candidates`, `dynamic_program` --
+    answer exactly as `main` does, so the pass is `main`'s guard, word for word."""
+    token = _MAINS.set(True)
+    try:
+        yield
+    finally:
+        _MAINS.reset(token)
 
 
 # The short option letters a shell takes, where it reads them: bash 5.2.21's `set` builtin (`set -eo

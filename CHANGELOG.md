@@ -10,40 +10,44 @@ evidence exposed.
 - **Codex model profiles move to GPT-6 (#2872).** Role defaults now use `gpt-6-luna` or
   `gpt-6-sol`; set `PANOPTICON_MODEL_<ROLE>` to pin another installed model.
 - **Workflow guard: the stdin and `-c` string walks read a shell's options as the shell does, and
-  only ever add a report (#2616, #2864, #2647, #2654; #2858).** A second walk reads a shell's
-  option words beside `main`'s, and the two are JOINED: a body or `-c` string is read where either
-  reads it, a check counts only where both count it, the candidates are the union -- so every
-  report `main` makes stands, and where `main` reads a body its reading stands, statement for
-  statement. The second walk skips a long option's FILE (`bash --rcfile /dev/null <<'EOF'` and
-  `--init-file` ran the heredoc and read CLEAN: #2616) and reads bash's one-dash long words in the
-  leading run (`bash -norc <<'EOF'`, `bash -norc -c '…'`: #2864); reads options on after `-s`, so
-  `bash -s -c true <<'EOF' <check>` counts no check bash never reads (#2647) and dash's `sh -s -c
-  true` reads the heredoc after the string; counts none after a lone `-` with a word behind it
-  (`bash - /dev/null`: #2654), where the shell runs none of the body (`-n`, `-o noexec`, `-D`,
-  `--version`, `-version`, `--pretty-print` but under `-i`) or where the option run holds a word
-  that may expand (`-o $X`, a `~`, a pattern); seeks the `-c` string in every reading of such a
-  word; and weighs a `$Y` after `-c` or `-c --` as a value in the option slot. A body or string
-  only the second walk finds is no shell's sure program: the guard's second fold leaves it out, so
-  no report of `main`'s reading is lost to it. Nothing is cleared: a body under a refused option,
-  an exit or noexec stays reported though nothing runs (#2603, #2606), and so do the over-report
-  halves of #2647 and #2654 -- the payload of a body bash never reads.
-- **Workflow guard: what the joined walk adds, and what it costs (#2858 round 10).** On the round-5
-  to round-8 seats' sets (80,514; 29,639; 18,548; 15,713 steps) and their 222 direct cases no cell
-  `main` reports reads CLEAN. Against `main` the walk adds 9,328 reports where a payload or an
-  unverified use runs and 24,516 where nothing does, by the join that makes them: a body only it
-  reads 2,414 / 6,858, a check only `main` counted 2,529 / 4,605, a string only it reads 1,973 /
-  2,809, a check in a string `main` reads 1,696 / 7,752, a candidate only it weighs 691 / 2,447,
-  several 25 / 45 (46 of the 222 cases). The over-reports are fail-closed: a word that may expand
-  may be the FILE, `-n` or `-c` (`bash $X -c "<check>"`, `bash -o $X -s`), a FILE may hand its
-  parameters on (`bash w.sh -c '…'`), a body whose check is withheld reads under both shells'
-  printers (`bash -s -c 'echo hi' <<'EOF' echo 'sh\ttool' | sh`), and a long option read on past
-  its FILE meets one that refuses or exits (`bash --rcfile /dev/null --version`). F2's linear cost
-  stays: `Y=; Z=; bash -c -- $Y $Z… 'P'` (bash runs `P`; `main` reads it CLEAN) costs 0.60, 2.46 and
-  6.64 s at 1,000, 4,000 and 10,000 words across the five `shell:` settings, 12-15x `main`'s 0.05,
-  0.18 and 0.45 s -- each word a candidate, weighed as `main` weighs its own (`bash $Y $Z… 'P'`:
-  6.04 s on `main` at 10,000 words). Open, as on `main`: a check counted under a refused shell where
-  errexit is off (round 9 withheld it: 14 rows of round 5's matrix), `-s $X`'s heredoc (#2608), `-c
-  $(…)`, and the guard's other named gaps.
+  the guard only adds reports (#2616, #2864, #2647, #2654; #2858).** `job_defects` returns `main`'s
+  findings -- a pass in which every join of the stdin and string walks answers as `main` does
+  (`workflow_options.mains_answer`) -- then those of a second walk that the first pass does not
+  make, so every finding `main` makes stands. The second walk skips a long option's FILE (`bash
+  --rcfile /dev/null <<'EOF'` and `--init-file` ran the heredoc and read CLEAN: #2616) and reads
+  bash's one-dash long words in the leading run (`bash -norc <<'EOF'`, `bash -norc -c '…'`: #2864);
+  reads options on after `-s`, so `bash -s -c true <<'EOF' <check>` counts no check bash never
+  reads (#2647) and dash's `sh -s -c true` reads the heredoc after the string; counts none after a
+  lone `-` with a word behind it (`bash - /dev/null`: #2654), where the shell runs none of the body
+  (`-n`, `-o noexec`, `-D`, `--version`, `-version`, `--pretty-print` but under `-i`) or where the
+  option run holds a word that may expand (`-o $X`, a `~`, a pattern); seeks the `-c` string in
+  every reading of such a word; and weighs a `$Y` after `-c` or `-c --` as a value in the option
+  slot. Nothing is cleared: a body under a refused option, an exit or noexec stays reported though
+  nothing runs (#2603, #2606), and so do the over-report halves of #2647 and #2654.
+- **Workflow guard: what the second walk adds, and what it costs (#2858 rounds 10-11).** On the
+  round-5 to round-8 seats' sets (80,514; 29,639; 18,548; 15,713 steps), their 222 direct cases and
+  round 10's seat hunt (4,276 rows), the first pass gives `main`'s findings exactly and the job
+  holds every one of them. Joining the walks at their inputs (round 10) was not enough: four
+  consumers read less given an added reading -- `_on_stdin` and annotate's `_complete`,
+  `substitution_script`, a printer-fed body read under both shells, an added `}` regrouping the
+  first fold -- and 850 of the seat's rows read CLEAN where `main` reported; a union of findings
+  ends that class. Against `main` the walk adds 9,328 reports where a payload or an unverified use
+  runs and 24,516 where nothing does, on the four sets: a body only it reads 2,414 / 6,858, a check
+  only `main` counted 2,529 / 4,605, a string only it reads 1,973 / 2,809, a check in a string
+  `main` reads 1,696 / 7,752, a candidate only it weighs 691 / 2,447, several 25 / 45 (46 of the 222
+  cases; 6 of the hunt's rows, a withheld string read under both shells' printers). The over-reports
+  are fail-closed: a word that may expand may be the FILE, `-n` or `-c` (`bash $X -c "<check>"`,
+  `bash -o $X -s`), a FILE may hand its parameters on (`bash w.sh -c '…'`), a body or string whose
+  check is withheld reads under both shells' printers (`bash -s -c 'echo hi' <<'EOF' echo 'sh\ttool'
+  | sh`), and a long option read on past its FILE meets one that refuses or exits (`bash --rcfile
+  /dev/null --version`). The cost: the job reads a step twice, so every ratio to `main` rises by
+  about one and stays flat with n -- on round 10's seat shapes at 1,000 to 8,000 words, 2.0-2.8x for
+  most, 3.5-5.1x for a long option's FILE, `-o $X` and one-dash runs, and 11-16x for the two `-c --`
+  shapes (`Y=; Z=; bash -c -- $Y $Z… 'P'`, `X=; bash -c -- $X… sh <<'EOF'`), which `main` reads
+  CLEAN though bash runs the payload, every word a candidate weighed as `main` weighs its own. Open,
+  as on `main`: a check counted under a refused shell where errexit is off (round 9 withheld it: 14
+  rows of round 5's matrix), #2608's `-s $X` and `-c $X` rows, `-c $(…)`, and the guard's other
+  named gaps.
 - **Workflow guard: what `eval`'s words and a `-c` string hand on (#2673, #2683, #2684, #2764,
   #2669, #2331).** `eval 'curl … |' 'sh'` ran the pipe and read CLEAN: `eval` joins its words before
   it runs them, and the guard read them one by one. Where a word begins or ends with an operator the

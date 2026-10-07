@@ -102,16 +102,11 @@ live, so a change that catches one fails there and edits this list.
   beside them carried as the value it is (#2342, #2466); one in a COMMAND-word position (`bash -c
   "$CMD … | sh"`) is unread, as `$CMD … | sh` is at top level. An option letter the shell
   in hand refuses reads as that refusal after `-c` and in `set`: `sh -c -K '…'` runs nothing and
-  `set -Z -e` sets nothing (#2443, #2475). #2858 joins a second stdin and string walk to that
-  reading, which only adds: it reads a long option's FILE as one and a one-dash long word in the
-  leading run (#2616, #2864), the options after `-s`, and a `-c` string in every reading of a word
-  that may expand -- a body or string only it finds read as no shell's sure program -- and counts no
-  check where bash never runs the body (`-s -c`, `- FILE`, noexec, an exit, `--pretty-print` not
-  interactive) or a word may expand (#2647, #2654). Still as on main: a body under a refused option,
-  an exit or noexec is reported though nothing runs (#2603, #2606), a check under a refused shell
-  counts where errexit is off, and `-s $X` keeps its reader (#2608). Because zsh runs twenty of
-  bash's refused letters and ksh runs `-G`, those read on; so does a word after a shell whose name
-  is itself a word. KEPT: binding
+  `set -Z -e` sets nothing (#2443, #2475). `job_defects` returns `main`'s findings, then #2858's
+  second walk's (#2616, #2864, #2647, #2654): it only adds. As on main, a refusal, an exit or noexec
+  reports a body that runs nothing (#2603, #2606), a check under a refused shell counts where errexit
+  is off, and `-s $X` keeps its reader (#2608). Because zsh runs twenty of bash's refused letters and ksh
+  runs `-G`, those read on; so does a word after a shell whose name is itself a word. KEPT: binding
   two spellings of one path means EVALUATING the shell, which the reader does not do by design; the
   fleet puts its variables in the URL and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
 * directories on the runner's PATH not in `workflow_operands.PATH_DIRS` (#2308), `$HOME/.cargo/bin`
@@ -265,6 +260,7 @@ from workflow_forms import (FETCHERS, SHELL_PROGRAM, Idle, Inlined, Reach, Unsur
                             working_directories)
 from workflow_printers import fed, operand
 from workflow_programs import ANY, VALUE_PROGRAM, handed, stdin_command
+from workflow_options import mains_answer
 from workflow_stdin import bound_stdin as bind_stdin, mark_reason
 from workflow_uses import (EXECUTORS as EXECUTORS, INTERPRETERS as INTERPRETERS,
                            UNPACKERS as UNPACKERS, uses as _uses)
@@ -558,6 +554,18 @@ def fetch_exec_defect(script):
 
 
 def job_defects(steps, strict=False):
+    """Defects for a job: `main`'s findings -- every join of `workflow_programs` answering as `main`
+    does (`mains_answer`) -- then the second walk's not among them (#2858 round 11)."""
+    steps = list(steps)
+    with mains_answer():
+        found = _job_defects(steps, strict)
+    for entry in _job_defects(steps, strict):
+        if entry not in found:
+            found.append(entry)
+    return found
+
+
+def _job_defects(steps, strict=False):
     """Defects for a job: steps share files but start fresh shells and cwd. Conditions and failure
     gates bind checks. `Unsure` scripts get a second fold; `strict` rejects an unread step."""
     found, seen, steps = [], set(), list(steps)     # read twice: a one-shot iterable, once
