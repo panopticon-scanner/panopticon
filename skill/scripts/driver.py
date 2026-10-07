@@ -307,15 +307,12 @@ def build_parser():
         p.add_argument("--online", action="store_true", default=None,
                        help="allow dependency auditors through the restricted egress proxy")
         p.add_argument("--include-fixtures", action="store_true")
-        # #1519: when this invocation's MEASURED artifact_write_guard posture
-        # is not proven, dispatching write-capable cells is refused unless the
-        # operator accepts the residual risk here. Keyed on the capability, NOT
-        # on the host's name (#1344 F3a): a claude run on a machine where the
-        # probe refutes -- no settings file at the path the host would arm --
-        # is refused on identical terms. Anti-drift, so a resume cannot quietly
+        # #1519/#1622: refuse an unproven reviewer artifact-write boundary
+        # unless the operator accepts it here. Keyed on measured capability,
+        # never host name or delivery mode. Anti-drift: a resume cannot quietly
         # drop the acceptance.
         p.add_argument("--allow-unenforced", action="store_true",
-                       help="accept unmediated reviewer Write when "
+                       help="accept an unproven reviewer-write boundary when "
                             "artifact_write_guard is not proven, on any host; "
                             "recorded in unenforced-ack.json")
         # The directory the HOST SESSION runs in, used only to locate its
@@ -819,22 +816,13 @@ def _gating_states(states):
             if name not in hosts.OPERATIONAL_CAPABILITIES}
 
 
-# The capabilities whose probes resolve off the SESSION root rather than the
-# reviewed tree, so a difference in either can be explained by a --session-dir
-# that was passed on one invocation and omitted on the next. read_scope_confined
-# joins the other two here because probes.claude.probe_read_guard_armed resolves
-# off session_root exactly like probe_write_guard_armed does (I3).
-_SESSION_DERIVED = (hosts.ARTIFACT_WRITE_GUARD, hosts.USAGE_LEDGER, hosts.READ_SCOPE_CONFINED)
-
-
 def _posture_drift(was, now, manifest):
     """The mid-run posture-change refusal, naming the likeliest remedy first.
 
     I2: `session_dir` is deliberately NOT a manifest field (driver.run() sets
     it in memory after write_manifest), so a run started with `--session-dir /s`
-    and resumed WITHOUT it re-resolves the write-guard and transcript probes
-    against cwd -- a perfectly ordinary operator slip that flips those two
-    capabilities and lands here. Telling that operator to discard the run with
+    and resumed WITHOUT it re-resolves that host's session-root capability
+    probes against cwd. Telling that operator to discard the run with
     --reset, while naming neither the flag nor the option of simply passing it
     again, is a worse answer than the mistake. So when a session-derived
     capability moved and this invocation carries no --session-dir, that remedy
@@ -848,7 +836,9 @@ def _posture_drift(was, now, manifest):
                "were built under the previous posture, so this run's report "
                "would disagree with itself about what was enforced."
                % "; ".join(moved))
-    session_moved = sorted(name for name in _SESSION_DERIVED
+    row = hosts.spec((manifest or {}).get("host", runio._DEFAULTS["host"]))
+    session_derived = row.session_root_capabilities if row else ()
+    session_moved = sorted(name for name in session_derived
                            if was.get(name) != now.get(name))
     if session_moved and not (manifest or {}).get("session_dir"):
         return ("%s If the earlier invocation ran with --session-dir, pass the "
