@@ -100,10 +100,10 @@ _CLAUDE_FALLBACK = {
     "setup_scan": {"model": None},
 }
 _CODEX_FALLBACK = {
-    "scout": {"model": "gpt-5.6-luna", "model_reasoning_effort": "medium"},
-    "advisor": {"model": "gpt-5.6-sol", "model_reasoning_effort": "high"},
-    "domain_panel": {"model": "gpt-5.6-terra", "model_reasoning_effort": "high"},
-    "domain_advisor": {"model": "gpt-5.6-sol", "model_reasoning_effort": "high"},
+    "scout": {"model": "gpt-6-luna", "model_reasoning_effort": "medium"},
+    "advisor": {"model": "gpt-6-sol", "model_reasoning_effort": "high"},
+    "domain_panel": {"model": "gpt-6-sol", "model_reasoning_effort": "high"},
+    "domain_advisor": {"model": "gpt-6-sol", "model_reasoning_effort": "high"},
     "setup_scan": {"model": None},
 }
 
@@ -126,7 +126,7 @@ def _hardcoded_fallback(host, role):
     if host == "claude":
         return _CLAUDE_FALLBACK.get(role, {"model": "sonnet"})
     if host == "codex":
-        return _CODEX_FALLBACK.get(role, {"model": "gpt-5.6-terra",
+        return _CODEX_FALLBACK.get(role, {"model": "gpt-6-sol",
                                           "model_reasoning_effort": "medium"})
     return {"model": None}
 
