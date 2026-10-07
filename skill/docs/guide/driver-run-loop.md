@@ -286,11 +286,13 @@ An override beginning with `{` must be valid JSON; a malformed object stops `dri
 `driver loop` before host work and the error names the environment key without printing its value.
 
 Every Codex role uses `delivery: return_json`; the shared loop validates and persists replies,
-records launches and denials, and handles retries. Codex does **not** claim `artifact_write_guard`,
-because it provides no self-writing path. The existing shared review gate still requires
+records launches and denials, and handles retries. Codex does **not yet** claim
+`artifact_write_guard`: return delivery is transport, not proof that its effective surface has no
+reviewer-selectable write path. The existing shared review gate still requires
 `--allow-unenforced` when that capability is unproven, even with write tools omitted. Obtain the
 operator's explicit acceptance before supplying the flag; it records an acknowledgement, not proof
-of confinement. This is a shared-gate limitation, not a reason to claim a guard that does not exist.
+of confinement. This is a shared-gate limitation, not a reason to claim proof the current probes do
+not establish.
 
 Codex's JSONL envelope reports token usage but not measured dollars or the effective model identity.
 The runner therefore returns `cost_usd: null` and `model: null`; `model_binding` and `usage_ledger`
@@ -404,8 +406,9 @@ on Claude hooks, and always uses the return-persist path.
   `meta.host_capabilities` and said on all four disclosure surfaces by `host_disclosure.notes`,
   which is separate from the capability lines because the fact gates nothing. `entry["delivery"] ==
   "return_json"` marks a **return-persist** entry — set on any entry whose role's template grants no
-  `Write`, or whose host has not proven `artifact_write_guard`; absent means the agent self-writes
-  under the write guard. A self-writing entry **self-writes** its own `entry["out_file"]` (a
+  `Write`, or whose host does not have both `self_write_delivery` and a proven
+  `artifact_write_guard`; absent means the agent self-writes under that proven boundary. A
+  self-writing entry **self-writes** its own `entry["out_file"]` (a
   findings file for review, a verdict bundle for verify) and returns a one-line confirmation —
   findings/verdicts never transit the loop. - **The loop persists** every `delivery: "return_json"`
   reply through `phases.persist` — the same tolerant parse and the same shape check the phase's done
@@ -588,7 +591,7 @@ on Claude hooks, and always uses the return-persist path.
   `agent` refuses the ENTRY — never a quiet fall-back to a bare, unenforced launch; a disagreeing
   `enforced` flag refuses the whole RUN before the batch opens, so nothing is launched and nothing
   is charged, and the remedy is `--reset` or a fresh readiness run rather than a retry. The engine's
-  own refusals (flag drift, posture drift, shadow shells, unmediated Write) surface unchanged;
+  own refusals (flag drift, posture drift, shadow shells, an unproven write boundary) surface unchanged;
   Ctrl-C in headless mode — or a SIGTERM, which the driver raises as the same interrupt (every later
   SIGTERM while it cleans up is ignored) — cancels the queue, terminates any child its runner
   registered a handle for and the running phase child's whole process group (each leads its own
@@ -956,7 +959,7 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   (`redacted: true`) rather than asserting it — from THIS run's manifest only, since a runner that
   writes captures and then dies leaves the previous run's file in place, so the claim is readable
   from the run's own artifacts and goes false if the pass is ever bypassed.
-- **`review`** / **`verify`** — the guard-confined self-write fan-out below. Like the scout (#1056),
+- **`review`** / **`verify`** — the write-capable, boundary-gated fan-out below. Like the scout (#1056),
   `review` batches every pending `(domain, group)` cell across ALL groups into ONE checkpoint, and
   `verify`'s PRIMARY round batches every pending advisor into one (#5) — so the host dispatches them
   concurrently instead of one round-trip per group. A batched checkpoint carries `group: null`; each
@@ -1146,8 +1149,8 @@ template; else `--model`) and persists each returned JSON to its `out_file` (`sc
 after confirming it parses. No write-guard here — nothing self-writes. The read guard is armed here
 too, exactly as at every checkpoint that carries entries: `read_guard_hook.install` before the batch
 and `read_guard_hook.uninstall` after, each scout entry confined to the files its group names. The
-guard-confined **self-write** path applies to `review` and `verify` checkpoints (whose
-reviewers/advisors write their own `out_file`).
+delivery-derived path applies to `review` and `verify`: a host with self-write transport and a
+proven boundary lets each reviewer/advisor write its own `out_file`; otherwise the loop persists JSON.
 
 A malformed self-write fails its done-predicate (`_cell_done` / `_verify_cell_done`) so the cell
 reads as not-done and is re-dispatched on the next iteration — no corrupt findings/verdict silently

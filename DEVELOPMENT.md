@@ -334,10 +334,11 @@ characters, and matching consumes the whole path.
 - **Fan-out resumes from artifacts, not an orchestrator's memory (P2 SP-A, #435,
   #444, #436).** `driver loop` owns pending-entry selection, bounded host launches,
   per-entry persistence and the ledger. `loop_batch` validates batch ownership and
-  recovers interrupted work before another launch. A reviewer with a proved artifact
-  write guard may write its own `out_file`; otherwise the entry returns JSON for the
-  host to persist. Codex uses returned JSON. The runner's final text does not advance
-  a phase until the driver's done predicate sees the required file on disk.
+  recovers interrupted work before another launch. A reviewer self-writes only when
+  its host has both `self_write_delivery` and a proved artifact-write boundary;
+  otherwise the entry returns JSON for the host to persist. Codex uses returned JSON.
+  The runner's final text does not advance a phase until the driver's done predicate
+  sees the required file on disk.
 - **Write and read confinement follow proved host capabilities.** The installed
   Claude write hook keeps grants by entry ID and binds a reviewer through its dispatch
   marker (or the headless entry environment); a bound reviewer may write only its own
