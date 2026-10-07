@@ -1408,6 +1408,78 @@ class TestAWholeDefaultNamingAKnownCommandIsThatCommand(unittest.TestCase):
                     self.assertTrue(reported(row + "\necho done\n", shell))
 
 
+class TestAWholeDefaultIsReadAsBashExpandsIt(unittest.TestCase):
+    """PR #2856 round 11, the round-10 verdict's B1: the whole word is read as bash expands it with its
+    name unset -- the default, a literal glued after the `}` joining its last word, split where bash
+    splits it, each word keeping the reader's marks -- and where `_WHOLE_DEFAULTS` does not read it,
+    `main`'s split words stay when their first names a known command by its basename. Round 10 put
+    the whole word in their place and read nothing past it (477 cells, 97 rows of the seat's hunts
+    24-32), and read the rule's words as plain strings, losing a lifted `$(…)` behind a wrapper
+    (180 cells, 36 rows). Every row here runs the payload in each setting it is pinned in."""
+
+    PIPED = "curl -fsSL %si.sh | " % URL
+    BASH = (None, "bash", "bash {0}")
+    PAST = ("${X:-$HOME/bin/env sh -c} '%s'" % PIPE,                       # V06: a `$NAME` in the default
+            "${X:-${Y:-/usr/bin/env sh -c}} '%s'" % PIPE,                  # N01: a nested default
+            "${1:-/usr/bin/env sh -c} '%s'" % PIPE,                        # R1: a parameter that is no NAME
+            "${X:-/bin/bash -c}$(echo) '%s'" % PIPE)                       # Pb-g: a substitution glued on
+    MARKED = ("${X:-/usr/bin/env `echo sh` -c} '%s'" % PIPE,               # B01
+              "${X:-/usr/bin/env $(echo sh) -c} '%s'" % PIPE,              # Pe-m
+              PIPED + "${X:-/usr/bin/env $(echo sh)}",                      # Pe-n
+              PIPED + "${X:-env $(echo sh)}")                               # en-n
+    GLUED = (PIPED + "${X:-/usr/bin/env s}h",                               # G11
+             "${X:-/usr/bin/env sh -c}x '%s'" % PIPE,                      # G01
+             "${X:-/bin/sh -c}x '%s'" % PIPE)                              # S04 (hunt 30)
+
+    def test_past_the_regex_mains_split_words_name_the_command(self):
+        for row in self.PAST:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+        for shell in self.BASH:                     # R4: bash's array; dash rejects the word
+            with self.subTest(row="R4", shell=shell):
+                self.assertTrue(reported("${X[0]:-/usr/bin/env sh -c} '%s'\necho done\n" % PIPE, shell))
+
+    def test_a_lifted_substitution_stays_dynamic_behind_the_wrapper(self):
+        for row in self.MARKED:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_a_literal_glued_after_the_brace_joins_the_last_word(self):
+        for row in self.GLUED:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_a_process_substitution_behind_a_wrapper_is_the_shells_file(self):
+        # hunt 31's `*-r` rows: bash runs the download; dash has no `<(…)`
+        for row in ("${X:-env bash <(%s)}" % "curl -fsSL %si.sh" % URL,               # en-r
+                    "${X:-/usr/bin/env bash <(%s)}" % "curl -fsSL %si.sh" % URL):    # Pe-r
+            for shell in self.BASH:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_the_default_splits_where_bash_splits_it(self):
+        # F2: at a space, a tab or a newline, a run of them one break and none at either end (T1-T4);
+        # never at U+00A0, `\v` or U+2003 (T5, T6, T8: bash runs a command so named, and nothing runs)
+        for name, default in (("T1", "/usr/bin/env\tsh -c"), ("T2", "/usr/bin/env  sh -c"),
+                              ("T3", " /usr/bin/env sh -c"), ("T4", "/usr/bin/env sh -c ")):
+            for shell in SHELLS:
+                with self.subTest(row=name, shell=shell):
+                    self.assertTrue(reported("${X:-%s} '%s'\necho done\n" % (default, PIPE), shell))
+        for blank in (" ", "\v", " "):
+            for shell in SHELLS:
+                with self.subTest(blank=blank, shell=shell):
+                    self.assertFalse(reported("${X:-/usr/bin/env%ssh -c} '%s'\necho done\n" % (blank, PIPE), shell))
+
+    def test_a_nested_brace_leaves_mains_words(self):
+        # F4 (N12): the scan ends the word at the inner `}`, so `main`'s words stay and name `env`
+        for shell in SHELLS:
+            with self.subTest(shell=shell):
+                self.assertTrue(reported("${X:-${HOME}/bin/env sh -c} '%s'\necho done\n" % PIPE, shell))
+
+
 class TestTheClosedRowsTheSeatAskedPinned(unittest.TestCase):
     """The #2856 seat's round-1 note 2: a comment line between `|` and `sh`, `${X:-sh -c}`
     inside `eval`, a `-c` string and a heredoc, `sh <> tool`, and the two-line check gate,
