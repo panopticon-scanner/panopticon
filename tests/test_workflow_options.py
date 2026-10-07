@@ -8,6 +8,8 @@ program, a `sha256sum` whose `-c` fails, and the step run as GitHub runs it (`-e
 `-o pipefail`): FR fetched and ran, F- fetched only, -- neither, +chk the check ran. Every row's four
 columns agree unless a comment says otherwise.
 """
+import collections
+import contextlib
 import time
 import unittest
 from unittest import mock
@@ -1068,15 +1070,34 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
     (`mains_answer`), nothing of this walk feeding it -- then this walk's not among them. Round 10's
     seat found four consumers that read LESS when an added reading reached them: B1 `_on_stdin` and
     annotate's `_complete`, B2 `substitution_script`, B3 a `()` reader's printers, B4 an added body's
-    `}` regrouping the first fold. Each row below is the seat's (`hunt.jsonl`, ids given): `main`
-    reports it RRRRR, this walk's own pass reads a cell CLEAN, and the job keeps `main`'s findings."""
+    `}` regrouping the first fold. Each row below is the seat's (`hunt.jsonl`, ids given; round 11's
+    `mfd`/`mfd2`: B4's shape behind a holder whose `-c` string only this walk finds): `main` reports
+    it RRRRR, this walk's own pass reads a cell CLEAN, and the job keeps `main`'s findings."""
 
+    # Round 10's B4 shape: `main`'s own Unsure fetch, then a brace group whose holder's heredoc body is `}`.
+    B4 = "eval 'bash -s' <<'B0'\n%sB0\n{ %s\n%%s <<'B1'\n}\nB1\n} | sh tool\n" % (GET, CHECK)
     SEAT = {"os000 (B1)": GET + "CMD=bash\n$CMD x -- -c cat < tool\n",
             "su00 (B2)": "X='%s'\nout=$(bash -s x -- -c 'echo hi' <<EOF\n$X\nEOF\n)\n" % PIPE,
             "nr02 (B3)": "bash x.sh -c \"echo 'curl -fsSLo tool %stool\\t' | sh\"\nCMD=$(echo true)\n"
                          "{ %s\n$CMD <<'EOF'\n}\nEOF\n} | sh tool\n" % (URL, CHECK),
-            "cf00432 (B4)": "eval 'bash -s' <<'B0'\n%sB0\n{ %s\nsh -sc true <<'B1'\n}\nB1\n} | sh tool\n" % (GET, CHECK)}
+            "cf00432 (B4)": B4 % "sh -sc true",
+            # Round 11's seat, B1: the walk fed into the main pass through `_stdin_details` (MF5 MF7 MF8
+            # MF9) read each of these CLEAN under the first three settings, and no pin failed.
+            "mfd2 (an outermost one-dash holder)": B4 % "bash -norc -c 'sh'",
+            "mfd (a one-dash holder's FILE)": B4 % "bash -rcfile /dev/null -c 'sh'",
+            "mfd (a nested holder)": B4 % "bash -c \"sh -rcfile /dev/null -c 'sh'\""}
     SHELLS = (None, "bash", "sh", "bash {0}", "sh {0}")
+    # This walk's own readers, each where `workflow_programs` looks it up; `_WALK`'s pair is bound when
+    # the module loads, so it is watched as a pair too.
+    WALK_ONLY = ((wp, ("_walk", "_walk_scripts", "_added_strings", "_shell_candidates", "_dash_c_strings",
+                       "_stdin_walk", "_counted", "_sure_string")), (wo, ("long_option", "_run")))
+    # Rows past the seat's for the structural pin: a long option's FILE, one-dash words, a value in the
+    # option slot, `-c --`, a string in a string, `eval`, a `$` command word, a dynamic string.
+    WALKED = (body("bash --rcfile /dev/null", PIPE), body("bash -norc", PIPE), "bash -norc -c '%s'\n" % PIPE,
+              GET + body("bash -s -c true", CHECK) + USE, GET + 'bash -norc -c "$(cat tool)"\n',
+              "X=\nbash -norc $X '%s'\n" % PIPE, body("bash -o $X -s", PIPE), body("bash -c -- $X 'P' sh", PIPE),
+              body("bash -c \"bash -norc -c 'sh'\"", PIPE), body("eval \"bash -norc -c 'sh'\"", PIPE),
+              "CMD=bash\n" + body("$CMD -norc", PIPE), "echo '%s' | bash -norc -c 'sh'\n" % PIPE)
 
     @staticmethod
     def argv(text):
@@ -1149,6 +1170,97 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
         self.assertTrue(seen and held)
         held_ids = {id(argv) for argv in held}
         self.assertEqual([], [argv for argv in seen if id(argv) in held_ids])
+
+    def test_nothing_of_the_walk_runs_in_the_main_pass(self):
+        # Round 11's seat, B1: the ruling's "nothing of the walk feeds the main pass", as a test. Each
+        # reader of this walk's own is watched where it is looked up, and none may run while `_MAINS`
+        # is set; each watcher must also see its reader run in the walk's pass, or it watches nothing.
+        calls = collections.Counter()
+
+        def watched(name, reader):
+            def call(*args, **kwargs):
+                calls[name, wo._MAINS.get()] += 1
+                return reader(*args, **kwargs)
+            return call
+
+        self.assertEqual((wp._options, wp._main_scripts), wp._MAIN)
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(wp, "_WALK", tuple(watched(f.__name__, f) for f in wp._WALK)))
+            for module, names in self.WALK_ONLY:
+                for name in names:
+                    stack.enter_context(mock.patch.object(module, name, watched(name, getattr(module, name))))
+            for script in self.WALKED + tuple(self.SEAT.values()):
+                for shell in self.SHELLS:
+                    wg.job_defects([wg.Step("step", script, shell)])
+        names = sorted(name for _module, names in self.WALK_ONLY for name in names)
+        self.assertEqual([], sorted({name for name, main in calls if main}))
+        self.assertEqual(names, sorted({name for name, main in calls if not main}))
+
+    def test_a_raise_in_the_main_pass_resets_the_switch(self):
+        # Round 11's seat, F1: `mains_answer` resets `_MAINS` on a raise too, pinned here and not by
+        # the order the tests run in.
+        with self.assertRaises(LookupError):
+            with wo.mains_answer():
+                self.assertTrue(wo._MAINS.get())
+                raise LookupError("in the main pass")
+        self.assertFalse(wo._MAINS.get())
+
+    def test_a_raise_in_the_main_pass_leaves_the_job(self):
+        # Round 11's seat, F2: a raise in the main pass is never read as a CLEAN `main` -- nothing
+        # catches it, no walk's pass runs after it, and the switch is off.
+        passes, real = [], wg._job_defects
+
+        def failing(steps, strict=False):
+            passes.append(wo._MAINS.get())
+            if wo._MAINS.get():
+                raise LookupError("in the main pass")
+            return real(steps, strict)
+
+        with mock.patch.object(wg, "_job_defects", failing), self.assertRaises(LookupError):
+            wg.job_defects([("step", PIPE + "\n")])
+        self.assertEqual([True], passes)
+        self.assertFalse(wo._MAINS.get())
+
+    def test_mains_findings_come_first(self):
+        # Round 11's seat, F3: the order. `$X` is empty and `-norc` bash's own: this walk reports the
+        # `$X` in the option slot before the stream both passes report, and the job keeps `main`'s
+        # findings first, then the walk's not among them.
+        script = "X=\nbash -norc $X '%s'\n" % PIPE
+        for shell in self.SHELLS:
+            with self.subTest(shell=shell):
+                step = [wg.Step("step", script, shell)]
+                with wo.mains_answer():
+                    mains = wg._job_defects(step)
+                walked = wg._job_defects(step)
+                self.assertNotEqual(mains[0], walked[0])
+                self.assertEqual(mains + [entry for entry in walked if entry not in mains], wg.job_defects(step))
+
+    def test_the_union_compares_names_and_never_hashes_them(self):
+        # Round 11's seat, F4: the union is linear -- a finding's name is compared only with the names
+        # found with its `why` -- and a step's name is the workflow's own YAML value, a list or a
+        # mapping maybe, so it is compared and never hashed (a set of the pairs raises on it).
+        script = "X=\nbash -norc $X '%s'\n" % PIPE
+        for name in (["a", "b"], {"k": "v"}):
+            with self.subTest(name=name):
+                found = wg.job_defects([wg.Step(name, script)])
+                self.assertEqual([name, name], [named for named, _why in found])
+        compared = []
+
+        class Name(str):
+            __hash__ = None             # unhashable, as a list is
+
+            def __eq__(self, other):
+                compared.append(other)
+                return str.__eq__(self, other)
+
+        n = 500
+        mains = [(Name("s%d" % k), "why %d" % k) for k in range(n)]
+        walked = [(Name("s%d" % k), "why %d" % k) for k in range(n)] + [(Name("t%d" % k), "new %d" % k) for k in range(n)]
+        with mock.patch.object(wg, "_job_defects", lambda steps, strict=False: list(mains if wo._MAINS.get() else walked)):
+            found = wg.job_defects([])
+        count = len(compared)
+        self.assertEqual(mains + walked[n:], found)
+        self.assertLessEqual(count, 2 * n)      # n here; round 11's scan of the whole list made 2n^2
 
 
 class TestTheOptionGrammarLivesInWorkflowOptions(unittest.TestCase):

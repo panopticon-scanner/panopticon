@@ -554,14 +554,14 @@ def fetch_exec_defect(script):
 
 
 def job_defects(steps, strict=False):
-    """Defects for a job: `main`'s findings -- every join of `workflow_programs` answering as `main`
-    does (`mains_answer`) -- then the second walk's not among them (#2858 round 11)."""
-    steps = list(steps)
+    """Defects for a job: `main`'s findings (`mains_answer`), then the second walk's not among them."""
+    steps, seen, found = list(steps), collections.defaultdict[str, list](list), []
     with mains_answer():
-        found = _job_defects(steps, strict)
-    for entry in _job_defects(steps, strict):
-        if entry not in found:
-            found.append(entry)
+        mains = _job_defects(steps, strict)
+    for at, (name, why) in enumerate(mains + _job_defects(steps, strict)):
+        if at < len(mains) or name not in seen[why]:    # each `why`'s names: a step's name is YAML's
+            seen[why].append(name)                      # own, a list maybe, so compared, never hashed
+            found.append((name, why))
     return found
 
 

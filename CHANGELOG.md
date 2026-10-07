@@ -31,23 +31,27 @@ evidence exposed.
   consumers read less given an added reading -- `_on_stdin` and annotate's `_complete`,
   `substitution_script`, a printer-fed body read under both shells, an added `}` regrouping the
   first fold -- and 850 of the seat's rows read CLEAN where `main` reported; a union of findings
-  ends that class. Against `main` the walk adds 9,328 reports where a payload or an unverified use
-  runs and 24,516 where nothing does, on the four sets: a body only it reads 2,414 / 6,858, a check
-  only `main` counted 2,529 / 4,605, a string only it reads 1,973 / 2,809, a check in a string
-  `main` reads 1,696 / 7,752, a candidate only it weighs 691 / 2,447, several 25 / 45 (46 of the 222
-  cases; 6 of the hunt's rows, a withheld string read under both shells' printers). The over-reports
+  ends that class. Against `main` the walk adds reports on 9,328 steps where a payload or an
+  unverified use runs and 24,516 where nothing does, on the four sets (posture-blind step counts,
+  every `shell:` setting read; a `noe` step judged on its two `{0}` settings alone gives 9,057 /
+  24,515): a body only it reads 2,414 / 6,858, a check only `main` counted 2,529 / 4,605, a string
+  only it reads 1,973 / 2,809, a check in a string `main` reads 1,696 / 7,752, a candidate only it
+  weighs 691 / 2,447, several 25 / 45 (46 of the 222 cases; 6 of the hunt's rows, a withheld string
+  read under both shells' printers). The over-reports
   are fail-closed: a word that may expand may be the FILE, `-n` or `-c` (`bash $X -c "<check>"`,
   `bash -o $X -s`), a FILE may hand its parameters on (`bash w.sh -c '…'`), a body or string whose
   check is withheld reads under both shells' printers (`bash -s -c 'echo hi' <<'EOF' echo 'sh\ttool'
   | sh`), and a long option read on past its FILE meets one that refuses or exits (`bash --rcfile
   /dev/null --version`). The cost: the job reads a step twice, so every ratio to `main` rises by
-  about one and stays flat with n -- on round 10's seat shapes at 1,000 to 8,000 words, 2.0-2.8x for
-  most, 3.5-5.1x for a long option's FILE, `-o $X` and one-dash runs, and 11-16x for the two `-c --`
-  shapes (`Y=; Z=; bash -c -- $Y $Z… 'P'`, `X=; bash -c -- $X… sh <<'EOF'`), which `main` reads
-  CLEAN though bash runs the payload, every word a candidate weighed as `main` weighs its own. Open,
+  about one and stays flat with n -- on round 10's seat shapes at 1,000 to 8,000 words, 2-3x for
+  most, 3.4-3.8x for a long option's FILE, 3.5-4.4x for one-dash runs, 4.5-5.6x for `-o $X`, and
+  11-16x for the two `-c --` shapes (`Y=; Z=; bash -c -- $Y $Z… 'P'`, `X=; bash -c -- $X… sh
+  <<'EOF'`), which `main` reads CLEAN though bash runs the payload, every word a candidate weighed
+  as `main` weighs its own; each range spans a Linux aarch64 box (its low end) and a Mac. Open,
   as on `main`: a check counted under a refused shell where errexit is off (round 9 withheld it: 14
-  rows of round 5's matrix), #2608's `-s $X` and `-c $X` rows, `-c $(…)`, and the guard's other
-  named gaps.
+  rows of round 5's matrix), #2608's `-s $X` and `-c $X` rows, `-c $(…)`, #2900's one-dash long
+  option behind a shell the step names through a variable (`CMD=bash; $CMD -norc <<'EOF'`), and the
+  guard's other named gaps.
 - **Workflow guard: what `eval`'s words and a `-c` string hand on (#2673, #2683, #2684, #2764,
   #2669, #2331).** `eval 'curl … |' 'sh'` ran the pipe and read CLEAN: `eval` joins its words before
   it runs them, and the guard read them one by one. Where a word begins or ends with an operator the
