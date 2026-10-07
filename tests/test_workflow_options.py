@@ -10,6 +10,9 @@ columns agree unless a comment says otherwise.
 """
 import collections
 import contextlib
+import itertools
+import os
+import tempfile
 import time
 import unittest
 from unittest import mock
@@ -1087,10 +1090,36 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
             "mfd (a one-dash holder's FILE)": B4 % "bash -rcfile /dev/null -c 'sh'",
             "mfd (a nested holder)": B4 % "bash -c \"sh -rcfile /dev/null -c 'sh'\""}
     SHELLS = (None, "bash", "sh", "bash {0}", "sh {0}")
-    # This walk's own readers, each where `workflow_programs` looks it up; `_WALK`'s pair is bound when
-    # the module loads, so it is watched as a pair too.
+    # Round 12's seat, B1 and F1: the walk's tables are read, never called, so no watcher sees one fed
+    # into the main pass (MX13: `_details`' recursion reading an inner argv less its one-dash long
+    # options), nor one of `main`'s own readers changed (MX3 `_after_dash_c`, MX4 `SHELL_OPTIONS`).
+    # The family carries them: B4 behind each holder -- outermost, a stdin string, nested, in `eval`,
+    # an inner shell behind a FILE holder, a string or `eval`, bare -- for each spelling of the walk's
+    # tables `main` reports there: all 71 rows of that grid's 225 that `main` (e9e6e1fd) reports RRRRR.
+    # A one-dash word holding a `c` (a `-c` cluster to `main`: `_after_dash_c`), alone or paired, under
+    # every holder; a FILE word `main` reads as no cluster under the four holders whose shell has no
+    # `-c` (the walk's `LONG_VALUE_OPTIONS`: an MX13 on them moves those); `-login -restricted` under
+    # the five whose shell has one.
+    HOLDERS = ("bash %s -c 'sh'", "sh %s -c 'sh'", "bash %s -c 'bash -s'", "bash -c \"bash %s -c 'sh'\"",
+               "eval \"bash %s -c 'sh'\"", "bash --rcfile /dev/null -c 'bash %s'", "bash -c 'bash %s'",
+               "eval 'bash %s'", "bash %s")
+    SPELLED = tuple("-" + name[2:] for name in wo.LONG_OPTIONS) + tuple(
+        spelled + " /dev/null" for name in wo.LONG_VALUE_OPTIONS for spelled in (name[1:], name))
+    CLUSTERS = tuple(words for words in SPELLED if not words.startswith("--") and "c" in words.split()[0])
+    FILES = tuple(words for words in SPELLED if words.endswith(" /dev/null") and (words.startswith("--") or "c" not in words))
+    FAMILY = tuple(holder % words for holder, words in itertools.chain(
+        itertools.product(HOLDERS, CLUSTERS + ("-norc -login", "--noprofile -norc")),
+        itertools.product(HOLDERS[5:], FILES), itertools.product(HOLDERS[:5], ("-login -restricted",))))
+    # This walk's own readers and helpers -- every function #2858 added that only the walk calls (round
+    # 12's seat, F3) -- each where it is looked up; `_WALK`'s pair is bound when the module loads, so it
+    # is watched as a pair too, and its two names are TRIPWIRES: nothing looks either up by name (round
+    # 12's seat, F2), so neither may run in the main pass, and neither need run in the walk's.
     WALK_ONLY = ((wp, ("_walk", "_walk_scripts", "_added_strings", "_shell_candidates", "_dash_c_strings",
-                       "_stdin_walk", "_counted", "_sure_string")), (wo, ("long_option", "_run")))
+                       "_stdin_walk", "_counted", "_sure_string", "Handed")),
+                 (wo, ("long_option", "_run", "_after_value", "_dash_c_operand", "_dash_s", "_in_every_reading",
+                       "_literal", "_long_name", "_long_word", "_one_word", "_operand_past", "_printed",
+                       "_runs_none", "_value_after_dash_c")))
+    TRIPWIRES = ("_walk", "_walk_scripts")
     # Rows past the seat's for the structural pin: a long option's FILE, one-dash words, a value in the
     # option slot, `-c --`, a string in a string, `eval`, a `$` command word, a dynamic string.
     WALKED = (body("bash --rcfile /dev/null", PIPE), body("bash -norc", PIPE), "bash -norc -c '%s'\n" % PIPE,
@@ -1122,6 +1151,13 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
         for name, script in self.SEAT.items():
             with self.subTest(row=name), wo.mains_answer():
                 self.assertTrue(all(wg._job_defects([wg.Step("step", script, s)]) for s in self.SHELLS))
+
+    def test_the_main_pass_reports_every_holder_of_the_family(self):
+        # Round 12's seat, B1 and F1: MX13, MX3 and MX4 each read some row of the family CCCRR, and the
+        # whole suite passed each of them.
+        for holder in self.FAMILY:
+            with self.subTest(holder=holder), wo.mains_answer():
+                self.assertTrue(all(wg._job_defects([wg.Step("step", self.B4 % holder, s)]) for s in self.SHELLS))
 
     def test_the_job_holds_every_finding_of_mains(self):
         for name, script in self.SEAT.items():
@@ -1173,28 +1209,31 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
 
     def test_nothing_of_the_walk_runs_in_the_main_pass(self):
         # Round 11's seat, B1: the ruling's "nothing of the walk feeds the main pass", as a test. Each
-        # reader of this walk's own is watched where it is looked up, and none may run while `_MAINS`
-        # is set; each watcher must also see its reader run in the walk's pass, or it watches nothing.
+        # reader and helper of this walk's own is watched where it is looked up, and none may run while
+        # `_MAINS` is set; each watcher but the two tripwires must also see its reader run in the walk's
+        # pass, counted per watcher (round 12's seat, F2), or it watches nothing. This pins NAMED calls:
+        # the walk's tables are read, not called, and `FAMILY`'s rows carry them (round 12's seat, B1).
         calls = collections.Counter()
 
-        def watched(name, reader):
+        def watched(label, reader):
             def call(*args, **kwargs):
-                calls[name, wo._MAINS.get()] += 1
+                calls[label, bool(wo._MAINS.get())] += 1
                 return reader(*args, **kwargs)
             return call
 
         self.assertEqual((wp._options, wp._main_scripts), wp._MAIN)
         with contextlib.ExitStack() as stack:
-            stack.enter_context(mock.patch.object(wp, "_WALK", tuple(watched(f.__name__, f) for f in wp._WALK)))
+            stack.enter_context(mock.patch.object(wp, "_WALK", tuple(watched("_WALK[%d]" % at, reader)
+                                                                     for at, reader in enumerate(wp._WALK))))
             for module, names in self.WALK_ONLY:
                 for name in names:
                     stack.enter_context(mock.patch.object(module, name, watched(name, getattr(module, name))))
             for script in self.WALKED + tuple(self.SEAT.values()):
                 for shell in self.SHELLS:
                     wg.job_defects([wg.Step("step", script, shell)])
-        names = sorted(name for _module, names in self.WALK_ONLY for name in names)
-        self.assertEqual([], sorted({name for name, main in calls if main}))
-        self.assertEqual(names, sorted({name for name, main in calls if not main}))
+        watchers = ["_WALK[0]", "_WALK[1]"] + [name for _module, names in self.WALK_ONLY for name in names]
+        self.assertEqual([], [label for label in watchers if calls[label, True]])
+        self.assertEqual([], [label for label in watchers if label not in self.TRIPWIRES and not calls[label, False]])
 
     def test_a_raise_in_the_main_pass_resets_the_switch(self):
         # Round 11's seat, F1: `mains_answer` resets `_MAINS` on a raise too, pinned here and not by
@@ -1235,10 +1274,28 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
                 self.assertNotEqual(mains[0], walked[0])
                 self.assertEqual(mains + [entry for entry in walked if entry not in mains], wg.job_defects(step))
 
-    def test_the_union_compares_names_and_never_hashes_them(self):
-        # Round 11's seat, F4: the union is linear -- a finding's name is compared only with the names
-        # found with its `why` -- and a step's name is the workflow's own YAML value, a list or a
-        # mapping maybe, so it is compared and never hashed (a set of the pairs raises on it).
+    def test_the_union_keeps_a_walk_finding_under_another_name(self):
+        # Round 12's seat, F4 (MU10): a walk's finding is among `main`'s only under its own name. Both
+        # passes report the first step's stream, only the walk the second's, under one `why`: the job
+        # keeps both, for a name the union keys and for one it compares.
+        for first, second in (("a", "b"), (["a"], ["b"])):
+            steps = [wg.Step(first, PIPE + "\n"), wg.Step(second, "bash -norc -c '%s'\n" % PIPE)]
+            with self.subTest(names=(first, second)):
+                with wo.mains_answer():
+                    mains = wg._job_defects(steps)
+                walked = wg._job_defects(steps)
+                self.assertEqual([first], [name for name, _why in mains])
+                self.assertEqual([first, second], [name for name, _why in walked])
+                self.assertEqual(1, len({why for _name, why in walked}))
+                self.assertEqual(walked, wg.job_defects(steps))
+
+    def test_the_union_keys_a_hashable_name_and_compares_the_rest(self):
+        # Round 11's seat, F4, and round 12's, B2 and F5: a hashable name -- every name the workflow schema
+        # takes -- is looked up with its `why`, so n entries make n comparisons whether their `why`s
+        # differ (D1) or are one (D2: round 12's union made 2n^2 there). A step's name is the workflow's
+        # own YAML value, a list or a mapping maybe: no key, it is compared with the names its `why`
+        # holds, never hashed (a set of the pairs raises on it) -- linear where those `why`s differ,
+        # quadratic in such names under one `why` (round 13's E2: a name the workflow schema refuses).
         script = "X=\nbash -norc $X '%s'\n" % PIPE
         for name in (["a", "b"], {"k": "v"}):
             with self.subTest(name=name):
@@ -1253,14 +1310,48 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
                 compared.append(other)
                 return str.__eq__(self, other)
 
+        class Hashed(Name):
+            __hash__ = str.__hash__     # hashable, as a string is
+
         n = 500
-        mains = [(Name("s%d" % k), "why %d" % k) for k in range(n)]
-        walked = [(Name("s%d" % k), "why %d" % k) for k in range(n)] + [(Name("t%d" % k), "new %d" % k) for k in range(n)]
-        with mock.patch.object(wg, "_job_defects", lambda steps, strict=False: list(mains if wo._MAINS.get() else walked)):
-            found = wg.job_defects([])
-        count = len(compared)
-        self.assertEqual(mains + walked[n:], found)
-        self.assertLessEqual(count, 2 * n)      # n here; round 11's scan of the whole list made 2n^2
+        for label, kind, why, new in (("D1", Name, "why %d", "new %d"), ("D2", Hashed, "why", "why")):
+            mains = [(kind("s%d" % k), why.replace("%d", str(k))) for k in range(n)]
+            walked = ([(kind("s%d" % k), why.replace("%d", str(k))) for k in range(n)]
+                      + [(kind("t%d" % k), new.replace("%d", str(k))) for k in range(n)])
+            del compared[:]
+            with self.subTest(distribution=label), mock.patch.object(
+                    wg, "_job_defects", lambda steps, strict=False: list(mains if wo._MAINS.get() else walked)):
+                found = wg.job_defects([])
+                count = len(compared)
+                self.assertEqual(mains + walked[n:], found)
+                self.assertLessEqual(count, 2 * n)      # n in each; 2n^2 by round 11's scan, and round 12's D2
+
+    def test_a_name_that_holds_itself_is_compared_by_identity(self):
+        # Round 13's E1: an anchor can make a step's name hold itself (`&a [*a]`), and `==` cannot finish
+        # between two such names, so the union compares them by identity -- where round 12's raised
+        # `RecursionError` and `main` printed every defect. Under `pwsh` both passes report each step;
+        # in the second job only the walk reports the second step's stream, under the first's `why`.
+        # The job keeps every finding, and the CLI prints each step's defect.
+        held, holds, mapped, maps = [], [], {}, {}
+        held.append(held)
+        holds.append(holds)
+        mapped["k"], maps["k"] = mapped, maps
+        for first, second in ((held, holds), (mapped, maps)):
+            for steps in ([wg.Step(first, "echo hi\n", "pwsh"), wg.Step(second, "echo hi\n", "pwsh")],
+                          [wg.Step(first, PIPE + "\n"), wg.Step(second, "bash -norc -c '%s'\n" % PIPE)]):
+                with self.subTest(name=type(first).__name__, shell=steps[0].shell):
+                    found = wg.job_defects(steps)
+                    self.assertEqual([id(first), id(second)], [id(name) for name, _why in found])
+                    self.assertEqual(1, len({why for _name, why in found}))
+        lines: list[str] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "held.yml")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("jobs:\n  j:\n    steps:\n" + "".join(
+                    "      - {name: %s, shell: pwsh, run: echo %d}\n" % (name, at)
+                    for at, name in enumerate(("&a [*a]", "&b [*b]", "&c {k: *c}", "&d {k: *d}"))))
+            self.assertEqual(1, wg.main([path], out=lines.append))
+        self.assertEqual(5, len(lines))         # each step's defect, then the count
 
 
 class TestTheOptionGrammarLivesInWorkflowOptions(unittest.TestCase):

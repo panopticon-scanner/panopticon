@@ -146,15 +146,14 @@ live, so a change that catches one fails there and edits this list.
   the rule is about what ARRIVED from outside, and a workflow editing its own downloaded file is
   author-deterministic -- that `sed` is in the repo under review.
 * a heredoc body or the text a printer hands a shell as its PROGRAM, past what is CLOSED: the body
-  handed to an interpreter as the PROGRAM it runs (`bash -s <<'EOF'`, `sh <<< '…'`,
-  `python3 - <<'EOF'` -- #1839, #2293 and run-14 SEC-3915165799). Two facts already parsed decide
-  it: whether a command's program is its stdin at all
-  (`workflow_programs.stdin_program`, an operand walk -- a `-c` string, a `-m` module and a script
-  FILE each put it elsewhere, the body then its input DATA), and which body descriptor 0 finally
-  reads, EXPANDED or not (`shell_reader`'s `Stage.stdin_heredoc`). A `-c`/`eval` string whose one
-  statement is a stdin-reading shell answers for the ENCLOSING command (#2500): a check behind an
-  `eval`/`-c` string counts for nothing; the body is still read (`workflow_programs._stdin`). That
-  is fail-closed -- `eval 'bash -s'` around a check alone is REPORTED though the step stops -- since
+  handed to an interpreter as the PROGRAM it runs (`bash -s <<'EOF'`, `sh <<< '…'`, `python3 - <<'EOF'`
+  -- #1839, #2293 and run-14 SEC-3915165799). Two facts already parsed decide it: whether a command's
+  program is its stdin at all (`workflow_programs.stdin_program`, an operand walk -- a `-c` string, a
+  `-m` module and a script FILE each put it elsewhere, the body then its input DATA), and which body
+  descriptor 0 finally reads, EXPANDED or not (`shell_reader`'s `Stage.stdin_heredoc`). A `-c`/`eval`
+  string whose one statement is a stdin-reading shell answers for the ENCLOSING command (#2500): a check
+  behind an `eval`/`-c` string counts for nothing; the body is still read (`workflow_programs._stdin`).
+  That is fail-closed -- `eval 'bash -s'` around a check alone is REPORTED though the step stops -- since
   what the inner shell is, what it reads and what becomes of its failure are the step's to change
   (`sh() { :; }`, `< $F`, `( … ) || true`). Nothing else in such a body is the step's own either,
   unless the holder's own options read stdin (`bash -s -c 'sh'`): the job is read with the bodies no
@@ -176,10 +175,9 @@ live, so a change that catches one fails there and edits this list.
   output remain unseen. A foreign program is reported too. A `$` command
   hand-off is reported (#2473); since #2499, either is kept only beside a reported fetch. A value
   word `workflow_annotate` leaves as written (#2468) has its body read as shell with no check
-  counted. Where a job fetch binds that command (#2607),
-  its run sentence owns stdin as data and both uncertain answers drop; unknown words stay
-  fail-closed. An expanding body masks substitutions as values (#2597). Inside a substitution, the
-  body speaks before its hand-off (#2598); the price remains
+  counted. Where a job fetch binds that command (#2607), its run sentence owns stdin as data and both
+  uncertain answers drop; unknown words stay fail-closed. An expanding body masks substitutions as values
+  (#2597). Inside a substitution, the body speaks before its hand-off (#2598); the price remains
   shell-like non-shell text. A nearer literal shell remains consumer when a surrounding value word
   gets its output. A direct or carried stream into a `$` command reports (#2602), as does a fetched
   file redirected into it. A value word left as written -- no table places it (`CMD=$(…)`), or the
@@ -203,13 +201,12 @@ live, so a change that catches one fails there and edits this list.
   first (`sh -c $(echo 'curl … | sh')` over-reports), a backquote whose text escapes `$`,
   `` ` ``, `"`, `\` or a newline, and a text the reader refuses, are not rendered, and the
   catch-all row for a word all substitution stays beside every such read (review C-1 to C-3);
-  a `<(…)` printer `substituted` cannot spell is weighed as a piped one (`sh <(echo "$X")`,
-  `sh <(echo 'sh\ttool')`), and a `>(…)` operand is taken for a `<(…)` FILE, the reader
-  keeping no direction (`sh >(echo 'sh tool')` over-reports); under `shell: sh` a `<(…)`
-  reads as bash runs it, though dash refuses the syntax and runs nothing (over-reports); and
-  bash 3.2.57 races a sourced `<(…)`, often reading it empty, so a check `source <(…)` prints
-  is credited where 3.2 may skip it (a 3.2-only gap; 5.2 wins). Any
-  other `tee`/`cat` spelling, or a stage that rewrites the stream (`tr`, `base64 -d`), leaves the
+  a `<(…)` printer `substituted` cannot spell is weighed as a piped one (`sh <(echo "$X")`, `sh <(echo
+  'sh\ttool')`), and a `>(…)` operand is taken for a `<(…)` FILE, the reader keeping no direction (`sh
+  >(echo 'sh tool')` over-reports); under `shell: sh` a `<(…)` reads as bash runs it, though dash refuses
+  the syntax and runs nothing (over-reports); and bash 3.2.57 races a sourced `<(…)`, often reading it
+  empty, so a check `source <(…)` prints is credited where 3.2 may skip it (a 3.2-only gap; 5.2 wins).
+  Any other `tee`/`cat` spelling, or a stage that rewrites the stream (`tr`, `base64 -d`), leaves the
   program unread, reported where the stage's words or the printer's text fetch, or beside a reported
   download. A heredoc WRITTEN then run (`cat <<'EOF' > x.sh`) is the `sed -i` ruling. Open:
   `xpg_echo`; an escape outside the table (`\x`, `\e`); `cat` options are read as printing its body
@@ -222,10 +219,9 @@ live, so a change that catches one fails there and edits this list.
   `sh tool`), and so do a `<(…)` that is not one printer (`sh <(echo a; echo 'sh tool')`) or that a
   shell reads past `--`, past a long option that takes a value (`--rcfile f <(…)`, the same gap) or
   on its stdin (`bash -- <(…)`, `bash < <(…)`), and an EXPANDING heredoc a `cat` prints into a
-  `$(…)` (`eval "$(cat <<EOF … EOF)"`).
-  A substitution heredoc body holding an apostrophe, unbalanced double quote, backquote, or bare
-  `$(` is an accepted Bash 3.2 parse-only gap: none runs a payload there, so #2626 kept #2493's
-  refusal limited to `)` instead of reporting code only Bash 5.2 parses.
+  `$(…)` (`eval "$(cat <<EOF … EOF)"`). A substitution heredoc body holding an apostrophe, unbalanced
+  double quote, backquote, or bare `$(` is an accepted Bash 3.2 parse-only gap: none runs a payload
+  there, so #2626 kept #2493's refusal limited to `)` instead of reporting code only Bash 5.2 parses.
 * distant function calls treat every `unset` as a barrier, including `unset FOO`, `unset -v FOO`
   and harmless `unset -f f`; this may over-report, but none of the fleet's 84 steps uses it (#2586).
 * Under outer `f || exit 1`, `( CHECK || exit 1 ); return $?`, its quoted form, and
@@ -502,8 +498,7 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=(), working=Non
     naming = [(i, _check_at_use(why, i, first_use)) for i, why in naming]
     cleared = [i for i, why in naming if why is None and _binds(conditions, i, first_use)]
     if cleared:
-        # Ordering is the substance: a checksum that runs after the bytes are
-        # made runnable is theatre.
+        # Ordering is the substance: a checksum that runs after the bytes are made runnable is theatre.
         return ("verifies %s only AFTER %s -- fetches %s, so %s"
                 % (shell_reader.readable(fetch.dest), how, _describe(fetch),
                    _remedy(fetch.dest)))
@@ -555,12 +550,18 @@ def fetch_exec_defect(script):
 
 def job_defects(steps, strict=False):
     """Defects for a job: `main`'s findings (`mains_answer`), then the second walk's not among them."""
-    steps, seen, found = list(steps), collections.defaultdict[str, list](list), []
+    steps, seen, found = list(steps), collections.defaultdict[object, list](list), []
     with mains_answer():
         mains = _job_defects(steps, strict)
     for at, (name, why) in enumerate(mains + _job_defects(steps, strict)):
-        if at < len(mains) or name not in seen[why]:    # each `why`'s names: a step's name is YAML's
-            seen[why].append(name)                      # own, a list maybe, so compared, never hashed
+        key = (name, why) if getattr(name, "__hash__", None) else why  # a step's name is YAML's own:
+        if not (new := at < len(mains) or key not in seen) and key is why:  # a hashable one is keyed
+            try:                                # with its `why`; a list or mapping is compared with
+                new = name not in seen[why]     # the names its `why` holds, and one that holds itself
+            except RecursionError:              # (`&a [*a]`), where `==` cannot finish, by identity
+                new = all(name is not other for other in seen[why])
+        if new:
+            seen[key].append(name)
             found.append((name, why))
     return found
 
@@ -625,9 +626,8 @@ def _job_defects(steps, strict=False):
 def unparseable(shell):
     """Why this step's shell is not one this guard reads, or None.
 
-    A `pwsh`, `python` or `cmd` step is not CLEAN, it is UNREAD, and the two
-    answers must not look alike: `Invoke-WebRequest x.exe; ./x.exe` is the same
-    act in a shell this parser has no grammar for."""
+    A `pwsh`, `python` or `cmd` step is not CLEAN, it is UNREAD, and the two answers must not look alike:
+    `Invoke-WebRequest x.exe; ./x.exe` is the same act in a shell this parser has no grammar for."""
     words = (shell or "").split()
     if not words or os.path.basename(words[0]) in PARSED_SHELLS:
         return None
