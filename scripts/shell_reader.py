@@ -50,8 +50,8 @@ import re
 import shlex
 
 from shell_lex import lex
-from shell_patterns import (MARK, QUOTED, QUOTED_DOLLAR, _expansion_end, is_pattern, leads,
-                            patterned, shell_words as shell_words)
+from shell_patterns import (MARK, QUOTED, QUOTED_DOLLAR, is_pattern, leads, patterned,
+                            shell_words as shell_words)
 from shell_quote import ansi_c
 from shell_text import (_lift_substitutions, join_continuations as join_continuations,
                         without_comments as without_comments)
@@ -144,45 +144,48 @@ def _negated(text, context):
     return text
 
 
-def _bare_blanks(segment):
-    """`segment`, one `${…}`, with each blank no quote or backslash covers marked `_BLANK`, or
-    None where it has none: a quoted or escaped blank is the word's own, as shlex keeps it. One
-    holding a newline or an operator no quote covers (`${V:-a | sh}`, `${V:-a; b}`) is None too:
-    `main` ends a statement or a stage there, and only the command word reads a word whole, so
-    every statement and stage is `main`'s (#2856 round 8)."""
-    out, quote, i = [], "", 0
-    while i < len(segment):
-        ch = segment[i]
-        if ch == "\\" and quote != "'" and i + 1 < len(segment):
-            out.append(segment[i:i + 2])
-            i += 2
+def _bare_blanks(text, i):
+    """The `${…}` at `i`, as `(end, marked)`: where it ends, and its text with each blank no quote
+    or backslash covers marked `_BLANK`. None where it has no such blank -- a quoted or escaped
+    blank is the word's own, as shlex keeps it -- or holds a newline or an operator no quote
+    covers (`${V:-a | sh}`, `${V:-a; b}`), or nothing ends it: `main` ends a statement or a stage
+    there, and only the command word reads a word whole, so every statement and stage is `main`'s
+    (#2856 round 8). The scan stops at that newline or operator, so it reads no `${` past its own
+    stage, and ends at the first `}` no quote covers: a default holding a nested `${…}` names no
+    shell (`shell_command._WHOLE_DEFAULTS` takes no `$`), so where that one ends decides nothing
+    (round 9)."""
+    out, quote, at = ["${"], "", i + 2
+    while at < len(text):
+        ch = text[at]
+        if ch == "\\" and quote != "'" and at + 1 < len(text):
+            out.append(text[at:at + 2])
+            at += 2
             continue
         if quote:
             quote = "" if ch == quote[-1] else quote
-        elif segment.startswith("$$", i):
-            out.append("$$")                    # the PID, as `_split` pairs it: no `$'` opens
-            i += 2
-            continue
-        elif segment.startswith("$'", i):
+        elif text.startswith("$'", at):
             # `$'…'` as `_split` reads it: bash's text for it, single-quoted (#2344).
-            end = i + 2
-            while end < len(segment) and segment[end] != "'":
-                end += 2 if segment[end] == "\\" else 1
-            body = ansi_c(segment[i + 2:end]) if end < len(segment) else None
+            end = at + 2
+            while end < len(text) and text[end] != "'":
+                end += 2 if text[end] == "\\" else 1
+            body = ansi_c(text[at + 2:end]) if end < len(text) else None
             if body is not None:
                 out.append("'%s'" % body.replace("'", "'\"'\"'"))
-                i = end + 1
+                at = end + 1
                 continue
             out.append("$'")
-            quote, i = "$'", i + 2
+            quote, at = "$'", at + 2
             continue
         elif ch in "'\"":
             quote = ch
         elif ch in "\n;|&<>()":
             return None
+        elif ch == "}":
+            out.append(ch)
+            return (at + 1, "".join(out)) if _BLANK in out else None
         out.append(_BLANK if ch in " \t" and not quote else ch)     # what the shells split on
-        i += 1
-    return "".join(out) if _BLANK in out else None
+        at += 1
+    return None
 
 
 def _split(text, context):
@@ -224,7 +227,6 @@ def _split(text, context):
     # of `^(x|y)$`, and ending it at that `|` left the `)` closing a group
     # nothing had opened -- the unbalanced count #2334 reads as a lost list.
     cond, at_head = 0, True
-    scanned = 0                     # past every `${` whose blank-free expansion was scanned
     # `! { ... }`: bash negates the GROUP's status, and errexit is off for every command inside
     # a negated compound, so each statement the group holds is read under the `!` (#2664, the
     # fix round: the `{`-ends-its-statement step above stranded the `!` on `{` alone). One
@@ -293,24 +295,19 @@ def _split(text, context):
             buf.append(text[i + 1])
             i += 2
             continue
-        if text.startswith("${", i) and i >= scanned:
-            end = _expansion_end(text, i + 2)
-            # A blank-free expansion is read on character by character, so a `${` nested in
-            # it is not scanned to the same end again (#2756 fix round, B3): once the outer
-            # one is known to hold no blank, so is every one inside it.
-            scanned = end or scanned
-            # Only a command word is read whole (#2856 round 8): a `${…}` that starts a word where
-            # every word the stage closed is a keyword or an assignment (`at_head`), and no `case`
-            # subject -- anywhere else shlex splits it `main`'s way, as it always did.
-            marked = _bare_blanks(text[i:end]) if end and getattr(context, "blanks", True) and at_head and (
-                len(buf) == word_start) and "".join(buf).split()[-1:] != ["case"] else None
-            if marked is not None:
-                # An unquoted `${X:-bash -s}` is one word to the reader as to bash, which
-                # expands it whole and only then splits the words (#2731): its bare blanks are
-                # marked past shlex, and `_command_result` splits a shell default as bash does.
-                buf.extend(marked)
-                i = end
-                continue
+        # Only a command word is read whole (#2856 round 8): a `${…}` that starts a word where
+        # every word the stage closed is a keyword or an assignment (`at_head`), and no `case`
+        # subject -- anywhere else shlex splits it `main`'s way, as it always did. The scan runs
+        # only there, behind those tests (round 9).
+        if text.startswith("${", i) and getattr(context, "blanks", True) and at_head and (
+                len(buf) == word_start) and "".join(buf).split()[-1:] != ["case"] and (
+                bare := _bare_blanks(text, i)):
+            # An unquoted `${X:-bash -s}` is one word to the reader as to bash, which
+            # expands it whole and only then splits the words (#2731): its bare blanks are
+            # marked past shlex, and `_command_result` splits a shell default as bash does.
+            i = bare[0]
+            buf.extend(bare[1])
+            continue
         # A case header ends at its `in`, even when its first arm shares
         # the line. Quoted/escaped words remain intact until shlex reads them.
         # The count asks the BUFFER, not the source text, whether a word just
@@ -498,12 +495,10 @@ def _assigns(words):
 def _whole(raw, context, span):
     """A word `_split` kept whole (`_bare_blanks`), as bash reads it before it splits it, and the
     `span` of `main`'s words it is: for the one reading that takes it whole, the command word
-    (`shell_command._command_result`, #2731), `kept` where every `$` of it is quoted. Every other
-    reading has `main`'s words (#2856 round 8)."""
+    (`shell_command._command_result`, #2731). Every other reading has `main`'s words (#2856
+    round 8)."""
     plain = context.restore_arithmetic(raw.replace(MARK, "").replace(QUOTED, "").replace(QUOTED_DOLLAR, ""))
     word = context.token(plain.replace(_ESCAPED, "\\"))
-    if raw.count(QUOTED_DOLLAR) == plain.count("$") > 0 and not _markers(word):
-        word = kept(word)
     word = word if isinstance(word, _Token) else _Token(word, _markers(word))
     word.span = span
     return word

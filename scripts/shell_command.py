@@ -51,7 +51,10 @@ _SHELLS = ("sh", "bash", "dash", "ash", "ksh", "zsh")
 # A command word that is a parameter's default or alternate (#2337): `${X:-sh}`,
 # `"${X-bash}"`, `${X:=sh}`, `${X:+sh}`. Where it spells a shell it is read as
 # that shell, which bash runs wherever `X` leaves the word to it.
-_DEFAULTS = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([^{}$`'\"\\]+)\}")
+_DEFAULTS = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([^{}$`'\"\\\s]+)\}")
+# The same read whole, its default holding blanks (`${X:-bash -s}`): only a word the reader split
+# at blanks no quote or backslash covers, where bash splits the default too, once expanded (#2731).
+_WHOLE_DEFAULTS = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([^{}$`'\"\\]+)\}")
 # A command word that is ONE unquoted reference, with no default or one that
 # hands on (`$SUDO`, `${SUDO}`, `${SUDO:-}`, `${X:-sudo}`), in front of a name
 # the reader knows: an optional wrapper spelled by variable (#2472). Empty or
@@ -89,13 +92,12 @@ def _shell_default(word):
     """The words a command word that is a shell's default runs as (`${X:-bash -s}`: `bash`,
     `-s`), or None. bash expands an unquoted default whole and then splits it at its blanks
     (#2731), so a default whose first word names a shell is that shell -- but only at a blank no
-    quote or backslash covers, which the reader marks (`span`, the words it split `main`'s way):
-    `${X:-"bash -s"}` and `${X:-bash\\ -s}` are one word, which names no shell."""
-    default = None if getattr(word, "kept", False) else _DEFAULTS.fullmatch(word)
+    quote or backslash covers, which the reader marks (`span`, the words it split `main`'s way).
+    Every other word is read as it always was, its default holding no blank: `"${SH:-bash}"` is
+    `bash` (#2337), and `"${SH:- bash}"`, `${X:-"bash -s"}` and `${X:-bash\\ -s}` name no shell."""
+    default = (_WHOLE_DEFAULTS if getattr(word, "span", 1) > 1 else _DEFAULTS).fullmatch(word)
     words = default[1].split() if default else []
-    if words and os.path.basename(words[0]) in _SHELLS and (len(words) == 1 or getattr(word, "span", 1) > 1):
-        return words
-    return None
+    return words if words and os.path.basename(words[0]) in _SHELLS else None
 
 
 def _command_result(argv, optional=True):

@@ -1669,7 +1669,7 @@ class TestAFunctionHeaderInEverySpellingBashAccepts(unittest.TestCase):
         self.assertEqual(["x"], [str(w) for w in shell_reader.statements("( x )")[0].stages[0].argv])
 
 
-class TestAStatementContinuedPastAPipeOrOneExpansionWord(unittest.TestCase):
+class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.TestCase):
     """#2756, #2731, #2657: three things the splitter read apart that every shell reads whole --
     a line ending in `|` continues on the next, an unquoted `${X:-bash -s}` is one expansion before
     bash splits its words, and `<>` is a redirection of standard input like `<`."""
@@ -1713,19 +1713,40 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(unittest.TestCase):
                 stage = shell_reader.statements(script)[0].stages[0]
                 self.assertEqual((argv, writes), ([str(w) for w in stage.argv], [str(w) for w in stage.writes]))
 
-    def test_a_bare_blank_is_one_the_shells_split_on_and_dollar_dollar_is_a_pair(self):
-        # PR #2856 round 6: F1 (c) a space or a tab -- no `\v`, `\f`, U+00A0 or U+2003; F2 `$$` is
-        # the PID pair, as `_split` reads it, so no `$'` opens behind it. Round 8: a newline or an
-        # operator no quote covers is where `main` ends a statement or a stage, so an expansion
-        # holding one is not read whole at all.
+    def test_a_bare_blank_is_one_the_shells_split_on(self):
+        # PR #2856 round 6: F1 (c) a space or a tab -- no `\v`, `\f`, U+00A0 or U+2003. Round 8: a
+        # newline or an operator no quote covers is where `main` ends a statement or a stage, so an
+        # expansion holding one is not read whole at all. Round 9 (B3, B4): the scan is the
+        # reader's own and gives where the `${…}` ends, at its first `}` no quote covers; it stops
+        # at that newline or operator, and an expansion nothing ends is None.
         for blank in (" ", "\t"):
             with self.subTest(blank=blank):
-                self.assertIsNotNone(shell_reader._bare_blanks("${D:-tool%sx}" % blank))
+                word = "${D:-tool%sx}" % blank
+                self.assertEqual((len(word), word.replace(blank, shell_reader._BLANK)),
+                                 shell_reader._bare_blanks(word + " y", 0))
         for blank in ("\v", "\f", "\u00a0", "\u2003", "\n", " |", " ;", " &", " >", " <", " (", " )"):
             with self.subTest(blank=blank):
-                self.assertIsNone(shell_reader._bare_blanks("${D:-tool%sx}" % blank))
-        self.assertEqual("${D:-$$'\\'" + shell_reader._BLANK + "tool" + shell_reader._BLANK + "'x y'}",
-                         shell_reader._bare_blanks("${D:-$$'\\' tool 'x y'}"))
+                self.assertIsNone(shell_reader._bare_blanks("${D:-tool%sx}" % blank, 0))
+        for text in ("${D:-tool x", "${D:-tool x | y}", "${D:-'tool x}", "${D:-tool x\\}"):
+            with self.subTest(text=text):
+                self.assertIsNone(shell_reader._bare_blanks(text, 0))
+        word = "${D:-tool '}' x}"
+        self.assertEqual((2 + len(word), word.replace(" ", shell_reader._BLANK)),
+                         shell_reader._bare_blanks("x %s y" % word, 2))
+
+    def test_an_unended_expansion_is_read_in_linear_time(self):
+        # PR #2856 round 9, the round-8 verdict's B4: the scan ran at every unquoted `${` before
+        # the splitter asked whether it starts a command word, and read one nothing ends to the end
+        # of the text -- quadratic in a pipeline or a `||` list of them, x18.7 to x142.8 the base
+        # from 1,000 to 8,000 stages. It runs only at a command word now, and ends with its stage.
+        for stage, last, statements in (("echo ${x || ", "true", True), ("echo ${x | ", "cat", False),
+                                        ("${x | ", "cat", False), ("echo ${x:-${y | ", "cat", False)):
+            with self.subTest(stage=stage):
+                self.assert_linear_growth(
+                    400, lambda size: stage * size + last + "\n",
+                    lambda size, parsed: self.assertEqual(
+                        (size + 1, size + 1), (len(parsed) if statements else len(parsed[0].stages),
+                                               sum(len(s.stages) for s in parsed))))
 
     def test_every_statement_and_stage_is_mains(self):
         # PR #2856 round 8: an operator, a newline or a `case` subject holding a blank reads as

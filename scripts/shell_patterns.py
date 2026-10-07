@@ -94,8 +94,6 @@ def _expansion_end(text: str, i: int) -> int | None:
             continue
         if quote:
             quote = "" if ch == quote[-1] else quote
-        elif text.startswith("$$", i):
-            i += 1                  # bash's PID, read as the pair: `$${` opens nothing (#2756)
         elif text.startswith("$'", i):
             quote, i = "$'", i + 1
         elif ch in "'\"":
