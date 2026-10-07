@@ -32,10 +32,10 @@ evidence exposed.
   <&3 < /dev/null`, `sh <&3 3<> tool <&3`: 25 in 5), and a non-shell interpreter fed the file
   (`python3 3<> tool <&3`, `perl`: 10 in 2). Still open, as on `main`: dash's `10<>`, which dash
   reads as the word `10` and `<>` on standard input, so `sh -s 10<> tool` runs the file under
-  `sh`; `cat 3<> tool <&3 | sh` -- a `cat` piped into a shell is a use only where its words name
-  the file, so `cat < tool | sh` reads CLEAN on `main` too (#2884) -- a compound's redirect or
-  pipe (`{ curl …; } 3<> tool >&3` ⏎ `sh tool`, #2883), and a check credited with a file it
-  holds by `N<` (#2886).
+  `sh` (#2903); `cat 3<> tool <&3 | sh` -- a `cat` piped into a shell is a use only where its
+  words name the file, so `cat < tool | sh` reads CLEAN on `main` too (#2884) -- a compound's
+  redirect or pipe (`{ curl …; } 3<> tool >&3` ⏎ `sh tool`, #2883), and a check credited with a
+  file it holds by `N<` (#2886).
 - **Workflow reader: a line ending in `|` continues, a command word's `${X:-bash -s}` is read
   whole, and `<>` opens its descriptor (#2756, #2731, #2657; #2733, #2608).** A line ending in
   `|` continues on the next (`curl … |` ⏎ `sh` ran the pipeline and read CLEAN, behind `eval`
