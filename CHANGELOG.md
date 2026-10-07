@@ -112,52 +112,55 @@ evidence exposed.
   expansion that decides a default's command or an option (`${X:-env $E sh -c}`,
   `${X:-${Y:-/usr/bin/env} sh -c}`, `${X:-sh $F -c}`; 80 cells, 16 rows of the round-10 seat's
   -- #2905's 115 and 23, but 25 in 5 the default's `}` closed and 10 in 2 a glued `$(…)` -- and
-  75, 15 of the round-11 seat's; #2905), `${1:-env sh} tool` (15, 3), an `IFS` the step sets
-  (10, 2), a default of blanks alone (10, 2), a one-word alternate (`${X:+true} sh -c '…'`, a
-  `$` word `main` reads in front of a command it does not know; 5, 1), a pattern in a default's
-  command word (`${X:-/bin/s[h] -c}`; 85, 17; #2906), and, `main`'s documented gap and #2601's
-  price, a foreign interpreter's program text, its default or written out (`${X:-python3 -c}
-  'import os; os.system("curl … | sh")'`, `perl -e`, `node -e`; 184, 37), as a fetch inside
-  `python3 -c` needs another language entirely; and a whole default read where the step sets its
-  name, whose value bash runs instead (`RUN='sh tool'` ⏎ `${RUN:-bash -s}`, as `main` reads
-  `${RUN:-bash}` since #2337; #2899) -- its wrappers' half rounds 6 to 9 reported, the step's
-  values reading their whole word, and round 10 reads it as `main` does: 45 cells in 9 rows of
-  my own (`RUN='sh tool'` ⏎ `${RUN:-/usr/bin/env true}`, `env -S true`, `timeout 9 true`,
-  `python3 -V`, and `RUN='sh -s'` ⏎ `curl … | ${RUN:-/usr/bin/env cat}`) and 158 in 32 of the
-  round-10 seat's. New fail-closed over-reports against the base, none run by a shell (206 cells
-  in 57 of the round-8 seat's rows -- 232 in 63 against `ca232d12` -- and 28 in 14 of the `N<>`
-  rows): the continuation's -- a CRLF after `|`, `|&` ⏎ `sh` under dash, `|` ⏎ `$$ sh` (26
-  cells, 7 rows); a `<>` that bash or dash does not read as standard input -- `bash -s <>tool
-  <<'EOF'` and `bash -s 0<> tool <<'EOF'` (the heredoc is the input), `source /dev/stdin <>
-  tool` and `bash -s <<'EOF' <>${N:-/dev/null }` under `sh`, `sh {v}<> tool` (bash opens a new
-  descriptor), `sh <> tool 0<&-` and `sh 0<> tool 0<&-`, and `sh 00<> tool` under dash (30, 8)
-  -- and a descriptor past 9 under dash, which opens none (`curl … 10<> tool >&10` ⏎ `sh tool`;
-  28, 14); and the whole word's (150, 42), all but two rows `main`'s own reading of the default
-  written out: a default dash reads otherwise (`${X:-$'bash' -s}`, `$'-s'` and `$'-c'`, which
-  dash keeps with their `$`, and `${RUN:-source ./tool}`; 20, 10), an `IFS` the step sets (5,
-  1), a name the step assigns (`RUN=cat` ⏎ `${RUN:-sh tool}`; 15, 3), `$$` in the default
-  (`${X:-bash $$ -s}`; 40, 8), `sh -c "… \$0"` or a backquote in the default (20, 4), `curl … |
-  ! ${SH:-bash -s}`, which no shell parses (5, 1), and an inner program behind a line that stops
-  `-e` shells first (`X=1` ⏎ `bash -c '… | ${SH:-bash -s}'`; 45, 15) -- the two new beside
-  `main`'s reading are `${X:-$$ bash -s} <<'EOF'` and `${X:-sh -c "echo \`id\`"} <<'EOF'`. On
-  the round-9 seat's hunts 18-23, against the base, 643 cells in 161 rows, none run by a shell:
-  a download fed to a whole default that names no shell (`curl … | ${V:-jq -r .}`, `${V:-less
-  -R} <<< "$(curl …)"`; 245, 49), the guard's catch-all for a command word it does not follow --
-  or, for `python3`, its reading of the interpreter -- where `main` reads all but `python3 -m
-  json.tool` and `tar -tz` CLEAN written out; a quoted or escaped blank beside a bare one, the
-  whole word read dequoted (`${X:-"" bash -s}`, `${X:-\ bash -s}`, `${X:-"bash -s" }`; 170, 40
-  -- bash 3.2 runs `${X:-"" bash -s}` and `${X:-'' bash -s}`); `$'…'` and `$"…"` under dash, and
-  inside a single-quoted `eval` or `bash -c` text (38, 16); `| !` at more positions (55, 11);
-  `${X:?bash -s}`, which stops the shell with `X` unset (10, 2); `${X:-/bin/sh* -s}` (10, 2); a
-  here-string into a wrapper's default under dash (`${X:-/usr/bin/env bash} <<< "$(curl …)"`;
-  32, 16); `/usr/bin/xargs` (15, 3) and `/usr/bin/sudo`, which the harness's sudo refuses and a
-  hosted runner's runs (30, 6); `>&03` and `10<>` under dash (24, 12); `sh 0<> tool 0<&-`, `sh
-  00<> tool` and `sh 0<> tool 3<> /dev/null 0<&3`, a dup onto fd 0 after its read (12, 3); and
-  `bash <(${X:-/usr/bin/wget -qO-} …)` under dash (2, 1). Round 10's own, against round 9, are
-  21 cells in 6 of the round-9 seat's rows: `/usr/bin/sudo` (15, 3) and `bash <(…)` under dash
-  (6, 3). On the round-10 seat's hunts 24-32, against the base, 126 cells in 35 rows, none run
-  by a shell: a quoted or escaped blank beside a bare one (`${X:-"/usr/bin/env sh" -c}`; 56,
-  13), `xargs` with no input (25, 5), `bash <(…)` under dash (22, 11), a tilde in a later word
+  75, 15 of the round-11 seat's; #2905), `${1:-env sh} tool` and `${1:-sh -c '…'}`, a positional
+  parameter's default whose first word names its command by no path, read whole as a command the
+  guard does not follow (20 / 4 at this head; the seat's 20 / 4 at round 11: n1-f, n1-k and n1-w
+  of hunt 33, and Q10 of hunt 41), an `IFS` the step sets (10, 2), a default of blanks alone
+  (10, 2), a one-word alternate (`${X:+true} sh -c '…'`, a `$` word `main` reads in front of a
+  command it does not know; 5, 1), a pattern in a default's command word (`${X:-/bin/s[h] -c}`;
+  85, 17; #2906), and, `main`'s documented gap and #2601's price, a foreign interpreter's
+  program text, its default or written out (`${X:-python3 -c} 'import os; os.system("curl … |
+  sh")'`, `perl -e`, `node -e`; 184, 37), as a fetch inside `python3 -c` needs another language
+  entirely; and a whole default read where the step sets its name, whose value bash runs instead
+  (`RUN='sh tool'` ⏎ `${RUN:-bash -s}`, as `main` reads `${RUN:-bash}` since #2337; #2899) --
+  its wrappers' half rounds 6 to 9 reported, the step's values reading their whole word, and
+  round 10 reads it as `main` does: 45 cells in 9 rows of my own (`RUN='sh tool'` ⏎
+  `${RUN:-/usr/bin/env true}`, `env -S true`, `timeout 9 true`, `python3 -V`, and `RUN='sh -s'`
+  ⏎ `curl … | ${RUN:-/usr/bin/env cat}`) and 158 in 32 of the round-10 seat's. New fail-closed
+  over-reports against the base, none run by a shell (206 cells in 57 of the round-8 seat's rows
+  -- 232 in 63 against `ca232d12` -- and 28 in 14 of the `N<>` rows): the continuation's -- a
+  CRLF after `|`, `|&` ⏎ `sh` under dash, `|` ⏎ `$$ sh` (26 cells, 7 rows); a `<>` that bash or
+  dash does not read as standard input -- `bash -s <>tool <<'EOF'` and `bash -s 0<> tool
+  <<'EOF'` (the heredoc is the input), `source /dev/stdin <> tool` and `bash -s <<'EOF'
+  <>${N:-/dev/null }` under `sh`, `sh {v}<> tool` (bash opens a new descriptor), `sh <> tool
+  0<&-` and `sh 0<> tool 0<&-`, and `sh 00<> tool` under dash (30, 8) -- and a descriptor past 9
+  under dash, which opens none (`curl … 10<> tool >&10` ⏎ `sh tool`; 28, 14); and the whole
+  word's (150, 42), all but two rows `main`'s own reading of the default written out: a default
+  dash reads otherwise (`${X:-$'bash' -s}`, `$'-s'` and `$'-c'`, which dash keeps with their
+  `$`, and `${RUN:-source ./tool}`; 20, 10), an `IFS` the step sets (5, 1), a name the step
+  assigns (`RUN=cat` ⏎ `${RUN:-sh tool}`; 15, 3), `$$` in the default (`${X:-bash $$ -s}`; 40,
+  8), `sh -c "… \$0"` or a backquote in the default (20, 4), `curl … | ! ${SH:-bash -s}`, which
+  no shell parses (5, 1), and an inner program behind a line that stops `-e` shells first (`X=1`
+  ⏎ `bash -c '… | ${SH:-bash -s}'`; 45, 15) -- the two new beside `main`'s reading are `${X:-$$
+  bash -s} <<'EOF'` and `${X:-sh -c "echo \`id\`"} <<'EOF'`. On the round-9 seat's hunts 18-23,
+  against the base, 643 cells in 161 rows, none run by a shell: a download fed to a whole
+  default that names no shell (`curl … | ${V:-jq -r .}`, `${V:-less -R} <<< "$(curl …)"`; 245,
+  49), the guard's catch-all for a command word it does not follow -- or, for `python3`, its
+  reading of the interpreter -- where `main` reads all but `python3 -m json.tool` and `tar -tz`
+  CLEAN written out; a quoted or escaped blank beside a bare one, the whole word read dequoted
+  (`${X:-"" bash -s}`, `${X:-\ bash -s}`, `${X:-"bash -s" }`; 170, 40 -- bash 3.2 runs `${X:-""
+  bash -s}` and `${X:-'' bash -s}`); `$'…'` and `$"…"` under dash, and inside a single-quoted
+  `eval` or `bash -c` text (38, 16); `| !` at more positions (55, 11); `${X:?bash -s}`, which
+  stops the shell with `X` unset (10, 2); `${X:-/bin/sh* -s}` (10, 2); a here-string into a
+  wrapper's default under dash (`${X:-/usr/bin/env bash} <<< "$(curl …)"`; 32, 16);
+  `/usr/bin/xargs` (15, 3) and `/usr/bin/sudo`, which the harness's sudo refuses and a hosted
+  runner's runs (30, 6); `>&03` and `10<>` under dash (24, 12); `sh 0<> tool 0<&-`, `sh 00<>
+  tool` and `sh 0<> tool 3<> /dev/null 0<&3`, a dup onto fd 0 after its read (12, 3); and `bash
+  <(${X:-/usr/bin/wget -qO-} …)` under dash (2, 1). Round 10's own, against round 9, are 21
+  cells in 6 of the round-9 seat's rows: `/usr/bin/sudo` (15, 3) and `bash <(…)` under dash (6,
+  3). On the round-10 seat's hunts 24-32, against the base, 126 cells in 35 rows, none run by a
+  shell: a quoted or escaped blank beside a bare one (`${X:-"/usr/bin/env sh" -c}`; 56, 13),
+  `xargs` with no input (25, 5), `bash <(…)` under dash (22, 11), a tilde in a later word
   (`${X:-./env ~/bin/nice sh -c}`; 10, 2), a name the step sets (10, 2), `exec -a` under dash
   (2, 1) and `function f { … }` under dash with `-e` (1, 1); and against round 10, 8 cells in 4
   rows, `main`'s own reading of an array element under dash (`${X[0]:-/usr/bin/env sh -c}`),
