@@ -22,17 +22,29 @@ evidence exposed.
 - **Workflow guard carries a compound command's closing output to its inner fetch (#2883).**
   A fetch whose own stdout is not redirected now inherits the first redirect or pipeline on the
   close of its enclosing `{ }`, `if`, `for`, `while`/`until` or `case`, so `> tool`,
-  `>> tool` and `| tee tool` followed by `sh tool` report as their simple-command and subshell
-  twins do. An inner stdout redirect or disconnected closing pipeline still stops the handoff; a
-  nested transparent close passes the outer destination inward. On a 43-row / 387-cell matrix
-  using bash 5.2.21, bash 3.2.57 and dash as both parent and child, this closes 279 executing cells
-  / 31 rows with no REPORT-to-CLEAN flip. The price is 36 fail-closed cells / four rows: a false
-  branch, zero-iteration loop or unmatched `case` arm that never fetches, and a later overwrite of
-  `tool`. On #2883's numbered-descriptor source set, this change alone closes 30 / 161 cells in six
-  rows; the other 131 cells / 29 rows depend on #2885's #2881 reader fix teaching which `N<>`
-  descriptor feeds stdout or stdin. Four pass-through-filter rows / 36 cells remain open under
-  #2904 because their simple twins are open too: an inner `curl | cat` or `curl | tee`, and a closing
-  `| cat > tool` or two-`tee` pipeline.
+  `>> tool` and adjacent `| tee tool` followed by `sh tool` report. An inner stdout boundary on the
+  fetch itself or a disconnected closing pipeline stops the file handoff; a nested transparent
+  keyword close passes the outer destination inward. Stream execution keeps the fetch's own stage,
+  so an outer logging redirect does not hide an inner `( curl ...; ) | sh`, and an inner close before
+  a later fetch does not hide the enclosing `| sh`.
+
+  On a 43-row / 387-cell matrix using bash 5.2.21, bash 3.2.57 and dash as both parent and child,
+  this closes 279 executing cells / 31 rows with no REPORT-to-CLEAN flip measured on that matrix.
+  Its known price there is 36 fail-closed cells / four rows: a false branch, zero-iteration loop or
+  unmatched `case` arm that never fetches, and a later overwrite of `tool`. The broader seat hunt
+  also records a multi-statement subshell's own redirect (11 cells / three rows), a fetch after a
+  close mapped to that inner close (five / one), and `done | while ...; done > tool` (five / one).
+  Bash-only `&>` parsed under dash adds 240 / 120, which main's simple-command twin also reports;
+  a failing check or `sh -c` under `-e` adds seven / two.
+
+  On #2883's numbered-descriptor source set, this change alone closes 30 / 161 cells in six rows;
+  the other 131 cells / 29 rows depend on #2885's #2881 reader fix teaching which `N<>` descriptor
+  feeds stdout or stdin. Four pass-through-filter rows / 36 cells remain open under #2904 because
+  their simple twins are open too: an inner `curl | cat` or `curl | tee`, and a closing
+  `| cat > tool` or two-`tee` pipeline. The reverse output map stays 1.00–1.02x main at n = 8,000;
+  one substitution holding many statements is 1.29x. Bound compound fetches now reach main's
+  existing per-bound-file use scan: S3's growth rises from 8.6x to 12.1x and S5a's from 15x to 50x,
+  while compound forms remain within 1.0–1.5x of their simple twins, whose scan scales about n^1.9.
 - **Workflow guard: what `eval`'s words and a `-c` string hand on (#2673, #2683, #2684, #2764,
   #2669, #2331).** `eval 'curl … |' 'sh'` ran the pipe and read CLEAN: `eval` joins its words before
   it runs them, and the guard read them one by one. Where a word begins or ends with an operator the

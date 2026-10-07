@@ -296,7 +296,7 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                     if stream_exec:
                         compound = compound_stream_consumer(stmts, index, EXECUTORS)
                         stream = compound_streamed_fetch(
-                            os.path.basename(argv[0]), argv[1:], fetch_stage, following,
+                            os.path.basename(argv[0]), argv[1:], stage, following,
                             EXECUTORS, compound,
                         )
                         fetch = stream or (fetch._replace(piped_to=None) if fetch.dest is None

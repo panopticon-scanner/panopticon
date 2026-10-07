@@ -4279,6 +4279,7 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
 
     URL = "https://example.test/tool"
     FETCH = "curl -fsSL %s" % URL
+    SHELLS = (None, "bash", "sh", "bash {0}", "sh {0}")
     COMPOUNDS = (
         "{ %s; } %s tool\nsh tool\n",
         "if true; then %s; fi %s tool\nsh tool\n",
@@ -4292,6 +4293,12 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
         why = wg.fetch_exec_defects(script)
         self.assertEqual(1, len(why), why)
         self.assertIn("fetches %s -> tool and running it under `sh`" % self.URL, why[0])
+
+    def assert_reported_in_every_shell(self, script):
+        for shell in self.SHELLS:
+            with self.subTest(script=script, shell=shell):
+                found = wg.job_defects([wg.Step("step", script, shell)])
+                self.assertEqual(1, len(found), found)
 
     def test_each_compound_carries_its_redirect_or_tee_destination(self):
         for compound in self.COMPOUNDS:
@@ -4311,6 +4318,22 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
             with self.subTest(script=script):
                 self.assert_reported(script)
 
+    def test_a_redirected_compound_does_not_hide_an_inner_subshell_stream(self):
+        for script in (
+                "{ ( %s; ) | sh; } > log\n" % self.FETCH,
+                "if true; then ( %s; ) | sh; fi > log\n" % self.FETCH,
+                "for value in one; do ( %s; ) | sh; done > log\n" % self.FETCH,
+                "case x in x) ( %s; ) | sh;; esac > log\n" % self.FETCH,
+        ):
+            self.assert_reported_in_every_shell(script)
+
+    def test_a_fetch_after_an_inner_close_keeps_the_outer_stream(self):
+        for script in (
+                "{ if true; then :; fi > /dev/null | %s; } | sh\n" % self.FETCH,
+                "{ { :; } > /dev/null | %s; } | sh\n" % self.FETCH,
+        ):
+            self.assert_reported_in_every_shell(script)
+
     def test_an_inner_stdout_redirect_still_disconnects_the_compound_output(self):
         for script in (
                 "{ %s > other; } > tool\nsh tool\n" % self.FETCH,
@@ -4320,11 +4343,16 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
                 "{ { %s; } | cat </dev/null; } > tool\nsh tool\n" % self.FETCH,
                 "{ %s; }\nif true; then :; fi > tool\nsh tool\n" % self.FETCH,
                 "%s\n{ :; } > tool\nsh tool\n" % self.FETCH,
+                "{ %s >&2; } > tool\nsh tool\n" % self.FETCH,
                 "a=(\n  %s\n) > tool\nsh tool\n" % self.FETCH,
         ):
             with self.subTest(script=script):
                 self.assertEqual([], wg.fetch_exec_defects(script))
         self.assert_reported("{ %s 2> err; } > tool\nsh tool\n" % self.FETCH)
+
+    def test_a_later_sibling_close_does_not_capture_the_prior_fetch(self):
+        script = "{ %s; }; { :; } > tool\nsh tool\n" % self.FETCH
+        self.assertEqual([], wg.fetch_exec_defects(script))
 
 
 class TestPipelineStreamProvenance(unittest.TestCase):

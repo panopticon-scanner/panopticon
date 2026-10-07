@@ -439,10 +439,8 @@ def _compound_outputs(stmts):
         before, after = levels[position]
         if 0 <= after < before:
             output = _closing_output(stmts[position]) or inherited.get(after)
-            for level in range(after + 1, before + 1):
-                if output is None:
-                    inherited.pop(level, None)
-                else:
+            if output is not None:
+                for level in range(after + 1, before + 1):
                     inherited[level] = output
         level = max(before, after)
         if level > 0 and level in inherited:
@@ -457,7 +455,7 @@ def compound_output(stmts, outputs, position, stage, following):
     """The stage and next argv after its own or its compound's stdout."""
     if following:
         return stage, tuple(command(following[0].argv))
-    if stage.stdout_writes or not stage.stdout_to_pipe:
+    if not stage.stdout_to_pipe:
         return stage, None
     if outputs[0] is None:
         outputs[0] = _compound_outputs(stmts)
@@ -466,7 +464,6 @@ def compound_output(stmts, outputs, position, stage, following):
         return stage, None
     close, piped_to = output
     return stage._replace(
-        writes=stage.writes + close.writes,
         stdout_writes=close.stdout_writes,
         stdout_to_pipe=close.stdout_to_pipe,
     ), piped_to
