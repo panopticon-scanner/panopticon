@@ -12,7 +12,8 @@ evidence exposed.
   reader read `N<> file` as a write alone, so a dup of N onto standard input (`sh 3<> tool
   0<&3`, a move `<&3-`, `3<> tool <&3 sh`, `bash -s 9<> tool <&9`) or a path to N (`sh /dev/fd/3
   3<> tool`, `. /dev/stdin 3<> tool 0<&3`) gave the shell nothing it reads. The file is now read
-  where such a dup or path reaches it, on any descriptor, and nowhere else: a check that holds a
+  where such a dup or path reaches it, on any descriptor -- through a dup or move onto another
+  descriptor first, too (`sh 3<> tool 4<&3 <&4`) -- and nowhere else: a check that holds a
   digest file open on N is credited with what it reads, not that file, so `sha256sum tool |
   sha256sum -c 3<> sums` checks the download against itself and the use stays reported, and a
   check whose pinned digest arrives on standard input keeps it -- where a check reads `sums`
@@ -29,10 +30,12 @@ evidence exposed.
   `<&3-` (298 in 149) and `source` (56 in 28); in bash too, a later redirection of standard
   input or a dup that fails first, read as `main` reads two `<` redirections, both (`sh 3<> tool
   <&3 < /dev/null`, `sh <&3 3<> tool <&3`: 25 in 5), and a non-shell interpreter fed the file
-  (`python3 3<> tool <&3`, `perl`: 10 in 2). Still open, as on `main`: `cat 3<> tool <&3 | sh`
-  -- a `cat` piped into a shell is a use only where its words name the file, so `cat < tool |
-  sh` reads CLEAN on `main` too (#2884) -- a compound's redirect or pipe (`{ curl …; } 3<> tool
-  >&3` ⏎ `sh tool`, #2883), and a check credited with a file it holds by `N<` (#2886).
+  (`python3 3<> tool <&3`, `perl`: 10 in 2). Still open, as on `main`: dash's `10<>`, which dash
+  reads as the word `10` and `<>` on standard input, so `sh -s 10<> tool` runs the file under
+  `sh`; `cat 3<> tool <&3 | sh` -- a `cat` piped into a shell is a use only where its words name
+  the file, so `cat < tool | sh` reads CLEAN on `main` too (#2884) -- a compound's redirect or
+  pipe (`{ curl …; } 3<> tool >&3` ⏎ `sh tool`, #2883), and a check credited with a file it
+  holds by `N<` (#2886).
 - **Workflow reader: a line ending in `|` continues, a command word's `${X:-bash -s}` is read
   whole, and `<>` opens its descriptor (#2756, #2731, #2657; #2733, #2608).** A line ending in
   `|` continues on the next (`curl … |` ⏎ `sh` ran the pipeline and read CLEAN, behind `eval`
