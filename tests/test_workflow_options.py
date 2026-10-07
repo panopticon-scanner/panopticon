@@ -12,6 +12,7 @@ import collections
 import contextlib
 import itertools
 import os
+import sys
 import tempfile
 import time
 import unittest
@@ -1107,9 +1108,43 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
         spelled + " /dev/null" for name in wo.LONG_VALUE_OPTIONS for spelled in (name[1:], name))
     CLUSTERS = tuple(words for words in SPELLED if not words.startswith("--") and "c" in words.split()[0])
     FILES = tuple(words for words in SPELLED if words.endswith(" /dev/null") and (words.startswith("--") or "c" not in words))
-    FAMILY = tuple(holder % words for holder, words in itertools.chain(
+    # Round 13's seat, B1: MZ1, MZ4 and MZ9 are MX13 within a depth-2 string, an inner word third or
+    # later, an inner `sh` -- each outside those rows -- and their twins write `LONG_OPTIONS` out, so only
+    # rows see them. So the family holds the seat's 40 holders (its hunt's: the nine and 31 more -- a
+    # nested `sh`, `eval` in `eval`, `dash`, a stdin operand, `exec`, `env`, `sudo`, a holder behind
+    # `-norc` or `-l`), each under five spellings that span where a one-dash word stands: alone, second
+    # of a pair, after a short option, third after an `-o` value, after a FILE -- five of the 25 of the
+    # hunt's 70 spellings that `main` (e9e6e1fd) reports RRRRR behind every one of the 40.
+    MORE_HOLDERS = ("sh -c \"bash %s -c 'sh'\"", "bash -c \"eval 'bash %s'\"", "eval \"eval 'bash %s'\"",
+                    "bash -c \"sh -c 'bash %s'\"", "bash -e -c \"bash %s -c 'sh'\"",
+                    "bash -c \"bash %s -c 'bash -s'\"", "sh %s", "dash %s", "dash %s -c 'sh'", "bash -c 'sh %s'",
+                    "eval 'sh %s'", "bash %s -s", "bash %s -", "bash %s /dev/stdin", "exec bash %s", "command bash %s",
+                    "env bash %s", "sudo bash %s", "bash %s -c 'eval \"sh\"'", "bash -c \"bash -c 'bash %s'\"",
+                    "bash --norc -c 'bash %s'", "bash -norc -c 'bash %s'", "bash -l -c 'bash %s'", "sh -c 'bash %s'",
+                    "bash -c \"bash %s\"", "eval \"bash %s\"", "bash %s -c 'sh' x", "bash %s -c 'sh -s'",
+                    "sh %s -c 'bash -s'", "bash %s -c \"eval 'sh'\"", "bash -c \"eval \\\"bash %s -c 'sh'\\\"\"")
+    SPREAD = ("-norc", "-protected -login", "-e -norc", "-o pipefail -norc", "--rcfile /dev/null -protected")
+    FAMILY = tuple(dict.fromkeys(holder % words for holder, words in itertools.chain(
         itertools.product(HOLDERS, CLUSTERS + ("-norc -login", "--noprofile -norc")),
-        itertools.product(HOLDERS[5:], FILES), itertools.product(HOLDERS[:5], ("-login -restricted",))))
+        itertools.product(HOLDERS[5:], FILES), itertools.product(HOLDERS[:5], ("-login -restricted",)),
+        itertools.product(HOLDERS + MORE_HOLDERS, SPREAD))))
+    # Round 13's seat, B2: MY6 read `LONG_OPTIONS` in `_options` (an `s` inside a one-dash long option is
+    # no `-s`), and MY1 is MX13's complement. The watched tables catch both; these rows -- every row the two
+    # main passes moved, under the seat's ids -- catch their twins, which write the table out. They are
+    # `main`'s ANSWER, not the truth: on the two the seat ran (g7037136, g7050172) nothing runs (`bash
+    # -version` exits before it reads), so a fix of `main`'s reader moves them, and knowingly.
+    MAINS_ANSWER = {"own/g7034600": "X=--rcfile\nbash  -version -rcfile /dev/null <<< '%schmod +x tool; ./tool'\n" % GET,
+                    "own/g7037136": "X=-c\nCMD=bash\neval '\"$CMD\" -version -i -norc -s' <<'EOF'\n%s%sEOF\n" % (GET, USE),
+                    "own/g7037996": "x=$(X=\necho '%s' | sudo bash -version -s -- x\n)\n" % PIPE,
+                    "own/g7038608": "X=-e\nenv sh -version -ec -cs <<EOF\n%s\nEOF\n" % PIPE,
+                    "own/g7039500": "X=--rcfile\nzsh -version -login -norc -s <<< '%s'\n" % PIPE,
+                    "own/g7050020": "HOME=-i\n" + body("eval 'dash $Y $Z -login -rcfile /dev/null'", PIPE),
+                    "own/g7050172": "X=-c\nsudo bash -version -eo pipefail -c - <<< '%s'\n" % PIPE,
+                    "r5/14256": body("sh -e -version -o errexit", PIPE),
+                    "r5/48376": "X='e'\n" + body("bash -$X -version -c true", PIPE),
+                    "r5/50016": "X='O'\n" + body("bash -e$X -version -c true", PIPE),
+                    "r5/66416": "X=''\n" + body("sh -$X -version -c true", PIPE),
+                    "r5/74616": "X='errexit'\n" + body("sh -o $X -version -c true", PIPE)}
     # This walk's own readers and helpers -- every function #2858 added that only the walk calls (round
     # 12's seat, F3) -- each where it is looked up; `_WALK`'s pair is bound when the module loads, so it
     # is watched as a pair too, and its two names are TRIPWIRES: nothing looks either up by name (round
@@ -1120,13 +1155,22 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
                        "_literal", "_long_name", "_long_word", "_one_word", "_operand_past", "_printed",
                        "_runs_none", "_value_after_dash_c")))
     TRIPWIRES = ("_walk", "_walk_scripts")
+    # The walk's tables, each read by the walk alone (round 13's seat, B1): its long options, the FILE and
+    # exit names, the readings of a word that may expand, its stdin operands, its patterns and its caches.
+    TABLES = ("LONG_OPTIONS", "LONG_VALUE_OPTIONS", "LONG_EXITS", "_EXIT_OR_FILE", "_READINGS", "_STDIN_OPERANDS",
+              "_LONG", "_ONE_PARAMETER", "_ONE_DEFAULT", "_DEFAULT_PARAMETER", "_LONGS", "_RUNS")
     # Rows past the seat's for the structural pin: a long option's FILE, one-dash words, a value in the
-    # option slot, `-c --`, a string in a string, `eval`, a `$` command word, a dynamic string.
+    # option slot, `-c --`, a string in a string, `eval`, a `$` command word, a dynamic string, a quoted
+    # FILE with a default (each pattern of `_one_word`); and each place round 13's seat's mutants read a
+    # table in the main pass: a depth-2 string (MZ1), an inner `sh` (MZ9), an inner argv of four words
+    # (MZ4), a `-s` cluster (MY6).
     WALKED = (body("bash --rcfile /dev/null", PIPE), body("bash -norc", PIPE), "bash -norc -c '%s'\n" % PIPE,
               GET + body("bash -s -c true", CHECK) + USE, GET + 'bash -norc -c "$(cat tool)"\n',
               "X=\nbash -norc $X '%s'\n" % PIPE, body("bash -o $X -s", PIPE), body("bash -c -- $X 'P' sh", PIPE),
               body("bash -c \"bash -norc -c 'sh'\"", PIPE), body("eval \"bash -norc -c 'sh'\"", PIPE),
-              "CMD=bash\n" + body("$CMD -norc", PIPE), "echo '%s' | bash -norc -c 'sh'\n" % PIPE)
+              "CMD=bash\n" + body("$CMD -norc", PIPE), "echo '%s' | bash -norc -c 'sh'\n" % PIPE,
+              "bash --rcfile \"${X:-$Y}\" -norc -c '%s'\n" % PIPE, body("bash -c \"bash -c 'bash -s'\"", PIPE),
+              body("bash -c 'sh -s'", PIPE), body("bash -c 'bash -e -x -s'", PIPE), body("bash -xs", PIPE))
 
     @staticmethod
     def argv(text):
@@ -1154,10 +1198,16 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
 
     def test_the_main_pass_reports_every_holder_of_the_family(self):
         # Round 12's seat, B1 and F1: MX13, MX3 and MX4 each read some row of the family CCCRR, and the
-        # whole suite passed each of them.
+        # whole suite passed each of them; round 13's, B1: so did MZ1, MZ4 and MZ9, and their twins.
         for holder in self.FAMILY:
             with self.subTest(holder=holder), wo.mains_answer():
                 self.assertTrue(all(wg._job_defects([wg.Step("step", self.B4 % holder, s)]) for s in self.SHELLS))
+
+    def test_the_main_pass_reads_a_one_dash_long_word_as_mains_letters(self):
+        # Round 13's seat, B2: `main`'s answer on every row MY1 and MY6 moved in the main pass.
+        for row, script in self.MAINS_ANSWER.items():
+            with self.subTest(row=row), wo.mains_answer():
+                self.assertTrue(all(wg._job_defects([wg.Step("step", script, s)]) for s in self.SHELLS))
 
     def test_the_job_holds_every_finding_of_mains(self):
         for name, script in self.SEAT.items():
@@ -1211,8 +1261,10 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
         # Round 11's seat, B1: the ruling's "nothing of the walk feeds the main pass", as a test. Each
         # reader and helper of this walk's own is watched where it is looked up, and none may run while
         # `_MAINS` is set; each watcher but the two tripwires must also see its reader run in the walk's
-        # pass, counted per watcher (round 12's seat, F2), or it watches nothing. This pins NAMED calls:
-        # the walk's tables are read, not called, and `FAMILY`'s rows carry them (round 12's seat, B1).
+        # pass, counted per watcher (round 12's seat, F2), or it watches nothing. A table is read, not
+        # called: MZ1, MZ4, MZ9, MY1 and MY6 (round 13's seat, B1 and B2) fed `LONG_OPTIONS` into the main
+        # pass past every watcher. So each table is watched too, wherever a module binds it, read for read;
+        # a twin that writes a table out reads none, and rows carry it: `FAMILY`'s and `MAINS_ANSWER`'s.
         calls = collections.Counter()
 
         def watched(label, reader):
@@ -1221,17 +1273,58 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
                 return reader(*args, **kwargs)
             return call
 
+        class Watched:
+            """A table's watched equivalent: each read -- an attribute (`.get`, `.fullmatch`), a member
+            test, an iteration, an index, a length, a store, its text -- counted, then served by the table."""
+
+            def __init__(self, label, table):
+                self._label, self._table = label, table
+
+            def _read(self):
+                calls[self._label, bool(wo._MAINS.get())] += 1
+                return self._table
+
+            def __getattr__(self, name):
+                return getattr(self._read(), name)
+
+            def __contains__(self, item):
+                return item in self._read()
+
+            def __iter__(self):
+                return iter(self._read())
+
+            def __len__(self):
+                return len(self._read())
+
+            def __getitem__(self, key):
+                return self._read()[key]
+
+            def __setitem__(self, key, value):
+                self._read()[key] = value
+
+            def __repr__(self):
+                return repr(self._read())
+
         self.assertEqual((wp._options, wp._main_scripts), wp._MAIN)
+        tables = [(label, getattr(wo, label)) for label in self.TABLES]
+        home = os.path.dirname(wo.__file__)
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(wp, "_WALK", tuple(watched("_WALK[%d]" % at, reader)
                                                                      for at, reader in enumerate(wp._WALK))))
             for module, names in self.WALK_ONLY:
                 for name in names:
                     stack.enter_context(mock.patch.object(module, name, watched(name, getattr(module, name))))
+            for module in [module for module in list(sys.modules.values())
+                           if os.path.dirname(getattr(module, "__file__", None) or "") == home]:
+                for name, value in list(vars(module).items()):    # every binding, an import's too
+                    for label, table in tables:
+                        if value is table:
+                            stack.enter_context(mock.patch.object(module, name, Watched(label, table)))
             for script in self.WALKED + tuple(self.SEAT.values()):
                 for shell in self.SHELLS:
                     wg.job_defects([wg.Step("step", script, shell)])
-        watchers = ["_WALK[0]", "_WALK[1]"] + [name for _module, names in self.WALK_ONLY for name in names]
+        watchers = (["_WALK[0]", "_WALK[1]"] + [name for _module, names in self.WALK_ONLY for name in names]
+                    + list(self.TABLES))
         self.assertEqual([], [label for label in watchers if calls[label, True]])
         self.assertEqual([], [label for label in watchers if label not in self.TRIPWIRES and not calls[label, False]])
 
@@ -1288,14 +1381,28 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
                 self.assertEqual([first, second], [name for name, _why in walked])
                 self.assertEqual(1, len({why for _name, why in walked}))
                 self.assertEqual(walked, wg.job_defects(steps))
+        # Round 13's seat, F2 (MN): "its own name" is one `==` to it, as round 12's list scan read it: `1.0`
+        # and `True` are among `1`'s findings, and a NaN only among its own (no NaN equals another).
+        nan, other = float("nan"), float("nan")
+        steps = [wg.Step(1, PIPE + "\n"), wg.Step(nan, PIPE + "\n")] + [
+            wg.Step(name, "bash -norc -c '%s'\n" % PIPE) for name in (1.0, True, other)]
+        with self.subTest(names=(1, "nan", 1.0, True, "another nan")):
+            with wo.mains_answer():
+                mains = wg._job_defects(steps)
+            walked = wg._job_defects(steps)
+            found = wg.job_defects(steps)
+            self.assertEqual(1, len({why for _name, why in walked}))
+            self.assertEqual(mains + [entry for entry in walked if entry not in mains], found)
+            self.assertEqual([1, nan, other], [name for name, _why in found])
 
     def test_the_union_keys_a_hashable_name_and_compares_the_rest(self):
         # Round 11's seat, F4, and round 12's, B2 and F5: a hashable name -- every name the workflow schema
-        # takes -- is looked up with its `why`, so n entries make n comparisons whether their `why`s
-        # differ (D1) or are one (D2: round 12's union made 2n^2 there). A step's name is the workflow's
-        # own YAML value, a list or a mapping maybe: no key, it is compared with the names its `why`
-        # holds, never hashed (a set of the pairs raises on it) -- linear where those `why`s differ,
-        # quadratic in such names under one `why` (round 13's E2: a name the workflow schema refuses).
+        # takes -- is looked up with its `why`, so n entries under one `why` make n comparisons (D2: round
+        # 12's union made 2n^2 there). A step's name is the workflow's own YAML value, a list or a mapping
+        # maybe: no key, it is compared with the names its `why` holds, never hashed (a set of the pairs
+        # raises on it) -- n comparisons where those `why`s differ (D1, whose `Name` is unhashable: this
+        # path; round 13's seat, F4), quadratic in such names under one `why` (round 13's E2: a name the
+        # workflow schema refuses).
         script = "X=\nbash -norc $X '%s'\n" % PIPE
         for name in (["a", "b"], {"k": "v"}):
             with self.subTest(name=name):
@@ -1343,6 +1450,18 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
                     found = wg.job_defects(steps)
                     self.assertEqual([id(first), id(second)], [id(name) for name, _why in found])
                     self.assertEqual(1, len({why for _name, why in found}))
+
+        # Round 13's seat, F1 (MW): only an `==` that cannot finish falls back to identity; a name whose `==`
+        # raises anything else leaves the job, as a raise anywhere in it does.
+        class Raising(list):
+            def __eq__(self, other):
+                raise LookupError("a name's own ==")
+
+        steps = [wg.Step(Raising("a"), PIPE + "\n"), wg.Step(Raising("b"), "bash -norc -c '%s'\n" % PIPE)]
+        with self.subTest(name="Raising"):
+            self.assertEqual(2, len(wg._job_defects(steps)))       # the walk's pass compares no name
+            with self.assertRaises(LookupError):
+                wg.job_defects(steps)
         lines: list[str] = []
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "held.yml")

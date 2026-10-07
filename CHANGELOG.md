@@ -59,13 +59,15 @@ evidence exposed.
   <<'EOF'`), which `main` reads CLEAN though bash runs the payload, every word a candidate weighed
   as `main` weighs its own; each range spans a Linux aarch64 box (its low end) and a Mac. The job
   keys each finding with its step's name, so it stays linear wherever the name is one the workflow
-  schema takes, a string (8,000 steps sharing one finding: 3.4x `main`); a `name:` the schema
-  refuses -- a list or a mapping -- is compared with the others under its finding instead, so where
-  many share one finding the cost grows fourfold with each doubling (4,000 such steps: 0.09 s,
-  `main` 0.002 s). Open, as on `main`: a check counted under a refused shell where errexit is off
-  (round 9 withheld it: 14 rows of round 5's matrix), #2608's `-s $X` and `-c $X` rows, `-c $(…)`,
-  #2900's one-dash long option behind a shell the step names through a variable (`CMD=bash; $CMD
-  -norc <<'EOF'`), and the guard's other named gaps.
+  schema takes, a string (8,000 steps sharing one finding: 2.7x `main` on the Linux box, 3.3x on
+  the Mac). Open, and this PR's own: a `name:` the schema refuses -- a list or a mapping -- is
+  compared with the others under its finding, so where many share one finding the cost grows
+  fourfold with each doubling (4,000 such steps: 0.14 s with list names and 0.20 s with mapping
+  names on the Linux box, 0.10 s and 0.13 s on the Mac; `main` 0.005 s and 0.002 s). Open, as on
+  `main`: a check counted under a refused shell where errexit is off (round 9 withheld it: 14 rows
+  of round 5's matrix), #2608's `-s $X` and `-c $X` rows, `-c $(…)`, #2900's one-dash long option
+  behind a shell the step names through a variable (`CMD=bash; $CMD -norc <<'EOF'`), and the
+  guard's other named gaps.
 - **Workflow guard: what `eval`'s words and a `-c` string hand on (#2673, #2683, #2684, #2764,
   #2669, #2331).** `eval 'curl … |' 'sh'` ran the pipe and read CLEAN: `eval` joins its words before
   it runs them, and the guard read them one by one. Where a word begins or ends with an operator the
