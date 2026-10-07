@@ -57,7 +57,7 @@ class TestModelResolver(unittest.TestCase):
         self.assertEqual(mr._hardcoded_fallback("kimi", "banana")["model"], "primary")
         self.assertEqual(mr._hardcoded_fallback("claude", "banana")["model"], "sonnet")
         self.assertEqual(mr._hardcoded_fallback("codex", "banana")["model"],
-                         "gpt-5.6-terra")
+                         "gpt-6-sol")
         # an unknown HOST still resolves to None (inherit session), never kimi
         self.assertIsNone(mr._hardcoded_fallback("bogus", "banana")["model"])
 
@@ -120,16 +120,16 @@ class TestModelResolver(unittest.TestCase):
         self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "haiku")
 
     def test_codex_defaults(self):
-        self.assertEqual(mr.resolve_model("codex", "scout")["model"], "gpt-5.6-luna")
+        self.assertEqual(mr.resolve_model("codex", "scout")["model"], "gpt-6-luna")
         panel = mr.resolve_model("codex", "domain_panel")
-        self.assertEqual(panel["model"], "gpt-5.6-terra")
+        self.assertEqual(panel["model"], "gpt-6-sol")
         self.assertEqual(panel["model_reasoning_effort"], "high")
         advisor = mr.registration_config("codex", "advisor")
-        # Operator-approved family PR: use the installed CLI's explicit slug.
-        self.assertEqual(advisor["model"], "gpt-5.6-sol")
+        # #2872: use the installed CLI's explicit GPT-6 workhorse slug.
+        self.assertEqual(advisor["model"], "gpt-6-sol")
         self.assertEqual(advisor["model_reasoning_effort"], "high")
         domain_advisor = mr.registration_config("codex", "domain_advisor")
-        self.assertEqual(domain_advisor["model"], "gpt-5.6-sol")
+        self.assertEqual(domain_advisor["model"], "gpt-6-sol")
         self.assertEqual(domain_advisor["model_reasoning_effort"], "high")
 
     def test_unknown_host_falls_back(self):
