@@ -21,11 +21,12 @@ carried, fail-closed. The prices, named in the CHANGELOG with the rest (a body's
 read as the step's own is; a `{ f; } &` group in a body; a call behind `&>` under dash):
 `T=P; f() { T=/dev/null; }; f; sh "$T"` is reported though no shell runs `P`; and `eval -p f` or
 `eval -- -- f` reads as a call of `f`, since the guard's `eval` reader keeps the words not led by
-`-` as the program, though bash rejects `-p` and dash runs `--` as a command. A call site
-carries once per step from each state of the names its bodies spell or set (`_named`; of the
-whole table where a body may set any name, `_record_any`), and past `_BUDGET` such states each
-name they may set gains the cap's stand-in, a price named there too. The sure carry is #2785's
-own PR.
+`-` as the program, though bash rejects `-p` and dash runs `--` as a command. Bodies carry
+once per step from each state of the names they spell or set (`_named`), at any call site of
+theirs, walking only the statements that may write (`_writes`) -- a body that may set any name,
+from each state of the whole table at one site (`_record_any`) -- and past `_BUDGET` carries at
+one site each name they may set gains the cap's stand-in, a price named there too. The sure
+carry is #2785's own PR.
 
 Beside `scripts/workflow_values.py`, which is at its ceiling; imports nothing above it.
 """
@@ -35,20 +36,26 @@ import re
 from shell_command import _ASSIGNMENT, _heads
 from shell_tokens import is_arm
 from workflow_function_calls import _function_syntax
-from workflow_values import PAST, Values, _update, emptied, record
+from workflow_values import Values, emptied, record, stand_in
 
 _DEPTH = 8          # calls followed inside a body, in all
-# A call site's carry is kept per step (`_carried`), keyed on the state of the names its bodies
-# spell or set alone (`_named`): `static_values` rebuilds the table at each statement that reads
-# one, and carrying every earlier call's bodies again there made a step cubic where `main` is
-# quadratic -- as keyed on the whole table it still was, where a loop changes a name between
-# calls or a step holds many names (rounds 8 and 9, B5). Past `_BUDGET` states at one call site
-# (a body reading a name its loop changes), each name its bodies may set gains the cap's
-# stand-in instead, unsure: fail-closed, a price. The last few steps are kept, each with its
-# statements, so an id is never reused while its entry stands.
+# Bodies' carries are kept per step (`_carried`), keyed on the state of the names they spell or
+# set alone (`_named`) and shared by every call site of theirs, and a carry walks only the
+# statements that may write (`_writes`): `static_values` rebuilds the table at each statement
+# that reads one, and carrying every earlier call's bodies again there made a step cubic where
+# `main` is quadratic -- as keyed on the whole table it still was, where a loop changes a name
+# between calls or a step holds many names (rounds 8 and 9, B5). Past `_BUDGET` carries at one
+# call site (a body reading a name its loop changes), each name its bodies may set gains the
+# cap's stand-in instead, unsure: fail-closed, a price. The last few steps are kept, each with
+# its statements, so an id is never reused while its entry stands.
 _BUDGET = 8
-_CARRIED: dict[int, tuple[list, int, dict]] = {}
+_CARRIED: dict[int, "_Step"] = {}
 _SPELLED = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# Where bash may write a name the carry's own step does not read: an assignment inside `${…}`
+# (`${X:=v}`, `${X=v}`), arithmetic (`$(( X=1 ))`, `$[ … ]`, `(( i++ ))` and `(( a += 1 ))`, whose
+# words the reader keeps without their parentheses), in a word, a redirect's target or a heredoc's
+# text; `let` too. Unsure, a carry walks it (`_writes`): a long option or a test's `=` costs a walk.
+_UNSURE = re.compile(r"\$\{[^}]*=|\$\(\(|\$\[|\+\+|--|^(?:[-+*/%&|^]|<<|>>)?=$")
 
 
 def _head(argv):
@@ -91,30 +98,15 @@ def _calls(stmts, head, close):
     return found
 
 
-def _carry(table, stmts, head, close):
+def _carry(table, stmts, head, close, positions=None):
     """Add what the body `stmts[head:close + 1]` may assign to `table`, unsure: each
     assignment as an uncertain one (`record`), an `unset` or bare `local` as a "maybe unset",
-    a `read` as the stand-in -- and nothing for a name the body makes `local`."""
+    a `read` as the stand-in -- and nothing for a name the body makes `local`. `positions`, where
+    given, are the body's statements that may do any of that (`_named`): the rest leave it alone."""
     inner = table.copy()
     local: set[str] = set()
-    for statement in stmts[head:close + 1]:
-        stage = statement.stages[-1] if statement.stages else None
-        if stage is None:
-            continue
-        word = _head(list(stage.argv))
-        argv = [str(w) for w in stage.argv]
-        name = os.path.basename(word) if word else ""
-        words = [w for w in argv[argv.index(word) + 1:] if not w.startswith("-")] if word in argv else []
-        if name in ("local", "declare", "typeset") and not any(
-                w.startswith("-") and "g" in w for w in argv):
-            local.update(w.split("=", 1)[0].split("[", 1)[0] for w in words)
-            for w in words:
-                if "=" not in w:
-                    emptied(inner, w, False)
-        elif name == "read" or name == "unset" and "-f" not in argv:
-            for w in words:
-                emptied(inner, w, False, name == "read")
-        record(inner, stage, False)
+    for at in range(head, close + 1) if positions is None else positions:
+        _carry_one(inner, local, stmts[at])
     # What the body adds goes after the caller's own candidates, never in place of one; past
     # the cap a use reads the cap's stand-in, whatever the order (`workflow_values.PAST`).
     for kind in ("scalars", "arrays"):
@@ -122,6 +114,27 @@ def _carry(table, stmts, head, close):
         for name in set(after) - local:
             own = before.get(name, [])
             before[name] = own + [candidate for candidate in after[name] if candidate not in own]
+
+
+def _carry_one(inner, local, statement):
+    """One statement of `_carry`'s body, into `inner`, its `local` names into `local`."""
+    stage = statement.stages[-1] if statement.stages else None
+    if stage is None:
+        return
+    word = _head(list(stage.argv))
+    argv = [str(w) for w in stage.argv]
+    name = os.path.basename(word) if word else ""
+    words = [w for w in argv[argv.index(word) + 1:] if not w.startswith("-")] if word in argv else []
+    if name in ("local", "declare", "typeset") and not any(
+            w.startswith("-") and "g" in w for w in argv):
+        local.update(w.split("=", 1)[0].split("[", 1)[0] for w in words)
+        for w in words:
+            if "=" not in w:
+                emptied(inner, w, False)
+    elif name == "read" or name == "unset" and "-f" not in argv:
+        for w in words:
+            emptied(inner, w, False, name == "read")
+    record(inner, stage, False)
 
 
 def _state(table, names):
@@ -136,16 +149,51 @@ def _state(table, names):
             tuple(sorted((name, tuple(map(texts, lists))) for name, lists in held(table.arrays).items())))
 
 
+class _Step:
+    """What the step `stmts` has carried (`_carried`): its call sites, {position: (bodies,
+    [carries made])}, and its bodies, {bodies: (names, written, anything, active, {state: what the
+    carry left})} -- a carry is the bodies' and their names' alone, so the call sites that share
+    both share it; the names some statement of the step may set (`assignable`: no other name is
+    ever held), and those each statement may set (`set_at`); and where the last call of a body
+    that may set any name left the table (`last`: the table, the position, the bodies' names)."""
+
+    def __init__(self, stmts):
+        self.stmts, self.size, self.sites, self.shared, self._set = stmts, len(stmts), {}, {}, {}
+        self.probe = "_" * (2 + max((len(name) for statement in stmts for stage in statement.stages
+                                     for word in stage.argv for name in _SPELLED.findall(str(word))), default=0))
+        self.assignable = frozenset().union(*(self.set_at(at) or () for at in range(len(stmts))))
+        self.last: tuple | None = None
+
+    def set_at(self, at):
+        """The names statement `at` may set, or None where it may set any (`eval`, `source`)."""
+        if at not in self._set:
+            written = _written(self.stmts[at], self.probe)
+            self._set[at] = None if self.probe in written else written
+        return self._set[at]
+
+    def pending(self, table, position):
+        """The names set since the last call of a body that may set any name left `table` -- what
+        the statements between it and `position` may set, the bodies called there, and its own
+        bodies' names (one it made `local` kept its value) -- or None where it left another table.
+        A statement between that may set any name gives every held name its stand-in last of all
+        it does (`record`'s `_unread`), so it leaves nothing more to do."""
+        if self.last is None or self.last[0] is not table or self.last[1] >= position:
+            return None
+        names = set(self.last[2])
+        for at in range(self.last[1] + 1, position):
+            here, site = self.set_at(at), self.sites.get(at)
+            names |= (here or frozenset()) | (self.shared[site[0]][1] if site and site[0] else frozenset())
+        return names
+
+
 def _carried(stmts):
-    """The call sites already read in the step `stmts`: {position: (bodies, names, written,
-    anything, {state: what the carry left})}, the last a list of (table, what the carry left)
-    where a body may set any name."""
-    entry = _CARRIED.get(id(stmts))
-    if entry is None or entry[0] is not stmts or entry[1] != len(stmts):
-        _CARRIED[id(stmts)] = entry = (stmts, len(stmts), {})
+    """The step `stmts`' `_Step`, kept for the last few steps, each with its statements."""
+    step = _CARRIED.get(id(stmts))
+    if step is None or step.stmts is not stmts or step.size != len(stmts):
+        _CARRIED[id(stmts)] = step = _Step(stmts)
         while len(_CARRIED) > 8:
             _CARRIED.pop(next(iter(_CARRIED)))
-    return entry[2]
+    return step
 
 
 def _reached(stmts, position, starts):
@@ -191,12 +239,13 @@ def _subshell(stmts, start, close):
     return True
 
 
-def _named(stmts, bodies):
-    """(names, written, anything) for `bodies`: `names`, every name they spell -- a name a body
-    reads or sets is spelled, as `valued` reads no `${!T}` -- and every name a dry carry, each
-    spelled name held without a candidate, shows them set (`REPLY` behind a bare `read`), which
-    are `written`; `anything` where one may set a name it does not spell (`eval`, `source`, a
-    name taken from a value), as a held name none of them spells then shows."""
+def _named(stmts, bodies, assignable):
+    """(names, written, anything, active) for `bodies`: `names`, every name some statement of the
+    step may set (`assignable`) that they spell -- a name a body reads or sets is spelled, as
+    `valued` reads no `${!T}` -- or that a dry carry, each spelled name held without a candidate,
+    shows them set (`REPLY` behind a bare `read`), which are `written`; `anything` where one may
+    set a name it does not spell (`eval`, `source`, a name taken from a value), as a held name none
+    of them spells then shows; and per body, the statements a carry walks (`_writes`)."""
     spelled = {name for start, close in bodies for statement in stmts[start:close + 1]
                for stage in statement.stages for word in stage.argv
                for name in _SPELLED.findall(str(word))}
@@ -205,67 +254,74 @@ def _named(stmts, bodies):
     for start, close in bodies:
         _carry(dry, stmts, start, close)
     written = {name for name, texts in dry.scalars.items() if texts} | set(dry.arrays)
-    return frozenset(spelled | written) - {probe}, frozenset(written - {probe}), probe in written
+    active = tuple(tuple(at for at in range(start, close + 1) if _writes(stmts[at], probe))
+                   for start, close in bodies)
+    return (frozenset((spelled | written) & assignable), frozenset(written & assignable), probe in written,
+            active)
+
+
+def _written(statement, probe):
+    """The names `_carry_one` may set at `statement`, `probe` among them where it may set any:
+    what it sets is the statement's words' and whether the names it spells are held, never their
+    values, so one dry step over those names, held without a candidate, and `probe` shows them.
+    A declaration that makes a name `local` sets it there too (a bare name empties)."""
+    spelled = {name for stage in statement.stages for word in stage.argv
+               for name in _SPELLED.findall(str(word))}
+    dry = Values({name: [] for name in spelled | {probe}})
+    _carry_one(dry, set(), statement)
+    return frozenset(name for name, texts in dry.scalars.items() if texts) | frozenset(dry.arrays)
+
+
+def _writes(statement, probe):
+    """Whether a carry walks `statement`: where bash may write a name the step does not read
+    (`_UNSURE`, `let`), and where `_carry_one` may set one (`_written`)."""
+    texts = [str(text) for stage in statement.stages
+             for text in (*stage.argv, *stage.writes, *stage.reads, stage.heredoc or "")]
+    return any(map(_UNSURE.search, texts)) or "let" in texts or bool(_written(statement, probe))
 
 
 def record_called(table, stmts, position, starts):
     """At statement `position`, a single-stage call of a function the step defines before it,
     add what its body may assign to `table` as unsure candidates, the caller's own kept
     (`_carry`): the bodies `_reached` lists, every definition of the name before the call and
-    every function the body calls. `starts` maps a definition's index to (name, head, close). A
-    call site carries once per step from each state of the names its bodies spell or set
-    (`_named`), and a later visit from that state takes what the carry left, exactly as a carry
-    makes it; past `_BUDGET` states, each name its bodies may set gains the cap's stand-in."""
-    sites = _carried(stmts)
-    if position not in sites:
-        bodies = _reached(stmts, position, starts)
-        names, written, anything = _named(stmts, bodies)
-        sites[position] = (bodies, names, written, anything, [] if anything else {})
-    bodies, names, written, anything, carries = sites[position]
+    every function the body calls. `starts` maps a definition's index to (name, head, close).
+    Bodies carry once per step from each state of their names (`_named`), and a later visit from
+    that state -- at any call site of the same bodies -- takes what the carry left, exactly as a
+    carry makes it; past `_BUDGET` carries at one call site, each name its bodies may set gains
+    the cap's stand-in on both sides (`stand_in`). Where a body may set any name, every other
+    held name gains its own stand-in at every call, as a carry gives it -- the names set since the
+    last such call (`_Step.pending`), so a visit costs what changed, not the table."""
+    step = _carried(stmts)
+    site = step.sites.get(position)
+    if site is None:
+        bodies = tuple(_reached(stmts, position, starts))
+        if bodies and bodies not in step.shared:
+            step.shared[bodies] = (*_named(stmts, bodies, step.assignable), {})
+        site = step.sites[position] = (bodies, [0])
+    bodies, made = site
     if not bodies:
         return
-    if anything:
-        _record_any(table, stmts, bodies, written, carries)
-        return
-    key = _state(table, names)
+    names, written, anything, active, carries = step.shared[bodies]
+    pending = step.pending(table, position) if anything else None
+    key, exact = _state(table, names), names       # `exact`: the names left as a carry leaves them
     if key in carries:
         scalars, arrays = carries[key]
-        for name in names:
-            table.scalars.pop(name, None)
-            table.arrays.pop(name, None)
         table.scalars.update((name, list(texts)) for name, texts in scalars.items())
         table.arrays.update((name, [list(words) for words in lists]) for name, lists in arrays.items())
-    elif len(carries) < _BUDGET:
-        for start, close in bodies:
-            _carry(table, stmts, start, close)
+    elif made[0] < _BUDGET:
+        made[0] += 1
+        for (start, close), positions in zip(bodies, active):
+            _carry(table, stmts, start, close, positions)
         carries[key] = ({name: list(table.scalars[name]) for name in names if name in table.scalars},
                         {name: [list(words) for words in table.arrays[name]]
                          for name in names if name in table.arrays})
+        pending = set()                 # the carry gave every held name its stand-in
     else:
-        for name in written:
-            _update(table, name, [PAST], False)
-
-
-def _record_any(table, stmts, bodies, written, carries):
-    """`record_called` where a body may set any name (`eval`, `source`, a name taken from a
-    value): every held name gains its stand-in at each call, so the whole table is the state,
-    compared and restored as the dicts it is -- a held list is replaced, never changed in place,
-    so a kept one is shared -- and a call costs one pass over the held names, as the carry's own
-    pass does. Past `_BUDGET` states, every held name and each the bodies set gains the cap's
-    stand-in."""
-    state = (table.scalars, table.arrays)
-    for before, after in carries:
-        if before == state:
-            for kind, kept in zip(state, after or ()):
-                kind.clear()
-                kind.update(kept)
-            return
-    if len(carries) >= _BUDGET:
-        for name in {*written, *table.scalars, *table.arrays}:
-            _update(table, name, [PAST], False)
-        return
-    before = (dict(table.scalars), dict(table.arrays))
-    for start, close in bodies:
-        _carry(table, stmts, start, close)
-    after = (dict(table.scalars), dict(table.arrays))
-    carries.append((before, None if after == before else after))
+        for name in written:            # all the bodies' names, where a body may set any name
+            stand_in(table, name)
+        exact = written
+    if anything:
+        for name in (pending if pending is not None else {*table.scalars, *table.arrays}) - exact:
+            if name in table.scalars or name in table.arrays:
+                emptied(table, name, False, True)
+        step.last = (table, position, names)

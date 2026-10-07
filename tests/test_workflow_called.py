@@ -121,10 +121,12 @@ class TestWhatACallMayLeave(unittest.TestCase):
 
 
 def named(script):
-    """`_named` for the bodies the step's last statement, a call, carries."""
+    """`_named`'s names, written names and `anything` for the bodies the step's last statement, a
+    call, carries."""
     stmts = stmts_of(script)
     starts = workflow_uses._function_ranges(stmts)[0]
-    return workflow_called._named(stmts, workflow_called._reached(stmts, len(stmts) - 1, starts))
+    return workflow_called._named(stmts, workflow_called._reached(stmts, len(stmts) - 1, starts),
+                                  workflow_called._carried(stmts).assignable)[:3]
 
 
 class TestACallSitesStateIsTheNamesItsBodiesSpellOrSet(unittest.TestCase):
@@ -133,17 +135,40 @@ class TestACallSitesStateIsTheNamesItsBodiesSpellOrSet(unittest.TestCase):
     that may set a name it does not spell keys on the whole table (`anything`)."""
 
     def test_the_names_a_body_reads_and_sets(self):
-        names, written, anything = named("g() { T=$X; }\ng\n")
-        self.assertLessEqual({"T", "X"}, names)
-        self.assertEqual(({"T"}, False), (written, anything))
-        # A body naming nothing but its own header has no state a table holds: one carry
-        # serves every table.
-        self.assertEqual((frozenset({"g"}), frozenset(), False), named("g() { : 0; : 1; }\ng\n"))
+        names, written, anything = named("X=1\ng() { T=$X; }\ng\n")
+        self.assertEqual(({"T", "X"}, {"T"}, False), (names, written, anything))
+        # Round 10 (B2): only a name some statement of the step may set is ever held, so a word
+        # no statement sets -- `s0`, the header's `g`, an `X` the step never assigns -- is no part
+        # of the state, and a body of words has none: one carry serves every table.
+        for body in (": 0; : 1", ": s0; : s1", "echo $X; : words here"):
+            with self.subTest(body=body):
+                self.assertEqual((frozenset(), frozenset(), False), named("g() { %s; }\ng\n" % body))
+        self.assertEqual({"T", "REPLY"}, workflow_called._carried(stmts_of(
+            "T=1\nread -r\ng() { : s0 $X; }\ng\n")).assignable)
 
     def test_a_write_the_body_does_not_spell_and_one_only_a_held_name_shows(self):
         self.assertIn("REPLY", named("g() { read -r; }\ng\n")[1])           # bash's default name
         self.assertIn("T", named("g() { unset T; }\ng\n")[1])               # a held name's "maybe unset"
         self.assertNotIn("T", named("g() { local T; T=x; }\ng\n")[1])       # dies with the call
+
+    def test_a_carry_walks_the_statements_that_may_write_alone(self):
+        # What a statement writes is its words' and whether the names it spells are held, so one
+        # dry step tells, and a carry skips the rest: a K-statement body that sets one name costs
+        # a carry that one statement (round 9).
+        for line, writes in (("T=x", True), ("T+=x", True), ("A=(x y)", True), ("unset T", True),
+                             ("local T", True), ("read -r", True), ("read -r T", True), ("eval :", True),
+                             ("for i in a b; do :; done", True), ("printf -v T x", True),
+                             ("mapfile T", True), ("readarray -t T", True), ("getopts ab T", True),
+                             ("declare T=x", True), ("typeset T=x", True), ("export T=x", True),
+                             ("readonly T=x", True), ("source ./env", True), (". ./env", True),
+                             # where bash may write a name the step does not read: unsure, walked
+                             (": ${T:=x}", True), (": ${T=x}", True), ("echo a${T:=x}b", True),
+                             (": $(( T=1 ))", True), (": $[ T=1 ]", True), (": ${A[T=2]}", True),
+                             ("A[i++]=y", True), ("let T=1", True), ("(( T++ ))", True),
+                             ("(( T += 1 ))", True), ("cat > ${T:=f}", True), ("cat <<EOF\n$((T=1))\nEOF", True),
+                             (": 0", False), ('echo "$X"', False), ('sh "$T"', False), ("f", False)):
+            with self.subTest(line=line):
+                self.assertEqual(writes, workflow_called._writes(stmts_of(line + "\n")[0], "____"))
 
     def test_a_body_that_may_set_any_name(self):
         for body in ('eval "$C"', ". ./env.sh", "source ./env.sh", 'export "$K=v"', 'read -r "$N"'):
@@ -164,7 +189,30 @@ class TestTheMemoLeavesWhatACarryLeaves(unittest.TestCase):
         "V=1\ng() { eval :; }\ng\nsh \"$V\"\nsh \"$V\"\n",
         "g() { eval :; }\nfor i in 1 2; do\nV=a; g\nV=b; g\ndone\nsh \"$V\"\n",
         "A=(x)\ng() { A+=(y); }\nfor i in 1 2; do\nX=a; g\ndone\n\"${A[@]}\"\n",
-        "h() { T=$X; }\ng() { h; }\nfor i in 1 2; do\nX=a; g\nX=b; g\ndone\nsh \"$T\"\n")
+        "h() { T=$X; }\ng() { h; }\nfor i in 1 2; do\nX=a; g\nX=b; g\ndone\nsh \"$T\"\n",
+        # Two call sites of the same bodies share a carry where their names' state is the same
+        # (round 10); what the key cannot see breaks the sharing: a redefinition between them (of
+        # the function or of one it calls), `unset -f`, positional and indirect state, a nameref,
+        # a name taken from a value or `eval` (each call site its own carry), an array's state.
+        "f() { T=a; }\nf\nf() { T=P; }\nf\nsh \"$T\"\nsh \"$T\"\n",
+        "h() { T=a; }\ng() { h; }\ng\nh() { T=P; }\ng\nsh \"$T\"\nsh \"$T\"\n",
+        "f() { T=P; }\nf\nunset -f f\nf\nsh \"$T\"\nsh \"$T\"\n",
+        "f() { T=$1; }\nf a\nf P\nsh \"$T\"\nsh \"$T\"\n",
+        "f() { T=${!X}; }\nX=A\nf\nX=B\nf\nsh \"$T\"\nsh \"$T\"\n",
+        "f() { declare -n R=X; R=P; }\nf\nf\nsh \"$X\"\nsh \"$X\"\n",
+        "f() { printf -v \"$N\" %s P; }\nN=T\nf\nN=U\nf\nsh \"$T\"\nsh \"$U\"\n",
+        "f() { eval \"$C\"; }\nC=T=P\nf\nC=U=P\nf\nsh \"$T\"\nsh \"$U\"\n",
+        "f() { T=${A[1]}; }\nA=(a b)\nf\nA=(c P)\nf\nsh \"$T\"\nsh \"$T\"\n",
+        # A body that may set any name gives every other held name its stand-in at each call, the
+        # names set since the last such call alone (round 10): writes and a named call between,
+        # a `local` it keeps, an array in a loop, two such bodies, a top-level `eval` between.
+        "V=1\ng() { eval :; }\nh() { W=2; }\ng\nV=3\nh\ng\nsh \"$V\"\nsh \"$W\"\n",
+        "g() { local V; eval :; }\nV=1\ng\nV=2\ng\nsh \"$V\"\nsh \"$V\"\n",
+        "A=(x)\ng() { . ./env; }\nfor i in 1 2; do\nA+=(y); g\nB=$i; g\ndone\n\"${A[@]}\"\nsh \"$B\"\n",
+        "g() { eval :; }\nk() { eval :; T=1; }\nT=0; g; k; g; U=2; k\nsh \"$T\"\nsh \"$U\"\n",
+        "g() { eval \"$C\"; }\nC=x\ng\neval y\nD=1\ng\nsh \"$C\"\nsh \"$D\"\n",
+        "g() { local V; eval :; }\nk() { eval :; }\nV=1\ng\nk\nsh \"$V\"\nsh \"$V\"\n",
+        "g() { eval :; }\nX=0\ng\nexport \"$K=v\" X=1\ng\nsh \"$X\"\nsh \"$X\"\n")
 
     def test_every_visit_leaves_what_a_fresh_carry_leaves(self):
         from unittest import mock

@@ -577,7 +577,12 @@ class TestACallSiteCarriesOncePerStateOfItsNames(unittest.TestCase):
 
     @staticmethod
     def body(size, first=""):
-        return "g() {\n" + first + "".join(": %d\n" % i for i in range(size)) + "}\n"
+        # The coordinator's word body (round 10): `: s0 .. : s<K-1>`, words no statement sets.
+        return "g() {\n" + first + "".join(": s%d\n" % i for i in range(size)) + "}\n"
+
+    @staticmethod
+    def wide(size, line):
+        return "log() { %s; }\n" % line + "".join("V%d=v%d\n" % (i, i) for i in range(size)) + "log\n" * size
 
     def looped(self, size, first="", head="for i in 1 2; do\n", tail="done\n"):
         return self.body(size, first) + head + "".join("X=a%d; g\n" % j for j in range(size)) + tail
@@ -606,17 +611,55 @@ class TestACallSiteCarriesOncePerStateOfItsNames(unittest.TestCase):
     def test_each_shape_costs_a_constant_factor_of_the_step_without_the_carry(self):
         while_head, while_tail = "n=0\nwhile [ $n -lt 2 ]; do\n", "n=$((n+1))\ndone\n"
         for name, script, bound in (
-                ("loop", self.looped(60), 3.0),
-                ("while", self.looped(60, head=while_head, tail=while_tail), 3.0),
-                ("wide", "log() { :; }\n" + "".join("V%d=v%d\n" % (i, i) for i in range(150)) + "log\n" * 150, 2.0),
-                ("reads", self.looped(60, "U=$X\n"), 4.0),
-                ("eval", "log() { eval :; }\n" + "".join("V%d=v%d\n" % (i, i) for i in range(150)) + "log\n" * 150,
-                 2.0)):
+                ("loop", self.looped(60), 1.5),
+                ("while", self.looped(60, head=while_head, tail=while_tail), 1.5),
+                ("flat", self.body(100) + "".join("X=a%d; g\n" % j for j in range(100)), 1.5),
+                ("wide", self.wide(150, ":"), 1.5),
+                ("reads", self.looped(60, "U=$X\n"), 1.8),
+                ("eval", self.wide(150, "eval :"), 1.8),
+                ("source", self.wide(150, ". /dev/null"), 1.8)):
             with self.subTest(shape=name):
                 ratio = self.ratio(script)
                 if ratio >= bound:          # once more, against a busy machine
                     ratio = min(ratio, self.ratio(script))
                 self.assertLess(ratio, bound)
+
+    @staticmethod
+    def work(script):
+        """The carry's work for `script`: the names it keys a state on at each visit, one besides,
+        and the names a body that may set any name gives their own stand-in."""
+        from unittest import mock
+        done = [0]
+        real_state, real_emptied = workflow_called._state, workflow_called.emptied
+
+        def state(table, names):
+            done[0] += 1 + len(names)
+            return real_state(table, names)
+
+        def emptied(*args):
+            done[0] += 1
+            return real_emptied(*args)
+        with mock.patch.object(workflow_called, "_state", state), \
+                mock.patch.object(workflow_called, "emptied", emptied):
+            reported(GET + script + "sh /dev/null\n")
+        return done[0]
+
+    def test_a_visit_costs_what_changed_not_the_words_or_the_table(self):
+        # Round 10 (B2): `main`'s rebuilds visit a call site about K^2 times in all, so the carry's
+        # work may grow four times when K doubles, and no faster. Round 9 keyed every word a body
+        # spells (`: s0 .. : s<K-1>`) and compared the whole table at every call of a body that
+        # may set any name: eight times.
+        while_head, while_tail = "n=0\nwhile [ $n -lt 2 ]; do\n", "n=$((n+1))\ndone\n"
+        for name, make in (("loop", lambda k: self.looped(k)),
+                           ("while", lambda k: self.looped(k, head=while_head, tail=while_tail)),
+                           ("flat", lambda k: self.body(k) + "".join("X=a%d; g\n" % j for j in range(k))),
+                           ("eval", lambda k: self.wide(k, "eval :")),
+                           ("source", lambda k: self.wide(k, ". /dev/null")),
+                           ("eval between writes", lambda k: "log() { eval :; }\n" + "".join(
+                               "V%d=v%d; log\n" % (i, i) for i in range(k)))):
+            with self.subTest(shape=name):
+                small, large = self.work(make(20)), self.work(make(40))
+                self.assertLess(large, 5 * small, (small, large))
 
     def carries(self, script):
         """How many times `_carry` ran for `script` (each site's dry carry included)."""
@@ -631,23 +674,38 @@ class TestACallSiteCarriesOncePerStateOfItsNames(unittest.TestCase):
             reported(GET + script + "sh /dev/null\n")
         return count[0]
 
-    def test_a_body_naming_nothing_carries_once_per_site_however_its_loop_changes_a_name(self):
-        # 24 sites: each a dry carry and one carry, where round 8 made 299.
-        self.assertEqual(48, self.carries(self.looped(24)))
+    def test_a_body_naming_nothing_carries_once_however_its_loop_changes_a_name(self):
+        # 24 sites of one body: a dry carry and one carry in all, the sites sharing it, where
+        # round 8 made 299.
+        self.assertEqual(2, self.carries(self.looped(24)))
 
     def test_a_body_reading_its_loops_name_carries_within_the_budget(self):
-        # 24 sites, each a dry carry and at most 8 states, where round 8 made 299.
-        self.assertLessEqual(self.carries(self.looped(24, "U=$X\n")), 24 * (1 + workflow_called._BUDGET))
+        # 24 sites: a dry carry, and at most 8 carries a site, where round 8 made 299.
+        self.assertLessEqual(self.carries(self.looped(24, "U=$X\n")), 1 + 24 * workflow_called._BUDGET)
 
     # Past the budget, each name the bodies set holds the cap's stand-in: twelve states of `X`
     # at each site; no shell runs a download in any row, and each reports, the budget's price.
     PRICE = tuple(row % "".join("X=a%d; g; " % j for j in range(12)) for row in (
         'T=/dev/null; g() { : "$X"; T=/dev/null; }; for i in 1 2; do %sdone; sh "$T"',
-        'T=/dev/null; g() { : "$X"; unset T; }; for i in 1 2; do %sdone; sh "${T:-/dev/null}"',
-        # a body that may set any name: every held name, past the budget
-        'T=/dev/null; g() { . ./env.sh; }; for i in 1 2; do %sdone; sh "$T"'))
-    # Within it (eight states), each reads as the carry made it.
-    HONEST = tuple(row.replace("X=a8; g; X=a9; g; X=a10; g; X=a11; g; ", "") for row in PRICE)
+        'T=/dev/null; g() { : "$X"; unset T; }; for i in 1 2; do %sdone; sh "${T:-/dev/null}"'))
+    # Within it (eight states), each reads as the carry made it; and a body that may set any name
+    # gives every other held name its own stand-in exactly as a carry does, past the budget too,
+    # so nothing is priced there (round 10: the round-9 seat's BU78-80).
+    HONEST = tuple(row.replace("X=a8; g; X=a9; g; X=a10; g; X=a11; g; ", "") for row in PRICE) + (
+        'T=/dev/null; g() { . ./env.sh; }; for i in 1 2; do %sdone; sh "$T"' % "".join(
+            "X=a%d; g; " % j for j in range(12)),)
+    # Round 10 (B1): an array the bodies set takes the stand-in on its word-lists too, so its
+    # element reads report past the budget: `A=(x P)`, `A+=`, `declare -g -a`, a nested call, a
+    # `.` and an `eval` body, nine and thirty states (BU02, BU26, BU30, BU38, BU94; both bashes
+    # run the payload, dash has no arrays).
+    ELEMENTS = tuple(row % "".join('X=a%d; : "$X"\n' % j for j in range(states)) for row, states in (
+        ('g() { : "$X"; A=(x @P@); }\nfor i in 1 2; do\n%sg\ndone\nsh "${A[1]}"', 9),
+        ('g() { : "$X"; A+=(x @P@); }\nfor i in 1 2; do\n%sg\ndone\nsh "${A[1]}"', 9),
+        ('g() { : "$X"; declare -g -a A=(x @P@); }\nfor i in 1 2; do\n%sg\ndone\nsh "${A[1]}"', 9),
+        ('g() { : "$X"; h; }; h() { A=(x @P@); }\nfor i in 1 2; do\n%sg\ndone\nsh "${A[1]}"', 9),
+        ('g() { . /dev/null; : "$X"; A=(x @P@); }\nfor i in 1 2; do\n%sg\ndone\nsh "${A[1]}"', 9),
+        ('g() { eval :; : "$X"; A=(x @P@); }\nfor i in 1 2; do\n%sg\ndone\nsh "${A[1]}"', 9),
+        ('g() { : "$X"; A=(x @P@); }\nfor i in 1 2; do\n%sg\ndone\nsh "${A[1]}"', 30)))
 
     def test_past_the_budget_the_names_a_body_sets_hold_the_stand_in(self):
         for rows, expected in ((self.PRICE, True), (self.HONEST, False)):
@@ -655,6 +713,59 @@ class TestACallSiteCarriesOncePerStateOfItsNames(unittest.TestCase):
                 for shell in SHELLS:
                     with self.subTest(row=row, shell=shell):
                         self.assertEqual(expected, reported(filled(row), shell))
+        for row in self.ELEMENTS:
+            for shell in (None, "bash", "bash {0}"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+
+class TestCallSitesShareACarryOnlyWhereTheKeySeesAll(unittest.TestCase):
+    """PR #2855 round 10: call sites of the same bodies share a carry where the state of the
+    bodies' names is the same, so a redefinition between two sites -- of the function, or of one
+    it calls -- or a change to an array a body reads must still reach the use; and a carry walks
+    only the statements that may write (`workflow_called._writes`), so a body that writes through
+    an expansion or arithmetic is still carried. Truth: every shell runs the payload, dash none
+    where the step holds an array."""
+
+    ALL_RUN = (
+        'T=/dev/null; f() { T=a; }; f; f() { T=@P@; }; f; sh "$T"',
+        'T=/dev/null; h() { T=a; }; g() { h; }; g; h() { T=@P@; }; g; sh "$T"',
+        'T=/dev/null; f() { T=a; }; f; f() { T=@P@; }; for i in 1 2; do f; done; sh "$T"',
+        'T=/dev/null; f() { : 0; : 1; T=@P@; : 2; }; for i in 1 2; do X=a; f; X=b; f; done; sh "$T"')
+    BASH_RUN = ('T=/dev/null; f() { T=${A[1]}; }; A=(a b); f; A=(c @P@); f; sh "$T"',)
+
+    def test_each_is_reported(self):
+        for rows, shells in ((self.ALL_RUN, SHELLS), (self.BASH_RUN, (None, "bash", "bash {0}"))):
+            for row in rows:
+                for shell in shells:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertTrue(reported(filled(row), shell))
+
+
+class TestTheMemoKeyAndItsVisits(unittest.TestCase):
+    """PR #2855 round 10, the round-9 verdict's B4: the round-9 seat's set 53. MP01 and MP05 move
+    an array an inner call site reads, and nothing else (the key holds the array side: its m83
+    read them CLEAN); MP07-MP09 rebuild the table at one state a dozen times past a call of a
+    body that may set any name (a memo hit, never a carry toward the budget: its m85 reported
+    them). Truth: both bashes run MP01 and MP05; nothing runs MP07-MP09."""
+
+    BASH_RUN = ('h() { U=${A[1]}; }\ng() { h; sh "$U"; }\nA=(x /dev/null); g\nA=(x @P@); unset U; g',
+                'h() { U=${A[1]}; }\ng() { h; sh "$U"; }\nA=(x /dev/null); g\nunset U; A=(x @P@); g')
+    NONE_RUN = ('T=/dev/null\ng() { . /dev/null; }\nfor i in 1 2; do\ng\n' + ': "$T"\n' * 12 + 'done\nsh "$T"',
+                'T=/dev/null\ng() { eval :; }\ng\n' + ': "$T"\n' * 12 + 'sh "$T"',
+                'T=/dev/null\ng() { eval :; }\nfor i in 1 2; do\ng\n' + 'echo "$T"\n' * 12 + 'done\nsh "$T"')
+
+    def test_an_array_an_inner_site_reads_is_in_its_state(self):
+        for row in self.BASH_RUN:
+            for shell in (None, "bash", "bash {0}"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_rebuilding_at_one_state_is_no_carry_toward_the_budget(self):
+        for row in self.NONE_RUN:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(filled(row), shell))
 
 
 class TestASubshellBodyByTheTokenAfterItsHeader(unittest.TestCase):

@@ -57,45 +57,38 @@ expansion -- the quoted twin over-reports, as it does for a pattern; a word
 with other text around a reference keeps its own blanks (`sh -c 'sh "$T"'`).
 It drops the empty words itself.
 
-The prices. Quoting: the reader's words have lost their quotes, so `sh "$p"`
-after `p=./cuda_*.run` reads as the glob, a single-quoted `'$T'`, which bash
-does not expand, as `"$T"`, the quoted twin `"" sh x` of an empty `$SUDO`
-dropped from `$SUDO sh x` as `sh x`, a literal's quoted word
-(`a=('./cuda_*.run')`) as live, a quoted brace word in a literal as expanded,
-and a quoted `"${a[*]}"`, one word to bash, as spliced; a literal `@(x)`
-value is live too. The shell's own settings are not read: the default `IFS`
-and globbing are assumed, so a step's `IFS=`, `IFS=$'\n'` or `set -f`
-over-reports a split or a pattern, and `IFS=:` misses one. Null: the empty
-candidate cannot say whether the name was unset or set empty, so a `-` or
-`=` default stands beside it and the set-but-null twin (`X=; sh "${X-d}"`,
-where bash gives `""`) over-reports.
-Literals: one folded behind a declaration is re-split on blanks, which
-shifts the words after a quoted blank too (`declare -a a=("my file" x)`
-reads `${a[1]}` as `file`; a reader-lane follow-up would keep a literal's
-words on its token); a subshell's empty prefix assignment `( T= sh tool )`
-and its quoted value `( T='(x y)' )` read as the literal `T=(...)`, and both
-REPLACE the outer value; and a `NAME=text` word inside an open unfolded
-literal is read as a scalar the statement may assign as well, which
-over-reports where it was an element, and a `NAME[N]=text` one gives NAME
-its stand-in. A statement that only assigns an array literal is read as
-running its words, as main reads it, and the table resolves those words too:
-`X=_1; a=(cuda$X.run)` alone over-reports.
-Walks: after a loop that ran to its end bash holds its last word and the
-table every word; a literal's glob is matched at the use, not where bash
-matched it; a header that may not run keeps the old candidates beside its
-stand-in. Caps: see `_CANDIDATES`; a text past `_LONGEST` is dropped, as on
-main, not stood in for -- a limit (a word split from one may name a file); a
-brace word `_braced` cannot expand gives its name the stand-in, a limit. Not
-read: the assignment `${T:=d}` makes, an operator expansion's value
-(`NAME=${URL##*/}` holds its own text, a plain word), an attribute an earlier
-declaration set rewriting a later assignment, a called body's SURE effect
-(#2785), a name bash sets itself (`cd`'s `PWD`, `BASH_REMATCH`, the numbers
-of a redirection's `{fd}`, `wait -p` and `coproc`), held only where the step
-assigned it too, and arithmetic -- `let T=5`, `((T++))` and an arithmetic
-`for`'s updates are not read, and `((T=x+1))` is read as its text beside the
-old value -- so a name built from a number the arithmetic changed holds the
-old number (`i=0; ((i++)); T=cuda_$i.run` holds `cuda_0.run`): a download
-named by the new number is missed, one named by the old over-reports.
+The prices. Quoting: the reader's words have lost their quotes, so `sh "$p"` after
+`p=./cuda_*.run` reads as the glob, a single-quoted `'$T'`, which bash does not expand, as
+`"$T"`, the quoted twin `"" sh x` of an empty `$SUDO` dropped from `$SUDO sh x` as `sh x`, a
+literal's quoted word (`a=('./cuda_*.run')`) as live, a quoted brace word in a literal as
+expanded, and a quoted `"${a[*]}"`, one word to bash, as spliced; a literal `@(x)` value is live
+too. The shell's own settings are not read: the default `IFS` and globbing are assumed, so a
+step's `IFS=`, `IFS=$'\n'` or `set -f` over-reports a split or a pattern, and `IFS=:` misses
+one. Null: the empty candidate cannot say whether the name was unset or set empty, so a `-` or
+`=` default stands beside it and the set-but-null twin (`X=; sh "${X-d}"`, where bash gives
+`""`) over-reports.
+Literals: one folded behind a declaration is re-split on blanks, which shifts the words after a
+quoted blank too (`declare -a a=("my file" x)` reads `${a[1]}` as `file`; a reader-lane
+follow-up would keep a literal's words on its token); a subshell's empty prefix assignment `( T=
+sh tool )` and its quoted value `( T='(x y)' )` read as the literal `T=(...)`, and both REPLACE
+the outer value; and a `NAME=text` word inside an open unfolded literal is read as a scalar the
+statement may assign as well, which over-reports where it was an element, and a `NAME[N]=text`
+one gives NAME its stand-in. A statement that only assigns an array literal is read as running
+its words, as main reads it, and the table resolves those words too: `X=_1; a=(cuda$X.run)`
+alone over-reports.
+Walks: after a loop that ran to its end bash holds its last word and the table every word; a
+literal's glob is matched at the use, not where bash matched it; a header that may not run keeps
+the old candidates beside its stand-in. Caps: see `_CANDIDATES`; a text past `_LONGEST` is
+dropped, as on main, not stood in for -- a limit (a word split from one may name a file); a
+brace word `_braced` cannot expand gives its name the stand-in, a limit. Not read: the
+assignment `${T:=d}` makes, an operator expansion's value (`NAME=${URL##*/}` holds its own text,
+a plain word), an attribute an earlier declaration set rewriting a later assignment, a called
+body's SURE effect (#2785), a name bash sets itself (`cd`'s `PWD`, `BASH_REMATCH`, the numbers
+of a redirection's `{fd}`, `wait -p` and `coproc`), held only where the step assigned it too,
+and arithmetic -- `let T=5`, `((T++))` and an arithmetic `for`'s updates are not read, and
+`((T=x+1))` is read as its text beside the old value -- so a name built from a number the
+arithmetic changed holds the old number (`i=0; ((i++)); T=cuda_$i.run` holds `cuda_0.run`): a
+download named by the new number is missed, one named by the old over-reports.
 
 Stdlib only, like everything under it.
 """
@@ -491,6 +484,13 @@ def _update(table, name, new, certain, array=False):
         candidates[name] = _capped(kept, [PAST] if array else PAST)
     else:
         _unseen(table, name)
+
+
+def stand_in(table, name):
+    """`name` past what the table bounds, unsure: its scalars gain the cap's stand-in and its
+    word-lists one holding it (`PAST`), so `$name` and `${name[1]}` alike read as every download."""
+    _update(table, name, [PAST], False)
+    _update(table, name, [[PAST]], False, True)
 
 
 def _capped(candidates, stand, cap=_CANDIDATES):
