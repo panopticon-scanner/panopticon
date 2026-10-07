@@ -100,7 +100,9 @@ def _carry(table, stmts, head, close, positions=None, names=None):
     assignment as an uncertain one (`record`), an `unset` or bare `local` as a "maybe unset",
     a `read` as the stand-in -- and nothing for a name the body makes `local`. `positions`, where
     given, are the body's statements that may do any of that (`_effects`): the rest leave it alone;
-    `names`, where given, the only names it reads or sets but by giving each its own stand-in."""
+    `names`, where given, the names it reads or sets (`record_called`'s `spelled`): it copies
+    and merges back only those, and a body that may set any other name gives each its stand-in
+    there."""
     inner = table.copy() if names is None else Values(
         {name: list(table.scalars[name]) for name in names if name in table.scalars},
         {name: [list(words) for words in table.arrays[name]] for name in names if name in table.arrays})
@@ -299,8 +301,10 @@ def record_called(table, stmts, position, starts):
                 if name in table.scalars or name in table.arrays:
                     emptied(table, name, False, True)
             step.last["own"] = (table, position, spelled)
+        # Each carry copies and merges back only the names its bodies spell or set: any other
+        # name stays the caller's as it is, where a copy of the whole table cost K names a carry.
         for (start, close), positions in zip(bodies, active):
-            _carry(table, stmts, start, close, positions, spelled if anything else None)
+            _carry(table, stmts, start, close, positions, spelled)
         return
     key = None if anything else bodies
     since = step.since(key, table, position)

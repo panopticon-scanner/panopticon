@@ -677,6 +677,43 @@ class TestACallSiteCarriesAFixedNumberOfTimes(unittest.TestCase):
                 small, large = self.work(make(40)), self.work(make(80))
                 self.assertLess(large, 5 * small, (small, large))
 
+    @staticmethod
+    def copied(script):
+        """The names in each table `record_called` builds for `script`: a carry's copy of the
+        caller's table, every name of which it merges back, and `_effects`' dry one."""
+        from unittest import mock
+        sizes, inside = [], [False]
+        real_init, real_called = workflow_called.Values.__init__, workflow_uses.record_called
+
+        def init(self, *args, **kwargs):
+            real_init(self, *args, **kwargs)
+            if inside[0]:
+                sizes.append(len(self.scalars) + len(self.arrays))
+
+        def called(*args):
+            inside[0] = True
+            try:
+                return real_called(*args)
+            finally:
+                inside[0] = False
+        with mock.patch.object(workflow_called.Values, "__init__", init), \
+                mock.patch.object(workflow_uses, "record_called", called):
+            reported(GET + script + "sh /dev/null\n")
+        return sizes
+
+    def test_a_carry_copies_and_merges_only_the_names_its_bodies_spell_or_set(self):
+        # PR #2855 round 12 (the round-11 seat's cost bar): a carry copied the caller's whole table
+        # and merged each name back -- K names a carry, eight carries a site -- where `log() { :; }`
+        # spells none, so `wide` outgrew `main`'s quadratic on the forge (1.13x at K = 400 to 1.23x at
+        # 3,200). It copies and merges the names its bodies spell or set, plus `_effects`' probe: the
+        # same at both sizes, where round 11's grew with the K names the step assigns.
+        for name, line, bound in (("nothing spelled", ":", 2), ("one read, one set", "X=$V0", 4)):
+            for size in (40, 80):
+                with self.subTest(body=name, size=size):
+                    sizes = self.copied(self.wide(size, line))
+                    self.assertTrue(sizes)
+                    self.assertLessEqual(max(sizes), bound, (max(sizes), len(sizes)))
+
     def carries(self, script):
         """How many times `_carry` ran for `script` (each site's dry carry included)."""
         from unittest import mock
