@@ -147,6 +147,9 @@ class TestGate(unittest.TestCase):
 
     def test_the_flag_records_the_acceptance(self):
         root = self._root()
+        # A planted PROVEN row cannot bypass the registry's claim mask. This
+        # host declares no write-boundary capability, so the ack stays UNKNOWN.
+        write_host_evidence(root, {hosts.ARTIFACT_WRITE_GUARD: hosts.PROVEN})
         path = requests.require_unenforced_ack(
             root, _manifest("generic", allow=True), ENTRIES)
         with open(path, encoding="utf-8") as fh:
@@ -227,8 +230,18 @@ class TestTheAckRecordsAShadowedOverride(unittest.TestCase):
             runio._write_json(path, body)
         return root
 
+    @staticmethod
+    def _plant_transport(root, value):
+        path = runio._pano(root, runio.HOST_CAPABILITIES)
+        body = runio._load_json(path)
+        body["self_write_delivery"] = value
+        body["capabilities"][hosts.ARTIFACT_WRITE_GUARD][
+            "self_write_delivery"] = value
+        runio._write_json(path, body)
+
     def test_a_shadowed_override_is_recorded_even_though_write_is_mediated(self):
         root = self._root(hosts.REFUTED, detail=self.SHADOW)
+        self._plant_transport(root, False)
         path = requests.require_unenforced_ack(
             root, _manifest("claude", allow=True), ENTRIES)
         self.assertIsNotNone(path)
@@ -250,6 +263,7 @@ class TestTheAckRecordsAShadowedOverride(unittest.TestCase):
 
     def test_a_proven_omission_records_boundary_and_transport_separately(self):
         root = self._root(hosts.REFUTED, detail=self.SHADOW)
+        self._plant_transport(root, True)
         omission = hosts.HostSpec(
             name="omission",
             claims=frozenset({hosts.ARTIFACT_WRITE_GUARD,

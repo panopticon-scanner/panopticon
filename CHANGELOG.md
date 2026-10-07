@@ -13,9 +13,12 @@ evidence exposed.
   `artifact_write_guard` now means reviewer-controlled artifact writes are impossible or confined.
   The static `self_write_delivery` fact is true only for Claude and Kimi, and a write-capable role
   self-writes only when that fact and a proven boundary both hold; all other cases remain
-  return-persist. Current Claude/Kimi proof covers the write-tool surface; if tool policy is not
-  proven, the acknowledgement names the remaining Bash-path gap. An unproven boundary (including
-  generic) still requires `--allow-unenforced`. Codex gains no capability claim in this policy change.
+  return-persist. Current Claude/Kimi proof covers the write-tool surface. When tool policy is
+  REFUTED and the operator passes `--allow-unenforced`, `unenforced-ack.json` names the remaining
+  Bash-path gap. For that PROVEN-boundary case, with no flag or with tool policy UNKNOWN, no
+  acknowledgement is written; the gap appears only in the `tool_policy_enforced` posture line. An
+  unproven boundary (including generic) still requires `--allow-unenforced`. Codex gains no
+  capability claim in this policy change.
 - **Workflow guard: what `eval`'s words and a `-c` string hand on (#2673, #2683, #2684, #2764,
   #2669, #2331).** `eval 'curl … |' 'sh'` ran the pipe and read CLEAN: `eval` joins its words before
   it runs them, and the guard read them one by one. Where a word begins or ends with an operator the

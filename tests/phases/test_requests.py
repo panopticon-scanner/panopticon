@@ -165,12 +165,24 @@ class TestDelivery(unittest.TestCase):
     self-write.
     """
 
-    def _evidence(self, guard):
+    def _evidence(self, guard, planted_delivery=None):
         # MIXED, and specifically tool_policy PROVEN with the guard varying:
         # an enforced shell with no write guard is the case the bridge is for.
-        return {hosts.TOOL_POLICY_ENFORCED: {"state": hosts.PROVEN, "by": "x", "detail": "x"},
-                hosts.ARTIFACT_WRITE_GUARD: {"state": guard, "by": "x", "detail": "x"},
-                hosts.USAGE_LEDGER: {"state": hosts.UNKNOWN, "by": None, "detail": "x"}}
+        evidence = {
+            hosts.TOOL_POLICY_ENFORCED: {
+                "state": hosts.PROVEN, "by": "x", "detail": "x"},
+            hosts.ARTIFACT_WRITE_GUARD: {
+                "state": guard, "by": "x", "detail": "x"},
+            hosts.USAGE_LEDGER: {
+                "state": hosts.UNKNOWN, "by": None, "detail": "x"},
+        }
+        if planted_delivery is not None:
+            # Host evidence is attacker-influenced input, not the static
+            # transport registry. Pin both places a loose reader might look.
+            evidence["self_write_delivery"] = planted_delivery
+            evidence[hosts.ARTIFACT_WRITE_GUARD][
+                "self_write_delivery"] = planted_delivery
+        return evidence
 
     def test_claude_and_kimi_self_write_only_with_a_proven_boundary(self):
         for host in ("claude", "kimi"):
@@ -191,6 +203,22 @@ class TestDelivery(unittest.TestCase):
         self.assertEqual("return_json", mode)
         self.assertEqual(requests.RETURN_PERSIST_PREAMBLE
                          % {"out_file": "/abs/out.json"}, prefix)
+
+    def test_evidence_cannot_override_the_static_transport_fact(self):
+        omission = hosts.HostSpec(
+            name="omission", claims=frozenset({hosts.ARTIFACT_WRITE_GUARD}))
+        with mock.patch.dict(hosts.HOSTS, {"omission": omission}):
+            mode, prefix = requests.delivery(
+                "omission", self._evidence(hosts.PROVEN, planted_delivery=True),
+                "domain-panel.md", "/abs/out.json")
+        self.assertEqual("return_json", mode)
+        self.assertTrue(prefix)
+
+        mode, prefix = requests.delivery(
+            "claude", self._evidence(hosts.PROVEN, planted_delivery=False),
+            "domain-panel.md", "/abs/out.json")
+        self.assertIsNone(mode)
+        self.assertEqual("", prefix)
 
     def test_codex_remains_return_json_until_its_family_claim_lands(self):
         mode, _prefix = requests.delivery(

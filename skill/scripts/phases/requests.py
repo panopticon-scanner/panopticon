@@ -523,9 +523,9 @@ def require_unenforced_ack(review_root, manifest, entries):
     The gate reads one capability: ARTIFACT_WRITE_GUARD, the safety outcome
     that reviewer-controlled artifact writes are impossible or confined to
     the declared out_file. Current Claude/Kimi proof covers the write-tool
-    surface; Bash-path writes are TOOL_POLICY_ENFORCED's surface and become a
-    named acknowledgement gap when it is unproven. The capability is separate
-    from static self_write_delivery, and delivery never bypasses this gate.
+    surface; Bash writes are TOOL_POLICY_ENFORCED's. For a PROVEN boundary, only
+    REFUTED plus --allow-unenforced records the gap; with no flag or at UNKNOWN no
+    ack is written, and only the posture line shows it. Delivery and transport stay separate.
 
     On a host that does not declare it -- `--host generic`, the one
     claim-nothing value the CLI still accepts since #1621 retired gemini from
@@ -662,7 +662,7 @@ def _merge_ack(path, body, refresh=_ACK_DISCLOSURE):
 
     So which keys are a binding and which are this invocation's own facts is
     the CALLER's to state, and `refresh` is where it says so. The review ack
-    refreshes only its two disclosure keys. Setup's ack (#1737 fix round 1)
+    refreshes only its four disclosure keys. Setup's ack (#1737 fix round 1)
     binds nothing downstream and refreshes everything: a stale `host` or
     `plan_sha256` there is not a binding preserved, it is a record of an
     acceptance that was never made.

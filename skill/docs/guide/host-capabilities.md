@@ -26,8 +26,11 @@ enforcement shell whose `tools:` grant matches its template, *and* the reviewed 
 that shadows those shells. `artifact_write_guard` — reviewer-controlled artifact writes are
 impossible or confined to the declared `out_file`. A family can prove an absent reviewer-selectable
 write surface or a mediated self-write path; transport is a separate static registry fact. Current
-Claude/Kimi proof covers the write-tool surface. Bash-path writes belong to `tool_policy_enforced`;
-if that is not proven, an acknowledgement records the named gap rather than broadening the claim.
+Claude/Kimi proof covers the write-tool surface. Bash-path writes belong to `tool_policy_enforced`.
+When that posture is REFUTED and the operator passes `--allow-unenforced`,
+`unenforced-ack.json` records the named gap rather than broadening the claim. For that
+PROVEN-boundary case, with no flag or with tool policy UNKNOWN, no acknowledgement is written; the
+gap appears only in the `tool_policy_enforced` posture line.
 `usage_ledger` — probed by `usage-source`, which follows the mode: in headless
 mode the run folder can hold the dispatch ledger, the host's CLI is on PATH and its `--help`
 advertises the flags that make a launch print the JSON envelope (`-p`, `--output-format` — any

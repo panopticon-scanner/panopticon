@@ -44,8 +44,11 @@ shell from a reviewer's.
 
 Known gap: **Bash-path artifact writes when `tool_policy_enforced` is not PROVEN (Claude/Kimi)**.
 Their current `artifact_write_guard` proof covers the write-tool surface. When tool policy is
-refuted and the operator proceeds, `unenforced-ack.json` preserves both the PROVEN capability row,
-`write_guard_covers_bash: false`, and this named gap. Composed proof is a separate policy decision.
+REFUTED and the operator passes `--allow-unenforced`, `unenforced-ack.json` preserves both the
+PROVEN capability row, `write_guard_covers_bash: false`, and this named gap. For that
+PROVEN-boundary case, with no flag or with tool policy UNKNOWN, no acknowledgement is written; the
+gap appears only in the `tool_policy_enforced` posture line. Composed proof is a separate policy
+decision.
 
 A **second, separate refusal** covers the reviewed tree shadowing the enforcement shells (spec
 §7.3). A target that ships `panopticon-*` agent files in a project-scoped agent directory — or any
