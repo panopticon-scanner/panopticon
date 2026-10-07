@@ -17,7 +17,7 @@ import os
 import re
 
 from shell_patterns import shell_words
-from shell_tokens import has_substitution, is_arm, readable
+from shell_tokens import derived, has_substitution, is_arm, readable
 from shell_wrappers import WRAPPERS, Defaulted, Rewritten, dynamic, unwrap
 
 
@@ -53,8 +53,10 @@ _SHELLS = ("sh", "bash", "dash", "ash", "ksh", "zsh")
 # that shell, which bash runs wherever `X` leaves the word to it.
 _DEFAULTS = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([^{}$`'\"\\\s]+)\}")
 # The same read whole, its default holding blanks (`${X:-bash -s}`): only a word the reader split
-# at blanks no quote or backslash covers, where bash splits the default too, once expanded (#2731).
-_WHOLE_DEFAULTS = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([^{}$`'\"\\]+)\}")
+# at blanks no quote or backslash covers, where bash splits the default too, once expanded (#2731);
+# a literal glued after the `}` joins its last word (`${X:-/usr/bin/env s}h`, #2856 round 11) --
+# none bash would glob (`${X:-bash -s}*` is `-s*`, an option no shell takes).
+_WHOLE_DEFAULTS = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([^{}$`'\"\\]+)\}([^\s{}$`'\"\\*?[]*)")
 # A command word that is ONE unquoted reference, with no default or one that
 # hands on (`$SUDO`, `${SUDO}`, `${SUDO:-}`, `${X:-sudo}`), in front of a name
 # the reader knows: an optional wrapper spelled by variable (#2472). Empty or
@@ -89,15 +91,25 @@ def _optional(argv):
 
 
 def _shell_default(word):
-    """The words a command word that is a shell's default runs as (`${X:-bash -s}`: `bash`,
-    `-s`), or None. bash expands an unquoted default whole and then splits it at its blanks
-    (#2731), so a default whose first word names a shell is that shell -- but only at a blank no
-    quote or backslash covers, which the reader marks (`span`, the words it split `main`'s way).
-    Every other word is read as it always was, its default holding no blank: `"${SH:-bash}"` is
-    `bash` (#2337), and `"${SH:- bash}"`, `${X:-"bash -s"}` and `${X:-bash\\ -s}` name no shell."""
-    default = (_WHOLE_DEFAULTS if getattr(word, "span", 1) > 1 else _DEFAULTS).fullmatch(word)
-    words = default[1].split() if default else []
-    return words if words and os.path.basename(words[0]) in _SHELLS else None
+    """The words a command word that is a shell's one-word default runs as (`${X:-sh}`: `sh`), or
+    None: `"${SH:-bash}"` is `bash` (#2337), and `"${SH:- bash}"`, `${X:-"bash -s"}` and
+    `${X:-bash\\ -s}` name no shell. A default holding a blank the reader marks is read whole
+    (`_default_words`)."""
+    default = _DEFAULTS.fullmatch(word)
+    return [default[1]] if default and os.path.basename(default[1]) in _SHELLS else None
+
+
+def _default_words(whole):
+    """The words bash makes of a command word it expands whole, its name unset (#2731): the default,
+    a literal glued after the `}` joining its last word, split where bash splits it -- at a space, a
+    tab or a newline, never a Unicode or vertical space (#2856 round 11, F2) -- each word a token
+    keeping the reader's marks of what it holds (`derived`), so a lifted `$(…)` stays dynamic behind
+    a wrapper and a `<(…)` a file. None where `_WHOLE_DEFAULTS` does not read the word: a `$NAME` or
+    a nested default in it, a parameter that is no NAME, a substitution glued after the `}`."""
+    default = _WHOLE_DEFAULTS.fullmatch(whole)
+    if not default or has_substitution(derived(default[2], whole)):
+        return None
+    return [derived(part, whole) for part in re.split(r"[ \t\n]+", (default[1] + default[2]).strip(" \t\n"))]
 
 
 def _command_result(argv, optional=True):
@@ -137,14 +149,16 @@ def _command_result(argv, optional=True):
         # reader's whole word is read, since it decides the program; every other word -- an
         # assignment, a keyword, an operand -- is `main`'s (#2856 round 8).
         if (whole := getattr(argv[0], "whole", None)) is not None:
-            argv[0:getattr(argv[0], "span", 1)] = [whole]
-            # A default whose first word is another name the reader knows -- a wrapper, a foreign
-            # interpreter, a fetcher, by path too -- is that name's command, read as `main` read its
-            # words (`${X:-/usr/bin/env bash -s}`, `${X:-/usr/bin/curl -fsSL URL}`; #2856 round 10).
-            if (default := _WHOLE_DEFAULTS.fullmatch(whole)) and (words := default[1].split()) and (
-                    os.path.basename(words[0]) in OPTIONAL_NEXT) and (
-                    os.path.basename(words[0]) not in _SHELLS):
-                argv[0:1] = [Defaulted(words[0]), *words[1:]]
+            span, words = getattr(argv[0], "span", 1), _default_words(whole)
+            if words and os.path.basename(words[0]) in OPTIONAL_NEXT:
+                # A default naming a command the reader knows -- a shell, a wrapper, a foreign
+                # interpreter, a fetcher, by path too -- is that command, its words the reader's own
+                # (`${X:-bash -s}`, `${X:-/usr/bin/env sh -c}`, `${X:-/usr/bin/curl -fsSL} URL`).
+                argv[0:span] = [Defaulted(words[0]), *words[1:]]
+            elif words or os.path.basename(argv[0]) not in OPTIONAL_NEXT:
+                argv[0:span] = [whole]          # a name the guard does not follow, read whole
+            # Else `main`'s split words stay: past `_WHOLE_DEFAULTS` (`${X:-$HOME/bin/env sh -c}`,
+            # `${1:-/bin/sh -c}`), their first names a known command by its basename (#2856 round 11).
         dropped = _optional(argv) if optional and not heads else 0
         if dropped:
             del argv[:dropped]                  # bash drops them, or they hand on (#2472)
