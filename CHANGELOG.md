@@ -202,8 +202,18 @@ evidence exposed.
   where round 11 tested every mark of the whole word against each (4.6x the base at 1,000 `$(…)`
   words, 15.7x at 4,000; the round-11 verdict's B3), so such a default costs that shlex token
   alone.
-- **Codex model profiles move to GPT-6 (#2872).** Role defaults now use `gpt-6-luna` or
+- **Codex model profiles move to GPT-6 (#2872).** Pinned role defaults now use `gpt-6-luna` or
   `gpt-6-sol`; set `PANOPTICON_MODEL_<ROLE>` to pin another installed model.
+- **Reviewer write safety separates the boundary from its transport (#1622).**
+  `artifact_write_guard` now means reviewer-controlled artifact writes are impossible or confined.
+  The static `self_write_delivery` fact is true only for Claude and Kimi, and a write-capable role
+  self-writes only when that fact and a proven boundary both hold; all other cases remain
+  return-persist. Current Claude/Kimi proof covers the write-tool surface. When tool policy is
+  REFUTED and the operator passes `--allow-unenforced`, `unenforced-ack.json` names the remaining
+  Bash-path gap. For that PROVEN-boundary case, with no flag or with tool policy UNKNOWN, no
+  acknowledgement is written; the gap appears only in the `tool_policy_enforced` posture line. An
+  unproven boundary (including generic) still requires `--allow-unenforced`. Codex gains no
+  capability claim in this policy change.
 - **Workflow guard reads a function header in the spellings bash takes at a statement's head
   (#2664, #2608; #2785).** `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after
   `then`, `do` or an opened `{` ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN:
