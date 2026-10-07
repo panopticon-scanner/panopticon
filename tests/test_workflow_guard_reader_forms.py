@@ -15,6 +15,7 @@ import unittest
 
 import shell_lex
 import workflow_guard as wg
+import workflow_called
 import workflow_uses
 
 URL = "https://example.test/"
@@ -348,8 +349,8 @@ class TestAPayloadAnywhereAmongTheCandidatesReports(unittest.TestCase):
         '[ -n "${INSTALLER_OVERRIDE:-}" ] && INSTALLER=$INSTALLER_OVERRIDE\nsh "$INSTALLER"',
         'T=@P@; command -v sh > /dev/null || T=/dev/null; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; fi; }; f; '
         'false && T=y; sh "$T"',
-        # A payload the call itself carried in, then a later update past the cap (kept: the
-        # carried candidates are dropped last-in-order, not all at once).
+        # A payload the call itself carried in, then a later update past the cap: the cap's
+        # stand-in, which a use reads as every download (round 7).
         'T=/dev/null; f() { T=@P@; if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; false && T=y; sh "$T"')
     BASH_RUN = (  # B03-B08, B10, B11: arrays (dash has none)
         'declare -a T=(@P@); f() { if false; then T=(a); T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); fi; }; f; sh "${T[0]}"',
@@ -466,6 +467,10 @@ class TestEveryCapLeavesItsStandIn(unittest.TestCase):
         # F3: a body's call in a list it backgrounds is not followed (DK21), as at the top level,
         # whose forked calls stay clear: DK01, DK04, DK17, and a group piped on.
         'T=/dev/null; f() { T=@P@; }; g() { f & wait; }; g; sh "$T"',
+        # Round 9, B2: a list's end decides, read once walking the body back (round 8, B3), so
+        # `f && : &` and `f || : &` send `f` to the background too (BG07, BG18).
+        'T=/dev/null; f() { T=@P@; }; g() { f && : & wait; }; g; sh "$T"',
+        'T=/dev/null; f() { T=@P@; }; g() { f || : & wait; }; g; sh "$T"',
         'T=/dev/null; f() { T=@P@; }; f & wait; sh "$T"',
         'T=/dev/null; f() { T=@P@; }; ( f ) & wait; sh "$T"',
         'T=/dev/null; f() { T=@P@; }; if true; then f; fi & wait; sh "$T"',
@@ -515,7 +520,7 @@ class TestTheStandInHoldsItsKeysAndAProductItsBound(unittest.TestCase):
         '[ -z "${NOPE:-}" ] && T=(x @P@); declare T=y; sh "${T[1]}"',
         'declare -a CMD=(true)\ndetect() {\n  case "$(uname -s)" in\n    Darwin) CMD=(a);;\n    FreeBSD) CMD=(b);;\n'
         '    OpenBSD) CMD=(c);;\n    NetBSD) CMD=(d);;\n    SunOS) CMD=(e);;\n    AIX) CMD=(f);;\n    HP-UX) CMD=(g);;\n'
-        '    Linux) CMD=(sh @P@);;\n  esac\n}\ndetect\nCMD=sh\n"${CMD[@]}"',
+        '  esac\n}\ndetect\n[ -n "${CUSTOM:-}" ] || CMD=(x @P@)\nCMD=sh\n"${CMD[@]}"',
         'T=/dev/null; g() { A=(x); T=@P@; }; g; sh "$T"',
         'T=/dev/null; g() { declare -a A=(x); T=@P@; }; g; sh "$T"',
         'T=/dev/null; g() { ARGS=(-fsSL); T=@P@; }; g; sh "$T"')
@@ -549,12 +554,149 @@ class TestTheStandInHoldsItsKeysAndAProductItsBound(unittest.TestCase):
 
     def test_a_call_site_carries_once_per_step(self):
         # B5: a body of K statements called K times reads in about main's time, not K times its
-        # cube: each call site's carry from one table is made once (`workflow_called._carried`).
+        # cube: each call site's carry from one state of its bodies' names is made once
+        # (`workflow_called._carried`; round 9 keys it on those names, not the whole table).
         import time
         body = "g() {\n" + "".join(": %d\n" % i for i in range(150)) + "}\n"
         start = time.perf_counter()
         reported(GET + body + "g\n" * 150 + "sh /dev/null\n")
         self.assertLess(time.perf_counter() - start, 8.0)
+
+
+class TestACallSiteCarriesOncePerStateOfItsNames(unittest.TestCase):
+    """PR #2855 round 9, the round-8 verdict's B1: the memo keyed a call site's carry on the whole
+    table, so a loop that changes a name between its calls carried each site again at every
+    rebuild, and a large table cost every visit a pass over every name -- cubic where `main` is
+    quadratic. A site's carry is now keyed on the names its bodies spell or set
+    (`workflow_called._named`): a body that names nothing carries once per site, and one that
+    reads a name its loop changes carries at most `_BUDGET` (8) states of it, past which each name
+    it sets holds the cap's stand-in, a price; a body that may set any name (`eval`, `source`)
+    compares the table as the dicts it is. Pinned as round 8's `lines` is, by the carry's cost --
+    here its CPU time beside the same step read with no carry, which round 8 ran 4.7-7.4 times
+    over -- and by the carries counted."""
+
+    @staticmethod
+    def body(size, first=""):
+        return "g() {\n" + first + "".join(": %d\n" % i for i in range(size)) + "}\n"
+
+    def looped(self, size, first="", head="for i in 1 2; do\n", tail="done\n"):
+        return self.body(size, first) + head + "".join("X=a%d; g\n" % j for j in range(size)) + tail
+
+    @staticmethod
+    def ratio(script):
+        """The step's CPU time with the carry over its time with `record_called` a no-op."""
+        import gc
+        import time
+        from unittest import mock
+
+        def cost():
+            enabled = gc.isenabled()
+            gc.disable()
+            try:
+                start = time.process_time()
+                reported(GET + script + "sh /dev/null\n")
+                return time.process_time() - start
+            finally:
+                if enabled:
+                    gc.enable()
+        with mock.patch.object(workflow_uses, "record_called", lambda *args: None):
+            bare = cost()
+        return cost() / bare
+
+    def test_each_shape_costs_a_constant_factor_of_the_step_without_the_carry(self):
+        while_head, while_tail = "n=0\nwhile [ $n -lt 2 ]; do\n", "n=$((n+1))\ndone\n"
+        for name, script, bound in (
+                ("loop", self.looped(60), 3.0),
+                ("while", self.looped(60, head=while_head, tail=while_tail), 3.0),
+                ("wide", "log() { :; }\n" + "".join("V%d=v%d\n" % (i, i) for i in range(150)) + "log\n" * 150, 2.0),
+                ("reads", self.looped(60, "U=$X\n"), 4.0),
+                ("eval", "log() { eval :; }\n" + "".join("V%d=v%d\n" % (i, i) for i in range(150)) + "log\n" * 150,
+                 2.0)):
+            with self.subTest(shape=name):
+                ratio = self.ratio(script)
+                if ratio >= bound:          # once more, against a busy machine
+                    ratio = min(ratio, self.ratio(script))
+                self.assertLess(ratio, bound)
+
+    def carries(self, script):
+        """How many times `_carry` ran for `script` (each site's dry carry included)."""
+        from unittest import mock
+        count = [0]
+        real = workflow_called._carry
+
+        def counted(*args):
+            count[0] += 1
+            return real(*args)
+        with mock.patch.object(workflow_called, "_carry", counted):
+            reported(GET + script + "sh /dev/null\n")
+        return count[0]
+
+    def test_a_body_naming_nothing_carries_once_per_site_however_its_loop_changes_a_name(self):
+        # 24 sites: each a dry carry and one carry, where round 8 made 299.
+        self.assertEqual(48, self.carries(self.looped(24)))
+
+    def test_a_body_reading_its_loops_name_carries_within_the_budget(self):
+        # 24 sites, each a dry carry and at most 8 states, where round 8 made 299.
+        self.assertLessEqual(self.carries(self.looped(24, "U=$X\n")), 24 * (1 + workflow_called._BUDGET))
+
+    # Past the budget, each name the bodies set holds the cap's stand-in: twelve states of `X`
+    # at each site; no shell runs a download in any row, and each reports, the budget's price.
+    PRICE = tuple(row % "".join("X=a%d; g; " % j for j in range(12)) for row in (
+        'T=/dev/null; g() { : "$X"; T=/dev/null; }; for i in 1 2; do %sdone; sh "$T"',
+        'T=/dev/null; g() { : "$X"; unset T; }; for i in 1 2; do %sdone; sh "${T:-/dev/null}"',
+        # a body that may set any name: every held name, past the budget
+        'T=/dev/null; g() { . ./env.sh; }; for i in 1 2; do %sdone; sh "$T"'))
+    # Within it (eight states), each reads as the carry made it.
+    HONEST = tuple(row.replace("X=a8; g; X=a9; g; X=a10; g; X=a11; g; ", "") for row in PRICE)
+
+    def test_past_the_budget_the_names_a_body_sets_hold_the_stand_in(self):
+        for rows, expected in ((self.PRICE, True), (self.HONEST, False)):
+            for row in rows:
+                for shell in SHELLS:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertEqual(expected, reported(filled(row), shell))
+
+
+class TestASubshellBodyByTheTokenAfterItsHeader(unittest.TestCase):
+    """PR #2855 round 9, F2: round 8 read a body as a subshell where its header's stage opened a
+    `(` and no `{` stood among its first three words, so `f() ( { T=P; } )` and `f() ( echo { ;
+    T=P )` were carried, an over-report. A body is a subshell where that `(` is followed by no
+    structural `{` (`_function_syntax`), or outlives the body's `}`: the reader keeps no place for
+    a `(`, so its depth says which came first (`workflow_called._subshell`). Rows are the round-8
+    seat's (SB100, SX01-SX17), truth over 8 parents."""
+
+    NONE_RUN = (  # SB100, SX01, SX02, SX04, SX05, SX06, SX09; and SX10, a `{` fourth
+        'T=/dev/null; f() ( { T=@P@; } ); f; sh "$T"',
+        'T=/dev/null; f() ( echo { ; T=@P@ ); f; sh "$T"',
+        'T=/dev/null; f() ( { T=@P@; }; : ); f; sh "$T"',
+        'T=/dev/null; f() ( : { ; T=@P@ ); f; sh "$T"',
+        'T=/dev/null; f ( ) ( { T=@P@; } ); f; sh "$T"',
+        'T=/dev/null; function f ( { T=@P@; } ); f; sh "$T"',
+        'T=/dev/null; f() ( { T=@P@; } ); g() { f; }; g; sh "$T"',
+        'T=/dev/null; f() ( printf %s { ; T=@P@ ); f; sh "$T"')
+    ALL_RUN = (  # SX11, SX12, SX14, SX17: brace bodies, a `{` word or a subshell first
+        'T=/dev/null; f() { { T=@P@; }; }; f; sh "$T"',
+        'T=/dev/null; f() { echo { ; T=@P@; }; f; sh "$T"',
+        'T=/dev/null; f() { ( : ) ; T=@P@; }; f; sh "$T"',
+        'T=/dev/null; f ( ) { T=@P@; }; f; sh "$T"',
+        'T=/dev/null; f() { (T=x; U=y); T=@P@; }; f; sh "$T"')
+    BASH_RUN = (  # SX13, SX15, SX16: `function` headers dash rejects
+        'T=/dev/null; function f { ( :; ); T=@P@; }; f; sh "$T"',
+        'T=/dev/null; function f () { T=@P@; }; f; sh "$T"',
+        'T=/dev/null; function f ( ) { T=@P@; }; f; sh "$T"')
+
+    def test_a_subshell_body_reaches_nothing(self):
+        for row in self.NONE_RUN:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(filled(row), shell))
+
+    def test_a_brace_body_is_carried(self):
+        for rows, shells in ((self.ALL_RUN, SHELLS), (self.BASH_RUN, (None, "bash", "bash {0}"))):
+            for row in rows:
+                for shell in shells:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertTrue(reported(filled(row), shell))
 
 
 class TestEveryHeaderSpellingTheSeatAskedFor(unittest.TestCase):

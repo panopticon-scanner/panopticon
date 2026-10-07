@@ -110,6 +110,82 @@ class TestWhatACallMayLeave(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertEqual({"T": ["old"]}, called(script))
 
+        # A `{` after the `(` (round 9, F2): still the subshell; a `(` the body's `}` outlives.
+        for script in ("f() ( { T=x; } )\nf\n", "f() ( echo { ; T=x )\nf\n", "function f ( { T=x; } )\nf\n",
+                       "f() ( { T=x; }; : )\nf\n"):
+            with self.subTest(script=script):
+                self.assertEqual({"T": ["old"]}, called(script))
+        for script in ("f() { ( : ); T=x; }\nf\n", "f() { (T=y; U=z); T=x; }\nf\n", "f() { { T=x; }; }\nf\n"):
+            with self.subTest(script=script):
+                self.assertIn("x", called(script)["T"])      # a brace body: carried
+
+
+def named(script):
+    """`_named` for the bodies the step's last statement, a call, carries."""
+    stmts = stmts_of(script)
+    starts = workflow_uses._function_ranges(stmts)[0]
+    return workflow_called._named(stmts, workflow_called._reached(stmts, len(stmts) - 1, starts))
+
+
+class TestACallSitesStateIsTheNamesItsBodiesSpellOrSet(unittest.TestCase):
+    """Round 9 (the round-8 verdict's B1): a call site's carry is keyed on the names its bodies
+    spell -- read or set -- and those a dry carry, each spelled name held, shows them set; a body
+    that may set a name it does not spell keys on the whole table (`anything`)."""
+
+    def test_the_names_a_body_reads_and_sets(self):
+        names, written, anything = named("g() { T=$X; }\ng\n")
+        self.assertLessEqual({"T", "X"}, names)
+        self.assertEqual(({"T"}, False), (written, anything))
+        # A body naming nothing but its own header has no state a table holds: one carry
+        # serves every table.
+        self.assertEqual((frozenset({"g"}), frozenset(), False), named("g() { : 0; : 1; }\ng\n"))
+
+    def test_a_write_the_body_does_not_spell_and_one_only_a_held_name_shows(self):
+        self.assertIn("REPLY", named("g() { read -r; }\ng\n")[1])           # bash's default name
+        self.assertIn("T", named("g() { unset T; }\ng\n")[1])               # a held name's "maybe unset"
+        self.assertNotIn("T", named("g() { local T; T=x; }\ng\n")[1])       # dies with the call
+
+    def test_a_body_that_may_set_any_name(self):
+        for body in ('eval "$C"', ". ./env.sh", "source ./env.sh", 'export "$K=v"', 'read -r "$N"'):
+            with self.subTest(body=body):
+                self.assertTrue(named("g() { %s; }\ng\n" % body)[2])
+
+
+class TestTheMemoLeavesWhatACarryLeaves(unittest.TestCase):
+    """Round 9: at every visit of a call site, the table `record_called` leaves equals the one a
+    fresh carry of the same bodies leaves (round 8's semantics), budget aside: a hit restores the
+    names it keys on, and for a body that may set any name, the whole table. Each script visits a
+    site more than once: a later statement rebuilds the table, a loop walks its body again."""
+
+    SCRIPTS = (
+        "g() { read -r; }\ng\nsh \"$REPLY\"\nsh \"$REPLY\"\n",
+        "T=a\ng() { T=$X; }\nfor i in 1 2; do\nX=a; g\nX=b; g\ndone\nsh \"$T\"\nsh \"$T\"\n",
+        "T=a\ng() { unset T; }\nfor i in 1 2; do\nX=a; g\ndone\nsh \"${T:-x}\"\nsh \"$T\"\n",
+        "V=1\ng() { eval :; }\ng\nsh \"$V\"\nsh \"$V\"\n",
+        "g() { eval :; }\nfor i in 1 2; do\nV=a; g\nV=b; g\ndone\nsh \"$V\"\n",
+        "A=(x)\ng() { A+=(y); }\nfor i in 1 2; do\nX=a; g\ndone\n\"${A[@]}\"\n",
+        "h() { T=$X; }\ng() { h; }\nfor i in 1 2; do\nX=a; g\nX=b; g\ndone\nsh \"$T\"\n")
+
+    def test_every_visit_leaves_what_a_fresh_carry_leaves(self):
+        from unittest import mock
+        real, seen = workflow_called.record_called, []
+
+        def checked(table, stmts, position, starts):
+            fresh = table.copy()
+            for start, close in workflow_called._reached(stmts, position, starts):
+                workflow_called._carry(fresh, stmts, start, close)
+            real(table, stmts, position, starts)
+            seen.append(position)
+            self.assertEqual(workflow_called._state(fresh, None), workflow_called._state(table, None))
+        for script in self.SCRIPTS:
+            with self.subTest(script=script), mock.patch.object(workflow_called, "_BUDGET", 10 ** 9), \
+                    mock.patch.object(workflow_uses, "record_called", checked):
+                seen.clear()
+                stmts = stmts_of(script)
+                for index in range(len(stmts)):
+                    workflow_uses.static_values(stmts, index)
+                self.assertGreater(len(seen), len(set(seen)))       # a site visited again
+
 
 if __name__ == "__main__":
     unittest.main()
