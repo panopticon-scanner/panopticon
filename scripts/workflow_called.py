@@ -32,10 +32,10 @@ Beside `scripts/workflow_values.py`, which is at its ceiling; imports nothing ab
 import os
 import re
 
-from shell_command import _ASSIGNMENT, _heads
+from shell_command import _ASSIGNMENT, _heads, command
 from shell_tokens import is_arm
 from workflow_function_calls import _function_syntax
-from workflow_values import Values, emptied, record, stand_in
+from workflow_values import _CANDIDATES, PAST, Values, emptied, record, stand_in
 
 _DEPTH = 8          # calls followed inside a body, in all
 # `static_values` rebuilds the table at each statement that reads one, and carrying every earlier
@@ -43,9 +43,13 @@ _DEPTH = 8          # calls followed inside a body, in all
 # the carries, keyed on the state of their names, grew again where those names were many (round
 # 10, B3). So a call site carries `_BUDGET` times a step (`_carried`), walking only the statements
 # that may write (`_writes`), and past that each name its bodies may set gains the cap's stand-in
-# instead, unsure: fail-closed, a price. The last few steps are kept, each with its statements, so
-# an id is never reused while its entry stands.
+# instead, unsure: fail-closed, a price. A carry costs the statements it walks and the names it
+# copies, and one costing more than `_WORK` counts as more than one, so a site's carries cost at
+# most `_BUDGET` times `_WORK` (round 12, the round-11 B2: a body setting K names, called K times,
+# cost eight walks of K statements a site). The last few steps are kept, each with its statements,
+# so an id is never reused while its entry stands.
 _BUDGET = 8
+_WORK = 128
 _CARRIED: dict[int, "_Step"] = {}
 _SPELLED = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # Where bash may write a name the carry's own step does not read: an assignment inside `${…}`
@@ -156,9 +160,17 @@ class _Step:
     def set_at(self, at):
         """The names statement `at` may set -- its plain ones where it may also set any name (`export
         "$K=v" X=P` sets `X`): such a statement gives every held name its stand-in last of all it
-        does (`record`'s `_unread`), which takes no stand-in away (round 11, the round-10 verdict's B1)."""
+        does (`record`'s `_unread`), which takes no stand-in away (round 11, the round-10 verdict's B1)
+        -- and each name a `read`, `unset` or `local` names behind a wrapper, which the walk's `_cleared`
+        reads through `command` (`command read T`, `nohup unset T`) where `_carry_one` stops at the
+        wrapper: names alone, so a wrapped `unset` empties nothing here (round 12, the round-11 B1)."""
         if at not in self._set:
-            self._set[at] = _written(self.stmts[at], self.probe) - {self.probe}
+            names = _written(self.stmts[at], self.probe) - {self.probe}
+            for stage in self.stmts[at].stages[-1:]:
+                argv = command(stage.argv)
+                if argv and os.path.basename(str(argv[0])) in ("read", "unset", "local"):
+                    names |= {str(word).split("[", 1)[0] for word in argv[1:] if not str(word).startswith("-")}
+            self._set[at] = names
         return self._set[at]
 
     def since(self, key, table, position):
@@ -288,18 +300,18 @@ def record_called(table, stmts, position, starts):
             step.effects[bodies] = _effects(stmts, bodies) if bodies else (frozenset(), False, (), frozenset())
         site = step.sites[position] = [bodies, *step.effects[bodies], 0]
     bodies, written, anything, active, spelled, made = site
-    if not bodies:
+    if not any(active):                 # no body that may write: a carry leaves the table as it is
         return
-    if made < _BUDGET:
+    if made < _BUDGET * _WORK // max(_WORK, sum(map(len, active)) + len(active) * len(spelled)):
         site[5] += 1
         if anything:
             # A carry gives each name it does not spell its own stand-in alone (`record`'s
             # `_unread`): given here, once a walk and then to what changed since, and the carry
             # walks the names the bodies spell.
             since = step.since("own", table, position)
-            for name in ({*table.scalars, *table.arrays} if since is None else since) - spelled:
-                if name in table.scalars or name in table.arrays:
-                    emptied(table, name, False, True)
+            for name in _held(table) if since is None else since:
+                if name not in spelled and (name in table.scalars or name in table.arrays):
+                    _own(table, name)
             step.last["own"] = (table, position, spelled)
         # Each carry copies and merges back only the names its bodies spell or set: any other
         # name stays the caller's as it is, where a copy of the whole table cost K names a carry.
@@ -308,11 +320,66 @@ def record_called(table, stmts, position, starts):
         return
     key = None if anything else bodies
     since = step.since(key, table, position)
-    if anything:                        # every name the table holds -- that changed, after the first
-        names = written | ({*table.scalars, *table.arrays} if since is None else {
-            name for name in since if name in table.scalars or name in table.arrays})
+    if anything:    # every name the table holds -- after the first, those that changed and any not held
+        names = [*_held(table), *(name for name in written if name not in table.scalars and name not in
+                                  table.arrays)] if since is None else {
+            name for name in since if name in written or name in table.scalars or name in table.arrays} | {
+            name for name in written if name not in table.scalars and name not in table.arrays}
     else:
         names = written if since is None else written & since
     for name in names:
-        stand_in(table, name)
+        _stood(table, name)
     step.last[key] = (table, position, ())
+
+
+class _Shared(list):
+    """A candidate list `_stood` gives every name that holds nothing on that side, one list for them
+    all: read-only, so no write changes it under another name -- the table's writers build a new
+    list (`_update`, `_carry`), and a mutator here raises."""
+
+
+def _read_only(*args):
+    raise TypeError("a stand-in's shared list is read-only")
+
+
+for _mutator in ("append", "extend", "insert", "remove", "pop", "clear", "sort", "reverse", "__setitem__",
+                 "__delitem__", "__iadd__", "__imul__"):
+    setattr(_Shared, _mutator, _read_only)
+
+
+# What `stand_in` leaves a name that held nothing -- scalars `PAST` and the "maybe unset" `""`,
+# word-lists one holding `PAST` -- and the word-lists it leaves a name that held scalars alone.
+_NOTHING, _LISTS = _Shared([PAST, ""]), _Shared([_Shared([PAST])])
+
+
+def _held(table):
+    """Every name `table` holds, each once, in the table's own order: a walk's first visit stands in
+    or gives its own stand-in to each, without a set of K names built to do it."""
+    return [*table.scalars, *(name for name in table.arrays if name not in table.scalars)]
+
+
+def _own(table, name):
+    """`emptied(table, name, False, True)` -- a held name given its own reference, `$NAME`, unsure --
+    as it leaves `table`, making no list but the one it keeps where the name holds fewer scalars
+    than `_CANDIDATES` (round 12, the round-11 B2: a walk gives every held name one)."""
+    texts, reference = table.scalars.get(name), "$" + name
+    if texts is None or len(texts) >= _CANDIDATES:
+        emptied(table, name, False, True)
+    elif reference not in texts:
+        table.scalars[name] = texts + [reference]
+
+
+def _stood(table, name):
+    """`stand_in`, as it leaves `table`, making no list it needs not: a name that held nothing takes
+    the shared lists, and one that held scalars alone keeps them, `PAST` added past the first
+    `_CANDIDATES`, beside the shared word-list -- so the stand-ins a walk gives K names make no K
+    lists that outlive them for the collector to walk (round 12, the round-11 B2)."""
+    texts, lists = table.scalars.get(name), table.arrays.get(name)
+    if texts is None and lists is None:
+        table.scalars[name], table.arrays[name] = _NOTHING, _LISTS
+    elif lists is None and texts is not None and (PAST not in texts or len(texts) <= _CANDIDATES):
+        if PAST not in texts:
+            table.scalars[name] = texts[:_CANDIDATES] + [PAST]
+        table.arrays[name] = _LISTS
+    else:
+        stand_in(table, name)
