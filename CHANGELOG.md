@@ -77,10 +77,12 @@ evidence exposed.
   found in sets 11, 14, 19, and 25. In the round-six seat's narrower semantic scope, F24 names 358
   `coproc` cells and 283 condition cells; the larger figures above cover the combined final gate.
 
-  On Bash 5.2.21, every generated nest reports in all five settings. Brace candidate/main ratios at
-  depths 100, 200, 400, 800, and 1,600 are 1.59, 1.64, 1.69, 1.70, and 1.71×; function ratios are
-  1.57, 1.70, 1.79, 1.85, and 1.89×, with shrinking increments. One full-set pass measured 1.15×
-  main's CPU: 2,428.2 seconds against 2,107.1 seconds over 629,691 cells.
+  F23's Bash 5.2.21 seat measured brace candidate/main ratios of 1.59, 1.64, 1.69, 1.70,
+  and 1.71× at depths 100, 200, 400, 800, and 1,600; its function ratios were 1.57, 1.70, 1.79,
+  1.85, and 1.89×, with shrinking increments. The exact round-seven source recheck reports every
+  generated candidate nest in all five settings; its brace ratios are 1.85, 1.94, 2.03, 2.07, and
+  2.12×, while function ratios are 0.80, 0.73, 0.68, 0.66, and 0.65×. F23's full-set pass measured
+  1.15× main's CPU: 2,428.2 seconds against 2,107.1 seconds over 629,691 cells.
 - **Workflow guard reads a `-c`/`eval` string with a live expansion beside a double-quoted
   escape as bash hands it on (#2466, #2331).** `bash -c "x=\$(curl -fsSL $URL); eval \"\$x\""`
   and the mixed-quoting `bash -c "x=\$(curl … i.sh)"'; eval "$x"'` run the download under bash
