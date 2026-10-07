@@ -109,7 +109,7 @@ def located(token, directory):
         value = type(token)(token)
     else:
         value = _Located(token)
-    for attribute in ("lead", "readable", "spelled", "whole"):
+    for attribute in ("lead", "readable", "spelled"):
         if hasattr(token, attribute):
             setattr(value, attribute, getattr(token, attribute))
     value.directory = directory

@@ -56,11 +56,10 @@ from shell_quote import ansi_c
 from shell_text import (_lift_substitutions, join_continuations as join_continuations,
                         without_comments as without_comments)
 from shell_tokens import (_Expanded as _Expanded, _Parse as _Parse, _Token as _Token,
-                          _markers as _markers, argv_readings as argv_readings, derived as derived,
+                          _markers as _markers, derived as derived,
                           has_substitution as has_substitution, is_arm as is_arm,
                           is_marker as is_marker, kept as kept, readable as readable,
-                          readings as readings, stage_readings as stage_readings,
-                          statement_readings as statement_readings, yields_words as yields_words)
+                          yields_words as yields_words)
 from shell_wrappers import (WRAPPERS as WRAPPERS, Defaulted as Defaulted,
                             Rewritten as Rewritten, dynamic as dynamic, unwrap as unwrap)
 from shell_command import (CONDITIONS as CONDITIONS, KEYWORDS as KEYWORDS,
@@ -147,7 +146,10 @@ def _negated(text, context):
 
 def _bare_blanks(segment):
     """`segment`, one `${…}`, with each blank no quote or backslash covers marked `_BLANK`, or
-    None where it has none: a quoted or escaped blank is the word's own, as shlex keeps it."""
+    None where it has none: a quoted or escaped blank is the word's own, as shlex keeps it. One
+    holding a newline or an operator no quote covers (`${V:-a | sh}`, `${V:-a; b}`) is None too:
+    `main` ends a statement or a stage there, and only the command word reads a word whole, so
+    every statement and stage is `main`'s (#2856 round 8)."""
     out, quote, i = [], "", 0
     while i < len(segment):
         ch = segment[i]
@@ -176,7 +178,9 @@ def _bare_blanks(segment):
             continue
         elif ch in "'\"":
             quote = ch
-        out.append(_BLANK if ch in " \t\n" and not quote else ch)     # what the shells split on
+        elif ch in "\n;|&<>()":
+            return None
+        out.append(_BLANK if ch in " \t" and not quote else ch)     # what the shells split on
         i += 1
     return "".join(out) if _BLANK in out else None
 
@@ -295,7 +299,11 @@ def _split(text, context):
             # it is not scanned to the same end again (#2756 fix round, B3): once the outer
             # one is known to hold no blank, so is every one inside it.
             scanned = end or scanned
-            marked = _bare_blanks(text[i:end]) if end and getattr(context, "blanks", True) else None
+            # Only a command word is read whole (#2856 round 8): a `${…}` that starts a word where
+            # every word the stage closed is a keyword or an assignment (`at_head`), and no `case`
+            # subject -- anywhere else shlex splits it `main`'s way, as it always did.
+            marked = _bare_blanks(text[i:end]) if end and getattr(context, "blanks", True) and at_head and (
+                len(buf) == word_start) and "".join(buf).split()[-1:] != ["case"] else None
             if marked is not None:
                 # An unquoted `${X:-bash -s}` is one word to the reader as to bash, which
                 # expands it whole and only then splits the words (#2731): its bare blanks are
@@ -487,32 +495,18 @@ def _assigns(words):
     return not words or words[0] in _DECLARATIONS
 
 
-def _split_default(word, context):
-    """`word` split at its blanks where it is an unquoted `${…}` holding one, else None: a
-    fetcher's operand or a redirection's target read as `main` read it before #2731 read the
-    word whole -- `-o ${D:-tool }` is the operand `${D:-tool` and a stray `}`, which the fetch
-    reader refuses as an unresolved transfer. No default is resolved to its literal: the name
-    may be set where no shell text shows it (the workflow's `env:`, `$GITHUB_ENV`, the runner),
-    and reading `${D:-x }` as the file `x` could only clear a step `main` reports (#2756). The
-    first piece keeps the whole word (`readings`), so a use that reads it whole still meets it."""
-    pieces = getattr(word, "pieces", None)
-    if getattr(word, "kept", False) or not pieces:
-        return None
-    first = pieces[0] if _markers(pieces[0]) else _Token(pieces[0], {})
-    setattr(first, "whole", word)
-    return [first, *pieces[1:]]
-
-
-def _defaulted(argv, context):
-    """A fetcher's or `tee`'s unquoted `${…}` operands holding a blank -- the destinations a
-    command names -- split as `main` read them (`_split_default`), in place."""
-    head = command(argv)
-    if not head or os.path.basename(str(head[0])) not in (*_FETCHERS, "tee"):
-        return
-    for at in range(len(argv) - 1, 0, -1):
-        words = _split_default(argv[at], context)
-        if words is not None:
-            argv[at:at + 1] = words
+def _whole(raw, context, span):
+    """A word `_split` kept whole (`_bare_blanks`), as bash reads it before it splits it, and the
+    `span` of `main`'s words it is: for the one reading that takes it whole, the command word
+    (`shell_command._command_result`, #2731), `kept` where every `$` of it is quoted. Every other
+    reading has `main`'s words (#2856 round 8)."""
+    plain = context.restore_arithmetic(raw.replace(MARK, "").replace(QUOTED, "").replace(QUOTED_DOLLAR, ""))
+    word = context.token(plain.replace(_ESCAPED, "\\"))
+    if raw.count(QUOTED_DOLLAR) == plain.count("$") > 0 and not _markers(word):
+        word = kept(word)
+    word = word if isinstance(word, _Token) else _Token(word, _markers(word))
+    word.span = span
+    return word
 
 
 def _stage(text, context):
@@ -560,12 +554,16 @@ def _stage(text, context):
         else:
             bodies[number] = body
 
+    # A word `_split` kept whole is read as `main` reads it, in the pieces its bare blanks split,
+    # each read as any word is; the first carries the whole word and how many pieces it spans,
+    # which only the command word reads (`shell_command._command_result`, #2731).
+    pieces: list[tuple[str, str | None, int]] = []
     for raw in tokens:
-        # The words `main` read where one `${…}` holds a bare blank (#2731 reads it whole).
-        pieces = [context.token(context.restore_arithmetic(piece.replace(MARK, "").replace(
-            QUOTED, "").replace(QUOTED_DOLLAR, "")).replace(_ESCAPED, "\\"))
-            for piece in raw.split(_BLANK) if piece] if _BLANK in raw and getattr(context, "blanks", True) else None
-        raw = raw.replace(_BLANK, " ") if getattr(context, "blanks", True) else raw
+        parts = ([part for part in raw.split(_BLANK) if part] or [raw]) if (
+            _BLANK in raw and getattr(context, "blanks", True)) else [raw]
+        whole = raw.replace(_BLANK, " ") if len(parts) > 1 else None
+        pieces.extend((part, None if at else whole, len(parts)) for at, part in enumerate(parts))
+    for raw, whole, span in pieces:
         plain = context.restore_arithmetic(
             raw.replace(MARK, "").replace(QUOTED, "").replace(QUOTED_DOLLAR, ""))
         raw, word = raw.replace(_ESCAPED, "\\"), context.token(plain.replace(_ESCAPED, "\\"))
@@ -615,12 +613,6 @@ def _stage(text, context):
                     reads_body(number, None)
                     continue
                 op = "&>"                     # unnumbered >&file
-            if pieces and len(pieces) > 1 and not getattr(word, "kept", False):
-                # `> ${D:-tool }`: the target `main` read, the stray words the command's.
-                word = word if _markers(word) else _Token(word, {})
-                setattr(word, "pieces", pieces)
-                word, *extra = _split_default(word, context)
-                argv.extend(extra)
             if op in ("<", "<<<") or op == "<>" and number == "0":   # `<>`: fd 0 reads (#2657)
                 spelled = op == "<<<" and entry and entry[0] == "heredoc"
                 word = entry[1][0] if spelled else word     # `lex` spelled it
@@ -653,15 +645,15 @@ def _stage(text, context):
             if expands:
                 substitutions.extend(_lift_substitutions(heredoc, _Parse(heredoc))[1])
             continue
-        if pieces and len(pieces) > 1:
+        if whole is not None:
             word = word if _markers(word) else _Token(word, {})
-            setattr(word, "pieces", pieces)
+            setattr(word, "whole", _whole(whole, context, span))
+            setattr(word, "span", span)
         take(word)
         argv.append(word)
         words.append(word)
     if all(word in KEYWORDS or _ASSIGNMENT.match(word) for word in argv):
         argv = words        # it only assigns: an array of a command is read as run
-    _defaulted(argv, context)
     stdout, stdin = sinks.get("1"), bodies.get("0")
     return Stage(argv, writes, reads, stdin[0] if stdin and stdin[2] else heredoc,
                  substitutions, [stdout] if stdout is not None else [], group_open,
@@ -674,7 +666,8 @@ def statements(script):
     """Every statement in a `run:` script, in order, as parsed stages; in a
     lifted substitution's text, each heredoc where its marker stands (#2336)."""
     context = _Parse(script)
-    context.blanks = _BLANK not in script   # a step spelling the mark reads as `main` (#2856 r7)
+    # A step that spells a mark the reader puts in its text reads as `main` (#2856 round 8).
+    context.blanks = not any(mark in script for mark in (MARK, QUOTED, _ESCAPED, QUOTED_DOLLAR, _BLANK))
     text = lex(script, lambda *heredoc: context.new("heredoc", heredoc))
     for marker, (kind, value) in getattr(script, "heredocs", {}).items():
         text = text.replace(marker, context.new(kind, value))

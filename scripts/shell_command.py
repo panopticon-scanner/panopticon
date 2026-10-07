@@ -87,14 +87,13 @@ def _optional(argv):
 
 def _shell_default(word):
     """The words a command word that is a shell's default runs as (`${X:-bash -s}`: `bash`,
-    `-s`), or None. bash splits an unquoted default at its blanks (#2731), so a default whose
-    first word names a shell is that shell -- but only at a blank no quote or backslash covers
-    (the reader's `pieces`): `${X:-"bash -s"}` and `${X:-bash\\ -s}` are one word, `main`'s
-    reading, which names no shell."""
+    `-s`), or None. bash expands an unquoted default whole and then splits it at its blanks
+    (#2731), so a default whose first word names a shell is that shell -- but only at a blank no
+    quote or backslash covers, which the reader marks (`span`, the words it split `main`'s way):
+    `${X:-"bash -s"}` and `${X:-bash\\ -s}` are one word, which names no shell."""
     default = None if getattr(word, "kept", False) else _DEFAULTS.fullmatch(word)
     words = default[1].split() if default else []
-    if words and os.path.basename(words[0]) in _SHELLS and (
-            len(words) == 1 or getattr(word, "pieces", None)):
+    if words and os.path.basename(words[0]) in _SHELLS and (len(words) == 1 or getattr(word, "span", 1) > 1):
         return words
     return None
 
@@ -131,6 +130,12 @@ def _command_result(argv, optional=True):
         if len(argv) > 1 and argv[1] == "()" and _NAME.match(argv[0]):
             del argv[0:2]
             continue
+        # The command word, where the reader split it `main`'s way at a bare blank inside its
+        # `${…}`, is read whole, as bash expands it before it splits it (#2731): the one place the
+        # reader's whole word is read, since it decides the program; every other word -- an
+        # assignment, a keyword, an operand -- is `main`'s (#2856 round 8).
+        if (whole := getattr(argv[0], "whole", None)) is not None:
+            argv[0:getattr(argv[0], "span", 1)] = [whole]
         dropped = _optional(argv) if optional and not heads else 0
         if dropped:
             del argv[:dropped]                  # bash drops them, or they hand on (#2472)

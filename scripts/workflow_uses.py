@@ -383,7 +383,7 @@ def _function_use(stmts, definition, args, dest, directory, named, inherited, ta
     followed (`f() { g; }` reads no table into `g`), as for a glob argument."""
     start, close = definition
     positional = {}
-    for number, word in ((n, w) for each in shell_reader.argv_readings(args) for n, w in enumerate(each, 1)):
+    for number, word in enumerate(args, 1):
         if binding := _from_operand(word, dest, directory, inherited):
             positional[str(number)] = binding
     called = bool(positional)
@@ -395,7 +395,7 @@ def _function_use(stmts, definition, args, dest, directory, named, inherited, ta
         for position, stage in enumerate(statement.stages):
             bound = _live(local_named, positional, here) if called else frozenset()
             argv = command(stage.argv)
-            if called and (answer := next(filter(None, (use(statement, position, stage, each, dest, here, bound) for each in shell_reader.argv_readings(argv))), None)):
+            if called and (answer := use(statement, position, stage, argv, dest, here, bound)):
                 return answer
             if any("$" in word for word in argv):
                 values = static_values(stmts, start + index, scopes=scopes, start=table)
@@ -404,8 +404,9 @@ def _function_use(stmts, definition, args, dest, directory, named, inherited, ta
                         return answer
             certain, direct_loop = _certainty(body, index, kinds)
             _cleared(stage, local_named, positional, certain, direct_loop)
-            for each in shell_reader.stage_readings(stage):
-                _bound_after(each, dest, here, local_named, positional, certain or direct_loop)
+            _bound_after(
+                stage, dest, here, local_named, positional, certain or direct_loop
+            )
             if argv and os.path.basename(argv[0]) in ("cd", "pushd", "popd"):
                 local_named = {key: value for key, value in local_named.items()
                                if value.absolute}
@@ -641,7 +642,7 @@ def _opens(stage):
 def uses(stmts, dest, after, working=None, scopes=None):
     """Names `dest` gains and its later uses, including bounded shell values and, where a
     stage as written names none, the step's own values at the use (`_resolved`, #2425)."""
-    names, out = {dest} | shell_reader.readings(dest), []
+    names, out = {dest}, []
     working, scopes = working or {}, scopes or {}
     starts, occupied = _function_ranges(stmts)
     kinds = _control_kinds(stmts)
@@ -670,7 +671,7 @@ def uses(stmts, dest, after, working=None, scopes=None):
             argv = command(stage.argv)
             call = not in_definition and argv and argv[0] in functions
             for name in sorted(names):
-                how = next(filter(None, (use(inner, position, stage, each, name, here, bound) for each in shell_reader.argv_readings(argv))), None)
+                how = use(inner, position, stage, argv, name, here, bound)
                 if not how and (call or any("$" in word for word in argv)):
                     table = table or static_values(stmts, index, working, scopes)
                     how = next(filter(None, (use(inner, position, stage, made, name, here, bound)
@@ -679,7 +680,7 @@ def uses(stmts, dest, after, working=None, scopes=None):
                     how = _function_use(stmts, functions[argv[0]], argv[1:], name, here, named,
                                         {**named, **positional}, table, scopes)
                 if how:
-                    if not same_file(name, dest) and name not in shell_reader.readings(dest):
+                    if not same_file(name, dest):
                         shown = re.sub(r"^\$CWD[^/]*/", "", name).replace("$UP", "..")
                         how += " (as `%s`, copied from it earlier)" % shown
                     break
@@ -689,8 +690,9 @@ def uses(stmts, dest, after, working=None, scopes=None):
         if not in_definition and len(statement.stages) == 1:
             stage = statement.stages[0]
             _cleared(stage, named, positional, certain, direct_loop)
-            for each in shell_reader.stage_readings(stage):
-                _bound_after(each, dest, directory, named, positional, certain or direct_loop)
+            _bound_after(
+                stage, dest, directory, named, positional, certain or direct_loop
+            )
             _function_changes(stage, functions, writable)
-        names |= {r for each in shell_reader.statement_readings(statement) for n in copies(each, names, directory) for r in {n} | shell_reader.readings(n)}
+        names |= copies(statement, names, directory)
     return names, out

@@ -1690,29 +1690,76 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(unittest.TestCase):
         self.assertEqual([["curl", "-fsSL", "u"], []],
                          [[str(w) for w in s.argv] for s in shell_reader.statements("curl -fsSL u |\n")[0].stages])
 
-    def test_an_expansion_with_blanks_is_one_word_and_a_shell_default_splits(self):
+    def test_an_expansion_with_blanks_is_mains_words_and_the_command_word_reads_it_whole(self):
+        # PR #2856 round 8, the confinement: every word is the words `main` split it into, and the
+        # command word alone is read whole, as bash expands it before it splits it (#2731).
         stage = shell_reader.statements("${X:-bash -s} <<'EOF'\nx\nEOF\n")[0].stages[0]
-        self.assertEqual(["${X:-bash -s}"], [str(w) for w in stage.argv])
+        self.assertEqual(["${X:-bash", "-s}"], [str(w) for w in stage.argv])
         self.assertEqual(["bash", "-s"], [str(w) for w in shell_reader.command(stage.argv)])
         self.assertIsInstance(shell_reader.command(stage.argv)[0], shell_reader.Defaulted)
         argv = shell_reader.statements("${X:-sh -c} 'curl u | sh'")[0].stages[0].argv
         self.assertEqual(["sh", "-c", "curl u | sh"], [str(w) for w in shell_reader.command(argv)])
-        # A default that is no shell stays one word; a quoted default is kept as written.
-        self.assertEqual(["${X:-a b}", "c"], [str(w) for w in shell_reader.statements("${X:-a b} c")[0].stages[0].argv])
+        # A default that is no shell is the command word whole; a quoted default is one word.
+        argv = shell_reader.statements("${X:-a b} c")[0].stages[0].argv
+        self.assertEqual((["${X:-a", "b}", "c"], ["${X:-a b}", "c"]),
+                         ([str(w) for w in argv], [str(w) for w in shell_reader.command(argv)]))
         argv = shell_reader.statements("\"${X:-bash -s}\" x")[0].stages[0].argv
         self.assertEqual(["${X:-bash -s}", "x"], [str(w) for w in shell_reader.command(argv)])
+        # Anywhere else -- an operand, a redirect's target, an assignment -- `main`'s words.
+        for script, argv, writes in (("wget -q -O ${D:-tool } u\n", ["wget", "-q", "-O", "${D:-tool", "}", "u"], []),
+                                     ("curl u > ${D:-tool }\n", ["curl", "u", "}"], ["${D:-tool"]),
+                                     ("F=${D:-tool }\n", ["F=${D:-tool", "}"], [])):
+            with self.subTest(script=script):
+                stage = shell_reader.statements(script)[0].stages[0]
+                self.assertEqual((argv, writes), ([str(w) for w in stage.argv], [str(w) for w in stage.writes]))
 
     def test_a_bare_blank_is_one_the_shells_split_on_and_dollar_dollar_is_a_pair(self):
-        # PR #2856 round 6: F1 (c) a space, a tab or a newline -- no `\v`, `\f`, U+00A0 or U+2003;
-        # F2 `$$` is the PID pair, as `_split` reads it, so no `$'` opens behind it.
-        for blank in (" ", "\t", "\n"):
+        # PR #2856 round 6: F1 (c) a space or a tab -- no `\v`, `\f`, U+00A0 or U+2003; F2 `$$` is
+        # the PID pair, as `_split` reads it, so no `$'` opens behind it. Round 8: a newline or an
+        # operator no quote covers is where `main` ends a statement or a stage, so an expansion
+        # holding one is not read whole at all.
+        for blank in (" ", "\t"):
             with self.subTest(blank=blank):
                 self.assertIsNotNone(shell_reader._bare_blanks("${D:-tool%sx}" % blank))
-        for blank in ("\v", "\f", "\u00a0", "\u2003"):
+        for blank in ("\v", "\f", "\u00a0", "\u2003", "\n", " |", " ;", " &", " >", " <", " (", " )"):
             with self.subTest(blank=blank):
                 self.assertIsNone(shell_reader._bare_blanks("${D:-tool%sx}" % blank))
         self.assertEqual("${D:-$$'\\'" + shell_reader._BLANK + "tool" + shell_reader._BLANK + "'x y'}",
                          shell_reader._bare_blanks("${D:-$$'\\' tool 'x y'}"))
+
+    def test_every_statement_and_stage_is_mains(self):
+        # PR #2856 round 8: an operator, a newline or a `case` subject holding a blank reads as
+        # `main` reads it -- only the command word is read whole.
+        for script, shape in (("echo ${V:-a | sh}\n", [[["echo", "${V:-a"], ["sh}"]]]),
+                              ("echo ${V:-a; b}\n", [[["echo", "${V:-a"]], [["b}"]]]),
+                              ("echo ${V:-a\nb}\n", [[["echo", "${V:-a"]], [["b}"]]]),
+                              ("case ${X:-a b} in *) sh tool;; esac\n",
+                               [[["case", "${X:-a", "b}", "in", "*", "sh", "tool"]], [["esac"]]])):
+            with self.subTest(script=script):
+                self.assertEqual(shape, [[[str(w) for w in stage.argv] for stage in statement.stages]
+                                         for statement in shell_reader.statements(script)])
+
+    def test_only_a_command_word_is_read_whole(self):
+        # PR #2856 round 8: the reader keeps a `${…}` whole only where it starts a command -- the
+        # stage's first word past its keywords and assignments -- so shlex builds no long token
+        # for an operand, an assignment or a `for` list (64k groups cost 5x before).
+        for script, at in (("${SH:-bash -s}\n", 0), ("X=1 ${SH:-bash -s}\n", 1), ("if ${X:-true x}; then :; fi\n", 1),
+                           ("! ${SH:-bash -s}\n", 1)):
+            with self.subTest(script=script):
+                word = shell_reader.statements(script)[0].stages[0].argv[at]
+                self.assertIsNotNone(getattr(word, "whole", None))
+        for script in ("sh ${V:-a b}\n", "V=${V:-a b}\n", "for f in ${V:-a b}; do :; done\n", "sudo ${SH:-bash -s}\n"):
+            with self.subTest(script=script):
+                argv = shell_reader.statements(script)[0].stages[0].argv
+                self.assertEqual([], [str(w) for w in argv if getattr(w, "whole", None) is not None])
+
+    def test_a_step_that_spells_a_reader_mark_reads_as_main(self):
+        # PR #2856 round 8: no mark the reader puts in its text may decide a reading, so a step
+        # that spells any of them (U+E000-U+E004) reads as `main`, its command word too.
+        for mark in ("\ue000", "\ue001", "\ue002", "\ue003", "\ue004"):
+            with self.subTest(mark=hex(ord(mark))):
+                stage = shell_reader.statements("echo %s\ncurl u | ${SH:-bash -s}\n" % mark)[1].stages[1]
+                self.assertEqual(["${SH:-bash", "-s}"], [str(w) for w in shell_reader.command(stage.argv)])
 
     def test_a_shells_default_splits_only_at_a_bare_blank(self):
         # PR #2856 round 6, F1 (a): `${X:-"sh -c"}` and `${X:-sh\ -c}` are one word, `main`'s

@@ -339,7 +339,7 @@ def record(table, stage, certain):
     argv = command(stage.argv)
     variable, operands = _header(stage, argv)
     if variable:
-        texts, written, unknown = _looped([w for each in shell_reader.argv_readings(operands) for w in each], table)
+        texts, written, unknown = _looped(operands, table)
         if unknown:
             texts.append("$" + variable)
         _update(table, variable, texts, certain and written)
@@ -349,7 +349,7 @@ def record(table, stage, certain):
 def _assign(table, name, append, text, certain):
     """`NAME=text`, or `NAME+=text`, as bash assigns it: to the scalar
     candidates, and to word 0 of each word-list where the name holds an array."""
-    new = (valued(text, table) or [text]) + [*shell_reader.readings(text)]   # `main`'s too (#2856)
+    new = valued(text, table) or [text]
     if name in table.arrays:
         scalar = name in table.scalars
         lists = [[shell_reader.derived(_glued(head, tail), head, tail)] + words[1:]
