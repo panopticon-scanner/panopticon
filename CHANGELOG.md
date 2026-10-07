@@ -7,52 +7,78 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
-- **Workflow reader reads whole what every shell reads whole (#2756, #2731, #2657; #2733,
-  #2608).** A line ending in `|` continues on the next (`curl … |` ⏎ `sh` ran the pipeline and
-  read CLEAN, behind `eval` and in a printed or heredoc text too); a command word that is an
-  unquoted `${X:-bash -s}` is read as bash reads it, expanded whole and then split at a blank no
-  quote or backslash covers, so a shell default's words run as that shell (`${X:-bash -s}
-  <<'EOF'` and `curl … | ${SH:-bash -s}` ran the download and read CLEAN; `${X:-"sh -c"}` or
-  `${X:-sh\ -c}` stays one word, naming no shell); and `<>` on descriptor 0 redirects standard
-  input as `<` does, so `bash -s <<'EOF' <>/dev/null` no longer credits a check no shell reads,
-  while on any other descriptor it is the write `main` read (`curl … 1<> tool` ⏎ `sh tool`
-  reports). `&&` at a line's end, `${X:-bash} -s`, and `<>` before the heredoc read as they did.
-  The whole word is the command word's alone (round 8, the coordinator's ruling): the reader
-  keeps a `${…}` whole only where it starts a command -- a stage's first word past its keywords
-  and assignments, no `case` subject, holding no newline or operator -- and every other word
-  holding one is the words `main` split it into, so a download destination and its use,
-  `xargs`'s input, a carrier, a value and a redirect's target all meet as on `main`, and every
-  statement and stage is `main`'s. A step that spells a mark the reader puts in its text
-  (U+E000-U+E004) is read exactly as `main` reads it, its command word too. `$$` is bash's PID,
-  read as the pair before anything the second `$` could open, in the splitter, the expansion
-  scanner and the blank marker alike, so `$${ | sh` and `${a:-$${b} x; sh tool; echo }` keep
-  their pipe and their use; a `${` nested in a blank-free expansion is scanned once (about x4
-  per doubling before); and only a space or a tab no quote covers is a blank, not `\v`, `\f` or
-  a Unicode space. On the round-7 seat's 10,852 rows, against the base (`ca232d12`): 630 cells
-  close where a shell runs the payload, none goes CLEAN where the base or `main` reports and a
-  shell runs it, and 173 clear where the base reported and nothing runs (`<>` on another
-  descriptor, the continuation, `$$`). Still CLEAN, as on `main`, where rounds 6 and 7 read them
-  whole -- the ruling's re-opens, the union's closures at comparison sites, 604 cells of the
-  round-6 head's (136 rows) and 1,109 of the round-7 head's (258 rows): a `${…}` spanning a line
-  (`-o ${D:-tool` ⏎ `}`, `${X:-bash` ⏎ `-s}`; 666 cells, 152 rows of round 7's), a value holding
-  a blank-holding default (`CMD=${CMD:-sh tool}; $CMD`, `F=${D:-"tool" x}` ⏎ `sh $F`; 269, 62),
-  an operand whose default names the download (`sh ${F:-tool }`; 125, 25), a destination's
-  spelling used quoted (`> ${D:-tool }` ⏎ `sh "${D:-tool }"`; 39, 17), and a `for` list and a
-  `case` subject holding one (h21, h22; 10, 2); and, as on `main`, `sh 3<> tool <&3` (a dup of
-  the `<>` descriptor, `main`'s gap), and a step that spells a reader mark (`echo <U+E004>` ⏎
-  `curl … | ${SH:-bash -s}`). New fail-closed over-reports against the base (48 cells in 14 of
-  the 10,852 rows, none run by a shell): round 1-4's named rows -- a CRLF after `|`, `|&` ⏎ `sh`
-  under dash, `|` ⏎ `$$ sh` (19 cells, 5 rows); a `<>` that bash or dash does not read as
-  standard input -- `bash -s <>tool <<'EOF'`, `source /dev/stdin <> tool` and `bash -s <<'EOF'
-  <>${N:-/dev/null }` under `sh`, `sh {v}<> tool` (bash opens a new descriptor), `sh <> tool
-  0<&-`, and `sh 00<> tool` under dash (20, 6); and a command word whose shell default dash or
-  the step's `IFS` reads otherwise -- `${X:-$'bash' -s}` under dash, which keeps its `$`, and an
-  `IFS` the step sets (9, 3). The cost is a constant factor of the base's, measured on the
-  forge: 1.00-1.04x on the round-7 seat's shapes at n = 500, and 1.09-1.11x for one `${…}` word
-  of tens of thousands of blank-separated groups to 1.5 MB, where round 7 paid 7-12x -- shlex
-  now builds such a word as one token only where it is a command word; the unterminated `${x`
-  line stays quadratic on both trees (`patterned`'s, pre-existing), 2.65x the base's here, where
-  the splitter scans each `${` for its end.
+- **Workflow reader: a line ending in `|` continues, a command word's `${X:-bash -s}` is read
+  whole, and `<>` opens its descriptor (#2756, #2731, #2657; #2733, #2608).** A line ending in
+  `|` continues on the next (`curl … |` ⏎ `sh` ran the pipeline and read CLEAN, behind `eval`
+  and in a printed or heredoc text too). A command word that is an unquoted `${X:-bash -s}` is
+  read as bash reads it, expanded whole and then split at a blank no quote or backslash covers,
+  so a shell default's words run as that shell (`${X:-bash -s} <<'EOF'` and `curl … | ${SH:-bash
+  -s}` ran the download and read CLEAN); any other word is read as it always was, its default
+  holding no blank, so `cat tool | "${SH:-bash}"` and `SH=1` ⏎ `"${SH:+sh}" tool` run the shell
+  they name, as on `main`, and `${X:-"sh -c"}`, `${X:-sh\ -c}` and `"${SH:- bash}"` name none.
+  `N<> file` opens the file on descriptor N for reading and writing: on 0 it redirects standard
+  input as `<` does, so `bash -s <<'EOF' <>/dev/null` no longer credits a check no shell reads;
+  on any other descriptor a later `>&N` or `1>&N` writes to it, so `curl … 3<> tool >&3` ⏎ `sh
+  tool` reports (`main` read `3<` and a `> tool` the dup overrides: 32 rows, every shell running
+  the payload), and with no dup nothing lands in it, which `main` and the base reported (`curl …
+  2<> tool` ⏎ `sh tool`, `9<>`, `10<>`, and `>/dev/fd/3 3<> tool`: 65 cells of the round-8
+  seat's rows). `&&` at a line's end and `${X:-bash} -s` read as they did. The whole word is the
+  command word's alone (round 8, the coordinator's ruling): the reader keeps a `${…}` whole only
+  where it starts a command -- a stage's first word past its keywords and assignments, no `case`
+  subject, holding no newline or operator -- and every other word holding one is the words
+  `main` split it into, so a download destination and its use, `xargs`'s input, a carrier, a
+  value and a redirect's target all meet as on `main`, and every statement and stage is
+  `main`'s. A program text that spells a mark the reader puts in its text (U+E000-U+E004) is
+  read as `main` reads it, its command word too, and each text is its own: the step's, and each
+  it hands a shell (`bash -c`, `eval`, a heredoc), so an inner text that spells none is still
+  read whole. `$$` is bash's PID, read in the splitter as the pair before anything the second
+  `$` could open, so `$${ | sh` and `${a:-$${b} x; sh tool; echo }` keep their pipe and their
+  use; and only a space or a tab no quote covers is a blank, not `\v`, `\f` or a Unicode space.
+  On the round-8 seat's 13,052 rows, against the base (`ca232d12`): 2,467 cells close where a
+  shell runs the payload (511 rows), none goes CLEAN where the base or `main` reports and a
+  shell runs it, and 231 clear where the base reported and nothing runs (55 rows: the two-line
+  check gate, `<>`, `$$`); and on 1,119 rows of `N<>` and its dups, 302 close, none opens, and
+  240 clear. Still CLEAN, as on `main`, where rounds 6 and 7 read them whole -- the ruling's
+  re-opens, 1,400 cells of the round-6 head's (305 rows) and 1,759 of the round-7 head's (396),
+  each row in the first of these it meets: a step that spells a reader mark (`echo <U+E004>` ⏎
+  `curl … | ${SH:-bash -s}`; 710 cells and 151 rows of round 6's, 564 and 120 of round 7's), a
+  `${…}` spanning a line (`-o ${D:-tool` ⏎ `}`, `${X:-bash` ⏎ `-s}`; 500 and 108, 676 and 154),
+  a dup of a `<>` descriptor onto fd 0 (`sh 3<> tool <&3`; 15 and 3 of round 6's), a function
+  body on its header's line (`f() { ${RUN:-sh tool}; }`; 16 and 4 each) or a command word after
+  a leading redirect (`2>/dev/null ${X:-bash -s} <<'EOF'`; 45 and 9 each), a `for` list or a
+  `case` subject (h21, h22; 10 and 2 each), a value that holds one (`CMD=${CMD:-sh tool}; $CMD`,
+  `F=${D:-"tool" x}` ⏎ `sh $F`; 20 and 4, 349 and 78), a destination's spelling used quoted (`>
+  ${D:-tool }` ⏎ `sh "${D:-tool }"`; 21 and 9, 27 and 11), and an operand or destination whose
+  default holds a blank (`sh ${F:-tool }`; 63 and 15, 72 and 18). Open on `main` too, and left
+  to their own fix: a nested default (`${X:-${Y:-bash} -s}`), a braced partial word (`${X:-bash
+  -s}{,}`), `coproc`, a pipe into a compound command, a dup of a `<>` descriptor onto fd 0 in
+  the same command (`sh 3<> tool <&3`) or read by a path (`sh /dev/fd/3 3<> tool`), and a
+  group's redirect (`{ curl …; } 3<> tool >&3`) -- the last three filed as #2881. New
+  fail-closed over-reports against the base, none run by a shell (206 cells in 57 of the round-8
+  seat's rows, 28 in 14 of the `N<>` rows): the continuation's -- a CRLF after `|`, `|&` ⏎ `sh`
+  under dash, `|` ⏎ `$$ sh` (26 cells, 7 rows); a `<>` that bash or dash does not read as
+  standard input -- `bash -s <>tool <<'EOF'` and `bash -s 0<> tool <<'EOF'` (the heredoc is the
+  input), `source /dev/stdin <> tool` and `bash -s <<'EOF' <>${N:-/dev/null }` under `sh`, `sh
+  {v}<> tool` (bash opens a new descriptor), `sh <> tool 0<&-` and `sh 0<> tool 0<&-`, and `sh
+  00<> tool` under dash (30, 8) -- and a descriptor past 9 under dash, which opens none (`curl …
+  10<> tool >&10` ⏎ `sh tool`; 28, 14); and the whole word's (150, 42), all but two rows
+  `main`'s own reading of the default written out: a default dash reads otherwise (`${X:-$'bash'
+  -s}`, `$'-s'` and `$'-c'`, which dash keeps with their `$`, and `${RUN:-source ./tool}`; 20,
+  10), an `IFS` the step sets (5, 1), a name the step assigns (`RUN=cat` ⏎ `${RUN:-sh tool}`;
+  15, 3), `$$` in the default (`${X:-bash $$ -s}`; 40, 8), `sh -c "… \$0"` or a backquote in the
+  default (20, 4), `curl … | ! ${SH:-bash -s}`, which no shell parses (5, 1), and an inner
+  program behind a line that stops `-e` shells first (`X=1` ⏎ `bash -c '… | ${SH:-bash -s}'`;
+  45, 15) -- the two new beside `main`'s reading are `${X:-$$ bash -s} <<'EOF'` and `${X:-sh -c
+  "echo \`id\`"} <<'EOF'`. `SH=1` ⏎ `bash -c '"${SH:+sh}" tool'` reports again, as on `main` and
+  the base (their over-report: the `-c` shell sees no `SH`), which round 8's kept test had
+  cleared. The cost is a constant factor of the base's, measured on the forge against
+  `ca232d12`: 1.04-1.07x for a pipeline or `||` list of unterminated `${` to 8,000 stages, where
+  round 8 grew to 143x -- the scan runs only at a command word now, and ends with its stage;
+  0.98-1.02x for an unterminated `${` per line, statement, `&&`, `&`, subshell, quote or nested
+  default and for the single unterminated line, where round 8 paid 1.5-7.6x; 0.04-0.12x for
+  unterminated `echo ${x |` lines, one statement by the continuation; 0.98-1.07x for the closed
+  and quoted cases and on rounds 3-7's shapes; and 0.98-1.15x for one word of 64,000 to 256,000
+  blank-separated groups, `$$'\'` groups the most.
 - **Workflow guard reads a function header in the spellings bash takes at a statement's head
   (#2664, #2608; #2785).** `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after
   `then`, `do` or an opened `{` ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN:
