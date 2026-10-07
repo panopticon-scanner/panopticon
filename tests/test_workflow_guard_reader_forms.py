@@ -1416,6 +1416,60 @@ class TestAReadWriteDescriptorIsReadOnItsNumber(unittest.TestCase):
             with self.subTest(row="CO", shell=shell):
                 self.assertFalse(reported(verified, shell))
 
+    def test_a_path_of_n_or_a_dup_a_value_decides_carries_what_n_holds(self):
+        # Round 4, the round-3 verdict's B1: a path open of N's descriptor carries what N holds onto
+        # its target, as a dup does, so a later close of N leaves it there (AP001; the spellings the
+        # reader resolves, AP025, AP033 and AP041; onto 4, AP073 and AP081; read-write onto 0, AP113; an
+        # operand, AP161). A path in a value (AP153), or a dup whose source a value decides (AD001,
+        # AD007, AD016, AD019), carries every file held, fail-closed. Every shell runs the download.
+        for use in ("sh 3<> tool </dev/fd/3 3<&-", "dash 3<> tool </proc/self/fd/3 3<&-",
+                    "bash 3<> tool </proc/thread-self/fd/3 3<&-", "sh 3<> tool <//dev/fd/3 3<&-",
+                    "bash 3<> tool 4</dev/fd/3 3<&- <&4", "sh 3<> tool 4<>/dev/fd/3 3<&- <&4",
+                    "bash 3<> tool 0<>/dev/fd/3 3<&-", "sh /dev/fd/4 3<> tool 4</dev/fd/3 3<&-",
+                    "P=/dev/fd/3\nbash 3<> tool <$P 3<&-", "FD=3\nsh 3<> tool <&$FD 3<&-",
+                    "FD=3\nsh 3<> tool 4<&$FD 3<&- <&4", "sh 3<> tool <&$((3)) 3<&-",
+                    "sh 3<> tool <&$(echo 3) 3<&-"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+
+    def test_the_shell_a_find_runs_reads_what_n_holds_whatever_the_root(self):
+        # Round 4, the round-3 verdict's B2: `find` hands the shell it runs behind `-exec`, `-execdir`
+        # or `{} +` the descriptors it holds, so that shell reads what N holds whatever root `find`
+        # walks (AG001, AG013, AG019, AG031, AG037, AG055; `sudo`, AG061). The reader reads the command
+        # `use()` reads, through `workflow_operands.described`, by the same tests. Every shell runs it.
+        for use in ("find /dev/null -maxdepth 0 -exec sh /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null -exec sh \\; 3<> tool <&3", "find /etc/passwd -exec sh /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null -execdir sh /dev/fd/3 \\; 3<> tool", "find /dev/null -exec sh /dev/fd/3 {} + 3<> tool",
+                    "find /dev/null -exec sh \\; 3<> tool 4<&3 3<&- <&4",
+                    "sudo find /dev/null -exec sh /dev/fd/3 \\; 3<> tool"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+        import shell_command
+        import workflow_operands
+        self.assertEqual(workflow_operands._FIND_EXEC, shell_command._FIND_EXEC)
+
+    def test_each_way_the_rule_names_a_reader_of_what_n_holds(self):
+        # Round 4, the round-3 verdict's B3-B9: one row for each way the rule reads a command as one
+        # that reads what N holds -- a substitution head (AV011), `eval` (AV045, AO069), a foreign
+        # interpreter (AXI01, which the seat ran by hand with a python payload), a shell by its path
+        # (AN017), a wrapper or a group in front (UX18, UX19, UX03), the second of two held files
+        # (AXF01) -- each run by every shell, and `source` (UP257), run by bash alone.
+        for shells, uses in ((SHELLS, ("$(echo sh) 3<> tool <&3", "eval sh 3<> tool <&3", "eval 'sh <&3' 3<> tool",
+                                       "python3 3<> tool <&3", "/bin/sh 3<> tool <&3", "sudo sh 3<> tool <&3",
+                                       "env sh 3<> tool <&3", "{ sh 3<> tool <&3; }", "sh 3<> other 4<> tool <&4")),
+                             (self.BASH, ("source /dev/fd/3 3<> tool",))):
+            for use in uses:
+                for shell in shells:
+                    with self.subTest(use=use, shell=shell):
+                        self.assertTrue(reported(GET + use + "\necho done\n", shell))
+        # F2: a move leaves nothing on its source, so once its target closes nothing is held and no
+        # shell runs anything (AXM01, ffffffff).
+        for shell in SHELLS:
+            with self.subTest(use="moved, then closed", shell=shell):
+                self.assertFalse(reported(GET + "sh 3<> tool 4<&3- 4<&-\necho done\n", shell))
+
 
 class TestEachGateOfTheWholeWordHasAVerdict(unittest.TestCase):
     """PR #2856 round 9, the round-8 verdict's F4: each test that confines the whole reading to a

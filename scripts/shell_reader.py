@@ -68,7 +68,7 @@ from shell_command import (CONDITIONS as CONDITIONS, KEYWORDS as KEYWORDS,
                            _FETCHERS as _FETCHERS, _FUNCTION as _FUNCTION,
                            _INTERPRETERS as _INTERPRETERS, _NAME as _NAME, _OPTIONAL as _OPTIONAL,
                            _SHELLS as _SHELLS, _command_result as _command_result,
-                           _optional as _optional, command as command,
+                           _optional as _optional, command as command, command_run,
                            command_as_written as command_as_written, conditional as conditional,
                            negated as negated, unresolved_wrapper as unresolved_wrapper,
                            wrapper_words as wrapper_words)
@@ -121,6 +121,7 @@ _ESCAPED = "\ue002"
 # expansion before it splits the result, where shlex would split the braces apart (#2731).
 _BLANK = "\ue004"
 _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
+_FD_SPELLINGS = re.compile(r"^/+(?:dev|proc/(?:thread-)?self)/+fd/")  # `//dev/fd/N`, `/proc/self/fd/N` (#2881)
 
 
 # --- reading the shell -------------------------------------------------------
@@ -535,7 +536,7 @@ def _stage(text, context):
     # its CURRENT sink, so `>file >/dev/stdout` still writes to file.
     pipe_outputs = {"1": True}
     pending = None
-    opened: dict[str, str] = {}      # the file `N<>` opened on N but 0, on each N it stands on
+    opened: dict[str, tuple[str, ...]] = {}  # the files `N<>` opened on N but 0, on each N they stand on
     literal: int | None = None          # where an array literal's words start
     words: list[str] = []               # argv with no literal folded
 
@@ -594,15 +595,18 @@ def _stage(text, context):
             pending = None
             take(word)
             number = (fd.lstrip("0") or "0") if fd else ("0" if op.startswith("<") else "1")
-            # A dup or a move of N carries the file `N<>` opened there onto its target, fd 0 too, where
-            # it stays open until that is redirected again (`4<&3 <&4`, #2881)
+            # A dup, a move or a path of N (`/dev/fd/N` in any spelling) carries what N holds onto its target,
+            # fd 0 too, until that is redirected again (`4<&3 <&4`, `</dev/fd/3 3<&-`, #2881); a source a value
+            # decides (`<&$FD`, `<"$P"`) carries every file held, fail-closed (round 4)
             moved = re.fullmatch(r"(\d+)-", word) if op in (">&", "<&") else None
-            held = opened.get((moved[1] if moved else word).lstrip("0") or "0") if moved or (
-                op in (">&", "<&") and _fd_or_close(word)) else None
+            source = (moved[1] if moved else word) if moved or op in (">&", "<&") and _fd_or_close(word) else (
+                op != "<<<" and input_alias_fd(derived(_FD_SPELLINGS.sub("/dev/fd/", word), word)))
+            held = tuple(dict.fromkeys(sum(opened.values(), ()))) if source == "?" else opened.get(
+                (source or "-").lstrip("0") or "0", ())
             opened.pop(number, None)            # any redirection of N ends what `N<>` opened there
             if moved:
                 opened.pop(moved[1].lstrip("0") or "0", None)
-            if held is not None:
+            if held:
                 opened[number] = held
             if op in (">&", "<&"):
                 if _fd_or_close(word):
@@ -631,7 +635,7 @@ def _stage(text, context):
                            bodies.get(source) if source and source != "?" else None)
             else:
                 if op == "<>":                 # open for reading too: what reads N reads it (#2881)
-                    opened[number] = word
+                    opened[number] = (*held, word)
                 writes.append(word)
                 sinks[number] = sinks.get("1") if word in _STDOUT_ALIASES else word
                 pipe_inputs[number] = False
@@ -662,13 +666,13 @@ def _stage(text, context):
         words.append(word)
     if all(word in KEYWORDS or _ASSIGNMENT.match(word) for word in argv):
         argv = words        # it only assigns: an array of a command is read as run
-    # An interpreter, or a command word the step's values decide (`$SH`), reads what `N<>` still holds
-    # open when its redirections end, on any descriptor, as `main` reads `N<` -- by a dup, a `/dev/fd`
-    # path in any spelling, a child program; any other command reads none of it, so no check is
-    # credited with a file it only holds (#2881 round 3).
-    if opened and (head := command(argv)) and ("$" in head[0] or has_substitution(head[0]) or os.path.basename(
-            head[0]) in (*_SHELLS, *_INTERPRETERS, "eval", "source", ".")):
-        reads.extend(file for file in dict.fromkeys(opened.values()) if file not in reads)
+    # An interpreter -- one `find` runs too (`command_run`, round 4) -- or a command word the step's
+    # values decide (`$SH`) reads what `N<>` still holds open when its redirections end, on any
+    # descriptor, as `main` reads `N<` -- by a dup, a `/dev/fd` path in any spelling, a child program;
+    # any other command reads none of it, so no check is credited with a file it only holds (#2881 round 3).
+    if opened and (head := command_run(argv)) and ("$" in head[0] or has_substitution(
+            head[0]) or os.path.basename(head[0]) in (*_SHELLS, *_INTERPRETERS, "eval", "source", ".")):
+        reads.extend(file for file in dict.fromkeys(sum(opened.values(), ())) if file not in reads)
     stdout, stdin = sinks.get("1"), bodies.get("0")
     return Stage(argv, writes, reads, stdin[0] if stdin and stdin[2] else heredoc,
                  substitutions, [stdout] if stdout is not None else [], group_open,
