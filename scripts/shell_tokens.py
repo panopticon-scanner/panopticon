@@ -62,6 +62,19 @@ def derived(text, *sources):
     return _Token(text, markers) if markers else text
 
 
+# The shape of every marker `_Parse.new` mints: its prefix, then a count and `@@`.
+_MARK = re.compile(r"@@shell-[0-9a-f]+-x*[0-9]+@@")
+
+
+def spelled(text, source):
+    """`derived(text, source)` in one pass over `text`: the markers of `source` that `text` spells,
+    found by their shape rather than by trying each against `text`, so a word cut into n pieces
+    costs the pieces, not the pieces times its n markers (#2856 round 12, the round-11 B3)."""
+    markers = _markers(source)
+    found = {key: markers[key] for key in _MARK.findall(text) if key in markers} if markers else {}
+    return _Token(text, found) if found else text
+
+
 class _Parse:
     def __init__(self, source):
         # No source spelling can collide, even if a nonce source is replaced
@@ -69,6 +82,7 @@ class _Parse:
         self.prefix = "@@shell-" + secrets.token_hex(16) + "-"
         while self.prefix in source:
             self.prefix += "x"
+        self.source = source            # the text parsed (`shell_command._sets`)
         self.entries: dict[str, tuple[str, object]] = {}
         self.pattern = re.compile(re.escape(self.prefix) + r"\d+@@")
 

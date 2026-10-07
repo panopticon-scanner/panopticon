@@ -65,6 +65,7 @@ from shell_command import (CONDITIONS as CONDITIONS, KEYWORDS as KEYWORDS,
                            _INTERPRETERS as _INTERPRETERS, _NAME as _NAME, _OPTIONAL as _OPTIONAL,
                            _SHELLS as _SHELLS, _command_result as _command_result,
                            _optional as _optional, command as command, command_run,
+                           credited_zero as credited_zero,
                            command_as_written as command_as_written, conditional as conditional,
                            negated as negated, unresolved_wrapper as unresolved_wrapper,
                            wrapper_words as wrapper_words)
@@ -489,6 +490,7 @@ def _whole(raw, context, span):
     word = context.token(plain.replace(_ESCAPED, "\\"))
     word = word if isinstance(word, _Token) else _Token(word, _markers(word))
     word.span = span
+    word.step = context                 # the step it is read in (`shell_command._sets`)
     return word
 
 
@@ -524,6 +526,9 @@ def _stage(text, context):
     pipe_outputs = {"1": True}
     pending = None
     opened: dict[str, tuple[str, ...]] = {}  # the files `N<>` opened on N but 0, on each N they stand on
+    # Where in `reads` each `0<>` put its file, and the one fd 0 still holds (`credited_zero`).
+    zero: list[int] = []
+    held: int | None = None
     literal: int | None = None          # where an array literal's words start
     words: list[str] = []               # argv with no literal folded
 
@@ -582,6 +587,7 @@ def _stage(text, context):
             pending = None
             take(word)
             number = (fd.lstrip("0") or "0") if fd else ("0" if op.startswith("<") else "1")
+            held = None if number == "0" else held      # a later redirection of fd 0 ends it
             # A dup, a move or a path of N (`/dev/fd/N` in any spelling) carries what N holds onto its target,
             # fd 0 too, until that is redirected again (`4<&3 <&4`, `</dev/fd/3 3<&-`, #2881); a source a value
             # decides (`<&$FD`, `<"$P"`) carries every file held, fail-closed (round 4)
@@ -614,6 +620,9 @@ def _stage(text, context):
                 spelled = op == "<<<" and entry and entry[0] == "heredoc"
                 word = entry[1][0] if spelled else word     # `lex` spelled it
                 reads.append(word)
+                if op == "<>":
+                    zero.append(len(reads) - 1)
+                    held = zero[-1]
                 sinks[number] = None           # an input file is not an output sink
                 source = input_alias_fd(word)
                 pipe_inputs[number] = source == "?" or pipe_inputs.get(source, False)
@@ -638,6 +647,7 @@ def _stage(text, context):
         if entry and entry[0] == "heredoc":
             heredoc, expands, fd = entry[1]
             number = fd.lstrip("0") or "0"
+            held = None if number == "0" else held
             pipe_inputs[number] = False
             pipe_outputs[number] = False
             reads_body(number, (heredoc, expands, True))
@@ -660,6 +670,8 @@ def _stage(text, context):
     if opened and (head := command_run(argv)) and ("$" in head[0] or has_substitution(
             head[0]) or os.path.basename(head[0]) in (*_SHELLS, *_INTERPRETERS, "eval", "source", ".")):
         reads.extend(file for file in dict.fromkeys(sum(opened.values(), ())) if file not in reads)
+    # A check reads what `0<>` opened only where fd 0 still holds it (#2856 round 12, B5).
+    reads, writes = credited_zero(argv, reads, writes, zero, held)
     stdout, stdin = sinks.get("1"), bodies.get("0")
     return Stage(argv, writes, reads, stdin[0] if stdin and stdin[2] else heredoc,
                  substitutions, [stdout] if stdout is not None else [], group_open,

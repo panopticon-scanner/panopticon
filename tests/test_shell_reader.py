@@ -1752,6 +1752,81 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.
                         (size + 1, size + 1), (len(parsed) if statements else len(parsed[0].stages),
                                                sum(len(s.stages) for s in parsed))))
 
+    def test_a_defaults_words_are_marked_in_linear_time(self):
+        # PR #2856 round 12, the round-11 verdict's B3: each word of a whole default took its marks by
+        # testing every mark of the whole word against it (`derived`), quadratic in a default of n
+        # `$(…)` words -- the head 4.6x the base at 1,000 and 15.7x at 4,000. Each word finds its own
+        # in one pass now (`spelled`). Timed on the command layer alone, as the parse pays its own
+        # shlex token (main's cost, #2912): t(4n) <= 8 t(n), with a miss read once more.
+        import shell_command
+        import shell_tokens
+
+        def read(size):
+            context = shell_tokens._Parse("")
+            marks = " ".join(context.new("subst", "echo") for _ in range(size))
+            whole = shell_tokens._Token("${X:-/usr/bin/env %s sh -c}" % marks, dict(context.entries))
+            enabled = gc.isenabled()
+            gc.disable()
+            try:
+                start = time.process_time()
+                words = shell_command._default_words(whole)
+                elapsed = time.process_time() - start
+            finally:
+                if enabled:
+                    gc.enable()
+            self.assertEqual(size + 3, len(words))
+            self.assertTrue(all(shell_reader.has_substitution(word) for word in words[1:-2]))
+            return elapsed
+
+        small, large = read(500), read(2000)
+        if large > 8 * small + 0.05:
+            small, large = min(small, read(500)), min(large, read(2000))
+        self.assertLessEqual(large, 8 * small + 0.05, (small, large))
+
+    def test_a_word_bash_expands_to_nothing_hands_on_to_the_next(self):
+        # PR #2856 round 12, the round-11 verdict's B2: with its name unset bash expands `${X:+W}`,
+        # `${X+W}`, `${X#W}`, `%`, `/` to nothing and runs the next word, or the literal glued after
+        # the `}`; a step that sets the name runs W -- for `:+` to a value not empty, and `set --` sets
+        # the positional parameters, `$0` always.
+        unset = ["sh", "-c", "x"]
+        alternate = ["true", "sh", "-c", "x"]
+        for step, expected in (("", unset), ("X=1\n", alternate), ("X=\n", unset), ("read X\n", alternate),
+                               ("for X in a; do :; done\n", alternate), (": ${X:=v}\n", alternate),
+                               ("(( X = 1 ))\n", alternate), ("echo $X\n", unset), ("curl -X POST u\n", unset)):
+            with self.subTest(step=step):
+                stage = shell_reader.statements(step + "${X:+/usr/bin/env true} sh -c x\n")[-1].stages[0]
+                self.assertEqual(expected, [str(w) for w in shell_reader.command(stage.argv)])
+        for row, expected in (("X=\n${X+/usr/bin/env true} sh -c x", alternate),
+                              ("set -- 1\n${1:+/usr/bin/env true} sh -c x", alternate),
+                              ("${1:+/usr/bin/env true} sh -c x", unset), ("${0:+/usr/bin/env true} sh -c x", alternate),
+                              ("X=1\n${X#/usr/bin/env true} sh -c x", unset), ("${X%%a b} sh -c x", unset),
+                              ("${X//a/env true} sh -c x", unset), ("${X:+/usr/bin/env true}sh -c x", unset),
+                              ("${X:+a b}", [])):
+            with self.subTest(row=row):
+                stage = shell_reader.statements(row + "\n")[-1].stages[0]
+                self.assertEqual(expected, [str(w) for w in shell_reader.command(stage.argv)])
+
+    def test_the_names_a_step_sets_are_found_in_linear_time(self):
+        # Round 12: `_sets` reads the step's text once, its arithmetic `((…))` to the next parenthesis,
+        # so a run of `((` costs a pass, where `[^)]*` made it quadratic.
+        import shell_command
+
+        class Step:
+            sets = None
+
+        def read(size):
+            step, whole = Step(), shell_reader._Token("${X:+a b}", {})
+            step.source = "((" * size + "\nX=1\n"       # no `))`: each `((` reads to its next parenthesis
+            whole.step = step
+            start = time.process_time()
+            self.assertTrue(shell_command._sets(whole, "X", True))
+            return time.process_time() - start
+
+        small, large = read(4000), read(16000)
+        if large > 8 * small + 0.05:
+            small, large = min(small, read(4000)), min(large, read(16000))
+        self.assertLessEqual(large, 8 * small + 0.05, (small, large))
+
     def test_every_statement_and_stage_is_mains(self):
         # PR #2856 round 8: an operator, a newline or a `case` subject holding a blank reads as
         # `main` reads it -- only the command word is read whole.
