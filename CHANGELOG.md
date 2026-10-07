@@ -43,36 +43,44 @@ evidence exposed.
   so a use after it is still reported; a child without its own `-e` remains reported too. Checks
   whose `-e` is suspended by an `&&`/`||` list or condition, or whose status is hidden by a later
   pipeline stage without child pipefail, also remain reported when execution reaches a later use.
-- **Child-script `&&` lists bound checks to that list (#2416, #2331).** A failed checksum ahead of
-  `&&` inside `sh -ec`, `eval`, or a `bash -e -s` body no longer certifies a use after the list.
-  A use in the skipped suffix of that ordinary list remains gated, including one in a nested
-  script. The parent refusal survives that local reach through nested and non-leading function
-  headers, alternated case patterns, compound and subshell negations, and Bash `time`/`coproc`
-  groups in both carry-on and errexit postures. One list-scoped analysis records case and group
-  state without a process cache. Each explicit opener receives only the words through that opener;
-  clause forms such as `if ( ... ) then`, `while ( ... ) do`, `else ( ... ) fi`, and
-  `do ( ... ) done` consume their reader-hidden parenthesis pair without closing an outer group.
-  Closing a nested group keeps the outer `&&`/`||` chain's start. A closed negation or condition
-  retains its refusal through uses that can run inside or after the group, and a function check
-  reads the group around its proved call site. A `coproc` close bounds an already-proved local
-  reach; it never creates a clear by itself. Dead arm fallbacks and the unsupported structural
-  `time` shortcut are gone.
+- **Child-script `&&` lists keep their failure reach inside the list (#2416, #2653, #2331).** A
+  failed checksum ahead of `&&` inside `sh -ec`, `eval`, or a `bash -e -s` body now certifies only
+  the suffix that depends on it. A use in that skipped suffix remains gated, including one in a
+  nested script; a use after the list is reported. This closes #2653's five stdin/`-c` forms.
+  #2416 remains open: set 3's `v2` and `v6` rows, where the list is a called function's body, still
+  read CLEAN and need their own follow-up.
 
-  The final 617,591-row posture-aware gate has zero cells where main REPORTs, this head is CLEAN,
-  and a measured parent runs the payload. Against main it adds 54,960 payload-running reports,
-  leaves 8,329 payload-running cells CLEAN for separate follow-up, and makes 7,374 former reports
-  CLEAN only where no measured parent runs the payload. Compared with the reviewed round-five
-  head, it adds 13,277 payload-running reports and removes 1,134 such reports; main is CLEAN in
-  every removed cell. It leaves 108 payload-running round-four-only reports CLEAN, the permitted
-  main-baseline cases `j06` (72 cells) and `m22` (36). The 2,708-row #2855/#2856 gate also keeps
-  G01r, Q05, N44, N86, and every other required bar-one row reporting in all five settings.
+  One list-scoped pass records case and group state without a process cache. Explicit braces keep
+  their source positions. Because the reader retains only aggregate parenthesis counts, a hidden
+  open/close pair in one stage, or a hidden opener beside leading `!` operators, is marked
+  ambiguous instead of being assigned an order. A handed check uses an existing parent refusal;
+  where the parent answer is CLEAN or only a `Reach`, it keeps a conservative hidden-parenthesis
+  refusal so it never clears a shape main reports. The structural barrier ends with its list or
+  group and does not change the next ordinary list's answer; a direct check keeps main's bounded
+  answer through the ambiguous span. No negation, condition, or function-call credit is inferred
+  from an unplaced compound boundary. The Bash `time` skip is restored, a `coproc` never exports a
+  child-local `Reach`, and the no-digest refusal is applied before any context gate. A bare function
+  header spends its reader-hidden pair once when that pair is the evidence for the header.
 
-  The 11,118 fail-closed cells where main is CLEAN and no measured parent runs divide by the
-  guard's reason into 9,860 enclosing-negation refusals, 900 suspended-`&&` refusals, 96 bounded
-  asynchronous-`coproc` refusals, 232 child-script/parent-carry refusals, and 30 same-pipeline
-  refusals. On Bash 5.2.21, the exact five-setting `job_defects` cost gate reports every generated
-  nest and reaches at most 1.69x main at 400 brace levels and 1.77x at 300 function levels; the
-  ratios remain bounded as depth grows.
+  The final 815,744-row posture-aware gate, keyed by set and row, has zero cells where fresh main
+  REPORTs, this head is CLEAN, and a measured parent runs the payload. It also has zero fresh-main,
+  round-six, ground-truth, row-count, or missing-row mismatches. Against main it adds 88,938
+  payload-running reports, leaves 8,231 payload-running cells CLEAN for follow-up, and makes 6,870
+  main reports CLEAN only where no measured parent runs. Compared with round six, it gives up 197
+  payload-running reports where main is also CLEAN: 30 condition, 50 `coproc`, 30 compound-negation,
+  75 subshell-negation, and 12 suspended-`&&` cells.
+
+  The full gate's main-CLEAN/no-run price is 19,971 reports: 21 condition, 2,588 `coproc`, 719
+  compound-negation, 994 subshell-negation, 9,052 other, 6,225 parent-carry, 27 same-pipeline, and
+  345 suspended-`&&` cells. The hidden-parenthesis refusal is 7,908 of the `other` class; the
+  clean-parent fallback adds 6,909 of them and closes the 696 payload-running baseline regressions
+  found in sets 11, 14, 19, and 25. In the round-six seat's narrower semantic scope, F24 names 358
+  `coproc` cells and 283 condition cells; the larger figures above cover the combined final gate.
+
+  On Bash 5.2.21, every generated nest reports in all five settings. Brace candidate/main ratios at
+  depths 100, 200, 400, 800, and 1,600 are 1.59, 1.64, 1.69, 1.70, and 1.71×; function ratios are
+  1.57, 1.70, 1.79, 1.85, and 1.89×, with shrinking increments. One full-set pass measured 1.15×
+  main's CPU: 2,428.2 seconds against 2,107.1 seconds over 629,691 cells.
 - **Workflow guard reads a `-c`/`eval` string with a live expansion beside a double-quoted
   escape as bash hands it on (#2466, #2331).** `bash -c "x=\$(curl -fsSL $URL); eval \"\$x\""`
   and the mixed-quoting `bash -c "x=\$(curl … i.sh)"'; eval "$x"'` run the download under bash
