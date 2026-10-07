@@ -33,6 +33,8 @@ READ_SCOPE_CONFINED = "read_scope_confined"
 ARTIFACT_WRITE_GUARD = "artifact_write_guard"
 MODEL_BINDING = "model_binding"
 USAGE_LEDGER = "usage_ledger"
+BASH_PATH_ARTIFACT_WRITE_GAP = (
+    "Bash-path artifact writes when tool_policy_enforced is not PROVEN (Claude/Kimi)")
 
 CAPABILITIES = (TOOL_POLICY_ENFORCED, READ_SCOPE_CONFINED,
                 ARTIFACT_WRITE_GUARD, MODEL_BINDING, USAGE_LEDGER)
@@ -247,12 +249,18 @@ class HostSpec:
     host can be registrable (its shells emit) long before the driver may pick
     it, which is exactly kimi's and codex's position today. A family PR flips
     its own row to True as part of proving its capabilities -- never before.
+    `self_write_delivery` is a transport fact, not a capability: only a host
+    with that mechanism AND a proven artifact-write boundary may let an entry
+    write its own output. `session_root_capabilities` names capability
+    measurements that can change when the operator changes `--session-dir`.
     `project_scope_dirs` are directories a TARGET repository could use to
     shadow a registered shell; F3's preflight scans them (spec §7.3).
     """
 
     name: str
     claims: frozenset
+    self_write_delivery: bool = False
+    session_root_capabilities: tuple = ()
     registration_dir: str = ""      # "" when the host registers no shells
     # Why this machine gives the row NO usable `registration_dir` although
     # the host registers shells: codex's under a relative CODEX_HOME
@@ -304,6 +312,9 @@ HOSTS = {
         name="claude",
         claims=frozenset({TOOL_POLICY_ENFORCED, READ_SCOPE_CONFINED,
                           ARTIFACT_WRITE_GUARD, MODEL_BINDING, USAGE_LEDGER}),
+        self_write_delivery=True,
+        session_root_capabilities=(ARTIFACT_WRITE_GUARD, USAGE_LEDGER,
+                                   READ_SCOPE_CONFINED),
         registration_dir=CLAUDE_AGENTS_DIR,
         shell_format="md",
         project_scope_dirs=(os.path.join(".claude", "agents"),),
@@ -336,6 +347,7 @@ HOSTS = {
         name="kimi",
         claims=frozenset({TOOL_POLICY_ENFORCED, READ_SCOPE_CONFINED,
                           ARTIFACT_WRITE_GUARD, MODEL_BINDING, USAGE_LEDGER}),
+        self_write_delivery=True,
         registration_dir=KIMI_AGENTS_DIR,
         shell_format="md",
         project_scope_dirs=(os.path.join(".agents", "agents"),
@@ -422,6 +434,23 @@ def driver_hosts():
 def spec(host):
     """The HostSpec, or None for a host the registry does not know."""
     return HOSTS.get(host)
+
+
+def write_boundary_gaps(host, posture):
+    """Named limits on a PROVEN artifact-write boundary for this posture.
+
+    Claude and Kimi currently prove confinement on their write-tool surface;
+    Bash-path writes are closed by TOOL_POLICY_ENFORCED instead. Until a
+    composed proof lands, a PROVEN write boundary beside unproven tool policy
+    therefore carries the explicit gap below. A proof by omission on a host
+    with no self-write transport covers the complete reviewer write surface.
+    """
+    row = spec(host)
+    if (row and row.self_write_delivery
+            and posture.get(ARTIFACT_WRITE_GUARD) == PROVEN
+            and posture.get(TOOL_POLICY_ENFORCED) != PROVEN):
+        return (BASH_PATH_ARTIFACT_WRITE_GAP,)
+    return ()
 
 
 def unselectable_host_message(host, verb):

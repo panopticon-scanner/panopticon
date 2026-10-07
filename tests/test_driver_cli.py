@@ -377,6 +377,13 @@ class TestAllowUnenforcedHelpNamesTheCapability(unittest.TestCase):
         # flag needs to know something durable records it.
         self.assertIn("unenforced-ack.json", self._flag_help())
 
+    def test_it_describes_an_unproven_boundary_not_a_known_write_path(self):
+        # #1622: the capability can be proven by absence or confinement, so
+        # an unproven state cannot truthfully assert that Write is unmediated.
+        text = self._flag_help()
+        self.assertIn("unproven reviewer-write boundary", text)
+        self.assertNotIn("unmediated reviewer Write", text)
+
     def test_the_string_reaches_driver_run_help(self):
         # Proves the two tests above are asserting on text an operator can
         # actually read, not on a dead attribute.
@@ -625,4 +632,3 @@ class TestDriverLoopCLI(unittest.TestCase):
             rc = driver.main(["loop", "x"])
         self.assertEqual(rc, 0)
         self.assertEqual(lp.call_args.args[0].verb, "loop")
-
