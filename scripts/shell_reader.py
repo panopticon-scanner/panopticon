@@ -619,6 +619,8 @@ def _stage(text, context):
                 reads_body(number, (word, not spelled, False) if op == "<<<" else
                            bodies.get(source) if source and source != "?" else None)
             else:
+                if op == "<>":                 # open for reading too, as `N< file` is: a dup of N
+                    reads.append(word)          # onto 0, or `/dev/fd/N`, reads it (#2881)
                 writes.append(word)
                 sinks[number] = sinks.get("1") if word in _STDOUT_ALIASES else word
                 pipe_inputs[number] = False

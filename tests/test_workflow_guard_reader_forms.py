@@ -692,6 +692,35 @@ class TestADupPutsTheDownloadInTheFileItsDescriptorOpened(unittest.TestCase):
                     self.assertTrue(reported(row + "\necho done\n", shell))
 
 
+class TestAReadWriteDescriptorIsReadOnItsNumber(unittest.TestCase):
+    """#2881: `N<> file` opens the file for reading as well as writing, as `N< file` does, so a
+    shell that dups N onto its standard input (`sh 3<> tool <&3`), or reads N by a path (`sh
+    /dev/fd/3 3<> tool`, `. /dev/stdin 3<> tool 0<&3`), runs the file. `main` read `N<> file` as
+    a write alone and read every one CLEAN, while every shell runs the payload (RRRRRRRR: #2856
+    round 9's dup hunt, and the round-8 seat's SDu7, SDuc and DIu4)."""
+
+    DUPS = ("sh N<> tool <&N", "sh N<> tool 0<&N", "sh N<>tool <&N", "bash N<> tool <&N",
+            "bash -s N<> tool <&N", "sh -s N<> tool 0<&N", "sh N<> tool 0<&N N<&-", "sh - N<> tool <&N",
+            "N<> tool <&N sh", "N<>tool 0<&N bash -s", "sh N<> tool 0<&N 1>&2")
+    PATHS = ("sh /dev/stdin 3<> tool <&3", ". /dev/stdin 3<> tool 0<&3", "bash /dev/stdin 3<> tool <&3",
+             "sh /dev/fd/3 3<> tool", "bash /dev/fd/3 3<>tool", ". /dev/fd/3 3<> tool",
+             "sh /dev/fd/0 3<> tool <&3")
+
+    def test_a_dup_onto_standard_input_runs_the_file(self):
+        for number in ("3", "9"):
+            for use in self.DUPS:
+                row = GET + use.replace("N", number)
+                for shell in SHELLS:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_a_path_to_the_descriptor_runs_the_file(self):
+        for use in self.PATHS:
+            for shell in SHELLS:
+                with self.subTest(row=GET + use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+
+
 class TestEachGateOfTheWholeWordHasAVerdict(unittest.TestCase):
     """PR #2856 round 9, the round-8 verdict's F4: each test that confines the whole reading to a
     command word moves a verdict, so each has a row here. Read whole past one, the guard reports
