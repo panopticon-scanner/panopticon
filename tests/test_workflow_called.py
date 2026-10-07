@@ -12,7 +12,7 @@ import unittest
 import shell_reader
 import workflow_called
 import workflow_uses
-from workflow_values import Values
+from workflow_values import PAST, Values
 
 
 def stmts_of(script):
@@ -251,7 +251,19 @@ class TestEachVisitIsACarryOrTheStandIn(unittest.TestCase):
         # and arrays.
         "g() { eval :; read -r; }\nT=1\ng\nT=2\ng\nsh \"$REPLY\"\nsh \"$T\"\n",
         "h() { eval :; }\ng() { local W; h; W=2; }\nW=1\ng\nV=3\ng\nsh \"$W\"\nsh \"$V\"\n",
-        "g() { eval :; A=(x y); }\nA=(a)\nB=(b)\ng\nB+=(c)\ng\n\"${A[@]}\"\n\"${B[@]}\"\n")
+        "g() { eval :; A=(x y); }\nA=(a)\nB=(b)\ng\nB+=(c)\ng\n\"${A[@]}\"\n\"${B[@]}\"\n",
+        # Round 12 (the round-11 verdict's B1): a `read`, `unset` or `local` behind a wrapper between two
+        # visits -- the walk's `_cleared` reads it through `shell_command.command`, so `set_at` names
+        # what it took the stand-in from -- in a named, an array and an any-name body and a function
+        # body's walk; and a body walked from a fresh table after a top-level visit past the budget, so
+        # the last stand-in was another table's (its seat's mC4).
+        "T=a\ng() { T=$X; }\nX=b; g\ncommand unset T\ng\nsh \"$T\"\nsh \"$T\"\n",
+        "T=a\ng() { T=$X; }\ng\nnohup read T < f\ng\nsh \"$T\"\nsh \"$T\"\n",
+        "g() { T=$X; }\nh() {\ng\ncommand local T\ng\nsh \"$T\"\nsh \"$T\"\n}\nh\n",
+        "A=(x)\ng() { A+=(y); }\ng\nenv unset A\ng\n\"${A[@]}\"\n\"${A[@]}\"\n",
+        "g() { eval :; }\nV=1\ng\ncommand read V < f\ng\nsh \"$V\"\nsh \"$V\"\n",
+        "g() { . ./env; }\nV=1\ng\ntimeout 5 read -r V < f\ng\nsh \"$V\"\nsh \"$V\"\n",
+        "g() { T=$X; }\ng\ng\nh() {\ng\n: \"$T\"\nsh \"$T\"\n}\nT=a\nh\nh\n")
 
     def visits(self, check, budget):
         from unittest import mock
@@ -287,6 +299,48 @@ class TestEachVisitIsACarryOrTheStandIn(unittest.TestCase):
                 workflow_called.stand_in(table, name)
             return table
         self.visits(stood, 0)
+
+
+class TestAStandInMakesNoListItNeedsNot(unittest.TestCase):
+    """Round 12 (the round-11 verdict's B2): past the budget a walk stands in every name the bodies may
+    set -- for a body that may set any name, every name the table holds -- and the lists each stand-in
+    made outlived the visit, which the collector walked again and again. `_stood` leaves the table as
+    `stand_in` does, but a side that held nothing takes one list shared by every such name, read-only."""
+
+    TABLES = (({}, {}), ({"T": ["a"]}, {}), ({"T": ["a", PAST]}, {}), ({"T": ["%d" % i for i in range(8)]}, {}),
+              ({"T": ["%d" % i for i in range(7)] + [PAST]}, {}), ({"T": ["%d" % i for i in range(8)] + [PAST]}, {}),
+              ({}, {"T": [["x", "y"]]}), ({"T": ["a"]}, {"T": [["x"]]}), ({"U": ["u"]}, {"V": [["v"]]}))
+
+    def test_it_leaves_the_table_as_the_stand_in_does(self):
+        for scalars, arrays in self.TABLES:
+            with self.subTest(scalars=scalars, arrays=arrays):
+                fast, slow = Values(scalars, arrays).copy(), Values(scalars, arrays).copy()
+                workflow_called._stood(fast, "T")
+                workflow_called.stand_in(slow, "T")
+                self.assertEqual(snapshot(slow), snapshot(fast))
+
+    def test_a_held_names_own_stand_in_leaves_the_table_as_emptied_does(self):
+        # Round 12: a walk's first visit gives every held name its own reference too (`_own`).
+        for scalars, arrays in self.TABLES[1:] + (({"T": ["a", "$T"]}, {}), ({"T": ["%d" % i for i in range(7)]}, {})):
+            with self.subTest(scalars=scalars, arrays=arrays):
+                fast, slow = Values(scalars, arrays).copy(), Values(scalars, arrays).copy()
+                workflow_called._own(fast, "T")
+                workflow_called.emptied(slow, "T", False, True)
+                self.assertEqual(snapshot(slow), snapshot(fast))
+
+    def test_the_lists_it_shares_are_read_only_and_a_write_makes_its_own(self):
+        table = Values()
+        workflow_called._stood(table, "T")
+        workflow_called._stood(table, "U")
+        self.assertIs(table.scalars["T"], table.scalars["U"])
+        for write in (lambda: table.scalars["T"].append("x"), lambda: table.arrays["T"][0].append("x"),
+                      lambda: table.arrays["T"].extend([["x"]]), lambda: table.scalars["T"].__setitem__(0, "x"),
+                      lambda: table.scalars["T"].sort(), lambda: table.arrays["T"].pop()):
+            with self.subTest(write=write):
+                self.assertRaises(TypeError, write)
+        workflow_called.record(table, stmts_of("T=x\n")[0].stages[0], False)
+        self.assertEqual([PAST, "", "x"], table.scalars["T"])
+        self.assertEqual([PAST, ""], table.scalars["U"])
 
 
 if __name__ == "__main__":
