@@ -249,7 +249,7 @@ from shell_reader import command, statements
 from workflow_annotate import annotate
 from workflow_checks import (CHECKSUM_TOOLS as CHECKSUM_TOOLS, checks as _checks,
                              clears_nested as _clears_nested, contextual as _check_at_use)
-from workflow_fetch import Fetch, compound_streamed_fetch
+from workflow_fetch import Fetch, compound_output, compound_streamed_fetch
 from workflow_forms import (FETCHERS, SHELL_PROGRAM, Idle, Inlined, Reach, Unsure, at_directory,
                             carried, compound_stream_consumer, flattened, kept, located,
                             names_file, parse_fetch, regions, stdin_program, step_credit,
@@ -282,7 +282,7 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
         dirs = working_directories(stmts, regions(stmts), 0, credit, directory)
         working = dict(enumerate(dirs))
     scopes = scopes or range(len(stmts))
-    found, unread = [], []
+    found, unread, out = [], [], [None]
     for index, statement in enumerate(stmts):
         here = working.get(index, directory)
         under = ANY if isinstance(statement, Inlined) else shell
@@ -290,13 +290,13 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
             argv, before = command(stage.argv), statement.stages[:position]
             if argv and os.path.basename(argv[0]) in FETCHERS:
                 following = statement.stages[position + 1:]
-                piped_to = tuple(command(following[0].argv)) if following else None
-                fetch = parse_fetch(os.path.basename(argv[0]), argv[1:], stage, piped_to)
+                fetch_stage, piped_to = compound_output(stmts, out, index, stage, following)
+                fetch = parse_fetch(os.path.basename(argv[0]), argv[1:], fetch_stage, piped_to)
                 if fetch is not None:
                     if stream_exec:
                         compound = compound_stream_consumer(stmts, index, EXECUTORS)
                         stream = compound_streamed_fetch(
-                            os.path.basename(argv[0]), argv[1:], stage, following,
+                            os.path.basename(argv[0]), argv[1:], fetch_stage, following,
                             EXECUTORS, compound,
                         )
                         fetch = stream or (fetch._replace(piped_to=None) if fetch.dest is None

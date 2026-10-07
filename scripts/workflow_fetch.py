@@ -339,11 +339,12 @@ _COMPOUND_OPEN = ("if", "while", "until", "for", "case", "{")
 _COMPOUND_CLOSE = ("fi", "done", "esac", "}")
 
 
-def _compound_delta(statement):
-    """The compound nesting change contributed by one flat statement."""
+def _compound_delta(statement, groups=True):
+    """The compound nesting change; `groups=False` keeps keyword compounds."""
     depth = 0
     for stage in statement.stages:
-        depth += stage.group_open - stage.group_close
+        if groups:
+            depth += stage.group_open - stage.group_close
         for token in stage.argv:
             if token not in shell_reader.KEYWORDS:
                 break
@@ -402,6 +403,73 @@ def _closing_stream(statement, executors):
             return consumer, True
         return None, _stream_forwarded(following) if following else True
     return None, True
+
+
+def _closing_output(statement):
+    """A compound close's stdout boundary, or None when it passes outward."""
+    for position, close in enumerate(statement.stages):
+        one = shell_reader.Statement([close], statement.separator)
+        if _compound_delta(one, False) >= 0:
+            continue
+        following = statement.stages[position + 1:] or _inline_pipeline(close)
+        next_argv = command(following[0].argv) if following else []
+        piped_to = (tuple(next_argv) if close.stdout_to_pipe and next_argv
+                    and _may_read_pipe(next_argv, following[0]) else None)
+        if close.stdout_writes or not close.stdout_to_pipe or following:
+            return close, piped_to
+        break
+    return None
+
+
+def _compound_outputs(stmts):
+    """Map enclosed statements to the first closing stdout boundary.
+
+    The reverse walk sees an outer close before its nested transparent closes,
+    so each depth inherits its parent's redirect or following pipeline in one
+    pass rather than rescanning the suffix for every fetch.
+    """
+    levels, depth = [], 0
+    for statement in stmts:
+        before = depth
+        depth += _compound_delta(statement, False)
+        levels.append((before, depth))
+    inherited: dict[int, tuple] = {}
+    outputs: dict[int, tuple] = {}
+    for position in range(len(stmts) - 1, -1, -1):
+        before, after = levels[position]
+        if 0 <= after < before:
+            output = _closing_output(stmts[position]) or inherited.get(after)
+            for level in range(after + 1, before + 1):
+                if output is None:
+                    inherited.pop(level, None)
+                else:
+                    inherited[level] = output
+        level = max(before, after)
+        if level > 0 and level in inherited:
+            outputs[position] = inherited[level]
+        if after > before:
+            for level in range(max(0, before) + 1, after + 1):
+                inherited.pop(level, None)
+    return outputs
+
+
+def compound_output(stmts, outputs, position, stage, following):
+    """The stage and next argv after its own or its compound's stdout."""
+    if following:
+        return stage, tuple(command(following[0].argv))
+    if stage.stdout_writes or not stage.stdout_to_pipe:
+        return stage, None
+    if outputs[0] is None:
+        outputs[0] = _compound_outputs(stmts)
+    output = outputs[0].get(position)
+    if output is None:
+        return stage, None
+    close, piped_to = output
+    return stage._replace(
+        writes=stage.writes + close.writes,
+        stdout_writes=close.stdout_writes,
+        stdout_to_pipe=close.stdout_to_pipe,
+    ), piped_to
 
 
 def compound_stream_consumer(stmts, position, executors):

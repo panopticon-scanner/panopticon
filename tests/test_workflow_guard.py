@@ -4274,6 +4274,59 @@ class TestACompoundCommandFeedsItsClosingPipeline(unittest.TestCase):
                 self.assertEqual([], wg.fetch_exec_defects(script))
 
 
+class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
+    """#2883: redirects and file-writing pipes on a compound apply inside it."""
+
+    URL = "https://example.test/tool"
+    FETCH = "curl -fsSL %s" % URL
+    COMPOUNDS = (
+        "{ %s; } %s tool\nsh tool\n",
+        "if true; then %s; fi %s tool\nsh tool\n",
+        "for value in one; do %s; done %s tool\nsh tool\n",
+        "while true; do %s; break; done %s tool\nsh tool\n",
+        "until false; do %s; break; done %s tool\nsh tool\n",
+        "case x in x) %s;; esac %s tool\nsh tool\n",
+    )
+
+    def assert_reported(self, script):
+        why = wg.fetch_exec_defects(script)
+        self.assertEqual(1, len(why), why)
+        self.assertIn("fetches %s -> tool and running it under `sh`" % self.URL, why[0])
+
+    def test_each_compound_carries_its_redirect_or_tee_destination(self):
+        for compound in self.COMPOUNDS:
+            for output in (">", ">>", "| tee"):
+                script = compound % (self.FETCH, output)
+                with self.subTest(compound=compound, output=output):
+                    self.assert_reported(script)
+
+    def test_multiline_and_nested_compounds_carry_the_outer_destination(self):
+        for script in (
+                "{\n%s\n} > tool\nsh tool\n" % self.FETCH,
+                "{ { %s; }; } > tool\nsh tool\n" % self.FETCH,
+                "if true; then\n  { %s; }\nfi | tee tool\nsh tool\n" % self.FETCH,
+                "if %s; then :; fi > tool\nsh tool\n" % self.FETCH,
+                "while %s; do break; done > tool\nsh tool\n" % self.FETCH,
+        ):
+            with self.subTest(script=script):
+                self.assert_reported(script)
+
+    def test_an_inner_stdout_redirect_still_disconnects_the_compound_output(self):
+        for script in (
+                "{ %s > other; } > tool\nsh tool\n" % self.FETCH,
+                "if true; then %s >/dev/null; fi | tee tool\nsh tool\n" % self.FETCH,
+                "{ %s; } | tee tool </dev/null\nsh tool\n" % self.FETCH,
+                "{ { %s; } > other; } > tool\nsh tool\n" % self.FETCH,
+                "{ { %s; } | cat </dev/null; } > tool\nsh tool\n" % self.FETCH,
+                "{ %s; }\nif true; then :; fi > tool\nsh tool\n" % self.FETCH,
+                "%s\n{ :; } > tool\nsh tool\n" % self.FETCH,
+                "a=(\n  %s\n) > tool\nsh tool\n" % self.FETCH,
+        ):
+            with self.subTest(script=script):
+                self.assertEqual([], wg.fetch_exec_defects(script))
+        self.assert_reported("{ %s 2> err; } > tool\nsh tool\n" % self.FETCH)
+
+
 class TestPipelineStreamProvenance(unittest.TestCase):
     URL = "https://example.test/install"
 
