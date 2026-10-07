@@ -693,32 +693,57 @@ class TestADupPutsTheDownloadInTheFileItsDescriptorOpened(unittest.TestCase):
 
 
 class TestAReadWriteDescriptorIsReadOnItsNumber(unittest.TestCase):
-    """#2881: `N<> file` opens the file for reading as well as writing, as `N< file` does, so a
-    shell that dups N onto its standard input (`sh 3<> tool <&3`), or reads N by a path (`sh
-    /dev/fd/3 3<> tool`, `. /dev/stdin 3<> tool 0<&3`), runs the file. `main` read `N<> file` as
-    a write alone and read every one CLEAN, while every shell runs the payload (RRRRRRRR: #2856
-    round 9's dup hunt, and the round-8 seat's SDu7, SDuc and DIu4)."""
+    """#2881: `N<> file` opens the file for reading as well as writing, so a shell that dups N onto
+    its standard input (`sh 3<> tool <&3`, a move `<&3-` too) or reads N by a path (`sh /dev/fd/3
+    3<> tool`, `. /dev/stdin 3<> tool 0<&3`) runs the file. `main` read `N<> file` as a write alone
+    and read every one CLEAN, while the shells run the payload (#2856 round 9's dup hunt, and the
+    round-8 seat's SDu7, SDuc and DIu4). Round 2 (the round-1 verdict): the file is read only where
+    such a dup or path reaches it -- a check that merely holds a digest file open on N is credited
+    with what it reads, not that file (B1, B2) -- on every descriptor (B3)."""
 
     DUPS = ("sh N<> tool <&N", "sh N<> tool 0<&N", "sh N<>tool <&N", "bash N<> tool <&N",
             "bash -s N<> tool <&N", "sh -s N<> tool 0<&N", "sh N<> tool 0<&N N<&-", "sh - N<> tool <&N",
             "N<> tool <&N sh", "N<>tool 0<&N bash -s", "sh N<> tool 0<&N 1>&2")
-    PATHS = ("sh /dev/stdin 3<> tool <&3", ". /dev/stdin 3<> tool 0<&3", "bash /dev/stdin 3<> tool <&3",
-             "sh /dev/fd/3 3<> tool", "bash /dev/fd/3 3<>tool", ". /dev/fd/3 3<> tool",
-             "sh /dev/fd/0 3<> tool <&3")
+    PATHS = ("sh /dev/stdin N<> tool <&N", ". /dev/stdin N<> tool 0<&N", "bash /dev/stdin N<> tool <&N",
+             "sh /dev/fd/N N<> tool", "bash /dev/fd/N N<>tool", ". /dev/fd/N N<> tool",
+             "sh /dev/fd/0 N<> tool <&N")
+    MOVES = ("sh N<> tool <&N-", "bash N<>tool 0<&N- -s")      # a move: bash alone runs it
+    # Every shell runs these on descriptors 1-9 (RRRRRRRR); bash alone past 9, where dash opens
+    # no descriptor, and a move, which dash rejects (RRRRfRRf).
+    BASH = (None, "bash", "bash {0}")
+    NUMBERS = ((("1", "2", "3", "9"), SHELLS, BASH), (("10", "99"), BASH, BASH))
 
-    def test_a_dup_onto_standard_input_runs_the_file(self):
-        for number in ("3", "9"):
-            for use in self.DUPS:
-                row = GET + use.replace("N", number)
-                for shell in SHELLS:
-                    with self.subTest(row=row, shell=shell):
-                        self.assertTrue(reported(row + "\necho done\n", shell))
+    def test_a_dup_onto_standard_input_or_a_path_runs_the_file(self):
+        for numbers, shells, moved in self.NUMBERS:
+            for number in numbers:
+                for uses, settings in ((self.DUPS + self.PATHS, shells), (self.MOVES, moved)):
+                    for use in uses:
+                        row = GET + use.replace("N", number)
+                        for shell in settings:
+                            with self.subTest(row=row, shell=shell):
+                                self.assertTrue(reported(row + "\necho done\n", shell))
 
-    def test_a_path_to_the_descriptor_runs_the_file(self):
-        for use in self.PATHS:
+    def test_a_descriptor_redirected_again_reads_the_file_no_longer(self):
+        # Closed, or opened on another file, before the dup: no shell runs the download (ffffffff).
+        for use in ("sh 3<> tool 3<&- <&3", "echo : > other\nsh 3<> tool 3< other <&3"):
             for shell in SHELLS:
-                with self.subTest(row=GET + use, shell=shell):
-                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+                with self.subTest(use=use, shell=shell):
+                    self.assertFalse(reported(GET + use + "\necho done\n", shell))
+
+    def test_a_check_is_credited_with_what_it_reads_alone(self):
+        # Round 2, B1 (the round-1 seat's CF lead row, with a wrong digest): the check verifies its
+        # standard input, the download's own fresh hash, and only holds `sums` open on 3 -- so the
+        # use is unverified. B2, its mirror: a pinned check on standard input, holding another file
+        # open on 3, still verifies what it reads.
+        unverified = ('echo "%s  tool" > sums\ncurl -fsSLo tool %stool\n'
+                      'sha256sum tool | sha256sum -c 3<> sums\nsh tool\necho done\n' % ("0" * 64, URL))
+        for shell in (None, "bash", "sh"):
+            with self.subTest(row="CF", shell=shell):
+                self.assertTrue(reported(unverified, shell))
+        verified = GET + '%s 3<> other\nsh tool\necho done\n' % CHECK
+        for shell in (None, "bash", "sh"):
+            with self.subTest(row="CO", shell=shell):
+                self.assertFalse(reported(verified, shell))
 
 
 class TestEachGateOfTheWholeWordHasAVerdict(unittest.TestCase):

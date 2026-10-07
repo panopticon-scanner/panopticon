@@ -121,6 +121,8 @@ _ESCAPED = "\ue002"
 # expansion before it splits the result, where shlex would split the braces apart (#2731).
 _BLANK = "\ue004"
 _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
+# A path to a descriptor, which reads the file `N<>` opened on it (`_stage`, #2881).
+_FD_PATH = re.compile(r"/(?:dev|proc/self)/fd/(\d+)")
 
 
 # --- reading the shell -------------------------------------------------------
@@ -535,6 +537,7 @@ def _stage(text, context):
     # its CURRENT sink, so `>file >/dev/stdout` still writes to file.
     pipe_outputs = {"1": True}
     pending = None
+    opened: dict[str, str] = {}      # the file `N<>` opened on each N but 0, while it stands
     literal: int | None = None          # where an array literal's words start
     words: list[str] = []               # argv with no literal folded
 
@@ -593,7 +596,14 @@ def _stage(text, context):
             pending = None
             take(word)
             number = (fd.lstrip("0") or "0") if fd else ("0" if op.startswith("<") else "1")
+            opened.pop(number, None)            # any redirection of N ends what `N<>` opened there
             if op in (">&", "<&"):
+                moved = re.fullmatch(r"(\d+)-", word)
+                if number == "0" and (_fd_or_close(word) or moved):
+                    # fd 0 now reads the file `N<>` opened on N: a dup or a move onto it (#2881)
+                    held = opened.get((moved[1] if moved else word).lstrip("0") or "0")
+                    if held is not None:
+                        reads.append(held)
                 if _fd_or_close(word):
                     source = word.lstrip("0") or "0"
                     sinks[number] = None if word == "-" else sinks.get(source)
@@ -619,8 +629,8 @@ def _stage(text, context):
                 reads_body(number, (word, not spelled, False) if op == "<<<" else
                            bodies.get(source) if source and source != "?" else None)
             else:
-                if op == "<>":                 # open for reading too, as `N< file` is: a dup of N
-                    reads.append(word)          # onto 0, or `/dev/fd/N`, reads it (#2881)
+                if op == "<>":                 # open for reading too: what reads N reads it (#2881)
+                    opened[number] = word
                 writes.append(word)
                 sinks[number] = sinks.get("1") if word in _STDOUT_ALIASES else word
                 pipe_inputs[number] = False
@@ -651,6 +661,9 @@ def _stage(text, context):
         words.append(word)
     if all(word in KEYWORDS or _ASSIGNMENT.match(word) for word in argv):
         argv = words        # it only assigns: an array of a command is read as run
+    # A path to a descriptor `N<>` opened reads that file (`sh /dev/fd/3 3<> tool`, #2881).
+    reads.extend(opened[path[1].lstrip("0") or "0"] for word in argv if (path := _FD_PATH.fullmatch(str(word)))
+                 and (path[1].lstrip("0") or "0") in opened)
     stdout, stdin = sinks.get("1"), bodies.get("0")
     return Stage(argv, writes, reads, stdin[0] if stdin and stdin[2] else heredoc,
                  substitutions, [stdout] if stdout is not None else [], group_open,
