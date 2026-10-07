@@ -275,14 +275,13 @@ removes tool-enabling patch, multi-agent, and experimental-tool metadata while r
 identity and reasoning settings; effective-surface probes check the result rather than trusting TOML
 alone. Nothing changes another host's runner or the calling session's configuration.
 
-The role profile keeps scout on `gpt-5.6-luna`/medium and domain-panel on `gpt-5.6-terra`/high.
-Advisor and domain-advisor use the explicit `gpt-5.6-sol`/high slug: the supported CLI's bundled
-catalog does not list the `gpt-5.6` alias. An unavailable or ambiguous model fails closed rather
-than silently selecting another tier; if your Codex build's catalog (`codex debug models --bundled`)
+The role profile keeps scout on `gpt-6-luna`/medium. Advisor, domain-panel, and domain-advisor use
+the explicit `gpt-6-sol`/high slug. An unavailable or ambiguous model fails closed rather than
+silently selecting another tier; if your Codex build's catalog (`codex debug models --bundled`)
 spells the tier differently, set `PANOPTICON_MODEL_<ROLE>` — e.g. `PANOPTICON_MODEL_DOMAIN_PANEL` —
 to a slug it lists, which is what the refusal itself names.
 Each override accepts either a plain model ID or a JSON object such as
-`{"model":"gpt-5.6-terra","model_reasoning_effort":"high"}`. Surrounding whitespace is allowed.
+`{"model":"gpt-6-sol","model_reasoning_effort":"high"}`. Surrounding whitespace is allowed.
 An override beginning with `{` must be valid JSON; a malformed object stops `driver run` or
 `driver loop` before host work and the error names the environment key without printing its value.
 

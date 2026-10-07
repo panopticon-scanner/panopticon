@@ -754,13 +754,21 @@ class TestEmitHostAgents(unittest.TestCase):
             # #run10: 4.x roles retired; #1737: setup_scan joined ROLE_FILES.
             self.assertEqual(len(written), len(dispatch.ROLE_FILES))
             self.assertTrue(all(path.endswith(".toml") for path in written))
-            with open(os.path.join(d, "panopticon-domain-panel.toml"), encoding="utf-8") as fh:
-                text = fh.read()
-            self.assertIn('name = "panopticon-domain-panel"', text)
-            self.assertIn('model = "gpt-5.6-terra"', text)
-            self.assertIn('model_reasoning_effort = "high"', text)
-            self.assertIn('sandbox_mode = "read-only"', text)
-            self.assertIn("never execute target code", text)
+            expected = {
+                "panopticon-scout": ("gpt-6-luna", "medium"),
+                "panopticon-advisor": ("gpt-6-sol", "high"),
+                "panopticon-domain-panel": ("gpt-6-sol", "high"),
+                "panopticon-domain-advisor": ("gpt-6-sol", "high"),
+            }
+            for name, (model, effort) in expected.items():
+                with self.subTest(name=name), \
+                        open(os.path.join(d, name + ".toml"), encoding="utf-8") as fh:
+                    text = fh.read()
+                    self.assertIn('name = "%s"' % name, text)
+                    self.assertIn('model = "%s"' % model, text)
+                    self.assertIn('model_reasoning_effort = "%s"' % effort, text)
+                    self.assertIn('sandbox_mode = "read-only"', text)
+                    self.assertIn("never execute target code", text)
 
     def test_the_codex_charter_names_the_panopticon_stamp(self):
         # M-10: one of eleven launches in the PR's own paid run was refused
