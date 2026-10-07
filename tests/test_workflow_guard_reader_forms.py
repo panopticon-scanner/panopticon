@@ -1362,7 +1362,8 @@ class TestAReadWriteDescriptorIsReadOnItsNumber(unittest.TestCase):
         # Round 2, the coordinator's note on the round-1 seat's DX rows: `4<&3` puts on 4 the file
         # `3<>` opened on 3, so a later dup of 4 onto standard input reads it -- DX05, DX06 and DX14,
         # every shell running the download, and so after 3 closes. The move `4<&3-` runs under bash
-        # alone (dash takes none); closed on 4 before the dup, nothing runs (ffffffff).
+        # alone (dash takes none); closed on 3 and on 4 before the dup, nothing runs (ffffffff). Round 3
+        # moved the control: closed on 4 alone, 3 still holds the file, which a shell reads (main's `3<`).
         for use in ("sh 3<> tool 4<&3 <&4", "sh 3<> tool 4>&3 0<&4", "sh 4<> tool 3<&4 <&3",
                     "sh 3<> tool 4<&3 3<&- <&4"):
             for shell in SHELLS:
@@ -1372,8 +1373,33 @@ class TestAReadWriteDescriptorIsReadOnItsNumber(unittest.TestCase):
             with self.subTest(use="the move", shell=shell):
                 self.assertTrue(reported(GET + "sh 3<> tool 4<&3- <&4\necho done\n", shell))
         for shell in SHELLS:
-            with self.subTest(use="closed on 4", shell=shell):
-                self.assertFalse(reported(GET + "sh 3<> tool 4<&3 4<&- <&4\necho done\n", shell))
+            with self.subTest(use="closed on 3 and 4", shell=shell):
+                self.assertFalse(reported(GET + "sh 3<> tool 4<&3 3<&- 4<&- <&4\necho done\n", shell))
+
+    def test_a_shell_reads_what_n_holds_by_any_route(self):
+        # Round 3, the round-2 verdict's B2 and B3: a shell reads what `N<>` still holds when its
+        # redirections end, as `main` reads `N<` -- by a path in any spelling (UP007, UP008, UP011, a
+        # path in a value UP016, `/dev/stdout` VP001 and VP003), a child program (UX26, UX30, the subshell
+        # UX42) and a command word the step's values decide (DW28). Every shell runs the download.
+        for use in ("sh /proc/thread-self/fd/3 3<> tool", "sh //dev/fd/3 3<> tool", "sh /proc/self/fd/../fd/3 3<> tool",
+                    "P=/dev/fd/3\nsh $P 3<> tool", "sh /dev/stdout 1<> tool", "sh /dev/stdout 3<> tool 1>&3",
+                    "sh -c 'sh <&3' 3<> tool", "sh -c 'sh /dev/fd/3' 3<> tool", "( sh <&3 ) 3<> tool",
+                    "SH=sh\n$SH 3<> tool <&3"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+
+    def test_a_check_is_credited_with_no_file_it_only_holds(self):
+        # Round 3, the round-2 verdict's B1: a check that reads `self` -- by its operand or on standard
+        # input after the dup, straight or through a chain -- while it holds the pinned `sums` on 3 checks
+        # the download against itself, so the use stays reported (QO001, QL001, WO001, WL001; wrong
+        # digests, every shell running the download).
+        wrong = 'echo "%s  tool" > sums\ncurl -fsSLo tool %stool\nsha256sum tool > self\n' % ("a" * 64, URL)
+        for check in ("sha256sum -c self 3<> sums <&3", "sha256sum -c 3<> sums <&3 < self",
+                      "sha256sum -c self 3<> sums 4<&3 <&4", "sha256sum -c 3<> sums 4<&3 <&4 < self"):
+            for shell in SHELLS:
+                with self.subTest(check=check, shell=shell):
+                    self.assertTrue(reported(wrong + check + "\nsh tool\necho done\n", shell))
 
     def test_a_check_is_credited_with_what_it_reads_alone(self):
         # Round 2, B1 (the round-1 seat's CF lead row, with a wrong digest): the check verifies its
