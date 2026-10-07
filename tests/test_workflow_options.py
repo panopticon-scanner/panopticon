@@ -383,17 +383,24 @@ class TestALongOptionOfTheShell(unittest.TestCase):
                 self.assertTrue(any(STREAM in why for why in defects(script)), script)
 
     def test_a_run_of_one_dash_long_options_costs_what_the_walk_does(self):
-        # #2858 round 3 (B3): `_run` is one pass per argv, kept by identity -- twenty and ten
+        # #2858 round 3 (B3): `_run` is one pass per argv, kept by identity -- twenty and two
         # thousand one-dash words cost within 2x of the same run of two-dash words (the seat
-        # measured 7.7 s at sixteen and a timeout at twenty on the round-3 head).
+        # measured 7.7 s at sixteen and a timeout at twenty on the round-3 head). Round 10: `main`
+        # reads the two-dash run's heredoc itself, and the one-dash run's only through this walk, as
+        # no shell's sure program -- which the guard folds twice (`job_defects`). So the pair keeps
+        # its 2x bound like for like, both runs ending in a one-dash word `main` reads as a `-c`
+        # cluster (each folded twice: 0.9x measured on the Mac), and the plain pair carries that
+        # second fold (1.6x-1.8x on the Mac, 2.15x on GitHub's 3.13 runner before `long_option` was
+        # kept per argv): a 3x bound.
         import time
         for n in (20, 2000):
-            runs = {}
-            for opt in ("--norc", "-norc"):
-                t0 = time.perf_counter()
-                self.assertTrue(defects(body("bash " + " ".join([opt] * n), PIPE)))
-                runs[opt] = time.perf_counter() - t0
-            self.assertLess(runs["-norc"], max(2 * runs["--norc"], 0.5), (n, runs))
+            for tail, bound in ((" -norc", 2), ("", 3)):
+                runs = {}
+                for opt in ("--norc", "-norc"):
+                    t0 = time.perf_counter()
+                    self.assertTrue(defects(body("bash " + " ".join([opt] * n) + tail, PIPE)))
+                    runs[opt] = time.perf_counter() - t0
+                self.assertLess(runs["-norc"], max(bound * runs["--norc"], 0.5), (n, tail, runs))
 
     def test_a_shell_that_reads_its_program_and_runs_none_of_it(self):
         # #2858 round 3: `-n` (noexec) and `-o noexec` read the heredoc and run nothing of it,

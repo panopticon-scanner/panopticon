@@ -87,7 +87,22 @@ def long_option(argv, at):
     alone, and after a short-option word `-help` is the letters `-h -e -l -p` (#2858 round 2). To
     dash a one-dash word is a cluster of letters (`dash -login` fails at `-g`), and zsh and ksh
     are not measured. None for any other word: a letter cluster, a word with a value glued on,
-    `-`, `--`, or a name not written as itself (a `str` subclass)."""
+    `-`, `--`, or a name not written as itself (a `str` subclass). Read once per argv and kept by
+    identity, as `_run` keeps its pass (#2858 round 10: asked word by word, a run of one-dash words
+    cost the walk twice what the two-dash run did)."""
+    hit = _LONGS.get(id(argv))
+    if hit is None or hit[0] is not argv or hit[1] != len(argv) or hit[2] is not argv[0]:
+        if len(_LONGS) > 256:
+            _LONGS.clear()
+        hit = _LONGS[id(argv)] = (argv, len(argv), argv[0], [_long_name(argv, k) for k in range(len(argv))])
+    return hit[3][at]
+
+
+_LONGS: dict[int, tuple[list, int, object, list]] = {}
+
+
+def _long_name(argv, at):
+    """`long_option`'s answer for the word `argv[at]`, worked out."""
     word = argv[at]
     found = _LONG.fullmatch(word) if type(word) is str else None
     if not found:
