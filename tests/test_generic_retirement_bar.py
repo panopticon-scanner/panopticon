@@ -3,8 +3,8 @@
     Originally shipped AHEAD of F5 as its entry criterion: F5 could delete
     `--host generic` once every host remaining in HOSTS had
     tool_policy_enforced = proven and read_scope_confined = proven, and had
-    artifact_write_guard either proven or explicitly bridged by
-    delivery: return_json.
+    artifact_write_guard either proven for a self-write transport or bridged
+    by delivery: return_json.
 
 Owner ruling D1 (2026-09-15, spec 8.3 option 1) retired F5: `--host generic`
 stays as the permanent, unenforced fallback, so there is no deletion left for
@@ -20,12 +20,12 @@ capability and maps it to a SHIPPED probe id. Live proof is per run (spec
 5.2); the registry cannot know it, and a claim with no probe is `unknown`
 forever, which fails the bar exactly as `refuted` does (spec 8.1).
 
-The write-guard clause is discharged by construction (R-F5-2): after F4 and
-#1608 every entry's `delivery` is derived by requests.delivery() and the
-bridge fires on any posture that is not PROVEN, so every driver host is
-"explicitly bridged". test_the_write_guard_clause_is_bridged_by_construction
-proves that once; the per-host shortfall is then the two security
-capabilities. model_binding and usage_ledger are excluded by D5.
+The write-boundary clause is discharged by construction (R-F5-2, #1622):
+requests.delivery() permits self-write only when the host's static transport
+fact and a PROVEN boundary both hold, and bridges every other case. Therefore
+every driver host is "explicitly bridged". The construction test proves that
+once; the per-host shortfall is then the two security capabilities.
+model_binding and usage_ledger are excluded by D5.
 """
 import dataclasses
 import glob
@@ -154,7 +154,8 @@ class TestGenericRetirementBar(unittest.TestCase):
                              retirement_shortfalls()["claimant"])
 
     def test_the_write_guard_clause_is_bridged_by_construction(self):
-        # R-F5-2. Under an all-unknown posture (no evidence), every role file --
+        # R-F5-2/#1622. Under an all-unknown posture (no evidence), every role
+        # file --
         # the four in ROLE_FILES and setup-scan -- resolves to return_json on
         # every driver host, so no host can reach a self-write it has not
         # proven it can guard. This is what makes "explicitly bridged" a

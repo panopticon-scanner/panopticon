@@ -7,8 +7,18 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
-- **Codex model profiles move to GPT-6 (#2872).** Role defaults now use `gpt-6-luna` or
+- **Codex model profiles move to GPT-6 (#2872).** Pinned role defaults now use `gpt-6-luna` or
   `gpt-6-sol`; set `PANOPTICON_MODEL_<ROLE>` to pin another installed model.
+- **Reviewer write safety separates the boundary from its transport (#1622).**
+  `artifact_write_guard` now means reviewer-controlled artifact writes are impossible or confined.
+  The static `self_write_delivery` fact is true only for Claude and Kimi, and a write-capable role
+  self-writes only when that fact and a proven boundary both hold; all other cases remain
+  return-persist. Current Claude/Kimi proof covers the write-tool surface. When tool policy is
+  REFUTED and the operator passes `--allow-unenforced`, `unenforced-ack.json` names the remaining
+  Bash-path gap. For that PROVEN-boundary case, with no flag or with tool policy UNKNOWN, no
+  acknowledgement is written; the gap appears only in the `tool_policy_enforced` posture line. An
+  unproven boundary (including generic) still requires `--allow-unenforced`. Codex gains no
+  capability claim in this policy change.
 - **Workflow guard carries a compound command's closing output to its inner fetch (#2883).**
   A fetch whose own stdout is not redirected now inherits the first redirect or pipeline on the
   close of its enclosing `{ }`, `if`, `for`, `while`/`until` or `case`, so `> tool`,
