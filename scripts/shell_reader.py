@@ -299,15 +299,14 @@ def _split(text, context):
             i = bare[0]
             buf.extend(bare[1])
             continue
-        # A case header ends at its `in`, even when its first arm shares
-        # the line. Quoted/escaped words remain intact until shlex reads them.
-        # The count asks the BUFFER, not the source text, whether a word just
-        # closed here: whitespace that only extends a run of whitespace ends
-        # nothing, an escaped space ends nothing, and the character before a
-        # statement's first space may be the `;` that ENDED the last one --
-        # a source-text test miscounted that as a word and killed the probe
-        # one word early, losing the second header of `case ... esac; case
-        # ... in ...`. Whitespace inside a quote never reaches this branch.
+        # A case header ends at its `in`, even when its first arm shares the line.
+        # Quoted/escaped words remain intact until shlex reads them. The count asks the BUFFER,
+        # not the source text, whether a word just closed here: whitespace that only extends a
+        # run of whitespace ends nothing, an escaped space ends nothing, and the character
+        # before a statement's first space may be the `;` that ENDED the last one -- a
+        # source-text test miscounted that as a word and killed the probe one word early, losing
+        # the second header of `case ... esac; case ... in ...`. Whitespace inside a quote never
+        # reaches this branch.
         if ch.isspace() and buf and not buf[-1][-1].isspace():
             # The word that closed, quotes and all: `"[["` is the ordinary
             # word, never the conditional; empty just past a `case` arm token.
