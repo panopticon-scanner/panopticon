@@ -9,129 +9,41 @@ evidence exposed.
 
 - **Codex model profiles move to GPT-6 (#2872).** Role defaults now use `gpt-6-luna` or
   `gpt-6-sol`; set `PANOPTICON_MODEL_<ROLE>` to pin another installed model.
-- **Workflow guard: the stdin operand walk reads a shell's options as the shell does (#2647, #2654,
-  #2616, #2606, #2603, #2331).** For a shell the step surely runs as itself (round 9's certificate,
-  below), after `-s` bash keeps reading options, so a `-c` among them
-  puts the program in the string and the heredoc is its data (`bash -s -c true` ran the download
-  past a check bash never read) -- for bash alone: dash runs the string and THEN reads stdin, so
-  under `dash` and `sh` the heredoc is the program after all (`sh -s -c true <<'EOF'`, `sh -cs
-  true`, `sh -c -s true` ran it; no check in it counts, since the string may eat stdin first and
-  bash never reads it); the word after a lone `-` is the script FILE (`bash - /dev/null`) where it
-  is literal or one word, and one that may vanish -- `$X`, `"$@"`, a nested `${X:-${Y}}` the reader
-  leaves plain, a pattern under `nullglob` -- leaves stdin the program, as after `--` (#2858 rounds 7
-  and 9); a shell's long options have a table, in
-  both spellings bash takes (`--login`, `-login`: #2864), the one-dash one in the leading run of
-  long options alone (after `-e`, `-help` is the letters `-h -e -l -p`, and the heredoc runs) --
-  `--rcfile FILE` and `--init-file FILE` are skipped whole, and a word outside the table, with a value
-  glued on or after a short option word (`bash -e --norc`: `--: invalid option` on 5.2.21 and 3.2.57,
-  round 9) is a refusal, as every two-dash word is to dash (`bash --rcfile /dev/null <<'EOF'`
-  and `bash -norc <<'EOF'` ran the heredoc and read CLEAN; `bash --bogus` ran nothing and was
-  reported); at the step's own level a measured shell's refused letter (`bash -K`), refused `-o`
-  name (`bash -o pipefial`) or `-o` value that is no name (`sh -o -`, `bash -o /dev/stdin`) runs
-  nothing, in the stdin walk and in the option words before a `-c` cluster. A word mixing `$(...)`
-  and `<(...)` is no sure FILE -- the substitution may split an option off first (`$(echo '-s
-  ')<(...)` is `-s /dev/fd/63`, and bash runs the heredoc) -- so #2592's `bash $(true)<(...)` stays
-  reported, as on main (round 9). Behind a string an inner shell's refusal is still
-  read on, `-O`'s shopt names still have no table, and no refusal is read as stopping the step: a
-  use after `bash -oo pipefail -c P` is still reported.
-- **Workflow guard: a clear or a check credit needs a shell the step surely runs as itself (#2858
-  round 9).** Every clear of the stdin and string walks this PR adds -- a refusal, an exit, noexec,
-  `--pretty-print`, a lone `-`'s FILE, `-s -c` -- and every check credit beyond main's fires only
-  where `workflow_forms.flattened` has certified the command word (`workflow_sure.certified`):
-  `bash`, `sh` or `dash` written as itself (by PATH or in `/bin` or `/usr/bin`, not `./bash`),
-  reached through literal words (not an optional `$S` the reader looks through, not `sudo -u
-  "$U"`), in a step that defines no function or alias of a shell's or a wrapper's name, its raw text
-  included (`eval 'bash() { :; }'`), sources no file, evaluates no word it does not spell, sets no
-  `BASH_ENV`, `ENV`, `PATH`, `SHELLOPTS` or `BASHOPTS`, exports no `BASH_FUNC_…`, uses no `hash` or
-  `enable`, follows no step of its job that writes `$GITHUB_ENV` or `$GITHUB_PATH`, and neither it nor
-  a step before it writes a file a later bare word may find -- a target named like a shell or a
-  wrapper (`curl -o ~/.cargo/bin/bash`, `cp t /snap/bin/sh`, `gunzip bash.gz`), one not written as
-  itself (`curl -o "$OUT"`), or an archive it unpacks -- each of which may make `bash` read its
-  heredoc (`bash() { command bash; }; bash --version <<'EOF'` ran it and read CLEAN); a certificate
-  goes on a fresh parse, never one another job reads. A `uses:` action that sets the environment or
-  `PATH` is a named gap beside the job's own `env:` -- with the option run literal up to the deciding
-  word and the state computed as the shell computes it. The certificate passes to the strings
-  `flattened` reads inside a certified command and to #2500's own parse of one, and to nothing
-  else: a `$(...)`'s statements, which the guard parses apart, read as main. Where none holds the
-  walks read no less than main read and count no check main did not (`bash() { :; }; bash -norc
-  <<'EOF' <check> EOF; <use>` ran the use unverified and read CLEAN). The price, fail-closed and as
-  on main: such steps, a `${SH:-bash}` or `./bash` command word, a `~`, glob or nested `${…}` in the
-  run (`bash - /nonexistent*` without `nullglob` runs nothing, rc 127), a login `--pretty-print`, and
-  a function that hands its words on (`bash() { command bash "$@"; }`) are reported. On the round-5
+- **Workflow guard: the stdin and `-c` string walks read a shell's options as the shell does, and
+  only ever add a report (#2616, #2864, #2647, #2654; #2858).** A second walk reads a shell's
+  option words beside `main`'s, and the two are JOINED: a body or `-c` string is read where either
+  reads it, a check counts only where both count it, the candidates are the union -- so every
+  report `main` makes stands, and where `main` reads a body its reading stands, statement for
+  statement. The second walk skips a long option's FILE (`bash --rcfile /dev/null <<'EOF'` and
+  `--init-file` ran the heredoc and read CLEAN: #2616) and reads bash's one-dash long words in the
+  leading run (`bash -norc <<'EOF'`, `bash -norc -c '…'`: #2864); reads options on after `-s`, so
+  `bash -s -c true <<'EOF' <check>` counts no check bash never reads (#2647) and dash's `sh -s -c
+  true` reads the heredoc after the string; counts none after a lone `-` with a word behind it
+  (`bash - /dev/null`: #2654), where the shell runs none of the body (`-n`, `-o noexec`, `-D`,
+  `--version`, `-version`, `--pretty-print` but under `-i`) or where the option run holds a word
+  that may expand (`-o $X`, a `~`, a pattern); seeks the `-c` string in every reading of such a
+  word; and weighs a `$Y` after `-c` or `-c --` as a value in the option slot. A body or string
+  only the second walk finds is no shell's sure program: the guard's second fold leaves it out, so
+  no report of `main`'s reading is lost to it. Nothing is cleared: a body under a refused option,
+  an exit or noexec stays reported though nothing runs (#2603, #2606), and so do the over-report
+  halves of #2647 and #2654 -- the payload of a body bash never reads.
+- **Workflow guard: what the joined walk adds, and what it costs (#2858 round 10).** On the round-5
   to round-8 seats' sets (80,514; 29,639; 18,548; 15,713 steps) and their 222 direct cases no cell
-  main reports reads CLEAN while a payload or a use runs; strict over-reports against main are 6,480
-  / 2,117 / 831 / 1,737 (round 8: 6,532 / 2,117 / 971 / 2,336), and the step and job scope -- the
-  names, the earlier steps, a write that may plant a shell -- changes no answer there (0 rows).
-- **Workflow guard: a shell that reads its program and runs none of it (#2331).** `bash -n -s
-  <<'EOF' CHECK EOF; USE` read the heredoc as the shell's program and credited the check, though
-  `-n` (noexec) runs nothing of it and the use after ran unverified -- main's own gap, listed in the
-  reader-forms docstring; and after a short option `-version` and `-noprofile` are the letters bash
-  reads (a mid-cluster `o` takes the next word as its name, and with none is accepted silently), `n`
-  among them. A measured shell's `n` letter, `-o noexec` (a cluster's `o` takes the next word, in
-  order: `-eo noexec`, `-Oo extglob noexec`) and `-D`/`+D` (strings printed, nothing run) at the
-  step's own level now read as "the program never runs" -- the LAST state of a run of literal option
-  words, since a later `+n` or `+o noexec` turns it back off and `bash -n +n -s` runs: the body is
-  not the shell's program, no check in it counts, a use after is reported, and a download in the
-  body stays CLEAN (nothing runs). `-t` runs one command and is read on; `SHELLOPTS=noexec` is
-  unchanged. A word that may EXPAND -- an option word, a long option's FILE or an `-o`/`-O` name
-  (`$X`, `${X:-}`, `$(true)`) -- may vanish, so the next word is the FILE (`X=; bash --rcfile $X
-  --version <<'EOF'` runs the heredoc), or spell `+n`, a `+o` name or `--rcfile` itself (`X=+n; bash
-  -n $X -s`, `X=--rcfile; bash $X -K -s` run it); a quoted expansion proven to be one word -- an
-  allowlist: `"$X"`, `"${X}"`, `"$1"`, `"${10}"`, `"$*"`, `"${A[*]}"`, `"$#"`, `"$?"`, `"$$"`, `"$!"`,
-  `"$-"`, and `"${X:-…}"`, `"${X-…}"`, `"${X:=…}"`, `"${X=…}"` whose default is text or a plain `$Y`
-  or `${Y}` -- never
-  vanishes, so as a long option's FILE it is that FILE (`X=; bash --rcfile "$X" --version` runs
-  nothing), where any other form, an `@` form (`"$@"`, `"${A[@]}"`), an indirect one (`"${!X}"`,
-  which `X=@` makes `"$@"`) or an unknown operator, may be no word or several and is an expansion
-  like `$X` (`bash --rcfile "$@" -nor -c P` runs `P`). Such a word holds the leading run of long
-  options, as bash does, and nothing at or after it is sure -- no refusal, exit or noexec there
-  clears, a `-c` cluster after it leaves the heredoc the program (`X=-s; sh $X -c true` runs it
-  under dash), and so does a lone `-` (`X=-s; bash $X - -c true` runs it) -- and no check in the
-  body is credited (`X=noexec; bash -o $X -s` ran the use past a check never read). The `-c` string
-  is looked for in every reading of such a word -- gone, itself, a long option taking a FILE, a
-  short option -- each read as written, so a refusal or an exit holds within its reading alone (`X=;
-  bash --rcfile $X -nor -c P` runs `P`, `-nor` the rc file; `X=-e; bash $X -rcfile P` runs `P`); in
-  every reading an option's value is skipped before a `--` ends anything (`bash -rcfile -- -login -c
-  P` runs `P`, `--` the rc file). A `-c` after an operand is still read, as on main, since the FILE
-  may hand its parameters to a shell (`printf 'exec bash "$@"' > w.sh; bash w.sh -c P` runs `P`):
-  past that operand every word is the FILE's parameter, before the cluster and after it, so nothing
-  bash would refuse or exit on clears (`echo 'eval "$4"' > w.sh; bash w.sh -o pipefial -c P` and
-  `bash w.sh -c -o - P` run `P`, as do `--version`, `--help` and `--`). A `-c` string the shell is
-  not sure to run -- found past an operand, after a word that may expand, or under `-n`, `-o noexec`
-  or `-D` -- is read for what it runs, and no check in it is credited (`bash /dev/null -- -c
-  '<check>'`, `X=-s; bash $X -- -c '<check>'` and `bash -n -c '<check>'` ran the use past a check
-  that never ran); `bash -c '<check>'` keeps its credit. `--pretty-print` (bash 5.2) prints a
-  heredoc or FILE program and runs none of it, and 3.2 and dash refuse it, so for a sure shell the
-  stdin walk reads it as running nothing where the literal run leaves the shell neither interactive
-  -- its last `i` state, as bash computes it: `-i +i` prints and `+i -i` runs, `--rcfile -i` takes
-  `-i` as its FILE, and an `-i` past `--` is a parameter (round 9) -- nor a login one, which sources a
-  `~/.bash_profile` the step may have written first (as an interactive one does a `~/.bashrc`), which
-  may read stdin itself: a check in the body counts for nothing and a use after is reported (`bash
-  -norc --pretty-print -i +i <<'EOF'`); where it is interactive the body is the program and its check
-  counts, as on main (`bash --pretty-print -i <<'EOF'`). Bash takes it only in the leading run of
-  long options (`bash -i --pretty-print` is refused), and a `-c` string after it still runs under 5.2
-  and is read. A parameter expansion right after `-c`, or after `-c --` or `-c -`, may be an option
-  word or vanish (`Y=-c; bash -c $Y P`, `Y=` and `Y=-e` run `P`, as `Y=; bash -c -- $Y P` does), so it
-  stands where the shell reads its options and the words after it are weighed, as after a `$X` before
-  the cluster; a quoted one-word form after `-c --` or `-c -` is the string (`Y=; bash -c -- "$Y" P`
-  runs only `"$Y"`, round 9). The price, fail-closed: where nothing runs in any
-  reading measured (`X=; bash -e $X -login`, `X=; bash $X -version`, `X=; bash $X -c true`, `X=;
-  bash $X - -c true`, `Y=x; bash -c $Y P`, `X=x.sh; bash - $X`, and `bash --rcfile "$@" -o pipefial
-  -c P`, which ran nothing for any value measured: 1,352 rows of the round-6 seat's hunt, 307 of
-  them CLEAN on main in a setting it now reports, 197 in every setting; so are the forms the
-  allowlist leaves out though they are one word in every shell measured, `"${#@}"` and `X=*;
-  "${!X}"` (`"${X@Q}"`, one word on bash 5.2 alone, gives none or two on 3.2), and a quoted
-  `"$(...)"` after a lone `-`) the step is reported, and so is a use after a check in `bash -s "$X"
-  <<'EOF'`, in a `-c` string behind an expansion in the shell's own option run (`X=-e; bash $X -c
-  '<check>'`, `${X:+-e}`, `-O "$X"`, which run the check for every value), or in a string a FILE may
-  run (`bash w.sh -- -c '<check>'`, where `w.sh` evaluates its last parameter).
-- **Workflow guard: a long option that prints and exits runs nothing (#2616, #2331).** `--version`,
-  `--help`, `--dump-strings` and `--dump-po-strings`, in either spelling, print and exit before bash
-  reads stdin or a `-c` string: `bash --version <<'EOF' CHECK EOF; USE` ran the use past a check
-  bash never read and was credited with the check (CLEAN). The four are a refusal of the walk now,
-  so the use after is reported as unverified; a download in the heredoc or the string stays CLEAN.
-  So do `--wordexp`, which expands stdin as words or is refused, and a FILE option with no file
-  after it (`bash -rcfile <<'EOF'`, rc 2).
+  `main` reports reads CLEAN. Against `main` the walk adds 9,328 reports where a payload or an
+  unverified use runs and 24,516 where nothing does, by the join that makes them: a body only it
+  reads 2,414 / 6,858, a check only `main` counted 2,529 / 4,605, a string only it reads 1,973 /
+  2,809, a check in a string `main` reads 1,696 / 7,752, a candidate only it weighs 691 / 2,447,
+  several 25 / 45 (46 of the 222 cases). The over-reports are fail-closed: a word that may expand
+  may be the FILE, `-n` or `-c` (`bash $X -c "<check>"`, `bash -o $X -s`), a FILE may hand its
+  parameters on (`bash w.sh -c '…'`), a body whose check is withheld reads under both shells'
+  printers (`bash -s -c 'echo hi' <<'EOF' echo 'sh\ttool' | sh`), and a long option read on past
+  its FILE meets one that refuses or exits (`bash --rcfile /dev/null --version`). F2's linear cost
+  stays: `Y=; Z=; bash -c -- $Y $Z… 'P'` (bash runs `P`; `main` reads it CLEAN) costs 0.60, 2.46 and
+  6.64 s at 1,000, 4,000 and 10,000 words across the five `shell:` settings, 12-15x `main`'s 0.05,
+  0.18 and 0.45 s -- each word a candidate, weighed as `main` weighs its own (`bash $Y $Z… 'P'`:
+  6.04 s on `main` at 10,000 words). Open, as on `main`: a check counted under a refused shell where
+  errexit is off (round 9 withheld it: 14 rows of round 5's matrix), `-s $X`'s heredoc (#2608), `-c
+  $(…)`, and the guard's other named gaps.
 - **Workflow guard: what `eval`'s words and a `-c` string hand on (#2673, #2683, #2684, #2764,
   #2669, #2331).** `eval 'curl … |' 'sh'` ran the pipe and read CLEAN: `eval` joins its words before
   it runs them, and the guard read them one by one. Where a word begins or ends with an operator the

@@ -100,26 +100,18 @@ live, so a change that catches one fails there and edits this list.
   one set outside the step that runs nothing of what follows (`SUDO=echo` in `env:`) over-reports.
   A `-c`/`eval` string loses its double-quoted `\$` escapes as bash drops them, a live `$` word
   beside them carried as the value it is (#2342, #2466); one in a COMMAND-word position (`bash -c
-  "$CMD … | sh"`) is unread, as `$CMD … | sh` is at top level. Where the shell is SURE (#2858 r9: a
-  literal `bash`, `sh` or `dash` through literal words, in a step naming no function or alias after
-  it or a wrapper, sourcing nothing, evaluating nothing unspelled, using no `BASH_ENV`, `ENV`,
-  `PATH`, `*OPTS`, `hash`, `enable` or `BASH_FUNC_`, after no step writing `$GITHUB_ENV`/`PATH`;
-  else as main), a refused option word -- a letter outside its table, a `-o` name it lacks or a
-  value no name, a long option outside its table, glued or after a short one, any under dash --
-  before a `-c` cluster, after it or in the stdin walk, a long option that exits, `--pretty-print`
-  but where the run is interactive or a login one, noexec and a lone `-`'s literal or one-word FILE
-  leave the body unread, and `-c` beside `-s` wins for bash, not dash (#2475, #2603, #2606, #2616,
-  #2654, #2647); `set -Z -e` sets nothing (#2443). After a word that may expand nothing is sure:
-  nothing beside it clears, the `-c` string is sought in every reading (a quoted one-word form never
-  vanishes), no check counts in the body or that string, past an operand or under noexec; a `$Y`
-  after `-c` or `-c --` is an option-slot value, a quoted one after `-c --` the string. Open: `-c
-  $(…)`, a check under dash's `+s - FILE`, a value, second string or word past the FILE, a FILE
-  after `--` or reading stdin, `X=c` in a cluster, `set -n` in the body, `$*` before a one-dash
-  option, a job's `env:`, a `uses:` action's `$GITHUB_ENV`/`PATH` or a startup file an earlier step
-  wrote, main's FILE and `-c` clears behind a shell-named function, and a nested `${…}`, `nullglob`
-  pattern or `~` as main's FILE. Behind a string an inner refusal reads on, `-O` names have no
-  table, and no refusal is read as stopping the step. zsh and ksh run letters bash refuses (twenty;
-  `-G`), so those read on; so does a word after a shell whose name is itself a word. KEPT: binding
+  "$CMD … | sh"`) is unread, as `$CMD … | sh` is at top level. An option letter the shell
+  in hand refuses reads as that refusal after `-c` and in `set`: `sh -c -K '…'` runs nothing and
+  `set -Z -e` sets nothing (#2443, #2475). #2858 joins a second stdin and string walk to that
+  reading, which only adds: it reads a long option's FILE as one and a one-dash long word in the
+  leading run (#2616, #2864), the options after `-s`, and a `-c` string in every reading of a word
+  that may expand -- a body or string only it finds read as no shell's sure program -- and counts no
+  check where bash never runs the body (`-s -c`, `- FILE`, noexec, an exit, `--pretty-print` not
+  interactive) or a word may expand (#2647, #2654). Still as on main: a body under a refused option,
+  an exit or noexec is reported though nothing runs (#2603, #2606), a check under a refused shell
+  counts where errexit is off, and `-s $X` keeps its reader (#2608). Because zsh runs twenty of
+  bash's refused letters and ksh runs `-G`, those read on; so does a word after a shell whose name
+  is itself a word. KEPT: binding
   two spellings of one path means EVALUATING the shell, which the reader does not do by design; the
   fleet puts its variables in the URL and a literal in `-o` (`-o dc.zip`, `-o /tmp/hadolint`).
 * directories on the runner's PATH not in `workflow_operands.PATH_DIRS` (#2308), `$HOME/.cargo/bin`
@@ -233,7 +225,7 @@ live, so a change that catches one fails there and edits this list.
   weighed joined as one text); a substitution's printer the readings disagree on stays unread
   (`sh -c "$(echo 'sh\ttool')"`: `Idle` beside a reported download, though a `shell: sh` step runs
   `sh tool`), and so do a `<(…)` that is not one printer (`sh <(echo a; echo 'sh tool')`) or that a
-  shell reads past `--` or a lone `-`, past a long option that takes a value (`--rcfile f <(…)`) or
+  shell reads past `--`, past a long option that takes a value (`--rcfile f <(…)`, the same gap) or
   on its stdin (`bash -- <(…)`, `bash < <(…)`), and an EXPANDING heredoc a `cat` prints into a
   `$(…)` (`eval "$(cat <<EOF … EOF)"`).
   A substitution heredoc body holding an apostrophe, unbalanced double quote, backquote, or bare
@@ -272,7 +264,7 @@ from workflow_forms import (FETCHERS, SHELL_PROGRAM, Idle, Inlined, Reach, Unsur
                             streamed_fetch as streamed_fetch, unbound, unread_program,
                             working_directories)
 from workflow_printers import fed, operand
-from workflow_programs import ANY, VALUE_PROGRAM, handed, stdin_command, uncertified
+from workflow_programs import ANY, VALUE_PROGRAM, handed, stdin_command
 from workflow_stdin import bound_stdin as bind_stdin, mark_reason
 from workflow_uses import (EXECUTORS as EXECUTORS, INTERPRETERS as INTERPRETERS,
                            UNPACKERS as UNPACKERS, uses as _uses)
@@ -394,12 +386,12 @@ def _unread_stdin(stage, before=None):
     return None
 
 
-def read(script, shell=None, before=()):
+def read(script, shell=None):
     """Every statement a `run:` script runs under `shell:` `shell`, quoted scripts expanded; a
     `$CMD` command word the step surely runs, and a printer's `"$X"` whose text fetches, the step
     assigns one literal read as that text (`workflow_annotate`, #2468), a mark no `$(...)` child
-    or handed script inherits; a step `before` it writing `$GITHUB_ENV` voids its certificates."""
-    return flattened(uncertified(annotate(statements(script), shell), before), shell=shell)
+    or handed script inherits."""
+    return flattened(annotate(statements(script), shell), shell=shell)
 
 
 def fetches(script):
@@ -578,7 +570,7 @@ def job_defects(steps, strict=False):
             why = unparseable(step.shell)
             if not why:
                 try:                # the one read of every text, substitutions too
-                    here = read(step.script, step.shell, steps[:number])
+                    here = read(step.script, step.shell)
                     back = [i for i, s in enumerate(here) if not (sure and isinstance(s, Unsure))]
                     here = [here[i] for i in back]
                     def walk_step(body):

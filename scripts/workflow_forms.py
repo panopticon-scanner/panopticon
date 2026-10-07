@@ -75,7 +75,7 @@ from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
                                working_directories as working_directories)
 from workflow_programs import (SHELL_PROGRAM as SHELL_PROGRAM, VALUE_PROGRAM, Named, Opaque,
                                candidates, dynamic_program, scripts, stdin_program as stdin_program,
-                               stdin_reader, stdin_scripts, runs_under, certified, unprinted as unprinted)
+                               stdin_reader, stdin_scripts, runs_under, unprinted as unprinted)
 from workflow_stdin import BoundStdin, bound_stdin as bound_stdin, mark_stdin
 
 
@@ -200,7 +200,7 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     where the holder's string names it (`runs_under`); `outer`: the bodies of the command running
     it, below the step's own, and `key` a name for the script, unique in the step, for its own
     bodies."""
-    out, last, where, top = [], len(stmts) - 1, regions(stmts if errexit is not None else certified(stmts)), errexit is None
+    out, last, where, top = [], len(stmts) - 1, regions(stmts), errexit is None
     errexit, pipefail = seed(shell) if top else (errexit, pipefail)
     inner = {} if top else where                # a step's own: `regions` over its read
     on = _errexit_states(stmts, errexit, where, shell=shell)
@@ -221,7 +221,7 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
                 runner, who = runs_under(argv, who, name), who or argv
                 own = name in ("eval", "source", ".") and who is argv     # in this shell, its `-e`
                 read = flattened(
-                    certified(statements(text), argv), gates,
+                    statements(text), gates,
                     on[index] and statement.separator not in ("&&", "||") if own
                     else _errexit(who[1:], invocation=True),
                     fails[index] if own else _errexit(who[1:], False, "pipefail", True),

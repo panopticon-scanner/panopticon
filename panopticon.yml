@@ -653,7 +653,6 @@ groups:
       - scripts/workflow_operands.py
       - scripts/workflow_programs.py
       - scripts/workflow_options.py
-      - scripts/workflow_sure.py
       - scripts/workflow_printers.py
       - scripts/workflow_fetch.py
       - scripts/workflow_stdin.py

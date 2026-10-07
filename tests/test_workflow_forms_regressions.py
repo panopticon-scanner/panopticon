@@ -305,7 +305,7 @@ class TestTheProgramAfterDashC(unittest.TestCase):
         # #2475: `sh -c -K P` and `sh -cK P` are refused outright -- bash
         # 3.2.57, 5.2.21 and dash all exit before they read `P` -- so the
         # step runs nothing and no program is handed over. The letters are
-        # bash's (`workflow_options.SHELL_OPTIONS`), which is the union:
+        # bash's (`workflow_programs.SHELL_OPTIONS`), which is the union:
         # dash takes fewer, and a letter dash alone refuses still runs.
         for spelling in ("sh -c -K", "sh -cK", "bash -c -Z -e", "bash -c -e -Z",
                          "bash -c -o pipefail -K", "sh -c -ex +Z"):
@@ -679,10 +679,8 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
     def test_a_stdin_scripts_reader_is_the_literal_shell_an_empty_tuple_or_none(self):
         # A stdin script's `reader` (`workflow_programs.Stdin`) is of three kinds, tabled below;
         # `stdin_program`'s answer is unchanged for each.
-        import workflow_sure  # round 9's module: imported here, so RED-first collects this file
-
-        def read(step):     # a step's own statement, certified as `flattened` certifies it (#2858 round 9)
-            stage = workflow_sure.certified(shell_reader.statements(step + " <<'EOF'\necho hi\nEOF"))[0].stages[-1]
+        def read(step):
+            stage = shell_reader.statements(step + " <<'EOF'\necho hi\nEOF")[0].stages[-1]
             argv = shell_reader.command(stage.argv)
             return argv, forms.stdin_program(argv), forms.stdin_scripts(argv, stage)[0].reader
 
@@ -693,19 +691,12 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
                 argv, program, reader = read(step)
                 self.assertIs(argv, reader)
                 self.assertEqual(forms.SHELL_PROGRAM, program)
-        # `bash -n -s`: read, never run (#2858 round 3) -- no program, as for a refused letter --
-        # where the step leaves `bash` its own name (`workflow_sure.certified`, round 9); a word no
-        # certificate covers, as a direct call's, reads as main read it.
-        stmts = shell_reader.statements("bash -n -s <<'EOF'\necho hi\nEOF")
-        self.assertEqual(forms.SHELL_PROGRAM, forms.stdin_program(shell_reader.command(stmts[0].stages[-1].argv)))
-        stage = workflow_sure.certified(stmts)[0].stages[-1]
-        self.assertIsNone(forms.stdin_program(shell_reader.command(stage.argv)))
-        # `bash -s -c 'echo hi'`: the `-c` after `-s` wins (#2647), the string is the program
-        # and stdin its data, so no script is read off it -- -- -- -- --, bash never reads it.
-        stage = workflow_sure.certified(shell_reader.statements("bash -s -c 'echo hi' <<'EOF'\necho hi\nEOF"))[0].stages[-1]
-        argv = shell_reader.command(stage.argv)
-        self.assertIsNone(forms.stdin_program(argv))
-        self.assertEqual([], forms.stdin_scripts(argv, stage))
+        # `()` where the shell runs none of the body (`bash -n -s`: noexec) or the `-c` after `-s`
+        # makes the string the program (`bash -s -c 'echo hi'`, #2647): read as `main` reads it, the
+        # step's own, and no check in it counted (#2858 round 10).
+        for step in ("bash -n -s", "bash -s -c 'echo hi'"):
+            with self.subTest(step=step):
+                self.assertEqual((forms.SHELL_PROGRAM, ()), read(step)[1:])
         # `()` behind a `-c` string naming a stdin shell, where the holder's own options read stdin.
         for step in ("bash -s -c 'sh'", "bash -e -s -c 'sh'", "sh -s -c 'bash -s'"):
             with self.subTest(step=step):

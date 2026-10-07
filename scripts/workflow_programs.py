@@ -56,17 +56,13 @@ import re
 import shell_lex
 import shell_reader
 from shell_text import Process
-from workflow_options import (LONG_VALUE_OPTIONS, SET_OPTION_NAMES as SET_OPTION_NAMES, _dash_s, long_option,
-                              SET_OPTIONS as SET_OPTIONS, _credited, _run, Sure, _cleared, _sure_shell,
-                              SHELL_OPTION_NAMES as SHELL_OPTION_NAMES, _STDIN_OPERANDS,
+from workflow_options import (SET_OPTION_NAMES as SET_OPTION_NAMES, SET_OPTIONS as SET_OPTIONS,
+                              SHELL_OPTION_NAMES as SHELL_OPTION_NAMES,
                               SHELL_OPTIONS as SHELL_OPTIONS, VALUE_OPTIONS, _BARE as _BARE,
                               _MEASURED_SHELLS as _MEASURED_SHELLS, _VALUE as _VALUE,
-                              _before_operand as _before_operand, _may_spell_option,
-                              _past_options, _long_word, _refused as _refused, _refused_long,
-                              _refused_name as _refused_name, _sure_string, _value, _void,
-                              _after_value, _value_after_dash_c, _literal, _one_word)
-from workflow_sure import (_dash_c_strings, _floor_candidates, certified as certified, inner_command,
-                          uncertified as uncertified)
+                              _before_operand, _may_spell_option, _past_options,
+                              _refused as _refused, _refused_name as _refused_name, _value)
+from workflow_options import Handed, _counted, _dash_c_strings, _shell_candidates, _stdin_walk, _sure_string
 from workflow_printers import (ANY as ANY, Named as Named, _PRINTERS as _PRINTERS, _piped as _piped,
                                file_operand as file_operand, handed as handed, operand, rendered,
                                printed as printed, producer as producer, spellings as spellings,
@@ -103,23 +99,25 @@ def scripts(argv):
     (#2487) -- the substitution's own text still read where `_walk` reads it, and no marker of this
     parse left to reach another. A text so rendered that the reader refuses is none, as before
     #2486: `eval "cat <<$(a b) …"` takes its delimiter from what `a b` prints, and `cat <<$(...)` is
-    no spelling to end the body at, so the string is unread and the rest of the step read."""
+    no spelling to end the body at, so the string is unread and the rest of the step read.
+
+    `main`'s strings come first, a check in one counted where the shell surely runs it (else
+    `Handed`, reader `()`); then those only this walk finds (`_added_strings`, #2858 round 10)."""
     shell = bool(argv) and os.path.basename(argv[0]) in _SHELL_STRING
-    out = []
-    for word in _program_words(argv):
-        script = _script(word)
-        if script is not None and shell and not _sure_string(argv, word):
-            script = Handed(script)
-        if script is not None:
-            out.append(script)
-    return out
+    out = [Handed(script, ()) if shell and not isinstance(script, Opaque) and not _sure_string(argv, word) else script
+           for word, script in ((word, _script(word)) for word in _program_words(argv)) if script is not None]
+    return out + [Handed(script) for script in map(_script, _added_strings(argv)) if script is not None]
 
 
-class Handed(str):
-    """A `-c` string `scripts` hands on that the shell is not sure to run (`_sure_string`, #2858
-    round 6): read for what it runs, with no `reader` under whose `-e` a check in it counts, as
-    `workflow_forms.flattened` reads a stdin body no shell is sure to read (`Stdin`)."""
-    reader = None
+def _main_scripts(argv):
+    """`scripts`' answer as `main` reads it (7e9223e6), word for word: `main`'s strings alone."""
+    return [script for script in map(_script, _program_words(argv)) if script is not None]
+
+
+def _added_strings(argv):
+    """A shell's `-c` strings this walk reads (`_dash_c_strings`, #2858) that `main`'s does not."""
+    shell, mains = bool(argv) and os.path.basename(argv[0]) in _SHELL_STRING, _program_words(argv)
+    return [word for word in _dash_c_strings(argv) if not any(word is seen for seen in mains)] if shell else []
 
 
 def _program_words(argv):
@@ -184,11 +182,20 @@ def _script(word):
 
 
 def _after_dash_c(argv):
-    """The script operand of a shell's `-c`, wherever the flag was clustered (`sh -ec`, `bash -lc`,
-    `bash -euc`: a short-option cluster carrying a lowercase `c` IS `-c`, the ordinary CI idiom): the
-    first operand after the options, which need not be the next word -- in every reading of a word in
-    the option run that may expand (#2858 round 4), and `main`'s where the shell is not sure (round 9)."""
-    return _dash_c_strings(argv)
+    """The script operand of a shell's `-c`, wherever the flag was clustered.
+
+    `sh -ec`, `bash -lc`, `bash -euc` are the ordinary CI idiom, not an
+    obfuscation, and a short-option cluster carrying a lowercase `c` IS `-c`:
+    no shell spells anything else that way. Requiring `-c` as its own token
+    let every clustered spelling through. The script is the first operand
+    after the options, which need not be the next word: `_past_options`.
+    """
+    for position, token in enumerate(argv[1:], start=1):
+        if token == "--":
+            break
+        if token.startswith("-") and not token.startswith("--") and "c" in token:
+            return _past_options(argv, position)
+    return []
 
 
 def candidates(argv):
@@ -215,34 +222,34 @@ def candidates(argv):
     that is the command word, handed a `-c` cluster, may be a shell itself (#2337,
     `CMD=sh; $CMD -c '…'`): the program after the options is the candidate. A `$(…)` or backquote
     value with no word after it is its own: bash makes the shell's words of its output, the program
-    among them (`sh $(echo tool)`), where a `<(…)` hands it a file (`shell_reader.yields_words`)."""
+    among them (`sh $(echo tool)`), where a `<(…)` hands it a file (`shell_reader.yields_words`).
+
+    `main`'s answer (`_candidates`), then the words this walk adds (`_shell_candidates`, #2858)."""
+    value, words = _candidates(argv)
+    more, added = _shell_candidates(argv) if argv and os.path.basename(argv[0]) in _SHELL_STRING else (None, [])
+    seen = set(map(id, words))
+    return (more if value is None else value), words + [word for word in added if id(word) not in seen]
+
+
+def _candidates(argv):
+    """`candidates`' answer as `main` reads it (7e9223e6), word for word."""
     if argv[1:] and _value(argv[0]) and argv[1][:1] == "-" != argv[1][1:2] and "c" in argv[1]:
         return argv[0], _past_options(argv, 1)
     if not argv or os.path.basename(argv[0]) not in _SHELL_STRING:
         return None, []
-    return _floor_candidates(argv, _candidates(argv))
-
-
-def _candidates(argv):
-    """`candidates`' answer for a shell, read off its option words as the shell reads them."""
     owed = 0
     for at, word in enumerate(argv[1:], start=1):
         if owed:
             owed -= 1
         elif _value(word):
-            return _after_value(argv, at)
-        elif word in ("-", "--") or word[:1] not in ("-", "+"):
-            break                               # the options end: a program, or `-`/`--`
-        elif (long := long_option(argv, at)) or word[:2] == "--":
-            if _refused_long(argv, at) and _sure_shell(argv):   # `bash --bogus $X '…'` runs nothing (#2616)
-                break
-            owed = long in LONG_VALUE_OPTIONS    # `bash -rcfile FILE $X '…'`: the FILE is its value
-        elif "c" in word:                       # a `-c` cluster, whose string `scripts` reads --
-            k = _value_after_dash_c(argv, at)   # unless it is a `$Y` (`Y=-c; bash -c $Y P`, round 7)
-            if k is not None:
-                return _after_value(argv, k)
+            rest = argv[at + 1:]
+            end = next((k for k, after in enumerate(rest, 1) if not _before_operand(after)), len(rest))
+            more = next((k for k in range(end, len(rest)) if _may_spell_option(rest[k])), len(rest))
+            return word, rest[:end] + rest[more + 1:] or (
+                [word] if shell_reader.yields_words(word) else [])
+        elif word in ("-", "--") or word[:1] not in ("-", "+") or word[:2] != "--" and "c" in word:
             break
-        else:
+        elif word[:2] != "--":
             owed = sum(letter in VALUE_OPTIONS for letter in word[1:])
     return None, []
 
@@ -304,7 +311,7 @@ def dynamic_program(argv):
     text). `set -- "$P"` IS one, and `eval set -- "$OPTS"` runs nothing of the value as a command:
     an accepted over-report, because a `;` in that value does run (r0 finding 4)."""
     name = os.path.basename(argv[0]) if argv else ""
-    for word in _program_words(argv):
+    for word in _program_words(argv) + _added_strings(argv):
         keys = getattr(word, "markers", {})
         text = shell_reader.readable(getattr(word, "spelled", word))
         if _all_expansion(text) and all(
@@ -323,6 +330,8 @@ VALUE_PROGRAM = "value"        # the command word is a value no table places; th
 # The interpreters of the second kind. `python3 -c` and `perl -e` are already ruled another language
 # by `scripts` above, and a heredoc is the same text one redirection over.
 _FOREIGN = ("python", "python3", "perl", "ruby", "node", "php", "pwsh")
+# The operands that ARE standard input.
+_STDIN_OPERANDS = ("-", "/dev/stdin", "/dev/fd/0")
 
 
 def stdin_program(argv):
@@ -336,18 +345,12 @@ def stdin_program(argv):
 
     Read as OPERANDS rather than as a full option grammar: an interpreter's first word that is not
     an option is its program, and a shell's `-s` says every word after it is a positional parameter
-    instead. See the guard's gap list for the spelling that leaves behind. At the step's own
-    level a SURE shell's refused option word (`_sure_shell`, #2858 r9) -- a letter outside `SHELL_OPTIONS`
-    (`sh -K <<'EOF'`, #2603), a `-o` value that is no name it takes (`bash -o pipefial`, `sh -o -`,
-    #2606) or a long option outside its table (`bash --bogus`, #2616) -- runs nothing, as
-    `_past_options` reads one after a `-c` (#2475); behind a string an inner shell's is read ON,
-    fail-closed (#2500). A `--rcfile FILE` is skipped whole (#2616); a lone `-` with a word after
-    it is bash's end of options, and that word, literal or one word, the script FILE (`bash - x.sh`,
-    #2654) -- for a sure shell, with no word before it that may expand (`X=-s; bash $X - x.sh`); after
-    `-s` the options are still read, and a `c` among them puts the program in the string (`bash -s
-    -c true`, #2647), where `--`, `-` or an operand leaves it on stdin. A stdin operand after an
-    option owed a value ends the walk there for another interpreter: python's `-O` takes no value,
-    so `python3 -O - file.py <<'EOF'` runs its heredoc.
+    instead. See the guard's gap list for the spelling that leaves behind. A letter the shell
+    refuses is read on, fail-closed: `sh -K <<'EOF'` runs nothing in bash or dash, but only
+    `_past_options` asks `_refused` (#2475), for a `-c` cluster. A stdin operand (`-`, `/dev/stdin`)
+    after an option owed a value ends the walk there, except under a literal shell, whose `-o` takes
+    it as an option name and refuses it (`bash -o - x.sh` exits 2): python's `-O` takes no value, so
+    `python3 -O - file.py <<'EOF'` runs its heredoc.
 
     A `-c` string or `eval`'s is ordinarily such a FILE-like place too (the `-c` string itself, not
     stdin, is the program) -- UNLESS that string is itself one statement whose own command is a
@@ -377,9 +380,10 @@ def stdin_program(argv):
     over-reports too. A `<(...)`/`>(...)` is NOT such a word, though `_value` matches its marker
     too: it always substitutes a real path, never empty, so `bash <(curl ...)` keeps reading as the
     FILE it is (`yields_words` tells a process substitution from a command substitution, whose
-    OUTPUT may vanish instead); a MIXED word (`$(true)<(...)`) may yet split an option off before
-    that path (`$(echo '-s ')<(...)` is `-s /dev/fd/63`, measured, #2858 round 9), and reads as one
-    that may vanish -- beside the ones the gap list names (`X=script.sh`, `X=-K`, `X=-n`).
+    OUTPUT may vanish instead) -- true only where EVERY substitution in the word is a process one; a
+    MIXED word (`$(true)<(...)`) still reads as may-vanish even though bash always substitutes a
+    real path for it too -- an over-report the guard's gap list does not separately name, beside the
+    ones it does (`X=script.sh`, `X=-K`, `X=-n`).
 
     A FILE after a value in the shell's option slot keeps stdin possible (#2605): the value may be
     `-s`, making that file and every later word a parameter, or `--rcfile`, making the file that
@@ -447,22 +451,38 @@ def _stdin(argv, depth):
 
 
 def _stdin_details(argv, depth):
-    """`_stdin` plus the command whose answer an enclosing string inherits (#2599)."""
+    """`_stdin` plus the command whose answer an enclosing string inherits (#2599): `main`'s, joined
+    with this walk's (#2858 round 10). Where `main` reads a body its answer stands, a check counted
+    only where this walk counts it too (else the reader `()`); a body only this walk reads has no
+    reader -- no shell's sure program, whose statements the guard's second fold leaves out."""
+    main = _details(argv, depth, _MAIN)
+    if main[0] is None:
+        walked = _details(argv, depth, _WALK)
+        return (walked[0], None, walked[2]) if walked[0] else main
+    if main[1] and _details(argv, depth, _WALK)[1] is not main[1]:
+        return main[0], (), main[2]
+    return main
+
+
+def _details(argv, depth, walk):
+    """`main`'s `_stdin_details` (7e9223e6), the options and strings it reads `walk`'s (`_MAIN`, `_WALK`)."""
     if not argv:
         return None, None, argv
-    kind, reader = _credited(argv, *_options(argv, depth), os.path.basename(argv[0]) in _SHELL_STRING and SHELL_PROGRAM)
-    found = _eval_words(argv) if os.path.basename(argv[0]) == "eval" else scripts(argv)
+    options, strings = walk
+    kind, reader = options(argv, depth)
+    found = _eval_words(argv) if os.path.basename(argv[0]) == "eval" else strings(argv)
     if found:
         text = " ".join(getattr(t, "spelled", t) for t in found)
         parsed = _parsed(text)
         if len(parsed) == 1 and len(parsed[0].stages) == 1:
-            inner = inner_command(argv, parsed[0].stages[0])
+            inner = shell_reader.command(parsed[0].stages[0].argv)
             if depth >= 64:                    # bounded: past 64 strings, fail-closed
                 return SHELL_PROGRAM, (() if kind == SHELL_PROGRAM and reader else None), inner
-            inherited = _stdin_details(inner, depth + 1)
+            inherited = _details(inner, depth + 1, walk)
             if inherited[0] in (SHELL_PROGRAM, VALUE_PROGRAM):
                 # No check in an inherited body counts; only a holder reading it is its reader.
-                inherited_reader = () if inherited[0] == SHELL_PROGRAM and reader is not None else None
+                inherited_reader = (() if inherited[0] == SHELL_PROGRAM
+                                    and kind == SHELL_PROGRAM and reader else None)
                 return inherited[0], inherited_reader, inherited[2]
     return kind, reader, argv
 
@@ -511,87 +531,72 @@ def _options(argv, depth):
     name = os.path.basename(argv[0])
     shell = name in _SHELL_STRING
     foreign = name in _FOREIGN
-    # `<(...)`/`>(...)` match `_value` too (`readable` renders every substitution alike) but never
-    # vanish: a real path, never empty or split away, unlike `$(...)`'s OUTPUT (#2485's `$(true)`).
+    # `<(...)`/`>(...)` are a `_value`-matching marker too (`readable` renders every substitution
+    # alike), but they never vanish -- a process substitution always substitutes a real path, never
+    # empty, never word-split away, unlike `$(...)`/backticks, whose OUTPUT may be (#2485's
+    # `$(true)`). `yields_words` is the one already here that tells them apart.
     value = not shell and not foreign and _value(argv[0]) and (
         not shell_reader.has_substitution(argv[0]) or shell_reader.yields_words(argv[0]))
     if not (shell or foreign or value):
         return None, None
     answer = SHELL_PROGRAM if shell else FOREIGN_PROGRAM if foreign else VALUE_PROGRAM
     reader = argv if shell and not depth else None
-    options, value_option, parameters = True, False, False
-    at = 1
-    while at < len(argv):
-        token = argv[at]
-        at += 1
+    options, value_option = True, False
+    rest = iter(argv[1:])
+    for token in rest:
         if token in _STDIN_OPERANDS:
-            # A lone `-` ends a shell's options as `--` does, and the word after it, if any, is the
-            # script FILE: `bash - /dev/null` runs the file and stdin is its data (#2654) -- where that
-            # word is literal or one word and the shell sure (`_cleared`, #2858 round 9); else it may
-            # vanish (`X=; bash - ${X:-${Y}}`, `bash - "$@"`) and stdin is the program, as after `$X`.
-            if token == "-" and shell and options and not parameters and at < len(argv) and _run(argv)[1] > at - 1:
-                sure = (_literal(argv[at]) or _one_word(argv[at])) and _cleared(argv, at - 1, True)
-                return (None, None) if sure else (answer, None)
             return answer, reader
         if token == "--":
             options = False
-            if parameters:
-                return answer, reader       # `bash -s -- -c x`: the rest are parameters (#2647)
             continue
-        if not token.startswith(("-", "+")) or not options:
-            if parameters:
-                return answer, reader       # `bash -s arg -c x`: a parameter, not a `-c` (#2647)
+        if not token.startswith(("-", "+")):
             if (shell or value) and _value(token) and (
                     not shell_reader.has_substitution(token) or shell_reader.yields_words(token)):
                 reader = None               # ... but it may name a FILE: no check counts
                 value_option = value_option or options
                 continue                    # the walk goes on as if absent
-            return (answer, reader) if value_option or shell and _run(argv)[1] < at - 1 else (None, None)
-        if word := _long_word(argv, at - 1):
-            # A long option, in either spelling (#2616): refused or printing and exiting, nothing runs
-            # where the shell is sure (#2858 r9); after a `$X` it may be letters (r3); a FILE is skipped.
-            if shell and not depth and word in ("void", "unsure"):
-                return (None, None) if word == "void" else (answer, None)
-            at += word == "file"
-            continue
-        letters = token[1:]
-        if parameters and shell_reader.dynamic(token, shell_reader.has_substitution):
-            return answer, reader           # `bash -s -$X -c x`: `$X` may spell `-c sh` first
+            return (answer, reader) if value_option else (None, None)
+        letters = "" if token[:2] in ("--", "++") else token[1:]
         if (shell or value) and "c" in letters:
-            # The program is the `-c` string -- for bash. dash runs it and THEN, with an `-s` among
-            # its options, reads stdin (`_dash_s`, #2647), so for `dash` and `sh` the body is the
-            # program, the step's own text with no check credited (`()`): the string may eat stdin
-            # first, and bash never reads it. So too after a word that may expand, where the
-            # cluster may be a FILE or a long name (`X=; bash --rcfile $X -e -norc` runs, #2858).
-            # After bash's own `-s` the reader is kept: a stdin shell the string names reads it.
-            if shell and (at > _run(argv)[1] or name in ("sh", "dash") and (parameters or _dash_s(argv, at - 1))):
-                return answer, None if at > _run(argv)[1] else ()
-            if parameters and not _cleared(argv, at - 1, True):
-                return answer, None         # `bash -s -c x`: only a sure bash leaves stdin unread (r9)
-            return None, reader if parameters else None
+            return None, None               # the program is the `-c` string
         if (shell or value) and "s" in letters:
-            if value:
-                return answer, reader       # a `$` word: the words after `-s` are parameters
-            # bash keeps reading options after `-s`, and a `c` among them puts the program in
-            # the string (#2647): the walk goes on, and an operand, `--` or `-` ends it here.
-            parameters = True
+            return answer, reader           # the words after `-s` are parameters
         # A shell's option word takes a value for each `o` or `O` in it (#2344,
         # `bash -oe pipefail`), and so does a `$` word's, which may be a shell;
         # another interpreter's, one where it ends so. Only a shell takes a
         # stdin operand for that value (and refuses `-o -`, rc 2): python's
         # `-O` takes none, so in `python3 -O - file.py` the `-` is stdin.
-        # A measured shell refuses a `-o` name outside its table, or a value that is no name
-        # at all, and exits before it reads stdin (#2606); `-n` reads it and runs none (#2858 r3).
-        # Only at the step's own level: behind a string the inner shell is read ON (#2500).
-        if shell and not depth and _void(argv, at - 1):
-            return (None, None) if _cleared(argv, at - 1) else (answer, None)
         owed = (sum(letter in VALUE_OPTIONS for letter in letters) if shell or value
                 else int(bool(letters) and letters[-1] in VALUE_OPTIONS))
         for _ in range(owed):
-            if at < len(argv) and argv[at] in _STDIN_OPERANDS and not shell:
+            if next(rest, None) in _STDIN_OPERANDS and not shell:
                 return answer, reader       # the program is stdin after all
-            at += 1
     return answer, reader
+
+
+def _walk(argv, depth):
+    """`_options`' answer as this walk reads a shell's or a `$` word's options (`_stdin_walk`,
+    `_counted`, #2858); another interpreter's is `main`'s."""
+    name = os.path.basename(argv[0])
+    shell, foreign = name in _SHELL_STRING, name in _FOREIGN
+    value = not shell and not foreign and _value(argv[0]) and (
+        not shell_reader.has_substitution(argv[0]) or shell_reader.yields_words(argv[0]))
+    if foreign or not (shell or value):
+        return _options(argv, depth)
+    kind, reader = _stdin_walk(argv, SHELL_PROGRAM if shell else VALUE_PROGRAM,
+                               argv if shell and not depth else None, shell, value)
+    return kind, _counted(argv, reader)
+
+
+def _walk_scripts(argv):
+    """The strings this walk reads: a shell's in every reading (`_dash_c_strings`), not `main`'s `f`
+    in `bash -rcfile f -c 'sh'`; any other command's as `main` reads them."""
+    shell = bool(argv) and os.path.basename(argv[0]) in _SHELL_STRING
+    return [script for script in map(_script, _dash_c_strings(argv)) if script is not None] if shell else _main_scripts(argv)
+
+
+_MAIN = (_options, _main_scripts)
+_WALK = (_walk, _walk_scripts)
 
 
 def runs_under(argv, reader, name):
@@ -611,7 +616,7 @@ def runs_under(argv, reader, name):
     words = argv[1:argv.index("--")] if "--" in argv else argv[1:]
     string = [w for w in _after_dash_c(argv) if sum(v is w for v in argv) == 1]
     words = words[:next((i + 1 for i, w in enumerate(words) if string and w is string[0]), None)]
-    if reader and type(argv[0]) in (str, Sure) and not any(map(_may_spell_option, words)):
+    if reader and type(argv[0]) is str and not any(map(_may_spell_option, words)):
         return name                         # its own text, no word that may spell an option
     return Named(name)                      # a string, a value, a default, or no reader: both ways
 

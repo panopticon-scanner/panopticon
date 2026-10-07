@@ -96,7 +96,7 @@ class Defaulted(str):
     and NOT `Rewritten`, whose command word the reader refuses as a pattern.
     The class records only that the name was not WRITTEN: `X` may hold
     another shell, so one shell's option letters may not be read into it
-    (`workflow_options._refused`, the #2443 review)."""
+    (`workflow_programs._refused`, the #2443 review)."""
 
 
 def dynamic(word, has_substitution):

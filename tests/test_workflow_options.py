@@ -23,10 +23,31 @@ CHECK = "echo '%s  tool' | sha256sum -c -" % ("a" * 64)
 USE = "chmod +x tool; ./tool\n"
 STREAM = "hands %si.sh straight to `sh`" % URL
 UNVERIFIED = "with nothing verifying what arrived"
+# `main`'s sentence for a body the step reads as its own with no check in it counted (#2858 round 10).
+WITHHELD = "and the step does not stop when that script fails"
 
 
 def defects(script):
     return [why for _name, why in wg.job_defects([("step", script)])]
+
+
+def as_main(test, scripts, what=STREAM):
+    """#2858 round 10, the monotone ruling: rows an earlier round CLEARED, read again as `main` reads
+    them -- reported, `what` in a sentence -- each a pin that fails if its row moves."""
+    for script in scripts:
+        with test.subTest(as_main=script):
+            found = defects(script)
+            test.assertTrue(any(what in why for why in found), (script, found))
+
+
+def over_reported(test, scripts, what=STREAM):
+    """#2858 round 10: rows `main` reads CLEAN, which this walk reads on past a long option's FILE
+    (#2616) or a one-dash long word (#2864) to one that refuses, prints or exits -- nothing runs,
+    and the row is reported: the named over-report of reading on with no clear."""
+    for script in scripts:
+        with test.subTest(over_reported=script):
+            found = defects(script)
+            test.assertTrue(any(what in why for why in found), (script, found))
 
 
 def body(command, text):
@@ -42,9 +63,10 @@ class TestTheOptionsAfterDashS(unittest.TestCase):
         # FR FR FR FR: the check in the body is never read, and `./tool` runs unverified.
         found = defects(GET + body("bash -s -c true", CHECK) + USE)
         self.assertEqual(1, len(found), found)
-        self.assertIn(UNVERIFIED, found[0])
-        # -- -- -- --: `bash -s -c 'echo hi'` runs the string alone; the pipe in the body never.
-        self.assertEqual([], defects(body("bash -s -c 'echo hi'", PIPE)))
+        self.assertIn(WITHHELD, found[0])
+        # -- -- -- --: `bash -s -c 'echo hi'` runs the string alone; the pipe in the body never --
+        # reported all the same, as on `main` (#2647's over-report half; round 10 clears nothing).
+        as_main(self, [body("bash -s -c 'echo hi'", PIPE)])
 
     def test_a_dash_c_that_is_a_parameter_leaves_the_body_the_program(self):
         # F-+chk x4 on each: the check runs and stops the step (rc 1) -- CLEAN, as before.
@@ -57,8 +79,9 @@ class TestTheOptionsAfterDashS(unittest.TestCase):
         # the body; the later literal `-c` is not trusted past such a word (the must-trip).
         found = defects(GET + "X='c sh'\nbash -s + -$X -c - + <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n")
         self.assertTrue(found and "running it under `sh`" in found[-1], found)
-        # F- F- F- F- (rc 127, bash runs `x`): the body is data -- CLEAN now, as the string wins.
-        self.assertEqual([], defects(GET + "X='-c sh'\nbash -s -c x \"$X\" x <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n"))
+        # F- F- F- F- (rc 127, bash runs `x`): the body is data -- reported all the same, as on
+        # `main`, which reads `-s` and the body (round 10 clears nothing).
+        as_main(self, [GET + "X='-c sh'\nbash -s -c x \"$X\" x <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n"], "tool")
 
     def test_the_holder_whose_dash_c_names_a_stdin_shell_keeps_its_reader(self):
         # FR FR FR FR: `bash -s -c 'sh'` runs `sh`, which reads the body -- reported, as before,
@@ -78,9 +101,10 @@ class TestALoneDashBeforeAFile(unittest.TestCase):
             with self.subTest(command=command):
                 found = defects(GET + body(command, CHECK) + USE)
                 self.assertEqual(1, len(found), found)
-                self.assertIn(UNVERIFIED, found[0])
-        # -- -- -- --: the pipe in the body is never run -- the over-report is gone.
-        self.assertEqual([], defects(body("bash - /dev/null", PIPE)))
+                self.assertIn(WITHHELD, found[0])
+        # -- -- -- --: the pipe in the body is never run -- reported all the same, as on `main`
+        # (#2654's over-report half; round 10 clears nothing).
+        as_main(self, [body("bash - /dev/null", PIPE)])
 
     def test_a_lone_dash_with_nothing_after_it_is_still_stdin(self):
         # F-+chk x4: the body is the program, the check runs and stops the step.
@@ -91,7 +115,8 @@ class TestALoneDashBeforeAFile(unittest.TestCase):
 class TestALongOptionOfTheShell(unittest.TestCase):
     """#2616: a shell's long options have a table now. `--rcfile FILE` and `--init-file FILE`
     take the file and read on; a word outside the table, or one spelled `--name=value`, is one
-    bash refuses (rc 2, no stdin read), and dash refuses every long option."""
+    bash refuses (rc 2, no stdin read), and dash refuses every long option -- read on, as `main`
+    reads it (#2858 round 10: no clear), and no check counted where the shell prints and exits."""
 
     def test_the_file_a_long_option_takes_is_no_script(self):
         # FR FR FR FR on each: the heredoc is the program after the file is skipped.
@@ -110,11 +135,10 @@ class TestALongOptionOfTheShell(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertTrue(any("where it reads its options" in why for why in defects(script)), script)
 
-    def test_a_refused_long_option_runs_nothing(self):
-        # -- -- -- -- (rc 2) on each: bash answers `invalid option`, dash `Illegal option --`.
-        for command in ("bash --bogus", "bash --rcfile=/dev/null", "dash --norc"):
-            with self.subTest(command=command):
-                self.assertEqual([], defects(body(command, PIPE)))
+    def test_a_refused_long_option_reads_as_main(self):
+        # -- -- -- -- (rc 2) on each: bash answers `invalid option`, dash `Illegal option --` --
+        # reported, as on `main` (round 10 withdraws the refusal clear).
+        as_main(self, [body(command, PIPE) for command in ("bash --bogus", "bash --rcfile=/dev/null", "dash --norc")])
         # Controls that read as they did: a FILE operand after the option's file, and a `-c`
         # found wherever it stands.
         self.assertEqual([], defects("printf 'true\\n' > script.sh\n" + body("bash --rcfile /dev/null script.sh", PIPE)))
@@ -130,16 +154,14 @@ class TestALongOptionOfTheShell(unittest.TestCase):
             "--restricted", "--verbose", "--version", "--wordexp"})
         self.assertEqual({"--help", "--version", "--dump-strings", "--dump-po-strings", "--wordexp"},
                          set(wo.LONG_EXITS))
-        self.assertTrue(wo._refused_long(["bash", "--bogus"], 1))
-        self.assertTrue(wo._refused_long(["bash", "--version"], 1))
-        self.assertTrue(wo._refused_long(["bash", "-rcfile"], 1))          # no FILE after it
-        self.assertFalse(wo._refused_long(["bash", "-rcfile", "/dev/null"], 1))
-        self.assertTrue(wo._refused_long(["bash", "-rcfile=/dev/null"], 1))
-        self.assertTrue(wo._refused_long(["dash", "--norc"], 1))
-        self.assertFalse(wo._refused_long(["bash", "--norc"], 1))
-        self.assertFalse(wo._refused_long(["bash", "-norc"], 1))
-        self.assertFalse(wo._refused_long(["zsh", "--bogus"], 1))
-        self.assertFalse(wo._refused_long(["bash", "--"], 1))
+        # The leading run's exits count no check (`_runs_none`, round 10); an rc FILE is no exit, and a
+        # two-dash word after a short one is refused (rc 1), which an `-e` step stops at, as on main.
+        for argv, none in ((["bash", "--version"], True), (["bash", "-version"], True), (["bash", "--norc", "--help"], True),
+                           (["bash", "--rcfile", "f", "-version"], True), (["bash", "--rcfile", "--version"], False),
+                           (["bash", "-e", "--version"], False), (["bash", "--norc"], False), (["bash", "-n"], True),
+                           (["bash", "-n", "+n"], False), (["bash", "-D"], True)):
+            with self.subTest(argv=argv):
+                self.assertEqual(none, wo._runs_none(argv))
         # Both spellings bash takes; the one-dash one only for `bash` and `sh`, in the leading run.
         self.assertEqual("--login", wo.long_option(["bash", "--login"], 1))
         self.assertEqual("--login", wo.long_option(["bash", "-login"], 1))
@@ -154,8 +176,10 @@ class TestALongOptionOfTheShell(unittest.TestCase):
         self.assertEqual("--login", wo.long_option(["dash", "--login"], 1))
         for word in ("-bogus", "-e", "-rcfile=/dev/null", "-", "--", "--rcfile=f"):
             self.assertIsNone(wo.long_option(["bash", word], 1), word)
-        self.assertFalse(wo._refused(["bash", "-login"], 1))
-        self.assertFalse(wo._refused_name(["bash", "-noediting"], 1))
+        # `main`'s readers, byte for byte (round 10), take `-login` for letters and refuse its `g`; the
+        # string reader never asks them about a long word, which ends its search first (`_operand_past`).
+        self.assertTrue(wo._refused(["bash", "-login"], 1))
+        self.assertEqual("--login", wo.long_option(["bash", "-login"], 1))
 
     def test_bash_takes_its_long_options_with_one_dash_too(self):
         # #2864 and the round-1 pre-check of PR #2858: bash reads `-login` as `--login`, and the
@@ -185,9 +209,11 @@ class TestALongOptionOfTheShell(unittest.TestCase):
         # -- -- -- -- (rc 2) on each: a one-dash word that spells no long option is a letter
         # cluster (`-bogus` fails at `g`), dash reads every one-dash word so (`dash -login` fails
         # at `-g`), a value glued on is refused (rc 1), and a long option after a `-c` cluster is
-        # refused by both bashes (`- : invalid option`).
-        for script in (body("bash -bogus", PIPE), body("dash -login", PIPE), body("bash -rcfile=/dev/null", PIPE),
-                       "bash -c -login '%s'\n" % PIPE, "bash -c --login '%s'\n" % PIPE):
+        # refused by both bashes (`- : invalid option`). `main` reads the first two on, and so does
+        # round 10 (no refusal clear); the rest `main` reads CLEAN too.
+        as_main(self, [body("bash -bogus", PIPE), body("dash -login", PIPE)])
+        for script in (body("bash -rcfile=/dev/null", PIPE), "bash -c -login '%s'\n" % PIPE,
+                       "bash -c --login '%s'\n" % PIPE):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
 
@@ -208,10 +234,9 @@ class TestALongOptionOfTheShell(unittest.TestCase):
                 self.assertTrue(defects(script), script)
         # -- -- -- --: `-help` alone prints and exits; a two-dash word off the leading run is an
         # error (rc 1); `-login` after `-c` is letters bash refuses (rc 2); a value glued on (rc 2).
-        for script in (body("bash -help", PIPE), body("bash -e --help", PIPE), "bash -c -login '%s'\n" % PIPE,
-                       body("bash --rcfile=/dev/null -e", PIPE)):
-            with self.subTest(script=script):
-                self.assertEqual([], defects(script), script)
+        # Reported as on `main` (round 10), bar the `-c` row, which `main` reads CLEAN too.
+        as_main(self, [body("bash -help", PIPE), body("bash -e --help", PIPE), body("bash --rcfile=/dev/null -e", PIPE)])
+        self.assertEqual([], defects("bash -c -login '%s'\n" % PIPE))
         # Fail-closed, reported though nothing runs: `bash -e -login` (`-o gin`, rc 1), `bash -e
         # -norc` (rc 1), `bash -e -noediting` (rc 1) -- the letters' own refusals are not all in
         # the table, and a check behind them is never credited.
@@ -226,20 +251,22 @@ class TestALongOptionOfTheShell(unittest.TestCase):
                 self.assertTrue(any(STREAM in why for why in defects(body(runner, PIPE))), runner)
         # -- -- -- --: noexec on at the end (`+n -n`), `-D` undone by nothing (`-D +D`), and a
         # cluster's `o` takes the next word as its name (`-eo noexec`, `-oe noexec`: finding 1).
+        # The body is read as `main` reads it -- the download reported (round 10: no clear) -- and
+        # no check in it counts.
         for runner in ("bash +n -n -s", "bash -D +D -s", "bash -eo noexec -s", "bash -oe noexec -s"):
             with self.subTest(runner=runner):
-                self.assertEqual([], defects(body(runner, PIPE)), runner)
+                as_main(self, [body(runner, PIPE)])
                 found = defects(GET + body(runner, CHECK) + USE)
-                self.assertTrue(any(UNVERIFIED in why for why in found), (runner, found))
+                self.assertTrue(any(WITHHELD in why for why in found), (runner, found))
         # `-n +n -s` with a check in the body: the body is the program again, the check counts.
         self.assertEqual([], defects(GET + body("bash -n +n -s", CHECK) + USE))
         # Each `o` takes a word (`-oo errexit noexec`: the second is `noexec`), and `D` runs
         # nothing whatever `+n` says (`+nD`): -T rc 0, the use after unverified (the seat's matrix).
         for runner in ("bash -oo errexit noexec", "sh -oo errexit noexec", "dash -oo errexit noexec", "bash +nD"):
             with self.subTest(runner=runner):
-                self.assertEqual([], defects(body(runner, PIPE)), runner)
+                as_main(self, [body(runner, PIPE)])
                 found = defects(GET + body(runner, CHECK) + USE)
-                self.assertTrue(any(UNVERIFIED in why for why in found), (runner, found))
+                self.assertTrue(any(WITHHELD in why for why in found), (runner, found))
 
     def test_a_word_that_may_expand_to_nothing_holds_the_leading_run(self):
         # #2858 round 3 (B2): `$X`, `${X:-}`, `$(true)` may expand to nothing or to a long
@@ -319,11 +346,10 @@ class TestALongOptionOfTheShell(unittest.TestCase):
             with self.subTest(runner=pre + runner):
                 found = defects(pre + GET + body(runner, CHECK) + USE)
                 self.assertTrue(found, (runner, found))
-        # Honest clears, nothing expands: -- -- on each (rc 0, 2, 0, 0).
-        for script in (body("bash --rcfile /dev/null --version", PIPE), body("bash -K -s", PIPE),
-                       body("bash -n -s", PIPE), body("bash -Oo extglob noexec", PIPE)):
-            with self.subTest(script=script):
-                self.assertEqual([], defects(script), script)
+        # Nothing expands, nothing runs: -- -- on each (rc 0, 2, 0, 0) -- reported as on `main`
+        # (round 10 withdraws these clears; no check in the first, third or fourth counts).
+        as_main(self, [body("bash -K -s", PIPE), body("bash -n -s", PIPE), body("bash -Oo extglob noexec", PIPE)])
+        over_reported(self, [body("bash --rcfile /dev/null --version", PIPE)])
         # The price, fail-closed: bash runs only the string here in every reading measured (`X=`,
         # `X=-s`: -- --, rc 0), but after `$X` the `-c` may be a FILE with an `-s` to follow.
         for pre in ("X=\n", "X=-s\n"):
@@ -374,15 +400,16 @@ class TestALongOptionOfTheShell(unittest.TestCase):
         # rc 0 -- and after a short option `-version` and `-noprofile` are letters with `n` among
         # them (a mid-cluster `o` with no word after it is accepted silently; with one, that word
         # is its name: `bash -e -version -c P` -> `-c: invalid option name`, rc 2). With a check in
-        # the body and a use after: -T (the use runs unverified) on both bashes -- reported;
-        # with a download in the body: -- -- (nothing runs) -- CLEAN. `-D` prints strings, same.
+        # the body and a use after: -T (the use runs unverified) on both bashes -- reported, no
+        # check counted; with a download in the body: -- -- (nothing runs) -- reported as on
+        # `main` (round 10 withdraws the clear). `-D` prints strings, same.
         for runner in ("bash -n -s", "bash -o noexec -s", "bash -s -version", "bash -e -version",
                        "bash -e -noprofile", "bash -D", "bash -Ds", "sh -n", "dash -n"):
             with self.subTest(runner=runner):
                 found = defects(GET + body(runner, CHECK) + USE)
-                self.assertTrue(any(UNVERIFIED in why for why in found), (runner, found))
-                self.assertEqual([], defects(body(runner, PIPE)), runner)
-        self.assertEqual([], defects("bash -e -version -c '%s'\n" % PIPE))     # `-c` is no name
+                self.assertTrue(any(WITHHELD in why for why in found), (runner, found))
+                as_main(self, [body(runner, PIPE)])
+        as_main(self, ["bash -e -version -c '%s'\n" % PIPE])     # `-c` is no name: rc 2, as main reads it
         # `-t` runs ONE command, so a download first in the body runs: read on, reported.
         self.assertTrue(any(STREAM in why for why in defects(body("bash -t -s", PIPE))))
 
@@ -399,15 +426,15 @@ class TestALongOptionOfTheShell(unittest.TestCase):
                        "bash -version -c 'sh'", "sh --version"):
             with self.subTest(runner=runner):
                 found = defects(GET + body(runner, CHECK) + USE)
-                self.assertTrue(any(UNVERIFIED in why for why in found), (runner, found))
+                self.assertTrue(any(WITHHELD in why or UNVERIFIED in why for why in found), (runner, found))
         # -- -- -- -- (rc 0): a download in the heredoc or the string is never run.
         # `--wordexp` expands stdin as words (bash 3.2) or is refused (5.2); `-rcfile` as the
-        # last word wants a FILE (rc 2): nothing runs under either.
-        for script in (body("bash --version", PIPE), body("bash -version", PIPE), body("bash -help", PIPE),
+        # last word wants a FILE (rc 2): nothing runs under either -- reported as on `main`
+        # (round 10 withdraws the clear).
+        as_main(self, [body("bash --version", PIPE), body("bash -version", PIPE), body("bash -help", PIPE),
                        "bash --help -c '%s'\n" % PIPE, "bash --dump-strings -c '%s'\n" % PIPE,
-                       body("bash -wordexp", PIPE), "bash --wordexp -c '%s'\n" % PIPE, body("bash -rcfile", PIPE)):
-            with self.subTest(script=script):
-                self.assertEqual([], defects(script))
+                       body("bash -wordexp", PIPE), "bash --wordexp -c '%s'\n" % PIPE])
+        over_reported(self, [body("bash -rcfile", PIPE)])
         self.assertEqual([], defects(GET + body("bash --norc", CHECK) + USE))     # the check counts
 
 
@@ -425,9 +452,10 @@ class TestDashReadsStdinAfterItsDashCString(unittest.TestCase):
             with self.subTest(runner=runner):
                 self.assertTrue(any(STREAM in why for why in defects(body(runner, PIPE))), runner)
         # -- -- -- --: bash runs the string alone, and an `-s` AFTER the string is a parameter
-        # to dash too (`sh -c true -s`); `-c` alone reads no stdin.
-        for runner in ("bash -s -c true", "bash -sc true", "bash -cs true", "bash -c -s true",
-                       "sh -c true -s", "dash -c true -s", "sh -c true"):
+        # to dash too (`sh -c true -s`); `-c` alone reads no stdin. `bash -s -c true` is reported
+        # all the same, as on `main` (#2647's over-report half, round 10).
+        as_main(self, [body("bash -s -c true", PIPE)])
+        for runner in ("bash -sc true", "bash -cs true", "bash -c -s true", "sh -c true -s", "dash -c true -s", "sh -c true"):
             with self.subTest(runner=runner):
                 self.assertEqual([], defects(body(runner, PIPE)), runner)
 
@@ -536,11 +564,10 @@ class TestADashCStringTheShellIsNotSureToRun(unittest.TestCase):
 
     def test_a_quoted_expansion_is_one_word_and_never_vanishes(self):
         # -- x4 (matrix 21652, 28132: rc 2; forge: `--version`, rc 0): `"$X"` is `--rcfile`'s FILE
-        # whatever it holds, so `-rcfile` wants a FILE and `--version` prints and exits.
-        for script in ("X=\n" + body('bash --rcfile "$X" -rcfile', PIPE), "X=\n" + body('sh --rcfile "$X" -rcfile', PIPE),
-                       "X=\n" + body('bash --rcfile "$X" --version', PIPE)):
-            with self.subTest(script=script):
-                self.assertEqual([], defects(script))
+        # whatever it holds, so `-rcfile` wants a FILE and `--version` prints and exits -- reported
+        # as on `main` (round 10 withdraws the clear).
+        as_main(self, ["X=\n" + body('bash --rcfile "$X" --version', PIPE)])
+        over_reported(self, ["X=\n" + body('bash --rcfile "$X" -rcfile', PIPE), "X=\n" + body('sh --rcfile "$X" -rcfile', PIPE)])
         # P x4 (forge): the string after it runs.
         self.assertTrue(any(STREAM in why for why in defects("X=\nbash --rcfile \"$X\" -c '%s'\n" % PIPE)))
 
@@ -571,10 +598,9 @@ class TestWhatMainReportsStaysReported(unittest.TestCase):
                 found = defects(GET + body(runner, CHECK) + USE)
                 self.assertTrue(any("tool" in why for why in found), found)
         # -- x4 with bash 5.2.21 and 3.2.57 each as the child (forge, `gt2.sh`): a download in the
-        # heredoc never runs -- the stdin program is uncredited and runs nothing.
-        for script in (body("bash --pretty-print", PIPE), body("bash -norc -pretty-print", PIPE)):
-            with self.subTest(script=script):
-                self.assertEqual([], defects(script))
+        # heredoc never runs -- the stdin program is uncredited, and reported as on `main` (round 10).
+        as_main(self, [body("bash --pretty-print", PIPE)])
+        over_reported(self, [body("bash -norc -pretty-print", PIPE)])
         # A `-c` string after it runs: FR x4 with bash 5.2.21 as the child, -- (rc 2) with 3.2.57
         # (forge) -- so no string reader refuses it, and a check in it keeps its credit: +chk, rc 1,
         # with either child bash.
@@ -623,12 +649,11 @@ class TestAQuotedExpansionThatMayBeNoWordOrMany(unittest.TestCase):
                        "A=(/dev/null -n)\n" + GET + body('bash --rcfile "${A[@]}"', CHECK) + USE):
             with self.subTest(script=script):
                 self.assertTrue(any("tool" in why for why in defects(script)), script)
-        # -- x4 (r09, r10: rc 2; k02412, k02616: rc 0): a one-word form is the FILE, and nothing runs.
-        for script in ("X=\n" + body('bash --rcfile "$X" -K', PIPE), "A=()\n" + body('bash --rcfile "${A[*]}" -K', PIPE),
-                       "X=\nY=\nbash --rcfile \"$Y\" --version $X -c '%s'\n" % PIPE,
-                       "X=\nY=\nbash -rcfile \"$Y\" --version $X -c '%s'\n" % PIPE):
-            with self.subTest(script=script):
-                self.assertEqual([], defects(script))
+        # -- x4 (r09, r10: rc 2; k02412, k02616: rc 0): a one-word form is the FILE, and nothing runs
+        # -- reported as on `main` (round 10 withdraws the clear).
+        as_main(self, ["X=\n" + body('bash --rcfile "$X" -K', PIPE), "A=()\n" + body('bash --rcfile "${A[*]}" -K', PIPE),
+                       "X=\nY=\nbash --rcfile \"$Y\" --version $X -c '%s'\n" % PIPE])
+        over_reported(self, ["X=\nY=\nbash -rcfile \"$Y\" --version $X -c '%s'\n" % PIPE])
         # The price, accepted (r12: rc 127 for every value the seat ran; main reports it too): after
         # an `@` form nothing is sure, so a refusal there no longer clears.
         self.assertTrue(any(STREAM in why for why in defects("bash --rcfile \"$@\" -o pipefial -c '%s'\n" % PIPE)))
@@ -641,17 +666,18 @@ class TestAQuotedExpansionThatMayBeNoWordOrMany(unittest.TestCase):
                        "X=\n" + body("bash -- $X", PIPE)):
             with self.subTest(script=script):
                 self.assertTrue(any(STREAM in why for why in defects(script)), script)
-        # -- x4 (r28, rc 127): a one-word `"$X"` is the FILE, and nothing runs.
-        self.assertEqual([], defects("X=x.sh\n" + body('bash - "$X"', PIPE)))
+        # -- x4 (r28, rc 127): a one-word `"$X"` is the FILE, and nothing runs -- reported as on
+        # `main` (round 10 withdraws the clear).
+        as_main(self, ["X=x.sh\n" + body('bash - "$X"', PIPE)])
 
 
 class TestAClearingRuleFiresOnlyOnSureInput(unittest.TestCase):
     """#2858 round 8, the coordinator's ruling on the round-7 seat: a rule that CLEARS fires only on
-    input proven sure -- an allowlist, never a denylist. `--pretty-print` voids the stdin program
-    only where nothing later in the option run may make the shell interactive; `_one_word` allows
-    only the quoted forms proven to be one word. Truth from the round-7 seat's hunt (row ids) and
-    direct probes (z, w, a, n): touch marks under bash 5.2.21 and 3.2.57, `sh` as dash and as each
-    bash."""
+    input proven sure -- an allowlist, never a denylist. Round 10 withdraws every clear, so what is
+    left is the CREDIT side: `--pretty-print` counts no check in the stdin program where nothing in
+    the option run makes the shell interactive (`_printed`); `_one_word` allows only the quoted
+    forms proven to be one word. Truth from the round-7 seat's hunt (row ids) and direct probes (z,
+    w, a, n): touch marks under bash 5.2.21 and 3.2.57, `sh` as dash and as each bash."""
 
     def test_pretty_print_runs_the_heredoc_where_the_shell_may_be_interactive(self):
         # P on 5.2 (b5, sh5; 3.2 refuses the option, rc 2): bash 5.2 ignores `--pretty-print` under
@@ -669,11 +695,13 @@ class TestAClearingRuleFiresOnlyOnSureInput(unittest.TestCase):
         with self.subTest(row="z19"):
             self.assertEqual([], defects(GET + body("bash --pretty-print -i", CHECK) + USE))
         # -- (121638 rc 0/2, 121654 `+i` rc 0/2, z02 rc 2): nothing interactive after it, or the
-        # option refused after a short one, and the heredoc never runs.
-        for script in (body("bash --pretty-print", PIPE), body("bash --pretty-print +i", PIPE),
-                       body("bash -i --pretty-print", PIPE)):
-            with self.subTest(script=script):
-                self.assertEqual([], defects(script))
+        # option refused after a short one, and the heredoc never runs -- reported as on `main`
+        # (round 10 withdraws the clear), and with a check, no check counted where 5.2 prints it.
+        as_main(self, [body("bash --pretty-print", PIPE), body("bash --pretty-print +i", PIPE),
+                       body("bash -i --pretty-print", PIPE)])
+        for runner in ("bash --pretty-print", "bash --pretty-print +i", "bash --pretty-print -i +i"):
+            with self.subTest(withheld=runner):
+                self.assertTrue(any(WITHHELD in why for why in defects(GET + body(runner, CHECK) + USE)), runner)
 
     def test_one_word_is_an_allowlist(self):
         # P x4 (120923, 120949, 127438, a11): `"${!X}"` with `X=@` or `X='A[@]'` is no word or
@@ -711,9 +739,9 @@ class TestAClearingRuleFiresOnlyOnSureInput(unittest.TestCase):
                 self.assertLess(time.perf_counter() - start, 1.0)
 
     def test_a_literal_after_a_lone_dash_is_the_file_and_a_value_after_dash_c_dash_dash_may_vanish(self):
-        # -- (127346, rc 127 x4): a literal `-` after a lone `-` is the FILE named `-`.
-        with self.subTest(row="127346"):
-            self.assertEqual([], defects(body("bash - -", PIPE)))
+        # -- (127346, rc 127 x4): a literal `-` after a lone `-` is the FILE named `-` -- reported
+        # as on `main` (round 10 withdraws the clear).
+        as_main(self, [body("bash - -", PIPE)])
         # P x4 (135648, 131856, 132172; main CLEAN too): with `Y` empty the next word is the string.
         for script in ("Y=\nsh -c -- $Y '%s'\n" % PIPE, "Y=\nbash -c -- $Y '%s'\n" % PIPE,
                        "Y=\nbash -c - $Y '%s'\n" % PIPE):
@@ -728,9 +756,11 @@ class TestAClearOrACreditNeedsASureShell(unittest.TestCase):
     words; (2) an option run literal up to the deciding word; (3) a step that leaves the shell its
     own name -- no function or alias of a shell's or a wrapper's name, no sourced file, no `eval` of
     a word it does not spell, no `BASH_ENV`/`ENV`; (4) the state the shell itself computes, startup
-    files included. Anything else reads as main read it. Truth: the round-8 seat's hunts (row ids)
-    and direct cases (y..), touch marks under bash 5.2.21 and 3.2.57, `sh` as dash and as each bash;
-    and this round's forge probes, cited where they stand."""
+    files included. Anything else reads as main read it. Round 10 (the monotone ruling) withdraws
+    every clear and the certificate with it: each row below reads as `main` reads it or adds a
+    report, and its clean controls are reported as `main` reports them. Truth: the round-8 seat's
+    hunts (row ids) and direct cases (y..), touch marks under bash 5.2.21 and 3.2.57, `sh` as dash
+    and as each bash; and the round-9 forge probes, cited where they stand."""
 
     def assert_reported(self, scripts):
         for script in scripts:
@@ -756,9 +786,10 @@ class TestAClearOrACreditNeedsASureShell(unittest.TestCase):
         # named price: rc 127 here) is not one either.
         self.assert_reported([body("$S bash --version", PIPE), body('sudo -u "$U" bash -K', PIPE),
                               body("./bash --version", PIPE), body("zsh --pretty-print", PIPE)])
-        # -- (rc 0, 2): the controls, literal, through a literal wrapper or an assignment.
-        self.assert_clean([body(c, PIPE) for c in ("bash --version", "sudo bash --version", "env bash -K",
-                                                   "/usr/bin/bash --version", "X=1 bash --version", "sh -o pipefial")])
+        # -- (rc 0, 2): the controls, literal, through a literal wrapper or an assignment -- round 9
+        # cleared them; reported as on `main` now (round 10).
+        as_main(self, [body(c, PIPE) for c in ("bash --version", "sudo bash --version", "env bash -K",
+                                              "/usr/bin/bash --version", "X=1 bash --version", "sh -o pipefial")])
 
     def test_rule_2_a_literal_run(self):
         # P x4 (160000 ym01, ym06, ym16, yk11, yl08; main REPORTS): after a lone `-` a word that may be
@@ -771,8 +802,9 @@ class TestAClearOrACreditNeedsASureShell(unittest.TestCase):
                               "HOME=-i\n" + body("bash --pretty-print ~", PIPE)])
         # The price (yl09, rc 127 x4): without `nullglob` the pattern stays the FILE, read as `$X` all the same.
         self.assert_reported([body("bash - /nonexistent*", PIPE)])
-        # -- (ym09 rc 127, 127346): a quoted one-word form, and a literal word, are the FILE.
-        self.assert_clean(["X=\nY=\n" + body('bash - "${X:-${Y}}"', PIPE), body("bash - x.sh", PIPE)])
+        # -- (ym09 rc 127, 127346): a quoted one-word form, and a literal word, are the FILE -- round 9
+        # cleared them; reported as on `main` now (round 10).
+        as_main(self, ["X=\nY=\n" + body('bash - "${X:-${Y}}"', PIPE), body("bash - x.sh", PIPE)])
 
     def test_rule_3_a_step_that_leaves_the_shell_its_name(self):
         # P x4 (yg01 147490, yg04, yg02, yg07, yg08, yg09; main REPORTS): a function or alias of the
@@ -795,13 +827,10 @@ class TestAClearOrACreditNeedsASureShell(unittest.TestCase):
         # 'bash -s -c true'` runs `true` and leaves the heredoc unread (-- x4), unless a `bash()` reads
         # it (P x4); an `eval` of a word the guard does not spell may define anything.
         self.assert_reported([shadows[0] + body("eval 'bash -s -c true'", PIPE), 'eval "$X"\n' + body("bash --version", PIPE)])
-        self.assert_clean(["eval \"bash --version <<'EOF'\n%s\nEOF\"\n" % PIPE, body("eval 'bash -s -c true'", PIPE)])
+        # Without the function round 9 cleared these; reported as on `main` now (round 10).
+        as_main(self, ["eval \"bash --version <<'EOF'\n%s\nEOF\"\n" % PIPE, body("eval 'bash -s -c true'", PIPE)])
         # The named over-report (yg03, -- x4): a function that hands its words on runs nothing here.
         self.assert_reported(['bash() { command bash "$@"; }\n' + body("bash --version", PIPE)])
-        import workflow_sure as ws       # round 9's module: imported here, so RED-first collects this file
-        stmts = shell_reader.statements(shadows[0] + body("bash --version", PIPE))
-        self.assertEqual({"bash"}, ws.shadowed(stmts))
-        self.assertNotIsInstance(ws.certified(stmts)[-1].stages[0].argv[0], wo.Sure)
 
     def test_rule_3_what_may_change_the_name_in_the_step_or_the_job(self):
         # The coordinator's widened scope: a step that sets `PATH`, `SHELLOPTS` or `BASHOPTS`, exports a
@@ -827,16 +856,16 @@ class TestAClearOrACreditNeedsASureShell(unittest.TestCase):
         for before in planted:
             with self.subTest(job=before):
                 self.assertTrue(job(before, body("bash --version", PIPE)), before)
-        # -- the controls: a literal target named like no shell, before or in the step.
-        self.assert_clean(["curl -fsSLo tool %stool\n" % URL + body("bash --version", PIPE)])
-        self.assertEqual([], job("echo hi > notes.txt\n", body("bash --version", PIPE)))
-        # The same step text in two jobs, certified in one alone and in either order: a certificate is
-        # never written into a parse another job reads.
+        # The controls round 9 cleared -- a literal target named like no shell, before or in the step
+        # -- reported as on `main` now (round 10).
+        as_main(self, ["curl -fsSLo tool %stool\n" % URL + body("bash --version", PIPE)])
+        self.assertTrue(job("echo hi > notes.txt\n", body("bash --version", PIPE)))
+        # The same step text in two jobs, in either order: reported in each, as on `main`.
         writer = 'echo "BASH_ENV=$PWD/e.sh" >> "$GITHUB_ENV"\n'
         for order in ((False, True, False), (True, False, True)):
             for tainted in order:
                 with self.subTest(order=order, tainted=tainted):
-                    self.assertEqual(tainted, bool(job(writer, later) if tainted else job("echo hi\n", later)))
+                    self.assertTrue(job(writer, later) if tainted else job("echo hi\n", later))
 
     def test_rule_4_the_state_the_shell_computes(self):
         # T on b5 sh5 (yf08 141005, yf01, 140309, yj08, this round's `--rcfile -i`; main REPORTS on
@@ -851,14 +880,17 @@ class TestAClearOrACreditNeedsASureShell(unittest.TestCase):
         # P on b5 (this round): a login run sources a `~/.bash_profile` the step may have written,
         # which may read stdin itself -- no clear; the named price where it is the runner's own.
         self.assert_reported([body("bash --login --pretty-print", PIPE), body("bash --pretty-print -l", PIPE)])
-        # -- (bash 5.2.21 and 3.2.57, this round: `--: invalid option`, rc 1/2): a two-dash option after a
-        # short one is refused, and nothing runs.
-        self.assert_clean([body("bash -e --version", PIPE), body("bash -i --pretty-print", PIPE),
-                           body("bash -o pipefail --norc", PIPE)])
-        self.assertEqual((True, False, False), wo._state(["bash", "--pretty-print", "+i", "-i"]))
-        self.assertEqual((False, False, False), wo._state(["bash", "--pretty-print", "--rcfile", "-i"]))
-        self.assertEqual((False, False, False), wo._state(["bash", "--pretty-print", "-s", "--", "-i"]))
-        self.assertEqual((False, True, False), wo._state(["bash", "--pretty-print", "-login"]))
+        # -- (bash 5.2.21 and 3.2.57, round 9: `--: invalid option`, rc 1/2): a two-dash option after a
+        # short one is refused, and nothing runs -- reported as on `main` now (round 10).
+        as_main(self, [body("bash -e --version", PIPE), body("bash -i --pretty-print", PIPE),
+                       body("bash -o pipefail --norc", PIPE)])
+        # The state `_printed` reads (round 10: a reason to count no check, never a clear).
+        for argv, printed in ((["bash", "--pretty-print", "+i", "-i"], False), (["bash", "--pretty-print", "-i", "+i"], True),
+                              (["bash", "--pretty-print", "--rcfile", "-i"], True), (["bash", "--pretty-print", "-s", "--", "-i"], True),
+                              (["bash", "--pretty-print", "-login"], True), (["bash", "--pretty-print", "-o", "interactive"], False),
+                              (["bash", "-e", "--pretty-print"], False)):
+            with self.subTest(argv=argv):
+                self.assertEqual(printed, wo._printed(argv))
 
     def test_a_mixed_word_a_member_after_dash_c_dash_dash_and_the_floor(self):
         # P x2 (bash 5.2.21, 3.2.57, this round): `$(echo '-s ')<(…)` is `-s /dev/fd/63`, so bash
@@ -889,13 +921,12 @@ class TestAnOptionValueTheShellRefuses(unittest.TestCase):
     stdin at a `-o` name outside its table, at a `-o` value that is no name at all, and at a
     letter it refuses -- in the stdin walk and in the option words before a `-c` cluster."""
 
-    def test_a_refused_name_or_value_runs_nothing(self):
-        # -- -- -- -- (rc 2) on each.
-        for script in (body("bash -o pipefial", PIPE), body("sh -o -", PIPE), body("bash -o /dev/stdin", PIPE),
+    def test_a_refused_name_or_value_reads_as_main(self):
+        # -- -- -- -- (rc 2) on each -- reported as on `main` (#2606 and #2603's over-reports; round
+        # 10 withdraws the refusal clear, and both issues move to Refs).
+        as_main(self, [body("bash -o pipefial", PIPE), body("sh -o -", PIPE), body("bash -o /dev/stdin", PIPE),
                        body("bash -oo pipefail -", PIPE), "bash -o pipefial -c '%s'\n" % PIPE,
-                       "sh -c -o - '%s'\n" % PIPE, body("bash -K", PIPE)):
-            with self.subTest(script=script):
-                self.assertEqual([], defects(script))
+                       "sh -c -o - '%s'\n" % PIPE, body("bash -K", PIPE)])
 
     def test_the_controls_read_as_they_did(self):
         # FR FR FR FR: a name the shell takes; a value in an expansion is read ON, fail-closed.
@@ -912,9 +943,11 @@ class TestAnOptionValueTheShellRefuses(unittest.TestCase):
                 self.assertTrue(any(STREAM in why for why in defects(script)), script)
 
     def test_a_literal_value_that_is_no_name_is_a_refusal_and_an_expansion_is_not(self):
+        # `main`'s reader, byte for byte (round 10): a value of letters outside the table refuses; a
+        # value that is not all letters is read on, fail-closed, as `main` reads it.
         self.assertTrue(wo._refused_name(["bash", "-o", "pipefial"], 1))
-        self.assertTrue(wo._refused_name(["sh", "-o", "-"], 1))
-        self.assertTrue(wo._refused_name(["bash", "-o", "/dev/stdin"], 1))
+        self.assertFalse(wo._refused_name(["sh", "-o", "-"], 1))
+        self.assertFalse(wo._refused_name(["bash", "-o", "/dev/stdin"], 1))
         self.assertFalse(wo._refused_name(["bash", "-o", "pipefail"], 1))
         self.assertFalse(wo._refused_name(["bash", "-o", "$X"], 1))
         self.assertFalse(wo._refused_name(["zsh", "-o", "pipefial"], 1))
@@ -934,6 +967,91 @@ class TestAWordHoldingAProcessSubstitution(unittest.TestCase):
         self.assertTrue(any(STREAM in why for why in defects("echo '%s' | bash $(true)<(echo 'echo x')\n" % PIPE)))
         # FR FR FR FR: a command substitution alone may vanish, and the body is read.
         self.assertTrue(any(STREAM in why for why in defects(body("bash $(true)", PIPE))))
+
+
+class TestTheWalkJoinsMains(unittest.TestCase):
+    """#2858 round 10, the monotone ruling: this walk's answer JOINS `main`'s -- a body is read where
+    either reads it, a check counts only where both count it, the body or string `main` reads stays
+    the step's own as `main` reads it, a body or string only this walk finds is no shell's sure
+    program (the guard's second fold leaves it out), and the `-c` strings and the candidates are
+    the union. One pin per join; each mutant that drops a join fails one (truth: the rows' own
+    classes above, and the round-10 probes `r10_probe.py` / `r10_fold1.py`, main CLEAN where noted)."""
+
+    IN_PIPELINE = "runs in the same pipeline as that use"
+
+    @staticmethod
+    def argv(text):
+        return shell_reader.command(shell_reader.statements(text)[0].stages[-1].argv)
+
+    def test_a_body_only_this_walk_reads_is_read_as_no_shells_sure_program(self):
+        # Read where either reads it: #2616 and #2864 (FR x4; main CLEAN), with no reader -- `Unsure`.
+        for runner in ("bash --rcfile /dev/null", "bash -norc", "bash -rcfile /dev/null"):
+            with self.subTest(runner=runner):
+                self.assertTrue(any(STREAM in why for why in defects(body(runner, PIPE))), runner)
+                argv = self.argv(body(runner, PIPE))
+                self.assertEqual((wp.SHELL_PROGRAM, None), (wp.stdin_program(argv), wp.stdin_reader(argv)))
+        # A `}` in a body `main` never reads is no group's end (main RRRRR; read as the step's own, it
+        # closed the group and the step read CLEAN): `sh -sc true`, where dash reads stdin after the string.
+        group = GET + "{ %s\nsh -sc true <<'B1'\n}\nB1\n} | sh tool\n" % CHECK
+        self.assertTrue(defects(group), group)
+
+    def test_a_check_counts_only_where_both_walks_count_it(self):
+        # #2647, #2654, and a shell that runs none of its program: `main` counted the check (CCCRR).
+        for runner in ("bash -s -c true", "bash - /dev/null", "bash --version", "bash -n -s", "bash -o $X -s"):
+            with self.subTest(runner=runner):
+                found = defects(GET + body(runner, CHECK) + USE)
+                self.assertTrue(any(WITHHELD in why for why in found), (runner, found))
+                self.assertEqual((), wp.stdin_reader(self.argv(body(runner, CHECK))))
+        # Both count it: CLEAN, as on main, the reader the shell's own argv.
+        for runner in ("bash -s", "bash -", "bash -e -s", "bash --norc"):
+            with self.subTest(runner=runner):
+                self.assertEqual([], defects(GET + body(runner, CHECK) + USE), runner)
+                argv = self.argv(body(runner, CHECK))
+                self.assertIs(argv, wp.stdin_reader(argv))
+
+    def test_the_body_main_reads_stays_the_steps_own(self):
+        # A check withheld keeps `main`'s statements the step's own (`()`, never None): a download
+        # in the body then a group whose check runs in the use's pipeline -- main RRRRR, and CCCRR
+        # when the body was made no shell's sure program (the round-10 probe's 30 cells).
+        for holder in ("bash -o $X -s", "bash -s $X", "bash -O $X -s"):
+            with self.subTest(holder=holder):
+                step = "%s <<'B1'\n%sB1\nCMD=$(echo true)\n{ %s\n$CMD <<'EOF'\n}\nEOF\n} | sh tool\n" % (holder, GET, CHECK)
+                self.assertTrue(any(self.IN_PIPELINE in why for why in defects(step)), holder)
+        # So with a string `main` reads and this walk withholds (`bash -o $X -c`, `Handed` with `()`).
+        step = "bash -o $X -c '%s'\nCMD=$(echo true)\n{ %s\n$CMD <<'EOF'\n}\nEOF\n} | sh tool\n" % (GET.strip(), CHECK)
+        self.assertTrue(any(self.IN_PIPELINE in why for why in defects(step)), step)
+
+    def test_the_strings_are_the_union(self):
+        # A string only this walk finds (main CLEAN): read for what it runs, with no reader.
+        for script in ("bash -norc -c '%s'\n" % PIPE, "bash -rcfile /dev/null -c '%s'\n" % PIPE,
+                       body("bash -rcfile /dev/null -c 'sh'", PIPE)):
+            with self.subTest(script=script):
+                self.assertTrue(any(STREAM in why for why in defects(script)), script)
+        # A dynamic string only this walk finds speaks as `main`'s would (`dynamic_program`): bash runs
+        # the download's text (FR x4; main CLEAN, reading `-norc` as a `-c` cluster it refuses).
+        self.assertTrue(defects(GET + 'bash -norc -c "$(cat tool)"\n'))
+        handed = wp.scripts(self.argv("bash -norc -c 'echo hi'"))
+        self.assertEqual((["echo hi"], [None]), ([str(s) for s in handed], [s.reader for s in handed]))
+        # One of `main`'s, a check in it counted only where the shell surely runs it.
+        self.assertTrue(any(WITHHELD in why for why in defects("X=-e\n" + GET + 'bash $X -c "%s"\n' % CHECK + USE)))
+        self.assertEqual([], defects(GET + 'bash -c "%s"\n' % CHECK + USE))
+
+    def test_the_candidates_are_the_union(self):
+        # `bash -rcfile FILE $X '…'`: main stops at `-rcfile`'s `c`; this walk skips the FILE and
+        # weighs the words after the value (FR x4 with `X=-c`; main CLEAN).
+        self.assertTrue(any("where it reads its options" in why
+                            for why in defects("X=-c\nbash -rcfile /dev/null $X '%s'\n" % PIPE)))
+        self.assertEqual(["P"], [str(w) for w in wp.candidates(self.argv("bash -rcfile /dev/null $X P"))[1]])
+        # `main`'s answer stands first where it has one.
+        self.assertEqual(["P"], [str(w) for w in wp.candidates(self.argv("sh $X P"))[1]])
+
+    def test_an_added_body_beside_mains_own_unsure_body_hides_nothing(self):
+        # The guard's first fold reads both bodies; a `cd`, an `exit` or a function in the added one
+        # does not hide the download `main` reports behind `eval 'bash -s'` (the fold-1 probe, 240 rows).
+        for inside in ("cd /tmp", "exit 0", "chmod() { :; }", "rm -f tool"):
+            with self.subTest(inside=inside):
+                step = "eval 'bash -s' <<'B0'\n%sB0\nbash -norc <<'B1'\n%s\nB1\n" % (GET, inside) + USE
+                self.assertTrue(defects(step), step)
 
 
 class TestTheOptionGrammarLivesInWorkflowOptions(unittest.TestCase):

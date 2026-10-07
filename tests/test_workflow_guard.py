@@ -2581,7 +2581,7 @@ class TestASetsValuesAreCountedPerLetterAndCheckedByName(unittest.TestCase):
     answers `set: foo: invalid option name`, leaves errexit off and runs the
     download with the checksum failing (#2560's fail-open).
 
-    Values now count per letter, as `workflow_options._past_options` and
+    Values now count per letter, as `workflow_programs._past_options` and
     `stdin_program` already count them, and a `-o` value outside
     `SET_OPTION_NAMES` refuses the whole `set` as an unknown LETTER does
     (#2443): a `+e` in it still reads as off, and on a COMMAND LINE the shell
@@ -2641,13 +2641,7 @@ class TestASetsValuesAreCountedPerLetterAndCheckedByName(unittest.TestCase):
                 found = self.job(body)
                 self.assertEqual(1, len(found), found)
                 self.assertIn("runs after a `set +e`", found[0][1])
-        # ... and the child shell one value short, `bash -oo pipefail -c P`: since #2606 the `-c`
-        # is read as the second `-o`'s value, no option name, which both bashes exit 2 at
-        # (`-c: invalid option name`) and run nothing -- so the string is no longer read and the
-        # check inside it is not weighed; the use after it is still reported, the same fail-closed
-        # answer a refused letter cluster gets (`bash -c -K P`, #2475), since no refusal is read
-        # as stopping the step.
-        self.assertIn("with nothing verifying what arrived",
+        self.assertIn("carries on past its failure",
                       self.job("bash -oo pipefail -c '%s; echo ok'\n")[0][1])
 
     def test_a_value_that_is_no_option_name_turns_nothing_on(self):

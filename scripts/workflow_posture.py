@@ -32,7 +32,7 @@ def _takes_value(words, at):
     does `set -oo pipefail -e`. A shell's COMMAND LINE takes the next word
     whatever it spells: `bash -oo pipefail -c P` answers `-c: invalid option
     name`, rc 2, and runs nothing at all (`invocation` below, and
-    `workflow_options._past_options`, which counts the same way)."""
+    `workflow_programs._past_options`, which counts the same way)."""
     return at < len(words) and words[at][:1] not in ("-", "+")
 
 
@@ -50,7 +50,7 @@ def _rejected(words):
 
     Read over the words `_errexit` reads, taking one value per `o` LETTER
     exactly as it does -- as bash does, and as
-    `workflow_options._past_options` and `stdin_program` already did -- so
+    `workflow_programs._past_options` and `stdin_program` already did -- so
     the two walks agree about which words are values. `set -oo pipefail
     errexit` turns errexit ON and leaves no positional behind (`$#` is 0 on
     bash 3.2.57 and 5.2.21), where the per-word count this replaced read the
