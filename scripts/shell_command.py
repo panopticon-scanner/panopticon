@@ -138,6 +138,13 @@ def _command_result(argv, optional=True):
         # assignment, a keyword, an operand -- is `main`'s (#2856 round 8).
         if (whole := getattr(argv[0], "whole", None)) is not None:
             argv[0:getattr(argv[0], "span", 1)] = [whole]
+            # A default whose first word is another name the reader knows -- a wrapper, a foreign
+            # interpreter, a fetcher, by path too -- is that name's command, read as `main` read its
+            # words (`${X:-/usr/bin/env bash -s}`, `${X:-/usr/bin/curl -fsSL URL}`; #2856 round 10).
+            if (default := _WHOLE_DEFAULTS.fullmatch(whole)) and (words := default[1].split()) and (
+                    os.path.basename(words[0]) in OPTIONAL_NEXT) and (
+                    os.path.basename(words[0]) not in _SHELLS):
+                argv[0:1] = [Defaulted(words[0]), *words[1:]]
         dropped = _optional(argv) if optional and not heads else 0
         if dropped:
             del argv[:dropped]                  # bash drops them, or they hand on (#2472)

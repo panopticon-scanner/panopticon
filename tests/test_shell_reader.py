@@ -1739,11 +1739,15 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.
         # the splitter asked whether it starts a command word, and read one nothing ends to the end
         # of the text -- quadratic in a pipeline or a `||` list of them, x18.7 to x142.8 the base
         # from 1,000 to 8,000 stages. It runs only at a command word now, and ends with its stage.
-        for stage, last, statements in (("echo ${x || ", "true", True), ("echo ${x | ", "cat", False),
-                                        ("${x | ", "cat", False), ("echo ${x:-${y | ", "cat", False)):
-            with self.subTest(stage=stage):
+        # `${x | ` is read at 1,600 too (the round-9 verdict's F4): there each `${` is a command
+        # word, and a probe at every one in front of the gates hides its quadratic term behind the
+        # cost of a stage at 400.
+        for stage, last, statements, n in (("echo ${x || ", "true", True, 400), ("echo ${x | ", "cat", False, 400),
+                                           ("${x | ", "cat", False, 400), ("${x | ", "cat", False, 1600),
+                                           ("echo ${x:-${y | ", "cat", False, 400)):
+            with self.subTest(stage=stage, n=n):
                 self.assert_linear_growth(
-                    400, lambda size: stage * size + last + "\n",
+                    n, lambda size: stage * size + last + "\n",
                     lambda size, parsed: self.assertEqual(
                         (size + 1, size + 1), (len(parsed) if statements else len(parsed[0].stages),
                                                sum(len(s.stages) for s in parsed))))
