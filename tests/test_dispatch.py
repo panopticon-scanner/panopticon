@@ -764,11 +764,11 @@ class TestEmitHostAgents(unittest.TestCase):
                 with self.subTest(name=name), \
                         open(os.path.join(d, name + ".toml"), encoding="utf-8") as fh:
                     text = fh.read()
-                self.assertIn('name = "%s"' % name, text)
-                self.assertIn('model = "%s"' % model, text)
-                self.assertIn('model_reasoning_effort = "%s"' % effort, text)
-                self.assertIn('sandbox_mode = "read-only"', text)
-                self.assertIn("never execute target code", text)
+                    self.assertIn('name = "%s"' % name, text)
+                    self.assertIn('model = "%s"' % model, text)
+                    self.assertIn('model_reasoning_effort = "%s"' % effort, text)
+                    self.assertIn('sandbox_mode = "read-only"', text)
+                    self.assertIn("never execute target code", text)
 
     def test_the_codex_charter_names_the_panopticon_stamp(self):
         # M-10: one of eleven launches in the PR's own paid run was refused

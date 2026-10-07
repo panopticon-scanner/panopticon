@@ -56,8 +56,8 @@ class TestModelResolver(unittest.TestCase):
         # untested -- every other test uses a role present in the lookup dict.
         self.assertEqual(mr._hardcoded_fallback("kimi", "banana")["model"], "primary")
         self.assertEqual(mr._hardcoded_fallback("claude", "banana")["model"], "sonnet")
-        self.assertEqual(mr._hardcoded_fallback("codex", "banana")["model"],
-                         "gpt-6-sol")
+        self.assertEqual(mr._hardcoded_fallback("codex", "banana"),
+                         {"model": "gpt-6-sol", "model_reasoning_effort": "medium"})
         # an unknown HOST still resolves to None (inherit session), never kimi
         self.assertIsNone(mr._hardcoded_fallback("bogus", "banana")["model"])
 

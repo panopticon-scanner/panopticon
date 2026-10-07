@@ -835,8 +835,8 @@ History:
   (#978). Un-loadable verdicts now count as a gate-relevant coverage gap in
   `certify`: a PASS with lost verdicts reads `INCONCLUSIVE` (#979).
 - **4.3.0** — 4.x series wrap. Codex host support: `codex` host in
-  model-profiles (role-specific Luna/Sol tiers with reasoning-effort levels;
-  active profiles moved to gpt-6-luna/sol in #2872),
+  model-profiles (gpt-5.6-luna/terra per role with reasoning-effort levels;
+  the active profiles moved to gpt-6-luna/gpt-6-sol in #2872),
   `--emit-host-agents codex`, dispatch/model-resolver/orchestrator wiring +
   codex-runner tests; `meta.integrity.empty_dispatch_plans` joins the
   certification gate. Ships on top of the issue-clearing sprint (2026-08-09/10,
