@@ -147,13 +147,15 @@ def _posture_barrier(statement, functions):
     return False
 
 
-def _gating_function_call(stmts, name, after, errexit, returns_status, seen=()):
+def _gating_function_call(stmts, name, after, errexit, returns_status, seen=(), calls=None):
     """The first proved call whose failure stops the step, or None.
     A call in a group is proved by that group's status. A call in another
     function is proved only when that containing function has its own proved
     call; `seen` makes malformed or recursive definitions fail closed. With
     errexit off, only a call whose explicit rescue exits can prove the gate,
     and only when the gate's failure remains the function's return status.
+    When supplied, `calls` records the proved call chain from outermost to
+    innermost so callers can retain a refusal around an intermediate call.
     """
     if name in seen:
         return None
@@ -189,6 +191,8 @@ def _gating_function_call(stmts, name, after, errexit, returns_status, seen=()):
         if not stops:
             continue
         if scope is None:
+            if calls is not None:
+                calls.append(position)
             return position
         outer, close = scope
         # A wrapper carries either an explicit exit or its final call's status.
@@ -198,9 +202,11 @@ def _gating_function_call(stmts, name, after, errexit, returns_status, seen=()):
             _closes(item) for item in stmts[position + 1:close + 1]
         )
         outer_call = _gating_function_call(
-            stmts, outer, close, errexit, outer_status, seen + (name,)
+            stmts, outer, close, errexit, outer_status, seen + (name,), calls
         )
         if outer_call is not None:
+            if calls is not None:
+                calls.append(position)
             return outer_call
         return None
     return None
