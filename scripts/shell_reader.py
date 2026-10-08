@@ -68,10 +68,10 @@ from shell_command import (CONDITIONS as CONDITIONS, KEYWORDS as KEYWORDS,
                            _FETCHERS as _FETCHERS, _FUNCTION as _FUNCTION,
                            _INTERPRETERS as _INTERPRETERS, _NAME as _NAME, _OPTIONAL as _OPTIONAL,
                            _SHELLS as _SHELLS, _command_result as _command_result,
-                           _optional as _optional, command as command,
+                           _optional as _optional, command as command, credited_zero as credited_zero,
                            command_as_written as command_as_written, conditional as conditional,
                            negated as negated, unresolved_wrapper as unresolved_wrapper,
-                           wrapper_words as wrapper_words)
+                           folds as folds, wrapper_words as wrapper_words)
 
 # One shell command: its argv, the files it redirects into / reads from, the
 # heredoc body attached to it, the command substitutions inside it -- the
@@ -108,7 +108,7 @@ Statement = collections.namedtuple("Statement", "stages separator")
 
 # The builtins whose words bash reads as assignments too: `declare -a a=(1 2)`.
 _DECLARATIONS = ("declare", "typeset", "local", "export", "readonly")
-_REDIRECT = re.compile(r"<<<|&>>|&>|>>|>\||>&|<&|>|<")
+_REDIRECT = re.compile(r"<<<|<>|&>>|&>|>>|>\||>&|<&|>|<")
 # The parentheses of a function header, as bash and dash read them: `()` or `( )`, and a
 # group's `{` with a header after it on the same line (#2664).
 _HEADER = re.compile(r"\([ \t]*\)")
@@ -117,6 +117,9 @@ _NESTED_CASE = re.compile(r"\s*case(?:\s|$)")
 # Put in place of the backslash of a `\$` or `` \` `` inside "..." (`_split`),
 # which bash drops and shlex keeps (#2342): a private-use character, as `MARK`.
 _ESCAPED = "\ue002"
+# Put in place of each blank inside an unquoted `${...}` (`_split`), which bash keeps as one
+# expansion before it splits the result, where shlex would split the braces apart (#2731).
+_BLANK = "\ue004"
 _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
 
 
@@ -138,6 +141,50 @@ def _negated(text, context):
                 return None
             continue
         return match.start()
+    return None
+
+
+def _bare_blanks(text, i):
+    """The `${…}` at `i`, as `(end, marked)`: where it ends, and its text with each blank no quote
+    or backslash covers marked `_BLANK`. None where it has no such blank -- a quoted or escaped
+    blank is the word's own, as shlex keeps it -- or holds a newline or an operator no quote
+    covers (`${V:-a | sh}`, `${V:-a; b}`), or nothing ends it: `main` ends a statement or a stage
+    there, and only the command word reads a word whole, so every statement and stage is `main`'s
+    (#2856 round 8). The scan stops at that newline or operator, so it reads no `${` past its own
+    stage, and ends at the first `}` no quote covers: a default holding a nested `${…}` names no
+    shell (`shell_command._WHOLE_DEFAULTS` takes no `$`), so where that one ends decides nothing
+    (round 9)."""
+    out, quote, at = ["${"], "", i + 2
+    while at < len(text):
+        ch = text[at]
+        if ch == "\\" and quote != "'" and at + 1 < len(text):
+            out.append(text[at:at + 2])
+            at += 2
+            continue
+        if quote:
+            quote = "" if ch == quote[-1] else quote
+        elif text.startswith("$'", at):
+            # `$'…'` as `_split` reads it: bash's text for it, single-quoted (#2344).
+            end = at + 2
+            while end < len(text) and text[end] != "'":
+                end += 2 if text[end] == "\\" else 1
+            body = ansi_c(text[at + 2:end]) if end < len(text) else None
+            if body is not None:
+                out.append("'%s'" % body.replace("'", "'\"'\"'"))
+                at = end + 1
+                continue
+            out.append("$'")
+            quote, at = "$'", at + 2
+            continue
+        elif ch in "'\"":
+            quote = ch
+        elif ch in "\n;|&<>()":
+            return None
+        elif ch == "}":
+            out.append(ch)
+            return (at + 1, "".join(out)) if _BLANK in out else None
+        out.append(_BLANK if ch in " \t" and not quote else ch)     # what the shells split on
+        at += 1
     return None
 
 
@@ -234,6 +281,12 @@ def _split(text, context):
                 quote = None
             i += 1
             continue
+        if text.startswith("$$", i):
+            # Bash's PID, read as the pair before anything the second `$` could open: `$${`
+            # is the PID and a brace, `$$'x'` the PID and a quote (#2756 fix round, B1).
+            buf.append("$$")
+            i += 2
+            continue
         if ch in "'\"" or text.startswith("$'", i):
             quote, opened = text[i:i + 2] if ch == "$" else ch, len(buf)
             buf.append(quote)
@@ -243,6 +296,19 @@ def _split(text, context):
             buf.append(ch)
             buf.append(text[i + 1])
             i += 2
+            continue
+        # Only a command word is read whole (#2856 round 8): a `${…}` that starts a word where
+        # every word the stage closed is a keyword or an assignment (`at_head`), and no `case`
+        # subject -- anywhere else shlex splits it `main`'s way, as it always did. The scan runs
+        # only there, behind those tests (round 9).
+        if text.startswith("${", i) and getattr(context, "blanks", True) and at_head and (
+                len(buf) == word_start) and "".join(buf).split()[-1:] != ["case"] and (
+                bare := _bare_blanks(text, i)):
+            # An unquoted `${X:-bash -s}` is one word to the reader as to bash, which
+            # expands it whole and only then splits the words (#2731): its bare blanks are
+            # marked past shlex, and `_command_result` splits a shell default as bash does.
+            i = bare[0]
+            buf.extend(bare[1])
             continue
         # A case header ends at its `in`, even when its first arm shares
         # the line. Quoted/escaped words remain intact until shlex reads them.
@@ -346,6 +412,12 @@ def _split(text, context):
             i += 2 if combined else 1
             continue
         if ch in ";\n&|":
+            if ch == "\n" and stages and not "".join(buf).strip():
+                # A line ending in `|` or `|&` continues on the next, as every shell reads
+                # it (#2756): the stage it opened goes on past the newline (`&&` and `||`
+                # end their statement at the operator, so the next line is read already).
+                i += 1
+                continue
             pair = text[i:i + 2]
             separator = pair if pair in ("&&", "||") else ch
             # Inside the test they join its expressions, and a `]]` that the
@@ -422,6 +494,18 @@ def _assigns(words):
     return not words or words[0] in _DECLARATIONS
 
 
+def _whole(raw, context, span):
+    """A word `_split` kept whole (`_bare_blanks`), as bash reads it before it splits it, and the
+    `span` of `main`'s words it is: for the one reading that takes it whole, the command word
+    (`shell_command._command_result`, #2731). Every other reading has `main`'s words (#2856
+    round 8)."""
+    plain = context.restore_arithmetic(raw.replace(MARK, "").replace(QUOTED, "").replace(QUOTED_DOLLAR, ""))
+    word = context.token(plain.replace(_ESCAPED, "\\"))
+    word = word if isinstance(word, _Token) else _Token(word, _markers(word))
+    word.span = span
+    return word
+
+
 def _stage(text, context):
     """Read lexical redirect operators in order, copying fd sinks by value,
     and an array literal as part of the word that assigns it (#2348). A word
@@ -453,6 +537,9 @@ def _stage(text, context):
     # its CURRENT sink, so `>file >/dev/stdout` still writes to file.
     pipe_outputs = {"1": True}
     pending = None
+    # Where in `reads` each `0<>` put its file, and the one fd 0 still holds (`credited_zero`).
+    zero: list[int] = []
+    held: int | None = None
     literal: int | None = None          # where an array literal's words start
     words: list[str] = []               # argv with no literal folded
 
@@ -467,7 +554,16 @@ def _stage(text, context):
         else:
             bodies[number] = body
 
+    # A word `_split` kept whole is read as `main` reads it, in the pieces its bare blanks split,
+    # each read as any word is; the first carries the whole word and how many pieces it spans,
+    # which only the command word reads (`shell_command._command_result`, #2731).
+    pieces: list[tuple[str, str | None, int]] = []
     for raw in tokens:
+        parts = ([part for part in raw.split(_BLANK) if part] or [raw]) if (
+            _BLANK in raw and getattr(context, "blanks", True)) else [raw]
+        whole = raw.replace(_BLANK, " ") if len(parts) > 1 else None
+        pieces.extend((part, None if at else whole, len(parts)) for at, part in enumerate(parts))
+    for raw, whole, span in pieces:
         plain = context.restore_arithmetic(
             raw.replace(MARK, "").replace(QUOTED, "").replace(QUOTED_DOLLAR, ""))
         raw, word = raw.replace(_ESCAPED, "\\"), context.token(plain.replace(_ESCAPED, "\\"))
@@ -502,6 +598,7 @@ def _stage(text, context):
             pending = None
             take(word)
             number = (fd.lstrip("0") or "0") if fd else ("0" if op.startswith("<") else "1")
+            held = None if number == "0" else held      # a later redirection of fd 0 ends it
             if op in (">&", "<&"):
                 if _fd_or_close(word):
                     source = word.lstrip("0") or "0"
@@ -517,10 +614,13 @@ def _stage(text, context):
                     reads_body(number, None)
                     continue
                 op = "&>"                     # unnumbered >&file
-            if op in ("<", "<<<"):
+            if op in ("<", "<<<") or op == "<>" and number == "0":   # `<>`: fd 0 reads (#2657)
                 spelled = op == "<<<" and entry and entry[0] == "heredoc"
                 word = entry[1][0] if spelled else word     # `lex` spelled it
                 reads.append(word)
+                if op == "<>":
+                    zero.append(len(reads) - 1)
+                    held = zero[-1]
                 sinks[number] = None           # an input file is not an output sink
                 source = input_alias_fd(word)
                 pipe_inputs[number] = source == "?" or pipe_inputs.get(source, False)
@@ -543,17 +643,24 @@ def _stage(text, context):
         if entry and entry[0] == "heredoc":
             heredoc, expands, fd = entry[1]
             number = fd.lstrip("0") or "0"
+            held = None if number == "0" else held
             pipe_inputs[number] = False
             pipe_outputs[number] = False
             reads_body(number, (heredoc, expands, True))
             if expands:
                 substitutions.extend(_lift_substitutions(heredoc, _Parse(heredoc))[1])
             continue
+        if whole is not None:
+            word = word if _markers(word) else _Token(word, {})
+            setattr(word, "whole", _whole(whole, context, span))
+            setattr(word, "span", span)
         take(word)
         argv.append(word)
         words.append(word)
     if all(word in KEYWORDS or _ASSIGNMENT.match(word) for word in argv):
         argv = words        # it only assigns: an array of a command is read as run
+    # A check reads what `0<>` opened only where fd 0 still holds it (#2856 round 12, B5).
+    reads, writes = credited_zero(argv, reads, writes, zero, held)
     stdout, stdin = sinks.get("1"), bodies.get("0")
     return Stage(argv, writes, reads, stdin[0] if stdin and stdin[2] else heredoc,
                  substitutions, [stdout] if stdout is not None else [], group_open,
@@ -566,6 +673,8 @@ def statements(script):
     """Every statement in a `run:` script, in order, as parsed stages; in a
     lifted substitution's text, each heredoc where its marker stands (#2336)."""
     context = _Parse(script)
+    # A step that spells a mark the reader puts in its text reads as `main` (#2856 round 8).
+    context.blanks = not any(mark in script for mark in (MARK, QUOTED, _ESCAPED, QUOTED_DOLLAR, _BLANK))
     text = lex(script, lambda *heredoc: context.new("heredoc", heredoc))
     for marker, (kind, value) in getattr(script, "heredocs", {}).items():
         text = text.replace(marker, context.new(kind, value))

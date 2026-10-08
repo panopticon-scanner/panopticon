@@ -63,6 +63,19 @@ def derived(text, *sources):
     return _Token(text, markers) if markers else text
 
 
+# The shape of every marker `_Parse.new` mints: its prefix, then a count and `@@`.
+_MARK = re.compile(r"@@shell-[0-9a-f]+-x*[0-9]+@@")
+
+
+def spelled(text, source):
+    """`derived(text, source)` in one pass over `text`: the markers of `source` that `text` spells,
+    found by their shape rather than by trying each against `text`, so a word cut into n pieces
+    costs the pieces, not the pieces times its n markers (#2856 round 12, the round-11 B3)."""
+    markers = _markers(source)
+    found = {key: markers[key] for key in _MARK.findall(text) if key in markers} if markers else {}
+    return _Token(text, found) if found else text
+
+
 def bang(word):
     """`word`, the first of a stage a `! { ... }` group holds, marked as running under its `!`
     (`shell_command.negated`): a mark, not a `!` word, so every other reader sees the stage as bash
