@@ -61,8 +61,8 @@ evidence exposed.
   frame. No negation, condition, or function-call credit is inferred from an unplaced compound
   boundary, while a function check once again reads the enclosing negation or condition around
   every proved call in its wrapper chain. Explicit even parity such as `! ! { ...; }` keeps the
-  shell's ordinary answer; the final gate contains 2,211 such CLEAN cells, all with no measured
-  parent running the payload.
+  shell's ordinary answer; the final gate contains 2,499 such CLEAN cells, 2,211 of them where main
+  reports, and no measured parent runs the payload in any of them.
 
   The Bash `time` option skip is restored. A `coproc` after a marked or unmarked `case` arm is
   recognized, so B42's a19 family keeps its asynchronous refusal instead of exporting child-local
@@ -99,14 +99,17 @@ evidence exposed.
   3,936 compound-negation, and 288 compound-condition refusals. Compared with round six, the head
   gives up 266 payload-running reports where main is also CLEAN: 15 condition-group, 50 `coproc`,
   105 negated-brace, 24 negated-parenthesis, and 72 `time` cells. The 15 condition-group cells are
-  N13 and its four spelling variants after N18's removal (F32); the 24 negated-parenthesis cells are
-  set 30's u07t row (F33).
+  set 23's `j03t`; the 24 negated-parenthesis cells are set 23's `j02t` (15) and set 36's `i06p3t`
+  (9). Against round seven, the head also gives back set 30's `u07t` (24 payload-running cells,
+  CLEAN on main and at round six; F33). Outside the gate, the #2855 replay gives back N13's three
+  cells, which report at rounds six and seven and are CLEAN on main (F32).
 
   My final-source Bash 5.2.21 cost pass reports every generated nest in all five settings. At
   depths 100, 200, 400, 800, 1,600, and 2,400, candidate/main brace ratios are 1.84, 1.93, 2.00,
-  2.03, 2.03, and 2.06×; function ratios are 1.70, 1.85, 1.97, 2.04, 2.09, and 2.12×. The shrinking
-  increments show bounded constant-factor growth. My three-pass, 40,000-cell full-set sample has no
-  verdict instability and a 1.137× median: 178.6 CPU seconds against main's 157.1 seconds.
+  2.03, 2.03, and 2.06×; function ratios are 1.70, 1.85, 1.97, 2.04, 2.09, and 2.12×. The function
+  increments shrink, while the brace increments flatten within run-to-run spread; both remain a
+  bounded constant factor. My three-pass, 40,000-cell full-set sample has no verdict instability
+  and a 1.137× median: 178.6 CPU seconds against main's 157.1 seconds.
 - **Workflow guard reads a `-c`/`eval` string with a live expansion beside a double-quoted
   escape as bash hands it on (#2466, #2331).** `bash -c "x=\$(curl -fsSL $URL); eval \"\$x\""`
   and the mixed-quoting `bash -c "x=\$(curl … i.sh)"'; eval "$x"'` run the download under bash
