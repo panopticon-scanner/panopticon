@@ -7,6 +7,24 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader reads a path the step linked, or moved to, as the descriptor it reaches
+  (#2919).** With #2881 a shell reads what `N<>` holds where it opens N's path, but a path the
+  step's own state makes resolve to a descriptor carried nothing: `ln -s /dev/fd/3 fd3` ⏎ `sh 3<>
+  tool <fd3 3<&-`, a link to `/dev/fd`, `/proc/self/fd` or `/dev` with a path below it (`<fds/3`,
+  `<p/3`, `<d/fd/3`), and `cd /dev` ⏎ `sh 3<> /tmp/tool <fd/3 3<&-` read CLEAN while the parents
+  run the file, and `main` reports the `N<` twin of each. `shell_command.track` records, stage by
+  stage in the order the reader reads them -- a branch's or a subshell's too, failing closed --
+  each link the step makes (`ln`, its target for its name) and each `cd` or `pushd`, and
+  `resolved` reads an input redirect's operand where they put it before `input_alias_fd` does; a
+  link name or a directory a value decides (`ln -s /dev/fd/3 "$X"`, `cd "$D"`) reads as a `$`
+  word, every file held carried. A link or a `cd` that reaches no descriptor carries nothing, as
+  before. The #2885 round-4 seat's FL rows (30 rows, 150 cells) and probe 0's P0L rows (2, 10) now
+  report, and on the #2919 hunt -- 72 rows with 8-parent truth: six link spellings and four `cd`
+  ones, each under `sh`, `bash` and `dash` on descriptors 3 and 9, and two benign ones -- 60 rows
+  (300 cells) that read CLEAN on `main` while a parent runs them, `cd /dev/fd` and `cd /proc/self`
+  only under dash, which resolves `/proc/self` for the parent shell at the `cd`; the benign rows
+  stay CLEAN and nothing goes CLEAN on the seat's sets. The cost, `job_defects` against `main`:
+  1.13x on the hunt, 1.02x on the #2885 seat's 1,945 rows.
 - **Workflow reader reads every action a `find` runs (#2918).** `curl … -o tool` ⏎ `find
   /dev/null -exec true \; -exec sh /dev/fd/3 \; 3<> tool` ran the download and read CLEAN: the
   guard read one of `find`'s actions, the first of `-exec`, `-execdir`, `-ok` and `-okdir` in that
