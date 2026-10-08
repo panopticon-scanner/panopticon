@@ -56,7 +56,7 @@ from shell_quote import ansi_c
 from shell_text import (_lift_substitutions, join_continuations as join_continuations,
                         without_comments as without_comments)
 from shell_tokens import (_Expanded as _Expanded, _Parse as _Parse, _Token as _Token,
-                          _markers as _markers, derived as derived,
+                          _markers as _markers, bang as bang, derived as derived,
                           has_substitution as has_substitution, is_arm as is_arm,
                           is_marker as is_marker, kept as kept, readable as readable,
                           yields_words as yields_words)
@@ -109,6 +109,10 @@ Statement = collections.namedtuple("Statement", "stages separator")
 # The builtins whose words bash reads as assignments too: `declare -a a=(1 2)`.
 _DECLARATIONS = ("declare", "typeset", "local", "export", "readonly")
 _REDIRECT = re.compile(r"<<<|&>>|&>|>>|>\||>&|<&|>|<")
+# The parentheses of a function header, as bash and dash read them: `()` or `( )`, and a
+# group's `{` with a header after it on the same line (#2664).
+_HEADER = re.compile(r"\([ \t]*\)")
+_BRACED_HEADER = re.compile(r"\{[ \t]+(?:function[ \t]+)?[A-Za-z_][A-Za-z0-9_-]*[ \t]*\([ \t]*\)")
 _NESTED_CASE = re.compile(r"\s*case(?:\s|$)")
 # Put in place of the backslash of a `\$` or `` \` `` inside "..." (`_split`),
 # which bash drops and shlex keeps (#2342): a private-use character, as `MARK`.
@@ -117,6 +121,25 @@ _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
 
 
 # --- reading the shell -------------------------------------------------------
+
+def _negated(text, context):
+    """Where in `text`, a stage inside a `! { ... }` group, the `!` that bash's errexit-off reading
+    of a negated compound gives every command in it stands, or None: a mark on its first word that
+    `negated` reads (`bang`), and a `!` word only where #2849 reads it from no group (`_split`) --
+    the command word past the keywords and the `case` arm that open the statement (`then CHECK`,
+    `x) CHECK`), not a statement that is keywords alone (`}`, `fi`), a `for`/`case`/`select`/
+    `function` header whose next words are names, an `if`/`elif`/`while`/`until` whose condition
+    errexit never applied to, or one already negated (#2664, the second fix round; round 13)."""
+    for match in re.finditer(r"\S+", text):
+        word = match.group()
+        mark = context.pattern.match(word)
+        if word in KEYWORDS or mark and context.entries[mark.group()][0] == "arm":
+            if word in CONDITIONS or word in ("for", "case", "select", "function", "!"):
+                return None
+            continue
+        return match.start()
+    return None
+
 
 def _split(text, context):
     """[[stage text, ...], ...]: statements, each a list of pipeline stages.
@@ -128,7 +151,7 @@ def _split(text, context):
     double-quoted `\\$` or `` \\` `` is marked for `_stage` (`_ESCAPED`), as
     shlex, reading what is left, no longer knows the quote it was in.
     """
-    statements = []
+    statements: list[tuple[list[str], str]] = []
     stages = []
     buf: list[str] = []
     quote, i, n, opened = None, 0, len(text), 0
@@ -157,6 +180,11 @@ def _split(text, context):
     # of `^(x|y)$`, and ending it at that `|` left the `)` closing a group
     # nothing had opened -- the unbalanced count #2334 reads as a lost list.
     cond, at_head = 0, True
+    # `! { ... }`: bash negates the GROUP's status, and errexit is off for every command inside
+    # a negated compound, so each statement the group holds is read under the `!` (#2664, the
+    # fix round: the `{`-ends-its-statement step above stranded the `!` on `{` alone). One
+    # entry per open `{` group, True where a `!` stood before it; `_negated` places the `!`.
+    negations: list[bool] = []
 
     def end_stage():
         nonlocal header_words, header_live, word_start, redirect_target, at_head
@@ -169,8 +197,21 @@ def _split(text, context):
         nonlocal cond
         end_stage()
         cond = 0
+        if any(negations) and (at := _negated(stages[0], context)) is not None:
+            context.bangs.add(len(statements))
+            if not negations[-1]:   # a plain `{` in the negated one: #2849 reads a check's own group
+                stages[0] = stages[0][:at] + "! " + stages[0][at:]
         if any(s.strip() for s in stages):
             statements.append((list(stages), separator))
+        bang = False
+        for word in (" ".join(stages).split() if any("{" in s or "}" in s for s in stages) else ()):
+            if word == "{":
+                negations.append(bang)
+                bang = False
+            elif word == "}" and negations:
+                negations.pop()
+            elif word == "!":
+                bang = True
         del stages[:]
 
     def close_case():
@@ -237,10 +278,19 @@ def _split(text, context):
                 cond, i = cond + 1, i + 1
                 buf.append(ch)
                 continue
-            # Preserve function headers: `f()` and `f ()` are not subshells.
-            if text[i:i + 2] == "()" and _NAME.fullmatch("".join(buf).strip()):
-                buf.append("()")
-                i += 2
+            # Preserve function headers: `f()`, `f ()` and `f ( )` are not subshells, nor
+            # after a keyword or an opened `{` (`then f() {`, `{ f() {`), and a `{` glued to
+            # one (`f(){`) is the body's own word, so the body's first command on the
+            # header's line is read as a command and not as the header's argument (#2664).
+            header = _HEADER.match(text, i)
+            words = "".join(buf).split() if header else []
+            if header and words and _NAME.fullmatch(words[-1]) and all(
+                    w in KEYWORDS for w in words[:-1]):
+                if words[-2:-1] != ["function"]:
+                    buf.append("()")        # after `function NAME` bash takes them as nothing
+                i = header.end()
+                if i < n and not text[i].isspace():
+                    text, n = text[:i] + " " + text[i:], n + 1
                 continue
             buf.append(" " + groups[0] + " ")
             word_start, redirect_target = len(buf), False
@@ -319,6 +369,13 @@ def _split(text, context):
             if arm_end and cases:
                 cases[-1] = "pattern"
             i += len(arm_end) if arm_end else len(separator)
+            continue
+        if ch == "{" and at_head and _BRACED_HEADER.match(text, i):
+            # `{ f() {`: the group's `{` is a statement of its own, as it is on a line of
+            # its own, so the first brace after the name is the body's (#2664).
+            buf.append(ch)
+            end_statement(";")
+            i += 1
             continue
         if ch.isspace() and len(buf) > word_start:
             redirect_target = False
@@ -514,8 +571,10 @@ def statements(script):
         text = text.replace(marker, context.new(kind, value))
     text, _inners = _lift_substitutions(text, context)
     out = []
-    for raw, separator in _split(text, context):
+    for at, (raw, separator) in enumerate(_split(text, context)):
         stages = [_stage(s, context) for s in raw]
+        if at in context.bangs:         # a negated group's `!`, marked on its first word
+            stages[0].argv[0] = bang(stages[0].argv[0])
         # A line-only boundary has no argv; keep its marker and the closer's separator.
         if any(s.argv or s.group_open or s.group_close for s in stages):
             out.append(Statement(stages, separator))
