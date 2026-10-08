@@ -1,8 +1,10 @@
 """Tests for scripts.synthesize: main()/CLI wiring. Module-level behaviour lives in
 tests/synth/test_<module>.py (WS-0 S4).
 """
+import ast
 import contextlib
 import html
+import inspect
 import io
 import os
 import json
@@ -11,6 +13,7 @@ from pathlib import Path
 import unittest
 from unittest import mock
 
+import scripts.run_tools as run_tools_mod
 import scripts.synthesize as syn
 import scripts.tools_manifest as tools_manifest
 import scripts.synth.findings as findings_mod
@@ -840,6 +843,51 @@ class TestUnusableScannerCertification(unittest.TestCase):
         self.assertEqual(cov["divergence"]["tools"], {})
         self.assertTrue(report["summary"]["coverage_certified"])
         self.assertEqual(rc, 0)
+
+
+class TestUnusableScannerCertificationAfterAnEarlierScan(TestUnusableScannerCertification):
+    """#2873: the pair above, run again after an earlier scan left its ledgers
+    full. `run_tools()` empties them when a run starts and nothing empties them
+    when it ends, so under xdist the pair read another test's network posture on
+    some orderings only (`'pip-audit': 'network_unavailable'` in its divergence).
+    Here every ledger `run_tools()` empties -- read off its own body, so a new
+    one cannot be missed -- is filled first, in the class setup, which runs
+    before each test's fixtures wherever the test lands. The pair passes, and
+    the ledgers read empty, only if every test starts as a fresh scan does
+    (`_fresh_run_ledgers`, tests/conftest.py)."""
+
+    @staticmethod
+    def _ledgers():
+        ledgers = []
+        for node in ast.walk(ast.parse(inspect.getsource(run_tools_mod.run_tools))):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "clear":
+                ledger = run_tools_mod
+                for name in ast.unparse(node.func.value).split("."):
+                    ledger = getattr(ledger, name)
+                ledgers.append(ledger)
+        return ledgers
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        for ledger in cls._ledgers():    # what an earlier test's scan leaves, for a tool this pair never runs
+            if isinstance(ledger, set):
+                ledger.add("pip-audit")
+            else:
+                ledger["pip-audit"] = "left by an earlier scan"
+        # and the posture #2873's pair inherited: that scan's online egress was refused
+        tools_manifest._NETWORK_POSTURE["pip-audit"] = run_tools_mod.egress.UNAVAILABLE
+
+    @classmethod
+    def tearDownClass(cls):
+        for ledger in cls._ledgers():
+            ledger.clear()
+        super().tearDownClass()
+
+    def test_every_ledger_a_scan_empties_is_empty_when_a_test_starts(self):
+        ledgers = self._ledgers()
+        self.assertEqual(7, len(ledgers))
+        self.assertEqual([], [ledger for ledger in ledgers if ledger])
 
 
 class TestRunDirArtifactResolution(unittest.TestCase):

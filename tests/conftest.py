@@ -110,6 +110,9 @@ import scripts.runners.claude as _claude_runner  # noqa: E402
 import scripts.runners.codex as _codex_runner  # noqa: E402
 import scripts.runners.kimi as _kimi_runner  # noqa: E402
 import scripts.setup_flow as _setup_flow  # noqa: E402
+import scripts.scanner_config as _scanner_config  # noqa: E402
+import scripts.tool_capture as _tool_capture  # noqa: E402
+import scripts.tools_manifest as _tools_manifest  # noqa: E402
 
 REAL_DOCKER_AVAILABLE = _run_tools.docker_available
 
@@ -284,3 +287,32 @@ def _no_claude_entries(request, monkeypatch):
     if "claude_runner" in request.keywords:
         return
     monkeypatch.setattr(_claude_runner.Runner, "run_entry", _refuse_claude_run_entry)
+
+
+# --- #2873: every test starts, and ends, as a fresh scan does ----------------
+# `run_tools()` empties seven process-global ledgers when a run STARTS -- the
+# five postures the manifest reports (network, suppression, scanner config,
+# ignore file, scanner scope) and `tool_capture`'s redacted captures and
+# container-cleanup failures -- and fills them where each argv is built;
+# `write_manifest` reads them back whenever its caller passes none of its own.
+# Nothing empties them when a run ENDS, because production runs one scan per
+# process. The suite runs hundreds: a test that drove `run_tools()` left its
+# ledgers to whatever test the same xdist worker ran next, and
+# `TestUnusableScannerCertification` read a `'pip-audit': 'network_unavailable'`
+# posture its own scan never granted, on some orderings only. So the ledgers are
+# emptied around every test. tests/test_synthesize.py fills each ledger
+# `run_tools()` empties, reading them off its own body, before that pair runs
+# again, and requires it to pass.
+RUN_LEDGERS = (_tools_manifest._NETWORK_POSTURE, _tools_manifest._IGNORE_FILE_POSTURE,
+               _tools_manifest._SCANNER_SCOPE_POSTURE, _scanner_config._SUPPRESSION_POSTURE,
+               _scanner_config._SCANNER_CONFIG_POSTURE, _tool_capture._REDACTED_CAPTURES,
+               _tool_capture._CONTAINER_CLEANUP_FAILURES)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_run_ledgers():
+    for ledger in RUN_LEDGERS:
+        ledger.clear()
+    yield
+    for ledger in RUN_LEDGERS:
+        ledger.clear()
