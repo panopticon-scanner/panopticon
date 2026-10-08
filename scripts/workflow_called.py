@@ -163,13 +163,16 @@ class _Step:
         does (`record`'s `_unread`), which takes no stand-in away (round 11, the round-10 verdict's B1)
         -- and each name a `read`, `unset` or `local` names behind a wrapper, which the walk's `_cleared`
         reads through `command` (`command read T`, `nohup unset T`) where `_carry_one` stops at the
-        wrapper: names alone, so a wrapped `unset` empties nothing here (round 12, the round-11 B1)."""
+        wrapper: names alone, so a wrapped `unset` empties nothing here (round 12, the round-11 B1).
+        Each is the name, not the word -- `T` of `T=x` and of `T[0]` -- as `_written` gives it
+        beside (round 13, the round-12 B1: the word `T=x` stood for a plain `local`'s `T`)."""
         if at not in self._set:
             names = _written(self.stmts[at], self.probe) - {self.probe}
             for stage in self.stmts[at].stages[-1:]:
                 argv = command(stage.argv)
                 if argv and os.path.basename(str(argv[0])) in ("read", "unset", "local"):
-                    names |= {str(word).split("[", 1)[0] for word in argv[1:] if not str(word).startswith("-")}
+                    names |= {str(word).split("[", 1)[0].split("=", 1)[0] for word in argv[1:]
+                              if not str(word).startswith("-")}
             self._set[at] = names
         return self._set[at]
 
