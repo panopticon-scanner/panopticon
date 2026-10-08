@@ -68,7 +68,7 @@ from shell_command import (CONDITIONS as CONDITIONS, KEYWORDS as KEYWORDS,
                            credited_zero as credited_zero,
                            command_as_written as command_as_written, conditional as conditional,
                            negated as negated, unresolved_wrapper as unresolved_wrapper,
-                           wrapper_words as wrapper_words)
+                           folds as folds, wrapper_words as wrapper_words)
 
 # One shell command: its argv, the files it redirects into / reads from, the heredoc body
 # attached to it, the command substitutions inside it -- the `$(...)`, `<(...)` and backtick
@@ -490,7 +490,6 @@ def _whole(raw, context, span):
     word = context.token(plain.replace(_ESCAPED, "\\"))
     word = word if isinstance(word, _Token) else _Token(word, _markers(word))
     word.span = span
-    word.step = context                 # the step it is read in (`shell_command._sets`)
     return word
 
 

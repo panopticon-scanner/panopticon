@@ -82,7 +82,6 @@ class _Parse:
         self.prefix = "@@shell-" + secrets.token_hex(16) + "-"
         while self.prefix in source:
             self.prefix += "x"
-        self.source = source            # the text parsed (`shell_command._sets`)
         self.entries: dict[str, tuple[str, object]] = {}
         self.pattern = re.compile(re.escape(self.prefix) + r"\d+@@")
 

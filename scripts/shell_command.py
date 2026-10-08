@@ -58,21 +58,22 @@ _DEFAULTS = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([^{}$`'\"\\\s]+)\}")
 # a literal glued after the `}` joins its last word (`${X:-/usr/bin/env s}h`, #2856 round 11) --
 # none bash would glob (`${X:-bash -s}*` is `-s*`, an option no shell takes).
 _WHOLE_DEFAULTS = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([^{}$`'\"\\]+)\}([^\s{}$`'\"\\*?[]*)")
-# A command word bash expands to nothing where its name is unset (#2856 round 12, the round-11 B2): an
-# alternate (`${X:+W}`, `${X+W}`), or a pattern taken off or replaced (`${X#W}`, `${X%%W}`, `${X/p/W}`),
-# whose W is a pattern and never the command. Unset, it is the literal glued after its `}`, or nothing.
-_VANISHING = re.compile(r"\$\{([A-Za-z_]\w*|[0-9]+|[@*])(:?\+|##?|%%?|//?)[^{}]*\}([^\s{}$`'\"\\*?[]*)")
-# Where a step may set a name (`_sets`): an assignment word, its own, a prefix's or a declaration's
-# (`X=1`, `export X=1`, `a[0]=x`; empty where its value stops at once, `X=` or `X=""`), `${X:=…}`,
-# and a name a builtin that sets one, or arithmetic, spells (`read X`, `for X in`, `(( X++ ))`).
-_SET_WORD = re.compile(r"(?:^|(?<=[\s;&|(`{]))([A-Za-z_]\w*)(?:\[[^\]\n]*\])?\+?=(?:\"\"|'')?([\s;&|)]|$)?", re.M)
-_SETTING = re.compile(r"\$\{([A-Za-z_]\w*):?=|(?:^|(?<=[\s;&|(`{]))(?:read|export|declare|typeset|local|readonly"
-                      r"|for|select|getopts|mapfile|readarray|printf|let)\s([^;&|\n]*)|\(\(([^()]*)\)\)", re.M)
-_SPELLED = re.compile(r"(?<![\w$-])[A-Za-z_]\w*")
-# A `set` that sets the positional parameters (`set -- 1`), past its options.
-_SET_POSITIONAL = re.compile(r"(?:^|(?<=[\s;&|(`{]))set\s+(?:[-+]\w*\s+)*--\s+[^\s;&|]", re.M)
-# A default's parameter and operator (`_strips`): `#`, `?`, `$`, `-` and `0` are never unset or empty.
-_PARAMETER = re.compile(r"\$\{([#?$!@*-]|[0-9]+|[A-Za-z_]\w*(?:\[[^]]*\])?)(:?[-=+])")
+# A command word bash may expand to nothing (#2856 rounds 12 and 13, the round-11 and round-12 B2): an
+# alternate (`${X:+W}`, `${X+W}`), a default with no colon, which a name set empty leaves empty
+# (`${X-W}`, `${X=W}`), a pattern taken off or replaced (`${X#W}`, `${X%%W}`, `${X/p/W}`) and a case
+# change (`${X^^W}`, `${X,W}`), whose W is a pattern and never the command -- of a name, an indirection
+# (`${!X…}`), an element (`${X[0]…}`, `${X[@]…}`), a positional parameter, `$@` and `$*`, `$!` with no
+# background job, and `$-`, empty under dash with no options. Empty, it is the literal glued after its
+# `}`, or nothing, and the next word runs; its other half is `_alternate`'s (`_command_result`).
+_VANISHING = re.compile(r"\$\{(!?[A-Za-z_]\w*(?:\[[^]]*\])?|[0-9]+|[@*!-])(:?\+|[-=]|##?|%%?|//?|\^\^?|,,?)"
+                        r"[^{}]*\}([^\s{}$`'\"\\*?[]*)")
+# The half `_command_result` reads of a command word bash may expand to nothing, and whether a word
+# it read had both (`folds`): its W, as `main` reads it, until `folds` reads the job with it empty.
+_HALVES = {"empty": False, "both": False}
+# A default's parameter and operator (`_strips`): only `#`, `?` and `$` are never unset or empty -- `$-`
+# is, under dash with no options, and `$0` in a `-c` text run with an empty `$0` -- and an
+# indirection (`${!Y:-W}`) is read as its name is (#2856 round 13, the round-12 B1: the seat's `excfix`).
+_PARAMETER = re.compile(r"\$\{(!?[A-Za-z_]\w*(?:\[[^]]*\])?|[#?$!@*-]|[0-9]+)(:?[-=+])")
 # A command word that is ONE unquoted reference, with no default or one that
 # hands on (`$SUDO`, `${SUDO}`, `${SUDO:-}`, `${X:-sudo}`), in front of a name
 # the reader knows: an optional wrapper spelled by variable (#2472). Empty or
@@ -129,46 +130,61 @@ def _default_words(whole):
     return [spelled(part, whole) for part in re.split(r"[ \t\n]+", (default[1] + default[2]).strip(" \t\n"))]
 
 
-def _sets(whole, name, colon):
-    """Whether the step `whole` was read from may set `name` -- with `colon`, to a value not empty
-    (`${X:+W}` asks that, `${X+W}` only whether it is set) -- as `_SET_WORD` and `_SETTING` find
-    it, once a step; `$0` always, and the positional parameters where a `set --` sets them. A name
-    only `eval`, `.`, the environment or a caller sets, and a function's arguments, read as unset
-    (#2856 round 12, the round-11 B2's set half)."""
-    context = getattr(whole, "step", None)
-    if context is None or name == "0":
-        return context is not None
-    if getattr(context, "sets", None) is None:
-        named, valued = set(), set()
-        for match in _SET_WORD.finditer(context.source):
-            named.add(match[1])
-            if match[2] is None:
-                valued.add(match[1])
-        for match in _SETTING.finditer(context.source):
-            spelled_here = match[2] if match[2] is not None else match[3] or ""
-            names = {match[1]} if match[1] else set(_SPELLED.findall(spelled_here))
-            named |= names
-            valued |= names
-        if _SET_POSITIONAL.search(context.source):
-            named.add("@")              # every positional parameter, as `set --` may set each
-        context.sets = (named, valued | (named & {"@"}))
-    if not (name[0].isalpha() or name[0] == "_"):
-        name = "@"
-    return name in context.sets[1 if colon else 0]
-
-
 def _strips(whole):
     """Whether `main`'s split words of a command word read whole (`_command_result`) end in the
     default's `}`, which comes off them: a default (`-`, `=`) or alternate (`+`) bash may expand --
-    not where the parameter is never unset or empty (`${#:-…}`, `${?:-…}`), nor an assignment to a
-    parameter that is no NAME (`${1:=…}`, an error that runs nothing; #2856 round 12, B1)."""
+    not where the parameter is never unset or empty (`${#:-…}`, `${?:-…}`, `${$:-…}`), nor an
+    assignment to a parameter that is no NAME (`${1:=…}`, an error that runs nothing; #2856 round
+    12, B1; round 13 reads `$-`, `$0` and `${!Y:-W}`, which may be empty, the round-12 B1)."""
     found = _PARAMETER.match(whole)
     if not found:
         return False
     parameter, operator = found[1], found[2]
     if operator.endswith("=") and not (parameter[0].isalpha() or parameter[0] == "_"):
         return False
-    return not (parameter in ("#", "?", "$", "-", "0") and operator in ("-", ":-"))
+    return not (parameter in ("#", "?", "$") and operator in ("-", ":-"))
+
+
+def _alternate(argv, whole, span):
+    """`argv` with its command word `whole` read as bash expands it where its name is set (for `-`
+    and `=`, unset): its W, as `_default_words` reads a default -- a command the reader knows is
+    that command, its words the reader's own; one it does not know, the word whole -- or past
+    `_WHOLE_DEFAULTS`, `main`'s split words, the default's `}` off their last (#2856 rounds 11-12)."""
+    argv, words = list(argv), _default_words(whole)
+    if words and os.path.basename(words[0]) in OPTIONAL_NEXT:
+        # A default naming a command the reader knows -- a shell, a wrapper, a foreign
+        # interpreter, a fetcher, by path too -- is that command, its words the reader's own
+        # (`${X:-bash -s}`, `${X:-/usr/bin/env sh -c}`, `${X:-/usr/bin/curl -fsSL} URL`).
+        argv[0:span] = [Defaulted(words[0]), *words[1:]]
+    elif words or os.path.basename(argv[0]) not in OPTIONAL_NEXT:
+        argv[0:span] = [whole]          # a name the guard does not follow, read whole
+    # Else `main`'s split words stay: past `_WHOLE_DEFAULTS` (`${X:-$HOME/bin/env sh -c}`,
+    # `${1:-/bin/sh -c}`), their first names a known command by its basename (#2856 round 11)
+    # -- the default's `}` off their last word, at its first `}`, and a word of it alone gone;
+    # a word `main` reads as a pattern stays (`/usr/bin/ba}[s]h`; #2856 round 12, B1).
+    elif _strips(whole) and not isinstance(argv[span - 1], Rewritten) and (
+            cut := argv[span - 1].partition("}"))[1]:
+        argv[span - 1:span] = [derived(cut[0] + cut[2], argv[span - 1])] if cut[0] + cut[2] else []
+    return argv
+
+
+def _runs(argv):
+    """How much a reading of a command may run that the guard reports, with the command as read, so
+    that two halves of an expansion bash may make empty, each what the guard may report where the
+    other is not, are a command it cannot read (#2856 round 13): 5 a command it cannot read,
+    reported wherever it runs; 4 a shell, a foreign interpreter, `eval`, `source`, `.` or an
+    unpacker, reported where it runs a download; 3 a fetcher, where what it fetches runs; 2 a word
+    the guard does not follow (`$X`), where a download is piped to it or a `-c` follows it; and 1
+    any other command, or none."""
+    if argv and getattr(argv[0], "whole", None) is not None:
+        argv = [spelled(str(argv[0]), argv[0]), *argv[1:]]     # `main`'s words, kept: read once
+    command_, reason, _heads = _command_result(argv)
+    head = os.path.basename(command_[0]) if command_ else ""
+    if reason or head in (*_SHELLS, *_INTERPRETERS, *_UNPACKERS, "eval", "source", "."):
+        return (5 if reason else 4), command_
+    if head in _FETCHERS or command_ and dynamic(command_[0], has_substitution):
+        return (3 if head in _FETCHERS else 2), command_
+    return 1, command_
 
 
 def _command_result(argv, optional=True):
@@ -183,7 +199,7 @@ def _command_result(argv, optional=True):
     # `xargs` appends words from its input to the argv behind it, so the
     # innermost wrapper read after one (`behind`, with its argv) was read from
     # an argv that is not the one that runs (#2227).
-    appended, behind = False, None
+    appended, behind, vanished = False, None, None
     while argv:
         if (_ENVIRONMENT if heads else _ASSIGNMENT).match(argv[0]):
             argv.pop(0)
@@ -209,28 +225,43 @@ def _command_result(argv, optional=True):
         # assignment, a keyword, an operand -- is `main`'s (#2856 round 8).
         if (whole := getattr(argv[0], "whole", None)) is not None:
             span = getattr(argv[0], "span", 1)
-            vanishing = _VANISHING.fullmatch(whole)
-            if vanishing and not (vanishing[2].endswith("+") and _sets(whole, vanishing[1], vanishing[2] == ":+")):
-                # Its name unset, bash expands it to nothing and runs the next word, or the literal
-                # glued after the `}` (`${X:+/usr/bin/env true} sh`, `${X#env true}sh -c`); a step
-                # that sets the name runs the alternate, read below (#2856 round 12, B2).
-                argv[0:span] = [spelled(vanishing[3], whole)] if vanishing[3] else []
-                continue
-            words = _default_words(whole)
-            if words and os.path.basename(words[0]) in OPTIONAL_NEXT:
-                # A default naming a command the reader knows -- a shell, a wrapper, a foreign
-                # interpreter, a fetcher, by path too -- is that command, its words the reader's own
-                # (`${X:-bash -s}`, `${X:-/usr/bin/env sh -c}`, `${X:-/usr/bin/curl -fsSL} URL`).
-                argv[0:span] = [Defaulted(words[0]), *words[1:]]
-            elif words or os.path.basename(argv[0]) not in OPTIONAL_NEXT:
-                argv[0:span] = [whole]          # a name the guard does not follow, read whole
-            # Else `main`'s split words stay: past `_WHOLE_DEFAULTS` (`${X:-$HOME/bin/env sh -c}`,
-            # `${1:-/bin/sh -c}`), their first names a known command by its basename (#2856 round 11)
-            # -- the default's `}` off their last word, at its first `}`, and a word of it alone gone;
-            # a word `main` reads as a pattern stays (`/usr/bin/ba}[s]h`; #2856 round 12, B1).
-            elif _strips(whole) and not isinstance(argv[span - 1], Rewritten) and (
-                    cut := argv[span - 1].partition("}"))[1]:
-                argv[span - 1:span] = [derived(cut[0] + cut[2], argv[span - 1])] if cut[0] + cut[2] else []
+            if vanishing := _VANISHING.fullmatch(whole):
+                # Bash may expand it to nothing, the literal glued after the `}` or none, and run the
+                # next word (`${X:+/usr/bin/env true} sh`, `${X#env true}sh -c`), or, its name set, an
+                # alternate's W (`X=1; ${X:+sh -c} '…'`) -- for `-` and `=`, its name unset, the
+                # default. Both halves are read, and the guard REPORTs where either runs (#2856 round
+                # 13: the round-12 ruling, round 6's rule, and the round-13 ruling's union -- no half
+                # ranked): W, as `main` reads it, and where `folds` reads the job again, the word
+                # expanded to nothing; two the guard may each report where the other is not -- two
+                # commands among a shell's kind, a fetcher and a word it does not follow, but for that
+                # word in front of a shell's kind -- are a command it cannot read (`_runs`). A
+                # pattern's or a case change's other half is the name's own value, which no half
+                # names (#2899).
+                # The guard asks a stage's command many times: its halves are read once for its words.
+                halves = getattr(argv[0], "halves", {})
+                if (rest := tuple(map(str, argv[span:]))) not in halves:
+                    empty = ([spelled(vanishing[3], whole)] if vanishing[3] else []) + argv[span:]
+                    alternate = _alternate(argv, whole, span) if vanishing[2][-1:] in "+-=" else None
+                    # `$-` and `$0` are never unset: `${0+W}` is always its W, and `${--W}` never is.
+                    if vanishing[1] in ("-", "0") and vanishing[2] in ("+", "-", "="):
+                        empty, alternate = (None, alternate) if vanishing[2] == "+" else (empty, None)
+                    apart = None
+                    if empty is not None and alternate is not None:
+                        (ran, read), (ran_empty, read_empty) = _runs(alternate), _runs(empty)
+                        if read != read_empty and 2 <= min(ran, ran_empty) and max(ran, ran_empty) < 5 and {
+                                ran, ran_empty} != {2, 4}:
+                            apart = "`%s` runs `%s`, or `%s` where it expands to nothing" % (
+                                readable(whole), readable(read[0]), readable(read_empty[0]))
+                    argv[0].halves = halves = {**halves, rest: (empty, alternate, apart)}
+                empty, alternate, apart = halves[rest]
+                vanished = apart or vanished
+                _HALVES["both"] = _HALVES["both"] or empty is not None and alternate is not None
+                if empty is not None and (alternate is None or _HALVES["empty"]):
+                    argv = list(empty)
+                    continue                    # the next word, read from the top; the W below
+                argv = list(alternate)
+            else:
+                argv = _alternate(argv, whole, span)
         dropped = _optional(argv) if optional and not heads else 0
         if dropped:
             del argv[:dropped]                  # bash drops them, or they hand on (#2472)
@@ -266,7 +297,7 @@ def _command_result(argv, optional=True):
         if word is not None:
             reason = "`%s` is a pattern bash expands where `%s` looks for `-c` or a script" % (
                 readable(word), os.path.basename(argv[0]))
-    return argv, reason, heads
+    return argv, reason or vanished, heads
 
 
 def command(argv):
@@ -274,24 +305,50 @@ def command(argv):
     return _command_result(argv)[0]
 
 
+def folds(unsure):
+    """The folds `workflow_guard.job_defects` reads a job in, each its `sure`: one, and a second that
+    leaves every `Unsure` statement out where `unsure()` then finds one -- a command word bash may
+    expand to nothing read as its W, as `main` reads it; then, where `_command_result` read one with
+    both halves, those folds again with it read empty, so the guard REPORTs where either half runs
+    (#2856 round 13, the round-13 ruling: the union, no half ranked)."""
+    _HALVES.update(empty=False, both=False)
+    try:
+        for empty in (False, True):
+            _HALVES["empty"] = empty
+            yield False
+            if unsure():
+                yield True
+            if not _HALVES["both"]:
+                return
+    finally:
+        _HALVES["empty"] = False
+
+
 # The checksum tools a check is credited with (`workflow_checks.CHECKSUM_TOOLS`, pinned equal by test).
 _CHECKERS = ("sha256sum", "sha512sum", "sha384sum", "shasum")
+# The unpackers the guard reads as running what they unpack (`workflow_uses.UNPACKERS`, pinned equal).
+_UNPACKERS = ("tar", "unzip", "install", "gunzip", "bsdtar")
 
 
 def credited_zero(argv, reads, writes, zero, held):
     """A stage's reads and writes, where each `reads[at]`, `at` in `zero`, is a file `0<>` opened on
     standard input, and `held` the one fd 0 still holds when the command runs (#2657): a checksum
     tool (`_CHECKERS`) reads that one alone, and only where it names no list but its standard input
-    (`-`, `/dev/stdin`, `/dev/fd/0`; a word of digits is an option's, `shasum -a 256`). Each other
+    (`-`, `/dev/stdin`, `/dev/fd/0`; a word of digits after `-a` is an option's, `shasum -a 256`). Each other
     is a write, as `main` reads `0<>`, so no check is credited with a file it does not read (`-c
     0<> sums < self`, `-c self 0<> sums`; #2856 round 12, the round-11 B5). Any other command keeps
     the files it was given: a shell reads its program there (#2657)."""
     tool = command(argv) if zero else []
     if not tool or os.path.basename(tool[0]) not in _CHECKERS:
         return reads, writes
-    stdin = all(word in ("/dev/stdin", "/dev/fd/0") or word.isdigit() for word in tool[1:] if not word.startswith("-"))
-    dropped = [at for at in zero if at != held or not stdin]
-    return [read for at, read in enumerate(reads) if at not in dropped], writes + [reads[at] for at in dropped]
+    # A word of digits is an option's only right after `-a` / `--algorithm` (`shasum -a 256`), and
+    # past `--` every word is an operand, so a list is named there (#2856 round 13, the round-12 B5:
+    # the seat's `digitfix`); `dropped` is a set, so the reads are filtered in one pass (B6).
+    stdin = "--" not in tool[1:] and all(
+        word in ("/dev/stdin", "/dev/fd/0") or word.isdigit() and previous in ("-a", "--algorithm")
+        for previous, word in zip(tool, tool[1:]) if not word.startswith("-"))
+    dropped = {at for at in zero if at != held or not stdin}
+    return [read for at, read in enumerate(reads) if at not in dropped], writes + [reads[at] for at in sorted(dropped)]
 
 
 def command_as_written(argv):
