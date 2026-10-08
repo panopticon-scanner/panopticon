@@ -21,7 +21,11 @@ evidence exposed.
   arrays sort by severity, domain, proposed name, and cluster key; equal-severity cluster leads use
   a stable finding fingerprint, while occurrences and CWE identifiers receive canonical orders.
   Reordering the input findings therefore leaves the emitted candidate array unchanged, and
-  `generated_at` remains optional.
+  `generated_at` remains optional. `cwe` remains optional and is omitted when empty; the open-object
+  extension contract remains explicit, with `evidence_status` undeclared until its vocabulary and
+  type are standardized. A catalog-gap finding without `location.file` now refuses the whole X0X
+  sibling with a dedicated warning and exit status instead of producing a count-only artifact; the
+  main JSON, HTML, other artifacts, and the rest of the driver run still complete.
 - **Workflow guard reads a function header in the spellings bash takes at a statement's head
   (#2664, #2608; #2785).** `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after
   `then`, `do` or an opened `{` ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN:
@@ -2549,20 +2553,16 @@ evidence exposed.
   empty location rather than quarantine the finding). So the emitter whose whole purpose is to carry
   catalog gaps into OCRDb's adjudication pool was discarding exactly the repo-wide ones, in silence,
   and `synthesize`'s `X0X artifact: <path> (N candidates)` line printed a count that was quietly
-  short. Nothing is invented — a file cannot be. The count the report had to leave out is now
-  published as `candidates_dropped_locus_free` (omitted when zero), an optional integer DECLARED in
-  `skill/reference/x0x-report-schema.json` so a downstream ingester has a documented field to read;
-  that key is the carrier that survives a `driver run`, because the driver keeps a child's output
-  only on failure. Run `synthesize.py` yourself and each dropped cluster is named on stderr too —
-  the domain, the lead title or, untitled, its finding id, and how many findings the cluster held —
-  with the count appended to the `X0X artifact:` line. Every agent-authored field in either
-  diagnostic is squeezed to one line, bounded with the cut MARKED, and rendered inert with `%r`, so
-  one hostile finding cannot repaint the operator's terminal or forge a line that reads as the
-  tool's own honest output. `strain_report.advisor_recode_signals` — the offline catalog-MIS-FIT
-  companion, which has no pipeline caller — makes the same disclosure at its own locus-free drop;
-  `cross_run_signals`'s line-window join is left alone, being intrinsically file-keyed. Residual,
-  filed as #2090: a MIXED cluster still reaches the pool with its locus-free member absent from
-  `recurrence`, silently.
+  short. Nothing is invented — a file cannot be. #2713 replaces the first count-only disclosure:
+  any locus-free X0X finding now refuses the whole sibling, removes a stale copy, exits `5`, and is
+  named on stderr; the driver forwards that warning while the main artifacts and scan complete.
+  Mixed clusters refuse too, closing #2090 rather than publishing only their located members.
+  Every agent-authored field in the diagnostic is squeezed to one line, bounded with the cut
+  MARKED, and rendered inert with `%r`, so one hostile finding cannot repaint the operator's
+  terminal or forge a line that reads as the tool's own honest output.
+  `strain_report.advisor_recode_signals` — the offline catalog-MIS-FIT
+  companion, which has no pipeline caller — keeps its own locus-free disclosure;
+  `cross_run_signals`'s line-window join is left alone, being intrinsically file-keyed.
 - **A run3 that never reviewed the file can no longer corroborate a "fixed" close (#1807,
   DAT-1268532600).** Stage 1 (`skill/scripts/reconcile.py diff`) read "no run3 record on this (file,
   panel)" as evidence of a fix, and its two whole-run guards only fired when run3 was EMPTY or

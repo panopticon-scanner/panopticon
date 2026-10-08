@@ -124,6 +124,18 @@ class TestNoFollowOpen(unittest.TestCase):
             self.assertEqual(fh.read(), "PRECIOUS")
         self.assertFalse(os.path.islink(artifact))
 
+    def test_remove_artifact_unlinks_a_leaf_symlink_without_touching_its_target(self):
+        victim = self._victim()
+        artifact = os.path.join(self.pano, "stale-x0x.json")
+        os.symlink(victim, artifact)
+
+        safe_write.remove_artifact(artifact)
+        safe_write.remove_artifact(artifact)  # an absent sibling is already removed
+
+        self.assertFalse(os.path.lexists(artifact))
+        with open(victim, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "PRECIOUS")
+
     def test_confine_rejects_a_symlinked_intermediate_component(self):
         outside = os.path.join(self.root, "outside")
         os.makedirs(outside)

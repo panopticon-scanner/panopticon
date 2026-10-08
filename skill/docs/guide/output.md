@@ -53,6 +53,11 @@ controller-side check — `synthesize` validates the report against
 `-discarded.json` sibling against the same schema, and `-x0x.json` against `x0x-report-schema.json`;
 any failure prints `SCHEMA:` lines naming the artifact and the JSON path, then
 `artifact invalid: N schema errors (see …)`, exits `4`, and ends a `driver` run in `error`.
+One X0X representability failure has its own status: a legitimate catalog-gap finding without
+`location.file` cannot satisfy the required occurrence shape. `synthesize` names the finding,
+removes any stale X0X sibling, emits no X0X artifact, and exits `5` after writing and validating the
+main JSON and HTML. The driver forwards that warning and advances, so the remaining phases and the
+scan complete; no count-only X0X artifact can be mistaken for the full evidence set.
 Validation is **fail-closed**: an uninstallable `jsonschema` (a declared runtime dependency) or an
 unreadable schema file is an error, never a silent pass, because "we could not check" and "we
 checked and it passed" must not look the same. **The schema pins the *controller's* output:** every

@@ -1252,24 +1252,45 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
         self.assertIn("report-x0x.json", stderr)
         self.assertIn("Grade:", stdout)
 
-    def test_a_wrong_typed_drop_tally_cannot_crash_the_artifact_line(self):
-        # Review N5: in production the tally is an int built two lines up, but a
-        # `%d` on a mocked or refactored value raises AFTER `os.replace` has put
-        # the artifact in place -- and the driver discards a successful child's
-        # stderr, so the traceback would vanish and the phase still read as
-        # advanced. The clause renders whatever it was handed instead.
+    def test_a_locus_free_gap_fails_only_x0x_and_removes_a_stale_sibling(self):
+        # #2713 owner ruling: no count-only artifact. The main report and HTML
+        # complete and validate, while X0X gets a distinct status and names the
+        # unrepresentable finding. A prior run's sibling cannot survive.
         import scripts.x0x_report as x0x_report
 
         with tempfile.TemporaryDirectory() as d, _chdir(d):
-            fp, out = self._fixture(d)
-            with mock.patch.object(
-                    x0x_report, "build_report",
-                    return_value={"candidates": [],
-                                  "candidates_dropped_locus_free": "2"}):
-                rc, stdout, stderr = self._run(["--target", "src", "--out", out, fp])
-        self.assertIn(", 2 locus-free cluster(s) dropped", stdout)
-        self.assertEqual(rc, 4)                        # the mocked envelope is invalid
-        self.assertIn("artifact invalid:", stderr)
+            fp = os.path.join(d, "findings-g1-SEC.json")
+            finding = _agentic(
+                "SE-077", sev="LOW", code="SEC-X0X", domain="SEC",
+                title="repo-wide dependency gap", short_title="dependency gap",
+                location={},
+            )
+            with open(fp, "w", encoding="utf-8") as fh:
+                json.dump({"findings": [finding]}, fh)
+            out = os.path.join(d, "report.json")
+            x0x_path = out.replace(".json", "-x0x.json")
+            Path(x0x_path).write_text('{"stale": true}', encoding="utf-8")
+
+            rc, stdout, stderr = self._run(
+                ["--target", "src", "--run-id", "run-1", "--out", out, fp])
+
+            self.assertEqual(syn.validate_artifacts(out), [])
+            self.assertTrue(os.path.isfile(out + ".html"))
+            self.assertFalse(os.path.lexists(x0x_path))
+            with open(out, encoding="utf-8") as fh:
+                report = json.load(fh)
+
+        self.assertEqual(rc, x0x_report.X0X_EMISSION_FAILED)
+        emitted_id = report["findings"][0]["id"]
+        self.assertTrue(emitted_id)
+        self.assertIn("Grade:", stdout)
+        self.assertIn("Gate:", stdout)
+        self.assertIn("JSON artifact:", stdout)
+        self.assertNotIn("X0X artifact:", stdout)
+        self.assertIn("X0X artifact not emitted", stderr)
+        self.assertIn(repr(emitted_id), stderr)
+        self.assertIn("'repo-wide dependency gap'", stderr)
+        self.assertNotIn("artifact invalid", stderr)
 
     def test_an_unhydratable_part_is_an_invalid_artifact_not_a_silent_pass(self):
         # A `meta.parts` pointer at a file that cannot be read makes the union

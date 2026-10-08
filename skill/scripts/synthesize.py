@@ -131,7 +131,7 @@ def build_parser():
     return ap
 
 
-def validate_artifacts(report_path, x0x_path):
+def validate_artifacts(report_path, x0x_path=None):
     """Validate the artifacts AS WRITTEN against their published schemas.
 
     #1639 P15 ruling 2. `validate_report` checks the in-memory document; this
@@ -145,8 +145,10 @@ def validate_artifacts(report_path, x0x_path):
       disagree about what "the report" means. A part that cannot be read makes
       the union unknowable, which fails CLOSED -- a run may not claim validity
       it could not establish.
-    * `report-x0x.json` is a sibling artifact with its own schema, ingested
-      downstream by OCRDb's candidate pool, and nothing had ever validated it.
+    * `report-x0x.json`, when emitted, is a sibling artifact with its own schema,
+      ingested downstream by OCRDb's candidate pool, and nothing had ever
+      validated it. A locus-free gap makes emission impossible and is reported
+      separately, so that path is omitted here rather than treated as corrupt.
 
     Each error names its artifact, because "N schema errors" across two files
     is not actionable without knowing which.
@@ -161,16 +163,17 @@ def validate_artifacts(report_path, x0x_path):
     else:
         errors.extend("%s: %s" % (name, e)
                       for e in validate_schema_mod.schema_errors(hydrated))
-    x0x_name = os.path.basename(x0x_path)
-    try:
-        with open(x0x_path, encoding="utf-8") as fh:
-            x0x_doc = json.load(fh)
-    except (OSError, ValueError) as exc:
-        errors.append("%s: schema: unreadable (%s)" % (x0x_name, exc))
-    else:
-        errors.extend("%s: %s" % (x0x_name, e) for e in
-                      validate_schema_mod.schema_errors(
-                          x0x_doc, validate_schema_mod.X0X_SCHEMA))
+    if x0x_path is not None:
+        x0x_name = os.path.basename(x0x_path)
+        try:
+            with open(x0x_path, encoding="utf-8") as fh:
+                x0x_doc = json.load(fh)
+        except (OSError, ValueError) as exc:
+            errors.append("%s: schema: unreadable (%s)" % (x0x_name, exc))
+        else:
+            errors.extend("%s: %s" % (x0x_name, e) for e in
+                          validate_schema_mod.schema_errors(
+                              x0x_doc, validate_schema_mod.X0X_SCHEMA))
     return errors
 
 
@@ -389,25 +392,26 @@ def main(argv=None):
     paths = render_mod.write_report(report, out)
     # §5.1: emit the X0X catalog-gap report — the <DOM>-X0X / ZZZ-X0X findings as
     # candidate records for OCRDb's new-code adjudication pool (ingested
-    # downstream), a sibling of the JSON report. Always emitted; empty candidates
-    # = an honest "no catalog gaps this run".
-    x0x = x0x_report.build_report(report.get("findings") or [],
-                                  report.get("meta") or {}, args.run_id)
+    # downstream), a sibling of the JSON report. Empty candidates are an honest
+    # "no catalog gaps this run". A fallback finding without location.file is
+    # different: no schema-valid occurrence can represent it, so refuse only
+    # this sibling rather than silently dropping evidence or inventing a locus.
     x0x_stem = out[:-len(".json")] if out.endswith(".json") else out
     x0x_path = x0x_stem + "-x0x.json"
-    safe_write.publish_texts([
-        (x0x_path, x0x_path + ".tmp", json.dumps(x0x, indent=2, sort_keys=True))])
-    x0x_line = "X0X artifact: %s (%d candidates)" % (x0x_path, len(x0x["candidates"]))
-    # #1807 DAT-2501524861: a catalog-gap cluster with no file location cannot be
-    # carried (every occurrence needs a file), so say so on the line that reports
-    # the count -- otherwise the count is short and nothing says why.
-    # `%s`, not `%d`: this runs AFTER the artifact was written and replaced, and a
-    # successful child's output is discarded by the driver, so a wrong-typed value
-    # would raise a traceback nobody ever sees on a phase still judged advanced.
-    x0x_dropped = x0x.get("candidates_dropped_locus_free") or 0
-    if x0x_dropped:
-        x0x_line += ", %s locus-free cluster(s) dropped" % x0x_dropped
-    print(x0x_line)
+    x0x_failure = None
+    try:
+        x0x = x0x_report.build_report(report.get("findings") or [],
+                                      report.get("meta") or {}, args.run_id)
+    except x0x_report.X0XEmissionError as exc:
+        x0x_failure = exc
+        safe_write.remove_artifact(x0x_path)
+        print("synthesize: X0X artifact not emitted: %s" % exc, file=sys.stderr)
+    else:
+        safe_write.publish_texts([
+            (x0x_path, x0x_path + ".tmp",
+             json.dumps(x0x, indent=2, sort_keys=True))])
+        print("X0X artifact: %s (%d candidates)"
+              % (x0x_path, len(x0x["candidates"])))
     html_out = args.html_out
     if html_out is None and args.out:
         html_out = render_mod._derive_html_path(paths[0])
@@ -422,7 +426,8 @@ def main(argv=None):
     # question and are answered below; this is the artifact itself failing to
     # be what it claims to be, and it is reported AFTER the summary so the
     # grade/gate text a run always prints is unchanged by it.
-    artifact_errors = validate_artifacts(paths[0], x0x_path)
+    artifact_errors = validate_artifacts(
+        paths[0], None if x0x_failure is not None else x0x_path)
     if artifact_errors:
         # An artifact error that the pre-write pass already printed is counted
         # but not reprinted: the two passes agree about it, which is not two
@@ -436,10 +441,13 @@ def main(argv=None):
         if repeats:
             print("SCHEMA artifact: %d error(s) already listed above as pre-write"
                   % repeats, file=sys.stderr)
+        checked_paths = [paths[0]] + ([] if x0x_failure is not None else [x0x_path])
         print("synthesize: artifact invalid: %d schema errors (see %s)"
-              % (len(artifact_errors), ", ".join([paths[0], x0x_path])),
+              % (len(artifact_errors), ", ".join(checked_paths)),
               file=sys.stderr)
         return validate_schema_mod.ARTIFACT_INVALID
+    if x0x_failure is not None:
+        return x0x_report.X0X_EMISSION_FAILED
     gate = report["summary"]["gate"]
     return 1 if gate == "FAIL" else 2 if gate == "INCONCLUSIVE" else 0
 

@@ -1106,12 +1106,15 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   findings packaged as OCRDb new-code **candidate records** (schema
   `skill/reference/x0x-report-schema.json`), mechanically clustered, with `generated_by.run_id` from
   the run manifest; adjudication (the gap rationale, the new_code/refine/retire verdict) happens
-  downstream in OCRDb's pool. A gap cluster in which no finding carries a file location cannot
-  become a candidate — every occurrence needs a `file`, and none is invented — so the artifact
-  carries the count it had to leave out, as `candidates_dropped_locus_free` (omitted when zero);
-  that key is what survives a `driver run`, which keeps a child's output only on failure. Run
-  `synthesize.py` yourself and it also names each dropped cluster on stderr and appends the count to
-  its own `X0X artifact:` line. SARIF is ingested via `skill/scripts/ingest_tools.py`, but only
+  downstream in OCRDb's pool. A catalog-gap finding without `location.file` cannot become an
+  occurrence — none is invented — and it cannot be silently omitted from the evidence. The emitter
+  therefore withholds the whole X0X sibling, removes any stale sibling at that path, exits `5`, and
+  names one offending finding in a bounded, inert stderr diagnostic. The driver forwards that
+  diagnostic and completes the scan: the main JSON and HTML, every other artifact, and the later
+  phases remain available. X0X objects deliberately remain open to extension fields;
+  `evidence_status` is not a declared field until its vocabulary and type are standardized. `cwe`
+  is optional and omitted when no identifiers were found. SARIF is ingested via
+  `skill/scripts/ingest_tools.py`, but only
   because `--tools-dir` was passed — a scan that ran but was never wired in would sit on disk
   un-ingested. Every report also carries `meta.cost` — the run's dispatch ledger, derived from the
   artifacts already on disk (scout profiles, the checkpoint entries, the verify queue), one `{phase,

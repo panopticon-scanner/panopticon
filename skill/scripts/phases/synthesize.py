@@ -10,6 +10,7 @@ import scripts.config_schema as config_schema
 import scripts.run_manifest as run_manifest
 import scripts.synth.validate_schema as validate_schema_mod
 import scripts.redact as redact
+import scripts.x0x_report as x0x_report
 from . import child
 from . import engine
 from . import runio
@@ -371,4 +372,9 @@ def synthesize_execute(review_root, manifest):
             "synthesize wrote an artifact that fails its own published schema "
             "(rc=%s): %s" % (proc.returncode,
                              redact.redact_diagnostic(proc.stderr or proc.stdout, 400, tail=True)))
+    if proc.returncode == x0x_report.X0X_EMISSION_FAILED:
+        diagnostic = redact.redact_diagnostic(
+            proc.stderr or proc.stdout, 400, tail=True).strip()
+        print("driver: X0X artifact not emitted (rc=%s): %s"
+              % (proc.returncode, diagnostic), file=sys.stderr, flush=True)
     return engine.PhaseResult(kind="advanced", message="synthesize: report.json written")

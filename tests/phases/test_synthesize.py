@@ -457,6 +457,49 @@ class TestSynthesizePhase(unittest.TestCase):
             {"src/x\\u%04xy.py" % point for point in points},
         )
 
+    def test_real_child_advances_and_warns_when_only_x0x_is_unrepresentable(self):
+        # #2713 owner ruling, driver half: rc=5 means the main artifacts are
+        # complete and only X0X failed. Forward the named warning and advance.
+        finding = {
+            "id": "SE-077",
+            "domain": "SEC",
+            "code": "SEC-X0X",
+            "severity": "LOW",
+            "confidence": "POSSIBLE",
+            "title": "repo-wide dependency gap",
+            "short_title": "dependency gap",
+            "category": "catalog-gap",
+            "panel": "security",
+            "location": {},
+        }
+        runio._write_json(
+            runio._pano(self.root, "groups.json"),
+            {"groups": [{"name": "app", "files": []}]},
+        )
+        runio._write_json(
+            runio._pano(self.root, "findings-app-SEC.json"),
+            {"findings": [finding],
+             "_panopticon": {"run_id": "R", "role": "domain_panel",
+                              "domain": "SEC", "group": "app"}},
+        )
+        report_path = runio._report_out(self.root)
+        x0x_path = report_path.replace(".json", "-x0x.json")
+        with open(x0x_path, "w", encoding="utf-8") as fh:
+            json.dump({"stale": True}, fh)
+
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            result = synthesize.synthesize_execute(
+                self.root, dict(self.manifest, host="generic"))
+
+        self.assertEqual(result.kind, "advanced")
+        self.assertTrue(synthesize.synthesize_done(self.root, self.manifest))
+        self.assertEqual(syn.validate_artifacts(report_path), [])
+        self.assertTrue(os.path.isfile(report_path + ".html"))
+        self.assertFalse(os.path.lexists(x0x_path))
+        self.assertIn("driver: X0X artifact not emitted (rc=5)", err.getvalue())
+        emitted_id = runio._load_json(report_path)["findings"][0]["id"]
+        self.assertIn(repr(emitted_id), err.getvalue())
+
     def test_passes_the_committed_exclude_paths_as_tools_exclude(self):
         # #1740 fix round 1 (controller addition): the report-side gate reads
         # the tool findings through `synthesize.py`, so the committed policy
