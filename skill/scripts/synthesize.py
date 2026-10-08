@@ -145,10 +145,10 @@ def validate_artifacts(report_path, x0x_path=None):
       disagree about what "the report" means. A part that cannot be read makes
       the union unknowable, which fails CLOSED -- a run may not claim validity
       it could not establish.
-    * `report-x0x.json`, when emitted, is a sibling artifact with its own schema,
-      ingested downstream by OCRDb's candidate pool, and nothing had ever
-      validated it. A locus-free gap makes emission impossible and is reported
-      separately, so that path is omitted here rather than treated as corrupt.
+    * `report-x0x.json` is a sibling artifact with its own schema, ingested
+      downstream by OCRDb's candidate pool, and nothing had ever validated it.
+      Locus-free gaps are excluded from that occurrence-bearing artifact and
+      recorded in its separate failure log.
 
     Each error names its artifact, because "N schema errors" across two files
     is not actionable without knowing which.
@@ -393,25 +393,33 @@ def main(argv=None):
     # §5.1: emit the X0X catalog-gap report — the <DOM>-X0X / ZZZ-X0X findings as
     # candidate records for OCRDb's new-code adjudication pool (ingested
     # downstream), a sibling of the JSON report. Empty candidates are an honest
-    # "no catalog gaps this run". A fallback finding without location.file is
-    # different: no schema-valid occurrence can represent it, so refuse only
-    # this sibling rather than silently dropping evidence or inventing a locus.
+    # "no catalog gaps this run". A fallback finding without location.file has
+    # no schema-valid occurrence, so leave it out of the candidate set and put
+    # a deterministic record in a separate failure log. The finding itself
+    # remains in report.json and the HTML.
     x0x_stem = out[:-len(".json")] if out.endswith(".json") else out
     x0x_path = x0x_stem + "-x0x.json"
-    x0x_failure = None
-    try:
-        x0x = x0x_report.build_report(report.get("findings") or [],
-                                      report.get("meta") or {}, args.run_id)
-    except x0x_report.X0XEmissionError as exc:
-        x0x_failure = exc
-        safe_write.remove_artifact(x0x_path)
-        print("synthesize: X0X artifact not emitted: %s" % exc, file=sys.stderr)
+    failure_path = x0x_report.failure_log_path(x0x_path)
+    x0x, failure_log = x0x_report.build_emission(
+        report.get("findings") or [], report.get("meta") or {}, args.run_id)
+    targets = [
+        (x0x_path, x0x_path + ".tmp",
+         json.dumps(x0x, indent=2, sort_keys=True)),
+    ]
+    if failure_log is None:
+        safe_write.remove_artifact(failure_path)
     else:
-        safe_write.publish_texts([
-            (x0x_path, x0x_path + ".tmp",
-             json.dumps(x0x, indent=2, sort_keys=True))])
-        print("X0X artifact: %s (%d candidates)"
-              % (x0x_path, len(x0x["candidates"])))
+        targets.append(
+            (failure_path, failure_path + ".tmp",
+             json.dumps(failure_log, indent=2, sort_keys=True)))
+    safe_write.publish_texts(targets)
+    print("X0X artifact: %s (%d candidates)"
+          % (x0x_path, len(x0x["candidates"])))
+    if failure_log is not None:
+        discarded = len(failure_log["discarded_findings"])
+        print("synthesize: warning: discarded %d locus-free catalog-gap "
+              "finding(s) from X0X; failure log: %s"
+              % (discarded, failure_path), file=sys.stderr)
     html_out = args.html_out
     if html_out is None and args.out:
         html_out = render_mod._derive_html_path(paths[0])
@@ -426,8 +434,7 @@ def main(argv=None):
     # question and are answered below; this is the artifact itself failing to
     # be what it claims to be, and it is reported AFTER the summary so the
     # grade/gate text a run always prints is unchanged by it.
-    artifact_errors = validate_artifacts(
-        paths[0], None if x0x_failure is not None else x0x_path)
+    artifact_errors = validate_artifacts(paths[0], x0x_path)
     if artifact_errors:
         # An artifact error that the pre-write pass already printed is counted
         # but not reprinted: the two passes agree about it, which is not two
@@ -441,13 +448,11 @@ def main(argv=None):
         if repeats:
             print("SCHEMA artifact: %d error(s) already listed above as pre-write"
                   % repeats, file=sys.stderr)
-        checked_paths = [paths[0]] + ([] if x0x_failure is not None else [x0x_path])
+        checked_paths = [paths[0], x0x_path]
         print("synthesize: artifact invalid: %d schema errors (see %s)"
               % (len(artifact_errors), ", ".join(checked_paths)),
               file=sys.stderr)
         return validate_schema_mod.ARTIFACT_INVALID
-    if x0x_failure is not None:
-        return x0x_report.X0X_EMISSION_FAILED
     gate = report["summary"]["gate"]
     return 1 if gate == "FAIL" else 2 if gate == "INCONCLUSIVE" else 0
 

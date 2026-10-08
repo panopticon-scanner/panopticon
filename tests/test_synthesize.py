@@ -3,6 +3,7 @@ tests/synth/test_<module>.py (WS-0 S4).
 """
 import ast
 import contextlib
+import datetime as datetime_mod
 import html
 import inspect
 import io
@@ -27,10 +28,17 @@ import scripts.evidence as evidence_mod
 
 import pytest
 
+from tests._test_helpers import only
 from tests.synth.helpers import (
     _chdir, _agentic,
     _isolate_cwd_from_stale_panopticon as _isolate_cwd_from_stale_panopticon,
 )
+
+
+class _FrozenDateTime(datetime_mod.datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return cls(2026, 10, 8, 17, 0, 0, tzinfo=tz)
 
 
 class TestPipelineCitations(unittest.TestCase):
@@ -1161,7 +1169,8 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as d, _chdir(d):
             fp, out = self._fixture(d)
-            with mock.patch.object(x0x_report, "build_report", return_value=x0x):
+            with mock.patch.object(x0x_report, "build_emission",
+                                   return_value=(x0x, None)):
                 rc, _stdout, stderr = self._run(["--target", "src", "--out", out, fp])
             raw = Path(out.replace(".json", "-x0x.json")).read_text(encoding="utf-8")
         self.assertEqual(rc, 0, stderr)
@@ -1244,53 +1253,88 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d, _chdir(d):
             fp, out = self._fixture(d)
-            with mock.patch.object(x0x_report, "build_report",
-                                   return_value={"candidates": []}):   # no schema_version
+            with mock.patch.object(
+                    x0x_report, "build_emission",
+                    return_value=({"candidates": []}, None)):   # no schema_version
                 rc, stdout, stderr = self._run(["--target", "src", "--out", out, fp])
         self.assertEqual(rc, 4)
         self.assertIn("artifact invalid:", stderr)
         self.assertIn("report-x0x.json", stderr)
         self.assertIn("Grade:", stdout)
 
-    def test_a_locus_free_gap_fails_only_x0x_and_removes_a_stale_sibling(self):
-        # #2713 owner ruling: no count-only artifact. The main report and HTML
-        # complete and validate, while X0X gets a distinct status and names the
-        # unrepresentable finding. A prior run's sibling cannot survive.
-        import scripts.x0x_report as x0x_report
-
+    def test_a_locus_free_gap_is_logged_while_the_rest_of_x0x_is_emitted(self):
+        # #2713 revised owner ruling: discard only the unrepresentable finding,
+        # log it separately, and leave the candidate artifact byte-identical to
+        # the same run without that finding. Re-running is deterministic, and a
+        # later clean run removes the stale failure log.
         with tempfile.TemporaryDirectory() as d, _chdir(d):
             fp = os.path.join(d, "findings-g1-SEC.json")
-            finding = _agentic(
+            located = _agentic(
+                "SE-076", sev="LOW", code="SEC-X0X", domain="SEC",
+                title="located catalog gap", short_title="located gap",
+                location={"file": "src/app.py", "line_start": 7},
+            )
+            locus_free = _agentic(
                 "SE-077", sev="LOW", code="SEC-X0X", domain="SEC",
                 title="repo-wide dependency gap", short_title="dependency gap",
                 location={},
             )
             with open(fp, "w", encoding="utf-8") as fh:
-                json.dump({"findings": [finding]}, fh)
+                json.dump({"findings": [located, locus_free]}, fh)
             out = os.path.join(d, "report.json")
             x0x_path = out.replace(".json", "-x0x.json")
-            Path(x0x_path).write_text('{"stale": true}', encoding="utf-8")
+            failure_path = x0x_path.replace(".json", "-failures.json")
 
-            rc, stdout, stderr = self._run(
-                ["--target", "src", "--run-id", "run-1", "--out", out, fp])
+            with mock.patch.object(datetime_mod, "datetime", _FrozenDateTime):
+                rc, stdout, stderr = self._run(
+                    ["--target", "src", "--run-id", "run-1", "--out", out, fp])
+            x0x_bytes = Path(x0x_path).read_bytes()
+            failure_bytes = Path(failure_path).read_bytes()
 
-            self.assertEqual(syn.validate_artifacts(out), [])
+            self.assertEqual(rc, 0, stderr)
+            self.assertEqual(syn.validate_artifacts(out, x0x_path), [])
             self.assertTrue(os.path.isfile(out + ".html"))
-            self.assertFalse(os.path.lexists(x0x_path))
+            self.assertIn(
+                "repo-wide dependency gap",
+                Path(out + ".html").read_text(encoding="utf-8"),
+            )
             with open(out, encoding="utf-8") as fh:
                 report = json.load(fh)
+            x0x = json.loads(x0x_bytes)
+            failure_log = json.loads(failure_bytes)
 
-        self.assertEqual(rc, x0x_report.X0X_EMISSION_FAILED)
-        emitted_id = report["findings"][0]["id"]
-        self.assertTrue(emitted_id)
-        self.assertIn("Grade:", stdout)
-        self.assertIn("Gate:", stdout)
-        self.assertIn("JSON artifact:", stdout)
-        self.assertNotIn("X0X artifact:", stdout)
-        self.assertIn("X0X artifact not emitted", stderr)
-        self.assertIn(repr(emitted_id), stderr)
-        self.assertIn("'repo-wide dependency gap'", stderr)
-        self.assertNotIn("artifact invalid", stderr)
+            self.assertEqual(len(report["findings"]), 2)
+            candidate = only(x0x["candidates"], "candidate")
+            self.assertEqual(
+                only(candidate["occurrences"], "occurrence")["file"], "src/app.py")
+            failure = only(
+                failure_log["discarded_findings"], "discarded finding")
+            self.assertEqual(failure["reason"], "no file locus")
+            self.assertIn("repo-wide dependency gap", failure["diagnostic"])
+            self.assertIn("discarded 1 locus-free", stderr)
+            self.assertIn(failure_path, stderr)
+            self.assertIn("X0X artifact:", stdout)
+            self.assertNotIn("artifact invalid", stderr)
+
+            # A resume/replay over unchanged inputs reproduces both artifacts.
+            with mock.patch.object(datetime_mod, "datetime", _FrozenDateTime):
+                rc, _stdout, stderr = self._run(
+                    ["--target", "src", "--run-id", "run-1", "--out", out, fp])
+            self.assertEqual(rc, 0, stderr)
+            self.assertEqual(Path(x0x_path).read_bytes(), x0x_bytes)
+            self.assertEqual(Path(failure_path).read_bytes(), failure_bytes)
+
+            # Removing only the offending finding cannot perturb X0X bytes and
+            # must remove the now-stale sidecar.
+            with open(fp, "w", encoding="utf-8") as fh:
+                json.dump({"findings": [located]}, fh)
+            with mock.patch.object(datetime_mod, "datetime", _FrozenDateTime):
+                rc, _stdout, stderr = self._run(
+                    ["--target", "src", "--run-id", "run-1", "--out", out, fp])
+            self.assertEqual(rc, 0, stderr)
+            self.assertEqual(Path(x0x_path).read_bytes(), x0x_bytes)
+            self.assertFalse(os.path.lexists(failure_path))
+            self.assertNotIn("locus-free", stderr)
 
     def test_an_unhydratable_part_is_an_invalid_artifact_not_a_silent_pass(self):
         # A `meta.parts` pointer at a file that cannot be read makes the union

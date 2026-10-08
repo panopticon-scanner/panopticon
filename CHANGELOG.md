@@ -23,9 +23,11 @@ evidence exposed.
   Reordering the input findings therefore leaves the emitted candidate array unchanged, and
   `generated_at` remains optional. `cwe` remains optional and is omitted when empty; the open-object
   extension contract remains explicit, with `evidence_status` undeclared until its vocabulary and
-  type are standardized. A catalog-gap finding without `location.file` now refuses the whole X0X
-  sibling with a dedicated warning and exit status instead of producing a count-only artifact; the
-  main JSON, HTML, other artifacts, and the rest of the driver run still complete.
+  type are standardized. A catalog-gap finding without `location.file` remains in the full findings
+  report but is excluded from the occurrence-bearing X0X candidate set and written to a deterministic,
+  redacted `-x0x-failures.json` sidecar. Synthesize and the driver disclose the exact count and path,
+  clean runs remove stale sidecars, and the remaining X0X is byte-identical to a run without the
+  unrepresentable finding.
 - **Workflow guard reads a function header in the spellings bash takes at a statement's head
   (#2664, #2608; #2785).** `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after
   `then`, `do` or an opened `{` ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN:
@@ -2553,13 +2555,13 @@ evidence exposed.
   empty location rather than quarantine the finding). So the emitter whose whole purpose is to carry
   catalog gaps into OCRDb's adjudication pool was discarding exactly the repo-wide ones, in silence,
   and `synthesize`'s `X0X artifact: <path> (N candidates)` line printed a count that was quietly
-  short. Nothing is invented — a file cannot be. #2713 replaces the first count-only disclosure:
-  any locus-free X0X finding now refuses the whole sibling, removes a stale copy, exits `5`, and is
-  named on stderr; the driver forwards that warning while the main artifacts and scan complete.
-  Mixed clusters refuse too, closing #2090 rather than publishing only their located members.
-  Every agent-authored field in the diagnostic is squeezed to one line, bounded with the cut
-  MARKED, and rendered inert with `%r`, so one hostile finding cannot repaint the operator's
-  terminal or forge a line that reads as the tool's own honest output.
+  short. Nothing is invented — a file cannot be. #2713 replaces the count-only disclosure: each
+  locus-free X0X finding is excluded from the candidate set and recorded in a deterministic,
+  redacted failure sidecar while located candidates are still emitted. Synthesize and the driver
+  name the exact count and path, and a clean run removes a stale sidecar. Every agent-authored field
+  in a log diagnostic is squeezed to one line, bounded with the cut MARKED, rendered inert with
+  `%r`, and redacted, so one hostile finding cannot repaint the operator's terminal, forge a line
+  that reads as the tool's own honest output, or publish a credential.
   `strain_report.advisor_recode_signals` — the offline catalog-MIS-FIT
   companion, which has no pipeline caller — keeps its own locus-free disclosure;
   `cross_run_signals`'s line-window join is left alone, being intrinsically file-keyed.

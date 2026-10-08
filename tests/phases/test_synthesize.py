@@ -10,7 +10,7 @@ import unittest
 from unittest import mock
 
 from scripts import hosts
-from tests._test_helpers import write_host_evidence
+from tests._test_helpers import only, write_host_evidence
 import scripts.config_schema as config_schema
 import scripts.evidence as evidence
 import scripts.phases.runio as runio
@@ -457,10 +457,11 @@ class TestSynthesizePhase(unittest.TestCase):
             {"src/x\\u%04xy.py" % point for point in points},
         )
 
-    def test_real_child_advances_and_warns_when_only_x0x_is_unrepresentable(self):
-        # #2713 owner ruling, driver half: rc=5 means the main artifacts are
-        # complete and only X0X failed. Forward the named warning and advance.
-        finding = {
+    def test_real_child_advances_and_discloses_a_locus_free_x0x_discard(self):
+        # #2713 revised owner ruling, driver half: the candidate-bearing X0X
+        # and main artifacts complete, while the sidecar, stderr disclosure,
+        # and phase status all name the one discarded locus-free finding.
+        locus_free = {
             "id": "SE-077",
             "domain": "SEC",
             "code": "SEC-X0X",
@@ -472,20 +473,26 @@ class TestSynthesizePhase(unittest.TestCase):
             "panel": "security",
             "location": {},
         }
+        located = dict(
+            locus_free,
+            id="SE-076",
+            title="located dependency gap",
+            short_title="located gap",
+            location={"file": "src/app.py", "line_start": 7},
+        )
         runio._write_json(
             runio._pano(self.root, "groups.json"),
             {"groups": [{"name": "app", "files": []}]},
         )
         runio._write_json(
             runio._pano(self.root, "findings-app-SEC.json"),
-            {"findings": [finding],
+            {"findings": [located, locus_free],
              "_panopticon": {"run_id": "R", "role": "domain_panel",
                               "domain": "SEC", "group": "app"}},
         )
         report_path = runio._report_out(self.root)
         x0x_path = report_path.replace(".json", "-x0x.json")
-        with open(x0x_path, "w", encoding="utf-8") as fh:
-            json.dump({"stale": True}, fh)
+        failure_path = x0x_path.replace(".json", "-failures.json")
 
         with contextlib.redirect_stderr(io.StringIO()) as err:
             result = synthesize.synthesize_execute(
@@ -493,12 +500,20 @@ class TestSynthesizePhase(unittest.TestCase):
 
         self.assertEqual(result.kind, "advanced")
         self.assertTrue(synthesize.synthesize_done(self.root, self.manifest))
-        self.assertEqual(syn.validate_artifacts(report_path), [])
+        self.assertEqual(syn.validate_artifacts(report_path, x0x_path), [])
         self.assertTrue(os.path.isfile(report_path + ".html"))
-        self.assertFalse(os.path.lexists(x0x_path))
-        self.assertIn("driver: X0X artifact not emitted (rc=5)", err.getvalue())
-        emitted_id = runio._load_json(report_path)["findings"][0]["id"]
-        self.assertIn(repr(emitted_id), err.getvalue())
+        candidate = only(runio._load_json(x0x_path)["candidates"], "candidate")
+        self.assertEqual(
+            only(candidate["occurrences"], "occurrence")["file"], "src/app.py")
+        failure = only(
+            runio._load_json(failure_path)["discarded_findings"],
+            "discarded finding",
+        )
+        self.assertEqual(failure["reason"], "no file locus")
+        self.assertIn("driver: X0X discarded 1 locus-free", err.getvalue())
+        self.assertIn(failure_path, err.getvalue())
+        self.assertIn("X0X discarded 1 locus-free", result.message)
+        self.assertIn(failure_path, result.message)
 
     def test_passes_the_committed_exclude_paths_as_tools_exclude(self):
         # #1740 fix round 1 (controller addition): the report-side gate reads

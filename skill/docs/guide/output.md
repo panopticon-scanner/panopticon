@@ -53,11 +53,15 @@ controller-side check — `synthesize` validates the report against
 `-discarded.json` sibling against the same schema, and `-x0x.json` against `x0x-report-schema.json`;
 any failure prints `SCHEMA:` lines naming the artifact and the JSON path, then
 `artifact invalid: N schema errors (see …)`, exits `4`, and ends a `driver` run in `error`.
-One X0X representability failure has its own status: a legitimate catalog-gap finding without
-`location.file` cannot satisfy the required occurrence shape. `synthesize` names the finding,
-removes any stale X0X sibling, emits no X0X artifact, and exits `5` after writing and validating the
-main JSON and HTML. The driver forwards that warning and advances, so the remaining phases and the
-scan complete; no count-only X0X artifact can be mistaken for the full evidence set.
+A legitimate catalog-gap finding without `location.file` cannot satisfy X0X's required occurrence
+shape. It remains in the main JSON and HTML, while `synthesize` excludes it from the X0X candidate
+set and writes `<stem>-x0x-failures.json` beside the X0X. That deterministic JSON object has one
+`discarded_findings` array; each row carries the bounded, redacted `finding_id`, the reason
+`no file locus`, and a bounded, redacted diagnostic. `synthesize` warns with the exact discard count
+and log path, then returns the report's ordinary gate status because the X0X was written. The driver
+forwards the disclosure and includes `x0x_discarded`, `x0x_failure_log`, and the same text in its
+terminal status. An unchanged resume reproduces the same bytes; a run with no discards removes an
+older failure log, so stale failures cannot follow a clean X0X.
 Validation is **fail-closed**: an uninstallable `jsonschema` (a declared runtime dependency) or an
 unreadable schema file is an error, never a silent pass, because "we could not check" and "we
 checked and it passed" must not look the same. **The schema pins the *controller's* output:** every
@@ -142,8 +146,9 @@ advisor. Then **over the whole report tree** before any shareable artifact:
 `render.redact_report_secrets` walks every string at any depth (`meta`, `summary`, `groups`,
 `cross_panel`, `delta` and anything a future producer adds), not a named list of keys, so a producer
 that copies text after it cannot reintroduce a secret. One dict feeds report.json, the `_partN.json`
-splits, the `-discarded.json` sibling, `.json.html`, `-x0x.json` and the terminal summary, so all of
-them inherit it. What the whole-tree walk does **not** change is structured data: the patterns are
+splits, the `-discarded.json` sibling, `.json.html`, `-x0x.json`, `-x0x-failures.json` and the
+terminal summary, so all of them inherit it; the failure log also redacts its bounded diagnostic
+explicitly. What the whole-tree walk does **not** change is structured data: the patterns are
 anchored to well-formed secret formats, so ids, codes, grades, hashes, file paths and the verbatim
 `meta.host_capabilities` posture come back identical. Prose is a different matter — a sentence that
 happens to contain a token-shaped substring is masked, exactly as it already was inside

@@ -31,6 +31,39 @@ def synthesize_done(review_root, manifest):
     report = runio._load_json(runio._report_out(review_root))
     return isinstance(report, dict) and isinstance(report.get("summary"), dict)
 
+
+def x0x_failure_disclosure(report_path):
+    """Return the bounded status facts for a non-empty X0X failure log."""
+    stem = report_path[:-len(".json")] if report_path.endswith(".json") else report_path
+    x0x_path = stem + "-x0x.json"
+    failure_path = x0x_report.failure_log_path(x0x_path)
+    document = runio._load_json(failure_path)
+    discarded = document.get("discarded_findings") if isinstance(document, dict) else None
+    if not isinstance(discarded, list) or not discarded:
+        return None
+    count = len(discarded)
+    return {
+        "count": count,
+        "path": failure_path,
+        "message": ("X0X discarded %d locus-free catalog-gap finding(s); "
+                    "failure log: %s" % (count, failure_path)),
+    }
+
+
+def attach_x0x_failure_status(status, report_path):
+    """Persist a completed synthesize disclosure in the terminal run status."""
+    if status.get("status") != "complete":
+        return status
+    disclosure = x0x_failure_disclosure(report_path)
+    if not disclosure:
+        return status
+    return dict(
+        status,
+        x0x_discarded=disclosure["count"],
+        x0x_failure_log=disclosure["path"],
+        message="%s; %s" % (status.get("message"), disclosure["message"]),
+    )
+
 def _collect_host_usage(review_root, manifest):
     """Write `<run_dir>/usage.json` just before synthesize, so meta.cost.tokens
     is populated without the operator having to remember (#calibration-1).
@@ -372,9 +405,9 @@ def synthesize_execute(review_root, manifest):
             "synthesize wrote an artifact that fails its own published schema "
             "(rc=%s): %s" % (proc.returncode,
                              redact.redact_diagnostic(proc.stderr or proc.stdout, 400, tail=True)))
-    if proc.returncode == x0x_report.X0X_EMISSION_FAILED:
-        diagnostic = redact.redact_diagnostic(
-            proc.stderr or proc.stdout, 400, tail=True).strip()
-        print("driver: X0X artifact not emitted (rc=%s): %s"
-              % (proc.returncode, diagnostic), file=sys.stderr, flush=True)
-    return engine.PhaseResult(kind="advanced", message="synthesize: report.json written")
+    disclosure = x0x_failure_disclosure(report)
+    message = "synthesize: report.json written"
+    if disclosure:
+        print("driver: %s" % disclosure["message"], file=sys.stderr, flush=True)
+        message += "; " + disclosure["message"]
+    return engine.PhaseResult(kind="advanced", message=message)

@@ -197,6 +197,26 @@ class TestX0xArtifact(_Planted):
         # the run folder for the next invocation to trip over.
         self.assertFalse(os.path.lexists(staging))
 
+    def test_the_x0x_failure_log_staging_write_refuses_a_planted_link(self):
+        findings = os.path.join(self.root, "findings-g1-SEC.json")
+        finding = {
+            "id": "SE-077", "domain": "SEC", "code": "SEC-X0X",
+            "severity": "LOW", "confidence": "POSSIBLE",
+            "title": "repo-wide dependency gap", "short_title": "dependency gap",
+            "category": "catalog-gap", "panel": "security", "location": {},
+        }
+        with open(findings, "w", encoding="utf-8") as fh:
+            json.dump({"findings": [finding]}, fh)
+        out = os.path.join(self.pano, "report.json")
+        staging = self.plant("report-x0x-failures.json.tmp")
+
+        with self.assertRaises(ValueError):
+            synthesize.main(["--out", out, findings])
+
+        self.assert_victim_intact()
+        self.assertFalse(os.path.lexists(staging))
+        self.assertFalse(os.path.lexists(os.path.join(self.pano, "report-x0x.json.tmp")))
+
 
 class TestTreeBaseline(_Planted):
     """`validate.capture_tree_baseline` stages `tree-baseline.txt.tmp` beside the

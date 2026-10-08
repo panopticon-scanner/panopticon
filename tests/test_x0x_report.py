@@ -127,31 +127,37 @@ class TestX0XReport(unittest.TestCase):
         self.assertIn("\\x1b[31mID", out)
         self.assertLess(len(out), 6 * (120 + 40) + 200)
 
-    def test_a_locus_free_finding_refuses_emission_with_an_inert_name(self):
-        # #2713 owner ruling: no count-only artifact may hide missing evidence.
-        # A file cannot be invented, so the whole X0X emission fails and names
-        # the finding. Agent-authored text stays one bounded, inert line.
-        f = _f("COD-X0X", "COD", "LOW", "dup dead\tblock\x1b[31m", None,
-               fid="gap-77")
+    def test_a_locus_free_finding_is_discarded_into_a_redacted_inert_log(self):
+        # #2713 revised owner ruling: keep the X0X, omit the unrepresentable
+        # occurrence, and preserve a loud machine-readable record beside it.
+        secret = "sk-" + "A" * 20
+        f = _f("COD-X0X", "COD", "LOW",
+               "dup dead\tblock\x1b[31m " + secret, None, fid="gap-77")
         f["location"] = {}
-        with self.assertRaises(x0x.X0XEmissionError) as caught:
-            x0x.build_candidates([f])
-        message = str(caught.exception)
-        self.assertEqual(len(message.splitlines()), 1)
-        self.assertNotIn("\x1b", message)
-        self.assertIn("'gap-77'", message)
-        self.assertIn("'dup dead block\\x1b[31m'", message)
-        self.assertLess(len(message), 2 * 120 + 100)
+
+        report, failure_log = x0x.build_emission([f], {}, run_id="run-1")
+
+        self.assertEqual(report["candidates"], [])
+        record = only(failure_log["discarded_findings"], "discarded finding")
+        self.assertEqual(record["finding_id"], "gap-77")
+        self.assertEqual(record["reason"], "no file locus")
+        diagnostic = record["diagnostic"]
+        self.assertEqual(len(diagnostic.splitlines()), 1)
+        self.assertNotIn("\x1b", diagnostic)
+        self.assertNotIn(secret, diagnostic)
+        self.assertIn("[REDACTED_KEY]", diagnostic)
+        self.assertIn("'gap-77'", diagnostic)
+        self.assertIn("\\x1b[31m", diagnostic)
+        self.assertLess(len(diagnostic), 2 * 120 + 100)
 
     def test_an_untitled_cluster_is_named_by_its_finding_id(self):
         # A whitespace-only title is empty once squeezed, so the id remains the
-        # identifying value in the refusal.
+        # identifying value in the failure log.
         f = {"code": "SEC-X0X", "domain": "SEC", "severity": "LOW", "id": "gap-77",
              "short_title": "   "}
-        with self.assertRaises(x0x.X0XEmissionError) as caught:
-            x0x.build_candidates([f])
+        _report, failure_log = x0x.build_emission([f], {}, run_id="run-1")
         self.assertEqual(
-            str(caught.exception),
+            only(failure_log["discarded_findings"], "discarded finding")["diagnostic"],
             "catalog-gap finding 'gap-77' ('?') has no location.file",
         )
 
@@ -160,27 +166,75 @@ class TestX0XReport(unittest.TestCase):
         # is MARKED, so a truncated value cannot read as a complete one.
         f = _f("SEC-X0X", "SEC", "LOW", "g" * 200, None)
         f["location"] = {}
-        with self.assertRaises(x0x.X0XEmissionError) as caught:
-            x0x.build_candidates([f])
-        self.assertIn("'" + "g" * 119 + "\u2026'", str(caught.exception))
+        _report, failure_log = x0x.build_emission([f], {}, run_id="run-1")
+        diagnostic = only(
+            failure_log["discarded_findings"], "discarded finding")["diagnostic"]
+        self.assertIn("'" + "g" * 119 + "\u2026'", diagnostic)
 
-    def test_the_schema_has_no_count_only_locus_free_artifact(self):
+    def test_failure_log_redacts_before_cutting_a_diagnostic_field(self):
+        # Cutting first can turn a recognizable credential into an unrecognized
+        # partial credential at the 120-character boundary.
+        secret = "sk-" + "B" * 20
+        f = _f("SEC-X0X", "SEC", "LOW", "p" * 105 + " " + secret, None,
+               fid="gap-1")
+        _report, failure_log = x0x.build_emission([f], {}, run_id="run-1")
+        diagnostic = only(
+            failure_log["discarded_findings"], "discarded finding")["diagnostic"]
+        self.assertNotIn(secret, diagnostic)
+        self.assertNotIn("sk-", diagnostic)
+        self.assertIn("[REDACTED_KEY]", diagnostic)
+
+    def test_an_all_locus_free_run_emits_an_empty_x0x_and_a_separate_log(self):
         gap = {"code": "SEC-X0X", "domain": "SEC", "severity": "HIGH", "id": "gap-1",
                "short_title": "no code covers repo-wide dependency pinning",
                "description": "whole-repo gap"}
-        with self.assertRaises(x0x.X0XEmissionError):
-            x0x.build_report([gap], {}, run_id="run-1")
+        report, failure_log = x0x.build_emission([gap], {}, run_id="run-1")
+        self.assertEqual(report["candidates"], [])
+        self.assertEqual(len(failure_log["discarded_findings"]), 1)
         self.assertNotIn("candidates_dropped_locus_free", _schema()["properties"])
 
-    def test_a_mixed_cluster_refuses_to_omit_its_locus_free_finding(self):
-        # #2090: a located sibling must not make the cluster appear complete.
+    def test_a_mixed_cluster_discards_only_its_locus_free_finding(self):
+        # A located sibling remains a complete one-occurrence candidate; the
+        # omitted sibling is visible in the separate log and nowhere else.
         located = _f("SEC-X0X", "SEC", "LOW", "hardcoded id", "a.py", 1, "f1")
         locus_free = _f("SEC-X0X", "SEC", "HIGH", "hardcoded id", None, 1, "f2")
         for order in ([located, locus_free], [locus_free, located]):
             with self.subTest(order=[finding["id"] for finding in order]):
-                with self.assertRaises(x0x.X0XEmissionError) as caught:
-                    x0x.build_report(order, {}, run_id="run-1")
-                self.assertIn("'f2'", str(caught.exception))
+                report, failure_log = x0x.build_emission(order, {}, run_id="run-1")
+                candidate = only(report["candidates"], "candidate")
+                self.assertEqual(candidate["recurrence"], 1)
+                self.assertEqual(
+                    only(candidate["occurrences"], "occurrence")["finding_id"], "f1")
+                self.assertEqual(
+                    only(failure_log["discarded_findings"], "discarded finding")
+                    ["finding_id"], "f2")
+
+    def test_discard_order_and_x0x_bytes_are_input_independent(self):
+        located = _f("SEC-X0X", "SEC", "HIGH", "hardcoded id", "a.py", 1, "f1")
+        missing_z = _f("COD-X0X", "COD", "LOW", "missing z", None, fid="z")
+        missing_a = _f("ARC-X0X", "ARC", "LOW", "missing a", None, fid="a")
+        baseline, _baseline_log = x0x.build_emission([located], {}, run_id="run-1")
+        emissions = [
+            x0x.build_emission(order, {}, run_id="run-1")
+            for order in (
+                [located, missing_z, missing_a],
+                [missing_a, located, missing_z],
+                [missing_z, missing_a, located],
+            )
+        ]
+        for report, _failure_log in emissions:
+            self.assertEqual(
+                json.dumps(report, indent=2, sort_keys=True),
+                json.dumps(baseline, indent=2, sort_keys=True),
+            )
+        logs = [failure_log for _report, failure_log in emissions]
+        first_log, *other_logs = logs
+        self.assertTrue(all(log == first_log for log in other_logs))
+        discarded = first_log["discarded_findings"]
+        self.assertEqual(
+            [row["finding_id"] for row in discarded],
+            ["a", "z"],
+        )
 
     def test_domainless_zzz_sentinel(self):
         f = {"code": "ZZZ-X0X", "severity": "MEDIUM", "short_title": "t",
