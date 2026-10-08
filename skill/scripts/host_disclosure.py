@@ -360,7 +360,7 @@ def _shape_line(row, host):
 
     Still a NOTE and never a capability line: the flag gates nothing, the
     headline counts five capabilities whatever this says, and the driver
-    validates every reply either way.
+    validates every returned role with a published schema either way.
     """
     shape, flag = row.get(hosts.SHAPE), row.get("flag") or "its output-schema flag"
     detail = row.get(hosts.SHAPE_DETAIL) or "no detail recorded"
@@ -370,7 +370,8 @@ def _shape_line(row, host):
                      + "advertised and the toy shape was proven by one launch (%s), but none "
                      + "of this build's three production role schemas passes the Codex "
                      + "compatibility screen; persist.write_reply validates each returned "
-                     + "role against its original schema on receipt") % (host, flag, detail)]
+                     + "role with a published schema against its original schema on receipt")
+                    % (host, flag, detail)]
         return [("replies are schema-constrained this run on host %r -- %s advertised, "
                  + "shape proven by one launch (%s)") % (host, flag, detail)]
     if shape == hosts.SHAPE_REFUTED:
@@ -379,10 +380,25 @@ def _shape_line(row, host):
                  + "without the flag and reply in fenced JSON, which the driver "
                  + "validates against the same schema on receipt") % (host, flag, detail)]
     if shape == hosts.SHAPE_UNMEASURED:
+        if host == "codex":
+            return [("no production reply is provider-schema-constrained on host %r -- %s "
+                     + "advertised (shape unmeasured: %s); none of this build's three "
+                     + "production role schemas passes the Codex compatibility screen; "
+                     + "persist.write_reply validates each returned role with a published "
+                     + "schema against its original schema on receipt") % (host, flag, detail)]
         return [("replies may be schema-constrained this run on host %r -- %s "
                  + "advertised (shape unmeasured: %s); entries carry the flag as "
-                 + "before, and the driver validates every reply either way")
+                 + "before, and the driver validates every returned role with a "
+                 + "published schema either way")
                 % (host, flag, detail)]
+    if host == "codex":
+        return [("no production reply is provider-schema-constrained on host %r -- %s "
+                 + "advertised (shape unmeasured until the first batch launches); none "
+                 + "of this build's three production role schemas passes the Codex "
+                 + "compatibility screen; the loop still proves the toy shape once under "
+                 + "that batch's own guards; persist.write_reply validates each returned "
+                 + "role with a published schema against its original schema on receipt")
+                % (host, flag)]
     return [("replies may be schema-constrained this run on host %r -- %s "
              + "advertised (shape unmeasured until the first batch launches); the "
              + "loop proves it once, under that batch's own guards, and says so here "

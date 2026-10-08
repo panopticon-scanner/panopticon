@@ -89,11 +89,12 @@ The seam's contract, in `skill/scripts/runners/base.py`:
   schemas published under `skill/reference/`, and `[]` otherwise, so you append
   it unconditionally. A family whose provider enforces a stricter JSON-Schema
   subset must also check the particular published schema before launch and omit
-  the flag for an incompatible schema while leaving the entry's schema in place
-  for receipt validation. After controller stamping, `phases.persist.write_reply`
-  enforces the unmodified Draft-7 `role_schema(entry)` on every returned role,
-  regardless of host. Codex checks the provider subset recursively: the root is
-  an object; every property is required; every object closes
+  the flag for an incompatible schema; receipt validation does not depend on
+  that flag or on the entry's `output_schema` field. After controller stamping,
+  `phases.persist.write_reply` derives the unmodified Draft-7
+  `role_schema(entry)` and enforces it on every returned role that has a
+  published schema, regardless of host. Codex checks the provider subset
+  recursively: the root is an object; every property is required; every object closes
   `additionalProperties`; nested `anyOf` and local `$defs` are allowed, while
   draft-07 `definitions`, malformed or unsupported keywords, external references,
   and shapes over the documented provider limits are not (#2923). A proven toy

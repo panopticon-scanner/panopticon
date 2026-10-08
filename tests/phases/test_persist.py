@@ -175,20 +175,38 @@ class TestWriteReply(unittest.TestCase):
              "advisor-verdict-schema.json", False),
         ]
         for entry, invalid, valid, schema_name, stamped in cases:
-            with self.subTest(schema=schema_name):
-                self.assertNotIn("output_schema", entry)
-                ok, reason = persist.write_reply(entry, json.dumps(invalid))
-                self.assertFalse(ok)
-                self.assertIn(schema_name, reason)
-                self.assertIn("schema:", reason)
-                self.assertFalse(os.path.exists(entry["out_file"]))
+            for advertised in (False, True):
+                with self.subTest(schema=schema_name, output_schema=advertised):
+                    candidate = dict(entry)
+                    if advertised:
+                        candidate["output_schema"] = persist.role_schema(candidate)
+                    else:
+                        self.assertNotIn("output_schema", candidate)
+                    ok, reason = persist.write_reply(candidate, json.dumps(invalid))
+                    self.assertFalse(ok)
+                    self.assertIn(schema_name, reason)
+                    self.assertIn("schema:", reason)
+                    self.assertFalse(os.path.exists(candidate["out_file"]))
 
-                ok, reason = persist.write_reply(entry, json.dumps(valid))
-                self.assertTrue(ok, reason)
-                with open(entry["out_file"], encoding="utf-8") as fh:
-                    written = json.load(fh)
-                if stamped:
-                    self.assertEqual("controller", written["_panopticon"]["stamped_by"])
+                    ok, reason = persist.write_reply(candidate, json.dumps(valid))
+                    self.assertTrue(ok, reason)
+                    with open(candidate["out_file"], encoding="utf-8") as fh:
+                        written = json.load(fh)
+                    if stamped:
+                        self.assertEqual("controller", written["_panopticon"]["stamped_by"])
+                    os.remove(candidate["out_file"])
+
+    def test_a_schema_reason_is_redacted_before_its_cap(self):
+        secret = "ghp_" + "Z" * 36
+        entry = _entry(self._out("findings-app-SEC.json"), host="codex", run_id="RID",
+                       group="app", domain="SEC")
+        ok, reason = persist.write_reply(
+            entry, json.dumps({"findings": [{"note": "x" * 140 + secret}]}))
+        self.assertFalse(ok)
+        self.assertIn("[REDACTED_TOKEN]", reason)
+        self.assertNotIn("ghp_", reason)
+        self.assertNotIn(secret[:13], reason)
+        self.assertFalse(os.path.exists(entry["out_file"]))
 
     def test_an_unknown_out_file_family_is_refused(self):
         e = _entry(self._out("report.json"))

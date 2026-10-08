@@ -339,9 +339,12 @@ evidence exposed.
   one observed valid inspection took 64.8 seconds; and `codex exec --output-schema` is omitted for
   a published schema whose root, recursive objects, references, or composition are not strict-output
   compatible. After controller stamping, `phases.persist.write_reply` validates every returned role
-  against its unmodified Draft-7 `role_schema(entry)` before writing. The Codex disclosure therefore
-  says that its successful toy proof constrains no production reply in this build, so neither a slow
-  probe nor an incompatible production schema can fan a rejection out across a matrix batch.
+  that has a published schema against its unmodified Draft-7 `role_schema(entry)` before writing.
+  Consequently, a lowercase or otherwise bare tool-advisor verdict that the older acceptance check
+  normalized now fails the published contract and spends a D10 retry. The 180-second bounds limit a
+  slow probe, and the compatibility screen keeps an incompatible production schema off the provider
+  argv, so neither can fan a rejection out across a matrix batch. The Codex disclosure separately
+  reports that its successful toy proof constrains no production reply in this build.
 - **Workflow guard reads a function header in the spellings bash takes at a statement's head
   (#2664, #2608; #2785).** `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after
   `then`, `do` or an opened `{` ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN:

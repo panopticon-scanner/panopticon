@@ -281,9 +281,9 @@ def command(entry, env, review_root, run_dir, runner=None, registration_dir=None
     `schema_argv` is `runners.schema.schema_argv`'s output -- `["--output-schema",
     <published schema>]` or nothing (D10 ruling 3). Codex's stricter schema
     subset is checked here; an incompatible published schema is omitted while
-    receipt validation remains on the entry (#2923 C). The accepted pair is
-    placed BEFORE the trailing `-`, which is not a flag but the stdin marker,
-    and `validate_command` re-checks the path it carries."""
+    receipt validation independently derives `role_schema(entry)` (#2923 C).
+    The accepted pair is placed BEFORE the trailing `-`, which is not a flag
+    but the stdin marker, and `validate_command` re-checks the path it carries."""
     runner = DEFAULT_RUNNER if runner is None else runner
     config = _shell(entry, registration_dir)
     model = entry.get("model")
