@@ -1238,23 +1238,27 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
         # Round 15's seat, B1: HVd2i, line 484's drop at depth 2 or more -- one dimension -- passed the whole
         # suite, since the family nests a run two levels at most. So the hand-off itself is pinned: every
         # recursive `_details` call (the one `_details` makes, known by its caller) receives the very list
-        # `shell_reader.command` returned for the inner string, word for word, at every depth from 1 to the
-        # walk's bound of 64, in the main pass and in the walk's. One row nests `eval` 64 deep (every depth at
-        # once); four nest `bash -c`, `sh -c` and `eval` strings five deep; each tail carries every member of
-        # the walk's tables in both spellings, a FILE pair, a cluster and a `-c` string, so a drop keyed to a
-        # depth, a member, a spelling, a position or a run length, alone or combined, written out or read from
-        # a table, changes a list this test holds.
+        # `shell_reader.command` returned for the inner string IN THAT FRAME -- its one `command()` call, so
+        # a second call on a thinned argv (round 16's seat, HVcmd2) is as caught as a new list or a changed
+        # word -- at every depth from 1 to the walk's bound of 64, in the main pass and in the walk's. One row
+        # nests `eval` 64 deep (every depth at once); four nest `bash -c`, `sh -c` and `eval` strings five
+        # deep; each tail carries every member of the walk's tables in both spellings, a FILE pair, a cluster
+        # and a `-c` string, so a drop keyed to a depth, a member, a spelling, a position or a run length,
+        # alone or combined, written out or read from a table, changes what this test holds.
         returned, handed = {}, []
         real_command, real_details = shell_reader.command, wp._details
 
         def command(argv):
             out = real_command(argv)
-            returned[id(out)] = (out, list(out))        # the list is kept, so its id is never reused
+            frame = sys._getframe(1)
+            if frame.f_code is real_details.__code__:    # the inner string's `command()`, by its frame
+                returned.setdefault(id(frame), []).append((frame, out, list(out)))    # kept: no id reuse
             return out
 
         def details(argv, depth, walk):
-            if sys._getframe(1).f_code is real_details.__code__:
-                handed.append((depth, argv, list(argv), bool(wo._MAINS.get())))
+            frame = sys._getframe(1)
+            if frame.f_code is real_details.__code__:
+                handed.append((depth, argv, list(argv), bool(wo._MAINS.get()), returned.get(id(frame), [])))
             return real_details(argv, depth, walk)
 
         tail = "bash %s --rcfile /dev/null -rcfile /dev/null -es -c 'sh'" % " ".join(self.RUN + tuple(wo.LONG_OPTIONS))
@@ -1270,10 +1274,10 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
             for row in rows:
                 for shell in self.SHELLS:
                     wg.job_defects([wg.Step("step", self.B4 % row, shell)])
-        self.assertEqual(list(range(1, 65)), sorted({depth for depth, _, _, mains in handed if mains}))
-        self.assertEqual(list(range(1, 65)), sorted({depth for depth, _, _, mains in handed if not mains}))
-        changed = [(depth, snapshot[:4]) for depth, argv, snapshot, _ in handed
-                   if id(argv) not in returned or returned[id(argv)][1] != snapshot]
+        self.assertEqual(list(range(1, 65)), sorted({depth for depth, _, _, mains, _ in handed if mains}))
+        self.assertEqual(list(range(1, 65)), sorted({depth for depth, _, _, mains, _ in handed if not mains}))
+        changed = [(depth, len(results), snapshot[:4]) for depth, argv, snapshot, _, results in handed
+                   if len(results) != 1 or argv is not results[0][1] or results[0][2] != snapshot]
         self.assertEqual([], changed[:5], "%d of %d hand-offs changed" % (len(changed), len(handed)))
 
     def test_the_main_pass_reads_a_one_dash_long_word_as_mains_letters(self):
