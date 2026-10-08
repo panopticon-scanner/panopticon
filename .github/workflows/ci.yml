@@ -40,7 +40,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30  # until the suite is sharded (#2933)
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
