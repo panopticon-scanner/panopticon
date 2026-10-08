@@ -56,7 +56,7 @@ from shell_quote import ansi_c
 from shell_text import (_lift_substitutions, join_continuations as join_continuations,
                         without_comments as without_comments)
 from shell_tokens import (_Expanded as _Expanded, _Parse as _Parse, _Token as _Token,
-                          _markers as _markers, derived as derived,
+                          _markers as _markers, bang as bang, derived as derived,
                           has_substitution as has_substitution, is_arm as is_arm,
                           is_marker as is_marker, kept as kept, readable as readable,
                           yields_words as yields_words)
@@ -126,22 +126,22 @@ _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
 # --- reading the shell -------------------------------------------------------
 
 def _negated(text, context):
-    """`text`, a stage inside a `! { ... }` group, with the `!` that bash's errexit-off reading
-    of a negated compound gives every command in it, placed where `negated` reads it and the
-    control-kind readers do not: in front of the first command word, past the keywords and the
-    `case` arm that open the statement (`then ! CHECK`, `x) ! CHECK`), and nowhere on a
-    statement that is keywords alone (`}`, `fi`), a `for`/`case`/`select`/`function` header
-    whose next words are names, an `if`/`elif`/`while`/`until` whose condition errexit never
-    applied to, or one already negated (#2664, the second fix round)."""
+    """Where in `text`, a stage inside a `! { ... }` group, the `!` that bash's errexit-off reading
+    of a negated compound gives every command in it stands, or None: a mark on its first word that
+    `negated` reads (`bang`), and a `!` word only where #2849 reads it from no group (`_split`) --
+    the command word past the keywords and the `case` arm that open the statement (`then CHECK`,
+    `x) CHECK`), not a statement that is keywords alone (`}`, `fi`), a `for`/`case`/`select`/
+    `function` header whose next words are names, an `if`/`elif`/`while`/`until` whose condition
+    errexit never applied to, or one already negated (#2664, the second fix round; round 13)."""
     for match in re.finditer(r"\S+", text):
         word = match.group()
         mark = context.pattern.match(word)
         if word in KEYWORDS or mark and context.entries[mark.group()][0] == "arm":
             if word in CONDITIONS or word in ("for", "case", "select", "function", "!"):
-                return text
+                return None
             continue
-        return text[:match.start()] + "! " + text[match.start():]
-    return text
+        return match.start()
+    return None
 
 
 def _bare_blanks(text, i):
@@ -198,7 +198,7 @@ def _split(text, context):
     double-quoted `\\$` or `` \\` `` is marked for `_stage` (`_ESCAPED`), as
     shlex, reading what is left, no longer knows the quote it was in.
     """
-    statements = []
+    statements: list[tuple[list[str], str]] = []
     stages = []
     buf: list[str] = []
     quote, i, n, opened = None, 0, len(text), 0
@@ -244,8 +244,10 @@ def _split(text, context):
         nonlocal cond
         end_stage()
         cond = 0
-        if any(negations):
-            stages[0] = _negated(stages[0], context)
+        if any(negations) and (at := _negated(stages[0], context)) is not None:
+            context.bangs.add(len(statements))
+            if not negations[-1]:   # a plain `{` in the negated one: #2849 reads a check's own group
+                stages[0] = stages[0][:at] + "! " + stages[0][at:]
         if any(s.strip() for s in stages):
             statements.append((list(stages), separator))
         bang = False
@@ -678,8 +680,10 @@ def statements(script):
         text = text.replace(marker, context.new(kind, value))
     text, _inners = _lift_substitutions(text, context)
     out = []
-    for raw, separator in _split(text, context):
+    for at, (raw, separator) in enumerate(_split(text, context)):
         stages = [_stage(s, context) for s in raw]
+        if at in context.bangs:         # a negated group's `!`, marked on its first word
+            stages[0].argv[0] = bang(stages[0].argv[0])
         # A line-only boundary has no argv; keep its marker and the closer's separator.
         if any(s.argv or s.group_open or s.group_close for s in stages):
             out.append(Statement(stages, separator))

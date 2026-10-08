@@ -33,6 +33,7 @@ class _Token(str):
 
     markers: dict[str, tuple[str, object]]
     kept: bool                  # set by `kept`; read with a default by `shell_reader._optional`
+    negated: bool               # set by `bang`; read with a default by `shell_command.negated`
 
 
 class _Expanded(_Token, Rewritten):
@@ -75,6 +76,15 @@ def spelled(text, source):
     return _Token(text, found) if found else text
 
 
+def bang(word):
+    """`word`, the first of a stage a `! { ... }` group holds, marked as running under its `!`
+    (`shell_command.negated`): a mark, not a `!` word, so every other reader sees the stage as bash
+    wrote it -- #2849's failure contexts read the group's `!` at its `{` (#2664 round 13)."""
+    token = word if isinstance(word, _Token) else _Token(word, {})
+    token.negated = True
+    return token
+
+
 class _Parse:
     def __init__(self, source):
         # No source spelling can collide, even if a nonce source is replaced
@@ -83,6 +93,7 @@ class _Parse:
         while self.prefix in source:
             self.prefix += "x"
         self.entries: dict[str, tuple[str, object]] = {}
+        self.bangs: set[int] = set()    # the statements a negated group holds (`shell_reader._split`)
         self.pattern = re.compile(re.escape(self.prefix) + r"\d+@@")
 
     def new(self, kind, value=None):

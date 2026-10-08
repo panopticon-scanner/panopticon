@@ -372,13 +372,16 @@ def wrapper_words(argv):
 
 
 def negated(argv):
-    """True if this command runs under a `!`.
+    """True if this command runs under a `!` -- its own, or a `! { ... }` group's, which the
+    reader marks on the stage's first word (`shell_tokens.bang`; #2664 round 13).
 
     `if ! sha256sum -c sums; then ...; fi` takes the THEN branch when the
     command FAILED, which inverts what its exit status means to everything
     reading it. Same family as `command()`: what stands in front of the
     command, rather than the command itself.
     """
+    if argv and getattr(argv[0], "negated", False):
+        return True
     for token in _heads(argv):
         if token == "!":
             return True

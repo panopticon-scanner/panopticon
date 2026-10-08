@@ -646,6 +646,7 @@ groups:
       match:
       - scripts/workflow_guard.py
       - scripts/workflow_checks.py
+      - scripts/workflow_failure_contexts.py
       - scripts/workflow_forms.py
       - scripts/workflow_gating.py
       - scripts/workflow_function_calls.py
