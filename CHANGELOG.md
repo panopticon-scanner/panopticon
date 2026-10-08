@@ -26,9 +26,9 @@ evidence exposed.
   fetch itself or a disconnected closing pipeline stops the file handoff; a nested transparent
   keyword close passes the outer destination inward. An outer logging redirect does not hide an
   inner `( curl ...; ) | sh`, and an inner close before a later fetch does not hide the enclosing
-  `| sh`; the closing-stage handoff and the stream-stage choice jointly preserve those cases. A
-  closing `| tee tool` that still forwards stdout is represented as both a file destination and a
-  stream: `bash`/`sh`/`source` consuming it through process substitution still report, while
+  `| sh`; the inherited stage deliberately omits the close's `stdout_to_pipe` bit, preserving those
+  cases. A closing `| tee tool` that still forwards stdout is represented as both a file destination
+  and a stream: `bash`/`sh`/`source` consuming it through process substitution still report, while
   `tee tool > /dev/null` remains disconnected.
 
   On a 43-row / 387-cell matrix using bash 5.2.21, bash 3.2.57 and dash as both parent and child,

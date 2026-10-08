@@ -5501,6 +5501,16 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
             self.assert_reported_in_bash_shells(
                 script, "command word this guard does not follow")
 
+    def test_a_nested_value_word_reader_receives_the_compound_tee(self):
+        script = "out=$( $BASH <( { %s; } | tee tool ) )\n" % self.FETCH
+        self.assert_reported_in_bash_shells(
+            script, "command word this guard does not follow")
+
+    def test_a_redirected_value_word_reader_receives_the_compound_tee(self):
+        script = "$BASH <( { %s; } | tee tool ) > out.log 2>&1\n" % self.FETCH
+        self.assert_reported_in_bash_shells(
+            script, "command word this guard does not follow")
+
     def test_the_forwarded_compound_tee_union_is_not_restricted(self):
         scripts = (
             ("stage after tee", "bash <( { %s; } | tee tool | cat - )\n"),
