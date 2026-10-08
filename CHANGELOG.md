@@ -9,6 +9,11 @@ evidence exposed.
 
 - **Codex model profiles move to GPT-6 (#2872).** Pinned role defaults now use `gpt-6-luna` or
   `gpt-6-sol`; set `PANOPTICON_MODEL_<ROLE>` to pin another installed model.
+- **X0X identifiers reject control and bidirectional code points (#2712).** The report schema now
+  refuses C0 controls other than tab and line feed, DEL/C1 controls, Arabic Letter Mark, bidi
+  marks, embeddings, overrides, and isolates in occurrence paths, candidate areas, and proposed
+  names. Honest emitter output remains valid, and `synthesize.py` keeps its ASCII-escaped,
+  multi-line JSON serialization.
 - **Reviewer write safety separates the boundary from its transport (#1622).**
   `artifact_write_guard` now means reviewer-controlled artifact writes are impossible or confined.
   The static `self_write_delivery` fact is true only for Claude and Kimi, and a write-capable role

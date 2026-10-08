@@ -1051,6 +1051,31 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
         self.assertNotIn("artifact invalid", stderr)
         self.assertIn("Grade:", stdout)
 
+    def test_x0x_serialization_stays_ascii_escaped_and_multiline(self):
+        import scripts.x0x_report as x0x_report
+
+        x0x = {
+            "schema_version": 1,
+            "generated_by": {"panopticon_version": "test", "run_id": "run-1"},
+            "ocrdb_version": "test",
+            "candidates": [{
+                "domain": "SEC",
+                "summary": "caf\u00e9",
+                "severity": "LOW",
+                "occurrences": [{"file": "src/example.py"}],
+            }],
+        }
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp, out = self._fixture(d)
+            with mock.patch.object(x0x_report, "build_report", return_value=x0x):
+                rc, _stdout, stderr = self._run(["--target", "src", "--out", out, fp])
+            raw = Path(out.replace(".json", "-x0x.json")).read_text(encoding="utf-8")
+        self.assertEqual(rc, 0, stderr)
+        self.assertGreater(len(raw.splitlines()), 1)
+        self.assertIn("\\u00e9", raw)
+        self.assertNotIn("\u00e9", raw)
+        self.assertEqual(json.loads(raw), x0x)
+
     def test_an_invalid_part_is_caught_through_the_hydrated_union(self):
         # The MAIN report stays valid; the defect is in a `_partN.json`, which
         # is exactly the artifact a consumer hydrates and validates and which
