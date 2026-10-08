@@ -449,14 +449,12 @@ def _split(text, context):
 
 
 def _fd_or_close(word):
-    """True for the historical ambiguity of the UNNUMBERED `>&word` form:
-    real bash reads a word made only of digits, or exactly `-`, as a file
-    descriptor to duplicate or close -- never a path -- and anything else as
-    the file `>word 2>&1` would have named. Checked against bash 5 (round 1
-    of #1733's fix): `>&2extra` writes a file called `2extra`; `>&2` does
-    not. The `&>word` spelling carries no such ambiguity at all (`&>2` is
-    always a file named `2`), so this is never consulted for it.
-    """
+    """True for the historical ambiguity of the UNNUMBERED `>&word` form: real bash reads a word
+    made only of digits, or exactly `-`, as a file descriptor to duplicate or close -- never a
+    path -- and anything else as the file `>word 2>&1` would have named. Checked against bash 5
+    (round 1 of #1733's fix): `>&2extra` writes a file called `2extra`; `>&2` does not. The
+    `&>word` spelling carries no such ambiguity at all (`&>2` is always a file named `2`), so
+    this is never consulted for it."""
     return word == "-" or (word.isascii() and word.isdigit())
 
 
