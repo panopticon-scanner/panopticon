@@ -24,6 +24,31 @@ def _f(code, domain, sev, title, file, line=1, fid=None, desc="d", refs=None):
             "location": {"file": file, "line_start": line, "line_end": line + 2}}
 
 
+_CONTROL_AND_BIDI_CODE_POINTS = tuple(
+    point
+    for first, last in (
+        (0x0000, 0x0008),
+        (0x000B, 0x001F),
+        (0x007F, 0x009F),
+        (0x061C, 0x061C),
+        (0x200E, 0x200F),
+        (0x202A, 0x202E),
+        (0x2066, 0x2069),
+    )
+    for point in range(first, last + 1)
+)
+
+_IDENTIFIER_PATTERN = (
+    r"^[^\u0000-\u0008\u000B-\u001F\u007F-\u009F\u061C"
+    r"\u200E-\u200F\u202A-\u202E\u2066-\u2069]*$"
+)
+
+_ALLOWED_BOUNDARY_CODE_POINTS = (
+    0x0009, 0x000A, 0x0020, 0x007E, 0x00A0, 0x061B, 0x061D,
+    0x200D, 0x2010, 0x2029, 0x202F, 0x2065, 0x206A,
+)
+
+
 class TestX0XReport(unittest.TestCase):
     def test_only_fallback_findings_become_candidates(self):
         findings = [
@@ -223,3 +248,118 @@ class TestX0XReport(unittest.TestCase):
                     _f("SEC-X0X", "SEC", "HIGH", "hardcoded id", "b.tsx", 5, "f2",
                        refs=["CWE-639"])]
         self.assertIsNone(jsonschema.validate(x0x.build_report(findings, meta, run_id="run-xyz"), schema))
+
+    def test_schema_rejects_the_exact_control_and_bidi_set_in_identifiers(self):
+        schema = _schema()
+        validator = jsonschema.Draft7Validator(schema)
+
+        def document():
+            report = x0x.build_report(
+                [_f("SEC-X0X", "SEC", "MEDIUM", "honest candidate",
+                    "src/package/widget.py")], {}, run_id="run-1")
+            candidate = only(report["candidates"], "candidate")
+            candidate["area"] = "runtime"
+            return report, candidate
+
+        fields = {
+            "occurrence.file": (
+                lambda candidate, value: only(
+                    candidate["occurrences"], "occurrence").__setitem__("file", value),
+                ["candidates", 0, "occurrences", 0, "file"],
+            ),
+            "candidate.area": (
+                lambda candidate, value: candidate.__setitem__("area", value),
+                ["candidates", 0, "area"],
+            ),
+            "candidate.proposed_name": (
+                lambda candidate, value: candidate.__setitem__("proposed_name", value),
+                ["candidates", 0, "proposed_name"],
+            ),
+        }
+        for field, (set_value, expected_path) in fields.items():
+            for point in _CONTROL_AND_BIDI_CODE_POINTS:
+                with self.subTest(field=field, code_point="U+%04X" % point):
+                    report, candidate = document()
+                    set_value(candidate, "safe" + chr(point) + "value")
+                    errors = list(validator.iter_errors(report))
+                    self.assertEqual(len(errors), 1)
+                    self.assertEqual(list(errors[0].path), expected_path)
+                    self.assertEqual(errors[0].validator, "pattern")
+                    self.assertEqual(errors[0].validator_value,
+                                     _IDENTIFIER_PATTERN)
+
+    def test_schema_accepts_every_control_and_bidi_range_neighbour(self):
+        schema = _schema()
+        validator = jsonschema.Draft7Validator(schema)
+
+        def document():
+            report = x0x.build_report(
+                [_f("SEC-X0X", "SEC", "MEDIUM", "honest candidate",
+                    "src/package/widget.py")], {}, run_id="run-1")
+            candidate = only(report["candidates"], "candidate")
+            candidate["area"] = "runtime"
+            return report, candidate
+
+        setters = {
+            "occurrence.file": lambda candidate, value: only(
+                candidate["occurrences"], "occurrence").__setitem__("file", value),
+            "candidate.area": lambda candidate, value: candidate.__setitem__("area", value),
+            "candidate.proposed_name": lambda candidate, value: candidate.__setitem__(
+                "proposed_name", value),
+        }
+        for field, set_value in setters.items():
+            for point in _ALLOWED_BOUNDARY_CODE_POINTS:
+                with self.subTest(field=field, code_point="U+%04X" % point):
+                    report, candidate = document()
+                    set_value(candidate, "safe" + chr(point) + "value")
+                    self.assertEqual(list(validator.iter_errors(report)), [])
+
+    def test_schema_accepts_empty_identifier_strings(self):
+        # #2712 governs which code points may occur. Preserve the schema's
+        # existing compatibility choice that a present identifier may be empty;
+        # producer-specific shape rules can be stricter (as #2713 will be).
+        schema = _schema()
+        validator = jsonschema.Draft7Validator(schema)
+        setters = {
+            "occurrence.file": lambda candidate: only(
+                candidate["occurrences"], "occurrence").__setitem__("file", ""),
+            "candidate.area": lambda candidate: candidate.__setitem__("area", ""),
+            "candidate.proposed_name": lambda candidate: candidate.__setitem__(
+                "proposed_name", ""),
+        }
+        for field, set_value in setters.items():
+            with self.subTest(field=field):
+                report = x0x.build_report(
+                    [_f("SEC-X0X", "SEC", "MEDIUM", "honest candidate",
+                        "src/package/widget.py")], {}, run_id="run-1")
+                candidate = only(report["candidates"], "candidate")
+                set_value(candidate)
+                self.assertEqual(list(validator.iter_errors(report)), [])
+
+    def test_schema_keeps_honest_identifiers_and_emitter_output_valid(self):
+        schema = _schema()
+        validator = jsonschema.Draft7Validator(schema)
+        report = x0x.build_report(
+            [_f("ARC-X0X", "ARC", "LOW", "bounded retry loop",
+                "packages/worker/retry.py")], {}, run_id="run-1")
+        candidate = only(report["candidates"], "candidate")
+        candidate["area"] = "worker-runtime"
+        validator.validate(report)
+        self.assertEqual(candidate["proposed_name"], "bounded-retry-loop")
+
+        # #2712 excludes neither horizontal tab nor line feed. #2713 may later
+        # layer a kebab-only rule onto proposed_name; paths and areas retain this
+        # exact control-character boundary.
+        for field, set_value in (
+                ("occurrence.file", lambda candidate, value: only(
+                    candidate["occurrences"], "occurrence").__setitem__("file", value)),
+                ("candidate.area", lambda candidate, value: candidate.__setitem__(
+                    "area", value))):
+            with self.subTest(field=field):
+                report = x0x.build_report(
+                    [_f("ARC-X0X", "ARC", "LOW", "bounded retry loop",
+                        "packages/worker/retry.py")], {}, run_id="run-1")
+                candidate = only(report["candidates"], "candidate")
+                candidate["area"] = "worker-runtime"
+                set_value(candidate, "segment\tline\nnext")
+                validator.validate(report)

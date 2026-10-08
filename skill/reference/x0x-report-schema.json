@@ -58,6 +58,7 @@
           },
           "proposed_name": {
             "type": "string",
+            "pattern": "^[^\\u0000-\\u0008\\u000B-\\u001F\\u007F-\\u009F\\u061C\\u200E-\\u200F\\u202A-\\u202E\\u2066-\\u2069]*$",
             "description": "Panopticon's suggested kebab-case anti-pattern name (e.g. `unbounded-external-response-read`). Maps to the OCRDb entry `name`; the adjudicator finalizes it."
           },
           "summary": {
@@ -75,6 +76,7 @@
           },
           "area": {
             "type": "string",
+            "pattern": "^[^\\u0000-\\u0008\\u000B-\\u001F\\u007F-\\u009F\\u061C\\u200E-\\u200F\\u202A-\\u202E\\u2066-\\u2069]*$",
             "description": "The OCRDb sub-grouping (domain `area`) the candidate would slot into, if known."
           },
           "cwe": {
@@ -98,7 +100,11 @@
               "type": "object",
               "required": ["file"],
               "properties": {
-                "file": {"type": "string", "description": "Repository-relative path."},
+                "file": {
+                  "type": "string",
+                  "pattern": "^[^\\u0000-\\u0008\\u000B-\\u001F\\u007F-\\u009F\\u061C\\u200E-\\u200F\\u202A-\\u202E\\u2066-\\u2069]*$",
+                  "description": "Repository-relative path."
+                },
                 "line_start": {"type": "integer"},
                 "line_end": {"type": "integer"},
                 "snippet": {
