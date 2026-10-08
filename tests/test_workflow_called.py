@@ -168,6 +168,19 @@ class TestWhatACallSitesBodiesMaySet(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertIn("X", workflow_called._Step(stmts_of(line + "\n")).set_at(0))
 
+    def test_a_statement_names_the_names_it_may_set_not_its_words(self):
+        # Round 13 (the round-12 verdict's B1, its seat's mR10 and mR7): `set_at` names what a `read`,
+        # `unset` or `local` sets -- `T` of `T=x` and of `T[0]`, never the word -- wrapped or not, and
+        # with what `_written` names beside: a bare `read` sets `REPLY`, which only `_written` names.
+        for line in ("local T=x", "command local T=x", "nohup local T=x", "env local T=x", "local T",
+                     "command local T", "command unset 'T[0]'", "nohup unset T", "command read -r T < f",
+                     "nohup read 'T[0]' < f", "timeout 5 read -r T < f"):
+            with self.subTest(line=line):
+                self.assertEqual({"T"}, workflow_called._Step(stmts_of(line + "\n")).set_at(0))
+        for line in ("read -r < f", "command read -r < f", "nohup read < f"):
+            with self.subTest(line=line):
+                self.assertEqual({"REPLY"}, workflow_called._Step(stmts_of(line + "\n")).set_at(0))
+
     def test_a_carry_walks_the_statements_that_may_write_alone(self):
         # What a statement writes is its words' and whether the names it spells are held, so one
         # dry step tells, and a carry skips the rest: a K-statement body that sets one name costs
@@ -263,7 +276,16 @@ class TestEachVisitIsACarryOrTheStandIn(unittest.TestCase):
         "A=(x)\ng() { A+=(y); }\ng\nenv unset A\ng\n\"${A[@]}\"\n\"${A[@]}\"\n",
         "g() { eval :; }\nV=1\ng\ncommand read V < f\ng\nsh \"$V\"\nsh \"$V\"\n",
         "g() { . ./env; }\nV=1\ng\ntimeout 5 read -r V < f\ng\nsh \"$V\"\nsh \"$V\"\n",
-        "g() { T=$X; }\ng\ng\nh() {\ng\n: \"$T\"\nsh \"$T\"\n}\nT=a\nh\nh\n")
+        "g() { T=$X; }\ng\ng\nh() {\ng\n: \"$T\"\nsh \"$T\"\n}\nT=a\nh\nh\n",
+        # Round 13 (the round-12 verdict's B1): a plain `local T=x` between two visits -- its seat's
+        # SX41, which `_written` names and the wrapped-name loop too, the name and not the word -- a
+        # wrapped one, a bare `read` (bash's `REPLY`, which `_written` alone names), and an element,
+        # `T[0]`, read or unset behind a wrapper (its seat's WX25-WX28).
+        "T=a\ng() { T=$X; }\nh() {\nlocal T=b\ng\nlocal T=b\ng\nsh \"$T\"\nsh \"$T\"\n}\nh\n",
+        "T=a\ng() { T=$X; }\nh() {\nlocal T=b\ng\nnohup local T=b\ng\nsh \"$T\"\nsh \"$T\"\n}\nh\n",
+        "g() { REPLY=$X; }\ng\nread -r < f\ng\nsh \"$REPLY\"\nsh \"$REPLY\"\n",
+        "T=a\ng() { T=$X; }\ng\ncommand read 'T[0]' < f\ng\nsh \"$T\"\nsh \"$T\"\n",
+        "T=a\ng() { T=$X; }\ng\ncommand unset 'T[0]'\ng\nsh \"$T\"\nsh \"$T\"\n")
 
     def visits(self, check, budget):
         from unittest import mock
@@ -341,6 +363,44 @@ class TestAStandInMakesNoListItNeedsNot(unittest.TestCase):
         workflow_called.record(table, stmts_of("T=x\n")[0].stages[0], False)
         self.assertEqual([PAST, "", "x"], table.scalars["T"])
         self.assertEqual([PAST, ""], table.scalars["U"])
+
+    def test_past_the_budget_a_visit_gives_the_shared_lists(self):
+        # Round 13 (the round-12 verdict's B2, its seat's mW4): through `record_called`, not `_stood`
+        # alone -- a site that stood its names in with `stand_in` made new lists at every visit, which
+        # no count of the calls saw. A name that held nothing takes both shared lists, one that held
+        # scalars alone the shared word-list, whatever the bodies: named, or one that may set any name.
+        from unittest import mock
+        for script in ("g() { T=$X; }\ng\n", "g() { eval :; T=$X; }\ng\n", "g() { . ./env; T=$X; }\ng\n"):
+            for scalars in ({}, {"T": ["a"]}):
+                with self.subTest(script=script, scalars=scalars), mock.patch.object(workflow_called, "_BUDGET", 0):
+                    stmts, table = stmts_of(script), Values(dict(scalars))
+                    workflow_called.record_called(table, stmts, len(stmts) - 1,
+                                                  workflow_uses._function_ranges(stmts)[0])
+                    self.assertIs(workflow_called._LISTS, table.arrays["T"])
+                    if not scalars:
+                        self.assertIs(workflow_called._NOTHING, table.scalars["T"])
+
+    def test_a_held_names_own_stand_in_makes_no_list_where_it_holds_one(self):
+        # Round 13 (the round-12 verdict's B2, its seat's mW6): a walk gives every held name a body
+        # does not spell its own reference, and `_own` keeps the list of one that holds it already,
+        # where `emptied` builds one at every visit -- through `record_called`, and alone.
+        stmts = stmts_of("g() { eval :; }\ng\n")
+        table = Values({"T": ["a", "$T"]})
+        texts = table.scalars["T"]
+        workflow_called.record_called(table, stmts, len(stmts) - 1, workflow_uses._function_ranges(stmts)[0])
+        self.assertIs(texts, table.scalars["T"])
+        workflow_called._own(table, "T")
+        self.assertIs(texts, table.scalars["T"])
+
+    def test_a_name_holding_the_shared_list_takes_its_own_reference_in_a_list_of_its_own(self):
+        # Round 13 (the round-12 verdict's F2, its seat's mO7): the shared list is never written in
+        # place -- a later walk's own stand-in builds the name a list of its own.
+        table = Values()
+        workflow_called._stood(table, "T")
+        workflow_called._own(table, "T")
+        self.assertEqual([PAST, "", "$T"], table.scalars["T"])
+        self.assertIsNot(workflow_called._NOTHING, table.scalars["T"])
+        self.assertEqual([PAST, ""], workflow_called._NOTHING)
 
 
 if __name__ == "__main__":

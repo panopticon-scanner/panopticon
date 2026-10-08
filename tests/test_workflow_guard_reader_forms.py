@@ -1128,6 +1128,34 @@ class TestTheRoundElevenSeatsRows(unittest.TestCase):
                     self.assertTrue(reported(self.seat(row), shell))
 
 
+class TestTheRoundTwelveSeatsRows(unittest.TestCase):
+    """PR #2855 round 13, the round-12 verdict's B1 and F1, on its seat's rows (the round-11
+    rows' `seat`: the download to `@P@`, truth over eight parents). Past the budget a visit
+    stands in again what the statements since the last one may set
+    (`workflow_called._Step.set_at`), and a `read`, `unset` or `local` -- behind a wrapper too
+    -- sets the name its word names, not the word: its seat's mR10 let the word `T=/dev/null`
+    stand for a plain `local`'s `T`, and SX41 read CLEAN where every parent runs the payload;
+    its mR7 let `T[0]` stand for `T` (WX25-WX28). RP01 and RP02 are round 13's own: a bare
+    `read`, whose `REPLY` only `_written` names. Each reports under every setting: where no
+    parent runs the payload -- dash under `-e`, which refuses `read 'T[0]'` and a bare `read`,
+    and bash 3.2 and dash under `-e`, which refuse `unset 'T[0]'` of a name that holds no array
+    -- it is the carry's price, as round 12's rows are."""
+
+    GATE = (
+        ('SX41', '11111111', '@G@\nT=/dev/null\ng() { T=@P@; }\nh() {\nlocal T=/dev/null\ng\nlocal T=/dev/null\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\n}\nh'),
+        ('WX25', '11111101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand read \'T[0]\' < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WX27', '11100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand unset \'T[0]\'\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('RP01', '11111101', '@G@\necho /dev/null > rf\nREPLY=/dev/null\ng() { REPLY=@P@; }\ng\nread -r < rf\ng\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\nsh "$REPLY"'),
+        ('RP02', '11111101', '@G@\necho /dev/null > rf\nREPLY=/dev/null\ng() { REPLY=@P@; }\ng\ncommand read -r < rf\ng\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\nsh "$REPLY"'),
+    )
+
+    def test_each_reports_under_every_setting(self):
+        for name, truth, row in self.GATE:
+            for shell, parents in TestTheRoundTenSeatsRows.PARENTS:
+                with self.subTest(row=name, shell=shell, runs=any(truth[p] == "1" for p in parents)):
+                    self.assertTrue(reported(TestTheRoundElevenSeatsRows.seat(row), shell))
+
+
 class TestASubshellBodyByTheTokenAfterItsHeader(unittest.TestCase):
     """PR #2855 round 9, F2: round 8 read a body as a subshell where its header's stage opened a
     `(` and no `{` stood among its first three words, so `f() ( { T=P; } )` and `f() ( echo { ;
