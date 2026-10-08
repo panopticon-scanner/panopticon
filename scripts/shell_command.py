@@ -6,7 +6,8 @@ lines), byte for byte: the keywords, assignment and function-header spellings
 a statement may open with, the shells and the default or optional `$` words
 that may stand for one (#2337, #2472), and the one walk that strips them all
 (`_command_result`) to answer `command`, `command_as_written`,
-`unresolved_wrapper`, `wrapper_words`, `negated` and `conditional`. The reader
+`unresolved_wrapper`, `wrapper_words`, `negated` and `conditional` -- and
+`command_run`, the command a `find` runs past them (#2881 round 4). The reader
 imports every name back under its own, so nothing that read
 `shell_reader.command` or `shell_reader.KEYWORDS` moved; this module imports
 nothing from the reader, so the layers still run one way.
@@ -354,6 +355,23 @@ def command_as_written(argv):
     """`command(argv)` with a leading `$` word kept as the command (#2472), for
     the reader that resolves such a word through the step's own table."""
     return _command_result(argv, optional=False)[0]
+
+
+# The tests after which `find` runs a command of its own on what it walks, in the order
+# `workflow_operands.described` tries them (its `_FIND_EXEC`, pinned equal by test).
+_FIND_EXEC = ("-exec", "-execdir", "-ok", "-okdir")
+
+
+def command_run(argv):
+    """`command(argv)`, or where that is a `find` running a command of its own, that command: the
+    words after the first of `_FIND_EXEC` it holds, `{}`, `;` and `+` dropped, as `use()` reads them
+    through `described` (`find /dev/null -exec sh /dev/fd/3 \\;`, #2881 round 4)."""
+    argv = command(argv)
+    for test in _FIND_EXEC:
+        if argv and os.path.basename(argv[0]) == "find" and test in argv:
+            if inner := [word for word in argv[argv.index(test) + 1:] if word not in ("{}", ";", "+")]:
+                return inner
+    return argv
 
 
 def unresolved_wrapper(argv):

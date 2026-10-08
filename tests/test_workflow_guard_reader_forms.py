@@ -1579,6 +1579,229 @@ class TestADupPutsTheDownloadInTheFileItsDescriptorOpened(unittest.TestCase):
                     self.assertTrue(reported(row + "\necho done\n", shell))
 
 
+class TestAReadWriteDescriptorIsReadOnItsNumber(unittest.TestCase):
+    """#2881: `N<> file` opens the file for reading as well as writing, so a shell that dups N onto
+    its standard input (`sh 3<> tool <&3`, a move `<&3-` too) or reads N by a path (`sh /dev/fd/3
+    3<> tool`, `. /dev/stdin 3<> tool 0<&3`) runs the file. `main` read `N<> file` as a write alone
+    and read every one CLEAN, while the shells run the payload (#2856 round 9's dup hunt, and the
+    round-8 seat's SDu7, SDuc and DIu4). Round 2 (the round-1 verdict): the file is read only where
+    such a dup or path reaches it -- a check that merely holds a digest file open on N is credited
+    with what it reads, not that file (B1, B2) -- on every descriptor (B3)."""
+
+    DUPS = ("sh N<> tool <&N", "sh N<> tool 0<&N", "sh N<>tool <&N", "bash N<> tool <&N",
+            "bash -s N<> tool <&N", "sh -s N<> tool 0<&N", "sh N<> tool 0<&N N<&-", "sh - N<> tool <&N",
+            "N<> tool <&N sh", "N<>tool 0<&N bash -s", "sh N<> tool 0<&N 1>&2")
+    PATHS = ("sh /dev/stdin N<> tool <&N", ". /dev/stdin N<> tool 0<&N", "bash /dev/stdin N<> tool <&N",
+             "sh /dev/fd/N N<> tool", "bash /dev/fd/N N<>tool", ". /dev/fd/N N<> tool",
+             "sh /dev/fd/0 N<> tool <&N")
+    MOVES = ("sh N<> tool <&N-", "bash N<>tool 0<&N- -s")      # a move: bash alone runs it
+    # Every shell runs these on descriptors 1-9 (RRRRRRRR); bash alone past 9, where dash opens
+    # no descriptor, and a move, which dash rejects (RRRRfRRf).
+    BASH = (None, "bash", "bash {0}")
+    NUMBERS = ((("1", "2", "3", "9"), SHELLS, BASH), (("10", "99"), BASH, BASH))
+
+    def test_a_dup_onto_standard_input_or_a_path_runs_the_file(self):
+        for numbers, shells, moved in self.NUMBERS:
+            for number in numbers:
+                for uses, settings in ((self.DUPS + self.PATHS, shells), (self.MOVES, moved)):
+                    for use in uses:
+                        row = GET + use.replace("N", number)
+                        for shell in settings:
+                            with self.subTest(row=row, shell=shell):
+                                self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_a_descriptor_redirected_again_reads_the_file_no_longer(self):
+        # Closed, or opened on another file, before the dup: no shell runs the download (ffffffff).
+        for use in ("sh 3<> tool 3<&- <&3", "echo : > other\nsh 3<> tool 3< other <&3"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertFalse(reported(GET + use + "\necho done\n", shell))
+
+    def test_a_dup_carries_the_file_to_another_descriptor(self):
+        # Round 2, the coordinator's note on the round-1 seat's DX rows: `4<&3` puts on 4 the file
+        # `3<>` opened on 3, so a later dup of 4 onto standard input reads it -- DX05, DX06 and DX14,
+        # every shell running the download, and so after 3 closes. The move `4<&3-` runs under bash
+        # alone (dash takes none); closed on 3 and on 4 before the dup, nothing runs (ffffffff). Round 3
+        # moved the control: closed on 4 alone, 3 still holds the file, which a shell reads (main's `3<`).
+        for use in ("sh 3<> tool 4<&3 <&4", "sh 3<> tool 4>&3 0<&4", "sh 4<> tool 3<&4 <&3",
+                    "sh 3<> tool 4<&3 3<&- <&4"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+        for shell in self.BASH:
+            with self.subTest(use="the move", shell=shell):
+                self.assertTrue(reported(GET + "sh 3<> tool 4<&3- <&4\necho done\n", shell))
+        for shell in SHELLS:
+            with self.subTest(use="closed on 3 and 4", shell=shell):
+                self.assertFalse(reported(GET + "sh 3<> tool 4<&3 3<&- 4<&- <&4\necho done\n", shell))
+
+    def test_a_shell_reads_what_n_holds_by_any_route(self):
+        # Round 3, the round-2 verdict's B2 and B3: a shell reads what `N<>` still holds when its
+        # redirections end, as `main` reads `N<` -- by a path the reader resolves (UP007, UP008, UP011, a
+        # path in a value UP016, `/dev/stdout` VP001 and VP003), a child program (UX26, UX30, the subshell
+        # UX42) and a command word the step's values decide (DW28). Every shell runs the download.
+        for use in ("sh /proc/thread-self/fd/3 3<> tool", "sh //dev/fd/3 3<> tool", "sh /proc/self/fd/../fd/3 3<> tool",
+                    "P=/dev/fd/3\nsh $P 3<> tool", "sh /dev/stdout 1<> tool", "sh /dev/stdout 3<> tool 1>&3",
+                    "sh -c 'sh <&3' 3<> tool", "sh -c 'sh /dev/fd/3' 3<> tool", "( sh <&3 ) 3<> tool",
+                    "SH=sh\n$SH 3<> tool <&3"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+
+    def test_a_check_is_credited_with_no_file_it_only_holds(self):
+        # Round 3, the round-2 verdict's B1: a check that reads `self` -- by its operand or on standard
+        # input after the dup, straight or through a chain -- while it holds the pinned `sums` on 3 checks
+        # the download against itself, so the use stays reported (QO001, QL001, WO001, WL001; wrong
+        # digests, every shell running the download).
+        wrong = 'echo "%s  tool" > sums\ncurl -fsSLo tool %stool\nsha256sum tool > self\n' % ("a" * 64, URL)
+        for check in ("sha256sum -c self 3<> sums <&3", "sha256sum -c 3<> sums <&3 < self",
+                      "sha256sum -c self 3<> sums 4<&3 <&4", "sha256sum -c 3<> sums 4<&3 <&4 < self"):
+            for shell in SHELLS:
+                with self.subTest(check=check, shell=shell):
+                    self.assertTrue(reported(wrong + check + "\nsh tool\necho done\n", shell))
+
+    def test_a_check_is_credited_with_what_it_reads_alone(self):
+        # Round 2, B1 (the round-1 seat's CF lead row, with a wrong digest): the check verifies its
+        # standard input, the download's own fresh hash, and only holds `sums` open on 3 -- so the
+        # use is unverified. B2, its mirror: a pinned check on standard input, holding another file
+        # open on 3, still verifies what it reads.
+        unverified = ('echo "%s  tool" > sums\ncurl -fsSLo tool %stool\n'
+                      'sha256sum tool | sha256sum -c 3<> sums\nsh tool\necho done\n' % ("0" * 64, URL))
+        for shell in (None, "bash", "sh"):
+            with self.subTest(row="CF", shell=shell):
+                self.assertTrue(reported(unverified, shell))
+        verified = GET + '%s 3<> other\nsh tool\necho done\n' % CHECK
+        for shell in (None, "bash", "sh"):
+            with self.subTest(row="CO", shell=shell):
+                self.assertFalse(reported(verified, shell))
+
+    def test_a_path_of_n_or_a_dup_a_value_decides_carries_what_n_holds(self):
+        # Round 4, the round-3 verdict's B1: a path open of N's descriptor carries what N holds onto
+        # its target, as a dup does, so a later close of N leaves it there (AP001; the spellings the
+        # reader resolves, AP025, AP033 and AP041; onto 4, AP073 and AP081; read-write onto 0, AP113; an
+        # operand, AP161). A path in a value (AP153), or a dup whose source a value decides (AD001,
+        # AD007, AD016, AD019), carries every file held, fail-closed. Every shell runs the download.
+        for use in ("sh 3<> tool </dev/fd/3 3<&-", "dash 3<> tool </proc/self/fd/3 3<&-",
+                    "bash 3<> tool </proc/thread-self/fd/3 3<&-", "sh 3<> tool <//dev/fd/3 3<&-",
+                    "bash 3<> tool 4</dev/fd/3 3<&- <&4", "sh 3<> tool 4<>/dev/fd/3 3<&- <&4",
+                    "bash 3<> tool 0<>/dev/fd/3 3<&-", "sh /dev/fd/4 3<> tool 4</dev/fd/3 3<&-",
+                    "P=/dev/fd/3\nbash 3<> tool <$P 3<&-", "FD=3\nsh 3<> tool <&$FD 3<&-",
+                    "FD=3\nsh 3<> tool 4<&$FD 3<&- <&4", "sh 3<> tool <&$((3)) 3<&-",
+                    "sh 3<> tool <&$(echo 3) 3<&-"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+
+    def test_the_shell_a_find_runs_reads_what_n_holds_whatever_the_root(self):
+        # Round 4, the round-3 verdict's B2: `find` hands the shell it runs behind `-exec`, `-execdir`
+        # or `{} +` the descriptors it holds, so that shell reads what N holds whatever root `find`
+        # walks (AG001, AG013, AG019, AG031, AG037, AG055; `sudo`, AG061). The reader reads the command
+        # `use()` reads, through `workflow_operands.described`, by the same tests. Every shell runs it.
+        for use in ("find /dev/null -maxdepth 0 -exec sh /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null -exec sh \\; 3<> tool <&3", "find /etc/passwd -exec sh /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null -execdir sh /dev/fd/3 \\; 3<> tool", "find /dev/null -exec sh /dev/fd/3 {} + 3<> tool",
+                    "find /dev/null -exec sh \\; 3<> tool 4<&3 3<&- <&4",
+                    "sudo find /dev/null -exec sh /dev/fd/3 \\; 3<> tool"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+        import shell_command
+        import workflow_operands
+        self.assertEqual(workflow_operands._FIND_EXEC, shell_command._FIND_EXEC)
+
+    def test_each_way_the_rule_names_a_reader_of_what_n_holds(self):
+        # Round 4, the round-3 verdict's B3-B9: one row for each way the rule reads a command as one
+        # that reads what N holds -- a substitution head (AV011), `eval` (AV045, AO069), a foreign
+        # interpreter (AXI01, which the seat ran by hand with a python payload), a shell by its path
+        # (AN017), a wrapper or a group in front (UX18, UX19, UX03), the second of two held files
+        # (AXF01) -- each run by every shell, and `source` (UP257), run by bash alone.
+        for shells, uses in ((SHELLS, ("$(echo sh) 3<> tool <&3", "eval sh 3<> tool <&3", "eval 'sh <&3' 3<> tool",
+                                       "python3 3<> tool <&3", "/bin/sh 3<> tool <&3", "sudo sh 3<> tool <&3",
+                                       "env sh 3<> tool <&3", "{ sh 3<> tool <&3; }", "sh 3<> other 4<> tool <&4")),
+                             (self.BASH, ("source /dev/fd/3 3<> tool",))):
+            for use in uses:
+                for shell in shells:
+                    with self.subTest(use=use, shell=shell):
+                        self.assertTrue(reported(GET + use + "\necho done\n", shell))
+        # F2: a move leaves nothing on its source, so once its target closes nothing is held and no
+        # shell runs anything (AXM01, ffffffff).
+        for shell in SHELLS:
+            with self.subTest(use="moved, then closed", shell=shell):
+                self.assertFalse(reported(GET + "sh 3<> tool 4<&3- 4<&-\necho done\n", shell))
+
+    def test_each_path_of_n_the_reader_resolves_carries_what_n_holds(self):
+        # Round 5, the round-4 verdict's B1 and B2: `/dev/stdout` and `/dev/stderr` are paths of fd 1
+        # and fd 2 (FS01, FS08; past a climb or `//` too), and a climb to `/dev/fd/N` or
+        # `/proc/self/fd/N` is a path of N (FD211, FD231; through `./`, a `/proc` path the reader
+        # does not resolve, which carries every file held, fail-closed), so each carries what N holds
+        # onto standard input, and every shell runs the download. A symlink the step makes to one
+        # stays open (B3, #2919).
+        climb = "../" * 12
+        for use in ("sh 1<> tool </dev/stdout 1>/dev/null", "sh 2<> tool </dev/stderr 2>/dev/null",
+                    "sh 1<> tool <%sdev/stdout 1>/dev/null" % climb, "sh 2<> tool <//dev/stderr 2>/dev/null",
+                    "sh 3<> tool <%sdev/fd/3 3<&-" % climb, "dash 9<> tool <%sproc/self/fd/9 9<&-" % climb,
+                    "sh 3<> tool <./%sproc/self/fd/3 3<&-" % climb):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+        # F6: a path of 4 carries what 4 holds and no more, past `thread-self`, a doubled slash or a
+        # climb, so with `other` on 4 no shell runs the download (F6A, F6B; ffffffff). F1: a
+        # here-string's word is the shell's text, not a path, so it carries nothing, and the shell
+        # finds 3 closed.
+        for use in ("sh 3<> tool 4<> other </proc/thread-self/fd/4 3<&- 4<&-",
+                    "sh 3<> tool 4<> other </proc/self//fd/4 3<&- 4<&-",
+                    "sh 3<> tool 4<> other <%sproc/self/fd/4 3<&- 4<&-" % climb, "sh 3<> tool <<< /dev/fd/3 3<&-"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertFalse(reported(GET + use + "\necho done\n", shell))
+
+    def test_a_check_named_through_a_value_is_credited_with_no_file_it_only_holds(self):
+        # Round 5, the round-4 verdict's B4: the check side credits `$X/sha256sum` as a check by its
+        # basename, so the reader hands it no file `N<>` only holds -- beside its operand (CK09), a
+        # path of N on 4 (CK16) or `0<> self` (CK10). Each checks the download against itself, and the
+        # use stays reported, the pinned digest right (the seat's payload's) or wrong.
+        for digest in ("4b6e6b7b4b378ba4396fd5218233be164d72462a8f28c6bdd08bd54fa2cfca66", "a" * 64):
+            pinned = 'echo "%s  tool" > sums\n%ssha256sum tool > self\nX=/usr/bin\n' % (digest, GET)
+            for check in ("$X/sha256sum -c self 3<> sums", "$X/sha256sum -c self 3<> sums 4</dev/fd/3 3<&-",
+                          "$X/sha256sum -c 0<> self 3<> sums"):
+                for shell in SHELLS:
+                    with self.subTest(digest=digest[:1], check=check, shell=shell):
+                        self.assertTrue(reported(pinned + check + "\nsh tool\necho done\n", shell))
+
+    def test_each_checksum_tool_named_through_a_value_is_handed_no_file_it_only_holds(self):
+        # Round 6, the round-5 verdict's B1: the exclusion is every checksum tool's
+        # (`shell_command._CHECKERS`), not `sha256sum`'s alone -- CK09's shape for each, the use
+        # reported under every setting.
+        import shell_command
+        for tool in shell_command._CHECKERS:
+            pinned = 'echo "%s  tool" > sums\n%s%s tool > self\nX=/usr/bin\n' % ("a" * 64, GET, tool)
+            for shell in SHELLS:
+                with self.subTest(tool=tool, shell=shell):
+                    self.assertTrue(reported(pinned + "$X/%s -c self 3<> sums\nsh tool\necho done\n" % tool, shell))
+
+    def test_find_runs_its_shell_behind_ok_and_by_its_path(self):
+        # Round 5, the round-4 verdict's B5 and B6: `find` runs the shell behind `-ok` and `-okdir`
+        # when it is answered yes (FX085, FX091), and `/usr/bin/find` is `find` (FX121), so that
+        # shell reads what 3 holds, and every shell runs the download. Round 6 (the round-5 verdict's
+        # B2): the shell a value names, `-exec $S` (FX283) -- the value arm reads the command word
+        # `find` runs, not the stage's first word.
+        for use in ("echo y > ans\nfind /dev/null -ok sh /dev/fd/3 \\; 3<> tool < ans",
+                    "echo y > ans\nfind /dev/null -okdir sh /dev/fd/3 \\; 3<> tool < ans",
+                    "/usr/bin/find /dev/null -exec sh /dev/fd/3 \\; 3<> tool",
+                    "S=sh\nfind /dev/null -exec $S /dev/fd/3 \\; 3<> tool"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+
+    def test_a_dup_a_value_decides_carries_each_file_each_descriptor_holds(self):
+        # Round 5, the round-4 verdict's B7 and B8: `<&$FD` carries every file held, not the first
+        # alone, and the shell reads each file a descriptor holds, not its first: with `other` on 3
+        # and the download on 4, every shell runs the download (CC09).
+        for shell in SHELLS:
+            with self.subTest(shell=shell):
+                self.assertTrue(reported(GET + "FD=4\nsh 3<> other 4<> tool <&$FD 3<&- 4<&-\necho done\n", shell))
+
+
 class TestEachGateOfTheWholeWordHasAVerdict(unittest.TestCase):
     """PR #2856 round 9, the round-8 verdict's F4: each test that confines the whole reading to a
     command word moves a verdict, so each has a row here. Read whole past one, the guard reports
