@@ -12,8 +12,10 @@ evidence exposed.
 - **X0X identifiers reject control and bidirectional code points (#2712).** The report schema now
   refuses C0 controls other than tab and line feed, DEL/C1 controls, Arabic Letter Mark, bidi
   marks, embeddings, overrides, and isolates in occurrence paths, candidate areas, and proposed
-  names. Honest emitter output remains valid, and `synthesize.py` keeps its ASCII-escaped,
-  multi-line JSON serialization.
+  names. The shared inert renderer now escapes those bidi controls in target-authored paths before
+  report emission, with one code-point policy shared by report and prompt rendering (#2118 items
+  1-2), so a hostile filename cannot suppress the X0X artifact. Honest emitter output remains
+  valid, and `synthesize.py` keeps its ASCII-escaped, multi-line JSON serialization.
 - **Workflow guard reads a function header in the spellings bash takes at a statement's head
   (#2664, #2608; #2785).** `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after
   `then`, `do` or an opened `{` ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN:

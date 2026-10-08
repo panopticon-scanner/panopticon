@@ -13,6 +13,7 @@ import scripts.evidence as evidence
 import scripts.executable as executable
 import scripts.groups_schema as groups_schema
 import scripts.hosts as hosts
+from scripts.inert import INERT_ESCAPE_CODE_POINTS
 import scripts.ocrdb as ocrdb
 import scripts.redact as redact
 import scripts.repo_config as repo_config
@@ -168,13 +169,14 @@ def _ensure_run_symlinks(review_root):
 def _prompt_safe(text):
     """Neutralize characters that could break prompt-line structure so a hostile
     filename cannot inject bullet lines into a reviewer's prompt (#1190 AGT-A1A).
-    C0/C1 control chars, DEL, and the Unicode line/paragraph separators are
-    rendered as inert \\xNN / \\uNNNN escapes; ordinary characters (including
-    non-ASCII) pass through unchanged, so legitimate paths are untouched."""
+    C0/C1 control chars, DEL, Unicode line/paragraph separators, and bidi
+    controls are rendered as inert \\xNN / \\uNNNN escapes; ordinary characters
+    (including non-ASCII) pass through unchanged, so legitimate paths are
+    untouched. The code-point policy is shared with tools.base (#2118 item 2)."""
     out = []
     for ch in text:
         o = ord(ch)
-        if o < 0x20 or o == 0x7f or 0x80 <= o <= 0x9f or o in (0x2028, 0x2029):
+        if o in INERT_ESCAPE_CODE_POINTS:
             out.append("\\x%02x" % o if o < 0x100 else "\\u%04x" % o)
         else:
             out.append(ch)

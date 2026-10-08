@@ -411,6 +411,52 @@ class TestSynthesizePhase(unittest.TestCase):
         self.assertEqual(dispatched_report["evidence"]["status"], "tool_confirmed")
         self.assertEqual(omitted_report["evidence"]["status"], "tool_reported")
 
+    def test_real_child_advances_with_bidi_controls_in_x0x_paths(self):
+        # The direct synthesize test pins rc=0. This pins the other half of the
+        # live boundary: the driver phase runs that child and advances instead
+        # of turning a target-chosen filename into a terminal scan error.
+        points = (0x061C, 0x200E, 0x202A, 0x2066)
+        findings = [{
+            "id": "SE-%03d" % (index + 1),
+            "domain": "SEC",
+            "code": "SEC-X0X",
+            "severity": "LOW",
+            "confidence": "POSSIBLE",
+            "title": "catalog gap %d" % index,
+            "short_title": "catalog gap %d" % index,
+            "category": "catalog-gap",
+            "panel": "security",
+            "location": {"file": "src/x%sy.py" % chr(point), "line_start": 1},
+        } for index, point in enumerate(points)]
+        runio._write_json(
+            runio._pano(self.root, "groups.json"),
+            {"groups": [{"name": "app", "files": []}]},
+        )
+        runio._write_json(
+            runio._pano(self.root, "findings-app-SEC.json"),
+            {"findings": findings,
+             "_panopticon": {"run_id": "R", "role": "domain_panel",
+                              "domain": "SEC", "group": "app"}},
+        )
+
+        result = synthesize.synthesize_execute(
+            self.root, dict(self.manifest, host="generic"))
+        x0x_path = runio._report_out(self.root).replace(".json", "-x0x.json")
+        x0x = runio._load_json(x0x_path)
+
+        self.assertEqual(result.kind, "advanced")
+        self.assertEqual(
+            validate_schema_mod.schema_errors(
+                x0x, validate_schema_mod.X0X_SCHEMA),
+            [],
+        )
+        self.assertEqual(
+            {occurrence["file"]
+             for candidate in x0x["candidates"]
+             for occurrence in candidate["occurrences"]},
+            {"src/x\\u%04xy.py" % point for point in points},
+        )
+
     def test_passes_the_committed_exclude_paths_as_tools_exclude(self):
         # #1740 fix round 1 (controller addition): the report-side gate reads
         # the tool findings through `synthesize.py`, so the committed policy
