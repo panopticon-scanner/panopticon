@@ -64,7 +64,7 @@ from shell_command import (CONDITIONS as CONDITIONS, KEYWORDS as KEYWORDS,
                            _FETCHERS as _FETCHERS, _FUNCTION as _FUNCTION,
                            _INTERPRETERS as _INTERPRETERS, _NAME as _NAME, _OPTIONAL as _OPTIONAL,
                            _SHELLS as _SHELLS, _command_result as _command_result,
-                           _optional as _optional, command as command, reads_held,
+                           _optional as _optional, command as command, reads_held, resolved, track,
                            credited_zero as credited_zero,
                            command_as_written as command_as_written, conditional as conditional,
                            negated as negated, unresolved_wrapper as unresolved_wrapper,
@@ -587,12 +587,12 @@ def _stage(text, context):
             take(word)
             number = (fd.lstrip("0") or "0") if fd else ("0" if op.startswith("<") else "1")
             held = None if number == "0" else held      # a later redirection of fd 0 ends it
-            # A dup, a move or a path of N (`_FD_SPELLINGS`, `input_alias_fd`) carries what N holds onto
+            # A dup, a move or a path of N (`_FD_SPELLINGS`, `input_alias_fd`, `resolved`) carries what N holds onto
             # its target, fd 0 too, until that is redirected again (`4<&3 <&4`, `</dev/fd/3 3<&-`, #2881);
             # a source a value decides (`<&$FD`, `<"$P"`) carries every file held, fail-closed (round 4)
             moved = re.fullmatch(r"(\d+)-", word) if op in (">&", "<&") else None
             source = (moved[1] if moved else word) if moved or op in (">&", "<&") and _fd_or_close(word) else (
-                op != "<<<" and input_alias_fd(derived(_FD_SPELLINGS.sub("/dev/fd/", word), word)))
+                op != "<<<" and input_alias_fd(derived(_FD_SPELLINGS.sub("/dev/fd/", resolved(word, context)), word)))
             carried = tuple(dict.fromkeys(sum(opened.values(), ()))) if source == "?" else opened.get(
                 (source or "-").lstrip("0") or "0", ())
             opened.pop(number, None)            # any redirection of N ends what `N<>` opened there
@@ -623,7 +623,7 @@ def _stage(text, context):
                     zero.append(len(reads) - 1)
                     held = zero[-1]
                 sinks[number] = None           # an input file is not an output sink
-                source = input_alias_fd(word)
+                source = input_alias_fd(resolved(word, context))
                 pipe_inputs[number] = source == "?" or pipe_inputs.get(source, False)
                 pipe_outputs[number] = False
                 reads_body(number, (word, not spelled, False) if op == "<<<" else
@@ -672,11 +672,11 @@ def _stage(text, context):
     # A check reads what `0<>` opened only where fd 0 still holds it (#2856 round 12, B5).
     reads, writes = credited_zero(argv, reads, writes, zero, held)
     stdout, stdin = sinks.get("1"), bodies.get("0")
-    return Stage(argv, writes, reads, stdin[0] if stdin and stdin[2] else heredoc,
+    return track(context, Stage(argv, writes, reads, stdin[0] if stdin and stdin[2] else heredoc,
                  substitutions, [stdout] if stdout is not None else [], group_open,
                  group_close, pipe_inputs["0"], pipe_outputs["1"],
                  tuple(fd for fd, connected in pipe_inputs.items() if connected),
-                 stdin[:2] if stdin else None)
+                 stdin[:2] if stdin else None))
 
 
 def statements(script):

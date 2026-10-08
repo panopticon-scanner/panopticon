@@ -1909,6 +1909,75 @@ class TestEveryActionOfAFindIsRead(unittest.TestCase):
                 self.assertEqual(count > cap, bool(shell_command.unresolved_wrapper(argv)))
 
 
+class TestAPathTheStepLinkedOrMovedToIsItsDescriptor(unittest.TestCase):
+    """#2919: a shell reads what `N<>` holds where it opens N's path (#2881), but a path the step's own
+    state makes resolve to a descriptor carried nothing -- a name it linked (`ln -s /dev/fd/3 x` then
+    `sh 3<> tool <x 3<&-`) or a relative path after its `cd` (`cd /dev` then `<fd/3`) -- while every
+    parent of the link forms, and of `cd /dev` and `cd /`, runs the file, and `main` reports the `N<`
+    twin. The reader now reads the operand where the step's links and `cd` put it
+    (`shell_command.track`, `resolved`)."""
+
+    def test_each_link_the_seat_and_the_hunt_name_reports(self):
+        # FL01, FL02, FL03, FL04 and FL06 (the #2885 round-4 seat; P0L01 and P0L02 are FL01's and
+        # FL03's), the hunt's `-sf` and `./` (L6), and #2885's CHANGELOG example.
+        for use in ("ln -s /dev/fd/3 x\nsh 3<> tool <x 3<&-", "ln -s /dev/fd/9 x\nsh 9<> tool 4<x 9<&- <&4",
+                    "ln -s /dev/fd fds\nsh 3<> tool <fds/3 3<&-", "ln -s /proc/self/fd p\nsh 3<> tool <p/3 3<&-",
+                    "ln -s /dev d\nsh 3<> tool <d/fd/3 3<&-", "ln -sf /dev/fd/3 x\nsh 3<> tool <./x 3<&-",
+                    "ln -s /dev/fd/3 fd3\nsh 3<> tool <fd3 3<&-"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+
+    def test_each_directory_a_cd_moved_to_reports(self):
+        # The hunt's C1 (`cd /dev`, #2885's CHANGELOG example) and C4 (`cd /`), which every parent runs,
+        # and C2 (`cd /dev/fd`) and C3 (`cd /proc/self`), which the dash parents run: `cd` resolves
+        # `/proc/self` there for the parent shell, not the child that holds 3.
+        get = "curl -fsSLo /tmp/tool %stool\n" % URL
+        for use in ("cd /dev\nsh 3<> /tmp/tool <fd/3 3<&-", "cd /\nsh 9<> /tmp/tool <dev/fd/9 9<&-",
+                    "cd /dev/fd\nsh 3<> /tmp/tool <3 3<&-", "cd /proc/self\nsh 3<> /tmp/tool <fd/3 3<&-"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(get + use + "\necho done\n", shell))
+
+    def test_a_name_or_a_directory_a_value_decides_carries_every_held_file(self):
+        # Fail-closed, as `<"$P"` already is: the link's name, or the `cd`'s directory, may be the one.
+        for use in ('ln -s /dev/fd/3 "$X"\nsh 3<> tool <x 3<&-', 'cd "$D"\nsh 3<> tool <fd/3 3<&-'):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+
+    def test_a_link_or_a_cd_that_reaches_no_descriptor_carries_nothing(self):
+        # As `main` reads them: a link elsewhere, a `cd` elsewhere, and a link to a descriptor with
+        # nothing downloaded (the hunt's B1).
+        for use in (GET + "ln -s /usr/share x\nsh 3<> tool <x/y 3<&-", GET + "cd /tmp\nsh 3<> tool <fd/3 3<&-",
+                    "ln -s /dev/fd/3 x\nsh 3<> /dev/null <x 3<&-", "cd /dev\nsh -c true <null"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertFalse(reported(use + "\necho done\n", shell))
+
+    def test_a_heredoc_or_a_pipe_a_link_reaches_is_the_shells_program(self):
+        # The input a path the step linked or moved to opens is the descriptor's, a heredoc's body or
+        # a pipe (the hunt's H1-H3, which every parent runs), beside a plain file of that name (H4).
+        body = "\ncurl -fsSL %si.sh | sh\nEOF\n" % URL
+        for use, runs in (("ln -s /dev/fd/3 x\nsh 3<<'EOF' <x" + body, True), ("cd /dev\nsh 3<<'EOF' <fd/3" + body, True),
+                          ("ln -s /dev/stdin x\ncurl -fsSL %si.sh | sh <x\n" % URL, True),
+                          ("touch x\nsh 3<<'EOF' <x" + body, False)):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertEqual(runs, reported(use + "echo done\n", shell))
+
+    def test_where_the_steps_links_and_cd_put_a_path(self):
+        import shell_command
+        import shell_tokens
+        context = shell_tokens._Parse("")
+        for text in ("ln -s /dev/fd/3 x", "ln -sf /dev/fd fds", "ln -s /dev", "cd /proc/self", "cd fd"):
+            shell_command.track(context, shell_reader.statements(text + "\n")[0].stages[0])
+        self.assertEqual({"x": "/dev/fd/3", "fds": "/dev/fd", "dev": "/dev"}, context.links)
+        self.assertEqual("/proc/self/fd", context.cwd)
+        self.assertEqual(["/dev/fd/3", "/dev/fd/9", "/dev/fd/4", "/proc/self/fd/7", "/etc/x"],
+                         [shell_command.resolved(word, context) for word in ("x", "fds/9", "dev/fd/4", "7", "/etc/x")])
+
+
 class TestEachGateOfTheWholeWordHasAVerdict(unittest.TestCase):
     """PR #2856 round 9, the round-8 verdict's F4: each test that confines the whole reading to a
     command word moves a verdict, so each has a row here. Read whole past one, the guard reports

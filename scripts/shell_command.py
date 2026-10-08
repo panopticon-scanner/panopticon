@@ -439,6 +439,48 @@ def _unread(argv):
     return None
 
 
+def track(context, stage):
+    """`stage`, recording in `context` what it does to the paths of the stages read after it (#2919): a
+    link it makes (`ln -s TARGET NAME`, `-sf`; NAME the target's basename where there is none) stands
+    for its target -- a hard one to a descriptor path cannot cross into `/proc`, and one to a file
+    resolves to that file -- and a `cd` or `pushd` moves every relative path into its directory. In the order `shell_reader.statements` reads them -- one in a branch, a loop or a
+    subshell too, failing closed -- and a name or a directory a value decides is every one
+    (`resolved`)."""
+    argv = command(stage.argv)
+    name = os.path.basename(argv[0]) if argv else ""
+    words = [word for word in argv[1:] if word == "-" or not word.startswith("-")]
+    if name == "ln" and words:
+        link = words[1] if len(words) > 1 else os.path.basename(words[0].rstrip("/"))
+        link = "" if dynamic(link, has_substitution) else os.path.normpath(link)
+        context.links[link] = words[0]
+    elif name in ("cd", "pushd"):
+        place = words[0] if words else "~"
+        place = "$OLDPWD" if place == "-" else place
+        context.cwd = place if place.startswith(("/", "~", "$")) or dynamic(place, has_substitution) else (
+            os.path.join(context.cwd, place) if context.cwd else "")
+    return stage
+
+
+def resolved(word, context):
+    """`word` where the step's links and `cd` put it (`track`, #2919), for `shell_reader.input_alias_fd`:
+    a name it linked, or a path below one, as the link's target; a relative one in the directory a `cd`
+    moved the step to -- a `$` word where a value decides the link's name or the directory, as
+    `input_alias_fd` reads a word a value decides."""
+    if not (context.links or context.cwd) or dynamic(word, has_substitution):
+        return word
+    path = os.path.normpath(word)
+    for link, target in context.links.items():
+        if link and (path == link or path.startswith(link + "/")):
+            path = target + path[len(link):]
+            break
+    else:
+        if "" in context.links and not path.startswith("/"):
+            return derived("$" + path, word)
+    if context.cwd and not path.startswith("/"):
+        path = context.cwd.rstrip("/") + "/" + path
+    return derived(path, word) if path != word else word
+
+
 def unresolved_wrapper(argv):
     """Why a wrapper at this command's head -- or, with none, a pattern bash
     expands where the command starts (#2294) -- cannot be resolved, if any;

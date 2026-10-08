@@ -94,6 +94,8 @@ class _Parse:
             self.prefix += "x"
         self.entries: dict[str, tuple[str, object]] = {}
         self.bangs: set[int] = set()    # the statements a negated group holds (`shell_reader._split`)
+        self.links: dict[str, str] = {}  # each name the step linked, to its target (`shell_command.track`)
+        self.cwd = ""                   # where the step's `cd` moved it, "" where none did (`track`)
         self.pattern = re.compile(re.escape(self.prefix) + r"\d+@@")
 
     def new(self, kind, value=None):
