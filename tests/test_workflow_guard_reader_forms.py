@@ -723,6 +723,7 @@ class TestACallSiteCarriesAFixedNumberOfTimes(unittest.TestCase):
         spent, site = {}, [None]
         real_called, real_carry, real_one = (
             workflow_uses.record_called, workflow_called._carry, workflow_called._carry_one)
+        passes = self.each_pass(spent)
 
         def called(table, stmts, position, starts):
             site[0] = position
@@ -743,12 +744,16 @@ class TestACallSiteCarriesAFixedNumberOfTimes(unittest.TestCase):
         for size in (100, 200):
             with self.subTest(size=size):
                 spent.clear()
+                passes.clear()
                 with mock.patch.object(workflow_uses, "record_called", called), \
                         mock.patch.object(workflow_called, "_carry", carry), \
-                        mock.patch.object(workflow_called, "_carry_one", one):
+                        mock.patch.object(workflow_called, "_carry_one", one), \
+                        mock.patch.object(wg, "_job_defects", passes.entered):
                     reported(GET + self.calls(size) + "sh /dev/null\n")
-                self.assertTrue(spent)
-                self.assertLessEqual(max(spent.values()), 8 * 128)
+                self.assertEqual(self.PASSES, len(passes))
+                for each in passes:
+                    self.assertTrue(each)
+                    self.assertLessEqual(max(each.values()), 8 * 128)
 
     def test_each_statement_is_read_for_what_it_may_set_once_a_step(self):
         # Round 12 (its seat's F4, mC7): `_Step.set_at` keeps what each statement may set, so the
@@ -806,18 +811,42 @@ class TestACallSiteCarriesAFixedNumberOfTimes(unittest.TestCase):
                     self.assertTrue(sizes)
                     self.assertLessEqual(max(sizes), bound, (max(sizes), len(sizes)))
 
+    # #2858's union: `job_defects` reads a step TWICE, one `_job_defects` call after the other --
+    # `main`'s pass under `mains_answer()`, then the walk's -- and each pass carries the sites within
+    # the budget on its own. So a step's carries are kept per pass, in the one run, and the passes
+    # are counted too: a third one is a change, and each pass is held to the budget, not their mean.
+    PASSES = 2
+
+    @staticmethod
+    def each_pass(current):
+        """A list of one `current`-shaped tally per `_job_defects` call: `entered` is the patch for
+        `wg._job_defects` that starts a pass -- `current` is emptied and its contents at the pass's end
+        are what the list keeps -- so the tallies the other patches add to `current` fall per pass."""
+        class Passes(list):
+            def entered(self, *args, **kwargs):
+                current.clear()
+                try:
+                    return real(*args, **kwargs)
+                finally:
+                    self.append(dict(current))
+        real = wg._job_defects
+        return Passes()
+
     def carries(self, script):
-        """How many times `_carry` ran for `script` (each site's dry carry included)."""
+        """How many times `_carry` ran for `script` in each pass (each site's dry carry included)."""
         from unittest import mock
-        count = [0]
+        count = {}
+        passes = self.each_pass(count)
         real = workflow_called._carry
 
         def counted(*args):
-            count[0] += 1
+            count["carries"] = count.get("carries", 0) + 1
             return real(*args)
-        with mock.patch.object(workflow_called, "_carry", counted):
+        with mock.patch.object(workflow_called, "_carry", counted), \
+                mock.patch.object(wg, "_job_defects", passes.entered):
             reported(GET + script + "sh /dev/null\n")
-        return count[0]
+        self.assertEqual(self.PASSES, len(passes))
+        return max(each.get("carries", 0) for each in passes)
 
     def test_each_site_carries_within_the_budget(self):
         # 24 sites of one body: one dry carry for them all, and at most 8 carries a site, where round
