@@ -1490,6 +1490,8 @@ class TestTheRoundElevenVerdictsRows(unittest.TestCase):
     - B2: a command word bash expands to nothing with its name unset -- `${X:+W}`, `${X+W}`, `${X#W}`,
       `%`, `/` -- is the literal glued after its `}`, or nothing, and the next word is the command; a
       step that sets the name runs the alternate, as before (`X=1`, `set -- 1`; `X=` for `+` alone).
+      Round 13, the round-12 ruling: no step's text decides a half -- both are read -- so the set
+      rows whose alternate runs nothing (`SET_RUNS_NOTHING`) are reported, a fail-closed over-report.
     - B5: a check is credited with what `0<>` opened only where fd 0 still holds it and the checker
       reads its standard input; else `0<>` is a write, as `main` reads it (56 cells, 20 rows).
     - F1, F2: the glued literal takes no glob character; a glued `$(…)` joins the last word."""
@@ -1560,10 +1562,13 @@ class TestTheRoundElevenVerdictsRows(unittest.TestCase):
             for shell in SHELLS:
                 with self.subTest(row=row, shell=shell):
                     self.assertTrue(reported(row + "\necho done\n", shell))
+        # Moved in round 13 by the round-12 ruling: "The `SET_RUNS_NOTHING` pins become over-reports.
+        # Change them to assert the REPORT, and name the class in the CHANGELOG as fail-closed." Both
+        # halves are read, and the next word, a shell, runs more than `true`.
         for row in self.SET_RUNS_NOTHING:
             for shell in SHELLS:
                 with self.subTest(row=row, shell=shell):
-                    self.assertFalse(reported(row + "\necho done\n", shell))
+                    self.assertTrue(reported(row + "\necho done\n", shell))
 
     def test_the_glued_literal_takes_no_glob_and_a_glued_substitution_joins(self):
         for row in self.GLUED:
@@ -1591,6 +1596,117 @@ class TestTheRoundElevenVerdictsRows(unittest.TestCase):
         import shell_command
         import workflow_checks
         self.assertEqual(set(shell_command._CHECKERS), set(workflow_checks.CHECKSUM_TOOLS))
+
+
+class TestTheRoundTwelveVerdictsRows(unittest.TestCase):
+    """PR #2856 round 13, the round-12 verdict, on its seat's rows (hunts 45-48; truth over the eight
+    parents b5e b5p b3e b3p de b5n b3n dn), each reported under every `shell:` setting -- the reading
+    is the setting's alike, so where only some parents run the row the others are a named over-report.
+    - B1: `$-` and `$0` may be empty and an indirection is read, so a default of one is read (h45).
+    - B2-B4, the ruling: no `_sets`; every expansion bash can make empty or unset is read both ways,
+      W and the word after it, and REPORTs where either half runs (h45, h46, h47). Two halves the
+      guard may each report that run apart are a command it cannot read.
+    - B5: a digit word is an option's only right after `-a` / `--algorithm`, and past `--` every word
+      is an operand, so a checker naming its list there is credited with no `0<>` file (h48)."""
+
+    PIPED = "curl -fsSL %si.sh | " % URL
+    B1 = ("${-:-/usr/bin/env sh} -c '%s'" % PIPE,                                     # dash-cm-c -------R
+          PIPED + "${-:-/usr/bin/env sh}",                                             # dash-cm-p fffffffR
+          "bash -c '${0:-/usr/bin/env sh} -c \"%s\"' ''" % PIPE,                       # zero-cm-bash-c RRRRRRRR
+          "sh -c '%s${0:-/usr/bin/env sh}' ''" % PIPED,                                 # zero-cm-sh-p RRRRRRRR
+          "Y=Z\n${!Y:-/usr/bin/env sh} -c '%s'" % PIPE,                                # i3 RRRR-RR-
+          "Y=Z\n" + PIPED + "${!Y:-/usr/bin/env sh}")                                  # i2 RRRRfRRf
+    B2 = ("${X^^/usr/bin/env true}sh -c '%s'" % PIPE,                                 # uc-g RR---R--
+          "${X,/usr/bin/env true}sh -c '%s'" % PIPE,                                   # l1-g RR---R--
+          "${!X:+/usr/bin/env true}sh -c '%s'" % PIPE,                                 # ixp-g --RR--R-
+          PIPED + "${!X#/usr/bin/env true} sh",                                        # ixh-p ffRRffRf
+          "${X[0]:+/usr/bin/env true}sh -c '%s'" % PIPE,                               # a0p-g RRRR-RR-
+          PIPED + "${X[@]:+/usr/bin/env true} sh",                                     # aatp-p RRRRfRRf
+          "${!:+/usr/bin/env true}sh -c '%s'" % PIPE,                                  # bangp-g RRRRRRRR
+          PIPED + "${!+/usr/bin/env true} sh",                                         # bangpp-p RRRRRRRR
+          "${-:+/usr/bin/env true}sh -c '%s'" % PIPE,                                  # dashp-g -------R
+          PIPED + "${-#/usr/bin/env true} sh",                                         # dashh-p fffffffR
+          "${@+/usr/bin/env sh} -c '%s'" % PIPE,                                       # at-p-c ----R--R
+          PIPED + "${*+/usr/bin/env sh}")                                              # star-p-p ffffRffR
+    # B3: a set anywhere in the step's text read the alternate where bash runs the next word.
+    B3 = ("${X:+/usr/bin/env true}sh -c '%s'\nX=1" % PIPE,                             # after-g RRRRRRRR
+          "(X=1)\n${X:+/usr/bin/env true}sh -c '%s'" % PIPE,                           # sub-g
+          "if false; then X=1; fi\n${X:+/usr/bin/env true}sh -c '%s'" % PIPE,          # dead-g
+          "# X=1\n${X:+/usr/bin/env true}sh -c '%s'" % PIPE,                           # cmt-g
+          "echo ' X=1'\n${X:+/usr/bin/env true}sh -c '%s'" % PIPE,                     # sq-g
+          "cat <<'EOF'\nX=1\nEOF\n${X:+/usr/bin/env true}sh -c '%s'" % PIPE,          # hd-g
+          "echo X=1\n${X:+/usr/bin/env true}sh -c '%s'" % PIPE,                        # arg-g
+          "declare X 2>/dev/null || true\n${X:+/usr/bin/env true}sh -c '%s'" % PIPE,   # declare-g
+          "X=1\nunset X\n${X:+/usr/bin/env true}sh -c '%s'" % PIPE,                    # unset-g
+          "f() { X=1; }\n${X:+/usr/bin/env true}sh -c '%s'" % PIPE,                    # func-g
+          "${1:+/usr/bin/env true}sh -c '%s'\nset -- 1" % PIPE,                        # setafter-1g
+          "(set -- 1)\n${1:+/usr/bin/env true}sh -c '%s'" % PIPE)                      # setsub-1g
+    # B4: a set `_sets` missed, where the alternate runs.
+    B4 = ("X=1\neval '${X:+/usr/bin/env sh -c} \"%s\"'" % PIPE,                       # outer-evalc RRRRRRRR
+          "set x\n${1:+/usr/bin/env sh -c} '%s'" % PIPE,                               # setx-c RRRRRRRR
+          "eval 'X=1'\n" + PIPED + "${X:+/usr/bin/env sh}",                            # evalset-p RRRRRRRR
+          "set -e x\n" + PIPED + "${1:+/usr/bin/env sh}",                              # setex-p RRRRRRRR
+          PIPED + "${HOME:+/usr/bin/env sh}")                                          # sv-HOME-cp RRRRRRRR
+    # Two halves that run apart: X set runs the download (`${X:+curl …}`), X unset `sh x`.
+    APART = ("${X:+curl -fsSL %si.sh} sh x | sh" % URL,
+             "${X-/usr/bin/env curl -fsSL %si.sh} sh x | sh" % URL,
+             PIPED + "${X:+/usr/bin/env bash} sh")
+    # B5 (h48): `sums` holds a digest no download has; the list the checker names holds the tool's own.
+    LIST = ('echo "%s  tool" > sums\n' % ("a" * 64) + GET + "sha256sum tool > %s\n%s\nsh tool")
+    NAMED = (("1", "sha256sum -c 0<> sums 1"), ("256", "sha256sum -c 256 0<> sums"),      # d1, d2
+             ("1", "shasum -a 256 -c 0<> sums 1"), ("1", "sha256sum -c 0<> sums -- 1"),  # d6, d10
+             ("./-x", "sha256sum -c -- -x 0<> sums"), ("./-x", "sha256sum --check -- -x 0<> sums"))  # x2, x3
+
+    def test_a_default_of_a_parameter_bash_may_leave_empty_is_reported(self):
+        for row in self.B1:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_every_expansion_bash_can_make_empty_is_read_both_ways(self):
+        for row in self.B2 + self.B3 + self.B4:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_two_halves_that_run_apart_are_reported(self):
+        for row in self.APART:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+        # A word the guard does not follow in front of a command it knows reads as that command.
+        for row in ("${CI:+xvfb-run -a} python3 test.py", "${SUDO:+sudo -E} bash build.sh"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(row + "\necho done\n", shell))
+
+    def test_the_half_that_runs_more_is_read(self):
+        # The order `_runs` reads: a command the guard cannot read over a shell's kind (`env $(…)`),
+        # a shell's kind -- an unpacker too -- over a word it does not follow, that word over any
+        # other command, and none over a check, whose credit is no one half's to give.
+        for row in ("${X:+env $(echo sh) -c} sh x",
+                    "curl -fsSLo t.tgz %st.tgz\n${X:+a b} tar xzf t.tgz" % URL,
+                    "${X:+echo hi} $Y -c '%s'" % PIPE,
+                    self.LIST.replace("sha256sum tool > %s\n%s", "${X:+/usr/bin/env sha256sum -c sums} true")):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_a_checker_naming_its_list_is_credited_with_no_zero_file(self):
+        for name, check in self.NAMED:
+            for shell in SHELLS:
+                with self.subTest(check=check, shell=shell):
+                    self.assertTrue(reported(self.LIST % (name, check) + "\necho done\n", shell))
+        # A digit word right after `-a` is the option's (Q1's credit, CK010-CK012's class): fd 0 holds
+        # `sums`, the checker reads it, and under `-e` the wrong digest stops the step.
+        row = self.LIST % ("1", "shasum -a 256 -c 0<> sums")
+        for shell in (None, "bash", "sh"):
+            with self.subTest(check="shasum -a 256 -c 0<> sums", shell=shell):
+                self.assertFalse(reported(row + "\necho done\n", shell))
+
+    def test_the_unpackers_are_the_guards_own(self):
+        import shell_command
+        self.assertEqual(set(shell_command._UNPACKERS), set(workflow_uses.UNPACKERS))
 
 
 class TestTheClosedRowsTheSeatAskedPinned(unittest.TestCase):

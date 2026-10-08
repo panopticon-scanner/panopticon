@@ -501,7 +501,6 @@ def _whole(raw, context, span):
     word = context.token(plain.replace(_ESCAPED, "\\"))
     word = word if isinstance(word, _Token) else _Token(word, _markers(word))
     word.span = span
-    word.step = context                 # the step it is read in (`shell_command._sets`)
     return word
 
 
