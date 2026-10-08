@@ -25,6 +25,7 @@ import shell_heredoc
 import shell_lex
 import shell_quote
 import shell_reader
+import shell_tokens
 
 
 def stage(script):
@@ -1106,23 +1107,33 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
         # negated compound with errexit off, so each statement the group holds is read under
         # the `!` -- the `{`-ends-its-statement step had stranded it on the `{` alone. The
         # close is read bare, as `_closes` asks for it; a statement past the `}` is not negated.
-        argvs = [list(stage.argv) for st in shell_reader.statements(
-            "! { f() { CHECK; }; f; }\nUSE\n") for stage in st.stages]
-        self.assertEqual([["!", "{"], ["!", "f()", "{", "CHECK"], ["}"], ["!", "f"], ["}"],
-                          ["USE"]], argvs)
-        argvs = [list(stage.argv) for st in shell_reader.statements(
-            "! {\nCHECK\n}\nUSE\n") for stage in st.stages]
-        self.assertEqual([["!", "{"], ["!", "CHECK"], ["}"], ["USE"]], argvs)
-        # A `case` header inside the group is read bare and its arm stays first: the `!`
-        # stands behind them (round 2), where the control-kind readers do not see it.
-        argvs = [list(stage.argv) for st in shell_reader.statements(
-            "! {\ncase x in\nx) CHECK;;\nesac\n}\n") for stage in st.stages]
-        self.assertIn(["case", "x", "in"], argvs)
-        self.assertEqual(["!", "CHECK"], next(argv for argv in argvs if "CHECK" in argv)[1:])
+        # Round 13 (#2849's failure contexts on `main`, which read the group's `!` at its `{`):
+        # the `!` is a mark on the stage's first word that `negated` reads (`shell_tokens.bang`),
+        # not a `!` word -- every other reader sees each stage as bash wrote it.
+        def read(script):
+            return [([str(word) for word in stage.argv], shell_reader.negated(stage.argv))
+                    for st in shell_reader.statements(script) for stage in st.stages]
+        self.assertEqual([(["!", "{"], True), (["f()", "{", "CHECK"], True), (["}"], False),
+                          (["f"], True), (["}"], False), (["USE"], False)],
+                         read("! { f() { CHECK; }; f; }\nUSE\n"))
+        self.assertEqual([(["!", "{"], True), (["CHECK"], True), (["}"], False), (["USE"], False)],
+                         read("! {\nCHECK\n}\nUSE\n"))
+        # A `case` header inside the group is read bare and its arm stays first: the mark is the
+        # arm's stage's (round 2's place for the `!`), where the control-kind readers see no word.
+        argvs = read("! {\ncase x in\nx) CHECK;;\nesac\n}\n")
+        self.assertIn((["case", "x", "in"], False), argvs)
+        self.assertEqual((["CHECK"], True), next((argv[1:], under) for argv, under in argvs if "CHECK" in argv))
         # Without the `!` nothing is carried.
-        argvs = [list(stage.argv) for st in shell_reader.statements(
-            "{ f() { CHECK; }; f; }\nUSE\n") for stage in st.stages]
-        self.assertEqual([["{"], ["f()", "{", "CHECK"], ["}"], ["f"], ["}"], ["USE"]], argvs)
+        self.assertEqual([(["{"], False), (["f()", "{", "CHECK"], False), (["}"], False), (["f"], False),
+                          (["}"], False), (["USE"], False)], read("{ f() { CHECK; }; f; }\nUSE\n"))
+        # The mark keeps the word it marks: a token keeps its own attributes and markers (a whole
+        # `${…}` word's reading), and a plain word becomes a token.
+        token = shell_tokens._Token("x", {"m": ("k", 1)})
+        token.span = 2
+        self.assertIs(token, shell_tokens.bang(token))
+        self.assertEqual((True, 2, {"m": ("k", 1)}), (token.negated, token.span, token.markers))
+        plain = shell_tokens.bang("y")
+        self.assertEqual(("y", True, {}), (plain, plain.negated, plain.markers))
 
     def test_a_nested_blank_free_expansion_reads_in_linear_time(self):
         # PR #2856 fix round (B3): `_expansion_end` ran at every `${`, and a blank-free
