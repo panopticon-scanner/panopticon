@@ -71,11 +71,11 @@ evidence exposed.
   (round 11 missed that write, and the use read the step's own value while every shell ran the
   payload: 195 cells in 53 rows of the round-11 seat's hunt, and 78 in 16 more, #2910's, that
   every tree read CLEAN: a body that may set any name with a wrapped `read` between two calls),
-  so no name escapes it; and a stand-in makes no list where the name held none, sharing one
-  read-only list, so the names a walk stands in leave the collector nothing to walk; so a step
-  reads within a constant factor of `main`'s time -- 1.01-1.34x on the forge, `main` and the
-  head interleaved in one process a size (the round-11 seat's `seat-cost18.py`, medians of
-  three, the collector on), over the round-11 seat's 20 shapes to K = 1,600 (200 where `main`
+  so no name a carry sets escapes it; and a stand-in makes no list where the name held none,
+  sharing one read-only list, so the names a walk stands in leave the collector nothing to walk;
+  so a step reads within a constant factor of `main`'s time -- 1.01-1.34x on the forge, `main`
+  and the head interleaved in one process a size (the round-11 seat's `seat-cost18.py`, medians
+  of three, the collector on), over the round-11 seat's 20 shapes to K = 1,600 (200 where `main`
   turns cubic, 800 for `wideassigned`) but for `calls`, and on the six that grew in round 11 to
   3,200: `calls` falls from 3.88x at K = 50 to 1.12x as its carries outgrow `_WORK`; `evalwide`
   and `evalbetween` fall from 1.17-1.19x to 1.08-1.09x, `srcwide` and `srcbetween` from
@@ -163,11 +163,12 @@ evidence exposed.
   the stand-in at its other keys where a later `T[0]=y`, `read T`, `printf -v T`, `mapfile T`,
   `unset 'T[0]'` or `( T= )` writes it, each still ending it; a body's `T=$1` holds no argument
   of its call, its `T=$(…)` and `printf -v T` no value, and a body that sets `T=P` before its
-  `local T` is read as leaving `T` alone; and a check whose failure a subshell, a pipe, an `if`
-  condition, `time` or `!` keeps from stopping the step (`( { f() { CHECK; }; f; } )`, `{ …;
-  CHECK; } | cat`) still clears the download. And the header test at every `(` had joined and
-  split the whole buffer before the match, about x4 per doubling of one `(( … ))` statement, now
-  computed only behind a match.
+  `local T` is read as leaving `T` alone; a body whose only write is `${T:=…}` or `${T=…}`
+  (#2781), or a `command`-wrapped `read T`, is read as setting nothing, within the budget and
+  past it; and a check whose failure a subshell, a pipe, an `if` condition, `time` or `!` keeps
+  from stopping the step (`( { f() { CHECK; }; f; } )`, `{ …; CHECK; } | cat`) still clears the
+  download. And the header test at every `(` had joined and split the whole buffer before the
+  match, about x4 per doubling of one `(( … ))` statement, now computed only behind a match.
 - **Reviewer write safety separates the boundary from its transport (#1622).**
   `artifact_write_guard` now means reviewer-controlled artifact writes are impossible or confined.
   The static `self_write_delivery` fact is true only for Claude and Kimi, and a write-capable role
