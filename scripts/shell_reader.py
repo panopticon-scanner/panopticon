@@ -490,15 +490,15 @@ def _whole(raw, context, span):
     word = context.token(plain.replace(_ESCAPED, "\\"))
     word = word if isinstance(word, _Token) else _Token(word, _markers(word))
     word.span = span
+    word.at = context.whole()
     return word
 
 
 def _stage(text, context):
-    """Read lexical redirect operators in order, copying fd sinks by value,
-    and an array literal as part of the word that assigns it (#2348). A word
-    with a double-quoted `\\$` or `` \\` `` in it carries the text bash makes
-    of it, `spelled`, which is the program a shell handed it runs (#2342): the
-    backslash of each gone, a live `$` word beside them kept as the value word
+    """Read lexical redirect operators in order, copying fd sinks by value, and an array literal
+    as part of the word that assigns it (#2348). A word with a double-quoted `\\$` or `` \\` ``
+    in it carries the text bash makes of it, `spelled`, which is the program a shell handed it
+    runs (#2342): the backslash of each gone, a live `$` word beside them kept as the value word
     it is (#2466), a lifted substitution as its marker; it reads as before."""
     try:
         tokens = shlex.split(patterned(text))

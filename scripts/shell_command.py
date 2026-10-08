@@ -69,9 +69,14 @@ _WHOLE_DEFAULTS = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([^{}$`'\"\\]+)\
 # `}`, or nothing, and the next word runs; its other half is `_alternate`'s (`_command_result`).
 _VANISHING = re.compile(r"\$\{(!?[A-Za-z_]\w*(?:\[[^]]*\])?|[0-9]+|[@*!-])(:?\+|[-=]|##?|%%?|//?|\^\^?|,,?)"
                         r"[^{}]*\}([^\s{}$`'\"\\*?[]*)")
-# The half `_command_result` reads of a command word bash may expand to nothing, and whether a word
-# it read had both (`folds`): its W, as `main` reads it, until `folds` reads the job with it empty.
-_HALVES = {"empty": False, "both": False}
+# The halves `_command_result` reads of the command words bash may expand to nothing (`folds`): the
+# ones this fold reads empty -- none, as `main` reads them, then all (`_ALL`), then each other set of
+# those whose halves read apart, by place (`_half`, #2929) -- and whether one with both halves was met.
+_HALVES: dict = {"empty": frozenset(), "words": {}, "both": False, "on": False}
+_ALL = frozenset({None})
+# The command words bash may expand to nothing whose every reading the folds read; one more reads as
+# a command the guard cannot read, wherever it runs (#2929).
+_HALF_CAP = 3
 # A default's parameter and operator (`_strips`): only `#`, `?` and `$` are never unset or empty -- `$-`
 # is, under dash with no options, and `$0` in a `-c` text run with an empty `$0` -- and an
 # indirection (`${!Y:-W}`) is read as its name is (#2856 round 13, the round-12 B1: the seat's `excfix`).
@@ -247,18 +252,22 @@ def _command_result(argv, optional=True):
                     # `$-` and `$0` are never unset: `${0+W}` is always its W, and `${--W}` never is.
                     if vanishing[1] in ("-", "0") and vanishing[2] in ("+", "-", "="):
                         empty, alternate = (None, alternate) if vanishing[2] == "+" else (empty, None)
-                    apart = None
+                    apart, differs = None, False
                     if empty is not None and alternate is not None:
                         (ran, read), (ran_empty, read_empty) = _runs(alternate), _runs(empty)
+                        differs = (ran, read) != (ran_empty, read_empty)
                         if read != read_empty and 2 <= min(ran, ran_empty) and max(ran, ran_empty) < 5 and {
                                 ran, ran_empty} != {2, 4}:
                             apart = "`%s` runs `%s`, or `%s` where it expands to nothing" % (
                                 readable(whole), readable(read[0]), readable(read_empty[0]))
-                    argv[0].halves = halves = {**halves, rest: (empty, alternate, apart)}
-                empty, alternate, apart = halves[rest]
+                    argv[0].halves = halves = {**halves, rest: (empty, alternate, apart, differs)}
+                empty, alternate, apart, differs = halves[rest]
                 vanished = apart or vanished
-                _HALVES["both"] = _HALVES["both"] or empty is not None and alternate is not None
-                if empty is not None and (alternate is None or _HALVES["empty"]):
+                # Both halves: read W, then empty where the fold reads all, or this place (`_half`).
+                read_empty, past = (_half(whole, differs) if empty is not None and alternate is not None
+                                    else (alternate is None, None))
+                vanished = vanished or past
+                if empty is not None and read_empty:
                     argv = list(empty)
                     continue                    # the next word, read from the top; the W below
                 argv = list(alternate)
@@ -307,18 +316,46 @@ def command(argv):
     return _command_result(argv)[0]
 
 
+def _half(whole, differs):
+    """Whether this fold reads empty a command word bash may expand to nothing that has both halves,
+    and why the guard cannot read it where its halves read apart and it is one past the `_HALF_CAP`
+    such words a job holds (#2929): outside `folds` never, as `main` reads it; in them, where the
+    fold reads all, or, its halves apart, its place -- its parse's source and order
+    (`shell_tokens._Parse.whole`), the same in every parse of that source."""
+    if not _HALVES["on"]:
+        return False, None
+    _HALVES["both"], words, past = True, _HALVES["words"], None
+    if differs and whole.at not in words and len(words) >= _HALF_CAP:
+        past = "`%s` is a command word bash may expand to nothing beside %d more, whose readings the guard does not combine" % (
+            readable(whole), _HALF_CAP)
+    elif differs:
+        words.setdefault(whole.at)
+    return _HALVES["empty"] is _ALL or differs and whole.at in _HALVES["empty"], past
+
+
+def _masks():
+    """The sets of command words bash may expand to nothing a fold reads empty, in order: none, all
+    where one has both halves, then each other set of those whose halves read apart (#2929)."""
+    words = list(_HALVES["words"])
+    some = [frozenset(word for at, word in enumerate(words) if bits >> at & 1) for bits in range(1, (1 << len(words)) - 1)]
+    return [frozenset()] + ([_ALL] + some if _HALVES["both"] else [])
+
+
 def folds(unsure):
     """The folds `workflow_guard.job_defects` reads a job in, each its `sure`: one, and a second that
-    leaves every `Unsure` statement out where `unsure()` then finds one -- a command word bash may
-    expand to nothing read as its W, as `main` reads it; then, where `_command_result` read one with
-    both halves, those folds again with it read empty, so the guard REPORTs where either half runs
-    (#2856 round 13, the round-13 ruling: the union, no half ranked). Each reads every `find`'s first
-    action where the guard asks how a stage uses a file, then, while one held another, its next
-    (`find_action`), so the guard REPORTs where any action uses it (#2918)."""
-    _HALVES.update(empty=False, both=False)
+    leaves every `Unsure` statement out where `unsure()` then finds one -- every command word bash
+    may expand to nothing read as its W, as `main` reads it; then, for each set of those whose halves
+    read apart, the first `_HALF_CAP` a job holds, those folds again with that set read empty, so the
+    guard REPORTs where any reading of them runs (#2856 round 13, the round-13 ruling: the union, no
+    half ranked; every reading, #2929). Each reads every `find`'s first action where the guard asks
+    how a stage uses a file, then, while one held another, its next (`find_action`), so the guard
+    REPORTs where any action uses it (#2918)."""
+    _HALVES.update(empty=frozenset(), words={}, both=False, on=True)
+    read: set = set()
     try:
-        for empty in (False, True):
-            _HALVES["empty"] = empty
+        while masks := [mask for mask in _masks() if mask not in read]:
+            _HALVES["empty"] = masks[0]
+            read.add(masks[0])
             for at in itertools.count():
                 _ACTIONS.update(at=at, more=False)
                 yield False
@@ -326,10 +363,8 @@ def folds(unsure):
                     yield True
                 if not _ACTIONS["more"]:
                     break
-            if not _HALVES["both"]:
-                return
     finally:
-        _HALVES["empty"] = False
+        _HALVES.update(empty=frozenset(), words={}, both=False, on=False)
         _ACTIONS.update(at=0, more=False)
 
 

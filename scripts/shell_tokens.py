@@ -94,12 +94,21 @@ class _Parse:
             self.prefix += "x"
         self.entries: dict[str, tuple[str, object]] = {}
         self.bangs: set[int] = set()    # the statements a negated group holds (`shell_reader._split`)
+        self.source = source
+        self.wholes = 0                 # the words `shell_reader._whole` kept, in order (`whole`)
         self.pattern = re.compile(re.escape(self.prefix) + r"\d+@@")
 
     def new(self, kind, value=None):
         marker = self.prefix + str(len(self.entries)) + "@@"
         self.entries[marker] = (kind, value)
         return marker
+
+    def whole(self):
+        """The place of the next word `shell_reader._whole` keeps whole (#2929): this parse's source
+        and how many it kept before, the same in every parse of that source, so a word is one word
+        to `shell_command.folds` however often its text is read again."""
+        self.wholes += 1
+        return self.source, self.wholes
 
     def token(self, text):
         markers = {m: self.entries[m] for m in self.pattern.findall(text)
