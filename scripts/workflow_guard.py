@@ -245,11 +245,12 @@ import sys
 
 import shell_lex
 import shell_reader
-from shell_reader import command, statements
+from shell_reader import command, folds, statements
 from workflow_annotate import annotate
 from workflow_checks import (CHECKSUM_TOOLS as CHECKSUM_TOOLS, checks as _checks,
                              clears_nested as _clears_nested, contextual as _check_at_use)
-from workflow_fetch import Fetch, compound_streamed_fetch
+from workflow_fetch import (Fetch, compound_output, compound_streamed_fetch, forwarded_consumer,
+                            is_forwarded_tee, streams_to_executor)
 from workflow_forms import (FETCHERS, SHELL_PROGRAM, Idle, Inlined, Reach, Unsure, at_directory,
                             carried, compound_stream_consumer, flattened, kept, located,
                             names_file, parse_fetch, regions, stdin_program, step_credit,
@@ -282,7 +283,7 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
         dirs = working_directories(stmts, regions(stmts), 0, credit, directory)
         working = dict(enumerate(dirs))
     scopes = scopes or range(len(stmts))
-    found, unread = [], []
+    found, unread, out = [], [], [None]
     for index, statement in enumerate(stmts):
         here = working.get(index, directory)
         under = ANY if isinstance(statement, Inlined) else shell
@@ -290,13 +291,13 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
             argv, before = command(stage.argv), statement.stages[:position]
             if argv and os.path.basename(argv[0]) in FETCHERS:
                 following = statement.stages[position + 1:]
-                piped_to = tuple(command(following[0].argv)) if following else None
-                fetch = parse_fetch(os.path.basename(argv[0]), argv[1:], stage, piped_to)
+                fetch_stage, piped_to = compound_output(stmts, out, index, stage, following)
+                fetch = parse_fetch(os.path.basename(argv[0]), argv[1:], fetch_stage, piped_to)
                 if fetch is not None:
                     if stream_exec:
                         compound = compound_stream_consumer(stmts, index, EXECUTORS)
                         stream = compound_streamed_fetch(
-                            os.path.basename(argv[0]), argv[1:], stage, following,
+                            os.path.basename(argv[0]), argv[1:], fetch_stage, following,
                             EXECUTORS, compound,
                         )
                         fetch = stream or (fetch._replace(piped_to=None) if fetch.dest is None
@@ -315,6 +316,7 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                 unread.append((index, reason))
             consumer = tuple(t for t in argv if not shell_reader.is_marker(t)) or None
             executes = consumer and os.path.basename(consumer[0]) in EXECUTORS
+            value_exec = consumer and stdin_program(consumer[:1]) == VALUE_PROGRAM
             for subno, text in enumerate(stage.substitutions):
                 inner = list(statements(text))
                 child_scope = "%sS%d_%d" % (scopes[index], position, subno)
@@ -324,8 +326,9 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                     inner, stream_exec, True, dict(enumerate(dirs)),
                     ["%sI%d" % (child_scope, i) for i in range(len(inner))], here, under)
                 unread.extend((index, why) for _inner, why in nested)
-                found.extend((index, fetch._replace(piped_to=consumer)
-                              if executes or fetch.piped_to is None else fetch)
+                found.extend((index, fetch._replace(piped_to=forwarded_consumer(fetch, consumer))
+                              if (executes or fetch.piped_to is None
+                                  or value_exec and is_forwarded_tee(fetch)) else fetch)
                              for _inner, fetch in fetched)
     return found, unread + (carried(stmts, EXECUTORS) if found else [])
 
@@ -458,7 +461,7 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=(), working=Non
                 "this guard could parse, so it cannot say what arrived or whether "
                 "anything checked it -- use explicit single-download commands "
                 "with named files (`-o <path>`) and `sha256sum -c` checks" % fetch.tool)
-    if fetch.dest is None:
+    if fetch.dest is None or streams_to_executor(fetch, EXECUTORS):
         if not fetch.piped_to:
             return None
         if stdin_program(fetch.piped_to[:1]) == VALUE_PROGRAM:
@@ -553,7 +556,8 @@ def job_defects(steps, strict=False):
     """Defects for a job: steps share files but start fresh shells and cwd. Conditions and failure
     gates bind checks. `Unsure` scripts get a second fold; `strict` rejects an unread step."""
     found, seen, steps = [], set(), list(steps)     # read twice: a one-shot iterable, once
-    for sure in (False, True):              # the second fold leaves every `Unsure` statement out
+    # The second fold leaves every `Unsure` statement out; `folds` reads each half (#2856 round 13).
+    for sure in folds(lambda: any(isinstance(statement, Unsure) for statement in stmts)):
         stmts: list[shell_reader.Statement] = []
         owner, conditions, credit, working, entries, fetched, unread = [], {}, {}, {}, [], [], []
         bound: list[Fetch] = []
@@ -601,8 +605,6 @@ def job_defects(steps, strict=False):
                         stmts, conditions, credit, (fetched, unread), working, scopes)]
         found += [entry for entry in entries if entry[0] not in seen]
         seen = {key for key, _name, _why in found}
-        if not any(isinstance(statement, Unsure) for statement in stmts):
-            break
     return [(name, why) for _key, name, why in found]
 
 

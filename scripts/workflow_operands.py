@@ -35,6 +35,7 @@ import re
 
 import shell_reader
 from shell_reader import command
+from shell_command import _FIND_EXEC as _FIND_EXEC, find_action
 from shell_patterns import is_pattern, patterned
 from shell_wrappers import dynamic
 
@@ -342,9 +343,6 @@ _EXTGROUP = re.compile(r"[@+!*?]\([^()]*\)")
 _EXPANSION = re.compile(r"\$\{[^{}]*\}|\$\(\.\.\.\)|\$(?:\w+|[^\w{])")
 _HERE = re.compile(r"^(?:\./+)+")
 _BRACE_LIMIT = 64
-# `find`'s ways of running a command over what it walked. The operand is `{}`,
-# which names nothing at all.
-_FIND_EXEC = ("-exec", "-execdir", "-ok", "-okdir")
 _RECURSIVE = ("-R", "-r", "--recursive")
 
 
@@ -530,12 +528,10 @@ def described(statement, position, stage, argv):
                        or unknown and bool(_GLOB.search(token)))
             reparsed.append(_Reparsed(token) if reparse else token)
         argv = [argv[0]] + reparsed
-    for predicate in _FIND_EXEC:
-        if os.path.basename(argv[0]) == "find" and predicate in argv:
-            inner = [t for t in argv[argv.index(predicate) + 1:]
-                     if t not in ("{}", ";", "+")]
-            if inner:
-                return inner, _walked(argv), True
+    # `find` runs the command of each action (`-exec`, `-execdir`, `-ok`, `-okdir`), one a fold
+    # (#2918); the operand is `{}`, which names nothing at all.
+    if inner := find_action(argv):
+        return inner, _walked(argv), True
     # `command()` strips what stands in FRONT of the command, and `argv` is
     # what it left: so the wrappers are the prefix, and an `xargs` anywhere
     # else is an operand -- a file that happens to be called `xargs` hands

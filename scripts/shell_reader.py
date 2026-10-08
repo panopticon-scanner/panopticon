@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 """As much of the POSIX shell as a guard over `run:` blocks has to read.
 
-Split out of `scripts/workflow_guard.py` (#1647 fix round 1), which asks two
-questions of a workflow step -- what does it download, and what checks the
-download -- and could answer neither while its input was a regex match over
-shell TEXT. Both questions need the same thing first: the commands, in order,
-with their arguments, their redirections, their heredocs and the commands
+Split out of `scripts/workflow_guard.py` (#1647 fix round 1), which asks two questions of a
+workflow step -- what does it download, and what checks the download -- and could answer neither
+while its input was a regex match over shell TEXT. Both questions need the same thing first: the
+commands, in order, with their arguments, their redirections, their heredocs and the commands
 hidden inside their substitutions.
 
-So this module reads shell, and nothing about supply chains lives here. The
-reading is deliberately partial -- no expansion, no arithmetic, no control
-flow -- and the rule on top is written to fail closed on what is missing (see
-that module's docstring). What IS handled, because each one hid a download
-from the guard until it was:
+So this module reads shell, and nothing about supply chains lives here. The reading is
+deliberately partial -- no expansion, no arithmetic, no control flow -- and the rule on top is
+written to fail closed on what is missing (see that module's docstring). What IS handled,
+because each one hid a download from the guard until it was:
 
     comments        `# curl ... | sh` in the prose explaining the rule
     continuations   a fetch written across four lines
@@ -31,13 +29,11 @@ from the guard until it was:
     patterns        `{sh,-c}` and `[s]h` are not expanded but marked: bash makes
                     words of them, so no command they may start is resolved
 
-The first three are settled on the TEXT, before any command is read, in the
-one quote-aware pass `scripts/shell_lex.py` makes the way bash does (#1793),
-and the substitutions are lifted out of it by `scripts/shell_text.py`.
-The wrappers' table, and the option grammar each one is read with, are
-`scripts/shell_wrappers.py`'s (#2227).
-The words a parse hands back, and the markers in them that say what was
-lifted out, are `scripts/shell_tokens.py`'s (#2628): split out at this
+The first three are settled on the TEXT, before any command is read, in the one quote-aware pass
+`scripts/shell_lex.py` makes the way bash does (#1793), and the substitutions are lifted out of
+it by `scripts/shell_text.py`. The wrappers' table, and the option grammar each one is read
+with, are `scripts/shell_wrappers.py`'s (#2227). The words a parse hands back, and the markers
+in them that say what was lifted out, are `scripts/shell_tokens.py`'s (#2628): split out at this
 module's size and imported back here, so no caller moved.
 
 Stdlib only. `statements(script)` is the entry point; `command(argv)` strips
@@ -68,33 +64,31 @@ from shell_command import (CONDITIONS as CONDITIONS, KEYWORDS as KEYWORDS,
                            _FETCHERS as _FETCHERS, _FUNCTION as _FUNCTION,
                            _INTERPRETERS as _INTERPRETERS, _NAME as _NAME, _OPTIONAL as _OPTIONAL,
                            _SHELLS as _SHELLS, _command_result as _command_result,
-                           _optional as _optional, command as command,
+                           _optional as _optional, command as command, reads_held,
+                           credited_zero as credited_zero,
                            command_as_written as command_as_written, conditional as conditional,
                            negated as negated, unresolved_wrapper as unresolved_wrapper,
-                           wrapper_words as wrapper_words)
+                           folds as folds, wrapper_words as wrapper_words)
 
-# One shell command: its argv, the files it redirects into / reads from, the
-# heredoc body attached to it, the command substitutions inside it -- the
-# `$(...)`, `<(...)` and backtick texts, which are commands in their own right
-# and where `eval "$(curl ...)"` hides its download -- and stdout_writes, the
-# final file sink of descriptor 1 after ordered redirects/duplications. `writes`
-# also carries an explicit OTHER fd (`2>err.log`) so the guard's file-tracking
-# stays correct; `stdout_writes` is the one a caller may call THE destination
-# (#1733). `&>word`/`&>>word` and the UNNUMBERED `>&word` land there too --
-# bash's `>word 2>&1` shorthand, a real file whatever `word` looks like. A
-# target beginning with `&` whose remainder IS a duplication or close (`&1`,
-# `&-`) -- `2>&1`, `>&2`, `>&-` -- lands in neither list.
-# Parse-local subshell markers leave argv alone; counts retain their boundaries
-# for the checksum handler without exposing marker tokens as commands.
-# `heredoc` is the body a caller may quote back (a `sha256sum -c` sums list;
-# of several, the one descriptor 0 reads if any -- `cat` and `-c` read stdin);
-# `stdin_heredoc` is the body descriptor 0 FINALLY reads, with the flag that
-# says whether it expanded -- `(body, expands)` or None. The two are different
-# questions: `sh 3<<EOF` writes a body nothing reads on stdin, `sh <<EOF 0<&3`
-# hands stdin somewhere else afterwards, and only the second question can say
-# whether a heredoc is the SCRIPT of the interpreter in front of it (#1839).
-# A here-string is a body the second question reads too (`sh <<< '...'`,
-# #2293) -- expanding unless `lex` spelled its word -- and never the first's.
+# One shell command: its argv, the files it redirects into / reads from, the heredoc body
+# attached to it, the command substitutions inside it -- the `$(...)`, `<(...)` and backtick
+# texts, which are commands in their own right and where `eval "$(curl ...)"` hides its download
+# -- and stdout_writes, the final file sink of descriptor 1 after ordered
+# redirects/duplications. `writes` also carries an explicit OTHER fd (`2>err.log`) so the
+# guard's file-tracking stays correct; `stdout_writes` is the one a caller may call THE
+# destination (#1733). `&>word`/`&>>word` and the UNNUMBERED `>&word` land there too -- bash's
+# `>word 2>&1` shorthand, a real file whatever `word` looks like. A target beginning with `&`
+# whose remainder IS a duplication or close (`&1`, `&-`) -- `2>&1`, `>&2`, `>&-` -- lands in
+# neither list. Parse-local subshell markers leave argv alone; counts retain their boundaries
+# for the checksum handler without exposing marker tokens as commands. `heredoc` is the body a
+# caller may quote back (a `sha256sum -c` sums list; of several, the one descriptor 0 reads if
+# any -- `cat` and `-c` read stdin); `stdin_heredoc` is the body descriptor 0 FINALLY reads,
+# with the flag that says whether it expanded -- `(body, expands)` or None. The two are
+# different questions: `sh 3<<EOF` writes a body nothing reads on stdin, `sh <<EOF 0<&3` hands
+# stdin somewhere else afterwards, and only the second question can say whether a heredoc is the
+# SCRIPT of the interpreter in front of it (#1839). A here-string is a body the second question
+# reads too (`sh <<< '...'`, #2293) -- expanding unless `lex` spelled its word -- and never the
+# first's.
 Stage = collections.namedtuple(
     "Stage", "argv writes reads heredoc substitutions stdout_writes "
              "group_open group_close stdin_from_pipe stdout_to_pipe pipe_input_fds "
@@ -108,7 +102,7 @@ Statement = collections.namedtuple("Statement", "stages separator")
 
 # The builtins whose words bash reads as assignments too: `declare -a a=(1 2)`.
 _DECLARATIONS = ("declare", "typeset", "local", "export", "readonly")
-_REDIRECT = re.compile(r"<<<|&>>|&>|>>|>\||>&|<&|>|<")
+_REDIRECT = re.compile(r"<<<|<>|&>>|&>|>>|>\||>&|<&|>|<")
 # The parentheses of a function header, as bash and dash read them: `()` or `( )`, and a
 # group's `{` with a header after it on the same line (#2664).
 _HEADER = re.compile(r"\([ \t]*\)")
@@ -117,7 +111,12 @@ _NESTED_CASE = re.compile(r"\s*case(?:\s|$)")
 # Put in place of the backslash of a `\$` or `` \` `` inside "..." (`_split`),
 # which bash drops and shlex keeps (#2342): a private-use character, as `MARK`.
 _ESCAPED = "\ue002"
+# Put in place of each blank inside an unquoted `${...}` (`_split`), which bash keeps as one
+# expansion before it splits the result, where shlex would split the braces apart (#2731).
+_BLANK = "\ue004"
 _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
+# The paths of N a carry reads as N, past slashes or a climb: `//dev/fd/N`, `../proc/thread-self/fd/N` (#2881)
+_FD_SPELLINGS = re.compile(r"^(?:/+|(?:\.\./+)+)(?:dev|proc/(?:thread-)?self)/+fd/")
 
 
 # --- reading the shell -------------------------------------------------------
@@ -141,15 +140,58 @@ def _negated(text, context):
     return None
 
 
+def _bare_blanks(text, i):
+    """The `${…}` at `i`, as `(end, marked)`: where it ends, and its text with each blank no quote
+    or backslash covers marked `_BLANK`. None where it has no such blank -- a quoted or escaped
+    blank is the word's own, as shlex keeps it -- or holds a newline or an operator no quote
+    covers (`${V:-a | sh}`, `${V:-a; b}`), or nothing ends it: `main` ends a statement or a stage
+    there, and only the command word reads a word whole, so every statement and stage is `main`'s
+    (#2856 round 8). The scan stops at that newline or operator, so it reads no `${` past its own
+    stage, and ends at the first `}` no quote covers: a default holding a nested `${…}` names no
+    shell (`shell_command._WHOLE_DEFAULTS` takes no `$`), so where that one ends decides nothing
+    (round 9)."""
+    out, quote, at = ["${"], "", i + 2
+    while at < len(text):
+        ch = text[at]
+        if ch == "\\" and quote != "'" and at + 1 < len(text):
+            out.append(text[at:at + 2])
+            at += 2
+            continue
+        if quote:
+            quote = "" if ch == quote[-1] else quote
+        elif text.startswith("$'", at):
+            # `$'…'` as `_split` reads it: bash's text for it, single-quoted (#2344).
+            end = at + 2
+            while end < len(text) and text[end] != "'":
+                end += 2 if text[end] == "\\" else 1
+            body = ansi_c(text[at + 2:end]) if end < len(text) else None
+            if body is not None:
+                out.append("'%s'" % body.replace("'", "'\"'\"'"))
+                at = end + 1
+                continue
+            out.append("$'")
+            quote, at = "$'", at + 2
+            continue
+        elif ch in "'\"":
+            quote = ch
+        elif ch in "\n;|&<>()":
+            return None
+        elif ch == "}":
+            out.append(ch)
+            return (at + 1, "".join(out)) if _BLANK in out else None
+        out.append(_BLANK if ch in " \t" and not quote else ch)     # what the shells split on
+        at += 1
+    return None
+
+
 def _split(text, context):
     """[[stage text, ...], ...]: statements, each a list of pipeline stages.
 
-    Quote-aware by hand rather than by regex, because the whole defect being
-    fixed is a regex that could not tell a `|` inside a URL from a pipeline.
-    A `$'...'` whose escapes `shell_quote.ansi_c` decodes becomes the '...' of
-    the text bash makes of it, so `sh $'-c'` reads as `sh -c` (#2344); a
-    double-quoted `\\$` or `` \\` `` is marked for `_stage` (`_ESCAPED`), as
-    shlex, reading what is left, no longer knows the quote it was in.
+    Quote-aware by hand rather than by regex, because the whole defect being fixed is a regex
+    that could not tell a `|` inside a URL from a pipeline. A `$'...'` whose escapes
+    `shell_quote.ansi_c` decodes becomes the '...' of the text bash makes of it, so `sh $'-c'`
+    reads as `sh -c` (#2344); a double-quoted `\\$` or `` \\` `` is marked for `_stage`
+    (`_ESCAPED`), as shlex, reading what is left, no longer knows the quote it was in.
     """
     statements: list[tuple[list[str], str]] = []
     stages = []
@@ -158,27 +200,24 @@ def _split(text, context):
     cases: list[str] = []
     groups = (context.new("group", "("), context.new("group", ")"))
     word_start, redirect_target = 0, False
-    # A `case` header is exactly three words (`case`, the word, `in`), so the
-    # shlex probe below only has to run while the buffer can still BE one --
-    # `header_words` counts the words the buffer has closed, `header_live`
-    # goes false as soon as the first word is not `case` or a third word has
-    # gone by without a header, and both reset when the buffer does. Probing
-    # unconditionally re-split the WHOLE buffer on every whitespace character,
-    # which made `_split` quadratic: 42 KB of one statement took ~93 s against
-    # 0.02 s before the probe existed, from a `run:` block this module reads
-    # out of the TARGET repository (fix round on #1714, Critical 1).
+    # A `case` header is exactly three words (`case`, the word, `in`), so the shlex probe below
+    # only has to run while the buffer can still BE one -- `header_words` counts the words the
+    # buffer has closed, `header_live` goes false as soon as the first word is not `case` or a
+    # third word has gone by without a header, and both reset when the buffer does. Probing
+    # unconditionally re-split the WHOLE buffer on every whitespace character, which made
+    # `_split` quadratic: 42 KB of one statement took ~93 s against 0.02 s before the probe
+    # existed, from a `run:` block this module reads out of the TARGET repository (fix round on
+    # #1714, Critical 1).
     header_words, header_live = 0, True
-    # `[[ ... ]]` is ONE compound command: the `&&`, `||`, `(`, `)`, `<` and
-    # `>` in it are the conditional's operators, not list separators, subshells
-    # or redirections (#2441) -- split at them, `CHECK && [[ -f a || -f b ]] ||
-    # exit 1` lost the `|| exit 1` that ends the real list. `cond` is 0 outside
-    # one and, inside, 1 plus the `(` it holds open, so a `)` it did not open
-    # ends it where `shell_lex` does: a `case` arm's `[[)` is a pattern.
-    # `at_head` says every word this stage closed is a keyword or an assignment
-    # -- where bash reads `[[` as the conditional, not as `echo [[ a`'s word.
-    # The test ends with the STATEMENT, not with a stage: bash makes one word
-    # of `^(x|y)$`, and ending it at that `|` left the `)` closing a group
-    # nothing had opened -- the unbalanced count #2334 reads as a lost list.
+    # `[[ ... ]]` is ONE compound command: the `&&`, `||`, `(`, `)`, `<` and `>` in it are the
+    # conditional's operators, not list separators, subshells or redirections (#2441) -- split
+    # at them, `CHECK && [[ -f a || -f b ]] || exit 1` lost the `|| exit 1` that ends the real
+    # list. `cond` is 0 outside one and, inside, 1 plus the `(` it holds open, so a `)` it did
+    # not open ends it where `shell_lex` does: a `case` arm's `[[)` is a pattern. `at_head` says
+    # every word this stage closed is a keyword or an assignment -- where bash reads `[[` as the
+    # conditional, not as `echo [[ a`'s word. The test ends with the STATEMENT, not with a
+    # stage: bash makes one word of `^(x|y)$`, and ending it at that `|` left the `)` closing a
+    # group nothing had opened -- the unbalanced count #2334 reads as a lost list.
     cond, at_head = 0, True
     # `! { ... }`: bash negates the GROUP's status, and errexit is off for every command inside
     # a negated compound, so each statement the group holds is read under the `!` (#2664, the
@@ -234,6 +273,12 @@ def _split(text, context):
                 quote = None
             i += 1
             continue
+        if text.startswith("$$", i):
+            # Bash's PID, read as the pair before anything the second `$` could open: `$${`
+            # is the PID and a brace, `$$'x'` the PID and a quote (#2756 fix round, B1).
+            buf.append("$$")
+            i += 2
+            continue
         if ch in "'\"" or text.startswith("$'", i):
             quote, opened = text[i:i + 2] if ch == "$" else ch, len(buf)
             buf.append(quote)
@@ -244,15 +289,27 @@ def _split(text, context):
             buf.append(text[i + 1])
             i += 2
             continue
-        # A case header ends at its `in`, even when its first arm shares
-        # the line. Quoted/escaped words remain intact until shlex reads them.
-        # The count asks the BUFFER, not the source text, whether a word just
-        # closed here: whitespace that only extends a run of whitespace ends
-        # nothing, an escaped space ends nothing, and the character before a
-        # statement's first space may be the `;` that ENDED the last one --
-        # a source-text test miscounted that as a word and killed the probe
-        # one word early, losing the second header of `case ... esac; case
-        # ... in ...`. Whitespace inside a quote never reaches this branch.
+        # Only a command word is read whole (#2856 round 8): a `${…}` that starts a word where
+        # every word the stage closed is a keyword or an assignment (`at_head`), and no `case`
+        # subject -- anywhere else shlex splits it `main`'s way, as it always did. The scan runs
+        # only there, behind those tests (round 9).
+        if text.startswith("${", i) and getattr(context, "blanks", True) and at_head and (
+                len(buf) == word_start) and "".join(buf).split()[-1:] != ["case"] and (
+                bare := _bare_blanks(text, i)):
+            # An unquoted `${X:-bash -s}` is one word to the reader as to bash, which
+            # expands it whole and only then splits the words (#2731): its bare blanks are
+            # marked past shlex, and `_command_result` splits a shell default as bash does.
+            i = bare[0]
+            buf.extend(bare[1])
+            continue
+        # A case header ends at its `in`, even when its first arm shares the line.
+        # Quoted/escaped words remain intact until shlex reads them. The count asks the BUFFER,
+        # not the source text, whether a word just closed here: whitespace that only extends a
+        # run of whitespace ends nothing, an escaped space ends nothing, and the character
+        # before a statement's first space may be the `;` that ENDED the last one -- a
+        # source-text test miscounted that as a word and killed the probe one word early, losing
+        # the second header of `case ... esac; case ... in ...`. Whitespace inside a quote never
+        # reaches this branch.
         if ch.isspace() and buf and not buf[-1][-1].isspace():
             # The word that closed, quotes and all: `"[["` is the ordinary
             # word, never the conditional; empty just past a `case` arm token.
@@ -346,6 +403,12 @@ def _split(text, context):
             i += 2 if combined else 1
             continue
         if ch in ";\n&|":
+            if ch == "\n" and stages and not "".join(buf).strip():
+                # A line ending in `|` or `|&` continues on the next, as every shell reads
+                # it (#2756): the stage it opened goes on past the newline (`&&` and `||`
+                # end their statement at the operator, so the next line is read already).
+                i += 1
+                continue
             pair = text[i:i + 2]
             separator = pair if pair in ("&&", "||") else ch
             # Inside the test they join its expressions, and a `]]` that the
@@ -356,14 +419,12 @@ def _split(text, context):
                 word_start, i = len(buf), i + 2
                 continue
             end_statement(separator)
-            # Every terminator that ENDS a case arm, not just `;;`: bash also
-            # spells it `;&` (fall through into the next arm's body) and `;;&`
-            # (resume matching at the next pattern). Reading only `;;` left
-            # the state at "body", so the next arm's `b)` was read as a group
-            # CLOSE and `b` became argv[0] -- shadowing the command behind it,
-            # which is how a `curl` in the second arm went unseen entirely
-            # (fix round on #1714, Critical 2). After any of the three the
-            # next word is a pattern again.
+            # Every terminator that ENDS a case arm, not just `;;`: bash also spells it `;&`
+            # (fall through into the next arm's body) and `;;&` (resume matching at the next
+            # pattern). Reading only `;;` left the state at "body", so the next arm's `b)` was
+            # read as a group CLOSE and `b` became argv[0] -- shadowing the command behind it,
+            # which is how a `curl` in the second arm went unseen entirely (fix round on #1714,
+            # Critical 2). After any of the three the next word is a pattern again.
             arm_end = next((t for t in (";;&", ";;", ";&")
                             if text.startswith(t, i)), None)
             if arm_end and cases:
@@ -388,14 +449,12 @@ def _split(text, context):
 
 
 def _fd_or_close(word):
-    """True for the historical ambiguity of the UNNUMBERED `>&word` form:
-    real bash reads a word made only of digits, or exactly `-`, as a file
-    descriptor to duplicate or close -- never a path -- and anything else as
-    the file `>word 2>&1` would have named. Checked against bash 5 (round 1
-    of #1733's fix): `>&2extra` writes a file called `2extra`; `>&2` does
-    not. The `&>word` spelling carries no such ambiguity at all (`&>2` is
-    always a file named `2`), so this is never consulted for it.
-    """
+    """True for the historical ambiguity of the UNNUMBERED `>&word` form: real bash reads a word
+    made only of digits, or exactly `-`, as a file descriptor to duplicate or close -- never a
+    path -- and anything else as the file `>word 2>&1` would have named. Checked against bash 5
+    (round 1 of #1733's fix): `>&2extra` writes a file called `2extra`; `>&2` does not. The
+    `&>word` spelling carries no such ambiguity at all (`&>2` is always a file named `2`), so
+    this is never consulted for it."""
     return word == "-" or (word.isascii() and word.isdigit())
 
 
@@ -403,9 +462,9 @@ def input_alias_fd(word):
     """Alias fd, ? for unresolved input, or None for a literal ordinary file."""
     if "$" in word or has_substitution(word):
         return "?"
-    word = os.path.normpath(word)
-    if word == "/dev/stdin":
-        return "0"
+    word = re.sub(r"^(?:/+|(?:\.\./)+)(?=dev/|proc/)", "/", os.path.normpath(word))     # `//dev/`, `../proc/`
+    if word in (std := ("/dev/stdin", "/dev/stdout", "/dev/stderr")):
+        return str(std.index(word))
     match = re.fullmatch(r"/dev/fd/([0-9]+)", word)
     if match:
         return match[1].lstrip("0") or "0"
@@ -420,6 +479,18 @@ def _assigns(words):
     other command word an array literal is a syntax error, read as before."""
     words = [word for word in words if word not in KEYWORDS and not _ASSIGNMENT.match(word)]
     return not words or words[0] in _DECLARATIONS
+
+
+def _whole(raw, context, span):
+    """A word `_split` kept whole (`_bare_blanks`), as bash reads it before it splits it, and the
+    `span` of `main`'s words it is: for the one reading that takes it whole, the command word
+    (`shell_command._command_result`, #2731). Every other reading has `main`'s words (#2856
+    round 8)."""
+    plain = context.restore_arithmetic(raw.replace(MARK, "").replace(QUOTED, "").replace(QUOTED_DOLLAR, ""))
+    word = context.token(plain.replace(_ESCAPED, "\\"))
+    word = word if isinstance(word, _Token) else _Token(word, _markers(word))
+    word.span = span
+    return word
 
 
 def _stage(text, context):
@@ -453,6 +524,10 @@ def _stage(text, context):
     # its CURRENT sink, so `>file >/dev/stdout` still writes to file.
     pipe_outputs = {"1": True}
     pending = None
+    opened: dict[str, tuple[str, ...]] = {}  # the files `N<>` opened on N but 0, on each N they stand on
+    # Where in `reads` each `0<>` put its file, and the one fd 0 still holds (`credited_zero`).
+    zero: list[int] = []
+    held: int | None = None
     literal: int | None = None          # where an array literal's words start
     words: list[str] = []               # argv with no literal folded
 
@@ -467,7 +542,16 @@ def _stage(text, context):
         else:
             bodies[number] = body
 
+    # A word `_split` kept whole is read as `main` reads it, in the pieces its bare blanks split,
+    # each read as any word is; the first carries the whole word and how many pieces it spans,
+    # which only the command word reads (`shell_command._command_result`, #2731).
+    pieces: list[tuple[str, str | None, int]] = []
     for raw in tokens:
+        parts = ([part for part in raw.split(_BLANK) if part] or [raw]) if (
+            _BLANK in raw and getattr(context, "blanks", True)) else [raw]
+        whole = raw.replace(_BLANK, " ") if len(parts) > 1 else None
+        pieces.extend((part, None if at else whole, len(parts)) for at, part in enumerate(parts))
+    for raw, whole, span in pieces:
         plain = context.restore_arithmetic(
             raw.replace(MARK, "").replace(QUOTED, "").replace(QUOTED_DOLLAR, ""))
         raw, word = raw.replace(_ESCAPED, "\\"), context.token(plain.replace(_ESCAPED, "\\"))
@@ -502,6 +586,20 @@ def _stage(text, context):
             pending = None
             take(word)
             number = (fd.lstrip("0") or "0") if fd else ("0" if op.startswith("<") else "1")
+            held = None if number == "0" else held      # a later redirection of fd 0 ends it
+            # A dup, a move or a path of N (`_FD_SPELLINGS`, `input_alias_fd`) carries what N holds onto
+            # its target, fd 0 too, until that is redirected again (`4<&3 <&4`, `</dev/fd/3 3<&-`, #2881);
+            # a source a value decides (`<&$FD`, `<"$P"`) carries every file held, fail-closed (round 4)
+            moved = re.fullmatch(r"(\d+)-", word) if op in (">&", "<&") else None
+            source = (moved[1] if moved else word) if moved or op in (">&", "<&") and _fd_or_close(word) else (
+                op != "<<<" and input_alias_fd(derived(_FD_SPELLINGS.sub("/dev/fd/", word), word)))
+            carried = tuple(dict.fromkeys(sum(opened.values(), ()))) if source == "?" else opened.get(
+                (source or "-").lstrip("0") or "0", ())
+            opened.pop(number, None)            # any redirection of N ends what `N<>` opened there
+            if moved:
+                opened.pop(moved[1].lstrip("0") or "0", None)
+            if carried:
+                opened[number] = carried
             if op in (">&", "<&"):
                 if _fd_or_close(word):
                     source = word.lstrip("0") or "0"
@@ -517,10 +615,13 @@ def _stage(text, context):
                     reads_body(number, None)
                     continue
                 op = "&>"                     # unnumbered >&file
-            if op in ("<", "<<<"):
+            if op in ("<", "<<<") or op == "<>" and number == "0":   # `<>`: fd 0 reads (#2657)
                 spelled = op == "<<<" and entry and entry[0] == "heredoc"
                 word = entry[1][0] if spelled else word     # `lex` spelled it
                 reads.append(word)
+                if op == "<>":
+                    zero.append(len(reads) - 1)
+                    held = zero[-1]
                 sinks[number] = None           # an input file is not an output sink
                 source = input_alias_fd(word)
                 pipe_inputs[number] = source == "?" or pipe_inputs.get(source, False)
@@ -528,6 +629,8 @@ def _stage(text, context):
                 reads_body(number, (word, not spelled, False) if op == "<<<" else
                            bodies.get(source) if source and source != "?" else None)
             else:
+                if op == "<>":                 # open for reading too: what reads N reads it (#2881)
+                    opened[number] = (*carried, word)
                 writes.append(word)
                 sinks[number] = sinks.get("1") if word in _STDOUT_ALIASES else word
                 pipe_inputs[number] = False
@@ -543,17 +646,31 @@ def _stage(text, context):
         if entry and entry[0] == "heredoc":
             heredoc, expands, fd = entry[1]
             number = fd.lstrip("0") or "0"
+            held = None if number == "0" else held
             pipe_inputs[number] = False
             pipe_outputs[number] = False
             reads_body(number, (heredoc, expands, True))
             if expands:
                 substitutions.extend(_lift_substitutions(heredoc, _Parse(heredoc))[1])
             continue
+        if whole is not None:
+            word = word if _markers(word) else _Token(word, {})
+            setattr(word, "whole", _whole(whole, context, span))
+            setattr(word, "span", span)
         take(word)
         argv.append(word)
         words.append(word)
     if all(word in KEYWORDS or _ASSIGNMENT.match(word) for word in argv):
         argv = words        # it only assigns: an array of a command is read as run
+    # An interpreter -- one any action of a `find` runs too (round 4; #2918) -- or a command word the step's
+    # values decide (`$SH`, but not `$X/sha256sum`: a check is credited by its basename, round 5) reads what
+    # `N<>` still holds open when its redirections end, on any descriptor, as `main` reads `N<` -- by a dup, a
+    # path, a child program; no other command reads it, so no check is credited with a file it only holds
+    # (`reads_held`, #2881).
+    if opened and reads_held(argv):
+        reads.extend(file for file in dict.fromkeys(sum(opened.values(), ())) if file not in reads)
+    # A check reads what `0<>` opened only where fd 0 still holds it (#2856 round 12, B5).
+    reads, writes = credited_zero(argv, reads, writes, zero, held)
     stdout, stdin = sinks.get("1"), bodies.get("0")
     return Stage(argv, writes, reads, stdin[0] if stdin and stdin[2] else heredoc,
                  substitutions, [stdout] if stdout is not None else [], group_open,
@@ -566,6 +683,8 @@ def statements(script):
     """Every statement in a `run:` script, in order, as parsed stages; in a
     lifted substitution's text, each heredoc where its marker stands (#2336)."""
     context = _Parse(script)
+    # A step that spells a mark the reader puts in its text reads as `main` (#2856 round 8).
+    context.blanks = not any(mark in script for mark in (MARK, QUOTED, _ESCAPED, QUOTED_DOLLAR, _BLANK))
     text = lex(script, lambda *heredoc: context.new("heredoc", heredoc))
     for marker, (kind, value) in getattr(script, "heredocs", {}).items():
         text = text.replace(marker, context.new(kind, value))
