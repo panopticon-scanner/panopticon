@@ -63,14 +63,14 @@ evidence exposed.
   the Mac). Open, and this PR's own: a `name:` the schema refuses -- a list or a mapping -- is
   compared with the others under its finding, so where many share one finding the cost grows
   fourfold with each doubling (4,000 such steps: 0.14 s with list names and 0.20 s with mapping
-  names on the Linux box, 0.10 s and 0.13 s on the Mac; `main` 0.005 s and 0.002 s); and the
-  residual of the guard pins in `tests/test_workflow_options.py`: a one-line twin of the stdin
-  walk's recursion that combines two restrictions (a depth and a run length, say) has no row, where
-  each single one -- depth, word position, inner shell, run length, a member, a holder, a spelling
-  -- has its rows. Open, as on `main`: a check counted under a refused shell where errexit is off
-  (round 9 withheld it: 14 rows of round 5's matrix), #2608's `-s $X` and `-c $X` rows, `-c $(…)`,
-  #2900's one-dash long option behind a shell the step names through a variable (`CMD=bash; $CMD
-  -norc <<'EOF'`), and the guard's other named gaps.
+  names on the Linux box, 0.10 s and 0.13 s on the Mac; `main` 0.005 s and 0.002 s); the guard pins
+  in `tests/test_workflow_options.py` hold the stdin walk's hand-off of each inner argv whole at
+  every depth to its bound of 64, so a one-line twin of that line, on one restriction or two --
+  depth, word position, inner shell, run length, a member, a holder, a spelling -- is caught, and
+  the residual that round 15 named there is closed. Open, as on `main`: a check counted under a
+  refused shell where errexit is off (round 9 withheld it: 14 rows of round 5's matrix), #2608's
+  `-s $X` and `-c $X` rows, `-c $(…)`, #2900's one-dash long option behind a shell the step names
+  through a variable (`CMD=bash; $CMD -norc <<'EOF'`), and the guard's other named gaps.
 - **Workflow guard: what `eval`'s words and a `-c` string hand on (#2673, #2683, #2684, #2764,
   #2669, #2331).** `eval 'curl … |' 'sh'` ran the pipe and read CLEAN: `eval` joins its words before
   it runs them, and the guard read them one by one. Where a word begins or ends with an operator the

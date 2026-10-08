@@ -12,6 +12,7 @@ import collections
 import contextlib
 import itertools
 import os
+import shlex
 import sys
 import tempfile
 import time
@@ -1145,8 +1146,9 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
     # `-dump-po-strings` it reads CLEAN at every length (the lead's letters read as a shell reading its stdin,
     # so the body is read and regroups), and those leads are left out of that holder's run, `LEFT_OUT` many
     # (each stands elsewhere; holder 30's own `-norc` has `main` report its run whole). 489 rows: HVrun3i and
-    # the twin keyed to `k` or more for every `k` from 2 to 16 move 32 to 216 of them in the main pass. A twin
-    # of that line reaches no run a top-level holder carries, so those rows pin `main`'s answer alone.
+    # the twin keyed to `k` or more for every `k` from 2 to 16 move 32 to 216 of these rows in the main pass
+    # (the family pin's failing subtests run 32 to 243, older rows among them). A twin of that line reaches no
+    # run a top-level holder carries, so those rows pin `main`'s answer alone.
     RUN = tuple("-" + name[2:] for name in wo.LONG_OPTIONS)
     LEFT_OUT = {6: 1, 10: 5, 11: 4, 12: 3, 13: 2, 14: 1, 22: 1, 26: 5, 27: 4, 28: 3, 29: 2, 38: 1}
     FIRST = (6, 5, 4, 3, 2, 1, 2, 2, 1, 1, 10, 10, 10, 7, 7, 10, 9, 5, 7, 3,
@@ -1231,6 +1233,48 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
         for holder in self.FAMILY:
             with self.subTest(holder=holder), wo.mains_answer():
                 self.assertTrue(all(wg._job_defects([wg.Step("step", self.B4 % holder, s)]) for s in self.SHELLS))
+
+    def test_the_recursion_hands_each_inner_argv_on_whole_at_every_depth(self):
+        # Round 15's seat, B1: HVd2i, line 484's drop at depth 2 or more -- one dimension -- passed the whole
+        # suite, since the family nests a run two levels at most. So the hand-off itself is pinned: every
+        # recursive `_details` call (the one `_details` makes, known by its caller) receives the very list
+        # `shell_reader.command` returned for the inner string, word for word, at every depth from 1 to the
+        # walk's bound of 64, in the main pass and in the walk's. One row nests `eval` 64 deep (every depth at
+        # once); four nest `bash -c`, `sh -c` and `eval` strings five deep; each tail carries every member of
+        # the walk's tables in both spellings, a FILE pair, a cluster and a `-c` string, so a drop keyed to a
+        # depth, a member, a spelling, a position or a run length, alone or combined, written out or read from
+        # a table, changes a list this test holds.
+        returned, handed = {}, []
+        real_command, real_details = shell_reader.command, wp._details
+
+        def command(argv):
+            out = real_command(argv)
+            returned[id(out)] = (out, list(out))        # the list is kept, so its id is never reused
+            return out
+
+        def details(argv, depth, walk):
+            if sys._getframe(1).f_code is real_details.__code__:
+                handed.append((depth, argv, list(argv), bool(wo._MAINS.get())))
+            return real_details(argv, depth, walk)
+
+        tail = "bash %s --rcfile /dev/null -rcfile /dev/null -es -c 'sh'" % " ".join(self.RUN + tuple(wo.LONG_OPTIONS))
+        wraps = {"b": lambda text: "bash -c " + shlex.quote(text), "s": lambda text: "sh -c " + shlex.quote(text),
+                 "e": lambda text: "eval " + shlex.quote(text)}
+        rows = ["eval " * 64 + tail]
+        for style in ("b", "s", "be", "bse"):
+            text = tail
+            for level in range(5):
+                text = wraps[style[level % len(style)]](text)
+            rows.append(text)
+        with mock.patch.object(shell_reader, "command", command), mock.patch.object(wp, "_details", details):
+            for row in rows:
+                for shell in self.SHELLS:
+                    wg.job_defects([wg.Step("step", self.B4 % row, shell)])
+        self.assertEqual(list(range(1, 65)), sorted({depth for depth, _, _, mains in handed if mains}))
+        self.assertEqual(list(range(1, 65)), sorted({depth for depth, _, _, mains in handed if not mains}))
+        changed = [(depth, snapshot[:4]) for depth, argv, snapshot, _ in handed
+                   if id(argv) not in returned or returned[id(argv)][1] != snapshot]
+        self.assertEqual([], changed[:5], "%d of %d hand-offs changed" % (len(changed), len(handed)))
 
     def test_the_main_pass_reads_a_one_dash_long_word_as_mains_letters(self):
         # Round 13's seat, B2: `main`'s answer on every row MY1 and MY6 moved in the main pass.
