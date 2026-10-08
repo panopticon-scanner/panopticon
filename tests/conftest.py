@@ -300,9 +300,13 @@ def _no_claude_entries(request, monkeypatch):
 # ledgers to whatever test the same xdist worker ran next, and
 # `TestUnusableScannerCertification` read a `'pip-audit': 'network_unavailable'`
 # posture its own scan never granted, on some orderings only. So the ledgers are
-# emptied around every test. tests/test_synthesize.py fills each ledger
-# `run_tools()` empties, reading them off its own body, before that pair runs
-# again, and requires it to pass.
+# emptied around every test: before it, for the pair; after it, for a class
+# setup that reads them before the next test's fixtures run
+# (`TestSchemaParity.setUpClass` writes a manifest). tests/test_synthesize.py
+# fills each ledger `run_tools()` empties -- the `.clear()` calls written in its
+# body; one emptied through a helper would need naming here -- before that pair
+# runs again and requires it to pass, and leaves them full in a one-test class
+# whose teardown requires them empty.
 RUN_LEDGERS = (_tools_manifest._NETWORK_POSTURE, _tools_manifest._IGNORE_FILE_POSTURE,
                _tools_manifest._SCANNER_SCOPE_POSTURE, _scanner_config._SUPPRESSION_POSTURE,
                _scanner_config._SCANNER_CONFIG_POSTURE, _tool_capture._REDACTED_CAPTURES,

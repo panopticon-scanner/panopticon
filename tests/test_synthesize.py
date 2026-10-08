@@ -850,8 +850,9 @@ class TestUnusableScannerCertificationAfterAnEarlierScan(TestUnusableScannerCert
     full. `run_tools()` empties them when a run starts and nothing empties them
     when it ends, so under xdist the pair read another test's network posture on
     some orderings only (`'pip-audit': 'network_unavailable'` in its divergence).
-    Here every ledger `run_tools()` empties -- read off its own body, so a new
-    one cannot be missed -- is filled first, in the class setup, which runs
+    Here every ledger `run_tools()` empties -- the `.clear()` calls written in
+    its own body, so one more written there is found, though one emptied through
+    a helper would not be -- is filled first, in the class setup, which runs
     before each test's fixtures wherever the test lands. The pair passes, and
     the ledgers read empty, only if every test starts as a fresh scan does
     (`_fresh_run_ledgers`, tests/conftest.py)."""
@@ -887,6 +888,51 @@ class TestUnusableScannerCertificationAfterAnEarlierScan(TestUnusableScannerCert
     def test_every_ledger_a_scan_empties_is_empty_when_a_test_starts(self):
         ledgers = self._ledgers()
         self.assertEqual(7, len(ledgers))
+        self.assertEqual([], [ledger for ledger in ledgers if ledger])
+
+
+class TestAScanLeavesTheLedgersToTheNextClassSetup(unittest.TestCase):
+    """#2873, the fixture's other half (round 1, B1): what a test's scan leaves
+    in the ledgers is emptied when the test ENDS, not only when the next one
+    starts, because a class setup runs between the two and may read them
+    (`TestSchemaParity.setUpClass` writes a manifest that takes five of them by
+    default). This class's one test leaves every ledger full; its class
+    teardown runs right after that test's fixtures tear down, wherever xdist
+    places it, and requires them empty."""
+
+    def test_a_scan_leaves_every_ledger_full(self):
+        for ledger in TestUnusableScannerCertificationAfterAnEarlierScan._ledgers():
+            if isinstance(ledger, set):
+                ledger.add("pip-audit")
+            else:
+                ledger["pip-audit"] = "left by this test's scan"
+
+    @classmethod
+    def tearDownClass(cls):
+        ledgers = TestUnusableScannerCertificationAfterAnEarlierScan._ledgers()
+        full = [ledger for ledger in ledgers if ledger]
+        for ledger in ledgers:
+            ledger.clear()
+        super().tearDownClass()
+        if full:
+            raise AssertionError("left full after the test that filled them: %r" % (full,))
+
+
+class TestAScanStartsWithEveryLedgerEmpty(unittest.TestCase):
+    """#2873 (round 1, F1): `run_tools()`'s own start-of-run reset, as behaviour.
+    The harness now empties the ledgers around every test, so a reset that stops
+    running while its `.clear()` stays in the source would otherwise go unseen:
+    a run over no tools must leave every ledger empty."""
+
+    def test_a_run_over_no_tools_empties_every_ledger(self):
+        ledgers = TestUnusableScannerCertificationAfterAnEarlierScan._ledgers()
+        for ledger in ledgers:
+            if isinstance(ledger, set):
+                ledger.add("pip-audit")
+            else:
+                ledger["pip-audit"] = "left by an earlier scan"
+        with tempfile.TemporaryDirectory() as d, contextlib.redirect_stderr(io.StringIO()):
+            run_tools_mod.run_tools(d, [], os.path.join(d, "tools"), runner=lambda *args, **kwargs: None)
         self.assertEqual([], [ledger for ledger in ledgers if ledger])
 
 
