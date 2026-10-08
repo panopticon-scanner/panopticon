@@ -90,9 +90,14 @@ The seam's contract, in `skill/scripts/runners/base.py`:
   it unconditionally. A family whose provider enforces a stricter JSON-Schema
   subset must also check the particular published schema before launch and omit
   the flag for an incompatible schema while leaving the entry's schema in place
-  for receipt validation. Codex does this recursively for strict object shapes:
-  every property must be required and `additionalProperties` must be false
-  (#2923). **Check what your CLI wants after the flag — a path or
+  for receipt validation. Codex checks the provider subset recursively: the root
+  is an object; every property is required; every object closes
+  `additionalProperties`; nested `anyOf` and local definitions are allowed;
+  malformed or unsupported keywords, external references, and shapes over the
+  documented provider limits are not (#2923). A proven toy shape therefore
+  discloses only that the runner may pass compatible entry schemas, never that
+  every production schema is compatible.
+  **Check what your CLI wants after the flag — a path or
   the text.** codex's `--output-schema <FILE>` takes the path, which is what
   `schema_argv` hands over by default; claude's `--json-schema <schema>` takes
   the JSON itself and refuses a path (`--json-schema is not valid JSON`, exit

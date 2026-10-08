@@ -139,6 +139,21 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
                 self.assertEqual(os.path.realpath(path),
                                  schema_rules.strict_output_schema(path))
 
+                definitions = copy.deepcopy(valid)
+                definitions["properties"]["nested"] = {
+                    "anyOf": [
+                        {"$ref": "#/$defs/detail"},
+                        {"type": "null"},
+                    ],
+                }
+                definitions["$defs"] = {
+                    "detail": copy.deepcopy(valid["properties"]["nested"]),
+                }
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump(definitions, fh)
+                self.assertEqual(os.path.realpath(path),
+                                 schema_rules.strict_output_schema(path))
+
                 mutations = []
                 top_required = copy.deepcopy(valid)
                 top_required["required"].remove("nested")
@@ -152,6 +167,36 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
                 no_properties = copy.deepcopy(valid)
                 no_properties["properties"]["nested"] = {"type": ["object", "null"]}
                 mutations.append(no_properties)
+                missing_object_type = copy.deepcopy(valid)
+                missing_object_type["properties"]["nested"].pop("type")
+                mutations.append(missing_object_type)
+                mutations.append({"type": "array", "items": {"type": "string"}})
+                mutations.append({"anyOf": [copy.deepcopy(valid), copy.deepcopy(valid)]})
+                for keyword in ("allOf", "oneOf", "not", "dependentRequired",
+                                "dependentSchemas", "if", "then", "else"):
+                    unsupported = copy.deepcopy(valid)
+                    unsupported["properties"]["ok"][keyword] = {}
+                    mutations.append(unsupported)
+                unsupported_array = copy.deepcopy(valid)
+                unsupported_array["properties"]["ok"] = {
+                    "type": "array",
+                    "items": {"type": "boolean"},
+                    "uniqueItems": True,
+                }
+                mutations.append(unsupported_array)
+                malformed_array = copy.deepcopy(valid)
+                malformed_array["properties"]["ok"] = {
+                    "type": "array",
+                    "items": {"type": "boolean"},
+                    "minItems": "one",
+                }
+                mutations.append(malformed_array)
+                external_ref = copy.deepcopy(valid)
+                external_ref["properties"]["ok"] = {"$ref": "other.json"}
+                mutations.append(external_ref)
+                dangling_ref = copy.deepcopy(valid)
+                dangling_ref["properties"]["ok"] = {"$ref": "#/$defs/missing"}
+                mutations.append(dangling_ref)
                 for body in mutations:
                     with self.subTest(body=body):
                         with open(path, "w", encoding="utf-8") as fh:
@@ -161,6 +206,32 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
                 with open(path, "w", encoding="utf-8") as fh:
                     fh.write("{not json")
                 self.assertIsNone(schema_rules.strict_output_schema(path))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_strict_output_compatibility_enforces_provider_size_limits(self):
+        body = {
+            "type": "object",
+            "properties": {"value": {"type": "string", "enum": ["aa", "b"]}},
+            "required": ["value"],
+            "additionalProperties": False,
+        }
+        tmp = tempfile.mkdtemp()
+        try:
+            path = os.path.join(tmp, "strict.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(body, fh)
+            with mock.patch.object(schema_rules.version, "reference_path", return_value=tmp):
+                for name, limit in (("_STRICT_MAX_PROPERTIES", 0),
+                                    ("_STRICT_MAX_DEPTH", 1),
+                                    ("_STRICT_MAX_TEXT", 1),
+                                    ("_STRICT_MAX_ENUM_VALUES", 0)):
+                    with self.subTest(limit=name), mock.patch.object(
+                            schema_rules, name, limit):
+                        self.assertIsNone(schema_rules.strict_output_schema(path))
+                with mock.patch.object(schema_rules, "_STRICT_LARGE_ENUM_COUNT", 1), \
+                        mock.patch.object(schema_rules, "_STRICT_LARGE_ENUM_TEXT", 1):
+                    self.assertIsNone(schema_rules.strict_output_schema(path))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

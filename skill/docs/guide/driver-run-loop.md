@@ -300,11 +300,15 @@ operator's explicit acceptance before supplying the flag; it records an acknowle
 of confinement. This is a shared-gate limitation, not a reason to claim proof the current probes do
 not establish.
 
-Codex's `--output-schema` accepts only strict object schemas: recursively, every property must also
-be required and each object must set `additionalProperties: false`. Before building an argv, the
-runner checks the published schema named by the entry. An incompatible schema stays on the entry for
-controller-side receipt validation but is omitted from the Codex argv, so the dedicated toy shape
-probe cannot falsely authorize a production schema that Codex rejects (#2923).
+Codex's `--output-schema` accepts only the provider's strict subset: the root must be an object;
+recursively, every property must also be required and each object must set
+`additionalProperties: false`; nested `anyOf` and local definitions are allowed, while unsupported
+composition, external references, malformed keywords, unknown keywords, and shapes over the
+documented provider limits are refused. Before building an argv, the runner checks the published
+schema named by the entry. An incompatible schema stays on the entry for controller-side receipt
+validation but is omitted from the Codex argv. The posture note consequently says that a proven toy
+shape constrains only entries whose own schema the runner accepts, rather than falsely authorizing a
+production schema that Codex rejects (#2923).
 
 Codex's JSONL envelope reports token usage but not measured dollars or the effective model identity.
 The runner therefore returns `cost_usd: null` and `model: null`; `model_binding` and `usage_ledger`

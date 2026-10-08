@@ -667,6 +667,11 @@ class TestTheConstrainedOutputDisclosure(unittest.TestCase):
         self.assertEqual(1, len(lines))
         self.assertIn("--json-schema", lines[0])
         self.assertIn("shape proven by one launch", lines[0])
+        # #2923: accepting the toy probe does not prove that a different
+        # production schema is provider-compatible.  The runner screens each
+        # schema independently and receipt validation remains the backstop.
+        self.assertIn("only when the runner accepts that entry's schema", lines[0])
+        self.assertIn("validates every reply either way", lines[0])
 
     def test_a_refuted_shape_says_what_the_run_does_instead(self):
         lines = self._shaped(hosts.SHAPE_REFUTED, "failed in 120 ms with no envelope")
