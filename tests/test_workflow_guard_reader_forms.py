@@ -1768,13 +1768,27 @@ class TestAReadWriteDescriptorIsReadOnItsNumber(unittest.TestCase):
                     with self.subTest(digest=digest[:1], check=check, shell=shell):
                         self.assertTrue(reported(pinned + check + "\nsh tool\necho done\n", shell))
 
+    def test_each_checksum_tool_named_through_a_value_is_handed_no_file_it_only_holds(self):
+        # Round 6, the round-5 verdict's B1: the exclusion is every checksum tool's
+        # (`shell_command._CHECKERS`), not `sha256sum`'s alone -- CK09's shape for each, the use
+        # reported under every setting.
+        import shell_command
+        for tool in shell_command._CHECKERS:
+            pinned = 'echo "%s  tool" > sums\n%s%s tool > self\nX=/usr/bin\n' % ("a" * 64, GET, tool)
+            for shell in SHELLS:
+                with self.subTest(tool=tool, shell=shell):
+                    self.assertTrue(reported(pinned + "$X/%s -c self 3<> sums\nsh tool\necho done\n" % tool, shell))
+
     def test_find_runs_its_shell_behind_ok_and_by_its_path(self):
         # Round 5, the round-4 verdict's B5 and B6: `find` runs the shell behind `-ok` and `-okdir`
         # when it is answered yes (FX085, FX091), and `/usr/bin/find` is `find` (FX121), so that
-        # shell reads what 3 holds, and every shell runs the download.
+        # shell reads what 3 holds, and every shell runs the download. Round 6 (the round-5 verdict's
+        # B2): the shell a value names, `-exec $S` (FX283) -- the value arm reads the command word
+        # `find` runs, not the stage's first word.
         for use in ("echo y > ans\nfind /dev/null -ok sh /dev/fd/3 \\; 3<> tool < ans",
                     "echo y > ans\nfind /dev/null -okdir sh /dev/fd/3 \\; 3<> tool < ans",
-                    "/usr/bin/find /dev/null -exec sh /dev/fd/3 \\; 3<> tool"):
+                    "/usr/bin/find /dev/null -exec sh /dev/fd/3 \\; 3<> tool",
+                    "S=sh\nfind /dev/null -exec $S /dev/fd/3 \\; 3<> tool"):
             for shell in SHELLS:
                 with self.subTest(use=use, shell=shell):
                     self.assertTrue(reported(GET + use + "\necho done\n", shell))

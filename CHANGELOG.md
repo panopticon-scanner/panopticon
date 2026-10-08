@@ -64,16 +64,17 @@ evidence exposed.
   literal `sha256sum` read it -- 9 cells where the pinned check verifies the download first, and 9
   where nothing runs. On every row set of both seats, no cell goes CLEAN where `main` or a
   reference tree reports and a shell runs the payload unverified, but #2899 and S08n, whose marks
-  vary from run to run (#2911), as at round 4. Named open, as ruled, though `main` reports its `N<`
-  twin: a symlink the step makes to a descriptor's path, which the reader reads as the file it
-  names (`ln -s /dev/fd/3 x` ⏎ `sh 3<> tool <x`, #2919). Still open, as on `main`: dash's two-digit
-  `N<>`, which dash reads as the word `N` and `<>` on standard input, so `cat - 10<> tool | sh`
-  runs the file under `sh` (#2903); `cat 3<> tool <&3 | sh` -- a `cat` piped into a shell is a use
-  only where its words name the file, so `cat < tool | sh` reads CLEAN on `main` too (#2884); a
-  compound's redirect or pipe (`{ curl …; } 3<> tool >&3` ⏎ `sh tool`, #2883); a function call's
-  redirect (`f() { sh; }; f < tool`, #2888); a check credited with a file it holds by `N<` (#2886);
-  and one credited with the sums on its standard input when it reads something else (`sha256sum -c
-  self < sums`, #2908).
+  vary from run to run (#2911), as at round 4. Named open, as ruled, though `main` reports its
+  `N<` twin: a symlink the step makes to a descriptor's path, or a relative path the step's own
+  `cd` makes resolve to one, which the reader reads as the file it names (`ln -s /dev/fd/3 x` ⏎
+  `sh 3<> tool <x`; `cd /dev/fd` ⏎ `sh ./3 3<> tool`; #2919). Still open, as on `main`: dash's
+  two-digit `N<>`, which dash reads as the word `N` and `<>` on standard input, so `cat - 10<>
+  tool | sh` runs the file under `sh` (#2903); `cat 3<> tool <&3 | sh` -- a `cat` piped into a
+  shell is a use only where its words name the file, so `cat < tool | sh` reads CLEAN on `main`
+  too (#2884); a compound's redirect or pipe (`{ curl …; } 3<> tool >&3` ⏎ `sh tool`, #2883); a
+  function call's redirect (`f() { sh; }; f < tool`, #2888); a check credited with a file it
+  holds by `N<` (#2886); and one credited with the sums on its standard input when it reads
+  something else (`sha256sum -c self < sums`, #2908).
 - **Workflow reader: a line ending in `|` continues, a command word's `${X:-bash -s}` is read
   whole, and `<>` opens its descriptor (#2756, #2731, #2657; #2733, #2608).** A line ending in
   `|` continues on the next (`curl … |` ⏎ `sh` ran the pipeline and read CLEAN, behind `eval`
