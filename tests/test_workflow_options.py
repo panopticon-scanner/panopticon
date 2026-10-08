@@ -8,8 +8,10 @@ program, a `sha256sum` whose `-c` fails, and the step run as GitHub runs it (`-e
 `-o pipefail`): FR fetched and ran, F- fetched only, -- neither, +chk the check ran. Every row's four
 columns agree unless a comment says otherwise.
 """
+import ast
 import collections
 import contextlib
+import inspect
 import itertools
 import os
 import shlex
@@ -1240,15 +1242,21 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
         # whole: every `_details` call that `_details` makes (known by its caller's frame) receives the very
         # list `shell_reader.command` returned for the inner string IN THAT FRAME -- its one `command()`
         # call, so a second call on a thinned argv (round 16's seat, HVcmd2) is as caught as a new list or a
-        # changed word -- that frame's depth plus one, and that frame's own `walk` (round 17's seat,
-        # HVwalkW2: the walk's tables handed to the main pass's recursion from depth 2 on), at every depth
-        # from 1 to the walk's bound of 64, in the main pass and in the walk's. One row nests `eval` 64 deep
-        # (every depth at once); four nest `bash -c`, `sh -c` and `eval` strings five deep; each tail carries
-        # every member of the walk's tables in both spellings, a FILE pair, a cluster and a `-c` string, so
-        # a one-line change of what the recursion sees -- a drop keyed to a depth, a member, a spelling, a
-        # position or a run length, alone or combined, written out or read from a table, a depth skipped, a
-        # walk swapped -- changes what this test holds.
-        returned, handed = {}, []
+        # changed word -- the depth and the walk its parent was ENTERED with, plus one and the same (round
+        # 17's seat, HVwalkW2: the walk's tables handed to the main pass's recursion from depth 2 on; round
+        # 18's: a rebinding of the parent's `walk` or `depth` before the call, which a parent's live locals
+        # would echo, so an entry stack holds each call's arguments as it entered and a self-call is tied to
+        # the innermost live entry, never to a frame's locals), and the pass's own walk -- `_MAIN` under the
+        # main pass, `_MAIN` then `_WALK` under the walk's, as the top-level entry carries it -- at every
+        # depth from 1 to the walk's bound of 64, in the main pass and in the walk's. One row nests `eval`
+        # 64 deep (every depth at once); four nest `bash -c`, `sh -c` and `eval` strings five deep; each tail
+        # carries every member of the walk's tables in both spellings, a FILE pair, a cluster and a `-c`
+        # string, so a one-line change of what the recursion sees -- a drop keyed to a depth, a member, a
+        # spelling, a position or a run length, alone or combined, written out or read from a table, a depth
+        # skipped, a walk swapped, a rebinding -- changes what this test holds. A static pin reads
+        # `_details`' own text: nothing in it binds `depth` or `walk`, and its one self-call passes exactly
+        # `inner`, `depth + 1` and `walk`, so a rebinding that keeps the values is caught too.
+        returned, handed, tops, entered = {}, [], [], []
         real_command, real_details = shell_reader.command, wp._details
 
         def command(argv):
@@ -1259,11 +1267,18 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
             return out
 
         def details(argv, depth, walk):
-            frame = sys._getframe(1)
-            if frame.f_code is real_details.__code__:
-                handed.append((depth, argv, list(argv), bool(wo._MAINS.get()), returned.get(id(frame), []),
-                               depth == frame.f_locals["depth"] + 1 and walk is frame.f_locals["walk"]))
-            return real_details(argv, depth, walk)
+            frame, mains = sys._getframe(1), bool(wo._MAINS.get())
+            if frame.f_code is real_details.__code__:    # a self-call: its parent is the innermost live entry
+                parent_depth, parent_walk = entered[-1]
+                handed.append((depth, argv, list(argv), mains, returned.get(id(frame), []),
+                               depth == parent_depth + 1 and walk is parent_walk and walk is entered[0][1]))
+            else:                                       # a top-level entry: the pass's own walk, by identity
+                tops.append((mains, walk is wp._MAIN, walk is wp._WALK))
+            entered.append((depth, walk))
+            try:
+                return real_details(argv, depth, walk)
+            finally:
+                entered.pop()
 
         tail = "bash %s --rcfile /dev/null -rcfile /dev/null -es -c 'sh'" % " ".join(self.RUN + tuple(wo.LONG_OPTIONS))
         wraps = {"b": lambda text: "bash -c " + shlex.quote(text), "s": lambda text: "sh -c " + shlex.quote(text),
@@ -1283,6 +1298,31 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
         changed = [(depth, len(results), own, snapshot[:4]) for depth, argv, snapshot, _, results, own in handed
                    if len(results) != 1 or argv is not results[0][1] or results[0][2] != snapshot or not own]
         self.assertEqual([], changed[:5], "%d of %d recursive calls changed" % (len(changed), len(handed)))
+        self.assertEqual([], [top for top in tops if not (top[1] or top[2])])     # every top-level walk is a pass's
+        self.assertEqual([], [top for top in tops if top[0] and not top[1]])      # the main pass walks as `main`
+        self.assertEqual({(False, True, False), (False, False, True), (True, True, False)}, set(tops))
+        # The static pin: `_details`' text, read from its AST, not its source text.
+        function = ast.parse(inspect.getsource(real_details)).body[0]
+        bound = []
+        for node in ast.walk(function):
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, (ast.AugAssign, ast.AnnAssign, ast.NamedExpr, ast.For, ast.comprehension)):
+                targets = [node.target]
+            elif isinstance(node, ast.With):
+                targets = [item.optional_vars for item in node.items if item.optional_vars is not None]
+            elif isinstance(node, ast.ExceptHandler):
+                targets = [ast.Name(id=node.name)] if node.name else []
+            else:
+                continue
+            bound.extend(name.id for target in targets for name in ast.walk(target)
+                         if isinstance(name, ast.Name) and name.id in ("depth", "walk"))
+        self.assertEqual([], bound)
+        calls = [node for node in ast.walk(function)
+                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_details"]
+        self.assertEqual(1, len(calls))
+        self.assertEqual((["inner", "depth + 1", "walk"], []),
+                         ([ast.unparse(argument) for argument in calls[0].args], calls[0].keywords))
 
     def test_the_main_pass_reads_a_one_dash_long_word_as_mains_letters(self):
         # Round 13's seat, B2: `main`'s answer on every row MY1 and MY6 moved in the main pass.
