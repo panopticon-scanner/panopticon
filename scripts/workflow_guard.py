@@ -248,8 +248,8 @@ from shell_reader import command, folds, statements
 from workflow_annotate import annotate
 from workflow_checks import (CHECKSUM_TOOLS as CHECKSUM_TOOLS, checks as _checks,
                              clears_nested as _clears_nested, contextual as _check_at_use)
-from workflow_fetch import (Fetch, compound_output, compound_streamed_fetch, forwarded_consumer,
-                            is_forwarded_tee, streams_to_executor)
+from workflow_fetch import (Fetch, _describe, _remedy, compound_output, compound_streamed_fetch,
+                            forwarded_consumer, is_forwarded_tee, streams_to_executor)
 from workflow_forms import (FETCHERS, SHELL_PROGRAM, Idle, Inlined, Reach, Unsure, at_directory,
                             carried, compound_stream_consumer, flattened, kept, located,
                             names_file, parse_fetch, regions, stdin_program, step_credit,
@@ -415,16 +415,6 @@ def _unshared(conditions, check, use):
 
 
 # --- the rule ----------------------------------------------------------------
-
-def _describe(fetch):
-    return "%s -> %s" % (shell_reader.readable(fetch.url) or "an unparsed URL",
-                         shell_reader.readable(fetch.dest))
-
-
-def _remedy(dest):
-    return ('verify it first: `echo "<sha256>  %s" | sha256sum -c -` between '
-            "the download and that use" % shell_reader.readable(dest))
-
 
 def _runs_after_failure(when):
     """True when a step `if:` runs even after an earlier step failed -- `always()`,

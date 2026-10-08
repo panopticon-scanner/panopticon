@@ -518,3 +518,13 @@ def compound_stream_consumer(stmts, position, executors):
         if not containing:
             break
     return None
+
+
+def _describe(fetch):
+    return "%s -> %s" % (shell_reader.readable(fetch.url) or "an unparsed URL",
+                         shell_reader.readable(fetch.dest))
+
+
+def _remedy(dest):
+    return ('verify it first: `echo "<sha256>  %s" | sha256sum -c -` between '
+            "the download and that use" % shell_reader.readable(dest))
