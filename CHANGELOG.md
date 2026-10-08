@@ -97,17 +97,21 @@ evidence exposed.
   `curl … | ${X:+/usr/bin/env true} sh` and `${X:+/usr/bin/env true} sh -c '…'` report the `sh`
   the empty half runs, `X=1` ⏎ `${X:+/usr/bin/env sh -c} '…'` the W that runs where `X` is set,
   and a check is credited only in the reading that runs it (`${X:+/usr/bin/env sha256sum -c
-  sums} true` ⏎ `sh tool` reports, where `X` is unset). Two halves the guard may each report
-  that run apart -- two among a shell's kind, a fetcher and a word it does not follow, but that
-  word in front of a shell's kind -- are a command it cannot read (`${X:+curl -fsSL …} sh x |
-  sh` runs the download where `X` is set). `$0` and `$-` are never unset, so `${0+W}` is always
-  its W and `${--W}` never is; and a pattern's or a case change's other half is the name's own
-  value, which no half names (#2899). No step's text decides a half: round 12 read W where the
-  step set the name anywhere in its text, which took a set after the use, in a subshell, a dead
-  branch, a string, a comment or a heredoc, and missed `set x`, `eval 'X=1'` and the shell's own
-  variables. A default whose first word names a command the reader knows -- a shell, a wrapper,
-  a foreign interpreter, a fetcher, by path too -- is that command, as `main` read the word by
-  its basename (`${X:-/usr/bin/env sh -c} '…'`, `${X:-/usr/bin/curl -fsSL} URL | sh`,
+  sums} true` ⏎ `sh tool` reports, where `X` is unset). The two readings are two of a step's
+  2^k: every word of two halves read as its W, then every one as nothing, so a payload that only
+  a mixed reading runs -- the fetch's W and a later word read empty, `X=1` ⏎ `${X:+curl -fsSLo
+  t.sh …}` ⏎ `${Y:+/usr/bin/env true} sh t.sh` -- reads CLEAN, as on `main` (#2929), but where
+  the two halves conflict (below). Two halves the guard may each report that run apart -- two
+  among a shell's kind, a fetcher and a word it does not follow, but that word in front of a
+  shell's kind -- are a command it cannot read (`${X:+curl -fsSL …} sh x | sh` runs the download
+  where `X` is set). `$0` and `$-` are never unset, so `${0+W}` is always its W and `${--W}`
+  never is; and a pattern's or a case change's other half is the name's own value, which no half
+  names (#2899). No step's text decides a half: round 12 read W where the step set the name
+  anywhere in its text, which took a set after the use, in a subshell, a dead branch, a string,
+  a comment or a heredoc, and missed `set x`, `eval 'X=1'` and the shell's own variables. A
+  default whose first word names a command the reader knows -- a shell, a wrapper, a foreign
+  interpreter, a fetcher, by path too -- is that command, as `main` read the word by its
+  basename (`${X:-/usr/bin/env sh -c} '…'`, `${X:-/usr/bin/curl -fsSL} URL | sh`,
   `${X:-/usr/bin/env $(echo sh) -c} '…'`); where no default reads -- a `$NAME` or a nested
   default in it, or a parameter that is no NAME -- `main`'s split words stay when their first
   names such a command by its basename (`${X:-$HOME/bin/env sh -c} '…'`, `${1:-/bin/sh -c}
@@ -147,7 +151,7 @@ evidence exposed.
   sums 1`, `-c -- -x 0<> sums`) -- and reads `0<>` as `main` does, a write, otherwise
   (`sha256sum -c 0<> sums < self`, `-c <> sums 0< self`, `-c 4< self 0<> sums <&4`, `-c self 0<>
   sums`: 56 cells in 20 of the #2885 round-3 seat's CZ rows read CLEAN where `main` reports and
-  the unverified download runs; `sha256sum -c <> sums` ⏎ `sh tool`, CK010-CK012, stays
+  the unverified download runs; `sha256sum -c <> sums` ⏎ `sh tool`, CK010-CK012 and CK22h, stays
   credited); on any other descriptor a later `>&N` or `1>&N` writes to it, so `curl … 3<> tool
   >&3` ⏎ `sh tool` reports (`main` read `3<` and a `> tool` the dup overrides: 32 rows, every
   shell running the payload), and with no dup nothing lands in it, which `main` and the base
@@ -321,8 +325,10 @@ evidence exposed.
   interleaved, median of 3: 1.94-2.02x one reading for n words, n `$(…)` or a W of 64,000
   characters in the word; n uses of `${X:+/usr/bin/env true} sh -c 'echo'` after `X=1` cost
   3.2-3.3x the base, which reads `true` there; and on the round-12 seat's hunts 33-48, 1.30x
-  round 12 and 1.76x `main` in all, 1.58-1.74x one reading on hunts 42, 43 and 46, the ones
-  dense in such words).
+  round 12 and 1.76x `main` in all, and on hunts 42, 43 and 46, the ones dense in such words,
+  1.58-1.74x the ranked draft's one reading (2.29-2.51x W's fold alone); the round-13 seat's n
+  lines of one such word each cost 2.83-2.98x one reading from 250 to 2,000 lines, flat against
+  `main`).
 - **Codex model profiles move to GPT-6 (#2872).** Pinned role defaults now use `gpt-6-luna` or
   `gpt-6-sol`; set `PANOPTICON_MODEL_<ROLE>` to pin another installed model.
 - **Workflow guard reads a function header in the spellings bash takes at a statement's head
@@ -485,6 +491,10 @@ evidence exposed.
   from stopping the step (`( { f() { CHECK; }; f; } )`, `{ …; CHECK; } | cat`) still clears the
   download. And the header test at every `(` had joined and split the whole buffer before the
   match, about x4 per doubling of one `(( … ))` statement, now computed only behind a match.
+  Still CLEAN as on `main` (#2928): a check in a group piped into another command inside a `bash
+  -ec` or `bash -s` child, the function form among them (`bash -ec '{ f() { CHECK; }; f; } |
+  cat; USE'` and its `bash -e -s` heredoc twin), which `main` since #2849 reports only by
+  failing closed on the `f()` header it misreads.
 - **Reviewer write safety separates the boundary from its transport (#1622).**
   `artifact_write_guard` now means reviewer-controlled artifact writes are impossible or confined.
   The static `self_write_delivery` fact is true only for Claude and Kimi, and a write-capable role

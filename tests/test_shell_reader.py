@@ -1878,7 +1878,12 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.
                                 # with no rank, `_runs` says only this: a fetcher, an unpacker and a
                                 # word the guard does not follow are among the kinds
                                 ("${X:+curl -fsSL u} $B x", "curl", "$B"), ("${X:+$A -v} $B x", "${X:+$A -v}", "$B"),
-                                ("${X:+curl -fsSL u} tar xzf t.tgz", "curl", "tar")):
+                                ("${X:+curl -fsSL u} tar xzf t.tgz", "curl", "tar"),
+                                # round 14 (the round-13 verdict's B1): `eval`, `source` and `.`,
+                                # each a kind of its own, a pair apiece
+                                ("${X:+curl -fsSL u} eval x", "curl", "eval"),
+                                ("${X:+curl -fsSL u} source x", "curl", "source"),
+                                ("${X:+curl -fsSL u} . x", "curl", ".")):
             with self.subTest(row=row):
                 stage = shell_reader.statements(row + "\n")[-1].stages[0]
                 self.assertIn("runs `%s`, or `%s` where it expands to nothing" % (ran, empty),

