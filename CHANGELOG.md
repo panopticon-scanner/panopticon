@@ -576,14 +576,16 @@ evidence exposed.
   most, 3.4-3.8x for a long option's FILE, 3.5-4.4x for one-dash runs, 4.5-5.6x for `-o $X`, and
   11-16x for the two `-c --` shapes (`Y=; Z=; bash -c -- $Y $Z… 'P'`, `X=; bash -c -- $X… sh
   <<'EOF'`), which `main` reads CLEAN though bash runs the payload, every word a candidate weighed
-  as `main` weighs its own; each range spans a Linux aarch64 box (its low end) and a Mac. The job
-  keys each finding with its step's name, so it stays linear wherever the name is one the workflow
-  schema takes, a string (8,000 steps sharing one finding: 2.7x `main` on the Linux box, 3.3x on
-  the Mac). Open, and this PR's own: a `name:` the schema refuses -- a list or a mapping -- is
-  compared with the others under its finding, so where many share one finding the cost grows
-  fourfold with each doubling (4,000 such steps: 0.14 s with list names and 0.20 s with mapping
-  names on the Linux box, 0.10 s and 0.13 s on the Mac; `main` 0.005 s and 0.002 s); the guard pins
-  in `tests/test_workflow_options.py` hold the stdin walk's recursive call whole -- its argv as its
+  as `main` weighs its own; each range spans a Linux aarch64 box (its low end) and a Mac. #2855's
+  pins that count a step's carries and time its reading hold each of the job's two passes on its
+  own, the passes asserted to be two, where one reading was the whole. The job keys each finding
+  with its step's name, so it stays linear wherever the name is one the workflow schema takes, a
+  string (8,000 steps sharing one finding: 2.7x `main` on the Linux box, 3.3x on the Mac). Open,
+  and this PR's own: a `name:` the schema refuses -- a list or a mapping -- is compared with the
+  others under its finding, so where many share one finding the cost grows fourfold with each
+  doubling (4,000 such steps: 0.14 s with list names and 0.20 s with mapping names on the Linux
+  box, 0.10 s and 0.13 s on the Mac; `main` 0.005 s and 0.002 s); the guard pins in
+  `tests/test_workflow_options.py` hold the stdin walk's recursive call whole -- its argv as its
   own frame's one `command()` result, its depth and its walk as the parent was entered with (an
   entry stack, never a frame's live locals), the walk as the pass's own -- at every depth to its
   bound of 64, and read `_details`' own text, where nothing may bind `depth` or `walk` and the one

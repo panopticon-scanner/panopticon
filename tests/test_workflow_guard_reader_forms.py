@@ -563,11 +563,25 @@ class TestTheStandInHoldsItsKeysAndAProductItsBound(unittest.TestCase):
         # B5: a body of K statements called K times reads in about main's time, not K times its
         # cube: each call site's carry from one state of its bodies' names is made once
         # (`workflow_called._carried`; round 9 keys it on those names, not the whole table).
+        # #2858's union: `job_defects` reads the step TWICE, one `_job_defects` call after the other
+        # -- `main`'s pass under `mains_answer()`, then the walk's -- so each pass is timed on its
+        # own, in the one run, and held to the bound the single reading had; the passes are counted
+        # too, as `TestACallSiteCarriesAFixedNumberOfTimes` counts them.
         import time
+        from unittest import mock
         body = "g() {\n" + "".join(": %d\n" % i for i in range(150)) + "}\n"
-        start = time.perf_counter()
-        reported(GET + body + "g\n" * 150 + "sh /dev/null\n")
-        self.assertLess(time.perf_counter() - start, 8.0)
+        took, real = [], wg._job_defects
+
+        def timed(*args, **kwargs):
+            start = time.perf_counter()
+            try:
+                return real(*args, **kwargs)
+            finally:
+                took.append(time.perf_counter() - start)
+        with mock.patch.object(wg, "_job_defects", timed):
+            reported(GET + body + "g\n" * 150 + "sh /dev/null\n")
+        self.assertEqual(TestACallSiteCarriesAFixedNumberOfTimes.PASSES, len(took))
+        self.assertLess(max(took), 8.0)
 
 
 class TestACallSiteCarriesAFixedNumberOfTimes(unittest.TestCase):
