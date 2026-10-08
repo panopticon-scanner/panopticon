@@ -7,6 +7,37 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader reads every action a `find` runs (#2918).** `curl … -o tool` ⏎ `find
+  /dev/null -exec true \; -exec sh /dev/fd/3 \; 3<> tool` ran the download and read CLEAN: the
+  guard read one of `find`'s actions, the first of `-exec`, `-execdir`, `-ok` and `-okdir` in that
+  order, its words to the end of the line, so a shell in a later action (`-exec true \; -exec sh
+  …`, `-execdir`, `-ok`), behind the order's `-exec` (`-execdir sh … \; -exec true \;`), after a
+  failing or negated test (`-exec false \; -o -exec sh …`, `! -name -exec -exec sh …`, `-name
+  -exec -o -exec sh …`) or behind a wrapper inside its action (`-exec env sh …`, `-exec sudo sh
+  …`) was never read, nor the file it runs. Every action is now read: the words after each of the
+  four, wherever it stands, to its `;` or to a `+` right after `{}`, a test's operand that spells
+  one read as one too, fail-closed, and its wrappers stripped as the guard strips them in front of
+  a command. A shell any action runs reads what `N<>` holds (`reads_held`), and where the guard
+  asks how a stage uses a file it reads one action a fold (`find_action`, `folds`), so it REPORTs
+  where any action uses the file: a shell handed it, the file run, `{}` naming it, a shell's
+  standard input, a printer piped into a shell. A command word an action leaves to `find` or bash
+  -- `{}`, each path it walks (`find /usr/bin/sh -exec {} …`), a substitution (`-exec $(echo sh)
+  …`) or a `$` word -- reads as a command the guard cannot read, as one behind a wrapper does, and
+  so does a `find` holding more than 8 distinct actions, read with its first alone so neither the
+  scan nor the folds grow with its words: the price, a report wherever such a `find` runs, a
+  download or none (`find . -name '*.sh' -exec {} \;`). A check an action runs is still credited
+  with nothing, as on `main`: `find` exits 0 though a `-exec … \;` command fails. On the #2885
+  round-4 seat's hunt the 84 rows (420 cells) that read CLEAN while every parent runs the file now
+  report, and their `N<` twins too; across its 956 rows and their twins, round 3's own 989 and
+  their twins, the AX, P0, F6 and P4 rows, the round-3 kit's 20,533 and #2856's hunts 33-53, no
+  cell goes CLEAN where `main` reports -- but for #2911's rows (S08n, S08p, hunt 37's `*-od`),
+  which differ between two runs of `main` too -- and the only other new reports are 7 rows every
+  parent runs (AF073-AF078, KGe26; 35 cells). The cost, `job_defects` against `main` in one process:
+  1.49x on the seat's 288 FX rows and 1.04x on its 1,945 rows; a job holding a download is read
+  once more for each further distinct action of its widest `find`, at most 8 times. Still unread,
+  as on `main`, since `find` is no wrapper to the fetch, program and pipe readers: a fetch inside
+  an action, an action's `-c` program, and a download piped into the shell an action runs (`curl
+  … | find /dev/null -exec sh \;`), filed as #2935.
 - **Workflow reader reads a read-write descriptor's file where an interpreter holds it, as `main`
   reads `N<` (#2881, #2608).** `curl … -o tool` ⏎ `sh 3<> tool <&3` ran the download and read
   CLEAN: the reader read `N<> file` as a write alone, so a dup of N onto standard input (`sh 3<>
