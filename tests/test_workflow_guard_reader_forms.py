@@ -1909,6 +1909,78 @@ class TestEveryActionOfAFindIsRead(unittest.TestCase):
                 self.assertEqual(count > cap, bool(shell_command.unresolved_wrapper(argv)))
 
 
+class TestEveryFindActionIsACommand(unittest.TestCase):
+    """#2935: `command()` never unwrapped `find`, so the guard's fetch, `-c` program and pipe readers
+    never saw an action -- the first one too -- and a download an action fetches, a program it runs,
+    or a stream piped into its shell read CLEAN while every parent runs it. `command()` now unwraps a
+    `find` as a wrapper, into the action a fold reads; one that runs a check keeps the `find`, as
+    `main` reads it, and a program an action runs has no shell sure to read it (`unsure`): `find`
+    exits 0 though a `-exec … \\;` command fails, so nothing an action runs is credited."""
+
+    def test_each_reader_sees_the_action(self):
+        # The #2935 hunt's families, by its ids, every parent running each: a fetch in an action
+        # (F-first-sh, F-later-bash, F-dir-chmod, F-ok-sh, F-sudo-sh), an action's `-c` program
+        # (C-first-stream, C-orfail-file), an action's `-c` running a download (D-first), and a
+        # download piped into the shell an action runs (P-first-sh, P-later-bash).
+        for use in ("find /dev/null -exec curl -fsSLo tool %stool \\;\nsh tool" % URL,
+                    "find /dev/null -exec true \\; -exec curl -fsSLo tool %stool \\;\nbash tool" % URL,
+                    "find . -maxdepth 0 -execdir curl -fsSLo tool %stool \\;\nchmod +x tool && ./tool" % URL,
+                    "echo y > ans\nfind /dev/null -ok curl -fsSLo tool %stool \\; < ans\nsh tool" % URL,
+                    "find /dev/null -exec sudo curl -fsSLo tool %stool \\;\nsh tool" % URL,
+                    "find /dev/null -exec sh -c '%s' \\;" % PIPE,
+                    "find /dev/null -exec false \\; -o -exec bash -c 'curl -fsSLo t %st; sh t' \\;" % URL,
+                    GET + "find /dev/null -exec sh -c 'sh tool' \\;",
+                    "curl -fsSL %si.sh | find /dev/null -exec sh \\;" % URL,
+                    "curl -fsSL %si.sh | find /dev/null -exec true \\; -exec bash -s \\;" % URL):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(use + "\necho done\n", shell))
+
+    def test_nothing_an_action_runs_is_credited(self):
+        # A check an action runs, as its command, in its `-c` program, or read off its shell's standard
+        # input, with the wrong digest or the right one, clears nothing (the hunt's K rows): `main`
+        # reads each so, and the unwrap keeps it -- beside the same check run on its own, which clears.
+        sums = "echo '%s  tool' > sums\n" % ("a" * 64)
+        self.assertFalse(reported(GET + sums + "sha256sum -c sums\nsh tool\n"))
+        for check in ("find /dev/null -exec sha256sum -c sums \\;", "find /dev/null -exec sh -c 'sha256sum -c sums' \\;",
+                      "find /dev/null -exec true \\; -exec bash -c 'sha256sum -c sums' \\;",
+                      "find /dev/null -exec sh \\; <<'EOF'\nsha256sum -c sums\nEOF"):
+            with self.subTest(check=check):
+                self.assertTrue(reported(GET + sums + check + "\nsh tool\n"))
+
+    def test_the_roots_still_stand_in_for_the_braces(self):
+        # `workflow_operands.described` hands the roots of the `find` an action came from
+        # (`Found.finder`), as it did with the `find` itself (#2918).
+        found = wg.job_defects([wg.Step("step", GET + "find . -name tool -exec chmod +x {} \\;\n", None)])
+        self.assertEqual(1, len(found))
+        self.assertIn("making it executable", found[0][1])
+
+    def test_a_find_that_fetches_and_runs_nothing_reads_clean(self):
+        # The hunt's benign finds: nothing downloads, nothing runs a download -- the price, none.
+        for use in ("find . -name '*.pyc' -exec rm -f {} \\;", "find . -type f -exec chmod 644 {} +",
+                    "find . -name '*.sh' -exec bash -n {} \\;", "find . -exec sh -c 'echo \"$1\"' _ {} \\;",
+                    "find . -name x -exec true \\; -exec echo found \\;", "find . -name '*.log' -exec gzip -f {} \\;"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertFalse(reported(use + "\n", shell))
+
+    def test_the_command_of_a_find_is_its_action(self):
+        import shell_command
+        stage = shell_reader.statements("find /dev/null -exec env sh -c x \\;\n")[0].stages[0]
+        argv = shell_reader.command(stage.argv)
+        self.assertEqual(["sh", "-c", "x"], argv)
+        self.assertEqual(["find", "/dev/null", "-exec", "env", "sh", "-c", "x", ";"], argv[0].finder)
+        self.assertEqual(["find"], shell_reader.wrapper_words(stage.argv)[:1])
+        # A check keeps the `find`; a program an action runs has no sure reader.
+        stage = shell_reader.statements("find /dev/null -exec sha256sum -c sums \\;\n")[0].stages[0]
+        self.assertEqual("find", shell_reader.command(stage.argv)[0])
+        self.assertEqual([None], [script.reader for script in shell_command.unsure(argv, ["x"])])
+        self.assertEqual((None, "r"), (shell_command.sure_reader(argv, "r"), shell_command.sure_reader(["sh"], "r")))
+        # The reader hands what `N<>` holds to a shell any action runs, whichever one a fold reads (#2918).
+        stage = shell_reader.statements("find /dev/null -exec true \\; -exec sh /dev/fd/3 \\; 3<> tool\n")[0].stages[0]
+        self.assertIn("tool", stage.reads)
+
+
 class TestEachGateOfTheWholeWordHasAVerdict(unittest.TestCase):
     """PR #2856 round 9, the round-8 verdict's F4: each test that confines the whole reading to a
     command word moves a verdict, so each has a row here. Read whole past one, the guard reports

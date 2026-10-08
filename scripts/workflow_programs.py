@@ -99,7 +99,7 @@ def scripts(argv):
     parse left to reach another. A text so rendered that the reader refuses is none, as before
     #2486: `eval "cat <<$(a b) …"` takes its delimiter from what `a b` prints, and `cat <<$(...)` is
     no spelling to end the body at, so the string is unread and the rest of the step read."""
-    return [script for script in map(_script, _program_words(argv)) if script is not None]
+    return shell_reader.unsure(argv, [script for script in map(_script, _program_words(argv)) if script is not None])
 
 
 def _program_words(argv):
@@ -601,7 +601,7 @@ def stdin_scripts(argv, stage, before=None, shell=None):
     out = []
     for spelled in texts:
         text = Stdin(spelled)
-        text.reader = reader if len(readings) == 1 else None
+        text.reader = shell_reader.sure_reader(argv, reader if len(readings) == 1 else None)
         setattr(text, "bound", stdin_command(argv)[0] if kind == VALUE_PROGRAM else None)
         out.append(text)
     # A FILE program beside a heredoc (#2764): the FILE is the program, and where its one

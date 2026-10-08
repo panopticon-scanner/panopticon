@@ -65,7 +65,7 @@ from shell_command import (CONDITIONS as CONDITIONS, KEYWORDS as KEYWORDS,
                            _INTERPRETERS as _INTERPRETERS, _NAME as _NAME, _OPTIONAL as _OPTIONAL,
                            _SHELLS as _SHELLS, _command_result as _command_result,
                            _optional as _optional, command as command, reads_held,
-                           credited_zero as credited_zero,
+                           credited_zero as credited_zero, sure_reader as sure_reader, unsure as unsure,
                            command_as_written as command_as_written, conditional as conditional,
                            negated as negated, unresolved_wrapper as unresolved_wrapper,
                            folds as folds, wrapper_words as wrapper_words)

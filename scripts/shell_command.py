@@ -20,8 +20,8 @@ import os
 import re
 
 from shell_patterns import shell_words
-from shell_tokens import derived, has_substitution, is_arm, readable, spelled
-from shell_wrappers import WRAPPERS, Defaulted, Rewritten, dynamic, unwrap
+from shell_tokens import _Token, derived, has_substitution, is_arm, readable, spelled
+from shell_wrappers import WRAPPERS, Defaulted, Found, Rewritten, _FoundDefaulted, dynamic, unwrap
 
 
 # Shell keywords that stand in FRONT of the command: `if curl ...; then`,
@@ -189,15 +189,18 @@ def _runs(argv):
     return 1, command_
 
 
-def _command_result(argv, optional=True):
+def _command_result(argv, optional=True, finds=True):
     """Shared parse result for execution extraction and unread decisions: the
     command, why it or a wrapper in front of it cannot be read (or None), and
     the words read as wrappers, as written. A command word that is a shell's
     default (`${X:-sh}`, `_DEFAULTS`) is read as that shell; `$` words in front
     of a known name are dropped (`_optional`) unless `optional` is False, the
-    reading `workflow_annotate` takes to find the word a step's table resolves."""
+    reading `workflow_annotate` takes to find the word a step's table resolves. A `find` is
+    unwrapped as a wrapper is, into the action a fold reads (`_found`, #2935), unless `finds` is
+    False: the `find` itself, as `reads_held` and `find_action` read it."""
     argv = list(argv)
     heads: list[str] = []
+    found = None                                # the `find` an action was unwrapped from
     # `xargs` appends words from its input to the argv behind it, so the
     # innermost wrapper read after one (`behind`, with its argv) was read from
     # an argv that is not the one that runs (#2227).
@@ -276,6 +279,12 @@ def _command_result(argv, optional=True):
         if isinstance(argv[0], Rewritten):
             return argv, "`%s` is a pattern bash expands before anything runs" % readable(
                 argv[0]), heads
+        if head == "find" and finds and (inner := _found(argv)) is not None:
+            if isinstance(inner, str):
+                return argv, inner, heads       # an action it cannot read (`_unread`)
+            heads.append(argv[0])
+            found, argv = argv, inner
+            continue
         if head not in WRAPPERS:
             break
         heads.append(argv[0])
@@ -299,6 +308,10 @@ def _command_result(argv, optional=True):
         if word is not None:
             reason = "`%s` is a pattern bash expands where `%s` looks for `-c` or a script" % (
                 readable(word), os.path.basename(argv[0]))
+    if found is not None and argv:
+        marked = (_FoundDefaulted if isinstance(argv[0], Defaulted) else Found)(argv[0])
+        marked.finder = found
+        argv[0] = marked
     return argv, reason or vanished, heads
 
 
@@ -406,7 +419,7 @@ def reads_held(argv):
     """Whether the command a stage runs reads what a descriptor holds open (`_reader`) -- where that
     is a `find`, whether any command its actions run does, its wrappers stripped (round 4: the
     first alone, `find /dev/null -exec sh /dev/fd/3 \\;`; every one, #2918)."""
-    argv = command(argv)
+    argv = _command_result(argv, finds=False)[0]
     return any(_reader(inner) for inner in ([command(words) for words in _actions(argv)] or [argv]) if inner)
 
 
@@ -421,6 +434,41 @@ def find_action(argv):
     if len(actions) <= _FIND_CAP:
         _ACTIONS["more"] = _ACTIONS["more"] or len(actions) > _ACTIONS["at"] + 1
     return command(actions[min(_ACTIONS["at"], len(actions) - 1)])
+
+
+def _found(argv):
+    """The words of the action of `find` -- `argv` its command -- this fold reads, where `command()`
+    unwraps it as a wrapper (#2935); why one of its actions cannot be read (`_unread`); or None: it
+    holds none, or the fold's is empty or runs a check, which keeps the `find`, as `main` reads it --
+    `find` exits 0 though a `-exec … \\;` command fails, so no check an action runs is credited."""
+    actions = _actions(argv)
+    if not actions:
+        return None
+    if why := _unread(argv):
+        return why
+    _ACTIONS["more"] = _ACTIONS["more"] or len(actions) > _ACTIONS["at"] + 1
+    words = actions[min(_ACTIONS["at"], len(actions) - 1)]
+    run = _command_result(words)[0] if words else []
+    return list(words) if run and os.path.basename(run[0]) not in _CHECKERS else None
+
+
+def unsure(argv, scripts):
+    """`scripts`, the programs `workflow_programs.scripts` reads off `argv`, each one no shell is sure
+    to read (`reader` None) where `argv` is a command a `find` action runs (`Found`, #2935): `find`
+    may run it never or many times and exits 0 though it fails, so `workflow_forms.flattened` reads
+    it `Unsure` and no check in it is the step's own."""
+    if not argv or not isinstance(argv[0], Found):
+        return scripts
+    scripts = [script if type(script) is not str else _Token(script, {}) for script in scripts]
+    for script in scripts:
+        script.reader = None
+    return scripts
+
+
+def sure_reader(argv, reader):
+    """`reader`, the shell `workflow_programs.stdin_scripts` reads a program on standard input under,
+    or None where `argv` is a command a `find` action runs (`unsure`, #2935)."""
+    return None if argv and isinstance(argv[0], Found) else reader
 
 
 def _unread(argv):
@@ -443,8 +491,7 @@ def unresolved_wrapper(argv):
     """Why a wrapper at this command's head -- or, with none, a pattern bash
     expands where the command starts (#2294) -- cannot be resolved, if any;
     or why a command a `find` there runs cannot be (`_unread`, #2918)."""
-    argv, reason, _heads = _command_result(argv)
-    return reason or _unread(argv)
+    return _command_result(argv)[1]
 
 
 def wrapper_words(argv):
