@@ -14,6 +14,12 @@ evidence exposed.
   marks, embeddings, overrides, and isolates in occurrence paths, candidate areas, and proposed
   names. Honest emitter output remains valid, and `synthesize.py` keeps its ASCII-escaped,
   multi-line JSON serialization.
+- **X0X candidate names and array order are reproducible (#2713).** Proposed names are now
+  schema-pinned to kebab case and 60 characters, and the emitter applies that same bound. Candidate
+  arrays sort by severity, domain, proposed name, and cluster key; equal-severity cluster leads use
+  a stable finding fingerprint, while occurrences and CWE identifiers receive canonical orders.
+  Reordering the input findings therefore leaves the emitted candidate array unchanged, and
+  `generated_at` remains optional.
 - **Reviewer write safety separates the boundary from its transport (#1622).**
   `artifact_write_guard` now means reviewer-controlled artifact writes are impossible or confined.
   The static `self_write_delivery` fact is true only for Claude and Kimi, and a write-capable role

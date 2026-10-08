@@ -7,6 +7,7 @@ import unittest
 import jsonschema
 
 from tests._test_helpers import only
+import scripts.evidence as evidence
 import scripts.x0x_report as x0x
 
 
@@ -286,3 +287,78 @@ class TestX0XReport(unittest.TestCase):
             with self.subTest(field=field):
                 set_value("segment\tline\nnext")
                 validator.validate(report)
+
+    def test_proposed_name_is_bounded_kebab_case_and_the_emitter_conforms(self):
+        schema = _schema()
+        validator = jsonschema.Draft7Validator(schema)
+
+        def document(name):
+            report = x0x.build_report(
+                [_f("ARC-X0X", "ARC", "LOW", "ordinary gap", "src/gap.py")],
+                {}, run_id="run-1")
+            only(report["candidates"], "candidate")["proposed_name"] = name
+            return report
+
+        for name in ("", "-leading", "trailing-", "two--hyphens", "Upper-case",
+                     "under_score", "white space", "line\n", "tab\tname", "a" * 61):
+            with self.subTest(rejected=name):
+                self.assertTrue(list(validator.iter_errors(document(name))))
+        for name in ("a", "cwe-400", "a" * 60, "bounded-retry-loop"):
+            with self.subTest(accepted=name):
+                validator.validate(document(name))
+
+        emitted = x0x.build_report(
+            [_f("ARC-X0X", "ARC", "LOW", "A" * 70 + " tail", "src/gap.py")],
+            {}, run_id="run-1")
+        proposed = only(emitted["candidates"], "candidate")["proposed_name"]
+        self.assertEqual(proposed, "a" * 60)
+        validator.validate(emitted)
+
+    def test_candidate_array_is_total_sorted_and_input_order_independent(self):
+        findings = [
+            _f("SEC-X0X", "SEC", "HIGH", "Shared Gap", "z.py", 9, "s-z",
+               desc="from z", refs=["CWE-522"]),
+            _f("ARC-X0X", "ARC", "LOW", "Beta gap", "beta.py", 4, "arc"),
+            _f("COD-X0X", "COD", "HIGH", "Cache/read gap", "slash.py", 3,
+               "cod-slash"),
+            _f("DAT-X0X", "DAT", "CRITICAL", "Critical gap", "critical.py", 1,
+               "dat"),
+            _f("SEC-X0X", "SEC", "HIGH", "shared gap", "a.py", 2, "s-a",
+               desc="from a", refs=["CWE-400"]),
+            _f("COD-X0X", "COD", "HIGH", "Cache read gap", "space.py", 5,
+               "cod-space"),
+        ]
+        orders = (
+            findings,
+            list(reversed(findings)),
+            findings[2:] + findings[:2],
+            sorted(findings, key=lambda finding: finding["id"]),
+        )
+        emitted = [x0x.build_candidates(order) for order in orders]
+        for candidate_array in emitted[1:]:
+            self.assertEqual(candidate_array, emitted[0])
+
+        self.assertEqual(
+            [(candidate["domain"], candidate.get("proposed_name"))
+             for candidate in emitted[0]],
+            [("DAT", "critical-gap"),
+             ("COD", "cache-read-gap"),
+             ("COD", "cache-read-gap"),
+             ("SEC", "shared-gap"),
+             ("ARC", "beta-gap")])
+        shared = next(candidate for candidate in emitted[0]
+                      if candidate["domain"] == "SEC")
+        expected_lead = max(
+            (finding for finding in findings if finding["domain"] == "SEC"),
+            key=evidence.finding_fingerprint)
+        self.assertEqual(shared["description"], expected_lead["description"])
+        self.assertEqual(shared["cwe"], ["CWE-400", "CWE-522"])
+        self.assertEqual([occurrence["file"] for occurrence in shared["occurrences"]],
+                         ["a.py", "z.py"])
+
+    def test_generated_at_stays_optional(self):
+        schema = _schema()
+        report = x0x.build_report([], {}, run_id="run-1")
+        self.assertNotIn("generated_at", schema["required"])
+        self.assertNotIn("generated_at", report)
+        self.assertIsNone(jsonschema.validate(report, schema))

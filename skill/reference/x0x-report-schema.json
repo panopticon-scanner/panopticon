@@ -59,7 +59,11 @@
           "proposed_name": {
             "type": "string",
             "pattern": "^[^\\u0000-\\u0008\\u000B-\\u001F\\u007F-\\u009F\\u061C\\u200E-\\u200F\\u202A-\\u202E\\u2066-\\u2069]*$",
-            "description": "Panopticon's suggested kebab-case anti-pattern name (e.g. `unbounded-external-response-read`). Maps to the OCRDb entry `name`; the adjudicator finalizes it."
+            "allOf": [
+              {"pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*(?![\\s\\S])"}
+            ],
+            "maxLength": 60,
+            "description": "Panopticon's suggested kebab-case anti-pattern name, at most 60 characters (e.g. `unbounded-external-response-read`). Maps to the OCRDb entry `name`; the adjudicator finalizes it."
           },
           "summary": {
             "type": "string",

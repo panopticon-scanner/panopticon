@@ -13,17 +13,21 @@ X0X findings is a separate, reviewer-side follow-on.
 """
 from typing import TYPE_CHECKING
 from typing import Any
+import json
 import re
 import sys
 
 if TYPE_CHECKING:
+    import scripts.evidence as evidence
     import scripts.ocrdb as ocrdb
     import scripts.report_records as report_records
 else:
     try:
+        import scripts.evidence as evidence
         import scripts.ocrdb as ocrdb
         import scripts.report_records as report_records
     except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
+        import evidence
         import ocrdb
         import report_records
 
@@ -34,6 +38,7 @@ _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _WS_RE = re.compile(r"\s+")
 _SEV_ORDER = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "INFO": 0}
 _DIAG_MAX = 120          # bound on any agent-authored value in a diagnostic
+_PROPOSED_NAME_MAX = 60
 
 
 def is_fallback(code):
@@ -49,7 +54,7 @@ def is_fallback(code):
 
 def _slug(text):
     s = _SLUG_RE.sub("-", (text or "").lower()).strip("-")
-    return s or None
+    return s[:_PROPOSED_NAME_MAX].rstrip("-") or None
 
 
 def _one_line(value, cap=_DIAG_MAX):
@@ -123,9 +128,34 @@ def _domain(finding):
 
 def _lead(cluster):
     """The most severe finding in a cluster — it leads the candidate's
-    summary/severity/name, and names the cluster in a diagnostic."""
-    return max(cluster,
-               key=lambda f: _SEV_ORDER.get(str(f.get("severity") or "").upper(), -1))
+    summary/severity/name, and names the cluster in a diagnostic. Equal severities
+    use stable finding identity rather than input order."""
+    return max(
+        cluster,
+        key=lambda finding: (
+            _SEV_ORDER.get(str(finding.get("severity") or "").upper(), -1),
+            evidence.finding_fingerprint(finding),
+            _canonical(finding),
+        ),
+    )
+
+
+def _canonical(value):
+    """A stable total-order key for JSON-originated report values."""
+    return json.dumps(value, ensure_ascii=True, sort_keys=True,
+                      separators=(",", ":"), default=str)
+
+
+def _candidate_order(item):
+    """The consumer's total candidate order, with the cluster key as its tie-break."""
+    cluster_key, candidate = item
+    severity = str(candidate.get("severity") or "").upper()
+    return (
+        -_SEV_ORDER.get(severity, -1),
+        str(candidate.get("domain") or ""),
+        str(candidate.get("proposed_name") or ""),
+        tuple(str(part) for part in cluster_key),
+    )
 
 
 def build_candidates(findings, dropped=None):
@@ -134,21 +164,28 @@ def build_candidates(findings, dropped=None):
     merges into one candidate with many occurrences; distinct titles stay
     separate. (Semantic clustering is a future refinement.)
 
+    The returned candidate array has a total, input-independent order.
+
     ``dropped``, when a list is passed, collects one record per cluster this
     emitter could not carry because no finding in it had a file location — the
     tally ``build_report`` publishes (see the ``continue`` below)."""
-    clusters: dict[tuple[str, str], list[dict[str, Any]]] = {}  # (domain, key) -> [findings], insertion-ordered
+    clusters: dict[tuple[str, str], list[dict[str, Any]]] = {}  # (domain, key) -> [findings]
     for f in findings:
         if not is_fallback(f.get("code")):
             continue
         title = f.get("short_title") or f.get("title") or ""
         norm = _WS_RE.sub(" ", title.strip().lower())
-        key = (_domain(f), norm if norm else f.get("id", ""))
+        key = (_domain(f), norm if norm else str(f.get("id") or ""))
         clusters.setdefault(key, []).append(f)
 
     candidates = []
-    for (domain, _), fs in clusters.items():
-        occurrences = [o for o in (_occurrence(f) for f in fs) if o is not None]
+    for cluster_key, fs in clusters.items():
+        domain, _ = cluster_key
+        occurrences = sorted(
+            (occurrence for occurrence in (_occurrence(f) for f in fs)
+             if occurrence is not None),
+            key=_canonical,
+        )
         lead = _lead(fs)
         if not occurrences:          # schema: occurrences has minItems 1
             # #1807 DAT-2501524861: a locus-free finding is the CANONICAL shape
@@ -170,11 +207,7 @@ def build_candidates(findings, dropped=None):
                 dropped.append({"domain": domain, "summary": name,
                                 "finding_count": len(fs)})
             continue
-        cwe = []
-        for f in fs:
-            for c in _cwes(f):
-                if c not in cwe:
-                    cwe.append(c)
+        cwe = sorted({c for f in fs for c in _cwes(f)})
         cand = {
             "domain": domain,
             "fallback_code": lead.get("code"),
@@ -190,8 +223,8 @@ def build_candidates(findings, dropped=None):
             cand["description"] = lead["description"]
         if cwe:
             cand["cwe"] = cwe
-        candidates.append(cand)
-    return candidates
+        candidates.append((cluster_key, cand))
+    return [candidate for _, candidate in sorted(candidates, key=_candidate_order)]
 
 
 def build_report(findings, meta, run_id, panopticon_version=None, target=None):
