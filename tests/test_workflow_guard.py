@@ -95,7 +95,8 @@ class TestTheFailureContextSplit(unittest.TestCase):
             with self.subTest(script=script):
                 statements = list(shell_reader.statements(script))
                 analysis = workflow_failure_contexts.statement_analysis(statements)
-                contexts = analysis.opened_contexts(statements[0].stages[0])
+                contexts = [context for statement in statements
+                            for context in analysis.opened_contexts(statement.stages[0])]
                 self.assertEqual(expected, tuple(tuple(context) for context in contexts))
 
     def test_hidden_group_events_follow_explicit_openers(self):
