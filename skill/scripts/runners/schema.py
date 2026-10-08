@@ -27,6 +27,7 @@ _STRICT_MAX_TEXT = 120000
 _STRICT_MAX_ENUM_VALUES = 1000
 _STRICT_LARGE_ENUM_COUNT = 250
 _STRICT_LARGE_ENUM_TEXT = 15000
+_STRICT_DIALECT = "http://json-schema.org/draft-07/schema#"
 
 
 def published_schema(path):
@@ -72,6 +73,9 @@ def strict_output_schema(path):
             body = json.load(fh)
     except (OSError, ValueError):
         return None
+    if (not isinstance(body, dict)
+            or body.get("$schema", _STRICT_DIALECT) != _STRICT_DIALECT):
+        return None
     try:
         jsonschema.validators.validator_for(body).check_schema(body)
     except (jsonschema.exceptions.SchemaError, TypeError, ValueError):
@@ -88,6 +92,12 @@ def strict_output_schema(path):
     ))
     kinds = frozenset(("string", "number", "boolean", "integer", "object",
                        "array", "null"))
+    formats = frozenset(("date-time", "time", "date", "duration", "email",
+                         "hostname", "ipv4", "ipv6", "uuid"))
+    string_rules = frozenset(("minLength", "maxLength", "pattern", "format"))
+    number_rules = frozenset(("multipleOf", "minimum", "maximum",
+                              "exclusiveMinimum", "exclusiveMaximum"))
+    array_rules = frozenset(("minItems", "maxItems", "items"))
     counts = {"properties": 0, "text": 0, "enum": 0}
 
     def value_text(value):
@@ -130,6 +140,16 @@ def strict_output_schema(path):
         if not declared and "$ref" not in node and "anyOf" not in node:
             return False
         if root and (kind != "object" or "anyOf" in node):
+            return False
+        if "$schema" in node and not root:
+            return False
+
+        declared_set = set(declared)
+        if (string_rules.intersection(node) and "string" not in declared_set
+                or number_rules.intersection(node)
+                and not declared_set.intersection(("number", "integer"))
+                or array_rules.intersection(node) and "array" not in declared_set
+                or "format" in node and node["format"] not in formats):
             return False
 
         ref = node.get("$ref")

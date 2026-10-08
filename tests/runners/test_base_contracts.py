@@ -140,6 +140,7 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
                                  schema_rules.strict_output_schema(path))
 
                 definitions = copy.deepcopy(valid)
+                definitions["properties"]["ok"] = {"type": "string", "format": "email"}
                 definitions["properties"]["nested"] = {
                     "anyOf": [
                         {"$ref": "#/$defs/detail"},
@@ -172,6 +173,9 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
                 mutations.append(missing_object_type)
                 mutations.append({"type": "array", "items": {"type": "string"}})
                 mutations.append({"anyOf": [copy.deepcopy(valid), copy.deepcopy(valid)]})
+                unsupported_dialect = copy.deepcopy(valid)
+                unsupported_dialect["$schema"] = "https://example.invalid/schema"
+                mutations.append(unsupported_dialect)
                 for keyword in ("allOf", "oneOf", "not", "dependentRequired",
                                 "dependentSchemas", "if", "then", "else"):
                     unsupported = copy.deepcopy(valid)
@@ -191,6 +195,18 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
                     "minItems": "one",
                 }
                 mutations.append(malformed_array)
+                unsupported_format = copy.deepcopy(valid)
+                unsupported_format["properties"]["ok"] = {
+                    "type": "string",
+                    "format": "panopticon-private-format",
+                }
+                mutations.append(unsupported_format)
+                misplaced_constraint = copy.deepcopy(valid)
+                misplaced_constraint["properties"]["ok"] = {
+                    "type": "string",
+                    "minItems": 1,
+                }
+                mutations.append(misplaced_constraint)
                 external_ref = copy.deepcopy(valid)
                 external_ref["properties"]["ok"] = {"$ref": "other.json"}
                 mutations.append(external_ref)
