@@ -1236,15 +1236,18 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
 
     def test_the_recursion_hands_each_inner_argv_on_whole_at_every_depth(self):
         # Round 15's seat, B1: HVd2i, line 484's drop at depth 2 or more -- one dimension -- passed the whole
-        # suite, since the family nests a run two levels at most. So the hand-off itself is pinned: every
-        # recursive `_details` call (the one `_details` makes, known by its caller) receives the very list
-        # `shell_reader.command` returned for the inner string IN THAT FRAME -- its one `command()` call, so
-        # a second call on a thinned argv (round 16's seat, HVcmd2) is as caught as a new list or a changed
-        # word -- at every depth from 1 to the walk's bound of 64, in the main pass and in the walk's. One row
-        # nests `eval` 64 deep (every depth at once); four nest `bash -c`, `sh -c` and `eval` strings five
-        # deep; each tail carries every member of the walk's tables in both spellings, a FILE pair, a cluster
-        # and a `-c` string, so a drop keyed to a depth, a member, a spelling, a position or a run length,
-        # alone or combined, written out or read from a table, changes what this test holds.
+        # suite, since the family nests a run two levels at most. So the recursive call itself is pinned
+        # whole: every `_details` call that `_details` makes (known by its caller's frame) receives the very
+        # list `shell_reader.command` returned for the inner string IN THAT FRAME -- its one `command()`
+        # call, so a second call on a thinned argv (round 16's seat, HVcmd2) is as caught as a new list or a
+        # changed word -- that frame's depth plus one, and that frame's own `walk` (round 17's seat,
+        # HVwalkW2: the walk's tables handed to the main pass's recursion from depth 2 on), at every depth
+        # from 1 to the walk's bound of 64, in the main pass and in the walk's. One row nests `eval` 64 deep
+        # (every depth at once); four nest `bash -c`, `sh -c` and `eval` strings five deep; each tail carries
+        # every member of the walk's tables in both spellings, a FILE pair, a cluster and a `-c` string, so
+        # a one-line change of what the recursion sees -- a drop keyed to a depth, a member, a spelling, a
+        # position or a run length, alone or combined, written out or read from a table, a depth skipped, a
+        # walk swapped -- changes what this test holds.
         returned, handed = {}, []
         real_command, real_details = shell_reader.command, wp._details
 
@@ -1258,7 +1261,8 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
         def details(argv, depth, walk):
             frame = sys._getframe(1)
             if frame.f_code is real_details.__code__:
-                handed.append((depth, argv, list(argv), bool(wo._MAINS.get()), returned.get(id(frame), [])))
+                handed.append((depth, argv, list(argv), bool(wo._MAINS.get()), returned.get(id(frame), []),
+                               depth == frame.f_locals["depth"] + 1 and walk is frame.f_locals["walk"]))
             return real_details(argv, depth, walk)
 
         tail = "bash %s --rcfile /dev/null -rcfile /dev/null -es -c 'sh'" % " ".join(self.RUN + tuple(wo.LONG_OPTIONS))
@@ -1274,11 +1278,11 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
             for row in rows:
                 for shell in self.SHELLS:
                     wg.job_defects([wg.Step("step", self.B4 % row, shell)])
-        self.assertEqual(list(range(1, 65)), sorted({depth for depth, _, _, mains, _ in handed if mains}))
-        self.assertEqual(list(range(1, 65)), sorted({depth for depth, _, _, mains, _ in handed if not mains}))
-        changed = [(depth, len(results), snapshot[:4]) for depth, argv, snapshot, _, results in handed
-                   if len(results) != 1 or argv is not results[0][1] or results[0][2] != snapshot]
-        self.assertEqual([], changed[:5], "%d of %d hand-offs changed" % (len(changed), len(handed)))
+        self.assertEqual(list(range(1, 65)), sorted({depth for depth, _, _, mains, _, _ in handed if mains}))
+        self.assertEqual(list(range(1, 65)), sorted({depth for depth, _, _, mains, _, _ in handed if not mains}))
+        changed = [(depth, len(results), own, snapshot[:4]) for depth, argv, snapshot, _, results, own in handed
+                   if len(results) != 1 or argv is not results[0][1] or results[0][2] != snapshot or not own]
+        self.assertEqual([], changed[:5], "%d of %d recursive calls changed" % (len(changed), len(handed)))
 
     def test_the_main_pass_reads_a_one_dash_long_word_as_mains_letters(self):
         # Round 13's seat, B2: `main`'s answer on every row MY1 and MY6 moved in the main pass.
