@@ -16,8 +16,6 @@ name, one module, one patch target), so every caller names this module instead.
 import json
 import os
 
-import jsonschema
-
 import scripts._version as version
 
 
@@ -65,6 +63,8 @@ def strict_output_schema(path):
     returned reply against the entry's schema, while the host launches without
     a flag it would reject (#2923).
     """
+    import jsonschema
+
     path = published_schema(path)
     if path is None:
         return None
