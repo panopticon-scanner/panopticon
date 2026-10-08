@@ -520,6 +520,34 @@ class TestSynthesizePhase(unittest.TestCase):
         self.assertIn("X0X discarded 1 locus-free", result.message)
         self.assertIn(failure_path, result.message)
 
+    def test_discard_signal_survives_a_successful_child_stderr_flood(self):
+        report_path = runio._report_out(self.root)
+        x0x_path = report_path.replace(".json", "-x0x.json")
+        failure_path = x0x_path.replace(".json", "-failures.json")
+
+        def fake_run(cmd, **_kwargs):
+            with open(cmd[cmd.index("--out") + 1], "w", encoding="utf-8") as fh:
+                json.dump({"findings": [], "summary": {"gate": "PASS"}}, fh)
+            runio._write_json(failure_path, {
+                "discarded_findings": [{
+                    "finding_id": "SE-077",
+                    "reason": "no file locus",
+                    "diagnostic": "bounded diagnostic",
+                }],
+            })
+            return mock.Mock(returncode=0, stdout="", stderr="FLOOD" * 2000)
+
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            result = synthesize.synthesize_execute(self.root, self.manifest)
+
+        self.assertIn("X0X discarded 1 locus-free", err.getvalue())
+        self.assertIn(failure_path, err.getvalue())
+        self.assertNotIn("FLOOD", err.getvalue())
+        self.assertIn("X0X discarded 1 locus-free", result.message)
+        self.assertIn(failure_path, result.message)
+        self.assertNotIn("FLOOD", result.message)
+
     def test_passes_the_committed_exclude_paths_as_tools_exclude(self):
         # #1740 fix round 1 (controller addition): the report-side gate reads
         # the tool findings through `synthesize.py`, so the committed policy

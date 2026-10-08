@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "X0XFailureLog",
+  "description": "Deterministic disclosure of catalog-gap findings that Panopticon retained in its main report but could not represent in X0X because they had no file locus.",
+  "type": "object",
+  "required": ["discarded_findings"],
+  "additionalProperties": false,
+  "properties": {
+    "discarded_findings": {
+      "type": "array",
+      "minItems": 1,
+      "description": "One row per discarded finding. This is an array rather than an id-keyed object because distinct findings may share a content-derived id.",
+      "items": {
+        "type": "object",
+        "required": ["finding_id", "reason", "diagnostic"],
+        "additionalProperties": false,
+        "properties": {
+          "finding_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F\\u061C\\u200E-\\u200F\\u2028-\\u202E\\u2066-\\u2069]*$",
+            "description": "Bounded, redacted and inert spelling of the source finding id, or ? when absent."
+          },
+          "reason": {
+            "const": "no file locus",
+            "description": "Stable machine-readable reason the finding cannot become an occurrence-bearing X0X candidate."
+          },
+          "diagnostic": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 340,
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F\\u061C\\u200E-\\u200F\\u2028-\\u202E\\u2066-\\u2069]*$",
+            "description": "Bounded, redacted, single-line and inert operator diagnostic."
+          }
+        }
+      }
+    }
+  }
+}

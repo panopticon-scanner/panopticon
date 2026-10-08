@@ -217,6 +217,18 @@ class TestX0xArtifact(_Planted):
         self.assertFalse(os.path.lexists(staging))
         self.assertFalse(os.path.lexists(os.path.join(self.pano, "report-x0x.json.tmp")))
 
+    def test_a_clean_x0x_run_removes_a_stale_failure_log_symlink(self):
+        findings = os.path.join(self.root, "findings-g1-SEC.json")
+        with open(findings, "w", encoding="utf-8") as fh:
+            json.dump({"findings": []}, fh)
+        out = os.path.join(self.pano, "report.json")
+        stale = self.plant("report-x0x-failures.json")
+
+        self.assertEqual(synthesize.main(["--out", out, findings]), 0)
+
+        self.assertFalse(os.path.lexists(stale))
+        self.assert_victim_intact()
+
 
 class TestTreeBaseline(_Planted):
     """`validate.capture_tree_baseline` stages `tree-baseline.txt.tmp` beside the

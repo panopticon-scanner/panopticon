@@ -131,7 +131,7 @@ def build_parser():
     return ap
 
 
-def validate_artifacts(report_path, x0x_path=None):
+def validate_artifacts(report_path, x0x_path=None, x0x_failure_path=None):
     """Validate the artifacts AS WRITTEN against their published schemas.
 
     #1639 P15 ruling 2. `validate_report` checks the in-memory document; this
@@ -145,10 +145,10 @@ def validate_artifacts(report_path, x0x_path=None):
       disagree about what "the report" means. A part that cannot be read makes
       the union unknowable, which fails CLOSED -- a run may not claim validity
       it could not establish.
-    * `report-x0x.json` is a sibling artifact with its own schema, ingested
-      downstream by OCRDb's candidate pool, and nothing had ever validated it.
-      Locus-free gaps are excluded from that occurrence-bearing artifact and
-      recorded in its separate failure log.
+    * `report-x0x.json` and its optional locus-free failure log are sibling
+      artifacts with their own schemas. The first is ingested downstream by
+      OCRDb's candidate pool; the second records findings that cannot enter its
+      occurrence-bearing candidate set.
 
     Each error names its artifact, because "N schema errors" across two files
     is not actionable without knowing which.
@@ -163,17 +163,20 @@ def validate_artifacts(report_path, x0x_path=None):
     else:
         errors.extend("%s: %s" % (name, e)
                       for e in validate_schema_mod.schema_errors(hydrated))
-    if x0x_path is not None:
-        x0x_name = os.path.basename(x0x_path)
+    for artifact_path, schema in (
+            (x0x_path, validate_schema_mod.X0X_SCHEMA),
+            (x0x_failure_path, validate_schema_mod.X0X_FAILURE_SCHEMA)):
+        if artifact_path is None:
+            continue
+        artifact_name = os.path.basename(artifact_path)
         try:
-            with open(x0x_path, encoding="utf-8") as fh:
-                x0x_doc = json.load(fh)
+            with open(artifact_path, encoding="utf-8") as fh:
+                artifact_doc = json.load(fh)
         except (OSError, ValueError) as exc:
-            errors.append("%s: schema: unreadable (%s)" % (x0x_name, exc))
+            errors.append("%s: schema: unreadable (%s)" % (artifact_name, exc))
         else:
-            errors.extend("%s: %s" % (x0x_name, e) for e in
-                          validate_schema_mod.schema_errors(
-                              x0x_doc, validate_schema_mod.X0X_SCHEMA))
+            errors.extend("%s: %s" % (artifact_name, e) for e in
+                          validate_schema_mod.schema_errors(artifact_doc, schema))
     return errors
 
 
@@ -434,7 +437,9 @@ def main(argv=None):
     # question and are answered below; this is the artifact itself failing to
     # be what it claims to be, and it is reported AFTER the summary so the
     # grade/gate text a run always prints is unchanged by it.
-    artifact_errors = validate_artifacts(paths[0], x0x_path)
+    failure_validation_path = failure_path if failure_log is not None else None
+    artifact_errors = validate_artifacts(
+        paths[0], x0x_path, failure_validation_path)
     if artifact_errors:
         # An artifact error that the pre-write pass already printed is counted
         # but not reprinted: the two passes agree about it, which is not two
@@ -449,6 +454,8 @@ def main(argv=None):
             print("SCHEMA artifact: %d error(s) already listed above as pre-write"
                   % repeats, file=sys.stderr)
         checked_paths = [paths[0], x0x_path]
+        if failure_validation_path is not None:
+            checked_paths.append(failure_validation_path)
         print("synthesize: artifact invalid: %d schema errors (see %s)"
               % (len(artifact_errors), ", ".join(checked_paths)),
               file=sys.stderr)

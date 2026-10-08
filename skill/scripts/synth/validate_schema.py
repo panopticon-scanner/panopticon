@@ -80,6 +80,7 @@ REFERENCE_DIR = os.path.join(
 
 REPORT_SCHEMA = "report-schema.json"
 X0X_SCHEMA = "x0x-report-schema.json"
+X0X_FAILURE_SCHEMA = "x0x-failure-log-schema.json"
 
 # synthesize's exit status for "this run wrote an artifact that does not
 # satisfy its own published schema" (#1639 P15 ruling 2). Terminal completion,

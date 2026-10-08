@@ -1267,6 +1267,23 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
         self.assertIn("report-x0x.json", stderr)
         self.assertIn("Grade:", stdout)
 
+    def test_an_invalid_x0x_failure_log_fails_the_run(self):
+        import scripts.x0x_report as x0x_report
+
+        x0x = x0x_report.build_report([], {}, run_id="run-1")
+        invalid_log = {"discarded_findings": [{"finding_id": "SE-077"}]}
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp, out = self._fixture(d)
+            with mock.patch.object(
+                    x0x_report, "build_emission",
+                    return_value=(x0x, invalid_log)):
+                rc, stdout, stderr = self._run(
+                    ["--target", "src", "--out", out, fp])
+        self.assertEqual(rc, 4)
+        self.assertIn("artifact invalid:", stderr)
+        self.assertIn("report-x0x-failures.json", stderr)
+        self.assertIn("Grade:", stdout)
+
     def test_a_locus_free_gap_is_logged_while_the_rest_of_x0x_is_emitted(self):
         # #2713 revised owner ruling: discard only the unrepresentable finding,
         # log it separately, and leave the candidate artifact byte-identical to
@@ -1297,7 +1314,8 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
             failure_bytes = Path(failure_path).read_bytes()
 
             self.assertEqual(rc, 0, stderr)
-            self.assertEqual(syn.validate_artifacts(out, x0x_path), [])
+            self.assertEqual(
+                syn.validate_artifacts(out, x0x_path, failure_path), [])
             self.assertTrue(os.path.isfile(out + ".html"))
             self.assertIn(
                 "repo-wide dependency gap",
@@ -1393,11 +1411,24 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
         # Artifact validity must not shadow the gate's own verdicts.
         with tempfile.TemporaryDirectory() as d, _chdir(d):
             fp, out = self._fixture(d)
+            with open(fp, encoding="utf-8") as fh:
+                document = json.load(fh)
+            document["findings"].append(_agentic(
+                "SE-077", sev="LOW", code="SEC-X0X", domain="SEC",
+                title="repo-wide dependency gap", short_title="dependency gap",
+                location={},
+            ))
+            with open(fp, "w", encoding="utf-8") as fh:
+                json.dump(document, fh)
             rc, _stdout, stderr = self._run(
                 ["--target", "src", "--fail-on", "high", "--gate-unverified",
                  "--out", out, fp])
+            failure_log_exists = os.path.isfile(out.replace(
+                ".json", "-x0x-failures.json"))
         self.assertEqual(rc, 1)
         self.assertNotIn("artifact invalid", stderr)
+        self.assertIn("discarded 1 locus-free", stderr)
+        self.assertTrue(failure_log_exists)
 
 
 # #1639 P15 fix round 1, C1. The shapes a review agent can write that the

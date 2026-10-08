@@ -1108,11 +1108,15 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   the run manifest; adjudication (the gap rationale, the new_code/refine/retire verdict) happens
   downstream in OCRDb's pool. A catalog-gap finding without `location.file` cannot become an
   occurrence — none is invented — so the emitter leaves it out of the X0X candidate set and records
-  it in the deterministic `<stem>-report-x0x-failures.json` sidecar. The main JSON and HTML retain
-  the finding. Synthesize warns with the exact discard count and sidecar path while returning the
-  ordinary gate status; the driver repeats that disclosure and carries it in the terminal status,
-  including on a resume. A clean run removes an older failure sidecar. X0X objects deliberately
-  remain open to extension fields;
+  it in the deterministic `<stem>-report-x0x-failures.json` sidecar, validated as written against
+  `skill/reference/x0x-failure-log-schema.json`. The array keeps every finding even when two share
+  one content-derived id. This also resolves #2090's mixed-cluster loss: an unlocated member is
+  logged and can never lead the candidate that its located siblings still emit. The main JSON and
+  HTML retain the finding. Synthesize warns with the exact discard count and sidecar path while
+  returning the ordinary gate status; the driver prints its own count/path line after the child and
+  carries it in the terminal status, including after stderr flooding and on a resume. A clean run
+  removes an older failure sidecar, including a planted symlink without following it. X0X objects
+  deliberately remain open to extension fields;
   `evidence_status` is not a declared field until its vocabulary and type are standardized. `cwe`
   is optional and omitted when no identifiers were found. SARIF is ingested via
   `skill/scripts/ingest_tools.py`, but only

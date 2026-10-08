@@ -119,21 +119,29 @@ class TestX0XFailureStatus(unittest.TestCase):
             branch="main", user_email="t@t", user_name="t",
         )
         args = driver.build_parser().parse_args(["run", root, "--no-tools"])
+        report_path = os.path.join(root, ".panopticon", "report.json")
         failure_path = os.path.join(root, ".panopticon", "report-x0x-failures.json")
-        disclosure = {
-            "count": 2,
-            "path": failure_path,
-            "message": ("X0X discarded 2 locus-free catalog-gap finding(s); "
-                        "failure log: %s" % failure_path),
-        }
-        with mock.patch.object(synthesize_phase, "x0x_failure_disclosure",
-                               return_value=disclosure):
-            status = driver.run(args, phases=())
+        os.makedirs(os.path.dirname(failure_path), exist_ok=True)
+        with open(failure_path, "w", encoding="utf-8") as fh:
+            json.dump({"discarded_findings": [
+                {"finding_id": "SE-077", "reason": "no file locus",
+                 "diagnostic": "first"},
+                {"finding_id": "SE-078", "reason": "no file locus",
+                 "diagnostic": "second"},
+            ]}, fh)
 
-        self.assertEqual(status["status"], "complete", status)
-        self.assertEqual(status["x0x_discarded"], 2)
-        self.assertEqual(status["x0x_failure_log"], failure_path)
-        self.assertIn(disclosure["message"], status["message"])
+        disclosure = synthesize_phase.x0x_failure_disclosure(report_path)
+        self.assertEqual(disclosure["count"], 2)
+        with mock.patch.object(runio, "_report_out", return_value=report_path):
+            status = driver.run(args, phases=())
+            resumed_status = driver.run(args, phases=())
+
+        for observed in (status, resumed_status):
+            self.assertEqual(observed["status"], "complete", observed)
+            self.assertEqual(observed["x0x_discarded"], 2)
+            self.assertEqual(observed["x0x_failure_log"], failure_path)
+            self.assertIn("X0X discarded 2 locus-free", observed["message"])
+            self.assertIn(failure_path, observed["message"])
 
 
 class TestDriverPlanIssues(unittest.TestCase):

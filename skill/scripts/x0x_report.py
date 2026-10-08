@@ -19,17 +19,20 @@ import sys
 
 if TYPE_CHECKING:
     import scripts.evidence as evidence
+    import scripts.inert as inert
     import scripts.ocrdb as ocrdb
     import scripts.redact as redact
     import scripts.report_records as report_records
 else:
     try:
         import scripts.evidence as evidence
+        import scripts.inert as inert
         import scripts.ocrdb as ocrdb
         import scripts.redact as redact
         import scripts.report_records as report_records
     except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
         import evidence
+        import inert
         import ocrdb
         import redact
         import report_records
@@ -73,11 +76,18 @@ def _one_line(value, cap=_DIAG_MAX):
 
 
 def _redacted_one_line(value, cap=_DIAG_MAX):
-    """Redact before cutting so the cap cannot expose a partial credential."""
+    """Redact and neutralize before cutting so no partial secret or control
+    sequence can survive in a bounded failure-log field."""
     text = " ".join(str(value or "").split())
     if not text:
         return ""
-    return _one_line(redact.redact_diagnostic(text, len(text)), cap)
+    text = redact.redact_diagnostic(text, len(text))
+    text = "".join(
+        ("\\x%02x" % ord(ch) if ord(ch) < 0x100 else "\\u%04x" % ord(ch))
+        if ord(ch) in inert.INERT_ESCAPE_CODE_POINTS else ch
+        for ch in text
+    )
+    return _one_line(text, cap)
 
 
 def _cwes(finding):

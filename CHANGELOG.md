@@ -379,10 +379,14 @@ evidence exposed.
   `generated_at` remains optional. `cwe` remains optional and is omitted when empty; the open-object
   extension contract remains explicit, with `evidence_status` undeclared until its vocabulary and
   type are standardized. A catalog-gap finding without `location.file` remains in the full findings
-  report but is excluded from the occurrence-bearing X0X candidate set and written to a deterministic,
-  redacted `-x0x-failures.json` sidecar. Synthesize and the driver disclose the exact count and path,
-  clean runs remove stale sidecars, and the remaining X0X is byte-identical to a run without the
-  unrepresentable finding.
+  report but is excluded from the occurrence-bearing X0X candidate set and written to a
+  deterministic, redacted `-x0x-failures.json` sidecar with its own write-time schema. The log keeps
+  duplicate ids, and an unlocated member of a mixed cluster cannot lead its located siblings,
+  resolving #2090.
+  Synthesize and the driver disclose the exact count and path even after child stderr flooding or a
+  resume, clean runs safely remove regular or symlinked stale sidecars, and the remaining X0X is
+  byte-identical to a run without the unrepresentable finding. The discard does not introduce a new
+  exit status; the report gate still selects `0`, `1`, or `2`.
 - **Workflow guard reads a function header in the spellings bash takes at a statement's head
   (#2664, #2608; #2785).** `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after
   `then`, `do` or an opened `{` ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN:
@@ -2963,8 +2967,10 @@ evidence exposed.
   and `synthesize`'s `X0X artifact: <path> (N candidates)` line printed a count that was quietly
   short. Nothing is invented — a file cannot be. #2713 replaces the count-only disclosure: each
   locus-free X0X finding is excluded from the candidate set and recorded in a deterministic,
-  redacted failure sidecar while located candidates are still emitted. Synthesize and the driver
-  name the exact count and path, and a clean run removes a stale sidecar. Every agent-authored field
+  redacted failure sidecar while located candidates are still emitted. That sidecar is validated
+  against `x0x-failure-log-schema.json`, keeps duplicate ids, and resolves #2090's silent
+  mixed-cluster loss. Synthesize and the driver name the exact count and path, and a clean run
+  removes a stale regular file or symlink without following it. Every agent-authored field
   in a log diagnostic is squeezed to one line, bounded with the cut MARKED, rendered inert with
   `%r`, and redacted, so one hostile finding cannot repaint the operator's terminal, forge a line
   that reads as the tool's own honest output, or publish a credential.

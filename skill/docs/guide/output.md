@@ -50,18 +50,27 @@ finished at all — the driver's `complete`/`error` status. *Artifact validity* 
 it wrote are what they claim to be: in the normal completion path — not in a separate
 controller-side check — `synthesize` validates the report against
 `skill/reference/report-schema.json`, the **hydrated union** of its `_partN.json` splits and
-`-discarded.json` sibling against the same schema, and `-x0x.json` against `x0x-report-schema.json`;
+`-discarded.json` sibling against the same schema, `-x0x.json` against
+`x0x-report-schema.json`, and a present `-x0x-failures.json` against
+`x0x-failure-log-schema.json`;
 any failure prints `SCHEMA:` lines naming the artifact and the JSON path, then
 `artifact invalid: N schema errors (see …)`, exits `4`, and ends a `driver` run in `error`.
 A legitimate catalog-gap finding without `location.file` cannot satisfy X0X's required occurrence
 shape. It remains in the main JSON and HTML, while `synthesize` excludes it from the X0X candidate
 set and writes `<stem>-x0x-failures.json` beside the X0X. That deterministic JSON object has one
 `discarded_findings` array; each row carries the bounded, redacted `finding_id`, the reason
-`no file locus`, and a bounded, redacted diagnostic. `synthesize` warns with the exact discard count
-and log path, then returns the report's ordinary gate status because the X0X was written. The driver
+`no file locus`, and a bounded, redacted, inert diagnostic. The array keeps duplicate ids because
+distinct content-derived findings can share one. `synthesize` validates the log as written, warns
+with the exact discard count and log path, then returns the report's ordinary gate status because
+the X0X was written. The driver
 forwards the disclosure and includes `x0x_discarded`, `x0x_failure_log`, and the same text in its
 terminal status. An unchanged resume reproduces the same bytes; a run with no discards removes an
 older failure log, so stale failures cannot follow a clean X0X.
+The complete `synthesize` status list is: `0` for a valid PASS (and for a pass-1 verify-queue
+emission), `1` for a valid FAIL, `2` for a valid INCONCLUSIVE or a pre-report CLI/compare usage
+error, `3` for invalid input such as an unreadable OCRDb bundle or tools manifest, and `4` when a
+written report, X0X, or X0X failure log fails its published schema. Discarding a locus-free X0X
+finding never changes the status selected by the report's gate.
 Validation is **fail-closed**: an uninstallable `jsonschema` (a declared runtime dependency) or an
 unreadable schema file is an error, never a silent pass, because "we could not check" and "we
 checked and it passed" must not look the same. **The schema pins the *controller's* output:** every
@@ -78,7 +87,7 @@ verbatim out of an untrusted artifact, is described in the schema without being 
 The two passes are labelled `SCHEMA pre-write:` (the in-memory document) and `SCHEMA artifact:`
 (what was written), an error both find is printed once, and **every artifact is still written** — a
 report that failed validation is on disk with `meta.schema_errors` in it, so it can be inspected
-(that count is the report's own; an `-x0x.json`-only failure leaves it `0`, and the `error` status
+(that count is the report's own; an X0X-sibling-only failure leaves it `0`, and the `error` status
 carries the total), and the `.panopticon/report.json` compat symlink still points at **this** run's
 report rather than the previous run's. *Coverage certification* is whether enough of the review
 actually happened for the verdict to mean anything — `summary.gate` and

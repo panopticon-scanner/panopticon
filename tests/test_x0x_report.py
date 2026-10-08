@@ -18,6 +18,13 @@ def _schema():
         return json.load(fh)
 
 
+def _failure_schema():
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "skill", "reference", "x0x-failure-log-schema.json")
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
 def _f(code, domain, sev, title, file, line=1, fid=None, desc="d", refs=None):
     return {"code": code, "domain": domain, "severity": sev,
             "short_title": title, "title": title, "description": desc,
@@ -73,6 +80,18 @@ class TestX0XReport(unittest.TestCase):
         self.assertEqual(sec["recurrence"], 2)
         self.assertEqual({o["finding_id"] for o in sec["occurrences"]}, {"f1", "f2"})
         self.assertEqual(sec["severity"], "CRITICAL")   # the most severe finding leads
+
+    def test_equal_fingerprint_lead_uses_the_canonical_finding_in_both_orders(self):
+        alpha = _f("SEC-X0X", "SEC", "HIGH", "shared gap", "a.py", 2,
+                   "same-a", desc="alpha description")
+        zulu = _f("SEC-X0X", "SEC", "HIGH", "shared gap", "a.py", 99,
+                  "same-z", desc="zulu description")
+        self.assertEqual(evidence.finding_fingerprint(alpha),
+                         evidence.finding_fingerprint(zulu))
+        for order in ([alpha, zulu], [zulu, alpha]):
+            with self.subTest(order=[finding["id"] for finding in order]):
+                candidate = only(x0x.build_candidates(order), "candidate")
+                self.assertEqual(candidate["description"], "zulu description")
 
     def test_domain_case_folded_so_variants_cluster_together(self):
         # #run7 COD-C2D: the domain flows in verbatim (no case-fold upstream)
@@ -149,6 +168,20 @@ class TestX0XReport(unittest.TestCase):
         self.assertIn("'gap-77'", diagnostic)
         self.assertIn("\\x1b[31m", diagnostic)
         self.assertLess(len(diagnostic), 2 * 120 + 100)
+        self.assertIsNone(jsonschema.validate(failure_log, _failure_schema()))
+
+    def test_failure_log_fields_escape_controls_and_bidi_before_publication(self):
+        f = _f("SEC-X0X", "SEC", "LOW", "gap\u202e\x1b", None,
+               fid="id\u202e\x1b")
+        _report, failure_log = x0x.build_emission([f], {}, run_id="run-1")
+        record = only(failure_log["discarded_findings"], "discarded finding")
+        for field in ("finding_id", "diagnostic"):
+            with self.subTest(field=field):
+                self.assertNotIn("\u202e", record[field])
+                self.assertNotIn("\x1b", record[field])
+        self.assertIn(r"\u202e", record["finding_id"])
+        self.assertIn(r"\x1b", record["finding_id"])
+        self.assertIsNone(jsonschema.validate(failure_log, _failure_schema()))
 
     def test_an_untitled_cluster_is_named_by_its_finding_id(self):
         # A whitespace-only title is empty once squeezed, so the id remains the
@@ -191,13 +224,16 @@ class TestX0XReport(unittest.TestCase):
         report, failure_log = x0x.build_emission([gap], {}, run_id="run-1")
         self.assertEqual(report["candidates"], [])
         self.assertEqual(len(failure_log["discarded_findings"]), 1)
+        self.assertEqual(x0x.build_report([gap], {}, run_id="run-1")["candidates"], [])
         self.assertNotIn("candidates_dropped_locus_free", _schema()["properties"])
 
     def test_a_mixed_cluster_discards_only_its_locus_free_finding(self):
         # A located sibling remains a complete one-occurrence candidate; the
         # omitted sibling is visible in the separate log and nowhere else.
-        located = _f("SEC-X0X", "SEC", "LOW", "hardcoded id", "a.py", 1, "f1")
-        locus_free = _f("SEC-X0X", "SEC", "HIGH", "hardcoded id", None, 1, "f2")
+        located = _f("SEC-X0X", "SEC", "LOW", "hardcoded id", "a.py", 1,
+                     "f1", desc="located description")
+        locus_free = _f("SEC-X0X", "SEC", "HIGH", "hardcoded id", None, 1,
+                        "f2", desc="discarded description")
         for order in ([located, locus_free], [locus_free, located]):
             with self.subTest(order=[finding["id"] for finding in order]):
                 report, failure_log = x0x.build_emission(order, {}, run_id="run-1")
@@ -205,6 +241,10 @@ class TestX0XReport(unittest.TestCase):
                 self.assertEqual(candidate["recurrence"], 1)
                 self.assertEqual(
                     only(candidate["occurrences"], "occurrence")["finding_id"], "f1")
+                self.assertEqual(candidate["summary"], "hardcoded id")
+                self.assertEqual(candidate["severity"], "LOW")
+                self.assertEqual(candidate["proposed_name"], "hardcoded-id")
+                self.assertEqual(candidate["description"], "located description")
                 self.assertEqual(
                     only(failure_log["discarded_findings"], "discarded finding")
                     ["finding_id"], "f2")
@@ -235,6 +275,40 @@ class TestX0XReport(unittest.TestCase):
             [row["finding_id"] for row in discarded],
             ["a", "z"],
         )
+
+    def test_failure_log_keeps_duplicate_ids_in_canonical_order(self):
+        first = _f("SEC-X0X", "SEC", "LOW", "alpha gap", None,
+                   fid="shared-id")
+        second = _f("COD-X0X", "COD", "LOW", "zulu gap", None,
+                    fid="shared-id")
+        logs = [
+            x0x.build_emission(order, {}, run_id="run-1")[1]
+            for order in ([first, second], [second, first])
+        ]
+        first_log, second_log = logs
+        self.assertEqual(
+            json.dumps(first_log, sort_keys=True),
+            json.dumps(second_log, sort_keys=True),
+        )
+        rows = first_log["discarded_findings"]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([row["finding_id"] for row in rows],
+                         ["shared-id", "shared-id"])
+        self.assertEqual(len({row["diagnostic"] for row in rows}), 2)
+
+    def test_every_nonempty_path_shape_remains_a_located_occurrence(self):
+        paths = ("0", ".", "/", "   ", "\x1b", "[REDACTED_KEY]")
+        findings = [
+            _f("SEC-X0X", "SEC", "LOW", "path shape", path,
+               index + 1, "f%d" % index)
+            for index, path in enumerate(paths)
+        ]
+        report, failure_log = x0x.build_emission(findings, {}, run_id="run-1")
+        self.assertIsNone(failure_log)
+        candidate = only(report["candidates"], "candidate")
+        self.assertEqual(candidate["recurrence"], len(paths))
+        self.assertEqual({row["file"] for row in candidate["occurrences"]},
+                         set(paths))
 
     def test_domainless_zzz_sentinel(self):
         f = {"code": "ZZZ-X0X", "severity": "MEDIUM", "short_title": "t",
@@ -332,27 +406,40 @@ class TestX0XReport(unittest.TestCase):
                         if error.validator == "pattern"
                         and error.validator_value == _IDENTIFIER_PATTERN
                     ]
+                    if field != "candidate.proposed_name":
+                        self.assertEqual(len(errors), 1)
                     self.assertEqual(len(identifier_errors), 1)
                     self.assertEqual(list(identifier_errors[0].path), expected_path)
 
-    def test_every_identifier_pattern_accepts_control_and_bidi_range_neighbours(self):
+    def test_schema_accepts_every_control_and_bidi_range_neighbour(self):
         schema = _schema()
+        validator = jsonschema.Draft7Validator(schema)
         candidate = schema["properties"]["candidates"]["items"]["properties"]
-        patterns = {
-            "occurrence.file": candidate["occurrences"]["items"]["properties"]["file"][
-                "pattern"],
-            "candidate.area": candidate["area"]["pattern"],
-            "candidate.proposed_name": candidate["proposed_name"]["pattern"],
+        report_fields = {
+            "occurrence.file": lambda item, value: only(
+                item["occurrences"], "occurrence").__setitem__("file", value),
+            "candidate.area": lambda item, value: item.__setitem__("area", value),
         }
-        for field, pattern in patterns.items():
-            self.assertEqual(pattern, _IDENTIFIER_PATTERN)
-            validator = jsonschema.Draft7Validator({"type": "string", "pattern": pattern})
+        for field, set_value in report_fields.items():
             for point in _ALLOWED_BOUNDARY_CODE_POINTS:
                 with self.subTest(field=field, code_point="U+%04X" % point):
-                    self.assertEqual(
-                        list(validator.iter_errors("safe" + chr(point) + "value")),
-                        [],
-                    )
+                    report = x0x.build_report(
+                        [_f("SEC-X0X", "SEC", "MEDIUM", "honest candidate",
+                            "src/package/widget.py")], {}, run_id="run-1")
+                    item = only(report["candidates"], "candidate")
+                    item["area"] = "runtime"
+                    set_value(item, "safe" + chr(point) + "value")
+                    self.assertEqual(list(validator.iter_errors(report)), [])
+
+        proposed_pattern = candidate["proposed_name"]["pattern"]
+        self.assertEqual(proposed_pattern, _IDENTIFIER_PATTERN)
+        proposed_validator = jsonschema.Draft7Validator(
+            {"type": "string", "pattern": proposed_pattern})
+        for point in _ALLOWED_BOUNDARY_CODE_POINTS:
+            with self.subTest(field="candidate.proposed_name",
+                              code_point="U+%04X" % point):
+                self.assertEqual(list(proposed_validator.iter_errors(
+                    "safe" + chr(point) + "value")), [])
 
     def test_empty_paths_and_areas_remain_valid_but_a_proposed_name_is_kebab(self):
         # #2712 governs which code points may occur. Preserve the schema's
@@ -423,7 +510,8 @@ class TestX0XReport(unittest.TestCase):
                      "under_score", "white space", "line\n", "tab\tname", "a" * 61):
             with self.subTest(rejected=name):
                 self.assertTrue(list(validator.iter_errors(document(name))))
-        for name in ("a", "cwe-400", "a" * 60, "bounded-retry-loop"):
+        for name in ("a", "3des-cipher-still-enabled", "cwe-400", "a" * 60,
+                     "bounded-retry-loop"):
             with self.subTest(accepted=name):
                 validator.validate(document(name))
 
@@ -433,6 +521,44 @@ class TestX0XReport(unittest.TestCase):
         proposed = only(emitted["candidates"], "candidate")["proposed_name"]
         self.assertEqual(proposed, "a" * 60)
         validator.validate(emitted)
+
+        digit_leading = x0x.build_report(
+            [_f("SEC-X0X", "SEC", "LOW", "3DES cipher still enabled",
+                "src/gap.py")], {}, run_id="run-1")
+        self.assertEqual(
+            only(digit_leading["candidates"], "candidate")["proposed_name"],
+            "3des-cipher-still-enabled",
+        )
+        validator.validate(digit_leading)
+
+        cut_on_hyphen = x0x.build_report(
+            [_f("SEC-X0X", "SEC", "LOW", "a" * 59 + " tail", "src/gap.py")],
+            {}, run_id="run-1")
+        proposed = only(cut_on_hyphen["candidates"], "candidate")["proposed_name"]
+        self.assertEqual(proposed, "a" * 59)
+        self.assertFalse(proposed.endswith("-"))
+        validator.validate(cut_on_hyphen)
+
+    def test_candidate_order_uses_name_before_title(self):
+        candidates = x0x.build_candidates([
+            _f("COD-X0X", "COD", "HIGH", "Node-RED flow injection", "a.py"),
+            _f("COD-X0X", "COD", "HIGH", "Node.js eval of input", "b.py"),
+        ])
+        self.assertEqual(
+            [candidate["proposed_name"] for candidate in candidates],
+            ["node-js-eval-of-input", "node-red-flow-injection"],
+        )
+
+    def test_candidate_order_uses_domain_before_name(self):
+        candidates = x0x.build_candidates([
+            _f("SEC-X0X", "SEC", "HIGH", "aaa gap", "a.py"),
+            _f("COD-X0X", "COD", "HIGH", "zzz gap", "b.py"),
+        ])
+        self.assertEqual(
+            [(candidate["domain"], candidate["proposed_name"])
+             for candidate in candidates],
+            [("COD", "zzz-gap"), ("SEC", "aaa-gap")],
+        )
 
     def test_candidate_array_is_total_sorted_and_input_order_independent(self):
         findings = [
