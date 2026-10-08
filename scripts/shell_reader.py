@@ -123,22 +123,22 @@ _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
 # --- reading the shell -------------------------------------------------------
 
 def _negated(text, context):
-    """Whether `text`, a stage inside a `! { ... }` group, runs under the `!` that bash's errexit-
-    off reading of a negated compound gives every command in it, where `negated` reads it (a mark
-    on its first word, `bang`) and no other reader sees it: a command word past the keywords and
-    the `case` arm that open the statement (`then CHECK`, `x) CHECK`) -- not a statement that is
-    keywords alone (`}`, `fi`), a `for`/`case`/`select`/`function` header whose next words are
-    names, an `if`/`elif`/`while`/`until` whose condition errexit never applied to, or one already
-    negated (#2664, the second fix round; round 13: the mark, not a `!` word, beside #2849)."""
+    """Where in `text`, a stage inside a `! { ... }` group, the `!` that bash's errexit-off reading
+    of a negated compound gives every command in it stands, or None: a mark on its first word that
+    `negated` reads (`bang`), and a `!` word only where #2849 reads it from no group (`_split`) --
+    the command word past the keywords and the `case` arm that open the statement (`then CHECK`,
+    `x) CHECK`), not a statement that is keywords alone (`}`, `fi`), a `for`/`case`/`select`/
+    `function` header whose next words are names, an `if`/`elif`/`while`/`until` whose condition
+    errexit never applied to, or one already negated (#2664, the second fix round; round 13)."""
     for match in re.finditer(r"\S+", text):
         word = match.group()
         mark = context.pattern.match(word)
         if word in KEYWORDS or mark and context.entries[mark.group()][0] == "arm":
             if word in CONDITIONS or word in ("for", "case", "select", "function", "!"):
-                return False
+                return None
             continue
-        return True
-    return False
+        return match.start()
+    return None
 
 
 def _split(text, context):
@@ -197,8 +197,10 @@ def _split(text, context):
         nonlocal cond
         end_stage()
         cond = 0
-        if any(negations) and _negated(stages[0], context):
+        if any(negations) and (at := _negated(stages[0], context)) is not None:
             context.bangs.add(len(statements))
+            if not negations[-1]:   # a plain `{` in the negated one: #2849 reads a check's own group
+                stages[0] = stages[0][:at] + "! " + stages[0][at:]
         if any(s.strip() for s in stages):
             statements.append((list(stages), separator))
         bang = False

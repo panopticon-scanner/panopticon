@@ -64,7 +64,11 @@ class TestANegatedGroupHoldingAFunctionHeader(unittest.TestCase):
             "! { f() { @C@; }; f; } | cat\n@U@", "! { f() { :; }; f; @C@; }\n@U@",
             "! {\nf() { @C@; }\nf\n}\n@U@", "g() { ! { @C@; }; }\ng\n@U@",
             "g() {\n! { @C@; }\n}\ng\n@U@", "g() {\n! { f() { @C@; }; f; }\n}\ng\n@U@",
-            "g() { @C@; }\n! { g; }\n@U@")
+            "g() { @C@; }\n! { g; }\n@U@",
+            # Round 13: the mark is the FIRST stage's -- a call that heads a pipe in the group --
+            # and a plain group inside the negated one keeps a `!` word, as #2849 reads a check's
+            # negation from its own group (the round-12 seat's N13).
+            "! { f() { @C@; }; f | cat; }\n@U@", "! {\n{\n@C@\n}\n}\n@U@", "! { :; { @C@; }; }\n@U@")
 
     def test_every_spelling_is_reported_under_every_shell_setting(self):
         for row in self.ROWS:

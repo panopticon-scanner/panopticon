@@ -25,6 +25,7 @@ import shell_heredoc
 import shell_lex
 import shell_quote
 import shell_reader
+import shell_tokens
 
 
 def stage(script):
@@ -1125,6 +1126,14 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
         # Without the `!` nothing is carried.
         self.assertEqual([(["{"], False), (["f()", "{", "CHECK"], False), (["}"], False), (["f"], False),
                           (["}"], False), (["USE"], False)], read("{ f() { CHECK; }; f; }\nUSE\n"))
+        # The mark keeps the word it marks: a token keeps its own attributes and markers (a whole
+        # `${…}` word's reading), and a plain word becomes a token.
+        token = shell_tokens._Token("x", {"m": ("k", 1)})
+        token.span = 2
+        self.assertIs(token, shell_tokens.bang(token))
+        self.assertEqual((True, 2, {"m": ("k", 1)}), (token.negated, token.span, token.markers))
+        plain = shell_tokens.bang("y")
+        self.assertEqual(("y", True, {}), (plain, plain.negated, plain.markers))
 
     def test_a_heredoc_its_substitution_closes_over_is_read(self):
         # Bash 5.2 takes the body of a heredoc still pending when its `$(...)`
