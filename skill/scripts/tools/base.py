@@ -17,6 +17,7 @@ import threading
 from collections.abc import Iterator
 from typing import Any, Protocol
 
+from scripts.inert import INERT_ESCAPE_CODE_POINTS
 from scripts.provenance import tool_provenance
 
 
@@ -250,9 +251,9 @@ _INERT_PARTIAL_TAIL = re.compile(r"\\(x[0-9a-f]?|u[0-9a-f]{0,3})?$")
 def inert_escape(text: str, keep: str = INERT_KEEP) -> str:
     r"""Render every character that can steer a terminal, a log line or a
     markdown document as an inert `\xNN` / `\uNNNN` escape: C0, DEL, C1 and the
-    Unicode line/paragraph separators. Ordinary characters -- non-ASCII
-    included -- pass through untouched, so a legitimate path or package name is
-    unchanged.
+    Unicode line/paragraph separators and the bidi controls in
+    ``INERT_ESCAPE_CODE_POINTS``. Ordinary characters -- non-ASCII included --
+    pass through untouched, so a legitimate path or package name is unchanged.
 
     ESCAPED, not stripped, and that is the whole point (#1829): a stripped
     `\x1b[2J` leaves `[2J` reading as literal text the scanner wrote, while
@@ -265,8 +266,7 @@ def inert_escape(text: str, keep: str = INERT_KEEP) -> str:
     out = []
     for ch in text:
         o = ord(ch)
-        if (o < 0x20 or o == 0x7f or 0x80 <= o <= 0x9f
-                or o in (0x2028, 0x2029)) and ch not in keep:
+        if o in INERT_ESCAPE_CODE_POINTS and ch not in keep:
             out.append("\\x%02x" % o if o < 0x100 else "\\u%04x" % o)
         else:
             out.append(ch)
