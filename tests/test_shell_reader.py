@@ -1783,44 +1783,78 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.
             small, large = min(small, read(500)), min(large, read(2000))
         self.assertLessEqual(large, 8 * small + 0.05, (small, large))
 
+    @staticmethod
+    def readings(row):
+        # Each reading `folds` gives the row's last stage (#2856 round 13, the round-13 ruling): W, as
+        # `main` reads it, then, where the word has both halves, the word expanded to nothing.
+        stage = shell_reader.statements(row + "\n")[-1].stages[0]
+        return [[str(w) for w in shell_reader.command(stage.argv)] for _sure in shell_reader.folds(lambda: False)]
+
     def test_a_word_bash_may_expand_to_nothing_is_read_both_ways(self):
         # PR #2856 round 13, the round-12 ruling on B2-B4: "Remove `_sets`. Read every expansion bash
         # can make empty or unset, B2's list included, as both halves: W, and the word after it. REPORT
-        # if either half runs." No step's text decides a half now: the next word -- or the literal
-        # glued after the `}` -- and W are each read, and the one that runs more is the command
-        # (`shell_command._runs`), W where they run alike, as `main` reads it. These rows' set-name
-        # readings moved under that ruling: `true` runs nothing, so the next word is read.
-        nothing = ["sh", "-c", "x"]
+        # if either half runs." And the round-13 ruling: "Option 1, the union. Read both halves and
+        # union what they find ... do not rank." No step's text decides a half, and no half is ranked:
+        # `folds` reads W, as `main` reads it, then the next word -- or the literal glued after the `}`.
+        both, nothing = [["true", "sh", "-c", "x"], ["sh", "-c", "x"]], [["sh", "-c", "x"]]
         for step in ("", "X=1\n", "X=\n", "read X\n", "for X in a; do :; done\n", ": ${X:=v}\n",
                      "(( X = 1 ))\n", "echo $X\n", "curl -X POST u\n"):
             with self.subTest(step=step):
-                stage = shell_reader.statements(step + "${X:+/usr/bin/env true} sh -c x\n")[-1].stages[0]
-                self.assertEqual(nothing, [str(w) for w in shell_reader.command(stage.argv)])
+                self.assertEqual(both, self.readings(step + "${X:+/usr/bin/env true} sh -c x"))
         for row, expected in (
-                ("X=\n${X+/usr/bin/env true} sh -c x", nothing), ("set -- 1\n${1:+/usr/bin/env true} sh -c x", nothing),
+                ("X=\n${X+/usr/bin/env true} sh -c x", both), ("set -- 1\n${1:+/usr/bin/env true} sh -c x", both),
                 # B2's spellings: a positional parameter, an indirection, an element, `$!`, `$-`, `$@`
                 # and `$*`, and a case change, whose W is a pattern like a pattern's.
-                ("${10:+/usr/bin/env true} sh -c x", nothing), ("${!X:+/usr/bin/env true} sh -c x", nothing),
-                ("${X[0]:+/usr/bin/env true} sh -c x", nothing), ("${X[@]+/usr/bin/env true} sh -c x", nothing),
-                ("${!:+/usr/bin/env true} sh -c x", nothing), ("${-:+/usr/bin/env true} sh -c x", nothing),
-                ("${@+/usr/bin/env true} sh -c x", nothing), ("${*:+/usr/bin/env true} sh -c x", nothing),
+                ("${10:+/usr/bin/env true} sh -c x", both), ("${!X:+/usr/bin/env true} sh -c x", both),
+                ("${X[0]:+/usr/bin/env true} sh -c x", both), ("${X[@]+/usr/bin/env true} sh -c x", both),
+                ("${!:+/usr/bin/env true} sh -c x", both), ("${-:+/usr/bin/env true} sh -c x", both),
+                ("${@+/usr/bin/env true} sh -c x", both), ("${*:+/usr/bin/env true} sh -c x", both),
                 ("${X^^/usr/bin/env true} sh -c x", nothing), ("${X,/usr/bin/env true} sh -c x", nothing),
                 # A pattern's other half is the name's own value, which no half names (#2899).
                 ("X=1\n${X#/usr/bin/env true} sh -c x", nothing), ("${X%%a b} sh -c x", nothing),
-                ("${X//a/env true} sh -c x", nothing), ("${X:+/usr/bin/env true}sh -c x", nothing),
+                ("${X//a/env true} sh -c x", nothing),
+                ("${X:+/usr/bin/env true}sh -c x", [["truesh", "-c", "x"], ["sh", "-c", "x"]]),
                 # A default with no colon is empty where its name is set empty, and the next word runs.
-                ("${X-/usr/bin/env true} sh -c x", nothing), ("${X-/usr/bin/env sh -c} x", nothing),
-                ("${X=/usr/bin/env sh -c} x", nothing), ("${X:+/usr/bin/env sh -c} x", nothing),
-                # A W the reader does not know is the word whole, a command it does not follow, which
-                # runs more than none -- and a check no half is credited with.
-                ("${X:+a b}", ["${X:+a b}"]), ("${X:+sha256sum -c} sums", ["${X:+sha256sum -c}", "sums"]),
-                # `$0` may be empty (`bash -c '…' ''`) but is never unset, nor is `$-`: `${0+W}` is
-                # always its W, and `${--W}` and `${0-W}` never are.
-                ("${0:+/usr/bin/env true} sh -c x", nothing), ("${0+/usr/bin/env true} sh -c x", ["true", *nothing]),
-                ("${--/usr/bin/env sh -c} x", ["x"]), ("${0-/usr/bin/env sh -c} x", ["x"])):
+                ("${X-/usr/bin/env true} sh -c x", both), ("${X-/usr/bin/env sh -c} x", [["sh", "-c", "x"], ["x"]]),
+                ("${X=/usr/bin/env sh -c} x", [["sh", "-c", "x"], ["x"]]),
+                ("${X:+/usr/bin/env sh -c} x", [["sh", "-c", "x"], ["x"]]),
+                # A W the reader does not know is the word whole, a command it does not follow -- and
+                # a check no half is credited with.
+                ("${X:+a b}", [["${X:+a b}"], []]), ("${X:+sha256sum -c} sums", [["${X:+sha256sum -c}", "sums"], ["sums"]]),
+                # `$0` may be empty (`bash -c '…' ''`) but is never unset, nor is `$-` (the round-13
+                # ruling: "accepted ... the shell's own semantics"): `${0+W}` and `${-+W}` are always
+                # their W, `${--W}` and `${0-W}` never are, and the `:`-forms are read both ways.
+                ("${0:+/usr/bin/env true} sh -c x", both), ("${-:+/usr/bin/env true} sh -c x", both),
+                ("${0+/usr/bin/env true} sh -c x", both[:1]), ("${-+/usr/bin/env true} sh -c x", both[:1]),
+                ("${--/usr/bin/env sh -c} x", [["x"]]), ("${0-/usr/bin/env sh -c} x", [["x"]])):
             with self.subTest(row=row):
-                stage = shell_reader.statements(row + "\n")[-1].stages[0]
-                self.assertEqual(expected, [str(w) for w in shell_reader.command(stage.argv)])
+                self.assertEqual(expected, self.readings(row))
+
+    def test_folds_read_w_then_each_fold_again_with_a_word_read_empty(self):
+        # PR #2856 round 13, the round-13 ruling's union: `folds` yields `job_defects` each `sure` --
+        # one fold, and a second where `unsure()` finds an `Unsure` statement in it -- with W read,
+        # then, where `_command_result` read a word with both halves, those folds again with it read
+        # empty; from a fresh switch, and back to W after, closed early or not.
+        stage = shell_reader.statements("${X:+/usr/bin/env true} sh -c x\n")[0].stages[0]
+        w, empty = ["true", "sh", "-c", "x"], ["sh", "-c", "x"]
+
+        def read():
+            return [str(word) for word in shell_reader.command(stage.argv)]
+        self.assertEqual([(False, w), (False, empty)], [(sure, read()) for sure in shell_reader.folds(lambda: False)])
+        self.assertEqual([(False, w), (True, w), (False, empty), (True, empty)],
+                         [(sure, read()) for sure in shell_reader.folds(lambda: True)])
+        folding = shell_reader.folds(lambda: False)
+        self.assertEqual((w, empty), (next(folding) or read(), next(folding) or read()))
+        folding.close()
+        self.assertEqual(w, read())
+        # A job no word of two halves is in is read in one fold, or two where one is unsure, as before
+        # -- though a word of two halves was read outside `folds` before it.
+        plain = shell_reader.statements("sh -c x\n")[0].stages[0]
+        for unsure, expected in ((False, [False]), (True, [False, True])):
+            with self.subTest(unsure=unsure):
+                read()
+                self.assertEqual(expected, [sure for sure in shell_reader.folds(lambda: unsure)
+                                            if shell_reader.command(plain.argv)])
 
     def test_two_halves_the_guard_may_each_report_are_a_command_it_cannot_read(self):
         # PR #2856 round 13: where the halves run apart and each is among a shell's kind, a fetcher and
@@ -1834,25 +1868,29 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.
                 stage = shell_reader.statements(row + "\n")[-1].stages[0]
                 self.assertIn("runs `%s`, or `%s` where it expands to nothing" % (ran, empty),
                               shell_reader.unresolved_wrapper(stage.argv))
-        # A word the guard does not follow in front of a shell's kind reads as that command, and two
-        # halves that read alike are one command.
-        for row, expected in (("${X:+a b} sh x", ["sh", "x"]), ("${CI:+xvfb-run -a} python3 t.py", ["python3", "t.py"]),
-                              ("${SUDO:+sudo -E} bash x", ["bash", "x"])):
+        # A word the guard does not follow in front of a shell's kind is no such command: each half
+        # is read in its own fold, and two halves that read alike are one command.
+        for row, expected in (("${X:+a b} sh x", [["${X:+a b}", "sh", "x"], ["sh", "x"]]),
+                              ("${CI:+xvfb-run -a} python3 t.py", [["${CI:+xvfb-run -a}", "python3", "t.py"],
+                                                                   ["python3", "t.py"]]),
+                              ("${SUDO:+sudo -E} bash x", [["bash", "x"], ["bash", "x"]])):
             with self.subTest(row=row):
                 stage = shell_reader.statements(row + "\n")[-1].stages[0]
-                self.assertEqual((expected, None), ([str(w) for w in shell_reader.command(stage.argv)],
-                                                    shell_reader.unresolved_wrapper(stage.argv)))
-        # Where they run alike, W is read, as `main` reads it: its wrapper stays a wrapper.
+                self.assertEqual((expected, None), (self.readings(row), shell_reader.unresolved_wrapper(stage.argv)))
+        # W is read first, as `main` reads it: its wrapper stays a wrapper.
         stage = shell_reader.statements("${SUDO:+sudo -E} bash x\n")[0].stages[0]
         self.assertEqual(["sudo"], [str(w) for w in shell_reader.wrapper_words(stage.argv)])
 
     def test_a_words_halves_are_read_for_the_words_behind_it(self):
         # The guard asks a stage's command many times, so its halves are read once and kept on the
-        # word -- for the words behind it: another argv behind the same word is read for its own.
+        # word -- for the words behind it: another argv behind the same word is read for its own, in
+        # each fold.
         stage = shell_reader.statements("${X:+/usr/bin/env true} sh -c x\n")[0].stages[0]
         other = [*stage.argv[:stage.argv[0].span], "true"]
-        self.assertEqual((["sh", "-c", "x"], ["true", "true"], ["sh", "-c", "x"]),
-                         tuple([str(w) for w in shell_reader.command(argv)] for argv in (stage.argv, other, stage.argv)))
+        self.assertEqual([(["true", "sh", "-c", "x"], ["true", "true"], ["true", "sh", "-c", "x"]),
+                          (["sh", "-c", "x"], ["true"], ["sh", "-c", "x"])],
+                         [tuple([str(w) for w in shell_reader.command(argv)] for argv in (stage.argv, other, stage.argv))
+                          for _sure in shell_reader.folds(lambda: False)])
 
     def test_a_default_of_a_parameter_bash_may_leave_empty_is_read(self):
         # PR #2856 round 13, the round-12 verdict's B1 (the seat's `excfix`): only `#`, `?` and `$`
@@ -1895,7 +1933,7 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.
             finally:
                 if enabled:
                     gc.enable()
-            self.assertEqual(["sh", "-c", "echo"], [str(w) for w in command])
+            self.assertEqual(["true", "sh", "-c", "echo"], [str(w) for w in command])
             return elapsed
 
         small, large = read(4000), read(16000)

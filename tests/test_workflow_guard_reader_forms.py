@@ -1680,10 +1680,11 @@ class TestTheRoundTwelveVerdictsRows(unittest.TestCase):
                 with self.subTest(row=row, shell=shell):
                     self.assertFalse(reported(row + "\necho done\n", shell))
 
-    def test_the_half_that_runs_more_is_read(self):
-        # The order `_runs` reads: a command the guard cannot read over a shell's kind (`env $(…)`),
-        # a shell's kind -- an unpacker too -- over a word it does not follow, that word over any
-        # other command, and none over a check, whose credit is no one half's to give.
+    def test_the_half_that_runs_what_the_guard_reports_is_read(self):
+        # Each half is read in its own fold, none ranked (the round-13 ruling's union): a command the
+        # guard cannot read beside a shell's kind (`env $(…)`), a shell's kind -- an unpacker too --
+        # beside a word it does not follow, that word with a `-c` after it beside any other command,
+        # and none beside a check, whose fold alone it credits: the other runs the download unchecked.
         for row in ("${X:+env $(echo sh) -c} sh x",
                     "curl -fsSLo t.tgz %st.tgz\n${X:+a b} tar xzf t.tgz" % URL,
                     "${X:+echo hi} $Y -c '%s'" % PIPE,
@@ -1707,6 +1708,23 @@ class TestTheRoundTwelveVerdictsRows(unittest.TestCase):
     def test_the_unpackers_are_the_guards_own(self):
         import shell_command
         self.assertEqual(set(shell_command._UNPACKERS), set(workflow_uses.UNPACKERS))
+
+
+class TestTheUnionReadsBothHalves(unittest.TestCase):
+    """PR #2856 round 13, the round-13 ruling, Option 1: "Read both halves and union what they find
+    ('REPORT if either half runs'); do not rank." `shell_command.folds` reads a job with each command
+    word bash may expand to nothing as its W, then again with it empty. One row per half where only
+    that half runs the payload, each REPORT under every `shell:` setting: a reading that drops either
+    half's folds reads one of them CLEAN."""
+
+    ONLY_W = "X=1\n${X:+/usr/bin/env sh -c} '%s'" % PIPE        # X set: sh runs it; empty, no such command
+    ONLY_EMPTY = "${X:+/usr/bin/env true} sh -c '%s'" % PIPE   # X set: `true` runs nothing; unset, sh
+
+    def test_a_row_only_one_half_runs_is_reported(self):
+        for row in (self.ONLY_W, self.ONLY_EMPTY):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
 
 
 class TestTheClosedRowsTheSeatAskedPinned(unittest.TestCase):

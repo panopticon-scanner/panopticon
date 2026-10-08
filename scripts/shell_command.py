@@ -66,6 +66,9 @@ _WHOLE_DEFAULTS = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([^{}$`'\"\\]+)\
 # `}`, or nothing, and the next word runs; its other half is `_alternate`'s (`_command_result`).
 _VANISHING = re.compile(r"\$\{(!?[A-Za-z_]\w*(?:\[[^]]*\])?|[0-9]+|[@*!-])(:?\+|[-=]|##?|%%?|//?|\^\^?|,,?)"
                         r"[^{}]*\}([^\s{}$`'\"\\*?[]*)")
+# The half `_command_result` reads of a command word bash may expand to nothing, and whether a word
+# it read had both (`folds`): its W, as `main` reads it, until `folds` reads the job with it empty.
+_HALVES = {"empty": False, "both": False}
 # A default's parameter and operator (`_strips`): only `#`, `?` and `$` are never unset or empty -- `$-`
 # is, under dash with no options, and `$0` in a `-c` text run with an empty `$0` -- and an
 # indirection (`${!Y:-W}`) is read as its name is (#2856 round 13, the round-12 B1: the seat's `excfix`).
@@ -165,13 +168,13 @@ def _alternate(argv, whole, span):
 
 
 def _runs(argv):
-    """How much a reading of a command may run that the guard reports, with the command as read, to
-    read of an expansion bash may make empty the half that runs more (#2856 round 13, the round-12
-    ruling: both halves, round 6's rule): 5 a command it cannot read, reported wherever it runs; 4
-    a shell, a foreign interpreter, `eval`, `source`, `.` or an unpacker, reported where it runs a
-    download; 3 a fetcher, where what it fetches runs; 2 a word the guard does not follow (`$X`),
-    where a download is piped to it or a `-c` follows it; 1 any other command; 0 none, `true`,
-    `false` or `:`; and -1 a checksum tool, whose credit is no one half's to give."""
+    """How much a reading of a command may run that the guard reports, with the command as read, so
+    that two halves of an expansion bash may make empty, each what the guard may report where the
+    other is not, are a command it cannot read (#2856 round 13): 5 a command it cannot read,
+    reported wherever it runs; 4 a shell, a foreign interpreter, `eval`, `source`, `.` or an
+    unpacker, reported where it runs a download; 3 a fetcher, where what it fetches runs; 2 a word
+    the guard does not follow (`$X`), where a download is piped to it or a `-c` follows it; 1 any
+    other command; 0 none, `true`, `false` or `:`; and -1 a checksum tool."""
     if argv and getattr(argv[0], "whole", None) is not None:
         argv = [spelled(str(argv[0]), argv[0]), *argv[1:]]     # `main`'s words, kept: read once
     command_, reason, _heads = _command_result(argv)
@@ -225,13 +228,14 @@ def _command_result(argv, optional=True):
                 # Bash may expand it to nothing, the literal glued after the `}` or none, and run the
                 # next word (`${X:+/usr/bin/env true} sh`, `${X#env true}sh -c`), or, its name set, an
                 # alternate's W (`X=1; ${X:+sh -c} '…'`) -- for `-` and `=`, its name unset, the
-                # default. Both halves are read (#2856 round 13: the round-12 ruling -- no `_sets`,
-                # round 6's rule, REPORT where either runs): the one that runs more is the command
-                # (`_runs`), W where they run alike, as `main` reads it; two the guard may each report
-                # where the other is not -- two commands among a shell's kind, a fetcher and a word
-                # it does not follow, but for that word in front of a shell's kind -- are a command it
-                # cannot read. A pattern's or a case change's other half is the name's own value,
-                # which no half names (#2899).
+                # default. Both halves are read, and the guard REPORTs where either runs (#2856 round
+                # 13: the round-12 ruling, round 6's rule, and the round-13 ruling's union -- no half
+                # ranked): W, as `main` reads it, and where `folds` reads the job again, the word
+                # expanded to nothing; two the guard may each report where the other is not -- two
+                # commands among a shell's kind, a fetcher and a word it does not follow, but for that
+                # word in front of a shell's kind -- are a command it cannot read (`_runs`). A
+                # pattern's or a case change's other half is the name's own value, which no half
+                # names (#2899).
                 # The guard asks a stage's command many times: its halves are read once for its words.
                 halves = getattr(argv[0], "halves", {})
                 if (rest := tuple(map(str, argv[span:]))) not in halves:
@@ -247,11 +251,11 @@ def _command_result(argv, optional=True):
                                 ran, ran_empty} != {2, 4}:
                             apart = "`%s` runs `%s`, or `%s` where it expands to nothing" % (
                                 readable(whole), readable(read[0]), readable(read_empty[0]))
-                        empty, alternate = (empty, None) if ran_empty > ran else (None, alternate)
                     argv[0].halves = halves = {**halves, rest: (empty, alternate, apart)}
                 empty, alternate, apart = halves[rest]
                 vanished = apart or vanished
-                if empty is not None:
+                _HALVES["both"] = _HALVES["both"] or empty is not None and alternate is not None
+                if empty is not None and (alternate is None or _HALVES["empty"]):
                     argv = list(empty)
                     continue                    # the next word, read from the top; the W below
                 argv = list(alternate)
@@ -298,6 +302,25 @@ def _command_result(argv, optional=True):
 def command(argv):
     """`argv` with supported wrappers stripped; unresolved forms stay lists."""
     return _command_result(argv)[0]
+
+
+def folds(unsure):
+    """The folds `workflow_guard.job_defects` reads a job in, each its `sure`: one, and a second that
+    leaves every `Unsure` statement out where `unsure()` then finds one -- a command word bash may
+    expand to nothing read as its W, as `main` reads it; then, where `_command_result` read one with
+    both halves, those folds again with it read empty, so the guard REPORTs where either half runs
+    (#2856 round 13, the round-13 ruling: the union, no half ranked)."""
+    _HALVES.update(empty=False, both=False)
+    try:
+        for empty in (False, True):
+            _HALVES["empty"] = empty
+            yield False
+            if unsure():
+                yield True
+            if not _HALVES["both"]:
+                return
+    finally:
+        _HALVES["empty"] = False
 
 
 # The checksum tools a check is credited with (`workflow_checks.CHECKSUM_TOOLS`, pinned equal by test).
