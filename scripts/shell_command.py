@@ -173,8 +173,8 @@ def _runs(argv):
     other is not, are a command it cannot read (#2856 round 13): 5 a command it cannot read,
     reported wherever it runs; 4 a shell, a foreign interpreter, `eval`, `source`, `.` or an
     unpacker, reported where it runs a download; 3 a fetcher, where what it fetches runs; 2 a word
-    the guard does not follow (`$X`), where a download is piped to it or a `-c` follows it; 1 any
-    other command; 0 none, `true`, `false` or `:`; and -1 a checksum tool."""
+    the guard does not follow (`$X`), where a download is piped to it or a `-c` follows it; and 1
+    any other command, or none."""
     if argv and getattr(argv[0], "whole", None) is not None:
         argv = [spelled(str(argv[0]), argv[0]), *argv[1:]]     # `main`'s words, kept: read once
     command_, reason, _heads = _command_result(argv)
@@ -183,7 +183,7 @@ def _runs(argv):
         return (5 if reason else 4), command_
     if head in _FETCHERS or command_ and dynamic(command_[0], has_substitution):
         return (3 if head in _FETCHERS else 2), command_
-    return (-1 if head in _CHECKERS else 0 if head in ("", "true", "false", ":") else 1), command_
+    return 1, command_
 
 
 def _command_result(argv, optional=True):

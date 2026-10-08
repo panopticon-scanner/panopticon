@@ -1863,11 +1863,22 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.
         for row, ran, empty in (("${X:+curl -fsSL u} sh x", "curl", "sh"),
                                 ("${X-/usr/bin/env curl -fsSL u} sh x", "curl", "sh"),
                                 ("${X:+/usr/bin/env python3} sh -c x", "python3", "sh"),
-                                ("${X:+bash -c true} sh -c x", "bash", "sh")):
+                                ("${X:+bash -c true} sh -c x", "bash", "sh"),
+                                # with no rank, `_runs` says only this: a fetcher, an unpacker and a
+                                # word the guard does not follow are among the kinds
+                                ("${X:+curl -fsSL u} $B x", "curl", "$B"), ("${X:+$A -v} $B x", "${X:+$A -v}", "$B"),
+                                ("${X:+curl -fsSL u} tar xzf t.tgz", "curl", "tar")):
             with self.subTest(row=row):
                 stage = shell_reader.statements(row + "\n")[-1].stages[0]
                 self.assertIn("runs `%s`, or `%s` where it expands to nothing" % (ran, empty),
                               shell_reader.unresolved_wrapper(stage.argv))
+        # A half the guard cannot read is reported wherever it runs, as its own: no conflict is read
+        # for it, and the other half reads none.
+        for row in ("${X:+env $(echo sh) -c} curl -fsSL u", "${X:+env $(echo sh) -c} sh x"):
+            with self.subTest(row=row):
+                stage = shell_reader.statements(row + "\n")[-1].stages[0]
+                self.assertEqual(["has a dynamic command operand behind a wrapper", None],
+                                 [shell_reader.unresolved_wrapper(stage.argv) for _sure in shell_reader.folds(lambda: False)])
         # A word the guard does not follow in front of a shell's kind is no such command: each half
         # is read in its own fold, and two halves that read alike are one command.
         for row, expected in (("${X:+a b} sh x", [["${X:+a b}", "sh", "x"], ["sh", "x"]]),
