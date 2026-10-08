@@ -4280,6 +4280,7 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
     URL = "https://example.test/tool"
     FETCH = "curl -fsSL %s" % URL
     SHELLS = (None, "bash", "sh", "bash {0}", "sh {0}")
+    BASH_SHELLS = (None, "bash", "bash {0}")
     COMPOUNDS = (
         "{ %s; } %s tool\nsh tool\n",
         "if true; then %s; fi %s tool\nsh tool\n",
@@ -4299,6 +4300,11 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
             with self.subTest(script=script, shell=shell):
                 found = wg.job_defects([wg.Step("step", script, shell)])
                 self.assertEqual(1, len(found), found)
+
+    def assert_clean_in_every_shell(self, script):
+        for shell in self.SHELLS:
+            with self.subTest(script=script, shell=shell):
+                self.assertEqual([], wg.job_defects([wg.Step("step", script, shell)]))
 
     def test_each_compound_carries_its_redirect_or_tee_destination(self):
         for compound in self.COMPOUNDS:
@@ -4334,6 +4340,37 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
         ):
             self.assert_reported_in_every_shell(script)
 
+    def test_a_file_writing_compound_tee_also_feeds_its_outer_reader(self):
+        tee = "{ %s; } | tee tool" % self.FETCH
+        consumers = (
+            "bash <( %s )",
+            "source <( %s )",
+            ". <( %s )",
+            "sh <( %s )",
+            "bash -s < <( %s )",
+            "bash < <( %s )",
+            "sh < <( %s )",
+            "source /dev/stdin < <( %s )",
+            "sudo bash <( %s )",
+        )
+        for consumer in consumers:
+            script = (consumer % tee) + "\n"
+            for shell in self.BASH_SHELLS:
+                with self.subTest(consumer=consumer, shell=shell):
+                    found = wg.job_defects([wg.Step("step", script, shell)])
+                    self.assertEqual(1, len(found), found)
+                    self.assertIn(self.URL, found[0][1])
+
+    def test_the_compound_tee_keeps_its_file_close_but_not_a_cut_stream(self):
+        script = "{ %s; } | tee tool\nsh tool\n" % self.FETCH
+        self.assert_reported_in_every_shell(script)
+        self.assertEqual("tool", wg.fetches(script)[0].dest)
+
+        cut = "bash <( { %s; } | tee tool > /dev/null )\n" % self.FETCH
+        for shell in self.BASH_SHELLS:
+            with self.subTest(shell=shell):
+                self.assertEqual([], wg.job_defects([wg.Step("step", cut, shell)]))
+
     def test_an_inner_stdout_redirect_still_disconnects_the_compound_output(self):
         for script in (
                 "{ %s > other; } > tool\nsh tool\n" % self.FETCH,
@@ -4351,8 +4388,34 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
         self.assert_reported("{ %s 2> err; } > tool\nsh tool\n" % self.FETCH)
 
     def test_a_later_sibling_close_does_not_capture_the_prior_fetch(self):
-        script = "{ %s; }; { :; } > tool\nsh tool\n" % self.FETCH
-        self.assertEqual([], wg.fetch_exec_defects(script))
+        for script in (
+                "{ %s; }; { :; } > tool\nsh tool\n" % self.FETCH,
+                "{ { %s; }; }\n{ :; } > tool\nsh tool\n" % self.FETCH,
+        ):
+            with self.subTest(script=script):
+                self.assertEqual([], wg.fetch_exec_defects(script))
+
+    def test_depth_and_disconnected_close_choices_stay_clean(self):
+        # A function close must not drive compound depth negative (M10).
+        function = "{ %s; }\nf() { :; } > tool\nsh tool\n" % self.FETCH
+        self.assert_clean_in_every_shell(function)
+
+        # A close whose stdout was redirected cannot feed its following tee (M18).
+        cut = "{ %s; } >&2 | tee tool\nsh tool\n" % self.FETCH
+        self.assert_clean_in_every_shell(cut)
+
+        # `level = after` lends the outer close across this inner file boundary (M9c).
+        inner = ("{ for i in 1; do :; done | ( %s; ) > f; } > tool\n"
+                 "sh tool\n") % self.FETCH
+        self.assert_clean_in_every_shell(inner)
+
+    def test_file_close_depth_excludes_lexical_groups(self):
+        # The reader gives array assignments and subshells the same group
+        # markers. File-close inheritance therefore tracks keyword compounds
+        # only, preserving the array-assignment boundary (M5a).
+        script = ("{ for i in 1; do :; done | ( %s; ); } > tool\n"
+                  "sh tool\n") % self.FETCH
+        self.assert_clean_in_every_shell(script)
 
 
 class TestPipelineStreamProvenance(unittest.TestCase):

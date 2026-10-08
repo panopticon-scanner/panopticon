@@ -26,7 +26,9 @@ evidence exposed.
   fetch itself or a disconnected closing pipeline stops the file handoff; a nested transparent
   keyword close passes the outer destination inward. Stream execution keeps the fetch's own stage,
   so an outer logging redirect does not hide an inner `( curl ...; ) | sh`, and an inner close before
-  a later fetch does not hide the enclosing `| sh`.
+  a later fetch does not hide the enclosing `| sh`. A closing `| tee tool` that still forwards
+  stdout is represented as both a file destination and a stream: `bash`/`sh`/`source` consuming it
+  through process substitution still report, while `tee tool > /dev/null` remains disconnected.
 
   On a 43-row / 387-cell matrix using bash 5.2.21, bash 3.2.57 and dash as both parent and child,
   this closes 279 executing cells / 31 rows with no REPORT-to-CLEAN flip measured on that matrix.
@@ -37,6 +39,20 @@ evidence exposed.
   Bash-only `&>` parsed under dash adds 240 / 120, which main's simple-command twin also reports;
   a failing check or `sh -c` under `-e` adds seven / two.
 
+  A round-two process-substitution matrix restores 369 running cells / 123 rows across HNE/HNT and
+  18 / six on HN, while retaining the 55 / 11 compound-tee file-use closures. Its disconnected
+  controls stay clean. Main's analogous simple-command gap is separate (#2921). HN also measures
+  48 newly fail-closed no-run cells / 15 rows: substitution bodies consumed by `eval` or `sh -c`
+  (30 / six), function/time forms under dash (four), `&>`/`>&` under dash (eight), process-
+  substitution redirects under dash (four), and `source f` under dash (two); each matches main's
+  simple-command behavior.
+
+  Compound output depth deliberately follows keyword compounds, not lexical group markers that the
+  reader also uses for array assignments. That preserves the array boundary but leaves 15 running
+  cells / three mixed keyword-close/subshell rows unclaimed. Keeping the enclosing level at
+  `max(before, after)` likewise avoids lending an outer destination across an inner file redirect;
+  the alternate reading would close 30 running cells / six HN rows but add a no-run over-report.
+
   On #2883's numbered-descriptor source set, this change alone closes 30 / 161 cells in six rows;
   the other 131 cells / 29 rows depend on #2885's #2881 reader fix teaching which `N<>` descriptor
   feeds stdout or stdin. Four pass-through-filter rows / 36 cells remain open under #2904 because
@@ -45,6 +61,7 @@ evidence exposed.
   one substitution holding many statements is 1.29x. Bound compound fetches now reach main's
   existing per-bound-file use scan: S3's growth rises from 8.6x to 12.1x and S5a's from 15x to 50x,
   while compound forms remain within 1.0–1.5x of their simple twins, whose scan scales about n^1.9.
+  That existing scan cost is tracked by #2917 and #2436.
 - **Workflow guard: what `eval`'s words and a `-c` string hand on (#2673, #2683, #2684, #2764,
   #2669, #2331).** `eval 'curl … |' 'sh'` ran the pipe and read CLEAN: `eval` joins its words before
   it runs them, and the guard read them one by one. Where a word begins or ends with an operator the

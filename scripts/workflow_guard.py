@@ -249,7 +249,7 @@ from shell_reader import command, statements
 from workflow_annotate import annotate
 from workflow_checks import (CHECKSUM_TOOLS as CHECKSUM_TOOLS, checks as _checks,
                              clears_nested as _clears_nested, contextual as _check_at_use)
-from workflow_fetch import Fetch, compound_output, compound_streamed_fetch
+from workflow_fetch import Fetch, compound_output, compound_streamed_fetch, forwarded_consumer, streams_to_executor
 from workflow_forms import (FETCHERS, SHELL_PROGRAM, Idle, Inlined, Reach, Unsure, at_directory,
                             carried, compound_stream_consumer, flattened, kept, located,
                             names_file, parse_fetch, regions, stdin_program, step_credit,
@@ -324,7 +324,7 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                     inner, stream_exec, True, dict(enumerate(dirs)),
                     ["%sI%d" % (child_scope, i) for i in range(len(inner))], here, under)
                 unread.extend((index, why) for _inner, why in nested)
-                found.extend((index, fetch._replace(piped_to=consumer)
+                found.extend((index, fetch._replace(piped_to=forwarded_consumer(fetch, consumer))
                               if executes or fetch.piped_to is None else fetch)
                              for _inner, fetch in fetched)
     return found, unread + (carried(stmts, EXECUTORS) if found else [])
@@ -458,7 +458,7 @@ def _defect(fetch, index, stmts, checks, conditions=None, unread=(), working=Non
                 "this guard could parse, so it cannot say what arrived or whether "
                 "anything checked it -- use explicit single-download commands "
                 "with named files (`-o <path>`) and `sha256sum -c` checks" % fetch.tool)
-    if fetch.dest is None:
+    if fetch.dest is None or streams_to_executor(fetch, EXECUTORS):
         if not fetch.piped_to:
             return None
         if stdin_program(fetch.piped_to[:1]) == VALUE_PROGRAM:

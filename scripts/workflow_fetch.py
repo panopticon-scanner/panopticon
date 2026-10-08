@@ -19,6 +19,10 @@ from workflow_programs import VALUE_PROGRAM, stdin_program
 # the next pipeline stage (None when the fetch ends the pipeline).
 Fetch = collections.namedtuple("Fetch", "tool url dest piped_to")
 
+
+class _ForwardedTee(tuple):
+    """A tee argv whose file output also continues to an outer reader."""
+
 FETCHERS = ("curl", "wget")
 
 # curl and wget spell the same options differently, and the difference is
@@ -233,8 +237,22 @@ def _parse_fetch(tool, args, stage, piped_to):
 
 
 def parse_fetch(tool, args, stage, piped_to):
-    """One `curl`/`wget` argv -> the four-field Fetch it performs."""
+    """One `curl`/`wget` argv -> the Fetch it performs."""
     return _parse_fetch(tool, args, stage, piped_to)[0]
+
+
+def streams_to_executor(fetch, executors):
+    """Whether a lent tee destination also reaches this outer consumer."""
+    return bool(isinstance(fetch.piped_to, _ForwardedTee) and fetch.piped_to and (
+        os.path.basename(fetch.piped_to[0]) in executors
+        or stdin_program(fetch.piped_to[:1]) == VALUE_PROGRAM))
+
+
+def forwarded_consumer(fetch, consumer):
+    """Keep a compound tee's outward stream when a substitution is consumed."""
+    if consumer and isinstance(fetch.piped_to, _ForwardedTee):
+        return _ForwardedTee(consumer)
+    return consumer
 
 
 def _may_read_pipe(argv, stage):
@@ -409,15 +427,17 @@ def _closing_output(statement):
     """A compound close's stdout boundary, or None when it passes outward."""
     for position, close in enumerate(statement.stages):
         one = shell_reader.Statement([close], statement.separator)
-        if _compound_delta(one, False) >= 0:
+        if _compound_delta(one) >= 0:
             continue
         following = statement.stages[position + 1:] or _inline_pipeline(close)
         next_argv = command(following[0].argv) if following else []
         piped_to = (tuple(next_argv) if close.stdout_to_pipe and next_argv
                     and _may_read_pipe(next_argv, following[0]) else None)
+        if (piped_to and os.path.basename(piped_to[0]) == "tee"
+                and _stream_forwarded(following)):
+            piped_to = _ForwardedTee(piped_to)
         if close.stdout_writes or not close.stdout_to_pipe or following:
             return close, piped_to
-        break
     return None
 
 
@@ -431,6 +451,8 @@ def _compound_outputs(stmts):
     levels, depth = [], 0
     for statement in stmts:
         before = depth
+        # Group markers are lexical subshells, not the keyword-compound
+        # levels whose closing output is lent to their enclosed commands.
         depth += _compound_delta(statement, False)
         levels.append((before, depth))
     inherited: dict[int, tuple] = {}
@@ -443,10 +465,10 @@ def _compound_outputs(stmts):
                 for level in range(after + 1, before + 1):
                     inherited[level] = output
         level = max(before, after)
-        if level > 0 and level in inherited:
+        if level in inherited:
             outputs[position] = inherited[level]
         if after > before:
-            for level in range(max(0, before) + 1, after + 1):
+            for level in range(before + 1, after + 1):
                 inherited.pop(level, None)
     return outputs
 
@@ -465,7 +487,6 @@ def compound_output(stmts, outputs, position, stage, following):
     close, piped_to = output
     return stage._replace(
         stdout_writes=close.stdout_writes,
-        stdout_to_pipe=close.stdout_to_pipe,
     ), piped_to
 
 
