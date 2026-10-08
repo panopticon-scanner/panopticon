@@ -7,6 +7,28 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader reads every mixed reading of the command words bash may expand to nothing
+  (#2929).** #2856's union read a job twice: every such word -- `${X:+W}`, `${X-W}` and their kin
+  -- as its W, then every one empty, two of a step's 2^k readings, so a payload only a mixed reading
+  runs read CLEAN while every parent runs it: `X=1` ⏎ `${X:+curl -fsSLo tool …}` ⏎ `${Y:+/usr/bin/env
+  true} sh tool`, the fetch's W and the shell's word empty, and the #2856 round-13 seat's 14 rows
+  of hunts 49, 51 and 53 (70 cells). `shell_command.folds` now reads, after those two folds, every
+  other set of such words whose halves read apart -- `_runs` reads a different command in each --
+  empty in a fold of its own, up to three words, so 4 folds read two of them and 8 three; halves
+  that read one command (`${SUDO:+sudo -E} apt-get …`) add no fold. A word is one word by its
+  place, the source its parse read and the order the parse kept it whole
+  (`shell_tokens._Parse.whole`), so a text read again in a fold, as a nested program is, holds the
+  same words, and a spelling written twice is two. A fourth such word reads as a command the guard
+  cannot read, reported wherever it runs, a download or none -- the price, none in the seats' sets
+  -- so the folds stop at 8. The two folds the union read come first, as before, so nothing it
+  reported reads CLEAN: across the #2885 round-4 seat's rows and their twins, round 3's own and
+  theirs, the AX, P0, F6 and P4 rows, the round-3 kit's 20,533 and #2856's hunts 33-53, the only
+  changes against #2936 are those 70 cells, beside #2911's rows (S08n, S08p, hunt 37's `*-od`),
+  which differ between two runs of `main` too. The cost, `job_defects` against #2936 in one
+  process: 2.06x on the 39 rows of hunts 45-53 that hold two such words, flat where one or none,
+  4.7x for three and at most 5x past them. Two such words in one stage stay #2856's named limit:
+  only a stage's first `${…}` word is read whole. `shell_reader._stage`'s docstring is rewrapped
+  at 96 columns, every word kept, for the line that stamps the place.
 - **Workflow reader reads every action a `find` runs (#2918).** `curl … -o tool` ⏎ `find
   /dev/null -exec true \; -exec sh /dev/fd/3 \; 3<> tool` ran the download and read CLEAN: the
   guard read one of `find`'s actions, the first of `-exec`, `-execdir`, `-ok` and `-okdir` in that
@@ -130,21 +152,17 @@ evidence exposed.
   `curl … | ${X:+/usr/bin/env true} sh` and `${X:+/usr/bin/env true} sh -c '…'` report the `sh`
   the empty half runs, `X=1` ⏎ `${X:+/usr/bin/env sh -c} '…'` the W that runs where `X` is set,
   and a check is credited only in the reading that runs it (`${X:+/usr/bin/env sha256sum -c
-  sums} true` ⏎ `sh tool` reports, where `X` is unset). The two readings are two of a step's
-  2^k: every word of two halves read as its W, then every one as nothing, so a payload that only
-  a mixed reading runs -- the fetch's W and a later word read empty, `X=1` ⏎ `${X:+curl -fsSLo
-  t.sh …}` ⏎ `${Y:+/usr/bin/env true} sh t.sh` -- reads CLEAN, as on `main` (#2929), but where
-  the two halves conflict (below). Two halves the guard may each report that run apart -- two
-  among a shell's kind, a fetcher and a word it does not follow, but that word in front of a
-  shell's kind -- are a command it cannot read (`${X:+curl -fsSL …} sh x | sh` runs the download
-  where `X` is set). `$0` and `$-` are never unset, so `${0+W}` is always its W and `${--W}`
-  never is; and a pattern's or a case change's other half is the name's own value, which no half
-  names (#2899). No step's text decides a half: round 12 read W where the step set the name
-  anywhere in its text, which took a set after the use, in a subshell, a dead branch, a string,
-  a comment or a heredoc, and missed `set x`, `eval 'X=1'` and the shell's own variables. A
-  default whose first word names a command the reader knows -- a shell, a wrapper, a foreign
-  interpreter, a fetcher, by path too -- is that command, as `main` read the word by its
-  basename (`${X:-/usr/bin/env sh -c} '…'`, `${X:-/usr/bin/curl -fsSL} URL | sh`,
+  sums} true` ⏎ `sh tool` reports, where `X` is unset). Two halves the guard may each report
+  that run apart -- two among a shell's kind, a fetcher and a word it does not follow, but that
+  word in front of a shell's kind -- are a command it cannot read (`${X:+curl -fsSL …} sh x |
+  sh` runs the download where `X` is set). `$0` and `$-` are never unset, so `${0+W}` is always
+  its W and `${--W}` never is; and a pattern's or a case change's other half is the name's own
+  value, which no half names (#2899). No step's text decides a half: round 12 read W where the
+  step set the name anywhere in its text, which took a set after the use, in a subshell, a dead
+  branch, a string, a comment or a heredoc, and missed `set x`, `eval 'X=1'` and the shell's
+  own variables. A default whose first word names a command the reader knows -- a shell, a
+  wrapper, a foreign interpreter, a fetcher, by path too -- is that command, as `main` read the
+  word by its basename (`${X:-/usr/bin/env sh -c} '…'`, `${X:-/usr/bin/curl -fsSL} URL | sh`,
   `${X:-/usr/bin/env $(echo sh) -c} '…'`); where no default reads -- a `$NAME` or a nested
   default in it, or a parameter that is no NAME -- `main`'s split words stay when their first
   names such a command by its basename (`${X:-$HOME/bin/env sh -c} '…'`, `${1:-/bin/sh -c}
