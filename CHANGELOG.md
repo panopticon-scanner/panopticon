@@ -479,9 +479,10 @@ evidence exposed.
   `max(before, after)` likewise avoids lending an outer destination across an inner file redirect;
   the alternate reading would close 30 running cells / six HN rows but add a no-run over-report.
 
-  On #2883's numbered-descriptor source set, this change alone closes 30 / 161 cells in six rows;
-  the other 131 cells / 29 rows depend on #2885's #2881 reader fix teaching which `N<>` descriptor
-  feeds stdout or stdin. Four pass-through-filter rows / 36 cells remain open under #2904 because
+  With main's #2856 reader folded via `50acb79e`, this change closes all 161 running cells / 35
+  rows in #2883's numbered-descriptor source set; #2885 moves none of them. The seven `10<> tool
+  >&10` rows add 14 no-run cells under dash (`sh` and `sh {0}`), as main's simple-command twins
+  already do. Four pass-through-filter rows / 36 cells remain open under #2904 because
   their simple twins are open too: an inner `curl | cat` or `curl | tee`, and a closing
   `| cat > tool` or two-`tee` pipeline. The reverse output map stays 1.00–1.02x main at n = 8,000;
   one substitution holding many statements is 1.29x. Bound compound fetches now reach main's
