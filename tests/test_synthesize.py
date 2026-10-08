@@ -1171,11 +1171,16 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
         self.assertEqual(json.loads(raw), x0x)
 
     def test_bidi_path_controls_are_inert_before_x0x_validation(self):
-        # #2712 review round 1 / #2118 items 1-2: one representative from
-        # every bidi range that can occur in a repository path reaches the
-        # finding normalizer, is preserved as an inert spelling in both
-        # artifacts, and cannot make synthesize exit ARTIFACT_INVALID.
-        points = (0x061C, 0x200E, 0x202A, 0x2066)
+        # #2712 review round 2 / #2118 items 1-2: every bidi control that can
+        # occur in a repository path reaches the finding normalizer, is
+        # preserved as an inert spelling in both artifacts, and cannot make
+        # synthesize exit ARTIFACT_INVALID.
+        points = (
+            0x061C,
+            0x200E, 0x200F,
+            0x202A, 0x202B, 0x202C, 0x202D, 0x202E,
+            0x2066, 0x2067, 0x2068, 0x2069,
+        )
         findings = [
             _agentic(
                 "SE-%03d" % (index + 1), sev="LOW", code="SEC-X0X",
