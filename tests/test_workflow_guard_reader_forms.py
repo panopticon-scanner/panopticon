@@ -14,7 +14,10 @@ $CMD` as `sh`), so a row that tests a dynamic command word -- or a holder,
 import unittest
 
 import shell_lex
+import shell_reader
 import workflow_guard as wg
+import workflow_called
+import workflow_uses
 
 URL = "https://example.test/"
 PIPE = "curl -fsSL %si.sh | sh" % URL
@@ -29,6 +32,1192 @@ UNGATED = "inside the script `%s` runs, and the step does not stop when that scr
 def defects(script):
     """The guard's answer for a job of one step running `script`."""
     return wg.job_defects([("step", script)])
+
+
+SHELLS = (None, "bash", "sh", "bash {0}", "sh {0}")
+
+
+def reported(script, shell=None):
+    """Whether the guard reports a job of one step running `script` under `shell:`."""
+    return bool(wg.job_defects([wg.Step("step", script, shell)]))
+
+
+def filled(row, check=CHECK, use="chmod +x tool && ./tool", payload="tool"):
+    """A hunt row -- `@C@` the check, `@U@` the use, `@P@` the payload path -- as a step."""
+    return (GET + row.replace("\\n", "\n").replace("@C@", check).replace("@U@", use)
+            .replace("@P@", payload) + "\necho done\n")
+
+
+class TestANegatedGroupHoldingAFunctionHeader(unittest.TestCase):
+    """PR #2855 fix round (B1). `! { f() { CHECK; }; f; }` ⏎ USE: bash negates the group's
+    status and runs every command in a negated compound with errexit off, so the check's
+    failure stops nothing and USE runs; every shell runs it (8 parents). The `{`-ends-its-
+    statement step of #2664 had stranded the `!` on `{` alone, so the check read as gated
+    (main REPORT -> CLEAN). The `!` is now carried onto every statement the group holds --
+    which also closes the own-line `! {` ⏎ `CHECK` ⏎ `}`, a hole of main's."""
+
+    ROWS = ("! { f() { @C@; }; f; }\n@U@", "! { f(){ @C@; }; f; }\n@U@",
+            "! {\nf() { @C@; }; f; }\n@U@", "! { @C@; }\n@U@", "! {\n@C@\n}\n@U@",
+            "bash -ec '! { f() { @C@; }; f; }; @U@'", "! { f() { @C@; }; f; } && @U@",
+            "! { f() { @C@; }; f; } || exit 1\n@U@", "! { :; f() { @C@; }; f; }\n@U@",
+            "true && ! { f() { @C@; }; f; }\n@U@", "( ! { f() { @C@; }; f; } )\n@U@",
+            "! { f() { @C@; }; f; } | cat\n@U@", "! { f() { :; }; f; @C@; }\n@U@",
+            "! {\nf() { @C@; }\nf\n}\n@U@", "g() { ! { @C@; }; }\ng\n@U@",
+            "g() {\n! { @C@; }\n}\ng\n@U@", "g() {\n! { f() { @C@; }; f; }\n}\ng\n@U@",
+            "g() { @C@; }\n! { g; }\n@U@",
+            # Round 13: the mark is the FIRST stage's -- a call that heads a pipe in the group --
+            # and a plain group inside the negated one keeps a `!` word, as #2849 reads a check's
+            # negation from its own group (the round-12 seat's N13).
+            "! { f() { @C@; }; f | cat; }\n@U@", "! {\n{\n@C@\n}\n}\n@U@", "! { :; { @C@; }; }\n@U@")
+
+    def test_every_spelling_is_reported_under_every_shell_setting(self):
+        for row in self.ROWS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_the_group_without_a_bang_reads_as_it_did(self):
+        # Under `-e` the check's failure stops the step: CLEAN where bash is strict.
+        for row in ("{ f() { @C@; }; f; }\n@U@", "{ @C@; }\n@U@"):
+            for shell in (None, "bash", "sh"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(filled(row), shell))
+
+
+class TestACalledFunctionsAssignmentReachesTheUse(unittest.TestCase):
+    """PR #2855 fix round (B2), #2785. `T=/dev/null; f(){ :; T=tool; }; f; sh "$T"`: bash runs
+    the body at the call, so `sh` runs the download; every shell runs it. Before #2664 the
+    misread header made `T=tool` the step's own statement (REPORT by accident); with the header
+    read, the body was skipped and the table held `/dev/null` at the use (CLEAN). The call now
+    adds the body's assignments as UNSURE candidates beside the caller's own
+    (`workflow_called.record_called`, round 2's fail-closed direction: the sure carry read past
+    a `return`, a wrapper, a later redefinition and a stand-in); `local` dies with the call; a
+    subshell body, a use before the call and a call before the definition carry nothing."""
+
+    ROWS = ('T=/dev/null; f(){ :; T=@P@; }; f; sh "$T"', 'T=/dev/null; f ( ) { :; T=@P@; }; f; sh "$T"',
+            'T=/dev/null; f() { :; T=@P@; }; f; sh "$T"', '{ f() { :; T=@P@; }; f; }; sh "$T"',
+            'T=/dev/null\ng ( )\n{\nT=@P@\n}\ng\nsh "$T"', 'f(){ :; T=@P@; }; f; sh "$T"',
+            'f(){\nT=@P@\n}\nf\nsh "$T"', 'f() { :; T=@P@; }; f; sh "$T"',
+            'T=/dev/null; if true; then f(){ :; T=@P@; }; fi; f; sh "$T"',
+            'T=/dev/null; for i in 1; do f(){ :; T=@P@; }; done; f; sh "$T"',
+            'T=/dev/null; { f() { :; T=@P@; }; }; f; sh "$T"',
+            'T=/dev/null; f() { :; T=@P@; }; { f; }; sh "$T"',
+            'f(){\ncurl -fsSLo tool.sh https://example.test/tool.sh\nT=tool.sh\n}\nf\nsh "$T"',
+            'T=/dev/null; f() { declare -g T=@P@; }; f; sh "$T"',
+            'T=/dev/null; f() { export T=@P@; }; f; sh "$T"',
+            'T=/dev/null; { f() { :; }; T=@P@; }; sh "$T"')
+    CONTROLS = ('T=/dev/null; f() { local T=@P@; }; f; sh "$T"', 'T=/dev/null; f() { T=@P@; }; sh "$T"; f',
+                'T=/dev/null; f() ( T=@P@ ); f; sh "$T"', 'T=/dev/null; f; f() { T=@P@; }; sh "$T"')
+
+    def test_every_spelling_is_reported_under_every_shell_setting(self):
+        for row in self.ROWS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_what_bash_never_carries_stays_clean(self):
+        for row in self.CONTROLS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(filled(row), shell))
+
+    def test_the_rows_of_2785(self):
+        # x1: the call sets `T=x`, so bash runs `sh x` (F- x4): reported all the same under the
+        # fail-closed carry, the one price PR #2855's round 2 named (the sure carry is #2785's
+        # own PR); x2 (its inverse), x27 (`declare -g`), s10 (the second call's body reads the
+        # first's assignment) and the `local` row run the download.
+        get = "curl -fsSLo cuda_1.run https://example.test/cuda_1.run\n"
+        for row in ('g() { T=x; }\nT=cuda_1.run\ng\nsh "$T" || :\n',
+                    'g() { T=cuda_1.run; }\nT=x\ng\nsh "$T"\n',
+                    'f() { declare -g T=cuda_1.run; }; T=x; f; sh "$T"\n',
+                    'f() { sh "$T" || :; T=cuda_1.run; }; T=a; f; f\n',
+                    'g() { local T=x; }\nT=cuda_1.run\ng\nsh "$T"\n'):
+            for shell in (None, "bash", "sh"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(get + row, shell))
+
+
+class TheCarriedBangStandsBehindTheControlWords(unittest.TestCase):
+    """PR #2855 round 2 (B1). The carried `!` had become the first WORD the control-kind readers
+    saw, so `then`, `do`, `else`, `case` and an arm were never pushed and a branch assignment
+    read as sure: `T=P; ! { if false; then T=/dev/null; fi; }; sh "$T"` read CLEAN while every
+    shell runs `P`. The `!` now stands past the keywords that open a statement and past a `case`
+    arm, and not on a `for`/`case` header, a condition or a bare keyword; `! !` is one negation
+    (bash XORs: fail-closed); a short-circuit, a redirect-first statement and a `[[ ]]` inside
+    the group read under the `!` too."""
+
+    ROWS = ('T=@P@; ! { if false; then T=/dev/null; fi; }; sh "$T"',
+            'T=@P@; ! { for i in; do T=/dev/null; done; }; sh "$T"',
+            'T=@P@; ! { while false; do T=/dev/null; done; }; sh "$T"',
+            'T=@P@; ! { if true; then :; else T=/dev/null; fi; }; sh "$T"',
+            'T=@P@; ! {\nif false; then\nT=/dev/null\nfi\n}\nsh "$T"',
+            "! {\ncase x in\nx) @C@;;\nesac\n}\n@U@", "! {\nif true; then @C@; fi\n}\n@U@",
+            'T=@P@; g() { ! { if false; then T=/dev/null; fi; }; }; g; sh "$T"',
+            "! { ! @C@; }\n@U@", "! { [[ -f tool ]] && @C@; }\n@U@", "! { > log @C@; }\n@U@",
+            "! { @C@ || exit 1; }\n@U@", "! { @C@ && @U@; }", "! { @C@ || @U@; }")
+
+    def test_each_row_is_reported_under_every_shell_setting(self):
+        for row in self.ROWS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_the_bang_stands_past_the_keywords(self):
+        # Round 13: the `!` is the first word's mark, which `negated` reads (`shell_tokens.bang`),
+        # so the control-kind readers -- and #2849's failure contexts -- see the words bash wrote.
+        argvs = [([str(word) for word in st.stages[0].argv], wg.shell_reader.negated(st.stages[0].argv))
+                 for st in wg.shell_reader.statements("! {\ncase x in\nx) CHECK;;\nesac\nif false; then T=x; fi\n}\n")]
+        self.assertEqual((["case", "x", "in"], False), argvs[1])
+        self.assertEqual((["CHECK"], True), (argvs[2][0][1:], argvs[2][1]))   # the arm marker first
+        self.assertEqual((["if", "false"], False), argvs[4])     # a condition: never under `!`
+        self.assertEqual((["then", "T=x"], True), argvs[5])
+        self.assertEqual([(["fi"], False), (["}"], False)], argvs[6:])
+
+
+class TestACallsEffectIsReadFailClosed(unittest.TestCase):
+    """PR #2855 round 2 (B2-B5): the sure carry replaced the caller's value past a `return` the
+    body takes, through a wrapper that never runs a function (`env f`, `timeout 5 f`), past a
+    later redefinition or `unset -f`, by a stand-in, and by a `declare -g` bash 3.2 and dash lack
+    -- each `T=P; …; sh "$T"` CLEAN while every shell runs `P`. A call now adds the body's
+    assignments unsure beside the caller's own, so each reports; the named price is `T=P; f() {
+    T=/dev/null; }; f; sh "$T"`, reported though no shell runs `P`."""
+
+    ROWS = ('T=@P@; f() { return; T=/dev/null; }; f; sh "$T"',
+            'T=@P@; f() { if true; then return; fi; T=/dev/null; }; f; sh "$T"',
+            'T=@P@; f() { [ -f x ] || return 0; T=/dev/null; }; f; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; env f || true; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; timeout 5 f || true; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; command f; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; if true; then f() { :; }; fi; f; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; true && f() { :; }; f; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; [ -n "$X" ] || f() { :; }; f; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; if true; then unset -f f; fi; f || :; sh "$T"',
+            'T=@P@; { f() { T=/dev/null; }; } | cat; f; sh "$T"',
+            'T=@P@; f(){ T=$1; }; f "$T"; sh "$T"', 'T=@P@; f(){ T=${X:-$T}; }; f; sh "$T"',
+            'T=@P@; f() { declare -g T=/dev/null; }; f; sh "$T"',
+            'T=@P@; f() { readonly T=/dev/null; }; f; sh "$T"',
+            'T=@P@; f() { declare -gx T=/dev/null; }; f; sh "$T"',
+            'T=@P@; if c; then f() { T=/dev/null; }; else f() { T=@P@; }; fi; f; sh "$T"',
+            'T=@P@; g() { T=/dev/null; }; f() { g; }; f; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; f; sh "$T"',
+            # A call inside a `case` arm, in five spellings (the round-3 seat's C91), and a
+            # non-matching arm, read fail-closed as a branch that does not run is.
+            'T=/dev/null; f(){ T=@P@; }; case x in x) f;; esac; sh "$T"',
+            'T=/dev/null; f(){ T=@P@; }; case x in x) f ;; esac; sh "$T"',
+            'T=/dev/null; f(){ T=@P@; }\ncase x in\nx) f;;\nesac\nsh "$T"',
+            'T=/dev/null; f(){ T=@P@; }; case x in x) :; f;; esac; sh "$T"',
+            'T=/dev/null; f(){ T=@P@; }\ncase x in\nx)\nf\n;;\nesac\nsh "$T"',
+            'T=/dev/null; f(){ T=@P@; }; case x in y) f;; esac; sh "$T"')
+
+    def test_each_row_is_reported_under_every_shell_setting(self):
+        for row in self.ROWS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+
+class TestTheCarryPastTheCandidateCap(unittest.TestCase):
+    """PR #2855 round 3 (B1 and F1). Past the candidate cap (`_CANDIDATES`, eight) the table
+    held a carried name's stand-in alone, which a use reads as nothing: eight body assignments
+    went CLEAN while every parent runs `P` (seven still reported). The merge back into the
+    caller's table never drops the caller's own candidates now. F1: `time f` and `eval f` run
+    the function (no wrapper), and the arm of a one-line `case` is stepped past before the head
+    walk, so a group, an assignment, a `!` or an `if` between the arm and the call still reach
+    it. `main`'s own top-level cap (x20) stands, named in the gap list."""
+
+    SEVEN = "T=a; T=b; T=c; T=d; T=e; T=f; T=g"
+    EIGHT = SEVEN + "; T=h"
+    NINE = EIGHT + "; T=i"
+    ROWS = ('T=@P@; f() { if false; then %s; fi; }; f; sh "$T"' % SEVEN,
+            'T=@P@; f() { if false; then %s; fi; }; f; sh "$T"' % EIGHT,
+            'T=@P@; f() { if false; then %s; fi; }; f; sh "$T"' % NINE,
+            'T=@P@; f() { if false; then unset T; %s; fi; }; f; sh "$T"' % EIGHT,
+            'T=@P@; g() { if false; then %s; fi; }; f() { g; }; f; sh "$T"' % EIGHT,
+            'T=@P@; f() { if false; then %s; fi; }; f; bash "$T"' % EIGHT,
+            'T=@P@; f() { if false; then %s; fi; }; f; U=$T; sh "$U"' % EIGHT,
+            'T=@P@; f() { if false; then %s; fi; }; f; sh "$T" || :' % EIGHT,
+            'T=/dev/null; f() { T=@P@; }; time f; sh "$T"', 'T=/dev/null; f() { T=@P@; }; eval f; sh "$T"',
+            'T=/dev/null; f() { T=@P@; }; case x in x) { f; };; esac; sh "$T"',
+            'T=/dev/null; f() { T=@P@; }; case x in x) X=1 f;; esac; sh "$T"',
+            'T=/dev/null; f() { T=@P@; }; case x in x) ! f;; esac; sh "$T"',
+            'T=/dev/null; f() { T=@P@; }; case x in x) if f; then :; fi;; esac; sh "$T"')
+
+    def test_each_row_is_reported_under_every_shell_setting(self):
+        for row in self.ROWS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_the_callers_value_stands_beside_the_stand_in(self):
+        stmts = wg.shell_reader.statements('T=P; f() { if false; then %s; fi; }; f; sh "$T"\n' % self.NINE)
+        table = workflow_uses.static_values(stmts, len(stmts) - 1).scalars["T"]
+        self.assertEqual("P", table[0])
+        self.assertIn(workflow_uses.PAST, table)        # round 7: the cap's stand-in, read as a use
+
+
+SEVEN_CARRIED = "T=a; T=b; T=c; T=d; T=e; T=f; T=g"
+
+
+class TestACarriedNameLaterPushedPastTheCap(unittest.TestCase):
+    """PR #2855 round 4 (B1 and F1). The carried candidates count against the caller's budget,
+    so the NEXT unsure update of the name after the call pushed the table past the cap, and the
+    stand-in alone read as nothing: `T=P; f() { if false; then T=a; … T=g; fi; }; f; false &&
+    T=x; sh "$T"` went CLEAN while every parent runs `P`, as did the 7-arm `uname` dispatcher
+    with an OVERRIDE line after it. Past the cap a name now keeps its first eight beside the
+    cap's stand-in, which a use reads as every download (round 7, `TestEveryCapLeavesItsStandIn`),
+    so each reports, as do `main`'s own x20 rows where a shell runs the payload. F1: `time` (one `-p`, then one `--`) and `eval` (one `--`), then a group, an
+    assignment, a `!` or an `if`, reach the call; and a function named like a wrapper (`sudo() {
+    … }; sudo x`) is the call bash makes of it."""
+
+    SEVEN = SEVEN_CARRIED
+    LATER = ("false && T=x", "if false; then T=x; fi", "eval :", "false && unset T", "false && read T",
+             "for T in $(echo @P@); do :; done", ". /dev/null", "case x in y) T=x;; esac",
+             '[ -n "$NOPE" ] && T=x', "while false; do T=x; done", 'K=X; export "$K=1"',
+             'N=X; read "$N" < /dev/null || :', "false && T=x; false && T=y", "false && T=x; f",
+             "false && T+=x", "false && T=x; g() { if false; then T=y; fi; }; g")
+    ROWS = tuple('T=@P@; f() { if false; then %s; fi; }; f; %s; sh "$T"' % (SEVEN_CARRIED, later)
+                 for later in LATER) + (
+        'T=@P@; f() { if false; then T=a; fi; }; f; ' + "; ".join("false && T=%s" % c for c in "bcdefgh") + '; sh "$T"',
+        'g() { if false; then %s; fi; }; T=@P@; g; false && T=x; sh "$T"' % SEVEN,
+        'T=@P@; f() { if false; then %s; fi; }; if true; then f; fi; false && T=x; sh "$T"' % SEVEN,
+        'T=@P@; f() { if false; then %s; fi; }; f || true; false && T=x; sh "$T"' % SEVEN,
+        'T=@P@; f() { if false; then %s; fi; }; f; false && T=x; bash "$T"' % SEVEN,
+        'T=@P@; f() { if false; then %s; fi; }; f; false && T=x; U=$T; sh "$U"' % SEVEN,
+        'T=@P@\nset_target() {\ncase "$(uname -s)" in\nDarwin) T=a;;\nFreeBSD) T=b;;\nOpenBSD) T=c;;\n'
+        'NetBSD) T=d;;\nSunOS) T=e;;\nAIX) T=f;;\nHP-UX) T=g;;\nesac\n}\nset_target\n'
+        '[ -n "${OVERRIDE:-}" ] && T=$OVERRIDE\nsh "$T"',
+        # The merge-path controls: two bodies of eight, a chain adding 3 + 3 + 2, a full caller.
+        'T=@P@; f() { if false; then %s; T=h; fi; }; g() { if false; then T=i; T=j; T=k; T=l; T=m; T=n; '
+        'T=o; T=p; fi; }; f; g; sh "$T"' % SEVEN,
+        'T=@P@; h() { if false; then T=g; T=h; fi; }; g() { if false; then T=d; T=e; T=f; fi; h; }; '
+        'f() { if false; then T=a; T=b; T=c; fi; g; }; f; sh "$T"',
+        'T=@P@; ' + "; ".join("false && T=%s" % c for c in "abcdefg") + '; f() { if false; then T=h; fi; }; f; '
+        'false && T=i; sh "$T"',
+        # The body's own payload among eight, assigned first in the body.
+        'f() { T=@P@; if false; then %s; fi; }; f; sh "$T"' % SEVEN)
+    F1 = ("T=/dev/null; f() { T=@P@; }; time -p f; sh \"$T\"", "T=/dev/null; f() { T=@P@; }; time -- f; sh \"$T\"",
+          "T=/dev/null; f() { T=@P@; }; time -p -- f; sh \"$T\"", "T=/dev/null; f() { T=@P@; }; time { f; }; sh \"$T\"",
+          "T=/dev/null; f() { T=@P@; }; time X=1 f; sh \"$T\"", "T=/dev/null; f() { T=@P@; }; time ! f; sh \"$T\"",
+          "T=/dev/null; f() { T=@P@; }; case x in x) time if f; then :; fi;; esac; sh \"$T\"",
+          "T=/dev/null; f() { T=@P@; }; case x in x) time { f; };; esac; sh \"$T\"",
+          "T=/dev/null; f() { T=@P@; }; case x in x) time -p { f; };; esac; sh \"$T\"",
+          "T=/dev/null; f() { T=@P@; }; time eval f; sh \"$T\"", "T=/dev/null; f() { T=@P@; }; eval time f; sh \"$T\"",
+          "T=/dev/null; f() { T=@P@; }; eval -- f; sh \"$T\"", "T=/dev/null; sudo() { T=@P@; }; sudo x; sh \"$T\"")
+    # Honest clears that stay clear: a wrapper with no function of its name runs none.
+    CONTROLS = tuple("T=/dev/null; f() { T=@P@; }; %s f; sh \"$T\"" % w for w in ("env", "command", "builtin", "nohup",
+                                                                                  "timeout 5", "nice", "sudo"))
+
+    def test_each_row_is_reported_under_every_shell_setting(self):
+        for row in self.ROWS + self.F1:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_a_wrapper_with_no_function_of_its_name_calls_none(self):
+        for row in self.CONTROLS:
+            for shell in (None, "bash", "sh"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(filled(row), shell))
+
+    def test_past_the_cap_the_first_eight_stand_beside_the_stand_in(self):
+        # Round 7: the first eight in the order bash assigns them, then the cap's stand-in, which
+        # the use reads as every download -- `x`, the ninth, is dropped and still reported.
+        stmts = wg.shell_reader.statements(
+            'T=P; f() { if false; then %s; fi; }; f; false && T=x; sh "$T"\n' % self.SEVEN)
+        self.assertEqual(["P", "a", "b", "c", "d", "e", "f", "g", workflow_uses.PAST],
+                         workflow_uses.static_values(stmts, len(stmts) - 1).scalars["T"])
+
+
+class TestAPayloadAnywhereAmongTheCandidatesReports(unittest.TestCase):
+    """PR #2855 round 5 (B1 and B2): past the cap a name kept only its first candidate, so a
+    payload anywhere else among the caller's own was dropped (`T=x; [ -z "$NOPE" ] && T=P; f() {
+    … six … }; f; false && T=y; sh "$T"` CLEAN while every shell runs `P`), and an array past the
+    cap kept nothing -- `_carry` even popped the caller's word-lists. Round 6 ordered the cap,
+    the caller's own first, which its seat broke three more ways; round 7 retired the ordering:
+    every cap leaves its stand-in, which a use reads as every download
+    (`TestEveryCapLeavesItsStandIn`). The rows are the round-5 seat's, each with its ground truth
+    (8 parents: every one runs the payload, or for an array both bashes do; the honest clears
+    run nothing)."""
+
+    ALL_RUN = (  # Y06, Y20, L01, L04, L18, F02, F13, F24, E06
+        'T=x; [ -z "$NOPE" ] && T=@P@; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; fi; }; f; false && T=y; sh "$T"',
+        'T=x; case x in x) T=@P@;; esac; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; fi; }; f; false && T=y; sh "$T"',
+        'T=x; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; [ -z "$NOPE" ] && T=@P@; sh "$T"',
+        'T=/dev/null\nset_target() {\ncase "$(uname -s)" in\nDarwin) T=a;;\nFreeBSD) T=b;;\nOpenBSD) T=c;;\nNetBSD) T=d;;\n'
+        'SunOS) T=e;;\nAIX) T=f;;\nHP-UX) T=g;;\nesac\n}\nset_target\n[ "$(uname -s)" = Linux ] && T=@P@\nsh "$T"',
+        'TOOL=/dev/null\nselect_tool() {\ncase "$RUNNER_OS" in\nmacOS) TOOL=a;;\nWindows) TOOL=b;;\nFreeBSD) TOOL=c;;\n'
+        'OpenBSD) TOOL=d;;\nNetBSD) TOOL=e;;\nSunOS) TOOL=f;;\nAIX) TOOL=g;;\nesac\n}\nselect_tool\n'
+        'if [ "$(uname -s)" = Linux ]; then\nTOOL=@P@\nfi\nsh "$TOOL"',
+        'T=${OVERRIDE:-}; [ -z "$T" ] && T=@P@; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; fi; }; f; false && T=y; sh "$T"',
+        'f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; [ -z "${NOPE:-}" ] && T=@P@; sh "$T"',
+        'INSTALLER=/dev/null\nif [ "$(uname -s)" = Linux ]; then\n  INSTALLER=@P@\nfi\ndetect_arch() {\n'
+        '  case "$(uname -m)" in\n    i386) INSTALLER=a;;\n    armv7l) INSTALLER=b;;\n    ppc64le) INSTALLER=c;;\n'
+        '    s390x) INSTALLER=d;;\n    riscv64) INSTALLER=e;;\n    mips) INSTALLER=f;;\n  esac\n}\ndetect_arch\n'
+        '[ -n "${INSTALLER_OVERRIDE:-}" ] && INSTALLER=$INSTALLER_OVERRIDE\nsh "$INSTALLER"',
+        'T=@P@; command -v sh > /dev/null || T=/dev/null; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; fi; }; f; '
+        'false && T=y; sh "$T"',
+        # A payload the call itself carried in, then a later update past the cap: the cap's
+        # stand-in, which a use reads as every download (round 7).
+        'T=/dev/null; f() { T=@P@; if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; false && T=y; sh "$T"')
+    BASH_RUN = (  # B03-B08, B10, B11: arrays (dash has none)
+        'declare -a T=(@P@); f() { if false; then T=(a); T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); fi; }; f; sh "${T[0]}"',
+        'declare -a T=(@P@); f() { if false; then T=(a); T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); fi; }; f; false && T=(y); '
+        'sh "${T[0]}"',
+        'declare -a T=(x); [ -z "${NOPE:-}" ] && declare -a T=(@P@); f() { if false; then T=(a); T=(b); T=(c); T=(d); T=(e); '
+        'T=(f); fi; }; f; false && T=(y); sh "${T[0]}"',
+        'declare -a T=(@P@ x); f() { if false; then T=(a); T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); fi; }; f; sh "${T[@]}"',
+        'declare -a T=(@P@); f() { if false; then T=(a); T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); fi; }; f; sh "$T"',
+        'declare -a T=(@P@); f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; T=h; fi; }; f; sh "${T[0]}"',
+        'declare -a CMD=(sh @P@)\nf() {\n  if [ -n "${NOPE:-}" ]; then CMD=(a); CMD=(b); CMD=(c); CMD=(d); CMD=(e); CMD=(f); '
+        'CMD=(g); CMD=(h); fi\n}\nf\n"${CMD[@]}"',
+        'declare -a T=(@P@); ' + "; ".join("false && T=(%s)" % c for c in "abcdefgh") + '; sh "${T[0]}"')
+    NONE_RUN = (  # E01 (eight candidates), and a call the step backgrounds: honest clears
+        'T=; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; sh "$T"',
+        'T=/dev/null; f() { T=@P@; }; f & sh "$T"')
+    PRICE = (  # E02, E05: nine candidates, none the payload -- the cap's price since round 7
+        'T=; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; false && T=y; sh "$T"',
+        'T=x; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; false && T=y; sh "$T"')
+
+    def test_each_payload_row_is_reported(self):
+        for rows, shells in ((self.ALL_RUN, SHELLS), (self.BASH_RUN, (None, "bash", "bash {0}"))):
+            for row in rows:
+                for shell in shells:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertTrue(reported(filled(row), shell))
+
+    def test_each_honest_clear_stays_clear(self):
+        for row in self.NONE_RUN:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(filled(row), shell))
+
+    def test_the_price_past_the_cap_is_reported(self):
+        for row in self.PRICE:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_the_first_eight_stand_beside_the_stand_in_and_an_array_keeps_its_lists(self):
+        def table(script):
+            stmts = wg.shell_reader.statements(script + "\n")
+            return workflow_uses.static_values(stmts, len(stmts) - 1)
+        scalars = table('T=x; [ -z "$NOPE" ] && T=P; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; fi; }; f; '
+                        'false && T=y; sh "$T"').scalars["T"]
+        self.assertEqual(["x", "P", "a", "b", "c", "d", "e", "f", workflow_uses.PAST], scalars)
+        values = table('declare -a T=(P); f() { if false; then T=(a); T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); '
+                       'fi; }; f; sh "${T[0]}"')
+        self.assertEqual(["P"], values.arrays["T"][0])
+        self.assertEqual([workflow_uses.PAST], values.arrays["T"][-1])
+
+
+class TestEveryCapLeavesItsStandIn(unittest.TestCase):
+    """PR #2855 round 7: the coordinator's ruling on round 6's three more cap edges -- B1, a stale
+    carried mark dropped the caller's own payload; B2, the stand-in took one of the eight slots;
+    B4, the word cap at the use put carried scalars ahead of an own `declare -a T=(P)` -- and on
+    #2871 (B3: a payload the step itself makes a name's ninth candidate, CLEAN on `main` too).
+    The ordering no longer carries safety: every truncation -- a name's (`_update`), a word's
+    (`valued`), an argv's (`valued_argvs`) -- leaves the cap's stand-in `PAST`, and a use holding
+    it reads as every download the step holds there, so it reports wherever an unverified one can
+    reach it; a write of the whole value or a sure `unset` ends it. The price, pinned: a use of a name with nine
+    or more candidates reports where no shell runs a download. Rows are the round-6 seat's, with
+    its ground truth over 8 parents (all run the payload; the bash rows, both bashes), and the
+    row-level controls."""
+
+    ALL_RUN = (
+        # B1: DS01, and DS05, the installer shape.
+        'T=x; f() { if false; then T=@P@; fi; }; f; T=x; g() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; '
+        'fi; }; g; [ -z "${NOPE:-}" ] && T=@P@; sh "$T"',
+        'INSTALLER=/dev/null\nuse_default() {\n  if [ -n "${USE_DEFAULT:-}" ]; then INSTALLER=@P@; fi\n}\nuse_default\n'
+        'INSTALLER=/dev/null\ndetect_arch() {\n  case "$(uname -m)" in\n    i386) INSTALLER=a;;\n    armv7l) INSTALLER=b;;\n'
+        '    ppc64le) INSTALLER=c;;\n    s390x) INSTALLER=d;;\n    riscv64) INSTALLER=e;;\n    mips) INSTALLER=f;;\n'
+        '    sparc64) INSTALLER=g;;\n  esac\n}\ndetect_arch\nif [ "$(uname -s)" = Linux ]; then\n  INSTALLER=@P@\nfi\n'
+        'sh "$INSTALLER"',
+        # B2: DN10, and DM02, a `load()` helper and a seven-arm `uname -s` dispatcher.
+        'T=x; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; '
+        + "; ".join("false && T=%d" % number for number in range(1, 7)) + '; [ -z "${NOPE:-}" ] && T=@P@; sh "$T"',
+        'T=/dev/null; load() { if [ -n "${A:-}" ]; then T=custom-a; fi; if [ -n "${B:-}" ]; then T=custom-b; fi; }; '
+        'load; case "$(uname -s)" in Darwin) T=darwin.sh;; FreeBSD) T=freebsd.sh;; OpenBSD) T=openbsd.sh;; '
+        'NetBSD) T=netbsd.sh;; SunOS) T=sunos.sh;; AIX) T=aix.sh;; Linux) T=@P@;; esac; sh "$T"',
+        # B3: DC03, and DC18, a seven-arm dispatcher then an OVERRIDE line (CLEAN on `main`).
+        'f() { T=@P@; }; f; ' + "; ".join("false && T=%d" % number for number in range(1, 9)) + '; sh "$T"',
+        'T=/dev/null\nset_target() {\n  case "$(uname -s)" in\n    Darwin) T=a;;\n    FreeBSD) T=b;;\n'
+        '    OpenBSD) T=c;;\n    NetBSD) T=d;;\n    SunOS) T=e;;\n    AIX) T=f;;\n    Linux) T=@P@;;\n  esac\n}\n'
+        'set_target\n[ -n "${OVERRIDE:-}" ] && T=$OVERRIDE\nsh "$T"',
+        # #2871's two nine-candidate rows (CLEAN on `main`).
+        'for T in a b c d e f g h @P@; do :; done; sh "$T"',
+        'T=x; ' + "; ".join("false && T=%d" % number for number in range(1, 8)) + '; [ -z "$NOPE" ] && T=@P@; sh "$T"',
+        # A word's product holding the payload: within 64 (`$D/$N`, the ninth: round 8 enumerates
+        # it; round 7's spelling ran `/tmp/payload`, no download, and passed on the stand-in alone)
+        # and past 64 (`$A/$B$C$D`, the 81st: the stand-in); and the argv cap (a ninth `$S $T`).
+        'D=/x; false && D=/y; [ -z "$NOPE" ] && D=.; N=a; false && N=b; [ -z "$NOPE" ] && N=@P@; '
+        'sh "$D/$N"',
+        'A=/x; false && A=/y; [ -z "$NOPE" ] && A=.; B=a; false && B=b; [ -z "$NOPE" ] && B=t; C=c; '
+        'false && C=d; [ -z "$NOPE" ] && C=o; D=e; false && D=f; [ -z "$NOPE" ] && D=ol; sh "$A/$B$C$D"',
+        'S=:; false && S=true; [ -z "$NOPE" ] && S=sh; T=a; false && T=b; [ -z "$NOPE" ] && T=@P@; $S "$T"',
+        # The stand-in reaches a use through a copy, a function body and a command word.
+        'for T in a b c d e f g h @P@; do :; done; U="$T"; sh "$U"',
+        'for T in a b c d e f g h @P@; do :; done; run() { sh "$T"; }; run',
+        'for T in a b c d e f g h @P@; do :; done; chmod +x "$T"; "$T"')
+    BASH_RUN = (  # B4: DM01; and DM06, the control with six decoys (dash has no `declare`)
+        'T=x; [ -z "${NOPE:-}" ] && declare -a T=(@P@); f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; '
+        'fi; }; f; sh "$T"',
+        'T=x; [ -z "${NOPE:-}" ] && declare -a T=(@P@); f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; fi; }; '
+        'f; sh "$T"')
+    PRICE = (  # nine candidates, none the payload: no shell runs a download, and each reports
+        'for T in a b c d e f g h i; do :; done; sh "$T"',
+        'T=x; ' + "; ".join("false && T=%d" % number for number in range(1, 9)) + '; sh "$T"')
+    NONE_RUN = (
+        'for T in a b c d e f g h; do :; done; sh "$T"',                  # eight: within the cap
+        'for T in a b c d e f g h @P@; do :; done; echo "$T"',            # nine, and no use
+        'for T in a b c d e f g h @P@; do :; done; T=/dev/null; sh "$T"',  # a whole write ends it
+        'for T in a b c d e f g h @P@; do :; done; unset T; sh "${T:-/dev/null}"',  # a sure unset
+        # F3: a body's call in a list it backgrounds is not followed (DK21), as at the top level,
+        # whose forked calls stay clear: DK01, DK04, DK17, and a group piped on.
+        'T=/dev/null; f() { T=@P@; }; g() { f & wait; }; g; sh "$T"',
+        # Round 9, B2: a list's end decides, read once walking the body back (round 8, B3), so
+        # `f && : &` and `f || : &` send `f` to the background too (BG07, BG18).
+        'T=/dev/null; f() { T=@P@; }; g() { f && : & wait; }; g; sh "$T"',
+        'T=/dev/null; f() { T=@P@; }; g() { f || : & wait; }; g; sh "$T"',
+        'T=/dev/null; f() { T=@P@; }; f & wait; sh "$T"',
+        'T=/dev/null; f() { T=@P@; }; ( f ) & wait; sh "$T"',
+        'T=/dev/null; f() { T=@P@; }; if true; then f; fi & wait; sh "$T"',
+        'T=/dev/null; f() { T=@P@; }; { f; } | cat; sh "$T"')
+    # F3, named: `eval -p f` and `eval -- -- f` run no `f` (bash rejects `-p`; dash runs `--`),
+    # but the guard's `eval` reader keeps the words not led by `-` as the program bash runs,
+    # fail-closed, and the carry follows the call it reads there -- an over-report, bounded.
+    NAMED = ('T=/dev/null; f() { T=@P@; }; eval -p f 2> /dev/null || :; sh "$T"',
+             'T=/dev/null; f() { T=@P@; }; eval -- -- f 2> /dev/null || :; sh "$T"')
+
+    def test_each_payload_row_is_reported(self):
+        for rows, shells in ((self.ALL_RUN, SHELLS), (self.BASH_RUN, (None, "bash", "bash {0}"))):
+            for row in rows:
+                for shell in shells:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertTrue(reported(filled(row), shell))
+
+    def test_the_price_and_the_named_over_reports_are_reported(self):
+        for row in self.PRICE + self.NAMED:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_each_honest_clear_stays_clear(self):
+        for row in self.NONE_RUN:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(filled(row), shell))
+
+
+class TestTheStandInHoldsItsKeysAndAProductItsBound(unittest.TestCase):
+    """PR #2855 round 8, the round-7 verdict. B1: a write of word 0 to an array past the cap
+    (`T=y`, `export T=y`, `declare T=y`) kept only the new word, though bash's `T=y` is `T[0]=y` and
+    keeps every other key: the stand-in now stays at the keys the write leaves. B2, the
+    coordinator's ruling: a product of a word's or an argv's references holds 64 before the
+    stand-in, a name's own cap staying 8, so the common honest installer shapes (`unzip
+    "tool-$V-$ARCH.zip"`, 3 x 3) read CLEAN as on `main`; past 64 the stand-in stands, a named
+    price. F3: a one-line body that opens with an array literal is no subshell, and carries.
+    Truth: b5e b3e dash-e b5 b3 dash, and the `{0}` pair (R ran the payload)."""
+
+    BASH_RUN = (  # EW01, EW06, EW07, EX04, and F3's BA01, BA05, BA08: both bashes run P, dash no arrays
+        'declare -a T=(a); f() { if false; then T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); fi; }; f; '
+        '[ -z "${NOPE:-}" ] && T=(x @P@); T=y; sh "${T[1]}"',
+        'declare -a T=(a); f() { if false; then T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); fi; }; f; '
+        '[ -z "${NOPE:-}" ] && T=(x @P@); export T=y; sh "${T[1]}"',
+        'declare -a T=(a); f() { if false; then T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); fi; }; f; '
+        '[ -z "${NOPE:-}" ] && T=(x @P@); declare T=y; sh "${T[1]}"',
+        'declare -a CMD=(true)\ndetect() {\n  case "$(uname -s)" in\n    Darwin) CMD=(a);;\n    FreeBSD) CMD=(b);;\n'
+        '    OpenBSD) CMD=(c);;\n    NetBSD) CMD=(d);;\n    SunOS) CMD=(e);;\n    AIX) CMD=(f);;\n    HP-UX) CMD=(g);;\n'
+        '  esac\n}\ndetect\n[ -n "${CUSTOM:-}" ] || CMD=(x @P@)\nCMD=sh\n"${CMD[@]}"',
+        'T=/dev/null; g() { A=(x); T=@P@; }; g; sh "$T"',
+        'T=/dev/null; g() { declare -a A=(x); T=@P@; }; g; sh "$T"',
+        'T=/dev/null; g() { ARGS=(-fsSL); T=@P@; }; g; sh "$T"')
+    HONEST = (  # PX01, PX02-shaped, PX22, EX10, EX11, EX12, EX15: products within 64, nothing runs
+        'A=1; false && A=2; false && A=3; B=x; false && B=y; false && B=z; sh -c : "$A" "$B"',
+        'OS=linux; [ -n "${D:-}" ] && OS=darwin; [ -n "${W:-}" ] && OS=windows; ARCH=amd64; '
+        '[ -n "${A:-}" ] && ARCH=arm64; [ -n "${P:-}" ] && ARCH=ppc64le; tar -xzf "tool-$OS-$ARCH.tar.gz" 2> /dev/null || :',
+        'V=1; false && V=2; false && V=3; ARCH=amd64; false && ARCH=arm64; false && ARCH=x86; '
+        'unzip -q "tool-$V-$ARCH.zip" 2> /dev/null || :',
+        'A=1; false && A=2; false && A=3; sh -c : "$A" "$A"',
+        'A=1; false && A=2; false && A=3; sh -c : "$A$A"',
+        'F=a; false && F=b; false && F=c; install -m 755 "$F" "/tmp/bin-$F" 2> /dev/null || :',
+        'A=1; false && A=2; B=1; false && B=2; C=1; false && C=2; D=1; false && D=2; sh -c : "$A" "$B" "$C" "$D"')
+    # The price past 64, named: four names of three candidates each at a runner (81), none the
+    # payload, reported as a use the table no longer bounds.
+    PRICE = ('A=1; false && A=2; false && A=3; B=x; false && B=y; false && B=z; C=p; false && C=q; false && C=r; '
+             'D=u; false && D=v; false && D=w; sh "$A$B$C$D" 2> /dev/null || :',)
+
+    def test_each_bash_row_is_reported(self):
+        for row in self.BASH_RUN:
+            for shell in (None, "bash", "bash {0}"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_a_product_within_64_reads_clean_and_past_it_is_the_price(self):
+        for rows, expected in ((self.HONEST, False), (self.PRICE, True)):
+            for row in rows:
+                for shell in SHELLS:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertEqual(expected, reported(filled(row), shell))
+
+    def test_a_call_site_carries_once_per_step(self):
+        # B5: a body of K statements called K times reads in about main's time, not K times its
+        # cube: each call site's carry from one state of its bodies' names is made once
+        # (`workflow_called._carried`; round 9 keys it on those names, not the whole table).
+        import time
+        body = "g() {\n" + "".join(": %d\n" % i for i in range(150)) + "}\n"
+        start = time.perf_counter()
+        reported(GET + body + "g\n" * 150 + "sh /dev/null\n")
+        self.assertLess(time.perf_counter() - start, 8.0)
+
+
+class TestACallSiteCarriesAFixedNumberOfTimes(unittest.TestCase):
+    """PR #2855 round 11, the round-10 verdict's B3 (the memo goes): `static_values` rebuilds the
+    table at every statement that reads it, so a call site is visited at every rebuild after it --
+    carried each time, round 8 was cubic where `main` is quadratic, and a memo keyed on the state of
+    the bodies' names grew again where the step assigns the words a body spells. A call site now
+    carries its bodies `_BUDGET` (8) times a step, and past that each name they may set holds the
+    cap's stand-in, a price; where one may set any name (`eval`, `source`), each name the table
+    holds does too -- each once a walk, then what changed since. Round 12 (the round-11 verdict's
+    B2): a carry costs the statements it walks and the names it copies, and one costing more than
+    `_WORK` counts as more than one; a body that may write nothing is not carried; and a stand-in
+    makes no list it needs not (`workflow_called._stood`). Pinned by the carry's cost (its CPU time,
+    the collector on, beside the same step read with no carry, and its work at two sizes), by a
+    site's work and by the carries counted."""
+
+    @staticmethod
+    def body(size, first=""):
+        # The coordinator's word body (round 10): `: s0 .. : s<K-1>`, words no statement sets.
+        return "g() {\n" + first + "".join(": s%d\n" % i for i in range(size)) + "}\n"
+
+    @staticmethod
+    def assigned(size):
+        # Round 11 (the round-10 verdict's B3): the word body, each word a name the step assigns first.
+        return "".join("s%d=x\n" % i for i in range(size)) + TestACallSiteCarriesAFixedNumberOfTimes.body(size)
+
+    @staticmethod
+    def wide(size, line):
+        return "log() { %s; }\n" % line + "".join("V%d=v%d\n" % (i, i) for i in range(size)) + "log\n" * size
+
+    def looped(self, size, first="", head="for i in 1 2; do\n", tail="done\n"):
+        return self.body(size, first) + head + "".join("X=a%d; g\n" % j for j in range(size)) + tail
+
+    @staticmethod
+    def between(size, line):
+        # A write between every two calls of an `eval` or `.` body (the round-10 seat's `evalbetween`).
+        return "log() { %s; }\n" % line + "".join("V%d=v%d; log\n" % (i, i) for i in range(size))
+
+    @staticmethod
+    def calls(size):
+        # A body setting K names, called K times (the round-11 seat's `calls`).
+        return "log() {\n" + "".join("W%d=x\n" % i for i in range(size)) + "}\n" + "log\n" * size
+
+    @staticmethod
+    def ratio(script):
+        """The step's CPU time with the carry over its time with `record_called` a no-op, the collector
+        on as it runs: round 12 (the round-11 verdict's B2) -- its seat's collector term, 9-21x `main`'s
+        and growing faster than the step, was the lists the visits made, which a run with it off hid."""
+        import time
+        from unittest import mock
+
+        def cost():
+            start = time.process_time()
+            reported(GET + script + "sh /dev/null\n")
+            return time.process_time() - start
+        with mock.patch.object(workflow_uses, "record_called", lambda *args: None):
+            bare = cost()
+        return cost() / bare
+
+    def test_each_shape_costs_a_constant_factor_of_the_step_without_the_carry(self):
+        while_head, while_tail = "n=0\nwhile [ $n -lt 2 ]; do\n", "n=$((n+1))\ndone\n"
+        for name, script, bound in (
+                ("loop", self.looped(60), 1.5),
+                ("while", self.looped(60, head=while_head, tail=while_tail), 1.5),
+                ("flat", self.body(100) + "".join("X=a%d; g\n" % j for j in range(100)), 1.5),
+                ("reads", self.looped(60, "U=$X\n"), 1.8),
+                # The round-10 verdict's B3, at two sizes: the ratio holds as K doubles (round 10's
+                # went 1.25 -> 1.68 and 1.20 -> 1.59 here).
+                ("flatassigned 50", self.assigned(50) + "".join("X=a%d; g\n" % j for j in range(50)), 1.5),
+                ("flatassigned 100", self.assigned(100) + "".join("X=a%d; g\n" % j for j in range(100)), 1.5),
+                ("loopassigned 30", self.assigned(30) + self.looped(30)[len(self.body(30)):], 1.5),
+                ("loopassigned 60", self.assigned(60) + self.looped(60)[len(self.body(60)):], 1.5),
+                # Round 12, the round-11 verdict's B2: its six shapes at two sizes each. `calls` costs
+                # most where a site's eight carries of its K statements fit `_WORK`, and less as K
+                # grows past it (3.9x -> 5.7x `main` from K = 50 to 3,200 in round 11).
+                ("wide 75", self.wide(75, ":"), 1.5), ("wide 150", self.wide(150, ":"), 1.5),
+                ("eval 75", self.wide(75, "eval :"), 1.8), ("eval 150", self.wide(150, "eval :"), 1.8),
+                ("source 75", self.wide(75, ". /dev/null"), 1.8), ("source 150", self.wide(150, ". /dev/null"), 1.8),
+                ("eval between 75", self.between(75, "eval :"), 1.8),
+                ("eval between 150", self.between(150, "eval :"), 1.8),
+                ("source between 75", self.between(75, ". /dev/null"), 1.8),
+                ("source between 150", self.between(150, ". /dev/null"), 1.8),
+                ("calls 100", self.calls(100), 4.5), ("calls 200", self.calls(200), 3.0)):
+            with self.subTest(shape=name):
+                ratio = self.ratio(script)
+                if ratio >= bound:          # once more, against a busy machine
+                    ratio = min(ratio, self.ratio(script))
+                self.assertLess(ratio, bound)
+
+    @staticmethod
+    def work(script):
+        """The carry's work for `script`, counted: each statement a carry walks (`_carry_one`, a dry one
+        for what a statement may set too), each name it copies (what the caller holds of the names it
+        is given, or the whole table), each own stand-in (`_own`, and `emptied` for a body's `unset`) and
+        each stand-in given past the budget (`_stood`) -- round 12 (the round-11 verdict's B2: the count
+        of carries and table sizes missed the statements a carry walks)."""
+        from unittest import mock
+        done = [0]
+        real_carry, real_one, real_emptied, real_own, real_stood = (workflow_called._carry, workflow_called._carry_one,
+                                                                    workflow_called.emptied, workflow_called._own,
+                                                                    workflow_called._stood)
+
+        def carry(table, stmts, head, close, positions=None, names=None):
+            held = {*table.scalars, *table.arrays}
+            done[0] += len(held) if names is None else len(held & set(names))
+            return real_carry(table, stmts, head, close, positions, names)
+
+        def counted(real):
+            def call(*args, **kwargs):
+                done[0] += 1
+                return real(*args, **kwargs)
+            return call
+        with mock.patch.object(workflow_called, "_carry", carry), \
+                mock.patch.object(workflow_called, "_carry_one", counted(real_one)), \
+                mock.patch.object(workflow_called, "emptied", counted(real_emptied)), \
+                mock.patch.object(workflow_called, "_own", counted(real_own)), \
+                mock.patch.object(workflow_called, "_stood", counted(real_stood)):
+            reported(GET + script + "sh /dev/null\n")
+        return done[0]
+
+    def test_a_visit_costs_what_changed_not_the_words_or_the_table(self):
+        # `main`'s rebuilds visit a call site about K^2 times in all, so the carry's work may grow four
+        # times when K doubles, and no faster: round 11 bounded it at five, which let K^2.3 through (its
+        # seat's B2). Round 9 keyed every word a body spells (`: s0 .. : s<K-1>`), round 10 every one the
+        # step assigns first, round 11 copied the whole table a carry (`wide`), gave every name its own
+        # stand-in at every visit (its seat's mA5) and had a site's carries walk K statements eight times
+        # (`many names set`): each fails here. Sized past the budget's onset.
+        while_head, while_tail = "n=0\nwhile [ $n -lt 2 ]; do\n", "n=$((n+1))\ndone\n"
+        for name, make in (("loop", lambda k: self.looped(k)),
+                           ("while", lambda k: self.looped(k, head=while_head, tail=while_tail)),
+                           ("flat", lambda k: self.body(k) + "".join("X=a%d; g\n" % j for j in range(k))),
+                           ("wide", lambda k: self.wide(k, ":")),
+                           ("eval", lambda k: self.wide(k, "eval :")),
+                           ("source", lambda k: self.wide(k, ". /dev/null")),
+                           ("eval between writes", lambda k: self.between(k, "eval :")),
+                           ("source between writes", lambda k: self.between(k, ". /dev/null")),
+                           ("flatassigned", lambda k: self.assigned(k) + "".join("X=a%d; g\n" % j for j in range(k))),
+                           ("loopassigned", lambda k: self.assigned(k) + self.looped(k)[len(self.body(k)):]),
+                           # a body that sets K names, called K times: past the budget, a walk stands
+                           # each in at its first site, then what changed since
+                           ("many names set", lambda k: self.calls(k))):
+            with self.subTest(shape=name):
+                small, large = self.work(make(40)), self.work(make(80))
+                self.assertLess(large, 4 * small, (small, large))
+
+    def test_a_sites_carries_walk_and_copy_no_more_than_the_budget_of_work(self):
+        # Round 12 (the round-11 verdict's B2): a site carried a body of K statements setting K names
+        # eight times, walking and copying 16K a site, K^3 a step where `main` is quadratic. A carry
+        # costing more than `_WORK` counts as more than one, so a site's carries walk and copy
+        # `_BUDGET * _WORK` at most, eight carries of 128, whatever K -- and still carry (five times at
+        # 100, twice at 200).
+        from unittest import mock
+        spent, site = {}, [None]
+        real_called, real_carry, real_one = (
+            workflow_uses.record_called, workflow_called._carry, workflow_called._carry_one)
+
+        def called(table, stmts, position, starts):
+            site[0] = position
+            try:
+                return real_called(table, stmts, position, starts)
+            finally:
+                site[0] = None
+
+        def carry(table, stmts, head, close, positions=None, names=None):
+            if site[0] is not None:
+                spent[site[0]] = spent.get(site[0], 0) + len({*table.scalars, *table.arrays} & set(names or ()))
+            return real_carry(table, stmts, head, close, positions, names)
+
+        def one(*args):
+            if site[0] is not None:
+                spent[site[0]] = spent.get(site[0], 0) + 1
+            return real_one(*args)
+        for size in (100, 200):
+            with self.subTest(size=size):
+                spent.clear()
+                with mock.patch.object(workflow_uses, "record_called", called), \
+                        mock.patch.object(workflow_called, "_carry", carry), \
+                        mock.patch.object(workflow_called, "_carry_one", one):
+                    reported(GET + self.calls(size) + "sh /dev/null\n")
+                self.assertTrue(spent)
+                self.assertLessEqual(max(spent.values()), 8 * 128)
+
+    def test_each_statement_is_read_for_what_it_may_set_once_a_step(self):
+        # Round 12 (its seat's F4, mC7): `_Step.set_at` keeps what each statement may set, so the
+        # narrowing past the budget reads a statement once a step, not once a visit -- K visits a walk
+        # over the K statements between them, K walks.
+        from unittest import mock
+        count = [0]
+        real = workflow_called._written
+
+        def written(*args):
+            count[0] += 1
+            return real(*args)
+        for size in (40, 80):
+            with self.subTest(size=size):
+                count[0] = 0
+                script = GET + self.between(size, "eval :") + "sh /dev/null\n"
+                with mock.patch.object(workflow_called, "_written", written):
+                    reported(script)
+                self.assertLessEqual(count[0], 2 * len(shell_reader.statements(script)))
+
+    @staticmethod
+    def copied(script):
+        """The names in each table `record_called` builds for `script`: a carry's copy of the
+        caller's table, every name of which it merges back, and `_effects`' dry one."""
+        from unittest import mock
+        sizes, inside = [], [False]
+        real_init, real_called = workflow_called.Values.__init__, workflow_uses.record_called
+
+        def init(self, *args, **kwargs):
+            real_init(self, *args, **kwargs)
+            if inside[0]:
+                sizes.append(len(self.scalars) + len(self.arrays))
+
+        def called(*args):
+            inside[0] = True
+            try:
+                return real_called(*args)
+            finally:
+                inside[0] = False
+        with mock.patch.object(workflow_called.Values, "__init__", init), \
+                mock.patch.object(workflow_uses, "record_called", called):
+            reported(GET + script + "sh /dev/null\n")
+        return sizes
+
+    def test_a_carry_copies_and_merges_only_the_names_its_bodies_spell_or_set(self):
+        # PR #2855 round 12 (the round-11 seat's cost bar): a carry copied the caller's whole table
+        # and merged each name back -- K names a carry, eight carries a site -- where `log() { :; }`
+        # spells none, so `wide` outgrew `main`'s quadratic on the forge (1.13x at K = 400 to 1.23x at
+        # 3,200). It copies and merges the names its bodies spell or set, plus `_effects`' probe: the
+        # same at both sizes, where round 11's grew with the K names the step assigns.
+        for name, line, bound in (("nothing spelled", ":", 2), ("one read, one set", "X=$V0", 4)):
+            for size in (40, 80):
+                with self.subTest(body=name, size=size):
+                    sizes = self.copied(self.wide(size, line))
+                    self.assertTrue(sizes)
+                    self.assertLessEqual(max(sizes), bound, (max(sizes), len(sizes)))
+
+    def carries(self, script):
+        """How many times `_carry` ran for `script` (each site's dry carry included)."""
+        from unittest import mock
+        count = [0]
+        real = workflow_called._carry
+
+        def counted(*args):
+            count[0] += 1
+            return real(*args)
+        with mock.patch.object(workflow_called, "_carry", counted):
+            reported(GET + script + "sh /dev/null\n")
+        return count[0]
+
+    def test_each_site_carries_within_the_budget(self):
+        # 24 sites of one body: one dry carry for them all, and at most 8 carries a site, where round
+        # 8 made 299 -- whatever the body reads or its loop changes.
+        for first in ("", "U=$X\n"):
+            with self.subTest(first=first):
+                self.assertLessEqual(self.carries(self.looped(24, first)), 1 + 24 * workflow_called._BUDGET)
+
+    # Past the budget, each name the bodies set holds the cap's stand-in: twelve calls of `g` in a
+    # loop; no shell runs a download in any row, and each reports, the budget's price -- where a
+    # body may set any name, each name the table holds (round 11, the round-10 verdict's B2, which
+    # round 10 had moved to must-clear: the round-9 seat's BU78-80).
+    PRICE = tuple(row % "".join("X=a%d; g; " % j for j in range(12)) for row in (
+        'T=/dev/null; g() { : "$X"; T=/dev/null; }; for i in 1 2; do %sdone; sh "$T"',
+        'T=/dev/null; g() { : "$X"; unset T; }; for i in 1 2; do %sdone; sh "${T:-/dev/null}"',
+        'T=/dev/null; g() { . ./env.sh; }; for i in 1 2; do %sdone; sh "$T"'))
+    # Within it (eight calls), each reads as the carry made it.
+    HONEST = tuple(row.replace("X=a8; g; X=a9; g; X=a10; g; X=a11; g; ", "") for row in PRICE[:2])
+    # Round 10 (B1): an array the bodies set takes the stand-in on its word-lists too, so its
+    # element reads report past the budget: `A=(x P)`, `A+=`, `declare -g -a`, a nested call, a
+    # `.` and an `eval` body, nine and thirty states (BU02, BU26, BU30, BU38, BU94; both bashes
+    # run the payload, dash has no arrays).
+    ELEMENTS = tuple(row % "".join('X=a%d; : "$X"\n' % j for j in range(states)) for row, states in (
+        ('g() { : "$X"; A=(x @P@); }\nfor i in 1 2; do\n%sg\ndone\nsh "${A[1]}"', 9),
+        ('g() { : "$X"; A+=(x @P@); }\nfor i in 1 2; do\n%sg\ndone\nsh "${A[1]}"', 9),
+        ('g() { : "$X"; declare -g -a A=(x @P@); }\nfor i in 1 2; do\n%sg\ndone\nsh "${A[1]}"', 9),
+        ('g() { : "$X"; h; }; h() { A=(x @P@); }\nfor i in 1 2; do\n%sg\ndone\nsh "${A[1]}"', 9),
+        ('g() { . /dev/null; : "$X"; A=(x @P@); }\nfor i in 1 2; do\n%sg\ndone\nsh "${A[1]}"', 9),
+        ('g() { eval :; : "$X"; A=(x @P@); }\nfor i in 1 2; do\n%sg\ndone\nsh "${A[1]}"', 9),
+        ('g() { : "$X"; A=(x @P@); }\nfor i in 1 2; do\n%sg\ndone\nsh "${A[1]}"', 30)))
+
+    def test_a_name_a_statement_sets_beside_any_is_one_it_changed(self):
+        # Round 11, the round-10 verdict's B1: the step's own `export "$K=v" X=/dev/null` sets `X`
+        # though it may set any name, so past the budget the next site stands `X` in again, as the
+        # sourced file sets it to the download (every shell runs it); read as setting nothing, `X`
+        # kept only the step's value.
+        row = ('K=Z\necho X=@P@ > xenv\ng() { . ./xenv; }\ng\nexport "$K=v" X=/dev/null\ng\n'
+               + ': "$X"\n' * 10 + 'sh "$X"')
+        for shell in SHELLS:
+            with self.subTest(shell=shell):
+                self.assertTrue(reported(filled(row), shell))
+
+    def test_past_the_budget_the_names_a_body_sets_hold_the_stand_in(self):
+        for rows, expected in ((self.PRICE, True), (self.HONEST, False)):
+            for row in rows:
+                for shell in SHELLS:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertEqual(expected, reported(filled(row), shell))
+        for row in self.ELEMENTS:
+            for shell in (None, "bash", "bash {0}"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+
+class TestASecondSiteOfTheSameBodiesCarriesWhatChanged(unittest.TestCase):
+    """PR #2855 round 10's rows, kept in round 11, where call sites no longer share a carry: a
+    redefinition between two sites of the same bodies -- of the function, or of one it calls -- or a
+    change to an array a body reads still reaches the use; and a carry walks only the statements
+    that may write (`workflow_called._writes`), so a body that writes through an expansion or
+    arithmetic is still carried. Truth: every shell runs the payload, dash none where the step
+    holds an array."""
+
+    ALL_RUN = (
+        'T=/dev/null; f() { T=a; }; f; f() { T=@P@; }; f; sh "$T"',
+        'T=/dev/null; h() { T=a; }; g() { h; }; g; h() { T=@P@; }; g; sh "$T"',
+        'T=/dev/null; f() { T=a; }; f; f() { T=@P@; }; for i in 1 2; do f; done; sh "$T"',
+        'T=/dev/null; f() { : 0; : 1; T=@P@; : 2; }; for i in 1 2; do X=a; f; X=b; f; done; sh "$T"')
+    BASH_RUN = ('T=/dev/null; f() { T=${A[1]}; }; A=(a b); f; A=(c @P@); f; sh "$T"',)
+
+    def test_each_is_reported(self):
+        for rows, shells in ((self.ALL_RUN, SHELLS), (self.BASH_RUN, (None, "bash", "bash {0}"))):
+            for row in rows:
+                for shell in shells:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertTrue(reported(filled(row), shell))
+
+
+class TestAnArrayAnInnerSiteReadsReachesTheUse(unittest.TestCase):
+    """PR #2855 round 10, the round-9 verdict's B4: the round-9 seat's MP01 and MP05 move an array
+    an inner call site reads, and nothing else; the round-9 key without the array side read them
+    CLEAN (its m83). Kept in round 11, where each visit within the budget is a fresh carry. Truth:
+    both bashes run them. (MP07-MP09, rebuilt past the budget, are its price now:
+    `TestTheRoundTenSeatsRows`.)"""
+
+    BASH_RUN = ('h() { U=${A[1]}; }\ng() { h; sh "$U"; }\nA=(x /dev/null); g\nA=(x @P@); unset U; g',
+                'h() { U=${A[1]}; }\ng() { h; sh "$U"; }\nA=(x /dev/null); g\nunset U; A=(x @P@); g')
+
+    def test_an_array_an_inner_site_reads_is_in_its_state(self):
+        for row in self.BASH_RUN:
+            for shell in (None, "bash", "bash {0}"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+
+class TestTheRoundTenSeatsRows(unittest.TestCase):
+    """PR #2855 round 11, the round-10 verdict's B1, B2 and B4, on its seat's rows as it filled
+    them (`seat`: the download to `@P@`, its truth over eight parents).
+    - B1 (sets 59-61): a name that only a statement that may also set any name sets (`export "$K=v"
+      X=P`, `declare`, `typeset`, `declare -g`, `export "$K"`), which the memo's key did not hold,
+      so a carry shared by a second site restored a stale value. The memo is gone; every visit
+      within the budget is a fresh carry.
+    - B2 (sets 58-59): past the budget, a body that may set any name (`. ./cenv`, `source`, `read
+      -r "$N"`, `printf -v "$N"`, `export "$N=P"`, `. ./aenv` and an array) gives every name the
+      table holds the cap's stand-in on both sides, as `6bd4625f` did.
+    - B4, the fixed budget's price (set 53's MP07-MP09 and set 62's MV01, MV02 and MV06; no shell
+      runs anything): a call site rebuilt past `_BUDGET` times -- a call, then more than eight
+      statements that read the table -- stands in what its bodies may set, and where one may set any
+      name, every name the table holds, so the use reads every download."""
+
+    B1 = (
+        ('XA01', '11111111', 'K=Z\nT=/dev/null\ng() { T=$X; }\nexport "$K=v" X=/dev/null\ng\nexport "$K=v" X=@P@\nT=/dev/null\nexport "$K=v"\ng\nsh "$T"'),
+        ('XA05', '11111100', 'K=Z\nT=/dev/null\ng() { T=$X; }\ndeclare "$K=v" X=/dev/null\ng\ndeclare "$K=v" X=@P@\nT=/dev/null\ndeclare "$K=v"\ng\nsh "$T"'),
+        ('XA09', '11111100', 'K=Z\nT=/dev/null\ng() { T=$X; }\ntypeset "$K=v" X=/dev/null\ng\ntypeset "$K=v" X=@P@\nT=/dev/null\ntypeset "$K=v"\ng\nsh "$T"'),
+        ('XA22', '11111111', 'K=Z\nT=/dev/null\ng() { T=$X; }\nh() { g; }\nexport "$K=v" X=/dev/null\nh\nexport "$K=v" X=@P@\nT=/dev/null\nexport "$K=v"\nh\nsh "$T"'),
+        ('XA23', '11111111', 'K=Z\nT=/dev/null\ng() { T=$X; }\nexport "$K=v" X=/dev/null\ng\nexport "$K=v" X=@P@\nT=/dev/null\nexport "$K=v"\nif :; then g; fi\nsh "$T"'),
+        ('XA24', '11111111', 'K=Z\nT=/dev/null\ng() { : 0; T=$X; : 1; }\nexport "$K=v" X=/dev/null\ng\nexport "$K=v" X=@P@\nT=/dev/null\nexport "$K=v"\ng\nsh "$T"'),
+        ('XA25', '11111111', 'K=Z\nT=/dev/null\ng() { T=$X; }\nexport "$K=v" X=/dev/null\ng\nexport "$K=v" X=@PD@/@PN@\nT=/dev/null\nexport "$K=v"\ng\nsh "$T"'),
+        ('XB45', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nh0() { export "$K=v" X=/dev/null; }\nh1() { export "$K=v" X=@P@; }\nh0\ng\nh1\nT=/dev/null\ng\nsh "$T"'),
+        ('XB49', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nfor i in 1 2; do\nexport "$K=v" X=/dev/null\ng\ndone\nexport "$K=v" X=@P@\nT=/dev/null\ng\nsh "$T"'),
+        ('XC01', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nexport "$K=v" X=/dev/null\ng\nexport "$K=v" X=@P@\nT=/dev/null\nexport "$K=v"\ng\nsh "$T"'),
+        ('XC02', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nexport "$K=v" X=/dev/null\nunset T\ng\nexport "$K=v" X=@P@\nunset T\ng\nsh "$T"'),
+        ('XC03', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nexport "$K=v" X=/dev/null\nT=\ng\nexport "$K=v" X=@P@\nT=\ng\nsh "$T"'),
+        ('XC04', '11111100', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\ndeclare "$K=v" X=/dev/null\ng\ndeclare "$K=v" X=@P@\nT=/dev/null\nexport "$K=v"\ng\nsh "$T"'),
+        ('XC05', '11111100', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\ndeclare "$K=v" X=/dev/null\nunset T\ng\ndeclare "$K=v" X=@P@\nunset T\ng\nsh "$T"'),
+        ('XC06', '11111100', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\ndeclare "$K=v" X=/dev/null\nT=\ng\ndeclare "$K=v" X=@P@\nT=\ng\nsh "$T"'),
+        ('XC07', '11111100', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\ntypeset "$K=v" X=/dev/null\ng\ntypeset "$K=v" X=@P@\nT=/dev/null\nexport "$K=v"\ng\nsh "$T"'),
+        ('XC08', '11111100', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\ntypeset "$K=v" X=/dev/null\nunset T\ng\ntypeset "$K=v" X=@P@\nunset T\ng\nsh "$T"'),
+        ('XC09', '11111100', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\ntypeset "$K=v" X=/dev/null\nT=\ng\ntypeset "$K=v" X=@P@\nT=\ng\nsh "$T"'),
+        ('XC10', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nexport X=/dev/null "$K=v"\ng\nexport X=@P@ "$K=v"\nT=/dev/null\nexport "$K=v"\ng\nsh "$T"'),
+        ('XC11', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nexport X=/dev/null "$K=v"\nunset T\ng\nexport X=@P@ "$K=v"\nunset T\ng\nsh "$T"'),
+        ('XC12', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nexport X=/dev/null "$K=v"\nT=\ng\nexport X=@P@ "$K=v"\nT=\ng\nsh "$T"'),
+        ('XC25', '11100000', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\ndeclare -g "$K=v" X=/dev/null\ng\ndeclare -g "$K=v" X=@P@\nT=/dev/null\nexport "$K=v"\ng\nsh "$T"'),
+        ('XC26', '11100000', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\ndeclare -g "$K=v" X=/dev/null\nunset T\ng\ndeclare -g "$K=v" X=@P@\nunset T\ng\nsh "$T"'),
+        ('XC27', '11100000', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\ndeclare -g "$K=v" X=/dev/null\nT=\ng\ndeclare -g "$K=v" X=@P@\nT=\ng\nsh "$T"'),
+        ('XC28', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nexport "$K" X=/dev/null\ng\nexport "$K" X=@P@\nT=/dev/null\nexport "$K=v"\ng\nsh "$T"'),
+        ('XC29', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nexport "$K" X=/dev/null\nunset T\ng\nexport "$K" X=@P@\nunset T\ng\nsh "$T"'),
+        ('XC30', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nexport "$K" X=/dev/null\nT=\ng\nexport "$K" X=@P@\nT=\ng\nsh "$T"'),
+        ('XC38', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nexport "$K=v" X=/dev/null\nT=\ng\nexport "$K=v" X=@P@\nT=\nif :; then g; fi\nsh "$T"'),
+        ('XC39', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nh() { g; }\nexport "$K=v" X=/dev/null\nT=\nh\nexport "$K=v" X=@P@\nT=\nh\nsh "$T"'),
+    )
+    B2 = (
+        ('BB201', '11111111', 'echo T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\ng\ndone\nsh "$T"'),
+        ('BB203', '11111111', 'echo T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ndone\nsh "$T"'),
+        ('BB205', '11111111', 'echo T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ng\ndone\nsh "$T"'),
+        ('BB207', '11111111', 'echo T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\nX=a12; : "$X"\nX=a13; : "$X"\nX=a14; : "$X"\nX=a15; : "$X"\nX=a16; : "$X"\nX=a17; : "$X"\nX=a18; : "$X"\nX=a19; : "$X"\nX=a20; : "$X"\nX=a21; : "$X"\nX=a22; : "$X"\nX=a23; : "$X"\nX=a24; : "$X"\nX=a25; : "$X"\nX=a26; : "$X"\nX=a27; : "$X"\nX=a28; : "$X"\nX=a29; : "$X"\ng\ndone\nsh "$T"'),
+        ('BB209', '11111111', 'echo T=@P@ > cenv\nT=/dev/null\ng() { : "$X"; . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\ng\ndone\nsh "$T"'),
+        ('BB211', '11111111', 'echo T=@P@ > cenv\nT=/dev/null\ng() { : "$X"; . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ndone\nsh "$T"'),
+        ('BB213', '11111111', 'echo T=@P@ > cenv\nT=/dev/null\ng() { : "$X"; . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ng\ndone\nsh "$T"'),
+        ('BB215', '11111111', 'echo T=@P@ > cenv\nT=/dev/null\ng() { : "$X"; . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\nX=a12; : "$X"\nX=a13; : "$X"\nX=a14; : "$X"\nX=a15; : "$X"\nX=a16; : "$X"\nX=a17; : "$X"\nX=a18; : "$X"\nX=a19; : "$X"\nX=a20; : "$X"\nX=a21; : "$X"\nX=a22; : "$X"\nX=a23; : "$X"\nX=a24; : "$X"\nX=a25; : "$X"\nX=a26; : "$X"\nX=a27; : "$X"\nX=a28; : "$X"\nX=a29; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA29', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA30', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA31', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA32', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA33', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ng\ndone\nsh "$T"'),
+        ('XA37', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { source ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA38', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { source ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA39', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { source ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA40', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { source ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA41', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { source ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ng\ndone\nsh "$T"'),
+        ('XA53', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { read -r "$N" < tf; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA54', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { read -r "$N" < tf; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA55', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { read -r "$N" < tf; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA56', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { read -r "$N" < tf; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA57', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { read -r "$N" < tf; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ng\ndone\nsh "$T"'),
+        ('XA61', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { printf -v "$N" %s @P@; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA62', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { printf -v "$N" %s @P@; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA63', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { printf -v "$N" %s @P@; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA64', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { printf -v "$N" %s @P@; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA65', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { printf -v "$N" %s @P@; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ng\ndone\nsh "$T"'),
+        ('XA69', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { export "$N=@P@"; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA70', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { export "$N=@P@"; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA71', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { export "$N=@P@"; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA72', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { export "$N=@P@"; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA73', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { export "$N=@P@"; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ng\ndone\nsh "$T"'),
+        ('XA78', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { . ./aenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ncase $i in *) g;; esac\ndone\nsh "${A[1]}"'),
+        ('XA80', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { . ./aenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ncase $i in *) g;; esac\ndone\nsh "${A[1]}"'),
+        ('XA85', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { : "$X"; . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA86', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { : "$X"; . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA87', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { : "$X"; . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA88', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { : "$X"; . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA89', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { : "$X"; . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ng\ndone\nsh "$T"'),
+    )
+    REBUILT = (
+        ('MP07', '00000000', 'T=/dev/null\ng() { . /dev/null; }\nfor i in 1 2; do\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\ndone\nsh "$T"'),
+        ('MP08', '00000000', 'T=/dev/null\ng() { eval :; }\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('MP09', '00000000', 'T=/dev/null\ng() { eval :; }\nfor i in 1 2; do\ng\necho "$T"\necho "$T"\necho "$T"\necho "$T"\necho "$T"\necho "$T"\necho "$T"\necho "$T"\necho "$T"\necho "$T"\necho "$T"\necho "$T"\ndone\nsh "$T"'),
+        ('MV01', '00000000', 'T=/dev/null\ng() { eval :; T=/dev/null; }\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('MV02', '00000000', 'T=/dev/null\ng() { . /dev/null; T=/dev/null; }\nfor i in 1 2; do\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\ndone\nsh "$T"'),
+        ('MV06', '00000000', 'T=/dev/null\ng() { eval :; T=/dev/null; }\nf() { g; }\nf\nf\nf\nf\nf\nf\nf\nf\nf\nf\nsh "$T"'),
+    )
+    # Each truth's parents, by the `shell:` the guard reads (the round-10 seat's order).
+    PARENTS = ((None, (0, 3)), ("bash", (1, 4)), ("sh", (6,)), ("bash {0}", (2, 5)), ("sh {0}", (7,)))
+
+    @staticmethod
+    def seat(row):
+        return ("curl -fsSLo /tmp/payload %spayload\n" % URL + row.replace("@PD@", "/tmp")
+                .replace("@PN@", "payload").replace("@P@", "/tmp/payload") + "\n")
+
+    def test_each_reports_where_a_shell_runs_the_payload(self):
+        for rows in (self.B1, self.B2):
+            for name, truth, row in rows:
+                for shell, parents in self.PARENTS:
+                    if any(truth[p] == "1" for p in parents):
+                        with self.subTest(row=name, shell=shell):
+                            self.assertTrue(reported(self.seat(row), shell))
+
+    def test_a_site_rebuilt_past_the_budget_is_its_price(self):
+        for name, truth, row in self.REBUILT:
+            self.assertEqual("00000000", truth)
+            for shell in SHELLS:
+                with self.subTest(row=name, shell=shell):
+                    self.assertTrue(reported(self.seat(row), shell))
+
+
+class TestTheRoundElevenSeatsRows(unittest.TestCase):
+    """PR #2855 round 12, the round-11 verdict's B1, on its seat's rows as it filled them (`seat`: the
+    download to `@P@`, truth over eight parents). Past the budget a visit stands in only what changed
+    since the last one (`workflow_called._Step.since`), and a `read`, `unset` or `local` behind a
+    wrapper (`command`, `command -p`, `nohup`, `nice`, `env`, `timeout`, `stdbuf`, `setsid`, `flock`,
+    `xargs`) was no change to it, though the walk's `_cleared` reads such a write through
+    `shell_command.command` and takes the stand-in away: the use read the step's own clean value.
+    `set_at` names what such a write names (names only: main's reading of a wrapped `unset` as one,
+    #2909, is not copied).
+    - `GATE` (sets 64, 65 and 67: a named, an array and an any-name body, function-body walks, a site
+      between, every wrapper): 195 cells where a parent runs the payload, which round 11 read CLEAN.
+    - `SHARED` (SW81-SW94, SX32, SX38): a body that may set any name beside a wrapped `read`, 78 cells
+      every earlier tree read CLEAN where a parent runs the payload (#2910's).
+    Each row reports under every setting: where no parent runs the payload -- the `-e` settings, where
+    the failing wrapper stops the step (the WR rows), and `sh`, which has no arrays (SX29, SX31, SX32)
+    -- that is the price, 72 cells."""
+
+    GATE = (
+        ('SW25', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW26', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nfor i in 1 2; do\ng\ncommand unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW27', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand unset -v T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW28', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nfor i in 1 2; do\ng\ncommand unset -v T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW29', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW30', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nfor i in 1 2; do\ng\ncommand read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW31', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand read -r T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW32', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nfor i in 1 2; do\ng\ncommand read -r T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW33', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand -- read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW34', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nfor i in 1 2; do\ng\ncommand -- read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW35', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand -p read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW36', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nfor i in 1 2; do\ng\ncommand -p read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW37', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\n$NOPE command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW38', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nfor i in 1 2; do\ng\n$NOPE command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW39', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nx=1 command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW40', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nfor i in 1 2; do\ng\nx=1 command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW41', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW42', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nfor i in 1 2; do\ng\ncommand command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW43', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand unset T U\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW44', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nfor i in 1 2; do\ng\ncommand unset T U\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SX10', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nh() {\ng\ncommand unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\n}\nh'),
+        ('SX11', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nk() { U=/dev/null; }\ng\nk\ncommand unset T\nk\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SX14', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nh() {\ng\ncommand read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\n}\nh'),
+        ('SX15', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nk() { U=/dev/null; }\ng\nk\ncommand read T < rf\nk\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SX18', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nh() {\ng\ncommand read -r T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\n}\nh'),
+        ('SX19', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nk() { U=/dev/null; }\ng\nk\ncommand read -r T < rf\nk\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SX22', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nh() {\ng\n$NOPE command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\n}\nh'),
+        ('SX23', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nk() { U=/dev/null; }\ng\nk\n$NOPE command read T < rf\nk\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SX29', '11111100', '@G@\necho x /dev/null > rf\nA=(x /dev/null)\ng() { A=(x @P@); }\ng\ncommand unset A\ng\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\nsh "${A[1]}"'),
+        ('SX31', '11111100', '@G@\necho x /dev/null > rf\nA=(x /dev/null)\ng() { A=(x @P@); }\ng\ncommand read -r -a A < rf\ng\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\nsh "${A[1]}"'),
+        ('SX40', '11111111', '@G@\nT=/dev/null\ng() { T=@P@; }\nh() {\nlocal T=/dev/null\ng\ncommand local T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\n}\nh'),
+        ('WR01', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nnohup unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR02', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nnohup read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR04', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nnice unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR05', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nnice read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR07', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nnice -n 1 unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR08', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nnice -n 1 read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR10', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nenv unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR11', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nenv read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR13', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nenv -i unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR14', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nenv -i read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR16', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ntimeout 5 unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR17', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ntimeout 5 read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR19', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nstdbuf -o0 unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR20', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nstdbuf -o0 read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR22', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nsetsid unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR23', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nsetsid read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR25', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nflock rf unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR26', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nflock rf read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR28', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nxargs unset T < /dev/null\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR29', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nxargs read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR31', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand nohup unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR32', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand nohup read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+    )
+    SHARED = (
+        ('SW81', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\ng\ncommand read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW82', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\ng\ncommand read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW83', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\ng\ncommand read -r T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW84', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\ng\ncommand read -r T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW85', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\ng\ncommand -- read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW86', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\ng\ncommand -- read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW87', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\ng\ncommand -p read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW88', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\ng\ncommand -p read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW89', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\ng\n$NOPE command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW90', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\ng\n$NOPE command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW91', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\ng\nx=1 command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW92', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\ng\nx=1 command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW93', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\ng\ncommand command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW94', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\ng\ncommand command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SX32', '11111100', '@G@\necho x /dev/null > rf\necho \'A=(x @P@)\' > aenv\nA=(x /dev/null)\ng() { . ./aenv; }\ng\ncommand read -r -a A < rf\ng\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\nsh "${A[1]}"'),
+        ('SX38', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\ng\ncommand read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+    )
+
+    @staticmethod
+    def seat(row):
+        return row.replace("@G@", "curl -fsSLo @P@ %spayload" % URL).replace("@P@", "/tmp/payload") + "\n"
+
+    def test_each_reports_under_every_setting(self):
+        for name, truth, row in self.GATE + self.SHARED:
+            for shell, parents in TestTheRoundTenSeatsRows.PARENTS:
+                with self.subTest(row=name, shell=shell, runs=any(truth[p] == "1" for p in parents)):
+                    self.assertTrue(reported(self.seat(row), shell))
+
+
+class TestTheRoundTwelveSeatsRows(unittest.TestCase):
+    """PR #2855 round 13, the round-12 verdict's B1 and F1, on its seat's rows (the round-11
+    rows' `seat`: the download to `@P@`, truth over eight parents). Past the budget a visit
+    stands in again what the statements since the last one may set
+    (`workflow_called._Step.set_at`), and a `read`, `unset` or `local` -- behind a wrapper too
+    -- sets the name its word names, not the word: its seat's mR10 let the word `T=/dev/null`
+    stand for a plain `local`'s `T`, and SX41 read CLEAN where every parent runs the payload;
+    its mR7 let `T[0]` stand for `T` (WX25-WX28). RP01 and RP02 are round 13's own: a bare
+    `read`, whose `REPLY` only `_written` names. Each reports under every setting: where no
+    parent runs the payload -- dash under `-e`, which refuses `read 'T[0]'` and a bare `read`,
+    and bash 3.2 and dash under `-e`, which refuse `unset 'T[0]'` of a name that holds no array
+    -- it is the carry's price, as round 12's rows are."""
+
+    GATE = (
+        ('SX41', '11111111', '@G@\nT=/dev/null\ng() { T=@P@; }\nh() {\nlocal T=/dev/null\ng\nlocal T=/dev/null\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\n}\nh'),
+        ('WX25', '11111101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand read \'T[0]\' < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WX27', '11100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand unset \'T[0]\'\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('RP01', '11111101', '@G@\necho /dev/null > rf\nREPLY=/dev/null\ng() { REPLY=@P@; }\ng\nread -r < rf\ng\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\nsh "$REPLY"'),
+        ('RP02', '11111101', '@G@\necho /dev/null > rf\nREPLY=/dev/null\ng() { REPLY=@P@; }\ng\ncommand read -r < rf\ng\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\nsh "$REPLY"'),
+    )
+
+    def test_each_reports_under_every_setting(self):
+        for name, truth, row in self.GATE:
+            for shell, parents in TestTheRoundTenSeatsRows.PARENTS:
+                with self.subTest(row=name, shell=shell, runs=any(truth[p] == "1" for p in parents)):
+                    self.assertTrue(reported(TestTheRoundElevenSeatsRows.seat(row), shell))
+
+
+class TestASubshellBodyByTheTokenAfterItsHeader(unittest.TestCase):
+    """PR #2855 round 9, F2: round 8 read a body as a subshell where its header's stage opened a
+    `(` and no `{` stood among its first three words, so `f() ( { T=P; } )` and `f() ( echo { ;
+    T=P )` were carried, an over-report. A body is a subshell where that `(` is followed by no
+    structural `{` (`_function_syntax`), or outlives the body's `}`: the reader keeps no place for
+    a `(`, so its depth says which came first (`workflow_called._subshell`). Rows are the round-8
+    seat's (SB100, SX01-SX17), truth over 8 parents."""
+
+    NONE_RUN = (  # SB100, SX01, SX02, SX04, SX05, SX06, SX09; and SX10, a `{` fourth
+        'T=/dev/null; f() ( { T=@P@; } ); f; sh "$T"',
+        'T=/dev/null; f() ( echo { ; T=@P@ ); f; sh "$T"',
+        'T=/dev/null; f() ( { T=@P@; }; : ); f; sh "$T"',
+        'T=/dev/null; f() ( : { ; T=@P@ ); f; sh "$T"',
+        'T=/dev/null; f ( ) ( { T=@P@; } ); f; sh "$T"',
+        'T=/dev/null; function f ( { T=@P@; } ); f; sh "$T"',
+        'T=/dev/null; f() ( { T=@P@; } ); g() { f; }; g; sh "$T"',
+        'T=/dev/null; f() ( printf %s { ; T=@P@ ); f; sh "$T"')
+    ALL_RUN = (  # SX11, SX12, SX14, SX17: brace bodies, a `{` word or a subshell first
+        'T=/dev/null; f() { { T=@P@; }; }; f; sh "$T"',
+        'T=/dev/null; f() { echo { ; T=@P@; }; f; sh "$T"',
+        'T=/dev/null; f() { ( : ) ; T=@P@; }; f; sh "$T"',
+        'T=/dev/null; f ( ) { T=@P@; }; f; sh "$T"',
+        'T=/dev/null; f() { (T=x; U=y); T=@P@; }; f; sh "$T"')
+    BASH_RUN = (  # SX13, SX15, SX16: `function` headers dash rejects
+        'T=/dev/null; function f { ( :; ); T=@P@; }; f; sh "$T"',
+        'T=/dev/null; function f () { T=@P@; }; f; sh "$T"',
+        'T=/dev/null; function f ( ) { T=@P@; }; f; sh "$T"')
+
+    def test_a_subshell_body_reaches_nothing(self):
+        for row in self.NONE_RUN:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(filled(row), shell))
+
+    def test_a_brace_body_is_carried(self):
+        for rows, shells in ((self.ALL_RUN, SHELLS), (self.BASH_RUN, (None, "bash", "bash {0}"))):
+            for row in rows:
+                for shell in shells:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertTrue(reported(filled(row), shell))
+
+
+class TestEveryHeaderSpellingTheSeatAskedFor(unittest.TestCase):
+    """The #2855 seat's round-1 note 3: pins for `f( ){`, a tab before `{`, `function f(){`,
+    and a header after `else`, `elif`, `while`, `until`, `!`, `&&`, `||` or `;` -- each a
+    definition every shell takes, whose call runs the pipe."""
+
+    ROWS = ("f( ){ @C@; }\nf", "f ()\t{ @C@; }\nf", "function f(){ @C@; }\nf",
+            "if false; then :; else f(){ @C@; }; fi\nf", "if false; then :; elif f() { @C@; }; then :; fi\nf",
+            "while f(){ @C@; }; do break; done\nf", "until f(){ @C@; }; do :; done\nf",
+            "! f() { @C@; }\nf", "true && f(){ @C@; }\nf", "false || f() { @C@; }\nf", ":; f(){ @C@; }\nf")
+
+    def test_each_is_reported(self):
+        for row in self.ROWS:
+            with self.subTest(row=row):
+                self.assertTrue(reported(filled(row, check=PIPE)))
 
 
 class TestAUsePipedAfterACaseCompound(unittest.TestCase):
@@ -2790,6 +3979,46 @@ class TestALiveExpansionBesideAnEscape(unittest.TestCase):
                 found = defects(script)
                 self.assertEqual(1, len(found), found)
                 self.assertIn("in this guard's conservative reading", found[0][1])
+
+
+class TestAFunctionHeaderGluedOrAfterAKeyword(unittest.TestCase):
+    """#2664 (MEDIUM): `f(){ curl … | sh; }` ⏎ `f` read CLEAN while every shell runs the pipe
+    -- a header written `f(){`, `f ( ) {`, or after `then`/`do`/`{` was read as a command and
+    the body's first command as its arguments. Bash evidence per row: each step from its own
+    file under bash 5.2.21 and 3.2.57 with `-e` and `-eo pipefail`, dash with `-e`, and 5.2.21
+    with `sh` = dash (b5 b3 dash gh), a mark-first `curl` stub whose payload marks when it
+    RUNS."""
+
+    STREAM = "hands %si.sh straight to `sh`" % URL
+
+    def test_the_six_rows_of_the_issue_are_reported(self):
+        # FR FR FR FR each; `main` CLEAN (the fail-open).
+        for script in ("f(){ %s; }\nf\n" % PIPE, "f ( ) { %s; }\nf\n" % PIPE,
+                       "if true; then f() { %s; }; fi\nf\n" % PIPE,
+                       "{ f() { %s; }; }\nf\n" % PIPE,
+                       "for i in 1; do f() { %s; }; done\nf\n" % PIPE):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(self.STREAM), found)
+        found = defects("g(){ %s; chmod +x tool; ./tool; }\ng\n" % GET.rstrip("\n"))
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("fetches %stool -> tool" % URL), found)
+
+    def test_the_controls_read_as_they_did(self):
+        # Reported on `main` too (FR x4; `function` is bash's, dash refuses it: -- rc2).
+        for script in ("f() { %s; }\nf\n" % PIPE, "function f { %s; }\nf\n" % PIPE,
+                       "f() ( %s; )\nf\n" % PIPE, "f()\n{ %s; }\nf\n" % PIPE,
+                       "install(){\n%s\n}\ninstall\n" % PIPE):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertTrue(found[0][1].startswith(self.STREAM), found)
+        # CLEAN: a body that runs nothing fetched (F- x4, -- x4).
+        for script in ("f(){ echo hi; }\nf\ncurl -fsSL %si.sh -o x.sh\n" % URL,
+                       "f ( ) { echo hi; }\nf\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], defects(script))
 
 
 class TestAShellsSoleSubstitutionOperand(unittest.TestCase):

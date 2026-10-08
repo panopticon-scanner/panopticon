@@ -174,9 +174,10 @@ groups:
       # whole directories, so it grew there without anyone deciding to, and the
       # next adapter or adapter test would have reddened the cap guard for
       # whoever added it. Fourth `ToolAdapters` layer over the surface every
-      # adapter is written against: the base class, the SARIF normalization and
-      # prefix registry, the egress rule, the `ADAPTERS` registry in the package
-      # marker, and the contract tests that hold all of them to it.
+      # adapter is written against: the shared inert-rendering policy, the base
+      # class, the SARIF normalization and prefix registry, the egress rule, the
+      # `ADAPTERS` registry in the package marker, and the contract tests that
+      # hold all of them to it.
       # `Integration` keeps the scanner adapters, their per-tool and
       # per-language tests, and `tests/tools/helpers.py`, the harness those
       # tests share. `tests/tools/git_repo.py` sits here only because it lives
@@ -187,6 +188,7 @@ groups:
       # them. Same move as #2233, which split `Image` out of `Core` one file
       # under the cap.
       match:
+      - skill/scripts/inert.py
       - skill/scripts/tools/base.py
       - skill/scripts/tools/sarif_utils.py
       - skill/scripts/tools/legacy_sarif.py
@@ -659,9 +661,11 @@ groups:
       - scripts/workflow_stdin.py
       - scripts/workflow_uses.py
       - scripts/workflow_values.py
+      - scripts/workflow_called.py
       - scripts/workflow_annotate.py
       tests:
       - tests/test_workflow_guard.py
+      - tests/test_workflow_called.py
       - tests/test_workflow_guard_reader_forms.py
       - tests/test_workflow_forms_regressions.py
       - tests/test_workflow_printers.py

@@ -12,14 +12,180 @@ evidence exposed.
 - **X0X identifiers reject control and bidirectional code points (#2712).** The report schema now
   refuses C0 controls other than tab and line feed, DEL/C1 controls, Arabic Letter Mark, bidi
   marks, embeddings, overrides, and isolates in occurrence paths, candidate areas, and proposed
-  names. Honest emitter output remains valid, and `synthesize.py` keeps its ASCII-escaped,
-  multi-line JSON serialization.
+  names. The shared inert renderer now escapes those bidi controls in target-authored paths before
+  report emission, with one code-point policy shared by report and prompt rendering (#2118 items
+  1-2), so a hostile filename cannot suppress the X0X artifact. Honest emitter output remains
+  valid, and `synthesize.py` keeps its ASCII-escaped, multi-line JSON serialization.
 - **X0X candidate names and array order are reproducible (#2713).** Proposed names are now
   schema-pinned to kebab case and 60 characters, and the emitter applies that same bound. Candidate
   arrays sort by severity, domain, proposed name, and cluster key; equal-severity cluster leads use
   a stable finding fingerprint, while occurrences and CWE identifiers receive canonical orders.
   Reordering the input findings therefore leaves the emitted candidate array unchanged, and
   `generated_at` remains optional.
+- **Workflow guard reads a function header in the spellings bash takes at a statement's head
+  (#2664, #2608; #2785).** `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after
+  `then`, `do` or an opened `{` ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN:
+  the reader knew a header only as `f()` at a statement's start, so `f(){` was one command word,
+  `f ( )` a subshell, and `then f() {` the command `f` -- the body's first command on the
+  header's line became that header's argument, and the call ran a function the guard had no body
+  for. The splitter now reads `()` and `( )` after a name wherever bash does, ends a group's `{`
+  before a header on its line as its own statement, and keeps `function NAME ()` to the name.
+  Three readings move with it, each to bash's: a block nested in a one-line function's body
+  inside a forked group no longer closes that body, a group's `{` before a header is the
+  group's, and `function f ( )` defines `f`. 60 cells go CLEAN -> REPORT with no shell running
+  the payload -- a function defined in one of the new spellings and never called, defined in a
+  branch that does not run, backgrounded, after `unset -f` or redefined to `:` -- each as `main`
+  already reports the `f() {` spelling, fail-closed. Still CLEAN while the shells run them
+  (limits, named in the PR): a body that is a `case`, a function defined inside a function body
+  or a `case` arm or a `( … )` subshell, `time f() {`, `function g { f() {`, and the names
+  `a.b`, `a:b` and `1f`. Two fix rounds closed what the seats found. A negated group holding a
+  header (`! { f() { CHECK; }; f; }` ⏎ USE) had its `!` stranded on the `{`, so the check read
+  as gated: the `!` is now carried onto every statement the group holds, as bash runs a negated
+  compound with errexit off, placed past the keywords that open the statement so `then`, `do`,
+  `case` and an arm are still read first -- which also closes the own-line `! {` ⏎ `CHECK` ⏎ `}`
+  form `main` missed; `! !` is read as one negation (bash XORs: fail-closed), and a
+  short-circuit inside a negated group, a call in a branch that does not run or in a child, a
+  call after `unset -f` and a prefix assignment are read under the `!` too (214 hunt cells and
+  36 harness cells on the round-2 rows, 110 more on the round-3 families: 324 fail-closed cells
+  in all). A called function's assignment (`T=/dev/null; f(){ :; T=tool; }; f; sh "$T"`) never
+  reached the use, `main` reporting it only because the misread header made it the step's own
+  statement; carrying the body's value out surely read past what the shells do (a `return` the
+  body takes, a wrapper that runs no function, a later redefinition, a stand-in, a `declare -g`
+  bash 3.2 and dash lack), so a call now adds what the body may assign as UNSURE candidates and
+  keeps the caller's own (`scripts/workflow_called.py`; every definition before the call, and
+  the functions the body calls, eight deep; `local` dies with the call, a subshell body reaches
+  nothing (one whose first command opens with a `{` word too: `f() ( { T=x; } )`, `f() ( echo {
+  ; T=x )`), and a call the step backgrounds (`f &`) carries nothing back -- a one-line `( f )`
+  still does, fail-closed; `time` -- one `-p`, then one `--`, before a group, a `!`, an
+  assignment or an `if` -- and `eval` (one `--`) run the function, as bash 5.2.21 reads them
+  (bash 3.2.57 runs neither `time --` spelling, dash no `time` call at all: read as calls,
+  fail-closed); the arm of a one-line `case` is stepped past first; a function named like a
+  wrapper, `sudo() { … }; sudo x`, is the call bash makes of it, where `env f` with no `env`
+  function runs none; a body's call in a list it backgrounds, `g() { f & wait; }` or `g() { f &&
+  : & wait; }`, carries nothing, as at the top level; and a call site carries its bodies eight
+  times a step -- `static_values` rebuilds the table at each statement that reads it, so a site
+  is visited at each rebuild after it, and a memo of the carries, keyed on the state of the
+  names they read or set, grew past `main` where the step assigns the words a body spells (round
+  10) -- walking only the statements that may write, and every one where bash may write a name
+  the step does not read (`${X:=v}`, arithmetic, `let`), copying and merging back only the names
+  its bodies spell or set, and not at all where no body may write; a carry costs the statements
+  it walks and the names it copies, and one costing more than 128 counts as more than one, so a
+  site's carries cost 1,024 at most (round 11's walked a body's K statements eight times a site
+  where the body set K names: 3.9x `main` at K = 50, 5.7x at 3,200); where a body may set any
+  name (`eval`, `source`, a name taken from a value), a carry gives every other held name its
+  own stand-in, as `record` does, once a walk and then to the names changed since; past a site's
+  carries, each name its bodies may set holds the cap's stand-in on both sides, its word-lists
+  too, so `${A[1]}` reads it, and where a body may set any name every name the table holds does,
+  as the round-9 head had it -- each once a walk and then, at a later visit, those changed
+  since, as the walk writes them: a statement that may set any name sets its plain names too
+  (`export "$K=v" X=P` sets `X`), and a `read`, `unset` or `local` behind a wrapper (`command`,
+  `nohup`, `nice`, `env`, `timeout`, `stdbuf`, `setsid`, `flock`, `xargs`) the names it names,
+  as the walk's `_cleared` reads it through `shell_command.command` and takes the stand-in away
+  (round 11 missed that write, and the use read the step's own value while every shell ran the
+  payload: 195 cells in 53 rows of the round-11 seat's hunt, and 78 in 16 more, #2910's, that
+  every tree read CLEAN: a body that may set any name with a wrapped `read` between two calls),
+  so no name a carry sets escapes it; and a stand-in makes no list where the name held none,
+  sharing one read-only list, so the names a walk stands in leave the collector nothing to walk;
+  so a step reads within a constant factor of `main`'s time -- 1.01-1.34x on the forge, `main`
+  and the head interleaved in one process a size (the round-11 seat's `seat-cost18.py`, medians
+  of three, the collector on), over the round-11 seat's 20 shapes to K = 1,600 (200 where `main`
+  turns cubic, 800 for `wideassigned`) but for `calls`, and on the six that grew in round 11 to
+  3,200: `calls` falls from 3.88x at K = 50 to 1.12x as its carries outgrow `_WORK`; `evalwide`
+  and `evalbetween` fall from 1.17-1.19x to 1.08-1.09x, `srcwide` and `srcbetween` from
+  1.17-1.20x to 1.08-1.10x, and `wide` holds at 1.04-1.05x -- each within about 0.01 of flat
+  from K = 800, the order of the two trees in a process moving it that much (a process's second
+  run is its slower, the head's the more so: averaged over both orders `wide` reads 1.036, 1.043
+  and 1.042 at 800, 1,600 and 3,200) -- at a price: past the budget a use of a name the bodies
+  may set reads every download, where no shell runs one -- a call followed by more than eight
+  statements that read the table (`g() { eval :; }; g`, twelve `: "$T"`, `sh "$T"`: 30 cells in
+  6 rows of the round-10 seat's 3,701, MP07-MP09 and MV01, MV02 and MV06), a body that may set
+  any name in a loop changing a name twelve times (`. ./env.sh`: 15 in 3, the round-9 seat's
+  BU78-80), an array's whole-array use (`sh ${A[@]}`, `sh ${A[*]}`) at nine and twelve states
+  (90 cells in 18 rows of the round-10 seat's, BB120-BB128 and BB136-BB144: 54 under bash, and
+  36 under `sh`, which has no arrays; at eight, it reports as `main` reads the array written
+  out), and under `sh`, where dash has no arrays, an array's element (68 cells in 34 rows of the
+  round-9 seat's 2,903); within one read, no site in the round-8 seat's 2,667 rows is visited
+  past the budget (eight visits at most, in 2 rows), and none reads otherwise than the round-10
+  head reads it; at a price, round 12's, where a wrapped `read`, `unset` or `local` stands its
+  names in again though a wrapper that runs no builtin leaves them alone -- under `-e`, where
+  the failing wrapper stops the step (`nohup unset T`: 66 cells in 22 rows of the round-11
+  seat's hunt), and under `sh` an array, which dash lacks (6 in 3) -- and where a body's carry
+  costs more than 128, carried fewer than eight times a site, or never past 1,024, so every name
+  it may set holds the stand-in from its first call (none of the 4,095 rows of the two seats
+  reaches it: the dearest carry there costs 89); at a price too, now that a fresh carry reads
+  the plain names of a statement that may set any name: under `sh`, a carry through a bashism
+  dash rejects (`declare`, `typeset`, `printf -v`, `source`, an array: 60 cells in 30 rows of
+  the round-10 seat's), and a `readonly` name assigned again, which bash refuses (`readonly
+  "$K=v" X=P` twice: 20 in 4) -- and at a price besides: `T=P; f() { T=/dev/null; }; f; sh
+  "$T"`, and #2785's `g() { T=x; }; T=P; g; sh "$T"`, are reported though no shell runs `P`, as
+  are a never-run decoy in a called body (`if false; then T=P; fi`), an assignment a body makes
+  only in a subshell, a pipe stage, a background job or a child shell, read as the step's own
+  statement is (`( T=P )`, `( T=P; )`, `( :; T=P )`, `( T=P ) & wait`, `( T=P ) || :`, `if ( T=P
+  ); then`, `( ( T=P ) )` and `( T=P ); :`, their two-line spellings with them: 85 cells in 17
+  rows of the round-8 seat's 2,667; `{ T=P; } | cat`, `: | T=P`, `T=P & wait`, `{ T=P; } &
+  wait`, `eval '( T=P )'`, `bash -c 'T=P'` and `sh -c 'T=P'`: 55 in 11; and a subshell body on
+  its header's next line, `f()` ⏎ `( T=P )`, or after `function f()`: 10 in 2), a call after
+  `unset -f f`, `bash -c f` or `export -f f; bash -c f` (15 in 3), under `sh` a body whose
+  header dash rejects (`function f { …; }`, `function f () { …; }`: 29 cells in 17 rows), a call
+  in a `{ …; } &` group the body backgrounds, and under `sh` a call behind `&>`, `>&`, `&>>`,
+  `;&` or `;;&` (dash reads `&>` as `&` then `>`); and `eval -p f` or `eval -- -- f` reads as a
+  call of `f` (the guard's `eval` reader keeps the words not led by `-` as the program) though
+  bash rejects `-p` and dash runs `--` as a command. The sure carry is #2785's own PR. The value
+  table's candidate cap moves with it, in the values lane, on the coordinator's rulings (#2871):
+  every truncation keeps what it can beside the cap's stand-in -- a name its first eight
+  candidates (`workflow_values._update`), a word's or an argv's product its first 64 (`valued`,
+  `valued_argvs`), so an installer's honest OS-by-arch product written inline (`unzip
+  "tool-$V-$ARCH.zip"`, 3 x 3) reads CLEAN as on `main`, where stored in a name first or walked
+  by a `for` (`F="tool-$V-$ARCH.zip"; unzip "$F"`) the name holds nine and pays the name's price
+  (30 cells in 6 rows of the round-8 seat's) -- and a use holding the stand-in reads as every
+  download the step holds there, so it reports wherever an unverified download can reach it. A
+  write of the whole value or a sure `unset` ends it; a write of word 0 (`T=y`, which bash makes
+  `T[0]=y`) keeps it at the other keys; an array keeps its word-lists beside it; and the order
+  kept carries no safety. `main` held the stand-in alone, which a use reads as nothing, so a
+  payload anywhere among nine or more candidates now reports -- the round-4 seat's 7-arm `uname`
+  and `$RUNNER_OS` dispatchers with an OVERRIDE line after them, `main`'s own x20 rows, the
+  ninth candidate of #2871 (`for T in a b c d e f g h P`; seven conditional reassignments, then
+  `[ -z "$NOPE" ] && T=P`): true reports, every shell running the payload; the array rows report
+  under `sh` too, where dash has no arrays and runs nothing. The price, measured: a use of a
+  name with nine or more candidates reports where no shell runs a download -- 26 cells in 6 rows
+  of the round-6 seat's 1,823, 196 in 53 of the round-7 seat's 2,136 (`for T in a b c d e f g h
+  i; do :; done; sh "$T"`) -- as does a use of a product past 64 (65 cells in 13 rows of the
+  round-8 seat's hunt: PB107-PB118, PB120), and a step that spells the reserved name
+  `${__panopticon_past_the_cap}` itself reads it as the stand-in (15 cells in 3 rows). Against
+  the round-5 seat's 1,697 rows the head closes 1,804 cells `main` leaves CLEAN and adds 542
+  fail-closed ones (177 since the round-4 head, 68 since the round-5 head, 25 since the round-6
+  head); against the round-6 seat's 1,823, 2,055 and 596; against the round-7 seat's 2,136,
+  2,479 and 757 (35 since the round-7 head, which this one clears of 82: the products within
+  64); against the round-8 seat's 2,667, 3,282 and 1,104 (none since the round-8 head, which
+  this one clears of 35: subshell bodies whose first command opens with a `{` word); against the
+  round-9 seat's 2,903, 3,804 and 1,317 (83 since the round-9 head: the array stand-in's 68
+  under `sh` and MP07-MP09's 15, both priced above); against the round-10 seat's 3,701, 5,229
+  and 1,967 (125 since the round-10 head, the budget's price and the two above, which closes 360
+  the round-10 head left CLEAN while a shell ran the payload: a name only a statement that may
+  set any name sets, which its shared carry restored stale, and a body that may set any name
+  past the budget); against the round-11 seat's 394 hunt rows, 273 close (its B1's 195 and
+  #2910's 78) and 72 are added, round 12's price above; and none goes CLEAN where `main` reports
+  and a shell runs the payload (16 cells do where none runs). A text the table would build past
+  4,096 characters is still dropped, as on `main` (a limit, kept for a follow-up). Still CLEAN
+  while a shell runs the payload, each as on `main`: a `case` whose header shares a one-line
+  body's line (`g() { case x in x) f;; esac; }`) is not read as one; nor is a call made through
+  a value (`F=f; $F`), one in a `case` behind `time`, one a loop's body makes before its own
+  definition (`for …; do f; f() { … }; done`), one to a function the step names `eval` or `time`
+  (`eval() { … }; eval f`, and a bare `eval`; a bare `time` is read as the call), or one a
+  function makes of its own arguments (`sudo() { "$@"; }; sudo f`); an array past the cap loses
+  the stand-in at its other keys where a later `T[0]=y`, `read T`, `printf -v T`, `mapfile T`,
+  `unset 'T[0]'` or `( T= )` writes it, each still ending it; a body's `T=$1` holds no argument
+  of its call, its `T=$(…)` and `printf -v T` no value, and a body that sets `T=P` before its
+  `local T` is read as leaving `T` alone; a body whose only write is `${T:=…}` or `${T=…}`
+  (#2781), or a `command`-wrapped `read T`, is read as setting nothing, within the budget and
+  past it; and a check whose failure a subshell, a pipe, an `if` condition, `time` or `!` keeps
+  from stopping the step (`( { f() { CHECK; }; f; } )`, `{ …; CHECK; } | cat`) still clears the
+  download. And the header test at every `(` had joined and split the whole buffer before the
+  match, about x4 per doubling of one `(( … ))` statement, now computed only behind a match.
+  Still CLEAN as on `main` (#2928): a check in a group piped into another command inside a `bash
+  -ec` or `bash -s` child, the function form among them (`bash -ec '{ f() { CHECK; }; f; } |
+  cat; USE'` and its `bash -e -s` heredoc twin), which `main` since #2849 reports only by
+  failing closed on the `f()` header it misreads.
 - **Reviewer write safety separates the boundary from its transport (#1622).**
   `artifact_write_guard` now means reviewer-controlled artifact writes are impossible or confined.
   The static `self_write_delivery` fact is true only for Claude and Kimi, and a write-capable role

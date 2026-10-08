@@ -25,6 +25,7 @@ import shell_heredoc
 import shell_lex
 import shell_quote
 import shell_reader
+import shell_tokens
 
 
 def stage(script):
@@ -1090,6 +1091,50 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
             shell_reader.statements(script)
         self.assertLess(time.monotonic() - start, 10.0)
 
+    def test_a_statement_of_many_parentheses_reads_in_linear_time(self):
+        # #2664 fix round (B3): the function-header test at every `(` joined and split the
+        # whole buffer before `_HEADER` had matched, so one `(( 0 + (1) + … ))` statement
+        # grew about x4 per doubling (8,000 `(`: 1.6 s -> 6.3 s on the forge); the words are
+        # now computed only behind a match. The bound is loose (base: ~1.6 s there) so CI's
+        # shared runners, 6-9x slower, still pass; the pre-fix reading took over 40 s on them.
+        script = "(( 0" + "".join(" + (1)" for _ in range(8000)) + " ))\n"
+        start = time.monotonic()
+        shell_reader.statements(script)
+        self.assertLess(time.monotonic() - start, 20.0)
+
+    def test_a_negated_group_carries_its_bang_onto_every_statement_it_holds(self):
+        # #2664 fix round (B1): bash negates the GROUP's status and runs every command in a
+        # negated compound with errexit off, so each statement the group holds is read under
+        # the `!` -- the `{`-ends-its-statement step had stranded it on the `{` alone. The
+        # close is read bare, as `_closes` asks for it; a statement past the `}` is not negated.
+        # Round 13 (#2849's failure contexts on `main`, which read the group's `!` at its `{`):
+        # the `!` is a mark on the stage's first word that `negated` reads (`shell_tokens.bang`),
+        # not a `!` word -- every other reader sees each stage as bash wrote it.
+        def read(script):
+            return [([str(word) for word in stage.argv], shell_reader.negated(stage.argv))
+                    for st in shell_reader.statements(script) for stage in st.stages]
+        self.assertEqual([(["!", "{"], True), (["f()", "{", "CHECK"], True), (["}"], False),
+                          (["f"], True), (["}"], False), (["USE"], False)],
+                         read("! { f() { CHECK; }; f; }\nUSE\n"))
+        self.assertEqual([(["!", "{"], True), (["CHECK"], True), (["}"], False), (["USE"], False)],
+                         read("! {\nCHECK\n}\nUSE\n"))
+        # A `case` header inside the group is read bare and its arm stays first: the mark is the
+        # arm's stage's (round 2's place for the `!`), where the control-kind readers see no word.
+        argvs = read("! {\ncase x in\nx) CHECK;;\nesac\n}\n")
+        self.assertIn((["case", "x", "in"], False), argvs)
+        self.assertEqual((["CHECK"], True), next((argv[1:], under) for argv, under in argvs if "CHECK" in argv))
+        # Without the `!` nothing is carried.
+        self.assertEqual([(["{"], False), (["f()", "{", "CHECK"], False), (["}"], False), (["f"], False),
+                          (["}"], False), (["USE"], False)], read("{ f() { CHECK; }; f; }\nUSE\n"))
+        # The mark keeps the word it marks: a token keeps its own attributes and markers (a whole
+        # `${…}` word's reading), and a plain word becomes a token.
+        token = shell_tokens._Token("x", {"m": ("k", 1)})
+        token.span = 2
+        self.assertIs(token, shell_tokens.bang(token))
+        self.assertEqual((True, 2, {"m": ("k", 1)}), (token.negated, token.span, token.markers))
+        plain = shell_tokens.bang("y")
+        self.assertEqual(("y", True, {}), (plain, plain.negated, plain.markers))
+
     def test_a_heredoc_its_substitution_closes_over_is_read(self):
         # Bash 5.2 takes the body of a heredoc still pending when its `$(...)`
         # closes from the lines below -- a recovery it warns about, and one
@@ -1561,3 +1606,49 @@ class TestTheHeredocIndexIsOneImplementation(unittest.TestCase):
 
     def test_shell_lex_lines_is_shell_heredoc_lines(self):
         self.assertIs(shell_lex._Lines, shell_heredoc._Lines)
+
+
+class TestAFunctionHeaderInEverySpellingBashAccepts(unittest.TestCase):
+    """#2664: a header written `f(){`, `f ( ) {`, or after `then`/`do`/`{` was read as a
+    command and the body's first command, on the same line, as its arguments -- every shell
+    runs `f(){ curl … | sh; }` ⏎ `f` and the guard read it CLEAN. The splitter now reads the
+    parentheses as a header wherever the words before them are keywords, and parts a `{` glued
+    to it, so the body's first command is a command of its own."""
+
+    def first(self, script):
+        return [str(w) for w in shell_reader.statements(script)[0].stages[0].argv]
+
+    def test_the_header_and_the_body_part(self):
+        for script, argv in (("f(){ x; }", ["f()", "{", "x"]),
+                             ("f ( ) { x; }", ["f", "()", "{", "x"]),
+                             ("f  (  ) { x; }", ["f", "()", "{", "x"]),
+                             ("install(){\nx\n}\n", ["install()", "{"])):
+            with self.subTest(script=script):
+                self.assertEqual(argv, self.first(script))
+        # After `then` and `do` the header is the second statement's; after a group's `{` it
+        # is too, the `{` a statement of its own as on a line of its own, so the first brace
+        # after the name is the body's (`workflow_function_calls._function_scope`).
+        for script, argv in (("if true; then f() { x; }; fi", ["then", "f()", "{", "x"]),
+                             ("for i in 1; do f(){ x; }; done", ["do", "f()", "{", "x"]),
+                             ("{ f() { x; }; }", ["f()", "{", "x"]),
+                             ("{ function f() { x; }; }", ["function", "f", "{", "x"])):
+            with self.subTest(script=script):
+                self.assertEqual(argv, [str(w) for w in
+                                        shell_reader.statements(script)[1].stages[0].argv])
+
+    def test_the_spellings_already_read_are_as_they_were(self):
+        for script, argv in (("f() { x; }", ["f()", "{", "x"]),
+                             ("f () { x; }", ["f", "()", "{", "x"]),
+                             ("function f { x; }", ["function", "f", "{", "x"]),
+                             ("f() ( x; )", ["f()", "x"]),
+                             ("f()\n{ x; }", ["f()"])):
+            with self.subTest(script=script):
+                self.assertEqual(argv, self.first(script))
+
+    def test_parentheses_that_are_no_header_stay_a_subshell(self):
+        # A name after a non-keyword word opens a subshell as before, and `( )` after none.
+        for script in ("echo f ( ) { x; }", "x=1 f() { x; }"):
+            with self.subTest(script=script):
+                stage = shell_reader.statements(script)[0].stages[0]
+                self.assertEqual(1, stage.group_open, stage)
+        self.assertEqual(["x"], [str(w) for w in shell_reader.statements("( x )")[0].stages[0].argv])

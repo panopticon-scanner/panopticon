@@ -344,11 +344,11 @@ class TestInertText(unittest.TestCase):
     stayed, and it lives here because both finding builders do.
     """
 
-    HAZARDS = tuple(chr(o) for o in
-                    list(range(0x00, 0x20)) + [0x7f]
-                    + list(range(0x80, 0xa0)) + [0x2028, 0x2029])
+    # #2118 item 2: production owns the set. The old hand-copy let production
+    # widen without the equality and rendering pins walking the new points.
+    HAZARDS = tuple(chr(o) for o in sorted(base.INERT_ESCAPE_CODE_POINTS))
 
-    def test_the_escape_covers_c0_del_c1_and_the_line_separators(self):
+    def test_the_escape_covers_controls_bidi_and_line_separators(self):
         for ch in self.HAZARDS:
             with self.subTest(codepoint=hex(ord(ch))):
                 out = base.inert_text("a%sb" % ch)
