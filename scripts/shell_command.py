@@ -7,13 +7,15 @@ a statement may open with, the shells and the default or optional `$` words
 that may stand for one (#2337, #2472), and the one walk that strips them all
 (`_command_result`) to answer `command`, `command_as_written`,
 `unresolved_wrapper`, `wrapper_words`, `negated` and `conditional` -- and
-`command_run`, the command a `find` runs past them (#2881 round 4). The reader
+`reads_held` and `find_action`, the commands a `find` runs past them (#2881
+round 4, #2918). The reader
 imports every name back under its own, so nothing that read
 `shell_reader.command` or `shell_reader.KEYWORDS` moved; this module imports
 nothing from the reader, so the layers still run one way.
 
 Stdlib only, like everything under it.
 """
+import itertools
 import os
 import re
 
@@ -310,18 +312,25 @@ def folds(unsure):
     leaves every `Unsure` statement out where `unsure()` then finds one -- a command word bash may
     expand to nothing read as its W, as `main` reads it; then, where `_command_result` read one with
     both halves, those folds again with it read empty, so the guard REPORTs where either half runs
-    (#2856 round 13, the round-13 ruling: the union, no half ranked)."""
+    (#2856 round 13, the round-13 ruling: the union, no half ranked). Each reads every `find`'s first
+    action where the guard asks how a stage uses a file, then, while one held another, its next
+    (`find_action`), so the guard REPORTs where any action uses it (#2918)."""
     _HALVES.update(empty=False, both=False)
     try:
         for empty in (False, True):
             _HALVES["empty"] = empty
-            yield False
-            if unsure():
-                yield True
+            for at in itertools.count():
+                _ACTIONS.update(at=at, more=False)
+                yield False
+                if unsure():
+                    yield True
+                if not _ACTIONS["more"]:
+                    break
             if not _HALVES["both"]:
                 return
     finally:
         _HALVES["empty"] = False
+        _ACTIONS.update(at=0, more=False)
 
 
 # The checksum tools a check is credited with (`workflow_checks.CHECKSUM_TOOLS`, pinned equal by test).
@@ -357,27 +366,85 @@ def command_as_written(argv):
     return _command_result(argv, optional=False)[0]
 
 
-# The tests after which `find` runs a command of its own on what it walks, in the order
-# `workflow_operands.described` tries them (its `_FIND_EXEC`, pinned equal by test).
+# The tests after which `find` runs a command of its own on what it walks, each read (`_actions`;
+# #2881 round 4, every one #2918) -- `workflow_operands.described` reads them here.
 _FIND_EXEC = ("-exec", "-execdir", "-ok", "-okdir")
+# The distinct actions of one `find` the guard reads; one with more reads as a command it cannot
+# read (`_unread`), so neither the scan nor the folds grow with the words (#2918).
+_FIND_CAP = 8
+# The action of each `find` a fold reads where the guard asks how a stage uses a file
+# (`find_action`), and whether one held another: `folds` reads each of them (#2918).
+_ACTIONS = {"at": 0, "more": False}
 
 
-def command_run(argv):
-    """`command(argv)`, or where that is a `find` running a command of its own, that command: the
-    words after the first of `_FIND_EXEC` it holds, `{}`, `;` and `+` dropped, as `use()` reads them
-    through `described` (`find /dev/null -exec sh /dev/fd/3 \\;`, #2881 round 4)."""
+def _actions(argv):
+    """The distinct commands a `find` may run, `argv` its command, at most one more than `_FIND_CAP`
+    (#2918): the words after each of `_FIND_EXEC` it holds -- in any order, past any test or
+    operator, and where a test's operand spells one too (`-name -exec`), so a word read as one
+    fails closed -- to its `;`, or to a `+` right after `{}` (`-exec true {} + -exec sh …`)."""
+    found: dict[tuple, None] = {}
+    if not argv or os.path.basename(argv[0]) != "find":
+        return []
+    for at, word in enumerate(argv):
+        if at and word in _FIND_EXEC and len(found) <= _FIND_CAP:
+            end = next((end for end in range(at + 1, len(argv)) if argv[end] == ";" or (
+                argv[end] == "+" and end > at + 1 and argv[end - 1] == "{}")), len(argv))
+            found.setdefault(tuple(argv[at + 1:end]))
+    return [list(words) for words in found]
+
+
+def _reader(argv):
+    """Whether a command reads what a descriptor holds open (#2881): an interpreter -- not a check,
+    credited by its basename (round 5) -- or a command word the step's values decide (`$SH`, not
+    `$X/sha256sum`)."""
+    name = os.path.basename(argv[0])
+    return name not in _CHECKERS and (dynamic(argv[0], has_substitution) or name in (
+        *_SHELLS, *_INTERPRETERS, "eval", "source", "."))
+
+
+def reads_held(argv):
+    """Whether the command a stage runs reads what a descriptor holds open (`_reader`) -- where that
+    is a `find`, whether any command its actions run does, its wrappers stripped (round 4: the
+    first alone, `find /dev/null -exec sh /dev/fd/3 \\;`; every one, #2918)."""
     argv = command(argv)
-    for test in _FIND_EXEC:
-        if argv and os.path.basename(argv[0]) == "find" and test in argv:
-            if inner := [word for word in argv[argv.index(test) + 1:] if word not in ("{}", ";", "+")]:
-                return inner
-    return argv
+    return any(_reader(inner) for inner in ([command(words) for words in _actions(argv)] or [argv]) if inner)
+
+
+def find_action(argv):
+    """The command an action of a `find` runs, `argv` its command, as `use()` reads it through
+    `workflow_operands.described` -- its wrappers stripped -- or None: in each fold
+    the next, so every one is read where the guard asks how the stage uses a file (`folds`, #2918);
+    past `_FIND_CAP` the first alone, the `find` read as a command the guard cannot read (`_unread`)."""
+    actions = _actions(argv)
+    if not actions:
+        return None
+    if len(actions) <= _FIND_CAP:
+        _ACTIONS["more"] = _ACTIONS["more"] or len(actions) > _ACTIONS["at"] + 1
+    return command(actions[min(_ACTIONS["at"], len(actions) - 1)])
+
+
+def _unread(argv):
+    """Why a command a `find` runs cannot be read, `argv` its command, or None (#2918): more actions
+    than `_FIND_CAP`, a reason its wrappers give (`-exec sudo $X …`), or a command word bash or
+    `find` decides, as behind a wrapper -- a `$` word, a substitution, or `{}`, each path it walks
+    (`find /usr/bin/sh -exec {} …`)."""
+    actions = _actions(argv)
+    if len(actions) > _FIND_CAP:
+        return "`find` holds more than %d actions" % _FIND_CAP
+    for inner, why, _heads in map(_command_result, actions):
+        if why:
+            return "a command `find` runs: %s" % why
+        if inner and (dynamic(inner[0], has_substitution) or "{}" in inner[0]):
+            return "`find` runs `%s`, a command word it or bash decides as it runs" % readable(inner[0])
+    return None
 
 
 def unresolved_wrapper(argv):
     """Why a wrapper at this command's head -- or, with none, a pattern bash
-    expands where the command starts (#2294) -- cannot be resolved, if any."""
-    return _command_result(argv)[1]
+    expands where the command starts (#2294) -- cannot be resolved, if any;
+    or why a command a `find` there runs cannot be (`_unread`, #2918)."""
+    argv, reason, _heads = _command_result(argv)
+    return reason or _unread(argv)
 
 
 def wrapper_words(argv):
