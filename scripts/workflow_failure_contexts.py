@@ -242,8 +242,11 @@ class _GroupFrame:
         self.context = context
         self.last_statement = None
         self.previous = previous
-        self.reach_barrier = (bool(previous and previous.reach_barrier)
-                              or _is_negated_context(context) or conditional(context))
+        self.reach_barrier = (previous.reach_barrier if previous else None)
+        if self.reach_barrier is None and _is_negated_context(context):
+            self.reach_barrier = "negated"
+        if self.reach_barrier is None and conditional(context):
+            self.reach_barrier = "conditional"
 
 
 class _StageShape:
@@ -278,7 +281,9 @@ def _move_case_depth(cases, change, count=1):
 
 def _coproc_prefix(words):
     """Whether the command-position prefix starts an asynchronous coprocess."""
-    return next((word for word in words if word not in shell_reader.KEYWORDS), None) == "coproc"
+    return next((word for word in words
+                 if word not in shell_reader.KEYWORDS
+                 and not shell_reader.is_arm(word)), None) == "coproc"
 
 
 def _body_words(stage):
@@ -321,7 +326,6 @@ def _stage_shape(stage, cases):
     head = True
     at = 0
     prefix = 0
-    segment = 0
     arm_closes = 0
 
     # A close for a group opened in the active arm precedes this stage's words;
@@ -354,12 +358,11 @@ def _stage_shape(stage, cases):
         if not head:
             if word in _COMMAND_RESTARTS:
                 prefix = at
-                segment = at
                 head = True
             at += 1
             continue
         if word == "{":
-            braces.append((at, "open", words[segment:at + 1]))
+            braces.append((at, "open", words[:at + 1]))
             _move_case_depth(cases, 1)
             at += 1
             continue
@@ -419,9 +422,8 @@ def _stage_shape(stage, cases):
     _move_case_depth(cases, 1, hidden_opens)
     before = [(event, context) for position, event, context in braces if position < prefix]
     after = [(event, context) for position, event, context in braces if position >= prefix]
-    hidden_prefix = words[prefix:] if prefix and before else stage.argv
     events = (before + after + [("close", None)] * remaining_closes
-              + [("open", hidden_prefix)] * hidden_opens)
+              + [("open", stage.argv)] * hidden_opens)
     return _StageShape(events, plain_arm or any(case.plain for case in cases),
                        leading_arm, has_command, ambiguous)
 
@@ -440,26 +442,22 @@ class _StatementAnalysis:
         for index, statement in enumerate(stmts):
             self.enclosing.append(top)
             plain_arm = False
-            barrier = bool(top and top.reach_barrier)
+            barrier = top.reach_barrier if top is not None else None
             for stage in statement.stages:
                 shape = _stage_shape(stage, cases)
                 if shape.ambiguous:
-                    barrier = True
-                    if top is not None:
-                        top.reach_barrier = True
+                    barrier = barrier or "ambiguous"
                 self.leading_arms[id(stage)] = (stage, shape.leading_arm)
                 plain_arm = plain_arm or shape.plain_arm
                 if shape.has_command and top is not None:
                     self._carry(top, index, index, stmts)
+                affected = top
                 for event, prefix in shape.events:
                     if event == "close":
                         if top is not None:
                             closed, top = top, top.previous
                             closed.closed = True
                             closed.context.through = closed.carrier
-                            if top is not None and closed.carrier is not None:
-                                self._carry(top, closed.carrier_start,
-                                            index, stmts, closed.carrier)
                         continue
                     context = _EnclosingContext(
                         _failure_context(prefix, shape.plain_arm, stage,
@@ -468,9 +466,13 @@ class _StatementAnalysis:
                     )
                     self.opened.setdefault(id(stage), []).append((stage, context))
                     top = _GroupFrame(context, top)
-                    if shape.ambiguous:
-                        top.reach_barrier = True
-                    barrier = barrier or top.reach_barrier
+                    affected = top
+                # A reader-hidden pair belongs to the innermost frame opened by
+                # this stage.  With no opener, it belongs to the frame already
+                # active around the stage.  Marking every opened/enclosing frame
+                # leaks the conservative fallback into sibling lists.
+                if shape.ambiguous and affected is not None:
+                    affected.reach_barrier = affected.reach_barrier or "ambiguous"
                 if shape.has_command and top is not None:
                     self._carry(top, index, index, stmts)
             self.plain_arms.append(plain_arm)
@@ -487,6 +489,10 @@ class _StatementAnalysis:
     def blocks_reach(self, index):
         """Whether this list must fall back from a child-local reach."""
         return index < len(self.reach_barriers) and self.reach_barriers[index]
+
+    def reach_barrier(self, index):
+        """The structural reason this list falls back, if any."""
+        return self.reach_barriers[index] if index < len(self.reach_barriers) else None
 
     def reach_barrier_end(self, index):
         """Last statement in this conservative fallback's structural span."""
@@ -528,20 +534,13 @@ def _inside_unmarked_case(stmts, index, analysis=None):
 
 def _enclosing_failure_contexts(stmts, index, analysis=None):
     """Failure prefixes on structural groups enclosing this statement."""
-    # A proved failure immediately after this command stops the same `&&`
-    # chain before any following payload.  Keep only an enclosing group that
-    # also carries that failure: its inversion can still make an outer use run.
-    known_after = (index + 1 < len(stmts) and stmts[index].separator == "&&"
-                   and _known_failure(stmts[index + 1]))
     analysis = statement_analysis(stmts) if analysis is None else analysis
     top = analysis.enclosing[index] if index < len(analysis.enclosing) else None
     contexts = []
     while top is not None:
         carries = (top.carrier_start is not None
                    and top.carrier_start <= index <= top.carrier)
-        if ((not top.closed or carries)
-                and (not known_after or top.carrier is not None
-                     and top.carrier >= index + 1)):
+        if not top.closed or carries:
             contexts.append(top.context)
         top = top.previous
     contexts.reverse()

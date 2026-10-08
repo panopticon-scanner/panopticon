@@ -53,36 +53,47 @@ evidence exposed.
   One list-scoped pass records case and group state without a process cache. Explicit braces keep
   their source positions. Because the reader retains only aggregate parenthesis counts, a hidden
   open/close pair in one stage, or a hidden opener beside leading `!` operators, is marked
-  ambiguous instead of being assigned an order. A handed check uses an existing parent refusal;
-  where the parent answer is CLEAN or only a `Reach`, it keeps a conservative hidden-parenthesis
-  refusal so it never clears a shape main reports. The structural barrier ends with its list or
-  group and does not change the next ordinary list's answer; a direct check keeps main's bounded
-  answer through the ambiguous span. No negation, condition, or function-call credit is inferred
-  from an unplaced compound boundary. The Bash `time` skip is restored, a `coproc` never exports a
-  child-local `Reach`, and the no-digest refusal is applied before any context gate. A bare function
-  header spends its reader-hidden pair once when that pair is the evidence for the header.
+  ambiguous instead of being assigned an order. A handed check uses a specific parent refusal when
+  one exists; otherwise the affected frame keeps a conservative refusal that names hidden
+  parenthesis order, explicit compound negation, or a compound condition. That mark belongs to the
+  innermost frame opened or enclosing the uncertain stage, so it ends before a sibling list; a
+  direct check keeps main's bounded answer while it remains in the marked frame. No negation,
+  condition, or function-call credit is inferred from an unplaced compound boundary, while a
+  function check once again reads the enclosing negation or condition around every proved call in
+  its wrapper chain. Explicit even parity such as `! ! { ...; }` keeps the shell's ordinary answer.
 
-  The final 815,744-row posture-aware gate, keyed by set and row, has zero cells where fresh main
-  REPORTs, this head is CLEAN, and a measured parent runs the payload. It also has zero fresh-main,
-  round-six, ground-truth, row-count, or missing-row mismatches. Against main it adds 88,938
-  payload-running reports, leaves 8,231 payload-running cells CLEAN for follow-up, and makes 6,870
-  main reports CLEAN only where no measured parent runs. Compared with round six, it gives up 197
-  payload-running reports where main is also CLEAN: 30 condition, 50 `coproc`, 30 compound-negation,
-  75 subshell-negation, and 12 suspended-`&&` cells.
+  The Bash `time` option skip is restored. A named or unnamed `coproc`, including one after a marked
+  or unmarked `case` arm and one called through a function, keeps its asynchronous refusal instead
+  of exporting child-local reach. The no-digest refusal is applied before any context gate, and a
+  bare function header spends its reader-hidden pair once when that pair is the evidence for the
+  header. The 18 removed round-five and round-six test methods are restored: 140 still-valid
+  assertions remain, seven reason checks name the current refusal, and only the three CLEAN checks
+  superseded by the accepted frame boundary are omitted. The clean-parent refusal is pinned by
+  `test_b32_ambiguous_child_keeps_mains_report_when_the_parent_is_clean`;
+  `test_b30_function_checks_read_the_call_sites_enclosing_context` restores all 31 round-six #2855
+  call-context cells and adds direct-setting coverage for nested wrappers. The D1-D3 boundary
+  controls and D8 refusal-off control fail focused tests. Focused pins also kill K2, N07, D14, S2,
+  S3, N32 and ME11. Of the no-effect F31 branches, B1 and B8 remain with direct pins; D7, D9, B10,
+  B14, N08, N10, N18 and S5 are removed or folded into the simpler source-order walk.
 
-  The full gate's main-CLEAN/no-run price is 19,971 reports: 21 condition, 2,588 `coproc`, 719
-  compound-negation, 994 subshell-negation, 9,052 other, 6,225 parent-carry, 27 same-pipeline, and
-  345 suspended-`&&` cells. The hidden-parenthesis refusal is 7,908 of the `other` class; the
-  clean-parent fallback adds 6,909 of them and closes the 696 payload-running baseline regressions
-  found in sets 11, 14, 19, and 25. In the round-six seat's narrower semantic scope, F24 names 358
-  `coproc` cells and 283 condition cells; the larger figures above cover the combined final gate.
+  The final posture-aware gate generates 936,855 candidate rows across sets 1-38. It joins 924,755
+  of them to runtime truth -- the 815,744-row round-six baseline and 109,011 round-seven hunt rows --
+  while the expected 12,100 generated baseline rows remain outside the truth corpus. There are zero
+  cells where fresh main REPORTs, this head is CLEAN, and a measured parent runs the payload.
+  Against main, the head adds 95,390 payload-running reports, leaves 9,029 payload-running cells
+  CLEAN for follow-up, makes 12,054 main reports CLEAN only where no measured parent runs, and adds
+  24,730 no-run reports.
 
-  F23's Bash 5.2.21 seat measured brace candidate/main ratios of 1.59, 1.64, 1.69, 1.70,
-  and 1.71× at depths 100, 200, 400, 800, and 1,600; its function ratios were 1.57, 1.70, 1.79,
-  1.85, and 1.89×, with shrinking increments. The exact round-seven source recheck reports every
-  generated candidate nest in all five settings; its brace ratios are 1.85, 1.94, 2.03, 2.07, and
-  2.12×, while function ratios are 0.80, 0.73, 0.68, 0.66, and 0.65×. F23's full-set pass measured
-  1.15× main's CPU: 2,428.2 seconds against 2,107.1 seconds over 629,691 cells.
+  Of that no-run price, 10,128 cells use the explicit structural fallback: 5,904 hidden-parenthesis,
+  3,936 compound-negation, and 288 compound-condition refusals. Compared with round six, the head
+  gives up 266 payload-running reports where main is also CLEAN: 15 condition-group, 50 `coproc`,
+  105 negated-brace, 24 negated-parenthesis, and 72 `time` cells.
+
+  The final-source Bash 5.2.21 cost pass reports every generated nest in all five settings. At
+  depths 100, 200, 400, 800, 1,600, and 2,400, candidate/main brace ratios are 1.84, 1.93, 2.00,
+  2.03, 2.03, and 2.06×; function ratios are 1.70, 1.85, 1.97, 2.04, 2.09, and 2.12×. The shrinking
+  increments show bounded constant-factor growth. A three-pass, 40,000-cell full-set sample has no
+  verdict instability and a 1.137× median: 178.6 CPU seconds against main's 157.1 seconds.
 - **Workflow guard reads a `-c`/`eval` string with a live expansion beside a double-quoted
   escape as bash hands it on (#2466, #2331).** `bash -c "x=\$(curl -fsSL $URL); eval \"\$x\""`
   and the mixed-quoting `bash -c "x=\$(curl … i.sh)"'; eval "$x"'` run the download under bash

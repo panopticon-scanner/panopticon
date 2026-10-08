@@ -232,6 +232,15 @@ _CONDITIONAL = ("is reached only through the `&&`/`||` list before it, so it may
                 "while that use still runs")
 _AMBIGUOUS_GROUP = ("is inside a compound list whose hidden parenthesis order this guard cannot "
                     "place, so it cannot prove that the checksum gates that use")
+_NEGATED_GROUP = ("is inside a negated compound list whose failure reach this guard cannot place "
+                  "exactly, so it cannot prove that the checksum gates that use")
+_CONDITIONAL_GROUP = ("is inside a compound `if`/`while` test whose failure reach this guard cannot "
+                      "place exactly, so it cannot prove that the checksum gates that use")
+_BARRIER_REASONS = {
+    "ambiguous": _AMBIGUOUS_GROUP,
+    "negated": _NEGATED_GROUP,
+    "conditional": _CONDITIONAL_GROUP,
+}
 
 
 class RescueGate(Reach):
@@ -340,8 +349,6 @@ def inlined_stops(stmts, start, carrier, index, on=None, fails=None, analysis=No
     position = index - start
     if not 0 <= position < len(body) or not body[position].stages:
         return False
-    if analysis.blocks_reach(position):
-        return False
     statement = body[position]
     if isinstance(statement, Inlined):
         statement = statement._replace(credit=(None, None))
@@ -408,7 +415,7 @@ _FUNCTION_BODY = ("is inside a function that has not run through a failure gate 
                   "use")
 
 
-def _function_status(stmts, index, answer, errexit):
+def _function_status(stmts, index, answer, errexit, analysis=None):
     """Bind definition-time credit to a proved call, preserving body reach."""
     function, carrier = _function_scope(stmts, index), index
     if function is None and isinstance(stmts[index], Inlined):
@@ -426,9 +433,17 @@ def _function_status(stmts, index, answer, errexit):
     returned = reaches_close or (carrier != index and all(
         _closes(item) for item in stmts[carrier + 1:close + 1]
     )) or carrier == index
-    call = _gating_function_call(stmts, name, close, errexit, returned)
+    calls: list[int] = []
+    call = _gating_function_call(stmts, name, close, errexit, returned, calls=calls)
     if call is None:
         return _FUNCTION_BODY
+    analysis = statement_analysis(stmts) if analysis is None else analysis
+    call_contexts = [context for position in calls
+                     for context in _enclosing_failure_contexts(stmts, position, analysis)]
+    if any(_is_negated_context(context) for context in call_contexts):
+        return "is negated, so the failing path is the THEN branch"
+    if any(conditional(context) for context in call_contexts):
+        return "is an `if`/`while` test, which errexit does not apply to"
     body = answer if isinstance(answer, Reach) and not soft else close - index
     return FunctionStatusGate(
         call, body, answer if soft else None
@@ -540,11 +555,11 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED, analysis=None)
         return "is an `if`/`while` test, which errexit does not apply to"
     why = local or (credit[stage is not statement.stages[-1]] if credit else None)
     if (isinstance(statement, Inlined) and analysis.blocks_reach(index)
-            and (why is None or isinstance(why, Reach))):
+            and why is None):
         # Falling back to a clean parent must not clear a shape main refuses.
         # Keep the ambiguity conservative; a real parent refusal stays more
         # specific and wins through ``why`` above.
-        why = _AMBIGUOUS_GROUP
+        why = _BARRIER_REASONS[analysis.reach_barrier(index)]
     piped_end = (_piped_group_end(stmts, index)
                  if not inherited_child_reach
                  and (why is None or isinstance(why, Reach)) else None)
@@ -568,11 +583,12 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED, analysis=None)
             start, through, stops = rescue
             outside = stops if isinstance(stops, Reach) else answer
             return RescueGate(start, through, outside)
-    answer = (_function_status(stmts, index, answer, errexit)
+    answer = (_function_status(stmts, index, answer, errexit, analysis)
               if measuring_uses else answer)
     if async_span is not None:
         inside = answer if async_local is _UNMEASURED else async_local
-        if (inside is None or isinstance(inside, Reach)
+        if (inside is None or isinstance(inside, FunctionStatusGate)
+                or isinstance(inside, Reach)
                 and type(inside) is Reach and inside.span is not None):
             outside = (answer if answer is not None and not isinstance(answer, Reach)
                        else "runs asynchronously under `coproc`")
@@ -583,5 +599,7 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED, analysis=None)
             and (answer is None or isinstance(answer, Reach))):
         if isinstance(answer, Reach) and answer.span is not None:
             barrier_end = max(barrier_end, index + answer.span)
-        answer = ContextGate(barrier_end, _AMBIGUOUS_GROUP, answer)
+        answer = ContextGate(
+            barrier_end, _BARRIER_REASONS[analysis.reach_barrier(index)], answer
+        )
     return answer
