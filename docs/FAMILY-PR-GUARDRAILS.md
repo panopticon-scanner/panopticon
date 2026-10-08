@@ -87,7 +87,12 @@ The seam's contract, in `skill/scripts/runners/base.py`:
   `command()` builds — that helper returns the flag plus the entry's
   `output_schema` only when the entry names one AND the path is one of the
   schemas published under `skill/reference/`, and `[]` otherwise, so you append
-  it unconditionally. **Check what your CLI wants after the flag — a path or
+  it unconditionally. A family whose provider enforces a stricter JSON-Schema
+  subset must also check the particular published schema before launch and omit
+  the flag for an incompatible schema while leaving the entry's schema in place
+  for receipt validation. Codex does this recursively for strict object shapes:
+  every property must be required and `additionalProperties` must be false
+  (#2923). **Check what your CLI wants after the flag — a path or
   the text.** codex's `--output-schema <FILE>` takes the path, which is what
   `schema_argv` hands over by default; claude's `--json-schema <schema>` takes
   the JSON itself and refuses a path (`--json-schema is not valid JSON`, exit
@@ -152,7 +157,9 @@ The seam's contract, in `skill/scripts/runners/base.py`:
   use `probe-output-schema` as an entry id, and make sure your `run_entry`
   builds the same argv for it as for the cell it was cloned from — a
   precondition refusal of your own reads as `unmeasured`, so the shape of your
-  flag simply never gets proven.
+  flag simply never gets proven. This launch proves the probe schema and the
+  flag's transport shape; it does not waive a family's per-production-schema
+  compatibility check.
 - `RunResult.stderr` (#1732) is what your CLI printed on stderr, and you fill
   it on a FAILED result only: `base.stderr_head(proc.stderr)` gives you the
   first `base.STDERR_HEAD` (200) characters, redacted before they are cut. The

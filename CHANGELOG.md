@@ -9,6 +9,13 @@ evidence exposed.
 
 - **Codex model profiles move to GPT-6 (#2872).** Pinned role defaults now use `gpt-6-luna` or
   `gpt-6-sol`; set `PANOPTICON_MODEL_<ROLE>` to pin another installed model.
+- **Codex headless probes reach panels without invocation-local workarounds (#2923).** The
+  registered, model-neutral `setup_scan` surface probe now keeps its intentional inherited model;
+  the localhost-only effective-surface probe has a 180-second bound, covering observed valid
+  46–90-second launches; and `codex exec --output-schema` is omitted for a published schema whose
+  object shapes are not strict-output compatible. The entry keeps that schema for controller-side
+  receipt validation, so an accepted toy probe can no longer fan a production-schema rejection out
+  across a matrix batch.
 - **Reviewer write safety separates the boundary from its transport (#1622).**
   `artifact_write_guard` now means reviewer-controlled artifact writes are impossible or confined.
   The static `self_write_delivery` fact is true only for Claude and Kimi, and a write-capable role

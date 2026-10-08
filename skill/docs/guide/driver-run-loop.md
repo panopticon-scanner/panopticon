@@ -215,6 +215,12 @@ anything, because that dispatch has a legitimate shell-less shape — but it is 
 one. The entry names `panopticon-setup-scan` when the posture proves enforcement, and when it does
 not, `driver setup` refuses unless the operator passes `--allow-unenforced`.
 
+The headless capability measurement inspects the registered `setup_scan` shell without inventing a
+model override, alongside the native setup fallback and the other registered roles. These launches
+use a 180-second local-probe bound: a valid inspection observed between 46 and 90 seconds remains a
+measurement, while exhausting the bound records the confinement check as unavailable with the
+timeout reason (#2923).
+
 Codex exposes only the bounded MCP tools `read_file`, `search`, and `list_files`, served by
 `skill/scripts/codex_read_tools.py`. Each launch binds `PANOPTICON_ENTRY_ID` to its row in the
 loop's `PANOPTICON_READ_SCOPE` file: exact `scope.files` and `scope.reads`, or descendants of
@@ -293,6 +299,12 @@ reviewer-selectable write path. The existing shared review gate still requires
 operator's explicit acceptance before supplying the flag; it records an acknowledgement, not proof
 of confinement. This is a shared-gate limitation, not a reason to claim proof the current probes do
 not establish.
+
+Codex's `--output-schema` accepts only strict object schemas: recursively, every property must also
+be required and each object must set `additionalProperties: false`. Before building an argv, the
+runner checks the published schema named by the entry. An incompatible schema stays on the entry for
+controller-side receipt validation but is omitted from the Codex argv, so the dedicated toy shape
+probe cannot falsely authorize a production schema that Codex rejects (#2923).
 
 Codex's JSONL envelope reports token usage but not measured dollars or the effective model identity.
 The runner therefore returns `cost_usd: null` and `model: null`; `model_binding` and `usage_ledger`

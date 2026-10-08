@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import shutil
@@ -111,6 +112,55 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
                 # file and lets the CLI be the one to choke on it.
                 self.assertEqual(["--x", os.path.realpath(bad)],
                                  schema_rules.schema_argv(("--x",), {"output_schema": bad}))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_strict_output_compatibility_checks_every_object_shape(self):
+        valid = {
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "nested": {
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "required": ["value"],
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["ok", "nested"],
+            "additionalProperties": False,
+        }
+        tmp = tempfile.mkdtemp()
+        try:
+            path = os.path.join(tmp, "strict.json")
+            with mock.patch.object(schema_rules.version, "reference_path", return_value=tmp):
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump(valid, fh)
+                self.assertEqual(os.path.realpath(path),
+                                 schema_rules.strict_output_schema(path))
+
+                mutations = []
+                top_required = copy.deepcopy(valid)
+                top_required["required"].remove("nested")
+                mutations.append(top_required)
+                nested_required = copy.deepcopy(valid)
+                nested_required["properties"]["nested"]["required"] = []
+                mutations.append(nested_required)
+                nested_open = copy.deepcopy(valid)
+                nested_open["properties"]["nested"].pop("additionalProperties")
+                mutations.append(nested_open)
+                no_properties = copy.deepcopy(valid)
+                no_properties["properties"]["nested"] = {"type": ["object", "null"]}
+                mutations.append(no_properties)
+                for body in mutations:
+                    with self.subTest(body=body):
+                        with open(path, "w", encoding="utf-8") as fh:
+                            json.dump(body, fh)
+                        self.assertIsNone(schema_rules.strict_output_schema(path))
+
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write("{not json")
+                self.assertIsNone(schema_rules.strict_output_schema(path))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

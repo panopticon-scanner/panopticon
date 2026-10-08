@@ -2,6 +2,7 @@ import copy
 import dataclasses
 import json
 import os
+import subprocess
 from unittest import mock
 
 import pytest
@@ -122,6 +123,19 @@ def test_unavailable_runtime_is_unknown_with_reason(probe, tmp_path):
     assert probe("codex", settings_path=str(tmp_path / "settings.json"), measure=lambda: [])[0] == hosts.UNKNOWN
 
 
+def test_a_surface_timeout_is_unknown_and_names_the_180_second_boundary(tmp_path):
+    """#2923 B: exhausted confinement is distinct from a 46--90s success."""
+    from scripts import codex_host
+
+    timeout = subprocess.TimeoutExpired(["codex", "exec"], codex_host.PROBE_TIMEOUT)
+    state, _by, detail = codex_probes.probe_codex_tool_policy(
+        "codex", settings_path=str(tmp_path / "settings.json"),
+        measure=mock.Mock(side_effect=timeout))
+    assert state == hosts.UNKNOWN
+    assert str(codex_host.PROBE_TIMEOUT) in detail
+    assert "timed out" in detail.lower()
+
+
 def test_missing_shell_is_refuted_without_invoking_runtime(tmp_path):
     with mock.patch("scripts.codex_host.inspect_surface", side_effect=AssertionError("no launch")) as inspector:
         state, _by, detail = codex_probes.probe_codex_tool_policy(
@@ -186,6 +200,34 @@ def test_probe_fixture_uses_real_emitter_but_injects_all_runtime_work(tmp_path):
     measured = codex_probes._codex_surfaces(str(registered), inspector=inspect)
     assert len(measured) == len(probes_common.DRIVER_ROLES) + 1
     assert len(set(seen)) == len(probes_common.DRIVER_ROLES) + 1
+
+
+def test_no_override_surface_measurement_builds_every_role_launch(tmp_path):
+    """#2923 A: the model-neutral registered setup probe reaches measurement."""
+    from scripts import codex_host
+
+    registered = tmp_path / "registered"
+    dispatch.emit_host_agents("codex", str(registered))
+    catalog = [{"slug": "gpt-6-luna"}, {"slug": "gpt-6-sol"}]
+
+    def inspect(entry, env, root, run_dir, **kwargs):
+        argv = codex_host.command(
+            entry, env, root, run_dir, registration_dir=kwargs["registration_dir"],
+            catalog=lambda: catalog)
+        try:
+            codex_host.validate_command(argv, env, root)
+        finally:
+            codex_host.cleanup_command(argv)
+        return copy.deepcopy(surfaces()[0][1])
+
+    measured = codex_probes._codex_surfaces(str(registered), inspector=inspect)
+    assert len(measured) == len(probes_common.DRIVER_ROLES) + 1
+    for probe in (codex_probes.probe_codex_tool_policy,
+                  codex_probes.probe_codex_read_scope):
+        state, _by, _detail = probe(
+            "codex", settings_path=str(tmp_path / "settings.json"),
+            measure=lambda: measured)
+        assert state == hosts.PROVEN
 
 
 def test_an_unplantable_hard_link_fixture_only_unproves_the_read_scope_row(tmp_path):

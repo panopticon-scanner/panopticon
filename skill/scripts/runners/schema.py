@@ -41,6 +41,48 @@ def published_schema(path):
     return real
 
 
+def strict_output_schema(path):
+    """Return a published schema only when every object is strict-output safe.
+
+    Codex/OpenAI strict structured output requires every key declared under
+    ``properties`` to also appear in ``required``, and requires object shapes
+    to close ``additionalProperties``.  Check that recursively before a
+    schema path reaches ``codex exec --output-schema``.  ``None`` is the
+    fail-safe answer: the controller still validates the returned reply
+    against the entry's schema, while the host launches without a flag it
+    would reject (#2923).
+    """
+    path = published_schema(path)
+    if path is None:
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            body = json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+    def compatible(node):
+        if isinstance(node, list):
+            return all(compatible(item) for item in node)
+        if not isinstance(node, dict):
+            return True
+        properties = node.get("properties")
+        kind = node.get("type")
+        if kind == "object" or (isinstance(kind, list) and "object" in kind) \
+                or properties is not None:
+            required = node.get("required")
+            if (not isinstance(properties, dict)
+                    or not isinstance(required, list)
+                    or any(not isinstance(name, str) for name in required)
+                    or len(required) != len(properties)
+                    or set(required) != set(properties)
+                    or node.get("additionalProperties") is not False):
+                return False
+        return all(compatible(value) for value in node.values())
+
+    return path if isinstance(body, dict) and compatible(body) else None
+
+
 # The largest token `inline_schema` will put on an argv. Linux caps a single
 # argv string at MAX_ARG_STRLEN (128 KiB) and `execve` answers E2BIG, which
 # the runner reports as a failed entry -- three burned launches per entry,
