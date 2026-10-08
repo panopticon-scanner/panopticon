@@ -7,6 +7,37 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader reads every action a `find` runs (#2918).** `curl … -o tool` ⏎ `find
+  /dev/null -exec true \; -exec sh /dev/fd/3 \; 3<> tool` ran the download and read CLEAN: the
+  guard read one of `find`'s actions, the first of `-exec`, `-execdir`, `-ok` and `-okdir` in that
+  order, its words to the end of the line, so a shell in a later action (`-exec true \; -exec sh
+  …`, `-execdir`, `-ok`), behind the order's `-exec` (`-execdir sh … \; -exec true \;`), after a
+  failing or negated test (`-exec false \; -o -exec sh …`, `! -name -exec -exec sh …`, `-name
+  -exec -o -exec sh …`) or behind a wrapper inside its action (`-exec env sh …`, `-exec sudo sh
+  …`) was never read, nor the file it runs. Every action is now read: the words after each of the
+  four, wherever it stands, to its `;` or to a `+` right after `{}`, a test's operand that spells
+  one read as one too, fail-closed, and its wrappers stripped as the guard strips them in front of
+  a command. A shell any action runs reads what `N<>` holds (`reads_held`), and where the guard
+  asks how a stage uses a file it reads one action a fold (`find_action`, `folds`), so it REPORTs
+  where any action uses the file: a shell handed it, the file run, `{}` naming it, a shell's
+  standard input, a printer piped into a shell. A command word an action leaves to `find` or bash
+  -- `{}`, each path it walks (`find /usr/bin/sh -exec {} …`), a substitution (`-exec $(echo sh)
+  …`) or a `$` word -- reads as a command the guard cannot read, as one behind a wrapper does, and
+  so does a `find` holding more than 8 distinct actions, read with its first alone so neither the
+  scan nor the folds grow with its words: the price, a report wherever such a `find` runs, a
+  download or none (`find . -name '*.sh' -exec {} \;`). A check an action runs is still credited
+  with nothing, as on `main`: `find` exits 0 though a `-exec … \;` command fails. On the #2885
+  round-4 seat's hunt the 84 rows (420 cells) that read CLEAN while every parent runs the file now
+  report, and their `N<` twins too; across its 956 rows and their twins, round 3's own 989 and
+  their twins, the AX, P0, F6 and P4 rows, the round-3 kit's 20,533 and #2856's hunts 33-53, no
+  cell goes CLEAN where `main` reports -- but for #2911's rows (S08n, S08p, hunt 37's `*-od`),
+  which differ between two runs of `main` too -- and the only other new reports are 7 rows every
+  parent runs (AF073-AF078, KGe26; 35 cells). The cost, `job_defects` against `main` in one process:
+  1.49x on the seat's 288 FX rows and 1.04x on its 1,945 rows; a job holding a download is read
+  once more for each further distinct action of its widest `find`, at most 8 times. Still unread,
+  as on `main`, since `find` is no wrapper to the fetch, program and pipe readers: a fetch inside
+  an action, an action's `-c` program, and a download piped into the shell an action runs (`curl
+  … | find /dev/null -exec sh \;`), filed as #2935.
 - **Workflow reader reads a read-write descriptor's file where an interpreter holds it, as `main`
   reads `N<` (#2881, #2608).** `curl … -o tool` ⏎ `sh 3<> tool <&3` ran the download and read
   CLEAN: the reader read `N<> file` as a write alone, so a dup of N onto standard input (`sh 3<>
@@ -561,6 +592,57 @@ evidence exposed.
   of round 5's matrix), #2608's `-s $X` and `-c $X` rows, `-c $(…)`, #2900's one-dash long option
   behind a shell the step names through a variable (`CMD=bash; $CMD -norc <<'EOF'`), and the
   guard's other named gaps.
+- **Workflow guard carries a compound command's closing output to its inner fetch (#2883).**
+  A fetch whose own stdout is not redirected now inherits the first redirect or pipeline on the
+  close of its enclosing `{ }`, `if`, `for`, `while`/`until` or `case`, so `> tool`,
+  `>> tool` and adjacent `| tee tool` followed by `sh tool` report. An inner stdout boundary on the
+  fetch itself or a disconnected closing pipeline stops the file handoff; a nested transparent
+  keyword close passes the outer destination inward. An outer logging redirect does not hide an
+  inner `( curl ...; ) | sh`, and an inner close before a later fetch does not hide the enclosing
+  `| sh`; the inherited stage deliberately omits the close's `stdout_to_pipe` bit, preserving those
+  cases. A closing `| tee tool` that still forwards stdout is represented as both a file destination
+  and a stream: `bash`/`sh`/`source` consuming it through process substitution still report, while
+  `tee tool > /dev/null` remains disconnected.
+
+  On a 43-row / 387-cell matrix using bash 5.2.21, bash 3.2.57 and dash as both parent and child,
+  this closes 279 executing cells / 31 rows with no REPORT-to-CLEAN flip measured on that matrix.
+  Its known price there is 36 fail-closed cells / four rows: a false branch, zero-iteration loop or
+  unmatched `case` arm that never fetches, and a later overwrite of `tool`. The broader seat hunt
+  also records a multi-statement subshell's own redirect (11 cells / three rows), a fetch after a
+  close mapped to that inner close (five / one), and `done | while ...; done > tool` (five / one).
+  Bash-only `&>` parsed under dash adds 240 / 120, which main's simple-command twin also reports;
+  a failing check or `sh -c` under `-e` adds seven / two.
+
+  A round-two process-substitution matrix restores 369 running cells / 123 rows across HNE/HNT and
+  18 / six on HN, while retaining the 55 / 11 compound-tee file-use closures. Its disconnected
+  controls stay clean. Main's analogous simple-command gap is separate (#2921). HN also measures
+  48 newly fail-closed no-run cells / 15 rows: substitution bodies consumed by `eval` or `sh -c`
+  (30 / six), function/time forms under dash (four), `&>`/`>&` under dash (eight), process-
+  substitution redirects under dash (four), and `source f` under dash (two); each matches main's
+  simple-command behavior.
+
+  An HNX/HNY extension restores the remaining 30 running cells / ten rows that main reports when
+  `$BASH`, `"$BASH"` or `$SHELL` consumes that forwarded tee through `<( ... )` or `< <( ... )`;
+  it adds no report where no parent runs against main. Pins cover a stage after the tee, redirects
+  on the compound close, tee and consumer, a consumer inside a substitution, two-level compound
+  nesting, and path-named executors and `tee`, so narrowing any one of those classes fails.
+
+  Compound output depth deliberately follows keyword compounds, not lexical group markers that the
+  reader also uses for array assignments. That preserves the array boundary but leaves 15 running
+  cells / three mixed keyword-close/subshell rows unclaimed. Keeping the enclosing level at
+  `max(before, after)` likewise avoids lending an outer destination across an inner file redirect;
+  the alternate reading would close 30 running cells / six HN rows but add a no-run over-report.
+
+  With main's #2856 reader folded via `50acb79e`, this change closes all 161 running cells / 35
+  rows in #2883's numbered-descriptor source set; #2885 moves none of them. The seven `10<> tool
+  >&10` rows add 14 no-run cells under dash (`sh` and `sh {0}`), as main's simple-command twins
+  already do. Four pass-through-filter rows / 36 cells remain open under #2904 because
+  their simple twins are open too: an inner `curl | cat` or `curl | tee`, and a closing
+  `| cat > tool` or two-`tee` pipeline. The reverse output map stays 1.00–1.02x main at n = 8,000;
+  one substitution holding many statements is 1.29x. Bound compound fetches now reach main's
+  existing per-bound-file use scan: S3's growth rises from 8.6x to 12.1x and S5a's from 15x to 50x,
+  while compound forms remain within 1.0–1.5x of their simple twins, whose scan scales about n^1.9.
+  That existing scan cost is tracked by #2917 and #2436.
 - **Workflow guard: what `eval`'s words and a `-c` string hand on (#2673, #2683, #2684, #2764,
   #2669, #2331).** `eval 'curl … |' 'sh'` ran the pipe and read CLEAN: `eval` joins its words before
   it runs them, and the guard read them one by one. Where a word begins or ends with an operator the

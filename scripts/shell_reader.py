@@ -59,12 +59,12 @@ from shell_tokens import (_Expanded as _Expanded, _Parse as _Parse, _Token as _T
 from shell_wrappers import (WRAPPERS as WRAPPERS, Defaulted as Defaulted,
                             Rewritten as Rewritten, dynamic as dynamic, unwrap as unwrap)
 from shell_command import (CONDITIONS as CONDITIONS, KEYWORDS as KEYWORDS,
-                           OPTIONAL_NEXT as OPTIONAL_NEXT, _ASSIGNMENT as _ASSIGNMENT, _CHECKERS,
+                           OPTIONAL_NEXT as OPTIONAL_NEXT, _ASSIGNMENT as _ASSIGNMENT,
                            _DEFAULTS as _DEFAULTS, _ENVIRONMENT as _ENVIRONMENT,
                            _FETCHERS as _FETCHERS, _FUNCTION as _FUNCTION,
                            _INTERPRETERS as _INTERPRETERS, _NAME as _NAME, _OPTIONAL as _OPTIONAL,
                            _SHELLS as _SHELLS, _command_result as _command_result,
-                           _optional as _optional, command as command, command_run,
+                           _optional as _optional, command as command, reads_held,
                            credited_zero as credited_zero,
                            command_as_written as command_as_written, conditional as conditional,
                            negated as negated, unresolved_wrapper as unresolved_wrapper,
@@ -662,12 +662,12 @@ def _stage(text, context):
         words.append(word)
     if all(word in KEYWORDS or _ASSIGNMENT.match(word) for word in argv):
         argv = words        # it only assigns: an array of a command is read as run
-    # An interpreter -- one `find` runs too (`command_run`, round 4) -- or a command word the step's values
-    # decide (`$SH`, but not `$X/sha256sum`: a check is credited by its basename, round 5) reads what `N<>`
-    # still holds open when its redirections end, on any descriptor, as `main` reads `N<` -- by a dup, a path,
-    # a child program; no other command reads it, so no check is credited with a file it only holds (#2881).
-    if opened and (head := command_run(argv)) and (name := os.path.basename(head[0])) not in _CHECKERS and (
-            dynamic(head[0], has_substitution) or name in (*_SHELLS, *_INTERPRETERS, "eval", "source", ".")):
+    # An interpreter -- one any action of a `find` runs too (round 4; #2918) -- or a command word the step's
+    # values decide (`$SH`, but not `$X/sha256sum`: a check is credited by its basename, round 5) reads what
+    # `N<>` still holds open when its redirections end, on any descriptor, as `main` reads `N<` -- by a dup, a
+    # path, a child program; no other command reads it, so no check is credited with a file it only holds
+    # (`reads_held`, #2881).
+    if opened and reads_held(argv):
         reads.extend(file for file in dict.fromkeys(sum(opened.values(), ())) if file not in reads)
     # A check reads what `0<>` opened only where fd 0 still holds it (#2856 round 12, B5).
     reads, writes = credited_zero(argv, reads, writes, zero, held)

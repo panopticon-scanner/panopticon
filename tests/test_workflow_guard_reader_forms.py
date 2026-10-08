@@ -1831,6 +1831,113 @@ class TestAReadWriteDescriptorIsReadOnItsNumber(unittest.TestCase):
                 self.assertTrue(reported(GET + "FD=4\nsh 3<> other 4<> tool <&$FD 3<&- 4<&-\necho done\n", shell))
 
 
+class TestEveryActionOfAFindIsRead(unittest.TestCase):
+    """#2918: `find` runs the command of each action it holds -- `-exec`, `-execdir`, `-ok` and
+    `-okdir`, in any order, past any test or operator -- and the guard read only the first, in a fixed
+    order, so one `-exec true \\;` in front of the shell passed it (the #2885 round-4 seat's F2: 84
+    rows, 420 cells, CLEAN on main while every parent runs the file)."""
+
+    def test_each_spelling_the_issue_names_reports(self):
+        # One row of each spelling #2918 lists, by the seat's ids: a shell in a later action (FX001,
+        # `-execdir` FX019), the fixed order's `-exec` behind an earlier `-execdir` (FX025), a failing
+        # or negated test in front (FX037, FX043, FX049), a word an action is handed (FX055), a `{} +`
+        # in front (FX061), the shell's standard input (FX073), `-ok` (FX103), a wrapper inside the
+        # action (FX193, FX199), and a command word `find` or bash decides (FX211, FX277). Every
+        # parent runs the download in each.
+        for use in ("find /dev/null -exec true \\; -exec sh /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null -exec true \\; -execdir sh /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null -execdir sh /dev/fd/3 \\; -exec true \\; 3<> tool",
+                    "find /dev/null -exec false \\; -o -exec sh /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null ! -name -exec -exec sh /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null -name -exec -o -exec sh /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null -exec echo -exec \\; -exec sh /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null -exec true {} + -exec sh /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null -exec true \\; -exec sh \\; 3<> tool <&3",
+                    "echo y > ans\nfind /dev/null -exec true \\; -ok sh /dev/fd/3 \\; 3<> tool < ans",
+                    "find /dev/null -exec env sh /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null -exec sudo sh /dev/fd/3 \\; 3<> tool",
+                    "find /usr/bin/sh -exec {} /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null -exec $(echo sh) /dev/fd/3 \\; 3<> tool"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+
+    def test_a_later_action_is_read_as_the_first_one_is(self):
+        # Each way the guard reads the first action's use of a file, in a later one: a shell handed the
+        # file, the file run, a shell `{}` hands it, the shell's standard input, a printer piped to a
+        # shell, and a wrapper inside the action. Every parent runs the download.
+        for use in ("find /dev/null -exec true \\; -exec sh tool \\;", "find /dev/null -exec true \\; -exec ./tool \\;",
+                    "find . -name tool -exec true \\; -exec sh {} \\;",
+                    "find /dev/null -exec true \\; -exec sh \\; < tool",
+                    "find /dev/null -exec true \\; -exec cat tool \\; | sh",
+                    "find /dev/null -exec true \\; -exec env sh tool \\;"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+
+    def test_a_command_word_find_or_bash_decides_is_one_the_guard_cannot_read(self):
+        # Fail-closed, as a dynamic command word behind a wrapper is (`sudo $X`): `{}` is each path the
+        # search walks, and a `$` word or a substitution is what bash makes of it. The price: such an
+        # action reads as a command the guard cannot read wherever it runs, a download or none.
+        for use, why in (("find . -name '*.sh' -exec {} \\;", "`find` runs `{}`, a command word it or bash decides"),
+                         ("find . -exec $X {} \\;", "`find` runs `$X`, a command word it or bash decides"),
+                         ("find . -exec $(echo sh) {} \\;", "`find` runs `$(...)`, a command word it or bash decides"),
+                         ("find . -exec sudo $X {} \\;", "a command `find` runs: has a dynamic command operand")):
+            with self.subTest(use=use):
+                found = wg.job_defects([wg.Step("step", use + "\n", None)])
+                self.assertEqual(1, len(found))
+                self.assertIn("cannot read command: " + why, found[0][1])
+
+    def test_a_reason_a_command_in_an_action_gives_is_read_as_at_the_top_level(self):
+        # What the guard cannot read in front of a command it cannot read inside an action either: a
+        # pattern where the shell looks for `-c` or a script, and more wrappers than it unwraps. Each
+        # reads so on its own line too.
+        for command, why in (("sh -[c] x", "`-[c]` is a pattern bash expands where `sh` looks for `-c`"),
+                             ("env " * 17 + "sh x", "has too many nested wrappers")):
+            for use in (command, "find . -exec %s \\;" % command):
+                with self.subTest(use=use):
+                    found = wg.job_defects([wg.Step("step", use + "\n", None)])
+                    self.assertEqual(1, len(found))
+                    self.assertIn(why, found[0][1])
+
+    def test_a_check_find_runs_is_credited_with_nothing(self):
+        # `find` exits 0 though a `-exec … \;` command fails, so a check one of its actions runs stops
+        # nothing: the action is read as a use, never as a check, as main reads it -- beside the same
+        # check run on its own, which clears the use.
+        sums = "echo '%s  tool' > sums\n" % ("a" * 64)
+        self.assertFalse(reported(GET + sums + "sha256sum -c sums\nsh tool\n"))
+        self.assertTrue(reported(GET + sums + "find /dev/null -exec sha256sum -c sums \\;\nsh tool\n"))
+
+    def test_each_action_ends_at_its_own_terminator(self):
+        # `;` ends an action, and `+` only right after `{}`; a word an operand spells `-exec` starts one
+        # too, failing closed; the same action twice is read once.
+        import shell_command
+        cases = (("find . -exec true {} + -exec sh x ;", [["true", "{}"], ["sh", "x"]]),
+                 ("find . -exec echo + ; -exec sh x ;", [["echo", "+"], ["sh", "x"]]),
+                 ("find . -exec echo -exec ; -exec sh x ;", [["echo", "-exec"], [], ["sh", "x"]]),
+                 ("find . -name -exec -o -exec sh x ;", [["-o", "-exec", "sh", "x"], ["sh", "x"]]),
+                 ("find . -exec true ; -exec true ;", [["true"]]), ("find . -exec sh x", [["sh", "x"]]),
+                 ("xargs -exec sh x ;", []))
+        for text, actions in cases:
+            with self.subTest(text=text):
+                self.assertEqual(actions, shell_command._actions(text.split()))
+
+    def test_the_folds_read_each_action_up_to_the_cap_and_no_further(self):
+        # One fold reads each distinct action where the guard asks how a stage uses a file; past
+        # `_FIND_CAP` the `find` reads as a command the guard cannot read, its first action alone, so
+        # neither the scan nor the folds grow with its words.
+        import shell_command
+        cap = 8
+        self.assertEqual(cap, shell_command._FIND_CAP)
+        for count, folds in ((1, 1), (3, 3), (cap, cap), (cap + 1, 1), (500, 1)):
+            argv = ["find", "."] + [word for n in range(count) for word in ("-exec", "echo", str(n), ";")]
+            with self.subTest(count=count):
+                read = [shell_command.find_action(argv) for _sure in shell_command.folds(lambda: False)]
+                self.assertEqual(folds, len(read))
+                self.assertEqual([["echo", str(n)] for n in range(folds)], read)
+                self.assertEqual(count > cap, bool(shell_command.unresolved_wrapper(argv)))
+
+
 class TestEachGateOfTheWholeWordHasAVerdict(unittest.TestCase):
     """PR #2856 round 9, the round-8 verdict's F4: each test that confines the whole reading to a
     command word moves a verdict, so each has a row here. Read whole past one, the guard reports
