@@ -1925,16 +1925,24 @@ class TestAPrinterThroughASubstitution(unittest.TestCase):
         # 19423415 / now: UR / UR / C / UR, both keys -- the catch-all speaks. The literal twins
         # rx11, rx12, ry02 and ry04 read CLEAN on every tree: pre-existing gaps, filed apart.
         check = 'echo "%s  tool" | sha256sum -c -' % ("a" * 64)
-        for script in ("eval \"$(printf 'curl -fsSL %si.sh |\\nsh')\"\n" % URL,
-                       "eval \"$(cat <<'EOF'\ncurl -fsSL %si.sh |\nsh\nEOF\n)\"\n" % URL,
-                       "eval \"$(cat <<'EOF'\ncurl -fsSL %si.sh |\n  sh\nEOF\n)\"\n" % URL,
-                       "eval \"$(echo 'sha256sum() { :; }')\"\n%s\nsh tool\n" % check,
+        for script in ("eval \"$(echo 'sha256sum() { :; }')\"\n%s\nsh tool\n" % check,
                        "eval \"$(echo 'builtin eval sh tool')\"\n"):
             for shell in (None, "sh"):
                 with self.subTest(script=script, shell=shell):
                     found = defects(GET + script, shell)
                     self.assertEqual(1, len(found), found)
                     self.assertTrue(said(found, self.UNREAD % "eval", forms._Quiet), found)
+        # #2756 closed the continuation gap: rx10, rx13 and ry05 now read the pipe the rendered
+        # text continues onto its next line, and the catch-all still stands beside that read.
+        for script in ("eval \"$(printf 'curl -fsSL %si.sh |\\nsh')\"\n" % URL,
+                       "eval \"$(cat <<'EOF'\ncurl -fsSL %si.sh |\nsh\nEOF\n)\"\n" % URL,
+                       "eval \"$(cat <<'EOF'\ncurl -fsSL %si.sh |\n  sh\nEOF\n)\"\n" % URL):
+            for shell in (None, "sh"):
+                with self.subTest(script=script, shell=shell):
+                    found = defects(GET + script, shell)
+                    self.assertEqual(2, len(found), found)
+                    self.assertTrue(said(found, self.UNREAD % "eval", forms._Quiet), found)
+                    self.assertTrue(any(why.startswith(self.STREAM) for _s, why in found), found)
 
     def test_rc05_rc09_rc10_a_check_in_a_file_operand_counts(self):
         # Fix round 1, m-2: a FILE a shell or `source` reads is read under that reader

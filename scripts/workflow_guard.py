@@ -245,7 +245,7 @@ import sys
 
 import shell_lex
 import shell_reader
-from shell_reader import command, statements
+from shell_reader import command, folds, statements
 from workflow_annotate import annotate
 from workflow_checks import (CHECKSUM_TOOLS as CHECKSUM_TOOLS, checks as _checks,
                              clears_nested as _clears_nested, contextual as _check_at_use)
@@ -556,7 +556,8 @@ def job_defects(steps, strict=False):
     """Defects for a job: steps share files but start fresh shells and cwd. Conditions and failure
     gates bind checks. `Unsure` scripts get a second fold; `strict` rejects an unread step."""
     found, seen, steps = [], set(), list(steps)     # read twice: a one-shot iterable, once
-    for sure in (False, True):              # the second fold leaves every `Unsure` statement out
+    # The second fold leaves every `Unsure` statement out; `folds` reads each half (#2856 round 13).
+    for sure in folds(lambda: any(isinstance(statement, Unsure) for statement in stmts)):
         stmts: list[shell_reader.Statement] = []
         owner, conditions, credit, working, entries, fetched, unread = [], {}, {}, {}, [], [], []
         bound: list[Fetch] = []
@@ -604,8 +605,6 @@ def job_defects(steps, strict=False):
                         stmts, conditions, credit, (fetched, unread), working, scopes)]
         found += [entry for entry in entries if entry[0] not in seen]
         seen = {key for key, _name, _why in found}
-        if not any(isinstance(statement, Unsure) for statement in stmts):
-            break
     return [(name, why) for _key, name, why in found]
 
 
