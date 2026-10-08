@@ -418,6 +418,10 @@ evidence exposed.
   from stopping the step (`( { f() { CHECK; }; f; } )`, `{ …; CHECK; } | cat`) still clears the
   download. And the header test at every `(` had joined and split the whole buffer before the
   match, about x4 per doubling of one `(( … ))` statement, now computed only behind a match.
+  Still CLEAN as on `main` (#2928): a check in a group piped into another command inside a `bash
+  -ec` or `bash -s` child, the function form among them (`bash -ec '{ f() { CHECK; }; f; } |
+  cat; USE'` and its `bash -e -s` heredoc twin), which `main` since #2849 reports only by
+  failing closed on the `f()` header it misreads.
 - **Reviewer write safety separates the boundary from its transport (#1622).**
   `artifact_write_guard` now means reviewer-controlled artifact writes are impossible or confined.
   The static `self_write_delivery` fact is true only for Claude and Kimi, and a write-capable role
