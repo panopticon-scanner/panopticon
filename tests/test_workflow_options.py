@@ -61,6 +61,17 @@ def body(command, text):
     return "%s <<'EOF'\n%s\nEOF\n" % (command, text)
 
 
+def runs(holders, run, first, left_out):
+    """Each holder under `run`'s members from the holder's index on, at every length from `first`'s for the
+    holder to the run's, and doubled; `left_out`'s leading members of its run left out (#2858 round 15)."""
+    rows = []
+    for at, holder in enumerate(holders):
+        words = (run[at % len(run):] + run[:at % len(run)])[left_out.get(at, 0):]
+        for length in list(range(first[at], len(words) + 1)) + [2 * len(words)]:
+            rows.append(holder % " ".join((words + words)[:length]))
+    return tuple(rows)
+
+
 class TestTheOptionsAfterDashS(unittest.TestCase):
     """#2647: bash keeps reading options after `-s`, and a `-c` among them puts the program in
     the string; the heredoc is that program's DATA. `--`, `-` or an operand ends the options,
@@ -1124,10 +1135,27 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
                     "bash -c \"bash %s\"", "eval \"bash %s\"", "bash %s -c 'sh' x", "bash %s -c 'sh -s'",
                     "sh %s -c 'bash -s'", "bash %s -c \"eval 'sh'\"", "bash -c \"eval \\\"bash %s -c 'sh'\\\"\"")
     SPREAD = ("-norc", "-protected -login", "-e -norc", "-o pipefail -norc", "--rcfile /dev/null -protected")
-    FAMILY = tuple(dict.fromkeys(holder % words for holder, words in itertools.chain(
+    # Round 14's seat, B1: HVrun3i is MX13 firing on an inner argv of THREE or more one-dash long options alone,
+    # the table written out -- a run no row's inner argv held (two at most). So the run length is closed in
+    # full, from the table: each of the 40 holders is under a run of `LONG_OPTIONS`' one-dash spellings of every
+    # length from 1 to 16, `RUN` read from the holder's index on (every member stands at every position), and
+    # under the run that carries every member twice. `main` (20fedc8b) reads a one-dash word as letters, and
+    # reports a run from the length `FIRST` holds for its holder on -- computed on `main` and frozen, as the
+    # grid's 71 rows were. A run led by `-posix`, `-verbose`, `-help`, `-version`, `-dump-strings` or
+    # `-dump-po-strings` it reads CLEAN at every length (the lead's letters read as a shell reading its stdin,
+    # so the body is read and regroups), and those leads are left out of that holder's run, `LEFT_OUT` many
+    # (each stands elsewhere; holder 30's own `-norc` has `main` report its run whole). 489 rows: HVrun3i and
+    # the twin keyed to `k` or more for every `k` from 2 to 16 move 32 to 216 of them in the main pass. A twin
+    # of that line reaches no run a top-level holder carries, so those rows pin `main`'s answer alone.
+    RUN = tuple("-" + name[2:] for name in wo.LONG_OPTIONS)
+    LEFT_OUT = {6: 1, 10: 5, 11: 4, 12: 3, 13: 2, 14: 1, 22: 1, 26: 5, 27: 4, 28: 3, 29: 2, 38: 1}
+    FIRST = (6, 5, 4, 3, 2, 1, 2, 2, 1, 1, 10, 10, 10, 7, 7, 10, 9, 5, 7, 3,
+             5, 1, 2, 2, 1, 1, 10, 7, 10, 10, 1, 10, 9, 8, 7, 3, 2, 1, 2, 2)
+    RUNS = runs(HOLDERS + MORE_HOLDERS, RUN, FIRST, LEFT_OUT)
+    FAMILY = tuple(dict.fromkeys(itertools.chain((holder % words for holder, words in itertools.chain(
         itertools.product(HOLDERS, CLUSTERS + ("-norc -login", "--noprofile -norc")),
         itertools.product(HOLDERS[5:], FILES), itertools.product(HOLDERS[:5], ("-login -restricted",)),
-        itertools.product(HOLDERS + MORE_HOLDERS, SPREAD))))
+        itertools.product(HOLDERS + MORE_HOLDERS, SPREAD))), RUNS)))
     # Round 13's seat, B2: MY6 read `LONG_OPTIONS` in `_options` (an `s` inside a one-dash long option is
     # no `-s`), and MY1 is MX13's complement. The watched tables catch both; these rows -- every row the two
     # main passes moved, under the seat's ids -- catch their twins, which write the table out. They are
@@ -1198,7 +1226,8 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
 
     def test_the_main_pass_reports_every_holder_of_the_family(self):
         # Round 12's seat, B1 and F1: MX13, MX3 and MX4 each read some row of the family CCCRR, and the
-        # whole suite passed each of them; round 13's, B1: so did MZ1, MZ4 and MZ9, and their twins.
+        # whole suite passed each of them; round 13's, B1: so did MZ1, MZ4 and MZ9, and their twins; round
+        # 14's, B1: so did HVrun3i, which the runs carry, with every run-length twin from two on.
         for holder in self.FAMILY:
             with self.subTest(holder=holder), wo.mains_answer():
                 self.assertTrue(all(wg._job_defects([wg.Step("step", self.B4 % holder, s)]) for s in self.SHELLS))
