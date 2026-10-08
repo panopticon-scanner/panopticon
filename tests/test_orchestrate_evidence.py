@@ -70,7 +70,8 @@ class TestRefusedRepliesAreRetained(LoopCase):
             self.priors.append(entry.get("prior_rejection"))
             body = {"findings": [{"title": "issue at " + self.SECRET, "severity": "HIGH",
                                   "domain": entry["domain"], "code": entry["domain"] + "-A1A",
-                                  "category": "authz",
+                                  "category": "authz", "description": "d",
+                                  "source_role": "domain_panel",
                                   "location": {"file": "src/app.py", "line_start": 1}}],
                     "_panopticon": {"run_id": entry.get("run_id"), "role": "domain_panel",
                                     "domain": entry["domain"], "group": "a-different-group"}}
@@ -529,4 +530,3 @@ class TestNoDriverReaderTakesTheUnboundRead(unittest.TestCase):
         self.assertEqual([], [ast.unparse(n.func) for n in ast.walk(bound)
                               if isinstance(n, ast.Call)
                               and ast.unparse(n.func).endswith("load_dispatch_request")])
-
