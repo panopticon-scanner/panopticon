@@ -159,13 +159,15 @@ class TheCarriedBangStandsBehindTheControlWords(unittest.TestCase):
                     self.assertTrue(reported(filled(row), shell))
 
     def test_the_bang_stands_past_the_keywords(self):
-        argvs = [list(st.stages[0].argv) for st in wg.shell_reader.statements(
-            "! {\ncase x in\nx) CHECK;;\nesac\nif false; then T=x; fi\n}\n")]
-        self.assertEqual(["case", "x", "in"], argvs[1])
-        self.assertEqual(["!", "CHECK"], argvs[2][1:])        # the arm marker first
-        self.assertEqual(["if", "false"], argvs[4])             # a condition: never under `!`
-        self.assertEqual(["then", "!", "T=x"], argvs[5])
-        self.assertEqual([["fi"], ["}"]], argvs[6:])
+        # Round 13: the `!` is the first word's mark, which `negated` reads (`shell_tokens.bang`),
+        # so the control-kind readers -- and #2849's failure contexts -- see the words bash wrote.
+        argvs = [([str(word) for word in st.stages[0].argv], wg.shell_reader.negated(st.stages[0].argv))
+                 for st in wg.shell_reader.statements("! {\ncase x in\nx) CHECK;;\nesac\nif false; then T=x; fi\n}\n")]
+        self.assertEqual((["case", "x", "in"], False), argvs[1])
+        self.assertEqual((["CHECK"], True), (argvs[2][0][1:], argvs[2][1]))   # the arm marker first
+        self.assertEqual((["if", "false"], False), argvs[4])     # a condition: never under `!`
+        self.assertEqual((["then", "T=x"], True), argvs[5])
+        self.assertEqual([(["fi"], False), (["}"], False)], argvs[6:])
 
 
 class TestACallsEffectIsReadFailClosed(unittest.TestCase):
