@@ -243,14 +243,19 @@ def parse_fetch(tool, args, stage, piped_to):
 
 def streams_to_executor(fetch, executors):
     """Whether a lent tee destination also reaches this outer consumer."""
-    return bool(isinstance(fetch.piped_to, _ForwardedTee) and fetch.piped_to and (
+    return bool(is_forwarded_tee(fetch) and (
         os.path.basename(fetch.piped_to[0]) in executors
         or stdin_program(fetch.piped_to[:1]) == VALUE_PROGRAM))
 
 
+def is_forwarded_tee(fetch):
+    """Whether a fetch keeps a compound tee's outward stream."""
+    return isinstance(fetch.piped_to, _ForwardedTee)
+
+
 def forwarded_consumer(fetch, consumer):
     """Keep a compound tee's outward stream when a substitution is consumed."""
-    if consumer and isinstance(fetch.piped_to, _ForwardedTee):
+    if is_forwarded_tee(fetch):
         return _ForwardedTee(consumer)
     return consumer
 

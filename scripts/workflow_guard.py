@@ -249,7 +249,8 @@ from shell_reader import command, statements
 from workflow_annotate import annotate
 from workflow_checks import (CHECKSUM_TOOLS as CHECKSUM_TOOLS, checks as _checks,
                              clears_nested as _clears_nested, contextual as _check_at_use)
-from workflow_fetch import Fetch, compound_output, compound_streamed_fetch, forwarded_consumer, streams_to_executor
+from workflow_fetch import (Fetch, compound_output, compound_streamed_fetch, forwarded_consumer,
+                            is_forwarded_tee, streams_to_executor)
 from workflow_forms import (FETCHERS, SHELL_PROGRAM, Idle, Inlined, Reach, Unsure, at_directory,
                             carried, compound_stream_consumer, flattened, kept, located,
                             names_file, parse_fetch, regions, stdin_program, step_credit,
@@ -296,7 +297,7 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                     if stream_exec:
                         compound = compound_stream_consumer(stmts, index, EXECUTORS)
                         stream = compound_streamed_fetch(
-                            os.path.basename(argv[0]), argv[1:], stage, following,
+                            os.path.basename(argv[0]), argv[1:], fetch_stage, following,
                             EXECUTORS, compound,
                         )
                         fetch = stream or (fetch._replace(piped_to=None) if fetch.dest is None
@@ -315,6 +316,7 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                 unread.append((index, reason))
             consumer = tuple(t for t in argv if not shell_reader.is_marker(t)) or None
             executes = consumer and os.path.basename(consumer[0]) in EXECUTORS
+            value_exec = consumer and stdin_program(consumer[:1]) == VALUE_PROGRAM
             for subno, text in enumerate(stage.substitutions):
                 inner = list(statements(text))
                 child_scope = "%sS%d_%d" % (scopes[index], position, subno)
@@ -325,7 +327,8 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                     ["%sI%d" % (child_scope, i) for i in range(len(inner))], here, under)
                 unread.extend((index, why) for _inner, why in nested)
                 found.extend((index, fetch._replace(piped_to=forwarded_consumer(fetch, consumer))
-                              if executes or fetch.piped_to is None else fetch)
+                              if (executes or fetch.piped_to is None
+                                  or value_exec and is_forwarded_tee(fetch)) else fetch)
                              for _inner, fetch in fetched)
     return found, unread + (carried(stmts, EXECUTORS) if found else [])
 

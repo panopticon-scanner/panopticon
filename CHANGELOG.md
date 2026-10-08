@@ -24,11 +24,12 @@ evidence exposed.
   close of its enclosing `{ }`, `if`, `for`, `while`/`until` or `case`, so `> tool`,
   `>> tool` and adjacent `| tee tool` followed by `sh tool` report. An inner stdout boundary on the
   fetch itself or a disconnected closing pipeline stops the file handoff; a nested transparent
-  keyword close passes the outer destination inward. Stream execution keeps the fetch's own stage,
-  so an outer logging redirect does not hide an inner `( curl ...; ) | sh`, and an inner close before
-  a later fetch does not hide the enclosing `| sh`. A closing `| tee tool` that still forwards
-  stdout is represented as both a file destination and a stream: `bash`/`sh`/`source` consuming it
-  through process substitution still report, while `tee tool > /dev/null` remains disconnected.
+  keyword close passes the outer destination inward. An outer logging redirect does not hide an
+  inner `( curl ...; ) | sh`, and an inner close before a later fetch does not hide the enclosing
+  `| sh`; the closing-stage handoff and the stream-stage choice jointly preserve those cases. A
+  closing `| tee tool` that still forwards stdout is represented as both a file destination and a
+  stream: `bash`/`sh`/`source` consuming it through process substitution still report, while
+  `tee tool > /dev/null` remains disconnected.
 
   On a 43-row / 387-cell matrix using bash 5.2.21, bash 3.2.57 and dash as both parent and child,
   this closes 279 executing cells / 31 rows with no REPORT-to-CLEAN flip measured on that matrix.
@@ -46,6 +47,12 @@ evidence exposed.
   (30 / six), function/time forms under dash (four), `&>`/`>&` under dash (eight), process-
   substitution redirects under dash (four), and `source f` under dash (two); each matches main's
   simple-command behavior.
+
+  An HNX/HNY extension restores the remaining 30 running cells / ten rows that main reports when
+  `$BASH`, `"$BASH"` or `$SHELL` consumes that forwarded tee through `<( ... )` or `< <( ... )`;
+  it adds no report where no parent runs against main. Pins cover a stage after the tee, redirects
+  on the compound close, tee and consumer, a consumer inside a substitution, two-level compound
+  nesting, and path-named executors and `tee`, so narrowing any one of those classes fails.
 
   Compound output depth deliberately follows keyword compounds, not lexical group markers that the
   reader also uses for array assignments. That preserves the array boundary but leaves 15 running

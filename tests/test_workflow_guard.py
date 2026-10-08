@@ -4306,6 +4306,13 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
             with self.subTest(script=script, shell=shell):
                 self.assertEqual([], wg.job_defects([wg.Step("step", script, shell)]))
 
+    def assert_reported_in_bash_shells(self, script, message=None):
+        for shell in self.BASH_SHELLS:
+            with self.subTest(script=script, shell=shell):
+                found = wg.job_defects([wg.Step("step", script, shell)])
+                self.assertEqual(1, len(found), found)
+                self.assertIn(message or self.URL, found[0][1])
+
     def test_each_compound_carries_its_redirect_or_tee_destination(self):
         for compound in self.COMPOUNDS:
             for output in (">", ">>", "| tee"):
@@ -4355,11 +4362,32 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
         )
         for consumer in consumers:
             script = (consumer % tee) + "\n"
-            for shell in self.BASH_SHELLS:
-                with self.subTest(consumer=consumer, shell=shell):
-                    found = wg.job_defects([wg.Step("step", script, shell)])
-                    self.assertEqual(1, len(found), found)
-                    self.assertIn(self.URL, found[0][1])
+            self.assert_reported_in_bash_shells(script)
+
+    def test_a_compound_tee_feeds_a_value_word_reader(self):
+        for script in (
+                "$BASH <( { %s; } | tee tool )\n" % self.FETCH,
+                "$SHELL -s < <( if true; then %s; fi | tee tool )\n" % self.FETCH,
+        ):
+            self.assert_reported_in_bash_shells(
+                script, "command word this guard does not follow")
+
+    def test_the_forwarded_compound_tee_union_is_not_restricted(self):
+        scripts = (
+            ("stage after tee", "bash <( { %s; } | tee tool | cat - )\n"),
+            ("redirect on close", "bash <( { %s; } 2>/dev/null | tee tool )\n"),
+            ("redirect on tee", "bash <( { %s; } | tee tool > /dev/stdout )\n"),
+            ("redirect on consumer", "bash <( { %s; } | tee tool ) > out.log\n"),
+            ("consumer in substitution", "out=$( bash <( { %s; } | tee tool ) )\n"),
+            ("nested close", "bash <( { { %s; } | tee tool; } )\n"),
+            ("nested fetch", "bash <( { { %s; }; } | tee tool )\n"),
+            ("executor by path", "/bin/bash <( { %s; } | tee tool )\n"),
+            ("executor through env", "/usr/bin/env bash <( { %s; } | tee tool )\n"),
+            ("tee by path", "bash <( { %s; } | /usr/bin/tee tool )\n"),
+        )
+        for restriction, template in scripts:
+            with self.subTest(restriction=restriction):
+                self.assert_reported_in_bash_shells(template % self.FETCH)
 
     def test_the_compound_tee_keeps_its_file_close_but_not_a_cut_stream(self):
         script = "{ %s; } | tee tool\nsh tool\n" % self.FETCH
@@ -4412,7 +4440,8 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
     def test_file_close_depth_excludes_lexical_groups(self):
         # The reader gives array assignments and subshells the same group
         # markers. File-close inheritance therefore tracks keyword compounds
-        # only, preserving the array-assignment boundary (M5a).
+        # only, preserving the array-assignment boundary (M5a). This also
+        # preserves HNP-012's known mixed keyword-close/subshell gap.
         script = ("{ for i in 1; do :; done | ( %s; ); } > tool\n"
                   "sh tool\n") % self.FETCH
         self.assert_clean_in_every_shell(script)
