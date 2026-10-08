@@ -36,13 +36,24 @@ import collections
 
 import shell_reader
 from shell_reader import command, conditional, negated
+from workflow_failure_contexts import (_enclosing_failure_contexts as _enclosing_failure_contexts,
+                                       _failure_context as _failure_context,
+                                       _function_body as _function_body,
+                                       _inside_unmarked_case as _inside_unmarked_case,
+                                       _is_negated_context as _is_negated_context,
+                                       _known_failure as _known_failure,
+                                       _negation_count as _negation_count,
+                                       _skippable_or as _skippable_or,
+                                       _structural_groups as _structural_groups,
+                                       conditional_contexts as conditional_contexts,
+                                       statement_analysis as statement_analysis)
 from workflow_function_calls import (FunctionGate, PipelineGate, Reach as Reach, _CLOSES,
                                      _DETACHED, _LOST as _LOST, _NO_E as _NO_E,
                                      _NO_PIPEFAIL as _NO_PIPEFAIL, _OPENS, _RESCUED,
                                      _READ_RESCUED, _SET_E as _SET_E, _UNPROVED_RESCUE,
                                      _closes, _control_depths, _function_scope, _function_syntax,
-                                     _gating_function_call, _posture_barrier, _stops_the_job,
-                                     _stops_step as _stops_step, clears as _clears)
+                                     _gating_function_call, _posture_barrier,
+                                     _stops_the_job, _stops_step as _stops_step, clears as _clears)
 from workflow_posture import (_errexit as _errexit, _rejected as _rejected,
                               _takes_value as _takes_value, seed as seed)
 
@@ -52,17 +63,6 @@ from workflow_posture import (_errexit as _errexit, _rejected as _rejected,
 # clears nothing: as its pipeline's last command, and as an earlier one (None:
 # it may clear).
 Inlined = collections.namedtuple("Inlined", "stages separator region credit")
-
-
-def _structural_groups(stage):
-    """Leading brace and subshell opens/closes carried by this stage."""
-    braces = []
-    for token in stage.argv:
-        if token not in shell_reader.KEYWORDS:
-            break
-        if token in ("{", "}"):
-            braces.append(token)
-    return stage.group_open + braces.count("{"), stage.group_close + braces.count("}")
 
 
 def _pipeline_groups(stage):
@@ -230,6 +230,17 @@ _BOUNDED_RESCUE = ("; a use in its own `||` rescue branch runs only after the ch
                    "and a use after that reach still runs")
 _CONDITIONAL = ("is reached only through the `&&`/`||` list before it, so it may be skipped "
                 "while that use still runs")
+_AMBIGUOUS_GROUP = ("is inside a compound list whose hidden parenthesis order this guard cannot "
+                    "place, so it cannot prove that the checksum gates that use")
+_NEGATED_GROUP = ("is inside a negated compound list whose failure reach this guard cannot place "
+                  "exactly, so it cannot prove that the checksum gates that use")
+_CONDITIONAL_GROUP = ("is inside a compound `if`/`while` test whose failure reach this guard cannot "
+                      "place exactly, so it cannot prove that the checksum gates that use")
+_BARRIER_REASONS = {
+    "ambiguous": _AMBIGUOUS_GROUP,
+    "negated": _NEGATED_GROUP,
+    "conditional": _CONDITIONAL_GROUP,
+}
 
 
 class RescueGate(Reach):
@@ -247,6 +258,26 @@ class RescueGate(Reach):
         return self if self.start <= use <= self.through else self.outside
 
 
+class ContextGate(str):
+    """A local failure answer through one boundary, then an outer answer."""
+
+    through: int
+    inside: object | None
+    outside: object | None
+
+    def __new__(cls, through, inside, outside):
+        reason = inside if inside is not None else outside
+        gate = str.__new__(cls, "" if reason is None else str(reason))
+        gate.through = through
+        gate.inside = inside
+        gate.outside = outside
+        return gate
+
+    def at_use(self, check, use):
+        """Use the local answer inside the boundary and the outer one after."""
+        return self.inside if check < use <= self.through else self.outside
+
+
 class FunctionStatusGate(FunctionGate):
     """A called function gate that also keeps the check's reach in its body."""
 
@@ -260,6 +291,8 @@ class FunctionStatusGate(FunctionGate):
 
 def clears(why, check, use):
     """Whether a check clears this use, excluding its own rescue body."""
+    if isinstance(why, ContextGate):
+        return clears(why.at_use(check, use), check, use)
     if isinstance(why, RescueGate):
         contextual = why.at_use(check, use)
         if contextual is why:
@@ -269,38 +302,6 @@ def clears(why, check, use):
             and check < use and use - check <= why.body_span):
         return True
     return _clears(why, check, use)
-
-
-def conditional_contexts(stmts):
-    """{statement: ((list head, carrier end), ...)} for conditional groups."""
-    stack, active = [], []
-    for index, statement in enumerate(stmts):
-        opens = closes = 0
-        for stage in statement.stages:
-            opened, closed = _structural_groups(stage)
-            opens, closes = opens + opened, closes + closed
-        for _opening in range(opens):
-            group = [index, None]
-            stack.append(group)
-        active.append(tuple(stack))
-        for _closing in range(closes):
-            if stack:
-                stack.pop()[1] = index
-    contexts = {}
-    for position, groups in enumerate(active):
-        ends: dict[int, list[int | None]] = {}
-        for start, end in groups:
-            if start and stmts[start - 1].separator in ("&&", "||"):
-                ends.setdefault(start, []).append(end)
-        found = [(start - 1, None if None in bounds
-                  else max(end for end in bounds if end is not None))
-                 for start, bounds in ends.items()]
-        if (position and position not in ends
-                and stmts[position - 1].separator in ("&&", "||")):
-            found.append((position - 1, position))
-        if found:
-            contexts[position] = tuple(found)
-    return contexts
 
 
 def conditional_reach(why, stmts, contexts, indexes, index, inner, on, fails):
@@ -332,7 +333,7 @@ def conditional_reach(why, stmts, contexts, indexes, index, inner, on, fails):
     return why
 
 
-def inlined_stops(stmts, start, carrier, index, on=None, fails=None):
+def inlined_stops(stmts, start, carrier, index, on=None, fails=None, analysis=None):
     """Whether this handed-script statement's failure reaches its carrier.
 
     Without recorded option states, the child proof being tested already
@@ -343,7 +344,8 @@ def inlined_stops(stmts, start, carrier, index, on=None, fails=None):
     precomputed credit: it was derived while flattening the parent, whose
     posture is exactly what is being bounded.
     """
-    body = stmts[start:carrier]
+    body = stmts if start == 0 and carrier == len(stmts) else stmts[start:carrier]
+    analysis = statement_analysis(body) if analysis is None else analysis
     position = index - start
     if not 0 <= position < len(body) or not body[position].stages:
         return False
@@ -353,7 +355,30 @@ def inlined_stops(stmts, start, carrier, index, on=None, fails=None):
     enabled = [True] * len(body) if on is None else on[start:carrier]
     piped = [False] * len(body) if fails is None else fails[start:carrier]
     return (_stops_step(body, position, enabled, piped) is None
-            and swallowed(body, position, statement, statement.stages[-1]) is None)
+            and swallowed(body, position, statement, statement.stages[-1],
+                          analysis=analysis) is None)
+
+
+def inlined_reaches(flat, stmts, indexes, on, fails):
+    """Give a handed script's bounded failures their reach in flat indices.
+
+    `_stops_step` measures an `&&` list in the child statement list, while
+    `clears` compares positions after nested scripts have been flattened.
+    `indexes` maps between them. Keep an existing refusal in either credit
+    slot: parent posture and a pipeline without pipefail remain stronger.
+    """
+    analysis = statement_analysis(stmts)
+    for position, index in enumerate(indexes):
+        if analysis.blocks_reach(position):
+            continue
+        stops = _stops_step(stmts, position, on, fails)
+        why = (Reach(0, _LOST) if stops is _LOST
+               else Reach(indexes[stops] - index)
+               if isinstance(stops, int) and stops >= position else None)
+        statement = flat[index]
+        if why is not None and statement.credit[0] is None:
+            flat[index] = statement._replace(credit=(why, statement.credit[1] or why))
+    return flat
 
 
 def _rescue_bounds(stmts, branch):
@@ -390,7 +415,7 @@ _FUNCTION_BODY = ("is inside a function that has not run through a failure gate 
                   "use")
 
 
-def _function_status(stmts, index, answer, errexit):
+def _function_status(stmts, index, answer, errexit, analysis=None):
     """Bind definition-time credit to a proved call, preserving body reach."""
     function, carrier = _function_scope(stmts, index), index
     if function is None and isinstance(stmts[index], Inlined):
@@ -408,23 +433,32 @@ def _function_status(stmts, index, answer, errexit):
     returned = reaches_close or (carrier != index and all(
         _closes(item) for item in stmts[carrier + 1:close + 1]
     )) or carrier == index
-    call = _gating_function_call(stmts, name, close, errexit, returned)
+    calls: list[int] = []
+    call = _gating_function_call(stmts, name, close, errexit, returned, calls=calls)
     if call is None:
         return _FUNCTION_BODY
+    analysis = statement_analysis(stmts) if analysis is None else analysis
+    call_contexts = [context for position in calls
+                     for context in _enclosing_failure_contexts(stmts, position, analysis)]
+    if any(_is_negated_context(context) for context in call_contexts):
+        return "is negated, so the failing path is the THEN branch"
+    if any(conditional(context) for context in call_contexts):
+        return "is an `if`/`while` test, which errexit does not apply to"
     body = answer if isinstance(answer, Reach) and not soft else close - index
     return FunctionStatusGate(
         call, body, answer if soft else None
     )
 
 
-def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
+def swallowed(stmts, index, statement, stage, credit=_UNMEASURED, analysis=None):
     """Why this check's failure would go nowhere, or None.
 
     Phrased to follow "the checksum that names <file>", because that is the
     sentence a reader gets when the check they wrote did not clear the fetch
     they wrote it for. What is read here is the shell right around the check
-    -- an `Inlined` statement's `credit` first, then its separator, `!` and
-    `if` -- and `credit` is the step's own answer for the statement, read
+    -- an `Inlined` statement's strong `credit` first, while a local `Reach`
+    still passes through its separator, `!`, `if` and function call -- and
+    `credit` is the step's own answer for the statement, read
     last: `step_credit`'s, the guard's `_SOFT_STEP` pair where the step
     carries `continue-on-error: true` (`job_defects`), or None where it has
     none. A `Reach` answer is a check ahead of `&&`, which still stops what
@@ -434,18 +468,48 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
     measuring_uses = credit is not _UNMEASURED
     if credit is _UNMEASURED:
         credit = None
-    inherited_child_reach = False
+    inherited_child_reach, local = False, None
+    async_local = _UNMEASURED
+    analysis = statement_analysis(stmts) if analysis is None else analysis
+    plain_arm = _inside_unmarked_case(stmts, index, analysis)
+    contexts = [(_failure_context(item.argv, plain_arm, item,
+                                  analysis.leading_arm(item)), item)
+                for item in statement.stages]
+    if not contexts:
+        contexts = [(_failure_context(stage.argv, plain_arm, stage,
+                                      analysis.leading_arm(stage)), stage)]
+    enclosing = _enclosing_failure_contexts(stmts, index, analysis)
+    # A check written in this shell keeps main's exact brace/group answer.
+    # For a handed script, an enclosing compound is the ambiguous child-local
+    # proof that must fall back to the parent answer instead.
+    exact_enclosing = () if isinstance(statement, Inlined) else enclosing
+    is_negated = (any(_is_negated_context(context, item)
+                      for context, item in contexts)
+                  or any(_is_negated_context(context) for context in exact_enclosing))
+    is_conditional = (any(conditional(context) for context, _item in contexts)
+                      or any(conditional(context) for context in exact_enclosing))
+    opened = (context for _local, item in contexts for context in analysis.opened_contexts(item))
+    async_spans = [max(0, (context.through if context.through is not None else index) - index)
+                   for context in (*enclosing, *opened)
+                   if getattr(context, "asynchronous", False)]
+    async_span = min(async_spans) if async_spans else None
     if isinstance(statement, Inlined):
         own = statement.credit[stage is not statement.stages[-1]]
         outer = credit[stage is not statement.stages[-1]] if credit else None
         # `flattened` uses an unbounded base Reach when the child gates its own
         # remainder but its parent does not stop on the child's status. A later
         # step-level Reach supplies the carrier boundary; every other local
-        # refusal remains stronger and is returned unchanged.
+        # refusal remains stronger and is returned unchanged. A bounded local
+        # Reach still needs its negation/condition and function call read below.
         inherited_child_reach = (type(own) is Reach and own.span is None
                                  and isinstance(outer, Reach))
         if own and not inherited_child_reach:
-            return own
+            if type(own) is Reach and own.span is not None:
+                local = None if _skippable_or(stmts, index) else own
+            elif not (is_negated or is_conditional):
+                return own
+        elif own is None:
+            async_local = None
     if statement.separator == "&":
         return _DETACHED
     if statement.separator == "||":
@@ -485,12 +549,17 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
     # module's own remedy text recommends -- the checksum is the second stage
     # and its own argv says nothing about the test wrapped around it. Ask the
     # head as well as the stage, because a one-stage statement is both.
-    head = statement.stages[0].argv if statement.stages else stage.argv
-    if negated(head) or negated(stage.argv):
+    if is_negated:
         return "is negated, so the failing path is the THEN branch"
-    if conditional(head) or conditional(stage.argv):
+    if is_conditional:
         return "is an `if`/`while` test, which errexit does not apply to"
-    why = credit[stage is not statement.stages[-1]] if credit else None
+    why = local or (credit[stage is not statement.stages[-1]] if credit else None)
+    if (isinstance(statement, Inlined) and analysis.blocks_reach(index)
+            and why is None):
+        # Falling back to a clean parent must not clear a shape main refuses.
+        # Keep the ambiguity conservative; a real parent refusal stays more
+        # specific and wins through ``why`` above.
+        why = _BARRIER_REASONS[analysis.reach_barrier(index)]
     piped_end = (_piped_group_end(stmts, index)
                  if not inherited_child_reach
                  and (why is None or isinstance(why, Reach)) else None)
@@ -514,4 +583,23 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED):
             start, through, stops = rescue
             outside = stops if isinstance(stops, Reach) else answer
             return RescueGate(start, through, outside)
-    return _function_status(stmts, index, answer, errexit) if measuring_uses else answer
+    answer = (_function_status(stmts, index, answer, errexit, analysis)
+              if measuring_uses else answer)
+    if async_span is not None:
+        inside = answer if async_local is _UNMEASURED else async_local
+        if (inside is None or isinstance(inside, FunctionStatusGate)
+                or isinstance(inside, Reach)
+                and type(inside) is Reach and inside.span is not None):
+            outside = (answer if answer is not None and not isinstance(answer, Reach)
+                       else "runs asynchronously under `coproc`")
+            answer = ContextGate(index + async_span, inside, outside)
+    barrier_end = (analysis.reach_barrier_end(index)
+                   if not isinstance(statement, Inlined) else None)
+    if (measuring_uses and barrier_end is not None
+            and (answer is None or isinstance(answer, Reach))):
+        if isinstance(answer, Reach) and answer.span is not None:
+            barrier_end = max(barrier_end, index + answer.span)
+        answer = ContextGate(
+            barrier_end, _BARRIER_REASONS[analysis.reach_barrier(index)], answer
+        )
+    return answer
