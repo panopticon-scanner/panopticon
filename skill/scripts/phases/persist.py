@@ -647,6 +647,17 @@ def write_reply(entry, text):
     # file nobody checked on the way in.
     if isinstance(data, dict) and role_of(entry) in _CONTROLLER_STAMP_ROLES:
         data = _controller_stamp(entry, data)
+    # Provider-side constraints are only an optimization: validate every
+    # returned role against its original published contract at receipt, after
+    # the controller has supplied the identity fields that contract requires.
+    schema = role_schema(entry)
+    if schema:
+        from scripts.synth import validate_schema
+        errors = validate_schema.schema_errors(data, schema_path=schema)
+        if errors:
+            detail = "; ".join(errors[:3])[:REASON_CAP]
+            return False, "reply for %r rejected by %s: %s" % (
+                entry.get("id"), os.path.basename(schema), detail)
     ok, reason = accepts(entry, data)
     if not ok:
         return False, "reply for %r rejected: %s" % (entry.get("id"), reason)

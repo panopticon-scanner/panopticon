@@ -22,6 +22,11 @@ def _entry(out_file, delivery="return_json", **extra):
     return e
 
 
+def _advisor_verdict(finding_id="F1", verdict="CONFIRMED"):
+    return {"finding_id": finding_id, "verdict": verdict, "confidence": "LIKELY",
+            "reasoning": "r", "explored": [], "references": [], "citations": {}}
+
+
 def _verify_cell(review_root, findings=2):
     """A production-shaped primary verify-cell entry, WITH its review cell on
     disk -- the state `verify_execute` actually dispatches in (review_done
@@ -45,8 +50,7 @@ def _verify_cell(review_root, findings=2):
     entry = verify._verify_entry(review_root, manifest, "app", "SEC", files, cell,
                                  "claude", ocrdb.load_bundle(), "primary")
     return {"entry": entry, "cell": cell, "ids": [f["id"] for f in cell],
-            "verdicts": lambda ids: [{"finding_id": i, "verdict": "CONFIRMED",
-                                      "reasoning": "r"} for i in ids]}
+            "verdicts": lambda ids: [_advisor_verdict(i) for i in ids]}
 
 
 class TestRoleOf(unittest.TestCase):
@@ -152,10 +156,39 @@ class TestWriteReply(unittest.TestCase):
 
     def test_a_tool_advisor_reply_needs_a_valid_verdict_value(self):
         e = _entry(self._out("verdicts", "q-0001.json"))
-        ok, _ = persist.write_reply(e, json.dumps({"verdict": "MAYBE"}))
+        ok, _ = persist.write_reply(e, json.dumps(_advisor_verdict(verdict="MAYBE")))
         self.assertFalse(ok)
-        ok, reason = persist.write_reply(e, json.dumps({"verdict": "confirmed"}))
+        ok, reason = persist.write_reply(e, json.dumps(_advisor_verdict()))
         self.assertTrue(ok, reason)
+
+    def test_each_returning_role_schema_is_enforced_after_controller_stamping(self):
+        cases = [
+            (_entry(self._out("findings-app-SEC.json"), host="codex", run_id="RID",
+                    group="app", domain="SEC"), {"findings": [{}]}, {"findings": []},
+             "findings-envelope-schema.json", True),
+            (_entry(self._out("verdicts", "verdicts-app-SEC.json"), host="codex",
+                    run_id="RID", group="app", domain="SEC", stage="primary"),
+             {"verdicts": [{}]}, {"verdicts": []},
+             "verdict-bundle-schema.json", True),
+            (_entry(self._out("verdicts", "q-0002.json"), host="codex"),
+             {"verdict": "CONFIRMED"}, _advisor_verdict(),
+             "advisor-verdict-schema.json", False),
+        ]
+        for entry, invalid, valid, schema_name, stamped in cases:
+            with self.subTest(schema=schema_name):
+                self.assertNotIn("output_schema", entry)
+                ok, reason = persist.write_reply(entry, json.dumps(invalid))
+                self.assertFalse(ok)
+                self.assertIn(schema_name, reason)
+                self.assertIn("schema:", reason)
+                self.assertFalse(os.path.exists(entry["out_file"]))
+
+                ok, reason = persist.write_reply(entry, json.dumps(valid))
+                self.assertTrue(ok, reason)
+                with open(entry["out_file"], encoding="utf-8") as fh:
+                    written = json.load(fh)
+                if stamped:
+                    self.assertEqual("controller", written["_panopticon"]["stamped_by"])
 
     def test_an_unknown_out_file_family_is_refused(self):
         e = _entry(self._out("report.json"))

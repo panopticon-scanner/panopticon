@@ -92,7 +92,8 @@ def _codex_surfaces(registration_dir=None, inspector=None, runner=None):
                      os.path.join(directory, dispatch.registered_agent_filename("codex", role_file)))
             if not setup and not os.path.isfile(shell):
                 raise FileNotFoundError("Codex reviewer shell is missing: %s" % shell)
-            entry = {"id": "setup-scan" if setup else "probe-" + role,
+            probe_id = (codex_host.SETUP_PROBE_ID if role == "setup_scan" else "probe-" + role)
+            entry = {"id": "setup-scan" if setup else probe_id,
                      "agent": None if setup else dispatch.registered_agent_name(role_file),
                      "enforced": not setup, "delivery": "return_json",
                      "model": None if setup else model_resolver.resolve_model("codex", role).get("model"),

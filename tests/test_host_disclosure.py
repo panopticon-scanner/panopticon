@@ -607,8 +607,8 @@ class TestTheConstrainedOutputDisclosure(unittest.TestCase):
     """D10 F1: when the driver omits the output schema, it says so once, on
     the surface that already speaks about this host's measured facts."""
 
-    def _envelope(self, fact):
-        body = {"schema_version": 1, "host": "claude", "probed_at": "t",
+    def _envelope(self, fact, host="claude"):
+        body = {"schema_version": 1, "host": host, "probed_at": "t",
                 "capabilities": {c: {"state": hosts.PROVEN, "by": "fixture",
                                      "detail": "fixture"}
                                  for c in hosts.CAPABILITIES}}
@@ -657,21 +657,26 @@ class TestTheConstrainedOutputDisclosure(unittest.TestCase):
     # of 309 launches -- so once a run has spent one launch measuring the
     # shape, every surface says which of the three answers it got.
 
-    def _shaped(self, shape, detail="the probe's own sentence"):
+    def _shaped(self, shape, detail="the probe's own sentence", host="claude"):
+        flag = "--output-schema" if host == "codex" else "--json-schema"
         return host_disclosure.notes(self._envelope(
-            {"flag": "--json-schema", "advertised": True, "detail": "advertised",
-             hosts.SHAPE: shape, hosts.SHAPE_DETAIL: detail}))
+            {"flag": flag, "advertised": True, "detail": "advertised",
+             hosts.SHAPE: shape, hosts.SHAPE_DETAIL: detail}, host=host))
 
     def test_a_proven_shape_says_one_launch_proved_it(self):
         lines = self._shaped(hosts.SHAPE_PROVEN)
         self.assertEqual(1, len(lines))
         self.assertIn("--json-schema", lines[0])
         self.assertIn("shape proven by one launch", lines[0])
-        # #2923: accepting the toy probe does not prove that a different
-        # production schema is provider-compatible.  The runner screens each
-        # schema independently and receipt validation remains the backstop.
-        self.assertIn("only when the runner accepts that entry's schema", lines[0])
-        self.assertIn("validates every reply either way", lines[0])
+        self.assertIn("schema-constrained this run", lines[0])
+        self.assertNotIn("production role schemas", lines[0])
+
+    def test_codex_proven_shape_says_no_production_reply_is_provider_constrained(self):
+        lines = self._shaped(hosts.SHAPE_PROVEN, host="codex")
+        self.assertEqual(1, len(lines))
+        self.assertIn("no production reply is provider-schema-constrained", lines[0])
+        self.assertIn("three production role schemas", lines[0])
+        self.assertIn("persist.write_reply", lines[0])
 
     def test_a_refuted_shape_says_what_the_run_does_instead(self):
         lines = self._shaped(hosts.SHAPE_REFUTED, "failed in 120 ms with no envelope")

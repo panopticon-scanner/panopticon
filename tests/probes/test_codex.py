@@ -124,7 +124,7 @@ def test_unavailable_runtime_is_unknown_with_reason(probe, tmp_path):
 
 
 def test_a_surface_timeout_is_unknown_and_names_the_180_second_boundary(tmp_path):
-    """#2923 B: exhausted confinement is distinct from a 46--90s success."""
+    """#2923 B: exhausted confinement is distinct from the observed 64.8s success."""
     from scripts import codex_host
 
     timeout = subprocess.TimeoutExpired(["codex", "exec"], codex_host.PROBE_TIMEOUT)

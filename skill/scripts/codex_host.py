@@ -40,10 +40,9 @@ DEFAULT_RUNNER = subprocess.run
 # unenforced fallback, so an unregistered machine has to be told what to run.
 REGISTER_REMEDY = "run: python3 skill/scripts/dispatch.py --emit-host-agents codex"
 MAX_BYTES = 8 * 1024 * 1024
-# A real 0.161.0 surface inspection took 64.8 seconds for one registered role
-# plus native setup.  Keep 46--90 second successes distinct from an unavailable
-# confinement probe; 180 seconds is still a bounded local-only measurement
-# (#2923 B).
+# One real 0.161.0 surface inspection took 64.8 seconds.  Allow headroom while
+# keeping both that localhost-only measurement and the bundled-catalog dump
+# bounded (#2923 B).
 PROBE_TIMEOUT = 180
 # Everything one launch allocated, keyed by the scratch cwd -- the one path
 # cleanup can recover from argv. The value is (per-entry runtime dir, run
@@ -67,6 +66,7 @@ LaunchRefused = runners_base.LaunchRefused
 
 
 _MODEL_NEUTRAL_SETUP_AGENT = "panopticon-setup-scan"
+SETUP_PROBE_ID = "probe-setup_scan"
 
 
 _POLICY_FEATURES = (
@@ -295,9 +295,11 @@ def command(entry, env, review_root, run_dir, runner=None, registration_dir=None
     # not, and the emitted TOML carries no `model` key either. Every other role
     # must still name one, or an enforced launch would silently take the CLI's
     # default.
-    registered_setup_probe = (entry.get("id") == "probe-setup_scan"
+    native_setup = (entry.get("id") == "setup-scan"
+                    and entry.get("agent") in (None, _MODEL_NEUTRAL_SETUP_AGENT))
+    registered_setup_probe = (entry.get("id") == SETUP_PROBE_ID
                               and entry.get("agent") == _MODEL_NEUTRAL_SETUP_AGENT)
-    if model is None and entry.get("id") != "setup-scan" and not registered_setup_probe:
+    if model is None and not native_setup and not registered_setup_probe:
         raise ValueError("Codex reviewer requires an explicit entry model")
     schema_argv = tuple(schema_argv or ())
     if schema_argv:

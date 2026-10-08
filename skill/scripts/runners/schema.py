@@ -55,8 +55,9 @@ def strict_output_schema(path):
 
     Codex/OpenAI strict structured output requires an object root, every
     object's properties to be required, and ``additionalProperties: false``.
-    It accepts nested ``anyOf`` and local definitions, but not an ``anyOf``
-    root, external references, or the unsupported composition keywords below.
+    It accepts nested ``anyOf`` and local ``$defs``, but not an ``anyOf`` root,
+    draft-07 ``definitions``, external references, or the unsupported
+    composition keywords below.
     Check those rules, the JSON Schema vocabulary, and the provider's size
     limits before a schema path reaches ``codex exec --output-schema``.
     ``None`` is the fail-safe answer: the controller still validates the
@@ -73,8 +74,7 @@ def strict_output_schema(path):
             body = json.load(fh)
     except (OSError, ValueError):
         return None
-    if (not isinstance(body, dict)
-            or body.get("$schema", _STRICT_DIALECT) != _STRICT_DIALECT):
+    if (not isinstance(body, dict) or body.get("$schema") != _STRICT_DIALECT):
         return None
     try:
         jsonschema.validators.validator_for(body).check_schema(body)

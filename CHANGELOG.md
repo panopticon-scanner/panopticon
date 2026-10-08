@@ -11,12 +11,13 @@ evidence exposed.
   `gpt-6-sol`; set `PANOPTICON_MODEL_<ROLE>` to pin another installed model.
 - **Codex headless probes reach panels without invocation-local workarounds (#2923).** The
   registered, model-neutral `setup_scan` surface probe now keeps its intentional inherited model;
-  the localhost-only effective-surface probe has a 180-second bound, covering observed valid
-  46–90-second launches; and `codex exec --output-schema` is omitted for a published schema whose
-  root, recursive objects, references, or composition are not strict-output compatible. The entry
-  keeps that schema for controller-side receipt validation, and disclosure qualifies the toy proof
-  per entry, so an accepted probe can no longer fan a production-schema rejection out across a
-  matrix batch.
+  the localhost-only effective-surface probe and bundled-catalog read have a 180-second bound after
+  one observed valid inspection took 64.8 seconds; and `codex exec --output-schema` is omitted for
+  a published schema whose root, recursive objects, references, or composition are not strict-output
+  compatible. After controller stamping, `phases.persist.write_reply` validates every returned role
+  against its unmodified Draft-7 `role_schema(entry)` before writing. The Codex disclosure therefore
+  says that its successful toy proof constrains no production reply in this build, so neither a slow
+  probe nor an incompatible production schema can fan a rejection out across a matrix batch.
 - **Reviewer write safety separates the boundary from its transport (#1622).**
   `artifact_write_guard` now means reviewer-controlled artifact writes are impossible or confined.
   The static `self_write_delivery` fact is true only for Claude and Kimi, and a write-capable role

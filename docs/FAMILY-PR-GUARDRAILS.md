@@ -90,13 +90,15 @@ The seam's contract, in `skill/scripts/runners/base.py`:
   it unconditionally. A family whose provider enforces a stricter JSON-Schema
   subset must also check the particular published schema before launch and omit
   the flag for an incompatible schema while leaving the entry's schema in place
-  for receipt validation. Codex checks the provider subset recursively: the root
-  is an object; every property is required; every object closes
-  `additionalProperties`; nested `anyOf` and local definitions are allowed;
-  malformed or unsupported keywords, external references, and shapes over the
-  documented provider limits are not (#2923). A proven toy shape therefore
-  discloses only that the runner may pass compatible entry schemas, never that
-  every production schema is compatible.
+  for receipt validation. After controller stamping, `phases.persist.write_reply`
+  enforces the unmodified Draft-7 `role_schema(entry)` on every returned role,
+  regardless of host. Codex checks the provider subset recursively: the root is
+  an object; every property is required; every object closes
+  `additionalProperties`; nested `anyOf` and local `$defs` are allowed, while
+  draft-07 `definitions`, malformed or unsupported keywords, external references,
+  and shapes over the documented provider limits are not (#2923). A proven toy
+  shape therefore discloses only the probe transport, never compatibility of a
+  production schema.
   **Check what your CLI wants after the flag — a path or
   the text.** codex's `--output-schema <FILE>` takes the path, which is what
   `schema_argv` hands over by default; claude's `--json-schema <schema>` takes

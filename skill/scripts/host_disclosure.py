@@ -365,9 +365,14 @@ def _shape_line(row, host):
     shape, flag = row.get(hosts.SHAPE), row.get("flag") or "its output-schema flag"
     detail = row.get(hosts.SHAPE_DETAIL) or "no detail recorded"
     if shape == hosts.SHAPE_PROVEN:
-        return [("replies are schema-constrained only when the runner accepts that entry's "
-                 + "schema on host %r -- %s advertised, shape proven by one launch (%s); "
-                 + "the driver validates every reply either way") % (host, flag, detail)]
+        if host == "codex":
+            return [("no production reply is provider-schema-constrained on host %r -- %s "
+                     + "advertised and the toy shape was proven by one launch (%s), but none "
+                     + "of this build's three production role schemas passes the Codex "
+                     + "compatibility screen; persist.write_reply validates each returned "
+                     + "role against its original schema on receipt") % (host, flag, detail)]
+        return [("replies are schema-constrained this run on host %r -- %s advertised, "
+                 + "shape proven by one launch (%s)") % (host, flag, detail)]
     if shape == hosts.SHAPE_REFUTED:
         return [("replies are not schema-constrained this run on host %r -- %s "
                  + "advertised, shape REFUTED by one launch (%s) -- entries launch "
