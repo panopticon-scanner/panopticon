@@ -260,7 +260,7 @@ evidence exposed.
   3.2-3.3x the base, which reads `true` there; and on the round-12 seat's hunts 33-48, 1.30x
   round 12 and 1.76x `main` in all, and on hunts 42, 43 and 46, the ones dense in such words,
   1.58-1.74x the ranked draft's one reading (2.29-2.51x W's fold alone); the round-13 seat's n
-  lines around one such word cost 2.83-2.98x one reading from 250 to 2,000 lines, flat against
+  lines of one such word each cost 2.83-2.98x one reading from 250 to 2,000 lines, flat against
   `main`).
 - **Codex model profiles move to GPT-6 (#2872).** Pinned role defaults now use `gpt-6-luna` or
   `gpt-6-sol`; set `PANOPTICON_MODEL_<ROLE>` to pin another installed model.
