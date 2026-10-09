@@ -2454,11 +2454,13 @@ class TestEveryMixedReadingIsRead(unittest.TestCase):
         # (`workflow_programs.stdin_scripts`, `at_place`), so two of one text are two places -- main
         # and round 1 read each CLEAN while the parents run it. With a blank more in one of the two
         # the pair reports as it did (the hunt's P1 rows), and with nothing downloaded each reads
-        # CLEAN (its B rows).
-        w, fetch = self.W, "curl -fsSLo t.sh %st.sh#" % URL
+        # CLEAN (its B rows). So too the heredoc a FILE program's shell reads (`bash <(echo 'sh')
+        # <<'EOF'`, the function's second `at_place`), and one a `cat` prints into a `<(…)`.
+        w, fetch, bash = self.W, "curl -fsSLo t.sh %st.sh#" % URL, (None, "bash", "bash {0}")
         env, moved = "X=1 %s\n%s", "X=1\nexport X\n%s\nunset X\n%s"
         for form, shells in (("sh <<'EOF'\n%s\nEOF", SHELLS), ("bash <<'EOF'\n%s\nEOF", SHELLS),
-                             ("sh <<< '%s'", (None, "bash", "bash {0}"))):     # `<<<` is bash's
+                             ("sh <<< '%s'", bash),                # `<<<` and `<(…)` are bash's
+                             ("bash <(echo 'sh') <<'EOF'\n%s\nEOF", bash), ("bash <(cat <<'EOF'\n%s\nEOF\n)", bash)):
             one = form % w
             for row in (env % (one, one), moved % (one, one), moved % (one, form % (w + " "))):
                 for shell in shells:
@@ -2554,6 +2556,14 @@ class TestEveryMixedReadingIsRead(unittest.TestCase):
                 shell_reader.command(stage.argv)
             self.assertLessEqual(len(shell_command._HALVES["words"]), shell_command._HALF_CAP)
             self.assertLessEqual(len(shell_command._masks()), 8)
+        # And `_masks` by itself, handed more words than the cap: the first three's sets, no more.
+        shell_command._HALVES.update(words=dict.fromkeys(range(12)), both=True)
+        try:
+            masks = shell_command._masks()
+        finally:
+            shell_command._HALVES.update(words={}, both=False)
+        self.assertEqual(8, len(masks))
+        self.assertEqual({0, 1, 2}, set().union(*masks[2:]))
 
     def test_a_word_in_a_program_a_shell_runs_is_a_place_of_its_own(self):
         # A nested program's first such word stands first in its own parse, as the step's does in
