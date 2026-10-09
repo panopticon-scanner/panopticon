@@ -320,8 +320,8 @@ def _half(whole, differs):
     """Whether this fold reads empty a command word bash may expand to nothing that has both halves,
     and why the guard cannot read it where its halves read apart and it is one past the `_HALF_CAP`
     such words a job holds (#2929): outside `folds` never, as `main` reads it; in them, where the
-    fold reads all, or, its halves apart, its place -- its parse's source and order
-    (`shell_tokens._Parse.whole`), the same in every parse of that source."""
+    fold reads all, or, its halves apart, its place -- where its parse stands and its order there
+    (`shell_tokens._Parse.whole`), the same in every parse of that place and never its text."""
     if not _HALVES["on"]:
         return False, None
     _HALVES["both"], words, past = True, _HALVES["words"], None
@@ -335,8 +335,9 @@ def _half(whole, differs):
 
 def _masks():
     """The sets of command words bash may expand to nothing a fold reads empty, in order: none, all
-    where one has both halves, then each other set of those whose halves read apart (#2929)."""
-    words = list(_HALVES["words"])
+    where one has both halves, then each other set of those whose halves read apart -- of the first
+    `_HALF_CAP` alone, so the folds never grow past 8 (#2929)."""
+    words = list(_HALVES["words"])[:_HALF_CAP]
     some = [frozenset(word for at, word in enumerate(words) if bits >> at & 1) for bits in range(1, (1 << len(words)) - 1)]
     return [frozenset()] + ([_ALL] + some if _HALVES["both"] else [])
 

@@ -41,6 +41,11 @@ class Lifted(str):
         return lifted
 
 
+class Backquoted(str):
+    """The text of a backquote, read again as a script of its own: a `str`, so `workflow_printers`
+    reads its backslashes as a backquote's, carrying the `place` its parse gives it (#2929)."""
+
+
 class Process(Lifted):
     """The text of a `<(...)` or `>(...)`: bash hands the command a FILE to
     read or write, where a `$(...)` or backquote hands it the OUTPUT as words."""
@@ -73,7 +78,8 @@ def _lift_substitutions(text, context, arithmetic_body=False):
     where `eval "$(curl -fsSL ... )"` and `bash <(curl ...)` keep their fetch.
     The heredoc markers in a text go with it, entries and all (`Lifted`).
     """
-    inners, out, i, quote = [], [], 0, None
+    inners: list[str] = []
+    out, i, quote = [], 0, None
     while i < len(text):
         ch = text[i]
         if quote in ("'", "$'"):                # single quotes suppress all of it
@@ -95,7 +101,7 @@ def _lift_substitutions(text, context, arithmetic_body=False):
         if ch == "`":
             end = text.find("`", i + 1)
             if end != -1:
-                inners.append(text[i + 1:end])
+                inners.append(Backquoted(text[i + 1:end]))
                 out.append(context.new("subst", inners[-1]))
                 i = end + 1
                 continue

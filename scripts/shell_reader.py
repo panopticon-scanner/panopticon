@@ -51,8 +51,8 @@ from shell_patterns import (MARK, QUOTED, QUOTED_DOLLAR, is_pattern, leads, patt
 from shell_quote import ansi_c
 from shell_text import (_lift_substitutions, join_continuations as join_continuations,
                         without_comments as without_comments)
-from shell_tokens import (_Expanded as _Expanded, _Parse as _Parse, _Token as _Token,
-                          _markers as _markers, bang as bang, derived as derived,
+from shell_tokens import (_Expanded as _Expanded, _Parse as _Parse, _Token as _Token, placed as placed,
+                          _markers as _markers, at_place as at_place, bang as bang, derived as derived,
                           has_substitution as has_substitution, is_arm as is_arm,
                           is_marker as is_marker, kept as kept, readable as readable,
                           yields_words as yields_words)
