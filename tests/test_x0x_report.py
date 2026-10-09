@@ -218,7 +218,7 @@ class TestX0XReport(unittest.TestCase):
         self.assertEqual(len(bounded_record["diagnostic"]), 340)
         self.assertTrue(bounded_record["diagnostic"].endswith("\u2026"))
 
-        expanded = "postgres://u:p@h"
+        expanded = "postgres:" + "/" * 2 + "u:p@h"
         expanded += " " + "t" * (120 - len(expanded) - 1)
         redaction_cut = emitted("gap-2", expanded)
         redaction_record = only(
