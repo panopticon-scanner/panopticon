@@ -12,6 +12,7 @@ from unittest import mock
 import scripts.phases.runio as runio
 import scripts.phases.engine as engine
 import scripts.phases.coverage as coverage
+import scripts.phases.synthesize as synthesize_phase
 import scripts.phases.tools as tools_phase
 import scripts.phases.validate as validate_phase
 
@@ -108,6 +109,39 @@ class TestResetGlobs(unittest.TestCase):
                 self.assertFalse(os.path.exists(os.path.join(artifacts, name)), name)
             with open(durable, encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), "keep")
+
+
+class TestX0XFailureStatus(unittest.TestCase):
+    def test_terminal_status_retains_the_synthesize_disclosure(self):
+        root = make_git_repo(
+            test_case=self,
+            files={"src/app.py": "x = 1\n"},
+            branch="main", user_email="t@t", user_name="t",
+        )
+        args = driver.build_parser().parse_args(["run", root, "--no-tools"])
+        report_path = os.path.join(root, ".panopticon", "report.json")
+        failure_path = os.path.join(root, ".panopticon", "report-x0x-failures.json")
+        os.makedirs(os.path.dirname(failure_path), exist_ok=True)
+        with open(failure_path, "w", encoding="utf-8") as fh:
+            json.dump({"discarded_findings": [
+                {"finding_id": "SE-077", "reason": "no file locus",
+                 "diagnostic": "first"},
+                {"finding_id": "SE-078", "reason": "no file locus",
+                 "diagnostic": "second"},
+            ]}, fh)
+
+        disclosure = synthesize_phase.x0x_failure_disclosure(report_path)
+        self.assertEqual(disclosure["count"], 2)
+        with mock.patch.object(runio, "_report_out", return_value=report_path):
+            status = driver.run(args, phases=())
+            resumed_status = driver.run(args, phases=())
+
+        for observed in (status, resumed_status):
+            self.assertEqual(observed["status"], "complete", observed)
+            self.assertEqual(observed["x0x_discarded"], 2)
+            self.assertEqual(observed["x0x_failure_log"], failure_path)
+            self.assertIn("X0X discarded 2 locus-free", observed["message"])
+            self.assertIn(failure_path, observed["message"])
 
 
 class TestDriverPlanIssues(unittest.TestCase):
@@ -391,4 +425,3 @@ class TestRunConvertsAConfinementRefusal(unittest.TestCase):
                                side_effect=boom):
             status = driver.run(args)
         self._assert_refusal(status, victim)
-
