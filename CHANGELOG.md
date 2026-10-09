@@ -79,10 +79,10 @@ evidence exposed.
   cost, `job_defects` against `main` interleaved in one process, three passes on the final
   scripts: 1.9x to 2.4x on the 39 rows of hunts 45-53 that hold two such words, flat where one or
   none, 3.3x to 5.0x for three and past them (the eight folds, to 200 words; the round-2 seat's
-  rows past the cap read 4.70x to 4.98x), and flat on the #2885 seat's 1,945 rows (0.93x and
-  0.97x, two passes). Two such words in one stage stay #2856's named limit: only a stage's first
-  `${…}` word is read whole. `shell_reader._stage`'s docstring is rewrapped at 96 columns, every
-  word kept, for the line that stamps the place.
+  rows past the cap read 4.70x to 4.98x), and 1.06x on the #2885 seat's 1,945 rows (1.05x to
+  1.07x, the round-3 seat's measure). Two such words in one stage stay #2856's named limit: only a
+  stage's first `${…}` word is read whole. `shell_reader._stage`'s docstring is rewrapped at 96
+  columns, every word kept, for the line that stamps the place.
 - **Workflow reader reads every action a `find` runs (#2918).** `curl … -o tool` ⏎ `find
   /dev/null -exec true \; -exec sh /dev/fd/3 \; 3<> tool` ran the download and read CLEAN: the
   guard read one of `find`'s actions, the first of `-exec`, `-execdir`, `-ok` and `-okdir` in that
