@@ -4,7 +4,6 @@ from typing import TYPE_CHECKING, Any
 import hashlib
 import html
 import json
-import os
 import re
 
 if TYPE_CHECKING:
@@ -1540,10 +1539,7 @@ def write_html(report, path, compare_report=None):
     lands in the REVIEWED tree's `.panopticon` -- a name a target can pre-commit
     as a symlink. Confine the whole path BEFORE the makedirs (which would
     traverse a symlinked directory) and never open through a link."""
-    safe_write.confine_artifact_path(path)
-    os.makedirs(os.path.dirname(os.path.abspath(path)) if os.path.dirname(path) else ".", exist_ok=True)
-    with safe_write.open_w_nofollow(path) as fh:
-        fh.write(render(report, compare_report=compare_report))
+    safe_write.write_text(path, render(report, compare_report=compare_report))
 
 
 def render(report, compare_report=None):
