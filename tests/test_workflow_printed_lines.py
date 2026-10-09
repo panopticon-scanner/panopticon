@@ -29,9 +29,11 @@ settings too. A line the guard can SPELL -- the `$` escaped inside double quotes
 copies of it are #2953's. A line whose command word is a one-word default (`${X:-curl} …`) waits for #2963's
 rule. `builtin` in front of a printer is no wrapper to the reader, so the printer is not read at all (as on
 `main`, spelled or not). Two gaps of the rendering, pinned as they read: a number written in another base prints
-as `0` here, and `strftime` codes inside bash's `%(…)T` stand as written.
+as `0` here, and `strftime` codes inside bash's `%(…)T` stand as written. And one bound: `printf` prints its format
+again while words are left, so its text can outgrow what is written many times over; past 4,096 characters and
+four times what was written the rendering is not followed, and the printer reports (`TestThePrice`).
 
-Everything here is measured on 766 rows in five bounded hunts; a class named below is the rows pinned for it.
+Everything here is measured on 780 rows in six bounded hunts; a class named below is the rows pinned for it.
 """
 import unittest
 from unittest import mock
@@ -204,6 +206,15 @@ class TestALineTheFormatPutsTogether(unittest.TestCase):
             with self.subTest(printer=name):
                 self.assertEqual(NOW, marks(fed(printer, "eval")))
 
+    def test_the_second_use_of_the_format_bares_a_fetch_the_first_kept_in_a_quote(self):
+        # The format opens a quote and never closes it. Used once, the fetch is inside it; used again for a
+        # second word, its own `"` closes the quote and the fetch stands bare.
+        twice = "printf 'echo \"" + N + L + " #%s" + N + "' w1 w2"
+        for route in ("pipe", "eval"):
+            with self.subTest(route=route):
+                self.assertEqual(NOW, marks(fed(twice, route)))                              # truth: runs
+                self.assertEqual(CLEAN, marks(fed(twice[:-3], route)))                       # one word: nothing
+
     def test_the_format_in_a_variable_has_each_word_weighed(self):
         step = "F='%s" + N + "'\n" + "{}\nsh t"             # truth: runs
         self.assertEqual(BEFORE, marks(step.format("printf \"$F\" '" + L + "' | sh")))
@@ -335,6 +346,16 @@ class TestThePrice(unittest.TestCase):
         self.assertEqual(BEFORE, marks("echo curl | sh\nsh t"))                              # `main`'s reading
         self.assertEqual(NOW, marks(fed("printf '%s" + N + "' curl -fsSLo t " + U)))        # truth: fetch only
 
+    def test_a_format_printed_again_past_the_bound_is_not_followed_and_reports(self):
+        long = "printf '" + ("true" + N) * 100 + "%s" + N + "' "       # 100 lines of `true`, then the word's
+        for route in ("pipe", "eval"):
+            with self.subTest(route=route):
+                self.assertEqual(NOW, marks(fed(long + "w " * 40, route)))               # truth: nothing -- the price
+                self.assertEqual(CLEAN, marks(fed(long + "w w w", route)))               # within it: nothing, and read
+                self.assertEqual(NOW, marks(fed(long + "true " * 39 + "'" + L + "'", route)))   # truth: runs
+                self.assertEqual(NOW, marks(fed(long + "true true '" + L + "'", route)))        # within it: runs
+                self.assertEqual(NOW, marks(fed("printf '" + "%250s" * 40 + N + "' w", route)))     # nothing: 10,000 blanks
+
     def test_four_rows_only_dash_makes_report_under_the_bash_settings_too(self):
         for printer, route in (('echo "true' + N + L + '$Q"', "file"),                      # truth: nothing, each:
                                ('echo -E "true' + N + L + '$Q"', "sh -c"),                  # dash refuses `<(…)`, and
@@ -386,7 +407,10 @@ class TestWhatAPrinterWrites(unittest.TestCase):
                 ("%d|%i|%d|%5d|", ["12", "-3", "x", "7"], "12|-3|0|    7|"), ("%.2b|%4b|", ["a" + B + "tbc", "d"], "a\t|   d|"),
                 ("a%yb%s", ["x", "y"], "a"), ("%s|%y|%s", ["a", "b", "c"], "a|"), ("plain", ["x", "y"], "plain"),
                 ("a%", ["x"], "a"), ("%5%|", [], ""), ("a%" + N + "b%s", ["c"], "a"), ("a" + B + "045b", [], "a%b"),
+                ("%s%", ["a", "b"], "a"), ("%250s|", ["a"], " " * 249 + "a|"),
                 ("%d|%d|", ["", "0x10"], "0|0|"),                                # the gap: the shells print `0|16|`
+                ("%0005s|%.0002s|", ["a", "bcd"], "    a|bc|"),
+                ("%.300s|", ["a" * 280 + " b"], "a" * 280 + " b|"),              # a precision is never capped
                 ("%s" + B + "0z", ["a"], "az")):
             for kinds in (self.BASH5, self.BASH3, self.MACOS, self.DASH):
                 with self.subTest(fmt=fmt, words=words, letters=kinds["letters"]):
@@ -408,6 +432,28 @@ class TestWhatAPrinterWrites(unittest.TestCase):
             for kinds, written in ((self.BASH5, bash5), (self.BASH3, bash3), (self.MACOS, bash3), (self.DASH, dash)):
                 with self.subTest(fmt=fmt, words=words, letters=kinds["letters"], echo=kinds["echo"]):
                     self.assertEqual(written, wp._formatted(fmt, words, kinds))
+
+    def test_a_width_no_shell_could_print_and_a_format_made_to_stall_the_scan(self):
+        # The shells would print the blanks; past 256 the rendering stops padding, and no count of digits is a
+        # number Python refuses. The scan ends at the first `%` that begins no conversion, so it stays linear.
+        for kinds in (self.BASH5, self.DASH):
+            huge = "9" * 5000
+            self.assertEqual(" " * 255 + "a|b" + " " * 255 + "|", wp._formatted("%" + huge + "s|%-" + huge + "s|", ["a", "b"], kinds))
+            self.assertEqual(" " * 255 + "a|bcd|", wp._formatted("%*s|%.*s|", [huge, "a", huge, "bcd"], kinds))
+            self.assertEqual("abc|", wp._formatted("%." + huge + "s|", ["abc"], kinds))
+            self.assertEqual("", wp._formatted("%(" * 50000 + "x", ["a"], kinds))
+            self.assertEqual("x", wp._formatted("x" + "%5%" * 50000, [], kinds))
+
+    def test_a_format_printed_again_is_followed_to_a_bound(self):
+        # What is written bounds what is followed: `_LONG` characters, or four times the format and its words.
+        for kinds in (self.BASH5, self.DASH):
+            self.assertEqual(16000, len(wp._formatted("%s" + N, ["w"] * 8000, kinds)))      # 8,000 lines of one word
+            self.assertEqual(6003, len(wp._formatted("x" * 2000 + "%s", ["a"] * 3, kinds)))  # three uses of 2,000
+            self.assertIsNone(wp._formatted("x" * 2000 + "%s", ["a"] * 10, kinds))           # ten: 20,010 characters
+            self.assertIsNone(wp._formatted("%256s" * 1000, ["a"], kinds))                   # 256,000 blanks of 5,000
+        words = shell_reader.command(shell_reader.statements("printf '" + "x" * 2000 + "%s' " + "'$A' " * 10)[0].stages[0].argv)
+        self.assertEqual([wp._PAST_DEPTH[1]], wp._apart(words, None))                        # LOUD, said once
+        self.assertEqual([wp._PAST_DEPTH[1]], wp._apart(words))
 
     def test_an_echo_under_each_row_and_family(self):
         bash, dash = wp._ECHO["bash"], wp._ECHO["sh"]

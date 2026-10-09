@@ -444,7 +444,7 @@ def unsubstituted(value):
 _CONVERSION = re.compile(r"%(?:%|([-+ #0']*)(\*|\d+)?(?:\.(\*|\d*))?(\([^)]*\))?([hjlLtz]*)([A-Za-z]))")
 _ESCAPE = re.compile(
     r"\\(?:([0-7]{1,4})|x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|(.))", re.S)
-_NUMBERS = "diouxXeEfFgGaA"
+_NUMBERS, _PAD, _LONG = "diouxXeEfFgGaA", 256, 4096
 _WRITERS = {
     "bash": ({"format": "eExuq", "b": "eExuo", "echo": "eExu", "letters": "qQnT", "lengths": "hjlLtz"},
              {"format": "eExq", "b": "eExo", "echo": "eEx", "letters": "qn", "lengths": "hjlLtz"},
@@ -486,23 +486,32 @@ def _formatted(fmt, words, kinds):
     conversion past the words prints none. `%b` decodes its word, `%q` quotes it, `%c` keeps its
     first character, a number's letter prints a number (the word where it is one, else `0`), bash
     5.2's `%(text)T` prints `text` and its `%n` nothing; a precision cuts a string and a width pads
-    it, on the left or after a `-`. At a letter the family does not know, and at a `%` that
-    begins no conversion, the output ends."""
-    made, last, out, taken = [], 0, [], 0
+    it, on the left or after a `-`, to `_PAD` characters at most: past that a shell prints only
+    more of the same blanks. At a letter the family does not know, and at a `%` that begins no
+    conversion, the output ends. None where the text outgrows both `_LONG` characters and four
+    times what was written: a format printed again for every few words multiplies, and that is
+    not followed (`_apart` answers LOUD, as `unspelled` does past `_DEPTH`)."""
+    made, last, taken = [], 0, 0
+    out: list[str] = []
 
     def word():
         nonlocal taken
         taken += 1
         return words[taken - 1] if taken <= len(words) else ""
 
-    def plain(part):
-        head, stray, _rest = part.partition("%")        # a `%` no conversion owns: the output ends
-        return _written(head, "format", kinds["format"]) + "\0" * bool(stray)
+    def count(digits):          # a width or a precision, however many digits spell it
+        return int(digits.lstrip("0")[:18] or 0)
 
-    for found in _CONVERSION.finditer(fmt):
-        made.append((plain(fmt[last:found.start()]), found))
+    while (at := fmt.find("%", last)) >= 0:
+        found = _CONVERSION.match(fmt, at)
+        if not found:           # a `%` no conversion owns: the output ends, and so does the scan
+            break
+        made.append((_written(fmt[last:at], "format", kinds["format"]), found))
         last = found.end()
+    tail = _written(fmt[last:] if at < 0 else fmt[last:at], "format", kinds["format"]) + "\0" * (at >= 0)
+    size, most = 0, max(_LONG, 4 * (len(fmt) + sum(map(len, words)) + len(words)))
     while True:
+        start = len(out)
         for text, found in made:
             out.append(text)
             flags, width, precision, dated, lengths, letter = found.groups()
@@ -527,10 +536,14 @@ def _formatted(fmt, words, kinds):
             elif letter != "s" and not re.fullmatch(r"[-+]?\d+", text):
                 text = "0"
             if precision is not None and letter in "sb" and not precision.startswith("-"):
-                text = text[:int(precision) if precision.isdigit() else 0]
-            pad = int(width) if width and re.fullmatch(r"-?\d+", width) else 0
-            out.append(text.ljust(abs(pad)) if "-" in flags or pad < 0 else text.rjust(pad))
-        out.append(plain(fmt[last:]))
+                text = text[:count(precision) if precision.isdigit() else 0]
+            digits = (width or "").lstrip("+-")
+            pad = min(count(digits), _PAD) if digits.isdigit() else 0
+            out.append(text.ljust(pad) if "-" in flags + (width or "")[:1] else text.rjust(pad))
+        out.append(tail)
+        size += sum(map(len, out[start:]))
+        if size > most:
+            return None
         if taken >= len(words) or not any(found[6] for _text, found in made):
             return "".join(out).split("\0")[0]
 
@@ -558,7 +571,8 @@ def _apart(words, shell=ANY):
     place (`_formatted`), after a `--`, and each word on its own too where the format holds a `$`
     (`printf "$F" WORD`: what it makes of the words is not written), but nothing where an option
     stands in the format's place (`-v NAME`: no shell prints then); an `echo`'s (`_echoed`). A text
-    equal to `main`'s is not said twice."""
+    equal to `main`'s is not said twice, and one `_formatted` does not follow is `_PAST_DEPTH`'s
+    LOUD stand-in."""
     if _MAINS.get():
         return []
     rest, reading = [str(getattr(word, "spelled", word)) for word in words[1:]], _reading(shell)
@@ -573,6 +587,7 @@ def _apart(words, shell=ANY):
         fmt = words[len(words) - len(rest)] if rest else ""
         texts = [_formatted(rest[0], rest[1:], kinds)
                  for _row, kinds in families if rest and not option]
+        texts = [_PAST_DEPTH[1] if text is None else text for text in texts]
         dollar = (shell_reader.has_substitution(fmt)
                   or shell_reader.dynamic(fmt, shell_reader.has_substitution))
         if texts and dollar and not hasattr(fmt, "spelled"):
