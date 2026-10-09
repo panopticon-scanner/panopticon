@@ -14,6 +14,7 @@ import scripts.orchestrate as orchestrate
 import scripts.phases.persist as persist
 import scripts.phases.runio as runio
 import scripts.runners.base as base
+from scripts.synth import validate_schema
 from tests._test_helpers import (all_proven_artifact as _all_proven_artifact, write_guard_not_proven as _write_guard_not_proven)
 from tests._test_helpers import docker_probe_runner
 
@@ -122,60 +123,120 @@ class TestRefusedRepliesAreRetained(LoopCase):
         # Round 2 B3: schema errors quote the rejected instance. Capping that
         # quote before redaction can cut a token into an unrecognisable prefix;
         # printing the unredacted reason also leaks a whole token. Exercise
-        # every quoted-error position through the real persistence seam.
-        for padding, error_position in ((0, 1), (154, 1), (70, 2), (0, 3)):
-            with self.subTest(padding=padding, error_position=error_position):
-                d, _floor = self._repo()
-                run_dir = os.path.join(d, ".panopticon", "runs", "schema-refusal")
-                os.makedirs(run_dir)
-                entry = {"id": "review-app-SEC", "delivery": "return_json",
-                         "out_file": os.path.join(run_dir, "findings-app-SEC.json"),
-                         "run_id": "RID", "group": "app", "domain": "SEC"}
-                secret = "ghp_" + "Z" * 36
-                findings = []
-                if error_position == 3:
-                    # One clean invalid finding sorts before the token-bearing
-                    # finding, after the unknown-root error below.
-                    findings.append({})
-                findings.append({"note": "x" * padding + secret})
-                body = {"findings": findings}
-                if error_position > 1:
-                    # The unknown root key sorts first; the token-bearing
-                    # finding is the SECOND or THIRD quoted schema error. Every
-                    # quoted error must be redacted, not merely an initial run.
-                    body["unexpected"] = "root"
-                reply = json.dumps(body)
-                result = base.RunResult(
-                    entry_id=entry["id"], ok=True, text=reply, usage={}, cost_usd=None,
-                    model="gpt-test", session_id="s", denials=[], error=None)
-                ledger = ledger_mod.Ledger(run_dir)
-                err = io.StringIO()
-                with contextlib.redirect_stderr(err):
-                    refusal = loop_batch.record_entry(
-                        entry, result,
-                        {"duration_ms": 1, "started_at": "2026-01-01T00:00:00Z",
-                         "finished_at": "2026-01-01T00:00:01Z"},
-                        run_dir, mock.Mock(), ledger, {"checkpoint": "review"},
-                        "headless", mock.Mock(host="codex"))
-                row = ledger.lines()[0]
-                with open(row["rejected_file"], encoding="utf-8") as fh:
-                    record = json.load(fh)
-                retry, _prior = persist.retry_block(run_dir, entry)
-                surfaces = {
-                    "refusal": refusal,
-                    "record": json.dumps(record),
-                    "ledger": json.dumps(row),
-                    "stderr": err.getvalue(),
-                    "retry": retry,
+        # every quoted-error position, returning role, and output-schema stamp
+        # through the real persistence seam. The five-error case also proves
+        # that unquoted fourth and fifth errors never get appended raw.
+        cases = (
+            ("review", 0, (1,)),
+            ("review", 154, (1,)),
+            ("review", 70, (2,)),
+            ("review", 0, (3,)),
+            ("verify", 0, (1,)),
+            ("tool-advisor", 0, (1,)),
+            ("tool-advisor-five-errors", 0, (1, 4, 5)),
+        )
+        for kind, padding, token_positions in cases:
+            for advertised in (False, True):
+                with self.subTest(kind=kind, padding=padding,
+                                  token_positions=token_positions,
+                                  output_schema=advertised):
+                    self._assert_schema_secret_is_confined(
+                        kind, padding, token_positions, advertised)
+
+    def _assert_schema_secret_is_confined(self, kind, padding, token_positions,
+                                          advertised):
+        d, _floor = self._repo()
+        run_dir = os.path.join(d, ".panopticon", "runs", "schema-refusal")
+        os.makedirs(run_dir)
+        secret = "ghp_" + "Z" * 36
+        if kind == "review":
+            entry = {"id": "review-app-SEC", "delivery": "return_json",
+                     "out_file": os.path.join(run_dir, "findings-app-SEC.json"),
+                     "run_id": "RID", "group": "app", "domain": "SEC"}
+            findings = []
+            if token_positions == (3,):
+                # One clean invalid finding sorts before the token-bearing
+                # finding, after the unknown-root error below.
+                findings.append({})
+            findings.append({"note": "x" * padding + secret})
+            body = {"findings": findings}
+            if token_positions[0] > 1:
+                # The unknown root key sorts first; the token-bearing finding
+                # is the SECOND or THIRD quoted schema error.
+                body["unexpected"] = "root"
+        else:
+            verdict = {"finding_id": "F1", "verdict": "CONFIRMED",
+                       "confidence": "LIKELY", "reasoning": "r",
+                       "explored": [], "references": [], "citations": {}}
+            if kind == "verify":
+                entry = {
+                    "id": "verify-app-SEC-primary", "delivery": "return_json",
+                    "out_file": os.path.join(
+                        run_dir, "verdicts", "verdicts-app-SEC.json"),
+                    "run_id": "RID", "group": "app", "domain": "SEC",
+                    "stage": "primary",
                 }
-                for name, text in surfaces.items():
-                    with self.subTest(padding=padding, error_position=error_position,
-                                      surface=name):
-                        if padding == 0 and (error_position < 3 or name != "retry"):
-                            self.assertIn("[REDACTED_TOKEN]", text)
-                        self.assertNotIn("ghp_", text)
-                        self.assertNotIn(secret[:13], text)
-                        self.assertNotIn(secret, text)
+                verdict["verdict"] = secret
+                body = {"verdicts": [verdict]}
+            else:
+                entry = {"id": "verify-tool-q-0001", "delivery": "return_json",
+                         "out_file": os.path.join(
+                             run_dir, "verdicts", "q-0001.json")}
+                if kind == "tool-advisor":
+                    verdict["verdict"] = secret
+                else:
+                    # Exactly five errors, with the token in positions 1, 4
+                    # and 5. The first three safe strings occupy 160
+                    # characters, so appending either later raw error exposes
+                    # a token prefix before REASON_CAP.
+                    verdict.update({"code": [secret], "explored": [0, 0],
+                                    "finding_id": [secret],
+                                    "reasoning": [secret]})
+                    errors = validate_schema.schema_errors(
+                        verdict, schema_path=persist.role_schema(entry))
+                    self.assertEqual(5, len(errors), errors)
+                    self.assertEqual(
+                        [True, False, False, True, True],
+                        [secret in error for error in errors], errors)
+                body = verdict
+        os.makedirs(os.path.dirname(entry["out_file"]), exist_ok=True)
+        if advertised:
+            entry["output_schema"] = persist.role_schema(entry)
+        else:
+            self.assertNotIn("output_schema", entry)
+        reply = json.dumps(body)
+        result = base.RunResult(
+            entry_id=entry["id"], ok=True, text=reply, usage={}, cost_usd=None,
+            model="gpt-test", session_id="s", denials=[], error=None)
+        ledger = ledger_mod.Ledger(run_dir)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            refusal = loop_batch.record_entry(
+                entry, result,
+                {"duration_ms": 1, "started_at": "2026-01-01T00:00:00Z",
+                 "finished_at": "2026-01-01T00:00:01Z"},
+                run_dir, mock.Mock(), ledger, {"checkpoint": "review"},
+                "headless", mock.Mock(host="codex"))
+        row = ledger.lines()[0]
+        with open(row["rejected_file"], encoding="utf-8") as fh:
+            record = json.load(fh)
+        retry, _prior = persist.retry_block(run_dir, entry)
+        surfaces = {
+            "refusal": refusal,
+            "record": json.dumps(record),
+            "ledger": json.dumps(row),
+            "stderr": err.getvalue(),
+            "retry": retry,
+        }
+        for name, text in surfaces.items():
+            with self.subTest(kind=kind, padding=padding,
+                              token_positions=token_positions,
+                              output_schema=advertised, surface=name):
+                if padding == 0 and (token_positions[0] < 3 or name != "retry"):
+                    self.assertIn("[REDACTED_TOKEN]", text)
+                self.assertNotIn("ghp_", text)
+                self.assertNotIn(secret[:13], text)
+                self.assertNotIn(secret, text)
 
     def test_the_next_launch_of_a_refused_entry_is_told_why(self):
         # D10 ruling 2, end to end: the retry goes out through the ordinary
