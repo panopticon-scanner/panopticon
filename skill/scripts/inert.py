@@ -9,9 +9,10 @@ import re
 from typing import Any
 
 
-# A lone surrogate (#2951) is not text: no encoder takes one, so a string holding
-# one raises at the first file it is written to. `json.load` hands one over for a
-# lone `\udXXX` escape -- a PAIR decodes to its character and holds none.
+# A lone surrogate (#2951) is not text: no encoder of text takes one, so a string
+# holding one raises where it is first hashed or written as text -- `json.dump`
+# alone writes it, as the escape it was read from. `json.load` hands one over for
+# a lone `\udXXX` escape -- a PAIR decodes to its character and holds none.
 SURROGATES = range(0xD800, 0xE000)
 
 INERT_ESCAPE_CODE_POINTS = frozenset(
@@ -29,11 +30,23 @@ INERT_ESCAPE_CODE_POINTS = frozenset(
 _SURROGATE = re.compile("[%c-%c]" % (SURROGATES[0], SURROGATES[-1]))
 
 
+def spelled(code_point: int) -> str:
+    r"""The ONE spelling of an inert code point: `\xNN` below U+0100 and `\uNNNN`
+    above it, as ever -- and `U+NNNN` for a surrogate, with NO backslash (#2951
+    round 2). A surrogate is what an undecodable byte in a file name becomes, and
+    `evidence.norm_path` reads a backslash as a separator: spelled with one, a
+    root-level `docs<byte>x.py` read as `docs/udce9x.py`, in the doc tree, and the
+    doc policy took a HIGH on it down to INFO. Six characters either way."""
+    if code_point in SURROGATES:
+        return "U+%04X" % code_point
+    return "\\x%02x" % code_point if code_point < 0x100 else "\\u%04x" % code_point
+
+
 def escape_surrogates(text: str) -> str:
-    r"""`text` with each lone surrogate as the inert `\uNNNN` escape this policy
-    writes for a code point, and every other character as it is -- for text
-    whose other characters are not this caller's to change."""
-    return _SURROGATE.sub(lambda found: "\\u%04x" % ord(found.group()), text)
+    """`text` with each lone surrogate as this policy spells one (`spelled`), and
+    every other character as it is -- for text whose other characters are not
+    this caller's to change."""
+    return _SURROGATE.sub(lambda found: spelled(ord(found.group())), text)
 
 
 def _holds_one(document):

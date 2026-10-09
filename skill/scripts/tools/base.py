@@ -17,7 +17,7 @@ import threading
 from collections.abc import Iterator
 from typing import Any, Protocol
 
-from scripts.inert import INERT_ESCAPE_CODE_POINTS, surrogate_free
+from scripts.inert import INERT_ESCAPE_CODE_POINTS, spelled, surrogate_free
 from scripts.provenance import tool_provenance
 
 
@@ -252,7 +252,7 @@ def inert_escape(text: str, keep: str = INERT_KEEP) -> str:
     r"""Render every character that can steer a terminal, a log line or a
     markdown document as an inert `\xNN` / `\uNNNN` escape: C0, DEL, C1, the
     line/paragraph separators, the bidi controls -- and a lone surrogate, which
-    no encoder takes (``INERT_ESCAPE_CODE_POINTS``). Ordinary characters,
+    no encoder takes, as `U+NNNN` (``inert.spelled``). Ordinary characters,
     non-ASCII included, pass untouched: a legitimate path or name is unchanged.
 
     ESCAPED, not stripped, and that is the whole point (#1829): a stripped
@@ -267,7 +267,7 @@ def inert_escape(text: str, keep: str = INERT_KEEP) -> str:
     for ch in text:
         o = ord(ch)
         if o in INERT_ESCAPE_CODE_POINTS and ch not in keep:
-            out.append("\\x%02x" % o if o < 0x100 else "\\u%04x" % o)
+            out.append(spelled(o))
         else:
             out.append(ch)
     return "".join(out)

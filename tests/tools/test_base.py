@@ -373,6 +373,8 @@ class TestInertText(unittest.TestCase):
                     self.assertEqual(ascii("a b"), ascii(out))
                 elif ord(ch) < 0x100:
                     self.assertEqual(ascii("a\\x%02xb" % ord(ch)), ascii(out))
+                elif 0xD800 <= ord(ch) <= 0xDFFF:      # #2951 round 2: no backslash, a separator to `norm_path`
+                    self.assertEqual("aU+%04Xb" % ord(ch), out)
                 else:
                     self.assertEqual(ascii("a\\u%04xb" % ord(ch)), ascii(out))
 

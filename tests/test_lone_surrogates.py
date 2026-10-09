@@ -3,15 +3,21 @@
 `json.load` hands a lone surrogate over for a lone `\\udXXX` escape, and no encoder takes one. On main one such
 string in one agent-authored finding ended the `synthesize.py` child with a traceback and status 1 -- which is also
 the gate's FAIL status -- and, where the string seeds the finding's id, with no report at all. Each is now spelled as
-the inert policy spells a code point (`\\ud800`, six visible characters), in four places:
+`inert.spelled` spells a surrogate (`U+D800`: six visible characters and no backslash), in five places:
 
 * `findings.agent_finding` and `evidence._agent_verdict`, the one door each for an agent's findings and an advisor's
   verdicts. Their text is hashed (the id, the fingerprint) before anything is written, so it is spelled on the way in.
 * `tools/base.parse_json_bytes` and the SARIF adapter's own parse, the door for a scanner's output, for that reason.
-* `synth/report.build_report`, the backstop: everything else a report holds meets its first encoder at a writer,
-  and every writer writes the report.
+* `synth/artifacts.read_json`, the one reader of the run directory's JSON (round 2): every cap a caller applies
+  comes after the spelling, which is six characters for one.
+* `synth/report.build_report`, the backstop: what never was JSON meets its first encoder at a writer, and every
+  writer writes the report.
 * The policy's own set, `inert.INERT_ESCAPE_CODE_POINTS`, so `inert_text` and the prompt's `_prompt_safe` cover a
   name that never was JSON.
+
+No backslash (round 2): `evidence.norm_path` reads one as a separator, so a root-level `docs<byte>x.py` spelled with
+one read as a file in `docs/`, and the doc policy took a HIGH on it down to INFO with the gate passing. The other
+inert code points keep their backslash; what `norm_path` makes of those is #2988.
 
 Named limits. The child pins plant U+D800 alone: that every code point of the block is spelled, and nothing beside
 the block moves, is pinned on the helper (`TestTheSpelling`). `--compare` reads reports already on disk and is not
@@ -36,20 +42,23 @@ import scripts.inert as inert
 import scripts.ingest_tools as ingest_tools
 import scripts.phases.review as review
 import scripts.phases.runio as runio
+import scripts.synth.artifacts as artifacts_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.render as render_mod
 import scripts.synth.report as report_mod
 import scripts.synthesize as syn
 import scripts.tools.base as base
 import scripts.tools.legacy_sarif as legacy_sarif
+import scripts.x0x_report as x0x_report
 import tests.test_schema_parity as parity
 from tests._test_helpers import SKILL_ROOT, first
 from tests.discovery_test_helpers import run_script
 
 SCRIPTS = os.path.join(SKILL_ROOT, "scripts")
 RUN_ID = "RID-2951"
+BACKSLASH = chr(92)
 LONE = "\ud800"            # what `json.load` returns for the lone escape `\ud800`
-SPELLED = "\\ud800"        # the six characters the inert policy writes for it
+SPELLED = "U+D800"         # the six characters the inert policy writes for it: no backslash
 
 
 def strings(document):
@@ -186,8 +195,43 @@ class TestTheSpelling(unittest.TestCase):
     def test_every_surrogate_is_spelled_as_the_policy_spells_a_code_point(self):
         wrong = [hex(point) for point in self.BLOCK
                  if {inert.escape_surrogates("a%cb" % point), base.inert_escape("a%cb" % point),
-                     runio._prompt_safe("a%cb" % point)} != {"a\\u%04xb" % point}]
+                     runio._prompt_safe("a%cb" % point), "a%sb" % inert.spelled(point)} != {"aU+%04Xb" % point}]
         self.assertEqual([], wrong)
+
+    def test_the_other_inert_code_points_keep_the_spelling_main_gives_them(self):
+        # One function spells them all now (`inert.spelled`); nothing but a surrogate's spelling is new.
+        for point in sorted(inert.INERT_ESCAPE_CODE_POINTS - set(self.BLOCK)):
+            old = (BACKSLASH + "x%02x" if point < 0x100 else BACKSLASH + "u%04x") % point
+            if (old, "a%sb" % old) != (inert.spelled(point), base.inert_escape("a%cb" % point, keep="")):
+                self.fail("U+%04X is spelled %r" % (point, inert.spelled(point)))
+        self.assertEqual("a%sx1bb%su202e" % (BACKSLASH, BACKSLASH), runio._prompt_safe("a%cb%c" % (0x1b, 0x202e)))
+
+    def test_a_spelled_name_is_the_one_path_component_it_was(self):
+        # Round 2, B1. A backslash is a separator to `evidence.norm_path` (#2988), so a surrogate is spelled
+        # without one: the name gains no separator and no glob character, and the doc policy leaves its HIGH alone.
+        for name in ("docs" + LONE + "x.py", "docs" + chr(0xDCE9) + "x.py", LONE + "docs", "specs" + LONE):
+            spelled = inert.escape_surrogates(name)
+            with self.subTest(name=plain(spelled)):
+                self.assertEqual((0, 0, 0), (spelled.count(BACKSLASH), spelled.count("/"), len(set(spelled) & set("*?["))))
+                self.assertEqual(spelled, evidence.norm_path(spelled))
+                found = [{"severity": "HIGH", "title": "smell", "category": "structure", "location": {"file": spelled}}]
+                self.assertEqual({"downgraded": 0, "examples": []}, findings_mod.apply_doc_severity_policy(found, "standard"))
+                self.assertEqual("HIGH", found[0]["severity"])
+        inside = [{"severity": "HIGH", "title": "smell", "category": "structure",
+                   "location": {"file": inert.escape_surrogates("docs/a" + LONE + ".md")}}]
+        findings_mod.apply_doc_severity_policy(inside, "standard")          # a file that IS in the doc tree is
+        self.assertEqual("INFO", inside[0]["severity"])                     # still read as one
+
+    def test_a_cut_takes_a_surrogates_spelling_as_the_plain_text_it_is(self):
+        # A backslash escape cut short is dropped before the marker (`_INERT_PARTIAL_TAIL`, as on main). A
+        # surrogate's spelling is plain characters, and a cut through it is left as a cut through any text is:
+        # dropping a trailing `U+D8` would move a clean text that ends so, and a clean input must not move.
+        for cap, kept in ((6, "aaaaaU"), (8, "aaaaaU+D"), (10, "aaaaaU+D80"), (11, "aaaaa" + SPELLED)):
+            with self.subTest(cap=cap):
+                self.assertEqual(kept + base.INERT_CUT, base.inert_text("aaaaa" + LONE * 3, limit=cap))
+        for clean in ("see U+D83D and more", "the CPU and more"):
+            with self.subTest(clean=clean):
+                self.assertEqual(clean[:8] + base.INERT_CUT, base.inert_text(clean, limit=8))
 
     def test_the_set_holds_the_block_and_the_helper_reads_the_same_range(self):
         self.assertEqual(self.BLOCK, inert.SURROGATES)
@@ -202,9 +246,9 @@ class TestTheSpelling(unittest.TestCase):
     def test_a_pair_is_one_character_and_two_halves_apart_are_two_surrogates(self):
         pair = json.loads('"\\ud83d\\ude00"')                # `json.load` joins the pair: U+1F600, no surrogate
         self.assertEqual(("\U0001f600", "\U0001f600"), (pair, inert.escape_surrogates(pair)))
-        for halves in ('"\\ud83d x \\ude00"', '"\\ude00\\ud83d"'):
+        for halves, spelled in (('"\\ud83d x \\ude00"', "U+D83D x U+DE00"), ('"\\ude00\\ud83d"', "U+DE00U+D83D")):
             with self.subTest(halves=halves):
-                self.assertEqual(plain(halves[1:-1]), plain(inert.escape_surrogates(json.loads(halves))))
+                self.assertEqual(spelled, inert.escape_surrogates(json.loads(halves)))
 
     def test_every_mode_of_the_one_neutralizer_spells_it(self):
         for mode in base.INERT_MODES:
@@ -216,7 +260,7 @@ class TestTheSpelling(unittest.TestCase):
         # A name that never was JSON: on Linux `os.walk` hands an undecodable byte over as a lone surrogate.
         name = "src/caf\udce9.py"
         line = runio._abs_file_list("/review", [name])
-        self.assertEqual(plain("- /review/src/caf\\udce9.py"), plain(line))
+        self.assertEqual("- /review/src/cafU+DCE9.py", line)
         line.encode("utf-8")
         self.assertEqual(["/review/" + name], runio._abs_files("/review", [name]))    # the read guard's bytes
 
@@ -399,6 +443,39 @@ class TestAScannersOutput(unittest.TestCase):
         self.assertEqual([], bare)
 
 
+class TestTheReader(unittest.TestCase):
+    """`synth/artifacts.read_json`, the one reader of the run directory's JSON (round 2, B2): what it hands over
+    holds no lone surrogate, so every cap a caller applies comes after the spelling."""
+
+    def read(self, document, **how):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "artifact.json")
+            with open(path, "w") as fh:
+                json.dump(document, fh)                 # ensure_ascii: the file holds the escape
+            return artifacts_mod.read_json(path, **how)
+
+    def test_every_string_of_a_run_artifact_is_spelled_as_it_is_read(self):
+        planted_file = {"k" + LONE: ["v" + LONE, {"n": LONE, "depth": [[LONE]]}], "plain": 1.5}
+        spelled = {"k" + SPELLED: ["v" + SPELLED, {"n": SPELLED, "depth": [[SPELLED]]}], "plain": 1.5}
+        for how in ({}, {"tolerant": True}, {"limit": 4096}):
+            with self.subTest(how=how):
+                self.assertEqual(spelled, self.read(planted_file, **how))
+        clean = {"a": ["b", {"c": "d\\ud800 as six characters"}], "n": 1}
+        self.assertEqual(clean, self.read(clean))
+
+    def test_a_cap_is_applied_to_the_spelled_text(self):
+        # The tools manifest's `cleanup_failures` row is cut to 64 and 500 as it is read (`synth/repair`). Cut
+        # BEFORE the spelling, 59 characters and a surrogate came out as 65, past the schema's bound.
+        import scripts.synth.repair as repair_mod
+        manifest = self.read({"cleanup_failures": {"semgrep": {"kind": "k" * 59 + LONE, "detail": "d" * 495 + LONE}}})
+        row = repair_mod.repair_tool_cleanup_failures(manifest["cleanup_failures"], warn=lambda *said: None)["semgrep"]
+        self.assertEqual(("k" * 59 + SPELLED[:5], 500), (row["kind"], len(row["detail"])))
+        self.assertEqual([], surrogates(row))
+
+    def test_a_failure_log_row_spells_it_the_same_way(self):
+        self.assertEqual("a" + SPELLED + " b", x0x_report._redacted_one_line("a" + LONE + " b"))
+
+
 class TestTheBackstop(unittest.TestCase):
     """`build_report` hands no lone surrogate to a writer, whatever fed it: over the richest run directory the suite
     builds (the schema-parity fixture), each run artifact in turn with a lone surrogate in EVERY value of it, then in
@@ -515,9 +592,10 @@ class TestTheRealChild(unittest.TestCase):
             fh.write("x = 1\n" * 100)
         return made
 
-    def child(self, *flags, findings=None, verdicts=None, scans=None, groups=None):
+    def child(self, *flags, findings=None, verdicts=None, scans=None, groups=None, beside=None):
         """One run, laid out as tests/test_e2e.py lays it out: (status, stderr, {artifact name: bytes}). The child
-        is started by the suite's own `run_script`, which holds the one `subprocess.run` these tests need."""
+        is started by the suite's own `run_script`, which holds the one `subprocess.run` these tests need.
+        `beside` is more of the run directory's own files, by name (the tools manifest, a hunk map)."""
         repo = self.repo()
         pano = os.path.join(repo, ".panopticon")
 
@@ -536,6 +614,8 @@ class TestTheRealChild(unittest.TestCase):
             argv += ["--verdicts-dir", os.path.join(pano, "verdicts")]
         for name, output in (scans or {}).items():
             write(os.path.join(pano, "tools", name), output)
+        for name, document in (beside or {}).items():
+            write(os.path.join(repo, name), document)
         if scans:
             argv += ["--tools-dir", os.path.join(pano, "tools")]
         argv += ["--out", os.path.join(pano, "report.json")]
@@ -635,6 +715,63 @@ class TestTheRealChild(unittest.TestCase):
         run = self.child(findings=[a_finding(1)], groups=groups(LONE))
         self.assertIn("extra" + SPELLED, "".join(strings(self.whole(run))))
         self.same(run, self.child(findings=[a_finding(1)], groups=groups(SPELLED)))
+
+    def test_a_name_with_an_undecodable_byte_is_not_read_into_the_doc_tree(self):
+        # Round 2, B1: a root-level `docs<byte>x.py`. On main the run ended in a traceback. Spelled with a backslash
+        # it read as `docs/...`, and the doc policy took its HIGH down to INFO with the gate passing.
+        flags = ("--gate-unverified", "--fail-on", "high")
+
+        def high(name):
+            return [a_finding(1, severity="HIGH", location={"file": name, "line_start": 1})]
+
+        def tool(name):
+            return {"semgrep.sarif": {"runs": [{"tool": {"driver": {"name": "semgrep", "rules": [{
+                "id": "sqli", "properties": {"tags": ["CWE-89"]}}]}}, "results": [{
+                    "ruleId": "sqli", "level": "error", "message": {"text": "SQL injection"}, "locations": [{
+                        "physicalLocation": {"artifactLocation": {"uri": name}, "region": {"startLine": 3}}}]}]}]}}
+
+        for name, severity, gate in (("docsax.py", "HIGH", "FAIL"), ("docs" + LONE + "x.py", "HIGH", "FAIL"),
+                                     ("docs/x.py", "INFO", "PASS")):          # the last IS in the doc tree
+            with self.subTest(name=plain(name), source="agent"):
+                run = self.child(*flags, findings=high(name))
+                report = self.whole(run)
+                self.assertEqual((severity, gate), (report["findings"][0]["severity"], report["summary"]["gate"]))
+            with self.subTest(name=plain(name), source="scanner"):
+                found = self.whole(self.child(findings=[], scans=tool(name)))["findings"]
+                self.assertEqual([(severity, severity == "INFO")], [(f["severity"], "doc_policy" in f) for f in found])
+        lone, twin = "docs" + LONE + "x.py", "docs" + SPELLED + "x.py"
+        self.same(self.child(*flags, findings=high(lone)), self.child(*flags, findings=high(twin)))
+        self.same(self.child(findings=[], scans=tool(lone)), self.child(findings=[], scans=tool(twin)))
+
+    def test_a_manifest_row_at_its_cap_writes_a_valid_report(self):
+        # Round 2, B2: 59 characters and a surrogate were cut to 60 and THEN spelled to 65, past the schema's 64,
+        # and the run ended `artifact invalid` (status 4) where its spelled twin was cut to 64 and written.
+        def manifest(text):
+            return {"tools-manifest.json": {"schema_version": 1, "run_id": RUN_ID, "selected": [], "missing": [],
+                                            "cleanup_failures": {"semgrep": {"kind": "k" * 59 + text,
+                                                                             "detail": "d" * 495 + text}}}}
+
+        for text in (LONE, LONE * 600):
+            with self.subTest(surrogates=len(text)):
+                run = self.child(findings=[a_finding(1)], beside=manifest(text))
+                row = self.whole(run)["meta"]["coverage"]["tools_cleanup_failures"]["semgrep"]
+                self.assertEqual((0, 64, 500), (run[0], len(row["kind"]), len(row["detail"])), run[1])
+                self.same(run, self.child(findings=[a_finding(1)], beside=manifest(text.replace(LONE, SPELLED))))
+
+    def test_a_hunk_map_names_a_file_as_the_finding_on_it_does(self):
+        # The `--diff-hunks` case of round 2's B3: the map's keys were read as written while the finding's path
+        # was spelled, so the finding on a changed file read as off the diff where its spelled twin read as on it.
+        def delta(text):
+            name = "src/b%s.py" % text
+            hunks = {"diff-hunks.json": {"base": "main", "base_source": "explicit", "diff_context": 5,
+                                         "files_changed": 1, "hunks": {name: [[1, 5]]}}}
+            return self.child("--diff-hunks", "diff-hunks.json", "--gate-scope", "on-diff", "--gate-unverified",
+                              "--fail-on", "medium", findings=[a_finding(1, location={"file": name, "line_start": 2})],
+                              beside=hunks)
+
+        run = delta(LONE)
+        self.assertEqual(("FAIL", 1), (self.whole(run)["summary"]["gate"], run[0]), run[1])     # on the diff: it gates
+        self.same(run, delta(SPELLED))
 
     def test_the_queue_pass_writes_a_queue_without_one(self):
         run = self.child("--emit-verify-queue", findings=planted(LONE))

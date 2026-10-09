@@ -13,7 +13,7 @@ import scripts.evidence as evidence
 import scripts.executable as executable
 import scripts.groups_schema as groups_schema
 import scripts.hosts as hosts
-from scripts.inert import INERT_ESCAPE_CODE_POINTS
+from scripts.inert import INERT_ESCAPE_CODE_POINTS, spelled
 import scripts.ocrdb as ocrdb
 import scripts.redact as redact
 import scripts.repo_config as repo_config
@@ -171,14 +171,14 @@ def _prompt_safe(text):
     filename cannot inject bullet lines into a reviewer's prompt (#1190 AGT-A1A).
     C0/C1 control chars, DEL, Unicode line/paragraph separators, bidi controls
     and lone surrogates (#2951: a name with an undecodable byte holds one, and
-    no encoder takes it) are rendered as inert \\xNN / \\uNNNN escapes; ordinary
+    no encoder takes it) are rendered as the policy spells them; ordinary
     characters (including non-ASCII) pass through unchanged, so legitimate paths
     are untouched. The code-point policy is shared with tools.base (#2118 item 2)."""
     out = []
     for ch in text:
         o = ord(ch)
         if o in INERT_ESCAPE_CODE_POINTS:
-            out.append("\\x%02x" % o if o < 0x100 else "\\u%04x" % o)
+            out.append(spelled(o))
         else:
             out.append(ch)
     return "".join(out)
