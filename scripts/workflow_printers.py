@@ -433,22 +433,26 @@ def unsubstituted(value):
 
 # What an unspelled printer WRITES with every word as written (#2955), which the second walk weighs
 # beside the ONE text `main` weighs. `_CONVERSION` is one conversion of a `printf` format: its
-# flags, width, precision, bash's `(…)`, C's length letters and its own letter (none for `%%`).
+# flags, width, precision, C's length letters and the character that names it (none for `%%`).
 # `_ESCAPE` is one backslash escape, and `_WRITERS` what each shell reads BEYOND `_decoded`'s table,
 # which all read alike -- by family (for a bash: 5.2, 3.2, and 3.2 as macOS ships it; for a `sh`:
 # dash; measured on bash 5.2.21, GNU's and Apple's 3.2.57, dash 0.5.12) and by where the text stands
 # (a FORMAT, a `%b` word, an `echo`): `e` is `\e` and `E` `\E`; `x` a `\xHH`; `u` a `\uHHHH` or
 # `\UHHHHHHHH`; `q` a `\"`, `\'` or `\?`; `o` an octal number with no `0` in front, which a FORMAT
-# always reads. `letters` are the conversions it knows beyond POSIX's and `lengths` C's length
-# letters, which bash skips and dash refuses: at any other letter it prints no more. A text is
-# rendered once a family, never decoded "as any shell might": a decoded quote can HIDE the command
-# after it, and a space a width pads can MAKE one, so a reading no shell makes proves nothing.
-_CONVERSION = re.compile(r"%(?:%|([-+ #0']*)(\*|\d+)?(?:\.(\*|\d*))?(\([^)]*\))?([hjlLtz]*)([A-Za-z]))")
+# always reads. `letters` are the conversions it knows beyond C's (`_KNOWN`; `(` is 5.2's `%(…)T`)
+# and `lengths` C's length letters, which bash skips and dash refuses: at any other character it
+# prints no more. A text is rendered once a family, never decoded "as any shell might": a decoded
+# quote can HIDE the command after it, and a space a width pads can MAKE one, so a reading no shell
+# makes proves nothing. `_PLAIN` is a number, or none, that each reads alike (a `-` at most, no `0`
+# in front, ASCII's digits, a machine word); `_COUNT` an `int` too: 3.2 dies of a `*` word past one.
+_CONVERSION = re.compile(r"%(?:%|([-+ #0']*)(\*|\d+)?(?:\.(\*|-?\d*))?([hjlLtz]*)(.))", re.S | re.A)
 _ESCAPE = re.compile(
     r"\\(?:([0-7]{1,4})|x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|(.))", re.S)
-_NUMBERS, _PAD, _LONG = "diouxXeEfFgGaA", 256, 4096
+_PLAIN = re.compile(r"|0|-?[1-9]\d{0,17}", re.A).fullmatch
+_COUNT = re.compile(r"|0|-?[1-9]\d{0,8}", re.A).fullmatch
+_KNOWN, _PAD, _LONG = "sbcdiouxXeEfFgGaA", 256, 4096
 _WRITERS = {
-    "bash": ({"format": "eExuq", "b": "eExuo", "echo": "eExu", "letters": "qQnT", "lengths": "hjlLtz"},
+    "bash": ({"format": "eExuq", "b": "eExuo", "echo": "eExu", "letters": "qQn(", "lengths": "hjlLtz"},
              {"format": "eExq", "b": "eExo", "echo": "eEx", "letters": "qn", "lengths": "hjlLtz"},
              {"format": "eExq", "b": "eExo", "echo": "x", "letters": "qn", "lengths": "hjlLtz"}),
     "sh": ({"format": "e", "b": "eo", "echo": "eo", "letters": "", "lengths": ""},)}
@@ -458,9 +462,10 @@ _WRITERS["dash"] = _WRITERS["sh"]
 def _written(text, place, kinds):
     """`text` as ONE family's printer decodes it at `place` (`_WRITERS`), to WEIGH and never to
     spell: `_ESCAPES`; an octal number -- one to three digits in a FORMAT, `\\0` and up to three
-    more in a `%b` word or an `echo`, and there one with no `0` only where `kinds` has `o`; the
-    kinds it names. A NUL and a value no text holds are dropped. `\\c` outside a FORMAT ENDS the
-    output: a NUL stands there, for the caller to cut at. Any other pair stays as written."""
+    more in a `%b` word or an `echo`, and there one with no `0` only where `kinds` has `o`, and
+    each a BYTE (`\\543` is `\\143`, a `c`); the kinds it names. A NUL and a value no text holds are
+    dropped. `\\c` outside a FORMAT ENDS the output: a NUL stands there, for the caller to cut at.
+    Any other pair stays as written."""
     def one(found):
         octal, coded, char = found[1], found[2] or found[3] or found[4], found[5]
         if char is not None:
@@ -472,7 +477,7 @@ def _written(text, place, kinds):
             if place != "format" and octal[0] != "0" and "o" not in kinds:
                 return found[0]
             digits = octal if place != "format" and octal[0] == "0" else octal[:3]
-            value, rest = int(digits, 8), octal[len(digits):]
+            value, rest = int(digits, 8) & 255, octal[len(digits):]
         elif ("x" if found[2] else "u") not in kinds:
             return found[0]
         else:
@@ -482,72 +487,74 @@ def _written(text, place, kinds):
 
 
 def _formatted(fmt, words, kinds):
-    """A `printf`'s text with each conversion replaced by its word AS WRITTEN, the format used again
-    while words are left, as both shells do: `%s %s\\n` joins two words into one line, `%s\\n` puts
-    each on its own, text in the format stands around them. A `*` takes a word of its own; a
-    conversion past the words prints none. `%b` decodes its word, `%q` quotes it, `%c` keeps its
-    first character, a number's letter prints a number (the word where it is one, else `0`), bash
-    5.2's `%(text)T` prints `text` and its `%n` nothing; a precision cuts a string and a width pads
-    it, on the left or after a `-`, to `_PAD` characters at most: past that a shell prints only
-    more of the same blanks. At a letter the family does not know, and at a `%` that begins no
-    conversion, the output ends. None where the text outgrows both `_LONG` characters and four
-    times what was written: a format printed again for every few words multiplies, and that is
-    not followed (`_apart` answers LOUD, as `unspelled` does past `_DEPTH`)."""
-    made, last, taken = [], 0, 0
+    """What one family's `printf` WRITES for `fmt` and `words`, the format used again while words
+    are left, or None where the guard does not follow it (`_apart` answers LOUD, as `unspelled`
+    does past `_DEPTH`). Followed, and then to the character: text and escapes in the format;
+    `%%`; `%s`; `%b` (decoded; a `\\c` ends the output); `%c` (one character); `%q` (quoted);
+    `%d` `%i` `%u` of a `_PLAIN` number, `0` for a word that begins no number; a `-` and a width
+    to `_PAD` on any but `%b`, a number's `0` and a precision on `%s`; a `*` takes a `_COUNT`
+    word; a word holding a `$` is printed as it stands, a `%b`'s decoded. At a character the
+    family does not know, and at a `%` with none after it, the output ENDS. NOT followed,
+    because the shells differ or the text is not one this reads: any other flag, letter, number,
+    width or precision; a `$` word or one outside ASCII cut or padded with blanks; a `$` word
+    under `%c`, or none padded there; a `%q` of a `~` or of a character outside ASCII's
+    printable ones; and a text past both `_LONG` characters and four times what was written (a
+    format printed again for every few words multiplies)."""
+    made, last, left = [], 0, words[::-1]
     out: list[str] = []
 
     def word():
-        nonlocal taken
-        taken += 1
-        return words[taken - 1] if taken <= len(words) else ""
+        return left.pop() if left else ""
 
-    def count(digits):          # a width or a precision, however many digits spell it
-        return int(digits.lstrip("0")[:18] or 0)
-
-    while (at := fmt.find("%", last)) >= 0:
-        found = _CONVERSION.match(fmt, at)
-        if not found:           # a `%` no conversion owns: the output ends, and so does the scan
-            break
+    while (at := fmt.find("%", last)) >= 0 and (found := _CONVERSION.match(fmt, at)):
         made.append((_written(fmt[last:at], "format", kinds["format"]), found))
         last = found.end()
-    tail = _written(fmt[last:] if at < 0 else fmt[last:at], "format", kinds["format"]) + "\0" * (at >= 0)
+    tail = _written(fmt[last:] if at < 0 else fmt[last:at], "format", kinds["format"])
     size, most = 0, max(_LONG, 4 * (len(fmt) + sum(map(len, words)) + len(words)))
     while True:
         start = len(out)
         for text, found in made:
             out.append(text)
-            flags, width, precision, dated, lengths, letter = found.groups()
+            flags, width, precision, lengths, letter = found.groups()
             if letter is None:
                 out.append("%")
                 continue
-            width = word() if width == "*" else width
-            precision = word() if precision == "*" else precision
-            text = word()
-            if (letter not in "sbc" + _NUMBERS + kinds["letters"] or bool(dated) != (letter == "T")
-                    or any(length not in kinds["lengths"] for length in lengths)):
-                out.append("\0")
-                continue
+            zero, odd = "0" in flags and letter in "diu", (precision or "")[:1] == "-"
+            width, precision = (word() if part == "*" else part for part in (width, precision))
+            cut, minus = precision is not None, "-" in flags + (width or "")[:1]
+            if not _COUNT(width or "") or cut and not _COUNT(precision):    # read before the letter is
+                return None
+            if letter not in _KNOWN + kinds["letters"] or lengths.strip(kinds["lengths"]):
+                return "".join(out)
+            asis = shell_reader.dynamic(text := word(), shell_reader.has_substitution)
+            if (odd or flags.strip("-0" if zero else "-") or letter not in "sbcdiuqQ"
+                    or abs(int(width or 0)) > _PAD or cut and letter != "s"
+                    or (width or cut) and (asis and (minus or not zero) or letter == "b" or not text.isascii())
+                    or letter == "c" and (asis or width and not text or text[:1] > "~")
+                    or not asis and (
+                        letter in "diu" and not _PLAIN(text) and re.match(r"\s*[-+]?[\d'\"]", text, re.A)
+                        or letter == "u" and text[:1] == "-" or letter in "qQ" and re.search("[^ -}]", text))):
+                return None
             if letter == "b":
                 text = _written(text, "b", kinds["b"])
             elif letter == "c":
                 text = text[:1]
-            elif letter in "qQ":
-                text = re.sub(r"[^\w%+./:=@-]", r"\\\g<0>", text) or "''"
-            elif letter in "Tn":
-                text = dated[1:-1] if dated else ""
-            elif letter != "s" and not re.fullmatch(r"[-+]?\d+", text):
+            elif letter in "qQ" and not asis:
+                text = re.sub(r"[^\w%+./:=@#-]|^#", r"\\\g<0>", text) or "''"
+            elif letter in "diu" and not (asis or text and _PLAIN(text)):
                 text = "0"
-            if precision is not None and letter in "sb" and not precision.startswith("-"):
-                text = text[:count(precision) if precision.isdigit() else 0]
-            digits = (width or "").lstrip("+-")
-            pad = min(count(digits), _PAD) if digits.isdigit() else 0
-            out.append(text.ljust(pad) if "-" in flags + (width or "")[:1] else text.rjust(pad))
+            text, ended = text.split("\0")[0], "\0" in text
+            text = text[:int(precision or 0)] if cut and precision[:1] != "-" else text
+            pad = abs(int(width or 0))
+            out.append(text if asis else text.ljust(pad) if minus else text.zfill(pad) if zero else text.rjust(pad))
+            if ended:
+                return "".join(out)
         out.append(tail)
         size += sum(map(len, out[start:]))
         if size > most:
             return None
-        if taken >= len(words) or not any(found[6] for _text, found in made):
-            return "".join(out).split("\0")[0]
+        if at >= 0 or not left or not any(found[5] for _text, found in made):
+            return "".join(out)
 
 
 def _echoed(words, row, kinds):
@@ -577,7 +584,7 @@ def _apart(words, shell=ANY):
     LOUD stand-in."""
     if _MAINS.get():
         return []
-    rest, reading = [str(getattr(word, "spelled", word)) for word in words[1:]], _reading(shell)
+    rest, reading = [getattr(word, "spelled", word) for word in words[1:]], _reading(shell)
     rows = [reading] if reading in _ECHO else ["bash", "sh"]
     families = [(row, kinds) for row in rows
                 for kinds in _WRITERS.get(row, _WRITERS["bash"] + _WRITERS["sh"])]

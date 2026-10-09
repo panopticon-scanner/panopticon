@@ -29,16 +29,20 @@ settings too. Behind a stage that REWRITES the text (`| tr … | sh`) the printe
 `main` weighs an `echo`'s there, whatever the stage makes of it. A line the guard can SPELL -- the `$` escaped inside double quotes -- is a program string, and two
 copies of it are #2953's. A line whose command word is a one-word default (`${X:-curl} …`) waits for #2963's
 rule. `builtin` in front of a printer is no wrapper to the reader, so the printer is not read at all (#2665; as
-on `main`, spelled or not). Two gaps of the rendering, pinned as they read: a number written in another base prints
-as `0` here, and `strftime` codes inside bash's `%(…)T` stand as written. And one bound: `printf` prints its format
-again while words are left, so its text can outgrow what is written many times over; past 4,096 characters and
-four times what was written the rendering is not followed, and the printer reports (`TestThePrice`).
+on `main`, spelled or not).
+
+The rendering is what the shell prints, to the character, or it is not followed and the printer reports. Followed:
+text and escapes in the format, `%%`, `%s`, `%b`, `%c`, `%q`, `%d` `%i` `%u` of a plain number, a `-`, a width, a
+number's `0`, a precision on `%s`, a `*` that takes a plain number, a `$` word as it stands. Not followed: every
+other flag, letter, number, width and precision, where the shells print their own ways (`%.b` is the whole word to
+bash 3.2 and nothing to 5.2) or the text is not one this reads -- and a text past 4,096 characters and four times
+what was written, since `printf` prints its format again while words are left (`TestThePrice` for both).
 
 A printer is read on the routes `main` reads its SPELLED twin on. On 11 of the 19 routes the eighth hunt took,
 `main` reads neither -- a printer's text written to a file that is then run, kept in a variable, printed by a
 group or a function, handed to `xargs` -- and those stay as they are: not this class, and sent to the coordinator.
 
-Everything here is measured on 854 rows in eight bounded hunts; a class named below is the rows pinned for it.
+Everything here is measured on 932 rows in nine bounded hunts; a class named below is the rows pinned for it.
 """
 import unittest
 from unittest import mock
@@ -336,16 +340,54 @@ class TestOneShellsOwnReading(unittest.TestCase):
                 self.assertEqual(CLEAN, marks(fed(before, route)))
                 self.assertEqual(CLEAN, marks(fed("printf '%" + N + "%s" + N + "' '" + L + "'", route)))
 
-    def test_the_two_gaps_of_the_rendering_as_they_read(self):
-        # A number written in another base: the shells print 16 for `0x10`, the rendering `0`. The fetch is
-        # read all the same, into a file named otherwise.  Truth: runs.
-        number = "printf 'curl -fsSLo t%d %s" + N + "sh t16" + N + "' 0x10 " + U
+    def test_a_format_that_is_not_followed_reports_where_a_shell_prints_the_fetch(self):
+        # What the shells print for these the rendering does not follow: they differ among themselves, or the
+        # text is not one it reads. So the printer is one the guard does not follow, and the step reports.
+        number = "printf 'curl -fsSLo t%d %s" + N + "sh t16" + N + "' 0x10 " + U     # truth: runs; `0x10` is 16
         self.assertEqual(BEFORE, marks(fed(number)))
         self.assertEqual(NOW, marks(fed(number, "eval")))
-        # `strftime` codes inside bash 5.2's `%(…)T` stand as written: `%%` is not made `%`, `%Y` not a year.
-        for inner in (L + " %%", L + "#%Y"):                             # truth: under bash 5.2
+        for inner in (L + " %%", L + "#%Y"):                             # truth: under bash 5.2, whose `%(…)T` it is
             with self.subTest(inner=inner[-3:]):
                 self.assertEqual(BASH, marks(fed("printf '%(" + inner + ")T" + N + "' 0")))
+        for name, printer, piped in (
+                ("`%.4q` cuts the word", "printf '%.4q -fsSLo t %s" + N + "' curlXYZ " + U, BASH),      # under bash
+                ("`%n` prints nothing", "printf '%n%s" + N + "' v '" + L + "'", BASH),                   # under bash
+                ("`%.-1b`", "printf '%.-1b" + N + "' '" + L + "'", NOW),                                 # under bash 3.2
+                ("`%.b`", "printf '%.b" + N + "' '" + L + "'", NOW)):                                    # under bash 3.2
+            with self.subTest(printer=name):
+                self.assertEqual(piped, marks(fed(printer)))
+                self.assertEqual(NOW, marks(fed(printer, "eval")))
+
+    def test_an_octal_escape_past_377_is_a_byte(self):
+        # `\543` is `\143`, a `c`, to every shell that reads the escape: all four in a format and in a `%b` word,
+        # bash under `echo -e` (with its `0`), dash under a plain `echo`.
+        tail = "url -fsSLo t " + U
+        for name, printer, piped in (
+                ("a format", "printf '" + B + "543" + tail + N + "'", NOW),                                   # runs
+                ("a format, the URL a word", "printf '" + B + "543url -fsSLo t %s" + N + "' " + U, NOW),     # runs
+                ("a `%b` word", "printf '%b" + N + "' '" + B + "543" + tail + "'", NOW),                       # runs
+                ("a `%b` word, a `0` in front", "printf '%b" + N + "' '" + B + "0543" + tail + "'", NOW),     # runs
+                ("echo -e", 'echo -e "' + B + "0543" + tail + '$Q"', BASH),                                    # under bash
+                ("echo", 'echo "' + B + "543" + tail + '$Q"', DASH),                                           # under dash
+                ("echo, a `0` in front", 'echo "' + B + "0543" + tail + '$Q"', DASH)):                         # under dash
+            with self.subTest(printer=name):
+                self.assertEqual(piped, marks(fed(printer)))
+                self.assertEqual(NOW, marks(fed(printer, "eval")))
+        for route in ("pipe", "eval"):                                   # truth: nothing; `\777` is one byte, no name
+            self.assertEqual(CLEAN, marks(fed("printf '" + B + "777 %s" + N + "' x", route)))
+
+    def test_a_number_and_a_dollar_word_the_rendering_follows(self):
+        # A number as written, zeros where its `0` asks, `0` for a word that begins none; a `$` word as it stands.
+        for route in ("pipe", "eval"):                                   # truth: nothing, each
+            for printer in ("printf 'echo %03d" + N + "' 7", "printf 'echo %d %i %u" + N + "' x y",
+                            "printf '%q -fsSLo t %s" + N + "' \"$X\" " + U,
+                            "printf 'echo %d %s" + N + "' \"$X\" \"$Y\""):
+                with self.subTest(printer=printer[8:24], route=route):
+                    self.assertEqual(CLEAN, marks(fed(printer, route)))
+            self.assertEqual(CLEAN, marks(THROUGH[route].format(p="printf 'export BUILD=%05d" + N + "' \"$n\"")))
+        zeros = "printf 'curl -fsSLo t%03d %s" + N + "sh t007" + N + "' 7 " + U      # truth: runs; the file is `t007`
+        self.assertEqual(BEFORE, marks(THROUGH["pipe"].format(p=zeros)))
+        self.assertEqual(NOW, marks(THROUGH["eval"].format(p=zeros)))
 
     def test_a_bare_variable_or_a_harmless_default_through_the_twelve_printers(self):
         for line in ("$X -fsSLo t " + U, "${X:-echo} -fsSLo t " + U):                       # truth: nothing
@@ -355,8 +397,8 @@ class TestOneShellsOwnReading(unittest.TestCase):
 
 
 class TestThePrice(unittest.TestCase):
-    """What reports though no parent runs a download: a line that only FETCHES, as on `main`, and a line only
-    dash makes, on a route every family is read for."""
+    """What reports though no parent runs a download: a line that only FETCHES, as on `main`; a line only dash
+    makes, on a route every family is read for; and a printer the guard does not follow."""
 
     def test_the_single_through_the_twelve_printers(self):        # truth: fetch only
         for name, printer in PRINTERS.items():
@@ -383,6 +425,25 @@ class TestThePrice(unittest.TestCase):
                 self.assertEqual(NOW, marks(fed(long + "true " * 39 + "'" + L + "'", route)))   # truth: runs
                 self.assertEqual(NOW, marks(fed(long + "true true '" + L + "'", route)))        # within it: runs
                 self.assertEqual(NOW, marks(fed("printf '" + "%250s" * 40 + N + "' w", route)))     # nothing: 10,000 blanks
+
+    def test_a_format_that_is_not_followed_reports_whatever_it_prints(self):
+        # Truth: nothing, each -- the line is harmless. The guard does not follow the format, so it cannot say so.
+        for name, printer, piped in (
+                ("`%x`", "printf 'echo %x" + N + "' 255", NOW), ("`%.1f`", "printf 'echo %.1f" + N + "' 1", NOW),
+                ("`%+d`", "printf 'echo %+d" + N + "' 5", NOW), ("`%5b`", "printf 'echo %5b" + N + "' ab", NOW),
+                ("`%.2q`", "printf 'echo %.2q" + N + "' abc", BASH),
+                ("a `*` of `08`", "printf 'echo %*s" + N + "' 08 ab", NOW),
+                ("a `$` word padded", "printf 'echo %5s" + N + "' \"$HOME\"", NOW),
+                ("a `$` word under `%c`", "printf 'echo %c" + N + "' \"$HOME\"", NOW),
+                ("`%q` of a `~`", "printf 'echo %q" + N + "' '~x'", BASH),
+                ("`%(%Y)T`", "printf 'echo %(%Y)T" + N + "' 0", BASH), ("`%n`", "printf 'echo a%nb" + N + "' v", BASH),
+                ("`%d` of `0x10`", "printf 'echo %d" + N + "' 0x10", NOW)):
+            with self.subTest(printer=name):
+                self.assertEqual(piped, marks(fed(printer)))             # dash prints no more at a letter it
+                self.assertEqual(NOW, marks(fed(printer, "eval")))       # does not know: CLEAN under `sh` down a pipe
+        table = "printf '%-10s %s" + N + "' \"$A\" \"$B\""              # a table of two `$` words, padded
+        for route in ("pipe", "eval"):
+            self.assertEqual(NOW, marks(THROUGH[route].format(p=table)))
 
     def test_behind_a_stage_that_spoils_the_line_the_text_is_weighed_as_written(self):
         # `tr a-z A-Z`, a `#` put in front, `rev`: no parent runs anything.  `main` reports the `echo` spelling of
@@ -440,15 +501,21 @@ class TestWhatAPrinterWrites(unittest.TestCase):
                 (B + "143x" + B + "0143 %s", ["a"], "cx\x0c3 a"), ("a" + B + "tb" + B + B + "c" + B + "qd", [], "a\tb\\c\\qd"),
                 ("%b", ["a" + N, "b" + B + "0143"], "a\nbc"), ("%b" + N, [B + "143"], "c\n"), ("%s|%b|%s", ["a", "b" + B + "c", "d"], "a|b"),
                 ("a" + B + "cb%s", ["d"], "a\\cbd"), ("%*s|%-*s|", ["3", "a", "3", "b"], "  a|b  |"), ("%*s|", ["-3", "a"], "a  |"),
-                ("%.2s|%.0s|%.s|%.9s|", ["abcd"] * 4, "ab|||abcd|"), ("%.*s|%.*s|", ["2", "abcd", "x", "abcd"], "ab||"),
+                ("%.2s|%.0s|%.s|%.9s|", ["abcd"] * 4, "ab|||abcd|"), ("%.*s|%.*s|", ["2", "abcd", "", "abcd"], "ab||"),
+                ("%.*s|", ["-2", "abcd"], "abcd|"), ("%b|", ["a" + B + "cXY"], "a"),   # a negative one cuts nothing; `\c` ends it
                 ("%6.2s|%-6.2s|", ["abcd", "abcd"], "    ab|ab    |"), ("%c%c|%3c|", ["ab", "cd", "ef"], "ac|  e|"),
-                ("%d|%i|%d|%5d|", ["12", "-3", "x", "7"], "12|-3|0|    7|"), ("%.2b|%4b|", ["a" + B + "tbc", "d"], "a\t|   d|"),
+                ("%d|%i|%d|%5d|", ["12", "-3", "x", "7"], "12|-3|0|    7|"), ("%5d|%-5d|%5i|", ["12", "-3", ""], "   12|-3   |    0|"),
+                ("%05d|%-05d|%03i|%02u|", ["12", "12", "-7", "5"], "00012|12   |-07|05|"), ("%3c|%-3c|", ["ab", "cd"], "  a|c  |"),
+                (B + "543" + B + "777|" + B + "400|", [], "c\xff||"), ("%b|%b|", [B + "543", B + "0543"], "c|c|"),   # a BYTE
+                ("%s|%d|%05d|%b|", ["$A", "$B", "$C", "$D" + N], "$A|$B|$C|$D\n|"),          # a `$` word as it stands
                 ("a%yb%s", ["x", "y"], "a"), ("%s|%y|%s", ["a", "b", "c"], "a|"), ("plain", ["x", "y"], "plain"),
                 ("a%", ["x"], "a"), ("%5%|", [], ""), ("a%" + N + "b%s", ["c"], "a"), ("a" + B + "045b", [], "a%b"),
-                ("%s%", ["a", "b"], "a"), ("%250s|", ["a"], " " * 249 + "a|"),
-                ("%d|%d|", ["", "0x10"], "0|0|"),                                # the gap: the shells print `0|16|`
-                ("%0005s|%.0002s|", ["a", "bcd"], "    a|bc|"),
-                ("%.300s|", ["a" * 280 + " b"], "a" * 280 + " b|"),              # a precision is never capped
+                ("%s%", ["a", "b"], "a"), ("%256s|", ["a"], " " * 255 + "a|"),      # the widest width followed
+                ("%d|%d|", ["", "y"], "0|0|"),                                   # a word that begins no number
+                ("%.300s|", ["a" * 280 + " b"], "a" * 280 + " b|"),              # a precision is never capped,
+                ("%.999999999s|", ["abc"], "abc|"), ("a%*y|", ["3"], "a"),         # while it is an `int`
+                # a digit outside ASCII is no digit to a shell: no width, no precision, no number
+                ("a%" + chr(0x662) + "s|", ["x"], "a"), ("a%.1" + chr(0x662) + "s|", ["abc"], "a"), ("%d|", [chr(0x662)], "0|"),
                 ("%s" + B + "0z", ["a"], "az")):
             for kinds in (self.BASH5, self.BASH3, self.MACOS, self.DASH):
                 with self.subTest(fmt=fmt, words=words, letters=kinds["letters"]):
@@ -463,23 +530,56 @@ class TestWhatAPrinterWrites(unittest.TestCase):
                 ("%b|", [B + "x63" + B + '"' + B + "u0063"], "c" + B + '"c|', "c" + B + '"' + B + "u0063|", B + "x63" + B + '"' + B + "u0063|"),
                 ("%q|%q|%q|", ["a b", "", "a=b:c/d.e+f@g%h-i_j,k"], "a\\ b|''|a=b:c/d.e+f@g%h-i_j\\,k|",
                  "a\\ b|''|a=b:c/d.e+f@g%h-i_j\\,k|", ""),
-                ("%Q|", ["a b"], "a\\ b|", "", ""), ("%(a b)T|", ["0"], "a b|", "", ""), ("a%nb", ["v"], "ab", "ab", "a"),
-                ("%(%%Y)T|", ["0"], "%%Y|", "", ""),                             # the gap: bash 5.2 prints `%Y|`
+                ("%5q|%-5q|", ["", "a b"], "   ''|a\\ b |", "   ''|a\\ b |", ""),
+                ("%q|%q|%q|", ["#a", "a#b", "$A"], "\\#a|a#b|$A|", "\\#a|a#b|$A|", ""),     # a `#` in front; a `$` word
+                ("%Q|", ["a b"], "a\\ b|", "", ""),
                 ("a%ls|%zd|", ["x", "1"], "ax|1|", "ax|1|", "a"),
                 ("a" + B + "ud800b", [], "ab", "a" + B + "ud800b", "a" + B + "ud800b")):       # no text holds a lone surrogate
             for kinds, written in ((self.BASH5, bash5), (self.BASH3, bash3), (self.MACOS, bash3), (self.DASH, dash)):
                 with self.subTest(fmt=fmt, words=words, letters=kinds["letters"], echo=kinds["echo"]):
                     self.assertEqual(written, wp._formatted(fmt, words, kinds))
 
+    def test_a_format_the_shells_print_their_own_ways_is_not_followed(self):
+        # None: `_apart` answers LOUD. A text stands where a family does not know the letter and prints no more.
+        E = chr(233)
+        for fmt, words, bash5, bash3, dash in (
+                ("%x|", ["255"], None, None, None), ("%o|", ["8"], None, None, None), ("%e|", ["1"], None, None, None),
+                ("%.1f|", ["1"], None, None, None), ("%+d|", ["5"], None, None, None), ("% d|", ["5"], None, None, None),
+                ("%'d|", ["5"], None, None, None), ("%#s|", ["a"], None, None, None), ("%05s|", ["a"], None, None, None),
+                ("%.3d|", ["5"], None, None, None), ("%.2b|", ["abc"], None, None, None), ("%4b|", ["d"], None, None, None),
+                ("%.b|", ["ab"], None, None, None), ("%.1c|", ["ab"], None, None, None), ("%3c|", [""], None, None, None),
+                ("%.-1s|", ["ab"], None, None, None), ("%.03s|", ["abcd"], None, None, None),
+                ("%*s|", ["010", "a"], None, None, None), ("%*s|", ["+3", "a"], None, None, None),
+                ("%*s|", [" 4", "a"], None, None, None), ("%.*s|", ["x", "abcd"], None, None, None),
+                ("%257s|", ["a"], None, None, None), ("%d|", ["0x10"], None, None, None), ("%d|", ["010"], None, None, None),
+                ("%d|", ["12abc"], None, None, None), ("%d|", ["+5"], None, None, None), ("%d|", ["'A"], None, None, None),
+                ("%d|", ["-0"], None, None, None), ("%d|", ["1234567890123456789"], None, None, None),
+                ("%u|", ["-3"], None, None, None), ("%5s|", ["$A"], None, None, None), ("%.2s|", ["$A"], None, None, None),
+                ("%c|", ["$A"], None, None, None), ("%-5d|", ["$A"], None, None, None), ("%*s|", ["$W", "a"], None, None, None),
+                ("%-05d|", ["$A"], None, None, None),
+                # past an `int` the shells print nothing or their own things, and bash 3.2 dies of a `*` word there:
+                # before the letter is read, so no output "ends" at one it does not know
+                ("%.9999999999s|", ["abc"], None, None, None), ("%.*s|", ["9999999999", "abc"], None, None, None),
+                ("a%*y|", ["9999999999"], None, None, None), ("a%.*y|", ["x"], None, None, None),
+                ("%5s|", [E], None, None, None), ("%.1s|", [E], None, None, None), ("%c|", [E], None, None, None),
+                ("%d|", ["1" + chr(0x662)], None, None, None), ("%*s|", ["1" + chr(0x662), "a"], None, None, None),
+                ("a%.2q|", ["abc"], None, None, "a"), ("a%q|", ["~x"], None, None, "a"), ("a%q|", ["x\ty"], None, None, "a"),
+                ("a%nb", ["v"], None, None, "a"), ("a%(x y)T|", ["0"], None, "a", "a"), ("a%l(x)T|", ["0"], None, "a", "a"),
+                ("a%.2Q|", ["a b"], None, "a", "a")):
+            for kinds, written in ((self.BASH5, bash5), (self.BASH3, bash3), (self.MACOS, bash3), (self.DASH, dash)):
+                with self.subTest(fmt=fmt, words=words, letters=kinds["letters"], echo=kinds["echo"]):
+                    self.assertEqual(written, wp._formatted(fmt, words, kinds))
+
     def test_a_width_no_shell_could_print_and_a_format_made_to_stall_the_scan(self):
-        # The shells would print the blanks; past 256 the rendering stops padding, and no count of digits is a
-        # number Python refuses. The scan ends at the first `%` that begins no conversion, so it stays linear.
+        # A width past `_PAD`, or one of more digits than a machine word holds, is not followed: nothing is
+        # allocated for it and no count of digits is a number Python refuses. The scan stays linear.
         for kinds in (self.BASH5, self.DASH):
             huge = "9" * 5000
-            self.assertEqual(" " * 255 + "a|b" + " " * 255 + "|", wp._formatted("%" + huge + "s|%-" + huge + "s|", ["a", "b"], kinds))
-            self.assertEqual(" " * 255 + "a|bcd|", wp._formatted("%*s|%.*s|", [huge, "a", huge, "bcd"], kinds))
-            self.assertEqual("abc|", wp._formatted("%." + huge + "s|", ["abc"], kinds))
-            self.assertEqual("", wp._formatted("%(" * 50000 + "x", ["a"], kinds))
+            self.assertIsNone(wp._formatted("%" + huge + "s|%-" + huge + "s|", ["a", "b"], kinds))
+            self.assertIsNone(wp._formatted("%*s|", [huge, "a"], kinds))
+            self.assertIsNone(wp._formatted("%.*s|", [huge, "bcd"], kinds))
+            self.assertIsNone(wp._formatted("%." + huge + "s|", ["abc"], kinds))
+            self.assertEqual(None if kinds is self.BASH5 else "", wp._formatted("%(" * 50000 + "x", ["a"], kinds))
             self.assertEqual("x", wp._formatted("x" + "%5%" * 50000, [], kinds))
 
     def test_a_format_printed_again_is_followed_to_a_bound(self):
@@ -510,6 +610,7 @@ class TestWhatAPrinterWrites(unittest.TestCase):
                 (["-n", "-n", "a"], "a", "a", "a", "-n a"),                         # dash takes ONE `-n`
                 (["-eE", "a" + N], "a" + N, "a" + N, "a" + N, "-eE a\n"), (["-Ee", "a" + N], "a\n", "a\n", "a\n", "-Ee a\n"),
                 (["-e", B + "0143" + B + "143"], "c" + B + "143", "c" + B + "143", "c" + B + "143", "-e cc"),
+                (["-e", B + "0543" + B + "543"], "c" + B + "543", "c" + B + "543", "c" + B + "543", "-e cc"),     # a BYTE
                 (["-e", B + "x63" + B + "e"], "c\x1b", "c\x1b", "c" + B + "e", "-e " + B + "x63\x1b"),
                 (["-e", B + "u0063"], "c", B + "u0063", B + "u0063", "-e " + B + "u0063"),
                 (["-e", "a" + B + "c", "b"], "a", "a", "a", "-e a"), (["-e", "a" + B + '"b'], "a" + B + '"b', "a" + B + '"b', "a" + B + '"b', "-e a" + B + '"b'),
@@ -593,6 +694,15 @@ class TestTheSecondWalkAlone(unittest.TestCase):
         words = self.argv("printf '%s -o t %s" + N + "' x '$U'")
         self.assertEqual(["x -o t $U\n"], wp._apart(words, None))
         self.assertEqual(["curl -o t $U\n"], wp._apart(words[:2] + [Spelled("$C")] + words[3:], None))
+
+    def test_a_lifted_substitution_is_a_dollar_word_to_the_rendering(self):
+        # The reader lifts a `$(...)` out of its word: the word holds no `$`, and the shell fills it all the same.
+        # So it stands as it is under `%s`, `%q` and `%d`, and a width or a `%c` on it is not followed.
+        words = self.argv("printf '%s|%q|%d" + N + "' \"$(a)\" \"$(b)\" \"$(c)\"")
+        self.assertEqual(["%s|%s|%s\n" % tuple(words[2:])], wp._apart(words, None))
+        for fmt in ("%5s", "%c", "%.2s"):
+            with self.subTest(fmt=fmt):
+                self.assertEqual([wp._PAST_DEPTH[1]], wp._apart(self.argv("printf '" + fmt + N + "' \"$(a)\""), None))
 
     def test_zsh_has_a_row_of_its_own_and_every_familys_escapes(self):
         # `_ECHO` has zsh's options and its decoding; no `_WRITERS` row is measured for it, so all four read.
