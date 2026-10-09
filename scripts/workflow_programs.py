@@ -66,7 +66,7 @@ from workflow_options import Handed, _MAINS, _counted, _dash_c_strings, _shell_c
 from workflow_printers import (ANY as ANY, Named as Named, _PRINTERS as _PRINTERS, _piped as _piped,
                                file_operand as file_operand, handed as handed, operand, rendered,
                                printed as printed, producer as producer, spellings as spellings,
-                               substituted, unspelled as unspelled, unsubstituted)
+                               substituted, unspelled as unspelled, unsubstituted, worded as worded)
 
 
 # A shell handed a SCRIPT as a string: `eval "curl ... -o x"`, `sh -c "..."`. The text is shell and
