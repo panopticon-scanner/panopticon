@@ -57,10 +57,12 @@ any failure prints `SCHEMA:` lines naming the artifact and the JSON path, then
 `artifact invalid: N schema errors (see …)`, exits `4`, and ends a `driver` run in `error`.
 A legitimate catalog-gap finding without `location.file` cannot satisfy X0X's required occurrence
 shape. It remains in the main JSON and HTML, while `synthesize` excludes it from the X0X candidate
-set and writes `<stem>-x0x-failures.json` beside the X0X. That deterministic JSON object has one
+set and writes `<report-stem>-x0x-failures.json` beside the X0X, where `<report-stem>` means the
+report filename without `.json`. That deterministic JSON object has one
 `discarded_findings` array; each row carries the bounded, redacted `finding_id`, the reason
-`no file locus`, and a bounded, redacted, inert diagnostic. The array keeps duplicate ids because
-distinct content-derived findings can share one. `synthesize` validates the log as written, warns
+`no file locus`, and a bounded, redacted, inert diagnostic whose truncation is marked. The array
+keeps duplicate ids because distinct content-derived findings can share one. `synthesize` validates
+the log as written, warns
 with the exact discard count and log path, then returns the report's ordinary gate status because
 the X0X was written. The driver
 forwards the disclosure and includes `x0x_discarded`, `x0x_failure_log`, and the same text in its

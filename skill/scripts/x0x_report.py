@@ -75,13 +75,21 @@ def _one_line(value, cap=_DIAG_MAX):
     return (text[:cap - 1] + "\u2026") if len(text) > cap else text
 
 
+def _marked_redacted_head(value, cap):
+    """A redacted head whose truncation is visible and whose length is ``cap``."""
+    text = redact.redact_diagnostic(value, cap + 1)
+    return (text[:cap - 1] + "\u2026") if len(text) > cap else text
+
+
 def _redacted_one_line(value, cap=_DIAG_MAX):
     """Redact and neutralize before cutting so no partial secret or control
     sequence can survive in a bounded failure-log field."""
     text = " ".join(str(value or "").split())
     if not text:
         return ""
-    text = redact.redact_diagnostic(text, len(text))
+    # Keep one character past the published bound. Redaction can lengthen a
+    # value, and cutting it to its old length would hide that a tail was lost.
+    text = redact.redact_diagnostic(text, cap + 1)
     text = "".join(
         ("\\x%02x" % ord(ch) if ord(ch) < 0x100 else "\\u%04x" % ord(ch))
         if ord(ch) in inert.INERT_ESCAPE_CODE_POINTS else ch
@@ -115,7 +123,7 @@ def _locus_diagnostic(finding):
     title = _redacted_one_line(
         finding.get("short_title") or finding.get("title")) or "?"
     diagnostic = "catalog-gap finding %r (%r) has no location.file" % (finding_id, title)
-    return redact.redact_diagnostic(diagnostic, 2 * _DIAG_MAX + 100)
+    return _marked_redacted_head(diagnostic, 2 * _DIAG_MAX + 100)
 
 
 def _discard_record(finding):

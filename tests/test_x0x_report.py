@@ -56,6 +56,19 @@ _ALLOWED_BOUNDARY_CODE_POINTS = (
     0x200D, 0x2010, 0x2029, 0x202F, 0x2065, 0x206A,
 )
 
+_FAILURE_LOG_FORBIDDEN_CODE_POINTS = tuple(
+    point
+    for first, last in (
+        (0x0000, 0x001F),
+        (0x007F, 0x009F),
+        (0x061C, 0x061C),
+        (0x200E, 0x200F),
+        (0x2028, 0x202E),
+        (0x2066, 0x2069),
+    )
+    for point in range(first, last + 1)
+)
+
 
 class TestX0XReport(unittest.TestCase):
     def test_only_fallback_findings_become_candidates(self):
@@ -183,6 +196,86 @@ class TestX0XReport(unittest.TestCase):
         self.assertIn(r"\x1b", record["finding_id"])
         self.assertIsNone(jsonschema.validate(failure_log, _failure_schema()))
 
+    def test_failure_log_schema_accepts_emitter_bounds_and_rejects_bad_shapes(self):
+        validator = jsonschema.Draft7Validator(_failure_schema())
+
+        def emitted(finding_id, title):
+            finding = _f("SEC-X0X", "SEC", "LOW", title, None,
+                         fid=finding_id)
+            _report, failure_log = x0x.build_emission(
+                [finding], {}, run_id="run-1")
+            return failure_log
+
+        field_cut = emitted("gap-1", "g" * 150)
+        field_record = only(
+            field_cut["discarded_findings"], "discarded finding")
+        self.assertIn("\u2026", field_record["diagnostic"])
+
+        emitter_bounds = emitted("i" * 120, "zw" + "\u200b" * 100)
+        bounded_record = only(
+            emitter_bounds["discarded_findings"], "discarded finding")
+        self.assertEqual(len(bounded_record["finding_id"]), 120)
+        self.assertEqual(len(bounded_record["diagnostic"]), 340)
+        self.assertTrue(bounded_record["diagnostic"].endswith("\u2026"))
+
+        expanded = "postgres://u:p@h"
+        expanded += " " + "t" * (120 - len(expanded) - 1)
+        redaction_cut = emitted("gap-2", expanded)
+        redaction_record = only(
+            redaction_cut["discarded_findings"], "discarded finding")
+        self.assertIn("[REDACTED]@h", redaction_record["diagnostic"])
+        self.assertIn("\u2026'", redaction_record["diagnostic"])
+
+        valid_record = {
+            "finding_id": "gap-3",
+            "reason": "no file locus",
+            "diagnostic": "bounded diagnostic",
+        }
+        accepted = {
+            "ordinary": {"discarded_findings": [valid_record]},
+            "duplicate rows": {
+                "discarded_findings": [valid_record, dict(valid_record)]},
+            "emitter field cut": field_cut,
+            "emitter exact bounds": emitter_bounds,
+            "redaction expansion cut": redaction_cut,
+        }
+        for label, document in accepted.items():
+            with self.subTest(accepted=label):
+                self.assertEqual(list(validator.iter_errors(document)), [])
+
+        def document(**row):
+            return {"discarded_findings": [{**valid_record, **row}]}
+
+        rejected = {
+            "finding id too long": document(finding_id="i" * 121),
+            "diagnostic too long": document(diagnostic="d" * 341),
+            "empty finding id": document(finding_id=""),
+            "empty diagnostic": document(diagnostic=""),
+            "wrong reason": document(reason="unknown"),
+            "empty array": {"discarded_findings": []},
+            "non-object row": {"discarded_findings": ["row"]},
+            "extra root key": {
+                "discarded_findings": [valid_record], "extra": True},
+            "extra row key": document(extra=True),
+            "missing root key": {},
+        }
+        for key in ("finding_id", "reason", "diagnostic"):
+            row = dict(valid_record)
+            del row[key]
+            rejected["missing row key " + key] = {"discarded_findings": [row]}
+        for field in ("finding_id", "diagnostic"):
+            rejected["trailing line feed in " + field] = document(
+                **{field: "safe\n"})
+        for label, document_value in rejected.items():
+            with self.subTest(rejected=label):
+                self.assertTrue(list(validator.iter_errors(document_value)))
+
+        for field in ("finding_id", "diagnostic"):
+            for point in _FAILURE_LOG_FORBIDDEN_CODE_POINTS:
+                with self.subTest(field=field, code_point="U+%04X" % point):
+                    hostile = document(**{field: "safe" + chr(point) + "value"})
+                    self.assertTrue(list(validator.iter_errors(hostile)))
+
     def test_an_untitled_cluster_is_named_by_its_finding_id(self):
         # A whitespace-only title is empty once squeezed, so the id remains the
         # identifying value in the failure log.
@@ -295,6 +388,18 @@ class TestX0XReport(unittest.TestCase):
         self.assertEqual([row["finding_id"] for row in rows],
                          ["shared-id", "shared-id"])
         self.assertEqual(len({row["diagnostic"] for row in rows}), 2)
+
+    def test_failure_log_keeps_two_equal_rows_for_one_id_and_title(self):
+        first = _f("SEC-X0X", "SEC", "LOW", "same gap", None,
+                   fid="shared-id")
+        second = _f("COD-X0X", "COD", "LOW", "same gap", None,
+                    fid="shared-id")
+        _report, failure_log = x0x.build_emission(
+            [first, second], {}, run_id="run-1")
+        rows = failure_log["discarded_findings"]
+        self.assertEqual(len(rows), 2)
+        first_row, second_row = rows
+        self.assertEqual(first_row, second_row)
 
     def test_every_nonempty_path_shape_remains_a_located_occurrence(self):
         paths = ("0", ".", "/", "   ", "\x1b", "[REDACTED_KEY]")
@@ -563,14 +668,14 @@ class TestX0XReport(unittest.TestCase):
     def test_candidate_array_is_total_sorted_and_input_order_independent(self):
         findings = [
             _f("SEC-X0X", "SEC", "HIGH", "Shared Gap", "z.py", 9, "s-z",
-               desc="from z", refs=["CWE-522"]),
+               desc="from a", refs=["CWE-522"]),
             _f("ARC-X0X", "ARC", "LOW", "Beta gap", "beta.py", 4, "arc"),
             _f("COD-X0X", "COD", "HIGH", "Cache/read gap", "slash.py", 3,
                "cod-slash"),
             _f("DAT-X0X", "DAT", "CRITICAL", "Critical gap", "critical.py", 1,
                "dat"),
             _f("SEC-X0X", "SEC", "HIGH", "shared gap", "a.py", 2, "s-a",
-               desc="from a", refs=["CWE-400"]),
+               desc="from z", refs=["CWE-400"]),
             _f("COD-X0X", "COD", "HIGH", "Cache read gap", "space.py", 5,
                "cod-space"),
         ]
@@ -593,6 +698,11 @@ class TestX0XReport(unittest.TestCase):
              ("COD", "cache-read-gap"),
              ("SEC", "shared-gap"),
              ("ARC", "beta-gap")])
+        self.assertEqual(
+            [candidate["summary"] for candidate in baseline
+             if candidate["domain"] == "COD"],
+            ["Cache read gap", "Cache/read gap"],
+        )
         shared = next(candidate for candidate in baseline
                       if candidate["domain"] == "SEC")
         expected_lead = max(

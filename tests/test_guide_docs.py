@@ -146,6 +146,21 @@ class TestTheGuideIsAnIndexPlusChapters(unittest.TestCase):
                           "## Global flags", "## Contents"],
                          [ln for ln in index.split("\n") if ln.startswith("## ")])
 
+    def test_x0x_siblings_use_the_report_filename_stem_everywhere(self):
+        paths = (
+            os.path.join(ROOT, "docs", "guide", "output.md"),
+            os.path.join(ROOT, "docs", "guide", "driver-run-loop.md"),
+            os.path.join(ROOT, "reference", "x0x-report-schema.json"),
+        )
+        for path in paths:
+            with self.subTest(path=os.path.relpath(path, ROOT)):
+                with open(path, encoding="utf-8") as fh:
+                    text = fh.read()
+                folded = " ".join(text.split())
+                self.assertIn("<report-stem>", folded)
+                self.assertIn("report filename without", folded)
+                self.assertNotRegex(folded, r"<stem>-(?:report-)?x0x")
+
     MAX_COLUMNS = 120
 
     @staticmethod

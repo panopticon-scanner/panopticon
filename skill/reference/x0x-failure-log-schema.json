@@ -19,7 +19,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 120,
-            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F\\u061C\\u200E-\\u200F\\u2028-\\u202E\\u2066-\\u2069]*$",
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F\\u061C\\u200E-\\u200F\\u2028-\\u202E\\u2066-\\u2069]*(?![\\s\\S])",
             "description": "Bounded, redacted and inert spelling of the source finding id, or ? when absent."
           },
           "reason": {
@@ -30,8 +30,8 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 340,
-            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F\\u061C\\u200E-\\u200F\\u2028-\\u202E\\u2066-\\u2069]*$",
-            "description": "Bounded, redacted, single-line and inert operator diagnostic."
+            "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F\\u061C\\u200E-\\u200F\\u2028-\\u202E\\u2066-\\u2069]*(?![\\s\\S])",
+            "description": "Bounded, redacted, single-line and inert operator diagnostic, with an ellipsis marking any cut."
           }
         }
       }

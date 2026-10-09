@@ -1359,6 +1359,36 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
             self.assertFalse(os.path.lexists(failure_path))
             self.assertNotIn("locus-free", stderr)
 
+    def test_equal_duplicate_discards_are_all_logged_and_counted(self):
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp = os.path.join(d, "findings-g1-SEC.json")
+            located = _agentic(
+                "SE-076", sev="LOW", code="SEC-X0X", domain="SEC",
+                title="located gap", short_title="located gap",
+                location={"file": "src/app.py", "line_start": 7},
+            )
+            missing = _agentic(
+                "SE-077", sev="LOW", code="SEC-X0X", domain="SEC",
+                title="same missing gap", short_title="same missing gap",
+                location={},
+            )
+            with open(fp, "w", encoding="utf-8") as fh:
+                json.dump({"findings": [located, missing, dict(missing)]}, fh)
+            out = os.path.join(d, "report.json")
+            failure_path = out.replace(".json", "-x0x-failures.json")
+
+            rc, _stdout, stderr = self._run(
+                ["--target", "src", "--out", out, fp])
+            with open(failure_path, encoding="utf-8") as fh:
+                failure_log = json.load(fh)
+
+        self.assertEqual(rc, 0, stderr)
+        rows = failure_log["discarded_findings"]
+        self.assertEqual(len(rows), 2)
+        first_row, second_row = rows
+        self.assertEqual(first_row, second_row)
+        self.assertIn("discarded 2 locus-free", stderr)
+
     def test_an_unhydratable_part_is_an_invalid_artifact_not_a_silent_pass(self):
         # A `meta.parts` pointer at a file that cannot be read makes the union
         # unknowable. Fail closed: the run cannot claim its artifact is valid.

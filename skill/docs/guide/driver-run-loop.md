@@ -1101,14 +1101,15 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   presence alone is the fact.
   `meta.coverage.delta` itself is unchanged; its sibling's schema node in
   `skill/reference/report-schema.json` is where that contract is stated.
-  `synthesize` also emits a sibling `<stem>-report-x0x.json` beside the tag-named `report.json` (the
-  `report.json` compat relink does not cover it) — the run's `<DOM>-X0X` / `ZZZ-X0X` catalog-gap
+  `synthesize` also emits a sibling `<report-stem>-x0x.json`, where `<report-stem>` is the report
+  filename without `.json` (`<tag>-report` under the driver). The `report.json` compat relink does
+  not cover it — the run's `<DOM>-X0X` / `ZZZ-X0X` catalog-gap
   findings packaged as OCRDb new-code **candidate records** (schema
   `skill/reference/x0x-report-schema.json`), mechanically clustered, with `generated_by.run_id` from
   the run manifest; adjudication (the gap rationale, the new_code/refine/retire verdict) happens
   downstream in OCRDb's pool. A catalog-gap finding without `location.file` cannot become an
   occurrence — none is invented — so the emitter leaves it out of the X0X candidate set and records
-  it in the deterministic `<stem>-report-x0x-failures.json` sidecar, validated as written against
+  it in the deterministic `<report-stem>-x0x-failures.json` sidecar, validated as written against
   `skill/reference/x0x-failure-log-schema.json`. The array keeps every finding even when two share
   one content-derived id. This also resolves #2090's mixed-cluster loss: an unlocated member is
   logged and can never lead the candidate that its located siblings still emit. The main JSON and
