@@ -10,7 +10,7 @@ import unittest
 from unittest import mock
 
 from scripts import hosts
-from tests._test_helpers import write_host_evidence
+from tests._test_helpers import only, write_host_evidence
 import scripts.config_schema as config_schema
 import scripts.evidence as evidence
 import scripts.phases.runio as runio
@@ -461,6 +461,92 @@ class TestSynthesizePhase(unittest.TestCase):
              for occurrence in candidate["occurrences"]},
             {"src/x\\u%04xy.py" % point for point in points},
         )
+
+    def test_real_child_advances_and_discloses_a_locus_free_x0x_discard(self):
+        # #2713 revised owner ruling, driver half: the candidate-bearing X0X
+        # and main artifacts complete, while the sidecar, stderr disclosure,
+        # and phase status all name the one discarded locus-free finding.
+        locus_free = {
+            "id": "SE-077",
+            "domain": "SEC",
+            "code": "SEC-X0X",
+            "severity": "LOW",
+            "confidence": "POSSIBLE",
+            "title": "repo-wide dependency gap",
+            "short_title": "dependency gap",
+            "category": "catalog-gap",
+            "panel": "security",
+            "location": {},
+        }
+        located = dict(
+            locus_free,
+            id="SE-076",
+            title="located dependency gap",
+            short_title="located gap",
+            location={"file": "src/app.py", "line_start": 7},
+        )
+        runio._write_json(
+            runio._pano(self.root, "groups.json"),
+            {"groups": [{"name": "app", "files": []}]},
+        )
+        runio._write_json(
+            runio._pano(self.root, "findings-app-SEC.json"),
+            {"findings": [located, locus_free],
+             "_panopticon": {"run_id": "R", "role": "domain_panel",
+                              "domain": "SEC", "group": "app"}},
+        )
+        report_path = runio._report_out(self.root)
+        x0x_path = report_path.replace(".json", "-x0x.json")
+        failure_path = x0x_path.replace(".json", "-failures.json")
+
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            result = synthesize.synthesize_execute(
+                self.root, dict(self.manifest, host="generic"))
+
+        self.assertEqual(result.kind, "advanced")
+        self.assertTrue(synthesize.synthesize_done(self.root, self.manifest))
+        self.assertEqual(syn.validate_artifacts(report_path, x0x_path), [])
+        self.assertTrue(os.path.isfile(report_path + ".html"))
+        candidate = only(runio._load_json(x0x_path)["candidates"], "candidate")
+        self.assertEqual(
+            only(candidate["occurrences"], "occurrence")["file"], "src/app.py")
+        failure = only(
+            runio._load_json(failure_path)["discarded_findings"],
+            "discarded finding",
+        )
+        self.assertEqual(failure["reason"], "no file locus")
+        self.assertIn("driver: X0X discarded 1 locus-free", err.getvalue())
+        self.assertIn(failure_path, err.getvalue())
+        self.assertIn("X0X discarded 1 locus-free", result.message)
+        self.assertIn(failure_path, result.message)
+
+    def test_discard_signal_survives_a_successful_child_stderr_flood(self):
+        report_path = runio._report_out(self.root)
+        x0x_path = report_path.replace(".json", "-x0x.json")
+        failure_path = x0x_path.replace(".json", "-failures.json")
+
+        def fake_run(cmd, **_kwargs):
+            with open(cmd[cmd.index("--out") + 1], "w", encoding="utf-8") as fh:
+                json.dump({"findings": [], "summary": {"gate": "PASS"}}, fh)
+            runio._write_json(failure_path, {
+                "discarded_findings": [{
+                    "finding_id": "SE-077",
+                    "reason": "no file locus",
+                    "diagnostic": "bounded diagnostic",
+                }],
+            })
+            return mock.Mock(returncode=0, stdout="", stderr="FLOOD" * 2000)
+
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            result = synthesize.synthesize_execute(self.root, self.manifest)
+
+        self.assertIn("X0X discarded 1 locus-free", err.getvalue())
+        self.assertIn(failure_path, err.getvalue())
+        self.assertNotIn("FLOOD", err.getvalue())
+        self.assertIn("X0X discarded 1 locus-free", result.message)
+        self.assertIn(failure_path, result.message)
+        self.assertNotIn("FLOOD", result.message)
 
     def test_passes_the_committed_exclude_paths_as_tools_exclude(self):
         # #1740 fix round 1 (controller addition): the report-side gate reads

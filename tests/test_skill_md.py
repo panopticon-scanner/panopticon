@@ -329,6 +329,7 @@ class TestSkillMd(unittest.TestCase):
             "Terminal completion, artifact validity and coverage certification",
             "report-schema.json",
             "x0x-report-schema.json",
+            "x0x-failure-log-schema.json",
             "hydrated",
             "artifact invalid: N schema errors",
             "fail-closed",

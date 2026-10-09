@@ -7,12 +7,20 @@ import unittest
 import jsonschema
 
 from tests._test_helpers import only
+import scripts.evidence as evidence
 import scripts.x0x_report as x0x
 
 
 def _schema():
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "skill", "reference", "x0x-report-schema.json")
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _failure_schema():
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "skill", "reference", "x0x-failure-log-schema.json")
     with open(path, encoding="utf-8") as fh:
         return json.load(fh)
 
@@ -48,6 +56,19 @@ _ALLOWED_BOUNDARY_CODE_POINTS = (
     0x200D, 0x2010, 0x2029, 0x202F, 0x2065, 0x206A,
 )
 
+_FAILURE_LOG_FORBIDDEN_CODE_POINTS = tuple(
+    point
+    for first, last in (
+        (0x0000, 0x001F),
+        (0x007F, 0x009F),
+        (0x061C, 0x061C),
+        (0x200E, 0x200F),
+        (0x2028, 0x202E),
+        (0x2066, 0x2069),
+    )
+    for point in range(first, last + 1)
+)
+
 
 class TestX0XReport(unittest.TestCase):
     def test_only_fallback_findings_become_candidates(self):
@@ -72,6 +93,18 @@ class TestX0XReport(unittest.TestCase):
         self.assertEqual(sec["recurrence"], 2)
         self.assertEqual({o["finding_id"] for o in sec["occurrences"]}, {"f1", "f2"})
         self.assertEqual(sec["severity"], "CRITICAL")   # the most severe finding leads
+
+    def test_equal_fingerprint_lead_uses_the_canonical_finding_in_both_orders(self):
+        alpha = _f("SEC-X0X", "SEC", "HIGH", "shared gap", "a.py", 2,
+                   "same-a", desc="alpha description")
+        zulu = _f("SEC-X0X", "SEC", "HIGH", "shared gap", "a.py", 99,
+                  "same-z", desc="zulu description")
+        self.assertEqual(evidence.finding_fingerprint(alpha),
+                         evidence.finding_fingerprint(zulu))
+        for order in ([alpha, zulu], [zulu, alpha]):
+            with self.subTest(order=[finding["id"] for finding in order]):
+                candidate = only(x0x.build_candidates(order), "candidate")
+                self.assertEqual(candidate["description"], "zulu description")
 
     def test_domain_case_folded_so_variants_cluster_together(self):
         # #run7 COD-C2D: the domain flows in verbatim (no case-fold upstream)
@@ -100,6 +133,15 @@ class TestX0XReport(unittest.TestCase):
         self.assertEqual(only(c["occurrences"], "occurrence"),
                          {"file": "x.py", "line_start": 3, "line_end": 5, "finding_id": "f1"})
 
+    def test_cwe_is_omitted_when_the_scrape_is_empty(self):
+        candidate = only(
+            x0x.build_candidates([
+                _f("ARC-X0X", "ARC", "LOW", "uncatalogued pattern", "x.py")
+            ]),
+            "candidate",
+        )
+        self.assertNotIn("cwe", candidate)
+
     def test_the_zzz_line_is_one_bounded_inert_line_for_a_hostile_finding(self):
         # Re-review of #1807: the pre-existing "not an OCRDb domain" line
         # rendered the agent-authored id raw and the code prefix unbounded --
@@ -117,79 +159,276 @@ class TestX0XReport(unittest.TestCase):
         self.assertIn("\\x1b[31mID", out)
         self.assertLess(len(out), 6 * (120 + 40) + 200)
 
-    def test_a_locus_free_cluster_is_dropped_and_announced(self):
-        # #1807 DAT-2501524861: a finding with no location is the CANONICAL shape
-        # for a repo-wide catalog gap (`synth/findings.py` pops the empty location
-        # deliberately), so this drop lands on exactly the gaps this emitter
-        # exists to carry. No occurrence can be invented -- the schema requires a
-        # file on every one -- so the cluster is announced instead of vanishing.
-        # The title is agent-authored, so the line renders it through `%r`: the
-        # whitespace squeeze alone would leave an ESC raw and a hostile title
-        # could repaint the operator's terminal (#1807 review N3).
-        f = _f("COD-X0X", "COD", "LOW", "dup dead\tblock\x1b[31m", None)
-        f["location"] = {}   # no file -> no valid occurrence -> candidate dropped
-        dropped = []
-        with contextlib.redirect_stderr(io.StringIO()) as err:
-            self.assertEqual(x0x.build_candidates([f], dropped), [])
-        self.assertEqual(err.getvalue(),
-                         "x0x: COD: dropping a catalog-gap cluster with no file "
-                         "location: 'dup dead block\\x1b[31m' (1 finding(s))\n")
-        # the out-list `build_report` tallies from, pinned (review N4): the record
-        # carries the squeezed text itself -- escaping belongs at the render.
-        self.assertEqual(dropped, [{"domain": "COD",
-                                    "summary": "dup dead block\x1b[31m",
-                                    "finding_count": 1}])
+    def test_a_locus_free_finding_is_discarded_into_a_redacted_inert_log(self):
+        # #2713 revised owner ruling: keep the X0X, omit the unrepresentable
+        # occurrence, and preserve a loud machine-readable record beside it.
+        secret = "sk-" + "A" * 20
+        f = _f("COD-X0X", "COD", "LOW",
+               "dup dead\tblock\x1b[31m " + secret, None, fid="gap-77")
+        f["location"] = {}
+
+        report, failure_log = x0x.build_emission([f], {}, run_id="run-1")
+
+        self.assertEqual(report["candidates"], [])
+        record = only(failure_log["discarded_findings"], "discarded finding")
+        self.assertEqual(record["finding_id"], "gap-77")
+        self.assertEqual(record["reason"], "no file locus")
+        diagnostic = record["diagnostic"]
+        self.assertEqual(len(diagnostic.splitlines()), 1)
+        self.assertNotIn("\x1b", diagnostic)
+        self.assertNotIn(secret, diagnostic)
+        self.assertIn("[REDACTED_KEY]", diagnostic)
+        self.assertIn("'gap-77'", diagnostic)
+        self.assertIn("\\x1b[31m", diagnostic)
+        self.assertLess(len(diagnostic), 2 * 120 + 100)
+        self.assertIsNone(jsonschema.validate(failure_log, _failure_schema()))
+
+    def test_failure_log_fields_escape_controls_and_bidi_before_publication(self):
+        f = _f("SEC-X0X", "SEC", "LOW", "gap\u202e\x1b", None,
+               fid="id\u202e\x1b")
+        _report, failure_log = x0x.build_emission([f], {}, run_id="run-1")
+        record = only(failure_log["discarded_findings"], "discarded finding")
+        for field in ("finding_id", "diagnostic"):
+            with self.subTest(field=field):
+                self.assertNotIn("\u202e", record[field])
+                self.assertNotIn("\x1b", record[field])
+        self.assertIn(r"\u202e", record["finding_id"])
+        self.assertIn(r"\x1b", record["finding_id"])
+        self.assertIsNone(jsonschema.validate(failure_log, _failure_schema()))
+
+    def test_failure_log_schema_accepts_emitter_bounds_and_rejects_bad_shapes(self):
+        validator = jsonschema.Draft7Validator(_failure_schema())
+
+        def emitted(finding_id, title):
+            finding = _f("SEC-X0X", "SEC", "LOW", title, None,
+                         fid=finding_id)
+            _report, failure_log = x0x.build_emission(
+                [finding], {}, run_id="run-1")
+            return failure_log
+
+        field_cut = emitted("gap-1", "g" * 150)
+        field_record = only(
+            field_cut["discarded_findings"], "discarded finding")
+        self.assertIn("\u2026", field_record["diagnostic"])
+
+        emitter_bounds = emitted("i" * 120, "zw" + "\u200b" * 100)
+        bounded_record = only(
+            emitter_bounds["discarded_findings"], "discarded finding")
+        self.assertEqual(len(bounded_record["finding_id"]), 120)
+        self.assertEqual(len(bounded_record["diagnostic"]), 340)
+        self.assertTrue(bounded_record["diagnostic"].endswith("\u2026"))
+
+        expanded = "postgres:" + "/" * 2 + "u:p@h"
+        expanded += " " + "t" * (120 - len(expanded) - 1)
+        redaction_cut = emitted("gap-2", expanded)
+        redaction_record = only(
+            redaction_cut["discarded_findings"], "discarded finding")
+        self.assertIn("[REDACTED]@h", redaction_record["diagnostic"])
+        self.assertIn("\u2026'", redaction_record["diagnostic"])
+
+        valid_record = {
+            "finding_id": "gap-3",
+            "reason": "no file locus",
+            "diagnostic": "bounded diagnostic",
+        }
+        accepted = {
+            "ordinary": {"discarded_findings": [valid_record]},
+            "duplicate rows": {
+                "discarded_findings": [valid_record, dict(valid_record)]},
+            "emitter field cut": field_cut,
+            "emitter exact bounds": emitter_bounds,
+            "redaction expansion cut": redaction_cut,
+        }
+        for label, document in accepted.items():
+            with self.subTest(accepted=label):
+                self.assertEqual(list(validator.iter_errors(document)), [])
+
+        def document(**row):
+            return {"discarded_findings": [{**valid_record, **row}]}
+
+        rejected = {
+            "finding id too long": document(finding_id="i" * 121),
+            "diagnostic too long": document(diagnostic="d" * 341),
+            "empty finding id": document(finding_id=""),
+            "empty diagnostic": document(diagnostic=""),
+            "wrong reason": document(reason="unknown"),
+            "empty array": {"discarded_findings": []},
+            "non-object row": {"discarded_findings": ["row"]},
+            "extra root key": {
+                "discarded_findings": [valid_record], "extra": True},
+            "extra row key": document(extra=True),
+            "missing root key": {},
+        }
+        for key in ("finding_id", "reason", "diagnostic"):
+            row = dict(valid_record)
+            del row[key]
+            rejected["missing row key " + key] = {"discarded_findings": [row]}
+        for field in ("finding_id", "diagnostic"):
+            rejected["trailing line feed in " + field] = document(
+                **{field: "safe\n"})
+        for label, document_value in rejected.items():
+            with self.subTest(rejected=label):
+                self.assertTrue(list(validator.iter_errors(document_value)))
+
+        for field in ("finding_id", "diagnostic"):
+            for point in _FAILURE_LOG_FORBIDDEN_CODE_POINTS:
+                with self.subTest(field=field, code_point="U+%04X" % point):
+                    hostile = document(**{field: "safe" + chr(point) + "value"})
+                    self.assertTrue(list(validator.iter_errors(hostile)))
 
     def test_an_untitled_cluster_is_named_by_its_finding_id(self):
-        # Review N1: the cluster KEY already falls back to the id and `_domain`'s
-        # line names the id, so the diagnostic was the one place that named
-        # nothing identifiable. A whitespace-only title is empty once squeezed.
+        # A whitespace-only title is empty once squeezed, so the id remains the
+        # identifying value in the failure log.
         f = {"code": "SEC-X0X", "domain": "SEC", "severity": "LOW", "id": "gap-77",
              "short_title": "   "}
-        with contextlib.redirect_stderr(io.StringIO()) as err:
-            self.assertEqual(x0x.build_candidates([f]), [])
-        self.assertEqual(err.getvalue(),
-                         "x0x: SEC: dropping a catalog-gap cluster with no file "
-                         "location: 'gap-77' (1 finding(s))\n")
+        _report, failure_log = x0x.build_emission([f], {}, run_id="run-1")
+        self.assertEqual(
+            only(failure_log["discarded_findings"], "discarded finding")["diagnostic"],
+            "catalog-gap finding 'gap-77' ('?') has no location.file",
+        )
 
     def test_a_long_title_is_cut_with_the_cut_marked(self):
         # Review N2: the house rule (`phases/review.py::_hit_text`) is that a cut
         # is MARKED, so a truncated value cannot read as a complete one.
         f = _f("SEC-X0X", "SEC", "LOW", "g" * 200, None)
         f["location"] = {}
-        with contextlib.redirect_stderr(io.StringIO()) as err:
-            self.assertEqual(x0x.build_candidates([f]), [])
-        self.assertIn("'" + "g" * 119 + "\u2026'", err.getvalue())
+        _report, failure_log = x0x.build_emission([f], {}, run_id="run-1")
+        diagnostic = only(
+            failure_log["discarded_findings"], "discarded finding")["diagnostic"]
+        self.assertIn("'" + "g" * 119 + "\u2026'", diagnostic)
 
-    def test_the_envelope_counts_the_locus_free_clusters_it_dropped(self):
-        # The count `synthesize` prints comes off `candidates`; without this the
-        # artifact is quietly short and nothing on the line says so.
+    def test_a_field_cut_with_a_space_at_the_bound_is_marked(self):
+        f = _f("SEC-X0X", "SEC", "LOW", "a" * 120 + " tail", None,
+               fid="gap-1")
+        _report, failure_log = x0x.build_emission([f], {}, run_id="run-1")
+        diagnostic = only(
+            failure_log["discarded_findings"], "discarded finding")["diagnostic"]
+        self.assertIn("'" + "a" * 119 + "\u2026'", diagnostic)
+
+    def test_an_exactly_maximum_length_diagnostic_stays_whole(self):
+        finding = {"id": "i", "title": "ttt" + "\u200b" * 48}
+        expected = "catalog-gap finding %r (%r) has no location.file" % (
+            finding["id"], finding["title"])
+        self.assertEqual(len(expected), 340)
+        self.assertEqual(x0x._locus_diagnostic(finding), expected)
+
+    def test_failure_log_redacts_before_cutting_a_diagnostic_field(self):
+        # Cutting first can turn a recognizable credential into an unrecognized
+        # partial credential at the 120-character boundary.
+        secret = "sk-" + "B" * 20
+        f = _f("SEC-X0X", "SEC", "LOW", "p" * 105 + " " + secret, None,
+               fid="gap-1")
+        _report, failure_log = x0x.build_emission([f], {}, run_id="run-1")
+        diagnostic = only(
+            failure_log["discarded_findings"], "discarded finding")["diagnostic"]
+        self.assertNotIn(secret, diagnostic)
+        self.assertNotIn("sk-", diagnostic)
+        self.assertIn("[REDACTED_KEY]", diagnostic)
+
+    def test_an_all_locus_free_run_emits_an_empty_x0x_and_a_separate_log(self):
         gap = {"code": "SEC-X0X", "domain": "SEC", "severity": "HIGH", "id": "gap-1",
                "short_title": "no code covers repo-wide dependency pinning",
                "description": "whole-repo gap"}
-        with contextlib.redirect_stderr(io.StringIO()):
-            report = x0x.build_report([gap], {}, run_id="run-1")
+        report, failure_log = x0x.build_emission([gap], {}, run_id="run-1")
         self.assertEqual(report["candidates"], [])
-        self.assertEqual(report["candidates_dropped_locus_free"], 1)
-        # the envelope is a published contract: the new key must validate AND be
-        # declared, or a downstream ingester has no documented field to read
-        # (review I2).
-        self.assertIsNone(jsonschema.validate(report, _schema()))
-        self.assertIn("candidates_dropped_locus_free", _schema()["properties"])
+        self.assertEqual(len(failure_log["discarded_findings"]), 1)
+        self.assertEqual(x0x.build_report([gap], {}, run_id="run-1")["candidates"], [])
+        self.assertNotIn("candidates_dropped_locus_free", _schema()["properties"])
 
-    def test_a_mixed_cluster_survives_and_reports_nothing_dropped(self):
-        # One located finding is enough to carry the cluster, so nothing was
-        # dropped -- only the locus-free occurrence is missing, and `recurrence`
-        # counts occurrences, as it always has.
-        located = _f("SEC-X0X", "SEC", "LOW", "hardcoded id", "a.py", 1, "f1")
-        locus_free = _f("SEC-X0X", "SEC", "HIGH", "hardcoded id", None, 1, "f2")
-        with contextlib.redirect_stderr(io.StringIO()) as err:
-            report = x0x.build_report([located, locus_free], {}, run_id="run-1")
+    def test_a_mixed_cluster_discards_only_its_locus_free_finding(self):
+        # A located sibling remains a complete one-occurrence candidate; the
+        # omitted sibling is visible in the separate log and nowhere else.
+        located = _f("SEC-X0X", "SEC", "LOW", "hardcoded id", "a.py", 1,
+                     "f1", desc="located description")
+        locus_free = _f("SEC-X0X", "SEC", "HIGH", "hardcoded id", None, 1,
+                        "f2", desc="discarded description")
+        for order in ([located, locus_free], [locus_free, located]):
+            with self.subTest(order=[finding["id"] for finding in order]):
+                report, failure_log = x0x.build_emission(order, {}, run_id="run-1")
+                candidate = only(report["candidates"], "candidate")
+                self.assertEqual(candidate["recurrence"], 1)
+                self.assertEqual(
+                    only(candidate["occurrences"], "occurrence")["finding_id"], "f1")
+                self.assertEqual(candidate["summary"], "hardcoded id")
+                self.assertEqual(candidate["severity"], "LOW")
+                self.assertEqual(candidate["proposed_name"], "hardcoded-id")
+                self.assertEqual(candidate["description"], "located description")
+                self.assertEqual(
+                    only(failure_log["discarded_findings"], "discarded finding")
+                    ["finding_id"], "f2")
+
+    def test_discard_order_and_x0x_bytes_are_input_independent(self):
+        located = _f("SEC-X0X", "SEC", "HIGH", "hardcoded id", "a.py", 1, "f1")
+        missing_z = _f("COD-X0X", "COD", "LOW", "missing z", None, fid="z")
+        missing_a = _f("ARC-X0X", "ARC", "LOW", "missing a", None, fid="a")
+        baseline, _baseline_log = x0x.build_emission([located], {}, run_id="run-1")
+        emissions = [
+            x0x.build_emission(order, {}, run_id="run-1")
+            for order in (
+                [located, missing_z, missing_a],
+                [missing_a, located, missing_z],
+                [missing_z, missing_a, located],
+            )
+        ]
+        for report, _failure_log in emissions:
+            self.assertEqual(
+                json.dumps(report, indent=2, sort_keys=True),
+                json.dumps(baseline, indent=2, sort_keys=True),
+            )
+        logs = [failure_log for _report, failure_log in emissions]
+        first_log, *other_logs = logs
+        self.assertTrue(all(log == first_log for log in other_logs))
+        discarded = first_log["discarded_findings"]
+        self.assertEqual(
+            [row["finding_id"] for row in discarded],
+            ["a", "z"],
+        )
+
+    def test_failure_log_keeps_duplicate_ids_in_canonical_order(self):
+        first = _f("SEC-X0X", "SEC", "LOW", "alpha gap", None,
+                   fid="shared-id")
+        second = _f("COD-X0X", "COD", "LOW", "zulu gap", None,
+                    fid="shared-id")
+        logs = [
+            x0x.build_emission(order, {}, run_id="run-1")[1]
+            for order in ([first, second], [second, first])
+        ]
+        first_log, second_log = logs
+        self.assertEqual(
+            json.dumps(first_log, sort_keys=True),
+            json.dumps(second_log, sort_keys=True),
+        )
+        rows = first_log["discarded_findings"]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([row["finding_id"] for row in rows],
+                         ["shared-id", "shared-id"])
+        self.assertEqual(len({row["diagnostic"] for row in rows}), 2)
+
+    def test_failure_log_keeps_two_equal_rows_for_one_id_and_title(self):
+        first = _f("SEC-X0X", "SEC", "LOW", "same gap", None,
+                   fid="shared-id")
+        second = _f("COD-X0X", "COD", "LOW", "same gap", None,
+                    fid="shared-id")
+        _report, failure_log = x0x.build_emission(
+            [first, second], {}, run_id="run-1")
+        rows = failure_log["discarded_findings"]
+        self.assertEqual(len(rows), 2)
+        first_row, second_row = rows
+        self.assertEqual(first_row, second_row)
+
+    def test_every_nonempty_path_shape_remains_a_located_occurrence(self):
+        paths = ("0", ".", "/", "   ", "\x1b", "[REDACTED_KEY]")
+        findings = [
+            _f("SEC-X0X", "SEC", "LOW", "path shape", path,
+               index + 1, "f%d" % index)
+            for index, path in enumerate(paths)
+        ]
+        report, failure_log = x0x.build_emission(findings, {}, run_id="run-1")
+        self.assertIsNone(failure_log)
         candidate = only(report["candidates"], "candidate")
-        self.assertEqual(candidate["recurrence"], 1)
-        self.assertEqual(only(candidate["occurrences"], "occurrence")["finding_id"], "f1")
-        self.assertNotIn("candidates_dropped_locus_free", report)
-        self.assertEqual(err.getvalue(), "")
+        self.assertEqual(candidate["recurrence"], len(paths))
+        self.assertEqual({row["file"] for row in candidate["occurrences"]},
+                         set(paths))
 
     def test_domainless_zzz_sentinel(self):
         f = {"code": "ZZZ-X0X", "severity": "MEDIUM", "short_title": "t",
@@ -249,7 +488,7 @@ class TestX0XReport(unittest.TestCase):
                        refs=["CWE-639"])]
         self.assertIsNone(jsonschema.validate(x0x.build_report(findings, meta, run_id="run-xyz"), schema))
 
-    def test_schema_rejects_the_exact_control_and_bidi_set_in_identifiers(self):
+    def test_schema_identifier_pattern_rejects_the_exact_control_and_bidi_set(self):
         schema = _schema()
         validator = jsonschema.Draft7Validator(schema)
 
@@ -282,50 +521,56 @@ class TestX0XReport(unittest.TestCase):
                     report, candidate = document()
                     set_value(candidate, "safe" + chr(point) + "value")
                     errors = list(validator.iter_errors(report))
-                    self.assertEqual(len(errors), 1)
-                    self.assertEqual(list(errors[0].path), expected_path)
-                    self.assertEqual(errors[0].validator, "pattern")
-                    self.assertEqual(errors[0].validator_value,
-                                     _IDENTIFIER_PATTERN)
+                    identifier_errors = [
+                        error for error in errors
+                        if error.validator == "pattern"
+                        and error.validator_value == _IDENTIFIER_PATTERN
+                    ]
+                    if field != "candidate.proposed_name":
+                        self.assertEqual(len(errors), 1)
+                    self.assertEqual(len(identifier_errors), 1)
+                    self.assertEqual(list(identifier_errors[0].path), expected_path)
 
     def test_schema_accepts_every_control_and_bidi_range_neighbour(self):
         schema = _schema()
         validator = jsonschema.Draft7Validator(schema)
-
-        def document():
-            report = x0x.build_report(
-                [_f("SEC-X0X", "SEC", "MEDIUM", "honest candidate",
-                    "src/package/widget.py")], {}, run_id="run-1")
-            candidate = only(report["candidates"], "candidate")
-            candidate["area"] = "runtime"
-            return report, candidate
-
-        setters = {
-            "occurrence.file": lambda candidate, value: only(
-                candidate["occurrences"], "occurrence").__setitem__("file", value),
-            "candidate.area": lambda candidate, value: candidate.__setitem__("area", value),
-            "candidate.proposed_name": lambda candidate, value: candidate.__setitem__(
-                "proposed_name", value),
+        candidate = schema["properties"]["candidates"]["items"]["properties"]
+        report_fields = {
+            "occurrence.file": lambda item, value: only(
+                item["occurrences"], "occurrence").__setitem__("file", value),
+            "candidate.area": lambda item, value: item.__setitem__("area", value),
         }
-        for field, set_value in setters.items():
+        for field, set_value in report_fields.items():
             for point in _ALLOWED_BOUNDARY_CODE_POINTS:
                 with self.subTest(field=field, code_point="U+%04X" % point):
-                    report, candidate = document()
-                    set_value(candidate, "safe" + chr(point) + "value")
+                    report = x0x.build_report(
+                        [_f("SEC-X0X", "SEC", "MEDIUM", "honest candidate",
+                            "src/package/widget.py")], {}, run_id="run-1")
+                    item = only(report["candidates"], "candidate")
+                    item["area"] = "runtime"
+                    set_value(item, "safe" + chr(point) + "value")
                     self.assertEqual(list(validator.iter_errors(report)), [])
 
-    def test_schema_accepts_empty_identifier_strings(self):
+        proposed_pattern = candidate["proposed_name"]["pattern"]
+        self.assertEqual(proposed_pattern, _IDENTIFIER_PATTERN)
+        proposed_validator = jsonschema.Draft7Validator(
+            {"type": "string", "pattern": proposed_pattern})
+        for point in _ALLOWED_BOUNDARY_CODE_POINTS:
+            with self.subTest(field="candidate.proposed_name",
+                              code_point="U+%04X" % point):
+                self.assertEqual(list(proposed_validator.iter_errors(
+                    "safe" + chr(point) + "value")), [])
+
+    def test_empty_paths_and_areas_remain_valid_but_a_proposed_name_is_kebab(self):
         # #2712 governs which code points may occur. Preserve the schema's
-        # existing compatibility choice that a present identifier may be empty;
-        # producer-specific shape rules can be stricter (as #2713 will be).
+        # existing compatibility choice for paths and areas. #2713 layers a
+        # non-empty kebab shape onto proposed_name.
         schema = _schema()
         validator = jsonschema.Draft7Validator(schema)
         setters = {
             "occurrence.file": lambda candidate: only(
                 candidate["occurrences"], "occurrence").__setitem__("file", ""),
             "candidate.area": lambda candidate: candidate.__setitem__("area", ""),
-            "candidate.proposed_name": lambda candidate: candidate.__setitem__(
-                "proposed_name", ""),
         }
         for field, set_value in setters.items():
             with self.subTest(field=field):
@@ -335,6 +580,12 @@ class TestX0XReport(unittest.TestCase):
                 candidate = only(report["candidates"], "candidate")
                 set_value(candidate)
                 self.assertEqual(list(validator.iter_errors(report)), [])
+
+        report = x0x.build_report(
+            [_f("SEC-X0X", "SEC", "MEDIUM", "honest candidate",
+                "src/package/widget.py")], {}, run_id="run-1")
+        only(report["candidates"], "candidate")["proposed_name"] = ""
+        self.assertTrue(list(validator.iter_errors(report)))
 
     def test_schema_keeps_honest_identifiers_and_emitter_output_valid(self):
         schema = _schema()
@@ -363,3 +614,168 @@ class TestX0XReport(unittest.TestCase):
                 candidate["area"] = "worker-runtime"
                 set_value(candidate, "segment\tline\nnext")
                 validator.validate(report)
+
+    def test_proposed_name_is_bounded_kebab_case_and_the_emitter_conforms(self):
+        schema = _schema()
+        validator = jsonschema.Draft7Validator(schema)
+
+        def document(name):
+            report = x0x.build_report(
+                [_f("ARC-X0X", "ARC", "LOW", "ordinary gap", "src/gap.py")],
+                {}, run_id="run-1")
+            only(report["candidates"], "candidate")["proposed_name"] = name
+            return report
+
+        for name in ("", "-leading", "trailing-", "two--hyphens", "Upper-case",
+                     "under_score", "white space", "line\n", "tab\tname", "a" * 61):
+            with self.subTest(rejected=name):
+                self.assertTrue(list(validator.iter_errors(document(name))))
+        for name in ("a", "3des-cipher-still-enabled", "cwe-400", "a" * 60,
+                     "bounded-retry-loop"):
+            with self.subTest(accepted=name):
+                validator.validate(document(name))
+
+        emitted = x0x.build_report(
+            [_f("ARC-X0X", "ARC", "LOW", "A" * 70 + " tail", "src/gap.py")],
+            {}, run_id="run-1")
+        proposed = only(emitted["candidates"], "candidate")["proposed_name"]
+        self.assertEqual(proposed, "a" * 60)
+        validator.validate(emitted)
+
+        digit_leading = x0x.build_report(
+            [_f("SEC-X0X", "SEC", "LOW", "3DES cipher still enabled",
+                "src/gap.py")], {}, run_id="run-1")
+        self.assertEqual(
+            only(digit_leading["candidates"], "candidate")["proposed_name"],
+            "3des-cipher-still-enabled",
+        )
+        validator.validate(digit_leading)
+
+        cut_on_hyphen = x0x.build_report(
+            [_f("SEC-X0X", "SEC", "LOW", "a" * 59 + " tail", "src/gap.py")],
+            {}, run_id="run-1")
+        proposed = only(cut_on_hyphen["candidates"], "candidate")["proposed_name"]
+        self.assertEqual(proposed, "a" * 59)
+        self.assertFalse(proposed.endswith("-"))
+        validator.validate(cut_on_hyphen)
+
+    def test_candidate_order_uses_name_before_title(self):
+        candidates = x0x.build_candidates([
+            _f("COD-X0X", "COD", "HIGH", "Node-RED flow injection", "a.py"),
+            _f("COD-X0X", "COD", "HIGH", "Node.js eval of input", "b.py"),
+        ])
+        self.assertEqual(
+            [candidate["proposed_name"] for candidate in candidates],
+            ["node-js-eval-of-input", "node-red-flow-injection"],
+        )
+
+    def test_candidate_order_uses_domain_before_name(self):
+        candidates = x0x.build_candidates([
+            _f("SEC-X0X", "SEC", "HIGH", "aaa gap", "a.py"),
+            _f("COD-X0X", "COD", "HIGH", "zzz gap", "b.py"),
+        ])
+        self.assertEqual(
+            [(candidate["domain"], candidate["proposed_name"])
+             for candidate in candidates],
+            [("COD", "zzz-gap"), ("SEC", "aaa-gap")],
+        )
+
+    def test_candidate_array_is_total_sorted_and_input_order_independent(self):
+        findings = [
+            _f("SEC-X0X", "SEC", "HIGH", "Shared Gap", "z.py", 9, "s-z",
+               desc="from a", refs=["CWE-522"]),
+            _f("ARC-X0X", "ARC", "LOW", "Beta gap", "beta.py", 4, "arc"),
+            _f("COD-X0X", "COD", "HIGH", "Cache/read gap", "slash.py", 3,
+               "cod-slash"),
+            _f("DAT-X0X", "DAT", "CRITICAL", "Critical gap", "critical.py", 1,
+               "dat"),
+            _f("SEC-X0X", "SEC", "HIGH", "shared gap", "a.py", 2, "s-a",
+               desc="from z", refs=["CWE-400"]),
+            _f("COD-X0X", "COD", "HIGH", "Cache read gap", "space.py", 5,
+               "cod-space"),
+        ]
+        orders = (
+            findings,
+            list(reversed(findings)),
+            findings[2:] + findings[:2],
+            sorted(findings, key=lambda finding: finding["id"]),
+        )
+        emitted = [x0x.build_candidates(order) for order in orders]
+        baseline, *permuted = emitted
+        for candidate_array in permuted:
+            self.assertEqual(candidate_array, baseline)
+
+        self.assertEqual(
+            [(candidate["domain"], candidate.get("proposed_name"))
+             for candidate in baseline],
+            [("DAT", "critical-gap"),
+             ("COD", "cache-read-gap"),
+             ("COD", "cache-read-gap"),
+             ("SEC", "shared-gap"),
+             ("ARC", "beta-gap")])
+        self.assertEqual(
+            [candidate["summary"] for candidate in baseline
+             if candidate["domain"] == "COD"],
+            ["Cache read gap", "Cache/read gap"],
+        )
+        shared = next(candidate for candidate in baseline
+                      if candidate["domain"] == "SEC")
+        expected_lead = max(
+            (finding for finding in findings if finding["domain"] == "SEC"),
+            key=evidence.finding_fingerprint)
+        self.assertEqual(shared["description"], expected_lead["description"])
+        self.assertEqual(shared["cwe"], ["CWE-400", "CWE-522"])
+        self.assertEqual([occurrence["file"] for occurrence in shared["occurrences"]],
+                         ["a.py", "z.py"])
+
+    def test_equal_severity_lead_prefers_fingerprint_before_canonical_order(self):
+        fingerprint_lead = _f(
+            "SEC-X0X", "SEC", "HIGH", "shared gap", "a.py", 2, "s-a",
+            desc="from a", refs=["CWE-400"])
+        canonical_lead = _f(
+            "SEC-X0X", "SEC", "HIGH", "Shared Gap", "z.py", 9, "s-z",
+            desc="from z", refs=["CWE-522"])
+        self.assertGreater(evidence.finding_fingerprint(fingerprint_lead),
+                           evidence.finding_fingerprint(canonical_lead))
+        self.assertGreater(x0x._canonical(canonical_lead),
+                           x0x._canonical(fingerprint_lead))
+
+        for order in ([fingerprint_lead, canonical_lead],
+                      [canonical_lead, fingerprint_lead]):
+            with self.subTest(order=[finding["id"] for finding in order]):
+                candidate = only(x0x.build_candidates(order), "candidate")
+                self.assertEqual(candidate["summary"], "shared gap")
+                self.assertEqual(candidate["description"], "from a")
+
+    def test_generated_at_stays_optional(self):
+        schema = _schema()
+        report = x0x.build_report([], {}, run_id="run-1")
+        self.assertNotIn("generated_at", schema["required"])
+        self.assertNotIn("generated_at", report)
+        self.assertIsNone(jsonschema.validate(report, schema))
+
+    def test_extension_objects_stay_open_without_declaring_evidence_status(self):
+        schema = _schema()
+        candidate_schema = schema["properties"]["candidates"]["items"]
+        occurrence_schema = candidate_schema["properties"]["occurrences"]["items"]
+        self.assertNotIn("evidence_status", candidate_schema["properties"])
+        self.assertNotIn("cwe", candidate_schema["required"])
+
+        report = x0x.build_report(
+            [_f("ARC-X0X", "ARC", "LOW", "open contract", "src/gap.py")],
+            {"target": "repo"}, run_id="run-1")
+        candidate = only(report["candidates"], "candidate")
+        occurrence = only(candidate["occurrences"], "occurrence")
+        report["extension"] = True
+        report["generated_by"]["extension"] = True
+        report["target"]["extension"] = True
+        candidate["extension"] = True
+        occurrence["extension"] = True
+        self.assertIsNone(jsonschema.validate(report, schema))
+        for node in (
+                schema,
+                schema["properties"]["generated_by"],
+                schema["properties"]["target"],
+                candidate_schema,
+                occurrence_schema):
+            self.assertNotEqual(node.get("additionalProperties"), False)

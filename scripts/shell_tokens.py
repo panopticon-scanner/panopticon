@@ -65,6 +65,10 @@ def derived(text, *sources):
 
 # The shape of every marker `_Parse.new` mints: its prefix, then a count and `@@`.
 _MARK = re.compile(r"@@shell-[0-9a-f]+-x*[0-9]+@@")
+# What every nonce this process mints ends in, and no text it reads holds but by chance: how `_keyed`
+# knows a marker of the reader's own from text of the target's shaped like one (#2929 round 3).
+_OURS = secrets.token_hex(8)
+_NONCE = re.compile(r"@@shell-[0-9a-f]+%s-" % _OURS)
 
 
 def spelled(text, source):
@@ -89,19 +93,38 @@ class _Parse:
     def __init__(self, source):
         # No source spelling can collide, even if a nonce source is replaced
         # in a test. No global registry: tokens retain only their own entries.
-        self.prefix = "@@shell-" + secrets.token_hex(16) + "-"
+        self.prefix = "@@shell-" + secrets.token_hex(16) + _OURS + "-"
         while self.prefix in source:
             self.prefix += "x"
         self.entries: dict[str, tuple[str, object]] = {}
         self.bangs: set[int] = set()    # the statements a negated group holds (`shell_reader._split`)
         self.links: dict[str, list[str]] = {}   # each name the step may have linked, to its targets (`shell_command.track`)
         self.cwds: list[str] = []       # each directory a `cd` may have moved the step to (`track`)
+        # Where this parse stands (`whole`, #2929 round 2): the place a parent gave the text it lifted
+        # (`new`) or the job its step's (`placed`), never what the text says; else, a program string
+        # or a text read alone, its text, the reader's nonces out.
+        self.place = getattr(source, "place", None) or ("text", _keyed(source))
+        self.wholes = 0                 # the words `shell_reader._whole` kept, in order (`whole`)
         self.pattern = re.compile(re.escape(self.prefix) + r"\d+@@")
 
     def new(self, kind, value=None):
         marker = self.prefix + str(len(self.entries)) + "@@"
+        # A text this parse lifts takes its place here, for the parse that reads it again (#2929
+        # round 2): a substitution's text, and a heredoc's body -- in the parse that reads its
+        # redirection, a child that carries a parent's heredoc placing it anew.
+        if kind == "subst" and hasattr(value, "__dict__"):
+            value.place = (self.place, len(self.entries))
+        elif kind == "heredoc":
+            value = (_at(value[0], (self.place, len(self.entries))), *value[1:])
         self.entries[marker] = (kind, value)
         return marker
+
+    def whole(self):
+        """The place of the next word `shell_reader._whole` keeps whole (#2929): this parse's place
+        and how many it kept before, the same in every parse of that place, so a word is one word to
+        `shell_command.folds` however often its text is read again, and two places two words."""
+        self.wholes += 1
+        return self.place, self.wholes
 
     def token(self, text):
         markers = {m: self.entries[m] for m in self.pattern.findall(text)
@@ -116,6 +139,41 @@ class _Parse:
             return value if kind == "arithmetic" else marker
 
         return self.pattern.sub(restore, text)
+
+
+class _Placed(str):
+    """A text and its `place` (`_at`)."""
+
+
+def _at(text, place):
+    text = _Placed(text)
+    text.place = place
+    return text
+
+
+def placed(text, number):
+    """`text`, a step's own script, at its index in the job, for the parse that reads it
+    (`_Parse.place`, #2929 round 2): two steps of one text are two places."""
+    return _at(text, ("step", number))
+
+
+def at_place(text, source):
+    """`text`, a program `workflow_programs.stdin_scripts` reads off `source`, at the place `source`
+    holds in the parse that lifted it, where it holds one (#2929 round 2): a heredoc's body read as
+    a shell's program is one place however often it is read, and two of one text are two."""
+    if place := getattr(source, "place", None):
+        text.place = place
+    return text
+
+
+def _keyed(source):
+    """A text no parent placed -- a program string, or a text read alone -- as the key of its parse's
+    place (#2929 rounds 2 and 3): the text, less the nonce of each marker of the reader's own it
+    holds (`_OURS`), as a word that may be a shell's program holds its `$(…)`
+    (`workflow_forms._weighed`), so a text read again keeps one key whatever nonce its parent minted.
+    Nothing else leaves it: text of the target's that is only shaped like a marker stays, and two
+    such texts keep two keys."""
+    return _NONCE.sub("", source)
 
 
 def is_arm(token):

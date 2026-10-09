@@ -51,8 +51,8 @@ from shell_patterns import (MARK, QUOTED, QUOTED_DOLLAR, is_pattern, leads, patt
 from shell_quote import ansi_c
 from shell_text import (_lift_substitutions, join_continuations as join_continuations,
                         without_comments as without_comments)
-from shell_tokens import (_Expanded as _Expanded, _Parse as _Parse, _Token as _Token,
-                          _markers as _markers, bang as bang, derived as derived,
+from shell_tokens import (_Expanded as _Expanded, _Parse as _Parse, _Token as _Token, placed as placed,
+                          _markers as _markers, at_place as at_place, bang as bang, derived as derived,
                           has_substitution as has_substitution, is_arm as is_arm,
                           is_marker as is_marker, kept as kept, readable as readable,
                           yields_words as yields_words)
@@ -490,15 +490,15 @@ def _whole(raw, context, span):
     word = context.token(plain.replace(_ESCAPED, "\\"))
     word = word if isinstance(word, _Token) else _Token(word, _markers(word))
     word.span = span
+    word.at = context.whole()
     return word
 
 
 def _stage(text, context):
-    """Read lexical redirect operators in order, copying fd sinks by value,
-    and an array literal as part of the word that assigns it (#2348). A word
-    with a double-quoted `\\$` or `` \\` `` in it carries the text bash makes
-    of it, `spelled`, which is the program a shell handed it runs (#2342): the
-    backslash of each gone, a live `$` word beside them kept as the value word
+    """Read lexical redirect operators in order, copying fd sinks by value, and an array literal
+    as part of the word that assigns it (#2348). A word with a double-quoted `\\$` or `` \\` ``
+    in it carries the text bash makes of it, `spelled`, which is the program a shell handed it
+    runs (#2342): the backslash of each gone, a live `$` word beside them kept as the value word
     it is (#2466), a lifted substitution as its marker; it reads as before."""
     try:
         tokens = shlex.split(patterned(text))

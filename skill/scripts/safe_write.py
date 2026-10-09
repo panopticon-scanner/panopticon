@@ -177,6 +177,19 @@ def open_a_nofollow(path):
     return os.fdopen(fd, "a", encoding="utf-8")
 
 
+def remove_artifact(path):
+    """Remove an artifact leaf without following it or an escaping parent.
+
+    Confine the parent rather than the leaf so a planted final symlink can be
+    unlinked safely. Missing artifacts are already in the requested state.
+    """
+    confine_artifact_path(os.path.dirname(os.path.abspath(path)))
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
 def publish_texts(targets):
     """Stage `(final_path, temp_path, text)` entries, then publish in reverse.
 
