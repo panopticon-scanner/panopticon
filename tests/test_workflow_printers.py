@@ -581,9 +581,13 @@ class TestFixRound3TwoReadingsAndAVanishingValue(unittest.TestCase):
         # The one shape R-F9 must NOT touch: `bash -s -c 'echo hi' <<'EOF'` -- `-s` makes the
         # reader the holder's own argv, and no word of its own may spell an option (`-c`'s STRING
         # `echo hi` holds no expansion: `_may_spell_option`, R-F12), so `runs_under`'s plain-name
-        # branch still applies -- CLEAN, read under bash's own (literal) table, same as n03.
-        self.assertEqual([], defects(
-            self.GET + "bash -s -c 'echo hi' <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n"))
+        # branch applied -- CLEAN, read under bash's own (literal) table, same as n03 -- until #2858
+        # round 10 counted no check in a body bash never reads (#2647): its reader is `()`, the step's
+        # own read under both shells' printers, and dash's `echo` decodes the tab -- reported, the
+        # named over-report (bash runs `echo hi` and never reads the body).
+        found = defects(self.GET + "bash -s -c 'echo hi' <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("running it under `sh`", found[0][1])
 
     def test_runs_under_reads_a_value_among_the_holders_words_as_named(self):
         # v01/v04's shape: `_stdin` gives `None` for a holder with no `-s` and a value among its
@@ -733,13 +737,20 @@ class TestFixRound4(unittest.TestCase):
         # `--`, a parameter), z08 `bash -s -c 'echo hi'`, s01 `bash -s -c 'echo $X'` (the `$` is
         # inside a string bash runs itself and begins no word: measured F- x4, `echo` prints
         # `-c sh` and nothing reads the body), n03 `bash <<'EOF'` (no word at all).
-        clean = {"z01": "VALUE='-c sh'\nbash -s -- \"$VALUE\" ",
-                 "z08": "bash -s -c 'echo hi' ",
-                 "s01": "export X='-c sh'\nbash -s -c 'echo $X' ", "n03": "bash "}
+        clean = {"z01": "VALUE='-c sh'\nbash -s -- \"$VALUE\" ", "n03": "bash "}
         for step, holder in clean.items():
             for shell in (None, "sh"):
                 with self.subTest(step=step, shell=shell):
                     self.assertEqual([], defects(self.GET + holder + body, shell))
+        # z08 and s01 since #2858 round 10: the `-c` after `-s` makes the string the program, so no
+        # check in the body counts, and the body is the step's own with no reader of its own (`()`)
+        # -- read under both shells' printers (`Named`), as `main` reads a holder's `()` body, where
+        # dash's `echo` decodes the tab: reported, the named over-report (F- x4, nothing reads it).
+        for step, holder in (("z08", "bash -s -c 'echo hi' "), ("s01", "export X='-c sh'\nbash -s -c 'echo $X' ")):
+            for shell in (None, "sh"):
+                with self.subTest(step=step, shell=shell):
+                    found = defects(self.GET + holder + body, shell)
+                    self.assertTrue(any("running it under `sh`" in why for _name, why in found), found)
         # `Named`, as before R-F12: n04 `X=-s; bash $X` (F- x4, R-F9's accepted over-report) and
         # z02 `bash "$X"` (F- x4: bash refuses the one word `-c sh`) -- the fail-closed price of
         # reading every `$` word that may spell an option, quoted or not -- and v01 `bash $X`
