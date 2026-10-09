@@ -7,24 +7,47 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
-- **Workflow reader reads a path the step linked, or moved to, as the descriptor it reaches
+- **Workflow reader reads a path the step linked or moved to as the descriptor it may reach
   (#2919).** With #2881 a shell reads what `N<>` holds where it opens N's path, but a path the
   step's own state makes resolve to a descriptor carried nothing: `ln -s /dev/fd/3 fd3` ⏎ `sh 3<>
   tool <fd3 3<&-`, a link to `/dev/fd`, `/proc/self/fd` or `/dev` with a path below it (`<fds/3`,
   `<p/3`, `<d/fd/3`), and `cd /dev` ⏎ `sh 3<> /tmp/tool <fd/3 3<&-` read CLEAN while the parents
   run the file, and `main` reports the `N<` twin of each. `shell_command.track` records, stage by
-  stage in the order the reader reads them -- a branch's or a subshell's too, failing closed --
-  each link the step makes (`ln`, its target for its name) and each `cd` or `pushd`, and
-  `resolved` reads an input redirect's operand where they put it before `input_alias_fd` does; a
-  link name or a directory a value decides (`ln -s /dev/fd/3 "$X"`, `cd "$D"`) reads as a `$`
-  word, every file held carried. A link or a `cd` that reaches no descriptor carries nothing, as
-  before. The #2885 round-4 seat's FL rows (30 rows, 150 cells) and probe 0's P0L rows (2, 10) now
+  stage in the order the reader reads them, each link the step may make (`ln`, each target a name
+  is given) and each directory a `cd` or `pushd` may move it to, and `sources` reads an input
+  redirect's operand as written, as `main` reads it, and then by each other path those records may
+  give it. A record adds a reading and takes none away (round 2): the reader does not know that an
+  `ln` or a `cd` runs, succeeds, or lasts past a subshell, a branch or a function, and round 1,
+  which read the operand only where the latest record put it, let a link or a move the shell never
+  makes clear a report `main` raises -- `true || ln -s /etc/hostname /dev/fd/3`, or `(cd
+  /srv/a/b/c)`, in front of `sh 3<> tool </dev/fd/3 3<&-`: the round-1 seat's 341 cells in 71
+  rows, which report again. Where the paths reach two descriptors every file held is carried, as
+  where a value decides the link's name or the directory (`ln -s /dev/fd/3 "$X"`, `cd "$D"`) and
+  where they are more than 16. A link or a `cd` that reaches no descriptor carries nothing, as
+  before. The #2885 round-4 seat's FL rows (30 rows, 150 cells) and probe 0's P0L rows (2, 10)
   report, and on the #2919 hunt -- 72 rows with 8-parent truth: six link spellings and four `cd`
-  ones, each under `sh`, `bash` and `dash` on descriptors 3 and 9, and two benign ones -- 60 rows
-  (300 cells) that read CLEAN on `main` while a parent runs them, `cd /dev/fd` and `cd /proc/self`
-  only under dash, which resolves `/proc/self` for the parent shell at the `cd`; the benign rows
-  stay CLEAN and nothing goes CLEAN on the seat's sets. The cost, `job_defects` against `main`:
-  1.13x on the hunt, 1.02x on the #2885 seat's 1,945 rows.
+  ones, each under `sh`, `bash` and `dash` on descriptors 3 and 9, and two benign ones -- 264
+  cells in 60 rows that read CLEAN on `main` while a parent runs them; on the round-1 seat's
+  343-row hunt, 583 cells in 128 rows, 63 of them (14 rows) ones round 1 still read CLEAN (a `cd
+  /dev` kept through a later `cd` the shell does not make, a link through a later `ln` that fails
+  or one made below it), and no cell goes REPORT to CLEAN, there or on the standing sets. The
+  price, CLEAN on `main` and REPORT here where no parent runs, on the seat's hunt: 217 cells in 52
+  rows -- a link name or a directory a value decides, every file held carried (65 cells, 13 rows);
+  `cd /dev/fd` and `cd /proc/self`, which only dash resolves for the parent shell, under the bash
+  settings (36, 12); a link later written over or removed, whose first target still stands (45,
+  9); a `cd` in a subshell, a branch, a function or a pipeline, or one that fails, before a
+  relative read (25, 5); a `cd` the step has left again, by another `cd`, `popd` or a `pushd` swap
+  (26, 9); and an output redirect through a linked or moved path (20, 4). Still unread, as on
+  `main` -- 230 cells in 48 rows of that hunt that a parent runs: a link or a move the reader does
+  not read as one, made in a child (`sh -c`, `eval`, a heredoc's program, a substitution), by
+  another tool (`busybox ln`, `cp -s`, `mv`, `xargs`), into a directory (`ln -t`, several
+  targets), through a chain of links, a pattern, `CDPATH`, `~` or `HOME`, or a symlinked
+  directory. On the standing sets -- the #2885 round-4 rows and twins, round 3's own and twins,
+  the AX, P0, F6 and P4 rows, the round-3 kit's 20,533 and #2856's hunts, 31,046 rows, 436 of them
+  holding an `ln`, a `cd` or a `pushd` -- only those 32 rows move, beside #2911's (hunt 37's
+  `*-od`), which differ between two runs of `main` too. The cost, `job_defects` against `main` in
+  one process: flat -- 0.94x on the #2919 hunt, 1.07x on the seat's 343 rows, 0.91x on the #2885
+  seat's 1,945 rows.
 - **Workflow reader reads every action a `find` runs (#2918).** `curl … -o tool` ⏎ `find
   /dev/null -exec true \; -exec sh /dev/fd/3 \; 3<> tool` ran the download and read CLEAN: the
   guard read one of `find`'s actions, the first of `-exec`, `-execdir`, `-ok` and `-okdir` in that
