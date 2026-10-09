@@ -10,6 +10,7 @@ import io
 import os
 import json
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 import unittest
@@ -1383,6 +1384,7 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
                 ["python3", "-m", "scripts.synthesize",
                  "--target", "src", "--out", out, fp],
                 cwd=d, env=child_env, capture_output=True, text=True, check=False,
+                executable=sys.executable,
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             failure_path = out.replace(".json", "-x0x-failures.json")
