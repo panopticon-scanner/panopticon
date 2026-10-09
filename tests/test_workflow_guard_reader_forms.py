@@ -5567,6 +5567,18 @@ class TestABodyOnItsHeadersLine(unittest.TestCase):
             with self.subTest(shell=shell):
                 self.assertTrue(reported(row, shell))
 
+    def test_a_header_on_another_headers_line_reads_as_it_did(self):
+        # The new flag is the whole word's alone: a header on the line of another header's `{` is
+        # still read through `at_head`, as on the base. Read as a header there, its body would be
+        # read as `main` reads it on lines of its own, and `main` credits a gate in a function never
+        # called, or called after the run (#2949): every parent runs the download in both rows, and
+        # both report, as on the base.
+        check = "sha256sum -c sums || exit 1"
+        for row in ("f() { g() { %s; }; }\nf\nsh t" % check, "f() { g() { %s; }; sh t; g; }\nf" % check):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\n%s\necho done\n" % (self.FETCH, self.SUMS, row), shell))
+
     def test_the_controls_read_as_they_did(self):
         # Reported on `main` and the base too: no such word (FN1-plainword), the body on lines of its
         # own (FNNL-union; FNNL-mixed-run, #2929's), the `{` on the next line.
