@@ -250,10 +250,10 @@ _INERT_PARTIAL_TAIL = re.compile(r"\\(x[0-9a-f]?|u[0-9a-f]{0,3})?$")
 
 def inert_escape(text: str, keep: str = INERT_KEEP) -> str:
     r"""Render every character that can steer a terminal, a log line or a
-    markdown document as an inert `\xNN` / `\uNNNN` escape: C0, DEL, C1 and the
-    Unicode line/paragraph separators and the bidi controls in
-    ``INERT_ESCAPE_CODE_POINTS``. Ordinary characters -- non-ASCII included --
-    pass through untouched, so a legitimate path or package name is unchanged.
+    markdown document as an inert `\xNN` / `\uNNNN` escape: C0, DEL, C1, the
+    line/paragraph separators, the bidi controls -- and a lone surrogate, which
+    no encoder takes (``INERT_ESCAPE_CODE_POINTS``). Ordinary characters,
+    non-ASCII included, pass untouched: a legitimate path or name is unchanged.
 
     ESCAPED, not stripped, and that is the whole point (#1829): a stripped
     `\x1b[2J` leaves `[2J` reading as literal text the scanner wrote, while
