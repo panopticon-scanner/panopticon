@@ -180,6 +180,16 @@ def envelope_shape(entry):
     return ENVELOPE_SHAPES.get(role_of(entry)) or "a single JSON object"
 
 
+def _reason_repr(value):
+    """A reply-derived value safe to place in a bounded refusal reason.
+
+    `repr` keeps newlines escaped so an agent cannot forge diagnostic lines.
+    Redaction must see the complete representation before the display cap is
+    applied: cutting first can leave a credential's still-sensitive prefix.
+    """
+    return redact.redact_diagnostic(repr(value), REASON_CAP)
+
+
 def last_rejection(run_folder, entry_id):
     """The most recent `rejected/` record for this entry, or None."""
     if not run_folder or not entry_id:
@@ -328,8 +338,8 @@ def retain_rejected(run_folder, entry, text, reason, *, kind):
     attempt = _next_attempt(directory, entry_id)
     record = {"schema_version": 1, "entry_id": entry_id, "attempt": attempt, "kind": kind,
               # D10 F3: the reason is built by interpolating REPLY content, so
-              # it gets the same masking the reply does. Bounded at the source
-              # (`%.200r`), not here, so every consumer sees the same string.
+              # it gets the same masking the reply does. Redacted and bounded
+              # at the source, not here, so every consumer sees the same string.
               "reason": redact.redact(reason),
               # the stamp format the ledger's own rows carry, so the two sort
               # against each other as plain strings.
@@ -379,14 +389,8 @@ def _stamp_matches(entry, data):
         return False, "reply carries no _panopticon stamp; the entry declares %s" % sorted(declared)
     for k, v in declared.items():
         if meta.get(k, "primary" if k == "stage" else None) != v:
-            # %.200r, not %r (D10 F3): `meta` is the PARSED REPLY, so this
-            # string carries content an agent -- possibly a prompt-injected one
-            # reviewing a hostile target -- chose. It is stored in the rejected
-            # record and quoted into the next attempt's prompt, so it is bounded
-            # where it is built rather than at each of those two consumers. `%r`
-            # honours a precision and keeps escaping newlines, which is what
-            # stops a reason from forging lines of its own.
-            return False, "_panopticon.%s is %.200r, the entry is %r" % (k, meta.get(k), v)
+            return False, "_panopticon.%s is %s, the entry is %r" % (
+                k, _reason_repr(meta.get(k)), v)
     return True, ""
 
 
@@ -447,7 +451,8 @@ def accepts(entry, data):
         return _verify_accepts(entry, data)
     verdict = str(data.get("verdict", "")).upper() if isinstance(data, dict) else ""
     if verdict not in evidence.VERDICT_VALUES:
-        return False, "verdict %.200r is not one of %s" % (verdict, sorted(evidence.VERDICT_VALUES))
+        return False, "verdict %s is not one of %s" % (
+            _reason_repr(verdict), sorted(evidence.VERDICT_VALUES))
     return True, ""
 
 

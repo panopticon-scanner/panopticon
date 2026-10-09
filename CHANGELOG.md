@@ -7,6 +7,13 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Reply-derived refusal reasons redact before their display cap (#2948).** A contradictory
+  `_panopticon` stamp or invalid tool-advisor verdict could put a credential in its rejection
+  reason, and the former `%.200r` formatting cut the value before downstream redaction saw it.
+  Whole credentials reached the immediate refusal and stderr, while credentials crossing that
+  boundary left sensitive prefixes in those surfaces, the rejection record and the ledger. Both
+  reasons now represent the complete value, redact it, and only then take the bounded excerpt;
+  the retained reply and retry prompt remain redacted as well.
 - **Workflow reader reads every action a `find` runs (#2918).** `curl … -o tool` ⏎ `find
   /dev/null -exec true \; -exec sh /dev/fd/3 \; 3<> tool` ran the download and read CLEAN: the
   guard read one of `find`'s actions, the first of `-exec`, `-execdir`, `-ok` and `-okdir` in that

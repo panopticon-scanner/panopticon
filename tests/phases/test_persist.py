@@ -157,6 +157,17 @@ class TestWriteReply(unittest.TestCase):
         ok, reason = persist.write_reply(e, json.dumps({"verdict": "confirmed"}))
         self.assertTrue(ok, reason)
 
+    def test_a_tool_verdict_reason_is_redacted_before_its_cap(self):
+        secret = "AKIA" + "Z" * 16
+        e = _entry(self._out("verdicts", "q-0001.json"))
+        ok, reason = persist.write_reply(
+            e, json.dumps({"verdict": "x" * 184 + secret}))
+        self.assertFalse(ok)
+        self.assertIn("[REDACTED_", reason)
+        self.assertNotIn("AKIA", reason)
+        self.assertNotIn(secret[:13], reason)
+        self.assertFalse(os.path.exists(e["out_file"]))
+
     def test_an_unknown_out_file_family_is_refused(self):
         e = _entry(self._out("report.json"))
         ok, reason = persist.write_reply(e, "{}")

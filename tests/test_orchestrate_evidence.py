@@ -11,6 +11,7 @@ from unittest import mock
 import scripts.ledger as ledger_mod
 import scripts.loop_batch as loop_batch
 import scripts.orchestrate as orchestrate
+import scripts.phases.persist as persist
 import scripts.phases.runio as runio
 import scripts.runners.base as base
 from tests._test_helpers import (all_proven_artifact as _all_proven_artifact, write_guard_not_proven as _write_guard_not_proven)
@@ -115,6 +116,55 @@ class TestRefusedRepliesAreRetained(LoopCase):
         self.assertIn("_panopticon.group is 'a-different-group'", record["reason"])
         self.assertIn("[REDACTED_TOKEN]", record["reply"])
         self.assertNotIn(self.RefusingRunner.SECRET, record["reply"])
+
+    def test_stamp_secrets_never_reach_any_refusal_surface(self):
+        for padding in (0, 184):
+            with self.subTest(padding=padding):
+                d, _floor = self._repo()
+                run_dir = os.path.join(d, ".panopticon", "runs", "stamp-refusal")
+                os.makedirs(run_dir)
+                entry = {"id": "review-app-SEC", "delivery": "return_json",
+                         "out_file": os.path.join(run_dir, "findings-app-SEC.json"),
+                         "run_id": "RID", "group": "app", "domain": "SEC"}
+                secret = "ghp_" + "Z" * 36
+                reply = json.dumps({
+                    "findings": [],
+                    "_panopticon": {"run_id": "RID", "domain": "SEC",
+                                    "group": "x" * padding + secret},
+                })
+                result = base.RunResult(
+                    entry_id=entry["id"], ok=True, text=reply, usage={}, cost_usd=None,
+                    model="gpt-test", session_id="s", denials=[], error=None)
+                ledger = ledger_mod.Ledger(run_dir)
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    refusal = loop_batch.record_entry(
+                        entry, result,
+                        {"duration_ms": 1, "started_at": "2026-01-01T00:00:00Z",
+                         "finished_at": "2026-01-01T00:00:01Z"},
+                        run_dir, mock.Mock(), ledger, {"checkpoint": "review"},
+                        "headless", mock.Mock(host="codex"))
+                row = ledger.lines()[0]
+                with open(row["rejected_file"], encoding="utf-8") as fh:
+                    record = json.load(fh)
+                retry, _prior = persist.retry_block(run_dir, entry)
+                surfaces = {
+                    "refusal": refusal,
+                    "record": json.dumps(record),
+                    "ledger": json.dumps(row),
+                    "stderr": err.getvalue(),
+                    "retry": retry,
+                }
+                for name, text in surfaces.items():
+                    with self.subTest(padding=padding, surface=name):
+                        if padding == 0:
+                            self.assertIn("[REDACTED_TOKEN]", text)
+                        elif name != "retry":
+                            self.assertIn("[REDACTED_", text)
+                        self.assertNotIn("ghp_", text)
+                        self.assertNotIn(secret[:13], text)
+                        self.assertNotIn(secret, text)
+                self.assertFalse(os.path.exists(entry["out_file"]))
 
     def test_the_next_launch_of_a_refused_entry_is_told_why(self):
         # D10 ruling 2, end to end: the retry goes out through the ordinary
