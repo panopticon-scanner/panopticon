@@ -311,6 +311,68 @@ class TestSynthesizePhase(unittest.TestCase):
         self.assertIn(f"<h1>{escaped}</h1>", page)
         self.assertNotIn(f"<h1>{name}</h1>", page)
 
+    def _assert_real_child_refuses_artifact_directory(self, leaf, action, expected_files):
+        """Drive one planted output leaf through synthesize_execute's real child."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = os.path.realpath(directory)
+            os.makedirs(runio._pano(root))
+            runio._write_json(runio._pano(root, "groups.json"), {"groups": []})
+            report = runio._report_out(root)
+            paths = {
+                "report": report,
+                "x0x": report.replace(".json", "-x0x.json"),
+                "failure": report.replace(".json", "-x0x-failures.json"),
+                "html": report + ".html",
+            }
+            os.makedirs(paths[leaf])
+            manifest = {"run_id": "R", "host": "generic",
+                        "security_mode": "standard", "flags": {"fail_on": "high"}}
+
+            with contextlib.redirect_stderr(io.StringIO()), \
+                    self.assertRaises(runio.DriverError) as caught:
+                synthesize.synthesize_execute(root, manifest)
+
+            refusal = str(caught.exception)
+            self.assertIn("rc=4", refusal)
+            self.assertIn("synthesize: artifact path refused:", refusal)
+            self.assertIn("cannot %s artifact" % action, refusal)
+            self.assertIn(os.path.basename(paths[leaf]), refusal)
+            self.assertNotIn("Traceback", refusal)
+            self.assertTrue(os.path.isdir(paths[leaf]), "the refused leaf was modified")
+            self.assertEqual(
+                {name: os.path.isfile(path) for name, path in paths.items()},
+                expected_files,
+            )
+            self.assertFalse(
+                [name for name in os.listdir(os.path.dirname(report))
+                 if name.endswith(".tmp")],
+                "a refused publication left a staging file",
+            )
+
+    def test_real_child_refuses_a_directory_at_the_report_path(self):
+        self._assert_real_child_refuses_artifact_directory(
+            "report", "publish",
+            {"report": False, "x0x": False, "failure": False, "html": False},
+        )
+
+    def test_real_child_refuses_a_directory_at_the_x0x_path(self):
+        self._assert_real_child_refuses_artifact_directory(
+            "x0x", "publish",
+            {"report": True, "x0x": False, "failure": False, "html": False},
+        )
+
+    def test_real_child_refuses_a_directory_at_the_stale_failure_log_path(self):
+        self._assert_real_child_refuses_artifact_directory(
+            "failure", "remove",
+            {"report": True, "x0x": False, "failure": False, "html": False},
+        )
+
+    def test_real_child_refuses_a_directory_at_the_html_path(self):
+        self._assert_real_child_refuses_artifact_directory(
+            "html", "write",
+            {"report": True, "x0x": True, "failure": False, "html": False},
+        )
+
     def test_forwards_the_manifest_verify_cap_including_zero(self):
         def fake_run(cmd, **kw):
             with open(cmd[cmd.index("--out") + 1], "w") as fh:

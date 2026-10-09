@@ -395,14 +395,15 @@ def synthesize_execute(review_root, manifest):
         except OSError:
             pass
         runio._ensure_run_symlinks(review_root)
-    # #1639 P15: the one non-gate non-zero status. The report parses — that is
-    # why the guard above cannot see this — but it does not satisfy the schema
-    # panopticon publishes for it, or its hydrated parts / X0X sibling do not.
-    # Artifact validity is not coverage certification and not a gate verdict,
-    # so it ends the run in `error` rather than being absorbed as one.
+    # #1639 P15 / #2952: the one non-gate non-zero status. The report parses —
+    # that is why the guard above cannot see this — but an artifact could not
+    # be published/removed or the report, hydrated parts, or X0X sibling does
+    # not satisfy its schema. Artifact validity is not coverage certification
+    # and not a gate verdict, so it ends the run in `error` rather than being
+    # absorbed as one.
     if proc.returncode == validate_schema_mod.ARTIFACT_INVALID:
         raise runio.DriverError(
-            "synthesize wrote an artifact that fails its own published schema "
+            "synthesize could not publish or validate an artifact "
             "(rc=%s): %s" % (proc.returncode,
                              redact.redact_diagnostic(proc.stderr or proc.stdout, 400, tail=True)))
     disclosure = x0x_failure_disclosure(report)

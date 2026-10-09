@@ -180,6 +180,13 @@ def validate_artifacts(report_path, x0x_path=None, x0x_failure_path=None):
     return errors
 
 
+def _artifact_path_refused(exc):
+    """Report an artifact-path refusal without aliasing it to gate FAIL."""
+    detail = redact.redact_diagnostic(str(exc), 400)
+    print("synthesize: artifact path refused: %s" % detail, file=sys.stderr)
+    return validate_schema_mod.ARTIFACT_INVALID
+
+
 def main(argv=None):
     """Main entry point: load findings, enrich citations, build and validate report."""
     args = build_parser().parse_args(argv)
@@ -196,7 +203,10 @@ def main(argv=None):
         if not html_out:
             print("ERROR: --compare requires --html-out or --out", file=sys.stderr)
             return 2
-        html_report.write_html(report_b, html_out, compare_report=report_a)
+        try:
+            html_report.write_html(report_b, html_out, compare_report=report_a)
+        except safe_write.ArtifactPathError as exc:
+            return _artifact_path_refused(exc)
         print("Compare HTML: %s" % html_out)
         return 0
 
@@ -392,7 +402,10 @@ def main(argv=None):
         # same defect twice as if it were two.
         print("SCHEMA pre-write: %s" % e, file=sys.stderr)
 
-    paths = render_mod.write_report(report, out)
+    try:
+        paths = render_mod.write_report(report, out)
+    except safe_write.ArtifactPathError as exc:
+        return _artifact_path_refused(exc)
     # §5.1: emit the X0X catalog-gap report — the <DOM>-X0X / ZZZ-X0X findings as
     # candidate records for OCRDb's new-code adjudication pool (ingested
     # downstream), a sibling of the JSON report. Empty candidates are an honest
@@ -409,13 +422,16 @@ def main(argv=None):
         (x0x_path, x0x_path + ".tmp",
          json.dumps(x0x, indent=2, sort_keys=True)),
     ]
-    if failure_log is None:
-        safe_write.remove_artifact(failure_path)
-    else:
-        targets.append(
-            (failure_path, failure_path + ".tmp",
-             json.dumps(failure_log, indent=2, sort_keys=True)))
-    safe_write.publish_texts(targets)
+    try:
+        if failure_log is None:
+            safe_write.remove_artifact(failure_path)
+        else:
+            targets.append(
+                (failure_path, failure_path + ".tmp",
+                 json.dumps(failure_log, indent=2, sort_keys=True)))
+        safe_write.publish_texts(targets)
+    except safe_write.ArtifactPathError as exc:
+        return _artifact_path_refused(exc)
     print("X0X artifact: %s (%d candidates)"
           % (x0x_path, len(x0x["candidates"])))
     if failure_log is not None:
@@ -427,7 +443,10 @@ def main(argv=None):
     if html_out is None and args.out:
         html_out = render_mod._derive_html_path(paths[0])
     if html_out:
-        html_report.write_html(report, html_out)
+        try:
+            html_report.write_html(report, html_out)
+        except safe_write.ArtifactPathError as exc:
+            return _artifact_path_refused(exc)
         print("HTML artifact: %s" % html_out)
     print(render_mod.render_summary(report))
     print("\nJSON artifact: %s" % ", ".join(paths))

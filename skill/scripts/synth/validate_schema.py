@@ -82,13 +82,14 @@ REPORT_SCHEMA = "report-schema.json"
 X0X_SCHEMA = "x0x-report-schema.json"
 X0X_FAILURE_SCHEMA = "x0x-failure-log-schema.json"
 
-# synthesize's exit status for "this run wrote an artifact that does not
-# satisfy its own published schema" (#1639 P15 ruling 2). Terminal completion,
-# artifact validity and coverage certification are three different facts, and
-# each gets its own channel: 1/2 are the GATE's verdicts (FAIL / INCONCLUSIVE,
-# both of them valid reports about a coverage question), 3 is a corrupt OCRDb
-# bundle, and this is the artifact itself being unreadable as what it claims to
-# be. A consumer that sees 4 should not read the report at all.
+# synthesize's exit status for "this run could not publish its artifact set or
+# wrote one that does not satisfy its own schema" (#1639 P15 ruling 2, #2952).
+# Terminal completion, artifact validity and coverage certification are three
+# different facts, and each gets its own channel: 1/2 are the GATE's verdicts
+# (FAIL / INCONCLUSIVE, both of them valid reports about a coverage question),
+# 3 is invalid input, and this is an incomplete or invalid output set. A
+# consumer that sees 4 should not read the report even when an earlier stage
+# left one on disk.
 ARTIFACT_INVALID = 4
 
 

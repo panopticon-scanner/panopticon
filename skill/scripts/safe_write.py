@@ -55,6 +55,18 @@ class NonRegularFileError(OSError):
     """The opened leaf is not a regular file and no bytes were consumed."""
 
 
+class ArtifactPathError(ValueError):
+    """A named refusal to write, publish, or remove an artifact path."""
+
+    def __init__(self, action, path, cause):
+        self.action = action
+        self.path = os.fspath(path)
+        self.cause = cause
+        detail = (str(cause).splitlines() or [type(cause).__name__])[0]
+        super().__init__("cannot %s artifact %r: %s" %
+                         (action, self.path, detail or type(cause).__name__))
+
+
 def read_failure_reason(error):
     """Classify the stage that rejected a bounded artifact read.
 
@@ -183,11 +195,26 @@ def remove_artifact(path):
     Confine the parent rather than the leaf so a planted final symlink can be
     unlinked safely. Missing artifacts are already in the requested state.
     """
-    confine_artifact_path(os.path.dirname(os.path.abspath(path)))
     try:
-        os.unlink(path)
-    except FileNotFoundError:
-        pass
+        confine_artifact_path(os.path.dirname(os.path.abspath(path)))
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            return
+    except (OSError, ValueError) as exc:
+        raise ArtifactPathError("remove", path, exc) from None
+
+
+def write_text(path, text):
+    """Write one text artifact without following a planted path component."""
+    try:
+        confine_artifact_path(path)
+        parent = os.path.dirname(os.path.abspath(path))
+        os.makedirs(parent, exist_ok=True)
+        with open_w_nofollow(path) as stream:
+            stream.write(text)
+    except (OSError, ValueError) as exc:
+        raise ArtifactPathError("write", path, exc) from None
 
 
 def publish_texts(targets):
@@ -206,14 +233,20 @@ def publish_texts(targets):
     staged = []
     try:
         for final, temp, text in targets:
-            parent = os.path.dirname(os.path.abspath(temp))
-            confine_artifact_path(parent)
-            os.makedirs(parent, exist_ok=True)
-            staged.append((temp, final))
-            with open_w_nofollow(temp) as stream:
-                stream.write(text)
+            try:
+                parent = os.path.dirname(os.path.abspath(temp))
+                confine_artifact_path(parent)
+                os.makedirs(parent, exist_ok=True)
+                staged.append((temp, final))
+                with open_w_nofollow(temp) as stream:
+                    stream.write(text)
+            except (OSError, ValueError) as exc:
+                raise ArtifactPathError("stage", final, exc) from None
         for temp, final in reversed(staged):
-            os.replace(temp, final)
+            try:
+                os.replace(temp, final)
+            except (OSError, ValueError) as exc:
+                raise ArtifactPathError("publish", final, exc) from None
     finally:
         for temp, _ in staged:
             if os.path.lexists(temp):

@@ -20,8 +20,8 @@ fail-open loss a PASS used to hide. A rangeless path that arrived `[]` deliberat
 it: a deletion-only, binary, mode-only or same-content rename change looks exactly like a truncated
 map from there.
 `summary.coverage_certified` and `meta.coverage.divergence` carry the detail; `main` exits `1` on
-FAIL, `2` on INCONCLUSIVE, `4` when an artifact it wrote fails its own published schema (next
-paragraph), `3` on an unreadable OCRDb bundle, `0` otherwise. Exit `2` is also argparse's
+FAIL, `2` on INCONCLUSIVE, `4` when an artifact cannot be published or fails its own published
+schema (next paragraph), `3` on an unreadable OCRDb bundle, `0` otherwise. Exit `2` is also argparse's
 usage-error code and `main`'s own precondition refusals, which never reach the gate: a `--compare`
 report it cannot read (either of the two), a `--compare` with neither `--html-out` nor `--out`, and
 an artifact-root refusal. A genuine INCONCLUSIVE run still writes a full report artifact and every
@@ -53,8 +53,12 @@ controller-side check — `synthesize` validates the report against
 `-discarded.json` sibling against the same schema, `-x0x.json` against
 `x0x-report-schema.json`, and a present `-x0x-failures.json` against
 `x0x-failure-log-schema.json`;
-any failure prints `SCHEMA:` lines naming the artifact and the JSON path, then
-`artifact invalid: N schema errors (see …)`, exits `4`, and ends a `driver` run in `error`.
+any schema failure prints `SCHEMA:` lines naming the artifact and the JSON path, then
+`artifact invalid: N schema errors (see …)`. An artifact path that cannot be written,
+published, or removed prints `synthesize: artifact path refused:` with the path and cause.
+Either case exits `4` and ends a `driver` run in `error`; artifacts completed before a refusal
+remain on disk, later artifacts are not written, and the refused directory or other leaf is left
+untouched.
 A legitimate catalog-gap finding without `location.file` cannot satisfy X0X's required occurrence
 shape. It remains in the main JSON and HTML, while `synthesize` excludes it from the X0X candidate
 set and writes `<report-stem>-x0x-failures.json` beside the X0X, where `<report-stem>` means the
@@ -71,7 +75,8 @@ older failure log, so stale failures cannot follow a clean X0X.
 The complete `synthesize` status list is: `0` for a valid PASS (and for a pass-1 verify-queue
 emission), `1` for a valid FAIL, `2` for a valid INCONCLUSIVE or a pre-report CLI/compare usage
 error, `3` for invalid input such as an unreadable OCRDb bundle or tools manifest, and `4` when a
-written report, X0X, or X0X failure log fails its published schema. Discarding a locus-free X0X
+report, split part, discarded-claims sibling, X0X, X0X failure log, or HTML page cannot be
+published or when a written JSON artifact fails its published schema. Discarding a locus-free X0X
 finding never changes the status selected by the report's gate.
 Validation is **fail-closed**: an uninstallable `jsonschema` (a declared runtime dependency) or an
 unreadable schema file is an error, never a silent pass, because "we could not check" and "we

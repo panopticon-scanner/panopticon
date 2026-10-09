@@ -48,6 +48,7 @@ import scripts.tool_capture as tool_capture
 import scripts.tools_manifest as tools_manifest
 import scripts.synthesize as synthesize
 import scripts.synth.render as render_mod
+import scripts.synth.validate_schema as validate_schema_mod
 
 
 class _Planted(unittest.TestCase):
@@ -190,8 +191,13 @@ class TestX0xArtifact(_Planted):
             json.dump({"findings": []}, fh)
         out = os.path.join(self.pano, "report.json")
         staging = self.plant("report-x0x.json.tmp")
-        with self.assertRaises(ValueError):
-            synthesize.main(["--out", out, findings])
+        # #2952 moves the refusal to the CLI's named artifact status; the
+        # confinement, victim, and planted-link cleanup assertions stay put.
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = synthesize.main(["--out", out, findings])
+        self.assertEqual(rc, validate_schema_mod.ARTIFACT_INVALID)
+        self.assertIn("artifact path refused", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
         self.assert_victim_intact()
         # Round 1 ruling: a refusal must not leave the planted link sitting in
         # the run folder for the next invocation to trip over.
@@ -210,8 +216,13 @@ class TestX0xArtifact(_Planted):
         out = os.path.join(self.pano, "report.json")
         staging = self.plant("report-x0x-failures.json.tmp")
 
-        with self.assertRaises(ValueError):
-            synthesize.main(["--out", out, findings])
+        # #2952: same status boundary as the candidate artifact, with the
+        # original no-follow and cleanup proof preserved below.
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = synthesize.main(["--out", out, findings])
+        self.assertEqual(rc, validate_schema_mod.ARTIFACT_INVALID)
+        self.assertIn("artifact path refused", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
 
         self.assert_victim_intact()
         self.assertFalse(os.path.lexists(staging))
