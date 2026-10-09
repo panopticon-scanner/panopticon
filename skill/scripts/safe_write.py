@@ -55,7 +55,7 @@ class NonRegularFileError(OSError):
     """The opened leaf is not a regular file and no bytes were consumed."""
 
 
-class ArtifactPathError(ValueError):
+class ArtifactPathError(OSError):
     """A named refusal to write, publish, or remove an artifact path."""
 
     def __init__(self, action, path, cause):
@@ -201,7 +201,7 @@ def remove_artifact(path):
             os.unlink(path)
         except FileNotFoundError:
             return
-    except (OSError, ValueError) as exc:
+    except OSError as exc:
         raise ArtifactPathError("remove", path, exc) from None
 
 
@@ -213,7 +213,7 @@ def write_text(path, text):
         os.makedirs(parent, exist_ok=True)
         with open_w_nofollow(path) as stream:
             stream.write(text)
-    except (OSError, ValueError) as exc:
+    except OSError as exc:
         raise ArtifactPathError("write", path, exc) from None
 
 
@@ -240,12 +240,12 @@ def publish_texts(targets):
                 staged.append((temp, final))
                 with open_w_nofollow(temp) as stream:
                     stream.write(text)
-            except (OSError, ValueError) as exc:
+            except OSError as exc:
                 raise ArtifactPathError("stage", final, exc) from None
         for temp, final in reversed(staged):
             try:
                 os.replace(temp, final)
-            except (OSError, ValueError) as exc:
+            except OSError as exc:
                 raise ArtifactPathError("publish", final, exc) from None
     finally:
         for temp, _ in staged:

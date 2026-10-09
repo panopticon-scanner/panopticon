@@ -205,7 +205,7 @@ def main(argv=None):
             return 2
         try:
             html_report.write_html(report_b, html_out, compare_report=report_a)
-        except safe_write.ArtifactPathError as exc:
+        except (safe_write.ArtifactPathError, ValueError) as exc:
             return _artifact_path_refused(exc)
         print("Compare HTML: %s" % html_out)
         return 0
@@ -404,7 +404,7 @@ def main(argv=None):
 
     try:
         paths = render_mod.write_report(report, out)
-    except safe_write.ArtifactPathError as exc:
+    except (safe_write.ArtifactPathError, ValueError) as exc:
         return _artifact_path_refused(exc)
     # §5.1: emit the X0X catalog-gap report — the <DOM>-X0X / ZZZ-X0X findings as
     # candidate records for OCRDb's new-code adjudication pool (ingested
@@ -430,7 +430,7 @@ def main(argv=None):
                 (failure_path, failure_path + ".tmp",
                  json.dumps(failure_log, indent=2, sort_keys=True)))
         safe_write.publish_texts(targets)
-    except safe_write.ArtifactPathError as exc:
+    except (safe_write.ArtifactPathError, ValueError) as exc:
         return _artifact_path_refused(exc)
     print("X0X artifact: %s (%d candidates)"
           % (x0x_path, len(x0x["candidates"])))
@@ -445,7 +445,7 @@ def main(argv=None):
     if html_out:
         try:
             html_report.write_html(report, html_out)
-        except safe_write.ArtifactPathError as exc:
+        except (safe_write.ArtifactPathError, ValueError) as exc:
             return _artifact_path_refused(exc)
         print("HTML artifact: %s" % html_out)
     print(render_mod.render_summary(report))
