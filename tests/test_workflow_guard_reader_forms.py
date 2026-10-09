@@ -2142,9 +2142,14 @@ class TestEveryFindActionIsACommand(unittest.TestCase):
         for _sure in shell_command.folds(lambda: False):
             read.append((shell_reader.command(half.argv)[0], shell_reader.acted(stage.argv)[0]))
         self.assertEqual([("true", "find"), ("sh", "find"), ("true", "sh"), ("true", "true"), ("sh", "sh"), ("sh", "true")], read)
-        plain = shell_reader.statements("sudo sh -c x\n")[0].stages[0]
-        self.assertEqual(1, sum(1 for _ in shell_command.folds(lambda: bool(shell_reader.acted(plain.argv)) and False)))
-        self.assertIs(plain.argv, shell_reader.acted(plain.argv, True))
+        # A job with no such `find` is read in `main`'s folds alone -- though `acted` was asked about
+        # one outside any fold just before: `folds` starts every job with none met.
+        plain, count = shell_reader.statements("sudo sh -c x\n")[0].stages[0], 0
+        shell_reader.acted(stage.argv)
+        for _sure in shell_command.folds(lambda: False):
+            count += 1
+            self.assertIs(plain.argv, shell_reader.acted(plain.argv, True))
+        self.assertEqual(1, count)
         # A reader that asks whether a command is known to fail asks `command()`: `find` is not.
         import workflow_failure_contexts
         known = [workflow_failure_contexts._known_failure(shell_reader.statements(text)[0])
