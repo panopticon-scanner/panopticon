@@ -329,12 +329,13 @@ def command(argv):
 def acted(argv, own=False):
     """`command()`, or in its place the command an action of a `find` runs (`_found`, #2935): what a
     stage RUNS, for the readers that ask that and no other -- each named, with the row that needs
-    it, in `tests/test_workflow_guard_reader_forms.py` (`ACTED`). GNU `find` 4.9.0 exits 0 whatever
-    a `-exec … \\;` command returns, and no `find` sets a variable of the step's, writes its files or
-    prints its lines, so what the step itself does is read off `command()`, the `find`. And `main`'s
-    reading is never lost (round 3): this is `command()` wherever `folds` is not reading the actions
-    -- in `main`'s folds, read first, and outside them. With `own`, `argv` itself where no action
-    stands in its place, for a reader that takes its own `command()` of the answer."""
+    it, in `tests/test_workflow_guard_reader_forms.py` (`ACTED`). What a stage IS to the step -- its
+    status, its call, its values, its posture, the check it is credited with -- is read off
+    `command()`, the `find`: GNU `find` 4.9.0 exits 0 whatever a `-exec … \\;` command returns, and
+    runs each action in a child of its own, never or many times. And `main`'s reading is never lost
+    (round 3): this is `command()` wherever `folds` is not reading the actions -- in `main`'s folds,
+    read first, and outside them. With `own`, `argv` itself where no action stands in its place, for
+    a reader that takes its own `command()` of the answer."""
     if _ACTIONS["act"]:
         run = _command_result(argv, finds=True)[0]
     else:
