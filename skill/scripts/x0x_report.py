@@ -13,27 +13,39 @@ X0X findings is a separate, reviewer-side follow-on.
 """
 from typing import TYPE_CHECKING
 from typing import Any
+import json
 import re
 import sys
 
 if TYPE_CHECKING:
+    import scripts.evidence as evidence
+    import scripts.inert as inert
     import scripts.ocrdb as ocrdb
+    import scripts.redact as redact
     import scripts.report_records as report_records
 else:
     try:
+        import scripts.evidence as evidence
+        import scripts.inert as inert
         import scripts.ocrdb as ocrdb
+        import scripts.redact as redact
         import scripts.report_records as report_records
     except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
+        import evidence
+        import inert
         import ocrdb
+        import redact
         import report_records
 
 SCHEMA_VERSION = 1
+FAILURE_LOG_SUFFIX = "-failures.json"
 
 _CWE_RE = re.compile(r"CWE-\d+", re.IGNORECASE)
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _WS_RE = re.compile(r"\s+")
 _SEV_ORDER = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "INFO": 0}
 _DIAG_MAX = 120          # bound on any agent-authored value in a diagnostic
+_PROPOSED_NAME_MAX = 60
 
 
 def is_fallback(code):
@@ -49,7 +61,7 @@ def is_fallback(code):
 
 def _slug(text):
     s = _SLUG_RE.sub("-", (text or "").lower()).strip("-")
-    return s or None
+    return s[:_PROPOSED_NAME_MAX].rstrip("-") or None
 
 
 def _one_line(value, cap=_DIAG_MAX):
@@ -61,6 +73,29 @@ def _one_line(value, cap=_DIAG_MAX):
     makes a control character inert."""
     text = " ".join(str(value or "").split())
     return (text[:cap - 1] + "\u2026") if len(text) > cap else text
+
+
+def _marked_redacted_head(value, cap):
+    """A redacted head whose truncation is visible and whose length is ``cap``."""
+    text = redact.redact_diagnostic(value, cap + 1)
+    return (text[:cap - 1] + "\u2026") if len(text) > cap else text
+
+
+def _redacted_one_line(value, cap=_DIAG_MAX):
+    """Redact and neutralize before cutting so no partial secret or control
+    sequence can survive in a bounded failure-log field."""
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+    # Keep two characters past the published bound. The second preserves a
+    # visible tail when the first is whitespace that the final squeeze removes.
+    text = redact.redact_diagnostic(text, cap + 2)
+    text = "".join(
+        ("\\x%02x" % ord(ch) if ord(ch) < 0x100 else "\\u%04x" % ord(ch))
+        if ord(ch) in inert.INERT_ESCAPE_CODE_POINTS else ch
+        for ch in text
+    )
+    return _one_line(text, cap)
 
 
 def _cwes(finding):
@@ -80,6 +115,25 @@ def _occurrence(finding):
     """An occurrence record, or None when the finding has no file (schema requires
     ``file`` on every occurrence)."""
     return report_records.occurrence(finding)
+
+
+def _locus_diagnostic(finding):
+    """Name one discarded finding in a bounded, redacted, inert diagnostic."""
+    finding_id = _redacted_one_line(finding.get("id")) or "?"
+    title = _redacted_one_line(
+        finding.get("title") or finding.get("short_title")) or "?"
+    diagnostic = "catalog-gap finding %r (%r) has no location.file" % (finding_id, title)
+    return _marked_redacted_head(diagnostic, 2 * _DIAG_MAX + 100)
+
+
+def _discard_record(finding):
+    """The deterministic sidecar record for one locus-free catalog gap."""
+    finding_id = _redacted_one_line(finding.get("id")) or "?"
+    return {
+        "finding_id": finding_id,
+        "reason": "no file locus",
+        "diagnostic": _locus_diagnostic(finding),
+    }
 
 
 def _domain(finding):
@@ -123,58 +177,70 @@ def _domain(finding):
 
 def _lead(cluster):
     """The most severe finding in a cluster — it leads the candidate's
-    summary/severity/name, and names the cluster in a diagnostic."""
-    return max(cluster,
-               key=lambda f: _SEV_ORDER.get(str(f.get("severity") or "").upper(), -1))
+    summary/severity/name, and names the cluster in a diagnostic. Equal severities
+    use stable finding identity rather than input order."""
+    return max(
+        cluster,
+        key=lambda finding: (
+            _SEV_ORDER.get(str(finding.get("severity") or "").upper(), -1),
+            evidence.finding_fingerprint(finding),
+            _canonical(finding),
+        ),
+    )
 
 
-def build_candidates(findings, dropped=None):
-    """Cluster the X0X fallback findings into candidate records. Cluster key =
-    ``(domain, normalized-title)``: the same anti-pattern titled the same way
-    merges into one candidate with many occurrences; distinct titles stay
-    separate. (Semantic clustering is a future refinement.)
+def _canonical(value):
+    """A stable total-order key for JSON-originated report values."""
+    return json.dumps(value, ensure_ascii=True, sort_keys=True,
+                      separators=(",", ":"), default=str)
 
-    ``dropped``, when a list is passed, collects one record per cluster this
-    emitter could not carry because no finding in it had a file location — the
-    tally ``build_report`` publishes (see the ``continue`` below)."""
-    clusters: dict[tuple[str, str], list[dict[str, Any]]] = {}  # (domain, key) -> [findings], insertion-ordered
-    for f in findings:
-        if not is_fallback(f.get("code")):
-            continue
+
+def _candidate_order(item):
+    """The consumer's total candidate order, with the cluster key as its tie-break."""
+    cluster_key, candidate = item
+    severity = str(candidate.get("severity") or "").upper()
+    return (
+        -_SEV_ORDER.get(severity, -1),
+        str(candidate.get("domain") or ""),
+        str(candidate.get("proposed_name") or ""),
+        tuple(str(part) for part in cluster_key),
+    )
+
+
+def _partition_fallbacks(findings):
+    """Split fallback findings into representable rows and sidecar failures."""
+    located = []
+    discarded = []
+    fallbacks = sorted(
+        (finding for finding in findings if is_fallback(finding.get("code"))),
+        key=_canonical,
+    )
+    for finding in fallbacks:
+        if _occurrence(finding) is None:
+            discarded.append(_discard_record(finding))
+        else:
+            located.append(finding)
+    return located, sorted(discarded, key=_canonical)
+
+
+def _build_candidates(fallbacks):
+    """Cluster already-located fallback findings into candidate records."""
+    clusters: dict[tuple[str, str], list[dict[str, Any]]] = {}  # (domain, key) -> [findings]
+    for f in fallbacks:
         title = f.get("short_title") or f.get("title") or ""
         norm = _WS_RE.sub(" ", title.strip().lower())
-        key = (_domain(f), norm if norm else f.get("id", ""))
+        key = (_domain(f), norm if norm else str(f.get("id") or ""))
         clusters.setdefault(key, []).append(f)
 
     candidates = []
-    for (domain, _), fs in clusters.items():
-        occurrences = [o for o in (_occurrence(f) for f in fs) if o is not None]
+    for cluster_key, fs in clusters.items():
+        domain, _ = cluster_key
+        occurrences = sorted(
+            (_occurrence(f) for f in fs),
+            key=_canonical,
+        )
         lead = _lead(fs)
-        if not occurrences:          # schema: occurrences has minItems 1
-            # #1807 DAT-2501524861: a locus-free finding is the CANONICAL shape
-            # for a repo-wide catalog gap -- `synth/findings.py` pops the empty
-            # location deliberately (#1522 COD-D1B) -- so this drop takes exactly
-            # the repo-wide gaps this emitter exists to carry to OCRDb's pool.
-            # A file cannot be invented for it, so DISCLOSE: one line naming the
-            # cluster (in `_domain`'s style), and a tally the envelope publishes,
-            # because otherwise the candidate count is quietly short.
-            # The cluster key already falls back to the id for an untitled
-            # finding, and `_domain`'s line names the id; so does this one, or it
-            # would be the one diagnostic naming nothing identifiable.
-            name = (_one_line(lead.get("short_title") or lead.get("title"))
-                    or _one_line(lead.get("id")) or "?")
-            print("x0x: %s: dropping a catalog-gap cluster with no file "
-                  "location: %r (%d finding(s))" % (domain, name, len(fs)),
-                  file=sys.stderr)
-            if dropped is not None:
-                dropped.append({"domain": domain, "summary": name,
-                                "finding_count": len(fs)})
-            continue
-        cwe = []
-        for f in fs:
-            for c in _cwes(f):
-                if c not in cwe:
-                    cwe.append(c)
+        cwe = sorted({c for f in fs for c in _cwes(f)})
         cand = {
             "domain": domain,
             "fallback_code": lead.get("code"),
@@ -190,19 +256,29 @@ def build_candidates(findings, dropped=None):
             cand["description"] = lead["description"]
         if cwe:
             cand["cwe"] = cwe
-        candidates.append(cand)
-    return candidates
+        candidates.append((cluster_key, cand))
+    return [candidate for _, candidate in sorted(candidates, key=_candidate_order)]
 
 
-def build_report(findings, meta, run_id, panopticon_version=None, target=None):
-    """Assemble a schema-valid X0XReport dict for a run's findings. ``run_id`` is
-    the driver's ``manifest.run_id`` (the schema requires it; per-run folders now
-    supply a real one instead of the prototype's ``derived:`` placeholder)."""
+def build_candidates(findings):
+    """Cluster the X0X fallback findings into candidate records. Cluster key =
+    ``(domain, normalized-title)``: the same anti-pattern titled the same way
+    merges into one candidate with many occurrences; distinct titles stay
+    separate. (Semantic clustering is a future refinement.)
+
+    The returned candidate array has a total, input-independent order. A
+    fallback finding without a file is excluded because the occurrence schema
+    cannot represent it; :func:`build_emission` returns the matching failure-log
+    records used by the synthesizer."""
+    located, _discarded = _partition_fallbacks(findings)
+    return _build_candidates(located)
+
+
+def _report(candidates, meta, run_id, panopticon_version=None, target=None):
+    """Assemble an X0X report around a pre-built candidate array."""
     meta = meta or {}
     if target is None and meta.get("target"):
         target = {"name": str(meta["target"])}
-    dropped: list[dict[str, Any]] = []
-    candidates = build_candidates(findings, dropped)
     report = {
         "schema_version": SCHEMA_VERSION,
         "generated_by": {
@@ -213,14 +289,37 @@ def build_report(findings, meta, run_id, panopticon_version=None, target=None):
         "ocrdb_version": meta.get("ocrdb_version") or "unknown",
         "candidates": candidates,
     }
-    if dropped:
-        # #1807: the catalog gaps this artifact could not carry, counted where a
-        # consumer of `candidates` will see them. Declared in
-        # skill/reference/x0x-report-schema.json as an optional integer with
-        # `minimum: 1`, so it must be OMITTED, never 0, when nothing was dropped.
-        report["candidates_dropped_locus_free"] = len(dropped)
     if target:
         report["target"] = target
     if meta.get("timestamp"):
         report["generated_at"] = meta["timestamp"]
     return report
+
+
+def build_report(findings, meta, run_id, panopticon_version=None, target=None):
+    """Assemble a schema-valid X0XReport dict for a run's findings. ``run_id`` is
+    the driver's ``manifest.run_id`` (the schema requires it; per-run folders now
+    supply a real one instead of the prototype's ``derived:`` placeholder)."""
+    return _report(build_candidates(findings), meta, run_id,
+                   panopticon_version=panopticon_version, target=target)
+
+
+def build_emission(findings, meta, run_id, panopticon_version=None, target=None):
+    """Return ``(X0X report, failure log or None)`` for one synthesis run.
+
+    Locus-free fallback findings stay in the main Panopticon report but cannot
+    enter X0X's occurrence-bearing candidate set. Each is recorded in the
+    deterministic sidecar; a clean emission returns ``None`` so the caller can
+    remove any stale sidecar from an earlier run.
+    """
+    located, discarded = _partition_fallbacks(findings)
+    report = _report(_build_candidates(located), meta, run_id,
+                     panopticon_version=panopticon_version, target=target)
+    failure_log = {"discarded_findings": discarded} if discarded else None
+    return report, failure_log
+
+
+def failure_log_path(x0x_path):
+    """Return the JSON failure-log path beside an X0X artifact."""
+    stem = x0x_path[:-len(".json")] if x0x_path.endswith(".json") else x0x_path
+    return stem + FAILURE_LOG_SUFFIX
