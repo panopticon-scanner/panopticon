@@ -2112,6 +2112,8 @@ class TestAPathTheStepLinkedOrMovedToIsItsDescriptor(unittest.TestCase):
         # Each directory a `cd` named is kept, a relative one below each before it.
         moves = tracked("cd /dev", "cd fd", "cd /tmp")
         self.assertEqual(["/dev", "/dev/fd", "/tmp"], moves.cwds)
+        # Home, bare or by `~`, is a place of its own, joined below no other (round 3).
+        self.assertEqual(["/dev", "~", "~sys", "~/x"], tracked("cd /dev", "cd", "cd ~sys", "cd ~/x").cwds)
         self.assertEqual([(None, "7"), (None, "3", "?"), ("5",)],
                          [shell_command.sources(word, moves, read) for word in ("7", "fd/3", "/dev/fd/5")])
         # The places kept are the latest `_PLACES`, and a word with more paths reaches every file held.
@@ -2121,6 +2123,216 @@ class TestAPathTheStepLinkedOrMovedToIsItsDescriptor(unittest.TestCase):
         self.assertEqual((None,), shell_command.sources("fd/3", None, read))         # a here-string's text
         many.links = {"x": ["/t%d" % n for n in range(shell_command._PLACES + 1)]}
         self.assertEqual((None, "?"), shell_command.sources("x", many, read))
+
+    # Round 3 (the round-2 seat's B1 and B2): the body a record may put on a descriptor is one more
+    # reading beside `main`'s, read in a fold of its own (`shell_command.body_read`, `folds`), never in
+    # its place. Round 2 read it in place of what the operand names as written, so a link or a `cd`
+    # the shell never makes put a harmless body where the shell reads a pipe or a download, and the
+    # step read CLEAN while a parent runs it (the seat's 16 rows, 78 cells).
+    PRINTED = "echo '%s' | " % PIPE     # a program a printer hands down the pipe: `main` reports its reader
+    HARMLESS = " 3<<'EOF' <%s\necho hi\nEOF\n"   # a harmless body on fd 3, and the read a record says is fd 3
+
+    def test_a_body_a_record_may_add_takes_no_reading_away(self):
+        # The seat's HA and B1x rows, a class a line: the shell reads the pipe by its own path, and a
+        # link that fails (`/dev/stdin` is there), never runs (`||`, a branch, a function never
+        # called, a `case` arm) or runs in a subshell says that path is fd 3; the pipe's other
+        # paths, a climb to one too; the readers -- `bash`, `bash -s`, a `cat` that passes the pipe
+        # on -- a `printf` printer, and a here-string as the body. Each reads as `main` reads it
+        # (the seat's truth for its rows: every parent runs each, the here-string the bash ones).
+        links = ("ln -s /dev/fd/3 %s || true", "true || ln -s /dev/fd/3 %s", "if false; then ln -s /dev/fd/3 %s; fi",
+                 "f() { ln -s /dev/fd/3 %s; }", "case x in y) ln -s /dev/fd/3 %s ;; esac", "(ln -s /dev/fd/3 %s) || true")
+        rows = [link % "/dev/stdin" + "\n" + self.PRINTED + "sh" + self.HARMLESS % "/dev/stdin" for link in links]
+        rows += [links[1] % path + "\n" + self.PRINTED + "sh" + self.HARMLESS % path
+                 for path in ("/dev/fd/0", "/proc/self/fd/0", "../../../../../dev/stdin")]
+        rows += [links[1] % "/dev/stdin" + "\n" + self.PRINTED + reader + self.HARMLESS % "/dev/stdin"
+                 for reader in ("bash", "bash -s")]
+        rows += [links[1] % "/dev/stdin" + "\n" + self.PRINTED + "cat 3<<'EOF' </dev/stdin | sh\necho hi\nEOF\n",
+                 links[1] % "/dev/stdin" + "\nprintf '%s\\n' '" + PIPE + "' | sh" + self.HARMLESS % "/dev/stdin",
+                 links[1] % "/dev/stdin" + "\n" + self.PRINTED + "sh 3<<< true </dev/stdin\n"]
+        # The download itself, where a value places it (it may be the file read), and a move the shell
+        # never makes, or not for long (the seat's B1x10, B1c01 and B1c02).
+        rows += [links[1] % "x" + "\ncurl -fsSLo \"$D/x\" %stool\nsh" % URL + self.HARMLESS % "x"]
+        rows += ["curl -fsSLo \"$D/3\" %stool\n" % URL + move + "\nsh" + self.HARMLESS % "3"
+                 for move in ("(cd /dev/fd)", "if false; then cd /dev/fd; fi", "f() { cd /dev/fd; }", "cd /dev/fd | cat")]
+        for row in rows:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "echo done\n", shell))
+        # The controls, as `main` reads them: no record at all; a harmless program down the pipe; and
+        # a body that is the program where the record is all that reaches it (round 1's closure).
+        self.assertTrue(reported(self.PRINTED + "sh" + self.HARMLESS % "/dev/stdin"))
+        self.assertFalse(reported(links[1] % "/dev/stdin" + "\necho 'echo hi' | sh" + self.HARMLESS % "/dev/stdin"))
+        self.assertTrue(reported("ln -s /dev/fd/3 x\nsh 3<<'EOF' <x\n%s\nEOF\n" % PIPE))
+
+    def test_a_check_is_not_credited_with_a_body_a_record_may_add(self):
+        # The seat's HB rows: a check that reads a list `main` does not know, beside a list on fd 3 a
+        # link the shell never makes may give it. Round 2 credited the check with that list (CCCRR);
+        # `main` reports the run in every setting, and so does the fold that reads `main`'s body
+        # (by the seat's truth the step stops in the three it cleared: `main`'s own price, kept).
+        check = "\n" + GET + "sha256sum -c 3<<'EOF' 4<<'END' <sums\n%s  tool\nEOF\necho hi\nEND\nsh tool\n" % ("a" * 64)
+        for link in ("ln -s /dev/fd/3 sums || true", "if false; then ln -s /dev/fd/3 sums; fi", "true"):
+            for shell in SHELLS:
+                with self.subTest(link=link, shell=shell):
+                    self.assertTrue(reported(link + check, shell))
+
+    def test_the_operands_own_body_is_read_and_a_records_beside_it(self):
+        # The seat's B1x12 and B1x13: the operand names a descriptor that holds a body, and a link the
+        # shell never makes says it is another. The operand's own body is `main`'s reading, read
+        # first and in every fold `main` reads; the other is one more reading, so a program in
+        # either reports -- in the second a price, where the link is never made (the seat's truth
+        # for B1x13: no parent runs it) -- and with no link each reads by its own body alone.
+        both = "sh 3<<'EOF' 4<<'END' </dev/fd/3\n%s\nEOF\n%s\nEND\n"
+        link = "true || ln -s /dev/fd/4 /dev/fd/3\n"
+        for own, other, linked, plain in ((PIPE, "echo hi", True, True), ("echo hi", PIPE, True, False),
+                                         ("echo hi", "echo ho", False, False)):
+            for shell in SHELLS:
+                with self.subTest(own=own, other=other, shell=shell):
+                    self.assertEqual(linked, reported(link + both % (own, other), shell))
+                    self.assertEqual(plain, reported(both % (own, other), shell))
+
+    def test_each_body_a_record_may_add_is_read_in_a_fold_of_its_own(self):
+        # A name linked twice may be either target, so the body on each is a reading, each read in
+        # its turn: round 2 read the first alone, and CLEAN where the second is the program.
+        two = "ln -s /dev/fd/3 x\nln -sf /dev/fd/4 x\nsh 3<<'EOF' 4<<'END' <x\n%s\nEOF\n%s\nEND\n"
+        three = "ln -s /dev/fd/3 x\nln -sf /dev/fd/4 x\nln -sf /dev/fd/5 x\nsh 3<<'A' 4<<'B' 5<<'C' <x\n%s\nA\n%s\nB\n%s\nC\n"
+        for row, runs in ((two % (PIPE, "echo hi"), True), (two % ("echo hi", PIPE), True), (two % ("echo hi", "echo ho"), False),
+                          (three % ("echo hi", "echo ho", PIPE), True), (three % ("echo hi", PIPE, "echo ho"), True),
+                          (three % ("echo a", "echo b", "echo c"), False)):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertEqual(runs, reported(row, shell))
+
+    def test_past_the_cap_a_record_may_put_any_body_held_there(self):
+        # B2, the seat's CAPX-H16, -H40, -LH17 and -LH40: past `_PLACES` places or targets the word
+        # reaches every file held, and every BODY held too -- round 2 named none, so the body on the
+        # descriptor the step's own `cd` or last link reaches read CLEAN while every parent runs it.
+        # At the cap it is read by its own path, as round 2 read it; a harmless body reads CLEAN.
+        import shell_command
+        cap = shell_command._PLACES
+        body = "\n%s\nEOF\n"
+        for extra in (cap - 1, cap, cap + 24):
+            moves = "cd /dev/fd\n" + "".join("(cd /d%d)\n" % n for n in range(extra)) + "sh 3<<'EOF' <3"
+            links = "".join("ln -sf /t%d x\n" % n for n in range(extra)) + "ln -sf /dev/fd/3 x\nsh 3<<'EOF' <x"
+            for row in (moves, links):
+                for shell in SHELLS:
+                    with self.subTest(extra=extra, row=row[-20:], shell=shell):
+                        self.assertTrue(reported(row + body % PIPE, shell))
+                        self.assertFalse(reported(row + body % "echo hi", shell))
+        # Any body held: the last of `_PLACES` of them is read in its own fold; one more than the
+        # reader keeps is a step it refuses, reported whole, a harmless one too.
+        past = "cd /dev/fd\n" + "".join("(cd /d%d)\n" % n for n in range(cap)) + "sh %s <3%s\n"
+
+        def held(count, last):
+            heads = " ".join("%d<<'E%d'" % (fd, fd) for fd in range(3, 3 + count))
+            return past % (heads, "".join("\n%s\nE%d" % (last if fd == 2 + count else "echo %d" % fd, fd)
+                                          for fd in range(3, 3 + count)))
+        self.assertTrue(reported(held(cap, PIPE)))
+        self.assertFalse(reported(held(cap, "echo last")))
+        for last in (PIPE, "echo last"):
+            found = wg.job_defects([wg.Step("step", held(cap + 1, last), None)])
+            self.assertIn("may put more than %d bodies on one descriptor" % cap, " ".join(why for _name, why in found))
+
+    def test_each_way_the_reader_reads_a_record_has_its_row(self):
+        # B3 (the round-2 seat: surviving mutants that re-open a row): each of these readings was right
+        # at round 2's head and unpinned, so dropping it re-opened a row and passed these tests. A
+        # record is read through what `command()` strips in front of it -- a wrapper, an assignment, a
+        # keyword -- and with `ln` named by its path; a target that ends in `/` names its link by its
+        # last part; a link's name is read in its normal form; `pushd` moves as `cd` does (the seat's
+        # EK06); and a relative `cd` stands below EACH place the step may be in, not the latest alone.
+        held, moved = "\nsh 3<> tool <%s 3<&-", "\nsh 3<> /tmp/tool <%s 3<&-"
+        get = "curl -fsSLo /tmp/tool %stool\n" % URL
+        rows = [GET + link + held % "x" for link in (
+            "sudo ln -s /dev/fd/3 x", "env ln -s /dev/fd/3 x", "command ln -s /dev/fd/3 x", "nice ln -s /dev/fd/3 x",
+            "LC_ALL=C ln -s /dev/fd/3 x", "if ln -s /dev/fd/3 x; then echo linked; fi", "! ln -s /dev/fd/3 x",
+            "/bin/ln -s /dev/fd/3 x", "/usr/bin/ln -sf /dev/fd/3 x", "sudo /bin/ln -s /dev/fd/3 x",
+            "ln -s /dev/fd/3 ./x", "ln -s /dev/fd/3 .//x")]
+        rows += [GET + "ln -s /dev/fd/" + held % "fd/3", GET + "ln -s /dev/" + held % "dev/fd/3",
+                 GET + "ln -s /dev/fd ./fds" + held % "fds/3"]
+        rows += [get + move + moved % "fd/3" for move in (
+            "command cd /dev", "CDPATH= cd /dev", "if cd /dev; then echo moved; fi", "pushd /dev", "pushd /dev > /dev/null",
+            "cd /\n(cd /tmp)\ncd dev", "cd /\nif false; then cd /tmp; fi\ncd dev")]
+        for row in rows:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+        # The pipe is the reader's past the cap too (the seat's CAPX-P16, -P40, -LP17 and -LP40, which
+        # every parent runs): a word that reaches more than the reader keeps may be the pipe's path.
+        import shell_command
+        cap, stream = shell_command._PLACES, "curl -fsSL %si.sh | sh <%%s\n" % URL
+        for extra in (cap - 1, cap, cap + 24):
+            moves = "cd /dev\n" + "".join("(cd /d%d)\n" % n for n in range(extra))
+            links = "".join("ln -sf /t%d x\n" % n for n in range(extra)) + "ln -sf /dev/stdin x\n"
+            for shell in SHELLS:
+                with self.subTest(extra=extra, shell=shell):
+                    self.assertTrue(reported(moves + stream % "stdin", shell))
+                    self.assertTrue(reported(links + stream % "x", shell))
+                    self.assertFalse(reported(moves + "sh <stdin\n", shell))
+        # And what each reading must NOT take in, CLEAN as `main` reads it: a name that only starts
+        # like a linked one; two paths that agree on one descriptor, which carry that one alone and
+        # not every file held; `/proc/self/fd/N` reached by a link, the one descriptor it names; a
+        # here-string's text a value decides, which is no path and carries nothing; and exactly
+        # `_PLACES` places, all kept -- one more and the oldest is any place, every file held.
+        for row in (GET + "ln -s /dev/fd/3 x" + held % "xy", GET + "ln -s /dev/fd x" + held % "xy/3",
+                    GET + "sh -c 'echo hi' 3<> tool <<< \"$X\" 3<&-",
+                    GET + "ln -s /dev/fd/3 x\nln -sf /dev/fd/3 x\nsh 3<> /dev/null 4<> tool <x 3<&- 4<&-",
+                    GET + "ln -s /proc/self/fd p\nsh 3<> /dev/null 4<> tool <p/3 3<&- 4<&-",
+                    get + "".join("(cd /d%d)\n" % n for n in range(cap)) + "sh 3<> /tmp/tool <fd/9 3<&-"):
+            for shell in SHELLS:
+                with self.subTest(row=row[-60:], shell=shell):
+                    self.assertFalse(reported(row + "\necho done\n", shell))
+        self.assertTrue(reported(get + "".join("(cd /d%d)\n" % n for n in range(cap + 1)) + "sh 3<> /tmp/tool <fd/9 3<&-\n"))
+
+    def test_the_folds_read_mains_body_first_then_each_a_record_adds(self):
+        import shell_command
+        one, two, own = ("a", False, True), ("b", False, True), ("own", False, True)
+
+        def read(bodies, reached):
+            """What `body_read` answers in each fold `folds` makes for it."""
+            return [shell_command.body_read(bodies, reached) for _sure in shell_command.folds(lambda: False)]
+        # `main`'s reading first -- the body the operand names as written, or none -- then each other
+        # body a record reaches, once: on a descriptor it names, or on any (`?`).
+        self.assertEqual([None], read({"3": one}, (None,)))
+        self.assertEqual([one], read({"3": one}, ("3",)))
+        self.assertEqual([None, one], read({"3": one}, (None, "3")))
+        self.assertEqual([None, one, two], read({"3": one, "4": two}, (None, "3", "4")))
+        self.assertEqual([None, one, two], read({"3": one, "4": two}, (None, "?")))
+        self.assertEqual([own, one], read({"0": own, "3": one, "4": own}, ("0", "3", "4")))
+        self.assertEqual([None], read({"3": one}, ("?",)))            # a source a value decides: as `main` reads it
+        self.assertEqual([None], read({"3": one}, (None, "5")))       # a descriptor that holds none
+        # Outside the folds, and after folds that read a record's body, `main`'s.
+        self.assertEqual([None, one, two], read({"3": one, "4": two}, (None, "4", "3")))
+        self.assertEqual({"at": 0, "more": False}, shell_command._BODIES)
+        self.assertIsNone(shell_command.body_read({"3": one}, (None, "3")))
+        # More than the reader keeps: `main`'s, then a step it refuses.
+        many = {str(fd): ("body %d" % fd, False, True) for fd in range(3, 4 + shell_command._PLACES)}
+        folds = shell_command.folds(lambda: False)
+        next(folds)
+        self.assertIsNone(shell_command.body_read(many, (None, "?")))
+        next(folds)
+        with self.assertRaises(shell_lex.Unreadable):
+            shell_command.body_read(many, (None, "?"))
+        folds.close()
+        # The record's folds follow ALL of `main`'s -- every set of the words bash may make empty
+        # (#2929), every action of a `find` -- and read each of those again.
+        seen = []
+
+        def unsure():
+            seen.append((shell_command._BODIES["at"], shell_command._HALVES["empty"] is shell_command._ALL,
+                         shell_command._ACTIONS["at"]))
+            shell_command._HALVES["both"] = True
+            shell_command._ACTIONS["more"] = shell_command._ACTIONS["at"] < 1
+            shell_command.body_read({"3": one}, (None, "3"))
+            return False
+        list(shell_command.folds(unsure))
+        self.assertEqual([(body, empty, at) for body in (0, 1) for empty in (False, True) for at in (0, 1)], seen)
+        # And the stage the reader hands on: `main`'s body in `main`'s folds, the record's in its own;
+        # only what fd 0 reads differs, so a string kept parsed across folds (`workflow_programs._parsed`,
+        # read for its argv alone) is the same in each.
+        text = "ln -s /dev/fd/3 /dev/stdin\necho x | sh 3<<'EOF' </dev/stdin\necho hi\nEOF\n"
+        stages = [shell_reader.statements(text)[-1].stages[-1] for _sure in shell_command.folds(lambda: False)]
+        self.assertEqual([None, ("echo hi", False)], [stage.stdin_heredoc for stage in stages])
+        self.assertEqual([stages[0]._replace(heredoc=None, stdin_heredoc=None)] * 2,
+                         [stage._replace(heredoc=None, stdin_heredoc=None) for stage in stages])
 
 class TestEachGateOfTheWholeWordHasAVerdict(unittest.TestCase):
     """PR #2856 round 9, the round-8 verdict's F4: each test that confines the whole reading to a

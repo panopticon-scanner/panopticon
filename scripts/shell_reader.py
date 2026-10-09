@@ -64,7 +64,7 @@ from shell_command import (CONDITIONS as CONDITIONS, KEYWORDS as KEYWORDS,
                            _FETCHERS as _FETCHERS, _FUNCTION as _FUNCTION,
                            _INTERPRETERS as _INTERPRETERS, _NAME as _NAME, _OPTIONAL as _OPTIONAL,
                            _SHELLS as _SHELLS, _command_result as _command_result,
-                           _optional as _optional, command as command, reads_held, carrier, sources, track,
+                           _optional as _optional, command as command, reads_held, body_read, carrier, sources, track,
                            credited_zero as credited_zero,
                            command_as_written as command_as_written, conditional as conditional,
                            negated as negated, unresolved_wrapper as unresolved_wrapper,
@@ -627,7 +627,7 @@ def _stage(text, context):
                 pipe_inputs[number] = "?" in reached or any(pipe_inputs.get(fd, False) for fd in reached)
                 pipe_outputs[number] = False
                 reads_body(number, (word, not spelled, False) if op == "<<<" else
-                           next((bodies[fd] for fd in reached if fd in bodies), None))
+                           body_read(bodies, reached))
             else:
                 if op == "<>":                 # open for reading too: what reads N reads it (#2881)
                     opened[number] = (*carried, word)

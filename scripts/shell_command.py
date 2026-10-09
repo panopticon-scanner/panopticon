@@ -20,6 +20,7 @@ import os
 import re
 
 from shell_patterns import shell_words
+from shell_quote import Unreadable
 from shell_tokens import derived, has_substitution, is_arm, readable, spelled
 from shell_wrappers import WRAPPERS, Defaulted, Rewritten, dynamic, unwrap
 
@@ -350,23 +351,31 @@ def folds(unsure):
     guard REPORTs where any reading of them runs (#2856 round 13, the round-13 ruling: the union, no
     half ranked; every reading, #2929). Each reads every `find`'s first action where the guard asks
     how a stage uses a file, then, while one held another, its next (`find_action`), so the guard
-    REPORTs where any action uses it (#2918)."""
+    REPORTs where any action uses it (#2918). Those are `main`'s folds, each descriptor reading the
+    body `main` reads there; where a link or a `cd` may put another on one (`body_read`), all of them
+    follow again once for each such body, so the guard REPORTs where either is the one read and no
+    reading of `main`'s is lost (#2919 round 3)."""
     _HALVES.update(empty=frozenset(), words={}, both=False, on=True)
-    read: set = set()
     try:
-        while masks := [mask for mask in _masks() if mask not in read]:
-            _HALVES["empty"] = masks[0]
-            read.add(masks[0])
-            for at in itertools.count():
-                _ACTIONS.update(at=at, more=False)
-                yield False
-                if unsure():
-                    yield True
-                if not _ACTIONS["more"]:
-                    break
+        for body in range(1 + _PLACES):         # `main`'s, then at most `_PLACES` others (`body_read`)
+            _BODIES.update(at=body, more=False)
+            read: set = set()
+            while masks := [mask for mask in _masks() if mask not in read]:
+                _HALVES["empty"] = masks[0]
+                read.add(masks[0])
+                for at in itertools.count():
+                    _ACTIONS.update(at=at, more=False)
+                    yield False
+                    if unsure():
+                        yield True
+                    if not _ACTIONS["more"]:
+                        break
+            if not _BODIES["more"]:
+                return
     finally:
         _HALVES.update(empty=frozenset(), words={}, both=False, on=False)
         _ACTIONS.update(at=0, more=False)
+        _BODIES.update(at=0, more=False)
 
 
 # The checksum tools a check is credited with (`workflow_checks.CHECKSUM_TOOLS`, pinned equal by test).
@@ -505,6 +514,9 @@ def track(context, stage):
 # The places a step may stand in, and the paths a word may reach, that the reader keeps: past them
 # the oldest places read as one a value decides, and a word reaches every file held (`sources`).
 _PLACES = 16
+# The body a fold reads on a descriptor a link or a `cd` may give another (`body_read`): 0 `main`'s,
+# then each other in turn; and whether a stage held one more, which `folds` then reads (round 3).
+_BODIES = {"at": 0, "more": False}
 
 
 def _reached(word, context):
@@ -526,11 +538,13 @@ def _reached(word, context):
 
 def sources(word, context, read):
     """What `word`, the operand of an input redirection, may reach (#2919): `read` of it as written,
-    first -- `shell_reader.input_alias_fd`'s answer, which every reader keeps as `main` reads it --
-    then the answers that differ from it among the other paths the step's links and `cd`s may give
-    it (`_reached`), `?` where they are more than the reader keeps; with no `context`, a
-    here-string's text, as written alone. A record adds a reading and takes none away (round 2):
-    the reader knows no `ln` or `cd` to have run."""
+    first -- `shell_reader.input_alias_fd`'s answer, `main`'s reading -- then the answers that differ
+    from it among the other paths the step's links and `cd`s may give it (`_reached`), `?` where
+    they are more than the reader keeps; with no `context`, a here-string's text, as written alone.
+    A record adds a reading and takes none away, the reader knowing no `ln` or `cd` to have run:
+    the pipe and the files held are read off every answer (`carrier`), and a body off the first in
+    every fold `main` reads, off each other in a fold of its own (`body_read`, round 3 -- round 2
+    read the first body any answer held, in place of `main`'s)."""
     first = read(word)
     more: list[str] = []
     reached = _reached(word, context)
@@ -550,6 +564,27 @@ def carrier(word, context, read):
     first, *more = sources(word, context, read)
     reached = [answer for answer in (first, *more) if answer]
     return "?" if "?" in reached or len(reached) > 1 else reached[0] if reached else first
+
+
+def body_read(bodies, reached):
+    """The heredoc or here-string body a descriptor reads, its operand reaching `reached` (`sources`),
+    of the `bodies` each descriptor holds (#2919 round 3): the one its operand names as written, or
+    none -- `main`'s reading, and the one every fold `main` reads takes, so a link or a `cd` the
+    shell never makes takes no reading away. Each OTHER body a record may put there -- on a
+    descriptor it reaches, or on any one where it reaches more than the reader keeps (`?`) -- is one
+    more reading beside it, read in a fold of its own (`folds`); more of them than `_PLACES` are a
+    step the reader refuses there (`Unreadable`), reported whole."""
+    first, *more = reached
+    main = bodies.get(first) if first and first != "?" else None
+    others = list(dict.fromkeys(body for fd, body in bodies.items() if ("?" in more or fd in more) and body != main))
+    at = _BODIES["at"]
+    if not others or not at:
+        _BODIES["more"] = _BODIES["more"] or bool(others)
+        return main
+    if len(others) > _PLACES:
+        raise Unreadable("a link or a `cd` may put more than %d bodies on one descriptor" % _PLACES)
+    _BODIES["more"] = _BODIES["more"] or len(others) > at
+    return others[min(at, len(others)) - 1]
 
 
 def unresolved_wrapper(argv):
