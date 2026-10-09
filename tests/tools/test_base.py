@@ -344,11 +344,24 @@ class TestInertText(unittest.TestCase):
     stayed, and it lives here because both finding builders do.
     """
 
-    HAZARDS = tuple(chr(o) for o in
-                    list(range(0x00, 0x20)) + [0x7f]
-                    + list(range(0x80, 0xa0)) + [0x2028, 0x2029])
+    # #2118 item 2 / #2712 review round 2: spell the contract independently so
+    # neither the rendering walk nor a production edit can silently shrink it.
+    EXPECTED = frozenset((
+        *range(0x0000, 0x0020),
+        0x007F,
+        *range(0x0080, 0x00A0),
+        0x2028, 0x2029,
+        0x061C,
+        0x200E, 0x200F,
+        0x202A, 0x202B, 0x202C, 0x202D, 0x202E,
+        0x2066, 0x2067, 0x2068, 0x2069,
+    ))
+    HAZARDS = tuple(chr(o) for o in sorted(base.INERT_ESCAPE_CODE_POINTS))
 
-    def test_the_escape_covers_c0_del_c1_and_the_line_separators(self):
+    def test_shared_escape_set_matches_the_schema_contract(self):
+        self.assertEqual(base.INERT_ESCAPE_CODE_POINTS, self.EXPECTED)
+
+    def test_the_escape_covers_controls_bidi_and_line_separators(self):
         for ch in self.HAZARDS:
             with self.subTest(codepoint=hex(ord(ch))):
                 out = base.inert_text("a%sb" % ch)
