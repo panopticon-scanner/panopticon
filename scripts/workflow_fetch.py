@@ -336,7 +336,7 @@ def stream_consumer(following, executors):
     writes on into it (`| tee f | sh`), or None: `streamed_fetch`'s walk, and
     `workflow_forms.carried`'s for a download a step prints (#2341)."""
     for next_stage in following:
-        argv = command(next_stage.argv)
+        argv = shell_reader.acted(next_stage.argv)
         if not argv or not _may_read_pipe(argv, next_stage):
             break
         if (os.path.basename(argv[0]) in executors
@@ -481,7 +481,7 @@ def _compound_outputs(stmts):
 def compound_output(stmts, outputs, position, stage, following):
     """The stage and next argv after its own or its compound's stdout."""
     if following:
-        return stage, tuple(command(following[0].argv))
+        return stage, tuple(shell_reader.acted(following[0].argv))
     if not stage.stdout_to_pipe:
         return stage, None
     if outputs[0] is None:

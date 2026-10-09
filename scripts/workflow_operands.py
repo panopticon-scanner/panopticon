@@ -529,9 +529,7 @@ def described(statement, position, stage, argv):
             reparsed.append(_Reparsed(token) if reparse else token)
         argv = [argv[0]] + reparsed
     # `find` runs the command of each action (`-exec`, `-execdir`, `-ok`, `-okdir`), one a fold
-    # (#2918), unwrapped by `command()` (#2935); the operand is `{}`, which names nothing at all.
-    if finder := getattr(argv[0], "finder", None):
-        return argv, _walked(finder), True
+    # (#2918); the operand is `{}`, which names nothing at all.
     if inner := find_action(argv):
         return inner, _walked(argv), True
     # `command()` strips what stands in FRONT of the command, and `argv` is

@@ -288,7 +288,7 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
         here = working.get(index, directory)
         under = ANY if isinstance(statement, Inlined) else shell
         for position, stage in enumerate(statement.stages):
-            argv, before = command(stage.argv), statement.stages[:position]
+            argv, before = shell_reader.acted(stage.argv), statement.stages[:position]
             if argv and os.path.basename(argv[0]) in FETCHERS:
                 following = statement.stages[position + 1:]
                 fetch_stage, piped_to = compound_output(stmts, out, index, stage, following)

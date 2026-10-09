@@ -478,7 +478,7 @@ def _details(argv, depth, walk):
         text = " ".join(getattr(t, "spelled", t) for t in found)
         parsed = _parsed(text)
         if len(parsed) == 1 and len(parsed[0].stages) == 1:
-            inner = shell_reader.command(parsed[0].stages[0].argv)
+            inner = shell_reader.command(shell_reader.acted(parsed[0].stages[0].argv, True))
             if depth >= 64:                    # bounded: past 64 strings, fail-closed
                 return SHELL_PROGRAM, (() if kind == SHELL_PROGRAM and reader else None), inner
             inherited = _details(inner, depth + 1, walk)
@@ -654,7 +654,7 @@ def stdin_scripts(argv, stage, before=None, shell=None):
         readings = texts = [here[0] if filed is None else filed]
     else:
         source, intact = producer(stage, before)
-        readings = spellings(shell_reader.command(source.argv), source, shell) if intact else []
+        readings = spellings(shell_reader.acted(source.argv), source, shell) if intact else []
         texts = [t for t in readings if t is not None]
     if not texts:
         return []

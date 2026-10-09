@@ -206,7 +206,7 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     for index, statement in enumerate(stmts):
         region, ordinal = outer + tuple((key, n) for n in inner.get(index, ())), 0
         for position, stage in enumerate(statement.stages):
-            argv, before = command(stage.argv), statement.stages[:position]
+            argv, before = shell_reader.acted(stage.argv), statement.stages[:position]
             # Asked once per stage, not per script it hands on (an `eval` chain was cubic, #2500).
             name = _runner(argv) if argv else ""
             for text in scripts(argv) + stdin_scripts(argv, stage, before, shell):

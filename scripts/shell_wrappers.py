@@ -90,12 +90,10 @@ class Rewritten(str):
 
 
 class Found(str):
-    """A command word an action of a `find` runs, read as that command (`shell_command._command_result`,
-    #2935): a plain `str` to every reader that keys on its name, and `finder` the argv of the `find` that
-    runs it -- whose roots stand in for its `{}` (`workflow_operands.described`), and whose exit says
-    nothing of it: `find` exits 0 though a `-exec … \\;` command fails, so nothing an action runs is
-    the step's own to credit."""
-    finder: "list[str]" = []
+    """A command word an action of a `find` runs, read as that command (`shell_command.acted`, #2935):
+    a plain `str` to every reader that keys on its name, and the mark that it is `find` that runs it
+    -- never or many times, exiting 0 though a `-exec … \\;` command fails -- so nothing an action runs
+    is the step's own to credit (`shell_command.unsure`, `sure_reader`)."""
 
 
 class Defaulted(str):
@@ -370,8 +368,3 @@ def unwrap(argv, head, has_substitution):
         return [Rewritten(word) if replace in word and not has_substitution(word) else word
                 for word in argv[i:]], None
     return argv[i:], None
-
-
-class _FoundDefaulted(Found, Defaulted):
-    """A `Found` word that was a parameter's default naming a shell (`Defaulted`)."""
-

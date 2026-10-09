@@ -12,7 +12,7 @@ import os
 import re
 
 import shell_reader
-from shell_reader import own_command as command, conditional, negated
+from shell_reader import command, conditional, negated
 
 
 # --- whether a command's failure is allowed to matter -------------------------
