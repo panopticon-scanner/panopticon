@@ -181,18 +181,11 @@ def envelope_shape(entry):
 
 
 def _redact_reason_value(value):
-    """A JSON-ish value with every string, including dict keys, redacted.
-
-    A refusal reason is diagnostic text, not a structured artifact: even UUIDs
-    under identity-named keys must be masked here. Redact each original string
-    before `repr` can turn a boundary character into a backslash escape.
-    """
+    """A JSON-ish value with every original string redacted before `repr`."""
     if isinstance(value, str):
         return redact.redact(value)
-    if isinstance(value, list):
-        return [_redact_reason_value(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_redact_reason_value(item) for item in value)
+    if isinstance(value, (list, tuple)):
+        return type(value)(_redact_reason_value(item) for item in value)
     if isinstance(value, dict):
         return {_redact_reason_value(key): _redact_reason_value(item)
                 for key, item in value.items()}
