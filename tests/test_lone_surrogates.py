@@ -3,11 +3,13 @@
 `json.load` hands a lone surrogate over for a lone `\\udXXX` escape, and no encoder takes one. On main one such
 string in one agent-authored finding ended the `synthesize.py` child with a traceback and status 1 -- which is also
 the gate's FAIL status -- and, where the string seeds the finding's id, with no report at all. Each is now spelled as
-the inert policy spells a code point (`\\ud800`, six visible characters), in three places:
+the inert policy spells a code point (`\\ud800`, six visible characters), in four places:
 
 * `findings.agent_finding` and `evidence._agent_verdict`, the one door each for an agent's findings and an advisor's
   verdicts. Their text is hashed (the id, the fingerprint) before anything is written, so it is spelled on the way in.
 * `tools/base.parse_json_bytes` and the SARIF adapter's own parse, the door for a scanner's output, for that reason.
+* `synth/report.build_report`, the backstop: everything else a report holds meets its first encoder at a writer,
+  and every writer writes the report.
 * The policy's own set, `inert.INERT_ESCAPE_CODE_POINTS`, so `inert_text` and the prompt's `_prompt_safe` cover a
   name that never was JSON.
 
@@ -36,8 +38,12 @@ import scripts.ingest_tools as ingest_tools
 import scripts.phases.review as review
 import scripts.phases.runio as runio
 import scripts.synth.findings as findings_mod
+import scripts.synth.render as render_mod
+import scripts.synth.report as report_mod
+import scripts.synthesize as syn
 import scripts.tools.base as base
 import scripts.tools.legacy_sarif as legacy_sarif
+import tests.test_schema_parity as parity
 from tests._test_helpers import SKILL_ROOT, first
 
 SCRIPTS = os.path.join(SKILL_ROOT, "scripts")
@@ -385,6 +391,99 @@ class TestAScannersOutput(unittest.TestCase):
         self.assertEqual([], bare)
 
 
+class TestTheBackstop(unittest.TestCase):
+    """`build_report` hands no lone surrogate to a writer, whatever fed it: over the richest run directory the suite
+    builds (the schema-parity fixture), each run artifact in turn with a lone surrogate in EVERY value of it, then in
+    every key of one depth of it (a file whose top-level keys are all renamed is not read at all).
+
+    The findings files, the verdict bundle and the queue are left to their own doors' pins; this walks the rest --
+    the files the CONTROLLER writes (groups, coverage, host capabilities, the tools manifest, the inventory, the
+    hunk map) and the two scanner outputs. A named limit: this is coarser than one string at a time, since a value
+    planted beside it can change how a string is read; that sweep (1,031 strings) is in the PR, not in the suite,
+    for its price."""
+
+    THEIR_OWN_PINS = ("agent-findings.json", "findings-app-SEC.json", "verdicts-app-SEC.json", "verify-queue.json")
+
+    def test_a_report_holding_none_is_the_object_assemble_made_and_one_holding_any_is_its_spelled_copy(self):
+        stages = dict.fromkeys(("verdicts_mod", "tool_axis_mod", "grading_mod", "cost_mod"), mock.DEFAULT)
+        for assembled, spelled in (({"meta": {"target": "plain"}, "findings": []}, None),
+                                   ({"meta": {"target": "x" + LONE}}, {"meta": {"target": "x" + SPELLED}})):
+            with self.subTest(assembled=repr(assembled)[:40]), mock.patch.multiple(
+                    report_mod, assemble=mock.Mock(return_value=assembled), **stages):
+                built = report_mod.build_report(mock.MagicMock())
+                if spelled is None:
+                    self.assertIs(assembled, built)
+                else:
+                    self.assertEqual((spelled, {"meta": {"target": "x" + LONE}}), (built, assembled))
+
+    def test_a_run_artifact_planted_whole_reaches_no_writer(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as tmp:
+            real = syn.main
+            with mock.patch.object(syn, "main", lambda argv: calls.append(list(argv)) or real(argv)):
+                out, _ = parity._build_report(tmp)
+            argv, out_dir = calls[-1], os.path.dirname(out)
+            walked = []
+            for path in sorted(Path(tmp).rglob("*")):
+                if not path.is_file() or out_dir in str(path) or path.name in self.THEIR_OWN_PINS:
+                    continue
+                original = path.read_bytes()
+                try:
+                    document = json.loads(original)
+                except ValueError:
+                    continue
+                for depth in range(_depth(document) + 1):
+                    what = "the keys at depth %d" % depth if depth else "every value"
+                    made = _planted(document, depth)
+                    if made == document:
+                        continue
+                    walked.append(path.name)
+                    path.write_text(json.dumps(made), encoding="utf-8")
+                    with self.subTest(file=path.name, planted=what):
+                        self.assertEqual("", self.final_pass(tmp, argv, out_dir))
+                    path.write_bytes(original)
+        self.assertLessEqual({"groups.json", "host-capabilities.json", "tools-manifest.json", "bandit.sarif",
+                              "dependency-check.json"}, set(walked))      # not vacuous: the fixture's files
+
+    def final_pass(self, tmp, argv, out_dir):
+        """What went wrong when the final `synthesize.main` pass ran, or "" -- an exception out of it, a surrogate
+        left in an artifact, or one on the stdout a child would have to encode."""
+        for name in os.listdir(out_dir):
+            os.remove(os.path.join(out_dir, name))
+        real, previous, said = render_mod.write_report, os.getcwd(), io.StringIO()
+        os.chdir(tmp)
+        try:
+            with mock.patch.object(render_mod, "write_report", lambda report, path, max_bytes=parity.SPLIT_BYTES:
+                                   real(report, path, max_bytes=max_bytes)), \
+                    contextlib.redirect_stdout(said), contextlib.redirect_stderr(io.StringIO()):
+                syn.main(list(argv))
+        except Exception as error:      # noqa: BLE001 -- the outcome under test
+            return "%s out of synthesize.main" % type(error).__name__
+        finally:
+            os.chdir(previous)
+        for name in sorted(os.listdir(out_dir)):
+            text = Path(out_dir, name).read_text(encoding="utf-8")
+            if name.endswith(".json") and surrogates(json.loads(text)):
+                return "a surrogate left in %s" % name
+        return "a surrogate on stdout" if surrogates(said.getvalue()) else ""
+
+
+def _depth(node):
+    """How many objects deep `node` nests (lists are not a level)."""
+    inner = node.values() if isinstance(node, dict) else node if isinstance(node, list) else ()
+    return isinstance(node, dict) + max(map(_depth, inner), default=0)
+
+
+def _planted(node, depth, at=1):
+    """`node` with a lone surrogate appended to every string VALUE of it (`depth` 0), or to every key of the
+    objects `depth` levels down and to nothing else."""
+    if isinstance(node, dict):
+        return {key + LONE if at == depth else key: _planted(value, depth, at + 1) for key, value in node.items()}
+    if isinstance(node, list):
+        return [_planted(value, depth, at) for value in node]
+    return node + LONE if isinstance(node, str) and not depth else node
+
+
 class TestTheRealChild(unittest.TestCase):
     """Through `synthesize.py` as the driver runs it: a child process, a findings file whose JSON holds the escape,
     and the artifacts on disk. A run on the lone surrogate must write what a run on its spelled twin writes."""
@@ -516,6 +615,18 @@ class TestTheRealChild(unittest.TestCase):
         self.assertEqual(["agent", "tool:dependency-check", "tool:semgrep"],
                          sorted(found.get("source", "agent").split("/")[0] for found in report["findings"]))
         self.same(run, self.child(findings=[a_finding(1)], scans=scans(SPELLED)))
+
+    def test_a_name_from_the_targets_tree(self):
+        # Not an agent's text and never hashed: a group and its file, as discovery names them from the tree. Only
+        # the backstop stands between this name and the page's writer.
+        def groups(text):
+            extra = {"name": "extra" + text, "files": ["src/b%s.py" % text], "panels": ["code"],
+                     "parent": "extra" + text, "chunk_of": "."}
+            return dict(self.groups, groups=self.groups["groups"] + [extra])
+
+        run = self.child(findings=[a_finding(1)], groups=groups(LONE))
+        self.assertIn("extra" + SPELLED, "".join(strings(self.whole(run))))
+        self.same(run, self.child(findings=[a_finding(1)], groups=groups(SPELLED)))
 
     def test_the_queue_pass_writes_a_queue_without_one(self):
         run = self.child("--emit-verify-queue", findings=planted(LONE))
