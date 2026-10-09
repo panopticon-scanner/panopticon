@@ -2179,6 +2179,8 @@ class TestEveryFindActionIsACommand(unittest.TestCase):
     ACTED = {
         ("workflow_forms", "flattened"): "find /dev/null -exec sh -c '%s' \\;\n" % PIPE,
         ("workflow_guard", "_walk"): FETCHED + "sh tool\n",
+        ("workflow_guard", "_unread_stdin"): GET + "T=tool\nfind /dev/null -exec sh \\; <<EOF\nsh $T\nEOF\n",
+        ("workflow_fetch", "stdout_fetch"): "x=$(find /dev/null -exec curl -fsSL %si.sh \\;)\nsh -c \"$x\"\n" % URL,
         ("workflow_fetch", "stream_consumer"): "curl -fsSL %si.sh | find /dev/null -exec sh \\;\n" % URL,
         ("workflow_fetch", "compound_output"): "curl -fsSL %stool | find /dev/null -exec tee tool \\;\nsh tool\n" % URL,
         ("workflow_programs", "_details"): GET + "bash -c 'find /dev/null -exec sh \\;' <<'EOF'\nsh tool\nEOF\n",

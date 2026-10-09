@@ -324,7 +324,7 @@ def stdout_fetch(text):
     nothing else -- what `x=$(curl -fsSL URL)` holds (#2341) -- or None."""
     stmts = shell_reader.statements(text)
     stage = stmts[0].stages[0] if len(stmts) == 1 and len(stmts[0].stages) == 1 else None
-    argv = command(stage.argv) if stage else []
+    argv = shell_reader.acted(stage.argv) if stage else []
     tool = os.path.basename(argv[0]) if argv else ""
     fetch, streams = _parse_fetch(tool, argv[1:], stage, None) if tool in FETCHERS else (None, False)
     return fetch if fetch and streams and fetch.url else None
