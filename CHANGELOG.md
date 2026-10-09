@@ -56,6 +56,82 @@ evidence exposed.
   at most three more under a bash setting, one under a dash setting, four where each family is read.
   One existing pin's value changes: `unprinted` for `printf 'sh %s' "$X" | tee f | sh` gains the
   written text, its old value pinned under the main pass.
+- **Workflow reader reads every mixed reading of the command words bash may expand to nothing
+  (#2929).** #2856's union read a job twice: every such word -- `${X:+W}`, `${X-W}` and their kin
+  -- as its W, then every one empty, two of a step's 2^k readings, so a payload only a mixed
+  reading runs read CLEAN while every parent runs it: `X=1` ⏎ `${X:+curl -fsSLo tool …}` ⏎
+  `${Y:+/usr/bin/env true} sh tool`, the fetch's W and the shell's word empty, and the #2856
+  round-13 seat's 14 rows of hunts 49, 51 and 53 (70 cells). `shell_command.folds` now reads,
+  after those two folds, every other set of such words whose halves read apart -- `_runs` reads
+  another command in each, or one command word with other operands (`${Q:+/usr/bin/env cat sums}
+  cat`) -- empty in a fold of its own, up to three words, so 4 folds read two of them and 8 three;
+  halves that read one command (`${SUDO:+sudo -E} apt-get …`) add no fold. A word is one word by
+  where it stands, never by what its text says (`shell_tokens._Parse.place`, round 2): a step at
+  its index in the job, a `$(…)`, a backquote, a `<(…)` or a heredoc's body at its place in the
+  text that lifted it, a program a shell reads on its standard input at its heredoc's, and in that
+  parse the order it was kept whole. So a text read again in a fold holds the same words, no nonce
+  of the reader's splits one, and one spelling at two places is two words -- two equal
+  substitutions, two heredocs of one body, two steps of one text (a step's program strings aside:
+  the limit below); round 1 keyed a parse by its text, which read those as one word (the round-1
+  seat's IdB.two, IdC.subst and MS.same rows, CLEAN while the parents run them: all 16 runs, 12
+  for IdC.subst-proc) and one word as many wherever a marker's nonce reached the text (its Idnonce
+  rows, reported at the cap though nothing runs). A `-c` or an `eval` string is no lifted text: it
+  reaches its parse by its text alone -- its parent's token, and `workflow_programs._parsed`, a
+  cache keyed by the text -- so its parse is keyed by that text, less the reader's own nonce and
+  nothing else (`shell_tokens._keyed`, round 3: every nonce this process mints ends in a tag of
+  its own, so a word that may be a shell's program, read with its `$(…)` left as a marker, keeps
+  one key whatever nonce its parent minted, and text of the target's that is only shaped like a
+  marker stays in the key -- round 2 took every such text out, and read the round-2 seat's
+  D.shcd-litmark and D.evq-litmark pairs CLEAN while every parent runs them, REPORT at round 1).
+  And that text is the one `workflow_programs._script` hands the reader, in which a substitution
+  no printer spells is already written `$(...)`. So two program strings that read alike once each
+  such substitution is so written are one word: two identical strings at two places, and two that
+  differ only inside a `$(…)`, a backquote or a `<(…)` that stands in them. That is the named
+  limit (#2953, the hand-off of a program string's place, which crosses the programs lane): a
+  payload only the mixed reading of two such strings runs reads CLEAN, as on `main`. On a capped
+  hunt of 180 rows with 8-parent truth -- 9 spellings (`sh -c`, `bash -c`, `eval`, single- and
+  double-quoted, an escaped `$`, `env sh -c`, `bash -lc`, `sh -ec`) by 5 program shapes -- all 45
+  identical pairs read CLEAN under every setting (225 cells) while every parent runs them, here
+  and on `main`; with one blank more in the second string each pair reports (CLEAN on `main`), one
+  copy alone only fetches and reads CLEAN, the benign pairs read CLEAN, and no cell reads worse
+  than `main`. On a second, of 200 rows -- 8 ways of differing inside a substitution (a `$(…)`, a
+  backquote, a `<(…)`, a heredoc's body in one, its argument, one inside another, two of which one
+  differs, a `$(…)` against a backquote in its place) by 5 runners -- all 40 pairs that differ
+  only there read CLEAN under every setting, as their 40 identical twins do, while a parent runs
+  each (192 cells either way: all 16 runs in 36 of the 40, the other 4 a `<(…)` only bash reads),
+  here and on `main`; with one blank more outside the substitution all 40 report (CLEAN on
+  `main`), and one copy alone and the pairs with nothing downloaded read CLEAN. The round-2 seat's
+  18 such pairs are this class; where two strings differ in what a printer spells, in an
+  arithmetic expansion or in a word of the substitution that holds the word itself, they are two
+  words and report. An `eval` whose words bash joins is the same class. A string that ends in the
+  download's name reports as one copy, on `main` too (`workflow_operands.covers` reads it as a
+  mention), which is why the round-1 seat's 8 rows and a first hunt's 10 pairs showed no reach. A
+  fourth such word reads as a command the guard cannot read, reported wherever it runs, a download
+  or none, so the folds stop at 8. The price, CLEAN on `main` and REPORT here though no parent
+  runs, counted at this head on the round-1 seat's rows: that cap (146 of its 20,000 fuzz rows;
+  one spelling written at four or more places is four words now and meets it, 37 of the round-2
+  seat's rows that round 1 read CLEAN), and, since every assignment of halves is read, a mixed
+  reading no assignment of the step's names takes -- `${X:+curl …} | ${X:+/usr/bin/env true} sh`,
+  one name in both words, reports though bash runs neither mix (618 of its 2,164 class rows, 408
+  fuzz rows, and its two-step MS.same-pipe); neither is met in the seats' standing sets, and no
+  cell of those 22,164 rows is REPORT on `main` and CLEAN here. The two folds the union read come
+  first, as before, so nothing it reported reads CLEAN: across the #2885 round-4 seat's rows and
+  their twins, round 3's own and theirs, the AX, P0, F6 and P4 rows, the round-3 kit's 20,533 and
+  #2856's hunts 33-53, the only changes against `main` are those 70 cells, beside #2911's rows
+  (S08n, S08p, hunt 37's `*-od`), which differ between two runs of `main` too; and on the round-1
+  seat's rows the IdB.two, IdC.subst and MS.same rows report, its Idnonce rows read CLEAN as
+  `main` reads them, and a capped hunt's six pairs of one heredoc or here-string read by two
+  shells report; on the round-2 seat's 1,774 rows the only change against round 2 is its two
+  litmark pairs, which report. Out of lane, granted by the coordinator, each net zero:
+  `workflow_guard.job_defects` hands each step's index to its parse (`placed`), and
+  `workflow_programs.stdin_scripts` keeps the place of the heredoc it reads (`at_place`). The
+  cost, `job_defects` against `main` interleaved in one process, three passes on the final
+  scripts: 1.9x to 2.4x on the 39 rows of hunts 45-53 that hold two such words, flat where one or
+  none, 3.3x to 5.0x for three and past them (the eight folds, to 200 words; the round-2 seat's
+  rows past the cap read 4.70x to 4.98x), and 1.06x on the #2885 seat's 1,945 rows (1.05x to
+  1.07x, the round-3 seat's measure). Two such words in one stage stay #2856's named limit: only a
+  stage's first `${…}` word is read whole. `shell_reader._stage`'s docstring is rewrapped at 96
+  columns, every word kept, for the line that stamps the place.
 - **Workflow reader reads every action a `find` runs (#2918).** `curl … -o tool` ⏎ `find
   /dev/null -exec true \; -exec sh /dev/fd/3 \; 3<> tool` ran the download and read CLEAN: the
   guard read one of `find`'s actions, the first of `-exec`, `-execdir`, `-ok` and `-okdir` in that
@@ -179,21 +255,17 @@ evidence exposed.
   `curl … | ${X:+/usr/bin/env true} sh` and `${X:+/usr/bin/env true} sh -c '…'` report the `sh`
   the empty half runs, `X=1` ⏎ `${X:+/usr/bin/env sh -c} '…'` the W that runs where `X` is set,
   and a check is credited only in the reading that runs it (`${X:+/usr/bin/env sha256sum -c
-  sums} true` ⏎ `sh tool` reports, where `X` is unset). The two readings are two of a step's
-  2^k: every word of two halves read as its W, then every one as nothing, so a payload that only
-  a mixed reading runs -- the fetch's W and a later word read empty, `X=1` ⏎ `${X:+curl -fsSLo
-  t.sh …}` ⏎ `${Y:+/usr/bin/env true} sh t.sh` -- reads CLEAN, as on `main` (#2929), but where
-  the two halves conflict (below). Two halves the guard may each report that run apart -- two
-  among a shell's kind, a fetcher and a word it does not follow, but that word in front of a
-  shell's kind -- are a command it cannot read (`${X:+curl -fsSL …} sh x | sh` runs the download
-  where `X` is set). `$0` and `$-` are never unset, so `${0+W}` is always its W and `${--W}`
-  never is; and a pattern's or a case change's other half is the name's own value, which no half
-  names (#2899). No step's text decides a half: round 12 read W where the step set the name
-  anywhere in its text, which took a set after the use, in a subshell, a dead branch, a string,
-  a comment or a heredoc, and missed `set x`, `eval 'X=1'` and the shell's own variables. A
-  default whose first word names a command the reader knows -- a shell, a wrapper, a foreign
-  interpreter, a fetcher, by path too -- is that command, as `main` read the word by its
-  basename (`${X:-/usr/bin/env sh -c} '…'`, `${X:-/usr/bin/curl -fsSL} URL | sh`,
+  sums} true` ⏎ `sh tool` reports, where `X` is unset). Two halves the guard may each report
+  that run apart -- two among a shell's kind, a fetcher and a word it does not follow, but that
+  word in front of a shell's kind -- are a command it cannot read (`${X:+curl -fsSL …} sh x |
+  sh` runs the download where `X` is set). `$0` and `$-` are never unset, so `${0+W}` is always
+  its W and `${--W}` never is; and a pattern's or a case change's other half is the name's own
+  value, which no half names (#2899). No step's text decides a half: round 12 read W where the
+  step set the name anywhere in its text, which took a set after the use, in a subshell, a dead
+  branch, a string, a comment or a heredoc, and missed `set x`, `eval 'X=1'` and the shell's
+  own variables. A default whose first word names a command the reader knows -- a shell, a
+  wrapper, a foreign interpreter, a fetcher, by path too -- is that command, as `main` read the
+  word by its basename (`${X:-/usr/bin/env sh -c} '…'`, `${X:-/usr/bin/curl -fsSL} URL | sh`,
   `${X:-/usr/bin/env $(echo sh) -c} '…'`); where no default reads -- a `$NAME` or a nested
   default in it, or a parameter that is no NAME -- `main`'s split words stay when their first
   names such a command by its basename (`${X:-$HOME/bin/env sh -c} '…'`, `${1:-/bin/sh -c}
