@@ -44,7 +44,7 @@ each script found here in place of the command handed it -- a stdin one under it
 command word (`VALUE_PROGRAM`) or where it is `Opaque` -- its `unread_program` weighs the
 candidates, the unprinted and the dynamic program, and the guard takes `stdin_program` and
 `SHELL_PROGRAM` through it, `VALUE_PROGRAM`, `ANY`, `handed` and `stdin_command` directly. The
-option-letter tables below are read here and in `workflow_posture._errexit`, the one layer up that
+option-letter tables of `workflow_options` are read here and in `workflow_posture._errexit`, the one layer up that
 reads a shell's options too (#2443, #2475).
 
 Stdlib only, like everything under it.
@@ -62,6 +62,7 @@ from workflow_options import (SET_OPTION_NAMES as SET_OPTION_NAMES, SET_OPTIONS 
                               _MEASURED_SHELLS as _MEASURED_SHELLS, _VALUE as _VALUE,
                               _before_operand, _may_spell_option, _past_options,
                               _refused as _refused, _refused_name as _refused_name, _value)
+from workflow_options import Handed, _MAINS, _counted, _dash_c_strings, _shell_candidates, _stdin_walk, _sure_string
 from workflow_printers import (ANY as ANY, Named as Named, _PRINTERS as _PRINTERS, _piped as _piped,
                                file_operand as file_operand, handed as handed, operand, rendered,
                                printed as printed, producer as producer, spellings as spellings,
@@ -98,8 +99,27 @@ def scripts(argv):
     (#2487) -- the substitution's own text still read where `_walk` reads it, and no marker of this
     parse left to reach another. A text so rendered that the reader refuses is none, as before
     #2486: `eval "cat <<$(a b) …"` takes its delimiter from what `a b` prints, and `cat <<$(...)` is
-    no spelling to end the body at, so the string is unread and the rest of the step read."""
-    return shell_reader.unsure(argv, [script for script in map(_script, _program_words(argv)) if script is not None])
+    no spelling to end the body at, so the string is unread and the rest of the step read.
+
+    `main`'s strings first, a check in one counted where the shell surely runs it (else `Handed`,
+    reader `()`), then this walk's own (`_added_strings`, #2858) -- `main`'s alone in the main pass."""
+    if _MAINS.get():
+        return shell_reader.unsure(argv, _main_scripts(argv))
+    shell = bool(argv) and os.path.basename(argv[0]) in _SHELL_STRING
+    out = [Handed(script, ()) if shell and not isinstance(script, Opaque) and not _sure_string(argv, word) else script
+           for word, script in ((word, _script(word)) for word in _program_words(argv)) if script is not None]
+    return shell_reader.unsure(argv, out + [Handed(script) for script in map(_script, _added_strings(argv)) if script is not None])
+
+
+def _main_scripts(argv):
+    """`scripts`' answer as `main` reads it (7e9223e6), word for word: `main`'s strings alone."""
+    return [script for script in map(_script, _program_words(argv)) if script is not None]
+
+
+def _added_strings(argv):
+    """A shell's `-c` strings this walk reads (`_dash_c_strings`, #2858) that `main`'s does not."""
+    shell, mains = bool(argv) and os.path.basename(argv[0]) in _SHELL_STRING, _program_words(argv)
+    return [word for word in _dash_c_strings(argv) if not any(word is seen for seen in mains)] if shell else []
 
 
 def _program_words(argv):
@@ -204,7 +224,18 @@ def candidates(argv):
     that is the command word, handed a `-c` cluster, may be a shell itself (#2337,
     `CMD=sh; $CMD -c '…'`): the program after the options is the candidate. A `$(…)` or backquote
     value with no word after it is its own: bash makes the shell's words of its output, the program
-    among them (`sh $(echo tool)`), where a `<(…)` hands it a file (`shell_reader.yields_words`)."""
+    among them (`sh $(echo tool)`), where a `<(…)` hands it a file (`shell_reader.yields_words`).
+
+    `main`'s answer (`_candidates`), then the words this walk adds (`_shell_candidates`, #2858)."""
+    value, words = _candidates(argv)
+    shell = bool(argv) and not _MAINS.get() and os.path.basename(argv[0]) in _SHELL_STRING
+    more, added = _shell_candidates(argv) if shell else (None, [])
+    seen = set(map(id, words))
+    return (more if value is None else value), words + [word for word in added if id(word) not in seen]
+
+
+def _candidates(argv):
+    """`candidates`' answer as `main` reads it (7e9223e6), word for word."""
     if argv[1:] and _value(argv[0]) and argv[1][:1] == "-" != argv[1][1:2] and "c" in argv[1]:
         return argv[0], _past_options(argv, 1)
     if not argv or os.path.basename(argv[0]) not in _SHELL_STRING:
@@ -283,7 +314,7 @@ def dynamic_program(argv):
     text). `set -- "$P"` IS one, and `eval set -- "$OPTS"` runs nothing of the value as a command:
     an accepted over-report, because a `;` in that value does run (r0 finding 4)."""
     name = os.path.basename(argv[0]) if argv else ""
-    for word in _program_words(argv):
+    for word in _program_words(argv) + ([] if _MAINS.get() else _added_strings(argv)):
         keys = getattr(word, "markers", {})
         text = shell_reader.readable(getattr(word, "spelled", word))
         if _all_expansion(text) and all(
@@ -423,11 +454,26 @@ def _stdin(argv, depth):
 
 
 def _stdin_details(argv, depth):
-    """`_stdin` plus the command whose answer an enclosing string inherits (#2599)."""
+    """`_stdin` plus the command an enclosing string inherits (#2599): `main`'s in the main pass (#2858
+    round 11), else joined with this walk's -- a check counted where both count it, else `()`."""
+    main = _details(argv, depth, _MAIN)
+    if _MAINS.get():
+        return main
+    if main[0] is None:
+        walked = _details(argv, depth, _WALK)
+        return (walked[0], None, walked[2]) if walked[0] else main
+    if main[1] and _details(argv, depth, _WALK)[1] is not main[1]:
+        return main[0], (), main[2]
+    return main
+
+
+def _details(argv, depth, walk):
+    """`main`'s `_stdin_details` (7e9223e6), the options and strings it reads `walk`'s (`_MAIN`, `_WALK`)."""
     if not argv:
         return None, None, argv
-    kind, reader = _options(argv, depth)
-    found = _eval_words(argv) if os.path.basename(argv[0]) == "eval" else scripts(argv)
+    options, strings = walk
+    kind, reader = options(argv, depth)
+    found = _eval_words(argv) if os.path.basename(argv[0]) == "eval" else strings(argv)
     if found:
         text = " ".join(getattr(t, "spelled", t) for t in found)
         parsed = _parsed(text)
@@ -435,7 +481,7 @@ def _stdin_details(argv, depth):
             inner = shell_reader.command(parsed[0].stages[0].argv)
             if depth >= 64:                    # bounded: past 64 strings, fail-closed
                 return SHELL_PROGRAM, (() if kind == SHELL_PROGRAM and reader else None), inner
-            inherited = _stdin_details(inner, depth + 1)
+            inherited = _details(inner, depth + 1, walk)
             if inherited[0] in (SHELL_PROGRAM, VALUE_PROGRAM):
                 # No check in an inherited body counts; only a holder reading it is its reader.
                 inherited_reader = (() if inherited[0] == SHELL_PROGRAM
@@ -529,6 +575,28 @@ def _options(argv, depth):
             if next(rest, None) in _STDIN_OPERANDS and not shell:
                 return answer, reader       # the program is stdin after all
     return answer, reader
+
+
+def _walk(argv, depth):
+    """`_options` as this walk reads a shell's or `$` word's options (`_stdin_walk`, `_counted`)."""
+    name = os.path.basename(argv[0])
+    shell, foreign = name in _SHELL_STRING, name in _FOREIGN
+    value = not shell and not foreign and _value(argv[0]) and (
+        not shell_reader.has_substitution(argv[0]) or shell_reader.yields_words(argv[0]))
+    if foreign or not (shell or value):
+        return _options(argv, depth)
+    kind, reader = _stdin_walk(argv, SHELL_PROGRAM if shell else VALUE_PROGRAM,
+                               argv if shell and not depth else None, shell, value)
+    return kind, _counted(argv, reader)
+
+
+def _walk_scripts(argv):
+    """This walk's strings: a shell's in every reading (`_dash_c_strings`), any other command's main's."""
+    shell = bool(argv) and os.path.basename(argv[0]) in _SHELL_STRING
+    return [script for script in map(_script, _dash_c_strings(argv)) if script is not None] if shell else _main_scripts(argv)
+
+
+_MAIN, _WALK = (_options, _main_scripts), (_walk, _walk_scripts)
 
 
 def runs_under(argv, reader, name):
