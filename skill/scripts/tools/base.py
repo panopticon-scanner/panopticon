@@ -17,7 +17,7 @@ import threading
 from collections.abc import Iterator
 from typing import Any, Protocol
 
-from scripts.inert import INERT_ESCAPE_CODE_POINTS
+from scripts.inert import INERT_ESCAPE_CODE_POINTS, surrogate_free
 from scripts.provenance import tool_provenance
 
 
@@ -156,13 +156,13 @@ def parse_json_bytes(raw: bytes) -> Any:
     """Decode scanner output bytes tolerantly and parse as JSON — the shared
     adapter idiom (one home for the decoding policy). Strips a leading ANSI /
     log preamble and trims to the first JSON start token so decorated stdout
-    (progress spinners, banners) still parses; genuinely non-JSON input still
-    raises."""
+    still parses; genuinely non-JSON input still raises. A lone surrogate in
+    any string of it comes back as its inert spelling (#2951)."""
     cleaned = strip_ansi(raw)
     starts = [i for i in (cleaned.find(b"{"), cleaned.find(b"[")) if i != -1]
     if starts:
         cleaned = cleaned[min(starts):]
-    return json.loads(cleaned.decode("utf-8", errors="replace"))
+    return surrogate_free(json.loads(cleaned.decode("utf-8", errors="replace")))
 
 
 def cvss_bucket(score: float) -> str:

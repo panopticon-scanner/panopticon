@@ -3,10 +3,11 @@
 `json.load` hands a lone surrogate over for a lone `\\udXXX` escape, and no encoder takes one. On main one such
 string in one agent-authored finding ended the `synthesize.py` child with a traceback and status 1 -- which is also
 the gate's FAIL status -- and, where the string seeds the finding's id, with no report at all. Each is now spelled as
-the inert policy spells a code point (`\\ud800`, six visible characters), in two places:
+the inert policy spells a code point (`\\ud800`, six visible characters), in three places:
 
 * `findings.agent_finding` and `evidence._agent_verdict`, the one door each for an agent's findings and an advisor's
   verdicts. Their text is hashed (the id, the fingerprint) before anything is written, so it is spelled on the way in.
+* `tools/base.parse_json_bytes` and the SARIF adapter's own parse, the door for a scanner's output, for that reason.
 * The policy's own set, `inert.INERT_ESCAPE_CODE_POINTS`, so `inert_text` and the prompt's `_prompt_safe` cover a
   name that never was JSON.
 
@@ -15,6 +16,7 @@ the block moves, is pinned on the helper (`TestTheSpelling`). `--compare` reads 
 covered. Nor is a nesting deeper than the stack, which ends the run in `redact.redact_tree` with or without a
 surrogate; `inert.surrogate_free` is only pinned not to be the walk that raises.
 """
+import ast
 import contextlib
 import copy
 import io
@@ -26,13 +28,16 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import scripts.evidence as evidence
 import scripts.inert as inert
+import scripts.ingest_tools as ingest_tools
 import scripts.phases.review as review
 import scripts.phases.runio as runio
 import scripts.synth.findings as findings_mod
 import scripts.tools.base as base
+import scripts.tools.legacy_sarif as legacy_sarif
 from tests._test_helpers import SKILL_ROOT, first
 
 SCRIPTS = os.path.join(SKILL_ROOT, "scripts")
@@ -316,6 +321,70 @@ class TestTheTwoDoors(unittest.TestCase):
                 json.dumps(read[0], ensure_ascii=False).encode("utf-8")
 
 
+def sarif(text=""):
+    return {"runs": [{"tool": {"driver": {"name": "semgrep", "rules": [{
+        "id": "sqli" + text, "properties": {"tags": ["CWE-89"]}}]}},
+        "results": [{"ruleId": "sqli" + text, "level": "error", "message": {"text": "SQL injection " + text},
+                     "locations": [{"physicalLocation": {"artifactLocation": {"uri": "src/app%s.py" % text},
+                                                         "region": {"startLine": 3}}}]}]}]}
+
+
+def dependency_check(text=""):
+    return {"dependencies": [{
+        "fileName": "commons%s-fileupload-1.4.jar" % text,
+        "includedBy": [{"reference": "org.owasp%s:webgoat:2023.4" % text}],
+        "vulnerabilities": [{"name": "CVE-2023-24998" + text, "severity": "MEDIUM", "cwes": ["CWE-770"],
+                             "description": "Apache Commons FileUpload DoS " + text}]}]}
+
+
+class TestAScannersOutput(unittest.TestCase):
+    """The door for tool-authored text: what an adapter parses holds no lone surrogate, whichever field it reads."""
+
+    def test_parse_json_bytes_hands_none_over_and_reads_a_clean_output_as_it_did(self):
+        planted_output = json.dumps({"k" + LONE: ["v" + LONE, {"n": LONE}]}).encode()
+        self.assertEqual({"k" + SPELLED: ["v" + SPELLED, {"n": SPELLED}]}, base.parse_json_bytes(planted_output))
+        clean = b'\x1b[2Kbanner\n{"a": ["b\\u001b", "\\ud83d\\ude00"], "n": 1.5}'
+        self.assertEqual({"a": ["b\x1b", "\U0001f600"], "n": 1.5}, base.parse_json_bytes(clean))
+
+    def test_a_clean_output_is_the_object_the_parser_made_at_both_parses(self):
+        made = {"runs": []}
+        with mock.patch.object(base.json, "loads", return_value=made):
+            self.assertIs(made, base.parse_json_bytes(b"{}"))
+            with mock.patch.object(legacy_sarif.su, "sarif_to_findings") as converted:
+                legacy_sarif.LegacySarifAdapter("semgrep").parse(b"{}", "app")
+        self.assertIs(made, converted.call_args.args[0])
+
+    def test_a_planted_scan_is_ingested_as_its_spelled_twin_and_can_be_fingerprinted(self):
+        def ingested(text):
+            with tempfile.TemporaryDirectory() as tools, contextlib.redirect_stderr(io.StringIO()):
+                for name, output in (("semgrep.sarif", sarif(text)), ("dependency-check.json", dependency_check(text))):
+                    with open(os.path.join(tools, name), "w") as fh:
+                        json.dump(output, fh)
+                return ingest_tools.ingest_dir(tools, "app")
+
+        found = ingested(LONE)
+        self.assertEqual(ingested(SPELLED), found)
+        self.assertEqual(["tool:dependency-check", "tool:semgrep"], sorted(f["source"] for f in found))
+        self.assertEqual([], surrogates(found))
+        for finding in found:
+            evidence.finding_fingerprint(finding)           # main raised here: the hash encodes its key
+
+    def test_no_adapter_reads_json_past_the_door(self):
+        # Structural: an adapter that calls `json.loads` on a scanner's output bare reopens the hole for its tool.
+        # `egress.py` reads `docker network inspect`, which no target writes.
+        bare = []
+        for path in sorted(Path(SCRIPTS, "tools").glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            wrapped = {id(call.args[0]) for call in ast.walk(tree)
+                       if isinstance(call, ast.Call) and getattr(call.func, "id", "") == "surrogate_free"
+                       and call.args}
+            bare += ["%s:%d" % (path.name, call.lineno) for call in ast.walk(tree)
+                     if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+                     and call.func.attr in ("loads", "load") and getattr(call.func.value, "id", "") == "json"
+                     and id(call) not in wrapped and path.name != "egress.py"]
+        self.assertEqual([], bare)
+
+
 class TestTheRealChild(unittest.TestCase):
     """Through `synthesize.py` as the driver runs it: a child process, a findings file whose JSON holds the escape,
     and the artifacts on disk. A run on the lone surrogate must write what a run on its spelled twin writes."""
@@ -437,6 +506,16 @@ class TestTheRealChild(unittest.TestCase):
         self.assertEqual(len(VERDICT_PLACES), len(statuses))
         self.assertNotIn("unverified", statuses)                # every verdict bound: the door was walked
         self.same(run, self.child(findings=findings, verdicts=bundle(SPELLED)))
+
+    def test_a_scanners_output(self):
+        def scans(text):
+            return {"semgrep.sarif": sarif(text), "dependency-check.json": dependency_check(text)}
+
+        run = self.child(findings=[a_finding(1)], scans=scans(LONE))
+        report = self.whole(run)
+        self.assertEqual(["agent", "tool:dependency-check", "tool:semgrep"],
+                         sorted(found.get("source", "agent").split("/")[0] for found in report["findings"]))
+        self.same(run, self.child(findings=[a_finding(1)], scans=scans(SPELLED)))
 
     def test_the_queue_pass_writes_a_queue_without_one(self):
         run = self.child("--emit-verify-queue", findings=planted(LONE))
