@@ -5,6 +5,8 @@ import html
 import io
 import json
 import os
+import stat
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -311,7 +313,9 @@ class TestSynthesizePhase(unittest.TestCase):
         self.assertIn(f"<h1>{escaped}</h1>", page)
         self.assertNotIn(f"<h1>{name}</h1>", page)
 
-    def _assert_real_child_refuses_artifact_directory(self, leaf, action, expected_files):
+    def _assert_real_child_refuses_artifact_leaf(
+            self, leaf, action, expected_files, plant=None, still_planted=None,
+            detail=None):
         """Drive one planted output leaf through synthesize_execute's real child."""
         with tempfile.TemporaryDirectory() as directory:
             root = os.path.realpath(directory)
@@ -324,7 +328,7 @@ class TestSynthesizePhase(unittest.TestCase):
                 "failure": report.replace(".json", "-x0x-failures.json"),
                 "html": report + ".html",
             }
-            os.makedirs(paths[leaf])
+            (plant or (lambda path, _root: os.makedirs(path)))(paths[leaf], root)
             manifest = {"run_id": "R", "host": "generic",
                         "security_mode": "standard", "flags": {"fail_on": "high"}}
 
@@ -335,10 +339,16 @@ class TestSynthesizePhase(unittest.TestCase):
             refusal = str(caught.exception)
             self.assertIn("rc=4", refusal)
             self.assertIn("synthesize: artifact path refused:", refusal)
-            self.assertIn("cannot %s artifact" % action, refusal)
+            if action:
+                self.assertIn("cannot %s artifact" % action, refusal)
+            if detail:
+                self.assertIn(detail, refusal)
             self.assertIn(os.path.basename(paths[leaf]), refusal)
             self.assertNotIn("Traceback", refusal)
-            self.assertTrue(os.path.isdir(paths[leaf]), "the refused leaf was modified")
+            self.assertTrue(
+                (still_planted or os.path.isdir)(paths[leaf]),
+                "the refused leaf was modified",
+            )
             self.assertEqual(
                 {name: os.path.isfile(path) for name, path in paths.items()},
                 expected_files,
@@ -350,28 +360,88 @@ class TestSynthesizePhase(unittest.TestCase):
             )
 
     def test_real_child_refuses_a_directory_at_the_report_path(self):
-        self._assert_real_child_refuses_artifact_directory(
+        self._assert_real_child_refuses_artifact_leaf(
             "report", "publish",
             {"report": False, "x0x": False, "failure": False, "html": False},
         )
 
     def test_real_child_refuses_a_directory_at_the_x0x_path(self):
-        self._assert_real_child_refuses_artifact_directory(
+        self._assert_real_child_refuses_artifact_leaf(
             "x0x", "publish",
             {"report": True, "x0x": False, "failure": False, "html": False},
         )
 
     def test_real_child_refuses_a_directory_at_the_stale_failure_log_path(self):
-        self._assert_real_child_refuses_artifact_directory(
+        self._assert_real_child_refuses_artifact_leaf(
             "failure", "remove",
             {"report": True, "x0x": False, "failure": False, "html": False},
         )
 
     def test_real_child_refuses_a_directory_at_the_html_path(self):
-        self._assert_real_child_refuses_artifact_directory(
+        self._assert_real_child_refuses_artifact_leaf(
             "html", "write",
             {"report": True, "x0x": True, "failure": False, "html": False},
         )
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires POSIX FIFOs")
+    def test_real_child_refuses_a_fifo_at_the_html_path_without_blocking(self):
+        self._assert_real_child_refuses_artifact_leaf(
+            "html", "write",
+            {"report": True, "x0x": True, "failure": False, "html": False},
+            plant=lambda path, _root: os.mkfifo(path),
+            still_planted=lambda path: stat.S_ISFIFO(os.lstat(path).st_mode),
+        )
+
+    def test_real_child_refuses_a_dangling_html_symlink(self):
+        self._assert_real_child_refuses_artifact_leaf(
+            "html", None,
+            {"report": True, "x0x": True, "failure": False, "html": False},
+            plant=lambda path, root: os.symlink(os.path.join(root, "missing"), path),
+            still_planted=os.path.islink,
+            detail="escapes .panopticon",
+        )
+
+    def test_real_child_refuses_an_html_symlink_to_a_directory(self):
+        def plant(path, root):
+            target = os.path.join(root, "outside-directory")
+            os.mkdir(target)
+            os.symlink(target, path)
+
+        self._assert_real_child_refuses_artifact_leaf(
+            "html", None,
+            {"report": True, "x0x": True, "failure": False, "html": False},
+            plant=plant,
+            still_planted=os.path.islink,
+            detail="escapes .panopticon",
+        )
+
+    @unittest.skipIf(getattr(os, "geteuid", lambda: 0)() == 0,
+                     "root bypasses parent write permissions")
+    def test_real_child_refuses_a_read_only_report_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = os.path.realpath(directory)
+            pano = runio._pano(root)
+            os.makedirs(pano)
+            groups = runio._pano(root, "groups.json")
+            runio._write_json(groups, {"groups": []})
+            report = runio._report_out(root)
+            cmd = [
+                sys.executable, runio._script("synthesize.py"),
+                "--target", "probe", "--groups", groups, "--run-dir", pano,
+                "--out", report,
+            ]
+            os.chmod(pano, 0o500)
+            try:
+                proc = synthesize.child._run_child(
+                    cmd, review_root=root, phase="synthesize", timeout=30)
+            finally:
+                os.chmod(pano, 0o700)
+
+            self.assertEqual(proc.returncode, validate_schema_mod.ARTIFACT_INVALID)
+            self.assertIn("synthesize: artifact path refused:", proc.stderr)
+            self.assertIn("report.json", proc.stderr)
+            self.assertNotIn("Traceback", proc.stderr)
+            self.assertFalse(os.path.exists(report))
 
     def test_forwards_the_manifest_verify_cap_including_zero(self):
         def fake_run(cmd, **kw):

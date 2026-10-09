@@ -154,7 +154,11 @@ def open_w_nofollow(path):
     artifact, and more quietly so -- the `os.replace` that follows renames the
     LINK over the artifact, so a run that never noticed also loses the anchor."""
     confine_artifact_path(path)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    # O_NONBLOCK keeps an existing FIFO from waiting forever for a reader. The
+    # descriptor check rejects every non-regular leaf that can still be opened
+    # (for example a FIFO that already has a reader) before any bytes are sent.
+    flags = (os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+             | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0))
     try:
         fd = os.open(path, flags, 0o644)
     except OSError:
@@ -163,6 +167,12 @@ def open_w_nofollow(path):
             fd = os.open(path, flags, 0o644)
         else:
             raise
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise NonRegularFileError(errno.EINVAL, "not a regular file")
+    except Exception:
+        os.close(fd)
+        raise
     return os.fdopen(fd, "w", encoding="utf-8")
 
 

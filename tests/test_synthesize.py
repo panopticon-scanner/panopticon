@@ -282,6 +282,46 @@ class TestHtmlOut(unittest.TestCase):
                 content = fh.read()
                 self.assertIn("new", content)
 
+    def test_compare_mode_refuses_a_directory_at_the_html_path(self):
+        with tempfile.TemporaryDirectory() as d, _chdir(d), \
+                mock.patch.object(datetime_mod, "datetime", _FrozenDateTime):
+            findings = os.path.join(d, "findings.json")
+            report = os.path.join(d, "report.json")
+            with open(findings, "w", encoding="utf-8") as fh:
+                json.dump({"findings": []}, fh)
+            self.assertEqual(syn.main(["--out", report, findings]), 0)
+            html_out = os.path.join(d, "compare.html")
+            os.mkdir(html_out)
+
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                rc = syn.main([
+                    "--compare", report, report, "--html-out", html_out,
+                ])
+
+            self.assertEqual(rc, 4)
+            self.assertIn("synthesize: artifact path refused:", err.getvalue())
+            self.assertNotIn("Traceback", err.getvalue())
+            self.assertTrue(os.path.isdir(html_out))
+
+    def test_a_clean_run_repeats_the_same_artifact_bytes_and_status(self):
+        with tempfile.TemporaryDirectory() as d, _chdir(d), \
+                mock.patch.object(datetime_mod, "datetime", _FrozenDateTime):
+            findings = os.path.join(d, "findings.json")
+            report = os.path.join(d, "report.json")
+            with open(findings, "w", encoding="utf-8") as fh:
+                json.dump({"findings": []}, fh)
+            paths = (report, report.replace(".json", "-x0x.json"), report + ".html")
+
+            first_status = syn.main(["--out", report, findings])
+            first = {path: Path(path).read_bytes() for path in paths}
+            second_status = syn.main(["--out", report, findings])
+            second = {path: Path(path).read_bytes() for path in paths}
+
+            self.assertEqual((first_status, second_status), (0, 0))
+            self.assertEqual(first, second)
+            self.assertFalse(os.path.lexists(
+                report.replace(".json", "-x0x-failures.json")))
+
     def test_compare_missing_file_errors_cleanly(self):
         with tempfile.TemporaryDirectory() as d:
             valid = os.path.join(d, "valid.json")
