@@ -26,28 +26,39 @@ evidence exposed.
   text, which read those as one word (the round-1 seat's IdB.two, IdC.subst and MS.same rows,
   CLEAN while every parent runs them) and one word as many wherever a marker's nonce reached the
   text (its Idnonce rows, reported at the cap though nothing runs). A `-c` or an `eval` string is
-  no lifted text: its parse is keyed by its text, the nonces out and each lifted body kept, so two
-  byte-identical program strings at two places read alike -- a named limit with no known reach
-  (the seat's 8 rows and a capped hunt's 10 pairs report on `main` as here). A fourth such word
-  reads as a command the guard cannot read, reported wherever it runs, a download or none, so the
-  folds stop at 8. The price: that cap (none in the seats' sets), and, since every assignment of
-  halves is read, a mixed reading no assignment of the step's names takes -- `${X:+curl …} |
-  ${X:+/usr/bin/env true} sh`, one name in both words, reports though bash runs neither mix (the
-  seat's 618 class rows and 408 fuzz rows and its two-step MS.same-pipe; none in the seats'
-  standing sets). The two folds the union read come first, as before, so nothing it reported reads
-  CLEAN: across the #2885 round-4 seat's rows and their twins, round 3's own and theirs, the AX,
-  P0, F6 and P4 rows, the round-3 kit's 20,533 and #2856's hunts 33-53, the only changes against
-  `main` are those 70 cells, beside #2911's rows (S08n, S08p, hunt 37's `*-od`), which differ
-  between two runs of `main` too; and on the round-1 seat's rows the IdB.two, IdC.subst and
-  MS.same rows report, its Idnonce rows read CLEAN as `main` reads them, and a capped hunt's six
-  pairs of one heredoc or here-string read by two shells report. Out of lane, granted by the
-  coordinator, each net zero: `workflow_guard.job_defects` hands each step's index to its parse
-  (`placed`), and `workflow_programs.stdin_scripts` keeps the place of the heredoc it reads
-  (`at_place`). The cost, `job_defects` against `main` in one process: 2.1x on the 39 rows of
-  hunts 45-53 that hold two such words, flat where one or none, 4.2x for three and past them, and
-  1.02x on the #2885 seat's 1,945 rows. Two such words in one stage stay #2856's named limit: only
-  a stage's first `${…}` word is read whole. `shell_reader._stage`'s docstring is rewrapped at 96
-  columns, every word kept, for the line that stamps the place.
+  no lifted text: it reaches its parse by its text alone -- its parent's token, and
+  `workflow_programs._parsed`, a cache keyed by the text -- so its parse is keyed by that text,
+  the nonces out and each lifted body kept, and two byte-identical program strings at two places
+  are read as one word. That is the named limit (#2953, the hand-off of a program string's place,
+  which crosses the programs lane): a payload only the mixed reading of two such strings runs
+  reads CLEAN, as on `main`. On a capped hunt of 180 rows with 8-parent truth -- 9 spellings (`sh
+  -c`, `bash -c`, `eval`, single- and double-quoted, an escaped `$`, `env sh -c`, `bash -lc`, `sh
+  -ec`) by 5 program shapes -- all 45 identical pairs read CLEAN under every setting (225 cells)
+  while every parent runs them, here and on `main`; with one blank more in the second string each
+  pair reports (CLEAN on `main`), one copy alone only fetches and reads CLEAN, the benign pairs
+  read CLEAN, and no cell reads worse than `main`. An `eval` whose words bash joins is the same
+  class. A string that ends in the download's name reports as one copy, on `main` too
+  (`workflow_operands.covers` reads it as a mention), which is why the round-1 seat's 8 rows and a
+  first hunt's 10 pairs showed no reach. A fourth such word reads as a command the guard cannot
+  read, reported wherever it runs, a download or none, so the folds stop at 8. The price: that cap
+  (none in the seats' sets), and, since every assignment of halves is read, a mixed reading no
+  assignment of the step's names takes -- `${X:+curl …} | ${X:+/usr/bin/env true} sh`, one name in
+  both words, reports though bash runs neither mix (the seat's 618 class rows and 408 fuzz rows
+  and its two-step MS.same-pipe; none in the seats' standing sets). The two folds the union read
+  come first, as before, so nothing it reported reads CLEAN: across the #2885 round-4 seat's rows
+  and their twins, round 3's own and theirs, the AX, P0, F6 and P4 rows, the round-3 kit's 20,533
+  and #2856's hunts 33-53, the only changes against `main` are those 70 cells, beside #2911's rows
+  (S08n, S08p, hunt 37's `*-od`), which differ between two runs of `main` too; and on the round-1
+  seat's rows the IdB.two, IdC.subst and MS.same rows report, its Idnonce rows read CLEAN as
+  `main` reads them, and a capped hunt's six pairs of one heredoc or here-string read by two
+  shells report. Out of lane, granted by the coordinator, each net zero:
+  `workflow_guard.job_defects` hands each step's index to its parse (`placed`), and
+  `workflow_programs.stdin_scripts` keeps the place of the heredoc it reads (`at_place`). The
+  cost, `job_defects` against `main` in one process: 2.1x on the 39 rows of hunts 45-53 that hold
+  two such words, flat where one or none, 4.2x for three and past them, and 1.02x on the #2885
+  seat's 1,945 rows. Two such words in one stage stay #2856's named limit: only a stage's first
+  `${…}` word is read whole. `shell_reader._stage`'s docstring is rewrapped at 96 columns, every
+  word kept, for the line that stamps the place.
 - **Workflow reader reads every action a `find` runs (#2918).** `curl … -o tool` ⏎ `find
   /dev/null -exec true \; -exec sh /dev/fd/3 \; 3<> tool` ran the download and read CLEAN: the
   guard read one of `find`'s actions, the first of `-exec`, `-execdir`, `-ok` and `-okdir` in that
