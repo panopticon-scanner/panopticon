@@ -1377,10 +1377,12 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
             with open(fp, "w", encoding="utf-8") as fh:
                 json.dump({"findings": [finding]}, fh)
             out = os.path.join(d, "report.json")
+            child_env = dict(os.environ)
+            child_env["PYTHONPATH"] = str(Path(syn.__file__).resolve().parents[1])
             completed = subprocess.run(
-                ["python3", str(Path(syn.__file__).resolve()),
+                ["python3", "-m", "scripts.synthesize",
                  "--target", "src", "--out", out, fp],
-                cwd=d, capture_output=True, text=True, check=False,
+                cwd=d, env=child_env, capture_output=True, text=True, check=False,
             )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             failure_path = out.replace(".json", "-x0x-failures.json")
