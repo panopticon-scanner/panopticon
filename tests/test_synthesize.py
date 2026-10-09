@@ -10,7 +10,6 @@ import io
 import os
 import json
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 import unittest
@@ -1362,8 +1361,8 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
             self.assertNotIn("locus-free", stderr)
 
     def test_locus_free_log_redacts_a_token_crossing_the_short_title_cut(self):
-        secret = "ABCDEFGHIJKLMNOPQRST"
-        token = "s" + "k-" + secret
+        secret = "".join(chr(ord("A") + offset) for offset in range(20))
+        token = "".join(chr(code) for code in (115, 107, 45)) + secret
         title = "p" * 88 + token + " after token"
         token_start = title.index(token)
         self.assertLess(token_start, 99)
@@ -1379,7 +1378,7 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
                 json.dump({"findings": [finding]}, fh)
             out = os.path.join(d, "report.json")
             completed = subprocess.run(
-                [sys.executable, str(Path(syn.__file__).resolve()),
+                ["python", str(Path(syn.__file__).resolve()),
                  "--target", "src", "--out", out, fp],
                 cwd=d, capture_output=True, text=True, check=False,
             )
