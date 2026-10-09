@@ -1914,8 +1914,9 @@ class TestAPathTheStepLinkedOrMovedToIsItsDescriptor(unittest.TestCase):
     state makes resolve to a descriptor carried nothing -- a name it linked (`ln -s /dev/fd/3 x` then
     `sh 3<> tool <x 3<&-`) or a relative path after its `cd` (`cd /dev` then `<fd/3`) -- while every
     parent of the link forms, and of `cd /dev` and `cd /`, runs the file, and `main` reports the `N<`
-    twin. The reader now reads the operand where the step's links and `cd` put it
-    (`shell_command.track`, `resolved`)."""
+    twin. The reader now reads the operand where the step's links and `cd` may put it too, beside
+    where it stands as written (`shell_command.track`, `sources`): a record adds a reading and takes
+    none away (round 2)."""
 
     def test_each_link_the_seat_and_the_hunt_name_reports(self):
         # FL01, FL02, FL03, FL04 and FL06 (the #2885 round-4 seat; P0L01 and P0L02 are FL01's and
@@ -1966,17 +1967,104 @@ class TestAPathTheStepLinkedOrMovedToIsItsDescriptor(unittest.TestCase):
                 with self.subTest(use=use, shell=shell):
                     self.assertEqual(runs, reported(use + "echo done\n", shell))
 
-    def test_where_the_steps_links_and_cd_put_a_path(self):
+    # Round 2 (the round-1 seat's B1): a record adds a reading and takes none away. Each row holds
+    # the download on fd 3 and reads fd 3's own path, which `main` reports; in front of it stands a
+    # link or a move the shell never makes, or not as the reader read it, which round 1 let rewrite
+    # the read, so it read CLEAN while every parent runs the download.
+    HELD = "sh 3<> tool <%s 3<&-"
+    DEEP = "/srv/a/b/c/d/e/f/g"         # deeper than the climb below, so no join of the two is `/dev`
+    CLIMB = "../../../../../dev/fd/3"   # `/dev/fd/3`, as `main` reads it from any directory
+
+    def test_a_link_the_shell_does_not_make_clears_nothing(self):
+        # The seat's LN rows, a class a line: the link's name is a descriptor path or a prefix of one,
+        # which `ln` cannot make (name-fd, name-prefix; hard); the `ln` never runs (a branch, `||`, a
+        # function never called, `&&`, a `case` arm); the reader takes another word for the name (`-t`,
+        # several targets, an option's value); the name is reached by a climb. And the controls.
+        read = self.HELD % "/dev/fd/3"
+        for link in ("ln -s /etc/hostname /dev/fd/3 || true", "ln -s /etc/hostname /dev/fd || true",
+                     "ln -s /etc/hostname /dev || true", "ln /etc/hostname /dev/fd/3 || true",
+                     "if false; then ln -s /etc/hostname /dev/fd/3; fi", "true || ln -s /etc/hostname /dev/fd/3",
+                     "f() { ln -s /etc/hostname /dev/fd/3; }", "[ -e /nonexistent ] && ln -s /etc/hostname /dev/fd/3",
+                     "case x in y) ln -s /etc/hostname /dev/fd/3 ;; esac", "mkdir -p d\nln -s -t d /dev/fd/3",
+                     "mkdir -p d\nln -st d /dev/fd/3", "mkdir -p d\nln -s /dev/fd/9 /dev/fd/3 d", "ln -S .bak -s /dev/fd/3 x",
+                     "echo ln -s /etc/hostname /dev/fd/3", "true"):
+            for shell in SHELLS:
+                with self.subTest(link=link, shell=shell):
+                    self.assertTrue(reported(GET + link + "\n" + read + "\necho done\n", shell))
+        climb = "ln -s /etc/hostname ../../../../../dev || true\n" + self.HELD % self.CLIMB
+        self.assertTrue(reported(GET + climb + "\necho done\n"))
+
+    def test_a_move_the_shell_does_not_make_clears_nothing(self):
+        # The seat's CM rows, a class a line: a `cd` that stays in a child -- a subshell, a pipeline
+        # stage, a function never called, a branch, a loop, a background job; one that fails, or that a
+        # wrapper runs; one undone (`popd`); and one whose real directory is not the path the reader
+        # joins -- a symlinked directory, `~user`, `HOME=…`. And the controls.
+        deep, read = self.DEEP, self.HELD % self.CLIMB
+        for move in ("(cd %s)", "(cd %s && ls > /dev/null)", "cd %s | cat", "f() { cd %s; }", "if false; then cd %s; fi",
+                     "true || cd %s", "case x in y) cd %s ;; esac", "while false; do cd %s; done", "for d in; do cd %s; done",
+                     "cd %s &\nwait", "cd /nonexistent%s || true", "cd %s extra || true", "sudo cd %s || true",
+                     "env cd %s || true", "pushd %s > /dev/null\npopd > /dev/null", "cd %s\ncd - > /dev/null", "true # %s"):
+            for shell in SHELLS:
+                with self.subTest(move=move, shell=shell):
+                    self.assertTrue(reported(GET + move % deep + "\n" + read + "\necho done\n", shell))
+        get, read = "curl -fsSLo /tmp/tool %stool\n" % URL, "sh 3<> /tmp/tool <../dev/fd/3 3<&-"
+        for move in ("cd /var/run", "cd ~sys", "HOME=/usr\ncd", "cd /usr"):
+            for shell in SHELLS:
+                with self.subTest(move=move, shell=shell):
+                    self.assertTrue(reported(get + move + "\n" + read + "\necho done\n", shell))
+
+    def test_every_link_and_every_move_recorded_is_a_reading(self):
+        # The price of knowing no `ln` or `cd` to have run: a link later written over or removed, and
+        # a directory the step has left again or entered in a subshell, still stand for a later path.
+        get = "curl -fsSLo /tmp/tool %stool\n" % URL
+        for use in ("ln -s /dev/fd/3 x\nln -sf /etc/hostname x\nsh 3<> /tmp/tool <x 3<&-",
+                    "ln -s /dev/fd/3 x\nrm x\nsh 3<> /tmp/tool <x 3<&-", "cd /dev\ncd /tmp\nsh 3<> /tmp/tool <fd/3 3<&-",
+                    "(cd /dev)\nsh 3<> /tmp/tool <fd/3 3<&-", "ln -s /dev/fd/3 x\nln -s /dev/fd/4 y\nsh 3<> /tmp/tool 4<> other <x 3<&- 4<&-"):
+            with self.subTest(use=use):
+                self.assertTrue(reported(get + use + "\necho done\n"))
+
+    def test_a_here_strings_text_is_no_path(self):
+        # `sh <<< x` hands the shell the text `x`, not the file: a link or a `cd` adds no reading of it
+        # (round 1 read each of these as the pipe's reader; nothing runs the download). A path does.
+        pipe = "curl -fsSL %si.sh | sh " % URL
+        for use in ('cd "$D"\n' + pipe + "<<< 'echo hi'", "cd /dev\n" + pipe + "<<< stdin", "ln -s /dev/stdin x\n" + pipe + "<<< x"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertFalse(reported(use + "\necho done\n", shell))
+        self.assertTrue(reported("ln -s /dev/stdin x\n" + pipe + "< x\necho done\n"))
+
+    def test_what_the_steps_links_and_cd_may_make_of_a_path(self):
         import shell_command
         import shell_tokens
-        context = shell_tokens._Parse("")
-        for text in ("ln -s /dev/fd/3 x", "ln -sf /dev/fd fds", "ln -s /dev", "cd /proc/self", "cd fd"):
-            shell_command.track(context, shell_reader.statements(text + "\n")[0].stages[0])
-        self.assertEqual({"x": "/dev/fd/3", "fds": "/dev/fd", "dev": "/dev"}, context.links)
-        self.assertEqual("/proc/self/fd", context.cwd)
-        self.assertEqual(["/dev/fd/3", "/dev/fd/9", "/dev/fd/4", "/proc/self/fd/7", "/etc/x"],
-                         [shell_command.resolved(word, context) for word in ("x", "fds/9", "dev/fd/4", "7", "/etc/x")])
+        read = shell_reader.input_alias_fd
 
+        def tracked(*lines):
+            context = shell_tokens._Parse("")
+            for text in lines:
+                shell_command.track(context, shell_reader.statements(text + "\n")[0].stages[0])
+            return context
+        # Each target a name was given is kept, the first beside the one that wrote it over.
+        links = tracked("ln -s /dev/fd/3 x", "ln -sf /dev/fd fds", "ln -s /dev", "ln -sf /etc/hostname x")
+        self.assertEqual({"x": ["/dev/fd/3", "/etc/hostname"], "fds": ["/dev/fd"], "dev": ["/dev"]}, links.links)
+        # As written first, then each other descriptor a link may give the word.
+        self.assertEqual([(None, "3"), (None, "9"), (None, "4"), (None,), ("5",)],
+                         [shell_command.sources(word, links, read) for word in ("x", "fds/9", "dev/fd/4", "/etc/x", "/dev/fd/5")])
+        # One descriptor where the paths agree on it, `?` -- every file held -- where they are two.
+        self.assertEqual(["3", "5", None], [shell_command.carrier(word, links, read) for word in ("x", "/dev/fd/5", "/etc/x")])
+        links.links["/dev/fd/5"] = ["/dev/fd/6"]
+        self.assertEqual("?", shell_command.carrier("/dev/fd/5", links, read))
+        # Each directory a `cd` named is kept, a relative one below each before it.
+        moves = tracked("cd /dev", "cd fd", "cd /tmp")
+        self.assertEqual(["/dev", "/dev/fd", "/tmp"], moves.cwds)
+        self.assertEqual([(None, "7"), (None, "3", "?"), ("5",)],
+                         [shell_command.sources(word, moves, read) for word in ("7", "fd/3", "/dev/fd/5")])
+        # The places kept are the latest `_PLACES`, and a word with more paths reaches every file held.
+        many = tracked(*("cd /d%d" % n for n in range(40)))
+        self.assertEqual((shell_command._PLACES, "$PWD", "/d39"), (len(many.cwds), many.cwds[0], many.cwds[-1]))
+        self.assertEqual((None, "?"), shell_command.sources("fd/3", many, read))     # any place the step left
+        self.assertEqual((None,), shell_command.sources("fd/3", None, read))         # a here-string's text
+        many.links = {"x": ["/t%d" % n for n in range(shell_command._PLACES + 1)]}
+        self.assertEqual((None, "?"), shell_command.sources("x", many, read))
 
 class TestEachGateOfTheWholeWordHasAVerdict(unittest.TestCase):
     """PR #2856 round 9, the round-8 verdict's F4: each test that confines the whole reading to a

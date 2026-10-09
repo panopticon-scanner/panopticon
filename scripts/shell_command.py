@@ -440,45 +440,80 @@ def _unread(argv):
 
 
 def track(context, stage):
-    """`stage`, recording in `context` what it does to the paths of the stages read after it (#2919): a
-    link it makes (`ln -s TARGET NAME`, `-sf`; NAME the target's basename where there is none) stands
-    for its target -- a hard one to a descriptor path cannot cross into `/proc`, and one to a file
-    resolves to that file -- and a `cd` or `pushd` moves every relative path into its directory. In the order `shell_reader.statements` reads them -- one in a branch, a loop or a
-    subshell too, failing closed -- and a name or a directory a value decides is every one
-    (`resolved`)."""
+    """`stage`, recording in `context` what it may do to the paths of the stages read after it (#2919): a
+    link it makes (`ln -s TARGET NAME`, `-sf`; NAME the target's basename where there is none) may stand
+    for its target, and a `cd` or `pushd` may move every relative path into its directory. May: the
+    reader does not know that an `ln` or a `cd` runs, succeeds or lasts past a subshell, a branch or a
+    function, so each record is kept beside the ones before it, in the order `shell_reader.statements`
+    reads them, and adds a reading of a later path without taking one away (`sources`, round 2). A
+    name or a directory a value decides is every one."""
     argv = command(stage.argv)
     name = os.path.basename(argv[0]) if argv else ""
     words = [word for word in argv[1:] if word == "-" or not word.startswith("-")]
     if name == "ln" and words:
         link = words[1] if len(words) > 1 else os.path.basename(words[0].rstrip("/"))
         link = "" if dynamic(link, has_substitution) else os.path.normpath(link)
-        context.links[link] = words[0]
+        context.links.setdefault(link, []).append(words[0])
     elif name in ("cd", "pushd"):
         place = words[0] if words else "~"
         place = "$OLDPWD" if place == "-" else place
-        context.cwd = place if place.startswith(("/", "~", "$")) or dynamic(place, has_substitution) else (
-            os.path.join(context.cwd, place) if context.cwd else "")
+        if place.startswith(("/", "~", "$")) or dynamic(place, has_substitution):
+            context.cwds.append(place)
+        else:                                   # below each place the step may stand in
+            context.cwds.extend([os.path.join(cwd, place) for cwd in context.cwds])
+        if len(context.cwds) > _PLACES:         # past them, any place: a directory a value decides
+            context.cwds[:] = ["$PWD", *context.cwds[1 - _PLACES:]]
     return stage
 
 
-def resolved(word, context):
-    """`word` where the step's links and `cd` put it (`track`, #2919), for `shell_reader.input_alias_fd`:
-    a name it linked, or a path below one, as the link's target; a relative one in the directory a `cd`
-    moved the step to -- a `$` word where a value decides the link's name or the directory, as
-    `input_alias_fd` reads a word a value decides."""
-    if not (context.links or context.cwd) or dynamic(word, has_substitution):
-        return word
+# The places a step may stand in, and the paths a word may reach, that the reader keeps: past them
+# the oldest places read as one a value decides, and a word reaches every file held (`sources`).
+_PLACES = 16
+
+
+def _reached(word, context):
+    """The other paths `word` may name where the step's links and `cd`s took effect (`track`): a name it
+    linked, or a path below one, as each target the link was given; then each relative one in each
+    directory a `cd` may have moved the step to -- a `$` word where a value decides a link's name, as
+    `shell_reader.input_alias_fd` reads a word a value decides."""
+    if not context or not (context.links or context.cwds) or dynamic(word, has_substitution):
+        return []
     path = os.path.normpath(word)
-    for link, target in context.links.items():
-        if link and (path == link or path.startswith(link + "/")):
-            path = target + path[len(link):]
-            break
-    else:
-        if "" in context.links and not path.startswith("/"):
-            return derived("$" + path, word)
-    if context.cwd and not path.startswith("/"):
-        path = context.cwd.rstrip("/") + "/" + path
-    return derived(path, word) if path != word else word
+    paths = [target + path[len(link):] for link, targets in context.links.items() for target in targets
+             if link and (path == link or path.startswith(link + "/"))]
+    if "" in context.links and not path.startswith("/"):
+        paths.append("$" + path)
+    paths += [cwd.rstrip("/") + "/" + relative for relative in (path, *paths) for cwd in context.cwds
+              if not relative.startswith(("/", "$"))]
+    return paths
+
+
+def sources(word, context, read):
+    """What `word`, the operand of an input redirection, may reach (#2919): `read` of it as written,
+    first -- `shell_reader.input_alias_fd`'s answer, which every reader keeps as `main` reads it --
+    then the answers that differ from it among the other paths the step's links and `cd`s may give
+    it (`_reached`), `?` where they are more than the reader keeps; with no `context`, a
+    here-string's text, as written alone. A record adds a reading and takes none away (round 2):
+    the reader knows no `ln` or `cd` to have run."""
+    first = read(word)
+    more: list[str] = []
+    reached = _reached(word, context)
+    for path in reached[:_PLACES]:
+        answer = read(derived(path, word))
+        if answer not in (None, first, *more):
+            more.append(answer)
+    if len(reached) > _PLACES and "?" not in (first, *more):
+        more.append("?")
+    return (first, *more)
+
+
+def carrier(word, context, read):
+    """`sources` as the one descriptor whose holdings a redirection carries: the one `word` reaches
+    as written, another a link or a `cd` may give it, or `?` -- every file held -- where they are
+    two."""
+    first, *more = sources(word, context, read)
+    reached = [answer for answer in (first, *more) if answer]
+    return "?" if "?" in reached or len(reached) > 1 else reached[0] if reached else first
 
 
 def unresolved_wrapper(argv):
