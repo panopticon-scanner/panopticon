@@ -180,14 +180,36 @@ def envelope_shape(entry):
     return ENVELOPE_SHAPES.get(role_of(entry)) or "a single JSON object"
 
 
+def _redact_reason_value(value):
+    """A JSON-ish value with every string, including dict keys, redacted.
+
+    A refusal reason is diagnostic text, not a structured artifact: even UUIDs
+    under identity-named keys must be masked here. Redact each original string
+    before `repr` can turn a boundary character into a backslash escape.
+    """
+    if isinstance(value, str):
+        return redact.redact(value)
+    if isinstance(value, list):
+        return [_redact_reason_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_reason_value(item) for item in value)
+    if isinstance(value, dict):
+        return {_redact_reason_value(key): _redact_reason_value(item)
+                for key, item in value.items()}
+    return value
+
+
 def _reason_repr(value):
     """A reply-derived value safe to place in a bounded refusal reason.
 
     `repr` keeps newlines escaped so an agent cannot forge diagnostic lines.
-    Redaction must see the complete representation before the display cap is
-    applied: cutting first can leave a credential's still-sensitive prefix.
+    Redaction first sees every complete string in the original value, before
+    `repr` rewrites token boundaries and before the diagnostic scan horizon.
+    The diagnostic pass then drops incomplete private keys from the resulting
+    representation before applying the display cap.
     """
-    return redact.redact_diagnostic(repr(value), REASON_CAP)
+    safe_value = _redact_reason_value(value)
+    return redact.redact_diagnostic(repr(safe_value), REASON_CAP)
 
 
 def last_rejection(run_folder, entry_id):
@@ -337,9 +359,10 @@ def retain_rejected(run_folder, entry, text, reason, *, kind):
     kept, truncated = _safe_reply(body)
     attempt = _next_attempt(directory, entry_id)
     record = {"schema_version": 1, "entry_id": entry_id, "attempt": attempt, "kind": kind,
-              # D10 F3: the reason is built by interpolating REPLY content, so
-              # it gets the same masking the reply does. Redacted and bounded
-              # at the source, not here, so every consumer sees the same string.
+              # D10 F3: a refusal's reply-derived value is redacted and bounded
+              # where its reason is built. Mask the complete reason again here:
+              # launch-failure reasons do not pass through those builders, and
+              # retained evidence keeps the same defense-in-depth as the reply.
               "reason": redact.redact(reason),
               # the stamp format the ledger's own rows carry, so the two sort
               # against each other as plain strings.
@@ -449,10 +472,11 @@ def accepts(entry, data):
         if not (isinstance(data, dict) and isinstance(data.get("verdicts"), list)):
             return False, "a verdict bundle must carry a `verdicts` list"
         return _verify_accepts(entry, data)
-    verdict = str(data.get("verdict", "")).upper() if isinstance(data, dict) else ""
+    raw_verdict = data.get("verdict", "") if isinstance(data, dict) else ""
+    verdict = str(raw_verdict).upper()
     if verdict not in evidence.VERDICT_VALUES:
         return False, "verdict %s is not one of %s" % (
-            _reason_repr(verdict), sorted(evidence.VERDICT_VALUES))
+            _reason_repr(raw_verdict), sorted(evidence.VERDICT_VALUES))
     return True, ""
 
 

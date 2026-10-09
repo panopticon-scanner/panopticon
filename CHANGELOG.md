@@ -12,8 +12,10 @@ evidence exposed.
   reason, and the former `%.200r` formatting cut the value before downstream redaction saw it.
   Whole credentials reached the immediate refusal and stderr, while credentials crossing that
   boundary left sensitive prefixes in those surfaces, the rejection record and the ledger. Both
-  reasons now represent the complete value, redact it, and only then take the bounded excerpt;
-  the retained reply and retry prompt remain redacted as well.
+  reasons now redact every original string (including nested keys and values) before representation
+  can rewrite token boundaries, then apply the incomplete-key guard and bounded excerpt. The
+  verdict reason uses the reply's value rather than its upper-cased comparison copy; the retained
+  reply and retry prompt remain redacted as well.
 - **Workflow reader reads every action a `find` runs (#2918).** `curl … -o tool` ⏎ `find
   /dev/null -exec true \; -exec sh /dev/fd/3 \; 3<> tool` ran the download and read CLEAN: the
   guard read one of `find`'s actions, the first of `-exec`, `-execdir`, `-ok` and `-okdir` in that

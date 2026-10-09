@@ -67,6 +67,132 @@ class TestRoleOf(unittest.TestCase):
         self.assertEqual(sorted(set(cases.values()) - {None}), sorted(persist.ROLES))
 
 
+class TestReplyReasonRedaction(unittest.TestCase):
+    """Reply values are safe before a refusal reason displays their repr."""
+
+    SECRET = "ghp_" + "z" * 36
+
+    @staticmethod
+    def _stamp_reason(role, key, value, advertised):
+        if role == "review-cell":
+            entry = _entry(
+                "/r/.panopticon/runs/t/findings-app-SEC.json",
+                run_id="RID", group="app", domain="SEC")
+            body = {
+                "findings": [],
+                "_panopticon": {"run_id": "RID", "group": "app",
+                                "domain": "SEC"},
+            }
+        else:
+            entry = _entry(
+                "/r/.panopticon/runs/t/verdicts/verdicts-app-SEC.json",
+                run_id="RID", group="app", domain="SEC", stage="primary")
+            body = {
+                "verdicts": [],
+                "_panopticon": {"run_id": "RID", "group": "app",
+                                "domain": "SEC", "stage": "primary"},
+            }
+        if advertised:
+            entry["output_schema"] = "/r/schemas/role.json"
+        body["_panopticon"][key] = value
+        ok, reason = persist.accepts(entry, body)
+        if ok:
+            raise AssertionError("the contradictory stamp was accepted")
+        return reason
+
+    @staticmethod
+    def _verdict_reason(value, advertised):
+        entry = _entry("/r/.panopticon/runs/t/verdicts/q-0001.json")
+        if advertised:
+            entry["output_schema"] = "/r/schemas/advisor.json"
+        ok, reason = persist.accepts(entry, {"verdict": value})
+        if ok:
+            raise AssertionError("the invalid verdict was accepted")
+        return reason
+
+    def _assert_secret_is_masked(self, reason, secret=None):
+        secret = secret or self.SECRET
+        self.assertIn("[REDACTED", reason)
+        self.assertNotIn(secret.casefold(), reason.casefold())
+        self.assertLess(len(reason), 400)
+        self.assertEqual(1, len(reason.splitlines()))
+
+    def test_every_reason_site_is_pinned_across_entry_dimensions(self):
+        # Round 2 B5: role, output_schema, stamp key and value type are inputs,
+        # not incidental details. Each axis has supported a one-line condition
+        # that leaked while the old two pins and the full suite stayed green.
+        keys_by_role = {
+            "review-cell": ("run_id", "group", "domain"),
+            "verify-cell": ("run_id", "group", "domain", "stage"),
+        }
+        for role, keys in keys_by_role.items():
+            for advertised in (False, True):
+                for key in keys:
+                    for structured in (False, True):
+                        with self.subTest(site="stamp", role=role, key=key,
+                                          output_schema=advertised,
+                                          structured=structured):
+                            value = ({self.SECRET: [self.SECRET]}
+                                     if structured else self.SECRET)
+                            reason = self._stamp_reason(
+                                role, key, value, advertised)
+                            self._assert_secret_is_masked(reason)
+        for advertised in (False, True):
+            for structured in (False, True):
+                with self.subTest(site="verdict", output_schema=advertised,
+                                  structured=structured):
+                    value = ({self.SECRET: [self.SECRET]}
+                             if structured else self.SECRET)
+                    reason = self._verdict_reason(value, advertised)
+                    self._assert_secret_is_masked(reason)
+
+    def test_strings_are_redacted_before_repr_escapes_their_boundaries(self):
+        # Round 2 B2: repr turns whitespace into backslash escapes. Redacting
+        # the representation therefore hides the boundary from the UUID and
+        # bearer rules; both are recognised on the original string.
+        uuid = "123e4567-e89b-12d3-a456-426614174000"
+        bearer_token = "A" * 24
+        cases = (
+            ("escaped-uuid", "\n" + uuid, uuid),
+            ("escaped-bearer", "Bearer\t" + bearer_token, bearer_token),
+        )
+        for label, value, secret in cases:
+            with self.subTest(label=label):
+                self._assert_secret_is_masked(
+                    persist._reason_repr(value), secret)
+
+    def test_strings_are_redacted_before_the_diagnostic_scan_horizon(self):
+        # Round 2 B3: the first giant token collapses to one marker. Before
+        # that collapse, the second token straddles the 4 MiB scan horizon;
+        # cutting there leaves a recognisable prefix beside the first marker.
+        scan_limit = 4 * 1024 * 1024
+        prefix_len = 13
+        first = "ghp_" + "A" * (scan_limit - prefix_len - 6)
+        value = first + " " + self.SECRET
+        reason = persist._reason_repr(value)
+        self.assertIn("[REDACTED_TOKEN]", reason)
+        self.assertNotIn(
+            self.SECRET[:prefix_len].casefold(), reason.casefold())
+        self.assertLessEqual(len(reason), persist.REASON_CAP)
+
+    def test_incomplete_private_keys_use_diagnostic_redaction_at_both_sites(self):
+        # Round 2 B4: plain redact plus a cut misses a key with no END marker.
+        # Both callers must retain redact_diagnostic's dangling-header guard.
+        body_line = "A" * 64
+        value = pem_begin("") + "\n" + body_line
+        cases = (
+            ("stamp", self._stamp_reason(
+                "review-cell", "group", value, False)),
+            ("verdict", self._verdict_reason(value, False)),
+        )
+        for site, reason in cases:
+            with self.subTest(site=site):
+                self.assertIn("[REDACTED_PRIVATE_KEY]", reason)
+                self.assertNotIn(body_line[:32], reason)
+                self.assertLess(len(reason), 400)
+                self.assertEqual(1, len(reason.splitlines()))
+
+
 class TestWriteReply(unittest.TestCase):
     def setUp(self):
         self.d = os.path.realpath(tempfile.mkdtemp())
