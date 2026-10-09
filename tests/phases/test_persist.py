@@ -201,9 +201,11 @@ class TestWriteReply(unittest.TestCase):
         entry = _entry(self._out("findings-app-SEC.json"), host="codex", run_id="RID",
                        group="app", domain="SEC")
         ok, reason = persist.write_reply(
-            entry, json.dumps({"findings": [{"note": "x" * 140 + secret}]}))
+            entry, json.dumps({"findings": [{"note": "x" * 154 + secret}]}))
         self.assertFalse(ok)
-        self.assertIn("[REDACTED_TOKEN]", reason)
+        # The reason cap can cut the replacement marker, but must never cut
+        # the raw token into a prefix too short for the redactor to recognise.
+        self.assertIn("[REDACTED_", reason)
         self.assertNotIn("ghp_", reason)
         self.assertNotIn(secret[:13], reason)
         self.assertFalse(os.path.exists(entry["out_file"]))

@@ -123,8 +123,8 @@ class TestRefusedRepliesAreRetained(LoopCase):
         # quote before redaction can cut a token into an unrecognisable prefix;
         # printing the unredacted reason also leaks a whole token. Exercise
         # both positions through the loop's real persistence/recording seam.
-        for padding in (0, 154):
-            with self.subTest(padding=padding):
+        for padding, second_error in ((0, False), (154, False), (70, True)):
+            with self.subTest(padding=padding, second_error=second_error):
                 d, _floor = self._repo()
                 run_dir = os.path.join(d, ".panopticon", "runs", "schema-refusal")
                 os.makedirs(run_dir)
@@ -132,8 +132,13 @@ class TestRefusedRepliesAreRetained(LoopCase):
                          "out_file": os.path.join(run_dir, "findings-app-SEC.json"),
                          "run_id": "RID", "group": "app", "domain": "SEC"}
                 secret = "ghp_" + "Z" * 36
-                reply = json.dumps(
-                    {"findings": [{"note": "x" * padding + secret}]})
+                body = {"findings": [{"note": "x" * padding + secret}]}
+                if second_error:
+                    # The unknown root key sorts first; the token-bearing
+                    # finding is the SECOND quoted schema error. Every quoted
+                    # error must be redacted, not merely the first one.
+                    body["unexpected"] = "root"
+                reply = json.dumps(body)
                 result = base.RunResult(
                     entry_id=entry["id"], ok=True, text=reply, usage={}, cost_usd=None,
                     model="gpt-test", session_id="s", denials=[], error=None)
@@ -158,7 +163,8 @@ class TestRefusedRepliesAreRetained(LoopCase):
                     "retry": retry,
                 }
                 for name, text in surfaces.items():
-                    with self.subTest(padding=padding, surface=name):
+                    with self.subTest(padding=padding, second_error=second_error,
+                                      surface=name):
                         if padding == 0:
                             self.assertIn("[REDACTED_TOKEN]", text)
                         self.assertNotIn("ghp_", text)
