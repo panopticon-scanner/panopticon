@@ -22,27 +22,46 @@ evidence exposed.
   text that lifted it, a program a shell reads on its standard input at its heredoc's, and in that
   parse the order it was kept whole. So a text read again in a fold holds the same words, no nonce
   of the reader's splits one, and one spelling at two places is two words -- two equal
-  substitutions, two heredocs of one body, two steps of one text; round 1 keyed a parse by its
-  text, which read those as one word (the round-1 seat's IdB.two, IdC.subst and MS.same rows,
-  CLEAN while every parent runs them) and one word as many wherever a marker's nonce reached the
-  text (its Idnonce rows, reported at the cap though nothing runs). A `-c` or an `eval` string is
-  no lifted text: it reaches its parse by its text alone -- its parent's token, and
-  `workflow_programs._parsed`, a cache keyed by the text -- so its parse is keyed by that text,
-  the nonces out and each lifted body kept, and two byte-identical program strings at two places
-  are read as one word. That is the named limit (#2953, the hand-off of a program string's place,
-  which crosses the programs lane): a payload only the mixed reading of two such strings runs
-  reads CLEAN, as on `main`. On a capped hunt of 180 rows with 8-parent truth -- 9 spellings (`sh
-  -c`, `bash -c`, `eval`, single- and double-quoted, an escaped `$`, `env sh -c`, `bash -lc`, `sh
-  -ec`) by 5 program shapes -- all 45 identical pairs read CLEAN under every setting (225 cells)
-  while every parent runs them, here and on `main`; with one blank more in the second string each
-  pair reports (CLEAN on `main`), one copy alone only fetches and reads CLEAN, the benign pairs
-  read CLEAN, and no cell reads worse than `main`. An `eval` whose words bash joins is the same
-  class. A string that ends in the download's name reports as one copy, on `main` too
-  (`workflow_operands.covers` reads it as a mention), which is why the round-1 seat's 8 rows and a
-  first hunt's 10 pairs showed no reach. A fourth such word reads as a command the guard cannot
-  read, reported wherever it runs, a download or none, so the folds stop at 8. The price, CLEAN on
-  `main` and REPORT here though no parent runs, counted at this head on the round-1 seat's rows:
-  that cap (146 of its 20,000 fuzz rows), and, since every assignment of halves is read, a mixed
+  substitutions, two heredocs of one body, two steps of one text (a step's program strings aside:
+  the limit below); round 1 keyed a parse by its text, which read those as one word (the round-1
+  seat's IdB.two, IdC.subst and MS.same rows, CLEAN while the parents run them: all 16 runs, 12
+  for IdC.subst-proc) and one word as many wherever a marker's nonce reached the text (its Idnonce
+  rows, reported at the cap though nothing runs). A `-c` or an `eval` string is no lifted text: it
+  reaches its parse by its text alone -- its parent's token, and `workflow_programs._parsed`, a
+  cache keyed by the text -- so its parse is keyed by that text, less the reader's own nonce and
+  nothing else (`shell_tokens._keyed`, round 3: every nonce this process mints ends in a tag of
+  its own, so a word that may be a shell's program, read with its `$(…)` left as a marker, keeps
+  one key whatever nonce its parent minted, and text of the target's that is only shaped like a
+  marker stays in the key -- round 2 took every such text out, and read the round-2 seat's
+  D.shcd-litmark and D.evq-litmark pairs CLEAN while every parent runs them, REPORT at round 1).
+  And that text is the one `workflow_programs._script` hands the reader, in which a substitution
+  no printer spells is already written `$(...)`. So two program strings that read alike once each
+  such substitution is so written are one word: two identical strings at two places, and two that
+  differ only inside a `$(…)`, a backquote or a `<(…)` that stands in them. That is the named
+  limit (#2953, the hand-off of a program string's place, which crosses the programs lane): a
+  payload only the mixed reading of two such strings runs reads CLEAN, as on `main`. On a capped
+  hunt of 180 rows with 8-parent truth -- 9 spellings (`sh -c`, `bash -c`, `eval`, single- and
+  double-quoted, an escaped `$`, `env sh -c`, `bash -lc`, `sh -ec`) by 5 program shapes -- all 45
+  identical pairs read CLEAN under every setting (225 cells) while every parent runs them, here
+  and on `main`; with one blank more in the second string each pair reports (CLEAN on `main`), one
+  copy alone only fetches and reads CLEAN, the benign pairs read CLEAN, and no cell reads worse
+  than `main`. On a second, of 200 rows -- 8 ways of differing inside a substitution (a `$(…)`, a
+  backquote, a `<(…)`, a heredoc's body in one, its argument, one inside another, two of which one
+  differs, a `$(…)` against a backquote in its place) by 5 runners -- all 40 pairs that differ
+  only there read CLEAN under every setting, as their 40 identical twins do, while a parent runs
+  each (192 cells either way: all 16 runs in 36 of the 40, the other 4 a `<(…)` only bash reads),
+  here and on `main`; with one blank more outside the substitution all 40 report (CLEAN on
+  `main`), and one copy alone and the pairs with nothing downloaded read CLEAN. The round-2 seat's
+  18 such pairs are this class; where two strings differ in what a printer spells, in an
+  arithmetic expansion or in a word of the substitution that holds the word itself, they are two
+  words and report. An `eval` whose words bash joins is the same class. A string that ends in the
+  download's name reports as one copy, on `main` too (`workflow_operands.covers` reads it as a
+  mention), which is why the round-1 seat's 8 rows and a first hunt's 10 pairs showed no reach. A
+  fourth such word reads as a command the guard cannot read, reported wherever it runs, a download
+  or none, so the folds stop at 8. The price, CLEAN on `main` and REPORT here though no parent
+  runs, counted at this head on the round-1 seat's rows: that cap (146 of its 20,000 fuzz rows;
+  one spelling written at four or more places is four words now and meets it, 37 of the round-2
+  seat's rows that round 1 read CLEAN), and, since every assignment of halves is read, a mixed
   reading no assignment of the step's names takes -- `${X:+curl …} | ${X:+/usr/bin/env true} sh`,
   one name in both words, reports though bash runs neither mix (618 of its 2,164 class rows, 408
   fuzz rows, and its two-step MS.same-pipe); neither is met in the seats' standing sets, and no
@@ -53,15 +72,17 @@ evidence exposed.
   (S08n, S08p, hunt 37's `*-od`), which differ between two runs of `main` too; and on the round-1
   seat's rows the IdB.two, IdC.subst and MS.same rows report, its Idnonce rows read CLEAN as
   `main` reads them, and a capped hunt's six pairs of one heredoc or here-string read by two
-  shells report. Out of lane, granted by the coordinator, each net zero:
+  shells report; on the round-2 seat's 1,774 rows the only change against round 2 is its two
+  litmark pairs, which report. Out of lane, granted by the coordinator, each net zero:
   `workflow_guard.job_defects` hands each step's index to its parse (`placed`), and
   `workflow_programs.stdin_scripts` keeps the place of the heredoc it reads (`at_place`). The
   cost, `job_defects` against `main` interleaved in one process, three passes on the final
   scripts: 1.9x to 2.4x on the 39 rows of hunts 45-53 that hold two such words, flat where one or
-  none, 3.3x to 4.7x for three and past them (the eight folds), and flat on the #2885 seat's 1,945
-  rows (0.93x and 0.97x, two passes). Two such words in one stage stay #2856's named limit: only a
-  stage's first `${…}` word is read whole. `shell_reader._stage`'s docstring is rewrapped at 96
-  columns, every word kept, for the line that stamps the place.
+  none, 3.3x to 5.0x for three and past them (the eight folds, to 200 words; the round-2 seat's
+  rows past the cap read 4.70x to 4.98x), and flat on the #2885 seat's 1,945 rows (0.93x and
+  0.97x, two passes). Two such words in one stage stay #2856's named limit: only a stage's first
+  `${…}` word is read whole. `shell_reader._stage`'s docstring is rewrapped at 96 columns, every
+  word kept, for the line that stamps the place.
 - **Workflow reader reads every action a `find` runs (#2918).** `curl … -o tool` ⏎ `find
   /dev/null -exec true \; -exec sh /dev/fd/3 \; 3<> tool` ran the download and read CLEAN: the
   guard read one of `find`'s actions, the first of `-exec`, `-execdir`, `-ok` and `-okdir` in that
