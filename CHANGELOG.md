@@ -9,26 +9,45 @@ evidence exposed.
 
 - **Workflow reader reads every mixed reading of the command words bash may expand to nothing
   (#2929).** #2856's union read a job twice: every such word -- `${X:+W}`, `${X-W}` and their kin
-  -- as its W, then every one empty, two of a step's 2^k readings, so a payload only a mixed reading
-  runs read CLEAN while every parent runs it: `X=1` ⏎ `${X:+curl -fsSLo tool …}` ⏎ `${Y:+/usr/bin/env
-  true} sh tool`, the fetch's W and the shell's word empty, and the #2856 round-13 seat's 14 rows
-  of hunts 49, 51 and 53 (70 cells). `shell_command.folds` now reads, after those two folds, every
-  other set of such words whose halves read apart -- `_runs` reads a different command in each --
-  empty in a fold of its own, up to three words, so 4 folds read two of them and 8 three; halves
-  that read one command (`${SUDO:+sudo -E} apt-get …`) add no fold. A word is one word by its
-  place, the source its parse read and the order the parse kept it whole
-  (`shell_tokens._Parse.whole`), so a text read again in a fold, as a nested program is, holds the
-  same words, and a spelling written twice is two. A fourth such word reads as a command the guard
-  cannot read, reported wherever it runs, a download or none -- the price, none in the seats' sets
-  -- so the folds stop at 8. The two folds the union read come first, as before, so nothing it
-  reported reads CLEAN: across the #2885 round-4 seat's rows and their twins, round 3's own and
-  theirs, the AX, P0, F6 and P4 rows, the round-3 kit's 20,533 and #2856's hunts 33-53, the only
-  changes against #2936 are those 70 cells, beside #2911's rows (S08n, S08p, hunt 37's `*-od`),
-  which differ between two runs of `main` too. The cost, `job_defects` against #2936 in one
-  process: 2.06x on the 39 rows of hunts 45-53 that hold two such words, flat where one or none,
-  4.7x for three and at most 5x past them. Two such words in one stage stay #2856's named limit:
-  only a stage's first `${…}` word is read whole. `shell_reader._stage`'s docstring is rewrapped
-  at 96 columns, every word kept, for the line that stamps the place.
+  -- as its W, then every one empty, two of a step's 2^k readings, so a payload only a mixed
+  reading runs read CLEAN while every parent runs it: `X=1` ⏎ `${X:+curl -fsSLo tool …}` ⏎
+  `${Y:+/usr/bin/env true} sh tool`, the fetch's W and the shell's word empty, and the #2856
+  round-13 seat's 14 rows of hunts 49, 51 and 53 (70 cells). `shell_command.folds` now reads,
+  after those two folds, every other set of such words whose halves read apart -- `_runs` reads
+  another command in each, or one command word with other operands (`${Q:+/usr/bin/env cat sums}
+  cat`) -- empty in a fold of its own, up to three words, so 4 folds read two of them and 8 three;
+  halves that read one command (`${SUDO:+sudo -E} apt-get …`) add no fold. A word is one word by
+  where it stands, never by what its text says (`shell_tokens._Parse.place`, round 2): a step at
+  its index in the job, a `$(…)`, a backquote, a `<(…)` or a heredoc's body at its place in the
+  text that lifted it, a program a shell reads on its standard input at its heredoc's, and in that
+  parse the order it was kept whole. So a text read again in a fold holds the same words, no nonce
+  of the reader's splits one, and one spelling at two places is two words -- two equal
+  substitutions, two heredocs of one body, two steps of one text; round 1 keyed a parse by its
+  text, which read those as one word (the round-1 seat's IdB.two, IdC.subst and MS.same rows,
+  CLEAN while every parent runs them) and one word as many wherever a marker's nonce reached the
+  text (its Idnonce rows, reported at the cap though nothing runs). A `-c` or an `eval` string is
+  no lifted text: its parse is keyed by its text, the nonces out and each lifted body kept, so two
+  byte-identical program strings at two places read alike -- a named limit with no known reach
+  (the seat's 8 rows and a capped hunt's 10 pairs report on `main` as here). A fourth such word
+  reads as a command the guard cannot read, reported wherever it runs, a download or none, so the
+  folds stop at 8. The price: that cap (none in the seats' sets), and, since every assignment of
+  halves is read, a mixed reading no assignment of the step's names takes -- `${X:+curl …} |
+  ${X:+/usr/bin/env true} sh`, one name in both words, reports though bash runs neither mix (the
+  seat's 618 class rows and 408 fuzz rows and its two-step MS.same-pipe; none in the seats'
+  standing sets). The two folds the union read come first, as before, so nothing it reported reads
+  CLEAN: across the #2885 round-4 seat's rows and their twins, round 3's own and theirs, the AX,
+  P0, F6 and P4 rows, the round-3 kit's 20,533 and #2856's hunts 33-53, the only changes against
+  `main` are those 70 cells, beside #2911's rows (S08n, S08p, hunt 37's `*-od`), which differ
+  between two runs of `main` too; and on the round-1 seat's rows the IdB.two, IdC.subst and
+  MS.same rows report, its Idnonce rows read CLEAN as `main` reads them, and a capped hunt's six
+  pairs of one heredoc or here-string read by two shells report. Out of lane, granted by the
+  coordinator, each net zero: `workflow_guard.job_defects` hands each step's index to its parse
+  (`placed`), and `workflow_programs.stdin_scripts` keeps the place of the heredoc it reads
+  (`at_place`). The cost, `job_defects` against `main` in one process: 2.1x on the 39 rows of
+  hunts 45-53 that hold two such words, flat where one or none, 4.2x for three and past them, and
+  1.02x on the #2885 seat's 1,945 rows. Two such words in one stage stay #2856's named limit: only
+  a stage's first `${…}` word is read whole. `shell_reader._stage`'s docstring is rewrapped at 96
+  columns, every word kept, for the line that stamps the place.
 - **Workflow reader reads every action a `find` runs (#2918).** `curl … -o tool` ⏎ `find
   /dev/null -exec true \; -exec sh /dev/fd/3 \; 3<> tool` ran the download and read CLEAN: the
   guard read one of `find`'s actions, the first of `-exec`, `-execdir`, `-ok` and `-okdir` in that
