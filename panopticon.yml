@@ -575,6 +575,7 @@ groups:
       - skill/scripts/findings_contract.py
       - skill/reference/report-schema.json
       - skill/reference/x0x-report-schema.json
+      - skill/reference/x0x-failure-log-schema.json
       - skill/reference/strain-report-schema.json
       - skill/reference/findings-envelope-schema.json
       - skill/reference/advisor-verdict-schema.json
@@ -672,6 +673,7 @@ groups:
       - tests/test_workflow_printers.py
       - tests/test_workflow_values.py
       - tests/test_workflow_annotate.py
+      - tests/test_workflow_options.py
       panels:
       - SEC
     Workflows:
