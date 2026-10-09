@@ -136,7 +136,7 @@ class TestRefusedRepliesAreRetained(LoopCase):
                 if error_position == 3:
                     # One clean invalid finding sorts before the token-bearing
                     # finding, after the unknown-root error below.
-                    findings.append({"note": "clean"})
+                    findings.append({})
                 findings.append({"note": "x" * padding + secret})
                 body = {"findings": findings}
                 if error_position > 1:
@@ -171,7 +171,7 @@ class TestRefusedRepliesAreRetained(LoopCase):
                 for name, text in surfaces.items():
                     with self.subTest(padding=padding, error_position=error_position,
                                       surface=name):
-                        if padding == 0 and error_position < 3:
+                        if padding == 0 and (error_position < 3 or name != "retry"):
                             self.assertIn("[REDACTED_TOKEN]", text)
                         self.assertNotIn("ghp_", text)
                         self.assertNotIn(secret[:13], text)
