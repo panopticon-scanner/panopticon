@@ -67,6 +67,13 @@ def strings(document):
             todo.extend(item)
 
 
+def plain(text):
+    """`text` as an assertion may print it: ASCII, a lone surrogate as its escape. `assertEqual` on two strings
+    prints them raw, and a failing pin here would hand the runner the one character no encoder takes -- under
+    pytest-xdist that ends the whole run, not the test. `ascii` is one-to-one, so the comparison is the same."""
+    return ascii(text)
+
+
 def surrogates(document):
     """The surrogates left in `document`'s strings, as `U+XXXX` so a failure prints."""
     return sorted({"U+%04X" % ord(ch) for text in strings(document) for ch in text if "\ud800" <= ch <= "\udfff"})
@@ -190,25 +197,27 @@ class TestTheSpelling(unittest.TestCase):
 
     def test_nothing_but_a_surrogate_moves(self):
         rest = "".join(map(chr, itertools.chain(range(0xD800), range(0xE000, sys.maxunicode + 1))))
-        self.assertEqual(rest, inert.escape_surrogates(rest))
+        moved = inert.escape_surrogates(rest)                # compared, not diffed: 1.1 million characters
+        self.assertTrue(rest == moved, "outside the block, %d characters became %d" % (len(rest), len(moved)))
 
     def test_a_pair_is_one_character_and_two_halves_apart_are_two_surrogates(self):
         pair = json.loads('"\\ud83d\\ude00"')                # `json.load` joins the pair: U+1F600, no surrogate
         self.assertEqual(("\U0001f600", "\U0001f600"), (pair, inert.escape_surrogates(pair)))
         for halves in ('"\\ud83d x \\ude00"', '"\\ude00\\ud83d"'):
             with self.subTest(halves=halves):
-                self.assertEqual(halves[1:-1], inert.escape_surrogates(json.loads(halves)))
+                self.assertEqual(plain(halves[1:-1]), plain(inert.escape_surrogates(json.loads(halves))))
 
     def test_every_mode_of_the_one_neutralizer_spells_it(self):
         for mode in base.INERT_MODES:
             with self.subTest(mode=mode):
-                self.assertEqual("src/a%s b.py" % SPELLED, base.inert_text("src/a%s b.py" % LONE, mode=mode))
+                self.assertEqual(plain("src/a%s b.py" % SPELLED),
+                                 plain(base.inert_text("src/a%s b.py" % LONE, mode=mode)))
 
     def test_a_path_in_a_reviewers_prompt_is_spelled_and_the_entrys_own_files_are_not(self):
         # A name that never was JSON: on Linux `os.walk` hands an undecodable byte over as a lone surrogate.
         name = "src/caf\udce9.py"
         line = runio._abs_file_list("/review", [name])
-        self.assertEqual("- /review/src/caf\\udce9.py", line)
+        self.assertEqual(plain("- /review/src/caf\\udce9.py"), plain(line))
         line.encode("utf-8")
         self.assertEqual(["/review/" + name], runio._abs_files("/review", [name]))    # the read guard's bytes
 
@@ -232,7 +241,7 @@ class TestTheWalk(unittest.TestCase):
         self.assertEqual(document(SPELLED), clean)
         self.assertEqual(list(document(SPELLED)), list(clean))          # and in the order they were written
         self.assertEqual(document(LONE), original)
-        self.assertEqual("a" + SPELLED, inert.surrogate_free("a" + LONE))
+        self.assertEqual(plain("a" + SPELLED), plain(inert.surrogate_free("a" + LONE)))
 
     def test_two_keys_that_spell_alike_keep_the_later_value(self):
         self.assertEqual({"k" + SPELLED: 2}, inert.surrogate_free({"k" + LONE: 1, "k" + SPELLED: 2}))
@@ -299,7 +308,7 @@ class TestTheTwoDoors(unittest.TestCase):
         raw = a_finding(1, id="CD-001" + LONE, evidence={"status": "x"}, provenance={"confirmed_by": "me"})
         with contextlib.redirect_stderr(io.StringIO()) as said:
             findings_mod.agent_finding(raw, "cell.json")
-        self.assertEqual(2, said.getvalue().count("from CD-001%s in cell.json" % SPELLED), said.getvalue())
+        self.assertEqual(2, said.getvalue().count("from CD-001%s in cell.json" % SPELLED), plain(said.getvalue()))
         self.assertEqual([], surrogates(said.getvalue()))
 
     def test_both_loaders_give_a_planted_finding_the_id_of_its_spelled_twin(self):

@@ -367,12 +367,14 @@ class TestInertText(unittest.TestCase):
             with self.subTest(codepoint=hex(ord(ch))):
                 out = base.inert_text("a%sb" % ch)
                 self.assertNotIn(ch, out)
+                # Compared through `ascii()` (#2951): a lone surrogate left in `out` would be printed raw by
+                # a failing `assertEqual`, and no runner can write one. `ascii` is one-to-one on strings.
                 if ch in base.INERT_KEEP:      # \t and \n: collapsed, not escaped
-                    self.assertEqual("a b", out)
+                    self.assertEqual(ascii("a b"), ascii(out))
                 elif ord(ch) < 0x100:
-                    self.assertEqual("a\\x%02xb" % ord(ch), out)
+                    self.assertEqual(ascii("a\\x%02xb" % ord(ch)), ascii(out))
                 else:
-                    self.assertEqual("a\\u%04xb" % ord(ch), out)
+                    self.assertEqual(ascii("a\\u%04xb" % ord(ch)), ascii(out))
 
     def test_ordinary_and_non_ascii_text_is_untouched(self):
         for text in ("app/db.py:12", "paquete-señal 1.0", "日本語のパッケージ",
@@ -450,8 +452,8 @@ class TestInertText(unittest.TestCase):
             if ch in base.INERT_KEEP:
                 continue
             with self.subTest(codepoint=hex(ord(ch))):
-                self.assertEqual(runio._prompt_safe("a%sb" % ch),
-                                 base.inert_escape("a%sb" % ch))
+                self.assertEqual(ascii(runio._prompt_safe("a%sb" % ch)),
+                                 ascii(base.inert_escape("a%sb" % ch)))
 
     def test_a_non_string_is_coerced_rather_than_passed_through(self):
         # Every consumer of these fields expects text; the report schema says so.
