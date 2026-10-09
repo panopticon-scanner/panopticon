@@ -143,17 +143,27 @@ class TestRefusedRepliesAreRetained(LoopCase):
                                 kind, 0, (token_position,), advertised,
                                 schema_errors=errors)
 
-        # Redaction must also precede the display cap for each role. Run both
-        # flag states so the cap pin cannot accidentally be flag-specific.
-        cut_error = ("x" * (persist.REASON_CAP - 13)
-                     + self.SCHEMA_SECRET)
+        # Redaction must also precede the display cap. Cross that boundary with
+        # every quoted position in the finite product so a count- or
+        # position-specific cut-before-redact change has no unpinned neighbour.
         for kind in ("review", "verify", "tool-advisor"):
             for advertised in (False, True):
-                with self.subTest(kind=kind, output_schema=advertised,
-                                  boundary="display-cap"):
-                    self._assert_schema_secret_is_confined(
-                        kind, persist.REASON_CAP - 13, (1,), advertised,
-                        schema_errors=[cut_error])
+                for count in range(1, 6):
+                    for token_position in range(1, min(count, 3) + 1):
+                        with self.subTest(kind=kind, output_schema=advertised,
+                                          count=count,
+                                          token_position=token_position,
+                                          boundary="display-cap"):
+                            errors = [
+                                ("x" * (persist.REASON_CAP - 13)
+                                 + self.SCHEMA_SECRET)
+                                if position == token_position else "e"
+                                for position in range(1, count + 1)
+                            ]
+                            self._assert_schema_secret_is_confined(
+                                kind, persist.REASON_CAP - 13,
+                                (token_position,), advertised,
+                                schema_errors=errors)
 
     def test_schema_secrets_never_reach_any_refusal_surface(self):
         # Round 2 B3: schema errors quote the rejected instance. Capping that
