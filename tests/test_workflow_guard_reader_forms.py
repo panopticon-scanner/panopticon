@@ -2023,6 +2023,19 @@ class TestAPathTheStepLinkedOrMovedToIsItsDescriptor(unittest.TestCase):
             with self.subTest(use=use):
                 self.assertTrue(reported(get + use + "\necho done\n"))
 
+    def test_a_relative_target_and_a_cd_back_are_read_too(self):
+        # A link's relative target stands in the directory the link was made in (`cd /` then `ln -s
+        # dev/fd/3 x`): with no `cd` it names no descriptor. And `cd -` goes where `OLDPWD` says, a
+        # place a value decides, so every file held is carried.
+        get = "curl -fsSLo /tmp/tool %stool\n" % URL
+        for use, held in (("cd /\nln -s dev/fd/3 x\nsh 3<> /tmp/tool <x 3<&-", True),
+                          ("cd /dev\nln -s fd/3 x\nsh 3<> /tmp/tool <x 3<&-", True),
+                          ("ln -s dev/fd/3 x\nsh 3<> /tmp/tool <x 3<&-", False),
+                          ("OLDPWD=/dev\ncd -\nsh 3<> /tmp/tool <fd/3 3<&-", True)):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertEqual(held, reported(get + use + "\necho done\n", shell))
+
     def test_a_here_strings_text_is_no_path(self):
         # `sh <<< x` hands the shell the text `x`, not the file: a link or a `cd` adds no reading of it
         # (round 1 read each of these as the pipe's reader; nothing runs the download). A path does.
