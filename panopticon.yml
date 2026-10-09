@@ -574,6 +574,7 @@ groups:
       - skill/scripts/findings_contract.py
       - skill/reference/report-schema.json
       - skill/reference/x0x-report-schema.json
+      - skill/reference/x0x-failure-log-schema.json
       - skill/reference/strain-report-schema.json
       - skill/reference/findings-envelope-schema.json
       - skill/reference/advisor-verdict-schema.json

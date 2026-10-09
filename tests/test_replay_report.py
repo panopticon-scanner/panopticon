@@ -314,7 +314,11 @@ def test_diff_nested_values_lists_and_key_order(tmp_path):
     assert any("KEY ORDER" in line for line in lines)
 
 
-@pytest.mark.parametrize("suffix", [".json", "_part2.json", "-discarded.json", "-x0x.json"])
+@pytest.mark.parametrize(
+    "suffix",
+    [".json", "_part2.json", "-discarded.json", "-x0x.json",
+     "-x0x-failures.json"],
+)
 def test_diff_each_json_artifact_content_and_presence(tmp_path, suffix):
     a = _out_dir(tmp_path, "a", "")
     b = _out_dir(tmp_path, "b", "")
