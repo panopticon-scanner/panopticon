@@ -2082,7 +2082,7 @@ class TestEveryFindActionIsACommand(unittest.TestCase):
         # Round 3, the round-2 verdict's B1: `main`'s reading is never lost. What the step itself does is
         # read off `command()`, the `find` -- by every reader `ACTED` does not name -- and `folds` reads
         # the job as `main` does before it reads an action. The seat's four groups, each REPORT on `main`
-        # and CLEAN at round 2's head while a parent runs it; the words are the seat's.
+        # and CLEAN at round 2's head while every parent runs it; the words are the seat's.
         valued = GET + "T=tool\nfind /dev/null -exec %s \\;\nsh %s\n"
         rows = (
             # (a) the value readers (`workflow_uses._cleared`, `workflow_values.record`): no `find` sets
@@ -2091,8 +2091,10 @@ class TestEveryFindActionIsACommand(unittest.TestCase):
                 "read T", "printf -v T x", "mapfile T", "readarray T", "getopts a T", "command unset T", "command local T",
                 "/usr/bin/unset T", "env read T", "sudo read T")),
             # (b) the sums-file writer (`workflow_checks._record_writes`): a `tee` an action runs is not
-            # the step's own write of the file its check reads.
-            *(GET + "echo '%s  tool' | find /dev/null -exec %s \\;\nsha256sum -c sums\nsh tool\n" % ("a" * 64, tee)
+            # the step's own write of the file its check reads -- here `find` never reaches the action,
+            # and the sums the check reads are the download's own digest, which passes.
+            *(GET + "sha256sum tool > sums\necho '%s  tool' | find %s -exec %s \\;\nsha256sum -c sums\nsh tool\n" % (
+                "a" * 64, test, tee) for test in (". -name nomatch", "/dev/null -false")
               for tee in ("tee sums", "tee -a sums", "sudo tee sums", "command tee sums")),
             # (c) the printers (`workflow_printers.producer`, `_passes_through`): what a `find` prints is
             # its own `-printf` line, whatever its action prints, and the printer in front of it is not
@@ -2102,8 +2104,7 @@ class TestEveryFindActionIsACommand(unittest.TestCase):
             # (d) the `xargs` walk (`workflow_operands.described`): a `find` with an action still hands
             # `xargs` its walk.
             *(GET + "find %s | xargs %s\n" % (walk, runner) for runner in ("sh", "-n1 bash") for walk in (
-                "tool -print -exec true \\;", ". -name tool -exec true \\; -print", ". -name tool -exec true {} \\;",
-                ". -name tool -exec echo {} \\;")),
+                "tool -print -exec true \\;", ". -name tool -exec true \\; -print", ". -name tool -exec echo {} \\;")),
         )
         for row in rows:
             with self.subTest(row=row):
