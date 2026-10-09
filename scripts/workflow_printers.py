@@ -378,7 +378,9 @@ def unspelled(stage, before, shell=None):
     if intact is None:
         return list(_PAST_DEPTH)
     if printer:
-        texts = [" ".join(words[1:]) if t is None else t for t in spellings(words, source, shell)]
+        read = spellings(words, source, shell)
+        texts = [" ".join(words[1:]) if t is None else t for t in read]
+        texts += _apart(words, shell) if None in read else []       # what it writes, as above (#2955)
     else:
         texts = [source.stdin_heredoc[0]]       # not a printer: a heredoc-fed `cat` (`producer`)
     return front[:1] + texts + [" ".join(front[1:])]

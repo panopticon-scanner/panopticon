@@ -25,15 +25,20 @@ none fetched.
 Named limits. A line that only FETCHES reports, as `echo curl | sh` does on `main` (`TestThePrice`): the word
 `${X:+…}./t.sh` printed once with its name set, and a `curl` on a line of its own. A printer inside `$(...)` or
 `<(...)` is read by every family, as `main` reads one there, so a line only dash makes reports under the bash
-settings too. A line the guard can SPELL -- the `$` escaped inside double quotes -- is a program string, and two
+settings too. Behind a stage that REWRITES the text (`| tr … | sh`) the printer's text is weighed as written, as
+`main` weighs an `echo`'s there, whatever the stage makes of it. A line the guard can SPELL -- the `$` escaped inside double quotes -- is a program string, and two
 copies of it are #2953's. A line whose command word is a one-word default (`${X:-curl} …`) waits for #2963's
-rule. `builtin` in front of a printer is no wrapper to the reader, so the printer is not read at all (as on
-`main`, spelled or not). Two gaps of the rendering, pinned as they read: a number written in another base prints
+rule. `builtin` in front of a printer is no wrapper to the reader, so the printer is not read at all (#2665; as
+on `main`, spelled or not). Two gaps of the rendering, pinned as they read: a number written in another base prints
 as `0` here, and `strftime` codes inside bash's `%(…)T` stand as written. And one bound: `printf` prints its format
 again while words are left, so its text can outgrow what is written many times over; past 4,096 characters and
 four times what was written the rendering is not followed, and the printer reports (`TestThePrice`).
 
-Everything here is measured on 780 rows in six bounded hunts; a class named below is the rows pinned for it.
+A printer is read on the routes `main` reads its SPELLED twin on. On 11 of the 19 routes the eighth hunt took,
+`main` reads neither -- a printer's text written to a file that is then run, kept in a variable, printed by a
+group or a function, handed to `xargs` -- and those stay as they are: not this class, and sent to the coordinator.
+
+Everything here is measured on 854 rows in eight bounded hunts; a class named below is the rows pinned for it.
 """
 import unittest
 from unittest import mock
@@ -215,6 +220,29 @@ class TestALineTheFormatPutsTogether(unittest.TestCase):
                 self.assertEqual(NOW, marks(fed(twice, route)))                              # truth: runs
                 self.assertEqual(CLEAN, marks(fed(twice[:-3], route)))                       # one word: nothing
 
+    FILTERED = ("printf '%s %s" + N + "' curl '-fsSLo t " + U + "'", "printf '%s" + N + "' \"" + L + "$Q\"",
+                'echo -n "' + L + '$Q"')
+
+    def test_behind_a_stage_that_hands_the_line_on_as_it_is(self):
+        # `main` weighs the printer's text where a stage between it and the shell rewrites the stream: there too
+        # an unspelled printer's was its words as one.  Truth: runs, each of the twelve.
+        for printer in self.FILTERED:
+            for stage in ("tr x x", "grep .", "sed 's/^//'", "sort"):
+                with self.subTest(printer=printer[:8], stage=stage):
+                    self.assertEqual(NOW, marks("%s | %s | sh\nsh t" % (printer, stage)))
+        self.assertEqual(BEFORE, marks('echo "' + L + '$Q" | tr x x | sh\nsh t'))          # `echo`'s text is its line
+
+    def test_on_eight_routes_main_reads_the_spelled_twin_on(self):
+        printf, echo = self.JOINED["two words, one line"], "echo '" + L + "'"
+        for name, route, was in (("sh /dev/stdin", "{p} | sh /dev/stdin", NOW), ("sh -", "{p} | sh -", NOW),      # runs
+                                 ("bash -s", "{p} | bash -s", NOW), ("a subshell", "( {p} ) | sh", NOW),           # runs
+                                 ("after `&&`", "true && {p} | sh", NOW), ("backticks", 'eval "`{p}`"', NOW),      # runs
+                                 ("a here-string", 'sh <<< "$({p})"', BEFORE),                          # under bash
+                                 ("a heredoc", "sh <<EOF\n$({p})\nEOF", BEFORE)):                        # runs
+            with self.subTest(route=name):
+                self.assertEqual(was, marks(route.format(p=printf) + "\nsh t"))
+                self.assertEqual(BEFORE, marks(route.format(p=echo) + "\nsh t"))
+
     def test_the_format_in_a_variable_has_each_word_weighed(self):
         step = "F='%s" + N + "'\n" + "{}\nsh t"             # truth: runs
         self.assertEqual(BEFORE, marks(step.format("printf \"$F\" '" + L + "' | sh")))
@@ -356,6 +384,15 @@ class TestThePrice(unittest.TestCase):
                 self.assertEqual(NOW, marks(fed(long + "true true '" + L + "'", route)))        # within it: runs
                 self.assertEqual(NOW, marks(fed("printf '" + "%250s" * 40 + N + "' w", route)))     # nothing: 10,000 blanks
 
+    def test_behind_a_stage_that_spoils_the_line_the_text_is_weighed_as_written(self):
+        # `tr a-z A-Z`, a `#` put in front, `rev`: no parent runs anything.  `main` reports the `echo` spelling of
+        # each (the text is weighed whatever the stage does to it), and the others now read as that one does.
+        for stage in ("tr a-z A-Z", "sed 's/^/# /'", "rev"):
+            for printer in TestALineTheFormatPutsTogether.FILTERED:
+                with self.subTest(printer=printer[:8], stage=stage):
+                    self.assertEqual(NOW, marks("%s | %s | sh\nsh t" % (printer, stage)))
+            self.assertEqual(BEFORE, marks('echo "' + L + '$Q" | %s | sh\nsh t' % stage))
+
     def test_four_rows_only_dash_makes_report_under_the_bash_settings_too(self):
         for printer, route in (('echo "true' + N + L + '$Q"', "file"),                      # truth: nothing, each:
                                ('echo -E "true' + N + L + '$Q"', "sh -c"),                  # dash refuses `<(…)`, and
@@ -377,9 +414,10 @@ class TestTheRowsThatWaitForAnotherRule(unittest.TestCase):
                 self.assertEqual(CLEAN, marks(step))
         self.assertEqual(BEFORE, marks("eval \"$(echo '%s')\"\nsh t" % L))                       # the command written out
 
-    def test_builtin_in_front_of_a_printer_is_no_wrapper_to_the_reader(self):
-        # Under bash: `builtin` runs the printer. The reader strips `command`, not `builtin`, so the stage is
-        # no printer to this module, spelled (`echo 'LINE'`) or not; nothing here can read it.
+    def test_builtin_in_front_of_a_printer_is_no_wrapper_to_the_reader_2665(self):
+        # Truth: 12 of the 16 runs, the bash parents'; dash has no `builtin`. The reader strips `command`, not
+        # `builtin` (#2665), so the stage is no printer to this module, spelled (`echo 'LINE'`) or not; nothing
+        # here can read it. Pinned as it reads, with #2665 named.
         for printer in ("builtin echo '" + L + "'", "builtin printf '%s %s" + N + "' curl '-fsSLo t " + U + "'"):
             with self.subTest(printer=printer[:14]):
                 self.assertEqual(CLEAN, marks(fed(printer)))
@@ -451,6 +489,12 @@ class TestWhatAPrinterWrites(unittest.TestCase):
             self.assertEqual(6003, len(wp._formatted("x" * 2000 + "%s", ["a"] * 3, kinds)))  # three uses of 2,000
             self.assertIsNone(wp._formatted("x" * 2000 + "%s", ["a"] * 10, kinds))           # ten: 20,010 characters
             self.assertIsNone(wp._formatted("%256s" * 1000, ["a"], kinds))                   # 256,000 blanks of 5,000
+            # ... and on the bound itself: eight uses of 512 characters are `_LONG`, and followed; of 513, not.
+            self.assertEqual(wp._LONG, len(wp._formatted("x" * 511 + "%s", ["a"] * 8, kinds)))
+            self.assertIsNone(wp._formatted("x" * 512 + "%s", ["a"] * 8, kinds))
+            # ... and where four times what was written is the larger bound: 1,000 words of four characters
+            # behind a format of five is 5,000 printed for 6,005 written.
+            self.assertEqual(5000, len(wp._formatted("%s" + N, ["abcd"] * 1000, kinds)))
         words = shell_reader.command(shell_reader.statements("printf '" + "x" * 2000 + "%s' " + "'$A' " * 10)[0].stages[0].argv)
         self.assertEqual([wp._PAST_DEPTH[1]], wp._apart(words, None))                        # LOUD, said once
         self.assertEqual([wp._PAST_DEPTH[1]], wp._apart(words))
@@ -529,6 +573,18 @@ class TestTheSecondWalkAlone(unittest.TestCase):
         self.assertEqual([2, 2, 2], [len(texts(alike, shell)) for shell in (None, "sh", wp.ANY)])
         with wo.mains_answer():                                     # the main pass: `main`'s one text alone
             self.assertEqual([1, 1], [len(texts(differ, wp.ANY)), len(texts(alike, None))])
+
+    def test_a_stage_that_rewrites_the_text_is_handed_what_the_printer_writes_too(self):
+        def handed(script):
+            stages = shell_reader.statements(script)[0].stages
+            return wp.unspelled(stages[-1], stages[:-1])
+
+        self.assertEqual(["tr", "%s %s" + N + " a $X", "a $X\n", "a b"], handed("printf '%s %s" + N + "' a \"$X\" | tr a b | sh"))
+        self.assertEqual(["tr", "$X", "a b"], handed('echo "$X" | tr a b | sh'))             # an `echo`'s is its line
+        self.assertEqual(["tr", "x\n", "a b"], handed("echo x | tr a b | sh"))               # spelled: nothing added
+        self.assertEqual(["tr", "x\n", "a b"], handed("printf 'x" + N + "' | tr a b | sh"))   # ... nor to a `printf`
+        with wo.mains_answer():
+            self.assertEqual(["tr", "%s %s" + N + " a $X", "a b"], handed("printf '%s %s" + N + "' a \"$X\" | tr a b | sh"))
 
     def test_a_word_the_reader_spelled_is_read_as_spelled(self):
         class Spelled(str):
