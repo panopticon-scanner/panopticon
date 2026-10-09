@@ -380,6 +380,22 @@ evidence exposed.
   report emission, with one code-point policy shared by report and prompt rendering (#2118 items
   1-2), so a hostile filename cannot suppress the X0X artifact. Honest emitter output remains
   valid, and `synthesize.py` keeps its ASCII-escaped, multi-line JSON serialization.
+- **X0X candidate names and array order are reproducible (#2713).** Proposed names are now
+  schema-pinned to kebab case and 60 characters, and the emitter applies that same bound. Candidate
+  arrays sort by severity, domain, proposed name, and cluster key; equal-severity cluster leads use
+  a stable finding fingerprint, while occurrences and CWE identifiers receive canonical orders.
+  Reordering the input findings therefore leaves the emitted candidate array unchanged, and
+  `generated_at` remains optional. `cwe` remains optional and is omitted when empty; the open-object
+  extension contract remains explicit, with `evidence_status` undeclared until its vocabulary and
+  type are standardized. A catalog-gap finding without `location.file` remains in the full findings
+  report but is excluded from the occurrence-bearing X0X candidate set and written to a
+  deterministic, redacted `-x0x-failures.json` sidecar with its own write-time schema. The log keeps
+  duplicate ids, and an unlocated member of a mixed cluster cannot lead its located siblings,
+  resolving #2090.
+  Synthesize and the driver disclose the exact count and path even after child stderr flooding or a
+  resume, clean runs safely remove regular or symlinked stale sidecars, and the remaining X0X is
+  byte-identical to a run without the unrepresentable finding. The discard does not introduce a new
+  exit status; the report gate still selects `0`, `1`, or `2`.
 - **Workflow guard reads a function header in the spellings bash takes at a statement's head
   (#2664, #2608; #2785).** `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after
   `then`, `do` or an opened `{` ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN:
@@ -3023,20 +3039,18 @@ evidence exposed.
   empty location rather than quarantine the finding). So the emitter whose whole purpose is to carry
   catalog gaps into OCRDb's adjudication pool was discarding exactly the repo-wide ones, in silence,
   and `synthesize`'s `X0X artifact: <path> (N candidates)` line printed a count that was quietly
-  short. Nothing is invented — a file cannot be. The count the report had to leave out is now
-  published as `candidates_dropped_locus_free` (omitted when zero), an optional integer DECLARED in
-  `skill/reference/x0x-report-schema.json` so a downstream ingester has a documented field to read;
-  that key is the carrier that survives a `driver run`, because the driver keeps a child's output
-  only on failure. Run `synthesize.py` yourself and each dropped cluster is named on stderr too —
-  the domain, the lead title or, untitled, its finding id, and how many findings the cluster held —
-  with the count appended to the `X0X artifact:` line. Every agent-authored field in either
-  diagnostic is squeezed to one line, bounded with the cut MARKED, and rendered inert with `%r`, so
-  one hostile finding cannot repaint the operator's terminal or forge a line that reads as the
-  tool's own honest output. `strain_report.advisor_recode_signals` — the offline catalog-MIS-FIT
-  companion, which has no pipeline caller — makes the same disclosure at its own locus-free drop;
-  `cross_run_signals`'s line-window join is left alone, being intrinsically file-keyed. Residual,
-  filed as #2090: a MIXED cluster still reaches the pool with its locus-free member absent from
-  `recurrence`, silently.
+  short. Nothing is invented — a file cannot be. #2713 replaces the count-only disclosure: each
+  locus-free X0X finding is excluded from the candidate set and recorded in a deterministic,
+  redacted failure sidecar while located candidates are still emitted. That sidecar is validated
+  against `x0x-failure-log-schema.json`, keeps duplicate ids, and resolves #2090's silent
+  mixed-cluster loss. Synthesize and the driver name the exact count and path, and a clean run
+  removes a stale regular file or symlink without following it. Every agent-authored field
+  in a log diagnostic is squeezed to one line, bounded with the cut MARKED, rendered inert with
+  `%r`, and redacted, so one hostile finding cannot repaint the operator's terminal, forge a line
+  that reads as the tool's own honest output, or publish a credential.
+  `strain_report.advisor_recode_signals` — the offline catalog-MIS-FIT
+  companion, which has no pipeline caller — keeps its own locus-free disclosure;
+  `cross_run_signals`'s line-window join is left alone, being intrinsically file-keyed.
 - **A run3 that never reviewed the file can no longer corroborate a "fixed" close (#1807,
   DAT-1268532600).** Stage 1 (`skill/scripts/reconcile.py diff`) read "no run3 record on this (file,
   panel)" as evidence of a fix, and its two whole-run guards only fired when run3 was EMPTY or

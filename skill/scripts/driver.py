@@ -1143,7 +1143,7 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
                 "the run completed with them missing from the review axis"
                 % (result.get("message"), len(exhausted), ", ".join(named),
                    " and %d more" % more if more > 0 else "")))
-    return result
+    return synthesize.attach_x0x_failure_status(result, runio._report_out(review_root))
 
 
 def parse_cli(argv=None):
