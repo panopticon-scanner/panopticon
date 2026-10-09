@@ -54,11 +54,12 @@ evidence exposed.
   shells report. Out of lane, granted by the coordinator, each net zero:
   `workflow_guard.job_defects` hands each step's index to its parse (`placed`), and
   `workflow_programs.stdin_scripts` keeps the place of the heredoc it reads (`at_place`). The
-  cost, `job_defects` against `main` in one process: 2.1x on the 39 rows of hunts 45-53 that hold
-  two such words, flat where one or none, 4.2x for three and past them, and 1.02x on the #2885
-  seat's 1,945 rows. Two such words in one stage stay #2856's named limit: only a stage's first
-  `${…}` word is read whole. `shell_reader._stage`'s docstring is rewrapped at 96 columns, every
-  word kept, for the line that stamps the place.
+  cost, `job_defects` against `main` interleaved in one process, three passes on the final
+  scripts: 1.9x to 2.4x on the 39 rows of hunts 45-53 that hold two such words, flat where one or
+  none, 3.3x to 4.7x for three and past them (the eight folds), and flat on the #2885 seat's 1,945
+  rows (0.93x to 1.02x). Two such words in one stage stay #2856's named limit: only a stage's
+  first `${…}` word is read whole. `shell_reader._stage`'s docstring is rewrapped at 96 columns,
+  every word kept, for the line that stamps the place.
 - **Workflow reader reads every action a `find` runs (#2918).** `curl … -o tool` ⏎ `find
   /dev/null -exec true \; -exec sh /dev/fd/3 \; 3<> tool` ran the download and read CLEAN: the
   guard read one of `find`'s actions, the first of `-exec`, `-execdir`, `-ok` and `-okdir` in that
