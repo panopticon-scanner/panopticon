@@ -590,15 +590,15 @@ evidence exposed.
   parent was entered with (an entry stack, never a frame's live locals) and the walk is the pass's
   own, at every depth to the bound of 64, and `_details`' own text binds neither `depth` nor `walk`
   and makes its one self-call with exactly `inner`, `depth + 1` and `walk`. And the verdict at
-  every nesting level, at the job and in each of its two passes: a family of sixteen holders behind
-  one to five `bash -c`, `sh -c` and `eval` strings, read under every `shell:` setting, and one
-  holder behind one to 64 `eval` words, read under every setting at seven depths (1, 8, 16, 32, 40,
-  63 and 64) and under the default setting alone at the other 57. The job's marks and the main
-  pass's are `main`'s own on each of those rows; the walk's pass is this PR's reading, pinned as
-  it reads. What is pinned is that call and those rows' verdicts: a change beside the call that
-  moves none of those rows is not seen, and it can read running rows CLEAN: a one-line change
-  keyed on a depth and one more dimension (an inner shell, a holder, a member, a run length)
-  passes the suite, and round 20's seat built six. Open, as on `main`:
+  every nesting level, at the job and in each of its two passes: a family of eight holders in
+  sixteen nests behind one to five `bash -c`, `sh -c` and `eval` strings, read under every `shell:`
+  setting, and one holder behind one to 64 `eval` words, read under every setting at seven depths
+  (1, 8, 16, 32, 40, 63 and 64) and under the default setting alone at the other 57. The job's
+  marks and the main pass's are `main`'s own on each of those rows; the walk's pass is this PR's
+  reading, pinned as it reads. What is pinned is that call and those rows' verdicts: a change
+  beside the call that moves none of those rows is not seen, and it can read running rows CLEAN: a
+  one-line change keyed on a depth and one more dimension (an inner shell, a holder, a member, a
+  run length) passes the suite, and round 20's seat built six. Open, as on `main`:
   a check counted under a refused shell where errexit is off (round 9 withheld it: 14 rows of round
   5's matrix), #2608's `-s $X` and `-c $X` rows, `-c $(…)`, #2900's one-dash long option behind a
   shell the step names through a variable (`CMD=bash; $CMD -norc <<'EOF'`), and the guard's other
