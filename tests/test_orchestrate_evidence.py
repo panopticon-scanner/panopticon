@@ -53,6 +53,8 @@ class TestRefusedRepliesAreRetained(LoopCase):
     one is never overwritten.
     """
 
+    SCHEMA_SECRET = "ghp_" + "Z" * 36
+
     class RefusingRunner(FakeRunner):
         """A return-persist reviewer that stamps its findings for a cell it was
         not dispatched for, and leaks a token-shaped literal while it is at
@@ -119,6 +121,40 @@ class TestRefusedRepliesAreRetained(LoopCase):
         self.assertIn("[REDACTED_TOKEN]", record["reply"])
         self.assertNotIn(self.RefusingRunner.SECRET, record["reply"])
 
+    def test_schema_error_redaction_covers_the_complete_product(self):
+        # Round 6 B1: role, advertised flag, error count and token position are
+        # the complete inputs to this display path. Pin their product rather
+        # than another sparse neighbour: positions 1-3 are quoted, 4-5 are not.
+        for kind in ("review", "verify", "tool-advisor"):
+            for advertised in (False, True):
+                for count in range(1, 6):
+                    for token_position in range(1, count + 1):
+                        with self.subTest(kind=kind, output_schema=advertised,
+                                          count=count,
+                                          token_position=token_position):
+                            errors = [
+                                "schema error %d: %s" % (
+                                    position,
+                                    self.SCHEMA_SECRET
+                                    if position == token_position else "clean")
+                                for position in range(1, count + 1)
+                            ]
+                            self._assert_schema_secret_is_confined(
+                                kind, 0, (token_position,), advertised,
+                                schema_errors=errors)
+
+        # Redaction must also precede the display cap for each role. Run both
+        # flag states so the cap pin cannot accidentally be flag-specific.
+        cut_error = ("x" * (persist.REASON_CAP - 13)
+                     + self.SCHEMA_SECRET)
+        for kind in ("review", "verify", "tool-advisor"):
+            for advertised in (False, True):
+                with self.subTest(kind=kind, output_schema=advertised,
+                                  boundary="display-cap"):
+                    self._assert_schema_secret_is_confined(
+                        kind, persist.REASON_CAP - 13, (1,), advertised,
+                        schema_errors=[cut_error])
+
     def test_schema_secrets_never_reach_any_refusal_surface(self):
         # Round 2 B3: schema errors quote the rejected instance. Capping that
         # quote before redaction can cut a token into an unrecognisable prefix;
@@ -144,11 +180,11 @@ class TestRefusedRepliesAreRetained(LoopCase):
                         kind, padding, token_positions, advertised)
 
     def _assert_schema_secret_is_confined(self, kind, padding, token_positions,
-                                          advertised):
+                                          advertised, schema_errors=None):
         d, _floor = self._repo()
         run_dir = os.path.join(d, ".panopticon", "runs", "schema-refusal")
         os.makedirs(run_dir)
-        secret = "ghp_" + "Z" * 36
+        secret = self.SCHEMA_SECRET
         if kind == "review":
             entry = {"id": "review-app-SEC", "delivery": "return_json",
                      "out_file": os.path.join(run_dir, "findings-app-SEC.json"),
@@ -210,7 +246,11 @@ class TestRefusedRepliesAreRetained(LoopCase):
             model="gpt-test", session_id="s", denials=[], error=None)
         ledger = ledger_mod.Ledger(run_dir)
         err = io.StringIO()
-        with contextlib.redirect_stderr(err):
+        schema_patch = (
+            mock.patch("scripts.synth.validate_schema.schema_errors",
+                       return_value=schema_errors)
+            if schema_errors is not None else contextlib.nullcontext())
+        with schema_patch, contextlib.redirect_stderr(err):
             refusal = loop_batch.record_entry(
                 entry, result,
                 {"duration_ms": 1, "started_at": "2026-01-01T00:00:00Z",
@@ -228,11 +268,14 @@ class TestRefusedRepliesAreRetained(LoopCase):
             "stderr": err.getvalue(),
             "retry": retry,
         }
+        quoted_positions = [position for position in token_positions
+                            if position <= 3]
         for name, text in surfaces.items():
             with self.subTest(kind=kind, padding=padding,
                               token_positions=token_positions,
                               output_schema=advertised, surface=name):
-                if padding == 0 and (token_positions[0] < 3 or name != "retry"):
+                if (padding == 0 and quoted_positions
+                        and (min(quoted_positions) < 3 or name != "retry")):
                     self.assertIn("[REDACTED_TOKEN]", text)
                 self.assertNotIn("ghp_", text)
                 self.assertNotIn(secret[:13], text)

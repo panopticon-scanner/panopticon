@@ -626,6 +626,13 @@ def _parse_reply(text):
             pass
 
 
+def _safe_schema_reason(errors):
+    """Bound only after every schema error is independently redacted."""
+    safe_errors = [redact.redact_diagnostic(error, REASON_CAP)
+                   for error in errors]
+    return "; ".join(safe_errors[:3])[:REASON_CAP]
+
+
 def write_reply(entry, text):
     """(ok, reason). Refuses -- writing nothing -- when the entry is not
     return-persist, is already done, the reply does not parse, or the parsed
@@ -654,9 +661,7 @@ def write_reply(entry, text):
         from scripts.synth import validate_schema
         errors = validate_schema.schema_errors(data, schema_path=schema)
         if errors:
-            safe_errors = [redact.redact_diagnostic(error, REASON_CAP)
-                           for error in errors[:3]]
-            detail = "; ".join(safe_errors)[:REASON_CAP]
+            detail = _safe_schema_reason(errors)
             return False, "reply for %r rejected by %s: %s" % (
                 entry.get("id"), os.path.basename(schema), detail)
     ok, reason = accepts(entry, data)
