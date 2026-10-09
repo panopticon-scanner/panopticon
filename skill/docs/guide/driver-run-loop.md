@@ -765,7 +765,7 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   redteam` the tree is untrusted and every scanner whose knob was verified against the pinned image
   is told to stop honouring one: semgrep `--disable-nosem`, bandit `--ignore-nosec`, gitleaks
   `--ignore-gitleaks-allow`. **For semgrep that flag is belt and the INGEST is the lever**, and the
-  real-image round is why the distinction is stated rather than implied: at the 1.177.0 pin semgrep
+  real-image round is why the distinction is stated rather than implied: at the 1.179.0 pin semgrep
   REPORTS a `# nosemgrep`'d result either way, marking it
   `"suppressions": [{"kind": "inSource"}]` in its SARIF, with and without `--disable-nosem` —
   identical output. So the decision is made where the SARIF is read: under `standard`
