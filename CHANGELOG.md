@@ -7,30 +7,64 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
-- **Workflow reader reads the command a `find` action runs, for every reader (#2935).** `command()`
-  never unwrapped `find`, so the guard's fetch, `-c` program and pipe readers saw no action, the
-  first one included: `find /dev/null -exec curl -fsSLo tool … \;` ⏎ `sh tool`, `find /dev/null
-  -exec sh -c 'curl … | sh' \;` and `curl … | find /dev/null -exec sh \;` ran the download and
-  read CLEAN. `command()` now unwraps a `find` as it unwraps a wrapper, into the action a fold
-  reads (#2918's folds), its wrappers stripped and its command word a `shell_wrappers.Found` whose
-  `finder` is the `find`. `find` exits 0 though a `-exec … \;` command fails, so nothing an action
-  runs is credited: an action that runs a checksum tool keeps the `find`, as `main` reads it, and
-  a program an action runs, as its `-c` string or on its shell's standard input, has no shell sure
-  to read it (`shell_command.unsure`, `sure_reader`), so `workflow_forms.flattened` reads it
-  `Unsure`. `workflow_operands.described` hands the `find`'s roots for a `Found` word's `{}`, and
-  `workflow_programs.scripts` and `stdin_scripts` call those two on their own lines (out of lane,
-  granted by the coordinator). An action whose command word is `{}`, a substitution or a `$` word,
-  or a `find` holding more than 8, reads as #2918 reads it. On the #2935 hunt -- 131 rows with
-  8-parent truth: a fetch in an action, its `-c` program, a download it runs and a stream piped
-  into its shell, each in ten positions, the checks and benign finds -- 77 rows (385 cells) that
-  read CLEAN on `main` while every parent runs them now report, with no price (the benign finds
-  stay CLEAN) and none going CLEAN; the unwrap alone would have read 14 of the check rows (42
-  cells) CLEAN, which the programs' two lines keep reported. No cell moves on the seat's sets (the
-  #2885 round-4 rows and twins, round 3's own and twins, the AX, P0, F6 and P4 rows, the round-3
-  kit's 20,533) but for #2911's rows (S08n, S08p, hunt 37's `*-od`), which differ between two runs
-  of `main` too. The cost, `job_defects` against `main` in one process: 2.1x on the #2935 hunt,
-  1.3x on the #2885 seat's 288 FX rows and 1.1x on its 1,945 rows. Still unread, as on `main`: a
-  fetch in one action of a `find` and its run in another (#2941).
+- **Workflow reader reads the command a `find` action runs, for every reader (#2935).**
+  `command()` never unwrapped `find`, so the guard's fetch, `-c` program and pipe readers saw no
+  action, the first one included: `find /dev/null -exec curl -fsSLo tool … \;` ⏎ `sh tool`, `find
+  /dev/null -exec sh -c 'curl … | sh' \;` and `curl … | find /dev/null -exec sh \;` ran the
+  download and read CLEAN. `command()` now unwraps a `find` as it unwraps a wrapper, into the
+  action a fold reads (#2918's folds) -- a command line of its own, read as the step's own is: its
+  wrappers stripped, a `$` word bash may drop in front of a known name dropped and a shell's
+  default read, as `main` reads them where the step runs them (round 2; round 1 read them as words
+  behind a wrapper, which reported benign finds) -- its command word a `shell_wrappers.Found`
+  whose `finder` is the `find`. GNU `find` 4.9.0 exits 0 whatever a `-exec … \;` command returns
+  (the round-1 seat: 33 of 33 measurements, 1 only for `{} +`), and no `find` runs `exit`,
+  `return` or a shell function, so nothing an action runs is the step's own. A stage's status and
+  its call are read off the stage itself, the `find` kept (`shell_command.own_command`;
+  `workflow_function_calls`, `workflow_gating` and `workflow_failure_contexts` import it as their
+  `command`, out of lane, granted by the coordinator): round 1 read `CHECK || find … -exec exit 1
+  \;` as `CHECK || exit 1`, and a function an action names as called, so the download ran with the
+  wrong digest and read CLEAN where `main` reports -- the round-1 seat's 8,776 cells in 2,308
+  rows, which report again. No check an action runs is credited: an action that runs a checksum
+  tool keeps the `find`, as `main` reads it, and a program an action runs, as its `-c` string or
+  on its shell's standard input, has no shell sure to read it (`shell_command.unsure`,
+  `sure_reader`), so `workflow_forms.flattened` reads it `Unsure`; `workflow_operands.described`
+  hands the `find`'s roots for a `Found` word's `{}`, and `workflow_programs.scripts` and
+  `stdin_scripts` call those two on their own lines (out of lane, granted). An action no `find`
+  can run keeps the `find` too (`_NO_PROGRAM`): a shell's special builtin -- `exit`, `set`,
+  `eval`, `exec` and their kind, behind a wrapper the action runs as well -- has no program, and
+  `find` looks an assignment up as a program's name, so `-exec set +e \;` is not the step's
+  posture and `-exec eval '…' \;` runs nothing; `command` is a program on macOS, which runs a
+  builtin too, and stays read. A `find` an action runs is kept: `find` ends an action at the first
+  `;` or `{} +`, so that one holds none it can run, and the reads grow with a nest's depth, not as
+  a power of it (a nest of depth 8: 22.8 s a step at round 1, by its seat; 46 ms here now, where
+  round 1 took 11 s). An action whose command word is `{}`, a substitution or a `$` word no known
+  name follows, or a `find` holding more than 8, reads as #2918 reads it. On the round-1 seat's
+  differential -- 27,902 generated steps, 139,510 cells, 8-parent truth on GNU find 4.9.0 --
+  27,085 cells in 5,503 rows that read CLEAN on `main` while a parent runs them report (a fetch in
+  an action then a run, an action's `-c` program, an action running a download, a stream piped
+  into an action's shell, heredoc and here-string programs; in every position and behind every
+  wrapper), and no cell goes REPORT to CLEAN where a parent runs, there, on its three status sets
+  or on the standing sets. The price, CLEAN on `main` and REPORT here where no parent runs, is
+  20,945 cells in 4,318 rows of that differential (round 1: 25,675 in 5,264), each a `find` that
+  never runs its action as written, which a reader cannot tell from one that does, or one of
+  `main`'s own over-reports reached through the unwrap: the test in front never matches, so the
+  action is never reached (1,520 cells); no `;` ends the action, so `find` stops on a usage error
+  (4,310); `command` is the action's first word, no program on Linux, where the truth was taken
+  (1,630); `-ok` or `-okdir` with no `y` to read (7,900); `-execdir` or `-okdir` from `/dev/null`,
+  which runs the action in `/dev` (2,464); `{}` handed on, so the shell or fetcher gets the root
+  (1,040); a check that gates the run inside one action program, wrong digest (805), a fetch-only
+  program in an action of a `find` rooted where the download lands (760) and a here-string program
+  under dash (352), which `main` reports alike outside a `find`, 164 more of those three behind an
+  optional `$` word; and in its probes a `find` as another's action, which `find` itself rejects,
+  the inner `-exec` read as an action of the first (25 cells). Of the benign finds that fetch
+  nothing, 5 cells read REPORT, one row with no `;` (round 1: 785 cells). No cell moves on the
+  standing sets (the #2885 round-4 rows and twins, round 3's own and twins, the AX, P0, F6 and P4
+  rows, the round-3 kit's 20,533, #2856's hunts) but for #2911's rows (S08n, S08p, hunt 37's
+  `*-od`), which differ between two runs of `main` too. The cost, `job_defects` against `main` in
+  one process: 2.5x on the #2935 hunt, 1.4x on the #2885 seat's 288 FX rows and 1.1x on its 1,945
+  rows; the worst case is one `find` of 8 actions, 13x to 16x a step (37 ms against 2.5), 19x for
+  ten of them in one, and a nest reads as that many actions of the first `find`. Still unread, as
+  on `main`: a fetch in one action of a `find` and its run in another (#2941).
 - **Workflow reader reads every action a `find` runs (#2918).** `curl … -o tool` ⏎ `find
   /dev/null -exec true \; -exec sh /dev/fd/3 \; 3<> tool` ran the download and read CLEAN: the
   guard read one of `find`'s actions, the first of `-exec`, `-execdir`, `-ok` and `-okdir` in that
