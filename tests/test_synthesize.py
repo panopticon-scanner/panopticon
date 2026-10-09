@@ -1378,7 +1378,7 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
                 json.dump({"findings": [finding]}, fh)
             out = os.path.join(d, "report.json")
             completed = subprocess.run(
-                ["python", str(Path(syn.__file__).resolve()),
+                ["python3", str(Path(syn.__file__).resolve()),
                  "--target", "src", "--out", out, fp],
                 cwd=d, capture_output=True, text=True, check=False,
             )
