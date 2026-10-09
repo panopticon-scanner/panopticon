@@ -122,9 +122,9 @@ class TestRefusedRepliesAreRetained(LoopCase):
         # Round 2 B3: schema errors quote the rejected instance. Capping that
         # quote before redaction can cut a token into an unrecognisable prefix;
         # printing the unredacted reason also leaks a whole token. Exercise
-        # both positions through the loop's real persistence/recording seam.
-        for padding, second_error in ((0, False), (154, False), (70, True)):
-            with self.subTest(padding=padding, second_error=second_error):
+        # every quoted-error position through the real persistence seam.
+        for padding, error_position in ((0, 1), (154, 1), (70, 2), (0, 3)):
+            with self.subTest(padding=padding, error_position=error_position):
                 d, _floor = self._repo()
                 run_dir = os.path.join(d, ".panopticon", "runs", "schema-refusal")
                 os.makedirs(run_dir)
@@ -132,11 +132,17 @@ class TestRefusedRepliesAreRetained(LoopCase):
                          "out_file": os.path.join(run_dir, "findings-app-SEC.json"),
                          "run_id": "RID", "group": "app", "domain": "SEC"}
                 secret = "ghp_" + "Z" * 36
-                body = {"findings": [{"note": "x" * padding + secret}]}
-                if second_error:
+                findings = []
+                if error_position == 3:
+                    # One clean invalid finding sorts before the token-bearing
+                    # finding, after the unknown-root error below.
+                    findings.append({"note": "clean"})
+                findings.append({"note": "x" * padding + secret})
+                body = {"findings": findings}
+                if error_position > 1:
                     # The unknown root key sorts first; the token-bearing
-                    # finding is the SECOND quoted schema error. Every quoted
-                    # error must be redacted, not merely the first one.
+                    # finding is the SECOND or THIRD quoted schema error. Every
+                    # quoted error must be redacted, not merely an initial run.
                     body["unexpected"] = "root"
                 reply = json.dumps(body)
                 result = base.RunResult(
@@ -163,9 +169,9 @@ class TestRefusedRepliesAreRetained(LoopCase):
                     "retry": retry,
                 }
                 for name, text in surfaces.items():
-                    with self.subTest(padding=padding, second_error=second_error,
+                    with self.subTest(padding=padding, error_position=error_position,
                                       surface=name):
-                        if padding == 0:
+                        if padding == 0 and error_position < 3:
                             self.assertIn("[REDACTED_TOKEN]", text)
                         self.assertNotIn("ghp_", text)
                         self.assertNotIn(secret[:13], text)
