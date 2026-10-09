@@ -2493,6 +2493,47 @@ class TestEveryMixedReadingIsRead(unittest.TestCase):
         self.assertEqual(bare[0], bare[1])
         self.assertNotEqual(bare[0], bare[2])
 
+    # The named limit's hunt (#2953): 9 spellings of a program string by 5 program shapes, none
+    # ending in the download's name -- one that does reports as one copy, on `main` too
+    # (`workflow_operands.covers` reads a `$` word ending in that name as a mention).
+    RUNNERS = ("sh -c '%s'", "bash -c '%s'", "eval '%s'", 'sh -c "%s"', 'eval "%s"', "env sh -c '%s'",
+               "bash -lc '%s'", "sh -ec '%s'")
+    SHAPES = ("%s; true", "%s && true", "true; %s; true", "( %s )", "%s >/dev/null")
+
+    def strings(self):
+        """Each program string of the limit's hunt, as the text a copy of it is written with."""
+        for shape in self.SHAPES:
+            for runner in self.RUNNERS:
+                yield lambda more="", shape=shape, runner=runner: runner % (shape % self.W + more)
+            yield lambda more="", shape=shape: 'sh -c "%s"' % (shape % self.W + more).replace("$", "\\$")
+
+    def test_two_identical_program_strings_at_two_places_are_one_word_2953(self):
+        # THE NAMED LIMIT, #2953 (the PR that hands a program string its place moves these rows to
+        # REPORT): a `-c` or an `eval` string reaches its parse by its text -- its parent's token,
+        # and `workflow_programs._parsed`, a cache keyed by the text -- so two byte-identical
+        # strings at two places are one word, and the payload their mixed reading runs (the first
+        # fetches, X set; the second runs it, X unset) reads CLEAN, as on `main`, while every parent
+        # runs it: all 45 pairs of the hunt, and an `eval` whose words bash joins.
+        pair = self.PREP + "X=1\nexport X\n%s\nunset X\n%s\necho done\n"
+        for string in self.strings():
+            for shell in SHELLS:
+                with self.subTest(string=string(), shell=shell):
+                    self.assertFalse(reported(pair % (string(), string()), shell))
+        join = "eval '%s;' 'true'" % self.W
+        self.assertFalse(reported(pair % (join, join)))
+
+    def test_program_strings_that_differ_are_two_words(self):
+        # The limit's controls: one blank more in the second string and the two are two words, read
+        # every way, so each pair reports -- `main` reads these CLEAN too; one copy alone fetches
+        # and runs nothing, and reads CLEAN. (The hunt holds each under all five settings.)
+        pair = self.PREP + "X=1\nexport X\n%s\nunset X\n%s\necho done\n"
+        for string in self.strings():
+            for shell in (None, "sh"):
+                with self.subTest(string=string(), shell=shell):
+                    self.assertTrue(reported(pair % (string(), string(" ")), shell))
+            self.assertFalse(reported(self.PREP + "X=1\nexport X\n%s\necho done\n" % string()))
+        self.assertTrue(reported(pair % ("eval '%s;' 'true'" % self.W, "eval '%s;' 'true '" % self.W)))
+
     def test_halves_that_run_one_command_word_with_other_operands_are_apart(self):
         # B3 (SH.cat.pipe.k2-env): `cat sums cat` and `cat` both run `cat`, but the shell reads the
         # download only where Q is unset: the word's halves read apart, so its empty half is read
