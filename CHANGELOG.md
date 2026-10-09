@@ -557,6 +557,71 @@ evidence exposed.
   acknowledgement is written; the gap appears only in the `tool_policy_enforced` posture line. An
   unproven boundary (including generic) still requires `--allow-unenforced`. Codex gains no
   capability claim in this policy change.
+- **Workflow guard: the stdin and `-c` string walks read a shell's options as the shell does, and
+  the guard only adds reports (#2616, #2864, #2647, #2654; #2858).** `job_defects` returns `main`'s
+  findings -- a pass in which every join of the stdin and string walks answers as `main` does
+  (`workflow_options.mains_answer`) -- then those of a second walk that the first pass does not
+  make, so every finding `main` makes stands. The second walk skips a long option's FILE (`bash
+  --rcfile /dev/null <<'EOF'` and `--init-file` ran the heredoc and read CLEAN: #2616) and reads
+  bash's one-dash long words in the leading run (`bash -norc <<'EOF'`, `bash -norc -c '…'`: #2864);
+  reads options on after `-s`, so `bash -s -c true <<'EOF' <check>` counts no check bash never
+  reads (#2647) and dash's `sh -s -c true` reads the heredoc after the string; counts none after a
+  lone `-` with a word behind it (`bash - /dev/null`: #2654), where the shell runs none of the body
+  (`-n`, `-o noexec`, `-D`, `--version`, `-version`, `--pretty-print` but under `-i`) or where the
+  option run holds a word that may expand (`-o $X`, a `~`, a pattern); seeks the `-c` string in
+  every reading of such a word; and weighs a `$Y` after `-c` or `-c --` as a value in the option
+  slot. Nothing is cleared: a body under a refused option, an exit or noexec stays reported though
+  nothing runs (#2603, #2606), and so do the over-report halves of #2647 and #2654.
+- **Workflow guard: what the second walk adds, and what it costs (#2858 rounds 10-11).** On the
+  round-5 to round-8 seats' sets (80,514; 29,639; 18,548; 15,713 steps), their 222 direct cases and
+  round 10's seat hunt (4,276 rows), the first pass gives `main`'s findings exactly and the job
+  holds every one of them. Joining the walks at their inputs (round 10) was not enough: four
+  consumers read less given an added reading -- `_on_stdin` and annotate's `_complete`,
+  `substitution_script`, a printer-fed body read under both shells, an added `}` regrouping the
+  first fold -- and 850 of the seat's rows read CLEAN where `main` reported; a union of findings
+  ends that class. Against `main` the walk adds reports on 9,328 steps where a payload or an
+  unverified use runs and 24,516 where nothing does, on the four sets (posture-blind step counts,
+  every `shell:` setting read; a `noe` step judged on its two `{0}` settings alone gives 9,057 /
+  24,515): a body only it reads 2,414 / 6,858, a check only `main` counted 2,529 / 4,605, a string
+  only it reads 1,973 / 2,809, a check in a string `main` reads 1,696 / 7,752, a candidate only it
+  weighs 691 / 2,447, several 25 / 45 (46 of the 222 cases; 6 of the hunt's rows, a withheld string
+  read under both shells' printers). The over-reports
+  are fail-closed: a word that may expand may be the FILE, `-n` or `-c` (`bash $X -c "<check>"`,
+  `bash -o $X -s`), a FILE may hand its parameters on (`bash w.sh -c '…'`), a body or string whose
+  check is withheld reads under both shells' printers (`bash -s -c 'echo hi' <<'EOF' echo 'sh\ttool'
+  | sh`), and a long option read on past its FILE meets one that refuses or exits (`bash --rcfile
+  /dev/null --version`). The cost: the job reads a step twice, so every ratio to `main` rises by
+  about one and stays flat with n -- on round 10's seat shapes at 1,000 to 8,000 words, 2-3x for
+  most, 3.4-3.8x for a long option's FILE, 3.5-4.4x for one-dash runs, 4.5-5.6x for `-o $X`, and
+  11-16x for the two `-c --` shapes (`Y=; Z=; bash -c -- $Y $Z… 'P'`, `X=; bash -c -- $X… sh
+  <<'EOF'`), which `main` reads CLEAN though bash runs the payload, every word a candidate weighed
+  as `main` weighs its own; each range spans a Linux aarch64 box (its low end) and a Mac. #2855's
+  pins that count a step's carries and time its reading hold each of the job's two passes on its
+  own, the passes asserted to be two, where one reading was the whole. The job keys each finding
+  with its step's name, so it stays linear wherever the name is one the workflow schema takes, a
+  string (8,000 steps sharing one finding: 2.7x `main` on the Linux box, 3.3x on the Mac). Open,
+  and this PR's own: a `name:` the schema refuses -- a list or a mapping -- is compared with the
+  others under its finding, so where many share one finding the cost grows fourfold with each
+  doubling (4,000 such steps: 0.14 s with list names and 0.20 s with mapping names on the Linux
+  box, 0.10 s and 0.13 s on the Mac; `main` 0.005 s and 0.002 s); the guard pins in
+  `tests/test_workflow_options.py` hold two things about the stdin walk's nesting. The recursive
+  call: its argv is its own frame's one `command()` result, its depth and its walk are what the
+  parent was entered with (an entry stack, never a frame's live locals) and the walk is the pass's
+  own, at every depth to the bound of 64, and `_details`' own text binds neither `depth` nor `walk`
+  and makes its one self-call with exactly `inner`, `depth + 1` and `walk`. And the verdict at
+  every nesting level, at the job and in each of its two passes: a family of eight holders in
+  sixteen nests behind one to five `bash -c`, `sh -c` and `eval` strings, read under every `shell:`
+  setting, and one holder behind one to 64 `eval` words, read under every setting at seven depths
+  (1, 8, 16, 32, 40, 63 and 64) and under the default setting alone at the other 57. The job's
+  marks and the main pass's are `main`'s own on each of those rows; the walk's pass is this PR's
+  reading, pinned as it reads. What is pinned is that call and those rows' verdicts: a change
+  beside the call that moves none of those rows is not seen, and it can read running rows CLEAN: a
+  one-line change keyed on a depth and one more dimension (an inner shell, a holder, a member, a
+  run length) passes the suite, and round 20's seat built six. Open, as on `main`:
+  a check counted under a refused shell where errexit is off (round 9 withheld it: 14 rows of round
+  5's matrix), #2608's `-s $X` and `-c $X` rows, `-c $(…)`, #2900's one-dash long option behind a
+  shell the step names through a variable (`CMD=bash; $CMD -norc <<'EOF'`), and the guard's other
+  named gaps.
 - **Workflow guard carries a compound command's closing output to its inner fetch (#2883).**
   A fetch whose own stdout is not redirected now inherits the first redirect or pipeline on the
   close of its enclosing `{ }`, `if`, `for`, `while`/`until` or `case`, so `> tool`,
