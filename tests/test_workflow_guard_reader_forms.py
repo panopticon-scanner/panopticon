@@ -563,11 +563,25 @@ class TestTheStandInHoldsItsKeysAndAProductItsBound(unittest.TestCase):
         # B5: a body of K statements called K times reads in about main's time, not K times its
         # cube: each call site's carry from one state of its bodies' names is made once
         # (`workflow_called._carried`; round 9 keys it on those names, not the whole table).
+        # #2858's union: `job_defects` reads the step TWICE, one `_job_defects` call after the other
+        # -- `main`'s pass under `mains_answer()`, then the walk's -- so each pass is timed on its
+        # own, in the one run, and held to the bound the single reading had; the passes are counted
+        # too, as `TestACallSiteCarriesAFixedNumberOfTimes` counts them.
         import time
+        from unittest import mock
         body = "g() {\n" + "".join(": %d\n" % i for i in range(150)) + "}\n"
-        start = time.perf_counter()
-        reported(GET + body + "g\n" * 150 + "sh /dev/null\n")
-        self.assertLess(time.perf_counter() - start, 8.0)
+        took, real = [], wg._job_defects
+
+        def timed(*args, **kwargs):
+            start = time.perf_counter()
+            try:
+                return real(*args, **kwargs)
+            finally:
+                took.append(time.perf_counter() - start)
+        with mock.patch.object(wg, "_job_defects", timed):
+            reported(GET + body + "g\n" * 150 + "sh /dev/null\n")
+        self.assertEqual(TestACallSiteCarriesAFixedNumberOfTimes.PASSES, len(took))
+        self.assertLess(max(took), 8.0)
 
 
 class TestACallSiteCarriesAFixedNumberOfTimes(unittest.TestCase):
@@ -723,6 +737,7 @@ class TestACallSiteCarriesAFixedNumberOfTimes(unittest.TestCase):
         spent, site = {}, [None]
         real_called, real_carry, real_one = (
             workflow_uses.record_called, workflow_called._carry, workflow_called._carry_one)
+        passes = self.each_pass(spent)
 
         def called(table, stmts, position, starts):
             site[0] = position
@@ -743,12 +758,16 @@ class TestACallSiteCarriesAFixedNumberOfTimes(unittest.TestCase):
         for size in (100, 200):
             with self.subTest(size=size):
                 spent.clear()
+                passes.clear()
                 with mock.patch.object(workflow_uses, "record_called", called), \
                         mock.patch.object(workflow_called, "_carry", carry), \
-                        mock.patch.object(workflow_called, "_carry_one", one):
+                        mock.patch.object(workflow_called, "_carry_one", one), \
+                        mock.patch.object(wg, "_job_defects", passes.entered):
                     reported(GET + self.calls(size) + "sh /dev/null\n")
-                self.assertTrue(spent)
-                self.assertLessEqual(max(spent.values()), 8 * 128)
+                self.assertEqual(self.PASSES, len(passes))
+                for each in passes:
+                    self.assertTrue(each)
+                    self.assertLessEqual(max(each.values()), 8 * 128)
 
     def test_each_statement_is_read_for_what_it_may_set_once_a_step(self):
         # Round 12 (its seat's F4, mC7): `_Step.set_at` keeps what each statement may set, so the
@@ -806,18 +825,42 @@ class TestACallSiteCarriesAFixedNumberOfTimes(unittest.TestCase):
                     self.assertTrue(sizes)
                     self.assertLessEqual(max(sizes), bound, (max(sizes), len(sizes)))
 
+    # #2858's union: `job_defects` reads a step TWICE, one `_job_defects` call after the other --
+    # `main`'s pass under `mains_answer()`, then the walk's -- and each pass carries the sites within
+    # the budget on its own. So a step's carries are kept per pass, in the one run, and the passes
+    # are counted too: a third one is a change, and each pass is held to the budget, not their mean.
+    PASSES = 2
+
+    @staticmethod
+    def each_pass(current):
+        """A list of one `current`-shaped tally per `_job_defects` call: `entered` is the patch for
+        `wg._job_defects` that starts a pass -- `current` is emptied and its contents at the pass's end
+        are what the list keeps -- so the tallies the other patches add to `current` fall per pass."""
+        class Passes(list):
+            def entered(self, *args, **kwargs):
+                current.clear()
+                try:
+                    return real(*args, **kwargs)
+                finally:
+                    self.append(dict(current))
+        real = wg._job_defects
+        return Passes()
+
     def carries(self, script):
-        """How many times `_carry` ran for `script` (each site's dry carry included)."""
+        """How many times `_carry` ran for `script` in each pass (each site's dry carry included)."""
         from unittest import mock
-        count = [0]
+        count = {}
+        passes = self.each_pass(count)
         real = workflow_called._carry
 
         def counted(*args):
-            count[0] += 1
+            count["carries"] = count.get("carries", 0) + 1
             return real(*args)
-        with mock.patch.object(workflow_called, "_carry", counted):
+        with mock.patch.object(workflow_called, "_carry", counted), \
+                mock.patch.object(wg, "_job_defects", passes.entered):
             reported(GET + script + "sh /dev/null\n")
-        return count[0]
+        self.assertEqual(self.PASSES, len(passes))
+        return max(each.get("carries", 0) for each in passes)
 
     def test_each_site_carries_within_the_budget(self):
         # 24 sites of one body: one dry carry for them all, and at most 8 carries a site, where round
@@ -3899,7 +3942,8 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
       `main`'s own gaps for a literal stdin shell, read as `main` reads them,
       each filed under #2331 too and reported behind a string: options that
       keep it from running its program (`bash -n -s`, `bash -t -s`,
-      `bash -s -c true`, `bash --version`, `bash -o $X -s` with `X=noexec`,
+      `bash -s -c true` and `bash --version` until #2647, `bash -o $X -s` with `X=noexec` until
+      #2858's round 4,
       and `SHELLOPTS=noexec bash -s` under a dash step); a subshell's
       `|| true`; a check in a function called under `|| true` or never called,
       or ahead of `&&` in a `-e` body; a body that reads the rest of itself
@@ -4995,11 +5039,18 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
     def test_2500_mains_own_gaps_read_as_on_main(self):
         # `main`'s gaps, filed under #2331: CLEAN, as on `main`, though every shell runs the
         # download (rc 0), bar bash under `SHELLOPTS=noexec`, a variable it refuses (rc 1).
-        self.assert_clean([stdin_step("bash -n -s"), stdin_step("bash -o noexec -s"),
-                           stdin_step("bash -t -s", "echo start\n" + CHECK),
-                           stdin_step("bash --version"), stdin_step("bash -s -c true"),
+        self.assert_clean([stdin_step("bash -t -s", "echo start\n" + CHECK),
                            stdin_step("SHELLOPTS=noexec bash -s"),
                            stdin_step("sh", pre="sh() { :; }\n")])
+        # No longer gaps (#2647): after `-s` bash keeps reading options, and the `-c` puts the
+        # program in the string -- the heredoc is data, its check never read; `--version`
+        # prints and exits, reading no stdin (`-version` too); and `-n` / `-o noexec` read the
+        # body and run none of it (#2858 round 3: `bash -s -version` is the letters, `n` among
+        # them), so the check never runs; FR FR FR FR on each. The body is read as `main` reads
+        # it, the step's own, and no check in it counts (round 10).
+        self.assert_reported([(stdin_step(runner), 1, UNGATED % "bash")
+                              for runner in ("bash -s -c true", "bash --version", "bash -version",
+                                             "bash -n -s", "bash -o noexec -s", "bash -s -version")])
 
     def test_2500_a_name_made_to_run_something_else_is_reported_behind_a_string(self):
         # Class 4: a function (`eval() { :; }` too), an alias, a fake `sh` first on `PATH`, a
@@ -5055,8 +5106,10 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
             (stdin_step("bash x.sh -ec 'sh -e'", self.ECHOED, pre=": > x.sh\n"), 1,
              UNGATED % "bash"),
             (stdin_step("eval 'bash - /dev/null'"), 1, UNGATED % "eval")])
-        # `main`'s gap, filed under #2331: the literal `bash - /dev/null` reads CLEAN.
-        self.assert_clean([stdin_step("bash - /dev/null")])
+        # No longer a gap (#2654): the word after a lone `-` is the script FILE, and the heredoc
+        # its data -- the check is never read, behind `eval` or not; FR FR FR FR on each. The body
+        # is read as `main` reads it, and no check in it counts (round 10).
+        self.assert_reported([(stdin_step("bash - /dev/null"), 1, UNGATED % "bash")])
         self.assert_clean([stdin_step("bash -s"), stdin_step("bash -e -s", self.ECHOED)])
 
     def test_2500_mains_literal_shell_gaps_are_reported_behind_a_string(self):
@@ -5098,6 +5151,11 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         reported.append((stdin_step("eval 'bash -s <>/dev/null'"), 1, UNGATED % "eval"))
         reported.append((GET + "bash -s <<'EOF' <>/dev/null\n%s\nEOF\n" % CHECK + USE, 1,
                          "fetches %stool -> tool and making it executable" % URL))
+        # No longer a gap (#2858 round 4): an `-o` name that may expand credits no check, since it
+        # may be `noexec` -- the literal twin is reported too (-T, rc 0, on both bashes: forge).
+        noexec_twin = stdin_step("bash -o $X -s", CHECK, pre="X=noexec\n")
+        gaps.remove(noexec_twin)
+        reported.append((noexec_twin, 1, UNGATED % "bash"))
         self.assert_reported(reported)
         self.assert_reported((script, 1, "inside a function") for script in fixed)
         self.assert_reported((script, 1, "ends a group that hands its failure")
