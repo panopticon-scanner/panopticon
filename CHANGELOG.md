@@ -7,6 +7,36 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **No lone surrogate reaches an encoder (#2951).** `json.load` hands a lone surrogate over for a
+  lone `\udXXX` escape, and no encoder takes one. One such string in one agent-authored finding
+  ended `synthesize.py` with a traceback and status 1, which is also the gate's FAIL status: in a
+  title, a file or a category the id's hash raised (`evidence.matrix_finding_id`) and NO report was
+  written; in a description, impact, remediation, exploit scenario, a reference or a provenance
+  value `html_report.write_html` raised and left an empty page; in a nested value, a key,
+  `location.function` or `lens` the run finished and the report carried the surrogate to whoever
+  loads it next. The same string in an advisor's verdict, in a scanner's output (a SARIF `ruleId`
+  or `uri`, dependency-check's `fileName`: `evidence.finding_fingerprint`) or in a group name
+  discovery took from the target's tree did the same. Each is now spelled as the inert policy
+  spells a code point, `\ud800` as six visible characters, so the text stays readable and every
+  written file is valid UTF-8. Where: `findings.agent_finding` and `evidence._agent_verdict`, the
+  one door each for findings and verdicts, and `tools/base.parse_json_bytes` with the SARIF
+  adapter's parse for a scanner's output -- on the way in, because that text is hashed before
+  anything is written, so the id and the fingerprint are those of the spelled text and the
+  driver's loader and synthesize's agree; `synth/report.build_report`, the backstop, for
+  everything else a report holds (names from the tree, the run's own artifacts), which meets its
+  first encoder at a writer; and the policy's own set, which gains U+D800 to U+DFFF, so
+  `inert_text` and the prompt's `_prompt_safe` cover a name that never was JSON (on Linux an
+  undecodable byte in a filename is one). Only surrogates are spelled at the doors: an input
+  holding none is read as it was, the same objects, and writes the same bytes -- on 45 cases
+  through both trees' children and on the schema-parity fixture's 26 files, ids and fingerprints
+  included. A run on a lone surrogate writes, byte for byte, what a run on its spelled twin
+  writes. One string of one input at a time over that fixture (13 files, 1,031 strings; the queue
+  pass 556): on `main` 92 fields end badly (30 raise, 62 leave the surrogate in an artifact) and
+  54 in the queue pass; now none. Not covered: `--compare`, which reads reports already on disk;
+  the last prints of the operator's own `--out` path; the driver's own readers of the run
+  artifacts beyond what `_prompt_safe` and `inert_text` wrap; and a value nested deeper than the
+  stack, which ends the run in `redact.redact_tree` with or without a surrogate (`main` does the
+  same).
 - **Workflow reader reads every action a `find` runs (#2918).** `curl … -o tool` ⏎ `find
   /dev/null -exec true \; -exec sh /dev/fd/3 \; 3<> tool` ran the download and read CLEAN: the
   guard read one of `find`'s actions, the first of `-exec`, `-execdir`, `-ok` and `-okdir` in that
