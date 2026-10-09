@@ -7,6 +7,11 @@ a GitHub runner's bash with `sh` = dash), measured with a recording `curl` that 
 program, a `sha256sum` whose `-c` fails, and the step run as GitHub runs it (`-e`, bash also
 `-o pipefail`): FR fetched and ran, F- fetched only, -- neither, +chk the check ran. Every row's four
 columns agree unless a comment says otherwise.
+
+A named limit (#2858 round 20): the nesting-level pin reads its 64-deep holder under every `shell:`
+setting at depths 1, 8, 16, 32, 40, 63 and 64 and under the default setting alone at the other
+depths, so a change keyed to one unsampled depth that only a non-default setting's reading shows is
+not seen.
 """
 import ast
 import collections
@@ -73,6 +78,14 @@ def runs(holders, run, first, left_out):
         for length in list(range(first[at], len(words) + 1)) + [2 * len(words)]:
             rows.append(holder % " ".join((words + words)[:length]))
     return tuple(rows)
+
+
+def nested(text, style, levels):
+    """`text` behind `levels` strings, a layer of `style`'s letters in turn, each quoted whole: `b` a `bash -c`
+    string, `s` an `sh -c` string, `e` an `eval` word (#2858 round 20)."""
+    for level in range(levels):
+        text = {"b": "bash -c ", "s": "sh -c ", "e": "eval "}[style[level % len(style)]] + shlex.quote(text)
+    return text
 
 
 class TestTheOptionsAfterDashS(unittest.TestCase):
@@ -1203,6 +1216,27 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
               "CMD=bash\n" + body("$CMD -norc", PIPE), "echo '%s' | bash -norc -c 'sh'\n" % PIPE,
               "bash --rcfile \"${X:-$Y}\" -norc -c '%s'\n" % PIPE, body("bash -c \"bash -c 'bash -s'\"", PIPE),
               body("bash -c 'sh -s'", PIPE), body("bash -c 'bash -e -x -s'", PIPE), body("bash -xs", PIPE))
+    # Round 19's seat, B1 and B2: HVin481 thins the argv that `_details` hands `command()`, and HVread474 reads a
+    # nested argv with the walk's readers, each from three strings deep on -- beside the recursive call, whose
+    # pins hold what the call is handed and not what is read around it, and deeper than the family nests (two).
+    # So the VERDICT is pinned at every nesting level, at `job_defects`: B4 behind each inner below, behind one
+    # to five strings of its style, and behind `DEEP` under one to 64 `eval` words (every depth the walk
+    # reads), gives at every level the marks written here -- the job's, the main pass's and the walk pass's, a
+    # letter a setting -- which are `main`'s (4ee63a96: its job, and this main pass, on the seat's deep rows).
+    # `REPORTED` inners are the ones `main` reports: a reading that drops or misreads the one-dash word three
+    # strings down turns them CCCRR (HVin481, HVread474, HVopt474). `CLEARED` ones it reads CLEAN under three
+    # settings: a walk that follows no string three deep reports them (HVstr476). `DEEP` is read under every
+    # setting at the depths `SPREAD` names and under `DEEP_SHELLS` at every depth (the default setting alone,
+    # for CI's time: a deeper row costs more, each reader walking the whole nest; the module's docstring
+    # names what that leaves out). These rows' verdicts are pinned, level by level; that is no proof that
+    # every change of `_details` moves one of them.
+    STYLES = ("b", "be", "bs")              # `bash -c` strings; `bash -c` and `eval` in turn; `bash -c` and `sh -c`
+    REPORTED, CLEARED = ("RRRRR", "RRRRR", "CCCRR"), ("CCCRR", "CCCRR", "CCCRR")
+    NESTED = tuple(itertools.product(("bash -norc -c 'sh'", "bash -norc", "sh -norc -c 'bash -s'", "bash -norc -s"),
+                                     STYLES, (REPORTED,))) + (
+        ("bash -posix -c 'sh'", "b", CLEARED), ("bash -posix", "be", CLEARED),
+        ("sh -posix -c 'bash -s'", "bs", CLEARED), ("bash -posix -s", "b", CLEARED))
+    DEEP, DEEP_SHELLS, SPREAD = "bash -norc -c 'sh'", SHELLS[:1], (1, 8, 16, 32, 40, 63, 64)
 
     @staticmethod
     def argv(text):
@@ -1251,11 +1285,13 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
         # depth from 1 to the walk's bound of 64, in the main pass and in the walk's. One row nests `eval`
         # 64 deep (every depth at once); four nest `bash -c`, `sh -c` and `eval` strings five deep; each tail
         # carries every member of the walk's tables in both spellings, a FILE pair, a cluster and a `-c`
-        # string, so a one-line change of what the recursion sees -- a drop keyed to a depth, a member, a
-        # spelling, a position or a run length, alone or combined, written out or read from a table, a depth
-        # skipped, a walk swapped, a rebinding -- changes what this test holds. A static pin reads
-        # `_details`' own text: nothing in it binds `depth` or `walk`, and its one self-call passes exactly
-        # `inner`, `depth + 1` and `walk`, so a rebinding that keeps the values is caught too.
+        # string, so a change of what the CALL is handed -- a drop keyed to a depth, a member, a spelling, a
+        # position or a run length, alone or combined, written out or read from a table, a depth skipped, a
+        # walk swapped, a rebinding -- changes what this test holds. A static pin reads `_details`' own
+        # text: nothing in it binds `depth` or `walk`, and its one self-call passes exactly `inner`,
+        # `depth + 1` and `walk`, so a rebinding that keeps the values is caught too. What a frame reads
+        # BESIDE the call is not this test's -- the argv it gives `command()`, the readers it takes from
+        # `walk` (round 19's seat, HVin481 and HVread474): the verdict at every nesting level is, below.
         returned, handed, tops, entered = {}, [], [], []
         real_command, real_details = shell_reader.command, wp._details
 
@@ -1323,6 +1359,36 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
         self.assertEqual(1, len(calls))
         self.assertEqual((["inner", "depth + 1", "walk"], []),
                          ([ast.unparse(argument) for argument in calls[0].args], calls[0].keywords))
+
+    def marks(self, holder, shells):
+        """The job's, the main pass's and the walk pass's marks for B4 behind `holder`, a letter a setting of
+        `shells` (`R` a report, `C` none), the two passes taken from the one `job_defects` run."""
+        real, columns = wg._job_defects, ([], [], [])
+        for shell in shells:
+            seen = []
+
+            def each(*args, **kwargs):
+                found = real(*args, **kwargs)
+                seen.append(found)
+                return found
+            with mock.patch.object(wg, "_job_defects", each):
+                job = wg.job_defects([wg.Step("step", self.B4 % holder, shell)])
+            self.assertEqual(2, len(seen))              # `main`'s pass, then the walk's
+            for column, found in zip(columns, [job] + seen):
+                column.append("R" if found else "C")
+        return tuple("".join(column) for column in columns)
+
+    def test_the_verdict_is_the_same_at_every_nesting_level(self):
+        # Round 19's seat, B1 and B2: the rows and their marks are `NESTED`'s and `DEEP`'s, above.
+        for inner, style, written in self.NESTED:
+            for level in range(1, 6):
+                with self.subTest(inner=inner, style=style, level=level):
+                    self.assertEqual(written, self.marks(nested(inner, style, level), self.SHELLS))
+        for level in range(1, 65):
+            shells = self.SHELLS if level in self.SPREAD else self.DEEP_SHELLS
+            written = tuple("".join(mark[self.SHELLS.index(shell)] for shell in shells) for mark in self.REPORTED)
+            with self.subTest(deep=level):
+                self.assertEqual(written, self.marks("eval " * level + self.DEEP, shells))
 
     def test_the_main_pass_reads_a_one_dash_long_word_as_mains_letters(self):
         # Round 13's seat, B2: `main`'s answer on every row MY1 and MY6 moved in the main pass.

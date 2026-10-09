@@ -585,18 +585,19 @@ evidence exposed.
   others under its finding, so where many share one finding the cost grows fourfold with each
   doubling (4,000 such steps: 0.14 s with list names and 0.20 s with mapping names on the Linux
   box, 0.10 s and 0.13 s on the Mac; `main` 0.005 s and 0.002 s); the guard pins in
-  `tests/test_workflow_options.py` hold the stdin walk's recursive call whole -- its argv as its
-  own frame's one `command()` result, its depth and its walk as the parent was entered with (an
-  entry stack, never a frame's live locals), the walk as the pass's own -- at every depth to its
-  bound of 64, and read `_details`' own text, where nothing may bind `depth` or `walk` and the one
-  self-call passes exactly `inner`, `depth + 1` and `walk`; so a one-line change of what that
-  recursion sees, on one restriction or two -- depth, word position, inner shell, run length, a
-  member, a holder, a spelling, a second `command()`, a swapped walk, a rebinding of `walk` or
-  `depth` before the call -- is caught, and the residual that round 15 named there is closed. Open,
-  as on `main`: a check counted under a refused shell where errexit is off (round 9 withheld it: 14
-  rows of round 5's matrix), #2608's `-s $X` and `-c $X` rows, `-c $(…)`, #2900's one-dash long
-  option behind a shell the step names through a variable (`CMD=bash; $CMD -norc <<'EOF'`), and the
-  guard's other named gaps.
+  `tests/test_workflow_options.py` hold two things about the stdin walk's nesting. The recursive
+  call: its argv is its own frame's one `command()` result, its depth and its walk are what the
+  parent was entered with (an entry stack, never a frame's live locals) and the walk is the pass's
+  own, at every depth to the bound of 64, and `_details`' own text binds neither `depth` nor `walk`
+  and makes its one self-call with exactly `inner`, `depth + 1` and `walk`. And the verdict at
+  every nesting level: a family of holders behind one to five `bash -c`, `sh -c` and `eval`
+  strings, and one holder behind one to 64 `eval` words, read at the job and in each pass under
+  every `shell:` setting as `main` reads them. What is pinned is that call and those rows'
+  verdicts: a change beside the call that moves none of those rows is not seen. Open, as on `main`:
+  a check counted under a refused shell where errexit is off (round 9 withheld it: 14 rows of round
+  5's matrix), #2608's `-s $X` and `-c $X` rows, `-c $(…)`, #2900's one-dash long option behind a
+  shell the step names through a variable (`CMD=bash; $CMD -norc <<'EOF'`), and the guard's other
+  named gaps.
 - **Workflow guard carries a compound command's closing output to its inner fetch (#2883).**
   A fetch whose own stdout is not redirected now inherits the first redirect or pipeline on the
   close of its enclosing `{ }`, `if`, `for`, `while`/`until` or `case`, so `> tool`,
