@@ -217,7 +217,7 @@ class TestTheWalk(unittest.TestCase):
     """`inert.surrogate_free`: every string of a document, and a document holding none comes back itself."""
 
     def test_a_document_holding_none_comes_back_itself(self):
-        for document in ({"a": ["b", {"c": "tab\t ESC\x1b bidi‮ astral\U0001f600"}], "n": 1, "z": None},
+        for document in ({"a": ["b", {"c": "tab\t ESC\x1b bidi\u202e astral\U0001f600"}], "n": 1, "z": None},
                          ["x", ["y"]], "text", 7, 2.5, True, None, {}, []):
             with self.subTest(document=repr(document)[:40]):
                 self.assertIs(document, inert.surrogate_free(document))
@@ -255,7 +255,7 @@ class TestTheTwoDoors(unittest.TestCase):
     read it -- the same copy, the same nested objects."""
 
     def test_a_finding_holding_none_is_the_copy_main_made(self):
-        raw = a_finding(1, references=["CWE-1"], description="tab\t newline\n ESC\x1b bidi‮ astral\U0001f600")
+        raw = a_finding(1, references=["CWE-1"], description="tab\t newline\n ESC\x1b bidi\u202e astral\U0001f600")
         before = copy.deepcopy(raw)
         clean = findings_mod.agent_finding(raw)
         self.assertEqual((before, before), (raw, clean))
@@ -266,7 +266,7 @@ class TestTheTwoDoors(unittest.TestCase):
     def test_a_verdict_holding_none_is_read_as_main_read_it(self):
         raw = a_verdict("COD-123", lambda v, text: v.update(
             explored=["a.py"], citations={"cwe": ["CWE-1"]}, missing_evidence=["b.py"], extra={"k": ["v"]},
-            reasoning="tab\t ESC\x1b bidi‮ astral\U0001f600"))
+            reasoning="tab\t ESC\x1b bidi\u202e astral\U0001f600"))
         before = copy.deepcopy(raw)
         clean = evidence._agent_verdict(raw)
         self.assertEqual((before, before), (raw, clean))
