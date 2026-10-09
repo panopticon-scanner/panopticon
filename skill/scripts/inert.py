@@ -6,6 +6,7 @@ paragraph separators, the bidi controls named by #2118 item 1 / #2712, and the
 surrogate block (#2951).
 """
 import re
+from typing import Any
 
 
 # A lone surrogate (#2951) is not text: no encoder takes one, so a string holding
@@ -41,7 +42,7 @@ def _holds_one(document):
     this pass is all a document holding none costs."""
     if isinstance(document, str):
         return _SURROGATE.search(document) is not None
-    todo = [document] if isinstance(document, (dict, list)) else []
+    todo: list[Any] = [document] if isinstance(document, (dict, list)) else []
     while todo:
         node = todo.pop()
         if isinstance(node, dict):
@@ -69,8 +70,8 @@ def surrogate_free(document):
     more of it than a caller's stack has left."""
     if not _holds_one(document):
         return document
-    copy = [None]
-    todo = [([document], copy)]
+    copy: list[Any] = [None]
+    todo: list[tuple[Any, Any]] = [([document], copy)]
     while todo:
         source, made = todo.pop()
         for key, value in (source.items() if isinstance(source, dict) else enumerate(source)):
