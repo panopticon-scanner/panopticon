@@ -35,6 +35,29 @@ def escape_surrogates(text: str) -> str:
     return _SURROGATE.sub(lambda found: "\\u%04x" % ord(found.group()), text)
 
 
+def _holds_one(document):
+    """Whether any string of `document` -- a key or a value, at any depth -- holds
+    a lone surrogate. Nothing is built, and a string that is ASCII is not read:
+    this pass is all a document holding none costs."""
+    if isinstance(document, str):
+        return _SURROGATE.search(document) is not None
+    todo = [document] if isinstance(document, (dict, list)) else []
+    while todo:
+        node = todo.pop()
+        if isinstance(node, dict):
+            for key in node:
+                if isinstance(key, str) and not key.isascii() and _SURROGATE.search(key):
+                    return True
+            node = node.values()
+        for value in node:
+            if isinstance(value, str):
+                if not value.isascii() and _SURROGATE.search(value):
+                    return True
+            elif isinstance(value, (dict, list)):
+                todo.append(value)
+    return False
+
+
 def surrogate_free(document):
     """`document` -- what `json.load` returned -- with no lone surrogate in any
     string of it: a key, a value, a list member, at any depth, each as
@@ -44,22 +67,18 @@ def surrogate_free(document):
     holding any comes back as a copy at every depth, the original untouched. No
     recursion: the nesting is its author's to choose, and `json.load` accepts
     more of it than a caller's stack has left."""
-    copy, escaped = [None], 0
+    if not _holds_one(document):
+        return document
+    copy = [None]
     todo = [([document], copy)]
     while todo:
         source, made = todo.pop()
         for key, value in (source.items() if isinstance(source, dict) else enumerate(source)):
             if isinstance(value, str):
-                spelled = escape_surrogates(value)
-                escaped += spelled != value
-                value = spelled
+                value = escape_surrogates(value)
             elif isinstance(value, (dict, list)):
                 nested = {} if isinstance(value, dict) else [None] * len(value)
                 todo.append((value, nested))
                 value = nested
-            if isinstance(key, str):
-                spelled = escape_surrogates(key)
-                escaped += spelled != key
-                key = spelled
-            made[key] = value
-    return copy[0] if escaped else document
+            made[escape_surrogates(key) if isinstance(key, str) else key] = value
+    return copy[0]
