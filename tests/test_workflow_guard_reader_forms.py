@@ -2478,22 +2478,83 @@ class TestEveryMixedReadingIsRead(unittest.TestCase):
                 with self.subTest(row=row, shell=shell):
                     self.assertEqual([], wg.job_defects([wg.Step("step", row, shell)]))
 
-    def test_a_text_no_parent_placed_keeps_every_body(self):
-        # A program string is keyed by its text (the named limit), each marker put back as what it
-        # holds and no nonce left: two that differ only inside a lifted heredoc body keep two keys,
-        # and one read again with another nonce keeps one.
+    def test_only_the_readers_own_nonce_leaves_a_text_key(self):
+        # A program string is keyed by its text (the named limit), less the reader's own nonce and
+        # nothing else (round 3, B1): a marker of the reader's keeps its number and loses its nonce,
+        # whichever parse minted it, so its text read again keeps one key; text of the target's that
+        # is only shaped like a marker stays, at any width, so two such texts keep two keys.
         import shell_text
         import shell_tokens
-        def text(nonce, body):
-            marker = "@@shell-%s-0@@" % (nonce * 32)
-            return shell_text.Lifted("sh " + marker, {marker: ("heredoc", (body, False, "0"))})
-        one, two, again = (shell_tokens._Parse(t).place for t in (text("a", "one\n"), text("b", "two\n"), text("c", "one\n")))
-        self.assertNotEqual(one, two)
-        self.assertEqual(one, again)
-        # A marker whose entry the text does not carry keeps its number, and loses its nonce.
-        bare = [shell_tokens._Parse("sh @@shell-%s-%d@@" % (nonce * 32, n)).place for nonce, n in (("a", 0), ("b", 0), ("a", 1))]
-        self.assertEqual(bare[0], bare[1])
-        self.assertNotEqual(bare[0], bare[2])
+
+        def marker(number):
+            parse = shell_tokens._Parse("echo hi")
+            return [parse.new("subst", shell_text.Lifted("true", {})) for _ in range(number + 1)][-1]
+        first, again, other = (shell_tokens._Parse("sh " + marker(n)).place for n in (0, 0, 1))
+        self.assertEqual(first, again)
+        self.assertNotEqual(first, other)
+        self.assertNotIn(shell_tokens._OURS, first[1])
+        for width in (2, 32, 48):
+            with self.subTest(width=width):
+                one, two = (shell_tokens._Parse("echo @@shell-%s-0@@" % (digit * width)).place for digit in "ab")
+                self.assertNotEqual(one, two)
+                self.assertEqual("echo @@shell-%s-0@@" % ("a" * width), one[1])
+
+    def test_text_shaped_like_a_marker_is_the_targets_own(self):
+        # D.shcd-litmark and D.evq-litmark (round 3, B1): two program strings that differ only in
+        # text shaped like the reader's marker are two words, as round 1 read them -- round 2 took
+        # every such text out of the key and read each pair CLEAN while every parent runs it. So at
+        # a nonce's width; one copy alone fetches, runs nothing and reads CLEAN.
+        pair = self.PREP + "X=1\nexport X\n%s\nunset X\n%s\n"
+        for runner in ("sh -c '%s'", "eval '%s'"):
+            for width in (2, 32, 48):
+                one, two = (runner % ("echo @@shell-%s-0@@ >/dev/null; %s; true" % (digit * width, self.W))
+                            for digit in "ab")
+                for shell in SHELLS:
+                    with self.subTest(runner=runner, width=width, shell=shell):
+                        self.assertTrue(reported(pair % (one, two), shell))
+                        self.assertFalse(reported(self.PREP + "X=1\nexport X\n%s\n" % one, shell))
+
+    def test_a_word_that_may_be_a_program_keeps_one_key_whatever_nonce_its_parent_minted(self):
+        # The reader's own nonce does leave the key: a word that may be a shell's program is read with
+        # its `$(…)` left as the marker the step's parse minted (`workflow_forms._weighed`), anew in
+        # every fold, so with the nonce in the key its one word was a new one each time and the cap
+        # reported a step that fetches nothing and runs nothing.
+        word = "\\${Y:+/usr/bin/env echo} make all"
+        for row in ('X=-c\nsh $X "echo $(date) >/dev/null; %s"\n' % word, 'X=-c\nsh $X "echo `date` >/dev/null; %s"\n' % word,
+                    'X=-c\nsh $X "$(echo true); %s"\n' % word, 'O=-c\nbash $O "echo $(uname) >/dev/null; %s"\n' % word):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertEqual([], wg.job_defects([wg.Step("step", row, shell)]))
+
+    def test_a_substitution_stands_under_its_parents_place(self):
+        # Round 3, B2: a `$(…)` takes its parent's place and its position there (`_Parse.new`), the
+        # whole chain of them, so one position under two parents is two places. Each pair runs the
+        # download under every parent, the first copy's W fetching and the second's empty half
+        # running; a place that dropped its parent, kept only the chain's root, or lost the middle of
+        # a chain two parses deep read each CLEAN (the round-2 seat's three mutants).
+        w = self.W
+        # Two steps of one text whose word stands in a `$(…)`, a backquote, a `<(…)` (M.subst.same,
+        # M.back.same, M.proc.same): the seat runs the first with `X=1` in its environment.
+        for text in ("v=$(%s)\n" % w, "v=`%s`\n" % w, "cat <(%s) >/dev/null\n" % w):
+            for shell in SHELLS:
+                with self.subTest(text=text, shell=shell):
+                    self.assertTrue(wg.job_defects([wg.Step("prep", self.PREP, shell), wg.Step("one", text, shell),
+                                                    wg.Step("two", text, shell)]))
+        # Two equal substitutions, each inside another, two deep and three (S.nest2, S.nest2b,
+        # S.nest3); two heredoc programs of one body whose word stands in a `$(…)` (I.substin) and
+        # two expanding heredocs that hold it (S.inhd); a step's own line and a `$(…)` that holds the
+        # same text (X.step+subst); and two program strings a blank apart that hold it
+        # (L.holdsubst.blank).
+        moved = self.PREP + "X=1\nexport X\n%s\nunset X\n%s\n"
+        pairs = [(one, one) for one in ("v=$(echo $(%s; true))" % w, "v=$(echo `%s; true`)" % w,
+                                        "v=$(echo $(echo $(%s; true)))" % w, "sh <<'EOF'\nv=$(%s; true)\nEOF" % w,
+                                        "cat <<EOF >/dev/null\n$(%s; true)\nEOF" % w)]
+        pairs += [("%s; true" % w, "v=$(%s; true)" % w), ("sh -c 'v=$(%s; true)'" % w, "sh -c 'v=$(%s; true )'" % w)]
+        for one, two in pairs:
+            for shell in SHELLS:
+                with self.subTest(one=one, two=two, shell=shell):
+                    self.assertTrue(reported(moved % (one, two), shell))
+                    self.assertFalse(reported(self.PREP + "X=1\nexport X\n%s\n" % one, shell))
 
     # The named limit's hunt (#2953): 9 spellings of a program string by 5 program shapes, none
     # ending in the download's name -- one that does reports as one copy, on `main` too
@@ -2524,10 +2585,41 @@ class TestEveryMixedReadingIsRead(unittest.TestCase):
         join = "eval '%s;' 'true'" % self.W
         self.assertFalse(reported(pair % (join, join)))
 
+    # The limit as wide as it is (round 3, B1): a string's own `$(…)`, backquote or `<(…)` is written
+    # `$(...)` in the text the reader is handed unless a printer spells it, so what stands inside one
+    # is no part of the key. What each of two strings holds in front of the word, by way of differing
+    # (the round-2 seat's D rows, and a `$(…)` against a backquote in its place).
+    INSIDE = (("v=$(true); ", "v=$(false); "), ("v=`true`; ", "v=`false`; "), ("v=$(true); ", "v=`true`; "),
+              ("cat <(true) >/dev/null; ", "cat <(false) >/dev/null; "),
+              ("v=$(tr a b <<'EOF'\none\nEOF\n); ", "v=$(tr a b <<'EOF'\ntwo\nEOF\n); "),
+              ("a=$(uname); b=$(uname); ", "a=$(uname -m); b=$(uname); "), ("v=$(echo $(true)); ", "v=$(echo $(false)); "))
+
+    def test_program_strings_alike_but_inside_a_substitution_are_one_word_2953(self):
+        # THE NAMED LIMIT, #2953 (the PR that hands a program string its place moves these rows to
+        # REPORT too): two program strings that read alike once each substitution no printer spells
+        # is written `$(...)` are one word -- identical strings, and strings that differ only inside
+        # such a substitution -- so the payload their mixed reading runs reads CLEAN, as on `main`,
+        # while a parent runs it: every pair here under `sh -c`, `bash -c` and `eval`, an `eval`
+        # whose words bash joins, and a string glued of two quotings.
+        pair = self.PREP + "X=1\nexport X\n%s\nunset X\n%s\n"
+        strings = [(runner % (one + self.W + "; true"), runner % (two + self.W + "; true"))
+                   for runner in ('sh -c "%s"', 'bash -c "%s"', 'eval "%s"') for one, two in self.INSIDE]
+        strings += [("eval \"v=$(true);\" '%s; true'" % self.W, "eval \"v=$(false);\" '%s; true'" % self.W),
+                    ("sh -c \"v=$(uname); \"'%s; true'" % self.W, "sh -c \"v=$(uname -m); \"'%s; true'" % self.W),
+                    ("sh -c v=$(true)\\;'%s; true'" % self.W, "sh -c v=$(false)\\;'%s; true'" % self.W)]
+        for one, two in strings:
+            for shell in SHELLS:
+                with self.subTest(one=one, two=two, shell=shell):
+                    self.assertFalse(reported(pair % (one, two), shell))
+
     def test_program_strings_that_differ_are_two_words(self):
-        # The limit's controls: one blank more in the second string and the two are two words, read
-        # every way, so each pair reports -- `main` reads these CLEAN too; one copy alone fetches
-        # and runs nothing, and reads CLEAN. (The hunt holds each under all five settings.)
+        # What the key does hold. One blank more in the second string, outside any substitution, and
+        # the two are two words, read every way, so each pair reports -- `main` reads these CLEAN
+        # too; one copy alone fetches and runs nothing, and reads CLEAN. (The hunts hold each under
+        # all five settings.) So with the blank behind a substitution, and where the strings differ
+        # in what a printer spells (`$(echo true)`, a `cat` of a heredoc), in an arithmetic
+        # expansion, or in a word of the substitution that holds the word itself (the round-2 seat's
+        # D.shcd-printer, D.shcd-cathd, D.shcd-arith and D.shcd-inner-word).
         pair = self.PREP + "X=1\nexport X\n%s\nunset X\n%s\necho done\n"
         for string in self.strings():
             for shell in (None, "sh"):
@@ -2535,6 +2627,16 @@ class TestEveryMixedReadingIsRead(unittest.TestCase):
                     self.assertTrue(reported(pair % (string(), string(" ")), shell))
             self.assertFalse(reported(self.PREP + "X=1\nexport X\n%s\necho done\n" % string()))
         self.assertTrue(reported(pair % ("eval '%s;' 'true'" % self.W, "eval '%s;' 'true '" % self.W)))
+        w, escaped = self.W, "\\" + self.W
+        for one, two in (('sh -c "v=$(true); %s; true"' % w, 'sh -c "v=$(true); %s; true "' % w),
+                         ('sh -c "$(echo true); %s; true"' % w, 'sh -c "$(echo :); %s; true"' % w),
+                         ('sh -c "$(cat <<\'EOF\'\ntrue\nEOF\n); %s; true"' % w,
+                          'sh -c "$(cat <<\'EOF\'\n:\nEOF\n); %s; true"' % w),
+                         ('sh -c "v=$((1 + 1)); %s; true"' % escaped, 'sh -c "v=$((2 + 2)); %s; true"' % escaped),
+                         ('sh -c "v=$(true >/dev/null; %s; true)"' % w, 'sh -c "v=$(false || true >/dev/null; %s; true)"' % w)):
+            for shell in SHELLS:
+                with self.subTest(one=one, two=two, shell=shell):
+                    self.assertTrue(reported(pair % (one, two), shell))
 
     def test_halves_that_run_one_command_word_with_other_operands_are_apart(self):
         # B3 (SH.cat.pipe.k2-env): `cat sums cat` and `cat` both run `cat`, but the shell reads the

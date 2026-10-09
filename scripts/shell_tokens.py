@@ -65,6 +65,10 @@ def derived(text, *sources):
 
 # The shape of every marker `_Parse.new` mints: its prefix, then a count and `@@`.
 _MARK = re.compile(r"@@shell-[0-9a-f]+-x*[0-9]+@@")
+# What every nonce this process mints ends in, and no text it reads holds but by chance: how `_keyed`
+# knows a marker of the reader's own from text of the target's shaped like one (#2929 round 3).
+_OURS = secrets.token_hex(8)
+_NONCE = re.compile(r"@@shell-[0-9a-f]+%s-" % _OURS)
 
 
 def spelled(text, source):
@@ -89,7 +93,7 @@ class _Parse:
     def __init__(self, source):
         # No source spelling can collide, even if a nonce source is replaced
         # in a test. No global registry: tokens retain only their own entries.
-        self.prefix = "@@shell-" + secrets.token_hex(16) + "-"
+        self.prefix = "@@shell-" + secrets.token_hex(16) + _OURS + "-"
         while self.prefix in source:
             self.prefix += "x"
         self.entries: dict[str, tuple[str, object]] = {}
@@ -97,7 +101,7 @@ class _Parse:
         # Where this parse stands (`whole`, #2929 round 2): the place a parent gave the text it lifted
         # (`new`) or the job its step's (`placed`), never what the text says; else, a program string
         # or a text read alone, its text, the reader's nonces out.
-        self.place = getattr(source, "place", None) or ("text", _spelled_out(source))
+        self.place = getattr(source, "place", None) or ("text", _keyed(source))
         self.wholes = 0                 # the words `shell_reader._whole` kept, in order (`whole`)
         self.pattern = re.compile(re.escape(self.prefix) + r"\d+@@")
 
@@ -160,14 +164,14 @@ def at_place(text, source):
     return text
 
 
-def _spelled_out(source):
+def _keyed(source):
     """A text no parent placed -- a program string, or a text read alone -- as the key of its parse's
-    place (#2929 round 2): each marker the reader lifted out of it put back as what it holds, a
-    heredoc's body or a substitution's text, and no nonce left, so two texts that differ anywhere
-    keep two keys and a text read again keeps one."""
-    marks = {**getattr(source, "heredocs", {}), **_markers(source)}
-    text = _MARK.sub(lambda mark: repr(marks[mark[0]]) if mark[0] in marks else mark[0], source)
-    return re.sub(r"@@shell-[0-9a-f]+-", "", text)
+    place (#2929 rounds 2 and 3): the text, less the nonce of each marker of the reader's own it
+    holds (`_OURS`), as a word that may be a shell's program holds its `$(…)`
+    (`workflow_forms._weighed`), so a text read again keeps one key whatever nonce its parent minted.
+    Nothing else leaves it: text of the target's that is only shaped like a marker stays, and two
+    such texts keep two keys."""
+    return _NONCE.sub("", source)
 
 
 def is_arm(token):
