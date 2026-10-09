@@ -6,7 +6,7 @@ flat-module ceiling.  ``workflow_gating`` keeps compatibility imports for the
 callers that already name these helpers there.
 """
 import shell_reader
-from shell_reader import command, conditional
+from shell_reader import own_command as command, conditional
 from workflow_function_calls import _function_syntax, _known_status
 
 

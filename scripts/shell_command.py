@@ -197,10 +197,9 @@ def _command_result(argv, optional=True, finds=True):
     of a known name are dropped (`_optional`) unless `optional` is False, the
     reading `workflow_annotate` takes to find the word a step's table resolves. A `find` is
     unwrapped as a wrapper is, into the action a fold reads (`_found`, #2935), unless `finds` is
-    False: the `find` itself, as `reads_held` and `find_action` read it."""
+    False: the `find` itself, as `reads_held` reads it and `own_command` answers."""
     argv = list(argv)
     heads: list[str] = []
-    found = None                                # the `find` an action was unwrapped from
     # `xargs` appends words from its input to the argv behind it, so the
     # innermost wrapper read after one (`behind`, with its argv) was read from
     # an argv that is not the one that runs (#2227).
@@ -282,9 +281,16 @@ def _command_result(argv, optional=True, finds=True):
         if head == "find" and finds and (inner := _found(argv)) is not None:
             if isinstance(inner, str):
                 return argv, inner, heads       # an action it cannot read (`_unread`)
-            heads.append(argv[0])
-            found, argv = argv, inner
-            continue
+            # The action is a command line of its own, read as the step's own is and as `_unread` just
+            # read it, its reasons out -- a `$` word bash may drop in front of a known name, a shell's
+            # default (round 2: not as a word behind a wrapper) -- and a `find` it runs is kept: `find`
+            # ends an action at the first `;` or `{} +`, so that one holds none it can run.
+            run, _why, inner_heads = _command_result(inner, optional, False)
+            if run:
+                marked = (_FoundDefaulted if isinstance(run[0], Defaulted) else Found)(run[0])
+                marked.finder = argv
+                run[0] = marked
+            return run, vanished, [*heads, argv[0], *inner_heads]
         if head not in WRAPPERS:
             break
         heads.append(argv[0])
@@ -308,16 +314,21 @@ def _command_result(argv, optional=True, finds=True):
         if word is not None:
             reason = "`%s` is a pattern bash expands where `%s` looks for `-c` or a script" % (
                 readable(word), os.path.basename(argv[0]))
-    if found is not None and argv:
-        marked = (_FoundDefaulted if isinstance(argv[0], Defaulted) else Found)(argv[0])
-        marked.finder = found
-        argv[0] = marked
     return argv, reason or vanished, heads
 
 
 def command(argv):
     """`argv` with supported wrappers stripped; unresolved forms stay lists."""
     return _command_result(argv)[0]
+
+
+def own_command(argv):
+    """`command()` with a `find` kept as the `find` the stage itself runs: what a stage's status and
+    its call are read from (`workflow_function_calls`, `workflow_gating`,
+    `workflow_failure_contexts`; #2935 round 2). GNU `find` 4.9.0 exits 0 whatever a `-exec … \\;`
+    command returns, and no `find` runs `exit`, `return` or a shell function, so an action is never
+    the step's own stop, nor its call."""
+    return _command_result(argv, finds=False)[0]
 
 
 def folds(unsure):
@@ -382,6 +393,13 @@ def command_as_written(argv):
 # The tests after which `find` runs a command of its own on what it walks, each read (`_actions`;
 # #2881 round 4, every one #2918) -- `workflow_operands.described` reads them here.
 _FIND_EXEC = ("-exec", "-execdir", "-ok", "-okdir")
+# The command words no `find` can run: a shell's special builtins and the builtins no system ships as
+# a program (`command`, `cd`, `read` and their kind are programs on macOS, and stay read). An action
+# whose word is one -- or an assignment, which `find` looks up as a program's name -- runs nothing,
+# and its `find` is read as `main` reads it (`_found`, #2935 round 2).
+_NO_PROGRAM = frozenset((".", ":", "break", "builtin", "continue", "declare", "eval", "exec", "exit", "export",
+                         "let", "local", "logout", "readonly", "return", "set", "shift", "shopt", "source",
+                         "trap", "typeset", "unset"))
 # The distinct actions of one `find` the guard reads; one with more reads as a command it cannot
 # read (`_unread`), so neither the scan nor the folds grow with the words (#2918).
 _FIND_CAP = 8
@@ -439,7 +457,8 @@ def find_action(argv):
 def _found(argv):
     """The words of the action of `find` -- `argv` its command -- this fold reads, where `command()`
     unwraps it as a wrapper (#2935); why one of its actions cannot be read (`_unread`); or None: it
-    holds none, or the fold's is empty or runs a check, which keeps the `find`, as `main` reads it --
+    holds none, or the fold's is empty, is one no `find` can run (`_NO_PROGRAM`, an assignment; round
+    2) or runs a check, each of which keeps the `find`, as `main` reads it --
     `find` exits 0 though a `-exec … \\;` command fails, so no check an action runs is credited."""
     actions = _actions(argv)
     if not actions:
@@ -448,8 +467,15 @@ def _found(argv):
         return why
     _ACTIONS["more"] = _ACTIONS["more"] or len(actions) > _ACTIONS["at"] + 1
     words = actions[min(_ACTIONS["at"], len(actions) - 1)]
-    run = _command_result(words)[0] if words else []
-    return list(words) if run and os.path.basename(run[0]) not in _CHECKERS else None
+    run, _why, heads = _command_result(words, finds=False) if words else ([], None, [])
+    if not run or _ASSIGNMENT.match(words[0]):
+        return None                             # nothing `find` can run: the `find`, as `main` reads it
+    for word in (*heads, run[0]):               # each word `find`, or a wrapper it runs, must find a program for
+        if word == "command":
+            break                               # a program on macOS, and one that runs a builtin too
+        if word in _NO_PROGRAM:
+            return None
+    return list(words) if os.path.basename(run[0]) not in _CHECKERS else None
 
 
 def unsure(argv, scripts):
@@ -479,7 +505,7 @@ def _unread(argv):
     actions = _actions(argv)
     if len(actions) > _FIND_CAP:
         return "`find` holds more than %d actions" % _FIND_CAP
-    for inner, why, _heads in map(_command_result, actions):
+    for inner, why, _heads in (_command_result(action, finds=False) for action in actions):
         if why:
             return "a command `find` runs: %s" % why
         if inner and (dynamic(inner[0], has_substitution) or "{}" in inner[0]):

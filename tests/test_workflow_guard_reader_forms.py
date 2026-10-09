@@ -1964,6 +1964,125 @@ class TestEveryFindActionIsACommand(unittest.TestCase):
                 with self.subTest(use=use, shell=shell):
                     self.assertFalse(reported(use + "\n", shell))
 
+    # Round 2, the round-1 seat's B1 and its price. The download fetched, a wrong digest in `sums`,
+    # and the frames an action runs in, by the seat's probes: first, behind `sudo`, in a `find`
+    # behind `env`, by `-execdir`, and after `-o`.
+    SUMS = "echo '%s  tool' > sums\n" % ("a" * 64)
+    CHECK = "sha256sum -c sums"
+    FRAMES = ("find /dev/null -exec %s \\;", "find /dev/null -exec sudo %s \\;", "env find /dev/null -exec %s \\;",
+              "find . -maxdepth 0 -execdir %s \\;", "find /dev/null -exec false \\; -o -exec %s \\;")
+
+    def marks(self, lines):
+        """R or C under each of the five settings: the download fetched, `lines`, then the run."""
+        return "".join("CR"[reported(GET + self.SUMS + lines + "\nsh tool\n", shell)] for shell in SHELLS)
+
+    def test_an_action_is_no_stop_of_the_step(self):
+        # B1, the status walk (`workflow_function_calls`, which reads a stage's status off
+        # `own_command`): GNU find 4.9.0 exits 0 whatever a `-exec … \\;` command returns, and no `find`
+        # runs `exit` or `return`, so a check's rescue written as an action stops nothing and every
+        # parent runs the download with the wrong digest. `main` reports each; round 1 read the action
+        # as the rescue written alone (the seat's S01, S02, S05-S07, S13-S15, S17, E10, E15, E16, T06
+        # and T09) -- the controls below, which read as they did.
+        check, first = self.CHECK, self.FRAMES[0]
+        for frame in self.FRAMES:
+            for rescue in ("%s || " + frame % "false", "%s || " + frame % "exit 1"):
+                with self.subTest(rescue=rescue):
+                    self.assertEqual("RRRRR", self.marks(rescue % check))
+        for rescue in ("%s || " + first % "exit", "%s || " + first % "return 1",
+                       "%s || { echo bad; " + first % "exit 1" + "; }", "%s || { echo bad; " + first % "false" + "; }",
+                       "%s || ( " + first % "exit 1" + " )", "( %s || " + first % "exit 1" + " )",
+                       "%s || " + first % "exit 1" + " || exit 1", "%s || " + first % "exit 1" + " || true",
+                       "set +e\n%s || " + first % "exit 1", "set -e\n%s || " + first % "false",
+                       "f() {\n  %s || " + first % "return 1" + "\n}\nf", "f() {\n  %s || " + first % "false" + "\n}\nf"):
+            with self.subTest(rescue=rescue):
+                self.assertEqual("RRRRR", self.marks(rescue % check))
+        for control, marks in (("%s || exit 1", "CCCCC"), ("%s || false", "CCCRR"), ("%s", "CCCRR"),
+                               ("f() {\n  %s || exit 1\n}\nf", "CCCCC")):
+            with self.subTest(control=control):
+                self.assertEqual(marks, self.marks(control % check))
+
+    def test_an_action_is_no_call_of_a_function(self):
+        # B1, the call detection: no `find` runs a shell function, so a function an action names is
+        # not called -- neither as the path to the function holding the check (`workflow_function_calls`;
+        # the seat's S10 and E13) nor as a piped call (`workflow_gating`; E03, E04, which round 1 read
+        # CLEAN under `shell: bash`). Beside each, the call written alone, read as it was.
+        body = "f() {\n  %s\n}\n" % self.CHECK
+        for frame in self.FRAMES:
+            named = frame % "f"
+            for call in ("g() {\n  %s\n}\ng" % named, "set -e\ng() {\n  %s\n}\ng" % named, named + " | cat",
+                         "{ %s; } | cat" % named, named):
+                with self.subTest(call=call):
+                    self.assertEqual("RRRRR", self.marks(body + call))
+        for control, marks in (("f", "CCCRR"), ("g() {\n  f\n}\ng", "CCCRR"), ("f | cat", "RCRRR")):
+            with self.subTest(control=control):
+                self.assertEqual(marks, self.marks(body + control))
+
+    def test_a_status_is_read_off_the_stage_itself(self):
+        # `own_command` keeps the `find` where `command` answers with its action, and
+        # `workflow_failure_contexts` asks it whether a command is known to fail: `find` is not.
+        import workflow_failure_contexts
+        stage = shell_reader.statements("sudo find /dev/null -exec false \\;\n")[0].stages[0]
+        self.assertEqual("false", shell_reader.command(stage.argv)[0])
+        self.assertEqual("find", shell_reader.own_command(stage.argv)[0])
+        known = [workflow_failure_contexts._known_failure(shell_reader.statements(text)[0])
+                 for text in ("false\n", "find /dev/null -exec false \\;\n", "find /dev/null -exec exit 1 \\;\n")]
+        self.assertEqual([True, False, False], known)
+
+    def test_an_action_no_find_can_run_keeps_the_find(self):
+        # A shell's special builtin has no program, and `find` looks an assignment up as a program's
+        # name: such an action runs nothing, behind `sudo` too, and its `find` reads as `main` reads
+        # it -- so `-exec set +e` is not the step's own posture (the seat's V17), and `-exec eval '…'`
+        # (V23), `-exec exec …` and `-exec X=1 …` run no program (CLEAN, as on `main`). `command` is a
+        # program on macOS, which runs a builtin too, and `env X=1 …` runs what follows: both report.
+        self.assertEqual("CCCRR", self.marks("find /dev/null -exec set +e \\;\n" + self.CHECK))
+        self.assertEqual("RRRRR", self.marks("set +e\nfind /dev/null -exec set -e \\;\n" + self.CHECK))
+        for action, runs in (("eval '%s'", False), ("exec sh -c '%s'", False), ("sudo exec sh -c '%s'", False),
+                             ("X=1 sh -c '%s'", False), ("builtin eval '%s'", False), ("env X=1 sh -c '%s'", True),
+                             ("command sh -c '%s'", True), ("command exec sh -c '%s'", True), ("sh -c '%s'", True)):
+            for shell in SHELLS:
+                with self.subTest(action=action, shell=shell):
+                    self.assertEqual(runs, reported("find /dev/null -exec %s \\;\n" % (action % PIPE), shell))
+        # What a `find` hands a download to is read as `main` reads it, whatever the action's word (V20, V21).
+        for use in ("exec sh tool", ". ./tool"):
+            self.assertTrue(reported(GET + "find /dev/null -exec %s \\;\n" % use))
+
+    def test_an_action_is_read_as_a_command_of_its_own(self):
+        # A `$` word bash may drop in front of a known name, and a shell's default, read in an action
+        # as they read where the step runs them (`main` dropped the one and read the other): round 1
+        # read each as a word behind a wrapper, which reported benign finds (the seat's R15, R16, R18;
+        # 780 of its 785 benign cells). With a download each still reports (R13, R14), and #2918's
+        # reasons stand: a `$` command word, and one behind a wrapper the action runs (R02, R06, R17).
+        for action in ("$SUDO sh -c 'echo hi'", "${SH:-sh} -c 'echo hi'"):
+            for shell in SHELLS:
+                with self.subTest(action=action, shell=shell):
+                    self.assertFalse(reported("find /dev/null -exec %s \\;\n" % action, shell))
+                    self.assertTrue(reported("find /dev/null -exec %s \\;\n" % action.replace("echo hi", PIPE), shell))
+        self.assertFalse(reported("find . -name '*.sh' -exec ${SUDO:-} bash -n {} \\;\n"))
+        for action, why in (("$X -c '%s'" % PIPE, "`find` runs `$X`"), ("sudo $X sh -c '%s'" % PIPE, "a command `find` runs"),
+                            ("$SUDO chmod +x {}", "`find` runs `$SUDO`")):
+            found = wg.job_defects([wg.Step("step", "find . -name '*.sh' -exec %s \\;\n" % action, None)])
+            self.assertIn(why, " ".join(reason for _name, reason in found))
+
+    def test_a_find_an_action_runs_is_kept(self):
+        # `find` ends an action at the first `;` or `{} +`, so a `find` an action runs holds no action
+        # it can run: `command()` unwraps one `find`, and the reads grow with the depth of a nest, not
+        # as a power of it (round 1: 32, 192, 768, 2,560, 8,192 and 25,600 `_found` calls at depths 1
+        # to 6; now 14 a level). Each `-exec` of the nest is still read, as an action of the first.
+        import shell_command
+        def nest(depth):
+            return "find /dev/null -exec " * depth + "sh -c '%s' " % PIPE + "\\; " * depth + "\n"
+        argv = shell_reader.command(shell_reader.statements(nest(3))[0].stages[0].argv)
+        self.assertEqual("find", argv[0])
+        self.assertEqual(3, argv[0].finder.count("-exec"))
+        calls, found = [], shell_command._found
+        shell_command._found = lambda argv: calls.append(1) or found(argv)
+        try:
+            for depth in (2, 6):
+                self.assertTrue(wg.job_defects([wg.Step("step", nest(depth), None)]))
+        finally:
+            shell_command._found = found
+        self.assertLess(len(calls), 200)
+
     def test_the_command_of_a_find_is_its_action(self):
         import shell_command
         stage = shell_reader.statements("find /dev/null -exec env sh -c x \\;\n")[0].stages[0]

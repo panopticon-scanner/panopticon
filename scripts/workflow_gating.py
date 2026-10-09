@@ -35,7 +35,7 @@ Stdlib only, like everything under it.
 import collections
 
 import shell_reader
-from shell_reader import command, conditional, negated
+from shell_reader import own_command as command, conditional, negated
 from workflow_failure_contexts import (_enclosing_failure_contexts as _enclosing_failure_contexts,
                                        _failure_context as _failure_context,
                                        _function_body as _function_body,
