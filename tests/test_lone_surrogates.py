@@ -25,7 +25,6 @@ import io
 import itertools
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -45,9 +44,9 @@ import scripts.tools.base as base
 import scripts.tools.legacy_sarif as legacy_sarif
 import tests.test_schema_parity as parity
 from tests._test_helpers import SKILL_ROOT, first
+from tests.discovery_test_helpers import run_script
 
 SCRIPTS = os.path.join(SKILL_ROOT, "scripts")
-SCRIPT_TIMEOUT = 120
 RUN_ID = "RID-2951"
 LONE = "\ud800"            # what `json.load` returns for the lone escape `\ud800`
 SPELLED = "\\ud800"        # the six characters the inert policy writes for it
@@ -502,8 +501,7 @@ class TestTheRealChild(unittest.TestCase):
         cls.base = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cls.base.cleanup)
         cls.runs = itertools.count(1)
-        found = subprocess.run([sys.executable, os.path.join(SCRIPTS, "discovery.py"), "--repo-scan", cls.repo()],
-                               capture_output=True, text=True, timeout=SCRIPT_TIMEOUT)
+        found = run_script("discovery.py", "--repo-scan", cls.repo())      # the suite's one way to run a script
         assert found.returncode == 0, found.stderr
         cls.groups = json.loads(found.stdout)
         cls.group = first(cls.groups["groups"], "group")["name"]
@@ -518,7 +516,8 @@ class TestTheRealChild(unittest.TestCase):
         return made
 
     def child(self, *flags, findings=None, verdicts=None, scans=None, groups=None):
-        """One run, laid out as tests/test_e2e.py lays it out: (status, stderr, {artifact name: bytes})."""
+        """One run, laid out as tests/test_e2e.py lays it out: (status, stderr, {artifact name: bytes}). The child
+        is started by the suite's own `run_script`, which holds the one `subprocess.run` these tests need."""
         repo = self.repo()
         pano = os.path.join(repo, ".panopticon")
 
@@ -528,7 +527,7 @@ class TestTheRealChild(unittest.TestCase):
                 json.dump(document, fh)            # ensure_ascii: the file holds `\ud800`, as an agent's does
             return path
 
-        argv = [sys.executable, os.path.join(SCRIPTS, "synthesize.py"), "--target", ".", "--run-id", RUN_ID,
+        argv = ["--target", ".", "--run-id", RUN_ID,
                 "--groups", write(os.path.join(repo, "groups.json"), groups or self.groups), *flags]
         if verdicts is not None:
             write(os.path.join(pano, "verdicts", "verdicts-%s-COD.json" % self.group), {
@@ -542,13 +541,13 @@ class TestTheRealChild(unittest.TestCase):
         argv += ["--out", os.path.join(pano, "report.json")]
         if findings is not None:
             argv.append(write(os.path.join(pano, "findings-%s-COD.json" % self.group), {"findings": findings}))
-        done = subprocess.run(argv, capture_output=True, cwd=repo, timeout=SCRIPT_TIMEOUT)
+        done = run_script("synthesize.py", *argv, cwd=repo)
         found = sorted(Path(pano).glob("report*")) + [path for path in [Path(repo, "verify-queue.json")]
                                                       if path.exists()]
         # A report names the file a cross-domain row came from, so the run's own directory is in it.
         artifacts = {path.name: path.read_bytes().replace(os.path.realpath(repo).encode(), b"<repo>")
                      .replace(repo.encode(), b"<repo>") for path in found}
-        return done.returncode, done.stderr.decode("utf-8", "backslashreplace"), artifacts
+        return done.returncode, done.stderr, artifacts
 
     def whole(self, run):
         """The run ended as its GATE decided and every artifact is text. Returns the report."""
