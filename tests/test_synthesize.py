@@ -1145,6 +1145,72 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
         self.assertNotIn("artifact invalid", stderr)
         self.assertIn("Grade:", stdout)
 
+    def test_x0x_serialization_stays_ascii_escaped_and_multiline(self):
+        import scripts.x0x_report as x0x_report
+
+        x0x = {
+            "schema_version": 1,
+            "generated_by": {"panopticon_version": "test", "run_id": "run-1"},
+            "ocrdb_version": "test",
+            "candidates": [{
+                "domain": "SEC",
+                "summary": "caf\u00e9",
+                "severity": "LOW",
+                "occurrences": [{"file": "src/example.py"}],
+            }],
+        }
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp, out = self._fixture(d)
+            with mock.patch.object(x0x_report, "build_report", return_value=x0x):
+                rc, _stdout, stderr = self._run(["--target", "src", "--out", out, fp])
+            raw = Path(out.replace(".json", "-x0x.json")).read_text(encoding="utf-8")
+        self.assertEqual(rc, 0, stderr)
+        self.assertGreater(len(raw.splitlines()), 1)
+        self.assertIn("\\u00e9", raw)
+        self.assertNotIn("\u00e9", raw)
+        self.assertEqual(json.loads(raw), x0x)
+
+    def test_bidi_path_controls_are_inert_before_x0x_validation(self):
+        # #2712 review round 2 / #2118 items 1-2: every bidi control that can
+        # occur in a repository path reaches the finding normalizer, is
+        # preserved as an inert spelling in both artifacts, and cannot make
+        # synthesize exit ARTIFACT_INVALID.
+        points = (
+            0x061C,
+            0x200E, 0x200F,
+            0x202A, 0x202B, 0x202C, 0x202D, 0x202E,
+            0x2066, 0x2067, 0x2068, 0x2069,
+        )
+        findings = [
+            _agentic(
+                "SE-%03d" % (index + 1), sev="LOW", code="SEC-X0X",
+                domain="SEC", title="catalog gap %d" % index,
+                short_title="catalog gap %d" % index,
+                location={"file": "src/x%sy.py" % chr(point), "line_start": 1},
+            )
+            for index, point in enumerate(points)
+        ]
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp = os.path.join(d, "findings-g1-SEC.json")
+            with open(fp, "w", encoding="utf-8") as fh:
+                json.dump({"findings": findings}, fh, ensure_ascii=False)
+            out = os.path.join(d, "report.json")
+            rc, _stdout, stderr = self._run(
+                ["--target", "src", "--run-id", "run-1", "--out", out, fp])
+            x0x_path = out.replace(".json", "-x0x.json")
+            with open(x0x_path, encoding="utf-8") as fh:
+                x0x = json.load(fh)
+
+            self.assertEqual(syn.validate_artifacts(out, x0x_path), [])
+
+        self.assertEqual(rc, 0, stderr)
+        self.assertEqual(
+            {occurrence["file"]
+             for candidate in x0x["candidates"]
+             for occurrence in candidate["occurrences"]},
+            {"src/x\\u%04xy.py" % point for point in points},
+        )
+
     def test_an_invalid_part_is_caught_through_the_hydrated_union(self):
         # The MAIN report stays valid; the defect is in a `_partN.json`, which
         # is exactly the artifact a consumer hydrates and validates and which

@@ -390,6 +390,13 @@ evidence exposed.
   `main`).
 - **Codex model profiles move to GPT-6 (#2872).** Pinned role defaults now use `gpt-6-luna` or
   `gpt-6-sol`; set `PANOPTICON_MODEL_<ROLE>` to pin another installed model.
+- **X0X identifiers reject control and bidirectional code points (#2712).** The report schema now
+  refuses C0 controls other than tab and line feed, DEL/C1 controls, Arabic Letter Mark, bidi
+  marks, embeddings, overrides, and isolates in occurrence paths, candidate areas, and proposed
+  names. The shared inert renderer now escapes those bidi controls in target-authored paths before
+  report emission, with one code-point policy shared by report and prompt rendering (#2118 items
+  1-2), so a hostile filename cannot suppress the X0X artifact. Honest emitter output remains
+  valid, and `synthesize.py` keeps its ASCII-escaped, multi-line JSON serialization.
 - **Workflow guard reads a function header in the spellings bash takes at a statement's head
   (#2664, #2608; #2785).** `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after
   `then`, `do` or an opened `{` ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN:
@@ -616,10 +623,15 @@ evidence exposed.
   parent was entered with (an entry stack, never a frame's live locals) and the walk is the pass's
   own, at every depth to the bound of 64, and `_details`' own text binds neither `depth` nor `walk`
   and makes its one self-call with exactly `inner`, `depth + 1` and `walk`. And the verdict at
-  every nesting level: a family of holders behind one to five `bash -c`, `sh -c` and `eval`
-  strings, and one holder behind one to 64 `eval` words, read at the job and in each pass under
-  every `shell:` setting as `main` reads them. What is pinned is that call and those rows'
-  verdicts: a change beside the call that moves none of those rows is not seen. Open, as on `main`:
+  every nesting level, at the job and in each of its two passes: a family of eight holders in
+  sixteen nests behind one to five `bash -c`, `sh -c` and `eval` strings, read under every `shell:`
+  setting, and one holder behind one to 64 `eval` words, read under every setting at seven depths
+  (1, 8, 16, 32, 40, 63 and 64) and under the default setting alone at the other 57. The job's
+  marks and the main pass's are `main`'s own on each of those rows; the walk's pass is this PR's
+  reading, pinned as it reads. What is pinned is that call and those rows' verdicts: a change
+  beside the call that moves none of those rows is not seen, and it can read running rows CLEAN: a
+  one-line change keyed on a depth and one more dimension (an inner shell, a holder, a member, a
+  run length) passes the suite, and round 20's seat built six. Open, as on `main`:
   a check counted under a refused shell where errexit is off (round 9 withheld it: 14 rows of round
   5's matrix), #2608's `-s $X` and `-c $X` rows, `-c $(…)`, #2900's one-dash long option behind a
   shell the step names through a variable (`CMD=bash; $CMD -norc <<'EOF'`), and the guard's other
