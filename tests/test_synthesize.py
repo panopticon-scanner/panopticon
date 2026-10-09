@@ -9,6 +9,8 @@ import inspect
 import io
 import os
 import json
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
 import unittest
@@ -1358,6 +1360,39 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
             self.assertEqual(Path(x0x_path).read_bytes(), x0x_bytes)
             self.assertFalse(os.path.lexists(failure_path))
             self.assertNotIn("locus-free", stderr)
+
+    def test_locus_free_log_redacts_a_token_crossing_the_short_title_cut(self):
+        secret = "ABCDEFGHIJKLMNOPQRST"
+        token = "s" + "k-" + secret
+        title = "p" * 88 + token + " after token"
+        token_start = title.index(token)
+        self.assertLess(token_start, 99)
+        self.assertGreater(token_start + len(token), 99)
+
+        with tempfile.TemporaryDirectory() as d:
+            fp = os.path.join(d, "findings-g1-SEC.json")
+            finding = _agentic(
+                "SE-077", sev="LOW", code="SEC-X0X", domain="SEC",
+                title=title, location={},
+            )
+            with open(fp, "w", encoding="utf-8") as fh:
+                json.dump({"findings": [finding]}, fh)
+            out = os.path.join(d, "report.json")
+            completed = subprocess.run(
+                [sys.executable, str(Path(syn.__file__).resolve()),
+                 "--target", "src", "--out", out, fp],
+                cwd=d, capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            failure_path = out.replace(".json", "-x0x-failures.json")
+            failure_log = json.loads(Path(failure_path).read_text(encoding="utf-8"))
+
+        diagnostic = only(
+            failure_log["discarded_findings"], "discarded finding")["diagnostic"]
+        self.assertIn("[REDACTED_KEY]", diagnostic)
+        for start in range(len(secret) - 7):
+            with self.subTest(start=start):
+                self.assertNotIn(secret[start:start + 8], diagnostic)
 
     def test_equal_duplicate_discards_are_all_logged_and_counted(self):
         with tempfile.TemporaryDirectory() as d, _chdir(d):

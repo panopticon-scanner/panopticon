@@ -297,6 +297,21 @@ class TestX0XReport(unittest.TestCase):
             failure_log["discarded_findings"], "discarded finding")["diagnostic"]
         self.assertIn("'" + "g" * 119 + "\u2026'", diagnostic)
 
+    def test_a_field_cut_with_a_space_at_the_bound_is_marked(self):
+        f = _f("SEC-X0X", "SEC", "LOW", "a" * 120 + " tail", None,
+               fid="gap-1")
+        _report, failure_log = x0x.build_emission([f], {}, run_id="run-1")
+        diagnostic = only(
+            failure_log["discarded_findings"], "discarded finding")["diagnostic"]
+        self.assertIn("'" + "a" * 119 + "\u2026'", diagnostic)
+
+    def test_an_exactly_maximum_length_diagnostic_stays_whole(self):
+        finding = {"id": "i", "title": "ttt" + "\u200b" * 48}
+        expected = "catalog-gap finding %r (%r) has no location.file" % (
+            finding["id"], finding["title"])
+        self.assertEqual(len(expected), 340)
+        self.assertEqual(x0x._locus_diagnostic(finding), expected)
+
     def test_failure_log_redacts_before_cutting_a_diagnostic_field(self):
         # Cutting first can turn a recognizable credential into an unrecognized
         # partial credential at the 120-character boundary.
@@ -712,6 +727,25 @@ class TestX0XReport(unittest.TestCase):
         self.assertEqual(shared["cwe"], ["CWE-400", "CWE-522"])
         self.assertEqual([occurrence["file"] for occurrence in shared["occurrences"]],
                          ["a.py", "z.py"])
+
+    def test_equal_severity_lead_prefers_fingerprint_before_canonical_order(self):
+        fingerprint_lead = _f(
+            "SEC-X0X", "SEC", "HIGH", "shared gap", "a.py", 2, "s-a",
+            desc="from a", refs=["CWE-400"])
+        canonical_lead = _f(
+            "SEC-X0X", "SEC", "HIGH", "Shared Gap", "z.py", 9, "s-z",
+            desc="from z", refs=["CWE-522"])
+        self.assertGreater(evidence.finding_fingerprint(fingerprint_lead),
+                           evidence.finding_fingerprint(canonical_lead))
+        self.assertGreater(x0x._canonical(canonical_lead),
+                           x0x._canonical(fingerprint_lead))
+
+        for order in ([fingerprint_lead, canonical_lead],
+                      [canonical_lead, fingerprint_lead]):
+            with self.subTest(order=[finding["id"] for finding in order]):
+                candidate = only(x0x.build_candidates(order), "candidate")
+                self.assertEqual(candidate["summary"], "shared gap")
+                self.assertEqual(candidate["description"], "from a")
 
     def test_generated_at_stays_optional(self):
         schema = _schema()

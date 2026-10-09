@@ -87,9 +87,9 @@ def _redacted_one_line(value, cap=_DIAG_MAX):
     text = " ".join(str(value or "").split())
     if not text:
         return ""
-    # Keep one character past the published bound. Redaction can lengthen a
-    # value, and cutting it to its old length would hide that a tail was lost.
-    text = redact.redact_diagnostic(text, cap + 1)
+    # Keep two characters past the published bound. The second preserves a
+    # visible tail when the first is whitespace that the final squeeze removes.
+    text = redact.redact_diagnostic(text, cap + 2)
     text = "".join(
         ("\\x%02x" % ord(ch) if ord(ch) < 0x100 else "\\u%04x" % ord(ch))
         if ord(ch) in inert.INERT_ESCAPE_CODE_POINTS else ch
@@ -121,7 +121,7 @@ def _locus_diagnostic(finding):
     """Name one discarded finding in a bounded, redacted, inert diagnostic."""
     finding_id = _redacted_one_line(finding.get("id")) or "?"
     title = _redacted_one_line(
-        finding.get("short_title") or finding.get("title")) or "?"
+        finding.get("title") or finding.get("short_title")) or "?"
     diagnostic = "catalog-gap finding %r (%r) has no location.file" % (finding_id, title)
     return _marked_redacted_head(diagnostic, 2 * _DIAG_MAX + 100)
 
