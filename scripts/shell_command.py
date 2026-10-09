@@ -47,6 +47,7 @@ _ENVIRONMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
+_PARENS = re.compile(r"[ \t]+\([ \t]*\)")    # a header's `()` behind a blank: `f ()`, `f ( )`
 
 # The shells whose options and program word a pattern may rewrite into a `-c`
 # and its script (`sh {-c,'…'}`, review N-3): `workflow_programs._SHELL_STRING`.
@@ -309,6 +310,17 @@ def _command_result(argv, optional=True):
             reason = "`%s` is a pattern bash expands where `%s` looks for `-c` or a script" % (
                 readable(word), os.path.basename(argv[0]))
     return argv, reason or vanished, heads
+
+
+def fronts(closed, state, text, at):
+    """What `closed`, a word a stage closed at `at` in `text`, leaves of `state` (True, or
+    `function` behind that keyword): True where the next word still stands where a command word
+    does, behind a keyword, an assignment or a function's header (`f()`, `f` in front of `()`,
+    the name after `function`); `function` behind that keyword; else False (#2954)."""
+    if closed == "function":
+        return closed
+    return bool(not closed or closed in KEYWORDS or _ASSIGNMENT.match(closed) or _FUNCTION.match(closed)
+                or _NAME.match(closed) and (state == "function" or _PARENS.match(text, at)))
 
 
 def command(argv):
