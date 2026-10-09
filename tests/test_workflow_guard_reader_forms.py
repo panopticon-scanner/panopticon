@@ -2111,20 +2111,33 @@ class TestEveryFindActionIsACommand(unittest.TestCase):
         # it can run: `command()` unwraps one `find`, and the reads grow with the depth of a nest, not
         # as a power of it (round 1: 32, 192, 768, 2,560, 8,192 and 25,600 `_found` calls at depths 1
         # to 6; now 14 a level). Each `-exec` of the nest is still read, as an action of the first.
+        # Since #2858 the guard reads a job twice -- `main`'s pass, then the walk's -- so the calls
+        # are counted for each reading, as `TestACallSiteCarriesAFixedNumberOfTimes` counts its
+        # carries, and each reading is held to the bound the one reading had: under 200 for depths 2
+        # and 6 together (46 and 102). The readings are counted too, and so is the growth: the same
+        # step for two levels more.
         import shell_command
+        from unittest import mock
         def nest(depth):
             return "find /dev/null -exec " * depth + "sh -c '%s' " % PIPE + "\\; " * depth + "\n"
         argv = shell_reader.command(shell_reader.statements(nest(3))[0].stages[0].argv)
         self.assertEqual("find", argv[0])
         self.assertEqual(3, argv[0].finder.count("-exec"))
-        calls, found = [], shell_command._found
-        shell_command._found = lambda argv: calls.append(1) or found(argv)
-        try:
-            for depth in (2, 6):
+        counted, found, readings = {}, shell_command._found, TestACallSiteCarriesAFixedNumberOfTimes.PASSES
+        passes = TestACallSiteCarriesAFixedNumberOfTimes.each_pass(counted)
+
+        def count(argv):
+            counted["calls"] = counted.get("calls", 0) + 1
+            return found(argv)
+        with mock.patch.object(shell_command, "_found", count), mock.patch.object(wg, "_job_defects", passes.entered):
+            for depth in (2, 4, 6):
                 self.assertTrue(wg.job_defects([wg.Step("step", nest(depth), None)]))
-        finally:
-            shell_command._found = found
-        self.assertLess(len(calls), 200)
+        self.assertEqual(3 * readings, len(passes))
+        for reading in range(readings):
+            two, four, six = (passes[at * readings + reading]["calls"] for at in range(3))
+            with self.subTest(reading=reading):
+                self.assertLess(two + six, 200)
+                self.assertEqual(four - two, six - four)
 
     def test_the_command_of_a_find_is_its_action(self):
         import shell_command
