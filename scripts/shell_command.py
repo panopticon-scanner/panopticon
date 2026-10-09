@@ -15,6 +15,7 @@ nothing from the reader, so the layers still run one way.
 
 Stdlib only, like everything under it.
 """
+import contextvars
 import itertools
 import os
 import re
@@ -106,16 +107,28 @@ def _optional(argv):
         if not match or match[1] and os.path.basename(match[1]) not in WRAPPERS:
             break
         count += 1
-    return count if count and os.path.basename(argv[count]) in OPTIONAL_NEXT else 0
+    after = _DEFAULTS.fullmatch(argv[count]) if count and WALKED_DEFAULTS.get() else None     # (#2963)
+    return count if count and os.path.basename(after[1] if after else argv[count]) in OPTIONAL_NEXT else 0
+
+
+# Whether a ONE-WORD default is read as the command it names where that is a fetcher or `eval`, as
+# `main` reads one that names a shell (#2963): with `X` unset `${X:-curl} URL | sh` fetches as `curl
+# URL | sh` does, and `${X:-eval} 'P'` runs `P`. It is the second walk's reading. `workflow_options.
+# mains_answer` turns it off while the main pass reads such a word as `main` does, one the guard does
+# not follow; so the job REPORTs where either reading does. `_optional` reads it too: a `$` word in
+# front of such a default is one bash may drop (`$SUDO ${X:-curl} URL | sh`).
+WALKED_DEFAULTS: contextvars.ContextVar[bool] = contextvars.ContextVar("walked_defaults", default=True)
 
 
 def _shell_default(word):
-    """The words a command word that is a shell's one-word default runs as (`${X:-sh}`: `sh`), or
+    """The words a command word that is a one-word default runs as, where the default names a shell
+    (`${X:-sh}`: `sh`) or, in the second walk (`WALKED_DEFAULTS`, #2963), a fetcher or `eval`; else
     None: `"${SH:-bash}"` is `bash` (#2337), and `"${SH:- bash}"`, `${X:-"bash -s"}` and
     `${X:-bash\\ -s}` name no shell. A default holding a blank the reader marks is read whole
     (`_default_words`)."""
     default = _DEFAULTS.fullmatch(word)
-    return [default[1]] if default and os.path.basename(default[1]) in _SHELLS else None
+    known = (*_SHELLS, *_FETCHERS, "eval") if WALKED_DEFAULTS.get() else _SHELLS
+    return [default[1]] if default and os.path.basename(default[1]) in known else None
 
 
 def _default_words(whole):
