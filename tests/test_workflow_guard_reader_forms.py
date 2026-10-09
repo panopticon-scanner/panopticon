@@ -2133,6 +2133,14 @@ class TestEveryFindActionIsACommand(unittest.TestCase):
         self.assertTrue(all(own is stage.argv for *_, own in read[:2]))
         self.assertEqual([["sh", "-c", "x"], ["true"]], [own for *_, own in read[2:]])
         self.assertEqual(find, shell_reader.acted(stage.argv))  # and `main`'s again, the folds done
+        # Every fold of `main`'s comes first: with a command word bash may expand to nothing beside
+        # the `find`, both of its halves are read with no action in place, then each again with each
+        # of the two actions.
+        half = shell_reader.statements("${X:+/usr/bin/env true} sh -c x\n")[0].stages[0]
+        read = []
+        for _sure in shell_command.folds(lambda: False):
+            read.append((shell_reader.command(half.argv)[0], shell_reader.acted(stage.argv)[0]))
+        self.assertEqual([("true", "find"), ("sh", "find"), ("true", "sh"), ("true", "true"), ("sh", "sh"), ("sh", "true")], read)
         plain = shell_reader.statements("sudo sh -c x\n")[0].stages[0]
         self.assertEqual(1, sum(1 for _ in shell_command.folds(lambda: bool(shell_reader.acted(plain.argv)) and False)))
         self.assertIs(plain.argv, shell_reader.acted(plain.argv, True))

@@ -342,15 +342,15 @@ def folds(unsure):
     (#2856 round 13, the round-13 ruling: the union, no half ranked). Each reads every `find`'s first
     action where the guard asks how a stage uses a file, then, while one held another, its next
     (`find_action`), so the guard REPORTs where any action uses it (#2918). Those are `main`'s folds,
-    read first, with every `find` the `find` (`acted` is `command`); where `acted` met a `find` with
-    an action in them, the same folds follow with each action in its `find`'s place (#2935 round 3:
-    `main`'s reading is never lost, and the guard REPORTs where either reads a defect)."""
+    every one of them read first, with every `find` the `find` (`acted` is `command`); where `acted`
+    met a `find` with an action in them, the same folds follow with each action in its `find`'s place
+    (#2935 round 3: `main`'s reading is never lost, and the guard REPORTs where either reads a defect)."""
     _HALVES.update(empty=False, both=False)
     _ACTIONS["acts"] = False
     try:
-        for empty in (False, True):
-            _HALVES["empty"] = empty
-            for act in (False, True):
+        for act in (False, True):
+            for empty in (False, True):
+                _HALVES["empty"] = empty
                 for at in itertools.count():
                     _ACTIONS.update(at=at, more=False, act=act)
                     yield False
@@ -358,9 +358,9 @@ def folds(unsure):
                         yield True
                     if not _ACTIONS["more"]:
                         break
-                if not _ACTIONS["acts"]:
+                if not _HALVES["both"]:
                     break
-            if not _HALVES["both"]:
+            if not _ACTIONS["acts"]:
                 return
     finally:
         _HALVES["empty"] = False
