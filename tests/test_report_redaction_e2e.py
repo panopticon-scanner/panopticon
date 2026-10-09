@@ -50,15 +50,17 @@ MARKERS = {
     "discarded": "ghp_" + "DISCARDED" + "D" * 27,
     "reasoning": "ghp_" + "REASON" + "E" * 30,
     "chunked": "ghp_" + "CHUNKED" + "F" * 29,
+    "x0x_failure": "ghp_" + "X0XFAIL" + "G" * 29,
 }
 
 
 def _findings_doc():
-    """Three findings: one an advisor CONFIRMS (so it lands in `findings[]`,
+    """Four findings: one an advisor CONFIRMS (so it lands in `findings[]`,
     the summary and the group roll-up), one it REJECTS (so it lands in
-    `discarded_claims`) and a bulky third so the split write has two active
-    findings to chunk across `report.json` + `report_part2.json`. Between them
-    the markers cover title, description and the evidence citations."""
+    `discarded_claims`), a bulky third so the split write has active findings
+    to chunk across `report.json` + `report_part2.json`, and a locus-free X0X
+    gap whose diagnostic lands in the failure sidecar. Between them the markers
+    cover title, description and the evidence citations."""
     return {"findings": [
         {"id": "SEC-1", "domain": "SEC", "code": "SEC-A1A",
          "title": "authz bypass %s" % MARKERS["title"],
@@ -79,6 +81,13 @@ def _findings_doc():
          "severity": "MEDIUM", "confidence": "POSSIBLE", "panel": "security",
          "category": "injection", "source": "agent:reviewer",
          "location": {"file": "app/z.py", "line_start": 11}},
+        {"id": "SEC-4", "domain": "SEC", "code": "SEC-X0X",
+         "title": "repo-wide gap %s" % MARKERS["x0x_failure"],
+         "short_title": "repo-wide gap %s" % MARKERS["x0x_failure"],
+         "description": "no file locus",
+         "severity": "LOW", "confidence": "POSSIBLE", "panel": "security",
+         "category": "catalog-gap", "source": "agent:reviewer",
+         "location": {}},
     ]}
 
 
@@ -221,6 +230,7 @@ class TestNoMarkerSurvivesAnyArtifact(unittest.TestCase):
             self.assertIn("report.json", written)
             self.assertIn("report.json.html", written)
             self.assertIn("report-x0x.json", written)
+            self.assertIn("report-x0x-failures.json", written)
             self.assertIn("report-strain.json", written)
             # ... and the one artifact that lands OUTSIDE the report directory.
             self.assertIn("verify-queue.json", sorted(os.listdir(scan_dirs[1])))

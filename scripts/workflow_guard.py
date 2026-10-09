@@ -573,7 +573,7 @@ def _job_defects(steps, strict=False):
             why = unparseable(step.shell)
             if not why:
                 try:                # the one read of every text, substitutions too
-                    here = read(step.script, step.shell)
+                    here = read(shell_reader.placed(step.script, number), step.shell)
                     back = [i for i, s in enumerate(here) if not (sure and isinstance(s, Unsure))]
                     here = [here[i] for i in back]
                     def walk_step(body):

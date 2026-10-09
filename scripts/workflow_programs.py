@@ -668,7 +668,7 @@ def stdin_scripts(argv, stage, before=None, shell=None):
         texts = [context.pattern.sub("$VALUE", lifted)]
     out = []
     for spelled in texts:
-        text = Stdin(spelled)
+        text = shell_reader.at_place(Stdin(spelled), spelled)
         text.reader = shell_reader.sure_reader(argv, reader if len(readings) == 1 else None)
         setattr(text, "bound", stdin_command(argv)[0] if kind == VALUE_PROGRAM else None)
         out.append(text)
@@ -679,7 +679,7 @@ def stdin_scripts(argv, stage, before=None, shell=None):
         parsed = shell_reader.statements(filed)
         if len(parsed) == 1 and len(parsed[0].stages) == 1 and _stdin(
                 shell_reader.command(parsed[0].stages[0].argv), 1)[0] in (SHELL_PROGRAM, VALUE_PROGRAM):
-            text = Stdin(stage.stdin_heredoc[0])
+            text = shell_reader.at_place(Stdin(stage.stdin_heredoc[0]), stage.stdin_heredoc[0])
             setattr(text, "bound", None)
             out.append(text)
     return out

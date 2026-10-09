@@ -487,8 +487,9 @@ def redact_report_secrets(report):
     """#run7 SEC-B2C: mask unambiguous secret formats (GitHub/OpenAI/AWS/Slack/
     Google tokens, PEM private keys) in EVERY string in the report, at any
     depth, BEFORE it reaches any shareable artifact -- report.json, the split
-    parts, the -discarded.json sibling, report.json.html, the X0X candidates
-    and the terminal summary all read from this one dict.
+    parts, the -discarded.json sibling, report.json.html, the X0X candidates,
+    the X0X failure sidecar and the terminal summary all read from this one
+    dict. The failure sidecar also redacts its bounded diagnostic explicitly.
 
     Reviewers are instructed to write [REDACTED], but a credential one of them
     quoted-but-didn't-redact would otherwise flow verbatim into the pipeline's
