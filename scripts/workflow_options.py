@@ -22,6 +22,7 @@ import contextvars
 import os
 import re
 
+import shell_command
 import shell_reader
 
 
@@ -35,11 +36,12 @@ def mains_answer():
     """The guard's main pass (`workflow_guard.job_defects`, #2858 round 11): while it holds, the four
     joins of `workflow_programs` -- `_stdin_details`, `scripts`, `candidates`, `dynamic_program` --
     answer exactly as `main` does, so the pass is `main`'s guard, word for word."""
-    token = _MAINS.set(True)
+    token, defaults = _MAINS.set(True), shell_command.WALKED_DEFAULTS.set(False)
     try:
         yield
     finally:
         _MAINS.reset(token)
+        shell_command.WALKED_DEFAULTS.reset(defaults)
 
 
 # The short option letters a shell takes, where it reads them: bash 5.2.21's `set` builtin (`set -eo
