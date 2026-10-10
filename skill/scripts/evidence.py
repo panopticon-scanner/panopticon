@@ -17,14 +17,14 @@ import uuid
 from types import ModuleType
 
 if TYPE_CHECKING:
-    from scripts import safe_write, tolerant_json
+    from scripts import inert, safe_write, tolerant_json
     from scripts._version import __version__
 else:
     try:
-        from scripts import safe_write, tolerant_json
+        from scripts import inert, safe_write, tolerant_json
         from scripts._version import __version__
     except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
-        import safe_write, tolerant_json
+        import inert, safe_write, tolerant_json
         from _version import __version__
 
 # #1639 P15 F3: the pinned types live in ONE module (it both enforces them on
@@ -133,7 +133,12 @@ def _agent_verdict(raw):
     completed run in `error`). `validate_schema.repair_verdict` does it against
     the schema nodes those fields land in, so this boundary and the findings
     boundary cannot disagree about a type.
+
+    A lone surrogate goes first (#2951, `inert.surrogate_free`), as it does for a
+    finding: no encoder takes one, and this verdict's text is written into the
+    report and the page. A verdict holding none is read as it always was.
     """
+    raw = inert.surrogate_free(raw)
     clean = {k: v for k, v in raw.items()
              if not str(k).startswith("_") and k not in CONTROLLER_STAMPED}
     if validate_schema_mod is None:
