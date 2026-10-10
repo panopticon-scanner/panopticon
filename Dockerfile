@@ -155,7 +155,7 @@ RUN curl -sfL --connect-timeout 5 --max-time 60 "https://rubygems.org/downloads/
 # lock file". Reset to `/`, the base image's own workdir, so nothing below
 # inherits this one.
 #
-# pip-audit used to ride along on the old npm line; it is one of the four
+# pip-audit used to ride along on the old npm line; it is one of the three
 # tools in the python closure above now. The three ARGs above stay as the
 # declared pins, and a test fails when they and package.json disagree.
 COPY tools-image/node/package.json tools-image/node/package-lock.json /opt/panopticon-node/
