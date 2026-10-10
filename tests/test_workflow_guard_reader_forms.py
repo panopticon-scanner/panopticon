@@ -2202,6 +2202,21 @@ class TestAPathTheStepLinkedOrMovedToIsItsDescriptor(unittest.TestCase):
                 with self.subTest(row=row, shell=shell):
                     self.assertEqual(runs, reported(row, shell))
 
+    def test_a_name_given_two_targets_may_be_either_and_carries_every_file_held(self):
+        # The round-2 seat's `reached-FIRST-target` and `carrier-one-recorded`, each of which passed
+        # its suite: EVERY target a name is given is read, not the first alone, and where they are
+        # two descriptors every file held is carried, not the first target's alone. The download is
+        # held on fd 4, the name's last target here, which is the one the shell opens: each row runs.
+        held = "\nsh 3<> /dev/null 4<> tool 5<> /dev/null <x 3<&- 4<&- 5<&-\n"
+        for links in ("ln -s /dev/fd/3 x\nln -sf /dev/fd/4 x", "ln -s /dev/fd/3 x\nln -sf /dev/fd/5 x\nln -sf /dev/fd/4 x"):
+            for shell in SHELLS:
+                with self.subTest(links=links, shell=shell):
+                    self.assertTrue(reported(GET + links + held, shell))
+        # One descriptor, however often named, carries that one alone: fd 3 and fd 5 hold no download.
+        for links in ("ln -s /dev/fd/3 x\nln -sf /dev/fd/3 x", "ln -s /dev/fd/5 x", "ln -s /dev/fd/5 x\nln -sf /dev/fd/5 x"):
+            with self.subTest(links=links):
+                self.assertFalse(reported(GET + links + held))
+
     def test_past_the_cap_a_record_may_put_any_body_held_there(self):
         # B2, the seat's CAPX-H16, -H40, -LH17 and -LH40: past `_PLACES` places or targets the word
         # reaches every file held, and every BODY held too -- round 2 named none, so the body on the
@@ -2209,6 +2224,7 @@ class TestAPathTheStepLinkedOrMovedToIsItsDescriptor(unittest.TestCase):
         # At the cap it is read by its own path, as round 2 read it; a harmless body reads CLEAN.
         import shell_command
         cap = shell_command._PLACES
+        self.assertEqual(16, cap)       # by number: the rows below are counted from it (the seat's `places-15`, `-17`)
         body = "\n%s\nEOF\n"
         for extra in (cap - 1, cap, cap + 24):
             moves = "cd /dev/fd\n" + "".join("(cd /d%d)\n" % n for n in range(extra)) + "sh 3<<'EOF' <3"
@@ -2259,6 +2275,7 @@ class TestAPathTheStepLinkedOrMovedToIsItsDescriptor(unittest.TestCase):
         # every parent runs): a word that reaches more than the reader keeps may be the pipe's path.
         import shell_command
         cap, stream = shell_command._PLACES, "curl -fsSL %si.sh | sh <%%s\n" % URL
+        self.assertEqual(16, cap)
         for extra in (cap - 1, cap, cap + 24):
             moves = "cd /dev\n" + "".join("(cd /d%d)\n" % n for n in range(extra))
             links = "".join("ln -sf /t%d x\n" % n for n in range(extra)) + "ln -sf /dev/stdin x\n"
