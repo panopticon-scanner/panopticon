@@ -29,6 +29,7 @@ from unittest import mock
 import shell_reader
 import workflow_guard as wg
 import workflow_options as wo
+import workflow_program_strings as ws
 import workflow_programs as wp
 
 URL = "https://example.test/"
@@ -1193,9 +1194,12 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
     # This walk's own readers and helpers -- every function #2858 added that only the walk calls (round
     # 12's seat, F3) -- each where it is looked up; `_WALK`'s pair is bound when the module loads, so it
     # is watched as a pair too, and its two names are TRIPWIRES: nothing looks either up by name (round
-    # 12's seat, F2), so neither may run in the main pass, and neither need run in the walk's.
-    WALK_ONLY = ((wp, ("_walk", "_walk_scripts", "_added_strings", "_shell_candidates", "_dash_c_strings",
-                       "_stdin_walk", "_counted", "_sure_string", "Handed")),
+    # 12's seat, F2), so neither may run in the main pass, and neither need run in the walk's. The readers
+    # of a STRING moved to `workflow_program_strings` (#3011) and look their helpers up there, so those
+    # watchers moved with them; `_dash_c_strings` is looked up in both modules and watched in both, each
+    # counted by (module, name), so that neither can go dead behind the other.
+    WALK_ONLY = ((wp, ("_walk", "_walk_scripts", "_dash_c_strings", "_stdin_walk", "_counted")),
+                 (ws, ("_added_strings", "_shell_candidates", "_dash_c_strings", "_sure_string", "Handed")),
                  (wo, ("long_option", "_run", "_after_value", "_dash_c_operand", "_dash_s", "_in_every_reading",
                        "_literal", "_long_name", "_long_word", "_one_word", "_operand_past", "_printed",
                        "_runs_none", "_value_after_dash_c")))
@@ -1500,7 +1504,8 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
                                                                      for at, reader in enumerate(wp._WALK))))
             for module, names in self.WALK_ONLY:
                 for name in names:
-                    stack.enter_context(mock.patch.object(module, name, watched(name, getattr(module, name))))
+                    stack.enter_context(mock.patch.object(
+                        module, name, watched((module.__name__, name), getattr(module, name))))
             for module in [module for module in list(sys.modules.values())
                            if os.path.dirname(getattr(module, "__file__", None) or "") == home]:
                 for name, value in list(vars(module).items()):    # every binding, an import's too
@@ -1510,10 +1515,12 @@ class TestTheGuardReturnsMainsFindingsThenTheWalks(unittest.TestCase):
             for script in self.WALKED + tuple(self.SEAT.values()):
                 for shell in self.SHELLS:
                     wg.job_defects([wg.Step("step", script, shell)])
-        watchers = (["_WALK[0]", "_WALK[1]"] + [name for _module, names in self.WALK_ONLY for name in names]
+        watchers = (["_WALK[0]", "_WALK[1]"]
+                    + [(module.__name__, name) for module, names in self.WALK_ONLY for name in names]
                     + list(self.TABLES))
+        tripwires = [(wp.__name__, name) for name in self.TRIPWIRES]
         self.assertEqual([], [label for label in watchers if calls[label, True]])
-        self.assertEqual([], [label for label in watchers if label not in self.TRIPWIRES and not calls[label, False]])
+        self.assertEqual([], [label for label in watchers if label not in tripwires and not calls[label, False]])
 
     def test_a_raise_in_the_main_pass_resets_the_switch(self):
         # Round 11's seat, F1: `mains_answer` resets `_MAINS` on a raise too, pinned here and not by

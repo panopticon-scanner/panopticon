@@ -62,7 +62,8 @@ from workflow_options import (SET_OPTION_NAMES as SET_OPTION_NAMES, SET_OPTIONS 
                               SHELL_OPTION_NAMES as SHELL_OPTION_NAMES,
                               SHELL_OPTIONS as SHELL_OPTIONS, VALUE_OPTIONS, _BARE as _BARE,
                               _MEASURED_SHELLS as _MEASURED_SHELLS, _VALUE as _VALUE,
-                              _may_spell_option,
+                              _before_operand as _before_operand, _may_spell_option,
+                              _past_options as _past_options,
                               _refused as _refused, _refused_name as _refused_name, _value)
 from workflow_options import _MAINS, _counted, _dash_c_strings, _stdin_walk
 from workflow_program_strings import (Opaque as Opaque, _EDGE as _EDGE, _NAME as _NAME,

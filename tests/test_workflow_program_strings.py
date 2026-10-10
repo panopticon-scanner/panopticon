@@ -5,7 +5,9 @@ Pins the compatibility bindings -- every name the module defines is the SAME obj
 `workflow_programs`, so no caller that reads `workflow_programs.scripts` or
 `workflow_programs._SHELL_STRING` moved -- that the new module sits below it (it imports nothing from
 it, and only what stands below both), and that every name another file reads through
-`workflow_programs` is still bound there."""
+`workflow_programs` is still bound there. One test moved with the readers: `WALK_ONLY` in
+`tests/test_workflow_options.py` watches each of the walk's readers on the module that LOOKS IT UP, and
+the readers of a string look theirs up here now."""
 import ast
 import os
 import unittest
@@ -20,13 +22,21 @@ MOVED = ("Opaque", "_EDGE", "_NAME", "_SHELL_STRING", "_added_strings", "_after_
          "_all_expansion", "_candidates", "_joined", "_main_scripts", "_program_words", "_script",
          "candidates", "dynamic_program", "scripts")
 # Every name a file under `scripts/`, `tests/` or `skill/` read through `workflow_programs` on `main`
-# when the half moved (5c4d00bd): by a `from` import, as an attribute, or as a `patch.object` target.
+# when the half moved (5c4d00bd): by a `from` import, as an attribute, as a `patch.object` target, or
+# by `getattr` over a list of names -- the pins of the two earlier moves out of this module, the option
+# grammar's (PR #2850) and the printers' (PR #2699), whose every name it re-exports.
 READ_THROUGH_IT = ("ANY", "FOREIGN_PROGRAM", "Named", "Opaque", "SET_OPTIONS", "SET_OPTION_NAMES",
-                   "SHELL_PROGRAM", "VALUE_OPTIONS", "VALUE_PROGRAM", "_FOREIGN", "_MAIN",
-                   "_MEASURED_SHELLS", "_SHELL_STRING", "_WALK", "_details", "_main_scripts", "_options",
-                   "_parsed", "_stdin", "candidates", "dynamic_program", "handed", "runs_under",
-                   "scripts", "stdin_command", "stdin_program", "stdin_reader", "stdin_scripts",
-                   "unprinted", "worded")
+                   "SHELL_OPTIONS", "SHELL_OPTION_NAMES", "SHELL_PROGRAM", "VALUE_OPTIONS",
+                   "VALUE_PROGRAM", "_BARE", "_FOREIGN", "_MAIN", "_MEASURED_SHELLS", "_PRINTERS",
+                   "_SHELL_STRING", "_VALUE", "_WALK", "_before_operand", "_details", "_main_scripts",
+                   "_may_spell_option", "_options", "_parsed", "_past_options", "_piped", "_refused",
+                   "_refused_name", "_stdin", "_value", "candidates", "dynamic_program", "handed",
+                   "printed", "producer", "runs_under", "scripts", "stdin_command", "stdin_program",
+                   "stdin_reader", "stdin_scripts", "unprinted", "unspelled", "worded")
+OPTIONS = ("SET_OPTIONS", "SET_OPTION_NAMES", "SHELL_OPTIONS", "SHELL_OPTION_NAMES", "VALUE_OPTIONS",
+           "_BARE", "_MEASURED_SHELLS", "_VALUE", "_before_operand", "_may_spell_option", "_past_options",
+           "_refused", "_refused_name", "_value")
+PRINTERS = ("ANY", "Named", "_PRINTERS", "_piped", "handed", "printed", "producer", "unspelled", "worded")
 BELOW = {"os", "re", "shell_lex", "shell_reader", "shell_text", "workflow_options", "workflow_printers"}
 
 
@@ -85,7 +95,8 @@ class TestWorkflowProgramsBindsEveryMovedName(unittest.TestCase):
         # Both modules bind these names and each reads its own: `workflow_programs`' stdin half reads its
         # `_SHELL_STRING`, `_after_dash_c`, `_all_expansion`, `_main_scripts` and `_script`, while `scripts`,
         # `candidates` and `dynamic_program` here read this module's. An assignment or a patch through one
-        # would change that module's name alone, silently.
+        # would change that module's name alone, silently. This reads LITERAL names; the one patch driven
+        # by a table is the next test's.
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         binders, offenders = ("workflow_programs", "workflow_program_strings"), []
         paths = sorted(os.path.join(folder, name) for top in ("scripts", "tests")
@@ -113,14 +124,41 @@ class TestWorkflowProgramsBindsEveryMovedName(unittest.TestCase):
                     offenders.append((os.path.relpath(path, root), node.lineno, words[0]))
         self.assertEqual([], offenders)
 
+    def test_the_walks_watch_table_names_no_moved_reader_on_workflow_programs(self):
+        # `tests/test_workflow_options.py` watches the walk's readers by a table, `WALK_ONLY`: each is
+        # patched on the module that LOOKS IT UP, and must then be seen to run. `scripts`, `candidates`,
+        # `dynamic_program` and `_added_strings` look their helpers up HERE: a reader of theirs named on
+        # `workflow_programs` would be watched where nobody reads it. (That test fails such a watcher; this
+        # one says why, and holds the table to the move.)
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_workflow_options.py")
+        with open(path, encoding="utf-8") as source:
+            tree = ast.parse(source.read())
+        modules = {alias.asname or alias.name: alias.name for node in tree.body if isinstance(node, ast.Import)
+                   for alias in node.names}
+        tables = [node.value for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                  and any(isinstance(target, ast.Name) and target.id == "WALK_ONLY" for target in node.targets)]
+        self.assertEqual(1, len(tables))
+        watched = {modules[row.elts[0].id]: {name.value for name in row.elts[1].elts} for row in tables[0].elts}
+        self.assertEqual({"workflow_programs", "workflow_program_strings", "workflow_options"}, set(watched))
+        self.assertFalse(watched["workflow_programs"] & set(MOVED), watched["workflow_programs"])
+        # what the moved readers call of the walk's own, each read in this module's globals
+        called_here = {"_added_strings", "_shell_candidates", "_dash_c_strings", "_sure_string", "Handed"}
+        self.assertEqual(called_here, watched["workflow_program_strings"])
+        for name in called_here:
+            with self.subTest(name=name):
+                self.assertTrue(hasattr(workflow_program_strings, name))
+        # and what `workflow_programs`' own walk still calls there
+        self.assertEqual({"_walk", "_walk_scripts", "_dash_c_strings", "_stdin_walk", "_counted"},
+                         watched["workflow_programs"])
+
     def test_every_name_read_through_workflow_programs_is_still_bound_there(self):
         for name in READ_THROUGH_IT:
             with self.subTest(name=name):
                 self.assertTrue(hasattr(workflow_programs, name))
-        for name in ("SET_OPTIONS", "SET_OPTION_NAMES", "VALUE_OPTIONS", "_MEASURED_SHELLS"):
+        for name in OPTIONS:
             with self.subTest(name=name):
                 self.assertIs(getattr(workflow_options, name), getattr(workflow_programs, name))
-        for name in ("ANY", "Named", "handed", "worded"):
+        for name in PRINTERS:
             with self.subTest(name=name):
                 self.assertIs(getattr(workflow_printers, name), getattr(workflow_programs, name))
 
