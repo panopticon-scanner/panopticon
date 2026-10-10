@@ -70,6 +70,12 @@ def marks(text):
     return job, mains
 
 
+def reports(text):
+    """The job's marks alone, for a test that holds only that the job reports: half of `marks`' runs."""
+    return "".join("R" if wg.job_defects([wg.Step("step", text + "\necho done", shell)]) else "C"
+                   for shell in SHELLS)
+
+
 def step(front, runner, sets=""):
     """The step: what `runner` needs first, what sets the front's name, then the front and the command."""
     before, command = runner
@@ -217,8 +223,7 @@ class TestWhereverTheStatementStands(unittest.TestCase):
             for front in ("$S", "$A $B", "${S:+sudo}", "${S:-command}"):
                 for command in (". ./t", "source ./t", "eval $(cat t)"):
                     with self.subTest(place=place, front=front, command=command):
-                        text = FETCH + shape % ("%s %s" % (front, command))
-                        self.assertEqual("RRRRR", marks(text)[0])
+                        self.assertEqual("RRRRR", reports(FETCH + shape % ("%s %s" % (front, command))))
 
     def test_a_wrapper_that_execs_in_every_place(self):
         for place, shape in self.PLACES.items():            # truth: the fetch alone
