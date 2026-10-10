@@ -7,6 +7,37 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader reads a `case` that is not its statement's first word (#2974).** `curl -fsSLo
+  t …` ⏎ `if true; then case x in x) sh t ;; esac; fi` ran the download under every parent and
+  read CLEAN: `_split` looked for a `case` header only where `case` was its statement's first
+  word, so behind `then`, `else`, `do`, `{`, `!` or a function's header the first command of an
+  arm was read as the pattern's argument (a second command there was read). The header is now
+  found behind what a command may stand behind -- a keyword, a function's header (`f() { case`,
+  and `f() case`, where the `case` is the body), `time` -- each passed by without a probe, so a
+  run of them is still read once (`header_at`). What stands in front of the header ends as a
+  statement of its own, as on a line of its own, so each row reads as its own-line twin reads, the
+  gates in its arms too: with those words left on the header's statement an arm was no arm to what
+  reads a `case`, and a check in it was credited behind `!`, in a condition and in a function
+  never called while all 16 runs ran the download (pinned). `time` is read through instead: a
+  statement of its own, it is a wrapper with no command, and a `time case …` that runs nothing
+  would report. No lead: `case` itself, so a keyword may be its subject; `for`, whose next word is
+  a name, and `in`; an assignment, behind which bash reads `case` as a command's name. On a
+  943-row hunt with 16-run truth -- 32 leads by 14 arm bodies, each with the `case` on the lead's
+  line, with its arms below, and with the lead on a line of its own -- against `main`: 1,365 cells
+  in 295 rows report that a parent runs (the issue's 17 rows and 83 cells among them), none that a
+  parent runs reads CLEAN, and 584 of the 608 one-line rows read as their own-line twin reads on
+  `main` (255 before; the other 24 stand behind an assignment, `time` or `time -p`, where the twin
+  is another step). The price, REPORT though no parent of that setting runs: 215 cells in 76 rows,
+  each a cell the own-line twin reports on `main` -- an arm that is not taken (70 cells, 14 rows),
+  a one-line `case` with no `;;` before its `esac` (35, 7), and `function f`, `my-fn()` or `time`
+  under `sh`, which dash refuses (110, 55). 125 cells in 25 rows go from REPORT to CLEAN, no
+  parent running: a pattern that is the fetched file's name, on a line below a header behind a
+  lead, which `main` read as a command. `time -p case …` is still unread (10 rows, 30 cells,
+  bash's alone): `time`'s option is no lead. On the standing sets and the #2939 round-1 seat's
+  class and fuzz rows (53,210 rows) nothing moves. The cost, `job_defects` against `main` on the
+  forge, three passes, each a process of its own: 1.12x to 1.13x on the hunt, whose arms are read
+  now, and flat on the #2942 seat's 3,881-row sample of the standing rows (1.00x); a `case` behind
+  n keywords is read in linear time (pinned).
 - **`scripts/shell_reader.py` splits its statement splitter into `scripts/shell_split.py` (#3001,
   reader lane).** A pure move at the module's size (700 of its 700 lines, with #2974 to edit
   `_split`): `_split`, which cuts a lexed `run:` text into statements and pipeline stages, the two
