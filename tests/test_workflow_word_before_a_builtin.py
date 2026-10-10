@@ -5,9 +5,9 @@
 while every parent shell runs the pipeline, and so did `$SUDO . ./t` and `$SUDO source ./t` after a fetch. The
 second walk now knows the three behind such words (`shell_defaults._optional`, under `WALKED_DEFAULTS`), by name or
 by a one-word default naming them, where EVERY word in front may be nothing with its name unset -- a bare reference,
-an empty default, an alternate (`${S:+sudo}`) -- or is `command`, which runs a builtin. No wrapper that execs can
-run one, so `${S:-sudo} eval 'P'` stays unread: nothing of `P` runs. The main pass reads as `main` does, so the job
-reports wherever either reading does.
+an empty default, an alternate naming a wrapper (`${S:+sudo}`) -- or is `command`, which runs a builtin. No wrapper
+that execs can run one, so `${S:-sudo} eval 'P'` stays unread: nothing of `P` runs. The main pass reads as `main`
+does, so the job reports wherever either reading does.
 
 Marks are a letter a `shell:` setting -- unset, `bash`, `sh`, `bash {0}`, `sh {0}` -- R where the guard reports,
 C where it reads the step CLEAN: first the job's, then the main pass's, which is `main`'s own reading.
@@ -21,10 +21,16 @@ bash runs: `source` (dash has none), `eval --` (dash runs `--`) and `. t` with n
 Named limits, pinned in `TestThePrice` and `TestWhatStaysForOtherIssues`. The word in front is read whatever the
 step did to its name, as `main` reads it in front of a shell: `S=sudo` makes bash run `sudo eval`, which runs
 nothing, and the row reports. A default naming `command` by path reports too; `/usr/bin/command` is a real file on
-macOS, where it runs the builtin, and no file on the forge. `builtin` in front is #2665's. A front that is no name
-(`$1`, `"$@"`), a substitution that prints nothing and two references glued are not dropped in front of a shell on
-`main` either, and are not this fix's. A `trap`'s action is not read at all (#2830), and a fetched file's text
-that the parent splices into a `-c` string is #2693.
+macOS, where it runs the builtin, and no file on the forge. And a quoted nothing beside the word (`$S""`) leaves
+an empty argument, which bash fails to run; the reader takes the quotes off first, as `main` does in front of a
+shell, and the row reports. `builtin` in front is #2665's. A front that is no name (`$1`, `"$@"`), a substitution
+that prints nothing and two references glued are not dropped in front of a shell on `main` either, and are not
+this fix's; nor is a default that is only a blank (`${S:- }`), or a word in front of a default or an alternate of
+several words (`$T ${S:+sudo -E}`): #3002. Nor is an alternate naming a word that is no wrapper
+(`${DRY_RUN:+echo}`): it too is nothing with its name unset, and `main` drops an alternate only where it names a
+wrapper (#3003). Nor is any other word that is nothing with its name unset: a pattern taken off, a substring, an
+array, an indirection, a default that holds a reference. A `trap`'s action is not read at all (#2830), and a
+fetched file's text that the parent splices into a `-c` string is #2693.
 """
 import unittest
 
@@ -119,6 +125,14 @@ class TestAWordThatMayBeNothing(unittest.TestCase):
                 with self.subTest(front=front, runner=name):
                     self.assertEqual(BEFORE, marks(step(front, runner)))
 
+    def test_a_default_or_an_alternate_of_several_words_is_mains_reading(self):
+        # `${SUDO:+sudo -E} eval 'P'`: bash expands the word whole and then splits it, and `main` keeps it whole
+        # and reads the statement without it (#2731), a builtin behind it too. Unmoved. Truth: runs, every one.
+        for front in ("${S:+sudo -E}", "${S+sudo -E}", "${S:+env A=1}", "${S:+ }", "${S:-command --}"):
+            for name, runner in BOTH.items():
+                with self.subTest(front=front, runner=name):
+                    self.assertEqual(BEFORE, marks(step(front, runner)))
+
     def test_behind_an_assignment_and_after_an_unset(self):
         for name, runner in BOTH.items():                   # truth: runs, both
             with self.subTest(front="A=1 $S", runner=name):
@@ -176,6 +190,14 @@ class TestAWrapperThatExecsCannotRunABuiltin(unittest.TestCase):
         for name, runner in FILES.items():                  # a wrapper first, then a word that vanishes
             with self.subTest(front=self.EXECS[-1], runner=name):
                 self.assertEqual(CLEAN, marks(step(self.EXECS[-1], runner)))
+
+    def test_mains_reading_of_a_default_of_several_words_is_unmoved(self):
+        # `main` reads `${S:-sudo -E} eval 'P'` without the word, as it reads an alternate, and reports it, where
+        # this fix's rule leaves the one-word `${S:-sudo}` unread. Truth: nothing; the fetch alone.
+        for front in ("${S:-sudo -E}", "${S:-env A=1}"):
+            for name, runner in BOTH.items():
+                with self.subTest(front=front, runner=name):
+                    self.assertEqual(BEFORE, marks(step(front, runner)))
 
 
 class TestItIsTheWordAndNotAPathToIt(unittest.TestCase):
@@ -274,6 +296,24 @@ class TestThePrice(unittest.TestCase):
     def test_mains_own_reading_of_a_name_the_step_set(self):
         self.assertEqual(BEFORE, marks("S=sudo\n$S sh -c '%s'" % P))       # truth: runs
 
+    def test_a_quoted_nothing_beside_the_word(self):
+        # `$S"" eval 'P'`: the quotes leave an empty ARGUMENT where the word alone leaves none, and bash fails
+        # to run it. The reader takes the quotes off before it reads the word, and reads `$S`. Truth: nothing;
+        # the fetch alone where one stands first.
+        for front in ('$S""', '""$S', "$S''"):
+            for name, runner in BOTH.items():
+                with self.subTest(front=front, runner=name):
+                    self.assertEqual(NOW, marks(step(front, runner)))
+            with self.subTest(front=front, runner="sh -c"):                # `main`'s own, in front of a shell
+                self.assertEqual(BEFORE, marks("%s sh -c '%s'" % (front, P)))
+        for front in ("${S:-''}", '${S:-""}'):              # the same as a default's word: `main` reads it empty
+            for name, runner in EVALS.items():
+                with self.subTest(front=front, runner=name):
+                    self.assertEqual(NOW, marks(step(front, runner)))
+        for name, runner in FILES.items():                  # and as a quoted reference in a default
+            with self.subTest(front='${S:-"$T"}', runner=name):
+                self.assertEqual(NOW, marks(step('${S:-"$T"}', runner)))
+
 
 class TestWhatStaysForOtherIssues(unittest.TestCase):
     """Rows this PR does not move, each pinned as it reads and named with what it waits for."""
@@ -297,6 +337,36 @@ class TestWhatStaysForOtherIssues(unittest.TestCase):
 
     def test_a_substitution_that_prints_nothing_and_two_references_glued(self):
         for front in ("$(true)", "$S$T"):                   # truth: runs, every one
+            for command in ("eval '%s'" % P, "sh -c '%s'" % P):
+                with self.subTest(front=front, command=command[:4]):
+                    self.assertEqual(CLEAN, marks("%s %s" % (front, command)))
+
+    def test_a_default_that_is_a_blank_and_a_word_in_front_of_several_words_is_3002(self):
+        # `${S:- }` is nothing to bash, and so is each word of `$T ${S:+sudo -E}`; `main` drops neither front in
+        # front of a shell. Truth: runs, every one.
+        for front in ("${S:- }", "$T ${S:+sudo -E}", "$T ${S:- }"):
+            for command in ("eval '%s'" % P, "sh -c '%s'" % P):
+                with self.subTest(front=front, command=command[:4]):
+                    self.assertEqual(CLEAN, marks("%s %s" % (front, command)))
+        with self.subTest(front="$T ${S:+sudo -E}", command=". ./t"):
+            self.assertEqual(CLEAN, marks("%s$T ${S:+sudo -E} . ./t" % FETCH))
+
+    def test_an_alternate_naming_no_wrapper_is_3003(self):
+        # `${DRY_RUN:+echo} sh -c 'P'`: with its name unset an alternate is nothing whatever it names, and `main`
+        # drops one only where it names a wrapper it knows, in front of a shell too. Truth: runs, every one.
+        for front in ("${S:+echo}", "${S+true}", "${S:+:}", "${S:+-x}", "$T ${S:+echo}"):
+            for command in ("eval '%s'" % P, "sh -c '%s'" % P):
+                with self.subTest(front=front, command=command[:4]):
+                    self.assertEqual(CLEAN, marks("%s %s" % (front, command)))
+
+    def test_other_words_that_are_nothing_are_not_dropped_in_front_of_a_shell_either(self):
+        # A pattern taken off, a replacement, a substring, a case change, an array, an indirection, a default
+        # that holds a reference: each is nothing with its name unset, and `main` drops none of them in front
+        # of a shell. Truth: a parent runs every one -- all sixteen runs for `#`, `%` and the two defaults, the
+        # twelve bash runs for the replacement, the substring and the array, bash 5.2 alone for `^^` and bash
+        # 3.2 alone for `${!S}`, which 5.2 refuses with the name unset.
+        for front in ("${S#x}", "${S%x}", "${S/x/y}", "${S:0}", "${S^^}", "${S[@]}", "${!S}", "${S:-$T}",
+                      "${S:-${T}}"):
             for command in ("eval '%s'" % P, "sh -c '%s'" % P):
                 with self.subTest(front=front, command=command[:4]):
                     self.assertEqual(CLEAN, marks("%s %s" % (front, command)))
