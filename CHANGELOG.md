@@ -7,6 +7,19 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Tools-image pins move together: semgrep 1.179.0, pyjwt 2.15.1, filelock 4.0.9 (#2876).**
+  Dependabot's requirements-only bump (#2946) failed the image's `pip check`: semgrep 1.179.0
+  requires `pyjwt[crypto]<3,>=2.15.0` where 1.178.0 held it to `~=2.13.0`, and a `--no-deps` closure
+  has no resolver to move a transitive pin with its parent. pyjwt moved to 2.15.1 with it, `ARG
+  SEMGREP_VERSION` followed the pinned file, and the digests are `bump_pins.py`'s. `pip-audit` over
+  the closure reported 14 known vulnerabilities before, all in pyjwt 2.13.0, and none after.
+  Dependabot's `ignore` for pyjwt's minor updates is dropped: semgrep no longer holds pyjwt to one
+  minor line, so the rule only withheld fixes such as these. Its major updates stay ignored, as do
+  the lines semgrep 1.179.0 still holds `boltons`, `exceptiongroup` and `wcmatch` to. Stale cites
+  follow the pin: the Dependabot comment, `DEVELOPMENT.md`, the image's rule-corrections README, and
+  the two comments on a `# nosemgrep`'d result, which semgrep 1.179.0 still reports either way,
+  `--disable-nosem` changing nothing in its SARIF (measured again at the pin); and the `Dockerfile`
+  counts three tools in the python closure, not four.
 - **No lone surrogate reaches an encoder (#2951).** `json.load` hands a lone surrogate over for a
   lone `\udXXX` escape, and no encoder of text takes one. One such string in one agent-authored
   finding ended `synthesize.py` badly, and how depended on the field. In a title, a file or a
