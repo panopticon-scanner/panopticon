@@ -546,6 +546,7 @@ groups:
       - tests/test_synthesize.py
       - tests/test_replay_report.py
       - tests/test_report_redaction_e2e.py
+      - tests/test_lone_surrogates.py
     Synth:
       # Includes synth/artifacts.py and tests/synth/test_artifacts.py (bounded run reads).
       match:

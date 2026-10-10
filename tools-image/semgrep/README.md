@@ -8,7 +8,7 @@ image build until a developer reviews and re-proves every affected rule.
 
 `controls.json` stores the positive and negative examples as inert JSON.
 During the image build, `verify_controls.py` materializes them under `/tmp`,
-Semgrep 1.177.0 scans the five corrected vendored paths, and the verifier
+Semgrep 1.179.0 scans the five corrected vendored paths, and the verifier
 requires the exact result set. This retains the seven unsafe permission modes,
 three custom and eight upstream subprocess launches, five untrusted checkout
 expressions, two invalid returns, and twelve JSON-derived path flows across all
