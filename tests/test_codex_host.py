@@ -93,6 +93,15 @@ def _register(root, name="panopticon-scout", mutation=None):
     (root / (name + ".toml")).write_text("\n".join(args[1::2]), encoding="utf-8")
 
 
+@pytest.fixture(scope="module")
+def registered_shells(tmp_path_factory):
+    from scripts import dispatch
+
+    path = tmp_path_factory.mktemp("codex-registered")
+    dispatch.emit_host_agents("codex", str(path))
+    return path
+
+
 def test_safety_config_is_fresh_and_only_has_read_native_tools():
     first = codex_host.safety_config()
     assert first["sandbox_mode"] == "read-only"
@@ -148,6 +157,84 @@ def test_setup_without_named_model_preserves_native_default(tmp_path):
     assert "--model" not in argv
     rows = json.loads(Path(_config(argv)["model_catalog_json"]).read_text())["models"]
     assert rows[0]["slug"] == MODEL["slug"]
+
+
+def test_registered_setup_probe_preserves_the_model_neutral_setup_contract(
+        tmp_path, registered_shells):
+    """#2923 A: probing setup_scan must not invent a role-model override."""
+    root, _entry, env = _case(tmp_path)
+    entry = {"id": codex_host.SETUP_PROBE_ID, "agent": "panopticon-setup-scan",
+             "model": None, "prompt": "measure"}
+    bound = dict(env, PANOPTICON_ENTRY_ID=entry["id"])
+    argv = codex_host.command(entry, bound, root, root / "run", runner=_fake_catalog,
+                              registration_dir=registered_shells)
+    try:
+        assert "--model" not in argv
+        assert codex_host.validate_command(argv, bound, root)
+    finally:
+        codex_host.cleanup_command(argv)
+
+    # The exception is the setup role, not every probe or registered shell.
+    entry.update(id="probe-scout", agent="panopticon-scout")
+    bound["PANOPTICON_ENTRY_ID"] = entry["id"]
+    with pytest.raises(ValueError, match="explicit entry model"):
+        codex_host.command(entry, bound, root, root / "run", runner=_fake_catalog,
+                           registration_dir=registered_shells)
+
+
+@pytest.mark.parametrize("agent", [
+    "panopticon-scout", "panopticon-domain-panel",
+    "panopticon-advisor", "panopticon-domain-advisor",
+])
+def test_setup_probe_id_with_any_other_registered_shell_needs_a_model(
+        tmp_path, registered_shells, agent):
+    root, _entry, env = _case(tmp_path)
+    entry = {"id": codex_host.SETUP_PROBE_ID, "agent": agent,
+             "model": None, "prompt": "measure"}
+    env["PANOPTICON_ENTRY_ID"] = entry["id"]
+    with pytest.raises(ValueError, match="explicit entry model"):
+        codex_host.command(entry, env, root, root / "run", runner=_fake_catalog,
+                           registration_dir=registered_shells)
+
+
+@pytest.mark.parametrize("entry_id", [
+    "probe-scout", "probe-advisor", "review-app-SEC", "x",
+])
+def test_setup_shell_under_any_other_id_needs_a_model(
+        tmp_path, registered_shells, entry_id):
+    root, _entry, env = _case(tmp_path)
+    entry = {"id": entry_id, "agent": "panopticon-setup-scan",
+             "model": None, "prompt": "measure"}
+    env["PANOPTICON_ENTRY_ID"] = entry_id
+    with pytest.raises(ValueError, match="explicit entry model"):
+        codex_host.command(entry, env, root, root / "run", runner=_fake_catalog,
+                           registration_dir=registered_shells)
+
+
+@pytest.mark.parametrize("entry_id", [
+    "probe-setup-scan", "PROBE-SETUP_SCAN", "Probe-Setup_Scan",
+    " probe-setup_scan", "probe-setup_scan ", "probe-setup_scan\n",
+    "probe-setup_scanx", "probe-setup_scan-2", "probe-setup", "setup_scan",
+])
+def test_ids_that_only_resemble_the_setup_probe_need_a_model(
+        tmp_path, registered_shells, entry_id):
+    root, _entry, env = _case(tmp_path)
+    entry = {"id": entry_id, "agent": "panopticon-setup-scan",
+             "model": None, "prompt": "measure"}
+    env["PANOPTICON_ENTRY_ID"] = entry_id
+    with pytest.raises(ValueError, match="explicit entry model"):
+        codex_host.command(entry, env, root, root / "run", runner=_fake_catalog,
+                           registration_dir=registered_shells)
+
+
+def test_native_setup_id_does_not_exempt_another_registered_shell(
+        tmp_path, registered_shells):
+    root, _entry, env = _case(tmp_path)
+    entry = {"id": "setup-scan", "agent": "panopticon-scout",
+             "model": None, "prompt": "measure"}
+    with pytest.raises(ValueError, match="explicit entry model"):
+        codex_host.command(entry, env, root, root / "run", runner=_fake_catalog,
+                           registration_dir=registered_shells)
 
 
 def test_real_launch_validator_checks_finished_argv_and_exact_scope_binding(tmp_path):
@@ -442,6 +529,11 @@ def test_transport_is_local_only_and_closes_on_failure(tmp_path, monkeypatch):
     with pytest.raises(subprocess.TimeoutExpired):
         codex_host._capture_requests(argv, {}, fake, "safe script")
     assert captured == {"shutdown": True, "closed": True}
+
+
+def test_effective_surface_probe_budget_is_the_documented_bound():
+    """#2923 B: the measured 64.8-second inspection fits the exact bound."""
+    assert codex_host.PROBE_TIMEOUT == 180
 
 
 def test_the_probe_launch_also_runs_in_the_registered_scratch(tmp_path, monkeypatch):
@@ -764,7 +856,7 @@ def test_an_output_schema_outside_the_published_reference_dir_is_refused(tmp_pat
     # request -- has to hold it to the schemas panopticon publishes.
     import scripts._version as version
     root, entry, env = _case(tmp_path)
-    published = os.path.abspath(version.reference_path("advisor-verdict-schema.json"))
+    published = os.path.abspath(version.reference_path("probe-output-schema.json"))
     argv = codex_host.command(entry, env, root, root / "run", runner=_fake_catalog,
                               schema_argv=["--output-schema", published])
     assert argv[-3:] == ["--output-schema", published, "-"]
@@ -775,8 +867,53 @@ def test_an_output_schema_outside_the_published_reference_dir_is_refused(tmp_pat
         forged = [*argv[:-3], "--output-schema", path, "-"]
         with pytest.raises(ValueError, match="output schema"):
             codex_host.validate_command(forged, env, root)
+    incompatible = os.path.abspath(version.reference_path("advisor-verdict-schema.json"))
+    with pytest.raises(ValueError, match="strict-output compatible"):
+        codex_host.validate_command(
+            [*argv[:-3], "--output-schema", incompatible, "-"], env, root)
     with pytest.raises(ValueError, match="output schema"):
         codex_host.validate_command([*argv[:-3], "--output-schema"], env, root)
+
+
+@pytest.mark.parametrize("schema_argv", [
+    ("--evil", "{probe}"),
+    ("--output-schema",),
+    ("--output-schema", "{probe}", "extra"),
+])
+def test_a_malformed_schema_argv_is_refused(tmp_path, schema_argv):
+    import scripts._version as version
+
+    root, entry, env = _case(tmp_path)
+    probe = os.path.abspath(version.reference_path("probe-output-schema.json"))
+    schema_argv = tuple(token.format(probe=probe) for token in schema_argv)
+    with pytest.raises(ValueError, match="invalid Codex output-schema argv"):
+        codex_host.command(entry, env, root, root / "run", runner=_fake_catalog,
+                           schema_argv=schema_argv)
+
+
+@pytest.mark.parametrize("name", [
+    "findings-envelope-schema.json",
+    "verdict-bundle-schema.json",
+    "advisor-verdict-schema.json",
+])
+def test_codex_omits_a_published_schema_that_violates_its_strict_output_contract(
+        tmp_path, name):
+    """#2923 C: a toy-schema pass cannot fan out a rejected production shape."""
+    import scripts._version as version
+
+    root, entry, env = _case(tmp_path)
+    published = os.path.abspath(version.reference_path(name))
+    entry["output_schema"] = published
+    argv = codex_host.command(entry, env, root, root / "run", runner=_fake_catalog,
+                              schema_argv=["--output-schema", published])
+    try:
+        assert "--output-schema" not in argv
+        # Only Codex's incompatible launch flag is omitted; persist.write_reply
+        # validates the returned role against role_schema(entry) after stamping.
+        assert entry["output_schema"] == published
+        assert codex_host.validate_command(argv, env, root)
+    finally:
+        codex_host.cleanup_command(argv)
 
 
 def test_launch_cwd_is_the_registered_scratch_this_module_allocated(tmp_path):

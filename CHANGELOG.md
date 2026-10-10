@@ -436,6 +436,18 @@ evidence exposed.
   `main`).
 - **Codex model profiles move to GPT-6 (#2872).** Pinned role defaults now use `gpt-6-luna` or
   `gpt-6-sol`; set `PANOPTICON_MODEL_<ROLE>` to pin another installed model.
+- **Codex headless probes reach panels without invocation-local workarounds (#2923).** The
+  registered, model-neutral `setup_scan` surface probe now keeps its intentional inherited model;
+  the localhost-only effective-surface probe and bundled-catalog read have a 180-second bound after
+  one observed valid inspection took 64.8 seconds; and `codex exec --output-schema` is omitted for
+  a published schema whose root, recursive objects, references, or composition are not strict-output
+  compatible. After controller stamping, `phases.persist.write_reply` validates every returned role
+  that has a published schema against its unmodified Draft-7 `role_schema(entry)` before writing.
+  Consequently, a lowercase or otherwise bare tool-advisor verdict that the older acceptance check
+  normalized now fails the published contract and spends a D10 retry. The 180-second bounds limit a
+  slow probe, and the compatibility screen keeps an incompatible production schema off the provider
+  argv, so neither can fan a rejection out across a matrix batch. The Codex disclosure separately
+  reports that its successful toy proof constrains no production reply in this build.
 - **X0X identifiers reject control and bidirectional code points (#2712).** The report schema now
   refuses C0 controls other than tab and line feed, DEL/C1 controls, Arabic Letter Mark, bidi
   marks, embeddings, overrides, and isolates in occurrence paths, candidate areas, and proposed
