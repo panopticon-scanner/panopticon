@@ -2018,6 +2018,72 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.
                 argv = shell_reader.statements(script)[0].stages[0].argv
                 self.assertEqual([], [str(w) for w in argv if getattr(w, "whole", None) is not None])
 
+    @staticmethod
+    def whole(script):
+        """The words of `script` the reader kept whole, as bash expands them."""
+        return [word.whole for statement in shell_reader.statements(script) for stage in statement.stages
+                for word in stage.argv if getattr(word, "whole", None) is not None]
+
+    def test_the_word_behind_a_function_header_is_a_command_word(self):
+        # #2954: a function's header leaves the next word where a command word stands, as a keyword
+        # does, so the first word of a body on its header's line is whole as on a line of its own:
+        # `f()`, `f ()`, `f ( )`, the name after `function`, the `{` glued or behind a tab, a body in
+        # `( )`, a header behind a keyword, and behind it the words a body may open with.
+        for script in ("f() { %s; }", "f () { %s; }", "f ( ) { %s; }", "f(){ %s; }", "f()\t{ %s; }", "f() ( %s )",
+                       "my-fn() { %s; }", "function f { %s; }", "function f() { %s; }", "function f () { %s; }",
+                       "function  f\t{ %s; }", "if true; then f() { %s; }; fi", "for a in 1; do function f { %s; }; done",
+                       "f() { if %s; then :; fi; }", "f() { ! %s; }", "f() { X=1 %s; }", "f() { { %s; }; }",
+                       "function f function g { %s; }"):
+            with self.subTest(script=script):
+                self.assertEqual(["${SH:-bash -s}"], self.whole(script % "${SH:-bash -s}" + "\n"))
+        # A name that is no header -- no `()` behind it, or words in them -- and a word behind a
+        # command are `main`'s words still; so is a second such word, #2856's named limit.
+        for script in ("f %s", "X=1 f %s", "f() g %s", "function f g %s", "f ( x ) %s", "functions %s", "echo 'f()' %s",
+                       "f() { echo %s; }", "function f { echo %s; }"):
+            with self.subTest(script=script):
+                self.assertEqual([], self.whole(script % "${SH:-bash -s}" + "\n"))
+        self.assertEqual(["${V:-a b}"], self.whole("f() { ${V:-a b} ${W:-c d}; }\n"))
+        # Behind a header only a default or an alternate is whole, the word whose two halves the
+        # reader reads: of a name, an element, an indirection, a positional or a special parameter.
+        # A pattern taken off or replaced and a case change keep `main`'s words there, as they keep
+        # them whole at a statement's head.
+        for word in ("${V:-a b}", "${V-a b}", "${V:=a b}", "${V=a b}", "${V:+a b}", "${V+a b}", "${V[0]:-a b}",
+                     "${!V:+a b}", "${1:-a b}", "${@:+a b}"):
+            with self.subTest(word=word):
+                self.assertEqual([word], self.whole("f() { %s; }\n" % word))
+        for word in ("${V#a b}", "${V##a b}", "${V%a b}", "${V%%a b}", "${V/x/a b}", "${V//x/a b}", "${V^^a b}", "${V,a b}"):
+            with self.subTest(word=word):
+                self.assertEqual([], self.whole("f() { %s; }\n" % word))
+                self.assertEqual([], self.whole("function f { %s; }\n" % word))
+                self.assertEqual([word], self.whole("%s\n" % word))
+                self.assertEqual([word], self.whole("{ %s; }\n" % word))
+
+    def test_what_a_closed_word_leaves_of_the_head(self):
+        # #2954, `shell_command.fronts`: True behind a keyword, an assignment and a header, `function`
+        # behind that keyword -- the name after it is a header's, whatever stands behind the name --
+        # and False behind any other word: a name with no `()` behind it, a quoted one, a command.
+        import shell_command
+        for closed, state, text, at, want in (
+                ("", True, "", 0, True), ("{", True, "{ x", 1, True), ("then", True, "then x", 4, True),
+                ("X=1", True, "X=1 x", 3, True), ("f()", True, "f() {", 3, True), ("function", True, "function f", 8, "function"),
+                ("f", "function", "function f {", 10, True), ("f", "function", "function f x", 10, True),
+                ("f", True, "f () {", 1, True), ("f", True, "f\t(\t) {", 1, True), ("f", True, "f {", 1, False),
+                ("f", True, "f ( x )", 1, False), ("f", True, "f x ()", 1, False), ("f", True, "f ()", 2, False),
+                ("f", True, "f\n()", 1, False), ("'f'", "function", "function 'f' {", 12, False),
+                ("2f", "function", "function 2f {", 11, False), ("sh", True, "sh t", 2, False), ("f()x", True, "f()x {", 4, False)):
+            with self.subTest(closed=closed, state=state, text=text):
+                left = shell_command.fronts(closed, state, text, at)
+                self.assertEqual((want, type(want)), (left, type(left)))
+
+    def test_a_statement_of_function_headers_is_read_in_linear_time(self):
+        # #2954: what a header leaves is carried from word to word, never read back off the stage's
+        # text, so a statement of `function f` after `function f` costs what its length does.
+        def check(size, parsed):
+            self.assertEqual(2 * size + 4, len(parsed[0].stages[0].argv))
+            self.assertEqual(["${Y:+a b}"], [word.whole for word in parsed[0].stages[0].argv
+                                             if getattr(word, "whole", None) is not None])
+        self.assert_linear_growth(4000, lambda size: "function f " * size + "{ ${Y:+a b} c; }\n", check)
+
     def test_a_step_that_spells_a_reader_mark_reads_as_main(self):
         # PR #2856 round 8: no mark the reader puts in its text may decide a reading, so a step
         # that spells any of them (U+E000-U+E004) reads as `main`, its command word too.
