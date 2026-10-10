@@ -6592,7 +6592,7 @@ class TestABodyOnItsHeadersLine(unittest.TestCase):
               (("${Y:+/usr/bin/env echo} make all",), (), (), False),           # nothing fetched
               (("${SUDO:+sudo -E} apt-get install -y x",), (FETCH,), (), False),    # nothing run
               (("sha256sum -c sums || exit 1",), (FETCH, SUMS), ("sh t",), False),  # a gate
-              # a gate behind a wrapper bash may drop: no parent runs the download, and the base
+              # a gate behind a wrapper bash may drop: no parent runs the download, and `main`
               # reported it on its header's line, the word cut in two (REPORT -> CLEAN, as `main`
               # reads it on a line of its own)
               (("${SUDO:+sudo -E} sha256sum -c sums || exit 1",), (FETCH, SUMS), ("sh t",), False),
@@ -6606,7 +6606,7 @@ class TestABodyOnItsHeadersLine(unittest.TestCase):
         return "\n".join((*front, header % body, *((call,) if call else ()), *behind, "echo done")) + "\n"
 
     def test_the_issues_rows_report(self):
-        # FN1-union and FN1-mixed-run: all 16 runs run the download, and `main` and the base read each
+        # FN1-union and FN1-mixed-run: all 16 runs run the download, and `main` read each
         # CLEAN under every setting. Dash refuses `function` and `my-fn()`, so only bash's settings
         # are pinned for those (under `sh` they report as they do on lines of their own: the price).
         for statements, front, behind, _reports in self.BODIES[:2]:
@@ -6637,19 +6637,22 @@ class TestABodyOnItsHeadersLine(unittest.TestCase):
 
     def test_a_header_behind_a_keyword_or_another_command(self):
         # A header that is not its line's first word, two on a line, a redirection or a comment behind
-        # the body, a one-line body inside a body on lines of its own: every parent runs each.
+        # the body, a one-line body inside a body on lines of its own, a tab for the blank in front
+        # of a header's `()`, inside it and at its `{`: every parent runs each.
         body = "%s sh t" % self.W
         for row in ("if true; then f() { %s; }; f; fi", "for a in 1; do f() { %s; }; f; done",
                     "if false; then :; else f() { %s; }; f; fi", "{ f() { %s; }; f; }", "true; f() { %s; }; f",
                     "true && f() { %s; } && f", "! f() { %s; }\nf", "g() { :; }; f() { %s; }; f",
                     "f() { %s; } 2>/dev/null\nf", "f() { %s; } # the installer\nf", "f2() { %s; }\nf2",
-                    "f() {\n  g() { %s; }\n  g\n}\nf"):
+                    "f() {\n  g() { %s; }\n  g\n}\nf", "f\t() { %s; }\nf", "f (\t) { %s; }\nf",
+                    "f()\t{\t%s; }\nf"):
             for shell in SHELLS:
                 with self.subTest(row=row, shell=shell):
                     self.assertTrue(reported("%s\n%s\necho done\n" % (self.FETCH, row % body), shell))
-        for shell in (None, "bash", "bash {0}"):        # dash refuses the keyword
-            with self.subTest(shell=shell):
-                self.assertTrue(reported("%s\nif true; then function f { %s; }; f; fi\n" % (self.FETCH, body), shell))
+        for row in ("if true; then function f { %s; }; f; fi", "function\tf { %s; }\nf"):
+            for shell in (None, "bash", "bash {0}"):    # dash refuses the keyword
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\n" % (self.FETCH, row % body), shell))
 
     def test_a_program_handed_to_a_shell_is_read_the_same_way(self):
         # The body on its header's line in a `-c` string, an `eval`, a heredoc: every parent runs each.
@@ -6665,8 +6668,8 @@ class TestABodyOnItsHeadersLine(unittest.TestCase):
         # Only a default or an alternate is whole behind a header. `${D/x/W}` puts W where `D` holds
         # the pattern, which `main` does not read of a word it keeps whole: `D=x` ⏎ `${D/x/curl
         # -fsSLo t …}` ⏎ `sh t` reads CLEAN on lines of its own while bash 5.2.21 and 3.2.57 run the
-        # download (dash refuses the word). On its header's line `main`'s words report it, as on the
-        # base, and so they do in the #2939 round-1 seat's fuzz row F06204.
+        # download (dash refuses the word). On its header's line `main`'s words report it, and so
+        # they do in the #2939 round-1 seat's fuzz row F06204.
         row = "D=x\ng() { ${D/x/curl -fsSLo t %st}; }\ng\nsh t\necho done\n" % URL
         for shell in (None, "bash", "bash {0}"):
             with self.subTest(shell=shell):
@@ -6674,19 +6677,30 @@ class TestABodyOnItsHeadersLine(unittest.TestCase):
 
     def test_a_header_on_another_headers_line_reads_as_it_did(self):
         # The new flag is the whole word's alone: a header on the line of another header's `{` is
-        # still read through `at_head`, as on the base. Read as a header there, its body would be
+        # still read through `at_head`, as on `main`. Read as a header there, its body would be
         # read as `main` reads it on lines of its own, and `main` credits a gate in a function never
         # called, or called after the run (#2949): every parent runs the download in both rows, and
-        # both report, as on the base.
+        # both report, as on `main`.
         check = "sha256sum -c sums || exit 1"
         for row in ("f() { g() { %s; }; }\nf\nsh t" % check, "f() { g() { %s; }; sh t; g; }\nf" % check):
             for shell in SHELLS:
                 with self.subTest(row=row, shell=shell):
                     self.assertTrue(reported("%s\n%s\n%s\necho done\n" % (self.FETCH, self.SUMS, row), shell))
 
+    def test_a_word_at_a_case_arms_head_is_read_whole_as_it_was(self):
+        # The new flag is asked in front of `at_head`, so it has to stand wherever `at_head` does. At
+        # a `case` arm's head on the arm's line the word that closed is the empty one, the clause of
+        # `fronts` no header and no keyword reaches: `main` reports each row, every parent runs the
+        # download, and with that clause gone each reads CLEAN.
+        for row in ("case x in *) %s sh t;; esac", "case x in\n  *) %s sh t ;;\nesac",
+                    "case x in\n  a) echo a ;;\n  x) %s sh t ;;\nesac"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\necho done\n" % (self.FETCH, row % self.W), shell))
+
     def test_the_controls_read_as_they_did(self):
-        # Reported on `main` and the base too: no such word (FN1-plainword), the body on lines of its
-        # own (FNNL-union; FNNL-mixed-run, #2929's), the `{` on the next line.
+        # Reported on `main` too: no such word (FN1-plainword), the body on lines of its own
+        # (FNNL-union; FNNL-mixed-run, #2929's), the `{` on the next line.
         for row in (self.step("f() { %s; }", "f", ("sh t",)), self.step("f() {\n%s\n}", "f", (self.W + " sh t",)),
                     self.step("f() {\n%s\n}", "f", (self.W + " sh t",), ("X=1", "${X:+%s}" % self.FETCH)),
                     self.step("f()\n{ %s; }", "f", (self.W + " sh t",))):
