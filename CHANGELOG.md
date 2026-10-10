@@ -7,6 +7,24 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`scripts/workflow_programs.py` splits the program handed as a string into
+  `scripts/workflow_program_strings.py` (#3011, programs lane).** A pure move at the module's size
+  (700 of its 700 lines): `scripts`, `candidates` and `dynamic_program`, which read the program a
+  command hands a shell as a STRING (`eval "…"`, `sh -c "…"`), the class `Opaque`, the eight
+  readers they ask (`_main_scripts`, `_added_strings`, `_program_words`, `_joined`, `_script`,
+  `_after_dash_c`, `_candidates`, `_all_expansion`) and the three tables those read
+  (`_SHELL_STRING`, `_EDGE`, `_NAME`) now live in the new module, byte for byte with the comments
+  above each and in their old order: lines 72 to 323, moved by number. The block is a leaf of the
+  module -- no name in it reads one of the 22 defined outside it -- so the new module imports
+  nothing from `workflow_programs`, which imports every moved name back under its own; no caller
+  and no test moved. What stays is the half that reads the program on standard input. The source
+  drops the seven imports only the block read, and its docstring says where the half went. No
+  verdict changes: on 6,180 rows in 34 sets -- the row sets of #2955, #2963 and #2997, and the
+  probes behind #3002, #3003 and #3007 -- every finding of every row, its name and its reason, is
+  the same under `main`'s scripts and the move's, under each of the five `shell:` settings and in
+  each of three readings (the job, its main pass, its walk pass): 92,700 cells holding 54,238
+  findings under each tree, and the two dumps are equal byte for byte. Sizes: 700 -> 454, and 280
+  for the new module.
 - **Workflow reader drops a word bash may drop in front of `eval`, `.` and `source` (#2997).**
   `$SUDO eval 'curl … | sh'` read CLEAN under every `shell:` setting while every parent shell runs
   the pipeline, and so did `$SUDO . ./t` and `$SUDO source ./t` after a fetch. The reader dropped

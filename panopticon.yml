@@ -661,6 +661,7 @@ groups:
       - scripts/workflow_posture.py
       - scripts/workflow_operands.py
       - scripts/workflow_programs.py
+      - scripts/workflow_program_strings.py
       - scripts/workflow_options.py
       - scripts/workflow_printers.py
       - scripts/workflow_fetch.py
@@ -679,6 +680,7 @@ groups:
       - tests/test_workflow_values.py
       - tests/test_workflow_annotate.py
       - tests/test_workflow_options.py
+      - tests/test_workflow_program_strings.py
       - tests/test_workflow_default_command_word.py
       - tests/test_workflow_word_before_a_builtin.py
       panels:
