@@ -27,9 +27,9 @@ Named limits. A line that only FETCHES reports, as `echo curl | sh` does on `mai
 `<(...)` is read by every family, as `main` reads one there, so a line only dash makes reports under the bash
 settings too. Behind a stage that REWRITES the text (`| tr … | sh`) the printer's text is weighed as written, as
 `main` weighs an `echo`'s there, whatever the stage makes of it. A line the guard can SPELL -- the `$` escaped inside double quotes -- is a program string, and two
-copies of it are #2953's. A line whose command word is a one-word default (`${X:-curl} …`) waits for #2963's
-rule. `builtin` in front of a printer is no wrapper to the reader, so the printer is not read at all (#2665; as
-on `main`, spelled or not).
+copies of it are #2953's. A line whose command word is a one-word default (`${X:-curl} …`) reads as the command it
+names since #2963, and reports. `builtin` in front of a printer is no wrapper to the reader, so the printer is not
+read at all (#2665; as on `main`, spelled or not).
 
 The rendering is what the shell prints, to the character, or it is not followed and the printer reports. Followed:
 text and escapes in the format, `%%`, `%s`, `%b`, `%c`, `%q`, `%d` `%i` `%u` of a plain number, a `-`, a width, a
@@ -463,17 +463,22 @@ class TestThePrice(unittest.TestCase):
                 self.assertEqual(NOW, marks(fed(printer, route)))
 
 
-class TestTheRowsThatWaitForAnotherRule(unittest.TestCase):
-    """Rows a parent runs that this PR does not move, each pinned as it reads and named with what it waits for."""
+class TestTheRowsThatWaitedForTheDefaultRule(unittest.TestCase):
+    """#2955's rows whose printed line begins with a one-word default. With the printer readings alone they read
+    CLEAN, and #2979 pinned them so; #2963 reads the default as the command it names, and with both each reports."""
 
-    def test_a_printed_line_whose_command_word_is_a_default_waits_for_2963(self):
+    def test_a_printed_line_whose_command_word_is_a_default_reports(self):
         line = "${X:-curl} -fsSLo t " + U
         for name, step in (("PF-fetch-run", "printf '%%s\\n' '%s' | sh\nsh t" % line),          # runs
                            ("its `echo` twin", "echo '%s' | sh\nsh t" % line),                   # runs
                            ("EVS-fetch-run", "eval \"$(echo '%s')\"\nsh t" % line)):             # runs
             with self.subTest(row=name):
-                self.assertEqual(CLEAN, marks(step))
+                self.assertEqual(NOW, marks(step))
         self.assertEqual(BEFORE, marks("eval \"$(echo '%s')\"\nsh t" % L))                       # the command written out
+
+
+class TestTheRowsThatWaitForAnotherRule(unittest.TestCase):
+    """Rows a parent runs that this PR does not move, each pinned as it reads and named with what it waits for."""
 
     def test_builtin_in_front_of_a_printer_is_no_wrapper_to_the_reader_2665(self):
         # Truth: 12 of the 16 runs, the bash parents'; dash has no `builtin`. The reader strips `command`, not

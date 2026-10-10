@@ -18,7 +18,7 @@ Named limits, pinned in `TestThePrice`. The default is read whatever the step di
 `X=echo` in front makes bash run `echo`, and the row reports -- 28 of the hunt's 48 such rows. So does an alternate
 (`:+`, `+`) whose name nothing sets, and one in a child shell's program whose name the step set and did not
 export. `main` reads a shell's default and a default holding a blank the same way. The rows that need #2955's
-printer readings as well are pinned as they read here (`TestTheRowsThatWaitForThePrinters`).
+printer readings as well report, now that both are in (`TestTheRowsThatNeedThePrinters`).
 """
 import unittest
 
@@ -216,20 +216,20 @@ class TestTheSecondWalkAlone(unittest.TestCase):
         self.assertIsInstance(word, shell_command.Defaulted)
 
 
-class TestTheRowsThatWaitForThePrinters(unittest.TestCase):
-    """#2955's rows that need both readings. This PR pins them as they read with the reader's rule alone; the
-    second of the two to merge moves them to RRRRR."""
+class TestTheRowsThatNeedThePrinters(unittest.TestCase):
+    """#2955's rows that need both readings: what a printer writes (#2979) and this rule for the printed line's
+    command word. This PR is the second of the two to merge, and with both each reports."""
 
     LINE = "${X:-curl} -fsSLo t %s" % U
 
     def test_a_printed_line_whose_command_word_is_a_default(self):
-        for name, step, read in (
-                ("PF-fetch-run", "printf '%%s\\n' '%s' | sh\nsh t" % self.LINE, CLEAN),     # runs: `printf`'s format hides the line
-                ("its `echo` twin", "echo '%s' | sh\nsh t" % self.LINE, NOW),                # runs
-                ("EVS-fetch-run", "eval \"$(echo '%s')\"\nsh t" % self.LINE, CLEAN),        # runs: the substitution is not weighed
-                ("in a `-c` string", "sh -c '%s'\nsh t" % self.LINE, NOW)):                 # runs
+        for name, step in (
+                ("PF-fetch-run", "printf '%%s\\n' '%s' | sh\nsh t" % self.LINE),     # runs; the line is what `printf` writes
+                ("its `echo` twin", "echo '%s' | sh\nsh t" % self.LINE),                # runs
+                ("EVS-fetch-run", "eval \"$(echo '%s')\"\nsh t" % self.LINE),        # runs; the line is what `echo` writes
+                ("in a `-c` string", "sh -c '%s'\nsh t" % self.LINE)):                 # runs
             with self.subTest(row=name):
-                self.assertEqual(read, marks(step))
+                self.assertEqual(NOW, marks(step))
 
 
 if __name__ == "__main__":

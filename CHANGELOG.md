@@ -31,8 +31,8 @@ evidence exposed.
   step set and did not export (4 rows of the hunt). Against the base on 863 rows -- the hunt, the
   issue's rows and #2955's printer hunts -- no cell goes CLEAN where it reported and the main pass
   is `main`'s on every row; `job_defects` over them costs 1.04x in one process. #2955's rows whose
-  printed line begins with such a default (PF-fetch-run, EVS-fetch-run) need that PR's printer
-  readings as well and are pinned as they read here.
+  printed line begins with such a default (PF-fetch-run, EVS-fetch-run) need #2979's printer
+  readings as well: with both they report, and both test modules pin it.
 - **Workflow reader reads a printed line as the shell that reads it gets it (#2955).** `printf '%s
   %s\n' curl '-fsSLo t URL' | sh` ⏎ `sh t` read CLEAN under the five `shell:` settings while the
   eight parent shells run the download, and so did the issue's word `${X:+curl … #}./t.sh` printed
