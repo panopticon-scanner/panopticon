@@ -12,16 +12,16 @@ evidence exposed.
   under every parent and read CLEAN: `_split` kept a `${…}` whole only where every word its stage
   had closed was a keyword or an assignment, and a function's header is neither, so the word
   behind `f() {` was cut at its blanks and its empty half never read -- the same body on lines of
-  its own reports. A header (`f()`, `f ()`, `f ( )`, the name after `function`, behind a keyword
-  too) now leaves the next word where a command word stands, as a keyword does
-  (`shell_command.fronts`), carried from word to word in a flag of its own (`in_front`), through
-  the keywords and assignments a body may open with. The flag is the whole word's alone, and
-  behind a header only a default or an alternate is whole (`${X:-W}`, `${X-W}`, `${X:=W}`,
-  `${X=W}`, `${X:+W}`, `${X+W}`), the word whose two halves the reader reads. `[[` at a body's
-  head and a header on another header's line still read through `at_head`, as on the base: with
-  one flag for all three, `f() { g() { CHECK || exit 1; }; }` ⏎ `f` ⏎ RUN would read as `main`
-  reads it on lines of its own, CLEAN while every parent runs the download (#2949: a gate in a
-  function never called, or called after the run), where the base reports it on one line; both
+  its own reports. A header (`f()`, `f ()`, `f ( )`, the name after `function`, a tab for any of
+  its blanks, behind a keyword too) now leaves the next word where a command word stands, as a
+  keyword does (`shell_command.fronts`), carried from word to word in a flag of its own
+  (`in_front`), through the keywords and assignments a body may open with. The flag is the whole
+  word's alone, and behind a header only a default or an alternate is whole (`${X:-W}`, `${X-W}`,
+  `${X:=W}`, `${X=W}`, `${X:+W}`, `${X+W}`), the word whose two halves the reader reads. `[[` at a
+  body's head and a header on another header's line still read through `at_head`, as on `main`:
+  with one flag for all three, `f() { g() { CHECK || exit 1; }; }` ⏎ `f` ⏎ RUN would read as
+  `main` reads it on lines of its own, CLEAN while every parent runs the download (#2949: a gate
+  in a function never called, or called after the run), where `main` reports it on one line; both
   rows are pinned as they report. And a pattern taken off or replaced (`${X#W}`, `${X/p/W}`) keeps
   `main`'s words behind a header: read whole, `D=x` ⏎ `g() { ${D/x/curl -fsSLo t …}; }` ⏎ `g` ⏎
   `sh t` would read as `main` reads that word on a line of its own, CLEAN while bash runs the
@@ -32,34 +32,36 @@ evidence exposed.
   its rows back and report 14 in 4 that no parent of that setting runs, as their twins do). On 772
   hunt rows with 8-parent truth -- ten header spellings by 22 bodies, each beside the same body on
   lines of its own, headers behind keywords and in program strings, bodies that open with `[[`,
-  nested and gating bodies -- against #2939's head: 561 cells in 129 rows report that a parent
-  runs (FN1-union and FN1-mixed-run under every setting), none that a parent runs reads CLEAN, and
-  351 of the 381 one-line rows read as their own-line twin reads on the base (211 before). The
-  price, REPORT here though no parent of that setting runs: 149 cells in 55 rows, each a cell the
-  own-line twin reports on the base -- a function never called, `${X:+sh t}` with `X` unset and
-  the cap (65 cells, 13 rows), and `function f` or `my-fn()` under `sh`, which dash refuses (84,
-  42). And CPH15 and CPP14, #2856 round 9's rows for the head test, move from CLEAN to REPORT
-  though no parent runs them (10 cells; the coordinator's ruling: the gate that kept them CLEAN is
-  the one that hid their twins): `function f { ${X:-bash -s} <<'EOF'; }` ⏎ `f` ⏎ … ⏎ `EOF`, the
-  call the heredoc's first line, beside the same with the call behind the heredoc, which every
-  bash parent runs; and `curl … | f() { ${SH:-bash -s}; }` ⏎ `f`, the definition lost in the
-  pipeline, beside one `lastpipe` keeps, which bash 5.2.21 runs -- `main` reports both shapes with
-  a plain `bash -s`. 5 cells in 1 row go from REPORT to CLEAN, no parent running: a gate behind
-  `${SUDO:+sudo -E}` on its header's line, read as `main` reads it on a line of its own. On the
-  standing sets (31,046 rows) 9 rows of #2856's seat hunts 16 and 25 move, all to REPORT: 21 cells
-  in 5 rows that a parent runs (`f() { ${RUN:-sh tool}; }`, `f() { ${X:-sh -c} '…'; }`), and 24
-  that none of that setting does (CPH14, CPH15, CPP14 and CPP15, the two ruled shapes in both
-  spellings, 20; `function` under `sh`, 4); nothing else moves but #2911's rows. On the #2939
-  round-1 seat's 20,000 fuzz rows, 2,091 of them with a body on its header's line, 154 rows move,
-  all to REPORT -- 185 cells in 49 rows that a parent runs, 585 in 127 that none of that setting
-  does -- and each reads as its own-line twin reads on the base (2,065 of the 2,091 do now, 1,911
-  before; the other 26 hold a pattern taken off or replaced); none of its 2,164 class rows moves.
-  The cost, `job_defects` against #2939's head interleaved in one process: 1.17x to 1.24x on the
-  574 rows of the first hunt, where the words now read both ways, and flat on the 347 standing
-  rows with a body on its header's line (1.01x to 1.05x) and on a tenth of the standing rows
-  (1.01x), three passes; a statement of `function f` after `function f` is read in linear time
-  (pinned). `shell_reader.py` stays at 700 lines: the module's and `_split`'s docstrings close on
-  their last lines, every word kept, for the line that carries the flag and the one that names it.
+  nested and gating bodies -- against `main`: 561 cells in 129 rows report that a parent runs
+  (FN1-union and FN1-mixed-run under every setting), none that a parent runs reads CLEAN, and 351
+  of the 381 one-line rows read as their own-line twin reads on `main` (211 before). The price,
+  REPORT here though no parent of that setting runs: 149 cells in 55 rows, each a cell the
+  own-line twin reports on `main` -- a function never called, `${X:+sh t}` with `X` unset and the
+  cap (65 cells, 13 rows), and `function f` or `my-fn()` under `sh`, which dash refuses (84, 42).
+  And CPH15 and CPP14, #2856 round 9's rows for the head test, move from CLEAN to REPORT though no
+  parent runs them (10 cells; the coordinator's ruling: the gate that kept them CLEAN is the one
+  that hid their twins): `function f { ${X:-bash -s} <<'EOF'; }` ⏎ `f` ⏎ … ⏎ `EOF`, the call the
+  heredoc's first line, beside the same with the call behind the heredoc, which every bash parent
+  runs; and `curl … | f() { ${SH:-bash -s}; }` ⏎ `f`, the definition lost in the pipeline, beside
+  one `lastpipe` keeps, which bash 5.2.21 runs -- `main` reports both shapes with a plain `bash
+  -s`. 5 cells in 1 row go from REPORT to CLEAN, no parent running: a gate behind `${SUDO:+sudo
+  -E}` on its header's line, read as `main` reads it on a line of its own. On the standing sets
+  (31,046 rows) 9 rows of #2856's seat hunts 16 and 25 move, all to REPORT: 21 cells in 5 rows
+  that a parent runs (`f() { ${RUN:-sh tool}; }`, `f() { ${X:-sh -c} '…'; }`), and 24 that none of
+  that setting does (CPH14, CPH15, CPP14 and CPP15, the two ruled shapes in both spellings, 20;
+  `function` under `sh`, 4); nothing else moves but one row of #2911's, which differs between two
+  runs of one tree. On the #2939 round-1 seat's 20,000 fuzz rows, 2,091 of them with a body on its
+  header's line, 154 rows move, all to REPORT -- 185 cells in 49 rows that a parent runs, 585 in
+  127 that none of that setting does -- and each reads as its own-line twin reads on `main` (2,065
+  of the 2,091 do now, 1,911 before; the other 26 hold a pattern taken off or replaced); none of
+  its 2,164 class rows moves. The cost, `job_defects` against `main` on the forge, three passes,
+  each a process of its own: 1.23x to 1.24x on the 574 rows of the first hunt and on the 62 nested
+  bodies, where the words now read both ways, and flat on the 347 standing rows with a body on its
+  header's line (1.00x to 1.02x), on the 136 rows whose body opens with `[[` and on the #2942
+  seat's 3,881-row sample of the standing rows (1.00x to 1.01x each); a statement of `function f`
+  after `function f` is read in linear time (pinned). `shell_reader.py` stays at 700 lines: the
+  module's and `_split`'s docstrings close on their last lines, every word kept, for the line that
+  carries the flag and the one that names it.
 - **Workflow reader reads a path the step linked or moved to as the descriptor it may reach
   (#2919).** With #2881 a shell reads what `N<>` holds where it opens N's path, but a path the
   step's own state makes resolve to a descriptor carried nothing: `ln -s /dev/fd/3 fd3` ⏎ `sh 3<>
