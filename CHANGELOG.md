@@ -20,6 +20,55 @@ evidence exposed.
   the two comments on a `# nosemgrep`'d result, which semgrep 1.179.0 still reports either way,
   `--disable-nosem` changing nothing in its SARIF (measured again at the pin); and the `Dockerfile`
   counts three tools in the python closure, not four.
+- **Workflow reader reads a printed line as the shell that reads it gets it (#2955).** `printf '%s
+  %s\n' curl '-fsSLo t URL' | sh` ⏎ `sh t` read CLEAN under the five `shell:` settings while the
+  eight parent shells run the download, and so did the issue's word `${X:+curl … #}./t.sh` printed
+  twice by `printf '%s\n'`, and `eval "$(echo LINE)"`. A printer the guard cannot spell out -- a `$`
+  in a word, a `printf` format `printed` does not read, an `echo` option or escape two shells read
+  two ways -- had its words weighed as ONE text, which begins with the printer's first word: an
+  `echo`'s line, but a `printf`'s FORMAT and an `echo -n`'s `-n`, so the line after it read as an
+  argument and never as a command; and a program word that is one `$(...)` was reported with a
+  reason the guard may drop, its printer never weighed. The second walk now weighs, beside that
+  text, what the printer WRITES with each word as written -- down a pipe, behind a stage that may
+  rewrite the text, inside `$(...)` or `<(...)`: an `echo`'s line without its options, decoded where
+  its shell decodes, and a `printf`'s format with its words in place. The rendering of a format is
+  what the shell prints, to the character, or it is not followed and the step REPORTS. Followed:
+  text and escapes in the format (an octal escape is a BYTE: `\543` is a `c`), `%%`, `%s`, `%b`,
+  `%c`, `%q`, `%d` `%i` `%u` of a plain decimal, a `-`, a width to 256 on any but `%b`, a number's
+  `0`, a precision on `%s`, a `*` that takes a plain decimal, the format used again while words are
+  left, and a `$` word as it stands; the output ends at a character the shell does not know. Not
+  followed: every other flag, letter, number, width and precision, and `%q` of a `~` or of a
+  character outside printable ASCII, where the shells print their own ways (`%.b` is the whole word
+  to bash 3.2 and nothing to 5.2; a width counts bytes; bash 3.2 dies of a `*` word past an `int`);
+  a `$` word that a precision or `%c` would cut or a width pad with blanks; and a text past 4,096
+  characters and four times the format and its words -- `printf` prints its format again for every
+  few words, so what it writes can outgrow the step many times over. Each shell family is rendered
+  on its own (bash 5.2, bash 3.2, bash 3.2 as macOS ships it, dash) and each distinct rendering
+  weighed once, because the readings are not nested: a `\"` bash decodes in a format closes a quote
+  and bares the command after it where dash keeps it hidden, and the other way about, and one pinned
+  row runs under bash 3.2 and dash and not under 5.2. `unread_program`'s last resort weighs the one
+  printer a program word's `$(...)` is. The main pass reads as `main` does, so the job REPORTs
+  wherever either reading does. Measured against the shells' own builtins: in 10,000 random formats
+  and 10,000 `echo` word lists on each of bash 5.2.21, bash 3.2.57 and dash 0.5.12, no rendering
+  that is followed differs from the output but by a `\u` outside ASCII in a C locale. And on 932
+  rows in nine bounded hunts, each under eight parent shells in two passes: no cell goes CLEAN where
+  `main` reports, and of the 645 rows a parent runs, 309 that read CLEAN now report and 120 reported
+  already. Still CLEAN though a parent runs, 216 rows, none of them claimed read: 184 whose printed
+  line begins with a one-word default (`${X:-curl} …`), which #2963 reads, the issue's PF-fetch-run
+  and EVS-fetch-run among them; 22 on routes `main` reads no printer on, spelled or not (its text
+  written to a file that is then run, kept in a variable, printed by a group or a function, handed
+  to `xargs`, read by `. /dev/stdin`); `builtin` in front of the printer, no wrapper to the reader
+  on `main` either (#2665, 8 rows, run by the bash parents); and two copies of a line the guard can
+  spell (#2953, 2 rows). The price, 82 rows where no parent runs a downloaded program and the step
+  now reports, each kind pinned: a line that only FETCHES, as `echo curl | sh` reports on `main` --
+  the word printed once with its name set (29) and a fetcher on a line with no run after it (9); a
+  format that is not followed around a harmless line (26: `%x`, `%.1f`, a `$` word padded); the text
+  in front of a stage that spoils it (`| tr a-z A-Z | sh`, 9), which `main` reports for an `echo` it
+  can spell; a line only dash makes, on a route every family is read for (5); and a format printed
+  again past the bound (4). A printer is weighed once a distinct rendering: `main`'s one text, then
+  at most three more under a bash setting, one under a dash setting, four where each family is read.
+  One existing pin's value changes: `unprinted` for `printf 'sh %s' "$X" | tee f | sh` gains the
+  written text, its old value pinned under the main pass.
 - **Workflow reader reads the command a `find` action runs, beside `main`'s reading of the `find`
   (#2935).** But for the reader that asks how a stage uses a file (#2918), no reader of the
   guard's saw the command an action of a `find` runs, the first one included: `find /dev/null
