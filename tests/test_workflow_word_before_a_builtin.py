@@ -37,6 +37,7 @@ SHELLS = (None, "bash", "sh", "bash {0}", "sh {0}")
 U = "https://example.test/t"
 P = "curl -fsSL %s | sh" % U
 FETCH = "curl -fsSLo t %s\n" % U
+BACKSLASH = chr(92)
 NOW = ("RRRRR", "CCCCC")            # the job reports; the main pass reads it CLEAN, as `main` did
 BEFORE = ("RRRRR", "RRRRR")         # `main` reported it already
 CLEAN = ("CCCCC", "CCCCC")
@@ -89,6 +90,17 @@ class TestAWordThatMayBeNothing(unittest.TestCase):
             for name, runner in BOTH.items():
                 with self.subTest(front=front, runner=name):
                     self.assertEqual(NOW, marks(step(front, runner)))
+
+    def test_the_builtin_spelled_with_quotes(self):
+        # bash removes the quotes before it looks the word up, and the reader hands `_optional` the word so.
+        # Truth: runs, every one.
+        for front in ("$S", "${S:+sudo}"):
+            for word in ("'eval'", '"eval"', BACKSLASH + "eval", 'e"va"l', "eval''"):
+                with self.subTest(front=front, word=word):
+                    self.assertEqual(NOW, marks("%s %s '%s'" % (front, word, P)))
+            for word in ("'.'", '"."', BACKSLASH + ".", "'source'"):
+                with self.subTest(front=front, word=word):
+                    self.assertEqual(NOW, marks("%s%s %s ./t" % (FETCH, front, word)))
 
     def test_an_empty_default(self):
         # `main` reads an empty default in front of a file's reader (#2731: the words bash makes of it are none),
