@@ -629,6 +629,7 @@ groups:
       # #2521: keep the parser, lexer and their focused tests in one review.
       match:
       - scripts/shell_reader.py
+      - scripts/shell_split.py
       - scripts/shell_command.py
       - scripts/shell_defaults.py
       - scripts/shell_tokens.py
@@ -640,6 +641,7 @@ groups:
       - scripts/shell_wrappers.py
       tests:
       - tests/test_shell_reader.py
+      - tests/test_shell_split.py
       - tests/test_shell_command.py
       - tests/test_shell_defaults.py
       - tests/test_shell_reader_conditionals.py
