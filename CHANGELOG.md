@@ -7,6 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow branch and step credit has its own bounded module (#3005).** The
+  byte-identical branch-region and shell-option credit readers now live in
+  `scripts/workflow_step_credit.py`; `workflow_forms` re-exports the same
+  objects, preserving every existing caller and answer while restoring
+  headroom for the carried-download fixes.
 - **Reply-derived refusal reasons redact before their display cap (#2948).** A contradictory
   `_panopticon` stamp or invalid tool-advisor verdict could put a credential in its rejection
   reason, and the former `%.200r` formatting cut the value before downstream redaction saw it.
