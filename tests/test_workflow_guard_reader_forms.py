@@ -2261,7 +2261,9 @@ class TestAPathTheStepLinkedOrMovedToIsItsDescriptor(unittest.TestCase):
         # fold `main` reads, so the folds read at most `_BODY_FOLDS` others -- each in a fold of its
         # own and by what it holds -- and one more is a step the reader refuses, reported whole, a
         # harmless one too: never read CLEAN (the coordinator's ruling on the cost of the folds).
-        past = "cd /dev/fd\n" + "".join("(cd /d%d)\n" % n for n in range(cap)) + "sh %s <3%s\n"
+        # The step stands in `/dev`, which the subshells' `cd`s push out of what the reader keeps: with
+        # the program on descriptor 3, the one `<fd/3` opens, every parent runs it.
+        past = "cd /dev\n" + "".join("(cd /d%d)\n" % n for n in range(cap)) + "sh %s <fd/3%s\n"
         folds = shell_command._BODY_FOLDS
         self.assertEqual(4, folds)      # by number: twice what a step that holds any holds
 
