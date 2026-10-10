@@ -523,8 +523,8 @@ def _reached(word, context):
     """The other paths `word` may name where the step's links and `cd`s took effect (`track`): a name it
     linked, or a path below one, as each target the link was given; then each relative one in each
     directory a `cd` may have moved the step to -- a `$` word where a value decides a link's name, as
-    `shell_reader.input_alias_fd` reads a word a value decides."""
-    if not context or not (context.links or context.cwds) or dynamic(word, has_substitution):
+    `shell_reader.input_alias_fd` reads a word a value decides. A word bash expands is read as any other (round 3)."""
+    if not context or not (context.links or context.cwds):
         return []
     path = os.path.normpath(word)
     paths = [target + path[len(link):] for link, targets in context.links.items() for target in targets
@@ -549,7 +549,7 @@ def sources(word, context, read):
     more: list[str] = []
     reached = _reached(word, context)
     for path in reached[:_PLACES]:
-        answer = read(derived(path, word))
+        answer = read(path)
         if answer not in (None, first, *more):
             more.append(answer)
     if len(reached) > _PLACES and "?" not in (first, *more):
@@ -563,7 +563,7 @@ def carrier(word, context, read):
     two."""
     first, *more = sources(word, context, read)
     reached = [answer for answer in (first, *more) if answer]
-    return "?" if "?" in reached or len(reached) > 1 else reached[0] if reached else first
+    return "?" if len(reached) > 1 else reached[0] if reached else first
 
 
 def body_read(bodies, reached):

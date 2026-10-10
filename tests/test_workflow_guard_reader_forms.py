@@ -2010,6 +2010,22 @@ class TestAPathTheStepLinkedOrMovedToIsItsDescriptor(unittest.TestCase):
                 with self.subTest(use=use, shell=shell):
                     self.assertEqual(runs, reported(use + "echo done\n", shell))
 
+    def test_a_pattern_below_a_link_or_a_cd_is_read_as_main_reads_its_whole_path(self):
+        # `main` reads `</dev/fd/[3]`, a path of whichever descriptor bash's expansion picks, as every
+        # file held and any pipe. So is its twin below a `cd /dev` or a link to `/dev/fd`, which each
+        # of bash's parents runs (dash expands no pattern in a redirection): rounds 1 and 2 read no
+        # word bash expands through a record, and CLEAN (the round-2 seat's `reached-dynamic-too`,
+        # which passed its suite). Where no record puts it below `/dev/fd` it is an ordinary file.
+        get, held = "curl -fsSLo /tmp/tool %stool\n" % URL, "sh 3<> /tmp/tool <%s 3<&-\n"
+        for use in (get + held % "/dev/fd/[3]", get + "cd /dev\n" + held % "fd/[3]", get + "ln -s /dev/fd fds\n" + held % "fds/[3]",
+                    "cd /dev\nsh 3<<'EOF' <fd/[3]\n%s\nEOF\n" % PIPE, "cd /dev\n%s <fd/[0]\n" % PIPE):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(use, shell))
+        for use in (get + "cd /srv\n" + held % "fd/[3]", get + held % "fd/[3]", "cd /dev\nsh 3<<'EOF' <fd/[3]\necho hi\nEOF\n"):
+            with self.subTest(use=use):
+                self.assertFalse(reported(use))
+
     # Round 2 (the round-1 seat's B1): a record adds a reading and takes none away. Each row holds
     # the download on fd 3 and reads fd 3's own path, which `main` reports; in front of it stands a
     # link or a move the shell never makes, or not as the reader read it, which round 1 let rewrite
@@ -2088,6 +2104,10 @@ class TestAPathTheStepLinkedOrMovedToIsItsDescriptor(unittest.TestCase):
                 with self.subTest(use=use, shell=shell):
                     self.assertFalse(reported(use + "\necho done\n", shell))
         self.assertTrue(reported("ln -s /dev/stdin x\n" + pipe + "< x\necho done\n"))
+        # Nor does its text carry a file held, where a link's name is any name (the round-2 seat's
+        # `site1-herestring-guard-off`): `<<< x` hands the shell the word, `< x` the download.
+        held = GET + 'L=x\nln -s /dev/fd/3 "$L"\nsh 3<> tool %s x 3<&-\n'
+        self.assertEqual([False, True], [reported(held % op) for op in ("<<<", "<")])
 
     def test_what_the_steps_links_and_cd_may_make_of_a_path(self):
         import shell_command
@@ -2116,6 +2136,9 @@ class TestAPathTheStepLinkedOrMovedToIsItsDescriptor(unittest.TestCase):
         self.assertEqual(["/dev", "~", "~sys", "~/x"], tracked("cd /dev", "cd", "cd ~sys", "cd ~/x").cwds)
         self.assertEqual([(None, "7"), (None, "3", "?"), ("5",)],
                          [shell_command.sources(word, moves, read) for word in ("7", "fd/3", "/dev/fd/5")])
+        # The descriptor a word names as written, reached again from a place, is that one still (the
+        # round-2 seat's `sources-first-repeated`): it carries what 3 holds, not every file held.
+        self.assertEqual((("3",), "3"), (shell_command.sources("../dev/fd/3", moves, read), shell_command.carrier("../dev/fd/3", moves, read)))
         # The places kept are the latest `_PLACES`, and a word with more paths reaches every file held.
         many = tracked(*("cd /d%d" % n for n in range(40)))
         self.assertEqual((shell_command._PLACES, "$PWD", "/d39"), (len(many.cwds), many.cwds[0], many.cwds[-1]))
@@ -2298,6 +2321,17 @@ class TestAPathTheStepLinkedOrMovedToIsItsDescriptor(unittest.TestCase):
                 with self.subTest(row=row[-60:], shell=shell):
                     self.assertFalse(reported(row + "\necho done\n", shell))
         self.assertTrue(reported(get + "".join("(cd /d%d)\n" % n for n in range(cap + 1)) + "sh 3<> /tmp/tool <fd/9 3<&-\n"))
+        # Nor these two (the round-2 seat's `sources-first-repeated` and `sources-cap-no-dedupe`, which
+        # passed its suite): a path that names descriptor 3 as written, and again from where a `cd`
+        # put the step, is 3 alone, not every file held; and a path a value decides, below a name
+        # with more targets than the reader keeps, is every file held as written and so no body, as
+        # `main` reads it -- the body behind a path a value decides is `main`'s to read, and the PR
+        # that reads it there moves this row.
+        for row in (get + "cd /\nsh 3<> /dev/null 4<> /tmp/tool <../dev/fd/3 3<&- 4<&-",
+                    "".join("ln -sf /t%d x\n" % n for n in range(cap + 1)) + "sh 3<<'EOF' <x/$N\n%s\nEOF" % PIPE):
+            for shell in SHELLS:
+                with self.subTest(row=row[-60:], shell=shell):
+                    self.assertFalse(reported(row + "\necho done\n", shell))
 
     def test_the_folds_read_mains_body_first_then_each_a_record_adds(self):
         import shell_command
