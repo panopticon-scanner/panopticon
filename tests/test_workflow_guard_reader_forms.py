@@ -2829,6 +2829,21 @@ class TestAPathTheStepLinkedOrMovedToIsItsDescriptor(unittest.TestCase):
                 with self.subTest(row=row[-60:], shell=shell):
                     self.assertFalse(reported(row + "\necho done\n", shell))
 
+    def test_a_find_action_reads_the_body_a_record_put_there(self):
+        # The fold onto #2935. `folds` reads each body a record may add with every `find` the `find`
+        # and then with each action in its place: the product of the two, not their sum. A shell
+        # that an action runs, reading a body through a link or a `cd`, needs both readings at
+        # once -- `main` with #2935 reads the action and no body there, and this PR by itself read
+        # the body and the `find` -- so each of these read CLEAN on both and reports only folded.
+        body = " 3<<'EOF' <%s\n%s\nEOF\n"
+        for use in ("ln -s /dev/fd/3 x\nfind /dev/null -exec sh \\;" + body % ("x", PIPE),
+                    "cd /dev\nfind /dev/null -exec sh \\;" + body % ("fd/3", PIPE),
+                    "ln -s /dev/fd/3 x\nfind /dev/null -exec true \\; -exec sh \\;" + body % ("x", PIPE)):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(use, shell))
+        self.assertFalse(reported("ln -s /dev/fd/3 x\nfind /dev/null -exec sh \\;" + body % ("x", "echo hi")))
+
     def test_the_folds_read_mains_body_first_then_each_a_record_adds(self):
         import shell_command
         one, two, own = ("a", False, True), ("b", False, True), ("own", False, True)
