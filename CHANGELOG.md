@@ -16,6 +16,93 @@ evidence exposed.
   can rewrite token boundaries, then apply the incomplete-key guard and bounded excerpt. The
   verdict reason uses the reply's value rather than its upper-cased comparison copy; the retained
   reply and retry prompt remain redacted as well.
+- **Workflow reader reads the first word of a function body on its header's line as a command word
+  (#2954).** `curl -fsSLo t …` ⏎ `f() { ${Y:+/usr/bin/env true} sh t; }` ⏎ `f` ran the download
+  under every parent and read CLEAN: `_split` kept a `${…}` whole only where every word its stage
+  had closed was a keyword or an assignment, and a function's header is neither, so the word
+  behind `f() {` was cut at its blanks and its empty half never read -- the same body on lines of
+  its own reports. A header (`f()`, `f ()`, `f ( )`, the name after `function`, a tab for any of
+  its blanks, behind a keyword too) now leaves the next word where a command word stands, as a
+  keyword does (`shell_command.fronts`), carried from word to word in a flag of its own
+  (`in_front`), through the keywords and assignments a body may open with. The flag is the whole
+  word's alone, and behind a header only a default or an alternate is whole (`${X:-W}`, `${X-W}`,
+  `${X:=W}`, `${X=W}`, `${X:+W}`, `${X+W}`), the word whose two halves the reader reads. `[[` at a
+  body's head and a header on another header's line still read through `at_head`, as on `main`:
+  with one flag for all three, `f() { g() { CHECK || exit 1; }; }` ⏎ `f` ⏎ RUN would read as
+  `main` reads it on lines of its own, CLEAN while every parent runs the download (#2949: a gate
+  in a function never called, or called after the run), where `main` reports it on one line; both
+  rows are pinned as they report. And a pattern taken off or replaced (`${X#W}`, `${X/p/W}`) keeps
+  `main`'s words behind a header: read whole, `D=x` ⏎ `g() { ${D/x/curl -fsSLo t …}; }` ⏎ `g` ⏎
+  `sh t` would read as `main` reads that word on a line of its own, CLEAN while bash runs the
+  download, where its cut words report it (pinned; the #2939 round-1 seat's fuzz row F06204 is
+  one). So a word of that kind that vanishes on its header's line (`f() { ${Y#/usr/bin/env true}
+  sh t; }`) is still unread there, as on `main`: the named limit (8 rows of an 80-row hunt over
+  the kinds, 32 cells, their own-line twins reporting; the kinds read whole bring 26 cells in 6 of
+  its rows back and report 14 in 4 that no parent of that setting runs, as their twins do). On 772
+  hunt rows with 8-parent truth -- ten header spellings by 22 bodies, each beside the same body on
+  lines of its own, headers behind keywords and in program strings, bodies that open with `[[`,
+  nested and gating bodies -- against `main`: 561 cells in 129 rows report that a parent runs
+  (FN1-union and FN1-mixed-run under every setting), none that a parent runs reads CLEAN, and 351
+  of the 381 one-line rows read as their own-line twin reads on `main` (211 before). The price,
+  REPORT here though no parent of that setting runs: 149 cells in 55 rows, each a cell the
+  own-line twin reports on `main` -- a function never called, `${X:+sh t}` with `X` unset and the
+  cap (65 cells, 13 rows), and `function f` or `my-fn()` under `sh`, which dash refuses (84, 42).
+  And CPH15 and CPP14, #2856 round 9's rows for the head test, move from CLEAN to REPORT though no
+  parent runs them (10 cells; the coordinator's ruling: the gate that kept them CLEAN is the one
+  that hid their twins): `function f { ${X:-bash -s} <<'EOF'; }` ⏎ `f` ⏎ … ⏎ `EOF`, the call the
+  heredoc's first line, beside the same with the call behind the heredoc, which every bash parent
+  runs; and `curl … | f() { ${SH:-bash -s}; }` ⏎ `f`, the definition lost in the pipeline, beside
+  one `lastpipe` keeps, which bash 5.2.21 runs -- `main` reports both shapes with a plain `bash
+  -s`. 5 cells in 1 row go from REPORT to CLEAN, no parent running: a gate behind `${SUDO:+sudo
+  -E}` on its header's line, read as `main` reads it on a line of its own. On the standing sets
+  (31,046 rows) 9 rows of #2856's seat hunts 16 and 25 move, all to REPORT: 21 cells in 5 rows
+  that a parent runs (`f() { ${RUN:-sh tool}; }`, `f() { ${X:-sh -c} '…'; }`), and 24 that none of
+  that setting does (CPH14, CPH15, CPP14 and CPP15, the two ruled shapes in both spellings, 20;
+  `function` under `sh`, 4); nothing else moves but one row of #2911's, which differs between two
+  runs of one tree. On the #2939 round-1 seat's 20,000 fuzz rows, 2,091 of them with a body on its
+  header's line, 154 rows move, all to REPORT -- 185 cells in 49 rows that a parent runs, 585 in
+  127 that none of that setting does -- and each reads as its own-line twin reads on `main` (2,065
+  of the 2,091 do now, 1,911 before; the other 26 hold a pattern taken off or replaced); none of
+  its 2,164 class rows moves. The cost, `job_defects` against `main` on the forge, three passes,
+  each a process of its own: 1.23x to 1.24x on the 574 rows of the first hunt and on the 62 nested
+  bodies, where the words now read both ways, and flat on the 347 standing rows with a body on its
+  header's line (1.00x to 1.02x), on the 136 rows whose body opens with `[[` and on the #2942
+  seat's 3,881-row sample of the standing rows (1.00x to 1.01x each); a statement of `function f`
+  after `function f` is read in linear time (pinned). `shell_reader.py` stays at 700 lines: the
+  module's and `_split`'s docstrings close on their last lines, every word kept, for the line that
+  carries the flag and the one that names it.
+- **Workflow reader reads a one-word default as the command it names (#2963).** `${X:-curl} -fsSL
+  URL | sh` read CLEAN under every `shell:` setting while every parent shell runs the download, with
+  no printer near it. A command word that is ONE default-value word was followed only where its
+  default names a shell (`${X:-sh}`, #2337) or holds a blank (#2731). Naming a fetcher (`curl`,
+  `wget`, by name or by path) or `eval`, it stayed a word the guard does not follow -- written
+  directly, in a `-c` or `eval` string, a heredoc, a group, a branch, a substitution, behind a
+  wrapper -- and a `$` word in front of it (`$SUDO ${X:-curl} …`) was not dropped, since the reader
+  drops one only in front of a name it knows. The second walk now reads such a default as the
+  command it names, under each of the six operators (`:-`, `-`, `:=`, `=`, and `:+`, `+`), and knows
+  the word after the ones it may drop by its one-word default too. The main pass reads the word as
+  `main` does (`shell_defaults.WALKED_DEFAULTS`, off under `workflow_options.mains_answer`), so the
+  job REPORTs wherever either reading does and no cell can go from REPORT to CLEAN. Of the issue's
+  73 staged rows, the 30 that read CLEAN while every parent runs (22 fetchers, 4 `eval`, 4 behind a
+  `$` word) now report and the other 43 are unmoved. On a hunt of 297 rows -- 26 places a fetch can
+  stand, each under up to twelve spellings of the default beside its literal twin, and 48 rows that
+  assign the default's name first -- the 220 rows a parent runs that `main` reads CLEAN now report;
+  213 of 217 spellings read as their literal twin reads on `main`, with the twin's truth; one
+  running row stays CLEAN as on `main`, a function's body (#2954's class). The price, named and
+  pinned: the default is read whatever the step did to its name, as `main` reads a shell's default,
+  so 28 of those 48 rows (`X=echo; ${X:-curl} …`) report though no parent runs the download, and so
+  do an alternate whose name nothing sets (`${X:+curl} …`) and one in a child shell whose name the
+  step set and did not export (4 rows of the hunt). Against `main` on 1,372 rows -- the hunt with
+  seven more alternates, the issue's rows and #2955's twelve sets -- no cell goes CLEAN where it
+  reported and the main pass is `main`'s on every row; `job_defects` over them costs 1.015x in one
+  process, and 1.13x on the hunt's own rows. A printed line that begins with such a default needs
+  #2979's printer readings as well, and with both it reports: #2955's PF-fetch-run and
+  EVS-fetch-run, which both test modules pin, and all 184 such rows of that issue's first hunt, each
+  one a row a parent runs. Not among the issue's rows, the same reading takes in a default naming a
+  shell behind a word bash may drop: `$SUDO ${X:-sh} -c '…'` read CLEAN, though `main` reads either
+  word alone, and now reports (15 measured rows a parent runs; an alternate there, `$SUDO ${X:+sh}
+  …`, joins the price). `eval`, `.` and `source` behind such a word read CLEAN on `main`, as
+  `$SUDO eval '…'` does (#2997), and a default naming one reads as that twin.
 - **Workflow reader reads a path the step linked or moved to as the descriptor it may reach
   (#2919).** With #2881 a shell reads what `N<>` holds where it opens N's path, but a path the
   step's own state makes resolve to a descriptor carried nothing: `ln -s /dev/fd/3 fd3` ⏎ `sh 3<>
