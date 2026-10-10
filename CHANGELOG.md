@@ -7,6 +7,31 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader drops a word bash may drop in front of `eval`, `.` and `source` (#2997).**
+  `$SUDO eval 'curl … | sh'` read CLEAN under every `shell:` setting while every parent shell runs
+  the pipeline, and so did `$SUDO . ./t` and `$SUDO source ./t` after a fetch. The reader dropped
+  an unquoted `$` word only in front of a shell, a wrapper, an interpreter or a fetcher (#2472),
+  and no builtin was among them. The second walk now knows the three behind such words, by name or
+  by a one-word default naming them (`${X:-eval}`, #2963), where EVERY word in front may be
+  nothing with its name unset -- a bare reference, an empty default, an alternate (`${S:+sudo}`)
+  -- or is `command`, which runs a builtin. A default naming a wrapper that execs is not dropped
+  there (`${S:-sudo} eval '…'`): `sudo`, `env`, `nohup`, `exec` and `time` look for a file named
+  `eval`, and nothing of the program runs. The main pass reads as `main` does
+  (`shell_defaults.WALKED_DEFAULTS`), so the job REPORTs wherever either reading does and no cell
+  can go from REPORT to CLEAN. On a hunt of 992 rows -- 47 kinds of front under 16 runners, and
+  eight places the statement can stand -- 327 of the 442 rows a parent runs that read CLEAN now
+  report. The 115 left are not this fix's and are pinned as they read: `builtin` in front (#2665,
+  43 rows), and three fronts `main` does not drop in front of a shell either -- one that is no
+  name (`$1`, `"$@"`; 48), a substitution that prints nothing (12), two references glued (12). The
+  price, named and pinned, is 11 rows that report though no parent runs the program: the word is
+  read whatever the step did to its name, so `S=sudo` then `$S eval '…'` reports (6 rows where the
+  step sets the name), and a default naming `command` by a path reports though the forge has no
+  `/usr/bin/command` (5 rows; macOS has one, and it runs the builtin). Against the base on 3,376
+  rows in 24 sets -- this hunt, a sweep of 32 runners, the probes, and #2963's and #2955's sets --
+  no cell goes CLEAN where it reported and the main pass is the base's on every row; `job_defects`
+  over them costs 1.068x in one process, all of it on the rows where a builtin's program is now
+  read (1.2x on the hunt), and nothing on the sets where no row moves. A `trap`'s action is still
+  not read (#2830), nor a fetched file's text that the parent splices into a `-c` string (#2693).
 - **Workflow reader reads a one-word default as the command it names (#2963).** `${X:-curl} -fsSL
   URL | sh` read CLEAN under every `shell:` setting while every parent shell runs the download, with
   no printer near it. A command word that is ONE default-value word was followed only where its
