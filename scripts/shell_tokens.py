@@ -98,6 +98,8 @@ class _Parse:
             self.prefix += "x"
         self.entries: dict[str, tuple[str, object]] = {}
         self.bangs: set[int] = set()    # the statements a negated group holds (`shell_reader._split`)
+        self.links: dict[str, list[str]] = {}   # each name the step may have linked, to its targets (`shell_command.track`)
+        self.cwds: list[str] = []       # each directory a `cd` may have moved the step to (`track`)
         # Where this parse stands (`whole`, #2929 round 2): the place a parent gave the text it lifted
         # (`new`) or the job its step's (`placed`), never what the text says; else, a program string
         # or a text read alone, its text, the reader's nonces out.

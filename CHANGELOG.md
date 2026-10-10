@@ -60,6 +60,101 @@ evidence exposed.
   (1.01x), three passes; a statement of `function f` after `function f` is read in linear time
   (pinned). `shell_reader.py` stays at 700 lines: the module's and `_split`'s docstrings close on
   their last lines, every word kept, for the line that carries the flag and the one that names it.
+- **Workflow reader reads a path the step linked or moved to as the descriptor it may reach
+  (#2919).** With #2881 a shell reads what `N<>` holds where it opens N's path, but a path the
+  step's own state makes resolve to a descriptor carried nothing: `ln -s /dev/fd/3 fd3` ⏎ `sh 3<>
+  tool <fd3 3<&-`, a link to `/dev/fd`, `/proc/self/fd` or `/dev` with a path below it (`<fds/3`,
+  `<p/3`, `<d/fd/3`), and `cd /dev` ⏎ `sh 3<> /tmp/tool <fd/3 3<&-` read CLEAN while the parents
+  run the file, and `main` reports the `N<` twin of each. `shell_command.track` records, stage by
+  stage in the order the reader reads them, each link the step may make (`ln`, each target a name
+  is given) and each directory a `cd` or `pushd` may move it to, and `sources` reads an input
+  redirect's operand as written, as `main` reads it, and then by each other path those records may
+  give it. A record adds a reading and takes none away: the reader does not know that an `ln` or a
+  `cd` runs, succeeds, or lasts past a subshell, a branch or a function. Round 1, which read the
+  operand only where the latest record put it, let a link or a move the shell never makes clear a
+  report `main` raises -- `true || ln -s /etc/hostname /dev/fd/3`, or `(cd /srv/a/b/c)`, in front
+  of `sh 3<> tool </dev/fd/3 3<&-`: the round-1 seat's 341 cells in 71 rows, which report again
+  (round 2). Round 2 still read one thing in place of `main`'s: the heredoc or here-string body a
+  record may put on a descriptor, taken wherever the operand as written names none. So `true || ln
+  -s /dev/fd/3 /dev/stdin` ⏎ `echo 'curl … | sh' | sh 3<<'EOF' </dev/stdin`, its body harmless,
+  read that body for the pipe, and CLEAN: the round-2 seat's 78 cells in 16 rows, each REPORT on
+  `main` with a parent running it by the seat's truth. That body is now one more reading beside
+  `main`'s (round 3): `shell_command.body_read` hands every fold `main` reads the body the operand
+  names as written, or none, and `folds` reads the job again once for each other body a record may
+  put there, so the guard REPORTs where either is the one read, and a finding `main` raises there
+  is never lost -- and each of those readings holds #2935's folds too, every `find` the `find` and
+  then each action in its place, so a shell an action runs that reads a body through a link
+  reports as well (`ln -s /dev/fd/3 x` ⏎ `find /dev/null -exec sh \; 3<<'EOF' <x`, which every
+  parent runs and neither PR reads alone). Those 16 rows report again, and a name linked twice is
+  read with the body on each of its targets, where round 2 read the first alone. Past 16 places or
+  paths a record may put any body held there -- round 2 named none, and the seat's CAPX-H16, -H40,
+  -LH17 and -LH40 read CLEAN while every parent runs them (20 cells, which report). Each such body
+  is one more reading of the whole job, on top of every fold `main` reads, so the folds read at
+  most 4 of them a stage (`_BODY_FOLDS`): the steps that hold any hold one or two, 4 is twice
+  that, and a stage with more is a step the reader refuses, reported whole and never read CLEAN.
+  Where the paths reach two descriptors every file held is carried, as where a value decides the
+  link's name or the directory (`ln -s /dev/fd/3 "$X"`, `cd "$D"`) and where they are more than
+  16. A link or a `cd` that reaches no descriptor carries nothing, as before. The #2885 round-4
+  seat's FL rows (30 rows, 150 cells) and probe 0's P0L rows (2, 10) report, and on the #2919 hunt
+  -- 72 rows with 8-parent truth: six link spellings and four `cd` ones, each under `sh`, `bash`
+  and `dash` on descriptors 3 and 9, and two benign ones -- 264 cells in 60 rows that read CLEAN
+  on `main` while a parent runs them; on the round-1 seat's 343-row hunt, 583 cells in 128 rows,
+  63 of them (14 rows) ones round 1 still read CLEAN (a `cd /dev` kept through a later `cd` the
+  shell does not make, a link through a later `ln` that fails or one made below it), and no cell
+  goes REPORT to CLEAN, there or on the standing sets. The price, CLEAN on `main` and REPORT here
+  where no parent runs, on the seat's hunt: 227 cells in 54 rows -- a link name or a directory a
+  value decides, every file held carried (65 cells, 13 rows); `cd /dev/fd` and `cd /proc/self`,
+  which only dash resolves for the parent shell, under the bash settings (36, 12); a link later
+  written over or removed, whose first target still stands (45, 9); a `cd` in a subshell, a
+  branch, a function or a pipeline, or one that fails, before a relative read (25, 5); a `cd` the
+  step has left again, by another `cd`, `popd` or a `pushd` swap (26, 9); an output redirect
+  through a linked or moved path (20, 4); and, with round 3, a body a directory or a link name a
+  value decides may put on standard input (10, 2). On the round-2 seat's 98 rows round 3 adds one
+  more class: an operand that names a descriptor whose own body is harmless, where a link the
+  shell never makes names another whose body is a program (5 cells, 1 row). The cap of 4 has a
+  price of its own, met on none of these sets: a stage with 5 to 16 harmless heredocs on distinct
+  descriptors, below a record that may reach any of them, is refused where it would read CLEAN. On
+  neither hunt, nor on the #2919 hunt, does a cell go REPORT to CLEAN against `main` `23ebd281`.
+  Still unread, as on `main` -- 230 cells in 48 rows of that hunt that a parent runs: a link or a
+  move the reader does not read as one, made in a child (`sh -c`, `eval`, a heredoc's program, a
+  substitution), by another tool (`busybox ln`, `cp -s`, `mv`, `xargs`), into a directory (`ln
+  -t`, several targets), through a chain of links, a pattern, `CDPATH`, `~` or `HOME`, or a
+  symlinked directory. On the standing sets -- the #2885 round-4 rows and twins, round 3's own and
+  twins, the AX, P0, F6 and P4 rows, the round-3 kit's 20,533 and #2856's hunts, 31,046 rows, 436
+  of them holding an `ln`, a `cd` or a `pushd` -- only those 32 rows move, beside #2911's (hunt
+  37's `*-od`), which differ between two runs of `main` too. The cost, `job_defects` against
+  `main` `23ebd281` in one process on the forge (a 32-core Neoverse-N2, Python 3.12.3; its load
+  was 8.2 when these began, 2.4 after the worst-case rows and 5.7 at the end), by the #2935 seat's
+  tool in three alternating passes: 1.02x on its sample of the standing rows, 1.05x on the round-1
+  seat's 343 rows and 1.05x on the #2919 hunt, and 1.01x and 1.01x on #2935's own probes and
+  differential in one pass each -- flat wherever no record meets a body -- and 1.34x on the
+  round-2 seat's 98 rows, which were built to hold one. Each such body is one more reading of the
+  job, and that multiplies with #2935's and #2929's folds: the worst step this round could build
+  -- ten `find`s of 8 actions, three two-halved words and bodies a record may put on one stage's
+  standard input -- takes 1.27 s with one such body, 1.92 s with two and 3.25 s with four against
+  0.64 s on `main`, x5.1; a fifth is refused in 0.76 s. On a 10-core M4 under a load of 3 the same
+  step is 1.33 s against 0.26 s.
+- **Workflow reader reads a pattern below a link or a `cd` as `main` reads its whole path (#2919
+  round 3, its own fix).** `main` reads `</dev/fd/[3]`, a path of whichever descriptor bash's
+  expansion picks, as every file held and any pipe. Rounds 1 and 2 of #2919 read no word bash
+  expands through the step's links and `cd`s, so its twin below a `cd /dev` or a link to
+  `/dev/fd` read CLEAN: `cd /dev` ⏎ `sh 3<> /tmp/tool <fd/[3] 3<&-` runs the file under each of
+  bash's six parents (dash expands no pattern in a redirection) and reported nowhere. The clause
+  that kept such a word out of `shell_command._reached` is gone, found by a mutant the round-2
+  seat listed as passing its suite: a word bash expands, or a value decides, is read through the
+  records like any other. On this round's own hunt -- 18 records by 40 operands by 9 forms,
+  6,480 rows, truth taken for every row that moves -- 12 cells in 4 rows that a parent runs go
+  CLEAN to REPORT, and so do 976 cells in 224 rows that none runs, the price: a pattern below a
+  name or a directory a value decides, or past the cap, where a plain path is every file held
+  already; a pattern below `cd /dev/fd` that matches nothing (`<[x]`, `<{x,y}`) or more than one
+  (`<fd/?`); and a value in front of `..` that folds onto a linked name (`<$X/../x`), whose body
+  is read though `X` unset names no such path -- it runs where `X` names a directory of the
+  step's. No cell goes REPORT to CLEAN, and none moves on the seats' sets or the standing sets
+  (31,559 rows). Two clauses a mutant each showed to do nothing went with it: `sources` handed
+  `read` a `derived` path, and `carrier` asked for `?` among two or more answers. Still unread,
+  as on `main`: a pattern that spells no `/dev/fd/` once the record is applied (`cd /dev` ⏎
+  `<f?/3`, as `</dev/f?/3` on `main`), one in place of a link's name (`<[x]` for a link `x`),
+  and one in a `cd`'s own directory.
 - **Tools-image pins move together: semgrep 1.179.0, pyjwt 2.15.1, filelock 4.0.9 (#2876).**
   Dependabot's requirements-only bump (#2946) failed the image's `pip check`: semgrep 1.179.0
   requires `pyjwt[crypto]<3,>=2.15.0` where 1.178.0 held it to `~=2.13.0`, and a `--no-deps` closure
