@@ -1418,14 +1418,23 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
             with open(fp, "w", encoding="utf-8") as fh:
                 json.dump({"findings": [finding]}, fh)
             out = os.path.join(d, "report.json")
+            decoy_bin = Path(d, "decoy-bin")
+            decoy_bin.mkdir()
+            decoy_python = decoy_bin / "python3"
+            decoy_python.write_text("#!/bin/sh\nexit 97\n", encoding="utf-8")
+            decoy_python.chmod(0o755)
             child_env = dict(os.environ)
+            child_env["PATH"] = str(decoy_bin)
             child_env["PYTHONPATH"] = str(Path(syn.__file__).resolve().parents[1])
             completed = subprocess.run(
-                ["python3", "-m", "scripts.synthesize",
+                [sys.executable, "-m", "scripts.synthesize",
                  "--target", "src", "--out", out, fp],
                 cwd=d, env=child_env, capture_output=True, text=True, check=False,
-                executable=sys.executable,
             )
+            # #2989: argv[0] identifies the interpreter whose prefix and site
+            # packages the completion child must use. The PATH decoy above
+            # makes a name-based launch a different executable as well.
+            self.assertEqual(completed.args[0], sys.executable)
             self.assertEqual(completed.returncode, 0, completed.stderr)
             failure_path = out.replace(".json", "-x0x-failures.json")
             failure_log = json.loads(Path(failure_path).read_text(encoding="utf-8"))
