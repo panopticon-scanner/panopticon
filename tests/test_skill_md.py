@@ -343,7 +343,7 @@ class TestSkillMd(unittest.TestCase):
             self.assertIn(token, out, token)
         # The exit code is stated with the others, not only in prose.
         self.assertIn("exits `1` on FAIL, `2` on INCONCLUSIVE, `4` when an "
-                      "artifact it wrote fails its own published schema", out)
+                      "artifact cannot be published or fails its own published schema", out)
 
     def test_pins_round1_flags_and_render_advisor(self):
         for token in [

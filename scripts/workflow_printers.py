@@ -44,6 +44,7 @@ import re
 import shell_lex
 import shell_reader
 import shell_text
+from workflow_options import _MAINS
 
 
 def _piped(stage, before):
@@ -313,7 +314,7 @@ def producer(stage, before):
             return None, False
         if walked == _DEPTH:
             return front, None              # too far back to look: unknown, fail-closed
-        argv = shell_reader.command(front.argv)
+        argv = shell_reader.acted(front.argv)
         if ((bool(argv) and os.path.basename(argv[0]) in _PRINTERS)
                 or (front.stdin_heredoc is not None and _cat_reads_stdin(argv))):
             return front, intact
@@ -331,7 +332,7 @@ def handed(stage, before):
     source, intact = producer(stage, before)
     if not intact or source.stdin_heredoc is None:
         return None
-    return (source.stdin_heredoc if _cat_reads_stdin(shell_reader.command(source.argv))
+    return (source.stdin_heredoc if _cat_reads_stdin(shell_reader.acted(source.argv))
             else None)
 
 
@@ -366,10 +367,10 @@ def unspelled(stage, before, shell=None):
     source, intact = producer(stage, before)
     if source is None:
         return []
-    words = shell_reader.command(source.argv)
+    words = shell_reader.acted(source.argv)
     printer = bool(words) and os.path.basename(words[0]) in _PRINTERS
     if intact:
-        return ([words[0], " ".join(words[1:])]
+        return ([words[0], " ".join(words[1:])] + _apart(words, shell)
                 if printer and None in spellings(words, source, shell) else [])
     front = shell_reader.command(before[-1].argv)
     if not front:
@@ -377,7 +378,9 @@ def unspelled(stage, before, shell=None):
     if intact is None:
         return list(_PAST_DEPTH)
     if printer:
-        texts = [" ".join(words[1:]) if t is None else t for t in spellings(words, source, shell)]
+        read = spellings(words, source, shell)
+        texts = [" ".join(words[1:]) if t is None else t for t in read]
+        texts += _apart(words, shell) if None in read else []       # what it writes, as above (#2955)
     else:
         texts = [source.stdin_heredoc[0]]       # not a printer: a heredoc-fed `cat` (`producer`)
     return front[:1] + texts + [" ".join(front[1:])]
@@ -397,7 +400,7 @@ def _printer(value):
     if len(parsed) != 1 or len(parsed[0].stages) != 1:
         return None
     stage = parsed[0].stages[0]
-    argv = shell_reader.command(stage.argv)
+    argv = shell_reader.acted(stage.argv)
     name = os.path.basename(argv[0]) if argv else ""
     if name not in _PRINTERS and (stage.stdin_heredoc is None or not _cat_reads_stdin(argv)):
         return None
@@ -424,7 +427,192 @@ def unsubstituted(value):
     found = _printer(value)
     if not found or os.path.basename(found[0][0]) not in _PRINTERS:
         return []
-    return [] if substituted(value) is not None else [found[0][0], " ".join(found[0][1:])]
+    return [] if substituted(value) is not None else [
+        found[0][0], " ".join(found[0][1:])] + _apart(found[0])
+
+
+# What an unspelled printer WRITES with every word as written (#2955), which the second walk weighs
+# beside the ONE text `main` weighs. `_CONVERSION` is one conversion of a `printf` format: its
+# flags, width, precision, C's length letters and the character that names it (none for `%%`).
+# `_ESCAPE` is one backslash escape, and `_WRITERS` what each shell reads BEYOND `_decoded`'s table,
+# which all read alike -- by family (for a bash: 5.2, 3.2, and 3.2 as macOS ships it; for a `sh`:
+# dash; measured on bash 5.2.21, GNU's and Apple's 3.2.57, dash 0.5.12) and by where the text stands
+# (a FORMAT, a `%b` word, an `echo`): `e` is `\e` and `E` `\E`; `x` a `\xHH`; `u` a `\uHHHH` or
+# `\UHHHHHHHH`; `q` a `\"`, `\'` or `\?`; `o` an octal number with no `0` in front, which a FORMAT
+# always reads. `letters` are the conversions it knows beyond C's (`_KNOWN`; `(` is 5.2's `%(…)T`)
+# and `lengths` C's length letters, which bash skips and dash refuses: at any other character it
+# prints no more. A text is rendered once a family, never decoded "as any shell might": a decoded
+# quote can HIDE the command after it, and a space a width pads can MAKE one, so a reading no shell
+# makes proves nothing. `_PLAIN` is a number, or none, that each reads alike (a `-` at most, no `0`
+# in front, ASCII's digits, a machine word); `_COUNT` an `int` too: 3.2 dies of a `*` word past one.
+_CONVERSION = re.compile(r"%(?:%|([-+ #0']*)(\*|\d+)?(?:\.(\*|-?\d*))?([hjlLtz]*)(.))", re.S | re.A)
+_ESCAPE = re.compile(
+    r"\\(?:([0-7]{1,4})|x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|(.))", re.S)
+_PLAIN = re.compile(r"|0|-?[1-9]\d{0,17}", re.A).fullmatch
+_COUNT = re.compile(r"|0|-?[1-9]\d{0,8}", re.A).fullmatch
+_KNOWN, _PAD, _LONG = "sbcdiouxXeEfFgGaA", 256, 4096
+_WRITERS = {
+    "bash": ({"format": "eExuq", "b": "eExuo", "echo": "eExu", "letters": "qQn(", "lengths": "hjlLtz"},
+             {"format": "eExq", "b": "eExo", "echo": "eEx", "letters": "qn", "lengths": "hjlLtz"},
+             {"format": "eExq", "b": "eExo", "echo": "x", "letters": "qn", "lengths": "hjlLtz"}),
+    "sh": ({"format": "e", "b": "eo", "echo": "eo", "letters": "", "lengths": ""},)}
+_WRITERS["dash"] = _WRITERS["sh"]
+
+
+def _written(text, place, kinds):
+    """`text` as ONE family's printer decodes it at `place` (`_WRITERS`), to WEIGH and never to
+    spell: `_ESCAPES`; an octal number -- one to three digits in a FORMAT, `\\0` and up to three
+    more in a `%b` word or an `echo`, and there one with no `0` only where `kinds` has `o`, and
+    each a BYTE (`\\543` is `\\143`, a `c`); the kinds it names. A NUL and a value no text holds are
+    dropped. `\\c` outside a FORMAT ENDS the output: a NUL stands there, for the caller to cut at.
+    Any other pair stays as written."""
+    def one(found):
+        octal, coded, char = found[1], found[2] or found[3] or found[4], found[5]
+        if char is not None:
+            if char == "c" and place != "format":
+                return "\0"
+            return _ESCAPES.get(char) or ("\x1b" if char in "eE" and char in kinds else
+                                          char if char in "\"'?" and "q" in kinds else found[0])
+        if octal:
+            if place != "format" and octal[0] != "0" and "o" not in kinds:
+                return found[0]
+            digits = octal if place != "format" and octal[0] == "0" else octal[:3]
+            value, rest = int(digits, 8) & 255, octal[len(digits):]
+        elif ("x" if found[2] else "u") not in kinds:
+            return found[0]
+        else:
+            value, rest = int(coded, 16), ""
+        return (chr(value) if 0 < value < 0xD800 or 0xDFFF < value < 0x110000 else "") + rest
+    return _ESCAPE.sub(one, text)
+
+
+def _formatted(fmt, words, kinds):
+    """What one family's `printf` WRITES for `fmt` and `words`, the format used again while words
+    are left, or None where the guard does not follow it (`_apart` answers LOUD, as `unspelled`
+    does past `_DEPTH`). Followed, and then to the character: text and escapes in the format;
+    `%%`; `%s`; `%b` (decoded; a `\\c` ends the output); `%c` (one character); `%q` (quoted);
+    `%d` `%i` `%u` of a `_PLAIN` number, `0` for a word that begins no number; a `-` and a width
+    to `_PAD` on any but `%b`, a number's `0` and a precision on `%s`; a `*` takes a `_COUNT`
+    word; a word holding a `$` is printed as it stands, a `%b`'s decoded. At a character the
+    family does not know, and at a `%` with none after it, the output ENDS. NOT followed,
+    because the shells differ or the text is not one this reads: any other flag, letter, number,
+    width or precision; a `$` word or one outside ASCII cut or padded with blanks; a `$` word
+    under `%c`, or none padded there; a `%q` of a `~` or of a character outside ASCII's
+    printable ones; and a text past both `_LONG` characters and four times what was written (a
+    format printed again for every few words multiplies)."""
+    made, last, left = [], 0, words[::-1]
+    out: list[str] = []
+
+    def word():
+        return left.pop() if left else ""
+
+    while (at := fmt.find("%", last)) >= 0 and (found := _CONVERSION.match(fmt, at)):
+        made.append((_written(fmt[last:at], "format", kinds["format"]), found))
+        last = found.end()
+    tail = _written(fmt[last:] if at < 0 else fmt[last:at], "format", kinds["format"])
+    size, most = 0, max(_LONG, 4 * (len(fmt) + sum(map(len, words)) + len(words)))
+    while True:
+        start = len(out)
+        for text, found in made:
+            out.append(text)
+            flags, width, precision, lengths, letter = found.groups()
+            if letter is None:
+                out.append("%")
+                continue
+            zero, odd = "0" in flags and letter in "diu", (precision or "")[:1] == "-"
+            width, precision = (word() if part == "*" else part for part in (width, precision))
+            cut, minus = precision is not None, "-" in flags + (width or "")[:1]
+            if not _COUNT(width or "") or cut and not _COUNT(precision):    # read before the letter is
+                return None
+            if letter not in _KNOWN + kinds["letters"] or lengths.strip(kinds["lengths"]):
+                return "".join(out)
+            asis = shell_reader.dynamic(text := word(), shell_reader.has_substitution)
+            if (odd or flags.strip("-0" if zero else "-") or letter not in "sbcdiuqQ"
+                    or abs(int(width or 0)) > _PAD or cut and letter != "s"
+                    or (width or cut) and (asis and (minus or not zero) or letter == "b" or not text.isascii())
+                    or letter == "c" and (asis or width and not text or text[:1] > "~")
+                    or not asis and (
+                        letter in "diu" and not _PLAIN(text) and re.match(r"\s*[-+]?[\d'\"]", text, re.A)
+                        or letter == "u" and text[:1] == "-" or letter in "qQ" and re.search("[^ -}]", text))):
+                return None
+            if letter == "b":
+                text = _written(text, "b", kinds["b"])
+            elif letter == "c":
+                text = text[:1]
+            elif letter in "qQ" and not asis:
+                text = re.sub(r"[^\w%+./:=@#-]|^#", r"\\\g<0>", text) or "''"
+            elif letter in "diu" and not (asis or text and _PLAIN(text)):
+                text = "0"
+            text, ended = text.split("\0")[0], "\0" in text
+            text = text[:int(precision or 0)] if cut and precision[:1] != "-" else text
+            pad = abs(int(width or 0))
+            out.append(text if asis else text.ljust(pad) if minus else text.zfill(pad) if zero else text.rjust(pad))
+            if ended:
+                return "".join(out)
+        out.append(tail)
+        size += sum(map(len, out[start:]))
+        if size > most:
+            return None
+        if at >= 0 or not left or not any(found[5] for _text, found in made):
+            return "".join(out)
+
+
+def _echoed(words, row, kinds):
+    """An `echo`'s text under one row of `_ECHO` with each word as written: its option words off
+    the front, its escapes decoded (`_written`) where that row decodes, as `printed` reads one."""
+    pattern, decode, cap = row
+    options = 0
+    while options < len(words) and (cap is None or options < cap) and pattern.fullmatch(words[options]):
+        options += 1
+    for letter in "".join(words[:options]):
+        decode = letter == "e" if letter in "eE" else decode
+    text = " ".join(words[options:])
+    return _written(text, "echo", kinds["echo"]).split("\0")[0] if decode else text
+
+
+def _apart(words, shell=ANY):
+    """More texts for an unspelled printer's words, in the second walk (#2955), beside the ONE text
+    `main` weighs, which begins with the printer's first word: `printf '%s\\n' WORD` prints WORD as a
+    line and `echo -n WORD` prints WORD, but that text reads WORD as an argument of `%s\\n` or of
+    `-n`, never as a command. So the texts weighed too are what the printer WRITES with each word as
+    written, a `$` word left as it stands, one a family of the shell `shell` reads it by, or of both
+    rows `spellings` reads where that is no measured one: a `printf`'s format with its words in
+    place (`_formatted`), after a `--`, and each word on its own too where the format holds a `$`
+    (`printf "$F" WORD`: what it makes of the words is not written), but nothing where an option
+    stands in the format's place (`-v NAME`: no shell prints then); an `echo`'s (`_echoed`). A text
+    equal to `main`'s is not said twice, and one `_formatted` does not follow is `_PAST_DEPTH`'s
+    LOUD stand-in."""
+    if _MAINS.get():
+        return []
+    rest, reading = [getattr(word, "spelled", word) for word in words[1:]], _reading(shell)
+    rows = [reading] if reading in _ECHO else ["bash", "sh"]
+    families = [(row, kinds) for row in rows
+                for kinds in _WRITERS.get(row, _WRITERS["bash"] + _WRITERS["sh"])]
+    if os.path.basename(words[0]) != "printf":
+        texts = [_echoed(rest, _ECHO[row], kinds) for row, kinds in families]
+    else:
+        option = rest[:1] != ["--"] and rest[:1] != ["-"] and rest[0][:1] == "-" if rest else True
+        rest = rest[rest[:1] == ["--"]:]
+        fmt = words[len(words) - len(rest)] if rest else ""
+        texts = [_formatted(rest[0], rest[1:], kinds)
+                 for _row, kinds in families if rest and not option]
+        texts = [_PAST_DEPTH[1] if text is None else text for text in texts]
+        dollar = (shell_reader.has_substitution(fmt)
+                  or shell_reader.dynamic(fmt, shell_reader.has_substitution))
+        if texts and dollar and not hasattr(fmt, "spelled"):
+            texts += rest[1:]
+    return [text for at, text in enumerate(texts)
+            if text != " ".join(words[1:]) and text not in texts[:at]]
+
+
+def worded(word):
+    """What `unread_program`'s last resort weighs for a program word that is ALL one `$(...)`, in
+    the second walk (#2955): the texts `unsubstituted` gives the `echo` or `printf` alone in its
+    script where no reading spells it (`eval "$(echo "$X")"`), else []."""
+    entry = getattr(word, "markers", {}).get(word)
+    if _MAINS.get() or not entry or not shell_reader.yields_words(word):    # one marker, and a `$(...)`
+        return []
+    return unsubstituted(entry[1])[1:]
 
 
 def fed(value):

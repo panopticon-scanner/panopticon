@@ -14,6 +14,7 @@ import scripts.orchestrate as orchestrate
 import scripts.phases.persist as persist
 import scripts.phases.runio as runio
 import scripts.runners.base as base
+from scripts.synth import validate_schema
 from tests._test_helpers import (all_proven_artifact as _all_proven_artifact, write_guard_not_proven as _write_guard_not_proven)
 from tests._test_helpers import docker_probe_runner
 from tests._test_helpers import pem_begin
@@ -53,6 +54,8 @@ class TestRefusedRepliesAreRetained(LoopCase):
     one is never overwritten.
     """
 
+    SCHEMA_SECRET = "ghp_" + "Z" * 36
+
     class RefusingRunner(FakeRunner):
         """A return-persist reviewer that stamps its findings for a cell it was
         not dispatched for, and leaks a token-shaped literal while it is at
@@ -72,7 +75,8 @@ class TestRefusedRepliesAreRetained(LoopCase):
             self.priors.append(entry.get("prior_rejection"))
             body = {"findings": [{"title": "issue at " + self.SECRET, "severity": "HIGH",
                                   "domain": entry["domain"], "code": entry["domain"] + "-A1A",
-                                  "category": "authz",
+                                  "category": "authz", "description": "d",
+                                  "source_role": "domain_panel",
                                   "location": {"file": "src/app.py", "line_start": 1}}],
                     "_panopticon": {"run_id": entry.get("run_id"), "role": "domain_panel",
                                     "domain": entry["domain"], "group": "a-different-group"}}
@@ -134,14 +138,23 @@ class TestRefusedRepliesAreRetained(LoopCase):
         else:
             entry = {"id": "verify-tool-q-0001", "delivery": "return_json",
                      "out_file": os.path.join(run_dir, "verdicts", "q-0001.json")}
-            body = {"verdict": value}
+            body = {"finding_id": "F1", "verdict": value,
+                    "confidence": "LIKELY", "reasoning": "r",
+                    "explored": [], "references": [], "citations": {}}
         result = base.RunResult(
             entry_id=entry["id"], ok=True, text=json.dumps(body), usage={},
             cost_usd=None, model="gpt-test", session_id="s", denials=[],
             error=None)
         ledger = ledger_mod.Ledger(run_dir)
         err = io.StringIO()
-        with contextlib.redirect_stderr(err):
+        # The schema matrix below pins the earlier receipt gate. Bypass only
+        # its verdict enum here to exercise the independent acceptance reason
+        # across the refusal, record, ledger, stderr and retry surfaces.
+        schema_patch = (
+            mock.patch("scripts.synth.validate_schema.schema_errors",
+                       return_value=[])
+            if site == "verdict" else contextlib.nullcontext())
+        with schema_patch, contextlib.redirect_stderr(err):
             refusal = loop_batch.record_entry(
                 entry, result,
                 {"duration_ms": 1, "started_at": "2026-01-01T00:00:00Z",
@@ -160,6 +173,176 @@ class TestRefusedRepliesAreRetained(LoopCase):
             "stderr": err.getvalue(),
             "retry": retry,
         }
+
+    def test_schema_error_redaction_covers_the_complete_product(self):
+        # Round 6 B1: role, advertised flag, error count and token position are
+        # the complete inputs to this display path. Pin their product rather
+        # than another sparse neighbour: positions 1-3 are quoted, 4-5 are not.
+        for kind in ("review", "verify", "tool-advisor"):
+            for advertised in (False, True):
+                for count in range(1, 6):
+                    for token_position in range(1, count + 1):
+                        with self.subTest(kind=kind, output_schema=advertised,
+                                          count=count,
+                                          token_position=token_position):
+                            errors = [
+                                "schema error %d: %s" % (
+                                    position,
+                                    self.SCHEMA_SECRET
+                                    if position == token_position else "clean")
+                                for position in range(1, count + 1)
+                            ]
+                            self._assert_schema_secret_is_confined(
+                                kind, 0, (token_position,), advertised,
+                                schema_errors=errors)
+
+        # Redaction must also precede the display cap. Cross that boundary with
+        # every quoted position in the finite product so a count- or
+        # position-specific cut-before-redact change has no unpinned neighbour.
+        for kind in ("review", "verify", "tool-advisor"):
+            for advertised in (False, True):
+                for count in range(1, 6):
+                    for token_position in range(1, min(count, 3) + 1):
+                        with self.subTest(kind=kind, output_schema=advertised,
+                                          count=count,
+                                          token_position=token_position,
+                                          boundary="display-cap"):
+                            errors = [
+                                ("x" * (persist.REASON_CAP - 13)
+                                 + self.SCHEMA_SECRET)
+                                if position == token_position else "e"
+                                for position in range(1, count + 1)
+                            ]
+                            self._assert_schema_secret_is_confined(
+                                kind, persist.REASON_CAP - 13,
+                                (token_position,), advertised,
+                                schema_errors=errors)
+
+    def test_schema_secrets_never_reach_any_refusal_surface(self):
+        # Round 2 B3: schema errors quote the rejected instance. Capping that
+        # quote before redaction can cut a token into an unrecognisable prefix;
+        # printing the unredacted reason also leaks a whole token. Exercise
+        # every quoted-error position, returning role, and output-schema stamp
+        # through the real persistence seam. The five-error case also proves
+        # that unquoted fourth and fifth errors never get appended raw.
+        cases = (
+            ("review", 0, (1,)),
+            ("review", 154, (1,)),
+            ("review", 70, (2,)),
+            ("review", 0, (3,)),
+            ("verify", 0, (1,)),
+            ("tool-advisor", 0, (1,)),
+            ("tool-advisor-five-errors", 0, (1, 4, 5)),
+        )
+        for kind, padding, token_positions in cases:
+            for advertised in (False, True):
+                with self.subTest(kind=kind, padding=padding,
+                                  token_positions=token_positions,
+                                  output_schema=advertised):
+                    self._assert_schema_secret_is_confined(
+                        kind, padding, token_positions, advertised)
+
+    def _assert_schema_secret_is_confined(self, kind, padding, token_positions,
+                                          advertised, schema_errors=None):
+        d, _floor = self._repo()
+        run_dir = os.path.join(d, ".panopticon", "runs", "schema-refusal")
+        os.makedirs(run_dir)
+        secret = self.SCHEMA_SECRET
+        if kind == "review":
+            entry = {"id": "review-app-SEC", "delivery": "return_json",
+                     "out_file": os.path.join(run_dir, "findings-app-SEC.json"),
+                     "run_id": "RID", "group": "app", "domain": "SEC"}
+            findings = []
+            if token_positions == (3,):
+                # One clean invalid finding sorts before the token-bearing
+                # finding, after the unknown-root error below.
+                findings.append({})
+            findings.append({"note": "x" * padding + secret})
+            body = {"findings": findings}
+            if token_positions[0] > 1:
+                # The unknown root key sorts first; the token-bearing finding
+                # is the SECOND or THIRD quoted schema error.
+                body["unexpected"] = "root"
+        else:
+            verdict = {"finding_id": "F1", "verdict": "CONFIRMED",
+                       "confidence": "LIKELY", "reasoning": "r",
+                       "explored": [], "references": [], "citations": {}}
+            if kind == "verify":
+                entry = {
+                    "id": "verify-app-SEC-primary", "delivery": "return_json",
+                    "out_file": os.path.join(
+                        run_dir, "verdicts", "verdicts-app-SEC.json"),
+                    "run_id": "RID", "group": "app", "domain": "SEC",
+                    "stage": "primary",
+                }
+                verdict["verdict"] = secret
+                body = {"verdicts": [verdict]}
+            else:
+                entry = {"id": "verify-tool-q-0001", "delivery": "return_json",
+                         "out_file": os.path.join(
+                             run_dir, "verdicts", "q-0001.json")}
+                if kind == "tool-advisor":
+                    verdict["verdict"] = secret
+                else:
+                    # Exactly five errors, with the token in positions 1, 4
+                    # and 5. The first three safe strings occupy 160
+                    # characters, so appending either later raw error exposes
+                    # a token prefix before REASON_CAP.
+                    verdict.update({"code": [secret], "explored": [0, 0],
+                                    "finding_id": [secret],
+                                    "reasoning": [secret]})
+                    errors = validate_schema.schema_errors(
+                        verdict, schema_path=persist.role_schema(entry))
+                    self.assertEqual(5, len(errors), errors)
+                    self.assertEqual(
+                        [True, False, False, True, True],
+                        [secret in error for error in errors], errors)
+                body = verdict
+        os.makedirs(os.path.dirname(entry["out_file"]), exist_ok=True)
+        if advertised:
+            entry["output_schema"] = persist.role_schema(entry)
+        else:
+            self.assertNotIn("output_schema", entry)
+        reply = json.dumps(body)
+        result = base.RunResult(
+            entry_id=entry["id"], ok=True, text=reply, usage={}, cost_usd=None,
+            model="gpt-test", session_id="s", denials=[], error=None)
+        ledger = ledger_mod.Ledger(run_dir)
+        err = io.StringIO()
+        schema_patch = (
+            mock.patch("scripts.synth.validate_schema.schema_errors",
+                       return_value=schema_errors)
+            if schema_errors is not None else contextlib.nullcontext())
+        with schema_patch, contextlib.redirect_stderr(err):
+            refusal = loop_batch.record_entry(
+                entry, result,
+                {"duration_ms": 1, "started_at": "2026-01-01T00:00:00Z",
+                 "finished_at": "2026-01-01T00:00:01Z"},
+                run_dir, mock.Mock(), ledger, {"checkpoint": "review"},
+                "headless", mock.Mock(host="codex"))
+        row = ledger.lines()[0]
+        with open(row["rejected_file"], encoding="utf-8") as fh:
+            record = json.load(fh)
+        retry, _prior = persist.retry_block(run_dir, entry)
+        surfaces = {
+            "refusal": refusal,
+            "record": json.dumps(record),
+            "ledger": json.dumps(row),
+            "stderr": err.getvalue(),
+            "retry": retry,
+        }
+        quoted_positions = [position for position in token_positions
+                            if position <= 3]
+        for name, text in surfaces.items():
+            with self.subTest(kind=kind, padding=padding,
+                              token_positions=token_positions,
+                              output_schema=advertised, surface=name):
+                if (padding == 0 and quoted_positions
+                        and (min(quoted_positions) < 3 or name != "retry")):
+                    self.assertIn("[REDACTED_TOKEN]", text)
+                self.assertNotIn("ghp_", text)
+                self.assertNotIn(secret[:13], text)
+                self.assertNotIn(secret, text)
 
     def test_stamp_and_verdict_secrets_never_reach_any_refusal_surface(self):
         # A complete token is visible to all five consumers. A token crossing
@@ -609,4 +792,3 @@ class TestNoDriverReaderTakesTheUnboundRead(unittest.TestCase):
         self.assertEqual([], [ast.unparse(n.func) for n in ast.walk(bound)
                               if isinstance(n, ast.Call)
                               and ast.unparse(n.func).endswith("load_dispatch_request")])
-

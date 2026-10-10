@@ -658,10 +658,11 @@ Dependabot proposes version bumps: the root `pip` entry sees `requirements-fixtu
 entry groups routine Python version updates and filters proposals that would break the current
 pinned tools graph: all version updates for `mcp`, `opentelemetry-*`, and `pydantic-core` (Pydantic
 2.13.5 requires exactly pydantic-core 2.46.5); major updates for `peewee`, `boltons`, `protobuf`,
-`wcmatch`, and `wrapt`; and major/minor updates for `click`, `jsonschema`, `exceptiongroup`,
-`importlib-metadata`, and `pyjwt`. Semgrep 1.178.0 constrains `boltons`, `exceptiongroup`, `pyjwt`,
-and `wcmatch`; pinned OpenTelemetry packages constrain `importlib-metadata`, `protobuf`, and
-`wrapt`. These filters match dependency names across the root entry, including the same name in
+`pyjwt`, `wcmatch`, and `wrapt`; and major/minor updates for `click`, `jsonschema`,
+`exceptiongroup`, and `importlib-metadata`. Semgrep 1.179.0 constrains `boltons`, `exceptiongroup`,
+`pyjwt` (to its major line: `<3,>=2.15.0`, where 1.178.0 held it to 2.13.x), and `wcmatch`; pinned
+OpenTelemetry packages constrain `importlib-metadata`, `protobuf`, and `wrapt`. These filters match
+dependency names across the root entry, including the same name in
 `pyproject.toml`; they are not specific to the tools file. Revisit them when upgrading the scanner
 roots and other pinned parents together. They use `update-types`, so security updates remain
 eligible, though a security fix that conflicts with this graph needs manual whole-graph resolution.
