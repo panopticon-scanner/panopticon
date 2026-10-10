@@ -682,6 +682,7 @@ groups:
       - tests/test_workflow_annotate.py
       - tests/test_workflow_options.py
       - tests/test_workflow_default_command_word.py
+      - tests/test_workflow_word_before_a_builtin.py
       panels:
       - SEC
     Workflows:
