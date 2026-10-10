@@ -10,6 +10,7 @@ import scripts.config_schema as config_schema
 import scripts.run_manifest as run_manifest
 import scripts.synth.validate_schema as validate_schema_mod
 import scripts.redact as redact
+import scripts.x0x_report as x0x_report
 from . import child
 from . import engine
 from . import runio
@@ -29,6 +30,39 @@ def synthesize_done(review_root, manifest):
     # and build_report writes it on every report it has ever produced.
     report = runio._load_json(runio._report_out(review_root))
     return isinstance(report, dict) and isinstance(report.get("summary"), dict)
+
+
+def x0x_failure_disclosure(report_path):
+    """Return the bounded status facts for a non-empty X0X failure log."""
+    stem = report_path[:-len(".json")] if report_path.endswith(".json") else report_path
+    x0x_path = stem + "-x0x.json"
+    failure_path = x0x_report.failure_log_path(x0x_path)
+    document = runio._load_json(failure_path)
+    discarded = document.get("discarded_findings") if isinstance(document, dict) else None
+    if not isinstance(discarded, list) or not discarded:
+        return None
+    count = len(discarded)
+    return {
+        "count": count,
+        "path": failure_path,
+        "message": ("X0X discarded %d locus-free catalog-gap finding(s); "
+                    "failure log: %s" % (count, failure_path)),
+    }
+
+
+def attach_x0x_failure_status(status, report_path):
+    """Persist a completed synthesize disclosure in the terminal run status."""
+    if status.get("status") != "complete":
+        return status
+    disclosure = x0x_failure_disclosure(report_path)
+    if not disclosure:
+        return status
+    return dict(
+        status,
+        x0x_discarded=disclosure["count"],
+        x0x_failure_log=disclosure["path"],
+        message="%s; %s" % (status.get("message"), disclosure["message"]),
+    )
 
 def _collect_host_usage(review_root, manifest):
     """Write `<run_dir>/usage.json` just before synthesize, so meta.cost.tokens
@@ -361,14 +395,20 @@ def synthesize_execute(review_root, manifest):
         except OSError:
             pass
         runio._ensure_run_symlinks(review_root)
-    # #1639 P15: the one non-gate non-zero status. The report parses — that is
-    # why the guard above cannot see this — but it does not satisfy the schema
-    # panopticon publishes for it, or its hydrated parts / X0X sibling do not.
-    # Artifact validity is not coverage certification and not a gate verdict,
-    # so it ends the run in `error` rather than being absorbed as one.
+    # #1639 P15 / #2952: the one non-gate non-zero status. The report parses —
+    # that is why the guard above cannot see this — but an artifact could not
+    # be published/removed or the report, hydrated parts, or X0X sibling does
+    # not satisfy its schema. Artifact validity is not coverage certification
+    # and not a gate verdict, so it ends the run in `error` rather than being
+    # absorbed as one.
     if proc.returncode == validate_schema_mod.ARTIFACT_INVALID:
         raise runio.DriverError(
-            "synthesize wrote an artifact that fails its own published schema "
+            "synthesize could not publish or validate an artifact "
             "(rc=%s): %s" % (proc.returncode,
                              redact.redact_diagnostic(proc.stderr or proc.stdout, 400, tail=True)))
-    return engine.PhaseResult(kind="advanced", message="synthesize: report.json written")
+    disclosure = x0x_failure_disclosure(report)
+    message = "synthesize: report.json written"
+    if disclosure:
+        print("driver: %s" % disclosure["message"], file=sys.stderr, flush=True)
+        message += "; " + disclosure["message"]
+    return engine.PhaseResult(kind="advanced", message=message)

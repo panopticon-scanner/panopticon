@@ -73,7 +73,7 @@ from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
                                working_directories as working_directories)
 from workflow_programs import (SHELL_PROGRAM as SHELL_PROGRAM, VALUE_PROGRAM, Named, Opaque,
                                candidates, dynamic_program, scripts, stdin_program as stdin_program,
-                               stdin_reader, stdin_scripts, runs_under, unprinted as unprinted)
+                               stdin_reader, stdin_scripts, runs_under, unprinted as unprinted, worded)
 from workflow_stdin import BoundStdin, bound_stdin as bound_stdin, mark_stdin
 
 
@@ -206,7 +206,7 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
     for index, statement in enumerate(stmts):
         region, ordinal = outer + tuple((key, n) for n in inner.get(index, ())), 0
         for position, stage in enumerate(statement.stages):
-            argv, before = command(stage.argv), statement.stages[:position]
+            argv, before = shell_reader.acted(stage.argv), statement.stages[:position]
             # Asked once per stage, not per script it hands on (an `eval` chain was cubic, #2500).
             name = _runner(argv) if argv else ""
             for text in scripts(argv) + stdin_scripts(argv, stage, before, shell):
@@ -445,8 +445,8 @@ def unread_program(argv, stage, walk, inside, before=None, shell=None):
                                 or handed and scripts(argv) and not isinstance(handed, Idle)):
         return handed or _weighed(_PRINTED % (os.path.basename(argv[0]), os.path.basename(
             shell_reader.readable(printer[0]))), list(printer[1:]), walk, _Quiet)
-    return said or _Quiet(              # the LAST resort (r0 finding 1)
-        _DYNAMIC % (how, shell_reader.readable(bare).strip()))
+    return said or _weighed(            # the LAST resort (r0 finding 1), its printer weighed (#2955)
+        _DYNAMIC % (how, shell_reader.readable(bare).strip()), worded(bare), walk, _Quiet)
 
 
 _DYNAMIC = ("runs `%s` on `%s`, a program this guard does not follow -- the word spells no "

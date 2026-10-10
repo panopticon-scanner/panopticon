@@ -33,6 +33,223 @@ evidence exposed.
   is `main`'s on every row; `job_defects` over them costs 1.04x in one process. #2955's rows whose
   printed line begins with such a default (PF-fetch-run, EVS-fetch-run) need that PR's printer
   readings as well and are pinned as they read here.
+- **Workflow reader reads a printed line as the shell that reads it gets it (#2955).** `printf '%s
+  %s\n' curl '-fsSLo t URL' | sh` ⏎ `sh t` read CLEAN under the five `shell:` settings while the
+  eight parent shells run the download, and so did the issue's word `${X:+curl … #}./t.sh` printed
+  twice by `printf '%s\n'`, and `eval "$(echo LINE)"`. A printer the guard cannot spell out -- a `$`
+  in a word, a `printf` format `printed` does not read, an `echo` option or escape two shells read
+  two ways -- had its words weighed as ONE text, which begins with the printer's first word: an
+  `echo`'s line, but a `printf`'s FORMAT and an `echo -n`'s `-n`, so the line after it read as an
+  argument and never as a command; and a program word that is one `$(...)` was reported with a
+  reason the guard may drop, its printer never weighed. The second walk now weighs, beside that
+  text, what the printer WRITES with each word as written -- down a pipe, behind a stage that may
+  rewrite the text, inside `$(...)` or `<(...)`: an `echo`'s line without its options, decoded where
+  its shell decodes, and a `printf`'s format with its words in place. The rendering of a format is
+  what the shell prints, to the character, or it is not followed and the step REPORTS. Followed:
+  text and escapes in the format (an octal escape is a BYTE: `\543` is a `c`), `%%`, `%s`, `%b`,
+  `%c`, `%q`, `%d` `%i` `%u` of a plain decimal, a `-`, a width to 256 on any but `%b`, a number's
+  `0`, a precision on `%s`, a `*` that takes a plain decimal, the format used again while words are
+  left, and a `$` word as it stands; the output ends at a character the shell does not know. Not
+  followed: every other flag, letter, number, width and precision, and `%q` of a `~` or of a
+  character outside printable ASCII, where the shells print their own ways (`%.b` is the whole word
+  to bash 3.2 and nothing to 5.2; a width counts bytes; bash 3.2 dies of a `*` word past an `int`);
+  a `$` word that a precision or `%c` would cut or a width pad with blanks; and a text past 4,096
+  characters and four times the format and its words -- `printf` prints its format again for every
+  few words, so what it writes can outgrow the step many times over. Each shell family is rendered
+  on its own (bash 5.2, bash 3.2, bash 3.2 as macOS ships it, dash) and each distinct rendering
+  weighed once, because the readings are not nested: a `\"` bash decodes in a format closes a quote
+  and bares the command after it where dash keeps it hidden, and the other way about, and one pinned
+  row runs under bash 3.2 and dash and not under 5.2. `unread_program`'s last resort weighs the one
+  printer a program word's `$(...)` is. The main pass reads as `main` does, so the job REPORTs
+  wherever either reading does. Measured against the shells' own builtins: in 10,000 random formats
+  and 10,000 `echo` word lists on each of bash 5.2.21, bash 3.2.57 and dash 0.5.12, no rendering
+  that is followed differs from the output but by a `\u` outside ASCII in a C locale. And on 932
+  rows in nine bounded hunts, each under eight parent shells in two passes: no cell goes CLEAN where
+  `main` reports, and of the 645 rows a parent runs, 309 that read CLEAN now report and 120 reported
+  already. Still CLEAN though a parent runs, 216 rows, none of them claimed read: 184 whose printed
+  line begins with a one-word default (`${X:-curl} …`), which #2963 reads, the issue's PF-fetch-run
+  and EVS-fetch-run among them; 22 on routes `main` reads no printer on, spelled or not (its text
+  written to a file that is then run, kept in a variable, printed by a group or a function, handed
+  to `xargs`, read by `. /dev/stdin`); `builtin` in front of the printer, no wrapper to the reader
+  on `main` either (#2665, 8 rows, run by the bash parents); and two copies of a line the guard can
+  spell (#2953, 2 rows). The price, 82 rows where no parent runs a downloaded program and the step
+  now reports, each kind pinned: a line that only FETCHES, as `echo curl | sh` reports on `main` --
+  the word printed once with its name set (29) and a fetcher on a line with no run after it (9); a
+  format that is not followed around a harmless line (26: `%x`, `%.1f`, a `$` word padded); the text
+  in front of a stage that spoils it (`| tr a-z A-Z | sh`, 9), which `main` reports for an `echo` it
+  can spell; a line only dash makes, on a route every family is read for (5); and a format printed
+  again past the bound (4). A printer is weighed once a distinct rendering: `main`'s one text, then
+  at most three more under a bash setting, one under a dash setting, four where each family is read.
+  One existing pin's value changes: `unprinted` for `printf 'sh %s' "$X" | tee f | sh` gains the
+  written text, its old value pinned under the main pass.
+- **Workflow reader reads the command a `find` action runs, beside `main`'s reading of the `find`
+  (#2935).** But for the reader that asks how a stage uses a file (#2918), no reader of the
+  guard's saw the command an action of a `find` runs, the first one included: `find /dev/null
+  -exec curl -fsSLo tool … \;` ⏎ `sh tool`, `find /dev/null -exec sh -c 'curl … | sh' \;` and
+  `curl … | find /dev/null -exec sh \;` ran the download and read CLEAN. `shell_reader.acted()`
+  answers with the action a fold reads (#2918's folds) in its `find`'s place -- a command line of
+  its own, read as the step's own is: its wrappers stripped, a `$` word bash may drop in front of
+  a known name dropped and a shell's default read (round 2; round 1 read them as words behind a
+  wrapper, which reported benign finds) -- its command word a `shell_wrappers.Found`. `command()`
+  is `main`'s, the `find` (round 3; rounds 1 and 2 unwrapped it for every reader), and `main`'s
+  reading is never lost: `shell_command.folds` reads a job in every fold of `main`'s first, where
+  `acted` is `command`, then, where one met a `find` with an action, in the same folds again with
+  each action in place, and the guard REPORTs where either reading holds a defect. Fourteen
+  readers ask `acted`, one line each (out of lane, granted by the coordinator), each named with
+  the row that needs it in `TestEveryFindActionIsACommand.ACTED` and held to that list by a test
+  that reads the scripts' AST: `workflow_forms.flattened`, `workflow_guard._walk` and
+  `_unread_stdin`, `workflow_fetch.stdout_fetch`, `stream_consumer` and `compound_output`,
+  `workflow_programs._details` and `stdin_scripts`, `workflow_printers.producer`, `handed`,
+  `unspelled` and `_printer`, and `workflow_uses.copies` and `use`; `producer` and the three that
+  take its answer read a stage one way, or `unspelled` raises. Every other reader reads
+  `command()`: GNU `find` 4.9.0 exits 0 whatever a `-exec … \;` command returns (the round-1 seat:
+  33 of 33 measurements, 1 only for `{} +`), and no `find` runs `exit`, `return` or a shell
+  function, sets or clears a variable of the step's or changes its posture, so a stage's status,
+  its call, its values, the sums file its check reads and its `xargs` walk are read off the `find`
+  itself. Round 1 read `CHECK || find … -exec exit 1 \;` as `CHECK || exit 1` and a function an
+  action names as called (its seat's 8,776 cells in 2,308 rows), and round 2 read `find … -exec
+  read T \;` as the step's own `read`, a `tee` in an action as the step rewriting its sums file,
+  an action's `echo` in place of what the `find` prints and an action as the end of its `xargs`
+  walk (its seat's 12,163 cells in 2,541 rows, REPORT on `main` and CLEAN there); each reads as
+  `main` reads it. No check an action runs is credited: an action that runs a checksum tool keeps
+  the `find`, and a program an action runs, as its `-c` string or on its shell's standard input,
+  has no shell sure to read it (`shell_command.unsure`, `sure_reader`, which
+  `workflow_programs.scripts` and `stdin_scripts` call on their own lines; out of lane, granted),
+  so `workflow_forms.flattened` reads it `Unsure`. A rule that keeps a `find` with an action as
+  `main` reads it fires on sure input alone, and where it is not sure the step REPORTs (round 3).
+  An action whose own first word is `.`, `source`, `eval` or `exec` -- a bare name, the one word
+  `find` itself looks up -- runs nothing, since no system ships those as programs (`_NO_PROGRAM`;
+  each word has the row that reports when it is dropped, and the eighteen other builtins round 2
+  listed moved no row once `command()` was `main`'s, and left); behind a wrapper, which may hand
+  its words to a shell as `sudo -s` does, or behind a path, the action is read. An assignment with
+  no `/` in it is a name `find` looks up and no program has; one that names a path is read. A
+  `find` an action runs is kept, since `find` ends an action at the first `;` or `{} +` and one
+  written word by word holds none it can run; one a wrapper splits out of a single word (`env -S
+  '…'`) may, and is a command the guard cannot read. A `$` word in front of the action's command
+  is read as the step's own is only where it begins with a whole reference; a `${…}` that holds a
+  blank is cut where the reader meets it, and is a command the guard cannot read. `command` is a
+  program on macOS, which runs a builtin too, and stays read. The reads grow with a nest's depth,
+  not as a power of it: each of the guard's two readings unwraps a nest of depth 2, 4 and 6 in 6,
+  10 and 14 reads (round 2: 46, 74 and 102; round 1: 192, 2,560 and 25,600), and a nest of depth 8
+  takes 167 ms a step on the forge, where `main` takes 13.5 (round 1: 22.8 s, by its seat). An
+  action whose command word is `{}`, a substitution or a `$` word no known name follows, or a
+  `find` holding more than 8, reads as #2918 reads it. On the round-1 seat's differential --
+  27,902 generated steps, 139,510 cells, 8-parent truth on GNU find 4.9.0 -- 27,085 cells in 5,503
+  rows that read CLEAN on `main` while a parent runs them report (a fetch in an action then a run,
+  an action's `-c` program, an action running a download, a stream piped into an action's shell,
+  heredoc and here-string programs; in every position and behind every wrapper), as at round 2. No
+  cell that is REPORT on `main` reads CLEAN, before #2929 or after it: none on the two seats' sets
+  (99,125 rows), the standing sets (31,046) or this round's hunt for readers that disagree about a
+  `find` (46,454 rows: 51 commands as the action, the `find` in 54 places of a pipeline, a
+  substitution, a string and a redirect), and none that round 1 or round 2 reported reads CLEAN
+  where a parent runs. The round-2 seat's rows report again: the 12,163 cells of its four reader
+  groups; its 38 rows with a builtin's name behind a wrapper or a path, 27 of which run under its
+  model of `sudo -s` and 4 behind a path to `command`; its 6 split nests; and its 244 rows with a
+  cut `$` word, 136 of which a parent runs. The price, CLEAN on `main` and REPORT here where no
+  parent runs, is 20,945 cells in 4,318 rows of that differential, as at round 2 (round 1: 25,675
+  in 5,264), each a `find` that never runs its action as written, which a reader cannot tell from
+  one that does, or one of `main`'s own over-reports reached through an action: the test in front
+  never matches, so the action is never reached (1,520 cells); no `;` ends the action, so `find`
+  stops on a usage error (4,310); `command` is the action's first word, no program on Linux, where
+  the truth was taken (1,630); `-ok` or `-okdir` with no `y` to read (7,900); `-execdir` or
+  `-okdir` from `/dev/null`, which runs the action in `/dev` (2,464); `{}` handed on, so the shell
+  or fetcher gets the root (1,040); a check that gates the run inside one action program, wrong
+  digest (805), a fetch-only program in an action of a `find` rooted where the download lands
+  (760) and a here-string program under dash (352), which `main` reports alike outside a `find`,
+  164 more of those three behind an optional `$` word; and in its probes a `find` as another's
+  action, which `find` itself rejects, the inner `-exec` read as an action of the first (25
+  cells). Where round 3's rules are not sure and nothing runs, they add 540 cells in 108 of those
+  244 rows, and 40 cells in 8 rows with a builtin's name behind a wrapper that runs nothing
+  (`sudo`, `env`, `time`, `nohup`, `doas -s`, a `$` word, a `find` that matches nothing). Round 3
+  takes two of round 2's price classes away: `find … -exec command set +e \;` in front of a
+  failing check, which round 2 reported as the step's own posture though the step stops wherever
+  `-e` holds, and an action read as the end of an `xargs` walk. Of the benign finds that fetch
+  nothing, 5 cells read REPORT, one row with no `;` (round 1: 785 cells). No cell moves on the
+  standing sets. The cost, `job_defects` against `main` in one process on the forge (a 32-core
+  Neoverse-N2, Python 3.12.3), by the round-1 seat's own tool in three alternating passes: 1.07x
+  on its sample of the standing rows (3,881 rows), 2.07x on its status probes and crossed set
+  (2,867) and 2.88x on its sample of the differential (3,986), where every row holds a `find` with
+  an action and is read in `main`'s folds and then in a fold for each action; the worst case is
+  one `find` of 8 actions, 10x to 13x a step (143 to 156 ms against 11 to 15), and ten of them in
+  one step 13x (1.26 s against 96 ms); nine actions are past the cap and cost 2.1x, and a nest
+  reads as that many actions of the first `find`. Still unread, as on `main`: a fetch in one
+  action of a `find` and its run in another (#2941).
+- **Workflow reader reads every mixed reading of the command words bash may expand to nothing
+  (#2929).** #2856's union read a job twice: every such word -- `${X:+W}`, `${X-W}` and their kin
+  -- as its W, then every one empty, two of a step's 2^k readings, so a payload only a mixed
+  reading runs read CLEAN while every parent runs it: `X=1` ⏎ `${X:+curl -fsSLo tool …}` ⏎
+  `${Y:+/usr/bin/env true} sh tool`, the fetch's W and the shell's word empty, and the #2856
+  round-13 seat's 14 rows of hunts 49, 51 and 53 (70 cells). `shell_command.folds` now reads,
+  after those two folds, every other set of such words whose halves read apart -- `_runs` reads
+  another command in each, or one command word with other operands (`${Q:+/usr/bin/env cat sums}
+  cat`) -- empty in a fold of its own, up to three words, so 4 folds read two of them and 8 three;
+  halves that read one command (`${SUDO:+sudo -E} apt-get …`) add no fold. A word is one word by
+  where it stands, never by what its text says (`shell_tokens._Parse.place`, round 2): a step at
+  its index in the job, a `$(…)`, a backquote, a `<(…)` or a heredoc's body at its place in the
+  text that lifted it, a program a shell reads on its standard input at its heredoc's, and in that
+  parse the order it was kept whole. So a text read again in a fold holds the same words, no nonce
+  of the reader's splits one, and one spelling at two places is two words -- two equal
+  substitutions, two heredocs of one body, two steps of one text (a step's program strings aside:
+  the limit below); round 1 keyed a parse by its text, which read those as one word (the round-1
+  seat's IdB.two, IdC.subst and MS.same rows, CLEAN while the parents run them: all 16 runs, 12
+  for IdC.subst-proc) and one word as many wherever a marker's nonce reached the text (its Idnonce
+  rows, reported at the cap though nothing runs). A `-c` or an `eval` string is no lifted text: it
+  reaches its parse by its text alone -- its parent's token, and `workflow_programs._parsed`, a
+  cache keyed by the text -- so its parse is keyed by that text, less the reader's own nonce and
+  nothing else (`shell_tokens._keyed`, round 3: every nonce this process mints ends in a tag of
+  its own, so a word that may be a shell's program, read with its `$(…)` left as a marker, keeps
+  one key whatever nonce its parent minted, and text of the target's that is only shaped like a
+  marker stays in the key -- round 2 took every such text out, and read the round-2 seat's
+  D.shcd-litmark and D.evq-litmark pairs CLEAN while every parent runs them, REPORT at round 1).
+  And that text is the one `workflow_programs._script` hands the reader, in which a substitution
+  no printer spells is already written `$(...)`. So two program strings that read alike once each
+  such substitution is so written are one word: two identical strings at two places, and two that
+  differ only inside a `$(…)`, a backquote or a `<(…)` that stands in them. That is the named
+  limit (#2953, the hand-off of a program string's place, which crosses the programs lane): a
+  payload only the mixed reading of two such strings runs reads CLEAN, as on `main`. On a capped
+  hunt of 180 rows with 8-parent truth -- 9 spellings (`sh -c`, `bash -c`, `eval`, single- and
+  double-quoted, an escaped `$`, `env sh -c`, `bash -lc`, `sh -ec`) by 5 program shapes -- all 45
+  identical pairs read CLEAN under every setting (225 cells) while every parent runs them, here
+  and on `main`; with one blank more in the second string each pair reports (CLEAN on `main`), one
+  copy alone only fetches and reads CLEAN, the benign pairs read CLEAN, and no cell reads worse
+  than `main`. On a second, of 200 rows -- 8 ways of differing inside a substitution (a `$(…)`, a
+  backquote, a `<(…)`, a heredoc's body in one, its argument, one inside another, two of which one
+  differs, a `$(…)` against a backquote in its place) by 5 runners -- all 40 pairs that differ
+  only there read CLEAN under every setting, as their 40 identical twins do, while a parent runs
+  each (192 cells either way: all 16 runs in 36 of the 40, the other 4 a `<(…)` only bash reads),
+  here and on `main`; with one blank more outside the substitution all 40 report (CLEAN on
+  `main`), and one copy alone and the pairs with nothing downloaded read CLEAN. The round-2 seat's
+  18 such pairs are this class; where two strings differ in what a printer spells, in an
+  arithmetic expansion or in a word of the substitution that holds the word itself, they are two
+  words and report. An `eval` whose words bash joins is the same class. A string that ends in the
+  download's name reports as one copy, on `main` too (`workflow_operands.covers` reads it as a
+  mention), which is why the round-1 seat's 8 rows and a first hunt's 10 pairs showed no reach. A
+  fourth such word reads as a command the guard cannot read, reported wherever it runs, a download
+  or none, so the folds stop at 8. The price, CLEAN on `main` and REPORT here though no parent
+  runs, counted at this head on the round-1 seat's rows: that cap (146 of its 20,000 fuzz rows;
+  one spelling written at four or more places is four words now and meets it, 37 of the round-2
+  seat's rows that round 1 read CLEAN), and, since every assignment of halves is read, a mixed
+  reading no assignment of the step's names takes -- `${X:+curl …} | ${X:+/usr/bin/env true} sh`,
+  one name in both words, reports though bash runs neither mix (618 of its 2,164 class rows, 408
+  fuzz rows, and its two-step MS.same-pipe); neither is met in the seats' standing sets, and no
+  cell of those 22,164 rows is REPORT on `main` and CLEAN here. The two folds the union read come
+  first, as before, so nothing it reported reads CLEAN: across the #2885 round-4 seat's rows and
+  their twins, round 3's own and theirs, the AX, P0, F6 and P4 rows, the round-3 kit's 20,533 and
+  #2856's hunts 33-53, the only changes against `main` are those 70 cells, beside #2911's rows
+  (S08n, S08p, hunt 37's `*-od`), which differ between two runs of `main` too; and on the round-1
+  seat's rows the IdB.two, IdC.subst and MS.same rows report, its Idnonce rows read CLEAN as
+  `main` reads them, and a capped hunt's six pairs of one heredoc or here-string read by two
+  shells report; on the round-2 seat's 1,774 rows the only change against round 2 is its two
+  litmark pairs, which report. Out of lane, granted by the coordinator, each net zero:
+  `workflow_guard.job_defects` hands each step's index to its parse (`placed`), and
+  `workflow_programs.stdin_scripts` keeps the place of the heredoc it reads (`at_place`). The
+  cost, `job_defects` against `main` interleaved in one process, three passes on the final
+  scripts: 1.9x to 2.4x on the 39 rows of hunts 45-53 that hold two such words, flat where one or
+  none, 3.3x to 5.0x for three and past them (the eight folds, to 200 words; the round-2 seat's
+  rows past the cap read 4.70x to 4.98x), and 1.06x on the #2885 seat's 1,945 rows (1.05x to
+  1.07x, the round-3 seat's measure). Two such words in one stage stay #2856's named limit: only a
+  stage's first `${…}` word is read whole. `shell_reader._stage`'s docstring is rewrapped at 96
+  columns, every word kept, for the line that stamps the place.
 - **Workflow reader reads every action a `find` runs (#2918).** `curl … -o tool` ⏎ `find
   /dev/null -exec true \; -exec sh /dev/fd/3 \; 3<> tool` ran the download and read CLEAN: the
   guard read one of `find`'s actions, the first of `-exec`, `-execdir`, `-ok` and `-okdir` in that
@@ -156,21 +373,17 @@ evidence exposed.
   `curl … | ${X:+/usr/bin/env true} sh` and `${X:+/usr/bin/env true} sh -c '…'` report the `sh`
   the empty half runs, `X=1` ⏎ `${X:+/usr/bin/env sh -c} '…'` the W that runs where `X` is set,
   and a check is credited only in the reading that runs it (`${X:+/usr/bin/env sha256sum -c
-  sums} true` ⏎ `sh tool` reports, where `X` is unset). The two readings are two of a step's
-  2^k: every word of two halves read as its W, then every one as nothing, so a payload that only
-  a mixed reading runs -- the fetch's W and a later word read empty, `X=1` ⏎ `${X:+curl -fsSLo
-  t.sh …}` ⏎ `${Y:+/usr/bin/env true} sh t.sh` -- reads CLEAN, as on `main` (#2929), but where
-  the two halves conflict (below). Two halves the guard may each report that run apart -- two
-  among a shell's kind, a fetcher and a word it does not follow, but that word in front of a
-  shell's kind -- are a command it cannot read (`${X:+curl -fsSL …} sh x | sh` runs the download
-  where `X` is set). `$0` and `$-` are never unset, so `${0+W}` is always its W and `${--W}`
-  never is; and a pattern's or a case change's other half is the name's own value, which no half
-  names (#2899). No step's text decides a half: round 12 read W where the step set the name
-  anywhere in its text, which took a set after the use, in a subshell, a dead branch, a string,
-  a comment or a heredoc, and missed `set x`, `eval 'X=1'` and the shell's own variables. A
-  default whose first word names a command the reader knows -- a shell, a wrapper, a foreign
-  interpreter, a fetcher, by path too -- is that command, as `main` read the word by its
-  basename (`${X:-/usr/bin/env sh -c} '…'`, `${X:-/usr/bin/curl -fsSL} URL | sh`,
+  sums} true` ⏎ `sh tool` reports, where `X` is unset). Two halves the guard may each report
+  that run apart -- two among a shell's kind, a fetcher and a word it does not follow, but that
+  word in front of a shell's kind -- are a command it cannot read (`${X:+curl -fsSL …} sh x |
+  sh` runs the download where `X` is set). `$0` and `$-` are never unset, so `${0+W}` is always
+  its W and `${--W}` never is; and a pattern's or a case change's other half is the name's own
+  value, which no half names (#2899). No step's text decides a half: round 12 read W where the
+  step set the name anywhere in its text, which took a set after the use, in a subshell, a dead
+  branch, a string, a comment or a heredoc, and missed `set x`, `eval 'X=1'` and the shell's
+  own variables. A default whose first word names a command the reader knows -- a shell, a
+  wrapper, a foreign interpreter, a fetcher, by path too -- is that command, as `main` read the
+  word by its basename (`${X:-/usr/bin/env sh -c} '…'`, `${X:-/usr/bin/curl -fsSL} URL | sh`,
   `${X:-/usr/bin/env $(echo sh) -c} '…'`); where no default reads -- a `$NAME` or a nested
   default in it, or a parameter that is no NAME -- `main`'s split words stay when their first
   names such a command by its basename (`${X:-$HOME/bin/env sh -c} '…'`, `${1:-/bin/sh -c}
@@ -390,6 +603,18 @@ evidence exposed.
   `main`).
 - **Codex model profiles move to GPT-6 (#2872).** Pinned role defaults now use `gpt-6-luna` or
   `gpt-6-sol`; set `PANOPTICON_MODEL_<ROLE>` to pin another installed model.
+- **Codex headless probes reach panels without invocation-local workarounds (#2923).** The
+  registered, model-neutral `setup_scan` surface probe now keeps its intentional inherited model;
+  the localhost-only effective-surface probe and bundled-catalog read have a 180-second bound after
+  one observed valid inspection took 64.8 seconds; and `codex exec --output-schema` is omitted for
+  a published schema whose root, recursive objects, references, or composition are not strict-output
+  compatible. After controller stamping, `phases.persist.write_reply` validates every returned role
+  that has a published schema against its unmodified Draft-7 `role_schema(entry)` before writing.
+  Consequently, a lowercase or otherwise bare tool-advisor verdict that the older acceptance check
+  normalized now fails the published contract and spends a D10 retry. The 180-second bounds limit a
+  slow probe, and the compatibility screen keeps an incompatible production schema off the provider
+  argv, so neither can fan a rejection out across a matrix batch. The Codex disclosure separately
+  reports that its successful toy proof constrains no production reply in this build.
 - **X0X identifiers reject control and bidirectional code points (#2712).** The report schema now
   refuses C0 controls other than tab and line feed, DEL/C1 controls, Arabic Letter Mark, bidi
   marks, embeddings, overrides, and isolates in occurrence paths, candidate areas, and proposed
@@ -397,6 +622,22 @@ evidence exposed.
   report emission, with one code-point policy shared by report and prompt rendering (#2118 items
   1-2), so a hostile filename cannot suppress the X0X artifact. Honest emitter output remains
   valid, and `synthesize.py` keeps its ASCII-escaped, multi-line JSON serialization.
+- **X0X candidate names and array order are reproducible (#2713).** Proposed names are now
+  schema-pinned to kebab case and 60 characters, and the emitter applies that same bound. Candidate
+  arrays sort by severity, domain, proposed name, and cluster key; equal-severity cluster leads use
+  a stable finding fingerprint, while occurrences and CWE identifiers receive canonical orders.
+  Reordering the input findings therefore leaves the emitted candidate array unchanged, and
+  `generated_at` remains optional. `cwe` remains optional and is omitted when empty; the open-object
+  extension contract remains explicit, with `evidence_status` undeclared until its vocabulary and
+  type are standardized. A catalog-gap finding without `location.file` remains in the full findings
+  report but is excluded from the occurrence-bearing X0X candidate set and written to a
+  deterministic, redacted `-x0x-failures.json` sidecar with its own write-time schema. The log keeps
+  duplicate ids, and an unlocated member of a mixed cluster cannot lead its located siblings,
+  resolving #2090.
+  Synthesize and the driver disclose the exact count and path even after child stderr flooding or a
+  resume, clean runs safely remove regular or symlinked stale sidecars, and the remaining X0X is
+  byte-identical to a run without the unrepresentable finding. The discard does not introduce a new
+  exit status; the report gate still selects `0`, `1`, or `2`.
 - **Workflow guard reads a function header in the spellings bash takes at a statement's head
   (#2664, #2608; #2785).** `f(){ curl … | sh; }` ⏎ `f`, `f ( ) { … }`, and a header after
   `then`, `do` or an opened `{` ran the pipe under bash 5.2.21, 3.2.57 and dash and read CLEAN:
@@ -3040,20 +3281,18 @@ evidence exposed.
   empty location rather than quarantine the finding). So the emitter whose whole purpose is to carry
   catalog gaps into OCRDb's adjudication pool was discarding exactly the repo-wide ones, in silence,
   and `synthesize`'s `X0X artifact: <path> (N candidates)` line printed a count that was quietly
-  short. Nothing is invented — a file cannot be. The count the report had to leave out is now
-  published as `candidates_dropped_locus_free` (omitted when zero), an optional integer DECLARED in
-  `skill/reference/x0x-report-schema.json` so a downstream ingester has a documented field to read;
-  that key is the carrier that survives a `driver run`, because the driver keeps a child's output
-  only on failure. Run `synthesize.py` yourself and each dropped cluster is named on stderr too —
-  the domain, the lead title or, untitled, its finding id, and how many findings the cluster held —
-  with the count appended to the `X0X artifact:` line. Every agent-authored field in either
-  diagnostic is squeezed to one line, bounded with the cut MARKED, and rendered inert with `%r`, so
-  one hostile finding cannot repaint the operator's terminal or forge a line that reads as the
-  tool's own honest output. `strain_report.advisor_recode_signals` — the offline catalog-MIS-FIT
-  companion, which has no pipeline caller — makes the same disclosure at its own locus-free drop;
-  `cross_run_signals`'s line-window join is left alone, being intrinsically file-keyed. Residual,
-  filed as #2090: a MIXED cluster still reaches the pool with its locus-free member absent from
-  `recurrence`, silently.
+  short. Nothing is invented — a file cannot be. #2713 replaces the count-only disclosure: each
+  locus-free X0X finding is excluded from the candidate set and recorded in a deterministic,
+  redacted failure sidecar while located candidates are still emitted. That sidecar is validated
+  against `x0x-failure-log-schema.json`, keeps duplicate ids, and resolves #2090's silent
+  mixed-cluster loss. Synthesize and the driver name the exact count and path, and a clean run
+  removes a stale regular file or symlink without following it. Every agent-authored field
+  in a log diagnostic is squeezed to one line, bounded with the cut MARKED, rendered inert with
+  `%r`, and redacted, so one hostile finding cannot repaint the operator's terminal, forge a line
+  that reads as the tool's own honest output, or publish a credential.
+  `strain_report.advisor_recode_signals` — the offline catalog-MIS-FIT
+  companion, which has no pipeline caller — keeps its own locus-free disclosure;
+  `cross_run_signals`'s line-window join is left alone, being intrinsically file-keyed.
 - **A run3 that never reviewed the file can no longer corroborate a "fixed" close (#1807,
   DAT-1268532600).** Stage 1 (`skill/scripts/reconcile.py diff`) read "no run3 record on this (file,
   panel)" as evidence of a fix, and its two whole-run guards only fired when run3 was EMPTY or

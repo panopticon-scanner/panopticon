@@ -66,7 +66,7 @@ from workflow_options import Handed, _MAINS, _counted, _dash_c_strings, _shell_c
 from workflow_printers import (ANY as ANY, Named as Named, _PRINTERS as _PRINTERS, _piped as _piped,
                                file_operand as file_operand, handed as handed, operand, rendered,
                                printed as printed, producer as producer, spellings as spellings,
-                               substituted, unspelled as unspelled, unsubstituted)
+                               substituted, unspelled as unspelled, unsubstituted, worded as worded)
 
 
 # A shell handed a SCRIPT as a string: `eval "curl ... -o x"`, `sh -c "..."`. The text is shell and
@@ -104,11 +104,11 @@ def scripts(argv):
     `main`'s strings first, a check in one counted where the shell surely runs it (else `Handed`,
     reader `()`), then this walk's own (`_added_strings`, #2858) -- `main`'s alone in the main pass."""
     if _MAINS.get():
-        return _main_scripts(argv)
+        return shell_reader.unsure(argv, _main_scripts(argv))
     shell = bool(argv) and os.path.basename(argv[0]) in _SHELL_STRING
     out = [Handed(script, ()) if shell and not isinstance(script, Opaque) and not _sure_string(argv, word) else script
            for word, script in ((word, _script(word)) for word in _program_words(argv)) if script is not None]
-    return out + [Handed(script) for script in map(_script, _added_strings(argv)) if script is not None]
+    return shell_reader.unsure(argv, out + [Handed(script) for script in map(_script, _added_strings(argv)) if script is not None])
 
 
 def _main_scripts(argv):
@@ -478,7 +478,7 @@ def _details(argv, depth, walk):
         text = " ".join(getattr(t, "spelled", t) for t in found)
         parsed = _parsed(text)
         if len(parsed) == 1 and len(parsed[0].stages) == 1:
-            inner = shell_reader.command(parsed[0].stages[0].argv)
+            inner = shell_reader.command(shell_reader.acted(parsed[0].stages[0].argv, True))
             if depth >= 64:                    # bounded: past 64 strings, fail-closed
                 return SHELL_PROGRAM, (() if kind == SHELL_PROGRAM and reader else None), inner
             inherited = _details(inner, depth + 1, walk)
@@ -654,7 +654,7 @@ def stdin_scripts(argv, stage, before=None, shell=None):
         readings = texts = [here[0] if filed is None else filed]
     else:
         source, intact = producer(stage, before)
-        readings = spellings(shell_reader.command(source.argv), source, shell) if intact else []
+        readings = spellings(shell_reader.acted(source.argv), source, shell) if intact else []
         texts = [t for t in readings if t is not None]
     if not texts:
         return []
@@ -668,8 +668,8 @@ def stdin_scripts(argv, stage, before=None, shell=None):
         texts = [context.pattern.sub("$VALUE", lifted)]
     out = []
     for spelled in texts:
-        text = Stdin(spelled)
-        text.reader = reader if len(readings) == 1 else None
+        text = shell_reader.at_place(Stdin(spelled), spelled)
+        text.reader = shell_reader.sure_reader(argv, reader if len(readings) == 1 else None)
         setattr(text, "bound", stdin_command(argv)[0] if kind == VALUE_PROGRAM else None)
         out.append(text)
     # A FILE program beside a heredoc (#2764): the FILE is the program, and where its one
@@ -679,7 +679,7 @@ def stdin_scripts(argv, stage, before=None, shell=None):
         parsed = shell_reader.statements(filed)
         if len(parsed) == 1 and len(parsed[0].stages) == 1 and _stdin(
                 shell_reader.command(parsed[0].stages[0].argv), 1)[0] in (SHELL_PROGRAM, VALUE_PROGRAM):
-            text = Stdin(stage.stdin_heredoc[0])
+            text = shell_reader.at_place(Stdin(stage.stdin_heredoc[0]), stage.stdin_heredoc[0])
             setattr(text, "bound", None)
             out.append(text)
     return out

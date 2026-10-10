@@ -75,6 +75,20 @@ class TestSchemaErrors(unittest.TestCase):
             validate_schema_mod.schema_errors({"candidates": []},
                                               validate_schema_mod.X0X_SCHEMA))
 
+    def test_the_x0x_failure_schema_is_reachable_by_name(self):
+        failure_log = {
+            "discarded_findings": [{
+                "finding_id": "SE-077",
+                "reason": "no file locus",
+                "diagnostic": "catalog-gap finding 'SE-077' ('gap') has no location.file",
+            }],
+        }
+        self.assertEqual(validate_schema_mod.schema_errors(
+            failure_log, validate_schema_mod.X0X_FAILURE_SCHEMA), [])
+        self.assertTrue(validate_schema_mod.schema_errors(
+            {"discarded_findings": [{"finding_id": "SE-077"}]},
+            validate_schema_mod.X0X_FAILURE_SCHEMA))
+
     def test_an_undescribed_meta_section_is_rejected(self):
         # #1602 ruling 4: `meta` is closed. This is the whole point of the
         # issue -- `host_capabilities` drifted for a release because an
@@ -129,7 +143,8 @@ class TestSchemaErrors(unittest.TestCase):
         # A wrong REFERENCE_DIR would fail closed on every call, which is safe
         # but useless; pin that it resolves onto the real shipped contracts.
         for name in (validate_schema_mod.REPORT_SCHEMA,
-                     validate_schema_mod.X0X_SCHEMA):
+                     validate_schema_mod.X0X_SCHEMA,
+                     validate_schema_mod.X0X_FAILURE_SCHEMA):
             path = os.path.join(validate_schema_mod.REFERENCE_DIR, name)
             self.assertTrue(os.path.isfile(path), path)
             with open(path, encoding="utf-8") as fh:

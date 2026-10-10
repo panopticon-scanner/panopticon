@@ -20,8 +20,8 @@ fail-open loss a PASS used to hide. A rangeless path that arrived `[]` deliberat
 it: a deletion-only, binary, mode-only or same-content rename change looks exactly like a truncated
 map from there.
 `summary.coverage_certified` and `meta.coverage.divergence` carry the detail; `main` exits `1` on
-FAIL, `2` on INCONCLUSIVE, `4` when an artifact it wrote fails its own published schema (next
-paragraph), `3` on an unreadable OCRDb bundle, `0` otherwise. Exit `2` is also argparse's
+FAIL, `2` on INCONCLUSIVE, `4` when an artifact cannot be published or fails its own published
+schema (next paragraph), `3` on an unreadable OCRDb bundle, `0` otherwise. Exit `2` is also argparse's
 usage-error code and `main`'s own precondition refusals, which never reach the gate: a `--compare`
 report it cannot read (either of the two), a `--compare` with neither `--html-out` nor `--out`, and
 an artifact-root refusal. A genuine INCONCLUSIVE run still writes a full report artifact and every
@@ -50,9 +50,34 @@ finished at all — the driver's `complete`/`error` status. *Artifact validity* 
 it wrote are what they claim to be: in the normal completion path — not in a separate
 controller-side check — `synthesize` validates the report against
 `skill/reference/report-schema.json`, the **hydrated union** of its `_partN.json` splits and
-`-discarded.json` sibling against the same schema, and `-x0x.json` against `x0x-report-schema.json`;
-any failure prints `SCHEMA:` lines naming the artifact and the JSON path, then
-`artifact invalid: N schema errors (see …)`, exits `4`, and ends a `driver` run in `error`.
+`-discarded.json` sibling against the same schema, `-x0x.json` against
+`x0x-report-schema.json`, and a present `-x0x-failures.json` against
+`x0x-failure-log-schema.json`;
+any schema failure prints `SCHEMA:` lines naming the artifact and the JSON path, then
+`artifact invalid: N schema errors (see …)`. An artifact path that cannot be written,
+published, or removed prints `synthesize: artifact path refused:` with the path and cause.
+Either case exits `4` and ends a `driver` run in `error`; artifacts completed before a refusal
+remain on disk, later artifacts are not written, and the refused directory or other leaf is left
+untouched.
+A legitimate catalog-gap finding without `location.file` cannot satisfy X0X's required occurrence
+shape. It remains in the main JSON and HTML, while `synthesize` excludes it from the X0X candidate
+set and writes `<report-stem>-x0x-failures.json` beside the X0X, where `<report-stem>` means the
+report filename without `.json`. That deterministic JSON object has one
+`discarded_findings` array; each row carries the bounded, redacted `finding_id`, the reason
+`no file locus`, and a bounded, redacted, inert diagnostic whose truncation is marked. The array
+keeps duplicate ids because distinct content-derived findings can share one. `synthesize` validates
+the log as written, warns
+with the exact discard count and log path, then returns the report's ordinary gate status because
+the X0X was written. The driver
+forwards the disclosure and includes `x0x_discarded`, `x0x_failure_log`, and the same text in its
+terminal status. An unchanged resume reproduces the same bytes; a run with no discards removes an
+older failure log, so stale failures cannot follow a clean X0X.
+The complete `synthesize` status list is: `0` for a valid PASS (and for a pass-1 verify-queue
+emission), `1` for a valid FAIL, `2` for a valid INCONCLUSIVE or a pre-report CLI/compare usage
+error, `3` for invalid input such as an unreadable OCRDb bundle or tools manifest, and `4` when a
+report, split part, discarded-claims sibling, X0X, X0X failure log, or HTML page cannot be
+published or when a written JSON artifact fails its published schema. Discarding a locus-free X0X
+finding never changes the status selected by the report's gate.
 Validation is **fail-closed**: an uninstallable `jsonschema` (a declared runtime dependency) or an
 unreadable schema file is an error, never a silent pass, because "we could not check" and "we
 checked and it passed" must not look the same. **The schema pins the *controller's* output:** every
@@ -69,7 +94,7 @@ verbatim out of an untrusted artifact, is described in the schema without being 
 The two passes are labelled `SCHEMA pre-write:` (the in-memory document) and `SCHEMA artifact:`
 (what was written), an error both find is printed once, and **every artifact is still written** — a
 report that failed validation is on disk with `meta.schema_errors` in it, so it can be inspected
-(that count is the report's own; an `-x0x.json`-only failure leaves it `0`, and the `error` status
+(that count is the report's own; an X0X-sibling-only failure leaves it `0`, and the `error` status
 carries the total), and the `.panopticon/report.json` compat symlink still points at **this** run's
 report rather than the previous run's. *Coverage certification* is whether enough of the review
 actually happened for the verdict to mean anything — `summary.gate` and
@@ -137,8 +162,9 @@ advisor. Then **over the whole report tree** before any shareable artifact:
 `render.redact_report_secrets` walks every string at any depth (`meta`, `summary`, `groups`,
 `cross_panel`, `delta` and anything a future producer adds), not a named list of keys, so a producer
 that copies text after it cannot reintroduce a secret. One dict feeds report.json, the `_partN.json`
-splits, the `-discarded.json` sibling, `.json.html`, `-x0x.json` and the terminal summary, so all of
-them inherit it. What the whole-tree walk does **not** change is structured data: the patterns are
+splits, the `-discarded.json` sibling, `.json.html`, `-x0x.json`, `-x0x-failures.json` and the
+terminal summary, so all of them inherit it; the failure log also redacts its bounded diagnostic
+explicitly. What the whole-tree walk does **not** change is structured data: the patterns are
 anchored to well-formed secret formats, so ids, codes, grades, hashes, file paths and the verbatim
 `meta.host_capabilities` posture come back identical. Prose is a different matter — a sentence that
 happens to contain a token-shaped substring is masked, exactly as it already was inside
