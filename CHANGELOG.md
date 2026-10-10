@@ -35,9 +35,9 @@ evidence exposed.
   lead, which `main` read as a command. `time -p case …` is still unread (10 rows, 30 cells,
   bash's alone): `time`'s option is no lead. On the standing sets and the #2939 round-1 seat's
   class and fuzz rows (53,210 rows) nothing moves. The cost, `job_defects` against `main` on the
-  forge, three passes, each a process of its own: 1.12x to 1.13x on the hunt, whose arms are read
-  now, and flat on the #2942 seat's 3,881-row sample of the standing rows (1.00x); a `case` behind
-  n keywords is read in linear time (pinned).
+  forge, three passes, each a process of its own: 1.12x to 1.14x on the hunt, whose arms are read
+  now, and flat on the #2942 seat's 3,881-row sample of the standing rows (0.99x to 1.00x); a
+  `case` behind n keywords is read in linear time (pinned).
 - **`scripts/shell_reader.py` splits its statement splitter into `scripts/shell_split.py` (#3001,
   reader lane).** A pure move at the module's size (700 of its 700 lines, with #2974 to edit
   `_split`): `_split`, which cuts a lexed `run:` text into statements and pipeline stages, the two
