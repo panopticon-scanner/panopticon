@@ -213,9 +213,10 @@ class TestTheSpelling(unittest.TestCase):
             spelled = inert.escape_surrogates(name)
             with self.subTest(name=plain(spelled)):
                 self.assertEqual((0, 0, 0), (spelled.count(BACKSLASH), spelled.count("/"), len(set(spelled) & set("*?["))))
-                self.assertEqual(spelled, evidence.norm_path(spelled))
+                self.assertEqual(plain(spelled), plain(evidence.norm_path(spelled)))
                 found = [{"severity": "HIGH", "title": "smell", "category": "structure", "location": {"file": spelled}}]
-                self.assertEqual({"downgraded": 0, "examples": []}, findings_mod.apply_doc_severity_policy(found, "standard"))
+                self.assertEqual(plain({"downgraded": 0, "examples": []}),
+                                 plain(findings_mod.apply_doc_severity_policy(found, "standard")))
                 self.assertEqual("HIGH", found[0]["severity"])
         inside = [{"severity": "HIGH", "title": "smell", "category": "structure",
                    "location": {"file": inert.escape_surrogates("docs/a" + LONE + ".md")}}]
@@ -227,11 +228,11 @@ class TestTheSpelling(unittest.TestCase):
         # surrogate's spelling is plain characters, and a cut through it is left as a cut through any text is:
         # dropping a trailing `U+D8` would move a clean text that ends so, and a clean input must not move.
         for cap, kept in ((6, "aaaaaU"), (8, "aaaaaU+D"), (10, "aaaaaU+D80"), (11, "aaaaa" + SPELLED)):
-            with self.subTest(cap=cap):
-                self.assertEqual(kept + base.INERT_CUT, base.inert_text("aaaaa" + LONE * 3, limit=cap))
+            with self.subTest(cap=cap):       # through `plain`: a failing pin must not print a raw surrogate
+                self.assertEqual(plain(kept + base.INERT_CUT), plain(base.inert_text("aaaaa" + LONE * 3, limit=cap)))
         for clean in ("see U+D83D and more", "the CPU and more"):
             with self.subTest(clean=clean):
-                self.assertEqual(clean[:8] + base.INERT_CUT, base.inert_text(clean, limit=8))
+                self.assertEqual(plain(clean[:8] + base.INERT_CUT), plain(base.inert_text(clean, limit=8)))
 
     def test_the_set_holds_the_block_and_the_helper_reads_the_same_range(self):
         self.assertEqual(self.BLOCK, inert.SURROGATES)
@@ -248,7 +249,7 @@ class TestTheSpelling(unittest.TestCase):
         self.assertEqual(("\U0001f600", "\U0001f600"), (pair, inert.escape_surrogates(pair)))
         for halves, spelled in (('"\\ud83d x \\ude00"', "U+D83D x U+DE00"), ('"\\ude00\\ud83d"', "U+DE00U+D83D")):
             with self.subTest(halves=halves):
-                self.assertEqual(spelled, inert.escape_surrogates(json.loads(halves)))
+                self.assertEqual(plain(spelled), plain(inert.escape_surrogates(json.loads(halves))))
 
     def test_every_mode_of_the_one_neutralizer_spells_it(self):
         for mode in base.INERT_MODES:
@@ -260,7 +261,7 @@ class TestTheSpelling(unittest.TestCase):
         # A name that never was JSON: on Linux `os.walk` hands an undecodable byte over as a lone surrogate.
         name = "src/caf\udce9.py"
         line = runio._abs_file_list("/review", [name])
-        self.assertEqual("- /review/src/cafU+DCE9.py", line)
+        self.assertEqual(plain("- /review/src/cafU+DCE9.py"), plain(line))
         line.encode("utf-8")
         self.assertEqual(["/review/" + name], runio._abs_files("/review", [name]))    # the read guard's bytes
 
@@ -473,7 +474,7 @@ class TestTheReader(unittest.TestCase):
         self.assertEqual([], surrogates(row))
 
     def test_a_failure_log_row_spells_it_the_same_way(self):
-        self.assertEqual("a" + SPELLED + " b", x0x_report._redacted_one_line("a" + LONE + " b"))
+        self.assertEqual(plain("a" + SPELLED + " b"), plain(x0x_report._redacted_one_line("a" + LONE + " b")))
 
 
 class TestTheBackstop(unittest.TestCase):
