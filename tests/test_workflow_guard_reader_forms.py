@@ -6919,11 +6919,13 @@ class TestACaseBehindAKeywordOrAHeader(unittest.TestCase):
             for shell in SHELLS:
                 with self.subTest(row=row, shell=shell):
                     self.assertFalse(reported("%s\n%s\necho done\n" % (self.FETCH, row), shell))
-        # `for`'s name and its words lead no header. Read as one, `case in in` or `case x in` would
-        # leave the reader in an arm's pattern, where a `|` is no pipeline, and the check piped behind
-        # the loop would be no check: it stops every parent, and each reads CLEAN, as on `main`.
+        # `for`'s name and its words lead no header, and neither does a command: its words are its
+        # arguments. Read as a header, `case in in` or `case x in` would leave the reader in an arm's
+        # pattern, where a `|` is no pipeline, and the check piped behind it would be no check: it
+        # stops every parent, and each reads CLEAN, as on `main`.
         gate = "echo '%s  t' | sha256sum -c - || exit 1" % ("a" * 64)
-        for row in ("for case in in\ndo :; done", "for a\nin case x in\ndo :; done"):
+        for row in ("for case in in\ndo :; done", "for a\nin case x in\ndo :; done",
+                    "echo case x in", "printf '%s\\n' case x in"):
             for shell in SHELLS:
                 with self.subTest(row=row, shell=shell):
                     self.assertFalse(reported("%s\n%s\n%s\nsh t\necho done\n" % (self.FETCH, row, gate), shell))
