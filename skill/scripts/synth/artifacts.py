@@ -13,6 +13,7 @@ import sys
 from typing import Any
 
 import scripts.evidence as evidence_mod
+import scripts.inert as inert
 import scripts.safe_write as safe_write
 
 MAX_JSON_BYTES = 16 * 1024 * 1024
@@ -30,11 +31,16 @@ def read_json(path, *, limit=None, tolerant=False, announce=False) -> Any:
     into markdown/prose tolerance. With announce=True, rejected present inputs
     get one stderr diagnostic; an optional missing file remains quiet. Callers
     already publishing a reason keep announce=False to avoid duplicate messages.
+
+    A lone surrogate in any string of the document comes back spelled (#2951,
+    `inert.surrogate_free`): this is the one reader of the run directory's JSON,
+    and spelling HERE puts every cap a caller applies after the spelling, which
+    is six characters for one. A document holding none comes back itself.
     """
     if limit is None:
         limit = MAX_JSON_BYTES
     try:
-        return _read_json(path, limit, tolerant)
+        return inert.surrogate_free(_read_json(path, limit, tolerant))
     except (OSError, ValueError, RecursionError, MemoryError) as exc:
         error = exc
         if isinstance(exc, (RecursionError, MemoryError)):
