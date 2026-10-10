@@ -7,6 +7,22 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`scripts/shell_command.py` splits its `$`-word readers into `scripts/shell_defaults.py`
+  (#2993, reader lane).** A pure move at the module's size (633 of its 700 lines, with #2919 to
+  fold onto it): the shells and the other names a `$` command word may stand in front of, its
+  default, alternate, optional and vanishing spellings, the halves the folds read of a word bash
+  may expand to nothing, and the readers of one word (`_optional`, `_shell_default`,
+  `_default_words`, `_strips`, `_alternate`, `_half`, `_masks`) now live in the new module, byte
+  for byte with the comments above each; `shell_command` imports every name back under its own,
+  so no caller and no test moved, and the new module imports nothing from it or from the reader.
+  The `find` readers stay where they are: the walk calls into them and they call back, and
+  #2935's pins bind their names to `shell_command`. No verdict changes: on 106,107 rows (530,535
+  cells) -- the standing sets, #2929's seats' sets, #2935's differential and probes, and #2919's
+  seats' rows, hunts and pins -- every finding of every row, its name and its reason, is the same
+  under `main`'s scripts and the move's under each of the five `shell:` settings, but for 8 rows
+  whose text differs from run to run under either: 6 hold a parse nonce in a finding's reason and
+  are identical once it is normalised, and 2 are the copies of #2911's `*-od` row. Sizes: 633 ->
+  490, and 174 for the new module.
 - **Workflow reader reads a printed line as the shell that reads it gets it (#2955).** `printf '%s
   %s\n' curl '-fsSLo t URL' | sh` ⏎ `sh t` read CLEAN under the five `shell:` settings while the
   eight parent shells run the download, and so did the issue's word `${X:+curl … #}./t.sh` printed
@@ -146,8 +162,11 @@ evidence exposed.
   an action and is read in `main`'s folds and then in a fold for each action; the worst case is
   one `find` of 8 actions, 10x to 13x a step (143 to 156 ms against 11 to 15), and ten of them in
   one step 13x (1.26 s against 96 ms); nine actions are past the cap and cost 2.1x, and a nest
-  reads as that many actions of the first `find`. Still unread, as on `main`: a fetch in one
-  action of a `find` and its run in another (#2941).
+  reads as that many actions of the first `find`. Those worst-case ratios were taken with that
+  machine's load between 3 and 9 and they move with it: the round-3 seat, at a load near 12,
+  measured about 26x and 27x for the two, on shorter times at the head, and the same 2x past the
+  cap. What holds on any machine is the count: at most 8 actions a `find`, one fold each. Still
+  unread, as on `main`: a fetch in one action of a `find` and its run in another (#2941).
 - **Workflow reader reads every mixed reading of the command words bash may expand to nothing
   (#2929).** #2856's union read a job twice: every such word -- `${X:+W}`, `${X-W}` and their kin
   -- as its W, then every one empty, two of a step's 2^k readings, so a payload only a mixed
