@@ -20,6 +20,49 @@ evidence exposed.
   the two comments on a `# nosemgrep`'d result, which semgrep 1.179.0 still reports either way,
   `--disable-nosem` changing nothing in its SARIF (measured again at the pin); and the `Dockerfile`
   counts three tools in the python closure, not four.
+- **No lone surrogate reaches an encoder (#2951).** `json.load` hands a lone surrogate over for a
+  lone `\udXXX` escape, and no encoder of text takes one. One such string in one agent-authored
+  finding ended `synthesize.py` badly, and how depended on the field. In a title, a file or a
+  category the id's hash raised (`evidence.matrix_finding_id`): a traceback, status 1 -- which is
+  also the gate's FAIL status -- and NO report. In a description, impact, remediation, exploit
+  scenario, a reference or a provenance value the page's writer could not encode it: the page was
+  left EMPTY, the report carried the surrogate, and the run ended status 4 as `artifact path
+  refused` (before #2956, a traceback in `html_report.write_html` and status 1). In a nested value,
+  a key, `location.function` or `lens` the run finished and the report carried the surrogate to
+  whoever loads it next (`json.dump` writes one without raising, as the escape it was read from).
+  The same string in an advisor's verdict, in a scanner's output (a SARIF `ruleId` or `uri`,
+  dependency-check's `fileName`: `evidence.finding_fingerprint`) or in a group name discovery took
+  from the target's tree did the same. Each is now spelled `U+D800`: six visible characters, so the
+  text stays readable and every written file is valid UTF-8, and NO backslash. `evidence.norm_path`
+  reads a backslash as a separator (#2988), so a name spelled with one would be read as a path into
+  another directory: a root-level `docs<byte>x.py` as a file in `docs/`, where the doc policy takes
+  a HIGH down to INFO and the gate passes. `inert.spelled` is the one spelling of every inert code
+  point now, and the others keep the backslash escapes they had. Where: `findings.agent_finding` and
+  `evidence._agent_verdict`, the one door each for findings and verdicts, and
+  `tools/base.parse_json_bytes` with the SARIF adapter's parse for a scanner's output -- on the way
+  in, because that text is hashed before anything is written, so the id and the fingerprint are
+  those of the spelled text and the driver's loader and synthesize's agree;
+  `synth/artifacts.read_json`, the one reader of the run directory's JSON (the tools manifest,
+  groups, plans, coverage, the hunk map), so that every cap a caller applies comes AFTER the
+  spelling -- spelled later, a manifest row of 59 characters and a surrogate that was cut to its 64
+  would come out as 65, past the schema's bound; `synth/report.build_report`, the backstop, for what
+  never was JSON, which meets its first encoder at a writer; and the policy's own set, which gains
+  U+D800 to U+DFFF, so `inert_text`, the prompt's `_prompt_safe` and the X0X failure log cover a
+  name that never was JSON (on Linux an undecodable byte in a filename is one). Only surrogates are
+  spelled: an input holding none is read as it was, the same objects, and writes the same bytes --
+  on 45 cases through both trees' children and on the schema-parity fixture's 26 files, ids and
+  fingerprints included. One string of one input at a time over that fixture (13 files, 1,031
+  strings; the queue pass 556), with one lone surrogate and again with 600 of them: on `main` 92
+  fields end badly with one (10 raise, 82 leave the surrogate in an artifact) and 54 in the queue
+  pass (10 and 44); now none raises, none leaves one in an artifact and none ends `artifact
+  invalid`. In the suite's child runs -- the issue's rows, every place of a finding and of a
+  verdict, a scanner's output, a name from the tree, a name with an undecodable byte on the doc
+  policy's way, a manifest row at its cap, a hunk map -- a run on the lone surrogate writes, byte
+  for byte, what a run on its spelled twin writes. Not covered: `--compare`, which reads reports
+  already on disk; a diagnostic on stderr that names a run file by its path, and the last prints of
+  the operator's own `--out` path; the driver's own readers of the run artifacts beyond what
+  `_prompt_safe` and `inert_text` wrap; and a value nested deeper than the stack, which ends the run
+  in `redact.redact_tree` with or without a surrogate (`main` does the same).
 - **`scripts/shell_command.py` splits its `$`-word readers into `scripts/shell_defaults.py`
   (#2993, reader lane).** A pure move at the module's size (633 of its 700 lines, with #2919 to
   fold onto it): the shells and the other names a `$` command word may stand in front of, its

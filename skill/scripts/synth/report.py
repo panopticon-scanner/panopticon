@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from scripts._version import __version__
 import scripts.evidence as evidence_mod
 import scripts.host_disclosure as host_disclosure
+import scripts.inert as inert
 import scripts.hosts as hosts
 import scripts.ocrdb as ocrdb
 from . import findings as findings_mod
@@ -214,7 +215,12 @@ def build_report(inp):
                                       delta=inp.delta)
     cost = cost_mod.cost_section(inp.cost, inp.plan.scout_profiles_seen,
                                  resolved.verdict_stats["queued"])
-    return assemble(inp.run, resolved, reconciled, graded, cost)
+    # #2951: the backstop. Findings, verdicts and scanner output are made
+    # surrogate-free where they are loaded, because their text is hashed first;
+    # everything else a report holds -- a group or file name from the target's
+    # tree, the run's own artifacts -- meets its first encoder at a writer, and
+    # every writer writes THIS. A report holding none comes back itself.
+    return inert.surrogate_free(assemble(inp.run, resolved, reconciled, graded, cost))
 
 
 def _host_capabilities_verbatim(host_capabilities):

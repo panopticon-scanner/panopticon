@@ -91,7 +91,7 @@ def _redacted_one_line(value, cap=_DIAG_MAX):
     # visible tail when the first is whitespace that the final squeeze removes.
     text = redact.redact_diagnostic(text, cap + 2)
     text = "".join(
-        ("\\x%02x" % ord(ch) if ord(ch) < 0x100 else "\\u%04x" % ord(ch))
+        inert.spelled(ord(ch))      # #2951: a surrogate has no backslash
         if ord(ch) in inert.INERT_ESCAPE_CODE_POINTS else ch
         for ch in text
     )
