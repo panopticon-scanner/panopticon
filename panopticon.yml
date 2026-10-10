@@ -667,6 +667,7 @@ groups:
       - scripts/workflow_stdin.py
       - scripts/workflow_uses.py
       - scripts/workflow_values.py
+      - scripts/workflow_value_expansion.py
       - scripts/workflow_called.py
       - scripts/workflow_annotate.py
       tests:
@@ -677,6 +678,7 @@ groups:
       - tests/test_workflow_printers.py
       - tests/test_workflow_printed_lines.py
       - tests/test_workflow_values.py
+      - tests/test_workflow_value_expansion.py
       - tests/test_workflow_annotate.py
       - tests/test_workflow_options.py
       - tests/test_workflow_default_command_word.py
