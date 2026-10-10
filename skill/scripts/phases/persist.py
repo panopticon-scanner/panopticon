@@ -180,29 +180,9 @@ def envelope_shape(entry):
     return ENVELOPE_SHAPES.get(role_of(entry)) or "a single JSON object"
 
 
-def _redact_reason_value(value):
-    """A JSON-ish value with every original string redacted before `repr`."""
-    if isinstance(value, str):
-        return redact.redact(value)
-    if isinstance(value, (list, tuple)):
-        return type(value)(_redact_reason_value(item) for item in value)
-    if isinstance(value, dict):
-        return {_redact_reason_value(key): _redact_reason_value(item)
-                for key, item in value.items()}
-    return value
-
-
 def _reason_repr(value):
-    """A reply-derived value safe to place in a bounded refusal reason.
-
-    `repr` keeps newlines escaped so an agent cannot forge diagnostic lines.
-    Redaction first sees every complete string in the original value, before
-    `repr` rewrites token boundaries and before the diagnostic scan horizon.
-    The diagnostic pass then drops incomplete private keys from the resulting
-    representation before applying the display cap.
-    """
-    safe_value = _redact_reason_value(value)
-    return redact.redact_diagnostic(repr(safe_value), REASON_CAP)
+    """A reply-derived value redacted before representation and capping."""
+    return redact.redact_repr(value, REASON_CAP)
 
 
 def last_rejection(run_folder, entry_id):
