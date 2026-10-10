@@ -27,9 +27,9 @@ Named limits. A line that only FETCHES reports, as `echo curl | sh` does on `mai
 `<(...)` is read by every family, as `main` reads one there, so a line only dash makes reports under the bash
 settings too. Behind a stage that REWRITES the text (`| tr … | sh`) the printer's text is weighed as written, as
 `main` weighs an `echo`'s there, whatever the stage makes of it. A line the guard can SPELL -- the `$` escaped inside double quotes -- is a program string, and two
-copies of it are #2953's. A line whose command word is a one-word default (`${X:-curl} …`) waits for #2963's
-rule. `builtin` in front of a printer is no wrapper to the reader, so the printer is not read at all (#2665; as
-on `main`, spelled or not).
+copies of it are #2953's. A line whose command word is a one-word default (`${X:-curl} …`) reads as the command it
+names since #2963, and reports. `builtin` in front of a printer is no wrapper to the reader, so the printer is not
+read at all (#2665; as on `main`, spelled or not).
 
 The rendering is what the shell prints, to the character, or it is not followed and the printer reports. Followed:
 text and escapes in the format, `%%`, `%s`, `%b`, `%c`, `%q`, `%d` `%i` `%u` of a plain number, a `-`, a width, a
@@ -463,17 +463,22 @@ class TestThePrice(unittest.TestCase):
                 self.assertEqual(NOW, marks(fed(printer, route)))
 
 
-class TestTheRowsThatWaitForAnotherRule(unittest.TestCase):
-    """Rows a parent runs that this PR does not move, each pinned as it reads and named with what it waits for."""
+class TestTheRowsThatWaitedForTheDefaultRule(unittest.TestCase):
+    """#2955's rows whose printed line begins with a one-word default. With the printer readings alone they read
+    CLEAN, and #2979 pinned them so; #2963 reads the default as the command it names, and with both each reports."""
 
-    def test_a_printed_line_whose_command_word_is_a_default_waits_for_2963(self):
+    def test_a_printed_line_whose_command_word_is_a_default_reports(self):
         line = "${X:-curl} -fsSLo t " + U
         for name, step in (("PF-fetch-run", "printf '%%s\\n' '%s' | sh\nsh t" % line),          # runs
                            ("its `echo` twin", "echo '%s' | sh\nsh t" % line),                   # runs
                            ("EVS-fetch-run", "eval \"$(echo '%s')\"\nsh t" % line)):             # runs
             with self.subTest(row=name):
-                self.assertEqual(CLEAN, marks(step))
+                self.assertEqual(NOW, marks(step))
         self.assertEqual(BEFORE, marks("eval \"$(echo '%s')\"\nsh t" % L))                       # the command written out
+
+
+class TestTheRowsThatWaitForAnotherRule(unittest.TestCase):
+    """Rows a parent runs that this PR does not move, each pinned as it reads and named with what it waits for."""
 
     def test_builtin_in_front_of_a_printer_is_no_wrapper_to_the_reader_2665(self):
         # Truth: 12 of the 16 runs, the bash parents'; dash has no `builtin`. The reader strips `command`, not
@@ -487,7 +492,10 @@ class TestTheRowsThatWaitForAnotherRule(unittest.TestCase):
 
 class TestWhatAPrinterWrites(unittest.TestCase):
     """`_formatted` and `_echoed` against what the shells themselves print for the same words (measured by handing
-    the words to each builtin as arguments, `render_diff.py`: bash 5.2.21, bash 3.2.57, dash 0.5.12)."""
+    the words to each builtin as arguments, `render_diff.py`: bash 5.2.21, bash 3.2.57, dash 0.5.12).
+
+    Texts are compared through `ascii()`, which is one-to-one: a rendering that kept a lone surrogate would be
+    printed raw by a failing `assertEqual`, and under pytest-xdist that ends the run instead of failing the test."""
 
     def setUp(self):
         self.BASH5, self.BASH3, self.MACOS = wp._WRITERS["bash"]
@@ -519,7 +527,7 @@ class TestWhatAPrinterWrites(unittest.TestCase):
                 ("%s" + B + "0z", ["a"], "az")):
             for kinds in (self.BASH5, self.BASH3, self.MACOS, self.DASH):
                 with self.subTest(fmt=fmt, words=words, letters=kinds["letters"]):
-                    self.assertEqual(written, wp._formatted(fmt, words, kinds))
+                    self.assertEqual(ascii(written), ascii(wp._formatted(fmt, words, kinds)))
 
     def test_a_format_each_family_prints_its_own_way(self):
         for fmt, words, bash5, bash3, dash in (
@@ -537,7 +545,7 @@ class TestWhatAPrinterWrites(unittest.TestCase):
                 ("a" + B + "ud800b", [], "ab", "a" + B + "ud800b", "a" + B + "ud800b")):       # no text holds a lone surrogate
             for kinds, written in ((self.BASH5, bash5), (self.BASH3, bash3), (self.MACOS, bash3), (self.DASH, dash)):
                 with self.subTest(fmt=fmt, words=words, letters=kinds["letters"], echo=kinds["echo"]):
-                    self.assertEqual(written, wp._formatted(fmt, words, kinds))
+                    self.assertEqual(ascii(written), ascii(wp._formatted(fmt, words, kinds)))
 
     def test_a_format_the_shells_print_their_own_ways_is_not_followed(self):
         # None: `_apart` answers LOUD. A text stands where a family does not know the letter and prints no more.
@@ -568,7 +576,7 @@ class TestWhatAPrinterWrites(unittest.TestCase):
                 ("a%.2Q|", ["a b"], None, "a", "a")):
             for kinds, written in ((self.BASH5, bash5), (self.BASH3, bash3), (self.MACOS, bash3), (self.DASH, dash)):
                 with self.subTest(fmt=fmt, words=words, letters=kinds["letters"], echo=kinds["echo"]):
-                    self.assertEqual(written, wp._formatted(fmt, words, kinds))
+                    self.assertEqual(ascii(written), ascii(wp._formatted(fmt, words, kinds)))
 
     def test_a_width_no_shell_could_print_and_a_format_made_to_stall_the_scan(self):
         # A width past `_PAD`, or one of more digits than a machine word holds, is not followed: nothing is
@@ -618,7 +626,7 @@ class TestWhatAPrinterWrites(unittest.TestCase):
             for row, kinds, written in ((bash, self.BASH5, bash5), (bash, self.BASH3, bash3), (bash, self.MACOS, macos),
                                         (dash, self.DASH, sh)):
                 with self.subTest(words=words, echo=kinds["echo"], letters=kinds["letters"]):
-                    self.assertEqual(written, wp._echoed(words, row, kinds))
+                    self.assertEqual(ascii(written), ascii(wp._echoed(words, row, kinds)))
 
 
 class TestTheSecondWalkAlone(unittest.TestCase):
