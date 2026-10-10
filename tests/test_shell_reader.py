@@ -2115,6 +2115,10 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.
         self.assertEqual([["if", "b"], ["then"], ["case", "x", "in"], ["arm:x)", "a"], ["esac"], ["fi"]],
                          shape("if b; then time case x in x) a ;; esac; fi"))
         self.assertEqual([["time", "a"]], shape("time a"))
+        self.assertEqual([["{"], ["case", "x", "in"], ["arm:x)", "a"], ["esac"], ["}"]], shape("{ time case x in x) a ;; esac; }"))
+        # What stands in front is followed by the header as a `;` or a newline would have it.
+        self.assertEqual([";", ";", ";", ";", ";", ""], [statement.separator for statement in shell_reader.statements(
+            "if b; then case x in x) a ;; esac; fi")])
         # No lead: an assignment (bash reads `case` as a command's name there), `for` (its next word
         # is a name), a keyword that is an argument or quoted, `time`'s option.
         for script in ("V=1 case x in x) a ;; esac", "for case in in; do a; done", "echo then case x in x",
