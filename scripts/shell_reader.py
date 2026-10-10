@@ -38,8 +38,7 @@ module's size and imported back here, so no caller moved.
 
 Stdlib only. `statements(script)` is the entry point; `command(argv)` strips
 what stands in front of a command; `readable(text)` puts lifted substitutions
-back for a human reading an error message.
-"""
+back for a human reading an error message."""
 import collections
 import os
 import re
@@ -61,7 +60,7 @@ from shell_wrappers import (WRAPPERS as WRAPPERS, Defaulted as Defaulted,
 from shell_command import (CONDITIONS as CONDITIONS, KEYWORDS as KEYWORDS,
                            OPTIONAL_NEXT as OPTIONAL_NEXT, _ASSIGNMENT as _ASSIGNMENT,
                            _DEFAULTS as _DEFAULTS, _ENVIRONMENT as _ENVIRONMENT,
-                           _FETCHERS as _FETCHERS, _FUNCTION as _FUNCTION,
+                           _FETCHERS as _FETCHERS, _FUNCTION as _FUNCTION, _PARAMETER, fronts,
                            _INTERPRETERS as _INTERPRETERS, _NAME as _NAME, _OPTIONAL as _OPTIONAL,
                            _SHELLS as _SHELLS, _command_result as _command_result,
                            _optional as _optional, command as command, acted as acted, reads_held, body_read, carrier,
@@ -191,8 +190,7 @@ def _split(text, context):
     that could not tell a `|` inside a URL from a pipeline. A `$'...'` whose escapes
     `shell_quote.ansi_c` decodes becomes the '...' of the text bash makes of it, so `sh $'-c'`
     reads as `sh -c` (#2344); a double-quoted `\\$` or `` \\` `` is marked for `_stage`
-    (`_ESCAPED`), as shlex, reading what is left, no longer knows the quote it was in.
-    """
+    (`_ESCAPED`), as shlex, reading what is left, no longer knows the quote it was in."""
     statements: list[tuple[list[str], str]] = []
     stages = []
     buf: list[str] = []
@@ -218,7 +216,7 @@ def _split(text, context):
     # conditional, not as `echo [[ a`'s word. The test ends with the STATEMENT, not with a
     # stage: bash makes one word of `^(x|y)$`, and ending it at that `|` left the `)` closing a
     # group nothing had opened -- the unbalanced count #2334 reads as a lost list.
-    cond, at_head = 0, True
+    cond, at_head, in_front = 0, True, True
     # `! { ... }`: bash negates the GROUP's status, and errexit is off for every command inside
     # a negated compound, so each statement the group holds is read under the `!` (#2664, the
     # fix round: the `{`-ends-its-statement step above stranded the `!` on `{` alone). One
@@ -226,11 +224,11 @@ def _split(text, context):
     negations: list[bool] = []
 
     def end_stage():
-        nonlocal header_words, header_live, word_start, redirect_target, at_head
+        nonlocal header_words, header_live, word_start, redirect_target, at_head, in_front
         stages.append("".join(buf))
         del buf[:]
         header_words, header_live, word_start = 0, True, 0
-        redirect_target, at_head = False, True
+        redirect_target, at_head, in_front = False, True, True
 
     def end_statement(separator):
         nonlocal cond
@@ -292,10 +290,11 @@ def _split(text, context):
         # Only a command word is read whole (#2856 round 8): a `${…}` that starts a word where
         # every word the stage closed is a keyword or an assignment (`at_head`), and no `case`
         # subject -- anywhere else shlex splits it `main`'s way, as it always did. The scan runs
-        # only there, behind those tests (round 9).
-        if text.startswith("${", i) and getattr(context, "blanks", True) and at_head and (
+        # only there, behind those tests (round 9). Behind a function's header too (`in_front`,
+        # #2954), a default or an alternate alone: a body's first word on its header's line.
+        if text.startswith("${", i) and getattr(context, "blanks", True) and in_front and (
                 len(buf) == word_start) and "".join(buf).split()[-1:] != ["case"] and (
-                bare := _bare_blanks(text, i)):
+                bare := (at_head or _PARAMETER.match(text, i)) and _bare_blanks(text, i)):
             # An unquoted `${X:-bash -s}` is one word to the reader as to bash, which
             # expands it whole and only then splits the words (#2731): its bare blanks are
             # marked past shlex, and `_command_result` splits a shell default as bash does.
@@ -318,6 +317,7 @@ def _split(text, context):
                 cond = int(closed == "[[")
             at_head = at_head and bool(not closed or closed in KEYWORDS
                                        or _ASSIGNMENT.match(closed))
+            in_front = in_front and fronts(closed, in_front, text, i)
             if header_live:
                 header_words += 1
                 try:
