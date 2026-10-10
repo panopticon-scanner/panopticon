@@ -2084,6 +2084,53 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.
                                              if getattr(word, "whole", None) is not None])
         self.assert_linear_growth(4000, lambda size: "function f " * size + "{ ${Y:+a b} c; }\n", check)
 
+    def test_a_case_behind_a_lead_is_cut_as_on_a_line_of_its_own(self):
+        # #2974: what stands in front of a `case` header ends as a statement of its own, so the
+        # reader makes the statements it makes of the lead on a line of its own, arm for arm.
+        def shape(script):
+            return [["arm:" + str(word).rsplit("@@", 1)[-1] if shell_reader.is_arm(word) else str(word) for word in stage.argv]
+                    for statement in shell_reader.statements(script) for stage in statement.stages]
+        for one, own in (("if true; then case x in x) a b ;; esac; fi", "if true; then\ncase x in x) a b ;; esac\nfi"),
+                         ("if false; then :; else case x in x) a ;; esac; fi", "if false; then :; else\ncase x in x) a ;; esac\nfi"),
+                         ("for i in 1; do case $i in 1) a | b ;; esac; done", "for i in 1; do\ncase $i in 1) a | b ;; esac\ndone"),
+                         ("f() { case x in x) a ;; y) b ;; esac; }", "f() {\ncase x in x) a ;; y) b ;; esac\n}"),
+                         ("f () { case x in x) a ;; esac; }", "f () {\ncase x in x) a ;; esac\n}"),
+                         ("function f { case x in x) a ;; esac; }", "function f {\ncase x in x) a ;; esac\n}"),
+                         ("{ { case x in x) a ;; esac; }; }", "{ {\ncase x in x) a ;; esac\n}; }"),
+                         ("if case x in x) a ;; esac; then b; fi", "if\ncase x in x) a ;; esac\nthen b; fi"),
+                         ("while case x in x) a ;; esac; do b; done", "while\ncase x in x) a ;; esac\ndo b; done")):
+            with self.subTest(one=one):
+                self.assertEqual(shape(own), shape(one))
+                self.assertIn(["case", one.split("case ")[1].split()[0], "in"], shape(one))
+        # A keyword for the subject leads nothing: the header is the three words it is.
+        for subject in ("if", "then", "time", "{", "!"):
+            self.assertEqual([["case", subject, "in"], ["arm:x)", "a"], ["esac"]], shape("case %s in x) a ;; esac" % subject))
+        # `for`'s name and its words lead nothing either, on one line or over three.
+        self.assertEqual([["for", "case", "in", "in"], ["do", "a"], ["done"]], shape("for case in in\ndo a; done"))
+        self.assertEqual([["for", "a"], ["in", "case", "x", "in"], ["do", "a"], ["done"]], shape("for a\nin case x in\ndo a; done"))
+        # `!` has no line of its own in a shell; here it is its own statement too. `time` is read
+        # through: a statement of its own, it would be a wrapper with no command.
+        self.assertEqual([["!"], ["case", "x", "in"], ["arm:x)", "a"], ["esac"]], shape("! case x in x) a ;; esac"))
+        self.assertEqual([["case", "x", "in"], ["arm:x)", "a"], ["esac"]], shape("time case x in x) a ;; esac"))
+        self.assertEqual([["if", "b"], ["then"], ["case", "x", "in"], ["arm:x)", "a"], ["esac"], ["fi"]],
+                         shape("if b; then time case x in x) a ;; esac; fi"))
+        self.assertEqual([["time", "a"]], shape("time a"))
+        # No lead: an assignment (bash reads `case` as a command's name there), `for` (its next word
+        # is a name), a keyword that is an argument or quoted, `time`'s option.
+        for script in ("V=1 case x in x) a ;; esac", "for case in in; do a; done", "echo then case x in x",
+                       "'then' case x in x", "time -p case x in x) a ;; esac"):
+            with self.subTest(script=script):
+                self.assertNotIn(["case", "x", "in"], shape(script))
+                self.assertFalse([words for words in shape(script) if words[0].startswith("arm:")])
+
+    def test_a_case_behind_a_run_of_leads_is_read_in_linear_time(self):
+        # #2974: each word in front of the header is passed by without a probe, and the probe reads
+        # the words behind them alone, so a header behind n keywords costs what its length does.
+        def check(size, parsed):
+            self.assertEqual(size + 4, len(parsed))
+            self.assertEqual(["case", "x", "in"], [str(word) for word in parsed[1].stages[0].argv])
+        self.assert_linear_growth(4000, lambda size: "{ " * size + "case x in x) a ;; esac" + "; }" * size + "\n", check)
+
     def test_a_step_that_spells_a_reader_mark_reads_as_main(self):
         # PR #2856 round 8: no mark the reader puts in its text may decide a reading, so a step
         # that spells any of them (U+E000-U+E004) reads as `main`, its command word too.
