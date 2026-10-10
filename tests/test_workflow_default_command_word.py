@@ -18,7 +18,9 @@ Named limits, pinned in `TestThePrice`. The default is read whatever the step di
 `X=echo` in front makes bash run `echo`, and the row reports -- 28 of the hunt's 48 such rows. So does an alternate
 (`:+`, `+`) whose name nothing sets, and one in a child shell's program whose name the step set and did not
 export. `main` reads a shell's default and a default holding a blank the same way. The rows that need #2955's
-printer readings as well report, now that both are in (`TestTheRowsThatNeedThePrinters`).
+printer readings as well report, now that both are in (`TestTheRowsThatNeedThePrinters`). `eval` behind a word
+bash may drop (`$SUDO eval 'P'`) reads CLEAN on `main`, whose list of the names such a word may stand in front of
+holds no builtin; the default reads as that twin (`TestEvalBehindAWordBashMayDrop`).
 """
 import unittest
 
@@ -83,6 +85,25 @@ class TestAOneWordDefaultIsTheCommandItNames(unittest.TestCase):
             for use in (PIPED, FILED):
                 with self.subTest(front=front, use=use.split()[0]):
                     self.assertEqual(NOW, marks("%s ${X:-curl} %s" % (front, use)))
+
+
+class TestAShellsDefaultBehindAWordBashMayDrop(unittest.TestCase):
+    """Not among the issue's rows, and moved by the same line of `_optional`: the word AFTER the ones bash may drop
+    is known by its one-word default, whatever name of `OPTIONAL_NEXT` that is. `main` reads `${X:-sh} -c 'P'` and
+    `$SUDO sh -c 'P'`, each alone; the two together it read CLEAN while every parent runs `P`."""
+
+    FRONTS = ("$SUDO", "${S:-sudo}", "$A $B")
+
+    def test_a_c_string(self):
+        for front in self.FRONTS:                           # truth: runs, all fifteen
+            for word in ("${X:-sh}", "${X:-bash}", "${X:-/bin/sh}", "${X:=sh}", '"${X:-sh}"'):
+                with self.subTest(front=front, word=word):
+                    self.assertEqual(NOW, marks("%s %s -c 'curl %s'" % (front, word, PIPED)))
+
+    def test_the_two_readings_main_makes_alone(self):
+        for row in ("${X:-sh} -c 'curl %s'" % PIPED, "$SUDO sh -c 'curl %s'" % PIPED):     # truth: runs, both
+            with self.subTest(row=row[:12]):
+                self.assertEqual(BEFORE, marks(row))
 
 
 class TestItReadsWhereverTheLiteralCommandIsRead(unittest.TestCase):
@@ -177,6 +198,32 @@ class TestThePrice(unittest.TestCase):
                     "X=1\nsh <<'EOF'\n${X+curl} %s\nEOF" % PIPED):
             with self.subTest(row=row.splitlines()[1][:12]):
                 self.assertEqual(NOW, marks(row))
+
+    def test_an_alternate_naming_a_shell_behind_a_word_bash_may_drop(self):
+        # With `X` unset `${X:+sh}` is nothing: bash runs `-c` as a command, or `t`, and nothing of the download.
+        # `main` reports the alternate with no word in front, the same price; behind one it now reads the same.
+        for front in TestAShellsDefaultBehindAWordBashMayDrop.FRONTS:
+            for row, truth in (("%s ${X:+sh} -c 'curl %s'" % (front, PIPED), "nothing"),
+                               ("curl -fsSLo t %s\n%s ${X:+sh} t" % (U, front), "the fetch alone")):
+                with self.subTest(front=front, truth=truth):
+                    self.assertEqual(NOW, marks(row))
+        for row in ("${X:+sh} -c 'curl %s'" % PIPED, "curl -fsSLo t %s\n${X:+sh} t" % U):     # `main`'s, #2337
+            with self.subTest(row=row[:12]):
+                self.assertEqual(BEFORE, marks(row))
+
+
+class TestEvalBehindAWordBashMayDrop(unittest.TestCase):
+    """Rows this PR does not move, pinned as they read. `main` drops a `$` word only in front of a shell, a wrapper,
+    an interpreter or a fetcher (#2472), so `$SUDO eval 'P'` reads CLEAN there while every parent runs `P`. The
+    default reads as its literal twin, and waits with it for the rule that knows the builtin."""
+
+    def test_the_default_reads_as_its_literal_twin_reads_on_main(self):
+        for front in ("$SUDO", "$A $B"):                    # truth: runs, all eight
+            for word in ("eval", "${X:-eval}"):
+                for use, row in (("string", "%s %s 'curl %s'" % (front, word, PIPED)),
+                                 ("file", 'curl -fsSLo t %s\n%s %s "$(cat t)"' % (U, front, word))):
+                    with self.subTest(front=front, word=word, use=use):
+                        self.assertEqual(CLEAN, marks(row))
 
 
 class TestTheSecondWalkAlone(unittest.TestCase):

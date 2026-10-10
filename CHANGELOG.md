@@ -34,7 +34,11 @@ evidence exposed.
   process, and 1.13x on the hunt's own rows. A printed line that begins with such a default needs
   #2979's printer readings as well, and with both it reports: #2955's PF-fetch-run and
   EVS-fetch-run, which both test modules pin, and all 184 such rows of that issue's first hunt, each
-  one a row a parent runs.
+  one a row a parent runs. Not among the issue's rows, the same reading takes in a default naming a
+  shell behind a word bash may drop: `$SUDO ${X:-sh} -c '…'` read CLEAN, though `main` reads either
+  word alone, and now reports (15 measured rows a parent runs; an alternate there, `$SUDO ${X:+sh}
+  …`, joins the price). `eval` behind such a word reads CLEAN on `main` (`$SUDO eval '…'`), and the
+  default reads as that twin.
 - **Tools-image pins move together: semgrep 1.179.0, pyjwt 2.15.1, filelock 4.0.9 (#2876).**
   Dependabot's requirements-only bump (#2946) failed the image's `pip check`: semgrep 1.179.0
   requires `pyjwt[crypto]<3,>=2.15.0` where 1.178.0 held it to `~=2.13.0`, and a `--no-deps` closure
