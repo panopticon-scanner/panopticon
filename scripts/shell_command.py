@@ -29,6 +29,7 @@ from shell_defaults import (OPTIONAL_NEXT as OPTIONAL_NEXT, _ALL as _ALL, _DEFAU
                             _optional as _optional, _shell_default as _shell_default,
                             _strips as _strips)
 from shell_patterns import shell_words
+from shell_quote import Unreadable
 from shell_tokens import _Token, has_substitution, is_arm, readable, spelled
 from shell_wrappers import WRAPPERS, Defaulted, Found, Rewritten, dynamic, unwrap
 
@@ -235,30 +236,38 @@ def folds(unsure):
     guard REPORTs where any reading of them runs (#2856 round 13, the round-13 ruling: the union, no
     half ranked; every reading, #2929). Each reads every `find`'s first action where the guard asks
     how a stage uses a file, then, while one held another, its next (`find_action`), so the guard
-    REPORTs where any action uses it (#2918). Those are `main`'s folds,
-    every one of them read first, with every `find` the `find` (`acted` is `command`); where `acted`
-    met a `find` with an action in them, the same folds follow with each action in its `find`'s place
-    (#2935 round 3: `main`'s reading is never lost, and the guard REPORTs where either reads a defect)."""
+    REPORTs where any action uses it (#2918). Those are `main`'s folds, each descriptor reading the
+    body `main` reads there; where a link or a `cd` may put another on one (`body_read`), all of them
+    follow again once for each such body, so the guard REPORTs where either is the one read and no
+    reading of `main`'s is lost (#2919 round 3). And where `acted`
+    met a `find` with an action in them, each of those follows again with each action in its `find`'s
+    place (#2935 round 3: `main`'s reading is never lost, and the guard REPORTs where either reads a
+    defect)."""
     _HALVES.update(empty=frozenset(), words={}, both=False, on=True)
     _ACTIONS["acts"] = False
     try:
-        for act in (False, True):
-            read: set = set()
-            while masks := [mask for mask in _masks() if mask not in read]:
-                _HALVES["empty"] = masks[0]
-                read.add(masks[0])
-                for at in itertools.count():
-                    _ACTIONS.update(at=at, more=False, act=act)
-                    yield False
-                    if unsure():
-                        yield True
-                    if not _ACTIONS["more"]:
-                        break
-            if not _ACTIONS["acts"]:
+        for body in range(1 + _BODY_FOLDS):     # `main`'s, then at most `_BODY_FOLDS` others (`body_read`)
+            _BODIES.update(at=body, more=False)
+            for act in (False, True):
+                read: set = set()
+                while masks := [mask for mask in _masks() if mask not in read]:
+                    _HALVES["empty"] = masks[0]
+                    read.add(masks[0])
+                    for at in itertools.count():
+                        _ACTIONS.update(at=at, more=False, act=act)
+                        yield False
+                        if unsure():
+                            yield True
+                        if not _ACTIONS["more"]:
+                            break
+                if not _ACTIONS["acts"]:
+                    break
+            if not _BODIES["more"]:
                 return
     finally:
         _HALVES.update(empty=frozenset(), words={}, both=False, on=False)
         _ACTIONS.update(_NO_FOLD)
+        _BODIES.update(at=0, more=False)
 
 
 # The checksum tools a check is credited with (`workflow_checks.CHECKSUM_TOOLS`, pinned equal by test).
@@ -426,6 +435,113 @@ def _unread(argv):
             return "`find` runs `%s`, a command word it or bash decides as it runs" % readable(
                 action[0] if cut else inner[0])
     return None
+
+
+def track(context, stage):
+    """`stage`, recording in `context` what it may do to the paths of the stages read after it (#2919): a
+    link it makes (`ln -s TARGET NAME`, `-sf`; NAME the target's basename where there is none) may stand
+    for its target, and a `cd` or `pushd` may move every relative path into its directory. May: the
+    reader does not know that an `ln` or a `cd` runs, succeeds or lasts past a subshell, a branch or a
+    function, so each record is kept beside the ones before it, in the order `shell_reader.statements`
+    reads them, and adds a reading of a later path without taking one away (`sources`, round 2). A
+    name or a directory a value decides is every one."""
+    argv = command(stage.argv)
+    name = os.path.basename(argv[0]) if argv else ""
+    words = [word for word in argv[1:] if word == "-" or not word.startswith("-")]
+    if name == "ln" and words:
+        link = words[1] if len(words) > 1 else os.path.basename(words[0].rstrip("/"))
+        link = "" if dynamic(link, has_substitution) else os.path.normpath(link)
+        context.links.setdefault(link, []).append(words[0])
+    elif name in ("cd", "pushd"):
+        place = words[0] if words else "~"
+        place = "$OLDPWD" if place == "-" else place
+        if place.startswith(("/", "~", "$")) or dynamic(place, has_substitution):
+            context.cwds.append(place)
+        else:                                   # below each place the step may stand in
+            context.cwds.extend([os.path.join(cwd, place) for cwd in context.cwds])
+        if len(context.cwds) > _PLACES:         # past them, any place: a directory a value decides
+            context.cwds[:] = ["$PWD", *context.cwds[1 - _PLACES:]]
+    return stage
+
+
+# The places a step may stand in, and the paths a word may reach, that the reader keeps: past them
+# the oldest places read as one a value decides, and a word reaches every file held (`sources`).
+_PLACES = 16
+# The body a fold reads on a descriptor a link or a `cd` may give another (`body_read`): 0 `main`'s,
+# then each other in turn; and whether a stage held one more, which `folds` then reads (round 3).
+_BODIES = {"at": 0, "more": False}
+# The other bodies one stage may be given that the folds read. Each is one more reading of the whole
+# job, on top of every fold `main` reads, so the count is kept small: the steps that hold any hold one
+# or two, 4 is twice that, and one more is a step the reader refuses, reported whole (`body_read`).
+_BODY_FOLDS = 4
+
+
+def _reached(word, context):
+    """The other paths `word` may name where the step's links and `cd`s took effect (`track`): a name it
+    linked, or a path below one, as each target the link was given; then each relative one in each
+    directory a `cd` may have moved the step to -- a `$` word where a value decides a link's name, as
+    `shell_reader.input_alias_fd` reads a word a value decides. A word bash expands is read as any other (round 3)."""
+    if not context or not (context.links or context.cwds):
+        return []
+    path = os.path.normpath(word)
+    paths = [target + path[len(link):] for link, targets in context.links.items() for target in targets
+             if link and (path == link or path.startswith(link + "/"))]
+    if "" in context.links and not path.startswith("/"):
+        paths.append("$" + path)
+    paths += [cwd.rstrip("/") + "/" + relative for relative in (path, *paths) for cwd in context.cwds
+              if not relative.startswith(("/", "$"))]
+    return paths
+
+
+def sources(word, context, read):
+    """What `word`, the operand of an input redirection, may reach (#2919): `read` of it as written,
+    first -- `shell_reader.input_alias_fd`'s answer, `main`'s reading -- then the answers that differ
+    from it among the other paths the step's links and `cd`s may give it (`_reached`), `?` where
+    they are more than the reader keeps; with no `context`, a here-string's text, as written alone.
+    A record adds a reading and takes none away, the reader knowing no `ln` or `cd` to have run:
+    the pipe and the files held are read off every answer (`carrier`), and a body off the first in
+    every fold `main` reads, off each other in a fold of its own (`body_read`, round 3 -- round 2
+    read the first body any answer held, in place of `main`'s)."""
+    first = read(word)
+    more: list[str] = []
+    reached = _reached(word, context)
+    for path in reached[:_PLACES]:
+        answer = read(path)
+        if answer not in (None, first, *more):
+            more.append(answer)
+    if len(reached) > _PLACES and "?" not in (first, *more):
+        more.append("?")
+    return (first, *more)
+
+
+def carrier(word, context, read):
+    """`sources` as the one descriptor whose holdings a redirection carries: the one `word` reaches
+    as written, another a link or a `cd` may give it, or `?` -- every file held -- where they are
+    two."""
+    first, *more = sources(word, context, read)
+    reached = [answer for answer in (first, *more) if answer]
+    return "?" if len(reached) > 1 else reached[0] if reached else first
+
+
+def body_read(bodies, reached):
+    """The heredoc or here-string body a descriptor reads, its operand reaching `reached` (`sources`),
+    of the `bodies` each descriptor holds (#2919 round 3): the one its operand names as written, or
+    none -- `main`'s reading, and the one every fold `main` reads takes, so a link or a `cd` the
+    shell never makes takes no reading away. Each OTHER body a record may put there -- on a
+    descriptor it reaches, or on any one where it reaches more than the reader keeps (`?`) -- is one
+    more reading beside it, read in a fold of its own (`folds`); more of them than `_BODY_FOLDS` are a
+    step the reader refuses there (`Unreadable`), reported whole."""
+    first, *more = reached
+    main = bodies.get(first) if first and first != "?" else None
+    others = list(dict.fromkeys(body for fd, body in bodies.items() if ("?" in more or fd in more) and body != main))
+    at = _BODIES["at"]
+    if not others or not at:
+        _BODIES["more"] = _BODIES["more"] or bool(others)
+        return main
+    if len(others) > _BODY_FOLDS:
+        raise Unreadable("a link or a `cd` may put more than %d bodies on one descriptor" % _BODY_FOLDS)
+    _BODIES["more"] = _BODIES["more"] or len(others) > at
+    return others[min(at, len(others)) - 1]
 
 
 def unresolved_wrapper(argv):
