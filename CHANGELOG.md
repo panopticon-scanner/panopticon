@@ -17,14 +17,22 @@ evidence exposed.
   above each and in their old order: lines 72 to 323, moved by number. The block is a leaf of the
   module -- no name in it reads one of the 22 defined outside it -- so the new module imports
   nothing from `workflow_programs`, which imports every moved name back under its own; no caller
-  and no test moved. What stays is the half that reads the program on standard input. The source
-  drops the seven imports only the block read, and its docstring says where the half went. No
-  verdict changes: on 6,180 rows in 34 sets -- the row sets of #2955, #2963 and #2997, and the
-  probes behind #3002, #3003 and #3007 -- every finding of every row, its name and its reason, is
-  the same under `main`'s scripts and the move's, under each of the five `shell:` settings and in
-  each of three readings (the job, its main pass, its walk pass): 92,700 cells holding 54,238
-  findings under each tree, and the two dumps are equal byte for byte. Sizes: 700 -> 454, and 280
-  for the new module.
+  moved. What stays is the half that reads the program on standard input. The source drops five
+  imports only the block read (`re`, `Process`, `Handed`, `_shell_candidates`, `_sure_string`) and
+  keeps two it no longer uses, `_before_operand` and `_past_options`, as re-exports: PR #2850's
+  move of the option grammar pins every name of that move through this module. One test moved with
+  the readers. #2858's watch table (`WALK_ONLY`) patches each of the walk's own readers on the
+  module that LOOKS IT UP, and fails a watcher that sees nothing run; it now names
+  `_added_strings`, `_shell_candidates`, `_sure_string` and `Handed` on the new module, where
+  `scripts`, `candidates` and `dynamic_program` look them up, and `_dash_c_strings` on both, each
+  watcher counted by its module and its name. Its two assertions stand as they were: nothing of
+  the walk runs in the main pass, and every watcher but the two tripwires is seen to run in the
+  walk's. No verdict changes: on 6,180 rows in 34 sets -- the row sets of #2955, #2963 and #2997,
+  and the probes behind #3002, #3003 and #3007 -- every finding of every row, its name and its
+  reason, is the same under `main`'s scripts and the move's, under each of the five `shell:`
+  settings and in each of three readings (the job, its main pass, its walk pass): 92,700 cells
+  holding 54,238 findings under each tree, and the two dumps are equal byte for byte. Sizes: 700
+  -> 455, and 280 for the new module.
 - **Workflow reader drops a word bash may drop in front of `eval`, `.` and `source` (#2997).**
   `$SUDO eval 'curl … | sh'` read CLEAN under every `shell:` setting while every parent shell runs
   the pipeline, and so did `$SUDO . ./t` and `$SUDO source ./t` after a fetch. The reader dropped
