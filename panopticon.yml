@@ -629,6 +629,7 @@ groups:
       match:
       - scripts/shell_reader.py
       - scripts/shell_command.py
+      - scripts/shell_defaults.py
       - scripts/shell_tokens.py
       - scripts/shell_lex.py
       - scripts/shell_quote.py
@@ -639,6 +640,7 @@ groups:
       tests:
       - tests/test_shell_reader.py
       - tests/test_shell_command.py
+      - tests/test_shell_defaults.py
       - tests/test_shell_reader_conditionals.py
       - tests/test_shell_wrappers.py
       - tests/test_workflow_guard_lexer_heredocs.py
@@ -670,6 +672,7 @@ groups:
       - tests/test_workflow_guard_reader_forms.py
       - tests/test_workflow_forms_regressions.py
       - tests/test_workflow_printers.py
+      - tests/test_workflow_printed_lines.py
       - tests/test_workflow_values.py
       - tests/test_workflow_annotate.py
       - tests/test_workflow_options.py

@@ -3,13 +3,14 @@
 
 Split out of `scripts/shell_reader.py` at that module's size (699 of its 700
 lines), byte for byte: the keywords, assignment and function-header spellings
-a statement may open with, the shells and the default or optional `$` words
-that may stand for one (#2337, #2472), and the one walk that strips them all
+a statement may open with, and the one walk that strips them all
 (`_command_result`) to answer `command`, `command_as_written`,
 `unresolved_wrapper`, `wrapper_words`, `negated` and `conditional` -- and
 `reads_held` and `find_action`, the commands a `find` runs past them (#2881
-round 4, #2918). The reader
-imports every name back under its own, so nothing that read
+round 4, #2918). The shells and the default or optional `$` words that may
+stand for a command word (#2337, #2472) went on to `scripts/shell_defaults.py`
+at this module's size in turn (#2993), byte for byte, and are imported back.
+The reader imports every name back under its own, so nothing that read
 `shell_reader.command` or `shell_reader.KEYWORDS` moved; this module imports
 nothing from the reader, so the layers still run one way.
 
@@ -19,10 +20,18 @@ import itertools
 import os
 import re
 
+from shell_defaults import (OPTIONAL_NEXT as OPTIONAL_NEXT, _ALL as _ALL, _DEFAULTS as _DEFAULTS,
+                            _FETCHERS as _FETCHERS, _HALF_CAP as _HALF_CAP, _HALVES as _HALVES,
+                            _INTERPRETERS as _INTERPRETERS, _OPTIONAL as _OPTIONAL,
+                            _PARAMETER as _PARAMETER, _SHELLS as _SHELLS, _VANISHING as _VANISHING,
+                            _WHOLE_DEFAULTS as _WHOLE_DEFAULTS, _alternate as _alternate,
+                            _default_words as _default_words, _half as _half, _masks as _masks,
+                            _optional as _optional, _shell_default as _shell_default,
+                            _strips as _strips)
 from shell_patterns import shell_words
 from shell_quote import Unreadable
-from shell_tokens import derived, has_substitution, is_arm, readable, spelled
-from shell_wrappers import WRAPPERS, Defaulted, Rewritten, dynamic, unwrap
+from shell_tokens import _Token, has_substitution, is_arm, readable, spelled
+from shell_wrappers import WRAPPERS, Defaulted, Found, Rewritten, dynamic, unwrap
 
 
 # Shell keywords that stand in FRONT of the command: `if curl ...; then`,
@@ -49,132 +58,6 @@ _ENVIRONMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 _FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
 
-# The shells whose options and program word a pattern may rewrite into a `-c`
-# and its script (`sh {-c,'…'}`, review N-3): `workflow_programs._SHELL_STRING`.
-_SHELLS = ("sh", "bash", "dash", "ash", "ksh", "zsh")
-# A command word that is a parameter's default or alternate (#2337): `${X:-sh}`,
-# `"${X-bash}"`, `${X:=sh}`, `${X:+sh}`. Where it spells a shell it is read as
-# that shell, which bash runs wherever `X` leaves the word to it.
-_DEFAULTS = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([^{}$`'\"\\\s]+)\}")
-# The same read whole, its default holding blanks (`${X:-bash -s}`): only a word the reader split
-# at blanks no quote or backslash covers, where bash splits the default too, once expanded (#2731);
-# a literal glued after the `}` joins its last word (`${X:-/usr/bin/env s}h`, #2856 round 11) --
-# none bash would glob (`${X:-bash -s}*` is `-s*`, an option no shell takes).
-_WHOLE_DEFAULTS = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?[-=+]([^{}$`'\"\\]+)\}([^\s{}$`'\"\\*?[]*)")
-# A command word bash may expand to nothing (#2856 rounds 12 and 13, the round-11 and round-12 B2): an
-# alternate (`${X:+W}`, `${X+W}`), a default with no colon, which a name set empty leaves empty
-# (`${X-W}`, `${X=W}`), a pattern taken off or replaced (`${X#W}`, `${X%%W}`, `${X/p/W}`) and a case
-# change (`${X^^W}`, `${X,W}`), whose W is a pattern and never the command -- of a name, an indirection
-# (`${!X…}`), an element (`${X[0]…}`, `${X[@]…}`), a positional parameter, `$@` and `$*`, `$!` with no
-# background job, and `$-`, empty under dash with no options. Empty, it is the literal glued after its
-# `}`, or nothing, and the next word runs; its other half is `_alternate`'s (`_command_result`).
-_VANISHING = re.compile(r"\$\{(!?[A-Za-z_]\w*(?:\[[^]]*\])?|[0-9]+|[@*!-])(:?\+|[-=]|##?|%%?|//?|\^\^?|,,?)"
-                        r"[^{}]*\}([^\s{}$`'\"\\*?[]*)")
-# The halves `_command_result` reads of the command words bash may expand to nothing (`folds`): the
-# ones this fold reads empty -- none, as `main` reads them, then all (`_ALL`), then each other set of
-# those whose halves read apart, by place (`_half`, #2929) -- and whether one with both halves was met.
-_HALVES: dict = {"empty": frozenset(), "words": {}, "both": False, "on": False}
-_ALL = frozenset({None})
-# The command words bash may expand to nothing whose every reading the folds read; one more reads as
-# a command the guard cannot read, wherever it runs (#2929).
-_HALF_CAP = 3
-# A default's parameter and operator (`_strips`): only `#`, `?` and `$` are never unset or empty -- `$-`
-# is, under dash with no options, and `$0` in a `-c` text run with an empty `$0` -- and an
-# indirection (`${!Y:-W}`) is read as its name is (#2856 round 13, the round-12 B1: the seat's `excfix`).
-_PARAMETER = re.compile(r"\$\{(!?[A-Za-z_]\w*(?:\[[^]]*\])?|[#?$!@*-]|[0-9]+)(:?[-=+])")
-# A command word that is ONE unquoted reference, with no default or one that
-# hands on (`$SUDO`, `${SUDO}`, `${SUDO:-}`, `${X:-sudo}`), in front of a name
-# the reader knows: an optional wrapper spelled by variable (#2472). Empty or
-# unset, bash drops the word and the next one is the command -- bash 5.2.21,
-# 3.2.57 and dash all run `$SUDO sh -c 'curl … | sh'`'s pipeline with `SUDO`
-# unset -- and set to `sudo` the next one runs too, so `_command_result` reads
-# the rest as the command. That fails CLOSED where the value runs nothing of
-# it (`SUDO=apt-get`; a literal `echo` or `true` `workflow_annotate` resolves
-# first). A quoted `"$SUDO"` keeps its word (`_stage`'s `quoted`): bash runs
-# the empty string and stops. The names: the shells, the wrappers, the foreign
-# interpreters and the fetchers -- the last two pinned equal to
-# `workflow_programs._FOREIGN` and `workflow_fetch.FETCHERS` by test.
-_OPTIONAL = re.compile(r"\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*(?::?[-+=]([^{}$`'\"\\\s]*))?\})")
-_INTERPRETERS = ("python", "python3", "perl", "ruby", "node", "php", "pwsh")
-_FETCHERS = ("curl", "wget")
-OPTIONAL_NEXT = (*_SHELLS, *WRAPPERS, *_INTERPRETERS, *_FETCHERS)
-
-
-def _optional(argv):
-    """How many leading words of `argv` bash may drop in front of a name the
-    reader knows (`_OPTIONAL`, #2472): each unquoted, one reference, with no
-    default or one that is itself a wrapper (`${X:-sudo}`); 0 where the word
-    after them is not in `OPTIONAL_NEXT`."""
-    count = 0
-    while count < len(argv) - 1:
-        word = argv[count]
-        match = None if getattr(word, "kept", False) else _OPTIONAL.fullmatch(word)
-        if not match or match[1] and os.path.basename(match[1]) not in WRAPPERS:
-            break
-        count += 1
-    return count if count and os.path.basename(argv[count]) in OPTIONAL_NEXT else 0
-
-
-def _shell_default(word):
-    """The words a command word that is a shell's one-word default runs as (`${X:-sh}`: `sh`), or
-    None: `"${SH:-bash}"` is `bash` (#2337), and `"${SH:- bash}"`, `${X:-"bash -s"}` and
-    `${X:-bash\\ -s}` name no shell. A default holding a blank the reader marks is read whole
-    (`_default_words`)."""
-    default = _DEFAULTS.fullmatch(word)
-    return [default[1]] if default and os.path.basename(default[1]) in _SHELLS else None
-
-
-def _default_words(whole):
-    """The words bash makes of a command word it expands whole, its name unset (#2731): the default,
-    a literal glued after the `}` joining its last word -- a lifted `$(…)` too, which keeps it dynamic
-    (#2856 round 12, the round-11 F2) -- split where bash splits it, at a space, a tab or a newline,
-    never a Unicode or vertical space (round 11, F2), each word a token keeping the reader's marks of
-    what it holds (`spelled`: in one pass over the word, round 12's B3), so a lifted `$(…)` stays
-    dynamic behind a wrapper and a `<(…)` a file. None where `_WHOLE_DEFAULTS` does not read the
-    word: a `$NAME` or a nested default in it, or a parameter that is no NAME."""
-    default = _WHOLE_DEFAULTS.fullmatch(whole)
-    if not default:
-        return None
-    return [spelled(part, whole) for part in re.split(r"[ \t\n]+", (default[1] + default[2]).strip(" \t\n"))]
-
-
-def _strips(whole):
-    """Whether `main`'s split words of a command word read whole (`_command_result`) end in the
-    default's `}`, which comes off them: a default (`-`, `=`) or alternate (`+`) bash may expand --
-    not where the parameter is never unset or empty (`${#:-…}`, `${?:-…}`, `${$:-…}`), nor an
-    assignment to a parameter that is no NAME (`${1:=…}`, an error that runs nothing; #2856 round
-    12, B1; round 13 reads `$-`, `$0` and `${!Y:-W}`, which may be empty, the round-12 B1)."""
-    found = _PARAMETER.match(whole)
-    if not found:
-        return False
-    parameter, operator = found[1], found[2]
-    if operator.endswith("=") and not (parameter[0].isalpha() or parameter[0] == "_"):
-        return False
-    return not (parameter in ("#", "?", "$") and operator in ("-", ":-"))
-
-
-def _alternate(argv, whole, span):
-    """`argv` with its command word `whole` read as bash expands it where its name is set (for `-`
-    and `=`, unset): its W, as `_default_words` reads a default -- a command the reader knows is
-    that command, its words the reader's own; one it does not know, the word whole -- or past
-    `_WHOLE_DEFAULTS`, `main`'s split words, the default's `}` off their last (#2856 rounds 11-12)."""
-    argv, words = list(argv), _default_words(whole)
-    if words and os.path.basename(words[0]) in OPTIONAL_NEXT:
-        # A default naming a command the reader knows -- a shell, a wrapper, a foreign
-        # interpreter, a fetcher, by path too -- is that command, its words the reader's own
-        # (`${X:-bash -s}`, `${X:-/usr/bin/env sh -c}`, `${X:-/usr/bin/curl -fsSL} URL`).
-        argv[0:span] = [Defaulted(words[0]), *words[1:]]
-    elif words or os.path.basename(argv[0]) not in OPTIONAL_NEXT:
-        argv[0:span] = [whole]          # a name the guard does not follow, read whole
-    # Else `main`'s split words stay: past `_WHOLE_DEFAULTS` (`${X:-$HOME/bin/env sh -c}`,
-    # `${1:-/bin/sh -c}`), their first names a known command by its basename (#2856 round 11)
-    # -- the default's `}` off their last word, at its first `}`, and a word of it alone gone;
-    # a word `main` reads as a pattern stays (`/usr/bin/ba}[s]h`; #2856 round 12, B1).
-    elif _strips(whole) and not isinstance(argv[span - 1], Rewritten) and (
-            cut := argv[span - 1].partition("}"))[1]:
-        argv[span - 1:span] = [derived(cut[0] + cut[2], argv[span - 1])] if cut[0] + cut[2] else []
-    return argv
-
 
 def _runs(argv):
     """How much a reading of a command may run that the guard reports, with the command as read, so
@@ -195,13 +78,15 @@ def _runs(argv):
     return 1, command_
 
 
-def _command_result(argv, optional=True):
+def _command_result(argv, optional=True, finds=False):
     """Shared parse result for execution extraction and unread decisions: the
     command, why it or a wrapper in front of it cannot be read (or None), and
     the words read as wrappers, as written. A command word that is a shell's
     default (`${X:-sh}`, `_DEFAULTS`) is read as that shell; `$` words in front
     of a known name are dropped (`_optional`) unless `optional` is False, the
-    reading `workflow_annotate` takes to find the word a step's table resolves."""
+    reading `workflow_annotate` takes to find the word a step's table resolves. Where `finds`,
+    a `find` is unwrapped as a wrapper is, into the action a fold reads (`_found`, #2935): the
+    reading `acted` answers with, and no other."""
     argv = list(argv)
     heads: list[str] = []
     # `xargs` appends words from its input to the argv behind it, so the
@@ -286,6 +171,14 @@ def _command_result(argv, optional=True):
         if isinstance(argv[0], Rewritten):
             return argv, "`%s` is a pattern bash expands before anything runs" % readable(
                 argv[0]), heads
+        if head == "find" and finds and (inner := _found(argv)) is not None:
+            # The action is a command line of its own, read as the step's own is and as `_unread` just
+            # read it, its reasons out -- a `$` word bash may drop in front of a known name, a shell's
+            # default (round 2: not as a word behind a wrapper) -- and a `find` it runs is kept: `find`
+            # ends an action at the first `;` or `{} +`, so one written word by word holds none it can
+            # run (one a wrapper splits out of a single word may, and is unread: `_unread`, round 3).
+            run = _command_result(inner)[0]
+            return [Found(run[0]), *run[1:]], vanished, heads
         if head not in WRAPPERS:
             break
         heads.append(argv[0])
@@ -317,30 +210,22 @@ def command(argv):
     return _command_result(argv)[0]
 
 
-def _half(whole, differs):
-    """Whether this fold reads empty a command word bash may expand to nothing that has both halves,
-    and why the guard cannot read it where its halves read apart and it is one past the `_HALF_CAP`
-    such words a job holds (#2929): outside `folds` never, as `main` reads it; in them, where the
-    fold reads all, or, its halves apart, its place -- where its parse stands and its order there
-    (`shell_tokens._Parse.whole`), the same in every parse of that place and never its text."""
-    if not _HALVES["on"]:
-        return False, None
-    _HALVES["both"], words, past = True, _HALVES["words"], None
-    if differs and whole.at not in words and len(words) >= _HALF_CAP:
-        past = "`%s` is a command word bash may expand to nothing beside %d more, whose readings the guard does not combine" % (
-            readable(whole), _HALF_CAP)
-    elif differs:
-        words.setdefault(whole.at)
-    return _HALVES["empty"] is _ALL or differs and whole.at in _HALVES["empty"], past
-
-
-def _masks():
-    """The sets of command words bash may expand to nothing a fold reads empty, in order: none, all
-    where one has both halves, then each other set of those whose halves read apart -- of the first
-    `_HALF_CAP` alone, so the folds never grow past 8 (#2929)."""
-    words = list(_HALVES["words"])[:_HALF_CAP]
-    some = [frozenset(word for at, word in enumerate(words) if bits >> at & 1) for bits in range(1, (1 << len(words)) - 1)]
-    return [frozenset()] + ([_ALL] + some if _HALVES["both"] else [])
+def acted(argv, own=False):
+    """`command()`, or in its place the command an action of a `find` runs (`_found`, #2935): what a
+    stage RUNS, for the readers that ask that and no other -- each named, with the row that needs
+    it, in `tests/test_workflow_guard_reader_forms.py` (`ACTED`). What a stage IS to the step -- its
+    status, its call, its values, its posture, the check it is credited with -- is read off
+    `command()`, the `find`: GNU `find` 4.9.0 exits 0 whatever a `-exec … \\;` command returns, and
+    runs each action in a child of its own, never or many times. And `main`'s reading is never lost
+    (round 3): this is `command()` wherever `folds` is not reading the actions -- in `main`'s folds,
+    read first, and outside them. With `own`, `argv` itself where no action stands in its place, for
+    a reader that takes its own `command()` of the answer."""
+    if _ACTIONS["act"]:
+        run = _command_result(argv, finds=True)[0]
+    else:
+        run = command(argv)
+        _ACTIONS["acts"] = _ACTIONS["acts"] or bool(run) and bool(_actions(run))
+    return argv if own and not (run and isinstance(run[0], Found)) else run
 
 
 def folds(unsure):
@@ -354,27 +239,34 @@ def folds(unsure):
     REPORTs where any action uses it (#2918). Those are `main`'s folds, each descriptor reading the
     body `main` reads there; where a link or a `cd` may put another on one (`body_read`), all of them
     follow again once for each such body, so the guard REPORTs where either is the one read and no
-    reading of `main`'s is lost (#2919 round 3)."""
+    reading of `main`'s is lost (#2919 round 3). And where `acted`
+    met a `find` with an action in them, each of those follows again with each action in its `find`'s
+    place (#2935 round 3: `main`'s reading is never lost, and the guard REPORTs where either reads a
+    defect)."""
     _HALVES.update(empty=frozenset(), words={}, both=False, on=True)
+    _ACTIONS["acts"] = False
     try:
         for body in range(1 + _BODY_FOLDS):     # `main`'s, then at most `_BODY_FOLDS` others (`body_read`)
             _BODIES.update(at=body, more=False)
-            read: set = set()
-            while masks := [mask for mask in _masks() if mask not in read]:
-                _HALVES["empty"] = masks[0]
-                read.add(masks[0])
-                for at in itertools.count():
-                    _ACTIONS.update(at=at, more=False)
-                    yield False
-                    if unsure():
-                        yield True
-                    if not _ACTIONS["more"]:
-                        break
+            for act in (False, True):
+                read: set = set()
+                while masks := [mask for mask in _masks() if mask not in read]:
+                    _HALVES["empty"] = masks[0]
+                    read.add(masks[0])
+                    for at in itertools.count():
+                        _ACTIONS.update(at=at, more=False, act=act)
+                        yield False
+                        if unsure():
+                            yield True
+                        if not _ACTIONS["more"]:
+                            break
+                if not _ACTIONS["acts"]:
+                    break
             if not _BODIES["more"]:
                 return
     finally:
         _HALVES.update(empty=frozenset(), words={}, both=False, on=False)
-        _ACTIONS.update(at=0, more=False)
+        _ACTIONS.update(_NO_FOLD)
         _BODIES.update(at=0, more=False)
 
 
@@ -414,12 +306,23 @@ def command_as_written(argv):
 # The tests after which `find` runs a command of its own on what it walks, each read (`_actions`;
 # #2881 round 4, every one #2918) -- `workflow_operands.described` reads them here.
 _FIND_EXEC = ("-exec", "-execdir", "-ok", "-okdir")
+# The command words no `find` can run, of those a reader of an action follows: a shell's `.`, `source`,
+# `eval` and `exec`, which no system ships as a program (`command`, `cd`, `read` and their kind are
+# programs on macOS, and stay read). An action whose OWN first word is one -- the word `find` itself
+# looks up, not one behind a wrapper or a path (round 3) -- or is an assignment with no `/` in it,
+# which `find` looks up as a program's name, runs nothing, and its `find` is read as `main` reads it
+# (`_found`, #2935 round 2). Each word has a row that reports when it is dropped; the eighteen other
+# builtins round 2 listed are words no reader of an action follows, and left the list (round 3).
+_NO_PROGRAM = frozenset((".", "eval", "exec", "source"))
 # The distinct actions of one `find` the guard reads; one with more reads as a command it cannot
 # read (`_unread`), so neither the scan nor the folds grow with the words (#2918).
 _FIND_CAP = 8
 # The action of each `find` a fold reads where the guard asks how a stage uses a file
-# (`find_action`), and whether one held another: `folds` reads each of them (#2918).
-_ACTIONS = {"at": 0, "more": False}
+# (`find_action`), and whether one held another: `folds` reads each of them (#2918). And whether the
+# fold reads that action in its `find`'s place (`act`, for `acted`), and whether a fold of `main`'s
+# met a `find` with one (`acts`; #2935 round 3). `_NO_FOLD` is the state outside `folds`: `main`'s.
+_NO_FOLD = {"at": 0, "more": False, "act": False, "acts": False}
+_ACTIONS = dict(_NO_FOLD)
 
 
 def _actions(argv):
@@ -468,19 +371,69 @@ def find_action(argv):
     return command(actions[min(_ACTIONS["at"], len(actions) - 1)])
 
 
+def _found(argv):
+    """The words of the action of `find` -- `argv` its command -- this fold reads, where `acted()`
+    unwraps it as a wrapper (#2935), or None, which keeps the `find`, as `main` reads it: it holds no
+    action; one of them cannot be read (`_unread`, which `unresolved_wrapper` reports); or the fold's
+    is empty, is one no `find` can run (`_NO_PROGRAM`, an assignment naming no path; round 2) or runs
+    a check -- `find` exits 0 though a `-exec … \\;` command fails, so no check an action runs is
+    credited."""
+    actions = _actions(argv)
+    if not actions:
+        return None
+    if _unread(argv):
+        return None                             # one it cannot read: `unresolved_wrapper` says why
+    _ACTIONS["more"] = _ACTIONS["more"] or len(actions) > _ACTIONS["at"] + 1
+    words = actions[min(_ACTIONS["at"], len(actions) - 1)]
+    run = command(words) if words else []
+    if not run or _ASSIGNMENT.match(words[0]) and "/" not in words[0] or words[0] in _NO_PROGRAM:
+        return None                             # nothing `find` can run: the `find`, as `main` reads it
+    return list(words) if os.path.basename(run[0]) not in _CHECKERS else None
+
+
+def unsure(argv, scripts):
+    """`scripts`, the programs `workflow_programs.scripts` reads off `argv`, each one no shell is sure
+    to read (`reader` None) where `argv` is a command a `find` action runs (`Found`, #2935): `find`
+    may run it never or many times and exits 0 though it fails, so `workflow_forms.flattened` reads
+    it `Unsure` and no check in it is the step's own."""
+    if not argv or not isinstance(argv[0], Found):
+        return scripts
+    scripts = [script if type(script) is not str else _Token(script, {}) for script in scripts]
+    for script in scripts:
+        script.reader = None
+    return scripts
+
+
+def sure_reader(argv, reader):
+    """`reader`, the shell `workflow_programs.stdin_scripts` reads a program on standard input under,
+    or None where `argv` is a command a `find` action runs (`unsure`, #2935)."""
+    return None if argv and isinstance(argv[0], Found) else reader
+
+
 def _unread(argv):
     """Why a command a `find` runs cannot be read, `argv` its command, or None (#2918): more actions
-    than `_FIND_CAP`, a reason its wrappers give (`-exec sudo $X …`), or a command word bash or
-    `find` decides, as behind a wrapper -- a `$` word, a substitution, or `{}`, each path it walks
-    (`find /usr/bin/sh -exec {} …`)."""
+    than `_FIND_CAP`, a reason its wrappers give (`-exec sudo $X …`), a `find` a wrapper splits out
+    of one word (`-exec env -S 'find … -exec sh ;'`, whose action no word here shows; #2935 round
+    3), or a command word bash or `find` decides, as behind a wrapper -- a `$` word, a substitution,
+    or `{}`, each path it walks (`find /usr/bin/sh -exec {} …`)."""
     actions = _actions(argv)
     if len(actions) > _FIND_CAP:
         return "`find` holds more than %d actions" % _FIND_CAP
-    for inner, why, _heads in map(_command_result, actions):
+    for action in actions:
+        inner, why, _heads = _command_result(action)
         if why:
             return "a command `find` runs: %s" % why
-        if inner and (dynamic(inner[0], has_substitution) or "{}" in inner[0]):
-            return "`find` runs `%s`, a command word it or bash decides as it runs" % readable(inner[0])
+        if inner and os.path.basename(inner[0]) == "find" and not any(inner[0] is word for word in action):
+            return "a command `find` runs: a `find` a wrapper splits out of one word, whose actions go unread"
+        # The action's own first word, where it holds a `$`: one that begins with a whole reference
+        # (`_OPTIONAL`: `$SUDO`, `${SH:-sh}`, `$X/bin/env`) is read as the step's own command word
+        # is. A `${…}` that holds a blank is cut where the reader meets it, an operand of `find`'s
+        # and no command word of the stage's, and what is left of it names nothing: `${X:+/usr/bin/env
+        # true} sh …` runs the shell where `X` is unset (round 3).
+        cut = action and dynamic(action[0], has_substitution) and not _OPTIONAL.match(action[0])
+        if cut or inner and (dynamic(inner[0], has_substitution) or "{}" in inner[0]):
+            return "`find` runs `%s`, a command word it or bash decides as it runs" % readable(
+                action[0] if cut else inner[0])
     return None
 
 

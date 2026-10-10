@@ -66,6 +66,166 @@ evidence exposed.
   1.07x on the seat's 343 rows, 0.91x on the #2885 seat's 1,945 rows. @TODO-FORGE@ (round 3, to
   re-take at the pushed head: the round-1 seat's hunt and the standing sets against `main`
   `1ed33763`, the price class by class, and the cost with the folds a record's body adds.)
+- **`scripts/shell_command.py` splits its `$`-word readers into `scripts/shell_defaults.py`
+  (#2993, reader lane).** A pure move at the module's size (633 of its 700 lines, with #2919 to
+  fold onto it): the shells and the other names a `$` command word may stand in front of, its
+  default, alternate, optional and vanishing spellings, the halves the folds read of a word bash
+  may expand to nothing, and the readers of one word (`_optional`, `_shell_default`,
+  `_default_words`, `_strips`, `_alternate`, `_half`, `_masks`) now live in the new module, byte
+  for byte with the comments above each; `shell_command` imports every name back under its own,
+  so no caller and no test moved, and the new module imports nothing from it or from the reader.
+  The `find` readers stay where they are: the walk calls into them and they call back, and
+  #2935's pins bind their names to `shell_command`. No verdict changes: on 106,107 rows (530,535
+  cells) -- the standing sets, #2929's seats' sets, #2935's differential and probes, and #2919's
+  seats' rows, hunts and pins -- every finding of every row, its name and its reason, is the same
+  under `main`'s scripts and the move's under each of the five `shell:` settings, but for 8 rows
+  whose text differs from run to run under either: 6 hold a parse nonce in a finding's reason and
+  are identical once it is normalised, and 2 are the copies of #2911's `*-od` row. Sizes: 633 ->
+  490, and 174 for the new module.
+- **Workflow reader reads a printed line as the shell that reads it gets it (#2955).** `printf '%s
+  %s\n' curl '-fsSLo t URL' | sh` ⏎ `sh t` read CLEAN under the five `shell:` settings while the
+  eight parent shells run the download, and so did the issue's word `${X:+curl … #}./t.sh` printed
+  twice by `printf '%s\n'`, and `eval "$(echo LINE)"`. A printer the guard cannot spell out -- a `$`
+  in a word, a `printf` format `printed` does not read, an `echo` option or escape two shells read
+  two ways -- had its words weighed as ONE text, which begins with the printer's first word: an
+  `echo`'s line, but a `printf`'s FORMAT and an `echo -n`'s `-n`, so the line after it read as an
+  argument and never as a command; and a program word that is one `$(...)` was reported with a
+  reason the guard may drop, its printer never weighed. The second walk now weighs, beside that
+  text, what the printer WRITES with each word as written -- down a pipe, behind a stage that may
+  rewrite the text, inside `$(...)` or `<(...)`: an `echo`'s line without its options, decoded where
+  its shell decodes, and a `printf`'s format with its words in place. The rendering of a format is
+  what the shell prints, to the character, or it is not followed and the step REPORTS. Followed:
+  text and escapes in the format (an octal escape is a BYTE: `\543` is a `c`), `%%`, `%s`, `%b`,
+  `%c`, `%q`, `%d` `%i` `%u` of a plain decimal, a `-`, a width to 256 on any but `%b`, a number's
+  `0`, a precision on `%s`, a `*` that takes a plain decimal, the format used again while words are
+  left, and a `$` word as it stands; the output ends at a character the shell does not know. Not
+  followed: every other flag, letter, number, width and precision, and `%q` of a `~` or of a
+  character outside printable ASCII, where the shells print their own ways (`%.b` is the whole word
+  to bash 3.2 and nothing to 5.2; a width counts bytes; bash 3.2 dies of a `*` word past an `int`);
+  a `$` word that a precision or `%c` would cut or a width pad with blanks; and a text past 4,096
+  characters and four times the format and its words -- `printf` prints its format again for every
+  few words, so what it writes can outgrow the step many times over. Each shell family is rendered
+  on its own (bash 5.2, bash 3.2, bash 3.2 as macOS ships it, dash) and each distinct rendering
+  weighed once, because the readings are not nested: a `\"` bash decodes in a format closes a quote
+  and bares the command after it where dash keeps it hidden, and the other way about, and one pinned
+  row runs under bash 3.2 and dash and not under 5.2. `unread_program`'s last resort weighs the one
+  printer a program word's `$(...)` is. The main pass reads as `main` does, so the job REPORTs
+  wherever either reading does. Measured against the shells' own builtins: in 10,000 random formats
+  and 10,000 `echo` word lists on each of bash 5.2.21, bash 3.2.57 and dash 0.5.12, no rendering
+  that is followed differs from the output but by a `\u` outside ASCII in a C locale. And on 932
+  rows in nine bounded hunts, each under eight parent shells in two passes: no cell goes CLEAN where
+  `main` reports, and of the 645 rows a parent runs, 309 that read CLEAN now report and 120 reported
+  already. Still CLEAN though a parent runs, 216 rows, none of them claimed read: 184 whose printed
+  line begins with a one-word default (`${X:-curl} …`), which #2963 reads, the issue's PF-fetch-run
+  and EVS-fetch-run among them; 22 on routes `main` reads no printer on, spelled or not (its text
+  written to a file that is then run, kept in a variable, printed by a group or a function, handed
+  to `xargs`, read by `. /dev/stdin`); `builtin` in front of the printer, no wrapper to the reader
+  on `main` either (#2665, 8 rows, run by the bash parents); and two copies of a line the guard can
+  spell (#2953, 2 rows). The price, 82 rows where no parent runs a downloaded program and the step
+  now reports, each kind pinned: a line that only FETCHES, as `echo curl | sh` reports on `main` --
+  the word printed once with its name set (29) and a fetcher on a line with no run after it (9); a
+  format that is not followed around a harmless line (26: `%x`, `%.1f`, a `$` word padded); the text
+  in front of a stage that spoils it (`| tr a-z A-Z | sh`, 9), which `main` reports for an `echo` it
+  can spell; a line only dash makes, on a route every family is read for (5); and a format printed
+  again past the bound (4). A printer is weighed once a distinct rendering: `main`'s one text, then
+  at most three more under a bash setting, one under a dash setting, four where each family is read.
+  One existing pin's value changes: `unprinted` for `printf 'sh %s' "$X" | tee f | sh` gains the
+  written text, its old value pinned under the main pass.
+- **Workflow reader reads the command a `find` action runs, beside `main`'s reading of the `find`
+  (#2935).** But for the reader that asks how a stage uses a file (#2918), no reader of the
+  guard's saw the command an action of a `find` runs, the first one included: `find /dev/null
+  -exec curl -fsSLo tool … \;` ⏎ `sh tool`, `find /dev/null -exec sh -c 'curl … | sh' \;` and
+  `curl … | find /dev/null -exec sh \;` ran the download and read CLEAN. `shell_reader.acted()`
+  answers with the action a fold reads (#2918's folds) in its `find`'s place -- a command line of
+  its own, read as the step's own is: its wrappers stripped, a `$` word bash may drop in front of
+  a known name dropped and a shell's default read (round 2; round 1 read them as words behind a
+  wrapper, which reported benign finds) -- its command word a `shell_wrappers.Found`. `command()`
+  is `main`'s, the `find` (round 3; rounds 1 and 2 unwrapped it for every reader), and `main`'s
+  reading is never lost: `shell_command.folds` reads a job in every fold of `main`'s first, where
+  `acted` is `command`, then, where one met a `find` with an action, in the same folds again with
+  each action in place, and the guard REPORTs where either reading holds a defect. Fourteen
+  readers ask `acted`, one line each (out of lane, granted by the coordinator), each named with
+  the row that needs it in `TestEveryFindActionIsACommand.ACTED` and held to that list by a test
+  that reads the scripts' AST: `workflow_forms.flattened`, `workflow_guard._walk` and
+  `_unread_stdin`, `workflow_fetch.stdout_fetch`, `stream_consumer` and `compound_output`,
+  `workflow_programs._details` and `stdin_scripts`, `workflow_printers.producer`, `handed`,
+  `unspelled` and `_printer`, and `workflow_uses.copies` and `use`; `producer` and the three that
+  take its answer read a stage one way, or `unspelled` raises. Every other reader reads
+  `command()`: GNU `find` 4.9.0 exits 0 whatever a `-exec … \;` command returns (the round-1 seat:
+  33 of 33 measurements, 1 only for `{} +`), and no `find` runs `exit`, `return` or a shell
+  function, sets or clears a variable of the step's or changes its posture, so a stage's status,
+  its call, its values, the sums file its check reads and its `xargs` walk are read off the `find`
+  itself. Round 1 read `CHECK || find … -exec exit 1 \;` as `CHECK || exit 1` and a function an
+  action names as called (its seat's 8,776 cells in 2,308 rows), and round 2 read `find … -exec
+  read T \;` as the step's own `read`, a `tee` in an action as the step rewriting its sums file,
+  an action's `echo` in place of what the `find` prints and an action as the end of its `xargs`
+  walk (its seat's 12,163 cells in 2,541 rows, REPORT on `main` and CLEAN there); each reads as
+  `main` reads it. No check an action runs is credited: an action that runs a checksum tool keeps
+  the `find`, and a program an action runs, as its `-c` string or on its shell's standard input,
+  has no shell sure to read it (`shell_command.unsure`, `sure_reader`, which
+  `workflow_programs.scripts` and `stdin_scripts` call on their own lines; out of lane, granted),
+  so `workflow_forms.flattened` reads it `Unsure`. A rule that keeps a `find` with an action as
+  `main` reads it fires on sure input alone, and where it is not sure the step REPORTs (round 3).
+  An action whose own first word is `.`, `source`, `eval` or `exec` -- a bare name, the one word
+  `find` itself looks up -- runs nothing, since no system ships those as programs (`_NO_PROGRAM`;
+  each word has the row that reports when it is dropped, and the eighteen other builtins round 2
+  listed moved no row once `command()` was `main`'s, and left); behind a wrapper, which may hand
+  its words to a shell as `sudo -s` does, or behind a path, the action is read. An assignment with
+  no `/` in it is a name `find` looks up and no program has; one that names a path is read. A
+  `find` an action runs is kept, since `find` ends an action at the first `;` or `{} +` and one
+  written word by word holds none it can run; one a wrapper splits out of a single word (`env -S
+  '…'`) may, and is a command the guard cannot read. A `$` word in front of the action's command
+  is read as the step's own is only where it begins with a whole reference; a `${…}` that holds a
+  blank is cut where the reader meets it, and is a command the guard cannot read. `command` is a
+  program on macOS, which runs a builtin too, and stays read. The reads grow with a nest's depth,
+  not as a power of it: each of the guard's two readings unwraps a nest of depth 2, 4 and 6 in 6,
+  10 and 14 reads (round 2: 46, 74 and 102; round 1: 192, 2,560 and 25,600), and a nest of depth 8
+  takes 167 ms a step on the forge, where `main` takes 13.5 (round 1: 22.8 s, by its seat). An
+  action whose command word is `{}`, a substitution or a `$` word no known name follows, or a
+  `find` holding more than 8, reads as #2918 reads it. On the round-1 seat's differential --
+  27,902 generated steps, 139,510 cells, 8-parent truth on GNU find 4.9.0 -- 27,085 cells in 5,503
+  rows that read CLEAN on `main` while a parent runs them report (a fetch in an action then a run,
+  an action's `-c` program, an action running a download, a stream piped into an action's shell,
+  heredoc and here-string programs; in every position and behind every wrapper), as at round 2. No
+  cell that is REPORT on `main` reads CLEAN, before #2929 or after it: none on the two seats' sets
+  (99,125 rows), the standing sets (31,046) or this round's hunt for readers that disagree about a
+  `find` (46,454 rows: 51 commands as the action, the `find` in 54 places of a pipeline, a
+  substitution, a string and a redirect), and none that round 1 or round 2 reported reads CLEAN
+  where a parent runs. The round-2 seat's rows report again: the 12,163 cells of its four reader
+  groups; its 38 rows with a builtin's name behind a wrapper or a path, 27 of which run under its
+  model of `sudo -s` and 4 behind a path to `command`; its 6 split nests; and its 244 rows with a
+  cut `$` word, 136 of which a parent runs. The price, CLEAN on `main` and REPORT here where no
+  parent runs, is 20,945 cells in 4,318 rows of that differential, as at round 2 (round 1: 25,675
+  in 5,264), each a `find` that never runs its action as written, which a reader cannot tell from
+  one that does, or one of `main`'s own over-reports reached through an action: the test in front
+  never matches, so the action is never reached (1,520 cells); no `;` ends the action, so `find`
+  stops on a usage error (4,310); `command` is the action's first word, no program on Linux, where
+  the truth was taken (1,630); `-ok` or `-okdir` with no `y` to read (7,900); `-execdir` or
+  `-okdir` from `/dev/null`, which runs the action in `/dev` (2,464); `{}` handed on, so the shell
+  or fetcher gets the root (1,040); a check that gates the run inside one action program, wrong
+  digest (805), a fetch-only program in an action of a `find` rooted where the download lands
+  (760) and a here-string program under dash (352), which `main` reports alike outside a `find`,
+  164 more of those three behind an optional `$` word; and in its probes a `find` as another's
+  action, which `find` itself rejects, the inner `-exec` read as an action of the first (25
+  cells). Where round 3's rules are not sure and nothing runs, they add 540 cells in 108 of those
+  244 rows, and 40 cells in 8 rows with a builtin's name behind a wrapper that runs nothing
+  (`sudo`, `env`, `time`, `nohup`, `doas -s`, a `$` word, a `find` that matches nothing). Round 3
+  takes two of round 2's price classes away: `find … -exec command set +e \;` in front of a
+  failing check, which round 2 reported as the step's own posture though the step stops wherever
+  `-e` holds, and an action read as the end of an `xargs` walk. Of the benign finds that fetch
+  nothing, 5 cells read REPORT, one row with no `;` (round 1: 785 cells). No cell moves on the
+  standing sets. The cost, `job_defects` against `main` in one process on the forge (a 32-core
+  Neoverse-N2, Python 3.12.3), by the round-1 seat's own tool in three alternating passes: 1.07x
+  on its sample of the standing rows (3,881 rows), 2.07x on its status probes and crossed set
+  (2,867) and 2.88x on its sample of the differential (3,986), where every row holds a `find` with
+  an action and is read in `main`'s folds and then in a fold for each action; the worst case is
+  one `find` of 8 actions, 10x to 13x a step (143 to 156 ms against 11 to 15), and ten of them in
+  one step 13x (1.26 s against 96 ms); nine actions are past the cap and cost 2.1x, and a nest
+  reads as that many actions of the first `find`. Those worst-case ratios were taken with that
+  machine's load between 3 and 9 and they move with it: the round-3 seat, at a load near 12,
+  measured about 26x and 27x for the two, on shorter times at the head, and the same 2x past the
+  cap. What holds on any machine is the count: at most 8 actions a `find`, one fold each. Still
+  unread, as on `main`: a fetch in one action of a `find` and its run in another (#2941).
 - **Workflow reader reads every mixed reading of the command words bash may expand to nothing
   (#2929).** #2856's union read a job twice: every such word -- `${X:+W}`, `${X-W}` and their kin
   -- as its W, then every one empty, two of a step's 2^k readings, so a payload only a mixed
