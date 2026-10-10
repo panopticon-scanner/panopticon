@@ -89,6 +89,13 @@ class Rewritten(str):
     the reader marks (#2294)."""
 
 
+class Found(str):
+    """A command word an action of a `find` runs, read as that command (`shell_command.acted`, #2935):
+    a plain `str` to every reader that keys on its name, and the mark that it is `find` that runs it
+    -- never or many times, exiting 0 though a `-exec … \\;` command fails -- so nothing an action runs
+    is the step's own to credit (`shell_command.unsure`, `sure_reader`)."""
+
+
 class Defaulted(str):
     """A command word that was a parameter's DEFAULT naming a shell, read as
     that shell (`shell_reader._DEFAULTS`, #2337): `${X:-sh}`. A plain `str`

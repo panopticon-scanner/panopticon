@@ -244,7 +244,7 @@ import sys
 
 import shell_lex
 import shell_reader
-from shell_reader import command, folds, statements
+from shell_reader import folds, statements
 from workflow_annotate import annotate
 from workflow_checks import (CHECKSUM_TOOLS as CHECKSUM_TOOLS, checks as _checks,
                              clears_nested as _clears_nested, contextual as _check_at_use)
@@ -288,7 +288,7 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
         here = working.get(index, directory)
         under = ANY if isinstance(statement, Inlined) else shell
         for position, stage in enumerate(statement.stages):
-            argv, before = command(stage.argv), statement.stages[:position]
+            argv, before = shell_reader.acted(stage.argv), statement.stages[:position]
             if argv and os.path.basename(argv[0]) in FETCHERS:
                 following = statement.stages[position + 1:]
                 fetch_stage, piped_to = compound_output(stmts, out, index, stage, following)
@@ -350,7 +350,7 @@ def _unread_stdin(stage, before=None):
     (`handed`, #2467), or printed by a `cat` alone in a `<(...)` a shell or `source` reads as its
     FILE (`fed`, #2495), is reported fetch or no fetch; a `$` word's body is READ as shell, a
     literal shell's where quoted (`stdin_scripts`)."""
-    argv = command(stage.argv)
+    argv = shell_reader.acted(stage.argv)
     here = stage.stdin_heredoc or handed(stage, before)
     kind = here and stdin_program(argv)
     if not kind:                        # or a `cat` in a `<(...)` it reads as its FILE (#2495)

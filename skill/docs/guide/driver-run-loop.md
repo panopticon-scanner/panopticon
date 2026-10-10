@@ -215,6 +215,12 @@ anything, because that dispatch has a legitimate shell-less shape — but it is 
 one. The entry names `panopticon-setup-scan` when the posture proves enforcement, and when it does
 not, `driver setup` refuses unless the operator passes `--allow-unenforced`.
 
+The headless capability measurement inspects the registered `setup_scan` shell without inventing a
+model override, alongside the native setup fallback and the other registered roles. The localhost
+surface launches and bundled-model catalog dump share a 180-second bound. One Codex 0.161.0 surface
+inspection was observed at 64.8 seconds; exhausting the bound records both `tool_policy` and
+`read_scope` as `unknown` with the timeout reason (#2923).
+
 Codex exposes only the bounded MCP tools `read_file`, `search`, and `list_files`, served by
 `skill/scripts/codex_read_tools.py`. Each launch binds `PANOPTICON_ENTRY_ID` to its row in the
 loop's `PANOPTICON_READ_SCOPE` file: exact `scope.files` and `scope.reads`, or descendants of
@@ -293,6 +299,18 @@ reviewer-selectable write path. The existing shared review gate still requires
 operator's explicit acceptance before supplying the flag; it records an acknowledgement, not proof
 of confinement. This is a shared-gate limitation, not a reason to claim proof the current probes do
 not establish.
+
+Codex's `--output-schema` accepts only the provider's strict subset: the root must be an object;
+recursively, every property must also be required and each object must set
+`additionalProperties: false`; nested `anyOf` and local `$defs` are allowed, while draft-07
+`definitions`, unsupported composition, external references, malformed or unknown keywords, and
+shapes over the documented provider limits are refused. Before building an argv, the runner checks
+the published schema named by the entry. An incompatible schema stays on the entry but is omitted
+from the Codex argv. After the controller stamps any omitted cell identity,
+`phases.persist.write_reply` validates every returned role that has a published schema against the
+unmodified Draft-7 `role_schema(entry)` before writing it. None of this build's three production
+role schemas passes the Codex provider screen, so the posture note says that the proven toy launch
+constrains no production reply; receipt validation is the production enforcement (#2923).
 
 Codex's JSONL envelope reports token usage but not measured dollars or the effective model identity.
 The runner therefore returns `cost_usd: null` and `model: null`; `model_binding` and `usage_ledger`

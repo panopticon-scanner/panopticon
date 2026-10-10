@@ -20,6 +20,98 @@ evidence exposed.
   the two comments on a `# nosemgrep`'d result, which semgrep 1.179.0 still reports either way,
   `--disable-nosem` changing nothing in its SARIF (measured again at the pin); and the `Dockerfile`
   counts three tools in the python closure, not four.
+- **Workflow reader reads the command a `find` action runs, beside `main`'s reading of the `find`
+  (#2935).** But for the reader that asks how a stage uses a file (#2918), no reader of the
+  guard's saw the command an action of a `find` runs, the first one included: `find /dev/null
+  -exec curl -fsSLo tool … \;` ⏎ `sh tool`, `find /dev/null -exec sh -c 'curl … | sh' \;` and
+  `curl … | find /dev/null -exec sh \;` ran the download and read CLEAN. `shell_reader.acted()`
+  answers with the action a fold reads (#2918's folds) in its `find`'s place -- a command line of
+  its own, read as the step's own is: its wrappers stripped, a `$` word bash may drop in front of
+  a known name dropped and a shell's default read (round 2; round 1 read them as words behind a
+  wrapper, which reported benign finds) -- its command word a `shell_wrappers.Found`. `command()`
+  is `main`'s, the `find` (round 3; rounds 1 and 2 unwrapped it for every reader), and `main`'s
+  reading is never lost: `shell_command.folds` reads a job in every fold of `main`'s first, where
+  `acted` is `command`, then, where one met a `find` with an action, in the same folds again with
+  each action in place, and the guard REPORTs where either reading holds a defect. Fourteen
+  readers ask `acted`, one line each (out of lane, granted by the coordinator), each named with
+  the row that needs it in `TestEveryFindActionIsACommand.ACTED` and held to that list by a test
+  that reads the scripts' AST: `workflow_forms.flattened`, `workflow_guard._walk` and
+  `_unread_stdin`, `workflow_fetch.stdout_fetch`, `stream_consumer` and `compound_output`,
+  `workflow_programs._details` and `stdin_scripts`, `workflow_printers.producer`, `handed`,
+  `unspelled` and `_printer`, and `workflow_uses.copies` and `use`; `producer` and the three that
+  take its answer read a stage one way, or `unspelled` raises. Every other reader reads
+  `command()`: GNU `find` 4.9.0 exits 0 whatever a `-exec … \;` command returns (the round-1 seat:
+  33 of 33 measurements, 1 only for `{} +`), and no `find` runs `exit`, `return` or a shell
+  function, sets or clears a variable of the step's or changes its posture, so a stage's status,
+  its call, its values, the sums file its check reads and its `xargs` walk are read off the `find`
+  itself. Round 1 read `CHECK || find … -exec exit 1 \;` as `CHECK || exit 1` and a function an
+  action names as called (its seat's 8,776 cells in 2,308 rows), and round 2 read `find … -exec
+  read T \;` as the step's own `read`, a `tee` in an action as the step rewriting its sums file,
+  an action's `echo` in place of what the `find` prints and an action as the end of its `xargs`
+  walk (its seat's 12,163 cells in 2,541 rows, REPORT on `main` and CLEAN there); each reads as
+  `main` reads it. No check an action runs is credited: an action that runs a checksum tool keeps
+  the `find`, and a program an action runs, as its `-c` string or on its shell's standard input,
+  has no shell sure to read it (`shell_command.unsure`, `sure_reader`, which
+  `workflow_programs.scripts` and `stdin_scripts` call on their own lines; out of lane, granted),
+  so `workflow_forms.flattened` reads it `Unsure`. A rule that keeps a `find` with an action as
+  `main` reads it fires on sure input alone, and where it is not sure the step REPORTs (round 3).
+  An action whose own first word is `.`, `source`, `eval` or `exec` -- a bare name, the one word
+  `find` itself looks up -- runs nothing, since no system ships those as programs (`_NO_PROGRAM`;
+  each word has the row that reports when it is dropped, and the eighteen other builtins round 2
+  listed moved no row once `command()` was `main`'s, and left); behind a wrapper, which may hand
+  its words to a shell as `sudo -s` does, or behind a path, the action is read. An assignment with
+  no `/` in it is a name `find` looks up and no program has; one that names a path is read. A
+  `find` an action runs is kept, since `find` ends an action at the first `;` or `{} +` and one
+  written word by word holds none it can run; one a wrapper splits out of a single word (`env -S
+  '…'`) may, and is a command the guard cannot read. A `$` word in front of the action's command
+  is read as the step's own is only where it begins with a whole reference; a `${…}` that holds a
+  blank is cut where the reader meets it, and is a command the guard cannot read. `command` is a
+  program on macOS, which runs a builtin too, and stays read. The reads grow with a nest's depth,
+  not as a power of it: each of the guard's two readings unwraps a nest of depth 2, 4 and 6 in 6,
+  10 and 14 reads (round 2: 46, 74 and 102; round 1: 192, 2,560 and 25,600), and a nest of depth 8
+  takes 167 ms a step on the forge, where `main` takes 13.5 (round 1: 22.8 s, by its seat). An
+  action whose command word is `{}`, a substitution or a `$` word no known name follows, or a
+  `find` holding more than 8, reads as #2918 reads it. On the round-1 seat's differential --
+  27,902 generated steps, 139,510 cells, 8-parent truth on GNU find 4.9.0 -- 27,085 cells in 5,503
+  rows that read CLEAN on `main` while a parent runs them report (a fetch in an action then a run,
+  an action's `-c` program, an action running a download, a stream piped into an action's shell,
+  heredoc and here-string programs; in every position and behind every wrapper), as at round 2. No
+  cell that is REPORT on `main` reads CLEAN, before #2929 or after it: none on the two seats' sets
+  (99,125 rows), the standing sets (31,046) or this round's hunt for readers that disagree about a
+  `find` (46,454 rows: 51 commands as the action, the `find` in 54 places of a pipeline, a
+  substitution, a string and a redirect), and none that round 1 or round 2 reported reads CLEAN
+  where a parent runs. The round-2 seat's rows report again: the 12,163 cells of its four reader
+  groups; its 38 rows with a builtin's name behind a wrapper or a path, 27 of which run under its
+  model of `sudo -s` and 4 behind a path to `command`; its 6 split nests; and its 244 rows with a
+  cut `$` word, 136 of which a parent runs. The price, CLEAN on `main` and REPORT here where no
+  parent runs, is 20,945 cells in 4,318 rows of that differential, as at round 2 (round 1: 25,675
+  in 5,264), each a `find` that never runs its action as written, which a reader cannot tell from
+  one that does, or one of `main`'s own over-reports reached through an action: the test in front
+  never matches, so the action is never reached (1,520 cells); no `;` ends the action, so `find`
+  stops on a usage error (4,310); `command` is the action's first word, no program on Linux, where
+  the truth was taken (1,630); `-ok` or `-okdir` with no `y` to read (7,900); `-execdir` or
+  `-okdir` from `/dev/null`, which runs the action in `/dev` (2,464); `{}` handed on, so the shell
+  or fetcher gets the root (1,040); a check that gates the run inside one action program, wrong
+  digest (805), a fetch-only program in an action of a `find` rooted where the download lands
+  (760) and a here-string program under dash (352), which `main` reports alike outside a `find`,
+  164 more of those three behind an optional `$` word; and in its probes a `find` as another's
+  action, which `find` itself rejects, the inner `-exec` read as an action of the first (25
+  cells). Where round 3's rules are not sure and nothing runs, they add 540 cells in 108 of those
+  244 rows, and 40 cells in 8 rows with a builtin's name behind a wrapper that runs nothing
+  (`sudo`, `env`, `time`, `nohup`, `doas -s`, a `$` word, a `find` that matches nothing). Round 3
+  takes two of round 2's price classes away: `find … -exec command set +e \;` in front of a
+  failing check, which round 2 reported as the step's own posture though the step stops wherever
+  `-e` holds, and an action read as the end of an `xargs` walk. Of the benign finds that fetch
+  nothing, 5 cells read REPORT, one row with no `;` (round 1: 785 cells). No cell moves on the
+  standing sets. The cost, `job_defects` against `main` in one process on the forge (a 32-core
+  Neoverse-N2, Python 3.12.3), by the round-1 seat's own tool in three alternating passes: 1.07x
+  on its sample of the standing rows (3,881 rows), 2.07x on its status probes and crossed set
+  (2,867) and 2.88x on its sample of the differential (3,986), where every row holds a `find` with
+  an action and is read in `main`'s folds and then in a fold for each action; the worst case is
+  one `find` of 8 actions, 10x to 13x a step (143 to 156 ms against 11 to 15), and ten of them in
+  one step 13x (1.26 s against 96 ms); nine actions are past the cap and cost 2.1x, and a nest
+  reads as that many actions of the first `find`. Still unread, as on `main`: a fetch in one
+  action of a `find` and its run in another (#2941).
 - **Workflow reader reads every mixed reading of the command words bash may expand to nothing
   (#2929).** #2856's union read a job twice: every such word -- `${X:+W}`, `${X-W}` and their kin
   -- as its W, then every one empty, two of a step's 2^k readings, so a payload only a mixed
@@ -449,6 +541,18 @@ evidence exposed.
   `main`).
 - **Codex model profiles move to GPT-6 (#2872).** Pinned role defaults now use `gpt-6-luna` or
   `gpt-6-sol`; set `PANOPTICON_MODEL_<ROLE>` to pin another installed model.
+- **Codex headless probes reach panels without invocation-local workarounds (#2923).** The
+  registered, model-neutral `setup_scan` surface probe now keeps its intentional inherited model;
+  the localhost-only effective-surface probe and bundled-catalog read have a 180-second bound after
+  one observed valid inspection took 64.8 seconds; and `codex exec --output-schema` is omitted for
+  a published schema whose root, recursive objects, references, or composition are not strict-output
+  compatible. After controller stamping, `phases.persist.write_reply` validates every returned role
+  that has a published schema against its unmodified Draft-7 `role_schema(entry)` before writing.
+  Consequently, a lowercase or otherwise bare tool-advisor verdict that the older acceptance check
+  normalized now fails the published contract and spends a D10 retry. The 180-second bounds limit a
+  slow probe, and the compatibility screen keeps an incompatible production schema off the provider
+  argv, so neither can fan a rejection out across a matrix batch. The Codex disclosure separately
+  reports that its successful toy proof constrains no production reply in this build.
 - **X0X identifiers reject control and bidirectional code points (#2712).** The report schema now
   refuses C0 controls other than tab and line feed, DEL/C1 controls, Arabic Letter Mark, bidi
   marks, embeddings, overrides, and isolates in occurrence paths, candidate areas, and proposed
