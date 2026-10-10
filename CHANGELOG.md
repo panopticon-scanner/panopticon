@@ -41,6 +41,15 @@ evidence exposed.
   process, all of it on the rows where a builtin's program is now read (1.21x on the hunt), and
   nothing on the sets where no row moves. A `trap`'s action is still not read (#2830), nor a
   fetched file's text that the parent splices into a `-c` string (#2693).
+- **Reply-derived refusal reasons redact before their display cap (#2948).** A contradictory
+  `_panopticon` stamp or invalid tool-advisor verdict could put a credential in its rejection
+  reason, and the former `%.200r` formatting cut the value before downstream redaction saw it.
+  Whole credentials reached the immediate refusal and stderr, while credentials crossing that
+  boundary left sensitive prefixes in those surfaces, the rejection record and the ledger. Both
+  reasons now redact every original string (including nested keys and values) before representation
+  can rewrite token boundaries, then apply the incomplete-key guard and bounded excerpt. The
+  verdict reason uses the reply's value rather than its upper-cased comparison copy; the retained
+  reply and retry prompt remain redacted as well.
 - **Workflow reader reads the first word of a function body on its header's line as a command word
   (#2954).** `curl -fsSLo t …` ⏎ `f() { ${Y:+/usr/bin/env true} sh t; }` ⏎ `f` ran the download
   under every parent and read CLEAN: `_split` kept a `${…}` whole only where every word its stage
