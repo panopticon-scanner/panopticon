@@ -487,7 +487,10 @@ class TestTheRowsThatWaitForAnotherRule(unittest.TestCase):
 
 class TestWhatAPrinterWrites(unittest.TestCase):
     """`_formatted` and `_echoed` against what the shells themselves print for the same words (measured by handing
-    the words to each builtin as arguments, `render_diff.py`: bash 5.2.21, bash 3.2.57, dash 0.5.12)."""
+    the words to each builtin as arguments, `render_diff.py`: bash 5.2.21, bash 3.2.57, dash 0.5.12).
+
+    Texts are compared through `ascii()`, which is one-to-one: a rendering that kept a lone surrogate would be
+    printed raw by a failing `assertEqual`, and under pytest-xdist that ends the run instead of failing the test."""
 
     def setUp(self):
         self.BASH5, self.BASH3, self.MACOS = wp._WRITERS["bash"]
@@ -519,7 +522,7 @@ class TestWhatAPrinterWrites(unittest.TestCase):
                 ("%s" + B + "0z", ["a"], "az")):
             for kinds in (self.BASH5, self.BASH3, self.MACOS, self.DASH):
                 with self.subTest(fmt=fmt, words=words, letters=kinds["letters"]):
-                    self.assertEqual(written, wp._formatted(fmt, words, kinds))
+                    self.assertEqual(ascii(written), ascii(wp._formatted(fmt, words, kinds)))
 
     def test_a_format_each_family_prints_its_own_way(self):
         for fmt, words, bash5, bash3, dash in (
@@ -537,7 +540,7 @@ class TestWhatAPrinterWrites(unittest.TestCase):
                 ("a" + B + "ud800b", [], "ab", "a" + B + "ud800b", "a" + B + "ud800b")):       # no text holds a lone surrogate
             for kinds, written in ((self.BASH5, bash5), (self.BASH3, bash3), (self.MACOS, bash3), (self.DASH, dash)):
                 with self.subTest(fmt=fmt, words=words, letters=kinds["letters"], echo=kinds["echo"]):
-                    self.assertEqual(written, wp._formatted(fmt, words, kinds))
+                    self.assertEqual(ascii(written), ascii(wp._formatted(fmt, words, kinds)))
 
     def test_a_format_the_shells_print_their_own_ways_is_not_followed(self):
         # None: `_apart` answers LOUD. A text stands where a family does not know the letter and prints no more.
@@ -568,7 +571,7 @@ class TestWhatAPrinterWrites(unittest.TestCase):
                 ("a%.2Q|", ["a b"], None, "a", "a")):
             for kinds, written in ((self.BASH5, bash5), (self.BASH3, bash3), (self.MACOS, bash3), (self.DASH, dash)):
                 with self.subTest(fmt=fmt, words=words, letters=kinds["letters"], echo=kinds["echo"]):
-                    self.assertEqual(written, wp._formatted(fmt, words, kinds))
+                    self.assertEqual(ascii(written), ascii(wp._formatted(fmt, words, kinds)))
 
     def test_a_width_no_shell_could_print_and_a_format_made_to_stall_the_scan(self):
         # A width past `_PAD`, or one of more digits than a machine word holds, is not followed: nothing is
@@ -618,7 +621,7 @@ class TestWhatAPrinterWrites(unittest.TestCase):
             for row, kinds, written in ((bash, self.BASH5, bash5), (bash, self.BASH3, bash3), (bash, self.MACOS, macos),
                                         (dash, self.DASH, sh)):
                 with self.subTest(words=words, echo=kinds["echo"], letters=kinds["letters"]):
-                    self.assertEqual(written, wp._echoed(words, row, kinds))
+                    self.assertEqual(ascii(written), ascii(wp._echoed(words, row, kinds)))
 
 
 class TestTheSecondWalkAlone(unittest.TestCase):
