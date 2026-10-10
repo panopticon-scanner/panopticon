@@ -7,6 +7,38 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader reads a one-word default as the command it names (#2963).** `${X:-curl} -fsSL
+  URL | sh` read CLEAN under every `shell:` setting while every parent shell runs the download, with
+  no printer near it. A command word that is ONE default-value word was followed only where its
+  default names a shell (`${X:-sh}`, #2337) or holds a blank (#2731). Naming a fetcher (`curl`,
+  `wget`, by name or by path) or `eval`, it stayed a word the guard does not follow -- written
+  directly, in a `-c` or `eval` string, a heredoc, a group, a branch, a substitution, behind a
+  wrapper -- and a `$` word in front of it (`$SUDO ${X:-curl} …`) was not dropped, since the reader
+  drops one only in front of a name it knows. The second walk now reads such a default as the
+  command it names, under each of the six operators (`:-`, `-`, `:=`, `=`, and `:+`, `+`), and knows
+  the word after the ones it may drop by its one-word default too. The main pass reads the word as
+  `main` does (`shell_defaults.WALKED_DEFAULTS`, off under `workflow_options.mains_answer`), so the
+  job REPORTs wherever either reading does and no cell can go from REPORT to CLEAN. Of the issue's
+  73 staged rows, the 30 that read CLEAN while every parent runs (22 fetchers, 4 `eval`, 4 behind a
+  `$` word) now report and the other 43 are unmoved. On a hunt of 297 rows -- 26 places a fetch can
+  stand, each under up to twelve spellings of the default beside its literal twin, and 48 rows that
+  assign the default's name first -- the 220 rows a parent runs that `main` reads CLEAN now report;
+  213 of 217 spellings read as their literal twin reads on `main`, with the twin's truth; one
+  running row stays CLEAN as on `main`, a function's body (#2954's class). The price, named and
+  pinned: the default is read whatever the step did to its name, as `main` reads a shell's default,
+  so 28 of those 48 rows (`X=echo; ${X:-curl} …`) report though no parent runs the download, and so
+  do an alternate whose name nothing sets (`${X:+curl} …`) and one in a child shell whose name the
+  step set and did not export (4 rows of the hunt). Against `main` on 1,372 rows -- the hunt with
+  seven more alternates, the issue's rows and #2955's twelve sets -- no cell goes CLEAN where it
+  reported and the main pass is `main`'s on every row; `job_defects` over them costs 1.015x in one
+  process, and 1.13x on the hunt's own rows. A printed line that begins with such a default needs
+  #2979's printer readings as well, and with both it reports: #2955's PF-fetch-run and
+  EVS-fetch-run, which both test modules pin, and all 184 such rows of that issue's first hunt, each
+  one a row a parent runs. Not among the issue's rows, the same reading takes in a default naming a
+  shell behind a word bash may drop: `$SUDO ${X:-sh} -c '…'` read CLEAN, though `main` reads either
+  word alone, and now reports (15 measured rows a parent runs; an alternate there, `$SUDO ${X:+sh}
+  …`, joins the price). `eval`, `.` and `source` behind such a word read CLEAN on `main`, as
+  `$SUDO eval '…'` does (#2997), and a default naming one reads as that twin.
 - **Workflow reader reads a path the step linked or moved to as the descriptor it may reach
   (#2919).** With #2881 a shell reads what `N<>` holds where it opens N's path, but a path the
   step's own state makes resolve to a descriptor carried nothing: `ln -s /dev/fd/3 fd3` ⏎ `sh 3<>
