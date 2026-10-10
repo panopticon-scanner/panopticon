@@ -1427,14 +1427,14 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
             child_env["PATH"] = str(decoy_bin)
             child_env["PYTHONPATH"] = str(Path(syn.__file__).resolve().parents[1])
             completed = subprocess.run(
-                [sys.executable, "-m", "scripts.synthesize",
+                ["/usr/bin/env", sys.executable, "-m", "scripts.synthesize",
                  "--target", "src", "--out", out, fp],
                 cwd=d, env=child_env, capture_output=True, text=True, check=False,
             )
-            # #2989: argv[0] identifies the interpreter whose prefix and site
-            # packages the completion child must use. The PATH decoy above
-            # makes a name-based launch a different executable as well.
-            self.assertEqual(completed.args[0], sys.executable)
+            # #2989: env execs its absolute command operand as the completion
+            # child's argv[0]. The PATH decoy makes a name-based launch a
+            # different executable as well.
+            self.assertEqual(completed.args[:2], ["/usr/bin/env", sys.executable])
             self.assertEqual(completed.returncode, 0, completed.stderr)
             failure_path = out.replace(".json", "-x0x-failures.json")
             failure_log = json.loads(Path(failure_path).read_text(encoding="utf-8"))
