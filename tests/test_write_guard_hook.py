@@ -2275,11 +2275,15 @@ class TestTheSymlinkRefusingWritersAgreeOnTheirFlags(unittest.TestCase):
                 self.assertEqual(flags, expected)
                 self.assertEqual(mode, self.PRIVATE)
 
-    def test_the_artifact_writers_differ_only_in_the_two_decided_ways(self):
+    def test_the_artifact_writers_have_the_decided_exact_flags(self):
         measured = self._artifact_writers()
         base = os.O_WRONLY | os.O_CREAT | self.NOFOLLOW
+        # #2952: the truncating artifact writer must refuse a FIFO immediately
+        # even when no reader has opened its other end. Keep the flag exact so
+        # that bounded refusal cannot silently drift back to a blocking open.
         self.assertEqual(measured["safe_write.open_w_nofollow"],
-                         (base | os.O_TRUNC, self.ARTIFACT))
+                         (base | os.O_TRUNC | getattr(os, "O_NONBLOCK", 0),
+                          self.ARTIFACT))
         self.assertEqual(measured["safe_write.open_a_nofollow"],
                          (base | os.O_APPEND, self.ARTIFACT))
         for name, (flags, _mode) in sorted(measured.items()):
