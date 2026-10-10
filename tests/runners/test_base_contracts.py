@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import shutil
@@ -111,6 +112,236 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
                 # file and lets the CLI be the one to choke on it.
                 self.assertEqual(["--x", os.path.realpath(bad)],
                                  schema_rules.schema_argv(("--x",), {"output_schema": bad}))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_strict_output_compatibility_checks_every_object_shape(self):
+        valid = {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "nested": {
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "required": ["value"],
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["ok", "nested"],
+            "additionalProperties": False,
+        }
+        tmp = tempfile.mkdtemp()
+        try:
+            path = os.path.join(tmp, "strict.json")
+            with mock.patch.object(schema_rules.version, "reference_path", return_value=tmp):
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump(valid, fh)
+                self.assertEqual(os.path.realpath(path),
+                                 schema_rules.strict_output_schema(path))
+
+                definitions = copy.deepcopy(valid)
+                definitions["properties"]["ok"] = {"type": "string", "format": "email"}
+                definitions["properties"]["nested"] = {
+                    "anyOf": [
+                        {"$ref": "#/$defs/detail"},
+                        {"type": "null"},
+                    ],
+                }
+                definitions["$defs"] = {
+                    "detail": copy.deepcopy(valid["properties"]["nested"]),
+                }
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump(definitions, fh)
+                self.assertEqual(os.path.realpath(path),
+                                 schema_rules.strict_output_schema(path))
+
+                legacy_definitions = copy.deepcopy(definitions)
+                legacy_definitions["definitions"] = legacy_definitions.pop("$defs")
+                legacy_definitions["properties"]["nested"]["anyOf"][0]["$ref"] = (
+                    "#/definitions/detail")
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump(legacy_definitions, fh)
+                self.assertIsNone(schema_rules.strict_output_schema(path))
+
+                mutations = []
+                no_dialect = copy.deepcopy(valid)
+                no_dialect.pop("$schema")
+                mutations.append(no_dialect)
+                top_required = copy.deepcopy(valid)
+                top_required["required"].remove("nested")
+                mutations.append(top_required)
+                nested_required = copy.deepcopy(valid)
+                nested_required["properties"]["nested"]["required"] = []
+                mutations.append(nested_required)
+                nested_open = copy.deepcopy(valid)
+                nested_open["properties"]["nested"].pop("additionalProperties")
+                mutations.append(nested_open)
+                no_properties = copy.deepcopy(valid)
+                no_properties["properties"]["nested"] = {"type": ["object", "null"]}
+                mutations.append(no_properties)
+                missing_object_type = copy.deepcopy(valid)
+                missing_object_type["properties"]["nested"].pop("type")
+                mutations.append(missing_object_type)
+                mutations.append({"$schema": valid["$schema"], "type": "array",
+                                  "items": {"type": "string"}})
+                mutations.append({"$schema": valid["$schema"],
+                                  "anyOf": [{k: copy.deepcopy(v) for k, v in valid.items()
+                                             if k != "$schema"}]})
+                unsupported_dialect = copy.deepcopy(valid)
+                unsupported_dialect["$schema"] = "https://example.invalid/schema"
+                mutations.append(unsupported_dialect)
+                for keyword in ("allOf", "oneOf", "not", "dependentRequired",
+                                "dependentSchemas", "if", "then", "else"):
+                    unsupported = copy.deepcopy(valid)
+                    unsupported["properties"]["ok"][keyword] = {}
+                    mutations.append(unsupported)
+                unsupported_array = copy.deepcopy(valid)
+                unsupported_array["properties"]["ok"] = {
+                    "type": "array",
+                    "items": {"type": "boolean"},
+                    "uniqueItems": True,
+                }
+                mutations.append(unsupported_array)
+                malformed_array = copy.deepcopy(valid)
+                malformed_array["properties"]["ok"] = {
+                    "type": "array",
+                    "items": {"type": "boolean"},
+                    "minItems": "one",
+                }
+                mutations.append(malformed_array)
+                unsupported_format = copy.deepcopy(valid)
+                unsupported_format["properties"]["ok"] = {
+                    "type": "string",
+                    "format": "panopticon-private-format",
+                }
+                mutations.append(unsupported_format)
+                misplaced_constraint = copy.deepcopy(valid)
+                misplaced_constraint["properties"]["ok"] = {
+                    "type": "string",
+                    "minItems": 1,
+                }
+                mutations.append(misplaced_constraint)
+                external_ref = copy.deepcopy(valid)
+                external_ref["properties"]["ok"] = {"$ref": "other.json"}
+                mutations.append(external_ref)
+                dangling_ref = copy.deepcopy(valid)
+                dangling_ref["properties"]["ok"] = {"$ref": "#/$defs/missing"}
+                mutations.append(dangling_ref)
+                for body in mutations:
+                    with self.subTest(body=body):
+                        with open(path, "w", encoding="utf-8") as fh:
+                            json.dump(body, fh)
+                        self.assertIsNone(schema_rules.strict_output_schema(path))
+
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write("{not json")
+                self.assertIsNone(schema_rules.strict_output_schema(path))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_strict_output_compatibility_refuses_each_rule_in_isolation(self):
+        """#2923 C: each provider rule has a counterexample of its own."""
+        dialect = "http://json-schema.org/draft-07/schema#"
+
+        def obj(**properties):
+            return {"type": "object", "properties": properties,
+                    "required": sorted(properties), "additionalProperties": False}
+
+        def root(**properties):
+            return {"$schema": dialect, **obj(**properties)}
+
+        def prop(schema):
+            return root(ok=schema)
+
+        def defs(member):
+            body = prop({"$ref": "#/$defs/detail"})
+            body["$defs"] = {"detail": member}
+            return body
+
+        control = root(ok={"type": "boolean"})
+        wrong_required = root(a={"type": "string"}, b={"type": "string"})
+        wrong_required["required"] = ["a", "c"]
+        no_required = root(a={"type": "string"})
+        no_required.pop("required")
+        root_any_of = copy.deepcopy(control)
+        root_any_of["anyOf"] = [obj(ok={"type": "boolean"})]
+        nonlocal_ref = prop({"$ref": "a/$defs/detail"})
+        nonlocal_ref["$defs"] = {"detail": {"type": "string"}}
+        refused = {
+            "required names differ": wrong_required,
+            "duplicate required in defs": defs({
+                "type": "object", "properties": {"a": {"type": "string"}},
+                "required": ["a", "a"], "additionalProperties": False}),
+            "object without required": no_required,
+            "root is not an object": {
+                "$schema": dialect, "type": "array", "items": {"type": "string"}},
+            "anyOf beside object root": root_any_of,
+            "nested schema dialect": prop({"type": "string", "$schema": dialect}),
+            "number rule on string": prop({"type": "string", "minimum": 1}),
+            "resolving ref without hash prefix": nonlocal_ref,
+            "required on string": prop({"type": "string", "required": ["x"]}),
+            "non-strict defs member": defs({
+                "type": "object", "properties": {"a": {"type": "string"}},
+                "required": ["a"]}),
+            "non-strict anyOf member": prop({"anyOf": [{
+                "type": "object", "properties": {"a": {"type": "string"}},
+                "required": ["a"]}, {"type": "null"}]}),
+            "non-strict array items": prop({"type": "array", "items": {
+                "type": "object", "properties": {"a": {"type": "string"}},
+                "required": ["a"]}}),
+            "array without items": prop({"type": "array"}),
+            "untyped node": prop({"description": "no type, ref, or anyOf"}),
+            "properties on string": prop({
+                "type": "string", "properties": {"a": {"type": "string"}}}),
+            "unknown type in defs": defs({"type": "file"}),
+            "duplicate type in defs": defs({"type": ["string", "string"]}),
+            "defs is not an object": {**control, "$defs": []},
+            "empty anyOf in defs": defs({"anyOf": []}),
+            "large enum": prop({
+                "type": "string",
+                "enum": ["v%03d-%s" % (i, "x" * 60) for i in range(300)]}),
+        }
+        tmp = tempfile.mkdtemp()
+        try:
+            path = os.path.join(tmp, "strict.json")
+            with mock.patch.object(schema_rules.version, "reference_path", return_value=tmp):
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump(control, fh)
+                self.assertEqual(os.path.realpath(path),
+                                 schema_rules.strict_output_schema(path))
+                for name, body in refused.items():
+                    with self.subTest(rule=name):
+                        with open(path, "w", encoding="utf-8") as fh:
+                            json.dump(body, fh)
+                        self.assertIsNone(schema_rules.strict_output_schema(path))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_strict_output_compatibility_enforces_provider_size_limits(self):
+        body = {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "properties": {"value": {"type": "string", "enum": ["aa", "b"]}},
+            "required": ["value"],
+            "additionalProperties": False,
+        }
+        tmp = tempfile.mkdtemp()
+        try:
+            path = os.path.join(tmp, "strict.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(body, fh)
+            with mock.patch.object(schema_rules.version, "reference_path", return_value=tmp):
+                for name, limit in (("_STRICT_MAX_PROPERTIES", 0),
+                                    ("_STRICT_MAX_DEPTH", 1),
+                                    ("_STRICT_MAX_TEXT", 1),
+                                    ("_STRICT_MAX_ENUM_VALUES", 0)):
+                    with self.subTest(limit=name), mock.patch.object(
+                            schema_rules, name, limit):
+                        self.assertIsNone(schema_rules.strict_output_schema(path))
+                with mock.patch.object(schema_rules, "_STRICT_LARGE_ENUM_COUNT", 1), \
+                        mock.patch.object(schema_rules, "_STRICT_LARGE_ENUM_TEXT", 1):
+                    self.assertIsNone(schema_rules.strict_output_schema(path))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

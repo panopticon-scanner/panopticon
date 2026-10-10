@@ -14,6 +14,7 @@ import shell_reader
 import shell_wrappers
 import workflow_forms as forms
 import workflow_guard as wg
+import workflow_options as wo
 import workflow_printers as wp
 
 URL = "https://example.test/"
@@ -1581,7 +1582,9 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
         # the newline it prints, never an error; past `_DEPTH` the answer is `_PAST_DEPTH`, a
         # reason and one LOUD text, whatever the stage stopped at (fix round 1b); a stage with no
         # command word in front (`X=1`) prints nothing. An unspelled printer arriving intact gives
-        # its name and its words as ONE text, as P1 weighs one right before the shell.
+        # its name and its words as ONE text, as P1 weighs one right before the shell -- and in the
+        # second walk (#2955) what it WRITES with each word as written, where that is another text
+        # (`sh $X` for the `printf`; an `echo`'s is its one text). The main pass gives the one alone.
         deep = "echo 'sh tool' | %s | sh\n" % " | ".join(["cat"] * 70)
         for script, argv in (("echo 'c2ggdG9vbA==' | base64 -d | sh\n",
                               ["base64", "c2ggdG9vbA==\n", "-d"]),
@@ -1593,13 +1596,17 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
                              (deep, list(wp._PAST_DEPTH)),
                              ("echo x | tr a b | X=1 | sh\n", []),
                              ('echo "$X" | tee f | sh\n', ["echo", "$X"]),
-                             ("printf 'sh %s' \"$X\" | tee f | sh\n", ["printf", "sh %s $X"]),
+                             ("printf 'sh %s' \"$X\" | tee f | sh\n", ["printf", "sh %s $X", "sh $X"]),
                              ("echo 'sh tool' | tee f | sh\n", []),
                              ("cat <<EOF | tee f | sh\nbody\nEOF\n", [])):
             with self.subTest(script=script):
                 stages = self.stages(script)
                 self.assertEqual(argv, forms.unprinted(shell_reader.command(stages[-1].argv),
                                                        stages[-1], stages[:-1]))
+        stages = self.stages("printf 'sh %s' \"$X\" | tee f | sh\n")
+        with wo.mains_answer():
+            self.assertEqual(["printf", "sh %s $X"], forms.unprinted(
+                shell_reader.command(stages[-1].argv), stages[-1], stages[:-1]))
         # Under a runner read both ways, each reading `spellings` gives is a text of its own.
         stages = self.stages("echo 'sh\\ttool' | tr a b | sh\n")
         self.assertEqual(["tr", "sh\\ttool\n", "sh\ttool\n", "a b"],

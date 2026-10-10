@@ -253,7 +253,7 @@ def copies(statement, names, directory):
     """New names this statement gives a known file through a bounded copy."""
     new = set()
     for stage in statement.stages:
-        argv = command(stage.argv)
+        argv = shell_reader.acted(stage.argv)
         if not argv:
             continue
         name = os.path.basename(argv[0])
@@ -308,7 +308,7 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset()):
             word.startswith(BIN_DIRS) or "/bin/" in word for word in rest):
         return "putting it on PATH with `%s`" % name
     if name == "cat" and position + 1 < len(statement.stages):
-        following = command(statement.stages[position + 1].argv)
+        following = shell_reader.acted(statement.stages[position + 1].argv)
         if following and os.path.basename(following[0]) in INTERPRETERS:
             return "piping it into `%s`" % os.path.basename(following[0])
     return None
