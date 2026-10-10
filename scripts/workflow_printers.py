@@ -313,7 +313,7 @@ def producer(stage, before):
             return None, False
         if walked == _DEPTH:
             return front, None              # too far back to look: unknown, fail-closed
-        argv = shell_reader.command(front.argv)
+        argv = shell_reader.acted(front.argv)
         if ((bool(argv) and os.path.basename(argv[0]) in _PRINTERS)
                 or (front.stdin_heredoc is not None and _cat_reads_stdin(argv))):
             return front, intact
@@ -331,7 +331,7 @@ def handed(stage, before):
     source, intact = producer(stage, before)
     if not intact or source.stdin_heredoc is None:
         return None
-    return (source.stdin_heredoc if _cat_reads_stdin(shell_reader.command(source.argv))
+    return (source.stdin_heredoc if _cat_reads_stdin(shell_reader.acted(source.argv))
             else None)
 
 
@@ -366,7 +366,7 @@ def unspelled(stage, before, shell=None):
     source, intact = producer(stage, before)
     if source is None:
         return []
-    words = shell_reader.command(source.argv)
+    words = shell_reader.acted(source.argv)
     printer = bool(words) and os.path.basename(words[0]) in _PRINTERS
     if intact:
         return ([words[0], " ".join(words[1:])]
@@ -397,7 +397,7 @@ def _printer(value):
     if len(parsed) != 1 or len(parsed[0].stages) != 1:
         return None
     stage = parsed[0].stages[0]
-    argv = shell_reader.command(stage.argv)
+    argv = shell_reader.acted(stage.argv)
     name = os.path.basename(argv[0]) if argv else ""
     if name not in _PRINTERS and (stage.stdin_heredoc is None or not _cat_reads_stdin(argv)):
         return None
