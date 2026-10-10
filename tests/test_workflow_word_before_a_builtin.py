@@ -182,6 +182,19 @@ class TestWhereverTheStatementStands(unittest.TestCase):
         "a subshell": "( %s )",
         "a branch": "if true; then %s; fi",
         "after `&&`": "true && %s",
+        "after `||`": "false || %s",
+        "after `;`": "true; %s",
+        "a condition": "if %s; then :; fi",
+        "a `for` body": "for x in 1; do %s; done",
+        "a `while` body": "while :; do %s; break; done",
+        "an `until` condition": "until %s; do break; done",
+        "a `case` arm": "case x in x) %s ;; esac",
+        "a substitution": "x=$(%s)",
+        "the background": "%s &\nwait",
+        "behind `!`": "! %s",
+        "a pipe's first stage": "%s | cat",
+        "a pipe's later stage": "true | %s",
+        "a group that is piped": "{ %s; } | cat",
     }
 
     def test_every_place(self):
@@ -222,6 +235,17 @@ class TestThePrice(unittest.TestCase):
         # The fetched file's text is read by another road, which sees the word and not its value. Truth: the
         # fetch alone.
         self.assertEqual(NOW, marks(step("$S", EVALS["a fetched file's text"], "S=echo\n")))
+
+    def test_an_alternate_whose_name_the_step_set(self):
+        # Set, an alternate IS its word: `S=1` makes `${S:+sudo} eval 'P'` run `sudo eval`, and so does `S=`
+        # with no colon. Set to nothing, the colon form is still nothing; and `command` runs the builtin.
+        for sets, front, truth in (("S=1\n", "${S:+sudo}", "nothing"), ("S=\n", "${S+sudo}", "nothing"),
+                                   ("S=\n", "${S:+sudo}", "runs"), ("S=1\n", "${S:+command}", "runs")):
+            for name in ("a string", "a fetched file's text"):
+                with self.subTest(sets=sets.strip(), front=front, runner=name, truth=truth):
+                    self.assertEqual(NOW, marks(step(front, EVALS[name], sets)))
+        # A default's name the step set to a word of its own is that word. Truth: nothing.
+        self.assertEqual(CLEAN, marks(step("${S:-command}", EVALS["a string"], "S=1\n")))
 
     def test_command_by_a_path(self):
         # macOS has a `/usr/bin/command` that runs the builtin it is given; the forge has none. Truth there:
