@@ -2257,19 +2257,29 @@ class TestAPathTheStepLinkedOrMovedToIsItsDescriptor(unittest.TestCase):
                     with self.subTest(extra=extra, row=row[-20:], shell=shell):
                         self.assertTrue(reported(row + body % PIPE, shell))
                         self.assertFalse(reported(row + body % "echo hi", shell))
-        # Any body held: the last of `_PLACES` of them is read in its own fold; one more than the
-        # reader keeps is a step it refuses, reported whole, a harmless one too.
+        # Any body held, but few of them: each is one more reading of the whole job, on top of every
+        # fold `main` reads, so the folds read at most `_BODY_FOLDS` others -- each in a fold of its
+        # own and by what it holds -- and one more is a step the reader refuses, reported whole, a
+        # harmless one too: never read CLEAN (the coordinator's ruling on the cost of the folds).
         past = "cd /dev/fd\n" + "".join("(cd /d%d)\n" % n for n in range(cap)) + "sh %s <3%s\n"
+        folds = shell_command._BODY_FOLDS
+        self.assertEqual(4, folds)      # by number: twice what a step that holds any holds
 
-        def held(count, last):
+        def held(count, program=None):
+            """`count` bodies on descriptors 3 up, the `program`-th a program and the others harmless."""
             heads = " ".join("%d<<'E%d'" % (fd, fd) for fd in range(3, 3 + count))
-            return past % (heads, "".join("\n%s\nE%d" % (last if fd == 2 + count else "echo %d" % fd, fd)
+            return past % (heads, "".join("\n%s\nE%d" % (PIPE if fd - 2 == program else "echo %d" % fd, fd)
                                           for fd in range(3, 3 + count)))
-        self.assertTrue(reported(held(cap, PIPE)))
-        self.assertFalse(reported(held(cap, "echo last")))
-        for last in (PIPE, "echo last"):
-            found = wg.job_defects([wg.Step("step", held(cap + 1, last), None)])
-            self.assertIn("may put more than %d bodies on one descriptor" % cap, " ".join(why for _name, why in found))
+        for count in range(1, folds + 1):
+            self.assertFalse(reported(held(count)))
+            for program in range(1, count + 1):
+                with self.subTest(count=count, program=program):
+                    self.assertTrue(reported(held(count, program)))
+        for count in (folds + 1, cap, cap + 1):
+            for program in (None, 1, count):
+                with self.subTest(count=count, program=program):
+                    found = wg.job_defects([wg.Step("step", held(count, program), None)])
+                    self.assertIn("may put more than %d bodies on one descriptor" % folds, " ".join(why for _name, why in found))
 
     def test_each_way_the_reader_reads_a_record_has_its_row(self):
         # B3 (the round-2 seat: surviving mutants that re-open a row): each of these readings was right
@@ -2355,7 +2365,7 @@ class TestAPathTheStepLinkedOrMovedToIsItsDescriptor(unittest.TestCase):
         self.assertEqual({"at": 0, "more": False}, shell_command._BODIES)
         self.assertIsNone(shell_command.body_read({"3": one}, (None, "3")))
         # More than the reader keeps: `main`'s, then a step it refuses.
-        many = {str(fd): ("body %d" % fd, False, True) for fd in range(3, 4 + shell_command._PLACES)}
+        many = {str(fd): ("body %d" % fd, False, True) for fd in range(3, 4 + shell_command._BODY_FOLDS)}
         folds = shell_command.folds(lambda: False)
         next(folds)
         self.assertIsNone(shell_command.body_read(many, (None, "?")))

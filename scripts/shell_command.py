@@ -357,7 +357,7 @@ def folds(unsure):
     reading of `main`'s is lost (#2919 round 3)."""
     _HALVES.update(empty=frozenset(), words={}, both=False, on=True)
     try:
-        for body in range(1 + _PLACES):         # `main`'s, then at most `_PLACES` others (`body_read`)
+        for body in range(1 + _BODY_FOLDS):     # `main`'s, then at most `_BODY_FOLDS` others (`body_read`)
             _BODIES.update(at=body, more=False)
             read: set = set()
             while masks := [mask for mask in _masks() if mask not in read]:
@@ -517,6 +517,10 @@ _PLACES = 16
 # The body a fold reads on a descriptor a link or a `cd` may give another (`body_read`): 0 `main`'s,
 # then each other in turn; and whether a stage held one more, which `folds` then reads (round 3).
 _BODIES = {"at": 0, "more": False}
+# The other bodies one stage may be given that the folds read. Each is one more reading of the whole
+# job, on top of every fold `main` reads, so the count is kept small: the steps that hold any hold one
+# or two, 4 is twice that, and one more is a step the reader refuses, reported whole (`body_read`).
+_BODY_FOLDS = 4
 
 
 def _reached(word, context):
@@ -572,7 +576,7 @@ def body_read(bodies, reached):
     none -- `main`'s reading, and the one every fold `main` reads takes, so a link or a `cd` the
     shell never makes takes no reading away. Each OTHER body a record may put there -- on a
     descriptor it reaches, or on any one where it reaches more than the reader keeps (`?`) -- is one
-    more reading beside it, read in a fold of its own (`folds`); more of them than `_PLACES` are a
+    more reading beside it, read in a fold of its own (`folds`); more of them than `_BODY_FOLDS` are a
     step the reader refuses there (`Unreadable`), reported whole."""
     first, *more = reached
     main = bodies.get(first) if first and first != "?" else None
@@ -581,8 +585,8 @@ def body_read(bodies, reached):
     if not others or not at:
         _BODIES["more"] = _BODIES["more"] or bool(others)
         return main
-    if len(others) > _PLACES:
-        raise Unreadable("a link or a `cd` may put more than %d bodies on one descriptor" % _PLACES)
+    if len(others) > _BODY_FOLDS:
+        raise Unreadable("a link or a `cd` may put more than %d bodies on one descriptor" % _BODY_FOLDS)
     _BODIES["more"] = _BODIES["more"] or len(others) > at
     return others[min(at, len(others)) - 1]
 
