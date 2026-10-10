@@ -6993,10 +6993,7 @@ class TestACaseArmsTokenIsAWordOfItsOwn(unittest.TestCase):
     def test_a_glued_arm_reads_as_the_arm_with_a_blank(self):
         # The same answer with the blank and without it, under every setting: for what runs, and for
         # what does not -- nothing fetched, an arm not taken, a check in an arm (credited in none).
-        # And for `$SHELL t`, the one row that goes from REPORT to CLEAN (the coordinator's ruling,
-        # quoted in #3014's PR): `main` reported the glued spelling because the word left behind the
-        # lost one was `t`, the fetched file's name; it reads `$SHELL t` CLEAN wherever else it
-        # stands, while bash's parents run it -- #2808's class, and reported when that lands.
+        # And for `$SHELL t`, one of the rows that go from REPORT to CLEAN: the test below.
         quiet = (("make all", (), ()), ("echo hi", (self.FETCH,), ()),
                  ("sha256sum -c sums || exit 1", (self.FETCH, self.SUMS), ("sh t",)),
                  ("$SHELL t", (self.FETCH,), ()))
@@ -7012,6 +7009,41 @@ class TestACaseArmsTokenIsAWordOfItsOwn(unittest.TestCase):
             with self.subTest(shell=shell):
                 self.assertFalse(reported("case x in x)make all ;; esac\necho done\n", shell))
                 self.assertFalse(reported("%s\ncase x in x)echo hi ;; esac\necho done\n" % self.FETCH, shell))
+
+    def test_a_glued_arms_first_word_is_read_with_the_words_behind_it(self):
+        # `main` lost the word glued to the `)` with the arm's token and read the words behind it as
+        # the command: it reported `x)echo sh t` for `sh t`, and `x)$SHELL t` for `t`, the fetched
+        # file's name. The arm now reads as its words read behind a blank and on a line of their own,
+        # so a report goes wherever `main` reads those words CLEAN there (the coordinator's ruling on
+        # the class, quoted in #3014's PR).
+        # Nothing runs where the first word is a command that does not run the others.
+        # A parent runs each row of the five kinds behind them. Each is `main`'s reading wherever the
+        # words stand, and reports here when the issue it joins lands: a name bash sets, in front of
+        # the fetched file (#2808); a substitution that prints the interpreter there (#2695); a
+        # substitution that prints nothing, in front of a command (#2693); two values glued there
+        # (#3016); an interpreter the table does not name, in front of the fetched file (#3017). For
+        # that last kind the truth is `busybox sh t`'s, all 16 runs: the harness's payload is a
+        # shell script and cannot say what `lua t` runs.
+        nothing_runs = ("echo sh t", "cat t", ": sh t", "true sh t", ": curl -fsSL %si.sh | sh" % URL)
+        kinds = (("nothing runs", nothing_runs),
+                 ("#2808", ("$SHELL t", "${SHELL} t", "\"$SHELL\" t", "$BASH t")),
+                 ("#2695", ("$(echo sh) t", "`echo sh` t", "\"$(echo sh)\" t")),
+                 ("#2693", ("$(true) sh t", "$(true) bash -c 'sh t'")),
+                 ("#3016", ("$X$Y sh t", "$X$Y eval \"sh t\"")),
+                 ("#3017", ("busybox sh t", "busybox ash t", "lua t", "python3.12 t", "fish t")))
+        for kind, rows in kinds:
+            for words in rows:
+                line = "%s\n%s\necho done\n" % (self.FETCH, words)
+                for layout in self.LAYOUTS + ("case x in a|x%s ;; esac", "case x in y) : ;; x%s ;; esac"):
+                    glued, spaced = (self.step(layout, behind + words, (self.FETCH,)) for behind in (")", ") "))
+                    for shell in SHELLS:
+                        with self.subTest(kind=kind, row=glued, shell=shell):
+                            self.assertEqual(reported(line, shell), reported(glued, shell))
+                            self.assertEqual(reported(line, shell), reported(spaced, shell))
+        for words in nothing_runs:
+            for shell in SHELLS:
+                with self.subTest(words=words, shell=shell):
+                    self.assertFalse(reported(self.step(self.LAYOUTS[0], ")" + words, (self.FETCH,)), shell))
 
     def test_a_word_at_the_head_of_an_arm_that_starts_its_line_is_read_whole(self):
         # `x) ${SUDO:+sudo -E} sh t ;;` with nothing in front of the arm on its line: the token is no
