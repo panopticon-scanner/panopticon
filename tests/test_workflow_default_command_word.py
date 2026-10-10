@@ -3,7 +3,7 @@
 `main` reads `${X:-sh}` as `sh` (#2337) and a default holding a blank as its words (#2731). A one-word default
 naming a fetcher or `eval` stayed a word the guard does not follow, so `${X:-curl} -fsSL URL | sh` read CLEAN under
 every `shell:` setting while every parent shell runs the download. The second walk now reads such a default as the
-command it names (`shell_command.WALKED_DEFAULTS`) and drops a `$` word in front of it, as bash may. The main pass
+command it names (`shell_defaults.WALKED_DEFAULTS`) and drops a `$` word in front of it, as bash may. The main pass
 reads the word as `main` does, so the job reports wherever either reading does.
 
 Marks are a letter a `shell:` setting -- unset, `bash`, `sh`, `bash {0}`, `sh {0}` -- R where the guard reports,

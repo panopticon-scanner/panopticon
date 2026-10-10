@@ -17,7 +17,7 @@ evidence exposed.
   drops one only in front of a name it knows. The second walk now reads such a default as the
   command it names, under each of the six operators (`:-`, `-`, `:=`, `=`, and `:+`, `+`), and knows
   the word after the ones it may drop by its one-word default too. The main pass reads the word as
-  `main` does (`shell_command.WALKED_DEFAULTS`, off under `workflow_options.mains_answer`), so the
+  `main` does (`shell_defaults.WALKED_DEFAULTS`, off under `workflow_options.mains_answer`), so the
   job REPORTs wherever either reading does and no cell can go from REPORT to CLEAN. Of the issue's
   73 staged rows, the 30 that read CLEAN while every parent runs (22 fetchers, 4 `eval`, 4 behind a
   `$` word) now report and the other 43 are unmoved. On a hunt of 297 rows -- 26 places a fetch can

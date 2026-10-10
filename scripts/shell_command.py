@@ -20,7 +20,8 @@ import itertools
 import os
 import re
 
-from shell_defaults import (OPTIONAL_NEXT as OPTIONAL_NEXT, _ALL as _ALL, _DEFAULTS as _DEFAULTS,
+from shell_defaults import (OPTIONAL_NEXT as OPTIONAL_NEXT, WALKED_DEFAULTS as WALKED_DEFAULTS,
+                            _ALL as _ALL, _DEFAULTS as _DEFAULTS,
                             _FETCHERS as _FETCHERS, _HALF_CAP as _HALF_CAP, _HALVES as _HALVES,
                             _INTERPRETERS as _INTERPRETERS, _OPTIONAL as _OPTIONAL,
                             _PARAMETER as _PARAMETER, _SHELLS as _SHELLS, _VANISHING as _VANISHING,
