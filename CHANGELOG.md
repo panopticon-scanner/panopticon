@@ -7,6 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow branch and step credit has its own bounded module (#3005).** The
+  byte-identical branch-region and shell-option credit readers now live in
+  `scripts/workflow_step_credit.py`; `workflow_forms` re-exports the same
+  objects, preserving every existing caller and answer while restoring
+  headroom for the carried-download fixes.
 - **Workflow reader drops a word bash may drop in front of `eval`, `.` and `source` (#2997).**
   `$SUDO eval 'curl … | sh'` read CLEAN under every `shell:` setting while every parent shell runs
   the pipeline, and so did `$SUDO . ./t` and `$SUDO source ./t` after a fetch. The reader dropped
