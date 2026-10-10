@@ -28,11 +28,13 @@ evidence exposed.
   pinned: the default is read whatever the step did to its name, as `main` reads a shell's default,
   so 28 of those 48 rows (`X=echo; ${X:-curl} …`) report though no parent runs the download, and so
   do an alternate whose name nothing sets (`${X:+curl} …`) and one in a child shell whose name the
-  step set and did not export (4 rows of the hunt). Against the base on 863 rows -- the hunt, the
-  issue's rows and #2955's printer hunts -- no cell goes CLEAN where it reported and the main pass
-  is `main`'s on every row; `job_defects` over them costs 1.04x in one process. #2955's rows whose
-  printed line begins with such a default (PF-fetch-run, EVS-fetch-run) need #2979's printer
-  readings as well: with both they report, and both test modules pin it.
+  step set and did not export (4 rows of the hunt). Against `main` on 1,372 rows -- the hunt with
+  seven more alternates, the issue's rows and #2955's twelve sets -- no cell goes CLEAN where it
+  reported and the main pass is `main`'s on every row; `job_defects` over them costs 1.015x in one
+  process, and 1.13x on the hunt's own rows. A printed line that begins with such a default needs
+  #2979's printer readings as well, and with both it reports: #2955's PF-fetch-run and
+  EVS-fetch-run, which both test modules pin, and all 184 such rows of that issue's first hunt, each
+  one a row a parent runs.
 - **`scripts/shell_command.py` splits its `$`-word readers into `scripts/shell_defaults.py`
   (#2993, reader lane).** A pure move at the module's size (633 of its 700 lines, with #2919 to
   fold onto it): the shells and the other names a `$` command word may stand in front of, its
