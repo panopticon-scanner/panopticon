@@ -17,6 +17,7 @@ import scripts.runners.base as base
 from scripts.synth import validate_schema
 from tests._test_helpers import (all_proven_artifact as _all_proven_artifact, write_guard_not_proven as _write_guard_not_proven)
 from tests._test_helpers import docker_probe_runner
+from tests._test_helpers import pem_begin
 
 
 from tests.orchestrate_helpers import (FakeRunner, LoopCase)
@@ -120,6 +121,58 @@ class TestRefusedRepliesAreRetained(LoopCase):
         self.assertIn("_panopticon.group is 'a-different-group'", record["reason"])
         self.assertIn("[REDACTED_TOKEN]", record["reply"])
         self.assertNotIn(self.RefusingRunner.SECRET, record["reply"])
+
+    def _reason_refusal_surfaces(self, site, value):
+        d, _floor = self._repo()
+        run_dir = os.path.join(d, ".panopticon", "runs", "reason-refusal")
+        os.makedirs(run_dir)
+        if site == "stamp":
+            entry = {"id": "review-app-SEC", "delivery": "return_json",
+                     "out_file": os.path.join(run_dir, "findings-app-SEC.json"),
+                     "run_id": "RID", "group": "app", "domain": "SEC"}
+            body = {
+                "findings": [],
+                "_panopticon": {"run_id": "RID", "domain": "SEC",
+                                "group": value},
+            }
+        else:
+            entry = {"id": "verify-tool-q-0001", "delivery": "return_json",
+                     "out_file": os.path.join(run_dir, "verdicts", "q-0001.json")}
+            body = {"finding_id": "F1", "verdict": value,
+                    "confidence": "LIKELY", "reasoning": "r",
+                    "explored": [], "references": [], "citations": {}}
+        result = base.RunResult(
+            entry_id=entry["id"], ok=True, text=json.dumps(body), usage={},
+            cost_usd=None, model="gpt-test", session_id="s", denials=[],
+            error=None)
+        ledger = ledger_mod.Ledger(run_dir)
+        err = io.StringIO()
+        # The schema matrix below pins the earlier receipt gate. Bypass only
+        # its verdict enum here to exercise the independent acceptance reason
+        # across the refusal, record, ledger, stderr and retry surfaces.
+        schema_patch = (
+            mock.patch("scripts.synth.validate_schema.schema_errors",
+                       return_value=[])
+            if site == "verdict" else contextlib.nullcontext())
+        with schema_patch, contextlib.redirect_stderr(err):
+            refusal = loop_batch.record_entry(
+                entry, result,
+                {"duration_ms": 1, "started_at": "2026-01-01T00:00:00Z",
+                 "finished_at": "2026-01-01T00:00:01Z"},
+                run_dir, mock.Mock(), ledger, {"checkpoint": "review"},
+                "headless", mock.Mock(host="codex"))
+        row = ledger.lines()[0]
+        with open(row["rejected_file"], encoding="utf-8") as fh:
+            record = json.load(fh)
+        retry, _prior = persist.retry_block(run_dir, entry)
+        self.assertFalse(os.path.exists(entry["out_file"]))
+        return {
+            "refusal": refusal,
+            "record": json.dumps(record),
+            "ledger": json.dumps(row),
+            "stderr": err.getvalue(),
+            "retry": retry,
+        }
 
     def test_schema_error_redaction_covers_the_complete_product(self):
         # Round 6 B1: role, advertised flag, error count and token position are
@@ -290,6 +343,41 @@ class TestRefusedRepliesAreRetained(LoopCase):
                 self.assertNotIn("ghp_", text)
                 self.assertNotIn(secret[:13], text)
                 self.assertNotIn(secret, text)
+
+    def test_stamp_and_verdict_secrets_never_reach_any_refusal_surface(self):
+        # A complete token is visible to all five consumers. A token crossing
+        # the value's display cap reaches four stamp surfaces; the shorter
+        # verdict prefix also puts its partial marker in the retry excerpt.
+        secret = "ghp_" + "Z" * 36
+        for site in ("stamp", "verdict"):
+            for padding in (0, 184):
+                with self.subTest(site=site, padding=padding):
+                    surfaces = self._reason_refusal_surfaces(
+                        site, "x" * padding + secret)
+                    for name, text in surfaces.items():
+                        with self.subTest(site=site, padding=padding,
+                                          surface=name):
+                            if padding == 0:
+                                self.assertIn("[REDACTED_TOKEN]", text)
+                            elif name != "retry":
+                                self.assertIn("[REDACTED_", text)
+                            self.assertNotIn("ghp_", text.casefold())
+                            self.assertNotIn(secret[:13].casefold(),
+                                             text.casefold())
+                            self.assertNotIn(secret.casefold(),
+                                             text.casefold())
+
+    def test_incomplete_key_bodies_never_reach_any_refusal_surface(self):
+        # Round 2 B4: the diagnostic helper discards an incomplete private key;
+        # plain redact(repr(value)) followed by a cut leaves its body exposed.
+        body_line = "A" * 64
+        value = pem_begin("") + "\n" + body_line
+        for site in ("stamp", "verdict"):
+            surfaces = self._reason_refusal_surfaces(site, value)
+            for name, text in surfaces.items():
+                with self.subTest(site=site, surface=name):
+                    self.assertIn("[REDACTED_PRIVATE_KEY]", text)
+                    self.assertNotIn(body_line[:32], text)
 
     def test_the_next_launch_of_a_refused_entry_is_told_why(self):
         # D10 ruling 2, end to end: the retry goes out through the ordinary
