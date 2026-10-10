@@ -12,6 +12,22 @@ evidence exposed.
   `scripts/workflow_step_credit.py`; `workflow_forms` re-exports the same
   objects, preserving every existing caller and answer while restoring
   headroom for the carried-download fixes.
+- **`scripts/shell_reader.py` splits its statement splitter into `scripts/shell_split.py` (#3001,
+  reader lane).** A pure move at the module's size (700 of its 700 lines, with #2974 to edit
+  `_split`): `_split`, which cuts a lexed `run:` text into statements and pipeline stages, the two
+  readers it asks (`_negated`, `_bare_blanks`) and the six tables they read (`_REDIRECT`,
+  `_HEADER`, `_BRACED_HEADER`, `_NESTED_CASE`, `_ESCAPED`, `_BLANK`) now live in the new module,
+  byte for byte with the comments above each and in their old order; `shell_reader` imports every
+  name back under its own, so no caller and no test moved, and the new module sits between
+  `shell_command` and the reader and imports nothing from the reader. The reader drops the three
+  imports only the splitter read, and its docstring says where the splitter went. No verdict
+  changes: on 108,094 rows (540,470 cells) -- the sets #2993's move was measured on, #2954's hunts
+  and #2974's -- every finding of every row, its name and its reason, is the same under `main`'s
+  scripts and the move's under each of the five `shell:` settings, but for 2 rows of #2911's,
+  which read differently from run to run under either: each lost one cell in one of the two long
+  passes, and in 6 fresh processes a tree every cell of both reports, the same under both. 6 rows
+  hold the reader's parse nonce in a finding's reason, which is put aside before the comparison.
+  Sizes: 700 -> 363, and 362 for the new module.
 - **Reply-derived refusal reasons redact before their display cap (#2948).** A contradictory
   `_panopticon` stamp or invalid tool-advisor verdict could put a credential in its rejection
   reason, and the former `%.200r` formatting cut the value before downstream redaction saw it.
