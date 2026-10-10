@@ -20,7 +20,7 @@ Named limits, pinned in `TestThePrice`. The default is read whatever the step di
 export. `main` reads a shell's default and a default holding a blank the same way. The rows that need #2955's
 printer readings as well report, now that both are in (`TestTheRowsThatNeedThePrinters`). `eval`, `.` and `source`
 behind a word bash may drop (`$SUDO eval 'P'`) read CLEAN on `main`, whose list of the names such a word may stand
-in front of holds no builtin (#2997); a default naming one reads as that twin
+in front of holds no builtin; #2997 reads them, and a default naming one with them
 (`TestEvalDotAndSourceBehindAWordBashMayDrop`).
 """
 import unittest
@@ -214,10 +214,10 @@ class TestThePrice(unittest.TestCase):
 
 
 class TestEvalDotAndSourceBehindAWordBashMayDrop(unittest.TestCase):
-    """#2997's rows, which this PR does not move, pinned as they read. `main` drops a `$` word only in front of a
-    shell, a wrapper, an interpreter or a fetcher (#2472), so `$SUDO eval 'P'`, `$SUDO . ./t` and `$SUDO source ./t`
-    read CLEAN there while the parents run them. A default naming the builtin reads as its literal twin, and waits
-    with it for the rule that knows the builtin."""
+    """#2997's rows. `main` drops a `$` word only in front of a shell, a wrapper, an interpreter or a fetcher
+    (#2472), so `$SUDO eval 'P'`, `$SUDO . ./t` and `$SUDO source ./t` read CLEAN there while the parents run them.
+    #2963's PR pinned them so; #2997 reads the builtin behind such a word, and a default naming it with it. The
+    rule's own pins are in `tests/test_workflow_word_before_a_builtin.py`."""
 
     FRONTS = ("$SUDO", "$A $B")
 
@@ -227,13 +227,13 @@ class TestEvalDotAndSourceBehindAWordBashMayDrop(unittest.TestCase):
                 for use, row in (("string", "%s %s 'curl %s'" % (front, word, PIPED)),
                                  ("file", 'curl -fsSLo t %s\n%s %s "$(cat t)"' % (U, front, word))):
                     with self.subTest(front=front, word=word, use=use):
-                        self.assertEqual(CLEAN, marks(row))
+                        self.assertEqual(NOW, marks(row))
 
     def test_dot_and_source(self):
         for front in self.FRONTS:           # truth: `.` runs, all four; `source` runs under bash, and dash has none
             for word in (".", "${X:-.}", "source", "${X:-source}"):
                 with self.subTest(front=front, word=word):
-                    self.assertEqual(CLEAN, marks("curl -fsSLo t %s\n%s %s ./t" % (U, front, word)))
+                    self.assertEqual(NOW, marks("curl -fsSLo t %s\n%s %s ./t" % (U, front, word)))
 
     def test_with_no_word_in_front_each_is_reported(self):
         for row in ("eval 'curl %s'" % PIPED, "curl -fsSLo t %s\n. ./t" % U, "curl -fsSLo t %s\nsource ./t" % U,
