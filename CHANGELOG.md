@@ -37,8 +37,8 @@ evidence exposed.
   one a row a parent runs. Not among the issue's rows, the same reading takes in a default naming a
   shell behind a word bash may drop: `$SUDO ${X:-sh} -c '…'` read CLEAN, though `main` reads either
   word alone, and now reports (15 measured rows a parent runs; an alternate there, `$SUDO ${X:+sh}
-  …`, joins the price). `eval` behind such a word reads CLEAN on `main` (`$SUDO eval '…'`), and the
-  default reads as that twin.
+  …`, joins the price). `eval`, `.` and `source` behind such a word read CLEAN on `main`, as
+  `$SUDO eval '…'` does (#2997), and a default naming one reads as that twin.
 - **Tools-image pins move together: semgrep 1.179.0, pyjwt 2.15.1, filelock 4.0.9 (#2876).**
   Dependabot's requirements-only bump (#2946) failed the image's `pip check`: semgrep 1.179.0
   requires `pyjwt[crypto]<3,>=2.15.0` where 1.178.0 held it to `~=2.13.0`, and a `--no-deps` closure
