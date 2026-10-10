@@ -327,9 +327,8 @@ def retain_rejected(run_folder, entry, text, reason, *, kind):
     kept, truncated = _safe_reply(body)
     attempt = _next_attempt(directory, entry_id)
     record = {"schema_version": 1, "entry_id": entry_id, "attempt": attempt, "kind": kind,
-              # D10 F3: the reason is built by interpolating REPLY content, so
-              # it gets the same masking the reply does. Bounded at the source
-              # (`%.200r`), not here, so every consumer sees the same string.
+              # D10 F3: schema reasons are masked before their source bound;
+              # every reason is masked again at this retained-record boundary.
               "reason": redact.redact(reason),
               # the stamp format the ledger's own rows carry, so the two sort
               # against each other as plain strings.
@@ -627,6 +626,13 @@ def _parse_reply(text):
             pass
 
 
+def _safe_schema_reason(errors):
+    """Bound only after every schema error is independently redacted."""
+    safe_errors = [redact.redact_diagnostic(error, REASON_CAP)
+                   for error in errors]
+    return "; ".join(safe_errors[:3])[:REASON_CAP]
+
+
 def write_reply(entry, text):
     """(ok, reason). Refuses -- writing nothing -- when the entry is not
     return-persist, is already done, the reply does not parse, or the parsed
@@ -647,6 +653,17 @@ def write_reply(entry, text):
     # file nobody checked on the way in.
     if isinstance(data, dict) and role_of(entry) in _CONTROLLER_STAMP_ROLES:
         data = _controller_stamp(entry, data)
+    # Provider-side constraints are only an optimization: validate every
+    # returned role with a published contract at receipt, after the controller
+    # has supplied the identity fields that contract requires.
+    schema = role_schema(entry)
+    if schema:
+        from scripts.synth import validate_schema
+        errors = validate_schema.schema_errors(data, schema_path=schema)
+        if errors:
+            detail = _safe_schema_reason(errors)
+            return False, "reply for %r rejected by %s: %s" % (
+                entry.get("id"), os.path.basename(schema), detail)
     ok, reason = accepts(entry, data)
     if not ok:
         return False, "reply for %r rejected: %s" % (entry.get("id"), reason)
