@@ -6715,6 +6715,222 @@ class TestABodyOnItsHeadersLine(unittest.TestCase):
                     self.assertFalse(reported("%s\n%s\necho done\n" % (self.FETCH, row % self.W), shell))
 
 
+class TestACaseBehindAKeywordOrAHeader(unittest.TestCase):
+    """#2974 (HIGH): `if true; then case x in x) sh t ;; esac; fi` behind a fetch read CLEAN while every
+    parent ran the download. `_split` looked for a `case` header only where `case` was its statement's
+    first word, so behind `then`, `else`, `do`, `{`, `!` or a function's header the first command of an
+    arm was read as the pattern's argument. The header is found behind what a command may stand behind,
+    and what stands in front of it ends as a statement of its own, as on a line of its own: each row
+    reads as its own-line twin reads, the gates in its arms too. Truth per row, twice over: bash 5.2.21
+    and 3.2.57 under `-e` and `-eo pipefail`, dash under `-e`, and each with no `-e`; a `curl` stub
+    whose payload marks when it RUNS."""
+
+    FETCH = "curl -fsSLo t %st" % URL
+    SUMS = "echo '%s  t' > sums" % ("a" * 64)
+    BASH = (None, "bash", "bash {0}")
+    # What a `case` may stand behind: the lead's line with the `case` on it, the same with the lead
+    # on a line of its own, and the call that runs it.
+    LEADS = (("if true; then %s; fi", "if true; then\n%s\nfi", None),
+             ("if false; then :; else %s; fi", "if false; then :; else\n%s\nfi", None),
+             ("if false; then :; elif true; then %s; fi", "if false; then :; elif true; then\n%s\nfi", None),
+             ("for a in 1; do %s; done", "for a in 1; do\n%s\ndone", None),
+             ("while true; do %s; break; done", "while true; do\n%s\nbreak; done", None),
+             ("until false; do %s; break; done", "until false; do\n%s\nbreak; done", None),
+             ("{ %s; }", "{\n%s\n}", None), ("{ { %s; }; }", "{ {\n%s\n}; }", None),
+             ("if true; then { %s; }; fi", "if true; then {\n%s\n}; fi", None),
+             ("if %s; then :; fi", "if\n%s\nthen :; fi", None),
+             ("while %s; do break; done", "while\n%s\ndo break; done", None),
+             ("f() { %s; }", "f() {\n%s\n}", "f"), ("f () { %s; }", "f () {\n%s\n}", "f"),
+             ("f(){ %s; }", "f(){\n%s\n}", "f"), ("f() ( %s )", "f() (\n%s\n)", "f"),
+             ("f() { if true; then %s; fi; }", "f() { if true; then\n%s\nfi; }", "f"))
+    # Bash's alone: dash refuses the keyword, and a `-` in a function's name.
+    BASH_LEADS = (("function f { %s; }", "function f {\n%s\n}", "f"),
+                  ("function f() { %s; }", "function f() {\n%s\n}", "f"),
+                  ("my-fn() { %s; }", "my-fn() {\n%s\n}", "my-fn"))
+    # An arm's commands, the lines in front of the `case`, the lines behind it, and whether the guard
+    # reports it under every setting (None: as on lines of its own, no more).
+    BODIES = ((("x) sh t ;;",), (FETCH,), (), True),                                # the issue's shape
+              (("x) %s ;;" % FETCH,), (), ("sh t",), True),                         # the fetch in the arm
+              (("x) curl -fsSL %si.sh | sh ;;" % URL,), (), (), True),              # fetched and run there
+              (("y) : ;;", "x) sh t ;;"), (FETCH,), (), True),                      # a second arm
+              (("a|x) sh t ;;",), (FETCH,), (), True), (("(x) sh t ;;",), (FETCH,), (), True),
+              (("x) ${Y:+/usr/bin/env true} sh t ;;",), (FETCH,), (), True),        # a word bash may drop
+              (("x) echo go; sh t ;;",), (FETCH,), (), True),                       # `main` read a second command
+              (("x) make all ;;",), (), (), False),                                 # nothing fetched
+              # no parent runs the download, and each reports as on lines of its own (the price): an
+              # arm that is not taken, and a gate in an arm, which `main` credits nowhere
+              (("y) sh t ;;",), (FETCH,), (), None),
+              (("x) sha256sum -c sums || exit 1 ;;",), (FETCH, SUMS), ("sh t",), None))
+
+    @staticmethod
+    def step(lead, call, arms, front=(), behind=(), below=False):
+        """A step: `front`, `lead` holding a `case` over `arms` -- on one line, or with the arms on
+        lines below the header (`below`) -- the `call` of a function, and `behind`."""
+        case = "case x in\n%s\nesac" % "\n".join("  " + arm for arm in arms) if below else "case x in %s esac" % " ".join(arms)
+        return "\n".join((*front, lead % case, *((call,) if call else ()), *behind, "echo done")) + "\n"
+
+    def test_the_issues_rows_report(self):
+        # The 17 rows of the issue's family that `main` read CLEAN in 83 cells while a parent ran the
+        # download: 16 of them under all 16 runs, the `function` spelling under bash's.
+        for row in ("%s\nif true; then case x in x) sh t ;; esac; fi" % self.FETCH,
+                    "%s\nif true; then case x in y) : ;; x) sh t ;; esac; fi" % self.FETCH,
+                    "if true; then case x in x) %s ;; esac; fi\nsh t" % self.FETCH,
+                    "%s\nif true; then case x in\n  x) sh t ;;\nesac; fi" % self.FETCH,
+                    "%s\nif false; then :; else case x in x) sh t ;; esac; fi" % self.FETCH,
+                    "%s\nfor a in 1; do case x in x) sh t ;; esac; done" % self.FETCH,
+                    "%s\nfor a in x; do case $a in\n  x) sh t ;;\nesac; done" % self.FETCH,
+                    "for a in x; do case $a in\n  x) curl -fsSL %st | sh ;;\nesac; done" % URL,
+                    "%s\nset -- x\nwhile [ $# -gt 0 ]; do case \"$1\" in\n  x) sh t ;;\nesac; shift; done" % self.FETCH,
+                    "%s\n{ case x in x) sh t ;; esac; }" % self.FETCH,
+                    "%s\n! case x in x) sh t ;; esac" % self.FETCH,
+                    "%s\nf() { case x in x) sh t ;; esac; }\nf" % self.FETCH,
+                    "%s\nf() { case x in y) : ;; x) sh t ;; esac; }\nf" % self.FETCH,
+                    "f() { case x in x) %s ;; esac; }\nf\nsh t" % self.FETCH,
+                    "%s\nf() { case x in\n x) sh t ;;\n esac; }\nf" % self.FETCH,
+                    "%s\nf() { case x in\n  x) sh t ;;\nesac\n}\nf" % self.FETCH):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\n", shell))
+        for shell in self.BASH:                         # dash refuses the keyword
+            with self.subTest(shell=shell):
+                self.assertTrue(reported("%s\nfunction f { case x in x) sh t ;; esac; }\nf\n" % self.FETCH, shell))
+
+    def test_a_case_behind_a_lead_reads_as_on_a_line_of_its_own(self):
+        # Every lead over the issue's arms, and four of them over every arm: the same answer under
+        # every setting whether the `case` shares the lead's line, only its header does, or neither
+        # -- and the answer named where every shell takes the lead, or bash's settings ask.
+        for leads, bodies in ((self.LEADS + self.BASH_LEADS, self.BODIES[:4]),
+                              (self.LEADS[:1] + self.LEADS[3:4] + self.LEADS[11:12] + self.BASH_LEADS[:1], self.BODIES[4:])):
+            for one, twin, call in leads:
+                for arms, front, behind, reports in bodies:
+                    own = self.step(twin, call, arms, front, behind, below=True)
+                    for below in (False, True):
+                        row = self.step(one, call, arms, front, behind, below)
+                        for shell in SHELLS:
+                            with self.subTest(row=row, shell=shell):
+                                self.assertEqual(reported(own, shell), reported(row, shell))
+                                if reports is not None and (shell in self.BASH or (one, twin, call) in self.LEADS):
+                                    self.assertEqual(reports, reported(row, shell))
+
+    def test_a_negated_or_a_timed_case_is_read(self):
+        # `!` and `time` have no line of their own to stand on. Every parent runs each `!` row; bash's
+        # run `time case`, which dash has no keyword for (under `sh` it reports too: the price).
+        for row in ("! case x in x) sh t ;; esac", "! case x in\n  x) sh t ;;\nesac",
+                    "if true; then ! case x in x) sh t ;; esac; fi", "! { case x in x) sh t ;; esac; }"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\necho done\n" % (self.FETCH, row), shell))
+        for row in ("time case x in x) sh t ;; esac", "time case x in\n  x) sh t ;;\nesac",
+                    "if true; then time case x in x) sh t ;; esac; fi"):
+            for shell in self.BASH:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\necho done\n" % (self.FETCH, row), shell))
+        # `time` is read through, not left a statement of its own: there it is a wrapper with no
+        # command, which the guard reports whatever the `case` holds. Nothing runs in these.
+        for row in ("time case x in x) echo hi ;; esac", "if true; then time case x in x) echo hi ;; esac; fi",
+                    "time case x in t) echo hi ;; esac"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported("%s\n%s\necho done\n" % (self.FETCH, row), shell))
+
+    def test_a_function_whose_body_is_the_case_is_read(self):
+        # `f() case x in x) sh t ;; esac`: a function's body may be any compound, and here the header
+        # is all that stands in front of the `case`. Every parent runs each; bash 5.2.21 alone takes
+        # the `function` spelling with no braces. A check in such a body, the function never called,
+        # is credited no more than in any arm, and all 16 runs run the download.
+        for row in ("f() case x in x) sh t ;; esac\nf", "f() case x in\n  x) sh t ;;\nesac\nf",
+                    "f() case x in y) : ;; x) sh t ;; esac\nf"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\necho done\n" % (self.FETCH, row), shell))
+        for shell in SHELLS:
+            with self.subTest(shell=shell):
+                self.assertTrue(reported("f() case x in x) curl -fsSL %si.sh | sh ;; esac\nf\necho done\n" % URL, shell))
+                self.assertTrue(reported("%s\n%s\nf() case x in x) sha256sum -c sums || exit 1 ;; esac\nsh t\necho done\n"
+                                         % (self.FETCH, self.SUMS), shell))
+        for shell in self.BASH:
+            with self.subTest(shell=shell):
+                self.assertTrue(reported("%s\nfunction f case x in x) sh t ;; esac\nf\necho done\n" % self.FETCH, shell))
+
+    def test_a_gate_in_an_arm_is_credited_no_more_than_on_a_line_of_its_own(self):
+        # What stands in front of the header is a statement of its own because what reads a `case`
+        # asks for it as its statement's first word. With the header left on the lead's statement
+        # the arm was read as no arm, and a check in it was credited: each of these read CLEAN under
+        # `-e` then, and all 16 runs run the download -- a failure the `!` negates, one in a
+        # condition, a function never called.
+        check = "sha256sum -c sums"
+        for row in ("! case x in x) %s ;; esac" % check, "! { case x in x) %s ;; esac; }" % check,
+                    "if case x in x) %s ;; esac; then :; fi" % check,
+                    "if false; then :; elif case x in x) %s ;; esac; then :; fi" % check,
+                    "while case x in x) %s ;; esac; do break; done" % check,
+                    "until case x in x) %s ;; esac; do break; done" % check,
+                    "f() { case x in x) %s || exit 1 ;; esac; }" % check,
+                    "if true; then case x in y) %s || exit 1 ;; esac; fi" % check):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\n%s\nsh t\necho done\n" % (self.FETCH, self.SUMS, row), shell))
+        # No parent runs the download here, and `main` reports each: it credits a gate in no arm, on
+        # a line of its own or not (the price, as it was).
+        for row in ("if true; then case x in x) %s || exit 1 ;; esac; fi" % check,
+                    "{ case x in x) %s || exit 1 ;; esac; }" % check,
+                    "f() { case x in x) %s || exit 1 ;; esac; }\nf" % check):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\n%s\nsh t\necho done\n" % (self.FETCH, self.SUMS, row), shell))
+
+    def test_other_spellings_and_programs_handed_to_a_shell(self):
+        # A quoted subject, a tab for each blank, `in` on the next line, a `case` in an arm of
+        # another behind a lead, and the lead in a `-c` string, an `eval`, a heredoc: every parent
+        # runs each.
+        for row in ("set -- x\nif true; then case \"$1\" in x) sh t ;; esac; fi",
+                    "if true; then\tcase\tx\tin x) sh t ;; esac; fi", "if true; then case x\nin x) sh t ;; esac; fi",
+                    "if true; then case x in x) case y in y) sh t ;; esac ;; esac; fi",
+                    "case x in x) if true; then case y in y) sh t ;; esac; fi ;; esac",
+                    "if true; then case x in y) : ;; esac; case x in x) sh t ;; esac; fi",
+                    "bash -c 'if true; then case x in x) sh t ;; esac; fi'",
+                    "eval 'f() { case x in x) sh t ;; esac; }; f'",
+                    "bash <<'EOF'\nif true; then case x in x) sh t ;; esac; fi\nEOF"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\necho done\n" % (self.FETCH, row), shell))
+
+    def test_the_controls_read_as_they_did(self):
+        # Reported on `main` too: the `case` as its statement's first word -- on a line of its own,
+        # behind `;`, `&&` and `(`, and as a pipeline's stage; a keyword for its subject, which is no
+        # lead behind `case`; and `for`, whose next word is a name and whose words are words.
+        for row in ("case x in x) sh t ;; esac", "true; case x in x) sh t ;; esac", "true && case x in x) sh t ;; esac",
+                    "( case x in x) sh t ;; esac )", "true | case x in x) sh t ;; esac",
+                    "case if in if) sh t ;; esac", "case then in then) sh t ;; esac", "case time in time) sh t ;; esac",
+                    "if true; then case if in if) sh t ;; esac; fi",
+                    "for case in in; do ( sh t ); done", "for a in case x in; do sh t; done"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\necho done\n" % (self.FETCH, row), shell))
+        # CLEAN, and no parent runs the download: behind an assignment `case` is a command's name and
+        # bash refuses the `)`; `for case in in` loops over a word; a keyword that is an argument, or
+        # quoted, leads nothing.
+        # A pattern that is the fetched file's name is a pattern, behind a keyword for a subject too
+        # (`time` and `if` lead nothing behind `case`) and behind a lead, where `main` read it as a
+        # command and reported it.
+        for row in ("V=1 case x in x) sh t ;; esac", "for case in in; do echo $case; done",
+                    "echo then case x in x", "'then' case x in x",
+                    "case time in t) echo hi ;; esac", "case if in t) echo hi ;; esac",
+                    "if true; then case time in t) echo hi ;; esac; fi"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported("%s\n%s\necho done\n" % (self.FETCH, row), shell))
+        # `for`'s name and its words lead no header, and neither does a command: its words are its
+        # arguments. Read as a header, `case in in` or `case x in` would leave the reader in an arm's
+        # pattern, where a `|` is no pipeline, and the check piped behind it would be no check: it
+        # stops every parent, and each reads CLEAN, as on `main`.
+        gate = "echo '%s  t' | sha256sum -c - || exit 1" % ("a" * 64)
+        for row in ("for case in in\ndo :; done", "for a\nin case x in\ndo :; done",
+                    "echo case x in", "printf '%s\\n' case x in"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported("%s\n%s\n%s\nsh t\necho done\n" % (self.FETCH, row, gate), shell))
+
+
 class TestASplitterGapEveryShellReadsWhole(unittest.TestCase):
     """#2756, #2731, #2657: a pipe continued on the next line, an unquoted `${X:-bash -s}`
     default, and `<>` on standard input -- each run by bash 5.2.21, 3.2.57 and dash and read
