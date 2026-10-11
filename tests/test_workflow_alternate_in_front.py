@@ -140,6 +140,27 @@ class TestAnAlternateIsNothingWhateverItNames(unittest.TestCase):
         self.assertEqual(NOW, marks(text))
 
 
+class TestItReadsAsABareReferenceInItsPlace(unittest.TestCase):
+    """The rule in one line: the job reads a step with an alternate that names no wrapper as it reads the same
+    step with `$T` in the alternate's place, whatever stands beside it and behind it -- the second walk's reading:
+    the main pass drops `$T` in front of a shell and not the alternate. On the forge that holds for every row of
+    the 5,733-row hunt that moves (596 of 596)."""
+
+    WORDS = ("${A:+echo}", "$T", "${V:+sudo}", "${W:-sudo}", "${X:+sh}", "${Z:-}")
+    TAILS = (("", "sh -c '%s'" % P), ("", "eval '%s'" % P), ("", "-c '%s'" % P), (FETCH, "t"), (FETCH, "sh t"), ("", P),
+             ("", "git push origin v1"))
+
+    def test_alone_and_beside_each_kind_of_word(self):
+        fronts = [("${A:+echo}",)] + [pair for pair in ((a, b) for a in self.WORDS for b in self.WORDS)
+                                       if "${A:+echo}" in pair]
+        for front in fronts:
+            for before, tail in self.TAILS:
+                row = "%s%s %s\n" % (before, " ".join(front), tail)
+                twin = "%s%s %s\n" % (before, " ".join("$T" if word == "${A:+echo}" else word for word in front), tail)
+                with self.subTest(row=row.splitlines()[-1]):
+                    self.assertEqual(marks(twin)[0], marks(row)[0])
+
+
 class TestAnAlternateThatIsTheCommand(unittest.TestCase):
     """An alternate naming a shell, a fetcher or `eval` may be the command, and the reader reads the word so
     (#2337, #2963). It is not dropped; a word in front of it is."""
