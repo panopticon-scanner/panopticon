@@ -7,6 +7,46 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader drops an alternate that names no wrapper (#2943, #3003).** `${DRY_RUN:+echo}
+  sh -c 'curl … | sh'` ran the pipeline under every parent and read CLEAN: with its name unset an
+  alternate is nothing whatever it names, and `shell_defaults._optional`, which drops a `$` word
+  in front of a name the reader knows, took an alternate for such a word only where it names a
+  wrapper -- the test it applies to a default, whose word stays. The second walk now goes on past
+  an alternate that names no wrapper, as it does past a bare reference: in front of a shell, a
+  wrapper, an interpreter, a fetcher, `eval`, `.` and `source`, wherever the statement stands. It
+  stops, as `main` does, at one the reader reads as the command it names (`_shell_default`: a
+  shell, a fetcher, `eval`): `$T ${X:+sh} -c 'P'` is `sh -c 'P'` where `X` is set and reads so,
+  now behind a dropped alternate too. The main pass reads as `main` does. So the job reads a step
+  with such an alternate as it reads the same step with `$T` in its place (pinned; 596 of the 596
+  rows that move in the hunt's third part). Two designs were measured and not taken. Keeping the
+  blank-free word whole, the direction #2943 names, reports four lines of `${DRY_RUN:+echo} git
+  push …` with nothing fetched -- the fourth word whose halves read apart is past the folds' cap
+  -- and on the #2939 round-1 seat's fuzz rows adds 5,727 cells where no parent runs. Dropping the
+  longest run of such words a known name stands behind lost 197 of 5,733 rows: a wrapper word
+  counted as a known name, and the `eval` in `${E:+eval} ${V:+sudo} t` went with the run. On a
+  6,879-row hunt with 16-run truth, in four parts -- 51 words in front by 14 commands; 28 places a
+  statement stands and 29 runs of words; every run of one to three words of nine kinds in front of
+  seven tails; the word in a stage a download is handed to -- against `main`: 3,750 cells in 760
+  rows report that a parent runs, and none goes from REPORT to CLEAN. The price, REPORT though no
+  parent of that setting runs, is 1,105 cells in 236 rows: an alternate that is the shell behind a
+  dropped word, which runs where its own name is set (675 cells; `main` reports it behind `$T`);
+  the step that set the name -- `S=1`, then `${S:+echo} sh -c 'P'` prints -- the word being
+  dropped whatever the step did to its name, as `$S` is (150); a `python3 t` behind the word,
+  which the harness's shell payload cannot show running (120); what `main` reports of the command
+  behind (110); and a setting whose parent refuses the row, `source` under `sh` (50). On the
+  seat's 10,004 fuzz rows with truth, where `main` misses 3,268 cells in 909 rows, 2,337 cells in
+  616 rows report and 3,064 are added where none runs, in 722 rows; `main` reports 678 of those
+  rows once the alternates are taken out of their text. Still missed, each for an issue of its
+  own: an alternate naming a shell, a fetcher or `eval` in front of another command (`${X:+sh}
+  curl … | sh`), read the one way `main` reads it (224 rows of the hunt); an alternate of a
+  positional parameter, an indirection or an element, or whose word holds a reference (39 rows); a
+  pattern or case operator, and `.`, `source` or `eval` inside a word (#2944), in the fuzz.
+  #3003's ten pinned limits move with it (`test_an_alternate_naming_no_wrapper_was_3003`). On the
+  standing sets and the seat's class rows, marked with the parse nonce pinned, 2 of 33,210 rows
+  move, both from CLEAN to REPORT and both run under all 16. The cost, `job_defects` against
+  `main` on the forge, three passes, each a process of its own: flat on the #2942 seat's 3,881-row
+  sample of the standing rows (0.99x to 1.01x) and on the hunt's fourth part (1.00x to 1.02x), and
+  1.10x to 1.11x on its first part, where the commands behind the words are read now.
 - **`scripts/workflow_printers.py` splits how a printer's text is decoded into
   `scripts/workflow_printer_writes.py` (#3013, printers lane).** A pure move at the module's size
   (700 of its 700 lines), in two pieces, each byte for byte with the comments above it and the two
