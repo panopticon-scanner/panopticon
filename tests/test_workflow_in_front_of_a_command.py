@@ -205,6 +205,19 @@ class TestBuiltinIsReadThrough(unittest.TestCase):
                 self.assertEqual(CLEAN, marks(step))
                 self.assertEqual(CLEAN, marks(FETCH + step))
 
+    def test_an_exec_with_nothing_to_run_keeps_no_redirection_behind_it(self):
+        # `exec 3<>t` keeps descriptor 3 for the lines behind it, and `command exec 3<>t` does. Behind `builtin`
+        # bash undoes the redirection when the builtin returns, wherever the word stands: `sh <&3` is a bad
+        # descriptor. Truth: the fetch alone, each (bash 5.2.21 and 3.2.57; dash has no `builtin`).
+        for front in ("builtin exec", "builtin -- exec", "builtin builtin exec", "builtin command exec", "command builtin exec",
+                      "X=1 builtin exec", "$S builtin exec", "builtin $S exec"):
+            with self.subTest(front=front):
+                self.assertEqual(CLEAN, marks(FETCH + "%s 3<> t\nsh <&3" % front))
+        for front in ("exec", "command exec"):                                  # truth: runs
+            with self.subTest(control=front):
+                self.assertEqual(BEFORE, marks(FETCH + "%s 3<> t\nsh <&3" % front))
+        self.assertEqual(NOW, marks(FETCH + "builtin exec sh t"))                # one with a command to run still runs it
+
     def test_no_wrapper_that_execs_runs_it(self):
         # `sudo`, `env`, `exec`, `nice` and `nohup` look for a program named `builtin`, and so does `time` where
         # `command` runs it; a path names a file. Truth: nothing, each.

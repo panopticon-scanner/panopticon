@@ -86,10 +86,12 @@ def _runs_builtin(argv, heads, optional):
     that may each be nothing (`_optional`) -- NAME as written, or the one-word default the reader reads as its word
     (`${E:-eval}`) -- and nothing where NAME is no builtin. Bash alone, so only where nothing that execs stands
     in front: `command` runs one, by name or by path (#2997), and so does `time` as bash's keyword, in front of
-    them all; `sudo`, `env`, `exec` and `command time` look for a program."""
+    them all; `sudo`, `env`, `exec` and `command time` look for a program. And not an `exec` with nothing to
+    run: behind `builtin` bash undoes the redirections it is given, where `exec 3<>F` alone keeps them."""
     named = argv[1 + (argv[1:2] == ["--"]):]
     named = named[_optional(named, True) if optional else 0:]
-    if not named or (_shell_default(named[0]) or named)[0] not in BUILTINS:
+    if not named or (_shell_default(named[0]) or named)[0] not in BUILTINS or [
+            word for word in named if word not in ("builtin", "command", "--")] == ["exec"]:
         return None
     runs = all(os.path.basename(word) == "command" for word in itertools.dropwhile(lambda word: word == "time", heads))
     return named if runs and _through() else None
