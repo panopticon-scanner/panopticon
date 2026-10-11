@@ -359,8 +359,8 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
         "out_file": out_file}, host)
     host_ev = runio.host_evidence(review_root)
     enforced = loop_batch.expected_enforced(review_root, host)
-    # #1344 F4 (a): a host with no PROVEN artifact_write_guard gets return-persist
-    # instead of unguarded self-write -- see requests.delivery.
+    # #1344/#1622: self-write requires both its static transport mechanism and
+    # a PROVEN artifact-write boundary -- see requests.delivery.
     mode, prefix = requests.delivery(host, host_ev, "domain-panel.md", out_file)
     # run_id/group/domain restate the cell this entry IS, so a host can check a
     # findings file's own `_panopticon` stamp against the entry that asked for

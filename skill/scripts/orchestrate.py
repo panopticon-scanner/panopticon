@@ -240,15 +240,14 @@ def loop(args):
               "bound the run with --max-iterations and --entry-timeout" % host,
               file=sys.stderr, flush=True)
     # Both are resolved BEFORE `_first_run`, and the resolved mode is written back onto `args`,
-    # deliberately. `driver._establish_host_posture` reads `args.mode` to decide WHICH settings
-    # file the guard probes measure (spec 5.4: the run folder's in headless mode, the session
-    # root's otherwise), and it runs on EVERY `driver.run` call. Leaving `args.mode` at None for
-    # the first call and resolving afterwards would probe the session root once and the run folder
-    # from then on -- and on any machine whose session root has no settings file (the #1493 case)
-    # those two disagree about artifact_write_guard, so the run would refuse ITSELF as mid-run
-    # posture drift on its second invocation. This is why host resolution reads the manifest here
-    # rather than after `_first_run`; `--reset` is handled in `_resolve_host` so the outgoing
-    # manifest cannot steer a re-minted run.
+    # deliberately. `driver._establish_host_posture` reads `args.mode` to choose the probe inputs
+    # for this host, and it runs on EVERY `driver.run` call. For Claude's guard probes, headless
+    # mode measures the run folder's settings and session mode measures the session root's
+    # (spec 5.4). Resolving after the first call would therefore measure different controls across
+    # invocations and make the run refuse ITSELF as posture drift (#1493). Other hosts may prove
+    # the same capability by a different mechanism; mode still has to be stable before probing.
+    # This is why host resolution reads the manifest here rather than after `_first_run`;
+    # `--reset` is handled in `_resolve_host` so the outgoing manifest cannot steer a re-minted run.
     args.mode = mode
     try:
         runner = runners_base.runner_for(host, mode)

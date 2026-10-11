@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Function-body and forked-scope readers for downloaded-file use discovery.
 
-Split out of `scripts/workflow_uses.py` at that module's 700-line ceiling,
+Split out of `scripts/workflow_uses.py` at that module's 699-line ceiling,
 byte for byte: function ranges and removal, the compound/group walk whose
 assignments live in another shell, and the bounded end of a function body.
 `workflow_uses` re-exports every name, so existing callers keep their imports.
@@ -49,23 +49,19 @@ _COMPOUNDS = {"{": "}", "if": "fi", "case": "esac", "for": "done", "select": "do
 
 
 def _forked(stmts, index):
-    """The statements the step's shell forks (#2425) in a child the statement
-    at `index` is not in: a `( ... )` subshell's past its opening statement,
-    an `&&`/`||` list's sent to the background whole (`T=x && : &`), and
-    every statement of a `{ ...; }` group or an `if`, `case`, `for`,
-    `select`, `while` or `until` compound, from its head to its close, that
-    is piped into, piped on, run by `coproc`, or sent to the background by
-    its own `&` or the one ending its list (`if T=x; then :; fi &`) -- a
-    list is not followed past a compound command, so `T=x && if c; then :;
-    fi &` reads `T=x` as sure (a limit) -- and, never sure outside it, a
-    compound that is a function's body (`g() for T in x; do :; done`, `{ f()
-    { :; }; }`, `_openers`), which runs only where it is called. Their
-    assignments end with the child, as `working_directories` keeps a
-    subshell's `cd`; a use in the same child sees them as its own; a use in
-    a later stage of the statement that closes it is outside it (`{ T=x; } |
-    sh "$T"`). A keyword is one only where the stage's command would stand
-    (`_openers`); an array literal's parentheses count as a group's, which
-    marks a multi-line literal's word lines unsure."""
+    """The statements the step's shell forks (#2425) in a child the statement at `index` is not in: a
+    `( ... )` subshell's past its opening statement, an `&&`/`||` list's sent to the background
+    whole (`T=x && : &`), and every statement of a `{ ...; }` group or an `if`, `case`, `for`,
+    `select`, `while` or `until` compound, from its head to its close, that is piped into, piped on,
+    run by `coproc`, or sent to the background by its own `&` or the one ending its list (`if T=x;
+    then :; fi &`) -- a list is not followed past a compound command, so `T=x && if c; then :; fi &`
+    reads `T=x` as sure (a limit) -- and, never sure outside it, a compound that is a function's
+    body (`g() for T in x; do :; done`, `{ f() { :; }; }`, `_openers`), which runs only where it is
+    called. Their assignments end with the child, as `working_directories` keeps a subshell's `cd`;
+    a use in the same child sees them as its own; a use in a later stage of the statement that
+    closes it is outside it (`{ T=x; } | sh "$T"`). A keyword is one only where the stage's command
+    would stand (`_openers`); an array literal's parentheses count as a group's, which marks a
+    multi-line literal's word lines unsure."""
     forked: set[int] = set()
     opened: list[tuple[int, bool, str]] = []
     subshells: list[int] = []
@@ -100,15 +96,13 @@ def _forked(stmts, index):
 
 
 def _openers(stage, header=False):
-    """The words `_forked` reads in `stage` for a compound's head or close,
-    each with whether the compound surely runs apart from the step's shell,
-    and whether a function header ends the stage with its body to come
-    (`header`: `g()` or `function g()` alone on its line). They are the lead
-    words -- the compound right after a function header is its body -- and
-    what the reader leaves in the command: the `select`, the compound after
-    `coproc` (and its NAME), which runs in a child, and the body `{` of a
-    function defined after a keyword on its line, which the reader splits
-    into its name, a group of its own `()` and the `{`."""
+    """The words `_forked` reads in `stage` for a compound's head or close, each with whether the
+    compound surely runs apart from the step's shell, and whether a function header ends the stage
+    with its body to come (`header`: `g()` or `function g()` alone on its line). They are the lead
+    words -- the compound right after a function header is its body -- and what the reader leaves in
+    the command: the `select`, the compound after `coproc` (and its NAME), which runs in a child,
+    and the body `{` of a function defined after a keyword on its line, which the reader splits into
+    its name, a group of its own `()` and the `{`."""
     argv = command(stage.argv)
     lead = stage.argv[:len(stage.argv) - len(argv)]
     words = []

@@ -246,24 +246,113 @@ class TestWhenAValueIsHeldAndEmptied(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertEqual(expected, table(script).scalars)
 
-    def test_a_call_records_nothing_and_a_pipeline_its_last_stage_unsure(self):
-        # A call's own assignments are not read (a price); a pipeline's stages
-        # run in subshells, but its last runs in the shell under `lastpipe`.
-        self.assertEqual({"T": ["a"]}, table("f() { T=b; }; T=a; f").scalars)
+    def test_a_call_adds_its_body_unsure_and_a_pipeline_its_last_stage_unsure(self):
+        # A call's own assignments were not read (a price) until PR #2855's fix rounds
+        # added them, unsure, beside the caller's own (#2785; `record_called`, round 2's
+        # fail-closed direction); a pipeline's stages run in subshells, but its last runs
+        # in the shell under `lastpipe`.
+        self.assertEqual({"T": ["a", "b"]}, table("f() { T=b; }; T=a; f").scalars)
         rows = {"T=a | cat; echo": {}, "T=a; echo | { T=x; }": {"T": ["a", "x"]},
                 "T=a; cat | T=b": {"T": ["a", "b"]}}
         for script, expected in rows.items():
             with self.subTest(script=script):
                 self.assertEqual(expected, table(script).scalars)
 
-    def test_a_name_past_eight_candidates_holds_its_stand_in_alone(self):
-        # x20: the guard's reading without the table, rather than the last eight.
+    def test_a_called_functions_assignments_reach_the_use_unsure(self):
+        # PR #2855 fix rounds (round 1 B2, round 2's direction), #2785: the table at the use
+        # after a call holds what the body may assign beside the caller's own value, never
+        # surely -- a `return` the body takes, a later redefinition, a stand-in or a
+        # `declare -g` the shell lacks all read the same way; every definition before the
+        # call counts and the functions the body calls are followed; `local` dies with the
+        # call; a subshell body, a call before the definition, and a wrapper in front of the
+        # name (`env f`, which runs no function) carry nothing.
+        rows = {'T=/dev/null; f(){ T=/tmp/p; }; f; sh "$T"': {"T": ["/dev/null", "/tmp/p"]},
+                'T=/dev/null; if true; then f(){ :; T=/tmp/p; }; fi; f; sh "$T"':
+                    {"T": ["/dev/null", "/tmp/p"]},
+                'T=/dev/null; f(){ T=/tmp/p; }; if c; then f; fi; sh "$T"':
+                    {"T": ["/dev/null", "/tmp/p"]},
+                'T=/dev/null; f(){ if c; then T=/tmp/p; fi; }; f; sh "$T"':
+                    {"T": ["/dev/null", "/tmp/p"]},
+                'T=/dev/null; f() { return; T=/tmp/p; }; f; sh "$T"': {"T": ["/dev/null", "/tmp/p"]},
+                'T=a; f(){ T=b; }; f(){ T=c; }; f; sh "$T"': {"T": ["a", "b", "c"]},
+                'T=a; f(){ T+=b; }; f; f; sh "$T"': {"T": ["a", "ab", "abb"]},
+                'T=a; f(){ unset T; }; f; sh "$T"': {"T": ["a", ""]},
+                'T=/dev/null; f(){ T=$1; }; f x; sh "$T"': {"T": ["/dev/null", "$1"]},
+                'T=/dev/null; f() { declare -g T=/tmp/p; }; f; sh "$T"': {"T": ["/dev/null", "/tmp/p"]},
+                'T=/dev/null; g() { T=/tmp/p; }; f() { g; }; f; sh "$T"': {"T": ["/dev/null", "/tmp/p"]},
+                'T=/dev/null\ng ( )\n{\nT=/tmp/p\n}\ng\nsh "$T"': {"T": ["/dev/null", "/tmp/p"]},
+                'T=/dev/null; f(){ local T=/tmp/p; }; f; sh "$T"': {"T": ["/dev/null"]},
+                'T=/dev/null; f() ( T=/tmp/p ); f; sh "$T"': {"T": ["/dev/null"]},
+                'T=/dev/null; f; f() { T=/tmp/p; }; sh "$T"': {"T": ["/dev/null"]},
+                'T=/dev/null; f() { T=/tmp/p; }; env f; sh "$T"': {"T": ["/dev/null"]}}
+        for script, expected in rows.items():
+            with self.subTest(script=script):
+                self.assertEqual(expected, at_use(script).scalars)
+
+    def test_a_name_past_eight_candidates_keeps_eight_beside_the_stand_in(self):
+        # x20: past the cap main held the guard's reading without the table, `$T`, which a use
+        # reads as nothing. Since PR #2855 (round 7, the coordinator's ruling on #2871) the name
+        # keeps its first eight beside the cap's stand-in `PAST`, which a use reads as every
+        # download -- whatever was dropped, the ninth `8` here or `9` after the loop below.
         nine = "T=cuda_1.run" + "".join("; false && T=%d" % number for number in range(1, 9))
-        self.assertEqual({"T": ["$T"]}, table(nine).scalars)
-        self.assertEqual({"T": ["$T", "9"]}, table(nine + "; false && T=9").scalars)
-        self.assertEqual({"T": ["$T"]}, table("for T in 1 2 3 4 5 6 7 8 9; do :; done").scalars)
+        eight = ["cuda_1.run", "1", "2", "3", "4", "5", "6", "7", wv.PAST]
+        self.assertEqual({"T": eight}, table(nine).scalars)
+        self.assertEqual({"T": eight}, table(nine + "; false && T=9").scalars)
+        self.assertEqual(wv.PAST, table("for T in 1 2 3 4 5 6 7 8 9; do :; done").scalars["T"][-1])
         append = "A=1; false && A=2; false && A=3; B=x; false && B=y; false && B=z; A+=$B"
-        self.assertEqual(["$A"], table(append).scalars["A"])
+        self.assertEqual(["1x", "1y", "1z", "2x", "2y", "2z", "3x", "3y", wv.PAST], table(append).scalars["A"])
+
+
+class TestTheStandInPastTheCap(unittest.TestCase):
+    """PR #2855 round 7 (#2871, the coordinator's ruling): every truncation -- a name's, a word's,
+    an argv's -- leaves the cap's stand-in `PAST`, which a use reads as every download the step
+    holds there (`workflow_uses._live`); a write of the whole value or a sure `unset` ends it,
+    a write of word 0 keeping it at the other keys (round 8). The order of what
+    is kept carries no safety: it is the order bash assigns, the caller's own first."""
+
+    NINE = "T=a" + "".join("; false && T=%s" % c for c in "bcdefghi")
+
+    def test_a_maybe_write_keeps_it_and_a_sure_one_or_unset_ends_it(self):
+        self.assertEqual(["a", "b", "c", "d", "e", "f", "g", "h", wv.PAST], table(self.NINE).scalars["T"])
+        self.assertEqual(wv.PAST, table(self.NINE + "; false && T=P").scalars["T"][-1])
+        self.assertNotIn("P", table(self.NINE + "; false && T=P").scalars["T"])
+        self.assertEqual(["x"], table(self.NINE + "; T=x").scalars["T"])
+        self.assertNotIn("T", table(self.NINE + "; unset T").scalars)
+        self.assertEqual(["x", "$T"], table(self.NINE + "; T=x; false && read T").scalars["T"])
+
+    def test_an_array_past_the_cap_holds_it_at_every_key(self):
+        lists = table("declare -a A=(a0 a1)" + "".join("; false && A=(%s0 %s1)" % (c, c) for c in "bcdefgh")
+                      + "; false && A=(P0 P1)")
+        self.assertEqual([wv.PAST], lists.arrays["A"][-1])
+        self.assertEqual(9, len(lists.arrays["A"]))
+        for word in ("$A", "${A[0]}", "${A[1]}", "${A[7]}"):
+            with self.subTest(word=word):
+                self.assertIn(wv.PAST, wv.valued(word, lists))
+        self.assertIn(["sh", wv.PAST], wv.valued_argvs(["sh", "${A[@]}"], lists))
+
+    def test_a_word_built_from_it_is_it_whole(self):
+        values = table(self.NINE + '; U="./$T.run"; V=$U')
+        self.assertIn(wv.PAST, values.scalars["U"])
+        self.assertIn(wv.PAST, values.scalars["V"])
+        self.assertNotIn("./" + wv.PAST + ".run", values.scalars["U"])
+        self.assertEqual(wv.PAST, wv._as_word("x" + wv.PAST, "$X"))
+
+    def test_the_argv_cap_keeps_each_word_without_a_choice(self):
+        # Round 8: a product holds 64 (`_PRODUCT`) before the stand-in; a name holds 8.
+        values = table("A=1; false && A=2; false && A=3; B=x; false && B=y; false && B=z")
+        argvs = wv.valued_argvs(["sh", "$A", "-c", "$B", "$A", "$B"], values)
+        self.assertEqual(["sh", "1", "-c", "x", "1", "x"], argvs[0])
+        self.assertEqual(["sh", wv.PAST, "-c", wv.PAST, wv.PAST, wv.PAST], argvs[-1])
+        self.assertEqual(65, len(argvs))
+        below = wv.valued_argvs(["sh", "$A", "-c", "$B"], values)
+        self.assertEqual(9, len(below))                 # 3 x 3, within the product's cap
+        self.assertFalse(any(wv.PAST in argv for argv in below))
+
+    def test_the_use_reads_it_as_a_bound_name(self):
+        name = wu._reference(wv.PAST)
+        self.assertTrue(name)
+        self.assertIn(name, wu._live({}, {}, "."))
+        self.assertIn(name, wu._live({}, {}, "sub"))
 
 
 class TestAValueTheTableCannotSee(unittest.TestCase):
@@ -477,8 +566,16 @@ class TestHowAWordResolves(unittest.TestCase):
         self.assertEqual(["aa", "ab", "ba", "bb"], wv.valued("$T$T", two))
         three = table("; ".join("%s=1; false && %s=2; false && %s=3" % (name, name, name)
                                 for name in "ABC"))
-        self.assertEqual(["111", "112", "113", "121", "122", "123", "131", "132"],
-                         wv.valued("$A$B$C", three))
+        # PR #2855 round 7, on the coordinator's ruling ("every truncation leaves the stand-in";
+        # #2871), and round 8's ("enumerate a product up to 64 before the stand-in"): the first
+        # eight as pinned, the product's 27 in all, and past 64 the cap's stand-in, which a use
+        # reads as every download, where the product was cut in silence.
+        texts = wv.valued("$A$B$C", three)
+        self.assertEqual(["111", "112", "113", "121", "122", "123", "131", "132"], texts[:8])
+        self.assertEqual((27, "333"), (len(texts), texts[-1]))
+        four = table("; ".join("%s=1; false && %s=2; false && %s=3" % (name, name, name) for name in "ABCD"))
+        self.assertEqual((65, "1111", wv.PAST), (len(wv.valued("$A$B$C$D", four)),) + tuple(
+            wv.valued("$A$B$C$D", four)[i] for i in (0, -1)))
 
     def test_nothing_inside_a_lifted_substitution_is_matched(self):
         stmts = statements('T=cuda_1.run\nsh "$(printf %s "$T")"')
@@ -711,8 +808,13 @@ class TestAnArrayLiteral(unittest.TestCase):
     def test_argvs_are_capped(self):
         values = table("T=a; false && T=b; false && T=c")
         argvs = wv.valued_argvs(["$T", "$T"], values)
-        self.assertEqual(8, len(argvs))
+        # PR #2855 round 7, on the coordinator's ruling ("every truncation leaves the stand-in";
+        # #2871), and round 8's ("enumerate a product up to 64 before the stand-in"): nine argvs
+        # in all, and past 64 one argv more, each word with a choice the stand-in.
+        self.assertEqual(9, len(argvs))
         self.assertEqual(["a", "a"], argvs[0])
+        argvs = wv.valued_argvs(["$T", "$T", "$T", "$T"], values)
+        self.assertEqual((65, ["a", "a", "a", "a"], [wv.PAST] * 4), (len(argvs), argvs[0], argvs[-1]))
 
 
 class TestTheTableAtAStatement(unittest.TestCase):
@@ -756,10 +858,13 @@ class TestTheTableAtAStatement(unittest.TestCase):
                        'T=cuda_1.run; coproc { T=x; sh "$T"; }\nwait; sh "$T"',
                        'T=cuda_1.run; coproc W { T=x; }\nwait; sh "$T"',
                        'T=cuda_1.run; { f() { :; }; T=x; } &\nwait; sh "$T"',
-                       'T=cuda_1.run; {\n  f() {\n    :\n  }\n  T=x\n} &\nwait; sh "$T"',
-                       'T=cuda_1.run; { f() { :; T=x; }; }; sh "$T"'):
+                       'T=cuda_1.run; {\n  f() {\n    :\n  }\n  T=x\n} &\nwait; sh "$T"'):
             with self.subTest(script=script):
                 self.assertEqual(["cuda_1.run", "x"], at_use(script).scalars["T"])
+        # #2664: a header after a group's `{` on its line is read as on a line of its own, so
+        # the body's `T=x` is the function's, never run here (bash runs `cuda_1.run`).
+        self.assertEqual(["cuda_1.run"],
+                         at_use('T=cuda_1.run; { f() { :; T=x; }; }; sh "$T"').scalars["T"])
         self.assertEqual(["$arr", ""], at_use(z04).scalars["arr"])
         # A use in the same child sees what the child assigned before it as its own.
         for script in ('T=a; { T=x; sh "$T"; } &', 'T=a\n(\n  T=x\n  sh "$T"\n)',
@@ -788,13 +893,14 @@ class TestTheTableAtAStatement(unittest.TestCase):
                        'T=cuda_1.run; { echo {; T=x; }; sh "$T"',
                        # A list is not followed past a compound command (a limit).
                        'T=cuda_1.run; T=x && if c; then :; fi &\nwait; sh "$T"',
-                       'T=cuda_1.run; T=x && { :; } &\nwait; sh "$T"',
-                       # v02: a block nested in a one-line function's body inside a
-                       # forked group is taken to close that body (a limit: bash
-                       # runs `cuda_1.run`).
-                       'T=cuda_1.run; { f() { { :; }; }; T=x; } &\nwait; sh "$T"'):
+                       'T=cuda_1.run; T=x && { :; } &\nwait; sh "$T"'):
             with self.subTest(script=script):
                 self.assertEqual({"T": ["x"]}, at_use(script).scalars)
+        # v02: a block nested in a one-line function's body inside a forked group closed that
+        # body until #2664 read the group's `{` as its own statement; bash runs `cuda_1.run`,
+        # and the forked group leaves the step's `T` unsure.
+        self.assertEqual({"T": ["cuda_1.run", "x"]}, at_use(
+            'T=cuda_1.run; { f() { { :; }; }; T=x; } &\nwait; sh "$T"').scalars)
         self.assertEqual({"T": ["a", "b", "c"], "U": ["d"]},
                          table("T=a; ( T=b; T=c; ); U=d").scalars)
 
@@ -898,17 +1004,18 @@ class TestTheTableAtAStatement(unittest.TestCase):
                      # h6: a `g ()` header marks its body too.
                      'T=cuda_1.run\ng () for T in x; do :; done\nsh "$T"': ["cuda_1.run", "x"]})
         # k1, k2, w2: a `function g()` header's own `()` opens no `( )` body;
-        # k7: a call's own assignments are not read (a price: bash runs `x`).
+        # k7: a call's own assignments were not read (a price: bash runs `x`) until
+        # PR #2855's fix rounds added them unsure (#2785): the table holds both.
         rows.update({'T=cuda_1.run\nfunction g()\n{\n  T=x\n}\nsh "$T"': ["cuda_1.run"],
                      'T=cuda_1.run\nfunction g ()\n{\n  T=x\n}\nsh "$T"': ["cuda_1.run"],
                      'T=cuda_1.run\nfunction g()\nwhile T=x; false; do :; done\nsh "$T"':
                          ["cuda_1.run", "x"],
-                     'T=cuda_1.run\nfunction g()\n{\n  T=x\n}\ng\nsh "$T"': ["cuda_1.run"]})
+                     'T=cuda_1.run\nfunction g()\n{\n  T=x\n}\ng\nsh "$T"': ["cuda_1.run", "x"]})
         # Limits: b2p, a one-line `function f {` after a `{`, is read to the group's
-        # `}` (bash runs `x`); k3, a `g ( )` header, is no definition (bash runs
-        # `cuda_1.run`).
+        # `}` (bash runs `x`). k3, a `g ( )` header, was no definition until #2664
+        # read it as `g ()`: bash runs `cuda_1.run`, and so does the table now.
         rows.update({'T=cuda_1.run; { function f { :; }; T=x; }\nsh "$T"': ["cuda_1.run"],
-                     'T=cuda_1.run\ng ( )\n{\n  T=x\n}\nsh "$T"': ["x"]})
+                     'T=cuda_1.run\ng ( )\n{\n  T=x\n}\nsh "$T"': ["cuda_1.run"]})
         for script, expected in rows.items():
             with self.subTest(script=script):
                 self.assertEqual(expected, at_use(script).scalars["T"])

@@ -264,11 +264,18 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
         audit = by_name["Audit current main for open code-scanning alerts"]
 
         self.assertEqual(upload.get("id"), "upload-sarif")
-        self.assertEqual(
+        self.assertRegex(
             upload["uses"],
-            "github/codeql-action/upload-sarif@"
-            "1c5b675653bb5c22dbe9b12b556ec555138e09fd",
+            r"^github/codeql-action/upload-sarif@[0-9a-f]{40}$",
         )
+        with open(WORKFLOW, encoding="utf-8") as source:
+            workflow_source = source.read()
+        versioned_pin = re.compile(
+            r"^\s*uses:\s+" + re.escape(upload["uses"])
+            + r"\s+# v\d+\.\d+\.\d+\s*$",
+            re.MULTILINE,
+        )
+        self.assertRegex(workflow_source, versioned_pin)
         self.assertNotIn("wait-for-processing", upload.get("with", {}))
         self.assertLess(steps.index(upload), steps.index(audit))
         self.assertEqual(audit.get("timeout-minutes"), 5)

@@ -231,3 +231,20 @@ def redact_tree(obj, _key=None):
     if isinstance(obj, dict):
         return {k: redact_tree(v, k) for k, v in obj.items()}
     return obj
+
+
+def _repr_value(obj):
+    """A JSON-ish value with every original string redacted before `repr`."""
+    if isinstance(obj, str):
+        return redact(obj)
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_repr_value(item) for item in obj)
+    if isinstance(obj, dict):
+        return {_repr_value(key): _repr_value(value)
+                for key, value in obj.items()}
+    return obj
+
+
+def redact_repr(obj, limit):
+    """Represent a nested value only after redacting its original strings."""
+    return redact_diagnostic(repr(_repr_value(obj)), limit)

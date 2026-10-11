@@ -19,6 +19,7 @@ import re
 import shell_lex
 import shell_reader
 from shell_reader import command
+from workflow_called import record_called
 from workflow_checks import inside
 from workflow_forms import (BIN_DIRS, CONTAINERS, at_directory, chmod_executable,
                             chmod_targets, covers, described, in_container, may_run,
@@ -32,7 +33,7 @@ from workflow_use_scopes import (_COMPOUNDS as _COMPOUNDS, _body_end, _forked,
 # names, and its callers keep reaching them here.
 from workflow_values import (Values as Values, assigned as assigned, record as record,
                              valued as valued, valued_argvs as valued_argvs)
-from workflow_values import _as_word, _for_parts, _literals, emptied
+from workflow_values import PAST, _as_word, _for_parts, _literals, emptied
 
 
 INTERPRETERS = ("sh", "bash", "dash", "zsh", "ksh", "ash", "python", "python3",
@@ -82,14 +83,15 @@ def _active(bindings, word, directory):
 
 
 def _live(named, positional, directory):
-    """Bound names that still designate the file in `directory`."""
+    """Bound names that still designate the file in `directory`, and the name the cap's
+    stand-in reads (`workflow_values.PAST`, #2871), which designates every download."""
     bound = {
         name for name, binding in {**named, **positional}.items()
         if binding.absolute or binding.directory == directory
     }
     if "1" in bound:
         bound.update(("@", "*"))
-    return bound
+    return bound | {_reference(PAST)}
 
 
 def _from_operand(word, dest, directory, bindings):
@@ -254,7 +256,7 @@ def copies(statement, names, directory):
     """New names this statement gives a known file through a bounded copy."""
     new = set()
     for stage in statement.stages:
-        argv = command(stage.argv)
+        argv = shell_reader.acted(stage.argv)
         if not argv:
             continue
         name = os.path.basename(argv[0])
@@ -309,7 +311,7 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset()):
             word.startswith(BIN_DIRS) or "/bin/" in word for word in rest):
         return "putting it on PATH with `%s`" % name
     if name == "cat" and position + 1 < len(statement.stages):
-        following = command(statement.stages[position + 1].argv)
+        following = shell_reader.acted(statement.stages[position + 1].argv)
         if following and os.path.basename(following[0]) in INTERPRETERS:
             return "piping it into `%s`" % os.path.basename(following[0])
     return None
@@ -377,7 +379,7 @@ def _function_use(stmts, definition, args, dest, directory, named, inherited, ta
     kinds = _control_kinds(body)
     for index, statement in enumerate(body):
         for position, stage in enumerate(statement.stages):
-            bound = _live(local_named, positional, here) if called else frozenset()
+            bound = _live(local_named if called else {}, positional, here)
             argv = command(stage.argv)
             if called and (answer := use(statement, position, stage, argv, dest, here, bound)):
                 return answer
@@ -434,8 +436,8 @@ def static_values(stmts, index, working=None, scopes=None, start=None):
     not found (a limit). At an index inside a function body only that body is
     walked, under its own control flow and from a copy of `start`, the
     caller's table at a call, which `_function_use` carries, or an empty one;
-    a body is otherwise skipped, so a call's own assignments are not read
-    (`f() { T=b; }; T=a; f` holds `a`, a price); a subshell body
+    a body is otherwise skipped, and a call to a function defined before it
+    adds what the body may assign, unsure (`record_called`); a subshell body
     (`g() ( ... )`) ends where its parentheses close (`_body_end`). A
     function defined after `{`, `then` or `do` on the same line is not found
     (`_function_ranges`' limit), nor is the end of a body that is neither
@@ -455,8 +457,9 @@ def static_values(stmts, index, working=None, scopes=None, start=None):
     relative path."""
     scopes = scopes or {}
     forked = _forked(stmts, index)
-    bodies = [(head, *_body_end(stmts, head, close))
-              for entries in _function_ranges(stmts)[0].values() for _name, head, close in entries]
+    starts = _function_ranges(stmts)[0]
+    bodies = [(head, *_body_end(stmts, head, close)) for entries in starts.values()
+              for _name, head, close in entries]
     first, last = max([(head, end) for head, end, found in bodies
                        if found and head <= index <= end], default=(-1, len(stmts) - 1))
     nested = {position for head, end, found in bodies if found and head > first
@@ -478,6 +481,8 @@ def static_values(stmts, index, working=None, scopes=None, start=None):
             certain = sure and (certain or looped) and position not in forked and len(stages) == 1
             _cleared(stages[-1], {}, {}, certain, direct_loop, table)
             record(table, stages[-1], certain)
+            if len(stages) == 1 and position not in forked:
+                record_called(table, stmts, position, starts)
 
     walk(range(max(first, 0), min(index, len(stmts))), True)
     loop = kinds[index] if index < len(stmts) else ()

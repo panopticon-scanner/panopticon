@@ -12,8 +12,15 @@ class TestTheBatchManifest(unittest.TestCase):
     first launch and used to roll back its artifacts after Ctrl-C."""
 
     def setUp(self):
-        self.dir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self.dir, True)
+        # #2875: the run folder sits in a parent of its own, so "outside the run"
+        # (`keep-outside.json`, `outside.json`) is a sibling no other test shares.
+        # Beside a bare `mkdtemp()` it was the system temp folder itself, the
+        # same `/tmp/keep-outside.json` for every suite on the host, and one
+        # run's cleanup deleted another's file mid-test.
+        parent = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, parent, True)
+        self.dir = os.path.join(parent, "run")
+        os.mkdir(self.dir)
 
     def _artifact(self, name, body="{}"):
         path = os.path.join(self.dir, name)

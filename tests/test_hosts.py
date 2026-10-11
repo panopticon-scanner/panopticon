@@ -37,6 +37,19 @@ class TestTotality(unittest.TestCase):
                                  "%s claims capabilities that do not exist: %s"
                                  % (name, unknown))
 
+    def test_every_transport_and_session_fact_is_well_formed(self):
+        for name, row in hosts.HOSTS.items():
+            with self.subTest(host=name):
+                self.assertIsInstance(row.self_write_delivery, bool)
+                self.assertEqual(
+                    [], sorted(set(row.session_root_capabilities)
+                               - set(hosts.CAPABILITIES)))
+                self.assertEqual(
+                    [], sorted(set(row.session_root_capabilities)
+                               - set(row.claims)))
+                if row.self_write_delivery:
+                    self.assertIn(hosts.ARTIFACT_WRITE_GUARD, row.claims)
+
     def test_a_host_that_registers_shells_says_where_and_in_what_format(self):
         for name, row in hosts.HOSTS.items():
             with self.subTest(host=name):
@@ -113,6 +126,25 @@ class TestDriverHostCapabilities(unittest.TestCase):
                     if hosts.declares(h, hosts.USAGE_LEDGER)]
         # kimi's ledger is the per-child wire file (kimi-usage-wire probe).
         self.assertEqual(["claude", "kimi"], ledgered)
+
+    def test_only_claude_and_kimi_have_self_write_delivery(self):
+        # #1622 owner ruling: this is transport, not a capability claim.
+        self.assertEqual(
+            ["claude", "kimi"],
+            sorted(name for name, row in hosts.HOSTS.items()
+                   if row.self_write_delivery))
+
+    def test_current_self_write_proofs_name_the_unproven_bash_path(self):
+        partial = {hosts.ARTIFACT_WRITE_GUARD: hosts.PROVEN,
+                   hosts.TOOL_POLICY_ENFORCED: hosts.REFUTED}
+        complete = dict(partial, **{hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
+        for host in ("claude", "kimi"):
+            with self.subTest(host=host):
+                self.assertEqual(
+                    (hosts.BASH_PATH_ARTIFACT_WRITE_GAP,),
+                    hosts.write_boundary_gaps(host, partial))
+                self.assertEqual((), hosts.write_boundary_gaps(host, complete))
+        self.assertEqual((), hosts.write_boundary_gaps("codex", partial))
 
     def test_kimi_and_codex_are_registrable_and_now_driver_selectable(self):
         # This was "registrable but not driver-selectable": dispatch.py could

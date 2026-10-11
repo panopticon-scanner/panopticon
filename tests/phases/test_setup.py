@@ -140,6 +140,19 @@ class TestDriverSetup(unittest.TestCase):
         # nothing was dispatched
         self.assertFalse(os.path.isfile(requests.request_path(d, namespace="setup")))
 
+    def test_a_proven_write_boundary_does_not_bypass_the_setup_ack(self):
+        # #1622: setup-scan gates on tool policy, independently of the review
+        # gate's artifact-write boundary and independently of return delivery.
+        d = self._repo()
+        write_host_evidence(d, {
+            hosts.TOOL_POLICY_ENFORCED: hosts.REFUTED,
+            hosts.ARTIFACT_WRITE_GUARD: hosts.PROVEN})
+        status = setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        self.assertEqual("error", status["status"], status)
+        self.assertIn(hosts.TOOL_POLICY_ENFORCED, status["message"])
+        self.assertIn("--allow-unenforced", status["message"])
+        self.assertFalse(os.path.isfile(requests.request_path(d, namespace="setup")))
+
     def test_the_ack_lets_the_shell_less_scan_proceed_and_is_recorded(self):
         d = self._repo()
         args = driver.build_parser().parse_args(["setup", d, "--allow-unenforced"])
