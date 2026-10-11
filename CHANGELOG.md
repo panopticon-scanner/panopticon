@@ -7,6 +7,16 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader: an array literal's word carries its `elements` (the array-literal cluster,
+  #2772, #2783, #2784, #2812; reader half).** A folded `NAME=(…)` / `NAME+=(…)` word, and the
+  `NAME=` opener where a statement that only assigns is still handed unfolded, now carry the
+  literal's words as bash splits them -- each the token of the same parse, a lifted `$(…)` keeping
+  its marker -- beside the text they always read as; a word that only looks like a literal (`T='(x
+  y)'`, a subshell's `T=`) carries none. Additive: nothing folds or unfolds differently and no
+  verdict moves. With the parse nonce pinned, none of 64,031 rows reads differently: the standing
+  sets, the #2939 seat's class and fuzz rows, the hunt and the fuzz of #2857, and 2,982 array
+  literals -- 27 shapes behind 12 words by 9 uses, and in 11 places. `workflow_values` reads
+  `elements` only when the cluster's switch lands.
 - **Workflow reader: three words in front of a command (#2665, #2648, #2480).** `builtin eval
   'curl … | sh'` read CLEAN while both bashes run the pipe: the reader left `builtin` where it
   stood, a command the guard does not follow. Bash runs `builtin NAME …` as the builtin NAME; dash
