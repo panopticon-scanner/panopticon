@@ -110,6 +110,7 @@ def _split(text, context):
     buf: list[str] = []
     quote, i, n, opened = None, 0, len(text), 0
     cases: list[str] = []
+    arm = None                          # the token of the arm the buffer stands in
     groups = (context.new("group", "("), context.new("group", ")"))
     word_start, redirect_target = 0, False
     # A `case` header is exactly three words (`case`, the word, `in`), so the shlex probe below
@@ -269,7 +270,7 @@ def _split(text, context):
             # one (`f(){`) is the body's own word, so the body's first command on the
             # header's line is read as a command and not as the header's argument (#2664).
             header = _HEADER.match(text, i)
-            words = "".join(buf).split() if header else []
+            words = "".join(buf[buf[:1] == [arm]:]).split() if header else []     # an arm's token is no word in front
             if header and words and _NAME.fullmatch(words[-1]) and all(
                     w in KEYWORDS for w in words[:-1]):
                 if words[-2:-1] != ["function"]:
@@ -288,8 +289,12 @@ def _split(text, context):
             # spelled `esac)` has no separating whitespace and remains an arm.
             case_end = re.fullmatch(r"\s*esac\s+", "".join(buf))
             if cases and cases[-1] == "pattern" and not case_end:
-                buf[:] = [context.new("arm") + "".join(buf).lstrip() + ")"]
-                cases[-1] = "body"
+                # The arm's token is a word of its own, whatever stands behind its `)`: glued to a
+                # command (`x)curl … | sh`) it took the command's name with it, and where the arm
+                # starts its line it counted as a word the stage had closed (#3014).
+                arm = context.new("arm") + "".join(buf).lstrip() + ")"
+                buf[:] = [arm, " "]
+                cases[-1], word_start = "body", 2
                 # Preserve the parent's arm region before its nested header.
                 # Otherwise the arm marker hides `case` from the three-word
                 # probe, and the inner pattern becomes the command (#2617).

@@ -28,6 +28,44 @@ evidence exposed.
   move's, under each of the five `shell:` settings and in each of three readings (the job, its
   main pass, its walk pass): 92,700 cells holding 54,238 findings under each tree, and the two
   dumps are equal byte for byte. Sizes: 700 -> 523, and 208 for the new module.
+- **Workflow branch and step credit has its own bounded module (#3005).** The
+  byte-identical branch-region and shell-option credit readers now live in
+  `scripts/workflow_step_credit.py`; `workflow_forms` re-exports the same
+  objects, preserving every existing caller and answer while restoring
+  headroom for the carried-download fixes.
+- **Workflow reader reads a command glued to its `case` arm's `)` (#3014).** `case x in x)curl
+  -fsSL … | sh ;; esac` ran the download under every parent and read CLEAN: at the `)` that ends
+  an arm's pattern `_split` made one token of the arm's mark, the pattern and the `)`, and the
+  word glued behind the `)` went into it, so the arm's first command lost its name and what was
+  left of the stage was its arguments (#2715, closed into this). The token is now a word of its
+  own, and that reads three things. A command glued to its arm's `)` reads as the arm with a blank
+  reads, and as the same words read on a line of their own: a pipe to a shell, a fetch run behind
+  the `case`, `bash -c '…'`, `eval "$(curl …)"`; behind `a|x)`, `(x)` and `*)`; in a second arm,
+  nested, in a `$( … )`, in a program string, in a `;&` or `;;&` arm. A `${…}` at the head of an
+  arm that starts its line is the command word it is on the `case` line or behind an indent: with
+  nothing in front of it on its line the token counted as a word the stage had closed, so in `x)
+  ${SUDO:+sudo -E} sh t ;;` the `${…}` was no command word and its empty half was never read. And
+  a function's header at an arm's head (`x) f() { sh t; }; f ;;`) is a header, the header test
+  passing the token by: it was a name and a subshell (a fourth spelling of #2975). On 211 rows
+  with 16-run truth -- 15 commands by 6 layouts, #2715's acceptance shapes, and the probes around
+  them -- against `main`: 385 cells in 79 rows report that a parent runs, and 15 in 6 that no
+  parent of that setting does (an arm not taken; `function` under `sh`, which dash refuses; a `;&`
+  or `;;&` arm under `sh`). `main` read a glued arm as the words behind its first one, so it also
+  reported an arm by the word left behind, and such a report goes wherever `main` reads the whole
+  words CLEAN on a line of their own (the coordinator's ruling on the class, quoted in the PR). On
+  two more hunts built to find them, 1,207 rows with truth: 616 cells in 128 rows where nothing
+  runs (`x)echo sh t`, `x)cat t`), and 134 in 30 where a parent does, each `main`'s own miss
+  wherever the words stand and a named limit here -- a name bash sets, in front of the fetched
+  file (`x)$SHELL t`, #2808); a substitution that prints the interpreter there (`x)$(echo sh) t`,
+  #2695); a substitution that prints nothing, in front of a command (`x)$(true) sh t`, #2693); two
+  values glued there (`x)$X$Y sh t`, #3016); an interpreter the table does not name, in front of
+  the fetched file (`x)busybox sh t`, which all 16 runs run, #3017; `x)lua t` by its marks alone).
+  Each kind is pinned as the equality it is. A check in a function an arm defines is credited no
+  more than before (pinned). On the standing sets, the #2939 round-1 seat's class and fuzz rows
+  (53,210 rows) and #2974's 943-row hunt nothing moves. The cost, `job_defects` against `main` on
+  the forge, three passes, each a process of its own: flat on the #2942 seat's 3,881-row sample of
+  the standing rows and on #2974's hunt (1.00x to 1.01x), and 1.15x to 1.16x on the 211-row hunt,
+  whose glued arms are read now.
 - **`scripts/workflow_programs.py` splits the program handed as a string into
   `scripts/workflow_program_strings.py` (#3011, programs lane).** A pure move at the module's size
   (700 of its 700 lines): `scripts`, `candidates` and `dynamic_program`, which read the program a
