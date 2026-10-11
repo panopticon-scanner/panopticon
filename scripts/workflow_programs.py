@@ -65,6 +65,7 @@ from workflow_options import (SET_OPTION_NAMES as SET_OPTION_NAMES, SET_OPTIONS 
                               _before_operand as _before_operand, _may_spell_option,
                               _past_options as _past_options,
                               _refused as _refused, _refused_name as _refused_name, _value)
+from workflow_option_words import lifted, written
 from workflow_options import _MAINS, _counted, _dash_c_strings, _stdin_walk
 from workflow_program_strings import (Opaque as Opaque, _EDGE as _EDGE, _NAME as _NAME,
                                       _SHELL_STRING as _SHELL_STRING, _added_strings as _added_strings,
@@ -314,10 +315,13 @@ def _options(argv, depth):
                 value_option = value_option or options
                 continue                    # the walk goes on as if absent
             return (answer, reader) if value_option else (None, None)
-        letters = "" if token[:2] in ("--", "++") else token[1:]
+        # The letters WRITTEN (#3020): a lifted `$(...)` stands in the word as a marker, and its
+        # text is none of them. A `c` only it may print leaves stdin the program, read with the
+        # string (`_after_dash_c`); an `s` it may print keeps stdin the program, as it did.
+        letters = "" if token[:2] in ("--", "++") else written(token)[1:]
         if (shell or value) and "c" in letters:
             return None, None               # the program is the `-c` string
-        if (shell or value) and "s" in letters:
+        if (shell or value) and ("s" in letters or lifted(token)):
             return answer, reader           # the words after `-s` are parameters
         # A shell's option word takes a value for each `o` or `O` in it (#2344,
         # `bash -oe pipefail`), and so does a `$` word's, which may be a shell;

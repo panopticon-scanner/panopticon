@@ -11,6 +11,7 @@ from typing import cast
 
 import shell_reader
 from shell_reader import command
+from workflow_option_words import lifted
 from workflow_programs import VALUE_PROGRAM, stdin_program
 
 
@@ -127,6 +128,8 @@ def _parse_fetch(tool, args, stage, piped_to):
             return None, False
         if argument.startswith("--"):
             name, sep, inline = argument[2:].partition("=")
+            if lifted(argument, 0, 2 + len(name)):
+                return Fetch(tool, None, None, None), False     # a NAME no text spells: unread (#3023)
             inline = shell_reader.derived(inline, argument)
             if name in value_long or name in dir_long:
                 value = inline if sep else (args[i] if i < len(args) else None)
@@ -165,6 +168,11 @@ def _parse_fetch(tool, args, stage, piped_to):
         if argument.startswith("-") and len(argument) > 1:
             j = 1
             while j < len(argument):
+                # Lifted text where a letter is read (`curl -fsSL$(true) URL`): what it prints may be
+                # any option, and its marker's text is none -- an `h` in it was `curl -h` (#3023).
+                # Unread, as a `$X` there is; in an option's VALUE (`-o"$(mktemp)"`) it is a value.
+                if lifted(argument, j, j + 1):
+                    return Fetch(tool, None, None, None), False
                 ch, j = argument[j], j + 1
                 if tool == "curl" and ch in "hMV":
                     return None, False
