@@ -7,6 +7,63 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader: three words in front of a command (#2665, #2648, #2480).** `builtin eval
+  'curl … | sh'` read CLEAN while both bashes run the pipe: the reader left `builtin` where it
+  stood, a command the guard does not follow. Bash runs `builtin NAME …` as the builtin NAME; dash
+  has no `builtin`, takes the word for a command not found, and without `-e` goes on. Taking the
+  word off, as `command` is taken off, reads the step as bash runs it and forgets dash: read that
+  way alone, 35 rows of the hunt below lose a report `main` gives, 13 of them in the cell whose
+  shell runs the download, dash without `-e`, where under bash the builtin behind the word sets a
+  name, leaves the directory or counts a check. So the reading is added. `shell_command.folds`
+  reads a job that holds such a word in every fold it reads any job in, the word left alone, then
+  in each of them once more with the word read through to the builtin it names; the second walk
+  alone, the main pass as `main`. The word is read through in front of a builtin's name (`builtin
+  sh tool` runs nothing; the 61 names of bash 5.2.21), past `--` and the `$` words that may each
+  be nothing, behind a keyword, an assignment, `command`, the keyword `time` or a `$` word bash
+  may drop, and where a one-word default names it or the builtin behind it; not behind a wrapper
+  that execs (`sudo builtin`, `env builtin`, `command time builtin`), nor as the word a `find`
+  action starts with, nor to an `exec` with nothing to run, whose redirections bash undoes behind
+  `builtin` and keeps behind `command`. `env SHELLOPTS=noexec bash -s` credited a check no shell
+  runs: bash takes `SHELLOPTS` from its environment, runs nothing of its program under `noexec`
+  and its first command alone under `onecmd`, and exits 0. The reader now marks the `bash` or `sh`
+  such an assignment stands in front of -- the step's own prefix, or one `env` or `sudo` hands on;
+  the last decides; a value the guard cannot read counts (`shell_wrappers.idles`) -- and `unsure`
+  and `sure_reader` make that shell's scripts ones no shell is sure to read, as for a `find`
+  action: read, since dash ignores the variable and a bash step refuses to assign it, and nothing
+  in them the step's own. And `"X=1" sh tool` reported though every shell runs a command named
+  `X=1` and nothing of `tool`: a quote or a backslash in the name or the operator makes a word no
+  assignment, and the reader took the quotes off first. `shell_reader._named` marks such a word
+  where a command word may stand -- behind a keyword, an assignment, a function's header, a `(`, a
+  `case` arm's token or a redirection -- and `_command_result` does not pop it; a quote in the
+  value or a subscript leaves an assignment one, and a wrapper is handed the word with its quotes
+  off. On a 1,839-row hunt with 16-run truth (the harness's `env` and `sudo` stubs drop the
+  assignments they are handed, so this truth was taken with two that apply them) against `main`:
+  1,078 cells in 370 rows report that a parent runs, 715 in 143 rows stop reporting what no shell
+  runs, and none goes from REPORT to CLEAN where a parent runs. The price, REPORT where no parent
+  of that setting runs, is 748 cells in 338 rows: the dash settings of a step bash runs (544; bash
+  5.2.21 and 3.2.57 started as `sh`, the `sh` of a macOS runner, run every one), `command` by path
+  (55, #2997's stance), the step's own prefix, which a bash step refuses to assign (48), a value
+  the guard cannot read (24), `onecmd` over a script of one command (21), what the same step reads
+  without `builtin` (20), an `sh` that is dash (19), `sudo` between the assignment and the shell
+  (12) and a function named `builtin` (5). A fuzz of 6,000 random steps with truth, mixing the
+  three words with the others the reader takes off the front of a command: 166 cells in 64 rows
+  report, 717 in 148 stop, and one goes from REPORT to CLEAN under `sh {0}` where dash runs --
+  `main` reported that row for the mis-read word and never saw the run, which stands behind
+  `builtin read T`: the value table reads that as `read T` under every shell (#3024), and `main`
+  reads the row CLEAN once the word is replaced by a command no shell finds. On the standing sets,
+  the #2939 seat's class rows and its fuzz rows, marked with the parse nonce pinned, 8 of 53,210
+  rows move, all from CLEAN to REPORT and each run by both bashes. Still CLEAN, each pinned and
+  named: a wrapper that hands its words to a shell (`sudo -s builtin eval 'P'`, for #2861's rule);
+  a function that hands its words to `builtin`; a step that exports `SHELLOPTS` earlier; `bash -t
+  -s`, `main`'s gap already. Pins that waited for #2665 move with it
+  (`test_builtin_in_front_was_2665`, its printer twin, the `builtin eval sh tool` row of the
+  printers' catch-all test, `builtin command sh +c` in the plus cluster's), `SHELLOPTS=noexec bash
+  -s` leaves the list of `main`'s gaps for the reported one, and `builtin` joins the words no
+  `find` can run, with its row. The cost, `job_defects` against `main` on the forge, three passes,
+  each a process of its own: 1.01x to 1.02x on the #2942 seat's 3,881-row sample of the standing
+  rows, where `_named` looks at the head of every stage; 1.44x to 1.47x on the hunt and 1.31x to
+  1.33x on the fuzz, whose rows all hold the words -- a job with a `builtin` it may read through
+  is read in twice the second walk's folds, and no other job.
 - **Workflow reader reads a shell's `c` in a `+` cluster as its `-c` (#3019).** `sh +c 'curl ... |
   sh'` and `bash +xc '...'` read CLEAN under every `shell:` setting while every parent shell runs
   the string: a `+` turns an option OFF and `c` is none to turn, so bash, dash, zsh, ksh and
