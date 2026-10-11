@@ -36,6 +36,10 @@ a `$(...)` in a `-c` or `eval` string, a `<(...)` a shell or `source` reads as i
     `ANY`        a runner this module has not measured `echo` under: read both readings, not one
     `Named`      a holder's NAME, read as `ANY` for the printers alone (R-F7)
 
+`_decoded` with its tables, and what an unspelled printer WRITES (`_written`, `_formatted`, `_echoed`
+and their tables, #2955), live in `scripts/workflow_printer_writes.py` (#3013), split out at this
+module's size and imported back here, so no caller moved.
+
 Stdlib only, like everything under it.
 """
 import os
@@ -44,6 +48,13 @@ import re
 import shell_lex
 import shell_reader
 import shell_text
+from workflow_options import _MAINS
+from workflow_printer_writes import (_CONVERSION as _CONVERSION, _COUNT as _COUNT,
+                                     _ESCAPE as _ESCAPE, _ESCAPES as _ESCAPES, _KNOWN as _KNOWN,
+                                     _LONG as _LONG, _OCTAL as _OCTAL, _PAD as _PAD,
+                                     _PLAIN as _PLAIN, _WRITERS as _WRITERS, _decoded as _decoded,
+                                     _echoed as _echoed, _formatted as _formatted,
+                                     _written as _written)
 
 
 def _piped(stage, before):
@@ -85,54 +96,6 @@ _ECHO_OPTIONS = re.compile("-[neE]+")
 _ECHO_N = re.compile("-n")
 _ECHO = {"bash": (_ECHO_OPTIONS, False, None), "zsh": (_ECHO_OPTIONS, True, None),
          "sh": (_ECHO_N, True, 1), "dash": (_ECHO_N, True, 1)}
-
-# The table `_decoded` reads in EITHER mode: a backslash followed by one of these decodes to the
-# byte shown. A trailing lone `\`, or one followed by anything else outside this table and the
-# octal/`\c` rules `_decoded` reads separately, is unspelled (fail-closed): dash's `echo` knows no
-# `\x`, bash's `-e` does (measured, b04).
-_ESCAPES = {"\\": "\\", "a": "\a", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v"}
-_OCTAL = re.compile("[0-7]{1,3}")
-
-
-def _decoded(text, fmt=False):
-    """`text` with `_ESCAPES` and an octal escape decoded, or None where one outside those is in it
-    -- unspelled, fail-closed. In `echo`/`%b` mode (`fmt` False, as both read octal, review C2): an
-    octal escape is `\\0` plus up to three MORE digits (`\\0101` decodes whole, one byte); `\\c` ends
-    the text there, dropping it and what follows. In a `printf` FORMAT (`fmt` True, review R-F3):
-    `\\c` is kept LITERAL, two characters, and does not end the text; an octal escape is `\\` plus ONE
-    to THREE digits counting a leading `0` (`\\0043` decodes `\\004`, leaving `3` as text; `\\163`
-    decodes whole, both shells read a leading `1`-`7` as one too). Either mode: a decoded NUL is
-    DROPPED, as the shell drops it from the script it reads (review R-F4), and a decoded value past
-    0x7F is unspelled (the shell emits a raw byte this reader cannot hold, review M2/R-F3)."""
-    out, at, end = [], 0, len(text)
-    while at < end:
-        char = text[at]
-        if char != "\\":
-            out.append(char)
-            at += 1
-            continue
-        nxt = text[at + 1:at + 2]
-        if nxt == "c":
-            if not fmt:                     # `echo`/`%b`: ends the text here
-                return "".join(out)
-            out.append("\\c")               # a printf FORMAT: `\c` prints literally
-            at += 2
-            continue
-        if nxt in _ESCAPES:
-            out.append(_ESCAPES[nxt])
-            at += 2
-            continue
-        octal = (_OCTAL.match(text, at + 1) if fmt and nxt in "01234567"
-                 else _OCTAL.match(text, at + 2) if not fmt and nxt == "0" else None)
-        if not octal:
-            return None                      # `\x`, `\e`, `\u`, `\'`, a trailing lone `\`
-        value = int(octal.group(), 8)
-        if value > 0x7F:
-            return None                      # a raw byte past ASCII: unspelled, fail-closed
-        if value:                            # a decoded NUL is dropped, as the shell drops it
-            out.append(chr(value))
-        at = octal.end()
-    return "".join(out)
 
 
 def _cat_reads_stdin(argv):
@@ -313,7 +276,7 @@ def producer(stage, before):
             return None, False
         if walked == _DEPTH:
             return front, None              # too far back to look: unknown, fail-closed
-        argv = shell_reader.command(front.argv)
+        argv = shell_reader.acted(front.argv)
         if ((bool(argv) and os.path.basename(argv[0]) in _PRINTERS)
                 or (front.stdin_heredoc is not None and _cat_reads_stdin(argv))):
             return front, intact
@@ -331,7 +294,7 @@ def handed(stage, before):
     source, intact = producer(stage, before)
     if not intact or source.stdin_heredoc is None:
         return None
-    return (source.stdin_heredoc if _cat_reads_stdin(shell_reader.command(source.argv))
+    return (source.stdin_heredoc if _cat_reads_stdin(shell_reader.acted(source.argv))
             else None)
 
 
@@ -366,10 +329,10 @@ def unspelled(stage, before, shell=None):
     source, intact = producer(stage, before)
     if source is None:
         return []
-    words = shell_reader.command(source.argv)
+    words = shell_reader.acted(source.argv)
     printer = bool(words) and os.path.basename(words[0]) in _PRINTERS
     if intact:
-        return ([words[0], " ".join(words[1:])]
+        return ([words[0], " ".join(words[1:])] + _apart(words, shell)
                 if printer and None in spellings(words, source, shell) else [])
     front = shell_reader.command(before[-1].argv)
     if not front:
@@ -377,7 +340,9 @@ def unspelled(stage, before, shell=None):
     if intact is None:
         return list(_PAST_DEPTH)
     if printer:
-        texts = [" ".join(words[1:]) if t is None else t for t in spellings(words, source, shell)]
+        read = spellings(words, source, shell)
+        texts = [" ".join(words[1:]) if t is None else t for t in read]
+        texts += _apart(words, shell) if None in read else []       # what it writes, as above (#2955)
     else:
         texts = [source.stdin_heredoc[0]]       # not a printer: a heredoc-fed `cat` (`producer`)
     return front[:1] + texts + [" ".join(front[1:])]
@@ -397,7 +362,7 @@ def _printer(value):
     if len(parsed) != 1 or len(parsed[0].stages) != 1:
         return None
     stage = parsed[0].stages[0]
-    argv = shell_reader.command(stage.argv)
+    argv = shell_reader.acted(stage.argv)
     name = os.path.basename(argv[0]) if argv else ""
     if name not in _PRINTERS and (stage.stdin_heredoc is None or not _cat_reads_stdin(argv)):
         return None
@@ -424,7 +389,53 @@ def unsubstituted(value):
     found = _printer(value)
     if not found or os.path.basename(found[0][0]) not in _PRINTERS:
         return []
-    return [] if substituted(value) is not None else [found[0][0], " ".join(found[0][1:])]
+    return [] if substituted(value) is not None else [
+        found[0][0], " ".join(found[0][1:])] + _apart(found[0])
+
+
+def _apart(words, shell=ANY):
+    """More texts for an unspelled printer's words, in the second walk (#2955), beside the ONE text
+    `main` weighs, which begins with the printer's first word: `printf '%s\\n' WORD` prints WORD as a
+    line and `echo -n WORD` prints WORD, but that text reads WORD as an argument of `%s\\n` or of
+    `-n`, never as a command. So the texts weighed too are what the printer WRITES with each word as
+    written, a `$` word left as it stands, one a family of the shell `shell` reads it by, or of both
+    rows `spellings` reads where that is no measured one: a `printf`'s format with its words in
+    place (`_formatted`), after a `--`, and each word on its own too where the format holds a `$`
+    (`printf "$F" WORD`: what it makes of the words is not written), but nothing where an option
+    stands in the format's place (`-v NAME`: no shell prints then); an `echo`'s (`_echoed`). A text
+    equal to `main`'s is not said twice, and one `_formatted` does not follow is `_PAST_DEPTH`'s
+    LOUD stand-in."""
+    if _MAINS.get():
+        return []
+    rest, reading = [getattr(word, "spelled", word) for word in words[1:]], _reading(shell)
+    rows = [reading] if reading in _ECHO else ["bash", "sh"]
+    families = [(row, kinds) for row in rows
+                for kinds in _WRITERS.get(row, _WRITERS["bash"] + _WRITERS["sh"])]
+    if os.path.basename(words[0]) != "printf":
+        texts = [_echoed(rest, _ECHO[row], kinds) for row, kinds in families]
+    else:
+        option = rest[:1] != ["--"] and rest[:1] != ["-"] and rest[0][:1] == "-" if rest else True
+        rest = rest[rest[:1] == ["--"]:]
+        fmt = words[len(words) - len(rest)] if rest else ""
+        texts = [_formatted(rest[0], rest[1:], kinds)
+                 for _row, kinds in families if rest and not option]
+        texts = [_PAST_DEPTH[1] if text is None else text for text in texts]
+        dollar = (shell_reader.has_substitution(fmt)
+                  or shell_reader.dynamic(fmt, shell_reader.has_substitution))
+        if texts and dollar and not hasattr(fmt, "spelled"):
+            texts += rest[1:]
+    return [text for at, text in enumerate(texts)
+            if text != " ".join(words[1:]) and text not in texts[:at]]
+
+
+def worded(word):
+    """What `unread_program`'s last resort weighs for a program word that is ALL one `$(...)`, in
+    the second walk (#2955): the texts `unsubstituted` gives the `echo` or `printf` alone in its
+    script where no reading spells it (`eval "$(echo "$X")"`), else []."""
+    entry = getattr(word, "markers", {}).get(word)
+    if _MAINS.get() or not entry or not shell_reader.yields_words(word):    # one marker, and a `$(...)`
+        return []
+    return unsubstituted(entry[1])[1:]
 
 
 def fed(value):

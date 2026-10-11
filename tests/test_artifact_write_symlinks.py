@@ -48,6 +48,7 @@ import scripts.tool_capture as tool_capture
 import scripts.tools_manifest as tools_manifest
 import scripts.synthesize as synthesize
 import scripts.synth.render as render_mod
+import scripts.synth.validate_schema as validate_schema_mod
 
 
 class _Planted(unittest.TestCase):
@@ -190,12 +191,54 @@ class TestX0xArtifact(_Planted):
             json.dump({"findings": []}, fh)
         out = os.path.join(self.pano, "report.json")
         staging = self.plant("report-x0x.json.tmp")
-        with self.assertRaises(ValueError):
-            synthesize.main(["--out", out, findings])
+        # #2952 moves the refusal to the CLI's named artifact status; the
+        # confinement, victim, and planted-link cleanup assertions stay put.
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = synthesize.main(["--out", out, findings])
+        self.assertEqual(rc, validate_schema_mod.ARTIFACT_INVALID)
+        self.assertIn("artifact path refused", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
         self.assert_victim_intact()
         # Round 1 ruling: a refusal must not leave the planted link sitting in
         # the run folder for the next invocation to trip over.
         self.assertFalse(os.path.lexists(staging))
+
+    def test_the_x0x_failure_log_staging_write_refuses_a_planted_link(self):
+        findings = os.path.join(self.root, "findings-g1-SEC.json")
+        finding = {
+            "id": "SE-077", "domain": "SEC", "code": "SEC-X0X",
+            "severity": "LOW", "confidence": "POSSIBLE",
+            "title": "repo-wide dependency gap", "short_title": "dependency gap",
+            "category": "catalog-gap", "panel": "security", "location": {},
+        }
+        with open(findings, "w", encoding="utf-8") as fh:
+            json.dump({"findings": [finding]}, fh)
+        out = os.path.join(self.pano, "report.json")
+        staging = self.plant("report-x0x-failures.json.tmp")
+
+        # #2952: same status boundary as the candidate artifact, with the
+        # original no-follow and cleanup proof preserved below.
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = synthesize.main(["--out", out, findings])
+        self.assertEqual(rc, validate_schema_mod.ARTIFACT_INVALID)
+        self.assertIn("artifact path refused", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+
+        self.assert_victim_intact()
+        self.assertFalse(os.path.lexists(staging))
+        self.assertFalse(os.path.lexists(os.path.join(self.pano, "report-x0x.json.tmp")))
+
+    def test_a_clean_x0x_run_removes_a_stale_failure_log_symlink(self):
+        findings = os.path.join(self.root, "findings-g1-SEC.json")
+        with open(findings, "w", encoding="utf-8") as fh:
+            json.dump({"findings": []}, fh)
+        out = os.path.join(self.pano, "report.json")
+        stale = self.plant("report-x0x-failures.json")
+
+        self.assertEqual(synthesize.main(["--out", out, findings]), 0)
+
+        self.assertFalse(os.path.lexists(stale))
+        self.assert_victim_intact()
 
 
 class TestTreeBaseline(_Planted):

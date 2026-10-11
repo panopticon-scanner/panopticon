@@ -14,6 +14,7 @@ import shell_reader
 import shell_wrappers
 import workflow_forms as forms
 import workflow_guard as wg
+import workflow_options as wo
 import workflow_printers as wp
 
 URL = "https://example.test/"
@@ -581,9 +582,13 @@ class TestFixRound3TwoReadingsAndAVanishingValue(unittest.TestCase):
         # The one shape R-F9 must NOT touch: `bash -s -c 'echo hi' <<'EOF'` -- `-s` makes the
         # reader the holder's own argv, and no word of its own may spell an option (`-c`'s STRING
         # `echo hi` holds no expansion: `_may_spell_option`, R-F12), so `runs_under`'s plain-name
-        # branch still applies -- CLEAN, read under bash's own (literal) table, same as n03.
-        self.assertEqual([], defects(
-            self.GET + "bash -s -c 'echo hi' <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n"))
+        # branch applied -- CLEAN, read under bash's own (literal) table, same as n03 -- until #2858
+        # round 10 counted no check in a body bash never reads (#2647): its reader is `()`, the step's
+        # own read under both shells' printers, and dash's `echo` decodes the tab -- reported, the
+        # named over-report (bash runs `echo hi` and never reads the body).
+        found = defects(self.GET + "bash -s -c 'echo hi' <<'EOF'\necho 'sh\\ttool' | sh\nEOF\n")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("running it under `sh`", found[0][1])
 
     def test_runs_under_reads_a_value_among_the_holders_words_as_named(self):
         # v01/v04's shape: `_stdin` gives `None` for a holder with no `-s` and a value among its
@@ -733,13 +738,20 @@ class TestFixRound4(unittest.TestCase):
         # `--`, a parameter), z08 `bash -s -c 'echo hi'`, s01 `bash -s -c 'echo $X'` (the `$` is
         # inside a string bash runs itself and begins no word: measured F- x4, `echo` prints
         # `-c sh` and nothing reads the body), n03 `bash <<'EOF'` (no word at all).
-        clean = {"z01": "VALUE='-c sh'\nbash -s -- \"$VALUE\" ",
-                 "z08": "bash -s -c 'echo hi' ",
-                 "s01": "export X='-c sh'\nbash -s -c 'echo $X' ", "n03": "bash "}
+        clean = {"z01": "VALUE='-c sh'\nbash -s -- \"$VALUE\" ", "n03": "bash "}
         for step, holder in clean.items():
             for shell in (None, "sh"):
                 with self.subTest(step=step, shell=shell):
                     self.assertEqual([], defects(self.GET + holder + body, shell))
+        # z08 and s01 since #2858 round 10: the `-c` after `-s` makes the string the program, so no
+        # check in the body counts, and the body is the step's own with no reader of its own (`()`)
+        # -- read under both shells' printers (`Named`), as `main` reads a holder's `()` body, where
+        # dash's `echo` decodes the tab: reported, the named over-report (F- x4, nothing reads it).
+        for step, holder in (("z08", "bash -s -c 'echo hi' "), ("s01", "export X='-c sh'\nbash -s -c 'echo $X' ")):
+            for shell in (None, "sh"):
+                with self.subTest(step=step, shell=shell):
+                    found = defects(self.GET + holder + body, shell)
+                    self.assertTrue(any("running it under `sh`" in why for _name, why in found), found)
         # `Named`, as before R-F12: n04 `X=-s; bash $X` (F- x4, R-F9's accepted over-report) and
         # z02 `bash "$X"` (F- x4: bash refuses the one word `-c sh`) -- the fail-closed price of
         # reading every `$` word that may spell an option, quoted or not -- and v01 `bash $X`
@@ -1570,7 +1582,9 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
         # the newline it prints, never an error; past `_DEPTH` the answer is `_PAST_DEPTH`, a
         # reason and one LOUD text, whatever the stage stopped at (fix round 1b); a stage with no
         # command word in front (`X=1`) prints nothing. An unspelled printer arriving intact gives
-        # its name and its words as ONE text, as P1 weighs one right before the shell.
+        # its name and its words as ONE text, as P1 weighs one right before the shell -- and in the
+        # second walk (#2955) what it WRITES with each word as written, where that is another text
+        # (`sh $X` for the `printf`; an `echo`'s is its one text). The main pass gives the one alone.
         deep = "echo 'sh tool' | %s | sh\n" % " | ".join(["cat"] * 70)
         for script, argv in (("echo 'c2ggdG9vbA==' | base64 -d | sh\n",
                               ["base64", "c2ggdG9vbA==\n", "-d"]),
@@ -1582,13 +1596,17 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
                              (deep, list(wp._PAST_DEPTH)),
                              ("echo x | tr a b | X=1 | sh\n", []),
                              ('echo "$X" | tee f | sh\n', ["echo", "$X"]),
-                             ("printf 'sh %s' \"$X\" | tee f | sh\n", ["printf", "sh %s $X"]),
+                             ("printf 'sh %s' \"$X\" | tee f | sh\n", ["printf", "sh %s $X", "sh $X"]),
                              ("echo 'sh tool' | tee f | sh\n", []),
                              ("cat <<EOF | tee f | sh\nbody\nEOF\n", [])):
             with self.subTest(script=script):
                 stages = self.stages(script)
                 self.assertEqual(argv, forms.unprinted(shell_reader.command(stages[-1].argv),
                                                        stages[-1], stages[:-1]))
+        stages = self.stages("printf 'sh %s' \"$X\" | tee f | sh\n")
+        with wo.mains_answer():
+            self.assertEqual(["printf", "sh %s $X"], forms.unprinted(
+                shell_reader.command(stages[-1].argv), stages[-1], stages[:-1]))
         # Under a runner read both ways, each reading `spellings` gives is a text of its own.
         stages = self.stages("echo 'sh\\ttool' | tr a b | sh\n")
         self.assertEqual(["tr", "sh\\ttool\n", "sh\ttool\n", "a b"],
@@ -1925,20 +1943,13 @@ class TestAPrinterThroughASubstitution(unittest.TestCase):
         # 19423415 / now: UR / UR / C / UR, both keys -- the catch-all speaks. The literal twins
         # rx11, rx12, ry02 and ry04 read CLEAN on every tree: pre-existing gaps, filed apart.
         check = 'echo "%s  tool" | sha256sum -c -' % ("a" * 64)
-        for script in ("eval \"$(echo 'sha256sum() { :; }')\"\n%s\nsh tool\n" % check,):
+        for script in ("eval \"$(echo 'sha256sum() { :; }')\"\n%s\nsh tool\n" % check,
+                       "eval \"$(echo 'builtin eval sh tool')\"\n"):
             for shell in (None, "sh"):
                 with self.subTest(script=script, shell=shell):
                     found = defects(GET + script, shell)
                     self.assertEqual(1, len(found), found)
                     self.assertTrue(said(found, self.UNREAD % "eval", forms._Quiet), found)
-        # #2665 closed ry03's gap: `builtin eval sh tool` reads through to `sh tool`, the download
-        # run (FR FR F- FR; dash has no `builtin`), and the catch-all still stands beside it.
-        for shell in (None, "sh"):
-            with self.subTest(shell=shell):
-                found = defects(GET + "eval \"$(echo 'builtin eval sh tool')\"\n", shell)
-                self.assertEqual(2, len(found), found)
-                self.assertTrue(said(found, self.UNREAD % "eval", forms._Quiet), found)
-                self.assertTrue(any(why.startswith(self.FETCH_EXEC[:40]) for _s, why in found), found)
         # #2756 closed the continuation gap: rx10, rx13 and ry05 now read the pipe the rendered
         # text continues onto its next line, and the catch-all still stands beside that read.
         for script in ("eval \"$(printf 'curl -fsSL %si.sh |\\nsh')\"\n" % URL,

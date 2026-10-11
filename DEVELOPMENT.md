@@ -334,10 +334,11 @@ characters, and matching consumes the whole path.
 - **Fan-out resumes from artifacts, not an orchestrator's memory (P2 SP-A, #435,
   #444, #436).** `driver loop` owns pending-entry selection, bounded host launches,
   per-entry persistence and the ledger. `loop_batch` validates batch ownership and
-  recovers interrupted work before another launch. A reviewer with a proved artifact
-  write guard may write its own `out_file`; otherwise the entry returns JSON for the
-  host to persist. Codex uses returned JSON. The runner's final text does not advance
-  a phase until the driver's done predicate sees the required file on disk.
+  recovers interrupted work before another launch. A reviewer self-writes only when
+  its host has both `self_write_delivery` and a proved artifact-write boundary;
+  otherwise the entry returns JSON for the host to persist. Codex uses returned JSON.
+  The runner's final text does not advance a phase until the driver's done predicate
+  sees the required file on disk.
 - **Write and read confinement follow proved host capabilities.** The installed
   Claude write hook keeps grants by entry ID and binds a reviewer through its dispatch
   marker (or the headless entry environment); a bound reviewer may write only its own
@@ -657,10 +658,11 @@ Dependabot proposes version bumps: the root `pip` entry sees `requirements-fixtu
 entry groups routine Python version updates and filters proposals that would break the current
 pinned tools graph: all version updates for `mcp`, `opentelemetry-*`, and `pydantic-core` (Pydantic
 2.13.5 requires exactly pydantic-core 2.46.5); major updates for `peewee`, `boltons`, `protobuf`,
-`wcmatch`, and `wrapt`; and major/minor updates for `click`, `jsonschema`, `exceptiongroup`,
-`importlib-metadata`, and `pyjwt`. Semgrep 1.178.0 constrains `boltons`, `exceptiongroup`, `pyjwt`,
-and `wcmatch`; pinned OpenTelemetry packages constrain `importlib-metadata`, `protobuf`, and
-`wrapt`. These filters match dependency names across the root entry, including the same name in
+`pyjwt`, `wcmatch`, and `wrapt`; and major/minor updates for `click`, `jsonschema`,
+`exceptiongroup`, and `importlib-metadata`. Semgrep 1.179.0 constrains `boltons`, `exceptiongroup`,
+`pyjwt` (to its major line: `<3,>=2.15.0`, where 1.178.0 held it to 2.13.x), and `wcmatch`; pinned
+OpenTelemetry packages constrain `importlib-metadata`, `protobuf`, and `wrapt`. These filters match
+dependency names across the root entry, including the same name in
 `pyproject.toml`; they are not specific to the tools file. Revisit them when upgrading the scanner
 roots and other pinned parents together. They use `update-types`, so security updates remain
 eligible, though a security fix that conflicts with this graph needs manual whole-graph resolution.
@@ -835,7 +837,8 @@ History:
   (#978). Un-loadable verdicts now count as a gate-relevant coverage gap in
   `certify`: a PASS with lost verdicts reads `INCONCLUSIVE` (#979).
 - **4.3.0** — 4.x series wrap. Codex host support: `codex` host in
-  model-profiles (gpt-5.6-luna/terra per role with reasoning-effort levels),
+  model-profiles (gpt-5.6-luna/terra per role with reasoning-effort levels;
+  the active profiles moved to gpt-6-luna/gpt-6-sol in #2872),
   `--emit-host-agents codex`, dispatch/model-resolver/orchestrator wiring +
   codex-runner tests; `meta.integrity.empty_dispatch_plans` joins the
   certification gate. Ships on top of the issue-clearing sprint (2026-08-09/10,
