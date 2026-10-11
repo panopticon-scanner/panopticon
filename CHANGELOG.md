@@ -7,6 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow branch and step credit has its own bounded module (#3005).** The
+  byte-identical branch-region and shell-option credit readers now live in
+  `scripts/workflow_step_credit.py`; `workflow_forms` re-exports the same
+  objects, preserving every existing caller and answer while restoring
+  headroom for the carried-download fixes.
 - **Workflow reader reads a command glued to its `case` arm's `)` (#3014).** `case x in x)curl
   -fsSL … | sh ;; esac` ran the download under every parent and read CLEAN: at the `)` that ends
   an arm's pattern `_split` made one token of the arm's mark, the pattern and the `)`, and the
