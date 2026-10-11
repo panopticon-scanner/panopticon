@@ -224,6 +224,7 @@ def _stage(text, context):
     held: int | None = None
     literal: int | None = None          # where an array literal's words start
     words: list[str] = []               # argv with no literal folded
+    folds: list[tuple[int, list[str]]] = []     # each literal folded: its opener in `words`, its elements
 
     def take(word):
         substitutions.extend(value for kind, value in _markers(word).values()
@@ -272,8 +273,14 @@ def _stage(text, context):
             else:
                 group_close += 1
                 if literal is not None:
-                    argv[literal - 1:] = [context.token(
-                        "%s(%s)" % (argv[literal - 1], " ".join(argv[literal:])))]
+                    # The folded word carries its `elements`, the words as bash splits them, each the
+                    # token of this parse, beside the text it always read as; a word that only looks
+                    # like a literal has none (the array-literal cluster, #2772).
+                    folded = context.token("%s(%s)" % (argv[literal - 1], " ".join(argv[literal:])))
+                    folded = folded if isinstance(folded, _Token) else _Token(folded, {})
+                    setattr(folded, "elements", list(argv[literal:]))
+                    folds.append((len(words) - len(argv[literal:]) - 1, list(argv[literal:])))
+                    argv[literal - 1:] = [folded]
                 literal = None
             continue
         if entry and entry[0] == "redirect":
@@ -360,6 +367,9 @@ def _stage(text, context):
         words.append(word)
     if all(word in KEYWORDS or _ASSIGNMENT.match(word) for word in argv):
         argv = words        # it only assigns: an array of a command is read as run
+        for opener, elements in folds:          # and the opener keeps the literal's `elements`
+            words[opener] = words[opener] if isinstance(words[opener], _Token) else _Token(words[opener], {})
+            setattr(words[opener], "elements", elements)
     # An interpreter -- one any action of a `find` runs too (round 4; #2918) -- or a command word the step's
     # values decide (`$SH`, but not `$X/sha256sum`: a check is credited by its basename, round 5) reads what
     # `N<>` still holds open when its redirections end, on any descriptor, as `main` reads `N<` -- by a dup, a
