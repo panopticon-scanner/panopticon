@@ -344,21 +344,39 @@ class TestInertText(unittest.TestCase):
     stayed, and it lives here because both finding builders do.
     """
 
-    HAZARDS = tuple(chr(o) for o in
-                    list(range(0x00, 0x20)) + [0x7f]
-                    + list(range(0x80, 0xa0)) + [0x2028, 0x2029])
+    # #2118 item 2 / #2712 review round 2: spell the contract independently so
+    # neither the rendering walk nor a production edit can silently shrink it.
+    EXPECTED = frozenset((
+        *range(0x0000, 0x0020),
+        0x007F,
+        *range(0x0080, 0x00A0),
+        0x2028, 0x2029,
+        0x061C,
+        0x200E, 0x200F,
+        0x202A, 0x202B, 0x202C, 0x202D, 0x202E,
+        0x2066, 0x2067, 0x2068, 0x2069,
+        *range(0xD800, 0xE000),      # #2951: a lone surrogate, which no encoder takes
+    ))
+    HAZARDS = tuple(chr(o) for o in sorted(base.INERT_ESCAPE_CODE_POINTS))
 
-    def test_the_escape_covers_c0_del_c1_and_the_line_separators(self):
+    def test_shared_escape_set_matches_the_schema_contract(self):
+        self.assertEqual(base.INERT_ESCAPE_CODE_POINTS, self.EXPECTED)
+
+    def test_the_escape_covers_controls_bidi_and_line_separators(self):
         for ch in self.HAZARDS:
             with self.subTest(codepoint=hex(ord(ch))):
                 out = base.inert_text("a%sb" % ch)
                 self.assertNotIn(ch, out)
+                # Compared through `ascii()` (#2951): a lone surrogate left in `out` would be printed raw by
+                # a failing `assertEqual`, and no runner can write one. `ascii` is one-to-one on strings.
                 if ch in base.INERT_KEEP:      # \t and \n: collapsed, not escaped
-                    self.assertEqual("a b", out)
+                    self.assertEqual(ascii("a b"), ascii(out))
                 elif ord(ch) < 0x100:
-                    self.assertEqual("a\\x%02xb" % ord(ch), out)
+                    self.assertEqual(ascii("a\\x%02xb" % ord(ch)), ascii(out))
+                elif 0xD800 <= ord(ch) <= 0xDFFF:      # #2951 round 2: no backslash, a separator to `norm_path`
+                    self.assertEqual(ascii("aU+%04Xb" % ord(ch)), ascii(out))
                 else:
-                    self.assertEqual("a\\u%04xb" % ord(ch), out)
+                    self.assertEqual(ascii("a\\u%04xb" % ord(ch)), ascii(out))
 
     def test_ordinary_and_non_ascii_text_is_untouched(self):
         for text in ("app/db.py:12", "paquete-señal 1.0", "日本語のパッケージ",
@@ -436,8 +454,8 @@ class TestInertText(unittest.TestCase):
             if ch in base.INERT_KEEP:
                 continue
             with self.subTest(codepoint=hex(ord(ch))):
-                self.assertEqual(runio._prompt_safe("a%sb" % ch),
-                                 base.inert_escape("a%sb" % ch))
+                self.assertEqual(ascii(runio._prompt_safe("a%sb" % ch)),
+                                 ascii(base.inert_escape("a%sb" % ch)))
 
     def test_a_non_string_is_coerced_rather_than_passed_through(self):
         # Every consumer of these fields expects text; the report schema says so.

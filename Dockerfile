@@ -30,7 +30,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 ARG GITLEAKS_VERSION=8.18.4
 ARG GOSEC_VERSION=2.29.0
-ARG SEMGREP_VERSION=1.178.0
+ARG SEMGREP_VERSION=1.179.0
 ARG BANDIT_VERSION=1.9.4
 ARG BRAKEMAN_VERSION=8.0.6
 ARG BUNDLER_AUDIT_VERSION=0.9.3
@@ -155,7 +155,7 @@ RUN curl -sfL --connect-timeout 5 --max-time 60 "https://rubygems.org/downloads/
 # lock file". Reset to `/`, the base image's own workdir, so nothing below
 # inherits this one.
 #
-# pip-audit used to ride along on the old npm line; it is one of the four
+# pip-audit used to ride along on the old npm line; it is one of the three
 # tools in the python closure above now. The three ARGs above stay as the
 # declared pins, and a test fails when they and package.json disagree.
 COPY tools-image/node/package.json tools-image/node/package-lock.json /opt/panopticon-node/

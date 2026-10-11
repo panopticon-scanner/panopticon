@@ -162,7 +162,7 @@ resolve against cwd; only the script path substitutes.
   `--fail-on {critical,high,medium,low}`, `--severity {all,medium,high,critical}`,
   `--tools`, `--no-tools`, `--max-per-group N`, `--gate-scope`, `--base <ref>`,
   `--pr <n>`, `--changes`, `--max-verify N`, `--allow-unenforced` (required to
-  dispatch write-capable reviewers on a host that cannot mediate Write).
+  dispatch write-capable reviewers when the artifact-write boundary is unproven).
 - CI gate key: `summary.gate` (`PASS` / `FAIL` / `OFF` / `INCONCLUSIVE`).
 
 See [`docs/PANOPTICON.md`](docs/PANOPTICON.md) for the complete contract.

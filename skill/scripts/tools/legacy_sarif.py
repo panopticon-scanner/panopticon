@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from scripts.inert import surrogate_free
 from . import sarif_utils as su
 from .base import (REDTEAM, STANDARD, ingest_policy_cv, run_tool,
                    scratch_cwd)
@@ -154,7 +155,7 @@ class LegacySarifAdapter:
             return run_tool(cmd, timeout=TOOL_TIMEOUT, cwd=cwd)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
-        sarif = json.loads(raw)
+        sarif = surrogate_free(json.loads(raw))    # #2951: as `parse_json_bytes` does
         # #1839: the INGEST decides whether an inline suppression comment in
         # the scanned tree's own source stands, because the pinned scanners
         # report a suppressed result either way (semgrep marks it

@@ -75,6 +75,8 @@ class FakeRunner(base.HostRunner):
         if eid.startswith("review-"):
             body = {"findings": [{"title": "issue", "severity": "HIGH", "domain": entry["domain"],
                                   "code": entry["domain"] + "-A1A", "category": "authz",
+                                  "description": "a schema-valid test finding",
+                                  "source_role": "domain_panel",
                                   "location": {"file": "src/app.py", "line_start": 1}}],
                     "_panopticon": {"run_id": run_id, "role": "domain_panel",
                                     "domain": entry["domain"], "group": entry["group"]}}
@@ -82,7 +84,8 @@ class FakeRunner(base.HostRunner):
             cell = review._load_cell_findings(self.review_root, {"run_id": run_id},
                                               entry["group"], entry["domain"])
             body = {"verdicts": [{"finding_id": cell[0]["id"], "verdict": "CONFIRMED",
-                                  "reasoning": "verified"}],
+                                  "confidence": "LIKELY", "reasoning": "verified",
+                                  "explored": [], "references": [], "citations": {}}],
                     "_panopticon": {"run_id": run_id, "role": "domain_advisor",
                                     "domain": entry["domain"], "group": entry["group"],
                                     "stage": entry.get("stage", "primary")}}

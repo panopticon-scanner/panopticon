@@ -1,9 +1,8 @@
-"""#1519 (AGT-B1A): the write-capable-on-unenforced-host gate.
+"""#1519/#1622: the reviewer artifact-write-boundary gate.
 
-The gate reads the host's ARTIFACT_WRITE_GUARD claim -- can its hook mediate a
-reviewer's Write? -- not TOOL_POLICY_ENFORCED and not a host name, because the
-write-guard is a Claude Code PreToolUse hook and a host can enforce a shell's
-tool list while mediating no Write at all. On `--host generic` -- the one
+The gate reads ARTIFACT_WRITE_GUARD -- are reviewer-controlled artifact writes
+impossible or confined? -- not TOOL_POLICY_ENFORCED, delivery, transport or a
+host name. On `--host generic` -- the one
 claim-nothing host the driver still accepts, gemini having left the selectable
 set (#1621, 2026-09-13) -- a domain-panel/domain-advisor `Write` has NO
 mediation at all: no registered shell, no hook, only prompt prose. A write
@@ -70,6 +69,29 @@ class TestGate(unittest.TestCase):
         self.assertFalse(os.path.exists(
             runio._pano(root, requests.UNENFORCED_ACK)))
 
+    def test_a_proven_boundary_needs_no_ack_without_self_write_transport(self):
+        # #1622: proof by omission satisfies the capability independently of
+        # delivery. This synthetic row prepares the core policy without giving
+        # Codex the claim that belongs to the second PR.
+        root = self._root()
+        omission = hosts.HostSpec(
+            name="omission", claims=frozenset({hosts.ARTIFACT_WRITE_GUARD}),
+            driver_selectable=True)
+        write_host_evidence(root, {hosts.ARTIFACT_WRITE_GUARD: hosts.PROVEN})
+        with mock.patch.dict(hosts.HOSTS, {"omission": omission}):
+            self.assertIsNone(requests.require_unenforced_ack(
+                root, _manifest("omission"), ENTRIES))
+        self.assertFalse(os.path.exists(
+            runio._pano(root, requests.UNENFORCED_ACK)))
+
+    def test_codex_remains_unclaimed_and_ack_gated_in_the_core_pr(self):
+        root = self._root()
+        self.assertNotIn(hosts.ARTIFACT_WRITE_GUARD, hosts.spec("codex").claims)
+        # Even a foreign/stale PROVEN row cannot grant an unclaimed capability.
+        write_host_evidence(root, {hosts.ARTIFACT_WRITE_GUARD: hosts.PROVEN})
+        with self.assertRaises(runio.DriverError):
+            requests.require_unenforced_ack(root, _manifest("codex"), ENTRIES)
+
     def test_generic_without_the_flag_refuses_loudly(self):
         root = self._root()
         with self.assertRaises(runio.DriverError) as caught:
@@ -125,6 +147,9 @@ class TestGate(unittest.TestCase):
 
     def test_the_flag_records_the_acceptance(self):
         root = self._root()
+        # A planted PROVEN row cannot bypass the registry's claim mask. This
+        # host declares no write-boundary capability, so the ack stays UNKNOWN.
+        write_host_evidence(root, {hosts.ARTIFACT_WRITE_GUARD: hosts.PROVEN})
         path = requests.require_unenforced_ack(
             root, _manifest("generic", allow=True), ENTRIES)
         with open(path, encoding="utf-8") as fh:
@@ -132,16 +157,19 @@ class TestGate(unittest.TestCase):
         self.assertTrue(ack["acknowledged"])
         self.assertEqual(ack["host"], "generic")
         self.assertFalse(ack["write_guard_covers_bash"])
+        self.assertEqual(hosts.UNKNOWN, ack[hosts.ARTIFACT_WRITE_GUARD])
+        self.assertFalse(ack["self_write_delivery"])
         self.assertEqual(ack["plan_sha256"], integrity._plan_hash(ENTRIES))
-        self.assertIn("no registered shell", ack["note"])
+        # #1622 owner ruling: the ack records an unproven safety outcome; it
+        # must not assert that a particular write mechanism definitely exists.
+        self.assertIn("boundary is unproven", ack["note"])
 
 
 class TestTheBridgeDoesNotBypassTheUnenforcedAck(unittest.TestCase):
-    """spec 10: extended, not deleted. #1344 F4 (a) makes an unguarded host's
-    write-capable cells return-persist instead of unmediated self-write, but
-    the shell still GRANTS Write -- require_unenforced_ack's refusal is about
-    that grant, not about how the entry's output reaches disk, so it must
-    still fire on an entry that now carries `delivery`.
+    """Spec 10: extended, not deleted. #1344 F4 (a) makes an unproven host's
+    write-capable cells return-persist instead of self-write, but delivery is
+    not proof of the effective write surface. The refusal must still fire on
+    an entry that now carries `delivery`.
     """
 
     def _root(self):
@@ -166,6 +194,15 @@ class TestTheBridgeDoesNotBypassTheUnenforcedAck(unittest.TestCase):
         self.assertEqual("return_json", entries[0]["delivery"])  # the bridge fired
         with self.assertRaises(runio.DriverError):
             requests.require_unenforced_ack(root, manifest_without_the_flag, entries)
+
+    def test_generic_return_json_still_does_not_bypass_the_gate(self):
+        root = self._root()
+        mode, _prefix = requests.delivery(
+            "generic", {}, "domain-panel.md", "/abs/out.json")
+        self.assertEqual("return_json", mode)
+        with self.assertRaises(runio.DriverError):
+            requests.require_unenforced_ack(
+                root, _manifest("generic"), [{"id": "cell", "delivery": mode}])
 
 
 class TestTheAckRecordsAShadowedOverride(unittest.TestCase):
@@ -193,8 +230,19 @@ class TestTheAckRecordsAShadowedOverride(unittest.TestCase):
             runio._write_json(path, body)
         return root
 
+    @staticmethod
+    def _plant_transport(root, value):
+        path = runio._pano(root, runio.HOST_CAPABILITIES)
+        body = runio._load_json(path)
+        body["self_write_delivery"] = value
+        body["capabilities"]["self_write_delivery"] = value
+        body["capabilities"][hosts.ARTIFACT_WRITE_GUARD][
+            "self_write_delivery"] = value
+        runio._write_json(path, body)
+
     def test_a_shadowed_override_is_recorded_even_though_write_is_mediated(self):
         root = self._root(hosts.REFUTED, detail=self.SHADOW)
+        self._plant_transport(root, False)
         path = requests.require_unenforced_ack(
             root, _manifest("claude", allow=True), ENTRIES)
         self.assertIsNotNone(path)
@@ -202,6 +250,10 @@ class TestTheAckRecordsAShadowedOverride(unittest.TestCase):
             ack = json.load(fh)
         self.assertTrue(ack["acknowledged"])
         self.assertEqual(hosts.REFUTED, ack[hosts.TOOL_POLICY_ENFORCED])
+        self.assertEqual(hosts.PROVEN, ack[hosts.ARTIFACT_WRITE_GUARD])
+        self.assertFalse(ack["write_guard_covers_bash"])
+        self.assertEqual([hosts.BASH_PATH_ARTIFACT_WRITE_GAP], ack["gaps"])
+        self.assertTrue(ack["self_write_delivery"])
         # The shadowing PATH, not merely the fact of a refusal.
         self.assertIn("panopticon-scout.md", ack["tool_policy_detail"])
         # And the note must not claim Write was unmediated: on this host it
@@ -209,6 +261,25 @@ class TestTheAckRecordsAShadowedOverride(unittest.TestCase):
         # exactly the case this test exists for.
         self.assertNotIn("no PreToolUse hook", ack["note"])
         self.assertIn("--allow-unenforced", ack["note"])
+
+    def test_a_proven_omission_records_boundary_and_transport_separately(self):
+        root = self._root(hosts.REFUTED, detail=self.SHADOW)
+        self._plant_transport(root, True)
+        omission = hosts.HostSpec(
+            name="omission",
+            claims=frozenset({hosts.ARTIFACT_WRITE_GUARD,
+                              hosts.TOOL_POLICY_ENFORCED}),
+            driver_selectable=True)
+        with mock.patch.dict(hosts.HOSTS, {"omission": omission}):
+            path = requests.require_unenforced_ack(
+                root, _manifest("omission", allow=True), ENTRIES)
+        with open(path, encoding="utf-8") as fh:
+            ack = json.load(fh)
+        self.assertEqual(hosts.PROVEN, ack[hosts.ARTIFACT_WRITE_GUARD])
+        self.assertEqual([], ack["gaps"])
+        self.assertFalse(ack["self_write_delivery"])
+        self.assertIn("posture remains PROVEN", ack["note"])
+        self.assertNotIn("mediate reviewer Write", ack["note"])
 
     def test_the_recorded_override_reads_back_through_synthesize(self):
         # Worthless unless the reader honours it: integrity's #493 plan-hash

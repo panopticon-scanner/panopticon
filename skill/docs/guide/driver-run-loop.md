@@ -215,6 +215,12 @@ anything, because that dispatch has a legitimate shell-less shape — but it is 
 one. The entry names `panopticon-setup-scan` when the posture proves enforcement, and when it does
 not, `driver setup` refuses unless the operator passes `--allow-unenforced`.
 
+The headless capability measurement inspects the registered `setup_scan` shell without inventing a
+model override, alongside the native setup fallback and the other registered roles. The localhost
+surface launches and bundled-model catalog dump share a 180-second bound. One Codex 0.161.0 surface
+inspection was observed at 64.8 seconds; exhausting the bound records both `tool_policy` and
+`read_scope` as `unknown` with the timeout reason (#2923).
+
 Codex exposes only the bounded MCP tools `read_file`, `search`, and `list_files`, served by
 `skill/scripts/codex_read_tools.py`. Each launch binds `PANOPTICON_ENTRY_ID` to its row in the
 loop's `PANOPTICON_READ_SCOPE` file: exact `scope.files` and `scope.reads`, or descendants of
@@ -275,23 +281,36 @@ removes tool-enabling patch, multi-agent, and experimental-tool metadata while r
 identity and reasoning settings; effective-surface probes check the result rather than trusting TOML
 alone. Nothing changes another host's runner or the calling session's configuration.
 
-The role profile keeps scout on `gpt-5.6-luna`/medium and domain-panel on `gpt-5.6-terra`/high.
-Advisor and domain-advisor use the explicit `gpt-5.6-sol`/high slug: the supported CLI's bundled
-catalog does not list the `gpt-5.6` alias. An unavailable or ambiguous model fails closed rather
-than silently selecting another tier; if your Codex build's catalog (`codex debug models --bundled`)
+The role profile keeps scout on `gpt-6-luna`/medium. Advisor, domain-panel, and domain-advisor use
+the explicit `gpt-6-sol`/high slug. An unavailable or ambiguous model fails closed rather than
+silently selecting another tier; if your Codex build's catalog (`codex debug models --bundled`)
 spells the tier differently, set `PANOPTICON_MODEL_<ROLE>` — e.g. `PANOPTICON_MODEL_DOMAIN_PANEL` —
 to a slug it lists, which is what the refusal itself names.
 Each override accepts either a plain model ID or a JSON object such as
-`{"model":"gpt-5.6-terra","model_reasoning_effort":"high"}`. Surrounding whitespace is allowed.
+`{"model":"gpt-6-sol","model_reasoning_effort":"high"}`. Surrounding whitespace is allowed.
 An override beginning with `{` must be valid JSON; a malformed object stops `driver run` or
 `driver loop` before host work and the error names the environment key without printing its value.
 
 Every Codex role uses `delivery: return_json`; the shared loop validates and persists replies,
-records launches and denials, and handles retries. Codex does **not** claim `artifact_write_guard`,
-because it provides no self-writing path. The existing shared review gate still requires
+records launches and denials, and handles retries. Codex does **not yet** claim
+`artifact_write_guard`: return delivery is transport, not proof that its effective surface has no
+reviewer-selectable write path. The existing shared review gate still requires
 `--allow-unenforced` when that capability is unproven, even with write tools omitted. Obtain the
 operator's explicit acceptance before supplying the flag; it records an acknowledgement, not proof
-of confinement. This is a shared-gate limitation, not a reason to claim a guard that does not exist.
+of confinement. This is a shared-gate limitation, not a reason to claim proof the current probes do
+not establish.
+
+Codex's `--output-schema` accepts only the provider's strict subset: the root must be an object;
+recursively, every property must also be required and each object must set
+`additionalProperties: false`; nested `anyOf` and local `$defs` are allowed, while draft-07
+`definitions`, unsupported composition, external references, malformed or unknown keywords, and
+shapes over the documented provider limits are refused. Before building an argv, the runner checks
+the published schema named by the entry. An incompatible schema stays on the entry but is omitted
+from the Codex argv. After the controller stamps any omitted cell identity,
+`phases.persist.write_reply` validates every returned role that has a published schema against the
+unmodified Draft-7 `role_schema(entry)` before writing it. None of this build's three production
+role schemas passes the Codex provider screen, so the posture note says that the proven toy launch
+constrains no production reply; receipt validation is the production enforcement (#2923).
 
 Codex's JSONL envelope reports token usage but not measured dollars or the effective model identity.
 The runner therefore returns `cost_usd: null` and `model: null`; `model_binding` and `usage_ledger`
@@ -405,8 +424,9 @@ on Claude hooks, and always uses the return-persist path.
   `meta.host_capabilities` and said on all four disclosure surfaces by `host_disclosure.notes`,
   which is separate from the capability lines because the fact gates nothing. `entry["delivery"] ==
   "return_json"` marks a **return-persist** entry — set on any entry whose role's template grants no
-  `Write`, or whose host has not proven `artifact_write_guard`; absent means the agent self-writes
-  under the write guard. A self-writing entry **self-writes** its own `entry["out_file"]` (a
+  `Write`, or whose host does not have both `self_write_delivery` and a proven
+  `artifact_write_guard`; absent means the agent self-writes under that proven boundary. A
+  self-writing entry **self-writes** its own `entry["out_file"]` (a
   findings file for review, a verdict bundle for verify) and returns a one-line confirmation —
   findings/verdicts never transit the loop. - **The loop persists** every `delivery: "return_json"`
   reply through `phases.persist` — the same tolerant parse and the same shape check the phase's done
@@ -589,7 +609,7 @@ on Claude hooks, and always uses the return-persist path.
   `agent` refuses the ENTRY — never a quiet fall-back to a bare, unenforced launch; a disagreeing
   `enforced` flag refuses the whole RUN before the batch opens, so nothing is launched and nothing
   is charged, and the remedy is `--reset` or a fresh readiness run rather than a retry. The engine's
-  own refusals (flag drift, posture drift, shadow shells, unmediated Write) surface unchanged;
+  own refusals (flag drift, posture drift, shadow shells, an unproven write boundary) surface unchanged;
   Ctrl-C in headless mode — or a SIGTERM, which the driver raises as the same interrupt (every later
   SIGTERM while it cleans up is ignored) — cancels the queue, terminates any child its runner
   registered a handle for and the running phase child's whole process group (each leads its own
@@ -763,7 +783,7 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   redteam` the tree is untrusted and every scanner whose knob was verified against the pinned image
   is told to stop honouring one: semgrep `--disable-nosem`, bandit `--ignore-nosec`, gitleaks
   `--ignore-gitleaks-allow`. **For semgrep that flag is belt and the INGEST is the lever**, and the
-  real-image round is why the distinction is stated rather than implied: at the 1.177.0 pin semgrep
+  real-image round is why the distinction is stated rather than implied: at the 1.179.0 pin semgrep
   REPORTS a `# nosemgrep`'d result either way, marking it
   `"suppressions": [{"kind": "inSource"}]` in its SARIF, with and without `--disable-nosem` —
   identical output. So the decision is made where the SARIF is read: under `standard`
@@ -957,7 +977,7 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   (`redacted: true`) rather than asserting it — from THIS run's manifest only, since a runner that
   writes captures and then dies leaves the previous run's file in place, so the claim is readable
   from the run's own artifacts and goes false if the pass is ever bypassed.
-- **`review`** / **`verify`** — the guard-confined self-write fan-out below. Like the scout (#1056),
+- **`review`** / **`verify`** — the write-capable, boundary-gated fan-out below. Like the scout (#1056),
   `review` batches every pending `(domain, group)` cell across ALL groups into ONE checkpoint, and
   `verify`'s PRIMARY round batches every pending advisor into one (#5) — so the host dispatches them
   concurrently instead of one round-trip per group. A batched checkpoint carries `group: null`; each
@@ -1099,17 +1119,26 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   presence alone is the fact.
   `meta.coverage.delta` itself is unchanged; its sibling's schema node in
   `skill/reference/report-schema.json` is where that contract is stated.
-  `synthesize` also emits a sibling `<stem>-report-x0x.json` beside the tag-named `report.json` (the
-  `report.json` compat relink does not cover it) — the run's `<DOM>-X0X` / `ZZZ-X0X` catalog-gap
+  `synthesize` also emits a sibling `<report-stem>-x0x.json`, where `<report-stem>` is the report
+  filename without `.json` (`<tag>-report` under the driver). The `report.json` compat relink does
+  not cover it — the run's `<DOM>-X0X` / `ZZZ-X0X` catalog-gap
   findings packaged as OCRDb new-code **candidate records** (schema
   `skill/reference/x0x-report-schema.json`), mechanically clustered, with `generated_by.run_id` from
   the run manifest; adjudication (the gap rationale, the new_code/refine/retire verdict) happens
-  downstream in OCRDb's pool. A gap cluster in which no finding carries a file location cannot
-  become a candidate — every occurrence needs a `file`, and none is invented — so the artifact
-  carries the count it had to leave out, as `candidates_dropped_locus_free` (omitted when zero);
-  that key is what survives a `driver run`, which keeps a child's output only on failure. Run
-  `synthesize.py` yourself and it also names each dropped cluster on stderr and appends the count to
-  its own `X0X artifact:` line. SARIF is ingested via `skill/scripts/ingest_tools.py`, but only
+  downstream in OCRDb's pool. A catalog-gap finding without `location.file` cannot become an
+  occurrence — none is invented — so the emitter leaves it out of the X0X candidate set and records
+  it in the deterministic `<report-stem>-x0x-failures.json` sidecar, validated as written against
+  `skill/reference/x0x-failure-log-schema.json`. The array keeps every finding even when two share
+  one content-derived id. This also resolves #2090's mixed-cluster loss: an unlocated member is
+  logged and can never lead the candidate that its located siblings still emit. The main JSON and
+  HTML retain the finding. Synthesize warns with the exact discard count and sidecar path while
+  returning the ordinary gate status; the driver prints its own count/path line after the child and
+  carries it in the terminal status, including after stderr flooding and on a resume. A clean run
+  removes an older failure sidecar, including a planted symlink without following it. X0X objects
+  deliberately remain open to extension fields;
+  `evidence_status` is not a declared field until its vocabulary and type are standardized. `cwe`
+  is optional and omitted when no identifiers were found. SARIF is ingested via
+  `skill/scripts/ingest_tools.py`, but only
   because `--tools-dir` was passed — a scan that ran but was never wired in would sit on disk
   un-ingested. Every report also carries `meta.cost` — the run's dispatch ledger, derived from the
   artifacts already on disk (scout profiles, the checkpoint entries, the verify queue), one `{phase,
@@ -1147,8 +1176,8 @@ template; else `--model`) and persists each returned JSON to its `out_file` (`sc
 after confirming it parses. No write-guard here — nothing self-writes. The read guard is armed here
 too, exactly as at every checkpoint that carries entries: `read_guard_hook.install` before the batch
 and `read_guard_hook.uninstall` after, each scout entry confined to the files its group names. The
-guard-confined **self-write** path applies to `review` and `verify` checkpoints (whose
-reviewers/advisors write their own `out_file`).
+delivery-derived path applies to `review` and `verify`: a host with self-write transport and a
+proven boundary lets each reviewer/advisor write its own `out_file`; otherwise the loop persists JSON.
 
 A malformed self-write fails its done-predicate (`_cell_done` / `_verify_cell_done`) so the cell
 reads as not-done and is re-dispatched on the next iteration — no corrupt findings/verdict silently
