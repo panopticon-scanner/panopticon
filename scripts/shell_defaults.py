@@ -79,13 +79,24 @@ def _optional(argv):
     default or one that is itself a wrapper (`${X:-sudo}`); 0 where the word
     after them is not in `OPTIONAL_NEXT`. The second walk (`WALKED_DEFAULTS`)
     knows that word by its one-word default too (#2963), and knows `eval`,
-    `.` and `source` behind words that may each be nothing (#2997)."""
+    `.` and `source` behind words that may each be nothing (#2997). It drops
+    an alternate that names no command it reads the word as (#3003): with its
+    name unset `${S:+echo}` is nothing, as `${S:+sudo}` is."""
+    walked = WALKED_DEFAULTS.get()
     count, loose = 0, True
     while count < len(argv) - 1:
         word = argv[count]
         match = None if getattr(word, "kept", False) else _OPTIONAL.fullmatch(word)
-        if not match or match[1] and os.path.basename(match[1]) not in WRAPPERS:
+        if not match:
             break
+        if match[1] and os.path.basename(match[1]) not in WRAPPERS:
+            # (#3003) `main` stops at a word that names no wrapper, and for a default it is right: the
+            # word stays where its name is unset. An alternate's does not, so the second walk goes on
+            # past one -- but for one the reader reads as the command it names (`_shell_default`: a
+            # shell, a fetcher, `eval`). `$T ${X:+sh} -c P` runs `sh -c P` where `X` is set, and reads
+            # so, as `main` read it.
+            if not walked or word[-len(match[1]) - 2] != "+" or _shell_default(word):
+                break
         # (#2997) A builtin runs behind a word that is NOTHING with its name unset -- a bare reference, an
         # empty default, an alternate (`${S:+sudo}`) -- or that is `command`, by name or by path (macOS has
         # a `/usr/bin/command` that runs one). No wrapper that execs can run a builtin: `sudo eval 'P'` and
@@ -93,8 +104,8 @@ def _optional(argv):
         loose = loose and (not match[1] or word[-len(match[1]) - 2] == "+"
                            or os.path.basename(match[1]) == "command")
         count += 1
-    after = _DEFAULTS.fullmatch(argv[count]) if count and WALKED_DEFAULTS.get() else None     # (#2963)
-    if count and loose and WALKED_DEFAULTS.get() and (after[1] if after else argv[count]) in ("eval", ".", "source"):
+    after = _DEFAULTS.fullmatch(argv[count]) if count and walked else None                    # (#2963)
+    if count and loose and walked and (after[1] if after else argv[count]) in ("eval", ".", "source"):
         return count                                                                      # (#2997)
     return count if count and os.path.basename(after[1] if after else argv[count]) in OPTIONAL_NEXT else 0
 
@@ -105,7 +116,8 @@ def _optional(argv):
 # mains_answer` turns it off while the main pass reads such a word as `main` does, one the guard does
 # not follow; so the job REPORTs where either reading does. `_optional` reads it too: a `$` word in
 # front of such a default is one bash may drop (`$SUDO ${X:-curl} URL | sh`). The same flag turns on
-# `_optional`'s reading of `eval`, `.` and `source` behind such a word (#2997).
+# `_optional`'s reading of `eval`, `.` and `source` behind such a word (#2997), and its dropping of
+# an alternate that names no wrapper (#3003).
 WALKED_DEFAULTS: contextvars.ContextVar[bool] = contextvars.ContextVar("walked_defaults", default=True)
 
 
