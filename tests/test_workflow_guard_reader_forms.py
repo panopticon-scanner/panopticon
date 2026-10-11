@@ -2278,14 +2278,17 @@ class TestEveryFindActionIsACommand(unittest.TestCase):
     NOTHING = {".": "curl -fsSL %si.sh | find /dev/null -exec . /dev/stdin \\;\n" % URL,
                "source": "curl -fsSL %si.sh | find /dev/null -exec source /dev/stdin \\;\n" % URL,
                "eval": "find /dev/null -exec eval '%s' \\;\n" % PIPE,
-               "exec": "find /dev/null -exec exec sh -c '%s' \\;\n" % PIPE}
+               "exec": "find /dev/null -exec exec sh -c '%s' \\;\n" % PIPE,
+               "builtin": "find /dev/null -exec builtin eval '%s' \\;\n" % PIPE}
 
     def test_each_word_no_find_can_run_has_the_row_it_keeps(self):
         # B2: a shell's `.`, `source`, `eval` and `exec` are no programs, so `find` runs nothing and
-        # the row reads as `main` reads it (the seat's V23). Each word stays for its row; the eighteen
-        # other builtins round 2 listed (`unset`, `builtin`, `local`, `set`, …) are words no reader of
-        # an action follows, and with `command()` `main`'s again no row moves when one is dropped, so
-        # they left the list. `find -exec set +e` is not the step's own posture (V17), list or none.
+        # the row reads as `main` reads it (the seat's V23). Each word stays for its row; the seventeen
+        # other builtins round 2 listed (`unset`, `local`, `set`, …) are words no reader of an action
+        # follows, and with `command()` `main`'s again no row moves when one is dropped, so they left
+        # the list. `builtin` left it with them and is back (#2665): a reader follows the word now, in
+        # the folds that read it through, and its row moves when it is dropped. `find -exec set +e` is
+        # not the step's own posture (V17), list or none.
         import shell_command
         from unittest import mock
         for word, row in self.NOTHING.items():
@@ -2295,9 +2298,9 @@ class TestEveryFindActionIsACommand(unittest.TestCase):
                     self.assertEqual("RRRRR", self.marked(row))
         self.assertEqual(set(self.NOTHING), set(shell_command._NO_PROGRAM))     # and no word without a row
         # `command` is a program on macOS, which runs a builtin too, and stays read; `builtin` is no
-        # program anywhere, and no reader follows the word (both as round 2 read them).
+        # program anywhere (as round 2 read both), whatever stands behind it.
         self.assertEqual("RRRRR", self.marked("find /dev/null -exec command sh -c '%s' \\;\n" % PIPE))
-        self.assertEqual("CCCCC", self.marked("find /dev/null -exec builtin eval '%s' \\;\n" % PIPE))
+        self.assertEqual("CCCCC", self.marked("find /dev/null -exec builtin command sh -c '%s' \\;\n" % PIPE))
         self.assertEqual("CCCRR", self.marks("find /dev/null -exec set +e \\;\n" + self.CHECK))
         self.assertEqual("RRRRR", self.marks("set +e\nfind /dev/null -exec set -e \\;\n" + self.CHECK))
         # What a `find` hands a download to is read as `main` reads it, whatever the action's word (V20, V21).
@@ -2311,11 +2314,15 @@ class TestEveryFindActionIsACommand(unittest.TestCase):
         # command using the -c option"), behind any other wrapper, or behind a path (`command` is a
         # program on macOS, which runs the builtin of its name), it is not, and the action is read:
         # REPORT, as round 1 read it. Round 2 kept the `find` behind `sudo` too (the seat's 31 rows).
+        # `builtin` is read through behind what runs a builtin alone -- `command`, by name or by path
+        # (#2665) -- and behind any other front the row stays CLEAN, as `main` reads the word there.
         for word, row in self.NOTHING.items():
             for front in ("sudo -s ", "sudo -i ", "sudo --shell ", "sudo --login ", "doas -s ", "sudo ", "env ", "nohup ",
                           "command ", "/usr/bin/command ", "/usr/bin/", "./"):
                 with self.subTest(word=word, front=front):
-                    self.assertEqual("RRRRR", self.marked(row.replace("-exec " + word, "-exec " + front + word)))
+                    read = word != "builtin" or front in ("command ", "/usr/bin/command ")
+                    self.assertEqual("RRRRR" if read else "CCCCC",
+                                     self.marked(row.replace("-exec " + word, "-exec " + front + word)))
 
     def test_an_assignment_is_no_program_where_it_names_no_path(self):
         # `find` looks an assignment up as a program's name, and none is named `X=1`: nothing runs
@@ -5983,10 +5990,15 @@ class TestWhichProgramAStdinReadingCommandRuns(unittest.TestCase):
 
     def test_2500_mains_own_gaps_read_as_on_main(self):
         # `main`'s gaps, filed under #2331: CLEAN, as on `main`, though every shell runs the
-        # download (rc 0), bar bash under `SHELLOPTS=noexec`, a variable it refuses (rc 1).
+        # download (rc 0).
         self.assert_clean([stdin_step("bash -t -s", "echo start\n" + CHECK),
-                           stdin_step("SHELLOPTS=noexec bash -s"),
                            stdin_step("sh", pre="sh() { :; }\n")])
+        # No longer a gap (#2648): a bash started under `SHELLOPTS=noexec` reads the body and runs
+        # none of it, as under `-n` below. Handed on by `env`: FR FR FR FR. As the step's own prefix
+        # bash refuses the variable (rc 1) and dash's child runs the download: the row reports under
+        # every setting, the guard not knowing which shell reads the word.
+        self.assert_reported([(stdin_step(runner), 1, UNGATED % "bash")
+                              for runner in ("SHELLOPTS=noexec bash -s", "env SHELLOPTS=noexec bash -s")])
         # No longer gaps (#2647): after `-s` bash keeps reading options, and the `-c` puts the
         # program in the string -- the heredoc is data, its check never read; `--version`
         # prints and exits, reading no stdin (`-version` too); and `-n` / `-o noexec` read the

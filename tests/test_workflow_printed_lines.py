@@ -28,8 +28,8 @@ Named limits. A line that only FETCHES reports, as `echo curl | sh` does on `mai
 settings too. Behind a stage that REWRITES the text (`| tr … | sh`) the printer's text is weighed as written, as
 `main` weighs an `echo`'s there, whatever the stage makes of it. A line the guard can SPELL -- the `$` escaped inside double quotes -- is a program string, and two
 copies of it are #2953's. A line whose command word is a one-word default (`${X:-curl} …`) reads as the command it
-names since #2963, and reports. `builtin` in front of a printer is no wrapper to the reader, so the printer is not
-read at all (#2665; as on `main`, spelled or not).
+names since #2963, and reports. `builtin` in front of a printer was no wrapper to the reader, so the printer was not
+read at all; #2665 reads the word through in the second walk, and the printer reports, spelled or not.
 
 The rendering is what the shell prints, to the character, or it is not followed and the printer reports. Followed:
 text and escapes in the format, `%%`, `%s`, `%b`, `%c`, `%q`, `%d` `%i` `%u` of a plain number, a `-`, a width, a
@@ -480,13 +480,14 @@ class TestTheRowsThatWaitedForTheDefaultRule(unittest.TestCase):
 class TestTheRowsThatWaitForAnotherRule(unittest.TestCase):
     """Rows a parent runs that this PR does not move, each pinned as it reads and named with what it waits for."""
 
-    def test_builtin_in_front_of_a_printer_is_no_wrapper_to_the_reader_2665(self):
-        # Truth: 12 of the 16 runs, the bash parents'; dash has no `builtin`. The reader strips `command`, not
-        # `builtin` (#2665), so the stage is no printer to this module, spelled (`echo 'LINE'`) or not; nothing
-        # here can read it. Pinned as it reads, with #2665 named.
+    def test_builtin_in_front_of_a_printer_was_no_wrapper_to_the_reader_2665(self):
+        # Truth: 12 of the 16 runs, the bash parents'; dash has no `builtin`. The reader stripped `command`, not
+        # `builtin`, so the stage was no printer to this module, spelled (`echo 'LINE'`) or not. #2665 reads the
+        # word through in folds of the second walk's own, and the printer is read there; the main pass reads it
+        # as `main` did.
         for printer in ("builtin echo '" + L + "'", "builtin printf '%s %s" + N + "' curl '-fsSLo t " + U + "'"):
             with self.subTest(printer=printer[:14]):
-                self.assertEqual(CLEAN, marks(fed(printer)))
+                self.assertEqual(NOW, marks(fed(printer)))
         self.assertEqual(BEFORE, marks(fed("command echo '" + L + "'")))
 
 

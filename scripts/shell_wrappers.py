@@ -27,6 +27,10 @@ place to be known; a pid or a list of ids, which is acted on while nothing
 runs; and flock's `-c STRING`, which a shell runs. `unbuffer` is a Tcl
 script, not getopt (`_unbuffer`).
 
+Beside the table stand two readings of what bash does with a word in front:
+`BUILTINS`, the names its `builtin` runs (#2665), and `idles`, the assignment
+that starts a bash so that it runs nothing of its program (#2648).
+
 Stdlib only. `unwrap(argv, head, has_substitution)` is the entry point.
 """
 import re
@@ -36,6 +40,15 @@ import signal
 WRAPPERS = ("sudo", "command", "exec", "nohup", "nice", "stdbuf", "env",
             "time", "timeout", "xargs", "doas", "setsid", "ionice", "taskset",
             "flock", "chrt", "unbuffer")
+# The builtins of bash 5.2.21 (`compgen -b`), which `builtin NAME` runs; of any other word it runs nothing:
+# `builtin sh tool` is `builtin: sh: not a shell builtin` (`shell_command._command_result`, #2665). Bash 3.2.57
+# has them all but `compopt`, `mapfile` and `readarray`.
+BUILTINS = frozenset((
+    ".", ":", "[", "alias", "bg", "bind", "break", "builtin", "caller", "cd", "command", "compgen", "complete",
+    "compopt", "continue", "declare", "dirs", "disown", "echo", "enable", "eval", "exec", "exit", "export", "false",
+    "fc", "fg", "getopts", "hash", "help", "history", "jobs", "kill", "let", "local", "logout", "mapfile", "popd",
+    "printf", "pushd", "pwd", "read", "readarray", "readonly", "return", "set", "shift", "shopt", "source", "suspend",
+    "test", "times", "trap", "true", "type", "typeset", "ulimit", "umask", "unalias", "unset", "wait"))
 _DURATION = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
 
 
@@ -110,6 +123,19 @@ def dynamic(word, has_substitution):
     """Whether this word is one no grammar can read as static: it holds a `$`
     or a lifted `$(...)` (`has_substitution`), or it is `Rewritten`."""
     return has_substitution(word) or "$" in word or isinstance(word, Rewritten)
+
+
+def idles(word, idle, has_substitution):
+    """`idle`, or what `word` makes of it, an assignment in front of a command or one a wrapper there hands on:
+    whether it may start a bash so that it runs nothing of its program, or its first command alone (#2648) --
+    `SHELLOPTS` listing `noexec` or `onecmd`, or holding a value no grammar reads, and the last such word
+    decides. Bash takes the variable from its environment and turns each option it lists on before it reads a
+    line. A word `env` splits (`-S`) is read at its blanks."""
+    for part in word.split() if any(blank in word for blank in " \t\n") else [word]:
+        name, _, value = part.partition("=")
+        if name == "SHELLOPTS":
+            idle = "$" in value or has_substitution(word) or not {"noexec", "onecmd"}.isdisjoint(value.split(":"))
+    return idle
 
 
 def _env_split(value):
