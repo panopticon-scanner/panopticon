@@ -26,11 +26,11 @@ an empty argument, which bash fails to run; the reader takes the quotes off firs
 shell, and the row reports. `builtin` in front is #2665's. A front that is no name (`$1`, `"$@"`), a substitution
 that prints nothing and two references glued are not dropped in front of a shell on `main` either, and are not
 this fix's; nor is a default that is only a blank (`${S:- }`), or a word in front of a default or an alternate of
-several words (`$T ${S:+sudo -E}`): #3002. Nor is an alternate naming a word that is no wrapper
-(`${DRY_RUN:+echo}`): it too is nothing with its name unset, and `main` drops an alternate only where it names a
-wrapper (#3003). Nor is any other word that is nothing with its name unset: a pattern taken off, a substring, an
-array, an indirection, a default that holds a reference. A `trap`'s action is not read at all (#2830), and a
-fetched file's text that the parent splices into a `-c` string is #2693.
+several words (`$T ${S:+sudo -E}`): #3002. An alternate naming a word that is no wrapper (`${DRY_RUN:+echo}`)
+was not this fix's either: it too is nothing with its name unset, and #3003 drops it since
+(`tests/test_workflow_alternate_in_front.py`). Nor is any other word that is nothing with its name unset: a
+pattern taken off, a substring, an array, an indirection, a default that holds a reference. A `trap`'s action is
+not read at all (#2830), and a fetched file's text that the parent splices into a `-c` string is #2693.
 """
 import unittest
 
@@ -351,13 +351,14 @@ class TestWhatStaysForOtherIssues(unittest.TestCase):
         with self.subTest(front="$T ${S:+sudo -E}", command=". ./t"):
             self.assertEqual(CLEAN, marks("%s$T ${S:+sudo -E} . ./t" % FETCH))
 
-    def test_an_alternate_naming_no_wrapper_is_3003(self):
+    def test_an_alternate_naming_no_wrapper_was_3003(self):
         # `${DRY_RUN:+echo} sh -c 'P'`: with its name unset an alternate is nothing whatever it names, and `main`
-        # drops one only where it names a wrapper it knows, in front of a shell too. Truth: runs, every one.
+        # dropped one only where it names a wrapper it knows, in front of a shell too. #3003 moved these rows:
+        # the second walk drops it now. Truth: runs, every one.
         for front in ("${S:+echo}", "${S+true}", "${S:+:}", "${S:+-x}", "$T ${S:+echo}"):
             for command in ("eval '%s'" % P, "sh -c '%s'" % P):
                 with self.subTest(front=front, command=command[:4]):
-                    self.assertEqual(CLEAN, marks("%s %s" % (front, command)))
+                    self.assertEqual(NOW, marks("%s %s" % (front, command)))
 
     def test_other_words_that_are_nothing_are_not_dropped_in_front_of_a_shell_either(self):
         # A pattern taken off, a replacement, a substring, a case change, an array, an indirection, a default
