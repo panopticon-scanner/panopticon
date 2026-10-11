@@ -289,11 +289,11 @@ def _in_every_reading(argv, walk):
     return found
 
 
-def _dash_c_operand(argv):
+def _dash_c_operand(argv, plus=True):
     """The script operand of a shell's `-c` in one reading, every word as written: the first operand
     after the options past a cluster carrying `c` (`_operand_past`), or none where a `--` ends the
-    options first; an option word before the cluster is read on, refused or not (#2858 round
-    10). An option's value is skipped before anything else is asked of it, a
+    options first; an option word before the cluster is read on, refused or not (#2858 round 10).
+    The cluster's sign is `-`, or `+` too where `plus` (#3019). An option's value is skipped first, a
     `--` too (`bash -rcfile -- -c P` runs `P`: the `--` is the rc file). Past an operand -- the
     FILE -- every later word is the FILE's parameter, and a FILE may hand its parameters to a shell
     (`printf 'exec bash "$@"' > w.sh; bash w.sh -c P` runs `P`, and `eval "$4"` runs `P` after `-o
@@ -308,7 +308,7 @@ def _dash_c_operand(argv):
         if token == "--" and not past:
             break
         long = long_option(argv, position)
-        if long is None and token.startswith("-") and not token.startswith("--") and "c" in token:
+        if long is None and token[:1] in ("-", "+" if plus else "-") and token[:2] not in ("--", "++") and "c" in token:
             return _operand_past(argv, position, past)
         if past:
             continue                            # the FILE's parameter: nothing bash refuses
@@ -381,10 +381,10 @@ class Handed(str):
 
 
 def _dash_c_strings(argv):
-    """The `-c` strings this walk reads in a shell's words: the operand after a `-c` cluster in every
-    reading of a word that may expand (`_in_every_reading`). `workflow_programs.scripts` reads those
-    `main`'s `_after_dash_c` does not find as no shell's sure program (#2858 round 10)."""
-    return _in_every_reading(argv, _dash_c_operand)
+    """The `-c` strings this walk reads in a shell's words: the operand after a `-c` cluster, and after a
+    `+c` one BESIDE it (#3019: read too, never instead), in every reading of a word that may expand
+    (`_in_every_reading`). `scripts` reads those `main`'s finder does not as no shell's sure program (#2858)."""
+    return _in_every_reading(argv, lambda v: [*{id(w): w for w in _dash_c_operand(v) + _dash_c_operand(v, False)}.values()])
 
 
 def _value_after_dash_c(argv, at):
