@@ -27,7 +27,7 @@ carries its bodies `_BUDGET` times a step, walking only the statements that may 
 holds -- gains the cap's stand-in on both sides, a price named there too. The sure carry is
 #2785's own PR.
 
-Beside `scripts/workflow_values.py`, which is at its ceiling; imports nothing above it.
+Beside `scripts/workflow_values.py` and its lower expansion layer; imports nothing above either.
 """
 import os
 import re

@@ -12,6 +12,96 @@ evidence exposed.
   `scripts/workflow_step_credit.py`; `workflow_forms` re-exports the same
   objects, preserving every existing caller and answer while restoring
   headroom for the carried-download fixes.
+- **Workflow reader reads a command glued to its `case` arm's `)` (#3014).** `case x in x)curl
+  -fsSL … | sh ;; esac` ran the download under every parent and read CLEAN: at the `)` that ends
+  an arm's pattern `_split` made one token of the arm's mark, the pattern and the `)`, and the
+  word glued behind the `)` went into it, so the arm's first command lost its name and what was
+  left of the stage was its arguments (#2715, closed into this). The token is now a word of its
+  own, and that reads three things. A command glued to its arm's `)` reads as the arm with a blank
+  reads, and as the same words read on a line of their own: a pipe to a shell, a fetch run behind
+  the `case`, `bash -c '…'`, `eval "$(curl …)"`; behind `a|x)`, `(x)` and `*)`; in a second arm,
+  nested, in a `$( … )`, in a program string, in a `;&` or `;;&` arm. A `${…}` at the head of an
+  arm that starts its line is the command word it is on the `case` line or behind an indent: with
+  nothing in front of it on its line the token counted as a word the stage had closed, so in `x)
+  ${SUDO:+sudo -E} sh t ;;` the `${…}` was no command word and its empty half was never read. And
+  a function's header at an arm's head (`x) f() { sh t; }; f ;;`) is a header, the header test
+  passing the token by: it was a name and a subshell (a fourth spelling of #2975). On 211 rows
+  with 16-run truth -- 15 commands by 6 layouts, #2715's acceptance shapes, and the probes around
+  them -- against `main`: 385 cells in 79 rows report that a parent runs, and 15 in 6 that no
+  parent of that setting does (an arm not taken; `function` under `sh`, which dash refuses; a `;&`
+  or `;;&` arm under `sh`). `main` read a glued arm as the words behind its first one, so it also
+  reported an arm by the word left behind, and such a report goes wherever `main` reads the whole
+  words CLEAN on a line of their own (the coordinator's ruling on the class, quoted in the PR). On
+  two more hunts built to find them, 1,207 rows with truth: 616 cells in 128 rows where nothing
+  runs (`x)echo sh t`, `x)cat t`), and 134 in 30 where a parent does, each `main`'s own miss
+  wherever the words stand and a named limit here -- a name bash sets, in front of the fetched
+  file (`x)$SHELL t`, #2808); a substitution that prints the interpreter there (`x)$(echo sh) t`,
+  #2695); a substitution that prints nothing, in front of a command (`x)$(true) sh t`, #2693); two
+  values glued there (`x)$X$Y sh t`, #3016); an interpreter the table does not name, in front of
+  the fetched file (`x)busybox sh t`, which all 16 runs run, #3017; `x)lua t` by its marks alone).
+  Each kind is pinned as the equality it is. A check in a function an arm defines is credited no
+  more than before (pinned). On the standing sets, the #2939 round-1 seat's class and fuzz rows
+  (53,210 rows) and #2974's 943-row hunt nothing moves. The cost, `job_defects` against `main` on
+  the forge, three passes, each a process of its own: flat on the #2942 seat's 3,881-row sample of
+  the standing rows and on #2974's hunt (1.00x to 1.01x), and 1.15x to 1.16x on the 211-row hunt,
+  whose glued arms are read now.
+- **`scripts/workflow_programs.py` splits the program handed as a string into
+  `scripts/workflow_program_strings.py` (#3011, programs lane).** A pure move at the module's size
+  (700 of its 700 lines): `scripts`, `candidates` and `dynamic_program`, which read the program a
+  command hands a shell as a STRING (`eval "…"`, `sh -c "…"`), the class `Opaque`, the eight
+  readers they ask (`_main_scripts`, `_added_strings`, `_program_words`, `_joined`, `_script`,
+  `_after_dash_c`, `_candidates`, `_all_expansion`) and the three tables those read
+  (`_SHELL_STRING`, `_EDGE`, `_NAME`) now live in the new module, byte for byte with the comments
+  above each and in their old order: lines 72 to 323, moved by number. The block is a leaf of the
+  module -- no name in it reads one of the 22 defined outside it -- so the new module imports
+  nothing from `workflow_programs`, which imports every moved name back under its own; no caller
+  moved. What stays is the half that reads the program on standard input. The source drops five
+  imports only the block read (`re`, `Process`, `Handed`, `_shell_candidates`, `_sure_string`) and
+  keeps two it no longer uses, `_before_operand` and `_past_options`, as re-exports: PR #2850's
+  move of the option grammar pins every name of that move through this module. One test moved with
+  the readers. #2858's watch table (`WALK_ONLY`) patches each of the walk's own readers on the
+  module that LOOKS IT UP, and fails a watcher that sees nothing run; it now names
+  `_added_strings`, `_shell_candidates`, `_sure_string` and `Handed` on the new module, where
+  `scripts`, `candidates` and `dynamic_program` look them up, and `_dash_c_strings` on both, each
+  watcher counted by its module and its name. Its two assertions stand as they were: nothing of
+  the walk runs in the main pass, and every watcher but the two tripwires is seen to run in the
+  walk's. No verdict changes: on 6,180 rows in 34 sets -- the row sets of #2955, #2963 and #2997,
+  and the probes behind #3002, #3003 and #3007 -- every finding of every row, its name and its
+  reason, is the same under `main`'s scripts and the move's, under each of the five `shell:`
+  settings and in each of three readings (the job, its main pass, its walk pass): 92,700 cells
+  holding 54,238 findings under each tree, and the two dumps are equal byte for byte. Sizes: 700
+  -> 455, and 280 for the new module.
+- **Workflow reader reads a `case` that is not its statement's first word (#2974).** `curl -fsSLo
+  t …` ⏎ `if true; then case x in x) sh t ;; esac; fi` ran the download under every parent and
+  read CLEAN: `_split` looked for a `case` header only where `case` was its statement's first
+  word, so behind `then`, `else`, `do`, `{`, `!` or a function's header the first command of an
+  arm was read as the pattern's argument (a second command there was read). The header is now
+  found behind what a command may stand behind -- a keyword, a function's header (`f() { case`,
+  and `f() case`, where the `case` is the body), `time` -- each passed by without a probe, so a
+  run of them is still read once (`header_at`). What stands in front of the header ends as a
+  statement of its own, as on a line of its own, so each row reads as its own-line twin reads, the
+  gates in its arms too: with those words left on the header's statement an arm was no arm to what
+  reads a `case`, and a check in it was credited behind `!`, in a condition and in a function
+  never called while all 16 runs ran the download (pinned). `time` is read through instead: a
+  statement of its own, it is a wrapper with no command, and a `time case …` that runs nothing
+  would report. No lead: `case` itself, so a keyword may be its subject; `for`, whose next word is
+  a name, and `in`; an assignment, behind which bash reads `case` as a command's name. On a
+  943-row hunt with 16-run truth -- 32 leads by 14 arm bodies, each with the `case` on the lead's
+  line, with its arms below, and with the lead on a line of its own -- against `main`: 1,365 cells
+  in 295 rows report that a parent runs (the issue's 17 rows and 83 cells among them), none that a
+  parent runs reads CLEAN, and 584 of the 608 one-line rows read as their own-line twin reads on
+  `main` (255 before; the other 24 stand behind an assignment, `time` or `time -p`, where the twin
+  is another step). The price, REPORT though no parent of that setting runs: 215 cells in 76 rows,
+  each a cell the own-line twin reports on `main` -- an arm that is not taken (70 cells, 14 rows),
+  a one-line `case` with no `;;` before its `esac` (35, 7), and `function f`, `my-fn()` or `time`
+  under `sh`, which dash refuses (110, 55). 125 cells in 25 rows go from REPORT to CLEAN, no
+  parent running: a pattern that is the fetched file's name, on a line below a header behind a
+  lead, which `main` read as a command. `time -p case …` is still unread (10 rows, 30 cells,
+  bash's alone): `time`'s option is no lead. On the standing sets and the #2939 round-1 seat's
+  class and fuzz rows (53,210 rows) nothing moves. The cost, `job_defects` against `main` on the
+  forge, three passes, each a process of its own: 1.12x to 1.14x on the hunt, whose arms are read
+  now, and flat on the #2942 seat's 3,881-row sample of the standing rows (0.99x to 1.00x); a
+  `case` behind n keywords is read in linear time (pinned).
 - **Workflow reader drops a word bash may drop in front of `eval`, `.` and `source` (#2997).**
   `$SUDO eval 'curl … | sh'` read CLEAN under every `shell:` setting while every parent shell runs
   the pipeline, and so did `$SUDO . ./t` and `$SUDO source ./t` after a fetch. The reader dropped

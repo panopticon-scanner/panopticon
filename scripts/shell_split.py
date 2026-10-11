@@ -110,6 +110,7 @@ def _split(text, context):
     buf: list[str] = []
     quote, i, n, opened = None, 0, len(text), 0
     cases: list[str] = []
+    arm = None                          # the token of the arm the buffer stands in
     groups = (context.new("group", "("), context.new("group", ")"))
     word_start, redirect_target = 0, False
     # A `case` header is exactly three words (`case`, the word, `in`), so the shlex probe below
@@ -119,8 +120,14 @@ def _split(text, context):
     # unconditionally re-split the WHOLE buffer on every whitespace character, which made
     # `_split` quadratic: 42 KB of one statement took ~93 s against 0.02 s before the probe
     # existed, from a `run:` block this module reads out of the TARGET repository (fix round on
-    # #1714, Critical 1).
-    header_words, header_live = 0, True
+    # #1714, Critical 1). The header may stand behind what a command may: a keyword (`then case`,
+    # `do case`, `{ case`, `! case`), a function's header (`f() { case`) or `time`. `header_at` is
+    # where the buffer's words in front of it end: each is passed by without a probe, so a long run
+    # of them is still read once, and the probe reads the words behind them alone. Found there,
+    # the words in front end as a statement of their own and the header as the next, as on a line
+    # of its own: what reads a `case` asks for it as its statement's first word (#2974). `time`
+    # goes with neither: a statement of its own, it would be a wrapper with no command.
+    header_words, header_live, header_at = 0, True, 0
     # `[[ ... ]]` is ONE compound command: the `&&`, `||`, `(`, `)`, `<` and `>` in it are the
     # conditional's operators, not list separators, subshells or redirections (#2441) -- split
     # at them, `CHECK && [[ -f a || -f b ]] || exit 1` lost the `|| exit 1` that ends the real
@@ -138,10 +145,10 @@ def _split(text, context):
     negations: list[bool] = []
 
     def end_stage():
-        nonlocal header_words, header_live, word_start, redirect_target, at_head, in_front
+        nonlocal header_words, header_live, header_at, word_start, redirect_target, at_head, in_front
         stages.append("".join(buf))
         del buf[:]
-        header_words, header_live, word_start = 0, True, 0
+        header_words, header_live, header_at, word_start = 0, True, 0, 0
         redirect_target, at_head, in_front = False, True, True
 
     def end_statement(separator):
@@ -232,14 +239,23 @@ def _split(text, context):
             at_head = at_head and bool(not closed or closed in KEYWORDS
                                        or _ASSIGNMENT.match(closed))
             in_front = in_front and fronts(closed, in_front, text, i)
-            if header_live:
+            if header_live and not header_words and closed not in ("case", "for", "in") and (
+                    in_front and not _ASSIGNMENT.match(closed) or closed == "time"):
+                header_at = len(buf)
+            elif header_live:
                 header_words += 1
                 try:
-                    words = shlex.split("".join(buf))
+                    words = shlex.split("".join(buf[header_at:]))
                 except ValueError:
                     words = []
                 words = [w for w in words if w not in groups]
                 if len(words) == 3 and words[0] == "case" and words[-1] == "in":
+                    if header_at:
+                        behind, buf[header_at:] = buf[header_at:], []
+                        if "".join(buf).split()[-1:] == ["time"]:   # it times the `case`: no command of its own
+                            buf[:] = ["".join(buf).rstrip()[:-4]]
+                        end_statement(";")
+                        buf[:] = behind
                     end_statement(";")
                     cases.append("pattern")
                 elif header_words >= 3 or (words and words[0] != "case"):
@@ -254,7 +270,7 @@ def _split(text, context):
             # one (`f(){`) is the body's own word, so the body's first command on the
             # header's line is read as a command and not as the header's argument (#2664).
             header = _HEADER.match(text, i)
-            words = "".join(buf).split() if header else []
+            words = "".join(buf[buf[:1] == [arm]:]).split() if header else []     # an arm's token is no word in front
             if header and words and _NAME.fullmatch(words[-1]) and all(
                     w in KEYWORDS for w in words[:-1]):
                 if words[-2:-1] != ["function"]:
@@ -273,8 +289,12 @@ def _split(text, context):
             # spelled `esac)` has no separating whitespace and remains an arm.
             case_end = re.fullmatch(r"\s*esac\s+", "".join(buf))
             if cases and cases[-1] == "pattern" and not case_end:
-                buf[:] = [context.new("arm") + "".join(buf).lstrip() + ")"]
-                cases[-1] = "body"
+                # The arm's token is a word of its own, whatever stands behind its `)`: glued to a
+                # command (`x)curl … | sh`) it took the command's name with it, and where the arm
+                # starts its line it counted as a word the stage had closed (#3014).
+                arm = context.new("arm") + "".join(buf).lstrip() + ")"
+                buf[:] = [arm, " "]
+                cases[-1], word_start = "body", 2
                 # Preserve the parent's arm region before its nested header.
                 # Otherwise the arm marker hides `case` from the three-word
                 # probe, and the inner pattern becomes the command (#2617).
