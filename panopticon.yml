@@ -689,6 +689,8 @@ groups:
       - tests/test_workflow_program_strings.py
       - tests/test_workflow_default_command_word.py
       - tests/test_workflow_word_before_a_builtin.py
+      - tests/test_workflow_plus_cluster.py
+      - tests/test_workflow_alternate_in_front.py
       panels:
       - SEC
     Workflows:
