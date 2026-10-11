@@ -73,7 +73,7 @@ _FETCHERS = ("curl", "wget")
 OPTIONAL_NEXT = (*_SHELLS, *WRAPPERS, *_INTERPRETERS, *_FETCHERS)
 
 
-def _optional(argv):
+def _optional(argv, nothing=False):
     """How many leading words of `argv` bash may drop in front of a name the
     reader knows (`_OPTIONAL`, #2472): each unquoted, one reference, with no
     default or one that is itself a wrapper (`${X:-sudo}`); 0 where the word
@@ -81,7 +81,10 @@ def _optional(argv):
     knows that word by its one-word default too (#2963), and knows `eval`,
     `.` and `source` behind words that may each be nothing (#2997). It drops
     an alternate that names no command it reads the word as (#3003): with its
-    name unset `${S:+echo}` is nothing, as `${S:+sudo}` is."""
+    name unset `${S:+echo}` is nothing, as `${S:+sudo}` is. And it knows
+    `builtin` as it knows `eval`, in the folds that read it through (#2665);
+    behind that word (`nothing`) it counts the words that may each be nothing,
+    whatever follows them, as bash looks up the first word it keeps there."""
     walked = WALKED_DEFAULTS.get()
     count, loose = 0, True
     while count < len(argv) - 1:
@@ -104,10 +107,14 @@ def _optional(argv):
         loose = loose and (not match[1] or word[-len(match[1]) - 2] == "+"
                            or os.path.basename(match[1]) == "command")
         count += 1
+    if nothing:
+        return count if loose else 0
     after = _DEFAULTS.fullmatch(argv[count]) if count and walked else None                    # (#2963)
-    if count and loose and walked and (after[1] if after else argv[count]) in ("eval", ".", "source"):
-        return count                                                                      # (#2997)
-    return count if count and os.path.basename(after[1] if after else argv[count]) in OPTIONAL_NEXT else 0
+    name = (after[1] if after else argv[count]) if count else ""
+    if count and loose and walked and (name in ("eval", ".", "source")                        # (#2997)
+                                       or name == "builtin" and _through()):                 # (#2665)
+        return count
+    return count if count and os.path.basename(name) in OPTIONAL_NEXT else 0
 
 
 # Whether a ONE-WORD default is read as the command it names where that is a fetcher or `eval`, as
@@ -119,6 +126,22 @@ def _optional(argv):
 # `_optional`'s reading of `eval`, `.` and `source` behind such a word (#2997), and its dropping of
 # an alternate that names no wrapper (#3003).
 WALKED_DEFAULTS: contextvars.ContextVar[bool] = contextvars.ContextVar("walked_defaults", default=True)
+# Whether this fold reads a `builtin` through to the builtin it names, and whether a fold met one it may read so
+# (`_through`, `shell_command.folds`; #2665). Bash runs `builtin eval 'P'` as `eval 'P'`; dash has no `builtin`,
+# runs nothing of it, and goes on where no `-e` stops it. So `main`'s reading, the word a command the guard does
+# not follow, is dash's, and stays: the second walk reads a job that holds such a word in every fold it reads any
+# job in, then in each of them again with the word read through, and the guard REPORTs where either reading does.
+_THROUGH = {"on": False, "met": False}
+
+
+def _through():
+    """Whether this fold reads through a `builtin` that stands in front of a builtin's name (#2665): never in
+    the main pass, and in the second walk only in the folds `shell_command.folds` reads again for the one a
+    fold met here -- which this notes."""
+    if not WALKED_DEFAULTS.get():
+        return False
+    _THROUGH["met"] = True
+    return _THROUGH["on"]
 
 
 def _shell_default(word):
@@ -126,10 +149,11 @@ def _shell_default(word):
     (`${X:-sh}`: `sh`) or, in the second walk (`WALKED_DEFAULTS`, #2963), a fetcher or `eval`; else
     None: `"${SH:-bash}"` is `bash` (#2337), and `"${SH:- bash}"`, `${X:-"bash -s"}` and
     `${X:-bash\\ -s}` name no shell. A default holding a blank the reader marks is read whole
-    (`_default_words`)."""
+    (`_default_words`). One naming `builtin` is that word in the folds that read it through (#2665)."""
     default = _DEFAULTS.fullmatch(word)
     known = (*_SHELLS, *_FETCHERS, "eval") if WALKED_DEFAULTS.get() else _SHELLS
-    return [default[1]] if default and os.path.basename(default[1]) in known else None
+    return [default[1]] if default and (os.path.basename(default[1]) in known
+                                        or default[1] == "builtin" and _through()) else None      # (#2665)
 
 
 def _default_words(whole):

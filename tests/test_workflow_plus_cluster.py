@@ -26,7 +26,8 @@ a `+` argument that holds a `c` (`$TOOL +check all`), keeps its hand-off beside 
 
 Left for other issues, pinned in `TestWhatStaysForOtherIssues` as they read: a `$` command word whose cluster is
 not its first word (#2671), a cluster's letter made by an expansion (#2889), zsh's `O`, which takes no value,
-`builtin command sh`, `busybox sh`, and a string that is a value, which this guard follows nowhere.
+`busybox sh`, and a string that is a value, which this guard follows nowhere. `builtin command sh` was among
+them until #2665 read `builtin` through.
 """
 import itertools
 import unittest
@@ -449,10 +450,13 @@ class TestWhatStaysForOtherIssues(unittest.TestCase):
             with self.subTest(words=words):
                 self.assertEqual((CLEAN, CLEAN), signs("zsh %s %s\n" % (words, P)))
 
-    def test_builtin_and_busybox_in_front(self):
-        for front in ("builtin command sh", "busybox sh", "busybox ash"):              # truth: runs, both
+    def test_busybox_in_front_and_builtin_no_longer(self):
+        for front in ("busybox sh", "busybox ash"):                                    # truth: runs, both
             with self.subTest(front=front):
                 self.assertEqual((CLEAN, CLEAN), signs("%s {S}c %s\n" % (front, P)))
+        # `builtin command sh` waited for #2665, which reads `builtin` through in folds of the second walk's own:
+        # the cluster behind it is read there, written either way. Truth: runs, both, under bash.
+        self.assertEqual((WALK, WALK), signs("builtin command sh {S}c %s\n" % P))
 
     def test_a_string_that_is_a_value(self):
         for shell in ("sh", "bash", "dash"):                                           # truth: runs, both

@@ -23,7 +23,7 @@ step did to its name, as `main` reads it in front of a shell: `S=sudo` makes bas
 nothing, and the row reports. A default naming `command` by path reports too; `/usr/bin/command` is a real file on
 macOS, where it runs the builtin, and no file on the forge. And a quoted nothing beside the word (`$S""`) leaves
 an empty argument, which bash fails to run; the reader takes the quotes off first, as `main` does in front of a
-shell, and the row reports. `builtin` in front is #2665's. A front that is no name (`$1`, `"$@"`), a substitution
+shell, and the row reports. `builtin` in front was #2665's, and reports since. A front that is no name (`$1`, `"$@"`), a substitution
 that prints nothing and two references glued are not dropped in front of a shell on `main` either, and are not
 this fix's; nor is a default that is only a blank (`${S:- }`), or a word in front of a default or an alternate of
 several words (`$T ${S:+sudo -E}`): #3002. An alternate naming a word that is no wrapper (`${DRY_RUN:+echo}`)
@@ -318,13 +318,15 @@ class TestThePrice(unittest.TestCase):
 class TestWhatStaysForOtherIssues(unittest.TestCase):
     """Rows this PR does not move, each pinned as it reads and named with what it waits for."""
 
-    def test_builtin_in_front_is_2665(self):
+    def test_builtin_in_front_was_2665(self):
+        # No longer waiting: #2665 reads `builtin` through to the builtin it names, in folds of the second walk's
+        # own (`tests/test_workflow_in_front_of_a_command.py`). The main pass reads the word as `main` did.
         for front in ("", "$S ", "$A $B "):                 # truth: runs under bash; dash has no `builtin`
             with self.subTest(front=front):
-                self.assertEqual(CLEAN, marks("%sbuiltin eval '%s'" % (front, P)))
+                self.assertEqual(NOW, marks("%sbuiltin eval '%s'" % (front, P)))
         for name, runner in BOTH.items():                   # the same, `builtin` named by a default
             with self.subTest(runner=name):
-                self.assertEqual(CLEAN, marks(step("${S:-builtin}", runner)))
+                self.assertEqual(NOW, marks(step("${S:-builtin}", runner)))
 
     def test_a_front_that_is_no_name_is_not_dropped_in_front_of_a_shell_either(self):
         # `$1`, `$@` and `"$@"` are nothing in a step's script unless the step sets them. Truth: runs, every one.
