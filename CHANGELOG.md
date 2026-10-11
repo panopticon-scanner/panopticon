@@ -7,6 +7,18 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A checksum gate inside a shell function is credited only where the function is proved to run
+  (#2949).** `f() { sha256sum -c sums || exit 1; }; sh tool` read CLEAN even when `f` was never
+  called, was called after the use, or appeared only as `find -exec f`: the stopping-rescue path
+  returned before the existing function-call bound was applied. That rescue now carries its
+  outside reach through the same `_function_status` bound as an unrescued check. On 65,894 standing
+  rows and five `shell:` settings (329,470 cells), 18 rows move, all in this class: 86 CLEAN to
+  REPORT, no REPORT to CLEAN, and no reason-only changes. All 288 Bash 5.2.21, Bash 3.2.57 and dash
+  truth cells for those rows run the payload. Called-after, one-line and skipped-call extensions
+  add 30 true CLEAN-to-REPORT cells across six bad/right-digest rows. Bash's `function f { ...; }`
+  spelling adds ten more; its two explicit-`sh` settings are the bounded fail-closed price (four
+  scanner cells), because dash fetches the file but refuses that syntax before running it. A proved
+  call before the use, a bare uncalled check and an inline rescue keep all 30 existing answers.
 - **`scripts/workflow_printers.py` splits how a printer's text is decoded into
   `scripts/workflow_printer_writes.py` (#3013, printers lane).** A pure move at the module's size
   (700 of its 700 lines), in two pieces, each byte for byte with the comments above it and the two
