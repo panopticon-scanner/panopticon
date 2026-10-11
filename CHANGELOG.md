@@ -74,6 +74,11 @@ evidence exposed.
   rows, where `_named` looks at the head of every stage; 1.44x to 1.47x on the hunt and 1.31x to
   1.33x on the fuzz, whose rows all hold the words -- a job with a `builtin` it may read through
   is read in twice the second walk's folds, and no other job.
+- **Workflow guard: downloaded-use scope readers move to
+  `scripts/workflow_use_scopes.py`.** A pure move out of `scripts/workflow_uses.py`, which stood at
+  its 699-line ceiling: function ranges and removal, the compound/group walk whose assignments
+  live in another shell, and function-body bounds now live in a 153-line leaf. The old module
+  re-exports every moved name and falls to 563 lines; no expectation moved.
 - **Workflow reader reads a shell's `c` in a `+` cluster as its `-c` (#3019).** `sh +c 'curl ... |
   sh'` and `bash +xc '...'` read CLEAN under every `shell:` setting while every parent shell runs
   the string: a `+` turns an option OFF and `c` is none to turn, so bash, dash, zsh, ksh and
