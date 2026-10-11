@@ -141,7 +141,7 @@ def _script(word):
     return Opaque(text)
 
 
-def _after_dash_c(argv):
+def _after_dash_c(argv, plus=True):
     """The script operand of a shell's `-c`, wherever the flag was clustered.
 
     `sh -ec`, `bash -lc`, `bash -euc` are the ordinary CI idiom, not an
@@ -157,12 +157,21 @@ def _after_dash_c(argv):
     `+c7`), which reports a word the shell refuses (`+-c`, `+c+x`) as `-+c` and `-c+x` are; a
     `++` word is no cluster, as a `--` one is none. What the sign DOES turn round is read where it
     always was: `+nc P` runs `P` and `-nc P` nothing, `+ec` leaves a check in `P` unheeded.
+
+    Its string is read BESIDE the one `main` found, never instead of it (`plus` off is `main`'s
+    reading, word for word): where the `+` cluster is the shell's own, the shell runs its string and
+    the `-c` after it is a parameter, but a FILE may run any parameter it is handed (`sh w.sh +check
+    x -c P`, `w.sh` an `eval "$4"`), and an expansion may make the cluster take its string for a
+    name (`X=o; sh +${X}c errexit -c P` runs `P`). So this reads more than `main` did and never less.
     """
     for position, token in enumerate(argv[1:], start=1):
         if token == "--":
             break
-        if token[:1] in ("-", "+") and token[:2] not in ("--", "++") and "c" in token:
-            return _past_options(argv, position)
+        if token[:1] in ("-", "+" if plus else "-") and token[:2] not in ("--", "++") and "c" in token:
+            found = _past_options(argv, position)
+            if token[0] == "-":
+                return found
+            return found + [word for word in _after_dash_c(argv, False) if not any(word is seen for seen in found)]
     return []
 
 
