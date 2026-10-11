@@ -308,7 +308,7 @@ def _dash_c_operand(argv):
         if token == "--" and not past:
             break
         long = long_option(argv, position)
-        if long is None and token.startswith("-") and not token.startswith("--") and "c" in token:
+        if long is None and token[:1] in ("-", "+") and token[:2] not in ("--", "++") and "c" in token:
             return _operand_past(argv, position, past)
         if past:
             continue                            # the FILE's parameter: nothing bash refuses

@@ -69,7 +69,8 @@ def scripts(argv):
 
 
 def _main_scripts(argv):
-    """`scripts`' answer as `main` reads it (7e9223e6), word for word: `main`'s strings alone."""
+    """`scripts`' answer as `main` reads it (7e9223e6), word for word: `main`'s strings alone,
+    a `+` cluster's among them since #3019 (`_after_dash_c`)."""
     return [script for script in map(_script, _program_words(argv)) if script is not None]
 
 
@@ -148,11 +149,19 @@ def _after_dash_c(argv):
     no shell spells anything else that way. Requiring `-c` as its own token
     let every clustered spelling through. The script is the first operand
     after the options, which need not be the next word: `_past_options`.
+
+    A cluster written with `+` carries it as well (#3019): `sh +c P`, `bash +xc P`, `sh -e +c P` and
+    `bash +rcfile P` -- letters, a `c` among them -- run `P` in bash, dash, zsh, ksh and busybox's
+    ash alike, since a `+` turns an option OFF and `c` is none to turn. So the sign is read as the
+    `-` is: one `+` and a `c` anywhere after it, whatever else the word holds (`+c$X`, and zsh runs
+    `+c7`), which reports a word the shell refuses (`+-c`, `+c+x`) as `-+c` and `-c+x` are; a
+    `++` word is no cluster, as a `--` one is none. What the sign DOES turn round is read where it
+    always was: `+nc P` runs `P` and `-nc P` nothing, `+ec` leaves a check in `P` unheeded.
     """
     for position, token in enumerate(argv[1:], start=1):
         if token == "--":
             break
-        if token.startswith("-") and not token.startswith("--") and "c" in token:
+        if token[:1] in ("-", "+") and token[:2] not in ("--", "++") and "c" in token:
             return _past_options(argv, position)
     return []
 
@@ -192,8 +201,9 @@ def candidates(argv):
 
 
 def _candidates(argv):
-    """`candidates`' answer as `main` reads it (7e9223e6), word for word."""
-    if argv[1:] and _value(argv[0]) and argv[1][:1] == "-" != argv[1][1:2] and "c" in argv[1]:
+    """`candidates`' answer as `main` reads it (7e9223e6), word for word but for the sign of the
+    cluster a `$` command word is handed: `$CMD +c P` is `$CMD -c P` (#3019, as `_after_dash_c`)."""
+    if argv[1:] and _value(argv[0]) and argv[1][:1] in ("-", "+") and argv[1][:2] not in ("--", "++") and "c" in argv[1]:
         return argv[0], _past_options(argv, 1)
     if not argv or os.path.basename(argv[0]) not in _SHELL_STRING:
         return None, []
