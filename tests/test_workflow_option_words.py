@@ -386,6 +386,33 @@ class TestTheReadingDoesNotDependOnTheMarker(unittest.TestCase):
             with self.subTest(row=row[:28]):
                 self.assertEqual({reading}, {marks(row) for _ in range(8)})
 
+    WORDS = ("-c", "-x", "-o", "errexit", "+c", "--", "-$(echo c)", "-e$(true)", "+$(echo x)", '"-$(echo s)"', "-c$(true)",
+             "$(echo -c)", "$Y", "'P'", "w.sh")
+
+    def test_no_finder_or_walk_asks_the_marker_over_every_run_of_up_to_three_words(self):
+        # Every run of one to three words of fifteen, behind `sh` and behind `$CMD`: what each finder, each walk for
+        # a value and each walk for stdin answers is the same under a marker without a letter and one with a `c`.
+        def answers(text):
+            words_ = argv(text)
+            shell = not text.startswith("$")
+            value, found = ws._candidates(words_)
+            more, added = wo._shell_candidates(words_) if shell else (None, [])
+            walked = wo._stdin_walk(words_, "PROGRAM", words_, shell, not shell)
+            return ([str(word) == "P" for word in ws._after_dash_c(words_)], [words_.index(word) for word in wo._dash_c_strings(words_)],
+                    value is not None, len(found), more is not None, len(added), walked[0], walked[1] is words_, walked[1] == (),
+                    wp._options(words_, 0)[0])
+        runs = [()]
+        for _ in range(3):
+            runs += [run + (word,) for run in runs if len(run) == max(map(len, runs)) for word in self.WORDS]
+        texts = ["%s %s" % (name, " ".join(run)) for name in ("sh", "$CMD") for run in runs if run]
+        self.assertEqual(2 * (15 + 15 ** 2 + 15 ** 3), len(texts))
+        found = []
+        for digit in "0c":
+            with nonce(digit):
+                found.append([answers(text) for text in texts])
+        differ = [text for text, zero, cee in zip(texts, *found) if zero != cee]
+        self.assertEqual([], differ[:5])
+
     def test_the_finders_find_the_string_under_either_marker(self):
         for digit in "0c":
             with nonce(digit):
@@ -569,6 +596,19 @@ class TestWhatStaysForOtherIssues(unittest.TestCase):
         # for its string too, since the search reads on past a word that only may print the `c`. Truth: runs, both.
         self.assertEqual({BOTH}, under("sh -o$(echo c) errexit %s\n" % P))
         self.assertEqual({BOTH}, under("sh -$(echo o) errexit -c %s\n" % P))
+
+    def test_the_first_pass_alone_holds_one_reading_of_stdin(self):
+        # The first pass returns ONE answer for stdin. `main`'s took the body for data under a marker with a `c` and
+        # named the substitution the `-c` program; this one keeps stdin the program, as `main`'s did under a marker
+        # without, and counts the check in it. The JOB reports under every marker: the second walk counts no check
+        # behind a word that may expand. Truth: the check stops the step; with `-$(echo x)` for `-e$(true)` it runs.
+        for word in ("-e$(true)", "-$(echo x)"):
+            with self.subTest(word=word):
+                self.assertEqual({WALK}, under("%ssh %s $(true) -- <<'EOF'\n%s\n%s\nEOF\n" % (GET, word, CHECK, USE)))
+        # The other way round: under a marker without a `c` `main`'s first pass found no string and said the download
+        # runs under `sh`; this one reads the string, and the job says the check inside it does not count. Truth:
+        # fetched, nothing run.
+        self.assertEqual({WALK}, under("%sxargs sh -e$(true) '%s; %s' tool\n" % (GET, CHECK, USE)))
 
     def test_the_other_readers_that_ask_a_marker_for_letters(self):
         # `workflow_posture._errexit`, `workflow_printers.file_operand` and `workflow_annotate` still read a
