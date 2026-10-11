@@ -180,6 +180,11 @@ def envelope_shape(entry):
     return ENVELOPE_SHAPES.get(role_of(entry)) or "a single JSON object"
 
 
+def _reason_repr(value):
+    """A reply-derived value redacted before representation and capping."""
+    return redact.redact_repr(value, REASON_CAP)
+
+
 def last_rejection(run_folder, entry_id):
     """The most recent `rejected/` record for this entry, or None."""
     if not run_folder or not entry_id:
@@ -327,9 +332,10 @@ def retain_rejected(run_folder, entry, text, reason, *, kind):
     kept, truncated = _safe_reply(body)
     attempt = _next_attempt(directory, entry_id)
     record = {"schema_version": 1, "entry_id": entry_id, "attempt": attempt, "kind": kind,
-              # D10 F3: the reason is built by interpolating REPLY content, so
-              # it gets the same masking the reply does. Bounded at the source
-              # (`%.200r`), not here, so every consumer sees the same string.
+              # D10 F3: reply-derived and schema reasons are masked before
+              # their source bounds. Mask the complete reason again here:
+              # launch-failure reasons do not pass through those builders, and
+              # retained evidence keeps the same defense-in-depth as the reply.
               "reason": redact.redact(reason),
               # the stamp format the ledger's own rows carry, so the two sort
               # against each other as plain strings.
@@ -379,14 +385,8 @@ def _stamp_matches(entry, data):
         return False, "reply carries no _panopticon stamp; the entry declares %s" % sorted(declared)
     for k, v in declared.items():
         if meta.get(k, "primary" if k == "stage" else None) != v:
-            # %.200r, not %r (D10 F3): `meta` is the PARSED REPLY, so this
-            # string carries content an agent -- possibly a prompt-injected one
-            # reviewing a hostile target -- chose. It is stored in the rejected
-            # record and quoted into the next attempt's prompt, so it is bounded
-            # where it is built rather than at each of those two consumers. `%r`
-            # honours a precision and keeps escaping newlines, which is what
-            # stops a reason from forging lines of its own.
-            return False, "_panopticon.%s is %.200r, the entry is %r" % (k, meta.get(k), v)
+            return False, "_panopticon.%s is %s, the entry is %r" % (
+                k, _reason_repr(meta.get(k)), v)
     return True, ""
 
 
@@ -445,9 +445,11 @@ def accepts(entry, data):
         if not (isinstance(data, dict) and isinstance(data.get("verdicts"), list)):
             return False, "a verdict bundle must carry a `verdicts` list"
         return _verify_accepts(entry, data)
-    verdict = str(data.get("verdict", "")).upper() if isinstance(data, dict) else ""
+    raw_verdict = data.get("verdict", "") if isinstance(data, dict) else ""
+    verdict = str(raw_verdict).upper()
     if verdict not in evidence.VERDICT_VALUES:
-        return False, "verdict %.200r is not one of %s" % (verdict, sorted(evidence.VERDICT_VALUES))
+        return False, "verdict %s is not one of %s" % (
+            _reason_repr(raw_verdict), sorted(evidence.VERDICT_VALUES))
     return True, ""
 
 
@@ -627,6 +629,13 @@ def _parse_reply(text):
             pass
 
 
+def _safe_schema_reason(errors):
+    """Bound only after every schema error is independently redacted."""
+    safe_errors = [redact.redact_diagnostic(error, REASON_CAP)
+                   for error in errors]
+    return "; ".join(safe_errors[:3])[:REASON_CAP]
+
+
 def write_reply(entry, text):
     """(ok, reason). Refuses -- writing nothing -- when the entry is not
     return-persist, is already done, the reply does not parse, or the parsed
@@ -647,6 +656,17 @@ def write_reply(entry, text):
     # file nobody checked on the way in.
     if isinstance(data, dict) and role_of(entry) in _CONTROLLER_STAMP_ROLES:
         data = _controller_stamp(entry, data)
+    # Provider-side constraints are only an optimization: validate every
+    # returned role with a published contract at receipt, after the controller
+    # has supplied the identity fields that contract requires.
+    schema = role_schema(entry)
+    if schema:
+        from scripts.synth import validate_schema
+        errors = validate_schema.schema_errors(data, schema_path=schema)
+        if errors:
+            detail = _safe_schema_reason(errors)
+            return False, "reply for %r rejected by %s: %s" % (
+                entry.get("id"), os.path.basename(schema), detail)
     ok, reason = accepts(entry, data)
     if not ok:
         return False, "reply for %r rejected: %s" % (entry.get("id"), reason)

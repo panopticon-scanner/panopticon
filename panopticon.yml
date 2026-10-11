@@ -174,9 +174,10 @@ groups:
       # whole directories, so it grew there without anyone deciding to, and the
       # next adapter or adapter test would have reddened the cap guard for
       # whoever added it. Fourth `ToolAdapters` layer over the surface every
-      # adapter is written against: the base class, the SARIF normalization and
-      # prefix registry, the egress rule, the `ADAPTERS` registry in the package
-      # marker, and the contract tests that hold all of them to it.
+      # adapter is written against: the shared inert-rendering policy, the base
+      # class, the SARIF normalization and prefix registry, the egress rule, the
+      # `ADAPTERS` registry in the package marker, and the contract tests that
+      # hold all of them to it.
       # `Integration` keeps the scanner adapters, their per-tool and
       # per-language tests, and `tests/tools/helpers.py`, the harness those
       # tests share. `tests/tools/git_repo.py` sits here only because it lives
@@ -187,6 +188,7 @@ groups:
       # them. Same move as #2233, which split `Image` out of `Core` one file
       # under the cap.
       match:
+      - skill/scripts/inert.py
       - skill/scripts/tools/base.py
       - skill/scripts/tools/sarif_utils.py
       - skill/scripts/tools/legacy_sarif.py
@@ -544,6 +546,7 @@ groups:
       - tests/test_synthesize.py
       - tests/test_replay_report.py
       - tests/test_report_redaction_e2e.py
+      - tests/test_lone_surrogates.py
     Synth:
       # Includes synth/artifacts.py and tests/synth/test_artifacts.py (bounded run reads).
       match:
@@ -572,6 +575,7 @@ groups:
       - skill/scripts/findings_contract.py
       - skill/reference/report-schema.json
       - skill/reference/x0x-report-schema.json
+      - skill/reference/x0x-failure-log-schema.json
       - skill/reference/strain-report-schema.json
       - skill/reference/findings-envelope-schema.json
       - skill/reference/advisor-verdict-schema.json
@@ -625,7 +629,9 @@ groups:
       # #2521: keep the parser, lexer and their focused tests in one review.
       match:
       - scripts/shell_reader.py
+      - scripts/shell_split.py
       - scripts/shell_command.py
+      - scripts/shell_defaults.py
       - scripts/shell_tokens.py
       - scripts/shell_lex.py
       - scripts/shell_quote.py
@@ -635,7 +641,9 @@ groups:
       - scripts/shell_wrappers.py
       tests:
       - tests/test_shell_reader.py
+      - tests/test_shell_split.py
       - tests/test_shell_command.py
+      - tests/test_shell_defaults.py
       - tests/test_shell_reader_conditionals.py
       - tests/test_shell_wrappers.py
       - tests/test_workflow_guard_lexer_heredocs.py
@@ -646,25 +654,44 @@ groups:
       match:
       - scripts/workflow_guard.py
       - scripts/workflow_checks.py
+      - scripts/workflow_failure_contexts.py
       - scripts/workflow_forms.py
       - scripts/workflow_gating.py
+      - scripts/workflow_step_credit.py
       - scripts/workflow_function_calls.py
       - scripts/workflow_posture.py
       - scripts/workflow_operands.py
       - scripts/workflow_programs.py
+      - scripts/workflow_program_strings.py
+      - scripts/workflow_options.py
       - scripts/workflow_printers.py
+      - scripts/workflow_printer_writes.py
       - scripts/workflow_fetch.py
       - scripts/workflow_stdin.py
       - scripts/workflow_uses.py
       - scripts/workflow_values.py
+      - scripts/workflow_value_expansion.py
+      - scripts/workflow_called.py
       - scripts/workflow_annotate.py
       tests:
       - tests/test_workflow_guard.py
+      - tests/test_workflow_called.py
       - tests/test_workflow_guard_reader_forms.py
       - tests/test_workflow_forms_regressions.py
       - tests/test_workflow_printers.py
+      - tests/test_workflow_printed_lines.py
+      - tests/test_workflow_printer_writes.py
+      - tests/test_workflow_step_credit.py
       - tests/test_workflow_values.py
+      - tests/test_workflow_value_expansion.py
       - tests/test_workflow_annotate.py
+      - tests/test_workflow_options.py
+      - tests/test_workflow_program_strings.py
+      - tests/test_workflow_default_command_word.py
+      - tests/test_workflow_word_before_a_builtin.py
+      - tests/test_workflow_plus_cluster.py
+      - tests/test_workflow_alternate_in_front.py
+      - tests/test_workflow_in_front_of_a_command.py
       panels:
       - SEC
     Workflows:

@@ -13,6 +13,7 @@ and a SECOND implementation behind that name is exactly the drift layout rule
 """
 import errno
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -114,6 +115,19 @@ class TestNoFollowOpen(unittest.TestCase):
         self.assertFalse(os.path.islink(artifact))
         self.assertTrue(os.path.isfile(artifact))
 
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires POSIX FIFOs")
+    def test_write_refuses_a_fifo_even_when_a_reader_allows_the_open(self):
+        artifact = os.path.join(self.pano, "artifact.json")
+        os.mkfifo(artifact)
+        reader = os.open(artifact, os.O_RDONLY | os.O_NONBLOCK)
+        self.addCleanup(os.close, reader)
+
+        with self.assertRaises(safe_write.NonRegularFileError) as raised:
+            safe_write.open_w_nofollow(artifact)
+
+        self.assertEqual(raised.exception.errno, errno.EINVAL)
+        self.assertTrue(stat.S_ISFIFO(os.lstat(artifact).st_mode))
+
     def test_append_does_not_follow_a_planted_symlink(self):
         victim = self._victim()
         artifact = os.path.join(self.root, "ledger.jsonl")    # no .panopticon segment
@@ -123,6 +137,33 @@ class TestNoFollowOpen(unittest.TestCase):
         with open(victim, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "PRECIOUS")
         self.assertFalse(os.path.islink(artifact))
+
+    def test_remove_artifact_unlinks_a_leaf_symlink_without_touching_its_target(self):
+        victim = self._victim()
+        artifact = os.path.join(self.pano, "stale-x0x.json")
+        os.symlink(victim, artifact)
+
+        safe_write.remove_artifact(artifact)
+        safe_write.remove_artifact(artifact)  # an absent sibling is already removed
+
+        self.assertFalse(os.path.lexists(artifact))
+        with open(victim, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "PRECIOUS")
+
+    def test_remove_artifact_refuses_an_escaping_parent(self):
+        outside = os.path.join(self.root, "outside")
+        os.makedirs(outside)
+        victim = os.path.join(outside, "report-x0x-failures.json")
+        with open(victim, "w", encoding="utf-8") as fh:
+            fh.write("PRECIOUS")
+        os.symlink(outside, os.path.join(self.pano, "runs"))
+
+        with self.assertRaises(ValueError):
+            safe_write.remove_artifact(
+                os.path.join(self.pano, "runs", "report-x0x-failures.json"))
+
+        with open(victim, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "PRECIOUS")
 
     def test_confine_rejects_a_symlinked_intermediate_component(self):
         outside = os.path.join(self.root, "outside")

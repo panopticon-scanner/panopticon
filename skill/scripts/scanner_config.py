@@ -181,8 +181,8 @@ SCANNER_OWNED_CONFIG = {
 # A tool ABSENT from this table has not been assessed, and has no manifest row:
 # that is not the same claim as `n/a`.
 SUPPRESSION_COMMENTS = {
-    # BELT, not the lever (fix round 1 §B). Measured in the pinned image:
-    # semgrep 1.177.0 REPORTS a `# nosemgrep`'d result either way, marking it
+    # BELT, not the lever (fix round 1 §B). Measured at the 1.177.0 pin and at
+    # 1.179.0: semgrep REPORTS a `# nosemgrep`'d result either way, marking it
     # `suppressions: [{"kind": "inSource"}]` in its SARIF, and `--disable-nosem`
     # does not change that output at all. What decides is the INGEST --
     # `tools/sarif_utils.sarif_to_findings` drops such a result under `standard`
@@ -213,7 +213,7 @@ SUPPRESSION_COMMENTS = {
 
 # The tools whose suppression-comment answer is decided at the INGEST rather
 # than on the argv (#1839 fix round 2, re-review finding 3). semgrep is the only
-# one today: at the 1.177.0 pin it REPORTS a `# nosemgrep`'d result and marks it
+# one today: at the 1.179.0 pin it REPORTS a `# nosemgrep`'d result and marks it
 # `suppressions: [{"kind": "inSource"}]` with and without `--disable-nosem`, so
 # the flag above is belt and `tools/sarif_utils.sarif_to_findings` is the lever
 # -- it drops such a result under `standard` and keeps it under `redteam`.

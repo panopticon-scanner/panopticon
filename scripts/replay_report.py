@@ -34,8 +34,8 @@ wherever they were written.
 this file's own repo) -- use it to produce the base-commit replay from the
 branch checkout before the tool exists on the base.
 
-`diff` compares the parsed report, `_part2`, `-discarded` and `-x0x` files
-of two out-dirs, masking `meta.timestamp` and the x0x `generated_at`, and
+`diff` compares the parsed report, `_part2`, `-discarded`, `-x0x`, and
+`-x0x-failures` files of two out-dirs, masking `meta.timestamp` and the x0x `generated_at`, and
 exits 1 on any difference -- including a key-order change, which the parsed
 compare alone would forgive but the written bytes do not. The `.json.html`
 rendering is compared as text with ISO timestamps masked, and the two
@@ -54,7 +54,8 @@ import tempfile
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SUFFIXES = (".json", "_part2.json", "-discarded.json", "-x0x.json")
+SUFFIXES = (".json", "_part2.json", "-discarded.json", "-x0x.json",
+            "-x0x-failures.json")
 STREAMS = ("synthesize.stdout", "synthesize.stderr")
 REQUIRED = ("dispatch-plan-driver.json", "out-file-hashes.json")
 MASK = {".json": ("meta.timestamp",), "-x0x.json": ("generated_at",)}

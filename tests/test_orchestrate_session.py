@@ -145,7 +145,9 @@ class TestSessionMode(LoopCase):
         req = orchestrate.requests.load_dispatch_request(d)
         entry = next(e for e in req["entries"] if e["id"] == "review-app-SEC")
         body = {"findings": [{"title": "issue", "severity": "HIGH", "domain": "SEC", "code": "SEC-A1A",
-                              "category": "authz", "location": {"file": "src/app.py", "line_start": 1}}],
+                              "category": "authz", "description": "d",
+                              "source_role": "domain_panel",
+                              "location": {"file": "src/app.py", "line_start": 1}}],
                 "_panopticon": {"run_id": entry["run_id"], "role": "domain_panel",
                                 "domain": "SEC", "group": "app"}}
         reply = os.path.join(d, "reply.txt")
@@ -181,8 +183,8 @@ class TestSessionMode(LoopCase):
         with open(reply, "w", encoding="utf-8") as fh:
             # a CONTRADICTING stamp: the one refusal ruling 4 leaves standing
             # (an omitted stamp is now filled from the entry).
-            fh.write(json.dumps({"findings": [], "note": "ghp_" + "C" * 36,
-                                 "_panopticon": {"group": "a-different-group"}}))
+            fh.write(json.dumps({"findings": [], "_panopticon": {
+                "group": "a-different-group", "note": "ghp_" + "C" * 36}}))
         err = io.StringIO()
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
             rc = driver.main(["persist", "review-app-SEC", "--file", reply, d])

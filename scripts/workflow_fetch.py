@@ -19,6 +19,10 @@ from workflow_programs import VALUE_PROGRAM, stdin_program
 # the next pipeline stage (None when the fetch ends the pipeline).
 Fetch = collections.namedtuple("Fetch", "tool url dest piped_to")
 
+
+class _ForwardedTee(tuple):
+    """A tee argv whose file output also continues to an outer reader."""
+
 FETCHERS = ("curl", "wget")
 
 # curl and wget spell the same options differently, and the difference is
@@ -233,8 +237,27 @@ def _parse_fetch(tool, args, stage, piped_to):
 
 
 def parse_fetch(tool, args, stage, piped_to):
-    """One `curl`/`wget` argv -> the four-field Fetch it performs."""
+    """One `curl`/`wget` argv -> the Fetch it performs."""
     return _parse_fetch(tool, args, stage, piped_to)[0]
+
+
+def streams_to_executor(fetch, executors):
+    """Whether a lent tee destination also reaches this outer consumer."""
+    return bool(is_forwarded_tee(fetch) and (
+        os.path.basename(fetch.piped_to[0]) in executors
+        or stdin_program(fetch.piped_to[:1]) == VALUE_PROGRAM))
+
+
+def is_forwarded_tee(fetch):
+    """Whether a fetch keeps a compound tee's outward stream."""
+    return isinstance(fetch.piped_to, _ForwardedTee)
+
+
+def forwarded_consumer(fetch, consumer):
+    """Keep a compound tee's outward stream when a substitution is consumed."""
+    if is_forwarded_tee(fetch):
+        return _ForwardedTee(consumer)
+    return consumer
 
 
 def _may_read_pipe(argv, stage):
@@ -301,7 +324,7 @@ def stdout_fetch(text):
     nothing else -- what `x=$(curl -fsSL URL)` holds (#2341) -- or None."""
     stmts = shell_reader.statements(text)
     stage = stmts[0].stages[0] if len(stmts) == 1 and len(stmts[0].stages) == 1 else None
-    argv = command(stage.argv) if stage else []
+    argv = shell_reader.acted(stage.argv) if stage else []
     tool = os.path.basename(argv[0]) if argv else ""
     fetch, streams = _parse_fetch(tool, argv[1:], stage, None) if tool in FETCHERS else (None, False)
     return fetch if fetch and streams and fetch.url else None
@@ -313,7 +336,7 @@ def stream_consumer(following, executors):
     writes on into it (`| tee f | sh`), or None: `streamed_fetch`'s walk, and
     `workflow_forms.carried`'s for a download a step prints (#2341)."""
     for next_stage in following:
-        argv = command(next_stage.argv)
+        argv = shell_reader.acted(next_stage.argv)
         if not argv or not _may_read_pipe(argv, next_stage):
             break
         if (os.path.basename(argv[0]) in executors
@@ -339,11 +362,12 @@ _COMPOUND_OPEN = ("if", "while", "until", "for", "case", "{")
 _COMPOUND_CLOSE = ("fi", "done", "esac", "}")
 
 
-def _compound_delta(statement):
-    """The compound nesting change contributed by one flat statement."""
+def _compound_delta(statement, groups=True):
+    """The compound nesting change; `groups=False` keeps keyword compounds."""
     depth = 0
     for stage in statement.stages:
-        depth += stage.group_open - stage.group_close
+        if groups:
+            depth += stage.group_open - stage.group_close
         for token in stage.argv:
             if token not in shell_reader.KEYWORDS:
                 break
@@ -404,6 +428,73 @@ def _closing_stream(statement, executors):
     return None, True
 
 
+def _closing_output(statement):
+    """A compound close's stdout boundary, or None when it passes outward."""
+    for position, close in enumerate(statement.stages):
+        one = shell_reader.Statement([close], statement.separator)
+        if _compound_delta(one) >= 0:
+            continue
+        following = statement.stages[position + 1:] or _inline_pipeline(close)
+        next_argv = command(following[0].argv) if following else []
+        piped_to = (tuple(next_argv) if close.stdout_to_pipe and next_argv
+                    and _may_read_pipe(next_argv, following[0]) else None)
+        if (piped_to and os.path.basename(piped_to[0]) == "tee"
+                and _stream_forwarded(following)):
+            piped_to = _ForwardedTee(piped_to)
+        if close.stdout_writes or not close.stdout_to_pipe or following:
+            return close, piped_to
+    return None
+
+
+def _compound_outputs(stmts):
+    """Map enclosed statements to the first closing stdout boundary.
+
+    The reverse walk sees an outer close before its nested transparent closes,
+    so each depth inherits its parent's redirect or following pipeline in one
+    pass rather than rescanning the suffix for every fetch.
+    """
+    levels, depth = [], 0
+    for statement in stmts:
+        before = depth
+        # Group markers are lexical subshells, not the keyword-compound
+        # levels whose closing output is lent to their enclosed commands.
+        depth += _compound_delta(statement, False)
+        levels.append((before, depth))
+    inherited: dict[int, tuple] = {}
+    outputs: dict[int, tuple] = {}
+    for position in range(len(stmts) - 1, -1, -1):
+        before, after = levels[position]
+        if 0 <= after < before:
+            output = _closing_output(stmts[position]) or inherited.get(after)
+            if output is not None:
+                for level in range(after + 1, before + 1):
+                    inherited[level] = output
+        level = max(before, after)
+        if level in inherited:
+            outputs[position] = inherited[level]
+        if after > before:
+            for level in range(before + 1, after + 1):
+                inherited.pop(level, None)
+    return outputs
+
+
+def compound_output(stmts, outputs, position, stage, following):
+    """The stage and next argv after its own or its compound's stdout."""
+    if following:
+        return stage, tuple(shell_reader.acted(following[0].argv))
+    if not stage.stdout_to_pipe:
+        return stage, None
+    if outputs[0] is None:
+        outputs[0] = _compound_outputs(stmts)
+    output = outputs[0].get(position)
+    if output is None:
+        return stage, None
+    close, piped_to = output
+    return stage._replace(
+        stdout_writes=close.stdout_writes,
+    ), piped_to
+
+
 def compound_stream_consumer(stmts, position, executors):
     """The executor piped from a compound containing statement `position`.
 
@@ -427,3 +518,13 @@ def compound_stream_consumer(stmts, position, executors):
         if not containing:
             break
     return None
+
+
+def _describe(fetch):
+    return "%s -> %s" % (shell_reader.readable(fetch.url) or "an unparsed URL",
+                         shell_reader.readable(fetch.dest))
+
+
+def _remedy(dest):
+    return ('verify it first: `echo "<sha256>  %s" | sha256sum -c -` between '
+            "the download and that use" % shell_reader.readable(dest))
