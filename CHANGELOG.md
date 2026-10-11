@@ -7,6 +7,37 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader reads a shell's `c` in a `+` cluster as its `-c` (#3019).** `sh +c 'curl ... |
+  sh'` and `bash +xc '...'` read CLEAN under every `shell:` setting while every parent shell runs
+  the string: a `+` turns an option OFF and `c` is none to turn, so bash, dash, zsh, ksh and
+  busybox's ash all take the letter as `-c`. The three finders of a `-c` cluster asked for a
+  leading `-` (`workflow_program_strings._after_dash_c` and `_candidates`,
+  `workflow_options._dash_c_operand`) and now read the sign as they read the `-`: one `+`, not
+  two, and a `c` anywhere after it. Two of them are `main`'s own finders, so the main pass reads
+  the string too, and a check inside it counts where one in a `-c` string does. Where the sign
+  turns a letter round it was read already: `+nc` runs the string and reports, `+ec 'check; use'`
+  reports where `-ec` is CLEAN. The string is read BESIDE the one `main` found, never instead of
+  it -- a FILE may run any parameter it is handed (`sh w.sh +check x -c P`), and an expansion may
+  make the cluster take its string for a name (`X=o; sh +${X}c errexit -c P`) -- so the reader
+  reads more than it did and never less: over every argv of one to four words from a 14-word
+  alphabet, what `main`'s finders find is among what these find. Measured on a grid of 1,481
+  pairs, the same step written `+` and `-`, each row run under eight parent shells in two passes
+  (the cluster's other letter, a character that is no letter, `o` and `O` with their names, noexec
+  and errexit, where the cluster stands, a `$` command word, a cluster an expansion makes, shell
+  names, a long option's name behind a `+`, an `s` beside the `c`, statements, wrappers, strings
+  and bodies) and on 1,645 rows that put a `+` word in front of words `main` already reads. Of the
+  grid's 1,481 `+` rows, 638 that a parent runs read CLEAN on `main` and none does now; none is
+  newly fail-open; 16 stay so, 15 where the `-` twin is too (a `$` word whose cluster is not its
+  first word, #2671; a letter an expansion makes, #2889; zsh's `O`; `builtin command sh`; `busybox
+  sh`; a value for a string) and one through #2671's hole. No report `main` makes is lost on
+  either set but 21 rows where a check inside a `+c` string the shell is sure to run is now
+  counted. The price is the mirror's: the sign is read whatever else the word holds, because `sh
+  +c$X`, `sh +{c,x}` and zsh's `+c7` run, so 421 rows whose word every shell refuses are newly
+  reported -- 417 as their `-` twin is on `main`, four alone (`+-c`) -- and a `$` word that is no
+  shell, handed a `+` argument holding a `c` (`$TOOL +check all`), keeps its hand-off beside a
+  reported fetch as `$TOOL -check all` does. On the standing row sets (4,848 rows in 28 sets, none
+  holding a `+` word with a `c`) no row moves in either pass, and `job_defects` costs 0.99x on
+  them.
 - **`scripts/workflow_printers.py` splits how a printer's text is decoded into
   `scripts/workflow_printer_writes.py` (#3013, printers lane).** A pure move at the module's size
   (700 of its 700 lines), in two pieces, each byte for byte with the comments above it and the two
