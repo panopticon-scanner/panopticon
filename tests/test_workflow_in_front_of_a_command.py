@@ -41,9 +41,9 @@ import unittest
 import shell_command
 import shell_defaults
 import shell_reader
+import shell_wrappers
 import workflow_guard as wg
 import workflow_options as wo
-from shell_wrappers import BUILTINS
 
 SHELLS = (None, "bash", "sh", "bash {0}", "sh {0}")
 U = "https://example.test/"
@@ -54,6 +54,11 @@ BACKSLASH = chr(92)
 NOW = ("RRRRR", "CCCCC")            # the job reports; the main pass reads it CLEAN, as `main` did
 BEFORE = ("RRRRR", "RRRRR")         # `main` reported it already
 CLEAN = ("CCCCC", "CCCCC")
+# What `compgen -b` prints under bash 5.2.21 on the forge; 3.2.57 prints the same less `compopt`, `mapfile`, `readarray`.
+BUILTINS = (". : [ alias bg bind break builtin caller cd command compgen complete compopt continue declare dirs disown echo "
+            "enable eval exec exit export false fc fg getopts hash help history jobs kill let local logout mapfile popd printf "
+            "pushd pwd read readarray readonly return set shift shopt source suspend test times trap true type typeset ulimit "
+            "umask unalias unset wait").split()
 CREDITED = ("CCCRR", "CCCRR")       # a check the step's `-e` rests on: CLEAN where the shell has one
 UNCREDITED = ("RRRRR", "RRRRR")     # the same check where nothing in its script is the step's own, in either pass
 
@@ -174,7 +179,8 @@ class TestBuiltinIsReadThrough(unittest.TestCase):
         # `builtin NAME sh t` against `NAME sh t`, for every builtin of bash 5.2.21. Truth: the twelve bash runs
         # of each pair agree, run or not (`command`, `eval` and `exec` run the download; no other does).
         self.assertEqual(61, len(BUILTINS))
-        for name in sorted(BUILTINS):
+        self.assertEqual(frozenset(BUILTINS), shell_wrappers.BUILTINS)
+        for name in BUILTINS:
             with self.subTest(name=name):
                 self.assertEqual(reports(FETCH + "%s sh t" % name), reports(FETCH + "builtin %s sh t" % name))
         for name in ("command", "eval", "exec"):
@@ -297,6 +303,17 @@ class TestNoReadingOfBuiltinIsLost(unittest.TestCase):
                 self.assertEqual("RRRRR", reports(step))
                 with through_alone():
                     self.assertEqual("CCCRR", reports(step))
+
+
+    def test_an_alternate_that_names_it_is_nothing_with_its_name_unset(self):
+        # `${S:+builtin} sh t` is `sh t` where `S` is unset, and `builtin sh t`, which runs nothing, where it is set.
+        # The folds that leave `builtin` alone drop the word (#3003); those that read it through take it for the
+        # command. Truth: runs, all sixteen -- and read through alone the row would be CLEAN.
+        for step in (FETCH + "${S:+builtin} sh t", "${S:+builtin} " + P):
+            with self.subTest(step=step[-20:]):
+                self.assertEqual(NOW, marks(step))
+                with through_alone():
+                    self.assertEqual("CCCCC", reports(step))
 
 
 class TestAShellStartedToRunNothing(unittest.TestCase):
