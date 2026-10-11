@@ -669,6 +669,7 @@ groups:
       - scripts/workflow_fetch.py
       - scripts/workflow_stdin.py
       - scripts/workflow_uses.py
+      - scripts/workflow_use_scopes.py
       - scripts/workflow_values.py
       - scripts/workflow_value_expansion.py
       - scripts/workflow_called.py
