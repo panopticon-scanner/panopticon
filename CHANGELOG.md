@@ -7,6 +7,32 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`scripts/workflow_printers.py` splits how a printer's text is decoded into
+  `scripts/workflow_printer_writes.py` (#3013, printers lane).** A pure move at the module's size
+  (700 of its 700 lines), in two pieces, each byte for byte with the comments above it and the two
+  in their old order: lines 90 to 136, the table `_ESCAPES`, `_OCTAL` and `_decoded`, which
+  decodes an `echo`'s or a `printf`'s text under ONE reading for `printed`; and lines 434 to 570,
+  what an unspelled printer WRITES (#2955) -- the tables `_CONVERSION`, `_ESCAPE`, `_PLAIN`,
+  `_COUNT`, `_KNOWN`, `_PAD`, `_LONG` and `_WRITERS`, and `_written`, `_formatted` and `_echoed`,
+  which render one text a shell family for the second walk. The 14 names are a leaf of the module
+  -- none reads one of the 28 defined outside them; the writers alone are not, since `_written`
+  reads the table `_decoded` reads -- so the new module imports `re` and `shell_reader` and
+  nothing from `workflow_printers`, which imports every moved name back under its own; no caller
+  moved and no test moved. What stays reads commands: which one prints, and what it hands a shell.
+  No import leaves the source, and its docstring says where the half went. Before the first push,
+  every test module that reads `workflow_printers` or `workflow_programs` was run on the move, and
+  each was read for a `getattr` or a `patch.object` driven from a table of names (#3011's first
+  head missed two): none reaches a moved name. No verdict changes: on 6,180 rows in 34 sets -- the
+  row sets of #2955, #2963 and #2997, and the probes behind #3002, #3003 and #3007 -- every
+  finding of every row, its name and its reason, is the same under `main`'s scripts and the
+  move's, under each of the five `shell:` settings and in each of three readings (the job, its
+  main pass, its walk pass): 92,700 cells holding 54,238 findings under each tree, and the two
+  dumps are equal byte for byte. Sizes: 700 -> 523, and 208 for the new module.
+- **Workflow branch and step credit has its own bounded module (#3005).** The
+  byte-identical branch-region and shell-option credit readers now live in
+  `scripts/workflow_step_credit.py`; `workflow_forms` re-exports the same
+  objects, preserving every existing caller and answer while restoring
+  headroom for the carried-download fixes.
 - **Workflow reader reads a command glued to its `case` arm's `)` (#3014).** `case x in x)curl
   -fsSL … | sh ;; esac` ran the download under every parent and read CLEAN: at the `)` that ends
   an arm's pattern `_split` made one token of the arm's mark, the pattern and the `)`, and the
