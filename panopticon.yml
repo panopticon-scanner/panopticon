@@ -665,6 +665,7 @@ groups:
       - scripts/workflow_program_strings.py
       - scripts/workflow_options.py
       - scripts/workflow_printers.py
+      - scripts/workflow_printer_writes.py
       - scripts/workflow_fetch.py
       - scripts/workflow_stdin.py
       - scripts/workflow_uses.py
@@ -679,6 +680,7 @@ groups:
       - tests/test_workflow_forms_regressions.py
       - tests/test_workflow_printers.py
       - tests/test_workflow_printed_lines.py
+      - tests/test_workflow_printer_writes.py
       - tests/test_workflow_step_credit.py
       - tests/test_workflow_values.py
       - tests/test_workflow_value_expansion.py
