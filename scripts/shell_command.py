@@ -32,13 +32,14 @@ from shell_defaults import (OPTIONAL_NEXT as OPTIONAL_NEXT, WALKED_DEFAULTS as W
 from shell_patterns import shell_words
 from shell_quote import Unreadable
 from shell_tokens import _Token, has_substitution, is_arm, readable, spelled
-from shell_wrappers import BUILTINS, WRAPPERS, Defaulted, Found, Rewritten, dynamic, idles, unwrap
+from shell_wrappers import (_SHADOWED, BUILTINS, WRAPPERS, Defaulted, Found, Rewritten, dynamic, idles, jobs_runs,
+                            runs_behind, unwrap)
+from shell_wrappers import behind as behind_wrapper
 
 
-# Shell keywords that stand in FRONT of the command: `if curl ...; then`,
-# `while true; do /tmp/payload; done`. Statements are split on `;`, so each of
-# these arrives as the first word of the statement it introduces -- and a guard
-# that reads `if` as the command sees neither the fetch nor the use.
+# Shell keywords that stand in FRONT of the command: `if curl ...; then`, `while true; do /tmp/payload; done`.
+# Statements are split on `;`, so each of these arrives as the first word of the statement it introduces -- and a
+# guard that reads `if` as the command sees neither the fetch nor the use.
 KEYWORDS = ("if", "then", "elif", "else", "fi", "do", "done", "while", "until",
             "for", "case", "esac", "in", "!", "{", "}", "(", ")", "function",
             "()")
@@ -80,45 +81,57 @@ def _runs(argv):
     return 1, command_
 
 
-def _runs_builtin(argv, heads, optional):
-    """The words of `argv` behind its `builtin`, where bash runs the builtin they start with and this fold reads
-    the word through (`_through`, #2665); else None. `builtin NAME …` runs NAME past a `--` and the `$` words
-    that may each be nothing (`_optional`) -- NAME as written, or the one-word default the reader reads as its word
-    (`${E:-eval}`) -- and nothing where NAME is no builtin. Bash alone, so only where nothing that execs stands
-    in front: `command` runs one, by name or by path (#2997), and so does `time` as bash's keyword, in front of
-    them all; `sudo`, `env`, `exec` and `command time` look for a program. And not an `exec` with nothing to
-    run: behind `builtin` bash undoes the redirections it is given, where `exec 3<>F` alone keeps them."""
+def _runs_builtin(argv, where, optional):
+    """The words of `argv` behind its `builtin` or its `jobs -x`, where bash runs what they start with and this
+    fold reads the word through (`_through`, #2665, #2836); else None. `where` is who reads the word
+    (`_command_result`). `jobs` runs the words behind its options where an `x` is among them as bash reads
+    them (`shell_wrappers.jobs_runs`), wherever a shell or macOS's script of that name reads it. `builtin
+    NAME …` runs NAME past a `--` and the `$` words that may each be nothing (`_optional`) -- NAME as written,
+    or the one-word default the reader reads as its word (`${E:-eval}`) -- and nothing where NAME is no
+    builtin, or where a wrapper that execs looks for a program named `builtin`. And not an `exec` with nothing
+    to run: behind `builtin` bash undoes the redirections it is given, where `exec 3<>F` alone keeps them."""
+    if os.path.basename(argv[0]) == "jobs":     # a keyword or an assignment behind it is a command not found
+        named = jobs_runs(argv, has_substitution)
+        return named if named and named[0] not in KEYWORDS and not _ASSIGNMENT.match(named[0]) and _through() else None
+    if where == "exec":
+        return None
     named = argv[1 + (argv[1:2] == ["--"]):]
     named = named[_optional(named, True) if optional else 0:]
     if not named or (_shell_default(named[0]) or named)[0] not in BUILTINS or [
             word for word in named if word not in ("builtin", "command", "--")] == ["exec"]:
         return None
-    runs = all(os.path.basename(word) == "command" for word in itertools.dropwhile(lambda word: word == "time", heads))
-    return named if runs and _through() else None
+    return named if _through() else None
 
 
-def _command_result(argv, optional=True, finds=False):
-    """Shared parse result for execution extraction and unread decisions: the
-    command, why it or a wrapper in front of it cannot be read (or None), and
-    the words read as wrappers, as written. A command word that is a shell's
-    default (`${X:-sh}`, `_DEFAULTS`) is read as that shell; `$` words in front
-    of a known name are dropped (`_optional`) unless `optional` is False, the
-    reading `workflow_annotate` takes to find the word a step's table resolves. Where `finds`,
-    a `find` is unwrapped as a wrapper is, into the action a fold reads (`_found`, #2935): the
-    reading `acted` answers with, and no other. A `builtin` in front of a builtin's name is read through
-    in the folds that read one so (#2665), and a shell an assignment in front may start to run nothing
-    is marked `idle` (#2648)."""
+def _command_result(argv, optional=True, finds=False, written=None):
+    """Shared parse result for execution extraction and unread decisions: the command, why it or a wrapper in
+    front of it cannot be read (or None), and the words read as wrappers, as written. A command word that is a
+    shell's default (`${X:-sh}`, `_DEFAULTS`) is read as that shell; `$` words in front of a known name are
+    dropped (`_optional`) unless `optional` is False, the reading `workflow_annotate` takes to find the word a
+    step's table resolves. Where `finds`, a `find` is unwrapped as a wrapper is, into the action a fold reads
+    (`_found`, #2935): the reading `acted` answers with, and no other. A `builtin` in front of a builtin's name is
+    read through in the folds that read one so (#2665), and a shell an assignment in front may start to run
+    nothing is marked `idle` (#2648). Who runs the word behind a wrapper decides what a builtin's name there is
+    (`shell_wrappers.behind`, #2670), and `written` is the argv a reader made `argv` of (`command`)."""
     argv = list(argv)
     heads: list[str] = []
-    # `xargs` appends words from its input to the argv behind it, so the
-    # innermost wrapper read after one (`behind`, with its argv) was read from
-    # an argv that is not the one that runs (#2227).
+    # `xargs` appends words from its input to the argv behind it, so the innermost wrapper read after one
+    # (`behind`, with its argv) was read from an argv that is not the one that runs (#2227).
     appended, behind, vanished, idle = False, None, None, False
+    # (#2670) Who runs the word behind and whether it is the first a shell reads (`shell_wrappers.behind`); the
+    # stage as it stood where the step's shell stopped being the one, which is what it IS where nothing behind
+    # runs; and `doubt`, whether a word in front may not be the program it names -- one a table or a default put
+    # there (none of `theirs`, the written argv's words), one the job's steps define (`_SHADOWED`). Such a word,
+    # and a builtin's name so made, is read both ways: as `main` reads it, and as written in the folds that read
+    # a `builtin` through.
+    where, front, doubt = "own", not (argv and type(argv[0]) is not str and getattr(argv[0], "piped", False)), False
+    outer: tuple[list[str], int] | None = None
+    theirs = None if written is None else {id(word) for word in written}
     while argv:
         # A word that spells an assignment but for a quote or a backslash in its name or its operator is the
         # command, of that name: the reader marks one where bash reads it (`shell_reader._named`, #2480).
         if (_ENVIRONMENT if heads else _ASSIGNMENT).match(argv[0]) and not getattr(argv[0], "quoted", False):
-            idle = idles(argv.pop(0), idle, has_substitution)
+            idle, front = idles(argv.pop(0), idle, has_substitution), False
             continue
         if argv[0] in KEYWORDS:
             keyword = argv.pop(0)
@@ -140,7 +153,7 @@ def _command_result(argv, optional=True, finds=False):
         # reader's whole word is read, since it decides the program; every other word -- an
         # assignment, a keyword, an operand -- is `main`'s (#2856 round 8).
         if (whole := getattr(argv[0], "whole", None)) is not None:
-            span = getattr(argv[0], "span", 1)
+            span, front = getattr(argv[0], "span", 1), False
             if vanishing := _VANISHING.fullmatch(whole):
                 # Bash may expand it to nothing, the literal glued after the `}` or none, and run the
                 # next word (`${X:+/usr/bin/env true} sh`, `${X#env true}sh -c`), or, its name set, an
@@ -179,19 +192,22 @@ def _command_result(argv, optional=True, finds=False):
                 if empty is not None and read_empty:
                     argv = list(empty)
                     continue                    # the next word, read from the top; the W below
-                argv = list(alternate)
+                argv, doubt = list(alternate), True     # (#2670) W, where its name's value decides the word
             else:
-                argv = _alternate(argv, whole, span)
+                argv, doubt = _alternate(argv, whole, span), True
         dropped = _optional(argv) if optional and not heads else 0
         if dropped:
             del argv[:dropped]                  # bash drops them, or they hand on (#2472)
+            front = False                       # and reads the next word as a command's, never as a keyword
             continue
         if words := None if heads else _shell_default(argv[0]):
             argv[0:1] = [Defaulted(words[0]), *words[1:]]   # the NAME, marked as unwritten
-        if argv[0] == "builtin" and (named := _runs_builtin(argv, heads, optional)):
-            argv = named                        # (#2665) bash runs the builtin it names
-            continue
         head = os.path.basename(argv[0])
+        if (argv[0] == "builtin" or head == "jobs") and (named := _runs_builtin(argv, where, optional)):
+            if where == "exec" or "/" in argv[0]:   # macOS's `jobs`, by a wrapper or a path: a script, a shell of its own
+                where, outer = "child", outer or (argv, len(heads))
+            front, argv = False, named              # (#2665, #2836) bash runs what it names, in the shell reading it
+            continue
         if heads and dynamic(argv[0], has_substitution):
             return argv, "has a dynamic command operand behind a wrapper", heads
         if isinstance(argv[0], Rewritten):
@@ -205,6 +221,14 @@ def _command_result(argv, optional=True, finds=False):
             # run (one a wrapper splits out of a single word may, and is unread: `_unread`, round 3).
             run = _command_result(inner)[0]
             return [Found(run[0]), *run[1:]], vanished, heads
+        # (#2670) A builtin's name behind a wrapper that execs is a command not found, or a script that acts on
+        # a child: `env eval 'P'` runs nothing and `sudo unset T` unsets nothing. In a shell handed the words
+        # a builtin that runs nothing else changes that shell alone. The stage is the wrapper's own.
+        if where != "own" and argv[0] in BUILTINS and not runs_behind(where, argv[0], lambda: _through(True)) and (
+                not (doubt or theirs is not None and id(argv[0]) not in theirs) or _through()):
+            argv, kept = outer or (argv, 0)
+            del heads[kept:]
+            break
         if head not in WRAPPERS:
             break
         heads.append(argv[0])
@@ -216,6 +240,10 @@ def _command_result(argv, optional=True, finds=False):
         # (#2648) `env` takes its assignments for itself, a `-S` string's too: every word it does not hand on.
         for word in argv[1:] if head == "env" else ():
             idle = idle if any(word is handed for handed in inner) else idles(word, idle, has_substitution)
+        doubt = doubt or theirs is not None and id(argv[0]) not in theirs or head in (_SHADOWED["names"] or ())
+        # `sudo` and `doas` hand on the words behind their own: what stands in front of those is what they were told.
+        where, front = behind_wrapper(where, front, head, argv[1:len(argv) - len(inner)] if head in ("sudo", "doas") else ())
+        outer = outer if outer or where == "own" else (argv, len(heads) - 1)
         behind = (head, argv) if appended else None
         appended = appended or head == "xargs"
         argv = inner
@@ -250,9 +278,10 @@ def fronts(closed, state, text, at):
                 or _NAME.match(closed) and (state == "function" or _PARENS.match(text, at)))
 
 
-def command(argv):
-    """`argv` with supported wrappers stripped; unresolved forms stay lists."""
-    return _command_result(argv)[0]
+def command(argv, written=None):
+    """`argv` with supported wrappers stripped; unresolved forms stay lists. `written` is the argv a reader
+    made `argv` of (`workflow_uses._resolved`): a word that is none of its words is one it put there (#2670)."""
+    return _command_result(argv, written=written)[0]
 
 
 def acted(argv, own=False):
@@ -279,6 +308,7 @@ def folds(unsure):
     it (#2665). So the reading that leaves the word alone, `main`'s and what dash does with it, is never lost,
     and the guard REPORTs where either reads a defect."""
     _THROUGH.update(on=False, met=False)
+    _SHADOWED["names"] = set()                  # (#2670) the wrappers' names this job's steps define
     try:
         yield from _folds(unsure)
         if _THROUGH["met"]:
@@ -286,6 +316,7 @@ def folds(unsure):
             yield from _folds(unsure)
     finally:
         _THROUGH.update(on=False, met=False)
+        _SHADOWED["names"] = None
 
 
 def _folds(unsure):
