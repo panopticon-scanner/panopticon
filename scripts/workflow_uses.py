@@ -358,7 +358,7 @@ def _resolved(argv, table):
                 kept.append(word)
         if kept and kept[0] is not argv[0] and shell_reader._ASSIGNMENT.match(kept[0]):
             continue                        # bash runs it as the command: never an assignment
-        if (kept := command(kept)) and _on_stdin(kept):
+        if (kept := command(kept, argv)) and _on_stdin(kept):   # (#2670) which words the table made, by `argv`
             yield kept
 
 
