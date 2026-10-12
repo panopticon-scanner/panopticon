@@ -648,6 +648,7 @@ groups:
       - scripts/shell_wrappers.py
       tests:
       - tests/test_shell_reader.py
+      - tests/test_workflow_a_descriptors_path.py
       - tests/test_shell_split.py
       - tests/test_shell_command.py
       - tests/test_shell_defaults.py

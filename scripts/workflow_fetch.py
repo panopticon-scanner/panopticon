@@ -216,6 +216,7 @@ def _parse_fetch(tool, args, stage, piped_to):
     dest = cast(str | None, dest)
     # A remote basename of "-" is a filename, not the explicit output
     # option that requests stdout. Keep that origin through directory joining.
+    dest = shell_reader.stdout_named(dest, stage)       # any spelling of descriptor 1 is the listed one (#2744)
     to_stdout = dest is None or (named and dest in _STDOUT_DESTINATIONS)
     # wget writes a file unless told `-O-`, and a whole-word expansion among its words may tell it
     # (`wget $(echo -qO-) URL | sh`, `X=-qO-; wget "$X" URL | sh`; one unquoted and alone may be the
