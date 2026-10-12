@@ -582,6 +582,10 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED, analysis=None)
         if rescue is not None:
             start, through, stops = rescue
             outside = stops if isinstance(stops, Reach) else answer
+            # A stopping rescue inside a function proves the body's status,
+            # not that the body ran. Bind its outside reach to the same proved
+            # call that an unrescued function check requires (#2949).
+            outside = _function_status(stmts, index, outside, errexit, analysis)
             return RescueGate(start, through, outside)
     answer = (_function_status(stmts, index, answer, errexit, analysis)
               if measuring_uses else answer)
