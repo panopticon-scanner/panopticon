@@ -172,14 +172,20 @@ class TestWhatACallSitesBodiesMaySet(unittest.TestCase):
         # Round 13 (the round-12 verdict's B1, its seat's mR10 and mR7): `set_at` names what a `read`,
         # `unset` or `local` sets -- `T` of `T=x` and of `T[0]`, never the word -- wrapped or not, and
         # with what `_written` names beside: a bare `read` sets `REPLY`, which only `_written` names.
-        for line in ("local T=x", "command local T=x", "nohup local T=x", "env local T=x", "local T",
-                     "command local T", "command unset 'T[0]'", "nohup unset T", "command read -r T < f",
-                     "nohup read 'T[0]' < f", "timeout 5 read -r T < f"):
+        for line in ("local T=x", "command local T=x", "local T", "command local T", "command unset 'T[0]'",
+                     "command read -r T < f", "time read 'T[0]' < f"):
             with self.subTest(line=line):
                 self.assertEqual({"T"}, workflow_called._Step(stmts_of(line + "\n")).set_at(0))
-        for line in ("read -r < f", "command read -r < f", "nohup read < f"):
+        for line in ("read -r < f", "command read -r < f"):
             with self.subTest(line=line):
                 self.assertEqual({"REPLY"}, workflow_called._Step(stmts_of(line + "\n")).set_at(0))
+        # A wrapper that execs runs no builtin (#2670): `nohup unset T` is a command not found and sets no
+        # name of the step's, and these six, which named `T` or `REPLY` behind the wrapper, name none. Nor
+        # does a shell handed the words: what it reads, it sets in itself.
+        for line in ("nohup local T=x", "env local T=x", "nohup unset T", "nohup read 'T[0]' < f",
+                     "timeout 5 read -r T < f", "nohup read < f", "sudo -s read -r T < f"):
+            with self.subTest(line=line):
+                self.assertEqual(frozenset(), workflow_called._Step(stmts_of(line + "\n")).set_at(0))
 
     def test_a_carry_walks_the_statements_that_may_write_alone(self):
         # What a statement writes is its words' and whether the names it spells are held, so one

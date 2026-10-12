@@ -2307,20 +2307,24 @@ class TestEveryFindActionIsACommand(unittest.TestCase):
         for use in ("exec sh tool", ". ./tool"):
             self.assertTrue(reported(GET + "find /dev/null -exec %s \\;\n" % use))
 
-    def test_a_builtins_name_is_no_program_only_where_find_looks_it_up(self):
+    def test_a_builtins_name_is_no_program_where_a_program_is_looked_up(self):
         # B3: the rule is sure for the action's own first word, written as a bare name -- the one
         # word `find` looks up. Behind a wrapper that hands its words to a shell (`sudo -s`, `-i`,
         # `--shell`, `--login`, `doas -s`: sudo 1.9.15p5 passes the command "to the shell as a simple
-        # command using the -c option"), behind any other wrapper, or behind a path (`command` is a
-        # program on macOS, which runs the builtin of its name), it is not, and the action is read:
-        # REPORT, as round 1 read it. Round 2 kept the `find` behind `sudo` too (the seat's 31 rows).
-        # `builtin` is read through behind what runs a builtin alone -- `command`, by name or by path
-        # (#2665) -- and behind any other front the row stays CLEAN, as `main` reads the word there.
+        # command using the -c option") or behind a path (`command` is a program on macOS, which runs
+        # the builtin of its name), it is not, and the action is read: REPORT, as round 1 read it.
+        # Behind a wrapper that execs (`sudo`, `env`, `nohup`) it IS sure since #2670: such a wrapper
+        # looks a program up as `find` does, and the action runs nothing -- CLEAN, where round 2 kept
+        # the `find` behind `sudo` (the seat's 31 rows) for want of that rule. `builtin` is read
+        # through behind what runs a builtin -- `command`, by name or by path (#2665), and a shell
+        # handed the words (#2670; it read CLEAN there) -- and behind a path that names a file the row
+        # stays CLEAN, as `main` reads the word there.
+        shelled = ("sudo -s ", "sudo -i ", "sudo --shell ", "sudo --login ", "doas -s ")
         for word, row in self.NOTHING.items():
-            for front in ("sudo -s ", "sudo -i ", "sudo --shell ", "sudo --login ", "doas -s ", "sudo ", "env ", "nohup ",
-                          "command ", "/usr/bin/command ", "/usr/bin/", "./"):
+            for front in (*shelled, "sudo ", "env ", "nohup ", "command ", "/usr/bin/command ", "/usr/bin/", "./"):
                 with self.subTest(word=word, front=front):
-                    read = word != "builtin" or front in ("command ", "/usr/bin/command ")
+                    read = front not in ("sudo ", "env ", "nohup ") and (
+                        word != "builtin" or front in (*shelled, "command ", "/usr/bin/command "))
                     self.assertEqual("RRRRR" if read else "CCCCC",
                                      self.marked(row.replace("-exec " + word, "-exec " + front + word)))
 

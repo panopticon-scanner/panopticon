@@ -222,11 +222,18 @@ class TestBuiltinIsReadThrough(unittest.TestCase):
         # `sudo`, `env`, `exec`, `nice` and `nohup` look for a program named `builtin`, and so does `time` where
         # `command` runs it; a path names a file. Truth: nothing, each.
         for front in ("sudo builtin", "env builtin", "exec builtin", "nice builtin", "nohup builtin", "command time builtin",
-                      "/usr/bin/builtin", "./builtin", "${S:-sudo} builtin", "sudo command builtin"):
+                      "/usr/bin/builtin", "./builtin", "${S:-sudo} builtin"):
             for name in ("eval of a string", ". ./t", "echo piped to a shell"):
                 before, command = RUNS[name]
                 with self.subTest(front=front, command=name):
                     self.assertEqual(CLEAN, marks("%s%s %s" % (before, front, command)))
+        # `sudo command builtin` stood in that list. #2670 reads who runs the word behind each wrapper: `command`
+        # is a script on macOS that a wrapper finds, and its shell runs the builtin behind (measured there, and
+        # `main` reported `sudo command eval 'P'` by the same file). Truth on the forge, which has none: nothing.
+        for name in ("eval of a string", ". ./t", "echo piped to a shell"):
+            before, command = RUNS[name]
+            with self.subTest(front="sudo command builtin", command=name):
+                self.assertEqual(NOW, marks("%ssudo command builtin %s" % (before, command)))
         self.assertEqual(CLEAN, marks("${S:-/usr/bin/builtin} eval '%s'" % P))   # a default naming a file
         self.assertEqual(CLEAN, marks("echo x | xargs builtin eval '%s'" % P))
         self.assertEqual(CLEAN, marks("find . -exec builtin eval '%s' %s;" % (P, BACKSLASH)))
@@ -251,8 +258,9 @@ class TestNoReadingOfBuiltinIsLost(unittest.TestCase):
         self.assertEqual([["builtin", "--", "cd", "/"], ["cd", "/"]], read("builtin -- cd /"))
         self.assertEqual([["builtin", "sh", "t"]], read("builtin sh t"))          # no builtin: one reading, one fold
         self.assertEqual([["eval", "P"]], read("eval P"))
-        self.assertEqual([[["builtin", "eval", "P"], ["builtin", "eval", "P"]], [["builtin", "eval", "P"], ["eval", "P"]]],
-                         read("sudo builtin eval P | builtin eval P"))            # every fold again, for the one it met
+        # Every fold again, for the one it met; the first stage is `sudo`'s own, which looks for a program (#2670).
+        self.assertEqual([[["sudo", "builtin", "eval", "P"], ["builtin", "eval", "P"]],
+                          [["sudo", "builtin", "eval", "P"], ["eval", "P"]]], read("sudo builtin eval P | builtin eval P"))
         with wo.mains_answer():                                                 # the main pass: `main`'s reading alone
             self.assertEqual([["builtin", "eval", "P"]], read("builtin eval P"))
 
@@ -495,13 +503,14 @@ class TestAWordThatOnlySpellsAnAssignment(unittest.TestCase):
 class TestWhatStaysForOtherIssues(unittest.TestCase):
     """Rows this PR does not move, each pinned as it reads and named with what it waits for."""
 
-    def test_a_wrapper_that_hands_its_words_to_a_shell(self):
-        # `sudo -s builtin eval 'P'` hands the words to a shell, which runs the builtin. The reader keeps a
-        # wrapper's word and not its options, so it cannot tell this from `sudo builtin`, which runs nothing:
-        # #2861's rule, which wrapper runs a builtin, decides both.
+    def test_a_wrapper_that_hands_its_words_to_a_shell_was_2861(self):
+        # `sudo -s builtin eval 'P'` hands the words to a shell, which runs the builtin. The reader kept a
+        # wrapper's word and not its options, so it could not tell this from `sudo builtin`, which runs nothing:
+        # #2861's rule, which wrapper runs a builtin, decides both, and these report since
+        # (`tests/test_workflow_behind_a_wrapper.py`; sudo's manual, doc-pinned there).
         for front in ("sudo -s builtin", "sudo -i builtin", "doas -s builtin"):
             with self.subTest(front=front):
-                self.assertEqual(CLEAN, marks("%s eval '%s'" % (front, P)))
+                self.assertEqual(NOW, marks("%s eval '%s'" % (front, P)))
 
     def test_a_function_that_hands_its_words_to_builtin(self):
         # Truth: runs under bash. The word behind `builtin` is `"$@"`, which the reader does not follow.
