@@ -22,6 +22,7 @@ import shell_reader
 from shell_text import Process
 from workflow_options import (VALUE_OPTIONS, Handed, _MAINS, _before_operand, _dash_c_strings,
                               _may_spell_option, _past_options, _shell_candidates, _sure_string, _value)
+from workflow_option_words import spells, written
 from workflow_printers import rendered
 
 
@@ -141,7 +142,7 @@ def _script(word):
     return Opaque(text)
 
 
-def _after_dash_c(argv, plus=True):
+def _after_dash_c(argv, plus=True, start=1):
     """The script operand of a shell's `-c`, wherever the flag was clustered.
 
     `sh -ec`, `bash -lc`, `bash -euc` are the ordinary CI idiom, not an
@@ -163,12 +164,23 @@ def _after_dash_c(argv, plus=True):
     the `-c` after it is a parameter, but a FILE may run any parameter it is handed (`sh w.sh +check
     x -c P`, `w.sh` an `eval "$4"`), and an expansion may make the cluster take its string for a
     name (`X=o; sh +${X}c errexit -c P` runs `P`). So this reads more than `main` did and never less.
+
+    The `c` is asked of the word as it is written, not of its text (`spells`, #3020): a lifted
+    `$(...)` stands in the text as a marker whose random hex may hold a `c` or none, so `sh -$(echo
+    c) P` was a cluster in one parse and none in the next. A word that holds lifted text MAY spell
+    `-c`, whatever the marker's letters, so its string is read in every parse -- and it may spell
+    none, so where no `c` is written in it the search goes on past it from `start` too, as it goes
+    past `-x`: both of `main`'s two readings, the second BESIDE the first (`Y=-c; sh -$(echo x) $Y
+    P` and `sh -$(echo x) w.sh -c P`, `w.sh` an `eval "$2"`, run `P`).
     """
-    for position, token in enumerate(argv[1:], start=1):
+    for position in range(start, len(argv)):
+        token = argv[position]
         if token == "--":
             break
-        if token[:1] in ("-", "+" if plus else "-") and token[:2] not in ("--", "++") and "c" in token:
+        if token[:1] in ("-", "+" if plus else "-") and token[:2] not in ("--", "++") and spells(token, "c"):
             found = _past_options(argv, position)
+            if "c" not in written(token):
+                found = found + [word for word in _after_dash_c(argv, plus, position + 1) if not any(word is seen for seen in found)]
             if token[0] == "-":
                 return found
             return found + [word for word in _after_dash_c(argv, False) if not any(word is seen for seen in found)]
@@ -211,8 +223,10 @@ def candidates(argv):
 
 def _candidates(argv):
     """`candidates`' answer as `main` reads it (7e9223e6), word for word but for the sign of the
-    cluster a `$` command word is handed: `$CMD +c P` is `$CMD -c P` (#3019, as `_after_dash_c`)."""
-    if argv[1:] and _value(argv[0]) and argv[1][:1] in ("-", "+") and argv[1][:2] not in ("--", "++") and "c" in argv[1]:
+    cluster a `$` command word is handed: `$CMD +c P` is `$CMD -c P` (#3019, as `_after_dash_c`).
+    A `$` word's cluster may be one lifted text spells (`spells`, #3020); a shell's walk for a value
+    ends at a `c` that is WRITTEN, and goes on past a word that only may print one."""
+    if argv[1:] and _value(argv[0]) and argv[1][:1] in ("-", "+") and argv[1][:2] not in ("--", "++") and spells(argv[1], "c"):
         return argv[0], _past_options(argv, 1)
     if not argv or os.path.basename(argv[0]) not in _SHELL_STRING:
         return None, []
@@ -226,7 +240,7 @@ def _candidates(argv):
             more = next((k for k in range(end, len(rest)) if _may_spell_option(rest[k])), len(rest))
             return word, rest[:end] + rest[more + 1:] or (
                 [word] if shell_reader.yields_words(word) else [])
-        elif word in ("-", "--") or word[:1] not in ("-", "+") or word[:2] != "--" and "c" in word:
+        elif word in ("-", "--") or word[:1] not in ("-", "+") or word[:2] != "--" and "c" in written(word):
             break
         elif word[:2] != "--":
             owed = sum(letter in VALUE_OPTIONS for letter in word[1:])

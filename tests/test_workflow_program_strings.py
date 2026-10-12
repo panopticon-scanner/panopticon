@@ -37,7 +37,9 @@ OPTIONS = ("SET_OPTIONS", "SET_OPTION_NAMES", "SHELL_OPTIONS", "SHELL_OPTION_NAM
            "_BARE", "_MEASURED_SHELLS", "_VALUE", "_before_operand", "_may_spell_option", "_past_options",
            "_refused", "_refused_name", "_value")
 PRINTERS = ("ANY", "Named", "_PRINTERS", "_piped", "handed", "printed", "producer", "unspelled", "worded")
-BELOW = {"os", "re", "shell_lex", "shell_reader", "shell_text", "workflow_options", "workflow_printers"}
+# `workflow_option_words` is the leaf #3020 put below all of these: what an option word spells.
+BELOW = {"os", "re", "shell_lex", "shell_reader", "shell_text", "workflow_option_words", "workflow_options",
+         "workflow_printers"}
 
 
 def _tree(module):

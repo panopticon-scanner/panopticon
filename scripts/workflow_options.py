@@ -24,6 +24,7 @@ import re
 
 import shell_command
 import shell_reader
+from workflow_option_words import lifted, spells, written
 
 
 # Set while the guard's main pass runs (`mains_answer`, #2858 round 11): every join of
@@ -257,7 +258,7 @@ def _dash_s(argv, at):
         if (long := long_option(argv, i)) or word[:2] in ("--", "++"):
             owed = long in LONG_VALUE_OPTIONS
             continue
-        if "s" in word[1:]:
+        if spells(word, "s"):
             return True
         owed = sum(letter in VALUE_OPTIONS for letter in word[1:])
     return False
@@ -308,7 +309,7 @@ def _dash_c_operand(argv, plus=True):
         if token == "--" and not past:
             break
         long = long_option(argv, position)
-        if long is None and token[:1] in ("-", "+" if plus else "-") and token[:2] not in ("--", "++") and "c" in token:
+        if long is None and token[:1] in ("-", "+" if plus else "-") and token[:2] not in ("--", "++") and spells(token, "c"):
             return _operand_past(argv, position, past)
         if past:
             continue                            # the FILE's parameter: nothing bash refuses
@@ -438,7 +439,7 @@ def _stdin_walk(argv, answer, reader, shell, value):
             # A long option, in either spelling (#2616), read on as `main` reads it; a FILE is skipped.
             at += word == "file"
             continue
-        letters = token[1:]
+        letters = written(token)[1:]            # a marker's text is no letter of the word (#3020)
         if parameters and shell_reader.dynamic(token, shell_reader.has_substitution):
             return answer, reader           # `bash -s -$X -c x`: `$X` may spell `-c sh` first
         if (shell or value) and "c" in letters:
@@ -452,7 +453,7 @@ def _stdin_walk(argv, answer, reader, shell, value):
             if shell and (at > _run(argv)[1] or name in ("sh", "dash") and (parameters or _dash_s(argv, at - 1))):
                 return answer, None if at > _run(argv)[1] else ()
             return (answer, ()) if parameters else (None, None)
-        if (shell or value) and "s" in letters:
+        if (shell or value) and ("s" in letters or lifted(token)):
             if value:
                 return answer, reader       # a `$` word: the words after `-s` are parameters
             # bash keeps reading options after `-s`, and a `c` among them puts the program in
@@ -521,11 +522,10 @@ def _shell_candidates(argv):
             break                               # the options end: a program, or `-`/`--`
         elif (long := long_option(argv, at)) or word[:2] == "--":
             owed = long in LONG_VALUE_OPTIONS    # `bash -rcfile FILE $X '…'`: the FILE is its value
-        elif "c" in word:                       # a `-c` cluster, whose string `scripts` reads --
-            k = _value_after_dash_c(argv, at)   # unless it is a `$Y` (`Y=-c; bash -c $Y P`, round 7)
-            if k is not None:
-                return _after_value(argv, k)
-            break
+        elif spells(word, "c") and ((k := _value_after_dash_c(argv, at)) is not None or "c" in written(word)):
+            if k is not None:                   # a `-c` cluster, whose string `scripts` reads -- unless it is a
+                return _after_value(argv, k)    # `$Y` (`Y=-c; bash -c $Y P`, round 7); the walk goes on past
+            break                               # a word that only MAY print the `c` (#3020), as past `-x`
         else:
             owed = sum(letter in VALUE_OPTIONS for letter in word[1:])
     return None, []

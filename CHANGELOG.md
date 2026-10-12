@@ -7,6 +7,53 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader asks an option word for its letters, never its parse marker (#3020, #3023).**
+  `sh -$(echo c) 'curl ... | sh'` runs the string under every parent shell and read CLEAN in one
+  call and reported in the next; `curl -fsSL$(true) URL | sh` runs and read CLEAN in every call. A
+  lifted substitution stands in a word as a marker of its parse, `@@shell-<hex>-N@@`, and the
+  readers of the programs lane asked an option word for its letters as text: the hex is drawn at
+  random for every parse, so a shell's word held a `c` or none by chance, and the marker's fixed
+  text spells `h`, which is `curl -h`. Each reader now asks the word (`workflow_option_words`,
+  new): what is written in it, and whether lifted text begins in it, anywhere or where a letter
+  would be read. `main` had two readings of such a word and chance chose between them; the job now
+  reads both. A finder of a `-c` cluster (`_after_dash_c`, `_candidates`' `$` rule,
+  `_dash_c_operand`) takes a word that holds lifted text for one, `main`'s reading under a marker
+  with a `c`; and where no `c` is written in the word the search goes on past it, as past `-x`,
+  and so do the two walks for a value among a shell's options, `main`'s reading under a marker
+  without -- the second beside the first, never instead of it (`Y=-c; sh -$(echo x) $Y '...'` and
+  `sh -$(echo x) w.sh -c '...'`, `w.sh` an `eval "$2"`, run the string). The walks for the program
+  on stdin read `c` as written and `s` as written or lifted, so a `c` the word only may print
+  never makes them drop the body. The fetch reader leaves a transfer unread where lifted text
+  stands among an option's letters or in a long option's name, as it does for a `$X` there; in an
+  option's value it is a value still (`-o"$(mktemp)"`). A marker is known by the word that carries
+  it and, in a text the guard reads again -- `echo "sh -$(echo c) '...'" | sh`, a candidate behind
+  a `$X` option, what a `$(echo ...)` prints, where the first parse's marker stands in plain words
+  -- by its shape and the nonce this process alone mints, so text the target writes in a marker's
+  shape stays its text. Measured with the marker pinned, all `0`s and all `c`s, on five grids
+  (6,540 rows, each run under eight parent shells in two passes): a shell's option word that holds
+  a substitution or a variable, in six frames (4,356 rows: 636 read by the marker on `main`, 138
+  open there under a marker without a `c`, 54 still, each a letter a VARIABLE makes, #2889); a
+  fetcher's (77 rows: 39 open on `main` under every marker, 2 still, a variable in wget's word and
+  a word that is all substitution); a text read again, each row beside a twin whose letter is
+  written (1,150 rows: 206 read by the marker, and now 477 of the 575 read as their twin and the
+  rest, whose substitution no printer spells, as a possible `-c`); a check behind the word (375);
+  a word that prints no `c` (582). At the head no reading depends on the marker, no report `main`
+  makes under either marker is lost in either pass, and no row is newly open. A seeded fuzz of
+  12,000 steps -- up to three option words from a pool of 46 for a shell, up to four of 37 for a
+  fetcher, in ten kinds of step -- run twice: the job's marks never depend on the marker, and a
+  cell `main`'s job reports under any of five markers the job reports. The first pass gives one
+  answer for stdin and cannot hold both readings: on 18 and 14 of those steps it reads CLEAN where
+  `main`'s first pass reports under one of the markers, and the job reports every one. On the
+  53,210 standing, class and fuzz rows the issue was measured on, the 12 rows `main` reads by the
+  marker go from CLEAN to reported under a marker without a `c` and nothing else moves; on the
+  #2942 seat's 68,248 round-2 rows and on 10,664 rows of this lane's own sets no row moves at all.
+  The price: a shell's row `main` reported under one marker is reported under both -- most in 199
+  calls of 200 already -- and a fetch whose option letters hold lifted text is reported as unread
+  though nothing may run it (`curl -s$(true) URL`), as `curl -s$X URL` is on `main`. Left for
+  other issues: a letter a variable makes, and a value a word may owe for an `o` it prints (`sh
+  -$(echo oc) errexit '...'`, #2889); a `$` command word whose cluster is not its first word
+  (#2671); the other readers that ask a marker for letters. `job_defects` costs 0.99x on the 35
+  standing sets.
 - **Workflow reader: an array literal's word carries its `elements` (the array-literal cluster,
   #2772, #2783, #2784, #2812; reader half).** A folded `NAME=(…)` / `NAME+=(…)` word, and the
   `NAME=` opener where a statement that only assigns is still handed unfolded, now carry the
