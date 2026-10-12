@@ -556,7 +556,7 @@ class TestWhatStays(unittest.TestCase):
         # #2671, #2900. Truth: runs, every one.
         for words_ in ("$CMD +x -c", "$CMD -e -$X -c", "$CMD -c $Y"):
             with self.subTest(words=words_):
-                self.assertEqual(CLEAN, marks("CMD=$(command -v sh)\nY=-c\n%s %s\n" % (words_, P)))
+                self.assertEqual(CLEAN, marks("CMD=$(command -v sh)\nX=x\nY=-c\n%s %s\n" % (words_, P)))
 
     def test_three_shapes_of_wget(self):
         # #3033: two URLs read as the first. #3034: the destination in a variable. #3035: a stream only an expansion
