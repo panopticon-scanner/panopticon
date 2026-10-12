@@ -704,9 +704,11 @@ groups:
       - scripts/workflow_programs.py
       - scripts/workflow_program_strings.py
       - scripts/workflow_options.py
+      - scripts/workflow_option_slots.py
       - scripts/workflow_option_words.py
       tests:
       - tests/test_workflow_options.py
+      - tests/test_workflow_option_slots.py
       - tests/test_workflow_program_strings.py
       - tests/test_workflow_plus_cluster.py
       - tests/test_workflow_option_words.py
