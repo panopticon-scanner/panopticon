@@ -188,6 +188,27 @@ class TestFetchParsing(unittest.TestCase):
             Fetch("wget", "https://example.test/i.sh", None, ("bash",)),
             self.one("wget -qO- https://example.test/i.sh | bash\n"))
 
+    def test_2916_explicit_stdout_is_bound_to_the_adjacent_tee_file(self):
+        for fetch in (
+                "wget -qO- https://example.test/i.sh",
+                "wget -O - https://example.test/i.sh",
+                "curl -fsSL -o - https://example.test/i.sh",
+        ):
+            with self.subTest(fetch=fetch):
+                script = fetch + " | tee tool\nsh tool\n"
+                self.assertEqual("tool", self.one(script).dest)
+                self.assertIsNotNone(wg.fetch_exec_defect(script))
+
+    def test_2916_discard_and_inferred_dash_file_do_not_bind_the_tee(self):
+        for fetch in (
+                "curl -fsSL -o /dev/null https://example.test/i.sh",
+                "wget https://example.test/-",
+        ):
+            with self.subTest(fetch=fetch):
+                script = fetch + " | tee tool\nsh tool\n"
+                self.assertNotEqual("tool", self.one(script).dest)
+                self.assertIsNone(wg.fetch_exec_defect(script))
+
     def test_wgets_lowercase_o_is_a_LOG_file_not_the_destination(self):
         # curl's `-o` and wget's `-o` are different options; one parser that
         # treats them alike writes the log path into the guard's dest field.
