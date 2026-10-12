@@ -1399,11 +1399,33 @@ class TestADownloadNamedThroughAnArray(unittest.TestCase):
                     'arr=(echo hi)\nif true; then arr=(sh tool); fi\n"${arr[@]}"\n'):
             with self.subTest(use=use):
                 self.assertReports(TOOL + use)
-        # t27 FR FR -- FR, posthog's: main's sentence, the transfer it cannot parse.
+        # t27 FR FR -- FR, posthog's: #2770 adds the precise transfer at the
+        # splice beside main's literal-as-command sentence. Open #2812 owns
+        # retiring that first, fail-closed array-literal reading.
         found = defects('fetch=(curl --fail --location)\n"${fetch[@]}" %stool --output tool\n'
                         "chmod +x tool\n./tool\n" % URL)
-        self.assertEqual(1, len(found), found)
+        self.assertEqual(2, len(found), found)
         self.assertTrue(found[0].startswith("runs `curl` with unresolved transfers"), found)
+        self.assertIn("fetches %stool -> tool and making it executable" % URL, found[1])
+
+    def test_2770_a_fetcher_array_is_parsed_at_its_splice(self):
+        scripts = (
+            'declare -a fetch=(curl -fsSL)\n"${fetch[@]}" %stool -o tool\nsh tool\n'
+            % URL,
+            'get() {\n local -a fetch=(curl -fsSL)\n "${fetch[@]}" %stool -o tool\n}\n'
+            'get\nsh tool\n' % URL,
+            'fetch=(curl -fsSL)\n"${fetch[@]}" %stool -o tool\nsh tool\n' % URL,
+        )
+        for script in scripts:
+            for shell in (None, "bash", "sh", "bash {0}", "sh {0}"):
+                with self.subTest(script=script, shell=shell):
+                    found = wg.job_defects([wg.Step("step", script, shell)])
+                    reasons = [why for _name, why in found]
+                    self.assertTrue(any("fetches %stool -> tool and running it under `sh`"
+                                        % URL in why for why in reasons), reasons)
+
+    def test_2770_a_spliced_nonfetch_array_stays_clean(self):
+        self.assertEqual([], defects('declare -a a=(echo hi)\n"${a[@]}"\n'))
 
     def test_an_array_that_runs_no_download_stays_clean(self):
         # Main CLEAN, F- F- F- F-: t23 assigns and never runs; t25 runs `echo hi`.
