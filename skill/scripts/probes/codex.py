@@ -1,7 +1,7 @@
 """The codex family's probes: what a Codex host proves about itself.
 
-Split out of `host_probes.py` (#1627). The `codex` row claims two
-capabilities and both are measured from ONE headless surface inspection --
+Split out of `host_probes.py` (#1627). The `codex` row claims three
+capabilities and all three are measured from ONE headless surface inspection --
 `_codex_surfaces` builds the real per-role sandbox once and every probe that
 follows reads it, which is why `run_probes` threads a shared `measure`
 callable through rather than letting each probe rebuild it.
@@ -13,6 +13,7 @@ The probe-id -> function registry stays in `host_probes.py`.
 import concurrent.futures
 import json
 import os
+from pathlib import Path
 import tempfile
 
 from scripts import dispatch, hosts, model_resolver
@@ -22,13 +23,44 @@ from . import common
 
 CODEX_EFFECTIVE_TOOLS = "codex-effective-tools"
 CODEX_READ_SCOPE = "codex-read-scope"
+CODEX_WRITE_SURFACE_ABSENT = "codex-write-surface-absent"
+
+# `Object.getOwnPropertyNames(globalThis)` on the measured V8 isolate contains
+# these language globals plus the Code Mode host globals below.  A name absent
+# from both sets refutes the write-omission proof until it is classified --
+# including a future ECMAScript addition, deliberately, because a new host
+# primitive and a new language primitive are indistinguishable at this seam.
+_KNOWN_ECMASCRIPT_GLOBALS = frozenset("""
+AggregateError Array ArrayBuffer AsyncDisposableStack BigInt BigInt64Array
+BigUint64Array Boolean DataView Date DisposableStack Error EvalError
+FinalizationRegistry Float16Array Float32Array Float64Array Function Infinity
+Int16Array Int32Array Int8Array Intl Iterator JSON Map Math NaN Number Object
+Promise Proxy RangeError ReferenceError Reflect RegExp Set String SuppressedError
+Symbol SyntaxError TypeError URIError Uint16Array Uint32Array Uint8Array
+Uint8ClampedArray WeakMap WeakRef WeakSet decodeURI decodeURIComponent encodeURI
+encodeURIComponent escape eval globalThis isFinite isNaN parseFloat parseInt
+undefined unescape
+""".split())
+
+# The COMPLETE non-ECMAScript set measured on the live Code Mode host.  These
+# are output/state helpers only; none accepts a filesystem or network path.
+# Codex 0.162.1 added `as_settled` (an async settlement iterator) and
+# `stream_settled` (that iterator forwarded to a callback); their live function
+# bodies expose only Promise/iteration mechanics, with no host primitive.
+CODE_MODE_HOST_GLOBALS = frozenset({
+    "ALL_TOOLS", "as_settled", "audio", "clearTimeout", "exit", "generatedImage",
+    "image", "load", "notify", "setTimeout", "store", "stream_settled", "text",
+    "tools", "yield_control",
+})
+_SHELLLESS_SETUP = "setup-scan (native default model and directory scope)"
 
 
 def _codex_surfaces(registration_dir=None, inspector=None, runner=None):
     """Measure each role in the real Codex runtime, without a paid model call.
 
-    A localhost Responses fixture enumerates the effective tools and attempts
-    two synthetic reads through the SAME launcher used by the runner. No target
+    A localhost Responses fixture enumerates the effective tools/globals,
+    attempts the blocked import and MCP-resource routes, and makes three
+    synthetic reads through the SAME launcher used by the runner. No target
     content participates. Only run_probes' caller-local cache shares results;
     every driver invocation inspects the current runtime and registered shells.
 
@@ -62,11 +94,12 @@ def _codex_surfaces(registration_dir=None, inspector=None, runner=None):
         # every role drives the same three reads.
         #
         # A filesystem with no links to plant does NOT raise (fix round 1, F3).
-        # This measurement is shared by both codex probes, so raising also
-        # un-proved `codex-effective-tools` -- a claim about the effective V8
-        # surface that has nothing to do with hard links, gating as REFUTED
-        # (hosts.py) on somebody's tmp mount -- and, because the caller caches
-        # only a successful measurement, ran the whole inspection twice. The
+        # This measurement is shared by all three Codex probes, so raising also
+        # un-proved the tool and write-surface rows -- claims about the
+        # effective V8 surface that have nothing to do with hard links, gating
+        # as REFUTED (hosts.py) on somebody's tmp mount -- and, because the
+        # caller caches only a successful measurement, repeated the whole
+        # inspection. The
         # reason rides ALONG with each surface instead, and only
         # `probe_codex_read_scope` treats it as UNKNOWN. No fixture, no probe
         # paths: a two-read measurement must not stand in for the three-read one.
@@ -88,7 +121,7 @@ def _codex_surfaces(registration_dir=None, inspector=None, runner=None):
         for role in (*common.DRIVER_ROLES, "setup-scan"):
             setup = role == "setup-scan"
             role_file = None if setup else dispatch.ROLE_FILES[role]
-            shell = ("setup-scan (native default model and directory scope)" if setup else
+            shell = (_SHELLLESS_SETUP if setup else
                      os.path.join(directory, dispatch.registered_agent_filename("codex", role_file)))
             if not setup and not os.path.isfile(shell):
                 raise FileNotFoundError("Codex reviewer shell is missing: %s" % shell)
@@ -115,7 +148,9 @@ def _codex_surfaces(registration_dir=None, inspector=None, runner=None):
         def measure(job):
             shell, entry, env, review_root = job
             surface = inspector(entry, env, review_root, root, registration_dir=directory,
-                                probe_paths=probe_paths, catalog=catalog)
+                                probe_paths=probe_paths,
+                                probe_module=Path(inside).resolve().as_uri(),
+                                catalog=catalog)
             if fixture_error and isinstance(surface, dict):
                 surface = dict(surface, hard_link_fixture=fixture_error)
             return shell, surface
@@ -128,7 +163,7 @@ def _codex_measure(probe_id, settings_path, registration_dir, measure):
     from scripts import codex_host
     if settings_path is None:
         return None, (hosts.UNKNOWN, probe_id,
-                      "Codex confinement is measured for driver loop --mode headless only; "
+                      "Codex security surfaces are measured for driver loop --mode headless only; "
                       "a parent session may override native child-agent permissions")
     try:
         return (measure() if measure else _codex_surfaces(registration_dir)), None
@@ -147,6 +182,8 @@ def _codex_measure(probe_id, settings_path, registration_dir, measure):
 
 
 def _codex_surface_problem(surface):
+    if not isinstance(surface, dict):
+        return "effective Codex surface is not an object"
     expected = {"mcp__panopticon_scope__read_file", "mcp__panopticon_scope__search",
                 "mcp__panopticon_scope__list_files", "list_mcp_resources",
                 "list_mcp_resource_templates", "read_mcp_resource"}
@@ -157,6 +194,80 @@ def _codex_surface_problem(surface):
             or set(forbidden) != {"exec", "patch", "spawn", "fetch", "process", "require"}
             or any(value != "undefined" for value in forbidden.values())):
         return "effective Codex surface is not the confined read-only tool set"
+    return None
+
+
+def _role_measurement_problem(paths):
+    expected = {
+        dispatch.registered_agent_filename("codex", dispatch.ROLE_FILES[role])
+        for role in common.DRIVER_ROLES
+    } | {_SHELLLESS_SETUP}
+    observed = []
+    for path in paths:
+        if not isinstance(path, str):
+            return "not every registered role and shell-less setup shape was inspected"
+        observed.append(path if path == _SHELLLESS_SETUP else os.path.basename(path))
+    if len(observed) != len(expected) or set(observed) != expected:
+        return "not every registered role and shell-less setup shape was inspected"
+    return None
+
+
+def _empty_resource_result(result, key):
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        return False
+    value = result.get("value")
+    if not isinstance(value, str):
+        return False
+    try:
+        return json.loads(value) == {key: []}
+    except (TypeError, ValueError):
+        return False
+
+
+def _codex_write_surface_problem(surface):
+    """Why this surface does not prove reviewer-selectable writes absent."""
+    from scripts import codex_host
+
+    problem = _codex_surface_problem(surface)
+    if problem:
+        return problem
+    if surface.get("mcp_servers") != ["panopticon_scope"]:
+        return "effective MCP server set is not exactly the controller-bound panopticon_scope"
+
+    globals_ = surface.get("globals")
+    if (not isinstance(globals_, list)
+            or any(not isinstance(name, str) for name in globals_)
+            or len(globals_) != len(set(globals_))):
+        return "Code Mode global enumeration is absent or malformed"
+    host_globals = set(globals_) - _KNOWN_ECMASCRIPT_GLOBALS
+    if host_globals != CODE_MODE_HOST_GLOBALS:
+        return "Code Mode non-ECMAScript host-global allowlist changed"
+
+    imports = surface.get("imports")
+    if not isinstance(imports, dict) or any(not isinstance(name, str) for name in imports):
+        return "Code Mode import measurement is absent or malformed"
+    file_imports = [name for name in imports if name.startswith("file:")]
+    module_imports = set(imports) - set(file_imports)
+    if (len(file_imports) != 1
+            or module_imports != set(codex_host.WRITE_SURFACE_IMPORTS)):
+        return "Code Mode filesystem/process/network import set was not measured exactly"
+    for name, result in imports.items():
+        if (not isinstance(result, dict) or result.get("ok") is not False
+                or "unsupported import" not in str(result.get("error", "")).lower()):
+            return "Code Mode import route %r was not rejected as unsupported" % name
+
+    resources = surface.get("resources")
+    if not isinstance(resources, dict) or set(resources) != {"list", "templates", "read"}:
+        return "MCP resource measurement is absent or malformed"
+    if not _empty_resource_result(resources["list"], "resources"):
+        return "the effective MCP resource list is not empty"
+    if not _empty_resource_result(resources["templates"], "resourceTemplates"):
+        return "the effective MCP resource-template list is not empty"
+    read = resources["read"]
+    if (not isinstance(read, dict) or read.get("ok") is not False
+            or "resources/read" not in str(read.get("error", "")).lower()
+            or "method not found" not in str(read.get("error", "")).lower()):
+        return "the controller-bound MCP server did not reject resource reads as unsupported"
     return None
 
 
@@ -172,8 +283,9 @@ def probe_codex_tool_policy(host, registration_dir=None, settings_path=None, mea
         if problem:
             return (hosts.REFUTED, CODEX_EFFECTIVE_TOOLS,
                     "%s: %s: %s" % (path, problem, json.dumps(surface, sort_keys=True)))
-    if len(paths) != len(common.DRIVER_ROLES) + 1:
-        return (hosts.UNKNOWN, CODEX_EFFECTIVE_TOOLS, "not every registered role was inspected")
+    problem = _role_measurement_problem(paths)
+    if problem:
+        return hosts.UNKNOWN, CODEX_EFFECTIVE_TOOLS, problem
     return (hosts.PROVEN, CODEX_EFFECTIVE_TOOLS,
             "effective Codex V8 ALL_TOOLS and forbidden globals inspected via localhost-only "
             "Responses fixture; shell/patch/agents/network absent; shells: %s" % ", ".join(paths))
@@ -223,8 +335,9 @@ def probe_codex_read_scope(host, registration_dir=None, settings_path=None, meas
                     "it, was READ through the grant: %s" % (path, json.dumps(linked, sort_keys=True)))
         if "hard-linked" in json.dumps(linked).lower():
             by_the_rule.append(path)
-    if len(paths) != len(common.DRIVER_ROLES) + 1:
-        return (hosts.UNKNOWN, CODEX_READ_SCOPE, "not every registered role was inspected")
+    problem = _role_measurement_problem(paths)
+    if problem:
+        return hosts.UNKNOWN, CODEX_READ_SCOPE, problem
     if not by_the_rule:
         return (hosts.REFUTED, CODEX_READ_SCOPE,
                 "no inspected role refused the planted hard link by the hard-link rule; the "
@@ -235,3 +348,33 @@ def probe_codex_read_scope(host, registration_dir=None, settings_path=None, meas
             "sibling, and refused a hard link planted inside the directory grant as hard-linked "
             "(%s); PANOPTICON_ENTRY_ID / PANOPTICON_READ_SCOPE bound to temporary grants; "
             "shells: %s" % (", ".join(by_the_rule), ", ".join(paths)))
+
+
+def probe_codex_write_surface(host, registration_dir=None, settings_path=None, measure=None):
+    """Prove no reviewer-selectable artifact-write route exists on Codex.
+
+    This is narrower than "the Codex process writes no files": controller/CLI
+    housekeeping under controller-selected runtime and CODEX_HOME paths is out
+    of scope.  A reviewer-selectable path or arbitrary host path is not.
+    """
+    surfaces, failure = _codex_measure(
+        CODEX_WRITE_SURFACE_ABSENT, settings_path, registration_dir, measure)
+    if failure:
+        return failure
+    paths = []
+    for path, surface in surfaces:
+        paths.append(path)
+        problem = _codex_write_surface_problem(surface)
+        if problem:
+            return hosts.REFUTED, CODEX_WRITE_SURFACE_ABSENT, "%s: %s" % (path, problem)
+    problem = _role_measurement_problem(paths)
+    if problem:
+        return hosts.UNKNOWN, CODEX_WRITE_SURFACE_ABSENT, problem
+    return (
+        hosts.PROVEN,
+        CODEX_WRITE_SURFACE_ABSENT,
+        "effective Codex ALL_TOOLS, Responses tools, Code Mode host globals/imports and "
+        "MCP resources contain no reviewer-selectable filesystem, process or network write "
+        "route; controller-selected runtime/CODEX_HOME housekeeping is outside this "
+        "reviewer-artifact boundary; shells: %s" % ", ".join(paths),
+    )

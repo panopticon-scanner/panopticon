@@ -19,6 +19,7 @@ def _isolate_codex_probes(test_case):
     for name, probe_id in (
         ("probe_codex_tool_policy", "codex-effective-tools"),
         ("probe_codex_read_scope", "codex-read-scope"),
+        ("probe_codex_write_surface", "codex-write-surface-absent"),
     ):
         patcher = mock.patch.object(
             codex_probes, name,

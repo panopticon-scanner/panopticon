@@ -787,6 +787,27 @@ class TestTheNoteIsNotACapability(unittest.TestCase):
         self.assertEqual(1, len(host_disclosure.lines(envelope)))
 
 
+class TestCodexThreeOfFivePosture(unittest.TestCase):
+    def test_the_omission_proof_leaves_only_the_two_operational_rows_unproven(self):
+        measured = envelope("codex", **{
+            hosts.TOOL_POLICY_ENFORCED: (
+                hosts.PROVEN, "codex-effective-tools", "fixture"),
+            hosts.READ_SCOPE_CONFINED: (
+                hosts.PROVEN, "codex-read-scope", "fixture"),
+            hosts.ARTIFACT_WRITE_GUARD: (
+                hosts.PROVEN, "codex-write-surface-absent", "fixture"),
+            hosts.MODEL_BINDING: (hosts.UNKNOWN, None, "not claimed"),
+            hosts.USAGE_LEDGER: (hosts.UNKNOWN, None, "not claimed"),
+        })
+        lines = host_disclosure.lines(measured)
+        headline = host_disclosure.headline(measured)
+        self.assertEqual(2, len(lines))
+        self.assertIn("2 of 5 NOT PROVEN", headline)
+        self.assertIn("model_binding", headline)
+        self.assertIn("usage_ledger", headline)
+        self.assertFalse(any(hosts.ARTIFACT_WRITE_GUARD in line for line in lines))
+
+
 class TestARefusedRegistrationNamesItselfAsTheRemedy(unittest.TestCase):
     """#2214 (COD-E2B epic #1803), a follow-up to #2198/#2232's
     COD-1638371699 fix: a relative `CODEX_HOME` makes `hosts.codex_home`
@@ -811,7 +832,7 @@ class TestARefusedRegistrationNamesItselfAsTheRemedy(unittest.TestCase):
         # genuinely the "codex without a refusal" case the fix must not touch.
         self.assertEqual("", hosts.spec("codex").registration_refusal)
 
-    def test_both_capabilities_codex_claims_name_the_refusal(self):
+    def test_all_capabilities_codex_claims_name_the_refusal(self):
         with mock.patch.dict(hosts.HOSTS, {"codex": self._refused_codex()}):
             for capability in sorted(hosts.spec("codex").claims):
                 with self.subTest(capability=capability):
@@ -821,9 +842,9 @@ class TestARefusedRegistrationNamesItselfAsTheRemedy(unittest.TestCase):
 
     def test_a_capability_codex_does_not_claim_is_unaffected(self):
         with mock.patch.dict(hosts.HOSTS, {"codex": self._refused_codex()}):
-            text = host_disclosure.remedy(hosts.ARTIFACT_WRITE_GUARD, "codex")
+            text = host_disclosure.remedy(hosts.MODEL_BINDING, "codex")
         self.assertNotEqual(self.REFUSAL, text)
-        self.assertIn("Codex has no write guard", text)
+        self.assertIn("does not bind the model", text)
 
     def test_the_disclosure_prints_the_refusal_once_not_per_capability_line(self):
         with mock.patch.dict(hosts.HOSTS, {"codex": self._refused_codex()}):
@@ -831,7 +852,7 @@ class TestARefusedRegistrationNamesItselfAsTheRemedy(unittest.TestCase):
         # Nothing is recorded for any capability, so `hosts.posture` reads all
         # five as unknown -- `lines()` still owes one line per unproven
         # capability (readiness zips this list against its own), so the count
-        # must stay five even though two of those lines now share one remedy.
+        # must stay five even though three of those lines now share one remedy.
         self.assertEqual(len(hosts.CAPABILITIES), len(out))
         joined = "\n".join(out)
         self.assertEqual(1, joined.count(self.REFUSAL))
@@ -842,6 +863,12 @@ class TestARefusedRegistrationNamesItselfAsTheRemedy(unittest.TestCase):
     def test_codex_with_no_refusal_still_gets_the_emit_remedy(self):
         text = host_disclosure.remedy(hosts.READ_SCOPE_CONFINED, "codex")
         self.assertIn("--emit-host-agents codex", text)
+
+    def test_codex_write_surface_drift_names_the_live_omission_probe(self):
+        text = host_disclosure.remedy(hosts.ARTIFACT_WRITE_GUARD, "codex")
+        self.assertIn("codex-write-surface-absent", text)
+        self.assertIn("headless", text)
+        self.assertNotIn("--session-dir", text)
 
     def test_the_live_headless_probe_names_the_refusal_and_the_disclosure_keeps_it(self):
         # Fix round 1's controller ruling, requirement 3: the disclosure's
