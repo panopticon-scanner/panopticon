@@ -257,6 +257,7 @@ from workflow_forms import (FETCHERS, SHELL_PROGRAM, Idle, Inlined, Reach, Unsur
                             working_directories)
 from workflow_printers import fed, operand
 from workflow_programs import ANY, VALUE_PROGRAM, handed, stdin_command
+from workflow_option_words import beside
 from workflow_options import mains_answer
 from workflow_stdin import bound_stdin as bind_stdin, mark_reason
 from workflow_uses import (EXECUTORS as EXECUTORS, INTERPRETERS as INTERPRETERS,
@@ -542,11 +543,16 @@ def fetch_exec_defect(script):
 
 
 def job_defects(steps, strict=False):
-    """Defects for a job: `main`'s findings (`mains_answer`), then the second walk's not among them."""
+    """Defects for a job: `main`'s findings (`mains_answer`), then the second walk's not among them -- and where the
+    any-expansion rule answered in the job (#2889), both as read with it off FIRST, then what its reading adds."""
     steps, seen, found = list(steps), collections.defaultdict[object, list](list), []
-    with mains_answer():
-        mains = _job_defects(steps, strict)
-    for at, (name, why) in enumerate(mains + _job_defects(steps, strict)):
+    def passes():
+        with mains_answer():
+            mains = _job_defects(steps, strict)
+        return [mains, _job_defects(steps, strict)]
+    read, more = beside(passes)
+    mains = read[0]
+    for at, (name, why) in enumerate(sum(read if read is more else read + more, [])):
         key = (name, why) if getattr(name, "__hash__", None) else why  # a step's name is YAML's own:
         if not (new := at < len(mains) or key not in seen) and key is why:  # a hashable one is keyed
             try:                                # with its `why`; a list or mapping is compared with

@@ -15,7 +15,9 @@ shell may give it; this is the same rule for every other expansion, in four part
  4. wget handed a whole-word expansion may be handed `-O-`: where its stdout is piped the stream view is added, and
     the file view stays `main`'s.
 
-Every new reading stands BESIDE `main`'s, never instead of it (`TestBesideNeverInstead`).
+Every new reading stands BESIDE `main`'s, never instead of it (`TestBesideNeverInstead`) -- and since the guard's
+readers, handed more words, may choose a quieter reading of a step, the JOB is read both ways wherever the rule
+answered in it: what `main` reported is reported (`TestWhatMainReportedIsReported`).
 
 Marks are a letter a `shell:` setting -- unset, `bash`, `sh`, `bash {0}`, `sh {0}` -- R where the guard reports, C
 where it reads the step CLEAN: first the job's, then the main pass's. Rows that hold a lifted substitution are read
@@ -35,8 +37,10 @@ Left for other issues, pinned in `TestWhatStays`: the `$CMD` command word whose 
 rule's own nouns found open on `main` as well: an expansion in FRONT of a written option word (#3042), a substitution
 in the string's slot (#3043), the value of a written `-O` (#3044), and a stream read through a `<(...)` (#3045).
 """
+import ast
 import contextlib
 import itertools
+import os
 import re
 import secrets
 import unittest
@@ -96,6 +100,24 @@ def under(text, digits="0c"):
         with nonce(digit):
             found.add(marks(text))
     return found
+
+
+def readings(text):
+    """(the job's marks, the rule's reading ALONE -- the job's floor taken out -- and the job's with the rule off)."""
+    job = alone = before = ""
+    for shell in SHELLS:
+        step = [wg.Step("step", text, shell)]
+        job += "R" if wg.job_defects(step) else "C"
+        with mock.patch.object(wg, "beside", lambda read: (read(),) * 2):
+            alone += "R" if wg.job_defects(step) else "C"
+        with words.as_before():
+            before += "R" if wg.job_defects(step) else "C"
+    return job, alone, before
+
+
+RULED = ("RRRRR", "RRRRR", "CCCCC")         # the rule reads it; with the rule off it is CLEAN, as it is on `main`
+FLOOR = ("RRRRR", "CCCCC", "RRRRR")         # `main` reports it and the rule's reading alone does not: the floor's
+EITHER = ("RRRRR", "RRRRR", "RRRRR")
 
 
 def argv(text):
@@ -337,6 +359,9 @@ class TestAValueTheWordMayOwe(unittest.TestCase):
         # ... and the search goes on past it: behind the NAME `-$i` may owe, the long word is one parameter more.
         self.assertEqual(["n", "P"], texts(wo._operand_past(argv("sh f -$i n --flag 'P'"), 2, True)))
         self.assertEqual(["n"], texts(wo._operand_past(argv("sh f -$i n --flag 'P'"), 2)))      # where the shell parses: refused
+        # No word there is refused, in any reading: `-o bogus` is the FILE's to read, and the walk goes on past it.
+        self.assertEqual(["a", "P"], texts(wo._operand_past(argv("sh w.sh -o$X bogus a 'P'"), 2, True)))
+        self.assertEqual([], texts(wo._operand_past(argv("sh w.sh -o$X bogus a 'P'"), 2)))
 
 
 class TestATildeWord(unittest.TestCase):
@@ -369,7 +394,7 @@ class TestATildeWord(unittest.TestCase):
             with self.subTest(word=word):
                 self.assertEqual(CLEAN, marks("HOME=-c\nsh %s %s\n" % (word, P)))
                 self.assertFalse(slots._value(argv("sh " + word)[1]))
-        for word in ("~", "~+", "~-", "~1", "~+2", "~-0"):
+        for word in ("~", "~+", "~-", "~1", "~+2", "~-0", "~10", "~+12"):       # a directory of the stack, however deep
             with self.subTest(word=word):
                 self.assertTrue(slots._value(argv("sh " + word)[1]))
 
@@ -384,6 +409,10 @@ class TestATildeWord(unittest.TestCase):
         # and the other way: the word only the value reading weighs. Truth: runs (`sh -x -c 'P'`).
         self.assertEqual(BOTH, marks("X=-x\nHOME=-c\nsh $X ~ %s\n" % P))
         self.assertEqual(["~", "P"], texts(slots._reopened(argv("sh $X ~ 'P'")[2:])))
+        # ... and PAST the first operand a tilde may spell an option, as `$Y` may there: the words behind it are
+        # weighed. Unmeasured: a FILE that hands its parameters to a shell (`w.sh` an `exec sh "$@"`) would run `P`.
+        self.assertEqual(["./f", "P"], texts(slots._reopened(argv("sh $X ./f ~ 'P'")[2:])))
+        self.assertEqual(RULED, readings("sh $X ./f ~ %s\n" % P))
         # A `$` word's stdin, after a value: `main` took the tilde for an operand, which leaves stdin the program.
         # Each pass's walk keeps that answer; read as a value alone the tilde is passed, and the `-c` takes it away.
         # Truth: fetched only (the tilde is a directory).
@@ -433,11 +462,14 @@ class TestAFetcherHandedAnExpansion(unittest.TestCase):
 
 
 class TestBesideNeverInstead(unittest.TestCase):
-    """Each new reading stands beside `main`'s: its two walks past the options, kept here as they stood on
-    13cdb9f7, find nothing the search does not, and their operand comes first."""
+    """Each new reading stands beside `main`'s: its two walks past the options and its search for the cluster, kept
+    here as they stood on `main`, find nothing the rule's do not, and their words come first -- and with the rule
+    off (`as_before`) each reader IS `main`'s, word for word."""
 
     WORDS = ("-c", "-e", "-x", "-o", "-O", "-co", "-oc", "-$X", "-c$X", "-$Xo", "-o$X", "-$foo", "-$(echo o)", "+$X", "--norc",
              "--", "-", "errexit", "bogus", "extglob", "$Y", "err$Z", "./f", "P", "-K", "-cK")
+    # The words a walk turns on: one that owes, one that may, one that refuses, the ends of the options, a NAME, none.
+    TURNS = ("-o", "-co", "-$X", "-$Xo", "-$foo", "-$(echo o)", "--norc", "--", "errexit", "bogus", "$Y", "P")
 
     @staticmethod
     def _mains_past(words_, at, refused=None):
@@ -485,37 +517,90 @@ class TestBesideNeverInstead(unittest.TestCase):
     def _at(words_, place):
         return [] if place is None or place >= len(words_) else [words_[place]]
 
+    @staticmethod
+    def _mains_after_dash_c(words_, plus=True, start=1):
+        past, again = TestBesideNeverInstead._mains_past, TestBesideNeverInstead._mains_after_dash_c
+        for position in range(start, len(words_)):          # `_after_dash_c` on 837228ef, word for word
+            token = words_[position]
+            if token == "--":
+                break
+            if token[:1] in ("-", "+" if plus else "-") and token[:2] not in ("--", "++") and words.spells(token, "c"):
+                found = past(words_, position)
+                if "c" not in words.written(token):
+                    found = found + [word for word in again(words_, plus, position + 1) if not any(word is seen for seen in found)]
+                if token[0] == "-":
+                    return found
+                return found + [word for word in again(words_, False) if not any(word is seen for seen in found)]
+        return []
+
     def test_the_walks_find_what_mains_found_and_mains_first(self):
-        # Every run of one, two and three of the words behind each cluster, under a shell whose refusals are
-        # measured and one whose are not. Each word is read once, as the reader hands it on, and stands in every
-        # argv it is part of: a word's reading does not depend on its neighbours. The search's first part
-        # (`_mains_operand`) is `main`'s walk word for word but for the refusal by NAME it asks, which rule 2 reads
-        # from less of the word: with that one question swapped in, the same operand or none for every one of them.
+        # Every run of one and two of the words behind each cluster, and every run of three of the words a walk turns
+        # on, under a shell whose refusals are measured and one whose are not. Each word is read once, as the reader
+        # hands it on, and stands in every argv it is part of: a word's reading does not depend on its neighbours.
+        # The search's first part (`_mains_operand`) is `main`'s walk word for word but for the refusal by NAME it
+        # asks, which rule 2 reads from less of the word: with that one question swapped in, the same operand or none
+        # for every one of them. And with the rule off, each walk hands on what `main`'s did and nothing else.
         read = {word: argv("sh " + word)[1] for word in self.WORDS}
         # `-c$foo`: `main` counted the two `o`s of the name, so its operand is one this rule's own reading never reaches.
         clusters = [argv("sh " + cluster)[1] for cluster in ("-c", "-c$X", "-c$foo", "-$X", "-$(echo o)", "-co")]
         self.assertEqual("-$(...)", shell_reader.readable(read["-$(echo o)"]))        # a lifted word, as the reader hands it on
         count = 0
         for shell in ("sh", "zsh"):
-            for size in (1, 2, 3):
-                for tail in itertools.product(self.WORDS, repeat=size):
+            for size, pool in ((1, self.WORDS), (2, self.WORDS), (3, self.TURNS)):
+                for tail in itertools.product(pool, repeat=size):
                     for cluster in clusters:
                         count += 1
                         self._holds([shell, cluster] + [read[word] for word in tail])
-        self.assertEqual(2 * 6 * (26 + 26 ** 2 + 26 ** 3), count)
+        self.assertEqual(2 * 6 * (26 + 26 ** 2 + 12 ** 3), count)
 
     def _holds(self, words_):
         mains = self._mains_past(words_, 1)
         found = wo._past_options(words_, 1)
         self.assertEqual(mains, found[:len(mains)], texts(words_))
         self.assertEqual(self._mains_past(words_, 1, wo._refused_name),
-                         self._at(words_, wo._mains_operand(words_, 1, False, False)), texts(words_))
+                         self._at(words_, wo._mains_operand(words_, 1, False, False, {})), texts(words_))
+        with words.as_before():                 # the rule off: `main`'s walk and no other
+            self.assertEqual(mains, wo._past_options(words_, 1), texts(words_))
         for past in (False, True):
             mains = self._mains_operand(words_, 1, past)
             found = wo._operand_past(words_, 1, past)
             self.assertEqual(mains, found[:len(mains)], (texts(words_), past))
             self.assertEqual(self._mains_operand(words_, 1, past, wo._refused_name),
-                             self._at(words_, wo._mains_operand(words_, 1, past, True)), (texts(words_), past))
+                             self._at(words_, wo._mains_operand(words_, 1, past, True, {})), (texts(words_), past))
+            with words.as_before():
+                self.assertEqual(mains, wo._operand_past(words_, 1, past), (texts(words_), past))
+
+    def test_the_search_for_the_cluster_hands_on_mains_words_first(self):
+        # `_after_dash_c` against `main`'s, which read a row of words that may each be the cluster by calling itself:
+        # with the rule off the same words in the same order, each the same object; with it on, those first.
+        pool = [argv("sh " + word)[1] for word in ("-c", "+c", "-x", "-$X", "+$X", "-$(echo x)", "-o", "--", "errexit", "$Y", "./f", "P")]
+        chain = [pool[3], pool[5], pool[4], pool[0], pool[8], pool[11]]        # `-$X`, `-$(echo x)`, `+$X`, `-c`, a NAME, `P`
+        count = more = 0
+        for size, among in ((1, pool), (2, pool), (3, pool), (4, chain)):
+            for tail in itertools.product(among, repeat=size):
+                words_ = ["sh"] + list(tail)
+                with words.as_before():
+                    mains = self._mains_after_dash_c(words_)
+                    self.assertEqual(list(map(id, mains)), list(map(id, ws._after_dash_c(words_))), texts(words_))
+                found = ws._after_dash_c(words_)
+                self.assertEqual(list(map(id, mains)), list(map(id, found[:len(mains)])), texts(words_))
+                self.assertEqual(len(found), len(set(map(id, found))), texts(words_))       # each word once
+                count, more = count + 1, more + (len(found) > len(mains))
+        self.assertEqual((12 + 12 ** 2 + 12 ** 3 + 6 ** 4, True), (count, more > 400))       # 527: the rule's words are not idle
+        # `X=x; sh -$X ./a -c 'P'`: `main` read on past the word and found `P`; the rule's reading finds `./a` first.
+        self.assertEqual(["P", "./a"], texts(ws._after_dash_c(argv("sh -$X ./a -c 'P'"))))
+        # A `+` cluster that writes its `c` ends the search, and the `-` one after it is read too, as `main` read it
+        # (#3019): `sh +c P -c Q` runs `P`, and a FILE may run `Q`.
+        for rule in (False, True):
+            with self.subTest(rule=rule), (contextlib.nullcontext() if rule else words.as_before()):
+                self.assertEqual(["P", "Q"], texts(ws._after_dash_c(argv("sh +c P -c Q"))))
+
+    def test_the_first_pass_counts_the_values_as_main_counted_them(self):
+        # `main`'s walk for a value counted an `o` or `O` in a word's TEXT, a name's letters among them, and the first
+        # pass does still: `-$FOO` owes two there, so `$Y` is the value it finds. Counted by what is written, the
+        # walk would end at `./a` -- one answer of `main`'s fewer.
+        value, found = ws._candidates(argv("sh -$FOO ./a ./b $Y 'P'"))
+        self.assertEqual(("$Y", ["P"]), (str(value), texts(found)))
 
     def test_the_two_walks_part_at_a_long_word_of_one_dash_as_mains_did(self):
         # `main`'s two walks differ in one thing: to the first a long option spelled with ONE dash is its letters,
@@ -543,16 +628,242 @@ class TestBesideNeverInstead(unittest.TestCase):
         twice = argv("sh -$X P P")
         self.assertEqual(["P", "P"], texts(wo._past_options(twice, 1)))
 
+    def test_a_row_of_such_words_is_read_in_a_loop_and_each_word_once(self):
+        # Five thousand words that may each be the cluster: a loop, where `main`'s search called itself once a word
+        # and ran out of stack at a thousand (`sh -$(true) -$(true) ...`, a RecursionError out of the guard).
+        self.assertEqual(["P"], texts(ws._after_dash_c(["sh"] + ["-$X"] * 5000 + ["P"])))
+        marker = argv("sh -$(true)")[1]
+        with words.as_before():
+            self.assertEqual(["P"], texts(ws._after_dash_c(["sh"] + [marker] * 5000 + ["P"])))
+
+        # ... and for the whole JOB twice the words is twice the steps: the search is asked for once a stage,
+        # however many scripts the stage hands on (`workflow_forms.flattened`), and each walk reads a word once --
+        # the first operand a cluster's walk reaches too, kept for every word (`_first_place`), where a row of
+        # such words reaches none. (`sh` and two hundred `-$X errexit` took 178 s before this; each count below
+        # was the square of the words.)
+        def steps(text):
+            asked = {"walks": 0, "searches": 0}
+            after, strings = wo._after, ws._strings
+
+            def walk(*args):
+                asked["walks"] += 1
+                return after(*args)
+
+            def search(*args):
+                asked["searches"] += 1
+                return strings(*args)
+            with mock.patch.object(wo, "_after", walk), mock.patch.object(ws, "_strings", search):
+                wg.job_defects([wg.Step("step", text, None)])
+            return asked
+        for shape in (lambda n: "sh" + " -$X errexit" * n + " %s\n" % P,      # a NAME behind each word
+                      lambda n: "sh" + " -$X" * n + "\n",                     # no operand at all
+                      lambda n: "sh" + " -$X" * n + " -K %s\n" % P):         # a word the shell refuses
+            with self.subTest(row=shape(1)):
+                small, large = steps(shape(20)), steps(shape(40))
+                self.assertEqual(small["searches"], large["searches"])
+                self.assertLess(large["walks"], 2.1 * small["walks"])
+
+    def test_the_first_operand_a_walk_reaches_is_kept_for_every_word(self):
+        # `_first_place` is `_operand_past`'s first operand, kept: asked of every word of these argvs, fresh and with
+        # one table for all, it gives the place of the word the walk hands on first, wherever `main` reaches none.
+        pool = [argv("sh " + word)[1] for word in ("-c", "-o", "-co", "-$X", "-$foo", "-$Xo", "-$(echo o)", "--norc", "--", "-",
+                                                    "errexit", "$Y", "P", "-K", "-login")]
+        asked = 0
+        for size in (1, 2, 3):
+            for tail in itertools.product(pool, repeat=size):
+                words_ = ["bash"] + list(tail)
+                firsts: dict = {}
+                for at in range(1, len(words_)):
+                    if words_[at][:1] not in ("-", "+") or words_[at] in ("-", "--") or words_[at][:2] == "--" or \
+                            wo._mains_operand(words_, at, False, True, {}) is not None:
+                        continue
+                    found = wo._operand_past(words_, at)
+                    for table in ({}, firsts):
+                        place = wo._first_place(words_, at, table)
+                        self.assertIs(found[0] if found else None, None if place is None else words_[place], texts(words_))
+                    asked += 1
+        self.assertGreater(asked, 1000)
+        # ... and it is the one a `-c` cluster's `$Y` is asked for where `main` reaches none: `-$foo` owed `main` two
+        # words, by the name's letters, and writes no `o` (`foo=x; sh -c -$foo $Y P` with `Y` empty runs `P`).
+        self.assertEqual(3, wo._value_after_dash_c(argv("sh -c -$foo $Y 'P'"), 1, {}, {}))
+        with words.as_before():
+            self.assertIsNone(wo._value_after_dash_c(argv("sh -c -$foo $Y 'P'"), 1, {}, {}))
+
     def test_the_words_after_a_value_are_mains_and_more(self):
-        # `_reopened` against `main`'s formula (13cdb9f7), over every run of four of these words.
+        # `_reopened` against `main`'s formula (13cdb9f7), over every run of three of these words and every run of
+        # four of the ones it turns on: `main`'s words first, and with the rule off those and no other.
         pool = ("-x", "pipefail", "~", "~1", "$Y", "-$Y", "x$Y", "./f", "P", "--", "$(echo -c)")
-        for rest_text in itertools.product(pool, repeat=4):
-            rest = argv("sh $V " + " ".join(rest_text))[2:]
-            end = next((k for k, after in enumerate(rest, 1) if not slots._before_operand(after)), len(rest))
-            more = next((k for k in range(end, len(rest)) if slots._may_spell_option(rest[k])), len(rest))
-            mains = rest[:end] + rest[more + 1:]
-            found = slots._reopened(rest)
-            self.assertEqual(mains, found[:len(mains)], rest_text)
+        more_than_mains = 0
+        for size, among in ((3, pool), (4, ("-x", "~", "$Y", "-$Y", "./f", "P", "--"))):
+            for rest_text in itertools.product(among, repeat=size):
+                rest = argv("sh $V " + " ".join(rest_text))[2:]
+                end = next((k for k, after in enumerate(rest, 1) if not slots._before_operand(after)), len(rest))
+                more = next((k for k in range(end, len(rest)) if slots._may_spell_option(rest[k])), len(rest))
+                mains = rest[:end] + rest[more + 1:]
+                found = slots._reopened(rest)
+                self.assertEqual(mains, found[:len(mains)], rest_text)
+                with words.as_before():
+                    self.assertEqual(list(map(id, mains)), list(map(id, slots._reopened(rest))), rest_text)
+                more_than_mains += len(found) > len(mains)
+        self.assertGreater(more_than_mains, 500)        # the tilde's second reading is not idle
+
+
+class TestWhatMainReportedIsReported(unittest.TestCase):
+    """The floor (`workflow_guard.job_defects`, `workflow_option_words.beside`).
+
+    The rule hands the guard's readers MORE -- strings, candidates, a first word -- and a reader handed more may
+    choose a quieter reading of the step: a string that only may exist is the program, so the heredoc is data; a
+    candidate is weighed, so the dynamic string behind it is not. An independent pass over the first build of this
+    found thirteen such shapes, 122 of its 64,535 generated steps: `main` reported each and the build read it CLEAN.
+    Mending each reader would be #2858 again, so the guarantee is structural. The rule has ONE switch (`ruled`), every
+    changed reader answers by the rule through it and with it off answers as `main` did; a job in which the rule
+    answered anything is read both ways, `main`'s findings first and whole and the rule's beside them. What `main`
+    reported is reported, whatever a reader makes of the rule's words."""
+
+    D = '"$(echo "$PRE" %s)"' % P
+    FOUND = (
+        # A string that only MAY exist replaces the shell's own reading of its stdin.
+        "curl -fsSLo \"$Y\" https://example.test/tool\necho \"%s  $Y\" | sha256sum -c\nsh -s$X \"$Y\" %s" % ("0" * 64, BODY),
+        'bash -$OPTS "$SCRIPT" <<EOF\n$SETUP\nEOF\n',
+        "echo \"$PRE\" %s | sh -$X \"$Y\"\n" % P,
+        # A quiet stdin hand-off speaks before the loud reason of the `-c` string.
+        "$CMD -${X:-c} %s <<'EOF'\necho hi\nEOF\n" % P,
+        "sh $V %s -$X \"$A\" <<'EOF'\necho hi\nEOF\n" % P,
+        # Stdin "is the program", so the printer of a FILE is not weighed.
+        "sh -$X <(echo \"$PRE\" %s)\n" % P,
+        # The second walk ends at the first word that MAY spell `c` among a FILE's parameters.
+        "bash w.sh -- -$X ./f2 -c %s\n" % P,
+        # A candidate, or a new first word, stands where the dynamic program was reported.
+        "sh -${X:-c} %s\n" % D,
+        "sh ~ -c %s\n" % D,
+        "sh -$X errexit $Y -c %s\n" % D,
+        "CMD=sh\n%s$CMD \"$@\" -$X '~'\n" % GET,
+        # ... and the mark `workflow_annotate` withdraws from a `$CMD` whose strings are no longer all plain: the
+        # one row of 36,000 my own fuzz lost (seed 2890), ruled documented (Krab 2423) and given back here.
+        "CMD=sh\n$CMD -$*o -$@K '%s; %s' %s\n" % (CHECK, USE, P),
+    )
+
+    def test_a_step_main_reported(self):
+        # RED before the floor: every one read CLEAN under every setting (the second, under three of the five).
+        for text in self.FOUND + ("bash -c -$X sh foo " + BODY, "sh -$X - \"$A\" -c %s\n" % self.D):
+            with self.subTest(text=text):
+                self.assertEqual("RRRRR", marks(text)[0])
+
+    def test_which_reading_reports_it(self):
+        # The floor's rows: the rule's reading alone does not report them, `main`'s does, the job does.
+        for text in self.FOUND[1:]:
+            with self.subTest(text=text):
+                self.assertEqual(FLOOR, readings(text))
+        self.assertEqual(("RRRRR", "CCCRR", "RRRRR"), readings(self.FOUND[0]))
+        # Two of the thirteen the rule's own reading keeps now. `bash -c -$X sh foo <<'EOF'`: the strings were joined
+        # into `sh foo`, a shell handed a FILE; read apart (`workflow_programs._details`), `main`'s `sh` reads the body.
+        self.assertEqual(EITHER, readings("bash -c -$X sh foo " + BODY))
+        # `sh -$X - "$A" -c "$(...)"`: `"$A"` stood before the dynamic string `main` found, and one reader weighs the
+        # first alone; `main`'s words stand first now (`_after_dash_c`).
+        self.assertEqual(EITHER, readings("sh -$X - \"$A\" -c %s\n" % self.D))
+
+    def test_with_the_rule_off_each_part_reads_as_main_read_it(self):
+        # One row for each answer a reader owes the rule (each `ruled` in the scripts): reported by the rule, and
+        # CLEAN with it off -- as on `main`, whose own tree reads every one of them CLEAN. A reader that ignored the
+        # switch would report its row with the rule off. The whole of it is measured on the forge against `main`'s
+        # tree, row for row and finding for finding, over every row set held (the PR's body has the counts).
+        for text in ("sh -$X %s\n" % P,                                    # a reference in a word (`_spans`)
+                     "sh ~ %s\n" % P,                                      # a tilde is a value (`_value`)
+                     "sh $X ~ %s\n" % P,                                   # ... before the operand (`_before_operand`)
+                     "sh $X ./f ~ %s\n" % P,                               # ... and past it (`_may_spell_option`)
+                     "sh -c -$(echo o) errexit %s\n" % P,                  # a NAME a lifted word may owe (`_may_be_name`)
+                     "bash -c$(echo O)o extglob errexit %s\n" % P,         # a refusal read before the expansion (`_refused_name`),
+                     "sh -c$(true)o bogus %s\n" % P,                       # ... which `main` read from the whole word
+                     "wget $X %s | sh\n" % URL):                           # a wget that may stream (`_parse_fetch`)
+            for digit in "0c":
+                with self.subTest(text=text, digit=digit), nonce(digit):
+                    self.assertEqual(RULED, readings(text))
+
+    def test_mains_findings_stand_first_and_whole(self):
+        # Two steps: the first only the rule reports, the second `main` reports too. The job's findings are `main`'s,
+        # each as `main` worded it and in its order, then the rule's -- whatever order the steps stand in.
+        steps = [wg.Step("one", "sh -$X 'curl -fsSL https://example.test/b.sh | sh'\n", None),
+                 wg.Step("two", "curl -fsSL https://example.test/a.sh | sh\n", None)]
+        with words.as_before():
+            before = wg.job_defects(steps)
+        found = wg.job_defects(steps)
+        self.assertEqual((["two"], ["two", "one"]), ([name for name, _why in before], [name for name, _why in found]))
+        self.assertEqual(before, found[:1])
+        self.assertIn("b.sh", found[1][1])
+        # Inside the switch the job is `main`'s own: read once, and no reading of the rule's beside it.
+        with words.as_before(), mock.patch.object(wg, "_job_defects", wraps=wg._job_defects) as passes:
+            wg.job_defects(steps)
+        self.assertEqual(2, passes.call_count)
+
+    def test_a_job_is_read_twice_only_where_the_rule_answered(self):
+        # The price of the floor: the two passes again, for a job that holds a word the rule answers about -- and
+        # nothing for any other, a `$` in it or not.
+        for text, passes in (("%s\n" % PIPE, 2), ('echo "$X"\n%s\n' % PIPE, 2), ('curl -fsSL "$URL" | sh -s -- "$A"\n', 2),
+                             ('sh -c "$X" -$Y\n', 2),                     # past the string: a parameter, never asked
+                             ("sh -$X %s\n" % P, 4), ("sh ~ %s\n" % P, 4), ("wget $X %s | sh\n" % URL, 4),
+                             ("curl -fsSL -o$OUT %s\n" % URL, 4)):           # asked, though the answer is `main`'s
+            with self.subTest(text=text), mock.patch.object(wg, "_job_defects", wraps=wg._job_defects) as read:
+                wg.job_defects([wg.Step("step", text, None)])
+                self.assertEqual(passes, read.call_count)
+
+    def test_the_switch(self):
+        self.assertEqual([True, False, False], [words.ruled(), words.ruled(False), words.ruled("")])
+        with words.as_before():
+            self.assertEqual([False, False], [words.ruled(), words.ruled(True)])
+            with words.as_before():
+                self.assertFalse(words.ruled())
+            self.assertFalse(words.ruled())                                 # the inner one's end leaves the outer on
+        self.assertTrue(words.ruled())
+        with self.assertRaises(KeyError), words.as_before():                # ... and so does an error
+            raise KeyError
+        self.assertTrue(words.ruled())
+
+    def test_a_reading_is_read_both_ways_where_the_rule_answered_in_it(self):
+        asked = []
+
+        def read(answer=True):
+            asked.append(words.ruled(answer))
+            return [asked[-1]]
+        # The rule answered: `main`'s reading first, then the rule's. Three reads asked it: on, off, never inside.
+        self.assertEqual(([False], [True]), words.beside(read))
+        self.assertEqual([True, False], asked)
+        # It answered nothing: ONE reading, the same object twice.
+        mains, found = words.beside(lambda: read(False))
+        self.assertIs(mains, found)
+        self.assertEqual([True, False, False], asked)
+        # With the rule off, one reading, `main`'s.
+        with words.as_before():
+            mains, found = words.beside(read)
+        self.assertEqual(([False], True), (mains, mains is found))
+        # A reading inside another tells that one what it heard: the outer is read both ways too, and inside its
+        # second reading the inner is read once (both of its parts are that one reading).
+        del asked[:]
+        self.assertEqual(([False, False], [False, True]), words.beside(lambda: [x for part in words.beside(read) for x in part]))
+        self.assertEqual([True, False, False], asked)
+        # A reading that raises leaves no note behind: the next reading starts unheard.
+        with self.assertRaises(KeyError):
+            words.beside(lambda: read() and {}[0])
+        mains, found = words.beside(lambda: read(False))
+        self.assertIs(mains, found)
+
+    def test_the_switch_is_read_in_one_place(self):
+        # The floor's argument: a reader's answer depends on the rule through `ruled` alone, so a reading in which
+        # `ruled` was never true IS the reading with the rule off, and needs no second one. So the switch and the
+        # note are named in the leaf alone, and read there by these three functions alone.
+        scripts = os.path.dirname(words.__file__)
+        named = {}
+        for name in sorted(os.listdir(scripts)):
+            if name.endswith(".py"):
+                with open(os.path.join(scripts, name), encoding="utf-8") as handle:
+                    tree = ast.parse(handle.read())
+                for function in [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]:
+                    used = {node.id for node in ast.walk(function) if isinstance(node, ast.Name)} & {"_OFF", "_HEARD"}
+                    used |= {node.attr for node in ast.walk(function) if isinstance(node, ast.Attribute)} & {"_OFF", "_HEARD"}
+                    if used:
+                        named[(name, function.name)] = sorted(used)
+        self.assertEqual({("workflow_option_words.py", "as_before"): ["_OFF"],
+                          ("workflow_option_words.py", "ruled"): ["_HEARD", "_OFF"],
+                          ("workflow_option_words.py", "beside"): ["_HEARD", "_OFF"]}, named)
 
 
 class TestTheLeafKnowsAReference(unittest.TestCase):
@@ -563,7 +874,14 @@ class TestTheLeafKnowsAReference(unittest.TestCase):
                             ("-x$@K", [(2, 4)]), ("-$*o", [(1, 3)]), ("-$-", [(1, 3)]), ("-$_x9o", [(1, 6)]), ("-$X$Y", [(1, 3), (3, 5)]),
                             ("-$#$X", [(3, 5)]), ("-${#X}$Y", [(6, 8)]), ("-${", [(1, 3)]), ("-$\\q", [(1, 4)]),
                             ("-$#", []), ("-$?", []), ("-$$", []), ("-$$X", []), ("-$!", []), ("-${#X}", []), ("-${#}", []), ("-e$", []),
-                            ("-$", []), ("-c", []), ("", [])):
+                            ("-$", []), ("-c", []), ("", []),
+                            # Only a `${` opens a brace to close: `${X:-{}` ends at its one `}`, and the `c` is written.
+                            ("-${X:-{}c", [(1, 8)]), ("-${X:-${Y:-{}}c", [(1, 14)]),
+                            # A length prints digits: of a name, a member, a positional, the set, a status.
+                            ("-${#X[1]}", []), ("-${#X[@]}", []), ("-${#12}", []), ("-${#@}", []), ("-${#*}", []), ("-${#?}", []),
+                            ("-${#-}", []), ("-${##}c", []), ("-${#_x9}", []),
+                            # ... and any other `${#` is the count under an operator, which prints its word: `${#+c}` is `c`.
+                            ("-${#+c}", [(1, 7)]), ("-${#:+o}", [(1, 8)]), ("-${#-o}", [(1, 7)]), ("-${#:-c}x", [(1, 8)]), ("-${#X:-c}", [(1, 9)])):
             with self.subTest(text=text):
                 self.assertEqual(spans, words._spans(text))
                 self.assertEqual(bool(spans), words.lifted(text))
@@ -590,6 +908,52 @@ class TestTheLeafKnowsAReference(unittest.TestCase):
         # bash names are ASCII letters, digits and `_`: a `$` before any other letter begins no expansion.
         self.assertEqual([], words._spans("-$" + chr(233) + "x"))
         self.assertEqual([(1, 4)], words._spans("-$Xa" + chr(233)))
+        # ... and every one of those letters begins a name and goes on one: `-$QUIET` writes no letter at all.
+        for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_":
+            with self.subTest(letter=letter):
+                self.assertEqual(["-", "-"], [words.written("-$" + letter), words.written("-$x" + letter)])
+        self.assertEqual(RULED, readings("sh -$QUIET %s\n" % P))
+
+    def test_a_marker_inside_a_reference(self):
+        # `-${X:-$(echo x)c}`: the lifted text stands inside the braces, and the word writes nothing but its `-`.
+        # (Each span cut out in turn, the second ended before the first did and the cut stepped back: `-c}`.)
+        for digit in "0c":
+            with nonce(digit):
+                word = argv("sh -${X:-$(echo x)c}")[1]
+                (start, end), (inner, inner_end) = words._spans(word)
+                self.assertTrue(start < inner < inner_end < end)
+                self.assertEqual(["-", "-"], [words.written(word), words.before(word)])
+                self.assertEqual(["-o", "-"], [words.written(argv("sh -${X:-$(echo x)}o")[1]), words.written(argv("sh -${X:-a$(echo x)b$(echo y)c}")[1])])
+
+    @staticmethod
+    def _mains_spans(word):
+        text, own = str(word), getattr(word, "markers", None)       # `_spans` on 837228ef, word for word
+        if not own and "@@" not in text:
+            return []
+        spans = set()
+        for key in own or ():
+            at = 0
+            for before in text.split(key)[:-1]:
+                spans.add((at + len(before), at + len(before) + len(key)))
+                at += len(before) + len(key)
+        for found in shell_tokens._MARK.finditer(text):
+            if shell_tokens._NONCE.match(found.group()):
+                spans.add(found.span())
+        return sorted(spans)
+
+    def test_with_the_rule_off_a_word_holds_its_markers_alone(self):
+        # `main`'s leaf, kept above: with the rule off the word is asked as `main` asked it, a reference its text.
+        for digit in "0c":
+            with nonce(digit):
+                for text in ("-$X", "-c$X", "-$cmd", "-${X:-c}", "-$(echo c)", "-$X$(echo c)e", "-${X:-$(echo x)c}", "-e", "~", "$Y", "-o$1"):
+                    word = argv("sh " + text)[1]
+                    spans = self._mains_spans(word)
+                    mains = "".join(letter for at, letter in enumerate(str(word)) if not any(a <= at < b for a, b in spans))
+                    with self.subTest(text=text, digit=digit), words.as_before():
+                        self.assertEqual(spans, words._spans(word))
+                        self.assertEqual([mains, bool(spans), "c" in mains or bool(spans)],
+                                         [words.written(word), words.lifted(word), words.spells(word, "c")])
+                    self.assertTrue(set(spans) <= set(words._spans(word)))      # ... and with it on, those and more
 
     def test_a_reference_beside_a_marker(self):
         for digit in "0c":
@@ -705,14 +1069,6 @@ class TestWhatStays(unittest.TestCase):
         self.assertEqual(CLEAN, marks("X=-qO-\nbash <(wget $X %s)\n" % URL))
         self.assertEqual(CLEAN, marks("X=-qO-\nsh < <(wget $X %s)\n" % URL))
         self.assertEqual(BOTH, marks("bash <(wget -qO- %s)\n" % URL))
-
-    def test_the_mark_the_table_withdraws(self):
-        # `workflow_annotate` resolves `CMD=sh; $CMD ...` to `sh` only where every program the statement hands a shell
-        # is plain. A string is found behind a word that holds an expansion now, so the mark is withdrawn there and
-        # the step reads as the unresolved `$CMD` it is written as. One sentence goes with the mark, the reader's
-        # "is a pattern" (`$*` is typed as a glob), which `main` gave this step: 1 step of the fuzz's 36,000 (seed
-        # 2890, `v09839`). Ruled: documented, not chased (Krab 2423). Truth: nothing, under any parent.
-        self.assertEqual(CLEAN, marks("CMD=sh\n$CMD -$*o -$@K '%s; %s' %s\n" % (CHECK, USE, P)))
 
     def test_the_first_pass_alone(self):
         # The first pass counts a check in a string it reads; the second walk counts none behind a word that may

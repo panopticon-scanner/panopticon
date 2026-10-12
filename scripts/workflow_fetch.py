@@ -12,7 +12,7 @@ from typing import cast
 import shell_reader
 from shell_reader import command
 from workflow_option_slots import _one_word, _value
-from workflow_option_words import lifted
+from workflow_option_words import lifted, ruled
 from workflow_programs import VALUE_PROGRAM, stdin_program
 
 
@@ -222,8 +222,8 @@ def _parse_fetch(tool, args, stage, piped_to):
     # (`wget $(echo -qO-) URL | sh`, `X=-qO-; wget "$X" URL | sh`; one unquoted and alone may be the
     # option and the URL both, #2889). So the response MAY leave on standard output: the stream view
     # is added where that is piped, BESIDE the file `main` reads the transfer into, which stays.
-    may_stream = tool == "wget" and any(
-        _value(operand) and (len(operands) > 1 or not _one_word(operand)) for operand in operands)
+    may_stream = ruled(tool == "wget" and any(
+        _value(operand) and (len(operands) > 1 or not _one_word(operand)) for operand in operands))
     streams = (to_stdout or may_stream) and stage.stdout_to_pipe
     if not to_stdout and directory and dest and not os.path.isabs(dest) and (
             tool == "curl" or not named):

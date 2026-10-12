@@ -22,7 +22,7 @@ import shell_reader
 from shell_text import Process
 from workflow_options import (VALUE_OPTIONS, Handed, _MAINS, _dash_c_strings, _may_be_name, _past_options,
                               _reopened, _shell_candidates, _sure_string, _value)
-from workflow_option_words import lifted, spells, written
+from workflow_option_words import beside, lifted, spells, written
 from workflow_printers import rendered
 
 
@@ -142,7 +142,7 @@ def _script(word):
     return Opaque(text)
 
 
-def _after_dash_c(argv, plus=True, start=1):
+def _after_dash_c(argv, plus=True):
     """The script operand of a shell's `-c`, wherever the flag was clustered.
 
     `sh -ec`, `bash -lc`, `bash -euc` are the ordinary CI idiom, not an
@@ -169,22 +169,51 @@ def _after_dash_c(argv, plus=True, start=1):
     `$(...)` stands in the text as a marker whose random hex may hold a `c` or none, so `sh -$(echo
     c) P` was a cluster in one parse and none in the next. A word that holds lifted text MAY spell
     `-c`, whatever the marker's letters, so its string is read in every parse -- and it may spell
-    none, so where no `c` is written in it the search goes on past it from `start` too, as it goes
-    past `-x`: both of `main`'s two readings, the second BESIDE the first (`Y=-c; sh -$(echo x) $Y
-    P` and `sh -$(echo x) w.sh -c P`, `w.sh` an `eval "$2"`, run `P`).
+    none, so where no `c` is written in it the search goes on past it too, as it goes past `-x`:
+    both of `main`'s two readings, the second BESIDE the first (`Y=-c; sh -$(echo x) $Y P` and `sh
+    -$(echo x) w.sh -c P`, `w.sh` an `eval "$2"`, run `P`).
+
+    A parameter reference is such a word too (#2889), and there `main` read on alone: so the words
+    `main` found stand FIRST and as it found them, and what the rule's reading adds after them
+    (`beside`; `X=x; sh -$X ./a -c P` hands on `P`, then `./a`).
     """
-    for position in range(start, len(argv)):
+    mains, found = beside(lambda: _strings(argv, plus))
+    seen = set(map(id, mains))
+    return mains + [word for word in found if id(word) not in seen]
+
+
+def _clusters(argv, plus):
+    """Where each word that may be the `-c` cluster stands, up to the first that WRITES its `c`
+    or a `--`, and whether one of them is signed `+`."""
+    places, signed = [], False
+    for position in range(1, len(argv)):
         token = argv[position]
         if token == "--":
             break
         if token[:1] in ("-", "+" if plus else "-") and token[:2] not in ("--", "++") and spells(token, "c"):
-            found = _past_options(argv, position)
-            if "c" not in written(token):
-                found = found + [word for word in _after_dash_c(argv, plus, position + 1) if not any(word is seen for seen in found)]
-            if token[0] == "-":
-                return found
-            return found + [word for word in _after_dash_c(argv, False) if not any(word is seen for seen in found)]
-    return []
+            places.append(position)
+            signed = signed or token[0] == "+"
+            if "c" in written(token):
+                break
+    return places, signed
+
+
+def _strings(argv, plus):
+    """`_after_dash_c` in ONE reading of the words: the operands past each word that may be the
+    cluster (`_clusters`), in their order, then -- where one is signed `+` -- those past each `-`
+    one, wherever it stands. Each word is handed on once, and walked once (`_past_options`'s
+    `walked`): a loop and no recursion, so a thousand such words are a thousand steps."""
+    places, signed = _clusters(argv, plus)
+    if signed:
+        places += _clusters(argv, False)[0]
+    found, seen = [], set()
+    walked: tuple[set, dict] = (set(), {})
+    for place in places:
+        for word in _past_options(argv, place, walked):
+            if id(word) not in seen:
+                seen.add(id(word))
+                found.append(word)
+    return found
 
 
 def candidates(argv):

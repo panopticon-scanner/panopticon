@@ -31,7 +31,7 @@ from workflow_option_slots import (_BARE as _BARE, _DEFAULT_PARAMETER as _DEFAUL
                                    _TILDE, _VALUE as _VALUE, _before_operand as _before_operand, _literal,
                                    _may_be_name, _may_spell_option as _may_spell_option, _one_word,
                                    _reopened, _value)
-from workflow_option_words import before, lifted, spells, written
+from workflow_option_words import before, lifted, ruled, spells, written
 
 
 # Set while the guard's main pass runs (`mains_answer`, #2858 round 11): every join of
@@ -240,11 +240,14 @@ def _refused_name(argv, at):
     takes, and `${X:-pipefail}` is one spelling of that. Only an `o` WRITTEN before the word's first
     expansion is read (`before`, #2889): what an expansion prints may be an `o` or an `O` of its
     own, which takes the first value, so a letter after it takes a word no text names -- `X=O;
-    bash -c${X}o extglob errexit P` runs `P`, where the written `o` was read to take `extglob`."""
+    bash -c${X}o extglob errexit P` runs `P`, where the written `o` was read to take `extglob`.
+    With the rule off (`ruled`) the word's whole text is read, as `main` read it."""
     if type(argv[0]) is not str or os.path.basename(argv[0]) not in _MEASURED_SHELLS:
         return False
-    value = at
-    for letter in before(argv[at])[1:]:
+    value, text = at, argv[at]
+    if (cut := before(text)) != text and ruled():
+        text = cut
+    for letter in text[1:]:
         value += letter in VALUE_OPTIONS
         if letter == "o" and value < len(argv) and argv[value].replace("-", "").isalpha():
             if argv[value] not in SHELL_OPTION_NAMES:
@@ -394,13 +397,15 @@ def _dash_c_strings(argv):
     return _in_every_reading(argv, lambda v: [*{id(w): w for w in _dash_c_operand(v) + _dash_c_operand(v, False)}.values()])
 
 
-def _value_after_dash_c(argv, at):
+def _value_after_dash_c(argv, at, known, firsts):
     """The index of the operand after the `-c` cluster `argv[at]` where that operand is a parameter
     expansion (`$Y`, `"$Y"`, `${Y:-}`; a `$(...)` is the dynamic program's), or None: it may be an
     option word or nothing, so the string may be a later word (`Y=-c; bash -c $Y P`, `Y=` and
-    `Y=-e` run `P`, measured; #2858 round 7), and it stands where the shell reads its options."""
-    found = _operand_past(argv, at)
-    k = next((i for i in range(at + 1, len(argv)) if found and argv[i] is found[0]), None)
+    `Y=-e` run `P`, measured; #2858 round 7), and it stands where the shell reads its options. The
+    operand is `_operand_past`'s first: `main`'s, else the first the walk reaches (`_first_place`)."""
+    place = _mains_operand(argv, at, False, True, known)
+    place = _first_place(argv, at, firsts) if place is None else place
+    k = next((i for i in range(at + 1, len(argv)) if place is not None and argv[i] is argv[place]), None)
     if k is None or not _value(argv[k]) or argv[k - 1] in ("-", "--") and _one_word(argv[k]):
         return None                             # after `-c --` a `$Y` may vanish (round 8), a member never
     return None if shell_reader.has_substitution(argv[k]) else k
@@ -517,12 +522,33 @@ def _printed(argv):
     return not interactive
 
 
+def _first_place(argv, at, firsts):
+    """The place of the first operand `_operand_past` reaches past the option word `argv[at]`, or None. Each
+    word's is decided by the words after it alone, so `firsts` keeps it for every option word walked: a run
+    of them that reaches none is walked ONCE however many clusters ask (#2889: `sh -$X -$X ...` was not)."""
+    todo = [at]
+    while todo:
+        if (k := todo[-1]) in firsts:
+            todo.pop()
+            continue
+        nexts = [n for n in _after(argv, k, False) if n < len(argv) and not (
+            argv[n].startswith("--") and argv[n] != "--" or long_option(argv, n))]  # refused after `-c`
+        if words := [n for n in nexts if n not in firsts and argv[n].startswith(("-", "+")) and argv[n] not in ("-", "--")]:
+            todo += words[::-1]
+            continue
+        firsts[todo.pop()] = next((p for n in nexts if (p := n + 1 if argv[n] in ("-", "--") else firsts.get(n, n)) is not None
+                                   and p < len(argv)), None)
+    return firsts[at]
+
+
 def _shell_candidates(argv):
     """`workflow_programs.candidates`' answer for a shell as this walk reads its option words (#2858):
     a long option's FILE is its value, and a `$Y` after a `-c` cluster may be no string. A word after
     an option word that holds an expansion may be the NAME that word owes (`may`, #2889), and is
     passed as one: `X=o; Y=-c; sh -$X errexit $Y P` runs `P`."""
     owed, may = 0, False
+    known: dict = {}
+    firsts: dict = {}
     for at, word in enumerate(argv[1:], start=1):
         if owed:
             owed -= 1
@@ -534,7 +560,7 @@ def _shell_candidates(argv):
             break                               # the options end: a program, or `-`/`--`
         elif (long := long_option(argv, at)) or word[:2] == "--":
             owed, may = long in LONG_VALUE_OPTIONS, False    # `bash -rcfile FILE $X '…'`: the FILE is its value
-        elif spells(word, "c") and ((k := _value_after_dash_c(argv, at)) is not None or "c" in written(word)):
+        elif spells(word, "c") and ((k := _value_after_dash_c(argv, at, known, firsts)) is not None or "c" in written(word)):
             if k is not None:                   # a `-c` cluster, whose string `scripts` reads -- unless it is a
                 return _after_value(argv, k)    # `$Y` (`Y=-c; bash -c $Y P`, round 7); the walk goes on past
             break                               # a word that only MAY print the `c` (#3020), as past `-x`
@@ -566,7 +592,7 @@ def _refused(argv, at):
     return letters.isalpha() and any(letter not in SHELL_OPTIONS for letter in letters)
 
 
-def _past_options(argv, at):
+def _past_options(argv, at, walked=None):
     """The first operand after `argv[at]`, the cluster that carries `-c`.
 
     Bash and dash read on through the option words after `-c` (#2332): `sh -c -e P`, `bash -c -x P`
@@ -581,9 +607,10 @@ def _past_options(argv, at):
     more (#2889): it may print an `o` or an `O` no text of it writes, so each word after it that may
     be a NAME may be its value, and the operand is then a later word -- `sh -$(echo oc) errexit P`
     and `X=o; sh -c -$X errexit P` run `P`. Those readings are walked too (`_reached`), and each
-    operand one reaches is handed on BESIDE `main`'s: more words than it found, never fewer.
+    operand one reaches is handed on BESIDE `main`'s: more words than it found, never fewer. `walked`
+    is what a caller's earlier walks of this argv read (`_reached`), which this one does not read again.
     """
-    return _reached(argv, at, False, False)
+    return _reached(argv, at, False, False, walked)
 
 
 def _operand_past(argv, at, past=False):
@@ -602,21 +629,27 @@ def _owed(word):
     return sum(letter in VALUE_OPTIONS for letter in written(word)[1:])
 
 
-def _mains_operand(argv, at, past, strict):
+def _mains_operand(argv, at, past, strict, known):
     """The place of the first operand after `argv[at]` as `main` walks the words (13cdb9f7), or None
     where it finds none: one value for each `o` or `O` in a word's TEXT, a name's letters and all,
-    and one way on from each word."""
-    while True:
+    and one way on from each word -- so the answer for a word is the answer for every word walked
+    from on the way, and `known` keeps it: a row of option words is walked once, not once each."""
+    place, trail = None, []
+    while at not in known:
+        trail.append(at)
         if not past and (_refused(argv, at) or _refused_name(argv, at)):
-            return None                         # the shell exits before the program
+            break                               # the shell exits before the program
         at += 1 + (argv[at][:2] != "--" and sum(letter in VALUE_OPTIONS for letter in argv[at][1:]))
         if at >= len(argv) or not past and (
                 argv[at].startswith("--") and argv[at] != "--" or strict and long_option(argv, at)):
-            return None                         # a long option after `-c`: refused
-        if argv[at] in ("-", "--"):
-            return at + 1 if at + 1 < len(argv) else None
-        if not argv[at].startswith(("-", "+")):
-            return at
+            break                               # a long option after `-c`: refused
+        if argv[at] in ("-", "--") or not argv[at].startswith(("-", "+")):
+            place = at + (argv[at] in ("-", "--"))
+            break
+    else:
+        place = known[at]
+    known.update(dict.fromkeys(trail, place if place is not None and place < len(argv) else None))
+    return known[trail[0]] if trail else place
 
 
 def _after(argv, at, past):
@@ -635,16 +668,19 @@ def _after(argv, at, past):
     return nexts
 
 
-def _reached(argv, at, past, strict):
+def _reached(argv, at, past, strict, walked=None):
     """The operands a walk past the option word `argv[at]` reaches: `main`'s FIRST, found as it
     found it (`_mains_operand`), then each one a reading of the words by what is WRITTEN in them
     reaches (`_after`), every reading walked and each word read once however many reach it. A `-`
     or `--` ends the options and hands on the word after it; a long word is refused where the shell
     parses (`--x`, and where `strict` either spelling of a long option), and is one more parameter
-    past an operand (`past`). An operand is handed on once, by its PLACE."""
-    mains = _mains_operand(argv, at, past, strict)
+    past an operand (`past`). An operand is handed on once, by its PLACE. Every word is read ONCE
+    however long the argv is, in a loop; and `walked`, where a caller walks one argv from several
+    words, is the places its earlier walks read, each handed on there, and what `main`'s walk
+    found from each: a row of two hundred such words costs two hundred steps, not their square."""
+    seen, known = (set(), {}) if walked is None else walked
+    mains = _mains_operand(argv, at, past, strict, known)
     places: dict = {} if mains is None else {mains: None}
-    seen: set = set()
     todo = _after(argv, at, past)[::-1]
     while todo:
         k = todo.pop()

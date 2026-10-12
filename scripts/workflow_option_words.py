@@ -26,28 +26,97 @@ the four that print digits alone -- the count `$#`, the status `$?`, the process
 read them. An ANSI-C word no text spells reaches a reader as a `$`, a backslash and what was
 written after them (`shell_quote.ansi_c`): to the word's end it is such a reference too.
 
+That rule has ONE switch, and it is here (`ruled`). Every reader the rule changed asks it before
+it answers by the rule, so with it off (`as_before`) each of them answers word for word as `main`
+did; and an answer the rule gave is noted, so a caller can read BOTH ways wherever one was given
+and neither where none was (`beside`). The guard does, for the whole job: what `main` reported is
+reported still, whatever a reader makes of the words the rule finds.
+
 Below every reader that asks it: it reads the word it is handed and those two patterns of
 `shell_tokens`, and nothing else.
 """
 
+import contextlib
+import contextvars
+import re
+
 import shell_tokens
+
+# Set while the readers answer as they did before the rule (`as_before`), and the note of the
+# reading in hand: whether the rule has answered in it (`ruled`, `beside`).
+_OFF: contextvars.ContextVar[bool] = contextvars.ContextVar("as_before", default=False)
+_HEARD: contextvars.ContextVar[list | None] = contextvars.ContextVar("heard", default=None)
+
+
+@contextlib.contextmanager
+def as_before():
+    """While this holds, the rule answers nothing (`ruled`): a word holds no reference, owes no
+    NAME, a tilde is the operand `main` read it as and no `wget` may stream -- every reader as
+    `main` had it."""
+    token = _OFF.set(True)
+    try:
+        yield
+    finally:
+        _OFF.reset(token)
+
+
+def ruled(answer=True):
+    """Whether the rule answers here: `answer`, and never while `as_before` holds. A reader asks
+    EVERY answer it owes the rule through this and reads the switch nowhere else, so where this
+    was never true a reading is, step for step, the one it is with the rule off; and where it was,
+    the reading in hand is told (`beside`)."""
+    if _OFF.get() or not answer:
+        return False
+    heard = _HEARD.get()
+    if heard is not None:
+        heard[0] = True
+    return True
+
+
+def beside(read):
+    """(`read()` as `main` answers it, `read()` under the rule): the SAME object twice where the
+    rule answered nothing in it, since that reading is `main`'s; else `read()` once more with the
+    rule off (`as_before`), for a caller to keep `main`'s answer first and whole and the rule's
+    beside it. A reading inside another tells that one what it heard."""
+    if _OFF.get():
+        found = read()
+        return found, found
+    outer, heard = _HEARD.get(), [False]
+    token = _HEARD.set(heard)
+    try:
+        found = read()
+    finally:
+        _HEARD.reset(token)
+    if not heard[0]:
+        return found, found
+    if outer is not None:
+        outer[0] = True
+    with as_before():
+        return read(), found
+
 
 # The characters of a parameter's NAME: ASCII letters and `_`, and digits after the first.
 _LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_"
 
+# A length or a count, which prints digits alone: `${#}`, `${#X}`, `${#X[1]}`, `${#1}`, `${#@}`,
+# `${#?}`. Any other `${#...}` is the count `$#` under an operator, and prints the operator's
+# word: `${#+c}` is `c`.
+_LENGTH = re.compile(r"\$\{#(?:[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]{}]*\])?|[0-9]+|[@*#?$!-])?\}")
+
 
 def _references(text):
     """Where each parameter reference stands in `text`: (start, end) pairs. `$NAME`, `$1`, `$@`,
-    `$*` and `$-`; `${...}` to its closing brace, a nested one counted; a `$` and a backslash to
-    the word's end. None for a `$` that begins no expansion (`-e$`) or one that prints digits
-    alone (`$#`, `$?`, `$$`, `$!`, `${#X}`)."""
+    `$*` and `$-`; `${...}` to its closing brace, a `${` nested in it counted and a bare `{` not,
+    which closes nothing (`${X:-{}` ends at its one `}`); a `$` and a backslash to the word's end.
+    None for a `$` that begins no expansion (`-e$`) or one that prints digits alone (`$#`, `$?`,
+    `$$`, `$!`, and a length, `_LENGTH`)."""
     at = text.find("$")
     while at >= 0:
         end, after = at + 1, text[at + 1:at + 2]
-        if after == "{" and text[at + 2:at + 3] != "#":
+        if after == "{" and not _LENGTH.match(text, at):
             depth = 0
             while end < len(text):
-                depth += (text[end] == "{") - (text[end] == "}")
+                depth += (text[end - 1:end + 1] == "${") - (text[end] == "}")
                 end += 1
                 if not depth:
                     break
@@ -64,12 +133,13 @@ def _references(text):
 
 
 def _spans(word):
-    """Where each marker and each parameter reference stands in `word`: (start, end) pairs, in
-    order."""
+    """Where each marker and, by the rule (`ruled`), each parameter reference stands in `word`:
+    (start, end) pairs, in order. A marker may stand INSIDE a reference (`${X:-$(...)}`)."""
     text, own = str(word), getattr(word, "markers", None)
-    if not own and "@@" not in text and "$" not in text:
+    references = list(_references(text)) if "$" in text else []
+    if not own and "@@" not in text and not references:
         return []
-    spans = set(_references(text))
+    spans = set(references) if ruled(references) else set()
     for key in own or ():
         at = 0
         for before in text.split(key)[:-1]:
@@ -93,7 +163,7 @@ def written(word):
     text, kept, at = str(word), [], 0
     for start, end in _spans(word):
         kept.append(text[at:start])
-        at = end
+        at = max(at, end)                       # one inside another ends no later than it
     return "".join(kept) + text[at:]
 
 

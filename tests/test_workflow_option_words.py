@@ -552,9 +552,9 @@ class TestTheLeaf(unittest.TestCase):
         with open(words.__file__, encoding="utf-8") as source:
             tree = ast.parse(source.read())
         # It reads `shell_tokens` for a marker's shape and this process's nonce, and nothing that asks it: no
-        # module it reaches is one of the workflow's.
-        self.assertEqual(["import shell_tokens"], [ast.unparse(node) for node in ast.walk(tree)
-                                                   if isinstance(node, (ast.Import, ast.ImportFrom))])
+        # module it reaches is one of the workflow's. The rule's switch (#2889) is the standard library's.
+        self.assertEqual(["import contextlib", "import contextvars", "import re", "import shell_tokens"],
+                         [ast.unparse(node) for node in ast.walk(tree) if isinstance(node, (ast.Import, ast.ImportFrom))])
         reached, queue = set(), ["shell_tokens"]
         while queue:
             name = queue.pop()
@@ -570,10 +570,12 @@ class TestTheLeaf(unittest.TestCase):
                         queue.append(node.module)
         self.assertIn("shell_tokens", reached)
         self.assertEqual([], sorted(name for name in reached if name.startswith("workflow")))
-        self.assertEqual(["_references", "_spans", "before", "written", "lifted", "spells"],       # two of #2889's
+        self.assertEqual(["as_before", "ruled", "beside",                 # #2889's switch, and two of its readers
+                          "_references", "_spans", "before", "written", "lifted", "spells"],
                          [node.name for node in tree.body if isinstance(node, ast.FunctionDef)])
-        for module, names in ((wo, {"before", "lifted", "spells", "written"}), (ws, {"lifted", "spells", "written"}),
-                              (wp, {"lifted", "written"}), (workflow_fetch, {"lifted"}), (workflow_option_slots, {"lifted", "written"})):
+        for module, names in ((wo, {"before", "lifted", "ruled", "spells", "written"}), (ws, {"beside", "lifted", "spells", "written"}),
+                              (wp, {"beside", "lifted", "written"}), (workflow_fetch, {"lifted", "ruled"}),
+                              (workflow_option_slots, {"lifted", "ruled", "written"}), (wg, {"beside"})):
             with open(module.__file__, encoding="utf-8") as source:
                 imported = {alias.name for node in ast.walk(ast.parse(source.read())) if isinstance(node, ast.ImportFrom)
                             and node.module == "workflow_option_words" for alias in node.names}

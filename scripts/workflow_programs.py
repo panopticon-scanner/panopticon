@@ -65,7 +65,7 @@ from workflow_options import (SET_OPTION_NAMES as SET_OPTION_NAMES, SET_OPTIONS 
                               _before_operand as _before_operand, _may_spell_option,
                               _past_options as _past_options,
                               _refused as _refused, _refused_name as _refused_name, _value)
-from workflow_option_words import lifted, written
+from workflow_option_words import beside, lifted, written
 from workflow_options import _MAINS, _TILDE, _counted, _dash_c_strings, _stdin_walk
 from workflow_program_strings import (Opaque as Opaque, _EDGE as _EDGE, _NAME as _NAME,
                                       _SHELL_STRING as _SHELL_STRING, _added_strings as _added_strings,
@@ -224,15 +224,23 @@ def _stdin_details(argv, depth):
 
 
 def _details(argv, depth, walk):
-    """`main`'s `_stdin_details` (7e9223e6), the options and strings it reads `walk`'s (`_MAIN`, `_WALK`)."""
+    """`main`'s `_stdin_details` (7e9223e6), the options and strings it reads `walk`'s (`_MAIN`, `_WALK`).
+
+    The strings `main` found are joined as it joined them and read FIRST; a string only the
+    any-expansion rule finds is one more reading of the words, so each is read after that and
+    ALONE (`beside`, #2889): `bash -c -$X sh foo <<'EOF'` names `sh` in one reading and `foo` in
+    another, never `sh foo`, and its body is the program of the `sh` `main` read."""
     if not argv:
         return None, None, argv
     options, strings = walk
     kind, reader = options(argv, depth)
-    found = _eval_words(argv) if os.path.basename(argv[0]) == "eval" else strings(argv)
-    if found:
-        text = " ".join(getattr(t, "spelled", t) for t in found)
-        parsed = _parsed(text)
+    if os.path.basename(argv[0]) == "eval":
+        readings = [_eval_words(argv)]
+    else:
+        mains, found = beside(lambda: strings(argv))
+        readings = [mains] + [[string] for string in found if string not in mains]
+    for found in readings:
+        parsed = _parsed(" ".join(getattr(t, "spelled", t) for t in found)) if found else []
         if len(parsed) == 1 and len(parsed[0].stages) == 1:
             inner = shell_reader.command(shell_reader.acted(parsed[0].stages[0].argv, True))
             if depth >= 64:                    # bounded: past 64 strings, fail-closed
@@ -375,8 +383,8 @@ def runs_under(argv, reader, name):
     if reader and reader is not argv:
         return os.path.basename(reader[0])  # another reader names itself (`sudo sh` → `sh`)
     words = argv[1:argv.index("--")] if "--" in argv else argv[1:]
-    string = [w for w in _after_dash_c(argv, False) if sum(v is w for v in argv) == 1]
-    words = words[:next((i + 1 for i, w in enumerate(words) if string and w is string[0]), None)]
+    string = next((w for w in _after_dash_c(argv, False) if sum(v is w for v in argv) == 1), None)
+    words = words[:next((i + 1 for i, w in enumerate(words) if string is not None and w is string), None)]
     if reader and type(argv[0]) is str and not any(map(_may_spell_option, words)):
         return name                         # its own text, no word that may spell an option
     return Named(name)                      # a string, a value, a default, or no reader: both ways

@@ -139,8 +139,11 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
         region, ordinal = outer + tuple((key, n) for n in inner.get(index, ())), 0
         for position, stage in enumerate(statement.stages):
             argv, before = shell_reader.acted(stage.argv), statement.stages[:position]
-            # Asked once per stage, not per script it hands on (an `eval` chain was cubic, #2500).
-            name = _runner(argv) if argv else ""
+            # Asked once per stage, not per script it hands on (an `eval` chain was cubic, #2500) --
+            # as the runner is where the reader is the stage's own argv or none, which `runs_under`
+            # asks only whether there is one (#2889: a word that holds an expansion may hand on
+            # every word after it, and each asked again cost the square of the words).
+            name, runners = _runner(argv) if argv else "", {}
             for text in scripts(argv) + stdin_scripts(argv, stage, before, shell):
                 ordinal += 1
                 who = getattr(text, "reader", argv)     # a stdin text's READER, `()` or None
@@ -148,7 +151,13 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
                     bool(who) and stops and swallowed(stmts, index, statement, stage, analysis=analysis) is None
                     and (top or on[index] or index == last)
                     and (fails[index] or stage is statement.stages[-1]))
-                runner, who = runs_under(argv, who, name), who or argv
+                if who and who is not argv:
+                    runner = runs_under(argv, who, name)
+                else:
+                    if bool(who) not in runners:
+                        runners[bool(who)] = runs_under(argv, who, name)
+                    runner = runners[bool(who)]
+                who = who or argv
                 own = name in ("eval", "source", ".") and who is argv     # in this shell, its `-e`
                 read = flattened(
                     statements(text), gates,

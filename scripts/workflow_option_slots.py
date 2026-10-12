@@ -15,14 +15,15 @@ still run one way: the reader below it, the option grammar and its walks above.
 Since #2889 a word here may be read for what an expansion makes of it: a tilde alone is a value
 (`_TILDE`, read BESIDE `main`'s reading of it, `_reopened`), and a word after an option word that
 holds an expansion may be the NAME that word owes (`_may_be_name`, which asks the word what is
-written in it, `workflow_option_words`).
+written in it, `workflow_option_words`). Each asks the rule first (`ruled`): with it off, a tilde
+is the operand it was and no word is a NAME.
 
 Stdlib only, like everything under it.
 """
 import re
 
 import shell_reader
-from workflow_option_words import lifted, written
+from workflow_option_words import lifted, ruled, written
 
 
 # The quoted forms proven to be exactly one word (#2858 round 8, an allowlist): text, `"$X"`,
@@ -100,7 +101,7 @@ def _value(word):
     """Whether `word` is such a value, or a tilde alone (`_TILDE`); a pattern is `leads`'s to read."""
     if isinstance(word, shell_reader.Rewritten):
         return getattr(word, "lead", None) is None
-    return bool(_VALUE.fullmatch(shell_reader.readable(word)) or _TILDE.fullmatch(word))
+    return bool(_VALUE.fullmatch(shell_reader.readable(word))) or ruled(_TILDE.fullmatch(word))
 
 
 # The letters an option's value is spelled with, as every `-o` or `-O` name of
@@ -114,7 +115,7 @@ def _before_operand(word, tilde=False):
     value (`_BARE`), or a word bash expands -- a `$`, a lifted substitution,
     a pattern (`shell_reader.dynamic`) -- which may vanish or be either. A tilde alone is such a
     word where `tilde` (#2889), and the operand `main` read it as where not."""
-    return (word[:1] in ("-", "+") or bool(_BARE.fullmatch(word) or tilde and _TILDE.fullmatch(word))
+    return (word[:1] in ("-", "+") or bool(_BARE.fullmatch(word)) or tilde and ruled(_TILDE.fullmatch(word))
             or shell_reader.dynamic(word, shell_reader.has_substitution))
 
 
@@ -123,7 +124,7 @@ def _may_spell_option(word, tilde=False):
     bash expands (`shell_reader.dynamic`) that begins with `-`, a `$` or a lifted substitution, or a
     pattern or an `xargs -I` replacement (`Rewritten`). One that begins with literal text of its own
     (`x$Y`, `echo $Y`) is none. A tilde alone is one where `tilde` (#2889)."""
-    return bool(tilde and _TILDE.fullmatch(word)) or shell_reader.dynamic(word, shell_reader.has_substitution) and (
+    return tilde and ruled(_TILDE.fullmatch(word)) or shell_reader.dynamic(word, shell_reader.has_substitution) and (
         shell_reader.readable(word)[:1] in ("-", "$") or isinstance(word, shell_reader.Rewritten))
 
 
@@ -149,4 +150,4 @@ def _may_be_name(word):
     is asked: bash's `-O` takes a shopt name and zsh's `-o` one of its own, and both lists move
     with the version, so a word shaped as a name may be one."""
     text = written(word)
-    return word[:1] not in ("-", "+") and bool(_BARE.fullmatch(text) or not text and lifted(word))
+    return ruled(word[:1] not in ("-", "+") and (_BARE.fullmatch(text) or not text and lifted(word)))
