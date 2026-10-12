@@ -35,10 +35,9 @@ from shell_tokens import _Token, has_substitution, is_arm, readable, spelled
 from shell_wrappers import BUILTINS, WRAPPERS, Defaulted, Found, Rewritten, dynamic, idles, unwrap
 
 
-# Shell keywords that stand in FRONT of the command: `if curl ...; then`,
-# `while true; do /tmp/payload; done`. Statements are split on `;`, so each of
-# these arrives as the first word of the statement it introduces -- and a guard
-# that reads `if` as the command sees neither the fetch nor the use.
+# Shell keywords that stand in FRONT of the command: `if curl ...; then`, `while true; do /tmp/payload; done`.
+# Statements are split on `;`, so each of these arrives as the first word of the statement it introduces -- and a
+# guard that reads `if` as the command sees neither the fetch nor the use.
 KEYWORDS = ("if", "then", "elif", "else", "fi", "do", "done", "while", "until",
             "for", "case", "esac", "in", "!", "{", "}", "(", ")", "function",
             "()")
@@ -98,21 +97,18 @@ def _runs_builtin(argv, heads, optional):
 
 
 def _command_result(argv, optional=True, finds=False):
-    """Shared parse result for execution extraction and unread decisions: the
-    command, why it or a wrapper in front of it cannot be read (or None), and
-    the words read as wrappers, as written. A command word that is a shell's
-    default (`${X:-sh}`, `_DEFAULTS`) is read as that shell; `$` words in front
-    of a known name are dropped (`_optional`) unless `optional` is False, the
-    reading `workflow_annotate` takes to find the word a step's table resolves. Where `finds`,
-    a `find` is unwrapped as a wrapper is, into the action a fold reads (`_found`, #2935): the
-    reading `acted` answers with, and no other. A `builtin` in front of a builtin's name is read through
-    in the folds that read one so (#2665), and a shell an assignment in front may start to run nothing
-    is marked `idle` (#2648)."""
+    """Shared parse result for execution extraction and unread decisions: the command, why it or a wrapper in
+    front of it cannot be read (or None), and the words read as wrappers, as written. A command word that is a
+    shell's default (`${X:-sh}`, `_DEFAULTS`) is read as that shell; `$` words in front of a known name are
+    dropped (`_optional`) unless `optional` is False, the reading `workflow_annotate` takes to find the word a
+    step's table resolves. Where `finds`, a `find` is unwrapped as a wrapper is, into the action a fold reads
+    (`_found`, #2935): the reading `acted` answers with, and no other. A `builtin` in front of a builtin's name is
+    read through in the folds that read one so (#2665), and a shell an assignment in front may start to run
+    nothing is marked `idle` (#2648)."""
     argv = list(argv)
     heads: list[str] = []
-    # `xargs` appends words from its input to the argv behind it, so the
-    # innermost wrapper read after one (`behind`, with its argv) was read from
-    # an argv that is not the one that runs (#2227).
+    # `xargs` appends words from its input to the argv behind it, so the innermost wrapper read after one
+    # (`behind`, with its argv) was read from an argv that is not the one that runs (#2227).
     appended, behind, vanished, idle = False, None, None, False
     while argv:
         # A word that spells an assignment but for a quote or a backslash in its name or its operator is the
