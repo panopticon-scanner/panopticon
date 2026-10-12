@@ -36,6 +36,8 @@ BINDERS = ("workflow_option_slots", "workflow_options", "workflow_programs")
 # first, which #2889 turned: `HOME=-c; sh ~ 'P'` runs `P`.
 ANSWERS = (
     ("sh -c P", (False, True, False, False, True)),
+    ("sh +x P", (False, True, False, False, True)),
+    ("sh -a.b P", (False, True, False, False, True)),
     ("sh pipefail", (False, True, False, False, True)),
     ("sh interactive-comments", (False, True, False, False, True)),
     ("sh ./x.sh", (False, False, False, False, True)),
