@@ -464,9 +464,20 @@ def test_missing_effective_observation_is_not_inferred_from_config(requests):
 
 def test_probe_script_quotes_paths_as_data_and_rejects_an_incomplete_set():
     paths = ['inside"; text("not code")', "outside\\path\nline", "hard-link"]
-    script = codex_host._probe_script(paths)
+    script = codex_host._probe_script(paths, "file:///probe.mjs")
     assert json.dumps(paths) in script
     assert "ALL_TOOLS.map" in script
+    # #1622: an omission proof has to inventory every host primitive, not
+    # merely the six write-shaped names known when the original tool-policy
+    # probe landed.  Imports and MCP resources are parallel routes around the
+    # callable-tool list, so the live script measures those too.
+    assert "Object.getOwnPropertyNames(globalThis)" in script
+    for specifier in ("node:fs", "node:child_process", "node:net", "file:"):
+        assert specifier in script
+    assert "tools.list_mcp_resources" in script
+    assert "tools.list_mcp_resource_templates" in script
+    assert "tools.read_mcp_resource" in script
+    assert "server: 'panopticon_scope'" in script
     assert "tools.mcp__panopticon_scope__read_file" in script
     # #1642: the third path is the planted hard link, and a measurement missing
     # it would leave the probe's refutation row unmeasured.

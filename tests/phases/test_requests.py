@@ -220,7 +220,7 @@ class TestDelivery(unittest.TestCase):
         self.assertIsNone(mode)
         self.assertEqual("", prefix)
 
-    def test_codex_remains_return_json_until_its_family_claim_lands(self):
+    def test_codex_with_a_proven_boundary_remains_return_json(self):
         mode, _prefix = requests.delivery(
             "codex", self._evidence(hosts.PROVEN),
             "domain-panel.md", "/abs/out.json")

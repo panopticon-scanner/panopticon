@@ -325,11 +325,13 @@ of 15 launches ok, all five capabilities `proven`, and four natural read
 denials -- each a verifier's Grep over a directory, which the guard denies by
 design.
 
-**Codex (#1619)** claims the two security capabilities and nothing else, so
-every Codex role runs as `delivery: return_json` and the loop writes the file.
+**Codex (#1619, #1622)** claims the three security capabilities and nothing
+operational, while every Codex role still runs as `delivery: return_json` and
+the loop writes the file because `self_write_delivery` is false.
 `tool_policy_enforced` is proven by `codex-effective-tools` and
 `read_scope_confined` by `codex-read-scope`, both in `probes/codex.py`, and
-both interrogate the **effective** runtime surface through the localhost-only
+`artifact_write_guard` by `codex-write-surface-absent`. All three share one
+inspection of the **effective** runtime surface through the localhost-only
 Responses fixture in `skill/scripts/codex_host.py`: a read-only TOML profile is
 not evidence, because parent-runtime permission overrides are reapplied to
 child agents. `skill/scripts/runners/codex.py` sets `CLI = "codex"`,
@@ -337,15 +339,22 @@ child agents. `skill/scripts/runners/codex.py` sets `CLI = "codex"`,
 `default_concurrency = 4`. Confinement is a read-only sandbox plus the scoped
 MCP read broker `skill/scripts/codex_read_tools.py`, which the emit branch
 registers as `panopticon_scope` with `read_file` / `search` / `list_files` and
-no write tool at all. The child's process cwd is the same empty, run-owned
+no write tool at all. The omission probe also pins the complete Code Mode
+host-global allowlist, rejects filesystem/process/network/file imports, and
+requires empty MCP resource/template lists with resource reads unsupported.
+The runner accepts only returned JSON, and controller persistence owns the
+destination, validates/stamps the reply and then writes it. Controller/CLI
+housekeeping under controller-selected runtime and `CODEX_HOME` paths is not
+a reviewer artifact write; a reviewer-selectable or arbitrary host path would
+refute the claim. The child's process cwd is the same empty, run-owned
 scratch directory `--cd` names, outside the review root (`codex_host.launch_cwd`,
 #1657): both roots are one directory, so whichever the CLI keys discovery off,
 the target's `AGENTS.md`, `.codex/skills` and `.codex/config.toml` are out of
-reach -- `features.skip_host_skill_discovery` is measured NOT to close them. Evidence: `driver loop . --host codex --mode headless -d
-skill/scripts/runners --no-tools --allow-unenforced` reached `status:
-complete`, with both claimed capabilities `proven` and the three unclaimed ones
-`unknown`, each detail saying in as many words that the host does not claim it,
-so there is nothing to prove.
+reach -- `features.skip_host_skill_discovery` is measured NOT to close them.
+Evidence: a live Codex 0.161.0 localhost measurement inspected the five
+registered roles plus the shell-less setup fallback without a model override;
+all three claimed capabilities were `proven`, leaving only `model_binding` and
+`usage_ledger` `unknown`.
 
 **Kimi (#1620)** claims all five, proven by `kimi-shell-surface`,
 `kimi-read-guard-armed`, `kimi-write-guard-armed`, `kimi-model-alias-bound` and
