@@ -92,12 +92,13 @@ from shell_split import (_BLANK as _BLANK, _BRACED_HEADER as _BRACED_HEADER, _ES
 # reads too (`sh <<< '...'`, #2293) -- expanding unless `lex` spelled its word -- and never the
 # first's. `pipe_output_fds` are the descriptors that feed the next stage when the stage's
 # redirections end, as `pipe_input_fds` are the ones the last stage feeds: `2>&1` adds 2, `>file`
-# takes 1 away (#2744).
+# takes 1 away (#2744). `stdin_reads` are the file words descriptor 0 finally reads, copied in
+# redirect order through a dup or a path of another descriptor (#2884).
 Stage = collections.namedtuple(
     "Stage", "argv writes reads heredoc substitutions stdout_writes "
              "group_open group_close stdin_from_pipe stdout_to_pipe pipe_input_fds "
-             "stdin_heredoc pipe_output_fds",
-    defaults=(0, 0, True, True, ("0",), None, ("1",)))
+             "stdin_heredoc pipe_output_fds stdin_reads",
+    defaults=(0, 0, True, True, ("0",), None, ("1",), ()))
 # One `;`/`&&`/`||`/newline-separated statement: its pipeline stages in order,
 # and the separator that FOLLOWS it -- which is where a shell says whether the
 # command's exit status is allowed to matter (`... || true`, `... &`).
@@ -241,6 +242,9 @@ def _stage(text, context):
     # fd 0 initially receives the preceding pipeline stage. Like output
     # sinks, input origins are copied in lexical redirect order.
     pipe_inputs = {"0": True}
+    # The ordinary files each descriptor may read, copied in the same order.
+    # Unlike `reads`, this preserves which ones reach fd 0 after all redirects.
+    input_files: dict[str, tuple[str, ...]] = {}
     # Which heredoc each descriptor reads, in that same order: a heredoc is an
     # input FILE opened on one descriptor, so a later open, copy or close of
     # that descriptor replaces it exactly as it replaces a pipe. A here-string
@@ -337,11 +341,17 @@ def _stage(text, context):
                 op != "<<<" and carrier(word, context, lambda path: input_alias_fd(derived(_FD_SPELLINGS.sub("/dev/fd/", path), word))))
             carried = tuple(dict.fromkeys(sum(opened.values(), ()))) if source == "?" else opened.get(
                 (source or "-").lstrip("0") or "0", ())
+            input_carried = tuple(dict.fromkeys(sum(input_files.values(), ()))) if source == "?" else input_files.get(
+                (source or "-").lstrip("0") or "0", ())
             opened.pop(number, None)            # any redirection of N ends what `N<>` opened there
+            input_files.pop(number, None)
             if moved:
                 opened.pop(moved[1].lstrip("0") or "0", None)
+                input_files.pop(moved[1].lstrip("0") or "0", None)
             if carried:
                 opened[number] = carried
+            if input_carried:
+                input_files[number] = input_carried
             if op in (">&", "<&"):
                 if _fd_or_close(word):
                     source = word.lstrip("0") or "0"
@@ -368,11 +378,14 @@ def _stage(text, context):
                 reached = sources(word, op != "<<<" and context, input_alias_fd)   # as written, then by a link or a `cd`
                 pipe_inputs[number] = "?" in reached or any(pipe_inputs.get(fd, False) for fd in reached)
                 pipe_outputs[number] = False
+                if op != "<<<":
+                    input_files[number] = tuple(dict.fromkeys((*input_files.get(number, ()), word)))
                 reads_body(number, (word, not spelled, False) if op == "<<<" else
                            body_read(bodies, reached))
             else:
                 if op == "<>":                 # open for reading too: what reads N reads it (#2881)
                     opened[number] = (*carried, word)
+                    input_files[number] = tuple(dict.fromkeys((*input_files.get(number, ()), word)))
                 writes.append(word)
                 alias = output_alias_fd(word)   # a path of N: where N points now (`2>&1 >/dev/stderr`, #2744)
                 sinks[number] = word if alias is None else sinks.get(alias)
@@ -389,6 +402,7 @@ def _stage(text, context):
             heredoc, expands, fd = entry[1]
             number = fd.lstrip("0") or "0"
             held = None if number == "0" else held
+            input_files.pop(number, None)
             pipe_inputs[number] = False
             pipe_outputs[number] = False
             reads_body(number, (heredoc, expands, True))
@@ -422,7 +436,8 @@ def _stage(text, context):
                  group_close, pipe_inputs["0"], pipe_outputs["1"],
                  tuple(fd for fd, connected in pipe_inputs.items() if connected),
                  stdin[:2] if stdin else None,
-                 tuple(fd for fd, connected in pipe_outputs.items() if connected)))
+                 tuple(fd for fd, connected in pipe_outputs.items() if connected),
+                 input_files.get("0", ())))
 
 
 def statements(script):
