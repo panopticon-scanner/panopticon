@@ -7,6 +7,72 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader: who runs the word behind a wrapper (#2670, #2836).** `env eval 'curl … | sh'`
+  was reported though no shell runs it, and `T=t; curl -o t U; env unset T; sh $T` read CLEAN
+  though every shell without `-e` runs the download: the reader read a builtin through any
+  wrapper, and a wrapper that execs looks for a program. `_command_result` now carries who runs
+  the word behind each wrapper (`shell_wrappers.behind`): the step's own shell, a program a
+  wrapper execs, or a shell handed the words. Behind a wrapper that execs -- `env`, `sudo`,
+  `nice`, `nohup`, `exec`, `timeout`, `xargs` and their kind -- a builtin's name that is no
+  program leaves the stage the wrapper's own (`runs_behind`): nothing behind it is read as run,
+  and nothing it would set is set. `[`, `echo`, `false`, `kill`, `printf`, `pwd`, `test` and
+  `true` are programs and read as before; `command` and `jobs` are scripts on macOS (`builtin NAME
+  "$@"` under /bin/sh) that hand their words to a shell of their own, where `env command eval 'P'`
+  runs, and stay read. A shell handed the words runs a builtin in itself: what its `eval`, `.`,
+  `source` or `builtin` reads is read in the folds that read a `builtin` through (#2665) and the
+  stage is the wrapper's in the others, so `sudo -s eval 'P'` reports and `sudo -s eval 'T=x'`
+  sets nothing of the step's. That `sudo -s`, `-i`, `--shell` and `--login` hand the words to a
+  shell is sudo's manual, doc-pinned and not forge-verified (the forge's `sudo` is a stand-in
+  written from it); `doas -s` is read as sudo's is. `time` is bash's keyword only where a command
+  starts: behind an assignment, a `$` word bash drops, `command`, `jobs -x` or a `|` it is
+  /usr/bin/time, which execs, so `echo x | time eval 'P'` reads CLEAN and `X=1 time unset T`
+  unsets nothing; the reader marks the first word of a pipeline's later stage for it. `jobs -x
+  curl … | sh` read CLEAN while both bashes run the pipe (#2836): the reader follows bash's own
+  reading of the options -- clusters of the letters `lnprsx`, an `x` among them, no `l`, `n` or
+  `p` in front of it; 50 spellings measured under 5.2.21 and 3.2.57 -- in folds of their own
+  beside the ones that leave the word alone, as for `builtin`, since dash has no `jobs -x`. A
+  wrapper that may not be the program it names is read both ways, as `main` reads it and as
+  written in the folds that read a `builtin` through, so that no report of `main`'s is cleared: a
+  word a table or a default made (`workflow_uses._resolved` hands `command()` the argv it made one
+  of), the W of a word a parameter expansion decides, and a wrapper's name the job's steps define
+  as a function or an alias (`shell_wrappers.shadows`; behind `sudo() { "$@"; }` an `eval` runs).
+  `${S:-sudo eval} 'P'` shows why: nothing runs with `S` unset, and the string runs with `S='sh
+  -c'`. On a 5,008-row hunt with 16-run truth against `main`: 1,874 cells in 648 rows report that
+  a parent runs (two of them only the forge's GNU bash 3.2.57, which under `-e` goes on past a
+  failing subshell where Apple's 3.2.57 stops), 2,038 in 434 rows stop reporting what no shell
+  runs, and none goes from REPORT to CLEAN where a parent runs. The price, REPORT where no parent
+  of that setting runs, is 2,420 cells in 802 rows: a `-e` setting of a step that runs without
+  `-e` (1,331: under `-e` the step stops at the command not found, which the guard does not know);
+  macOS's scripts (520: a Mac's own bash 5.2.21, bash 3.2.57 and dash run 495 of the cells
+  reported among the 579 rows measured there, and none this fix quiets); the dash settings of a
+  step bash runs (306; bash started as `sh` runs 600 of the 608 dash-setting cells a bash parent
+  runs); a word that may not be the program it names, read as written beside `main`'s reading
+  (165); `exec` of a builtin's name, where the step ends (46); a check behind such a wrapper then
+  `|| exit 1` (35); and 17 others. A fuzz of 6,000 random steps with truth: 496 cells in 223 rows
+  report, 671 in 142 stop, and two go from REPORT to CLEAN under `sh {0}` where dash runs -- `time
+  unset T` under dash, #3024's class, beside an `eval` no shell runs: with that `eval` replaced by
+  a command no shell finds, truth is the same and `main` reads both rows CLEAN. The fuzz also
+  found why a word in doubt is read both ways and not as `main` reads it alone: `alias sudo=''` in
+  front of `sudo -s unset T` kept `main`'s own miss. None of the 31,046 standing rows, the #2939
+  seat's 2,164 class rows or its 20,000 fuzz rows moves, with the parse nonce pinned under `0` and
+  under `c`: none of them holds these words. Pins that move: three of batch C's own (`sudo -s
+  builtin`, which waited for this rule; `sudo command builtin`; a fold's stage), the `find` action
+  forms (a builtin's name is no program behind a wrapper that execs either), the names a statement
+  may set (`nohup unset T` sets none), and one row of the annotate tests that keeps its two
+  sentences and gains "cannot read command" (#2836's fix shape). Still as `main` reads them, each
+  pinned and named: `time` as the keyword under every shell (#3024's class), a quoted `time`,
+  `time` in a `find` action, a word in doubt in front of a shell handed the words, a function of a
+  wrapper's name in front of `builtin`, a shim of a wrapper's name the step's text does not spell.
+  `scripts/shell_command.py` stands at 699 of 700 lines, four of them taken from three comment
+  windows, every word kept. The cost, `job_defects` against `main` on the forge, three passes,
+  each a process of its own: the standing sample (3,881 rows) 65.81 / 64.89 / 65.22 s on `main`
+  and 65.57 / 65.86 / 66.28 s on the head (+1.0% by the medians); the hunt's first 1,500 rows
+  35.82 / 35.65 / 35.68 s on `main` and 34.20 / 34.66 / 34.26 s on the head (-4.0% by the
+  medians); my fuzz's first 1,500 rows 55.14 / 54.64 / 54.81 s on `main` and 62.32 / 62.99 / 63.08
+  s on the head (+14.9% by the medians) (32 cores, Neoverse-N2, Python 3.12.3; load 7.40 to 1.23).
+  The fuzz pays for the folds its rows are read in a second time (a `jobs`, a shell handed the
+  words, a word in doubt), as a row with `builtin` has since #2665; no standing row holds such a
+  word.
 - **A checksum gate inside a shell function is credited only where the function is proved to run
   (#2949).** `f() { sha256sum -c sums || exit 1; }; sh tool` read CLEAN even when `f` was never
   called, was called after the use, or appeared only as `find -exec f`: the stopping-rescue path

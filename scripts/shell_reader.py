@@ -56,7 +56,7 @@ from shell_tokens import (_Expanded as _Expanded, _Parse as _Parse, _Token as _T
                           is_marker as is_marker, kept as kept, readable as readable,
                           yields_words as yields_words)
 from shell_wrappers import (WRAPPERS as WRAPPERS, Defaulted as Defaulted,
-                            Rewritten as Rewritten, dynamic as dynamic, unwrap as unwrap)
+                            Rewritten as Rewritten, dynamic as dynamic, shadows, unwrap as unwrap)
 from shell_command import (CONDITIONS as CONDITIONS, KEYWORDS as KEYWORDS,
                            OPTIONAL_NEXT as OPTIONAL_NEXT, _ASSIGNMENT as _ASSIGNMENT,
                            _DEFAULTS as _DEFAULTS, _ENVIRONMENT as _ENVIRONMENT,
@@ -421,6 +421,7 @@ def statements(script):
     """Every statement in a `run:` script, in order, as parsed stages; in a
     lifted substitution's text, each heredoc where its marker stands (#2336)."""
     context = _Parse(script)
+    shadows(script)                     # a wrapper's name the text defines is the step's own (#2670)
     # A step that spells a mark the reader puts in its text reads as `main` (#2856 round 8).
     context.blanks = not any(mark in script for mark in (MARK, QUOTED, _ESCAPED, QUOTED_DOLLAR, _BLANK))
     text = lex(script, lambda *heredoc: context.new("heredoc", heredoc))
@@ -432,6 +433,10 @@ def statements(script):
         stages = [_stage(s, context) for s in raw]
         if at in context.bangs:         # a negated group's `!`, marked on its first word
             stages[0].argv[0] = bang(stages[0].argv[0])
+        for stage in stages[1:]:        # behind a `|` bash reads `time` as a program's name, no keyword (#2670)
+            if stage.argv[:1] == ["time"] and not stage.group_open:
+                stage.argv[0] = _Token("time", {})
+                setattr(stage.argv[0], "piped", True)
         # A line-only boundary has no argv; keep its marker and the closer's separator.
         if any(s.argv or s.group_open or s.group_close for s in stages):
             out.append(Statement(stages, separator))

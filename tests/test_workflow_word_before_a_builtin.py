@@ -183,6 +183,8 @@ class TestAWrapperThatExecsCannotRunABuiltin(unittest.TestCase):
 
     def test_what_main_reports_of_a_files_reader_is_unmoved(self):
         # `main` reports `${S:-sudo} . ./t`, where the fetch alone happens. That is `main`'s, before and after.
+        # And after #2670 (PR #2861), by the coordinator's ruling there: a WRITTEN `sudo . ./t` runs nothing
+        # and reads CLEAN, but a default's word is whatever its name holds where it is set, so this report stays.
         for front in self.EXECS[:-1]:
             for name, runner in FILES.items():
                 with self.subTest(front=front, runner=name):
@@ -193,7 +195,8 @@ class TestAWrapperThatExecsCannotRunABuiltin(unittest.TestCase):
 
     def test_mains_reading_of_a_default_of_several_words_is_unmoved(self):
         # `main` reads `${S:-sudo -E} eval 'P'` without the word, as it reads an alternate, and reports it, where
-        # this fix's rule leaves the one-word `${S:-sudo}` unread. Truth: nothing; the fetch alone.
+        # this fix's rule leaves the one-word `${S:-sudo}` unread. Truth: nothing; the fetch alone. Unmoved by
+        # #2670 (PR #2861) too, by the coordinator's ruling there: only a written wrapper is known to exec.
         for front in ("${S:-sudo -E}", "${S:-env A=1}"):
             for name, runner in BOTH.items():
                 with self.subTest(front=front, runner=name):

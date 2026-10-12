@@ -82,9 +82,9 @@ def _optional(argv, nothing=False):
     `.` and `source` behind words that may each be nothing (#2997). It drops
     an alternate that names no command it reads the word as (#3003): with its
     name unset `${S:+echo}` is nothing, as `${S:+sudo}` is. And it knows
-    `builtin` as it knows `eval`, in the folds that read it through (#2665);
-    behind that word (`nothing`) it counts the words that may each be nothing,
-    whatever follows them, as bash looks up the first word it keeps there."""
+    `builtin` and `jobs` as it knows `eval`, in the folds that read them through
+    (#2665, #2836); behind `builtin` (`nothing`) it counts the words that may each be
+    nothing, whatever follows them, as bash looks up the first word it keeps there."""
     walked = WALKED_DEFAULTS.get()
     count, loose = 0, True
     while count < len(argv) - 1:
@@ -110,9 +110,9 @@ def _optional(argv, nothing=False):
     if nothing:
         return count if loose else 0
     after = _DEFAULTS.fullmatch(argv[count]) if count and walked else None                    # (#2963)
-    name = (after[1] if after else argv[count]) if count else ""
+    name = after[1] if after else argv[count]
     if count and loose and walked and (name in ("eval", ".", "source")                        # (#2997)
-                                       or name == "builtin" and _through()):                 # (#2665)
+                                       or name in ("builtin", "jobs") and _through()):       # (#2665, #2836)
         return count
     return count if count and os.path.basename(name) in OPTIONAL_NEXT else 0
 
@@ -134,12 +134,13 @@ WALKED_DEFAULTS: contextvars.ContextVar[bool] = contextvars.ContextVar("walked_d
 _THROUGH = {"on": False, "met": False}
 
 
-def _through():
+def _through(mains=False):
     """Whether this fold reads through a `builtin` that stands in front of a builtin's name (#2665): never in
     the main pass, and in the second walk only in the folds `shell_command.folds` reads again for the one a
-    fold met here -- which this notes."""
+    fold met here -- which this notes. `mains` is the answer in the main pass, for a word `main` read through
+    already (a shell's `eval` behind `sudo -s`, #2670): its reading stays there."""
     if not WALKED_DEFAULTS.get():
-        return False
+        return mains
     _THROUGH["met"] = True
     return _THROUGH["on"]
 
@@ -149,11 +150,12 @@ def _shell_default(word):
     (`${X:-sh}`: `sh`) or, in the second walk (`WALKED_DEFAULTS`, #2963), a fetcher or `eval`; else
     None: `"${SH:-bash}"` is `bash` (#2337), and `"${SH:- bash}"`, `${X:-"bash -s"}` and
     `${X:-bash\\ -s}` name no shell. A default holding a blank the reader marks is read whole
-    (`_default_words`). One naming `builtin` is that word in the folds that read it through (#2665)."""
+    (`_default_words`). One naming `builtin` or `jobs` is that word in the folds that read it through (#2665,
+    #2836)."""
     default = _DEFAULTS.fullmatch(word)
     known = (*_SHELLS, *_FETCHERS, "eval") if WALKED_DEFAULTS.get() else _SHELLS
-    return [default[1]] if default and (os.path.basename(default[1]) in known
-                                        or default[1] == "builtin" and _through()) else None      # (#2665)
+    return [default[1]] if default and (os.path.basename(default[1]) in known          # (#2665, #2836)
+                                        or default[1] in ("builtin", "jobs") and _through()) else None
 
 
 def _default_words(whole):
