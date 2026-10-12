@@ -19,17 +19,21 @@ import re
 import shell_lex
 import shell_reader
 from shell_reader import command
+from workflow_called import record_called
 from workflow_checks import inside
 from workflow_forms import (BIN_DIRS, CONTAINERS, at_directory, chmod_executable,
                             chmod_targets, covers, described, in_container, may_run,
                             same_file, stdin_program)
-from workflow_function_calls import _FUNCTION_TOKEN, _function_scope, _function_syntax
 from workflow_programs import _SHELL_STRING, VALUE_PROGRAM, scripts
+from workflow_use_scopes import (_COMPOUNDS as _COMPOUNDS, _body_end, _forked,
+                                 _function_changes, _function_ranges,
+                                 _openers as _openers, _opens as _opens,
+                                 _own_parens as _own_parens)
 # Compatibility bindings: the value table moved to `workflow_values` with its
 # names, and its callers keep reaching them here.
 from workflow_values import (Values as Values, assigned as assigned, record as record,
                              valued as valued, valued_argvs as valued_argvs)
-from workflow_values import _as_word, _for_parts, _literals, emptied
+from workflow_values import PAST, _as_word, _for_parts, _literals, emptied
 
 
 INTERPRETERS = ("sh", "bash", "dash", "zsh", "ksh", "ash", "python", "python3",
@@ -79,14 +83,15 @@ def _active(bindings, word, directory):
 
 
 def _live(named, positional, directory):
-    """Bound names that still designate the file in `directory`."""
+    """Bound names that still designate the file in `directory`, and the name the cap's
+    stand-in reads (`workflow_values.PAST`, #2871), which designates every download."""
     bound = {
         name for name, binding in {**named, **positional}.items()
         if binding.absolute or binding.directory == directory
     }
     if "1" in bound:
         bound.update(("@", "*"))
-    return bound
+    return bound | {_reference(PAST)}
 
 
 def _from_operand(word, dest, directory, bindings):
@@ -251,7 +256,7 @@ def copies(statement, names, directory):
     """New names this statement gives a known file through a bounded copy."""
     new = set()
     for stage in statement.stages:
-        argv = command(stage.argv)
+        argv = shell_reader.acted(stage.argv)
         if not argv:
             continue
         name = os.path.basename(argv[0])
@@ -306,7 +311,7 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset()):
             word.startswith(BIN_DIRS) or "/bin/" in word for word in rest):
         return "putting it on PATH with `%s`" % name
     if name == "cat" and position + 1 < len(statement.stages):
-        following = command(statement.stages[position + 1].argv)
+        following = shell_reader.acted(statement.stages[position + 1].argv)
         if following and os.path.basename(following[0]) in INTERPRETERS:
             return "piping it into `%s`" % os.path.basename(following[0])
     return None
@@ -357,24 +362,6 @@ def _resolved(argv, table):
             yield kept
 
 
-def _function_ranges(stmts):
-    """Definition starts and the indices occupied by each function body."""
-    starts: dict[int, list[tuple[str, int, int]]] = {}
-    occupied: set[int] = set()
-    for index, statement in enumerate(stmts):
-        for stage in statement.stages:
-            name = _function_syntax(stage.argv)[0]
-            if name is None:
-                continue
-            scope = _function_scope(stmts, index)
-            if scope is None:
-                continue
-            close = scope[1]
-            starts.setdefault(index, []).append((name, index, close))
-            occupied.update(range(index, close + 1))
-    return starts, occupied
-
-
 def _function_use(stmts, definition, args, dest, directory, named, inherited, table, scopes):
     """A use reached by one direct call carrying a matching glob argument, or by a value of the
     caller's `table` (#2425, #2489), which the body's table starts from (`static_values`' `start`);
@@ -392,7 +379,7 @@ def _function_use(stmts, definition, args, dest, directory, named, inherited, ta
     kinds = _control_kinds(body)
     for index, statement in enumerate(body):
         for position, stage in enumerate(statement.stages):
-            bound = _live(local_named, positional, here) if called else frozenset()
+            bound = _live(local_named if called else {}, positional, here)
             argv = command(stage.argv)
             if called and (answer := use(statement, position, stage, argv, dest, here, bound)):
                 return answer
@@ -415,17 +402,6 @@ def _function_use(stmts, definition, args, dest, directory, named, inherited, ta
     return None
 
 
-def _function_changes(stage, functions, writable):
-    """Apply a certain `unset -f`; definitions are installed by their range."""
-    if not writable:
-        return
-    argv = command(stage.argv)
-    if argv[:1] == ["unset"] and "-f" in argv:
-        for word in argv[1:]:
-            if not str(word).startswith("-"):
-                functions.pop(str(word), None)
-
-
 def _functions_before(stmts, starts, kinds, scopes, after):
     """Functions certainly defined earlier in this same workflow-step shell."""
     functions: dict[str, tuple[int, int]] = {}
@@ -441,88 +417,6 @@ def _functions_before(stmts, starts, kinds, scopes, after):
         if len(stmts[index].stages) == 1:
             _function_changes(stmts[index].stages[0], functions, writable)
     return functions
-
-
-# The words that open a group or compound `_forked` follows, and each one's close.
-_COMPOUNDS = {"{": "}", "if": "fi", "case": "esac", "for": "done", "select": "done",
-              "while": "done", "until": "done"}
-
-
-def _forked(stmts, index):
-    """The statements the step's shell forks (#2425) in a child the statement
-    at `index` is not in: a `( ... )` subshell's past its opening statement,
-    an `&&`/`||` list's sent to the background whole (`T=x && : &`), and
-    every statement of a `{ ...; }` group or an `if`, `case`, `for`,
-    `select`, `while` or `until` compound, from its head to its close, that
-    is piped into, piped on, run by `coproc`, or sent to the background by
-    its own `&` or the one ending its list (`if T=x; then :; fi &`) -- a
-    list is not followed past a compound command, so `T=x && if c; then :;
-    fi &` reads `T=x` as sure (a limit) -- and, never sure outside it, a
-    compound that is a function's body (`g() for T in x; do :; done`, `{ f()
-    { :; }; }`, `_openers`), which runs only where it is called. Their
-    assignments end with the child, as `working_directories` keeps a
-    subshell's `cd`; a use in the same child sees them as its own; a use in
-    a later stage of the statement that closes it is outside it (`{ T=x; } |
-    sh "$T"`). A keyword is one only where the stage's command would stand
-    (`_openers`); an array literal's parentheses count as a group's, which
-    marks a multi-line literal's word lines unsure."""
-    forked: set[int] = set()
-    opened: list[tuple[int, bool, str]] = []
-    subshells: list[int] = []
-    header = False                          # a function header's body is still to come
-
-    def fork(start, end, onward=False):     # `onward`: the close's statement pipes on past it
-        if not (start <= index < end or index == end and not onward):
-            forked.update(range(start, end + 1))
-
-    for position, statement in enumerate(stmts):
-        end = position                      # the end of its `&&`/`||` list
-        while stmts[end].separator in ("&&", "||") and end + 1 < len(stmts):
-            end += 1
-        if stmts[end].separator == "&":
-            fork(position, end)
-        last = len(statement.stages) - 1
-        for number, stage in enumerate(statement.stages):
-            subshells += [position + 1] * stage.group_open
-            for _ in range(min(stage.group_close, len(subshells))):
-                fork(subshells.pop(), position, number < last)
-            words, header = _openers(stage, header)
-            for word, child in words:
-                if str(word) in _COMPOUNDS:
-                    opened.append((position, child or number > 0, _COMPOUNDS[str(word)]))
-                elif opened and word == opened[-1][2]:
-                    start, piped, _close = opened.pop()
-                    if piped or number < last or stmts[end].separator == "&":
-                        fork(start, position, number < last)
-    for start in subshells:                 # a group the step leaves open
-        fork(start, len(stmts) - 1)
-    return forked
-
-
-def _openers(stage, header=False):
-    """The words `_forked` reads in `stage` for a compound's head or close,
-    each with whether the compound surely runs apart from the step's shell,
-    and whether a function header ends the stage with its body to come
-    (`header`: `g()` or `function g()` alone on its line). They are the lead
-    words -- the compound right after a function header is its body -- and
-    what the reader leaves in the command: the `select`, the compound after
-    `coproc` (and its NAME), which runs in a child, and the body `{` of a
-    function defined after a keyword on its line, which the reader splits
-    into its name, a group of its own `()` and the `{`."""
-    argv = command(stage.argv)
-    lead = stage.argv[:len(stage.argv) - len(argv)]
-    words = []
-    for number, word in enumerate(lead):
-        words.append((word, header))
-        header = (bool(_FUNCTION_TOKEN.fullmatch(str(word))) or word == "()"
-                  or lead[number - 1:number] == ["function"])
-    if argv[:1] == ["select"]:
-        words.append((argv[0], header))
-    elif argv[:1] == ["coproc"]:
-        words += [(word, True) for word in argv[1:3] if str(word) in _COMPOUNDS][:1]
-    elif argv[1:2] == ["{"] and min(stage.group_open, stage.group_close) > _literals(stage):
-        words.append((argv[1], True))
-    return words, header and not argv and stage.group_open <= _own_parens(stage)
 
 
 def static_values(stmts, index, working=None, scopes=None, start=None):
@@ -542,8 +436,8 @@ def static_values(stmts, index, working=None, scopes=None, start=None):
     not found (a limit). At an index inside a function body only that body is
     walked, under its own control flow and from a copy of `start`, the
     caller's table at a call, which `_function_use` carries, or an empty one;
-    a body is otherwise skipped, so a call's own assignments are not read
-    (`f() { T=b; }; T=a; f` holds `a`, a price); a subshell body
+    a body is otherwise skipped, and a call to a function defined before it
+    adds what the body may assign, unsure (`record_called`); a subshell body
     (`g() ( ... )`) ends where its parentheses close (`_body_end`). A
     function defined after `{`, `then` or `do` on the same line is not found
     (`_function_ranges`' limit), nor is the end of a body that is neither
@@ -563,8 +457,9 @@ def static_values(stmts, index, working=None, scopes=None, start=None):
     relative path."""
     scopes = scopes or {}
     forked = _forked(stmts, index)
-    bodies = [(head, *_body_end(stmts, head, close))
-              for entries in _function_ranges(stmts)[0].values() for _name, head, close in entries]
+    starts = _function_ranges(stmts)[0]
+    bodies = [(head, *_body_end(stmts, head, close)) for entries in starts.values()
+              for _name, head, close in entries]
     first, last = max([(head, end) for head, end, found in bodies
                        if found and head <= index <= end], default=(-1, len(stmts) - 1))
     nested = {position for head, end, found in bodies if found and head > first
@@ -586,6 +481,8 @@ def static_values(stmts, index, working=None, scopes=None, start=None):
             certain = sure and (certain or looped) and position not in forked and len(stages) == 1
             _cleared(stages[-1], {}, {}, certain, direct_loop, table)
             record(table, stages[-1], certain)
+            if len(stages) == 1 and position not in forked:
+                record_called(table, stmts, position, starts)
 
     walk(range(max(first, 0), min(index, len(stmts))), True)
     loop = kinds[index] if index < len(stmts) else ()
@@ -605,40 +502,6 @@ def static_values(stmts, index, working=None, scopes=None, start=None):
             entered, after = entered or inside, after + 1
         walk(range(index + 1, after), False)
     return table
-
-
-def _body_end(stmts, start, close):
-    """The last statement of the body defined at `start`, and whether its end
-    was found: `close`, where `_function_ranges` found the `}`, or where a
-    subshell body's parentheses close, opened on the definition's line
-    (`g() ( ... )`, past a `function NAME()` header's own `()`: `_own_parens`)
-    or the next -- searched for to the step's end, past a `}` inside the body
-    that `_function_ranges` takes for its close."""
-    following = stmts[start + 1].stages[:1] if start + 1 < len(stmts) else []
-    for stage in stmts[start].stages:
-        name, braces = _function_syntax(stage.argv)
-        opens = stage.group_open - _own_parens(stage) > _literals(stage)
-        if name and "{" not in braces and (opens or any(map(_opens, following))):
-            depth = 0
-            for end in range(start if opens else start + 1, len(stmts)):
-                depth += sum(item.group_open - item.group_close for item in stmts[end].stages)
-                if depth <= 0:
-                    return end, True
-            return close, False
-    return close, close < len(stmts) - 1 or any("}" in _function_syntax(stage.argv)[1]
-                                                for stage in stmts[close].stages)
-
-
-def _own_parens(stage):
-    """1 where the reader reads a `function NAME()` header's own `()` as a group."""
-    return int(stage.argv[:1] == ["function"] and stage.group_close > _literals(stage)
-               and not any(_FUNCTION_TOKEN.fullmatch(str(word)) or word == "()"
-                           for word in stage.argv))
-
-
-def _opens(stage):
-    """Whether `stage` opens a group, past its array literals' parentheses."""
-    return stage.group_open > _literals(stage)
 
 
 def uses(stmts, dest, after, working=None, scopes=None):

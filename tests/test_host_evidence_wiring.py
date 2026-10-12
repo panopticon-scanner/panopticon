@@ -836,9 +836,8 @@ class TestTheDriftRefusalNamesTheRightRemedy(unittest.TestCase):
 
     def test_a_session_derived_capability_names_session_dir_first(self):
         # I3: read_scope_confined resolves off the session root exactly like
-        # the write guard (probes.claude.probe_read_guard_armed), so it belongs
-        # in _SESSION_DERIVED alongside the other two -- mirrored here, not a
-        # separate test.
+        # the write guard (probes.claude.probe_read_guard_armed), so Claude's
+        # registry row names it alongside the other two.
         for capability in (hosts.ARTIFACT_WRITE_GUARD, hosts.USAGE_LEDGER,
                           hosts.READ_SCOPE_CONFINED):
             with self.subTest(capability=capability):
@@ -857,6 +856,23 @@ class TestTheDriftRefusalNamesTheRightRemedy(unittest.TestCase):
         err = driver._posture_drift(self._WAS, now, {"host": "claude"})
         self.assertNotIn("--session-dir", err)
         self.assertIn("--reset", err)
+
+    def test_codex_write_boundary_drift_does_not_suggest_session_dir(self):
+        # #1622: Codex's future omission proof measures the headless effective
+        # surface, not a session-root hook. The shared remedy follows the
+        # registry row even before the family PR adds that capability claim.
+        now = dict(self._WAS, **{hosts.ARTIFACT_WRITE_GUARD: hosts.REFUTED})
+        err = driver._posture_drift(self._WAS, now, {"host": "codex"})
+        self.assertNotIn("--session-dir", err)
+        self.assertIn("--reset", err)
+
+    def test_a_legacy_manifest_uses_the_default_hosts_session_remedy(self):
+        # Pre-host manifests resolve as Claude everywhere else; making the
+        # drift lookup host-aware must preserve that compatibility contract.
+        now = dict(self._WAS, **{hosts.ARTIFACT_WRITE_GUARD: hosts.REFUTED})
+        err = driver._posture_drift(self._WAS, now, {})
+        self.assertIn("--session-dir", err)
+        self.assertIn(hosts.ARTIFACT_WRITE_GUARD, err)
 
     def test_a_run_that_passed_the_flag_is_not_told_to_pass_it_again(self):
         now = dict(self._WAS, **{hosts.ARTIFACT_WRITE_GUARD: hosts.REFUTED})

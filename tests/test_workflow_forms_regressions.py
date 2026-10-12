@@ -211,11 +211,9 @@ class TestCombinedPipeline(unittest.TestCase):
 
 class TestFetchCompatibility(unittest.TestCase):
     def test_single_owner_and_legacy_shapes(self):
-        # 13 since #2744's reader half added `stderr_to_pipe` (defaults False): the legacy
-        # six-argument shape still builds.
-        self.assertEqual(13, len(shell_reader.Stage._fields))
+        self.assertEqual(12, len(shell_reader.Stage._fields))
         legacy = shell_reader.Stage([], [], [], None, [], [])
-        self.assertEqual((0, 0, True, True, ("0",), None, False), tuple(legacy)[6:])
+        self.assertEqual((0, 0, True, True, ("0",), None), tuple(legacy)[6:])
         self.assertEqual(("tool", "url", "dest", "piped_to"), forms.Fetch._fields)
         for name in ("Fetch", "FETCHERS", "STDOUT", "parse_fetch", "streamed_fetch"):
             self.assertIs(getattr(forms, name), getattr(fetches, name))
@@ -450,14 +448,17 @@ class TestTheProgramAfterDashC(unittest.TestCase):
                 argv = shell_reader.statements(script)[0].stages[0].argv
                 self.assertEqual((None, None), workflow_programs.dynamic_program(argv))
 
-    def test_a_process_substitution_is_neither_an_opaque_script_nor_a_dynamic_program(self):
+    def test_a_process_substitution_is_a_file_in_an_opaque_script_and_no_dynamic_program(self):
         # `shell_reader.yields_words`: a `<(...)` hands a file, not words. A
-        # string holding one beside a `$(...)` is no script at all, where its
-        # twin with the `$(...)` alone is read opaque (#2486), the one
-        # printer's text written in (#2487) ...
+        # string holding one beside a `$(...)` is read opaque since #2684, the
+        # file rendered `$(...)` as an operand (bash runs `tool` there), as its
+        # twin with the `$(...)` alone is (#2486), the one printer's text
+        # written in (#2487) ...
         for script in ('sh -c "sh $(echo tool) <(echo x)" x', 'eval "sh $(echo tool) <(echo x)"'):
             with self.subTest(script=script):
-                self.assertEqual([], self.program(script))
+                found = self.program(script)
+                self.assertEqual(["sh tool $(...)"], found)
+                self.assertIsInstance(found[0], workflow_programs.Opaque)
         found = self.program('sh -c "sh $(echo tool)" x')
         self.assertEqual(["sh tool"], found)
         self.assertIsInstance(found[0], workflow_programs.Opaque)
@@ -527,10 +528,17 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
         # At a program, a `-c` (whose string `scripts` reads), a `--`, a word
         # the value only begins (`$X/x.sh` is no option), or a value an `-o`
         # takes; and a pattern is `leads`'s to read (#2294).
-        for script in ("sh $X", "sh x.sh $X P", "sh -c $X P", "sh -- $X P", "bash $X/x.sh P",
+        for script in ("sh $X", "sh x.sh $X P", "sh -- $X P", "bash $X/x.sh P",
                        "bash -o $X P", "bash [-]c P", "python3 $X P", "sh -e P"):
             with self.subTest(script=script):
                 self.assertEqual([], forms.candidates(self.argv(script))[1])
+        # Moved by #2858 round 7: a `$X` right after `-c` may be an option word or nothing -- with
+        # `X=-c`, `X=-e` or `X=` bash 5.2.21 and 3.2.57 run `P` (forge, both child bashes), with
+        # `X=x` nothing (rc 127) -- so it stands where the shell reads its options; was [].
+        self.assertEqual(["P"], forms.candidates(self.argv("sh -c $X P"))[1])
+        # And after `-c --` (round 8, the round-7 seat's F3): `$X` may vanish, making `P` the string
+        # -- `X=; sh -c -- $X P` runs `P` under dash and both bashes (135648); was [], a fail-open.
+        self.assertEqual(["P"], forms.candidates(self.argv("sh -c -- $X P"))[1])
 
     def test_every_o_before_a_stdin_program_takes_a_value(self):
         # `bash -oe pipefail <<'EOF'` reads its program from the heredoc.
@@ -551,11 +559,17 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
         for script, expected in rows:
             with self.subTest(script=script):
                 self.assertEqual(expected, forms.stdin_program(self.argv(script)))
-        # A literal file, an ended option list and a literal `-c` remain files
-        # or strings. The literal `-s` must-trip remains a stdin program.
-        for script in ("sh file.sh", "sh -- $X file.sh", "sh $X -c 'cat' file.sh"):
+        # A literal file and an ended option list remain files. The literal `-s`
+        # must-trip remains a stdin program. A literal `-c` after the value is no
+        # longer sure (#2858 round 4): `X=-s; sh $X -c 'true' file.sh <<'EOF'` runs
+        # the heredoc after the string under dash (FR, forge); with `'cat'` the
+        # string eats it first (-- --), which the reader cannot tell -- fail-closed,
+        # as `dash -s -c 'cat'` is read.
+        for script in ("sh file.sh", "sh -- $X file.sh"):
             with self.subTest(script=script):
                 self.assertIsNone(forms.stdin_program(self.argv(script)))
+        self.assertEqual(forms.SHELL_PROGRAM,
+                         forms.stdin_program(self.argv("sh $X -c 'cat' file.sh")))
         self.assertEqual(forms.SHELL_PROGRAM,
                          forms.stdin_program(self.argv("sh -s file.sh")))
 
@@ -672,11 +686,17 @@ class TestAValueWhereAShellReadsItsOptions(unittest.TestCase):
 
         # The argv of a literal shell at the step's own level, whatever its options, a `-c` string
         # among them that names no shell reading stdin too.
-        for step in ("bash -s", "bash -e -s", "sudo bash -s", "bash -n -s", "bash -s -c 'echo hi'"):
+        for step in ("bash -s", "bash -e -s", "sudo bash -s"):
             with self.subTest(step=step):
                 argv, program, reader = read(step)
                 self.assertIs(argv, reader)
                 self.assertEqual(forms.SHELL_PROGRAM, program)
+        # `()` where the shell runs none of the body (`bash -n -s`: noexec) or the `-c` after `-s`
+        # makes the string the program (`bash -s -c 'echo hi'`, #2647): read as `main` reads it, the
+        # step's own, and no check in it counted (#2858 round 10).
+        for step in ("bash -n -s", "bash -s -c 'echo hi'"):
+            with self.subTest(step=step):
+                self.assertEqual((forms.SHELL_PROGRAM, ()), read(step)[1:])
         # `()` behind a `-c` string naming a stdin shell, where the holder's own options read stdin.
         for step in ("bash -s -c 'sh'", "bash -e -s -c 'sh'", "sh -s -c 'bash -s'"):
             with self.subTest(step=step):
