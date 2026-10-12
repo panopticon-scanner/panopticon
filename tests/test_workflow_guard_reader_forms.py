@@ -4386,16 +4386,21 @@ class TestAProgramWordContainingASubstitution(unittest.TestCase):
 
     def test_beside_a_download_both_twins_are_reported(self):
         # Bash 3.2.57, 5.2.21 and dash run the download in both. Each is the
-        # `Idle` sentence of its own rule: the value's for the candidate, which
-        # speaks first, `_DYNAMIC`'s for the literal word (#2483, #2486).
+        # `Idle` sentence of its own rule at #2486's base. #2428 adds the literal
+        # word's source-bound file-reader use beside that existing sentence; the
+        # value's candidate stays unread.
         prog = "curl -fsSLo prog.sh %stool\n" % URL
-        for script, said in ((prog + 'X=-c\nsh $X "$(cat prog.sh)"\n', "passes `sh` `$X`"),
-                             (prog + 'sh -c "$(cat prog.sh)"\n', "runs `sh -c` on `$(...)`")):
-            with self.subTest(script=script):
-                found = defects(script)
-                self.assertEqual(1, len(found), found)
-                self.assertTrue(found[0][1].startswith(said), found)
-                self.assertIsInstance(found[0][1], wg.Idle)
+        candidate = defects(prog + 'X=-c\nsh $X "$(cat prog.sh)"\n')
+        self.assertEqual(1, len(candidate), candidate)
+        self.assertTrue(candidate[0][1].startswith("passes `sh` `$X`"), candidate)
+        self.assertIsInstance(candidate[0][1], wg.Idle)
+        literal = defects(prog + 'sh -c "$(cat prog.sh)"\n')
+        generic = [why for _step, why in literal if isinstance(why, wg.Idle)]
+        bound = [why for _step, why in literal
+                 if "running it through a command substitution handed to `sh -c`" in why]
+        self.assertEqual(1, len(generic), literal)
+        self.assertEqual(1, len(bound), literal)
+        self.assertNotIsInstance(bound[0], wg.Idle)
 
     def test_the_literal_dash_c_form_is_read_since_2486(self):
         # The literal path reads a program word holding a `$(...)` with the
@@ -4638,9 +4643,11 @@ class TestADynamicProgramWordALiteralShell(unittest.TestCase):
         for word in ('${A}x', 'x${A}', '${A:-${B}}x', '${A', '$', '${A:-${B}} ${C}'):
             with self.subTest(word=word):
                 self.assertEqual([], defects(GET + 'sh -c "%s"\n' % word))
-        # A blank BETWEEN substitutions is text of the word's own too, as between expansions above,
-        # though bash 5.2.21, 3.2.57 and dash run the download through it: a known gap.
-        self.assertEqual([], defects(GET + 'sh -c "$(cat a) $(cat tool)"\n'))
+        # A blank BETWEEN substitutions is text of the word's own too, so this remains outside the
+        # all-expansion rule. #2428 now binds the `tool` reader independently of that catch-all.
+        found = defects(GET + 'sh -c "$(cat a) $(cat tool)"\n')
+        self.assertEqual(1, len(found), found)
+        self.assertIn("running it through a command substitution handed to `sh -c`", found[0][1])
 
     def test_eval_set_is_the_declared_over_report(self):
         # Finding 4: `eval set -- "$OPTS"` is the getopt idiom, and bash runs
@@ -4667,25 +4674,28 @@ class TestADynamicProgramWordALiteralShell(unittest.TestCase):
         # 3.2.57, 5.2.21 and dash run the download in every one (dash prints
         # nothing for `$(< f)`, so there only the bashes do; zsh runs its
         # own). `sudo` is a stub here, never the real one.
-        # The row itself is pinned in `test_beside_a_download_both_twins_are_reported`.
+        # #2428 adds the downloaded path these exact file-reader rows read beside the generic
+        # `Idle` catch-all, so a checksum of that path can clear both verdicts.
         prog = "curl -fsSLo prog.sh %stool\n" % URL
-        sh_c, on = "runs `sh -c` on `$(...)`", "runs `%s` on `%s`"
-        for script, said in ((prog + 'eval "$(cat prog.sh)"\n', on % ("eval", "$(...)")),
-                             (prog + 'sh -c "`cat prog.sh`"\n', sh_c),
-                             (prog + 'sh -c "$(cat prog.sh)" x\n', sh_c),
-                             (prog + 'bash -c "$(< prog.sh)"\n', on % ("bash -c", "$(...)")),
-                             (GET + 'sh -c "$(cat tool)"\n', sh_c),
-                             (GET + 'sh -c "$P$(cat tool)"\n', on % ("sh -c", "$P$(...)")),
-                             (GET + 'sh -c "$(cat a)$(cat tool)"\n', on % ("sh -c", "$(...)$(...)")),
-                             (GET + 'sudo sh -c "$(cat tool)"\n', sh_c),
-                             (GET + 'zsh -c "$(cat tool)"\n', on % ("zsh -c", "$(...)")),
-                             (GET + '${SHELL:-sh} -c "$(cat tool)"\n', sh_c),
-                             (GET + 'y=$(sh -c "$(cat tool)")\n', sh_c)):
+        for script, runner in ((prog + 'eval "$(cat prog.sh)"\n', "eval"),
+                               (prog + 'sh -c "`cat prog.sh`"\n', "sh -c"),
+                               (prog + 'sh -c "$(cat prog.sh)" x\n', "sh -c"),
+                               (prog + 'bash -c "$(< prog.sh)"\n', "bash -c"),
+                               (GET + 'sh -c "$(cat tool)"\n', "sh -c"),
+                               (GET + 'sh -c "$P$(cat tool)"\n', "sh -c"),
+                               (GET + 'sh -c "$(cat a)$(cat tool)"\n', "sh -c"),
+                               (GET + 'sudo sh -c "$(cat tool)"\n', "sh -c"),
+                               (GET + 'zsh -c "$(cat tool)"\n', "zsh -c"),
+                               (GET + '${SHELL:-sh} -c "$(cat tool)"\n', "sh -c"),
+                               (GET + 'y=$(sh -c "$(cat tool)")\n', "sh -c")):
             with self.subTest(script=script):
                 found = defects(script)
-                self.assertEqual(1, len(found), found)
-                self.assertTrue(found[0][1].startswith(said), found)
-                self.assertIsInstance(found[0][1], wg.Idle)
+                bound = [why for _step, why in found if "running it through a command substitution" in why]
+                generic = [why for _step, why in found if isinstance(why, wg.Idle)]
+                self.assertEqual(1, len(bound), found)
+                self.assertEqual(1, len(generic), found)
+                self.assertIn("handed to `%s`" % runner, bound[0])
+                self.assertNotIsInstance(bound[0], wg.Idle)
         # The control: the download run by its name, loud.
         found = defects(GET + "sh tool\n")
         self.assertEqual(1, len(found), found)
@@ -4695,20 +4705,24 @@ class TestADynamicProgramWordALiteralShell(unittest.TestCase):
         # Every shell runs `"$(cat tool) "` as it runs `"$(cat tool)"`, and a `run: |` block wraps
         # the word in newlines (`_all_expansion`). Bash 5.2.21, 3.2.57 and dash run the download
         # in every row, each CLEAN until now. The sentence quotes the word without its blanks.
-        sh_c, on_eval = "runs `sh -c` on `$(...)`", "runs `eval` on `$(...)`"
-        for script, said in ((GET + 'sh -c "$(cat tool) "\n', sh_c),
-                             (GET + 'sh -c " $(cat tool)"\n', sh_c),
-                             (GET + 'sh -c "$(cat tool);"\n', "runs `sh -c` on `$(...);`"),
-                             (GET + 'eval "$(cat tool) "\n', on_eval),
-                             (GET + 'sh -c "\n  $(cat tool)\n"\n', sh_c),
-                             (GET + 'eval "\n$(cat tool)\n"\n', on_eval),
-                             (GET + 'sh -c "\t$(cat tool)"\n', sh_c),
-                             (GET + 'sh -c "`cat tool` "\n', sh_c)):
+        # #2428 binds the same spellings to `tool`; the surrounding blanks still change nothing.
+        for script, runner in ((GET + 'sh -c "$(cat tool) "\n', "sh -c"),
+                               (GET + 'sh -c " $(cat tool)"\n', "sh -c"),
+                               (GET + 'sh -c "$(cat tool);"\n', "sh -c"),
+                               (GET + 'eval "$(cat tool) "\n', "eval"),
+                               (GET + 'sh -c "\n  $(cat tool)\n"\n', "sh -c"),
+                               (GET + 'eval "\n$(cat tool)\n"\n', "eval"),
+                               (GET + 'sh -c "\t$(cat tool)"\n', "sh -c"),
+                               (GET + 'sh -c "`cat tool` "\n', "sh -c")):
             with self.subTest(script=script):
                 found = defects(script)
-                self.assertEqual(1, len(found), found)
-                self.assertTrue(found[0][1].startswith(said), found)
-                self.assertIsInstance(found[0][1], wg.Idle)
+                bound = [why for _step, why in found
+                         if "running it through a command substitution handed to `%s`" % runner
+                         in why]
+                generic = [why for _step, why in found if isinstance(why, wg.Idle)]
+                self.assertEqual(1, len(bound), found)
+                self.assertEqual(1, len(generic), found)
+                self.assertNotIsInstance(bound[0], wg.Idle)
         # A leading `;`, or a second trailing one, is text: every shell refuses the string (rc 2)
         # and runs none of the download.
         for script in (GET + 'sh -c ";$(cat tool)"\n', GET + 'sh -c "$(cat tool);;"\n'):
@@ -4786,9 +4800,9 @@ class TestALiteralStringHoldingASubstitution(unittest.TestCase):
             (4, 'zsh -c "%s"\n' % sub, piped % (URL + "i.sh")),
             (4, 'eval "%s"\n' % sub, piped % (URL + "i.sh")),
             (4, '${X:-sh} -c "%s"\n' % sub, piped % (URL + "i.sh")),
-            # 5: a program word all substitution, `_DYNAMIC`'s; the file run by its name; and the
-            # value twin, whose `Idle` sentence speaks first.
-            (5, prog + 'sh -c "$(cat prog.sh)"\n', "runs `sh -c` on `$(...)`"),
+            # 5: #2428 adds the literal file-reader word's exact source-bound use beside its
+            # `_DYNAMIC` reason; the file run by name and the value twin keep their own sentences.
+            (5, prog + 'sh -c "$(cat prog.sh)"\n', "fetches %si.sh -> prog.sh and running it through" % URL),
             (5, prog + "sh prog.sh\n", "fetches %si.sh -> prog.sh and running it" % URL),
             (5, prog + 'X=-c\nsh $X "$(cat prog.sh)"\n', "passes `sh` `$X` where it reads"),
             # 6 beside a download no checksum clears: `_DYNAMIC`'s, as `sh -c "$P"` is above.
@@ -4796,8 +4810,10 @@ class TestALiteralStringHoldingASubstitution(unittest.TestCase):
         for row, script, said in rows:
             with self.subTest(row=row, script=script):
                 found = defects(script)
-                self.assertEqual(1, len(found), found)
-                self.assertTrue(found[0][1].startswith(said), found)
+                matching = [why for _step, why in found if why.startswith(said)]
+                self.assertEqual(1, len(matching), found)
+                expected = 2 if script == prog + 'sh -c "$(cat prog.sh)"\n' else 1
+                self.assertEqual(expected, len(found), found)
 
     def test_row_6_alone_is_a_known_gap(self):
         # CLEAN, though all three fetch and run the download: the dynamic twin of #2486, filed
