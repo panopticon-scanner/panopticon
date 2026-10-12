@@ -7,6 +7,13 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **CI runs the test suite across the runner's cores (`pytest -n auto`, #2933).** Each
+  `test (3.x)` job ran the whole suite serially under one core, and the 3.11 job (C tracer,
+  no `sys.monitoring`) brushed its time cap after row-heavy merges (#2932 raised it to 20 min).
+  `pytest-xdist` was already in the `test` extra but unused in CI; the forge legs already run
+  `-n auto`. `pytest-cov` combines the workers' data, so `--cov-fail-under=90` stays the gate on
+  the combined total. A band-aid before the full file-shard matrix (#2933): no behavior change,
+  no new check names, workflow file only.
 - **`scripts/workflow_options.py` splits the readers of a word in a shell's option slot into
   `scripts/workflow_option_slots.py` (for #2889, programs lane).** A pure move at the module's size
   (699 of its 700 lines), in two pieces, each byte for byte with the comments above it and the two

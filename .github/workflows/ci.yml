@@ -55,7 +55,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[test]"
       - name: Test
-        run: python -m pytest tests/ -q --cov --cov-fail-under=90 --cov-report=term-missing --cov-report=xml:coverage.xml
+        # -n auto: run the suite across the runner's cores (pytest-xdist). Interim
+        # step toward the file-shard matrix (#2933); pytest-cov combines worker data,
+        # so --cov-fail-under stays the combined-total gate.
+        run: python -m pytest tests/ -q -n auto --cov --cov-fail-under=90 --cov-report=term-missing --cov-report=xml:coverage.xml
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
