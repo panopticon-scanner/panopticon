@@ -7,10 +7,22 @@ from unittest import mock
 
 import pytest
 
-from scripts import dispatch, host_probes, hosts
+from scripts import codex_host, dispatch, host_probes, hosts
 import scripts.probes.claude as claude_probes
 import scripts.probes.codex as codex_probes
 import scripts.probes.common as probes_common
+
+
+HOST_GLOBALS = {
+    "ALL_TOOLS", "as_settled", "audio", "clearTimeout", "exit", "generatedImage",
+    "image", "load", "notify", "setTimeout", "store", "stream_settled", "text",
+    "tools", "yield_control",
+}
+MODULE_IMPORTS = {
+    "node:fs", "fs", "node:fs/promises", "node:child_process", "node:module",
+    "node:worker_threads", "node:net", "node:http", "node:https", "node:dgram",
+    "node:tls", "file:///tmp/panopticon-probe.mjs",
+}
 
 
 def surfaces():
@@ -19,6 +31,15 @@ def surfaces():
                   "mcp__panopticon_scope__list_files", "list_mcp_resources",
                   "list_mcp_resource_templates", "read_mcp_resource"],
         "direct_tools": ["functions.exec", "functions.wait", "functions.request_user_input"],
+        "mcp_servers": ["panopticon_scope"],
+        "globals": sorted(HOST_GLOBALS),
+        "imports": {name: {"ok": False, "error": "unsupported import in exec"}
+                    for name in MODULE_IMPORTS},
+        "resources": {
+            "list": {"ok": True, "value": '{"resources":[]}'},
+            "templates": {"ok": True, "value": '{"resourceTemplates":[]}'},
+            "read": {"ok": False, "error": "resources/read failed: method not found"},
+        },
         "forbidden": dict.fromkeys(("exec", "patch", "spawn", "fetch", "process", "require"), "undefined"),
         # Third read (#1642): the hard link planted INSIDE the directory grant.
         # The wording is the broker's own, because that is what the probe reads.
@@ -27,12 +48,16 @@ def surfaces():
                   {"isError": True, "content": [{"type": "text", "text": "Read tool refused: read scope "
                     "denies a hard-linked file inside a directory grant (st_nlink=2)"}]}],
     }
-    return [(role + ".toml", copy.deepcopy(surface)) for role in (*probes_common.DRIVER_ROLES, "setup-scan")]
+    paths = [dispatch.registered_agent_filename("codex", dispatch.ROLE_FILES[role])
+             for role in probes_common.DRIVER_ROLES]
+    paths.append("setup-scan (native default model and directory scope)")
+    return [(path, copy.deepcopy(surface)) for path in paths]
 
 
 @pytest.mark.parametrize("probe,probe_id", [
     (codex_probes.probe_codex_tool_policy, codex_probes.CODEX_EFFECTIVE_TOOLS),
     (codex_probes.probe_codex_read_scope, codex_probes.CODEX_READ_SCOPE),
+    (codex_probes.probe_codex_write_surface, codex_probes.CODEX_WRITE_SURFACE_ABSENT),
 ])
 def test_every_claim_requires_measured_headless_surface(probe, probe_id, tmp_path):
     measure = mock.Mock(return_value=surfaces())
@@ -54,14 +79,64 @@ def test_every_claim_requires_measured_headless_surface(probe, probe_id, tmp_pat
     lambda s: s["forbidden"].update(fetch="function"),
     lambda s: s["forbidden"].pop("require"),
 ])
-def test_native_tool_policy_mutation_refutes_both_security_claims(change, tmp_path):
+def test_native_tool_policy_mutation_refutes_all_bearing_security_claims(change, tmp_path):
     measured = surfaces()
     change(measured[-1][1])
-    for probe in (codex_probes.probe_codex_tool_policy, codex_probes.probe_codex_read_scope):
+    for probe in (codex_probes.probe_codex_tool_policy,
+                  codex_probes.probe_codex_read_scope,
+                  codex_probes.probe_codex_write_surface):
         state, _by, detail = probe("codex", settings_path=str(tmp_path / "settings.json"),
                                   measure=lambda: measured)
         assert state == hosts.REFUTED
         assert measured[-1][0] in detail
+
+
+def test_the_non_ecmascript_host_global_allowlist_is_exact():
+    assert codex_probes.CODE_MODE_HOST_GLOBALS == HOST_GLOBALS
+
+
+WRITE_ROUTE_MUTATIONS = {
+    "mcp-write-tool": lambda s: s["tools"].append("mcp__panopticon_scope__write_file"),
+    "direct-write-tool": lambda s: s["direct_tools"].append("functions.apply_patch"),
+    "mcp-server": lambda s: s["mcp_servers"].append("reviewer_supplied"),
+    "host-global": lambda s: s["globals"].append("writeFile"),
+    "filesystem-import": lambda s: s["imports"].update(
+        {"node:fs": {"ok": True, "value": ["writeFile"]}}),
+    "resource": lambda s: s["resources"].update(
+        {"list": {"ok": True, "value": '{"resources":[{"uri":"file:///tmp/x"}]}'}}),
+    "resource-template": lambda s: s["resources"].update(
+        {"templates": {"ok": True, "value":
+                       '{"resourceTemplates":[{"uriTemplate":"file:///{path}"}]}'}}),
+    "resource-read": lambda s: s["resources"].update(
+        {"read": {"ok": True, "value": "reviewer-selected bytes"}}),
+}
+
+
+@pytest.mark.parametrize("role_index", range(len(probes_common.DRIVER_ROLES) + 1),
+                         ids=(*probes_common.DRIVER_ROLES, "shell-less-setup"))
+@pytest.mark.parametrize("route,change", WRITE_ROUTE_MUTATIONS.items(),
+                         ids=WRITE_ROUTE_MUTATIONS)
+def test_any_write_route_on_any_role_refutes_the_omission_proof(
+        role_index, route, change, tmp_path):
+    measured = surfaces()
+    change(measured[role_index][1])
+    state, by, detail = codex_probes.probe_codex_write_surface(
+        "codex", settings_path=str(tmp_path / "settings.json"),
+        measure=lambda: measured)
+    assert state == hosts.REFUTED, route
+    assert by == codex_probes.CODEX_WRITE_SURFACE_ABSENT
+    assert measured[role_index][0] in detail
+
+
+def test_missing_or_duplicate_role_measurements_do_not_prove_omission(tmp_path):
+    complete = surfaces()
+    cases = (complete[:-1], complete[:-1] + [copy.deepcopy(complete[0])])
+    for measured in cases:
+        state, by, detail = codex_probes.probe_codex_write_surface(
+            "codex", settings_path=str(tmp_path / "settings.json"),
+            measure=lambda: measured)
+        assert (state, by) == (hosts.UNKNOWN, codex_probes.CODEX_WRITE_SURFACE_ABSENT)
+        assert "every registered role" in detail
 
 
 def test_widened_scope_mutation_refutes_actual_read_boundary(tmp_path):
@@ -114,7 +189,9 @@ def test_a_two_read_measurement_is_unknown_not_proven(tmp_path):
     assert "three-read" in detail
 
 
-@pytest.mark.parametrize("probe", [codex_probes.probe_codex_tool_policy, codex_probes.probe_codex_read_scope])
+@pytest.mark.parametrize("probe", [codex_probes.probe_codex_tool_policy,
+                                   codex_probes.probe_codex_read_scope,
+                                   codex_probes.probe_codex_write_surface])
 def test_unavailable_runtime_is_unknown_with_reason(probe, tmp_path):
     state, _by, detail = probe("codex", settings_path=str(tmp_path / "settings.json"),
                                measure=mock.Mock(side_effect=FileNotFoundError("codex not installed")))
@@ -148,6 +225,7 @@ def test_missing_shell_is_refuted_without_invoking_runtime(tmp_path):
 @pytest.mark.parametrize("probe,probe_id", [
     (codex_probes.probe_codex_tool_policy, codex_probes.CODEX_EFFECTIVE_TOOLS),
     (codex_probes.probe_codex_read_scope, codex_probes.CODEX_READ_SCOPE),
+    (codex_probes.probe_codex_write_surface, codex_probes.CODEX_WRITE_SURFACE_ABSENT),
 ])
 def test_a_relative_codex_home_is_reported_instead_of_measured(probe, probe_id, tmp_path, monkeypatch):
     # COD-1638371699: the codex row as `CODEX_HOME=.` leaves it, in a cwd that
@@ -187,6 +265,9 @@ def test_probe_fixture_uses_real_emitter_but_injects_all_runtime_work(tmp_path):
         if entry["id"] == "setup-scan":
             assert entry["scope"] == {"files": [], "dirs": [root], "reads": []}
             assert entry["model"] is None
+        elif entry["id"] == codex_host.SETUP_PROBE_ID:
+            assert entry["agent"] == "panopticon-setup-scan"
+            assert entry["model"] is None
         else:
             assert entry["scope"]["files"] == [inside]
             assert root == run_dir
@@ -194,6 +275,7 @@ def test_probe_fixture_uses_real_emitter_but_injects_all_runtime_work(tmp_path):
         assert linked not in entry["scope"]["files"]
         assert env["PANOPTICON_ENTRY_ID"] == entry["id"]
         assert kwargs["registration_dir"] == str(registered)
+        assert kwargs["probe_module"].startswith("file:")
         seen.append(entry["agent"])
         return surfaces()[0][1]
 
@@ -223,7 +305,8 @@ def test_no_override_surface_measurement_builds_every_role_launch(tmp_path):
     measured = codex_probes._codex_surfaces(str(registered), inspector=inspect)
     assert len(measured) == len(probes_common.DRIVER_ROLES) + 1
     for probe in (codex_probes.probe_codex_tool_policy,
-                  codex_probes.probe_codex_read_scope):
+                  codex_probes.probe_codex_read_scope,
+                  codex_probes.probe_codex_write_surface):
         state, _by, _detail = probe(
             "codex", settings_path=str(tmp_path / "settings.json"),
             measure=lambda: measured)
@@ -251,6 +334,7 @@ def test_an_unplantable_hard_link_fixture_only_unproves_the_read_scope_row(tmp_p
         artifact = host_probes.run_probes("codex", str(tmp_path), registration_dir=str(registered),
                                           settings_path=str(tmp_path / "settings.json"))
     assert artifact["capabilities"][hosts.TOOL_POLICY_ENFORCED]["state"] == hosts.PROVEN
+    assert artifact["capabilities"][hosts.ARTIFACT_WRITE_GUARD]["state"] == hosts.PROVEN
     read_row = artifact["capabilities"][hosts.READ_SCOPE_CONFINED]
     assert read_row["state"] == hosts.UNKNOWN
     assert "cross-device link" in read_row["detail"]
@@ -260,7 +344,7 @@ def test_an_unplantable_hard_link_fixture_only_unproves_the_read_scope_row(tmp_p
     # reads as "the advisor role is broken".
     assert read_row["detail"].startswith("the hard-link refutation fixture could not be planted")
     assert ".toml" not in read_row["detail"]
-    # Measured ONCE for both probes, and with no probe paths at all: a
+    # Measured ONCE for all three probes, and with no probe paths at all: a
     # two-read measurement must not stand in for the three-read one.
     assert seen == [None] * (len(probes_common.DRIVER_ROLES) + 1)
 
@@ -274,7 +358,8 @@ def test_registry_dispatch_shares_measurement_only_within_one_invocation(tmp_pat
         for _ in range(2):
             artifact = host_probes.run_probes("codex", str(tmp_path), registration_dir=str(tmp_path),
                                               settings_path=str(tmp_path / "settings.json"))
-            for capability in (hosts.TOOL_POLICY_ENFORCED, hosts.READ_SCOPE_CONFINED):
+            for capability in (hosts.TOOL_POLICY_ENFORCED, hosts.READ_SCOPE_CONFINED,
+                               hosts.ARTIFACT_WRITE_GUARD):
                 assert artifact["capabilities"][capability]["state"] == hosts.PROVEN
         assert measure.call_count == 2
 
@@ -284,7 +369,9 @@ def test_the_probe_never_swallows_the_suites_launch_guard(tmp_path):
     # a live `codex` and failed would still read as a clean "unavailable".
     from scripts import codex_host
 
-    for probe in (codex_probes.probe_codex_tool_policy, codex_probes.probe_codex_read_scope):
+    for probe in (codex_probes.probe_codex_tool_policy,
+                  codex_probes.probe_codex_read_scope,
+                  codex_probes.probe_codex_write_surface):
         with pytest.raises(codex_host.LaunchRefused):
             probe("codex", settings_path=str(tmp_path / "settings.json"),
                   measure=mock.Mock(side_effect=codex_host.LaunchRefused("refused")))

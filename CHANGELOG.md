@@ -1579,7 +1579,13 @@ evidence exposed.
   Bash-path gap. For that PROVEN-boundary case, with no flag or with tool policy UNKNOWN, no
   acknowledgement is written; the gap appears only in the `tool_policy_enforced` posture line. An
   unproven boundary (including generic) still requires `--allow-unenforced`. Codex gains no
-  capability claim in this policy change.
+  capability claim in this policy-only half; the family proof below adds it.
+- **Codex now proves its reviewer write surface absent (#1622).**
+  `codex-write-surface-absent` shares the live six-shape Codex measurement and proves
+  `artifact_write_guard` only when the exact tool surfaces, Code Mode host globals/imports and MCP
+  resource routes expose no reviewer-selectable write path. Codex remains return-persist, a proven
+  omission needs no `--allow-unenforced`, and controller/CLI housekeeping at controller-selected
+  runtime paths is explicitly outside the capability.
 - **Workflow guard: the stdin and `-c` string walks read a shell's options as the shell does, and
   the guard only adds reports (#2616, #2864, #2647, #2654; #2858).** `job_defects` returns `main`'s
   findings -- a pass in which every join of the stdin and string walks answers as `main` does
