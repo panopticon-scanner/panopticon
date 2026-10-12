@@ -1,6 +1,7 @@
 """A downloaded file whose bytes become a shell program is a use of that file (#2428)."""
 import unittest
 
+import workflow_forms as forms
 import workflow_guard as guard
 
 
@@ -14,11 +15,12 @@ def defects(script):
 
 
 class TestDownloadedFileReaderHandoffs(unittest.TestCase):
-    def assert_bound(self, use, kind="command substitution"):
+    def assert_bound(self, use, kind="command substitution", generic=True):
         found = defects(GET + use + "\n")
-        self.assertEqual(1, len(found), found)
-        self.assertIn("running it", found[0])
-        self.assertIn("through a %s" % kind, found[0])
+        bound = [why for why in found if "running it" in why and "through a %s" % kind in why]
+        self.assertEqual(1, len(bound), found)
+        catch_all = [why for why in found if isinstance(why, forms.FileBound)]
+        self.assertEqual(1 if generic else 0, len(catch_all), found)
 
     def test_the_filed_command_substitution_forms_bind_the_reader_to_the_download(self):
         for use in (
@@ -42,7 +44,7 @@ class TestDownloadedFileReaderHandoffs(unittest.TestCase):
     def test_a_process_substitution_file_operand_binds_the_reader(self):
         for use in ('bash <(cat tool)', 'source <(head -n 20 tool)'):
             with self.subTest(use=use):
-                self.assert_bound(use, "process substitution")
+                self.assert_bound(use, "process substitution", generic=False)
 
     def test_an_output_process_substitution_does_not_hand_the_reader_to_the_shell(self):
         self.assertEqual([], defects(GET + 'bash >(cat tool)\n'))
@@ -50,8 +52,9 @@ class TestDownloadedFileReaderHandoffs(unittest.TestCase):
     def test_the_reader_path_uses_its_command_substitutions_working_directory(self):
         get = "curl -fsSLo a/tool %s\n" % URL
         found = defects(get + 'eval "$(cd a; cat tool)"\n')
-        self.assertEqual(1, len(found), found)
-        self.assertIn("running it through a command substitution", found[0])
+        bound = [why for why in found if "running it through a command substitution" in why]
+        self.assertEqual(1, len(bound), found)
+        self.assertEqual(1, sum(isinstance(why, forms.FileBound) for why in found), found)
 
     def test_a_check_of_that_file_before_the_handoff_clears_it(self):
         for use in (
@@ -64,21 +67,32 @@ class TestDownloadedFileReaderHandoffs(unittest.TestCase):
 
     def test_a_check_after_the_handoff_is_too_late(self):
         found = defects(GET + 'eval "$(cat tool)"\n' + CHECK)
-        self.assertEqual(1, len(found), found)
-        self.assertIn("only AFTER running it through a command substitution", found[0])
+        late = [why for why in found
+                if "only AFTER running it through a command substitution" in why]
+        self.assertEqual(1, len(late), found)
+        self.assertEqual(1, sum(isinstance(why, forms.FileBound) for why in found), found)
 
-    def test_an_unrelated_file_and_a_job_with_no_download_are_clean(self):
+    def test_an_unrelated_file_keeps_the_current_main_generic_verdict(self):
         for script in (
                 GET + 'eval "$(cat other.sh)"\n',
                 GET + 'eval "$(head -n 20 other.sh)"\n',
                 GET + 'eval "$(tail -n +1 other.sh)"\n',
                 GET + "eval \"$(sed -n '1,20p' other.sh)\"\n",
-                GET + 'eval "$(tr A-Z a-z < other.sh)"\n',
-                GET + 'bash <(cat other.sh)\n',
-                'eval "$(cat tool)"\n',
-                'bash <(cat tool)\n'):
+                GET + 'eval "$(tr A-Z a-z < other.sh)"\n'):
+            with self.subTest(script=script):
+                found = defects(script)
+                self.assertEqual(1, len(found), found)
+                self.assertIsInstance(found[0], forms.FileBound)
+
+    def test_a_job_with_no_download_and_an_unrelated_process_file_are_clean(self):
+        for script in (GET + 'bash <(cat other.sh)\n',
+                       'eval "$(cat tool)"\n',
+                       'bash <(cat tool)\n'):
             with self.subTest(script=script):
                 self.assertEqual([], defects(script))
+
+    def test_process_substitution_through_stdin_is_a_documented_preexisting_gap(self):
+        self.assertEqual([], defects(GET + 'bash < <(cat tool)\n'))
 
     def test_reader_arguments_and_discarded_output_keep_the_generic_fail_safe(self):
         for use in (
@@ -91,7 +105,7 @@ class TestDownloadedFileReaderHandoffs(unittest.TestCase):
                 self.assertTrue(found[0].startswith("runs `eval` on `$(...)`"), found)
                 self.assertNotIn("running it through", found[0])
 
-    def test_option_values_and_sed_or_tr_program_arguments_are_not_input_files(self):
+    def test_non_input_arguments_keep_the_current_main_generic_verdict(self):
         for use in (
                 'eval "$(head -n tool other.sh)"',
                 'eval "$(tail -n tool other.sh)"',
@@ -102,7 +116,9 @@ class TestDownloadedFileReaderHandoffs(unittest.TestCase):
                 'eval "$(head -n 1 other.sh < tool)"',
                 "eval \"$(sed -n '1p' other.sh < tool)\""):
             with self.subTest(use=use):
-                self.assertEqual([], defects(GET + use + "\n"))
+                found = defects(GET + use + "\n")
+                self.assertEqual(1, len(found), found)
+                self.assertIsInstance(found[0], forms.FileBound)
 
     def test_unbounded_reader_forms_keep_the_generic_fail_safe(self):
         for use in ('eval "$(cat 3<tool)"', 'eval "$(cat <<< tool)"',
@@ -126,13 +142,13 @@ class TestDownloadedFileReaderHandoffs(unittest.TestCase):
                             for why in found), found)
 
     def test_a_reader_among_other_output_still_hands_the_download_on(self):
-        for use in (
-                'eval "$(printf true; cat tool)"',
-                'eval "$(cat tool; printf true)"',
-                'eval "$(cat other.sh tool)"',
-                'sh -c "$(cat other.sh) $(cat tool)"'):
+        for use, generic in (
+                ('eval "$(printf true; cat tool)"', True),
+                ('eval "$(cat tool; printf true)"', True),
+                ('eval "$(cat other.sh tool)"', True),
+                ('sh -c "$(cat other.sh) $(cat tool)"', False)):
             with self.subTest(use=use):
-                self.assert_bound(use)
+                self.assert_bound(use, generic=generic)
 
 
 if __name__ == "__main__":

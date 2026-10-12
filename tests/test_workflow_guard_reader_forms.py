@@ -4386,17 +4386,21 @@ class TestAProgramWordContainingASubstitution(unittest.TestCase):
 
     def test_beside_a_download_both_twins_are_reported(self):
         # Bash 3.2.57, 5.2.21 and dash run the download in both. Each is the
-        # `Idle` sentence of its own rule at #2486's base. #2428 moves the literal
-        # word to the source-bound file-reader use; the value's candidate stays unread.
+        # `Idle` sentence of its own rule at #2486's base. #2428 adds the literal
+        # word's source-bound file-reader use beside that existing sentence; the
+        # value's candidate stays unread.
         prog = "curl -fsSLo prog.sh %stool\n" % URL
         candidate = defects(prog + 'X=-c\nsh $X "$(cat prog.sh)"\n')
         self.assertEqual(1, len(candidate), candidate)
         self.assertTrue(candidate[0][1].startswith("passes `sh` `$X`"), candidate)
         self.assertIsInstance(candidate[0][1], wg.Idle)
         literal = defects(prog + 'sh -c "$(cat prog.sh)"\n')
-        self.assertEqual(1, len(literal), literal)
-        self.assertIn("running it through a command substitution handed to `sh -c`", literal[0][1])
-        self.assertNotIsInstance(literal[0][1], wg.Idle)
+        generic = [why for _step, why in literal if isinstance(why, wg.Idle)]
+        bound = [why for _step, why in literal
+                 if "running it through a command substitution handed to `sh -c`" in why]
+        self.assertEqual(1, len(generic), literal)
+        self.assertEqual(1, len(bound), literal)
+        self.assertNotIsInstance(bound[0], wg.Idle)
 
     def test_the_literal_dash_c_form_is_read_since_2486(self):
         # The literal path reads a program word holding a `$(...)` with the
@@ -4670,8 +4674,8 @@ class TestADynamicProgramWordALiteralShell(unittest.TestCase):
         # 3.2.57, 5.2.21 and dash run the download in every one (dash prints
         # nothing for `$(< f)`, so there only the bashes do; zsh runs its
         # own). `sudo` is a stub here, never the real one.
-        # #2428 moves these exact file-reader rows from the generic `Idle` catch-all to the
-        # downloaded path they read, so a checksum of that path can clear the use.
+        # #2428 adds the downloaded path these exact file-reader rows read beside the generic
+        # `Idle` catch-all, so a checksum of that path can clear both verdicts.
         prog = "curl -fsSLo prog.sh %stool\n" % URL
         for script, runner in ((prog + 'eval "$(cat prog.sh)"\n', "eval"),
                                (prog + 'sh -c "`cat prog.sh`"\n', "sh -c"),
@@ -4687,7 +4691,9 @@ class TestADynamicProgramWordALiteralShell(unittest.TestCase):
             with self.subTest(script=script):
                 found = defects(script)
                 bound = [why for _step, why in found if "running it through a command substitution" in why]
+                generic = [why for _step, why in found if isinstance(why, wg.Idle)]
                 self.assertEqual(1, len(bound), found)
+                self.assertEqual(1, len(generic), found)
                 self.assertIn("handed to `%s`" % runner, bound[0])
                 self.assertNotIsInstance(bound[0], wg.Idle)
         # The control: the download run by its name, loud.
@@ -4710,10 +4716,13 @@ class TestADynamicProgramWordALiteralShell(unittest.TestCase):
                                (GET + 'sh -c "`cat tool` "\n', "sh -c")):
             with self.subTest(script=script):
                 found = defects(script)
-                self.assertEqual(1, len(found), found)
-                self.assertIn("running it through a command substitution handed to `%s`" % runner,
-                              found[0][1])
-                self.assertNotIsInstance(found[0][1], wg.Idle)
+                bound = [why for _step, why in found
+                         if "running it through a command substitution handed to `%s`" % runner
+                         in why]
+                generic = [why for _step, why in found if isinstance(why, wg.Idle)]
+                self.assertEqual(1, len(bound), found)
+                self.assertEqual(1, len(generic), found)
+                self.assertNotIsInstance(bound[0], wg.Idle)
         # A leading `;`, or a second trailing one, is text: every shell refuses the string (rc 2)
         # and runs none of the download.
         for script in (GET + 'sh -c ";$(cat tool)"\n', GET + 'sh -c "$(cat tool);;"\n'):
@@ -4791,8 +4800,8 @@ class TestALiteralStringHoldingASubstitution(unittest.TestCase):
             (4, 'zsh -c "%s"\n' % sub, piped % (URL + "i.sh")),
             (4, 'eval "%s"\n' % sub, piped % (URL + "i.sh")),
             (4, '${X:-sh} -c "%s"\n' % sub, piped % (URL + "i.sh")),
-            # 5: #2428 replaces the literal file-reader word's `_DYNAMIC` reason with its exact
-            # source-bound use; the file run by name and the value twin keep their own sentences.
+            # 5: #2428 adds the literal file-reader word's exact source-bound use beside its
+            # `_DYNAMIC` reason; the file run by name and the value twin keep their own sentences.
             (5, prog + 'sh -c "$(cat prog.sh)"\n', "fetches %si.sh -> prog.sh and running it through" % URL),
             (5, prog + "sh prog.sh\n", "fetches %si.sh -> prog.sh and running it" % URL),
             (5, prog + 'X=-c\nsh $X "$(cat prog.sh)"\n', "passes `sh` `$X` where it reads"),
@@ -4801,8 +4810,10 @@ class TestALiteralStringHoldingASubstitution(unittest.TestCase):
         for row, script, said in rows:
             with self.subTest(row=row, script=script):
                 found = defects(script)
-                self.assertEqual(1, len(found), found)
-                self.assertTrue(found[0][1].startswith(said), found)
+                matching = [why for _step, why in found if why.startswith(said)]
+                self.assertEqual(1, len(matching), found)
+                expected = 2 if script == prog + 'sh -c "$(cat prog.sh)"\n' else 1
+                self.assertEqual(expected, len(found), found)
 
     def test_row_6_alone_is_a_known_gap(self):
         # CLEAN, though all three fetch and run the download: the dynamic twin of #2486, filed

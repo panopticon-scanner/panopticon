@@ -1772,16 +1772,18 @@ class TestAPrinterThroughASubstitution(unittest.TestCase):
         # tool')"` (b5 b3 dash gh: F- F- F- F-), e06b with `true` first (FR FR FR FR), e07 a
         # pipeline `eval "$(echo 'sh tool' | cat)"` (FR FR FR FR), e14/e14b a printer whose output
         # leaves the substitution `sh -c "$(echo 'sh tool' >&2)"` / `> /dev/null` (F- F- F- F-),
-        # At the base, e03 `eval "$(cat prog.sh)"` (F- F- F- F-) had the same `_DYNAMIC` `Idle`;
-        # #2428 binds a file reader to its own path, so that unrelated-file twin is now CLEAN.
+        # and e03 an operand `eval "$(cat prog.sh)"` (F- F- F- F-): `_DYNAMIC`'s `Idle` beside the
+        # download, as at the base -- a fail-closed over-report where nothing runs it. #2428 keeps
+        # that generic verdict while adding an exact source-bound verdict where the paths match;
+        # narrowing the generic over-report belongs to #3059.
         for script, how in (("eval \"$(echo a; echo 'sh tool')\"\n", "eval"),
                             ("eval \"$(echo true; echo 'sh tool')\"\n", "eval"),
                             ("eval \"$(echo 'sh tool' | cat)\"\n", "eval"),
                             ("sh -c \"$(echo 'sh tool' >&2)\"\n", "sh -c"),
-                            ("sh -c \"$(echo 'sh tool' > /dev/null)\"\n", "sh -c")):
+                            ("sh -c \"$(echo 'sh tool' > /dev/null)\"\n", "sh -c"),
+                            ('eval "$(cat prog.sh)"\n', "eval")):
             with self.subTest(script=script):
                 self.assertTrue(said(defects(GET + script), self.UNREAD % how, forms._Quiet))
-        self.assertEqual([], defects(GET + 'eval "$(cat prog.sh)"\n'))
 
     def test_d13_e11_the_r_p3_corner_where_the_readings_disagree(self):
         # d13 `sh -c "$(echo 'sh\ttool')"` and e11 `eval "$(echo 'sh\ttool')"` (b5 b3 dash gh: F-

@@ -6,6 +6,10 @@ This layer sits beside `workflow_printers`: it recognizes the bounded file reade
 an `eval`/`-c` string, a printer's stdin program, or a shell's process-substitution file operand,
 and names the reader's exact path for `workflow_uses`. It does not decide whether that path is a
 download or whether a checksum clears it; those remain the use and guard layers' jobs.
+
+The process-substitution binding is deliberately limited to a shell's file operand, such as
+`bash <(cat tool)`. It does not yet follow a process substitution through stdin redirection, so
+`bash < <(cat tool)` remains the pre-existing clean gap.
 """
 from dataclasses import dataclass
 import os

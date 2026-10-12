@@ -192,8 +192,9 @@ class _Quiet(Idle):
 class FileBound(_Quiet):
     """A catch-all whose dynamic text is bounded to the named reader files (#2428).
 
-    The guard drops it in favor of the exact source-bound use. It remains only when an earlier
-    command wrote one of those files, whose generated contents may themselves name the download.
+    The guard keeps it beside an exact source-bound use so adding that use cannot clear the
+    generic verdict current main reports (#2856 r6). Its `_Quiet` base still limits it to jobs
+    where the guard reports an unverified fetch; narrowing that existing over-report is #3059.
     """
 
     files: tuple[str, ...]
@@ -204,34 +205,9 @@ class FileBound(_Quiet):
         return reason
 
 
-def file_bound_reasons(unread, stmts, working):
-    """Keep a file-bound catch-all only if an earlier command generated that reader file."""
-    def generated_paths(stage):
-        argv = command(stage.argv)
-        name = os.path.basename(argv[0]) if argv else ""
-        operands = [word for word in argv[1:] if not str(word).startswith("-")]
-        named = (operands if name in ("sponge", "tee") else
-                 [word[3:] for word in argv[1:] if str(word).startswith("of=")]
-                 if name == "dd" else [])
-        return list(stage.writes) + named
-
-    writes = []
-    for index, statement in enumerate(stmts):
-        here = working.get(index, ".")
-        writes.append(tuple(at_directory(path, here) for stage in statement.stages
-                            for path in generated_paths(stage)))
-
-    def generated(index, reason):
-        if not isinstance(reason, FileBound):
-            return True
-        here = working.get(index, ".")
-        files = tuple(at_directory(path, here) for path in reason.files)
-        prior = (path for group in writes[:index] for path in group)
-        return any(any(names_file(old, new)
-                       or os.path.basename(str(old)) == os.path.basename(str(new))
-                       for new in files) for old in prior)
-
-    return [(index, reason) for index, reason in unread if generated(index, reason)]
+def file_bound_reasons(unread, _stmts, _working):
+    """Keep the generic current-main verdict beside the new source-bound verdict (#2856 r6)."""
+    return unread
 
 
 def _runner(argv):
