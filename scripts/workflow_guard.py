@@ -202,8 +202,9 @@ live, so a change that catches one fails there and edits this list.
   `` ` ``, `"`, `\` or a newline, and a text the reader refuses, are not rendered, and the
   catch-all row for a word all substitution stays beside every such read (review C-1 to C-3);
   a `<(…)` printer `substituted` cannot spell is weighed as a piped one (`sh <(echo "$X")`, `sh <(echo
-  'sh\ttool')`), and a `>(…)` operand is taken for a `<(…)` FILE, the reader keeping no direction (`sh
-  >(echo 'sh tool')` over-reports); under `shell: sh` a `<(…)` reads as bash runs it, though dash refuses
+  'sh\ttool')`), and a `>(…)` operand is taken for a `<(…)` FILE by that printer rule, though its
+  parse now retains the direction (`sh >(echo 'sh tool')` over-reports); under `shell: sh` a `<(…)`
+  reads as bash runs it, though dash refuses
   the syntax and runs nothing (over-reports); and bash 3.2.57 races a sourced `<(…)`, often reading it
   empty, so a check `source <(…)` prints is credited where 3.2 may skip it (a 3.2-only gap; 5.2 wins).
   Any other `tee`/`cat` spelling, or a stage that rewrites the stream (`tr`, `base64 -d`), leaves the
@@ -251,8 +252,8 @@ from workflow_checks import (CHECKSUM_TOOLS as CHECKSUM_TOOLS, checks as _checks
 from workflow_fetch import (Fetch, _describe, _remedy, compound_output, compound_streamed_fetch,
                             forwarded_consumer, is_forwarded_tee, streams_to_executor)
 from workflow_forms import (FETCHERS, SHELL_PROGRAM, Idle, Inlined, Reach, Unsure, at_directory,
-                            carried, compound_stream_consumer, flattened, kept, located,
-                            names_file, parse_fetch, regions, stdin_program, step_credit,
+                            carried, compound_stream_consumer, file_bound_reasons, flattened, kept,
+                            located, names_file, parse_fetch, regions, stdin_program, step_credit,
                             streamed_fetch as streamed_fetch, unbound, unread_program,
                             working_directories)
 from workflow_printers import fed, operand
@@ -522,6 +523,7 @@ def _defects(stmts, conditions=None, credit=None, walked=None, working=None, sco
     working, conditions = working or {}, conditions or {}
     checks = _checks(stmts, credit, working)
     fetched, unread = walked or _walk(stmts, stream_exec=True)
+    unread = file_bound_reasons(unread, stmts, working)
     found = [(index, why, fetch) for index, fetch in fetched
              if (why := _defect(fetch, index, stmts, checks, conditions, working=working,
                                 scopes=scopes))]

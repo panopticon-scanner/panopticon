@@ -42,6 +42,9 @@ it, the stages in front of it in its pipeline (#2333, #2478):
 live in `scripts/workflow_program_strings.py` (#3011), split out at this module's size and imported back
 here, so no caller moved.
 
+The source-bound file readers that feed those programs live in
+`scripts/workflow_file_readers.py` (#2428) and are re-exported here for the same reason.
+
 `workflow_forms` imports all but `stdin_command` (the guard's) and `Opaque`: its `flattened` reads
 each script found here in place of the command handed it -- a stdin one under its reader's `-e`
 (`runs_under`), and with no check in it counted where it has none, behind a string, under a `$`
@@ -58,6 +61,13 @@ import os
 
 import shell_lex
 import shell_reader
+from workflow_file_readers import (FileHandoff as FileHandoff,
+                                   file_handoffs as file_handoffs,
+                                   file_program_files as file_program_files,
+                                   file_stdin_files as file_stdin_files,
+                                   reader_files as reader_files,
+                                   redirection_handoffs as redirection_handoffs,
+                                   statement_file_handoffs as statement_file_handoffs)
 from workflow_options import (SET_OPTION_NAMES as SET_OPTION_NAMES, SET_OPTIONS as SET_OPTIONS,
                               SHELL_OPTION_NAMES as SHELL_OPTION_NAMES,
                               SHELL_OPTIONS as SHELL_OPTIONS, VALUE_OPTIONS, _BARE as _BARE,

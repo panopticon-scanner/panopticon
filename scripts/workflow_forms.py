@@ -84,8 +84,9 @@ from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
                                names_file as names_file, same_file as same_file,
                                working_directories as working_directories)
 from workflow_programs import (SHELL_PROGRAM as SHELL_PROGRAM, VALUE_PROGRAM, Named, Opaque,
-                               candidates, dynamic_program, scripts, stdin_program as stdin_program,
-                               stdin_reader, stdin_scripts, runs_under, unprinted as unprinted, worded)
+                               candidates, dynamic_program, file_program_files, file_stdin_files,
+                               scripts, stdin_program as stdin_program, stdin_reader, stdin_scripts,
+                               runs_under, unprinted as unprinted, worded)
 from workflow_stdin import BoundStdin, bound_stdin as bound_stdin, mark_stdin
 
 
@@ -197,6 +198,27 @@ class _Quiet(Idle):
     the download -- `echo "$x" | sh` and `sh -c "$x"` are its own."""
 
 
+class FileBound(_Quiet):
+    """A catch-all whose dynamic text is bounded to the named reader files (#2428).
+
+    The guard keeps it beside an exact source-bound use so adding that use cannot clear the
+    generic verdict current main reports (#2856 r6). Its `_Quiet` base still limits it to jobs
+    where the guard reports an unverified fetch; narrowing that existing over-report is #3059.
+    """
+
+    files: tuple[str, ...]
+
+    def __new__(cls, text, files):
+        reason = super().__new__(cls, text)
+        reason.files = tuple(map(str, files))
+        return reason
+
+
+def file_bound_reasons(unread, _stmts, _working):
+    """Keep the generic current-main verdict beside the new source-bound verdict (#2856 r6)."""
+    return unread
+
+
 def _runner(argv):
     """A script's runner as `flattened` names it: a `$` word as written (#2473), else a basename."""
     return (shell_reader.readable(argv[0]) if stdin_program(argv) == VALUE_PROGRAM
@@ -257,6 +279,8 @@ def unread_program(argv, stage, walk, inside, before=None, shell=None):
     handed = inside and substitution_script(argv, stage, walk, before, shell)
     (value, words), printer = candidates(argv), unprinted(argv, stage, before, shell)
     how, bare = (None, None) if handed else dynamic_program(argv)
+    bare_files = file_program_files(bare)
+    printer_files = file_stdin_files(stage, before) if printer else ()
     if shell_reader.unresolved_wrapper(stage.argv) or not (handed or words or printer or bare):
         return handed or None           # an unresolved command is reported whole
     said = words and _weighed((
@@ -273,10 +297,13 @@ def unread_program(argv, stage, walk, inside, before=None, shell=None):
          and (not shell_reader.is_marker(w) or shell_reader.has_substitution(w))], walk)
     if (handed or printer) and (not said or isinstance(said, Idle) or stdin_reader(argv) is not None
                                 or handed and scripts(argv) and not isinstance(handed, Idle)):
-        return handed or _weighed(_PRINTED % (os.path.basename(argv[0]), os.path.basename(
+        answer = handed or _weighed(_PRINTED % (os.path.basename(argv[0]), os.path.basename(
             shell_reader.readable(printer[0]))), list(printer[1:]), walk, _Quiet)
-    return said or _weighed(            # the LAST resort (r0 finding 1), its printer weighed (#2955)
+        return (FileBound(answer, printer_files)
+                if printer_files and isinstance(answer, _Quiet) else answer)
+    answer = said or _weighed(          # the LAST resort (r0 finding 1), its printer weighed (#2955)
         _DYNAMIC % (how, shell_reader.readable(bare).strip()), worded(bare), walk, _Quiet)
+    return FileBound(answer, bare_files) if bare_files and isinstance(answer, _Quiet) else answer
 
 
 _DYNAMIC = ("runs `%s` on `%s`, a program this guard does not follow -- the word spells no "

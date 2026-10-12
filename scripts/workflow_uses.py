@@ -24,7 +24,8 @@ from workflow_checks import inside
 from workflow_forms import (BIN_DIRS, CONTAINERS, at_directory, chmod_executable,
                             chmod_targets, covers, described, in_container, may_run,
                             same_file, stdin_program)
-from workflow_programs import _SHELL_STRING, VALUE_PROGRAM, scripts
+from workflow_programs import (_SHELL_STRING, VALUE_PROGRAM, reader_files,
+                               redirection_handoffs, scripts)
 from workflow_printers import _cat_reads_stdin
 from workflow_use_scopes import (_COMPOUNDS as _COMPOUNDS, _body_end, _forked,
                                  _function_changes, _function_ranges,
@@ -271,12 +272,21 @@ def copies(statement, names, directory):
     return new
 
 
-def use(statement, position, stage, argv, dest, directory, bound=frozenset()):
-    """How this stage uses `dest`, including whole bound value words."""
+def use(statement, position, stage, argv, dest, directory, bound=frozenset(), handoff=None):
+    """How this stage uses `dest`, including whole bound value words and program hand-offs."""
     wrappers = shell_reader.wrapper_words(stage.argv)
     if any(_reference(word) in bound or
            may_run(at_directory(word, directory, True), dest) for word in wrappers):
         return "running it"
+    if not argv:
+        if not handoff:
+            return None
+    for word, source in redirection_handoffs(argv, stage, statement.stages[:position]):
+        if covers(at_directory(word, directory), dest):
+            return "running it through a %s handed to `%s`" % (source.kind, source.runner)
+    if handoff and any(covers(at_directory(word, directory), dest)
+                       for word in reader_files(stage, argv)):
+        return "running it through a %s handed to `%s`" % (handoff.kind, handoff.runner)
     if not argv:
         return None
     argv, handed, recursive = described(statement, position, stage, argv)
@@ -534,15 +544,16 @@ def uses(stmts, dest, after, working=None, scopes=None):
         in_definition = index in occupied
         bound = set() if in_definition else _live(named, positional, directory)
         how, table = None, None
-        for point, inner, position, stage, where, here in inside(
+        for point, inner, position, stage, where, here, handoff in inside(
                 statement, index, directory=directory, scope=index):
             argv = command(stage.argv)
             call = not in_definition and argv and argv[0] in functions
             for name in sorted(names):
-                how = use(inner, position, stage, argv, name, here, bound)
+                how = use(inner, position, stage, argv, name, here, bound, handoff)
                 if not how and (call or any("$" in word for word in argv)):
                     table = table or static_values(stmts, index, working, scopes)
-                    how = next(filter(None, (use(inner, position, stage, made, name, here, bound)
+                    how = next(filter(None, (use(inner, position, stage, made, name, here, bound,
+                                                  handoff)
                                              for made in _resolved(argv, table))), None)
                 if not how and call:
                     how = _function_use(stmts, functions[argv[0]], argv[1:], name, here, named,
@@ -553,7 +564,7 @@ def uses(stmts, dest, after, working=None, scopes=None):
                         how += " (as `%s`, copied from it earlier)" % shown
                     break
             if how:
-                out.append((point, how + where))
+                out.append((point, how + ("" if handoff else where)))
                 break
         if not in_definition and len(statement.stages) == 1:
             stage = statement.stages[0]
