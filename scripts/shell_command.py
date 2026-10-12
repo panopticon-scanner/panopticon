@@ -20,15 +20,15 @@ import itertools
 import os
 import re
 
-from shell_defaults import (OPTIONAL_NEXT as OPTIONAL_NEXT, WALKED_DEFAULTS as WALKED_DEFAULTS,
-                            _ALL as _ALL, _DEFAULTS as _DEFAULTS,
-                            _FETCHERS as _FETCHERS, _HALF_CAP as _HALF_CAP, _HALVES as _HALVES,
-                            _INTERPRETERS as _INTERPRETERS, _OPTIONAL as _OPTIONAL,
+from shell_defaults import (OPTIONAL_NEXT as OPTIONAL_NEXT, WALKED_DEFAULTS as WALKED_DEFAULTS, _set as _set,
+                            _ALL as _ALL, _DEFAULTS as _DEFAULTS, _NOTHING as _NOTHING, _SPLAT as _SPLAT,
+                            _FETCHERS as _FETCHERS, _HALF_CAP as _HALF_CAP, _HALVES as _HALVES, _drops as _drops,
+                            _INTERPRETERS as _INTERPRETERS, _OPTIONAL as _OPTIONAL, _vanishing as _vanishing,
                             _PARAMETER as _PARAMETER, _SHELLS as _SHELLS, _VANISHING as _VANISHING,
                             _THROUGH as _THROUGH, _WHOLE_DEFAULTS as _WHOLE_DEFAULTS, _alternate as _alternate,
-                            _default_words as _default_words, _half as _half, _masks as _masks,
-                            _optional as _optional, _shell_default as _shell_default,
-                            _strips as _strips, _through as _through)
+                            _default_words as _default_words, _half as _half, _masks as _masks, _DROPPED as _DROPPED,
+                            _optional as _optional, _shell_default as _shell_default, PRINTERS_NEXT as PRINTERS_NEXT,
+                            _strips as _strips, _through as _through, _SET_DEFAULT as _SET_DEFAULT)
 from shell_patterns import shell_words
 from shell_quote import Unreadable
 from shell_tokens import _Token, has_substitution, is_arm, readable, spelled
@@ -154,7 +154,7 @@ def _command_result(argv, optional=True, finds=False, written=None):
         # assignment, a keyword, an operand -- is `main`'s (#2856 round 8).
         if (whole := getattr(argv[0], "whole", None)) is not None:
             span, front = getattr(argv[0], "span", 1), False
-            if vanishing := _VANISHING.fullmatch(whole):
+            if vanishing := _vanishing(whole):
                 # Bash may expand it to nothing, the literal glued after the `}` or none, and run the
                 # next word (`${X:+/usr/bin/env true} sh`, `${X#env true}sh -c`), or, its name set, an
                 # alternate's W (`X=1; ${X:+sh -c} '…'`) -- for `-` and `=`, its name unset, the
@@ -167,8 +167,8 @@ def _command_result(argv, optional=True, finds=False, written=None):
                 # pattern's or a case change's other half is the name's own value, which no half
                 # names (#2899).
                 # The guard asks a stage's command many times: its halves are read once for its words.
-                halves = getattr(argv[0], "halves", {})
-                if (rest := (_THROUGH["on"], *map(str, argv[span:]))) not in halves:    # each fold's own reading
+                halves = getattr(argv[0], "halves", {})                                 # each fold's own reading
+                if (rest := (_THROUGH["on"], _DROPPED in _HALVES["empty"], *map(str, argv[span:]))) not in halves:
                     empty = ([spelled(vanishing[3], whole)] if vanishing[3] else []) + argv[span:]
                     alternate = _alternate(argv, whole, span) if vanishing[2][-1:] in "+-=" else None
                     # `$-` and `$0` are never unset: `${0+W}` is always its W, and `${--W}` never is.
@@ -200,7 +200,7 @@ def _command_result(argv, optional=True, finds=False, written=None):
             del argv[:dropped]                  # bash drops them, or they hand on (#2472)
             front = False                       # and reads the next word as a command's, never as a keyword
             continue
-        if words := None if heads else _shell_default(argv[0]):
+        if words := None if heads else _shell_default(argv[0], argv):
             argv[0:1] = [Defaulted(words[0]), *words[1:]]   # the NAME, marked as unwritten
         head = os.path.basename(argv[0])
         if (argv[0] == "builtin" or head == "jobs") and (named := _runs_builtin(argv, where, optional)):
@@ -334,7 +334,7 @@ def _folds(unsure):
     met a `find` with an action in them, each of those follows again with each action in its `find`'s
     place (#2935 round 3: `main`'s reading is never lost, and the guard REPORTs where either reads a
     defect)."""
-    _HALVES.update(empty=frozenset(), words={}, both=False, on=True)
+    _HALVES.update(empty=frozenset(), words={}, both=False, on=True, drops=False)
     _ACTIONS["acts"] = False
     try:
         for body in range(1 + _BODY_FOLDS):     # `main`'s, then at most `_BODY_FOLDS` others (`body_read`)
@@ -356,7 +356,7 @@ def _folds(unsure):
             if not _BODIES["more"]:
                 return
     finally:
-        _HALVES.update(empty=frozenset(), words={}, both=False, on=False)
+        _HALVES.update(empty=frozenset(), words={}, both=False, on=False, drops=False)
         _ACTIONS.update(_NO_FOLD)
         _BODIES.update(at=0, more=False)
 

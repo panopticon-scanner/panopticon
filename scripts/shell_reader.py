@@ -113,6 +113,9 @@ _DECLARATIONS = ("declare", "typeset", "local", "export", "readonly")
 _NAMED = "\ue005"
 _WORD = re.compile(r"""(?:[^ \t\r\n'"\\]|\\.|'[^']*'|"(?:[^"\\]|\\.)*")+""", re.S)
 _SPELLED = re.compile(r"""["'\\]*[A-Za-z_](?:["'\\]*[A-Za-z0-9_])*["'\\]*(?:\[[^]]*\]["'\\]*)?(?:\+["'\\]*)?=""")
+# A `$` word written whole in double quotes (`_stage`'s `double`): what stands between them. Read once for a stage,
+# as a search for each kept word's own spelling costs the square of a long stage's length.
+_DOUBLE = re.compile(r'"(\$[^"\\\s]*)"')
 # The paths of N a carry reads as N, past slashes or a climb: `//dev/fd/N`, `../proc/thread-self/fd/N` (#2881)
 _FD_SPELLINGS = re.compile(r"^(?:/+|(?:\.\./+)+)(?:dev|proc/(?:thread-)?self)/+fd/")
 
@@ -270,6 +273,7 @@ def _stage(text, context):
     # each read as any word is; the first carries the whole word and how many pieces it spans,
     # which only the command word reads (`shell_command._command_result`, #2731).
     pieces: list[tuple[str, str | None, int]] = []
+    doubles: set[str] | None = None
     for raw in tokens:
         parts = ([part for part in raw.split(_BLANK) if part] or [raw]) if (
             _BLANK in raw and getattr(context, "blanks", True)) else [raw]
@@ -288,6 +292,10 @@ def _stage(text, context):
             setattr(word, "spelled", context.token(plain.replace(_ESCAPED, "")))
         elif raw.count(QUOTED_DOLLAR) == plain.count("$") > 0 and not _markers(word):
             word = kept(word)               # every `$` of it quoted: bash keeps the word (#2472)
+            # ...and where the quotes are double ones around the whole of it, `"$@"` is no word at all (#3002);
+            # in single quotes or behind a backslash it is the two characters (`shell_defaults._SPLAT`).
+            doubles = set(_DOUBLE.findall(text)) if doubles is None else doubles
+            setattr(word, "double", plain in doubles)
         if named:                           # `"X=1"`, `X\=1`: a command of that name (#2480)
             word = word if isinstance(word, _Token) else _Token(word, {})
             setattr(word, "quoted", True)

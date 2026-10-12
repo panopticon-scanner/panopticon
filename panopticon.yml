@@ -656,6 +656,7 @@ groups:
       - tests/test_shell_wrappers.py
       - tests/test_workflow_guard_lexer_heredocs.py
       - tests/test_workflow_behind_a_wrapper.py
+      - tests/test_workflow_words_that_are_nothing.py
       panels:
       - SEC
     WorkflowGuard:

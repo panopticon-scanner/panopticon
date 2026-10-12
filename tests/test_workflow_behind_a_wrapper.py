@@ -586,10 +586,11 @@ class TestWhatStaysForOtherIssues(unittest.TestCase):
         self.assertEqual(BEFORE, marks("doas -s eval '%s'" % P))
         self.assertEqual(CLEAN, marks("doas eval '%s'" % P))
 
-    def test_a_default_whose_name_the_step_sets_to_command(self):
-        # Truth: runs, every one (`command eval 'P'`). CLEAN on `main` too: #2997 leaves a default naming a
-        # wrapper unread in front of `eval` whatever the step did to its name. Reported with this PR.
-        self.assertEqual(CLEAN, marks("S=command\n${S:-sudo} eval '%s'" % P))
+    def test_a_default_whose_name_the_step_sets_to_command_was_3038(self):
+        # Truth: runs, every one (`command eval 'P'`). CLEAN on `main` too: #2997 left a default naming a
+        # wrapper unread in front of `eval` whatever the step did to its name. Reported with this PR, as #3038,
+        # which moved the row: the second walk reads the names a job's steps set to `command`.
+        self.assertEqual(WALKED, marks("S=command\n${S:-sudo} eval '%s'" % P))
 
     def test_an_eval_another_process_runs(self):
         # Truth: `T` stays and `t` runs, every one. #3032 (an `eval`'s text is read as the step's own wherever

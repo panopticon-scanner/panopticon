@@ -17,7 +17,7 @@ import re
 import shlex
 
 from shell_quote import ansi_c
-from shell_command import CONDITIONS, KEYWORDS, fronts, _ASSIGNMENT, _NAME, _PARAMETER
+from shell_command import CONDITIONS, KEYWORDS, fronts, _ASSIGNMENT, _NAME, _NOTHING, _OPTIONAL, _PARAMETER, _SPLAT
 
 
 _REDIRECT = re.compile(r"<<<|<>|&>>|&>|>>|>\||>&|<&|>|<")
@@ -138,6 +138,11 @@ def _split(text, context):
     # stage: bash makes one word of `^(x|y)$`, and ending it at that `|` left the `)` closing a
     # group nothing had opened -- the unbalanced count #2334 reads as a lost list.
     cond, at_head, in_front = 0, True, True
+    # Whether the next word may still be the command though `in_front` has ended: every word closed since is one
+    # bash may make nothing of (`_OPTIONAL`, `_NOTHING`, a quoted `_SPLAT`), so a default or an alternate there is
+    # kept whole too, as the first word is (#3002: `$T ${S:+sudo -E} sh -c 'P'`). Not behind a word kept whole
+    # itself: the second such word of a stage is #2976's.
+    leads = True
     # `! { ... }`: bash negates the GROUP's status, and errexit is off for every command inside
     # a negated compound, so each statement the group holds is read under the `!` (#2664, the
     # fix round: the `{`-ends-its-statement step above stranded the `!` on `{` alone). One
@@ -145,11 +150,11 @@ def _split(text, context):
     negations: list[bool] = []
 
     def end_stage():
-        nonlocal header_words, header_live, header_at, word_start, redirect_target, at_head, in_front
+        nonlocal header_words, header_live, header_at, word_start, redirect_target, at_head, in_front, leads
         stages.append("".join(buf))
         del buf[:]
         header_words, header_live, header_at, word_start = 0, True, 0, 0
-        redirect_target, at_head, in_front = False, True, True
+        redirect_target, at_head, in_front, leads = False, True, True, True
 
     def end_statement(separator):
         nonlocal cond
@@ -213,7 +218,7 @@ def _split(text, context):
         # subject -- anywhere else shlex splits it `main`'s way, as it always did. The scan runs
         # only there, behind those tests (round 9). Behind a function's header too (`in_front`,
         # #2954), a default or an alternate alone: a body's first word on its header's line.
-        if text.startswith("${", i) and getattr(context, "blanks", True) and in_front and (
+        if text.startswith("${", i) and getattr(context, "blanks", True) and (in_front or leads) and (
                 len(buf) == word_start) and "".join(buf).split()[-1:] != ["case"] and (
                 bare := (at_head or _PARAMETER.match(text, i)) and _bare_blanks(text, i)):
             # An unquoted `${X:-bash -s}` is one word to the reader as to bash, which
@@ -238,6 +243,9 @@ def _split(text, context):
                 cond = int(closed == "[[")
             at_head = at_head and bool(not closed or closed in KEYWORDS
                                        or _ASSIGNMENT.match(closed))
+            leads = (in_front or leads) and _BLANK not in closed and bool(
+                fronts(closed, in_front, text, i) or _OPTIONAL.fullmatch(closed) or _NOTHING.fullmatch(closed)
+                or closed[:1] == '"' == closed[-1:] and _SPLAT.fullmatch(closed[1:-1]))
             in_front = in_front and fronts(closed, in_front, text, i)
             if header_live and not header_words and closed not in ("case", "for", "in") and (
                     in_front and not _ASSIGNMENT.match(closed) or closed == "time"):
