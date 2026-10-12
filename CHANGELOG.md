@@ -25,6 +25,31 @@ evidence exposed.
   direct command-substitution forms under all three, and for the process-substitution target
   under both bashes; dash refuses that syntax. It never marked the output-side or unrelated-file
   controls; the failing checksum control ran and stopped the payload under every shell.
+- **`scripts/workflow_options.py` splits the readers of a word in a shell's option slot into
+  `scripts/workflow_option_slots.py` (for #2889, programs lane).** A pure move at the module's size
+  (699 of its 700 lines), in two pieces, each byte for byte with the comments above it and the two
+  in their old order: lines 534 to 586, the patterns `_ONE_PARAMETER`, `_ONE_DEFAULT` and
+  `_DEFAULT_PARAMETER` with `_one_word` and `_literal`, which the second walk asks of a word that
+  may expand (#2858); and lines 664 to 699, `_VALUE` and `_value`, `_BARE` and `_before_operand`,
+  and `_may_spell_option`, the three readers of a value where a shell reads its options (#2344).
+  The ten names are a leaf of the module -- none reads one of the 38 defined outside them -- so
+  the new module imports `re` and `shell_reader` and nothing from `workflow_options`, which
+  imports every moved name back under its own; `workflow_programs` re-exports the five it did
+  before. No caller moved and no test moved. #2858's watch table (`WALK_ONLY`) patches each of
+  the walk's readers on the module that LOOKS IT UP: the two that moved are looked up by readers
+  that stayed (`_run`, `_in_every_reading`, `_stdin_walk`, `_value_after_dash_c`), and no reader
+  that moved calls anything the table watches; its tables are watched by object, every binding
+  wrapped, and the three patterns are one object under both modules' names. The new test module
+  holds both facts. Before the first push every test module that reads `workflow_options` or
+  `workflow_programs` was run on the move. No verdict changes: on 6,180 rows in 34 sets -- the row
+  sets of #2955, #2963 and #2997, and the probes behind #3002, #3003 and #3007 -- every finding of
+  every row, its name and its reason, is the same under `main`'s scripts and the move's, under
+  each of the five `shell:` settings and in each of three readings (the job, its main pass, its
+  walk pass): 92,700 cells holding 56,528 findings under each tree, and the two dumps are
+  equal byte for byte; and the eleven grids of #3019, #3020 and #2889, 14,238 rows that put an
+  expansion in or beside a shell's option words, read the same under each of two pinned markers,
+  marks and findings. The room is for #2889's rule, the next change to this module. Sizes:
+  699 -> 612, and 112 for the new module.
 - **Workflow reader: who runs the word behind a wrapper (#2670, #2836).** `env eval 'curl … | sh'`
   was reported though no shell runs it, and `T=t; curl -o t U; env unset T; sh $T` read CLEAN
   though every shell without `-e` runs the download: the reader read a builtin through any
