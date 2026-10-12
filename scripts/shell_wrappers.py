@@ -49,6 +49,96 @@ BUILTINS = frozenset((
     "fc", "fg", "getopts", "hash", "help", "history", "jobs", "kill", "let", "local", "logout", "mapfile", "popd",
     "printf", "pushd", "pwd", "read", "readarray", "readonly", "return", "set", "shift", "shopt", "source", "suspend",
     "test", "times", "trap", "true", "type", "typeset", "ulimit", "umask", "unalias", "unset", "wait"))
+# What a builtin's name is to something other than the step's own shell (#2670). A wrapper that execs looks for a
+# PROGRAM. `echo`, `test` and their kind are programs that do the builtin's work. `command` and `jobs` are scripts
+# on macOS (`builtin command "$@"` under /bin/sh) that hand the words behind them to a shell of their own
+# (`HANDS_ON`). Every other builtin's name is a command not found there, or a script that acts on a child of its
+# own and so on nothing of the step. A shell handed the words (`sudo -s`, those two scripts) runs a builtin in
+# ITSELF: `eval`, `.` and `source` read a text there, and `builtin` runs a builtin (`READS`).
+PROGRAMS = frozenset(("[", "echo", "false", "kill", "printf", "pwd", "test", "true"))
+HANDS_ON = frozenset(("command", "jobs"))
+READS = frozenset((".", "builtin", "eval", "source"))
+
+
+# The wrappers' names the steps of the job now being read define as a function or an alias, and None outside a
+# job's read (`shadows`, `shell_command.folds`; #2670). `sudo() { "$@"; }` is how a step runs its commands where
+# there is no `sudo`, and behind that word `eval 'P'` runs: such a word may not be the program it names.
+_SHADOWED: "dict[str, set[str] | None]" = {"names": None}
+_NAMES = "|".join(WRAPPERS)
+_DEFINES = re.compile(r"(?<![\w.-])(?:(%s)[ \t]*\([ \t]*\)|function[ \t]+(%s)(?![\w.-]))" % (_NAMES, _NAMES))
+# An `alias` and the words of its command, each read once (a search from every `alias` of a long line is
+# quadratic), then each `NAME=` among them.
+_ALIASES, _ALIASED = re.compile(r"(?<![\w.-])alias\b([^\n;&|]*)"), re.compile(r"(?<![\w.-])(%s)=" % _NAMES)
+
+
+def defined(text):
+    """The wrappers' names `text` defines as a function (`sudo()`, `function sudo`) or an alias (`alias
+    sudo=…`), wherever it spells one, a quoted string too: an `eval` may be what defines it."""
+    names = {name for found in _DEFINES.findall(text) for name in found if name}
+    return names.union(*(_ALIASED.findall(words) for words in _ALIASES.findall(text)))
+
+
+def shadows(text):
+    """Note the names `text` defines (`defined`) while a job is read (`_SHADOWED`). A step's definition is read
+    for every step after it, which a fresh shell has none of: the word then keeps `main`'s reading beside the
+    rule's, and no report is lost to it."""
+    if _SHADOWED["names"] is not None and ("(" in text or "alias" in text or "function" in text):
+        _SHADOWED["names"].update(defined(text))
+
+
+def runs_behind(where, name, through):
+    """Whether the builtin's name `name` runs anything of the words behind it where `where` reads it, not the
+    step's own shell (`behind`, #2670). A program of the name does its work (`PROGRAMS`). A wrapper that execs
+    ("exec") finds the two scripts that hand on (`HANDS_ON`) and nothing else. A shell handed the words
+    ("child") runs every builtin, in itself: `command` and `exec` run the word behind them, read in every
+    fold; what `READS` names the reader reads as the step's own once it reads it at all -- so those are read
+    in the folds that read a `builtin` through (`through`, `shell_defaults._through`) and the stage is the
+    wrapper's in the others, where what a text sets stays in the child: the guard REPORTs what either does."""
+    if name in PROGRAMS or where == "exec":
+        return name in PROGRAMS | HANDS_ON
+    return name in ("command", "exec") or name in READS and through()
+
+
+def jobs_runs(argv, has_substitution):
+    """The words `jobs` runs, `argv` its command, or []. Bash reads its options to the first word that is none
+    or a `--` -- clusters of the letters `lnprsx` -- and with an `x` among them runs the rest as a command,
+    builtins too; an `l`, `n` or `p` read BEFORE the `x`, or any other letter, is an error and nothing runs
+    (bash 5.2.21 and 3.2.57: `jobs -x -l sh t`, `jobs -xp sh t` and `jobs -rx sh t` run `sh t`; `jobs -lx sh
+    t` and `jobs -x -z sh t` run nothing). A word no grammar reads (`dynamic`) may be the `-x`, or nothing in
+    front of it (`jobs $O sh t`); behind an `x` it is the command where no `-` leads it, and options if one
+    does."""
+    seen, at = "", 1
+    while at < len(argv) and argv[at] not in ("-", "--"):
+        letters = argv[at][1:] if argv[at][:1] == "-" else None
+        if dynamic(argv[at], has_substitution):
+            letters = "x" if "x" not in seen else "" if letters is not None else None
+        if letters is None:
+            break
+        for letter in letters:
+            if letter not in "lnprsx" or letter == "x" and set(seen) & set("lnp"):
+                return []
+            seen += letter
+        at += 1
+    return argv[at + (argv[at:at + 1] == ["--"]):] if "x" in seen else []
+
+
+def behind(where, front, head, own):
+    """Who runs the word behind the wrapper `head`, and whether that word is the first a shell reads (where
+    `time` is its keyword), given who read `head` itself (`where`, `front`) and the words `own` it keeps for
+    itself (#2670): the step's own shell ("own"), a program a wrapper execs ("exec"), or a shell of its own
+    that the words are handed to ("child"). `command` is a builtin where a shell reads it and a script that
+    hands on behind a wrapper that execs; `time` the first word a shell reads is its keyword; `sudo` and `doas`
+    hand their words to a shell where told to (`-s`, `-i`, `--shell`, `--login`: sudo's and doas's own
+    manuals, which the forge's stub cannot show); every other wrapper execs a program."""
+    if head == "command":
+        return ("child" if where == "exec" else where), False
+    if head == "time" and front:
+        return where, front
+    shell = head in ("sudo", "doas") and any(word in ("--shell", "--login") or word[:1] == "-" and word[1:2] != "-"
+                                             and set(word[1:]) & set("si") for word in own)
+    return ("child", True) if shell else ("exec", False)
+
+
 _DURATION = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
 
 
