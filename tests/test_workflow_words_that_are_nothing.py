@@ -557,6 +557,15 @@ class TestThePrice(unittest.TestCase):
         # fetch alone.
         self.assertEqual(NOW, marks('%ssh -c "%s"' % (FETCH, chr(92) + '"$@' + chr(92) + '" bash t')))
 
+    def test_a_check_the_guard_does_not_credit_stops_the_step_all_the_same(self):
+        # `sha256sum -c sums` with no `sums` the guard can bind is no check to it, written out or not: the run
+        # behind a word that is nothing reports as the written run does on `main`. Truth: the check fails and the
+        # step stops under `-e`; with no `-e` the file runs.
+        self.assertEqual(BEFORE, marks("%ssha256sum -c sums\nsh t" % FETCH))
+        for front in ("$1", '"$@"', "${S#x}"):
+            with self.subTest(front=front):
+                self.assertEqual(NOW, marks("%ssha256sum -c sums\n%s sh t" % (FETCH, front)))
+
     def test_what_bash_3_2_alone_runs(self):
         # A default assigned to all of an array, and a negative subscript: bash 5.2.21 refuses both under `-e`,
         # dash has no array. Truth: bash 3.2.57 with no `-e` runs the first, both bashes with no `-e` the second.
@@ -638,6 +647,16 @@ class TestWhatStaysForOtherIssues(unittest.TestCase):
                      'S=command\n"${S:-sudo}" eval \'%s\'' % P):
             with self.subTest(text=text[:22]):
                 self.assertEqual(CLEAN, marks(text))
+
+    def test_a_default_whose_name_the_step_set_to_another_wrapper(self):
+        # `S=sudo; ${S:-env} -E sh -c 'P'` is `sudo -E sh -c 'P'`. The reader reads the wrapper the default names,
+        # and `env` takes no `-E`: it reads on through no such word. Truth: runs.
+        self.assertEqual(CLEAN, marks(step("${S:-env} -E", SHELL, "S=sudo\n")))
+
+    def test_a_quoted_default_of_the_words_the_step_set(self):
+        # `set -- sudo; "${@:-}" sh -c 'P'` is `sudo sh -c 'P'`; with no word set the quotes keep an empty one,
+        # which is why the reader does not drop it (`TestTheOtherWordsThatAreNothing`). Truth: runs.
+        self.assertEqual(CLEAN, marks(step('"${@:-}"', SHELL, "set -- sudo\n")))
 
     def test_a_default_naming_time_in_front_of_its_option(self):
         # A `time` an expansion makes is no reserved word: bash runs /usr/bin/time, which execs and runs no
