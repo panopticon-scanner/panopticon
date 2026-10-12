@@ -153,6 +153,13 @@
 #     tests into `WorkflowGuard`; `Workflows` keeps `.github/**` and the tests
 #     for those committed workflows. Measured with discovery's assignment:
 #     `WorkflowGuard` 13 after #2585's use split, `Workflows` 30.
+#   - 2026-10-11 (#3020): `WorkflowGuard` crossed the fence at 42 when #3020's
+#     option-word reader met #2857's and #2870's additions at a fold. Split out
+#     `WorkflowPrograms`, what a shell is handed as its program: the programs
+#     reader, its strings and its options, the option-word reader, and their
+#     focused tests -- the modules a programs-lane change touches together.
+#     Measured with discovery's assignment: `WorkflowPrograms` 8,
+#     `WorkflowGuard` 34.
 #
 # Fixtures: deliberately-vulnerable hostile test corpora. Redteam mode keeps
 # fixtures in review scope by design (discovery.py include_fixtures=redteam),
@@ -661,9 +668,6 @@ groups:
       - scripts/workflow_function_calls.py
       - scripts/workflow_posture.py
       - scripts/workflow_operands.py
-      - scripts/workflow_programs.py
-      - scripts/workflow_program_strings.py
-      - scripts/workflow_options.py
       - scripts/workflow_printers.py
       - scripts/workflow_printer_writes.py
       - scripts/workflow_fetch.py
@@ -686,13 +690,25 @@ groups:
       - tests/test_workflow_values.py
       - tests/test_workflow_value_expansion.py
       - tests/test_workflow_annotate.py
-      - tests/test_workflow_options.py
-      - tests/test_workflow_program_strings.py
       - tests/test_workflow_default_command_word.py
       - tests/test_workflow_word_before_a_builtin.py
-      - tests/test_workflow_plus_cluster.py
       - tests/test_workflow_alternate_in_front.py
       - tests/test_workflow_in_front_of_a_command.py
+      panels:
+      - SEC
+    WorkflowPrograms:
+      # #3020: what a shell is handed as its program -- the programs lane's
+      # readers and their focused tests, split out of `WorkflowGuard` at its fence.
+      match:
+      - scripts/workflow_programs.py
+      - scripts/workflow_program_strings.py
+      - scripts/workflow_options.py
+      - scripts/workflow_option_words.py
+      tests:
+      - tests/test_workflow_options.py
+      - tests/test_workflow_program_strings.py
+      - tests/test_workflow_plus_cluster.py
+      - tests/test_workflow_option_words.py
       panels:
       - SEC
     Workflows:
