@@ -9,8 +9,9 @@ while every shell without `-e` runs the download. The reader now asks who runs t
 wrapper that execs, a builtin's name that is no program leaves the stage the wrapper's own
 (`shell_wrappers.runs_behind`): nothing behind it is read as run, and nothing it would set is set. `echo`,
 `printf`, `test`, `[`, `true`, `false`, `pwd` and `kill` are programs too and read as before. `command` and `jobs`
-are scripts on macOS (`builtin command "$@"` under /bin/sh; Fedora ships them too) that hand their words to a shell
-of their own, so `env command eval 'P'` reports as it did: the forge has no such file, and there it is a price.
+are scripts on macOS (/usr/bin/command, /usr/bin/jobs: `builtin NAME "$@"` under /bin/sh, measured on macOS 26.4)
+that hand their words to a shell of their own, so `env command eval 'P'` reports as it did: the forge has no such
+file, and there it is a price.
 
 A shell handed the words. `sudo -s`, `-i`, `--shell` and `--login`, and `doas -s`, hand the words to a shell, and a
 shell runs a builtin -- in itself. `sudo -s eval 'P'` reports as it did, and `sudo -s unset T` unsets nothing of
@@ -107,7 +108,7 @@ EXECS = ("env", "sudo", "nice", "nohup", "exec", "setsid", "timeout 5", "stdbuf 
 # What hands the words to a shell.
 SHELLED = ("sudo -s", "sudo -i", "sudo --shell", "sudo --login", "sudo -Es", "sudo -u root -s", "doas -s", "env sudo -s",
            "sudo -s command", "sudo -s time")
-# What a line sets that a later `sh $T` rests on: (the line, whether a plain shell would then run `t`).
+# The lines that set the name a later `sh $T` rests on: behind each, a plain shell runs `sh` of nothing.
 SETS = ("unset T", "read T < /dev/null", "eval 'T=x'")
 
 
@@ -196,7 +197,8 @@ class TestAWrapperThatExecsRunsNoBuiltin(unittest.TestCase):
             with self.subTest(front=front):
                 self.assertEqual(BEFORE, marks("%s eval '%s'" % (front, P)))
                 self.assertEqual(BEFORE, marks("%s%s sh t" % (FETCH, front)))
-        self.assertEqual(WALKED, marks("env jobs -x sh -c '%s'" % P))           # `main` did not follow `jobs` at all
+        self.assertEqual(WALKED, marks("env jobs -x sh -c '%s'" % P))           # `main` did not follow `jobs` at all,
+        self.assertEqual(WALKED, marks("env command builtin eval '%s'" % P))    # nor `builtin` behind a wrapper
         self.assertEqual(WALKED, marks("env jobs -x eval '%s'" % P))            # the script's shell runs a builtin
         # By its path the script is what runs, in the step's own shell too: `/usr/bin/jobs -x eval 'echo RAN'`
         # prints RAN on macOS, and what it sets it sets in itself. (`/usr/bin/builtin` names no file anywhere.)
@@ -207,7 +209,6 @@ class TestAWrapperThatExecsRunsNoBuiltin(unittest.TestCase):
         self.assertEqual(["unset", "T"], read("jobs -x unset T", through=True))
         self.assertEqual(["env", "/usr/bin/jobs", "-x", "unset", "T"], read("env /usr/bin/jobs -x unset T", through=True))
         self.assertEqual(CLEAN, marks("/usr/bin/builtin eval '%s'" % P))
-        self.assertEqual(WALKED, marks("env command builtin eval '%s'" % P))    # nor `builtin` behind a wrapper
         # What the script's shell sets is its own: truth on macOS, `T` stays.
         self.assertEqual(BEFORE, marks("T=t\n%senv command unset T\nsh $T" % FETCH))
         self.assertEqual({"command", "jobs"}, set(shell_wrappers.HANDS_ON))
