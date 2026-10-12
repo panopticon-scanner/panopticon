@@ -23,7 +23,7 @@ capabilities).
 Claude proves that boundary with a `PreToolUse` write hook; Kimi ships its own equivalent
 (`kimi_guard_hook.py`, registered through the generated per-run `config.toml`). Those are the only
 two rows whose separate `self_write_delivery` fact is true. Codex has no self-write transport and
-does not yet claim the boundary; its roles use `delivery: return_json`. Generic and Gemini do too.
+proves the boundary by omission; its roles use `delivery: return_json`. Generic and Gemini do too.
 The delivery choice itself proves nothing. `dispatch.emit_host_agents` can only build a scoped agent
 shell for `claude`/`kimi`/`codex`. The
 refusal that follows is keyed on **measured posture, not on the host's name** (#1344 F3a):

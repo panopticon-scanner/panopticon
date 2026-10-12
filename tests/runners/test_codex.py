@@ -353,6 +353,20 @@ def test_missing_preparation_binding_or_return_delivery_never_launches(tmp_path)
     fake_run.assert_not_called()
 
 
+def test_codex_refuses_self_write_delivery_before_launch(tmp_path):
+    # #1622 obligation 5: proof by omission does not add a self-write
+    # transport.  Even with every launch precondition present, this family
+    # accepts only the controller-persisted return_json path.
+    fake_run = mock.Mock(side_effect=AssertionError("must not launch"))
+    runner = codex.Runner(runner=fake_run)
+    runner.prepare(str(tmp_path), str(tmp_path))
+    result = runner.run_entry(
+        dict(entry(), delivery=None), {base.ENV_ENTRY_ID: entry()["id"]})
+    assert not result.ok
+    assert "requires delivery: return_json" in result.error
+    fake_run.assert_not_called()
+
+
 def test_prepare_is_idempotent_and_leaves_guard_arming_to_the_loop(tmp_path):
     # The subject is the RUN directory, which is what prepare is handed and
     # what it must leave untouched; the registration fixture lives beside it.

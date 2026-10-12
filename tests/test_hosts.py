@@ -171,6 +171,7 @@ class TestDriverHostCapabilities(unittest.TestCase):
         expected = {
             hosts.TOOL_POLICY_ENFORCED: "codex-effective-tools",
             hosts.READ_SCOPE_CONFINED: "codex-read-scope",
+            hosts.ARTIFACT_WRITE_GUARD: "codex-write-surface-absent",
         }
         self.assertTrue(row.registration_dir)
         self.assertTrue(row.driver_selectable)

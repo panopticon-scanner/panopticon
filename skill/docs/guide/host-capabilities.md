@@ -77,11 +77,14 @@ because "we did not measure" and "we measured and it is off" have different reme
 the host does not CLAIM can never read `proven`, whatever an artifact on disk says; a `refuted`
 entry passes that mask untouched, since a refutation grants nothing.
 
-Codex claims only `tool_policy_enforced` and `read_scope_confined`. `codex-effective-tools`
-interrogates the installed CLI's effective headless tool surface under the launch restrictions;
-`codex-read-scope` exercises scoped allowed and denied accesses. These are real offline CLI checks,
-not paid reviewer turns, and their details name the inspected registration/runtime surfaces.
-Removing a tool restriction or widening a tested read grant must refute the corresponding probe. The
+Codex claims the three security capabilities. `codex-effective-tools` interrogates the installed
+CLI's effective headless tool surface under the launch restrictions; `codex-read-scope` exercises
+scoped allowed and denied accesses; and `codex-write-surface-absent` proves
+`artifact_write_guard` by omission. All three share one live measurement of every registered role
+and the shell-less setup fallback. These are real offline CLI checks, not paid reviewer turns, and
+their details name the inspected registration/runtime surfaces. Removing a tool restriction,
+widening a tested read grant or exposing one write route on one role refutes the corresponding
+probe. The
 reviewer prompt's own tool-policy paragraph is **rendered from that same surface** rather than
 written beside it (#1639 P14): it names `panopticon_scope`'s `read_file`, `search` and `list_files`
 with the descriptions the broker publishes and states that there is no shell — run-13 found it
@@ -95,13 +98,21 @@ Re-probing is deliberate and happens on every `driver run` — so once per `driv
 and it costs one `codex debug models --bundled` dump plus one `codex exec` per role (the five
 registered roles, plus one more measuring the shell-less setup fallback, run concurrently), all
 against a localhost fixture rather than a paid endpoint; size a long run with that in mind.
-`driver setup` costs NONE of it (#1737): it takes no `--mode`, so `settings_path` is None, and both
-Codex probes short-circuit to `unknown` before they launch anything — which is exactly why an
+`driver setup` costs NONE of it (#1737): it takes no `--mode`, so `settings_path` is None, and all
+three Codex probes short-circuit to `unknown` before they launch anything — which is exactly why an
 unenforceable Codex setup is refused with `driver loop --setup --host codex --mode headless` as its
-remedy rather than a registration command that could not change the answer. `artifact_write_guard`,
-`model_binding`, and `usage_ledger` stay unclaimed and `unknown`; today's Codex probes do not yet
-establish the complete write-surface-absence obligation, and the return-JSON bridge and measured
-token fields do not upgrade those claims.
+remedy rather than a registration command that could not change the answer.
+
+The write-absence proof checks the exact `ALL_TOOLS` and Responses surfaces; allowlists the complete
+non-ECMAScript Code Mode host-global set; rejects filesystem, process, network and `file:` imports;
+and requires the only effective MCP server to be the controller-bound `panopticon_scope`, with only
+`read_file`, `search` and `list_files`, empty resource/template lists and unsupported resource
+reads. The runner still refuses every delivery except `return_json`; the controller, not the
+reviewer, owns `out_file`, validates the returned role schema, stamps the entry identity and writes
+the artifact. The capability concerns reviewer-selectable artifact paths. Codex housekeeping under
+controller-selected runtime and `CODEX_HOME` paths is outside it; exposing an arbitrary or
+reviewer-selectable host path would refute it. `model_binding` and `usage_ledger` remain unclaimed
+and `unknown`, so a healthy headless Codex posture is three of five proven.
 
 Kimi claims all five. They are measured by the family's own probes (#1344): `kimi-shell-surface`
 (the registered shells; every tool name they allow or forbid verified against the installed CLI's
@@ -120,8 +131,8 @@ layout — the channel the runner reads, not the operator's `~/.kimi-code/sessio
 `self_write_delivery` is true only for Claude and Kimi. A write-template role self-writes only when
 that static mechanism fact and a proven `artifact_write_guard` both hold; Codex, generic and Gemini
 remain return-persist. Delivery is never evidence for the gate, so generic still refuses without
-`--allow-unenforced`. Codex's planned proof by omission covers the complete reviewer write surface,
-so it carries no Bash-path gap while remaining return-persist.
+`--allow-unenforced`. Codex's proof by omission covers the complete reviewer write surface, so it
+carries no Bash-path gap while remaining return-persist.
 
 **The posture is disclosed, and the disclosure is not gating.** An unproven capability does not sink
 `summary.gate`, `summary.coverage_certified` or `meta.integrity.integrity_ok`, and no combination of

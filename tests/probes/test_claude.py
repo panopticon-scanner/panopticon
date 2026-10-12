@@ -274,10 +274,11 @@ class TestEntryModelBoundProbe(unittest.TestCase):
                                  claude_probes.USAGE_SOURCE,
                                  claude_probes.ENTRY_MODEL_BOUND,
                                  claude_probes.READ_GUARD_ARMED,
-                                 # #1344 codex family PR (#1619): the two
-                                 # probes the codex row maps its claims to.
+                                 # #1344/#1622 Codex family: the three probes
+                                 # the Codex row maps its claims to.
                                  codex_probes.CODEX_EFFECTIVE_TOOLS,
                                  codex_probes.CODEX_READ_SCOPE,
+                                 codex_probes.CODEX_WRITE_SURFACE_ABSENT,
                                  # #1344 kimi family PR (#1620): the five
                                  # probes the kimi row maps its five claims to.
                                  kimi_probes.KIMI_SHELL_SURFACE,

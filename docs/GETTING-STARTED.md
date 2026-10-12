@@ -97,7 +97,7 @@ Read these lines before the findings:
 - It files issues to GitHub only, from a finished report, when you ask it to. No other tracker is supported or planned.
 - It does not run as a service and does not collect telemetry. Outbound calls are only the ones you ask for: your agent host; `--online` for the dependency auditors, through an allowlisting proxy; `synthesize --epss` for EPSS scores; GitHub when you file issues; and the image pulls. The scanner containers run with `--network none`.
 - It does not certify your code as secure. It certifies that the review it planned was the review it ran, and it says what it could not do.
-- When the reviewer artifact-write boundary is unproven (currently Codex and generic), write-capable roles need your explicit `--allow-unenforced`. Read the disclosure before accepting it.
+- When the reviewer artifact-write boundary is unproven (always for `generic`, or when a family probe is unknown/refuted), write-capable roles need your explicit `--allow-unenforced`. A healthy headless Codex run proves this boundary by omission. Read the disclosure before accepting it.
 
 ## Where to go next
 

@@ -216,6 +216,22 @@ class TestWriteReply(unittest.TestCase):
             self.assertEqual(json.load(fh)["domains"], ["SEC"])   # strict json: fence gone
         self.assertFalse(os.path.exists(e["out_file"] + ".tmp"))
 
+    def test_returned_content_cannot_choose_the_controller_owned_out_file(self):
+        # #1622 obligation 5: Codex controls the returned content, not the
+        # destination.  A path-shaped field remains inert JSON; write_reply
+        # persists only to the out_file already bound on the dispatch entry.
+        controlled = self._out("scout-app.json")
+        reviewer_choice = os.path.join(self.d, "reviewer-choice.json")
+        e = _entry(controlled, id="scout-app", host="codex")
+        body = {"domains": [], "files": [], "tools": [],
+                "out_file": reviewer_choice}
+        ok, reason = persist.write_reply(e, json.dumps(body))
+        self.assertTrue(ok, reason)
+        self.assertTrue(os.path.isfile(controlled))
+        self.assertFalse(os.path.exists(reviewer_choice))
+        with open(controlled, encoding="utf-8") as stream:
+            self.assertEqual(reviewer_choice, json.load(stream)["out_file"])
+
     def test_a_non_return_persist_entry_is_refused(self):
         e = _entry(self._out("findings-app-SEC.json"), delivery=None)
         ok, reason = persist.write_reply(e, "{}")
