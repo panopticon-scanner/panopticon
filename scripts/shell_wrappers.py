@@ -51,10 +51,11 @@ BUILTINS = frozenset((
     "test", "times", "trap", "true", "type", "typeset", "ulimit", "umask", "unalias", "unset", "wait"))
 # What a builtin's name is to something other than the step's own shell (#2670). A wrapper that execs looks for a
 # PROGRAM. `echo`, `test` and their kind are programs that do the builtin's work. `command` and `jobs` are scripts
-# on macOS (`builtin command "$@"` under /bin/sh) that hand the words behind them to a shell of their own
-# (`HANDS_ON`). Every other builtin's name is a command not found there, or a script that acts on a child of its
-# own and so on nothing of the step. A shell handed the words (`sudo -s`, those two scripts) runs a builtin in
-# ITSELF: `eval`, `.` and `source` read a text there, and `builtin` runs a builtin (`READS`).
+# on macOS (/usr/bin/command and /usr/bin/jobs: `builtin NAME "$@"` under /bin/sh, measured on macOS 26.4) that
+# hand the words behind them to a shell of their own (`HANDS_ON`). Every other builtin's name is a command not
+# found there, or a script that acts on a child of its own and so on nothing of the step. A shell handed the
+# words (`sudo -s`, those two scripts) runs a builtin in ITSELF: `eval`, `.` and `source` read a text there, and
+# `builtin` runs a builtin (`READS`).
 PROGRAMS = frozenset(("[", "echo", "false", "kill", "printf", "pwd", "test", "true"))
 HANDS_ON = frozenset(("command", "jobs"))
 READS = frozenset((".", "builtin", "eval", "source"))
@@ -127,9 +128,11 @@ def behind(where, front, head, own):
     `time` is its keyword), given who read `head` itself (`where`, `front`) and the words `own` it keeps for
     itself (#2670): the step's own shell ("own"), a program a wrapper execs ("exec"), or a shell of its own
     that the words are handed to ("child"). `command` is a builtin where a shell reads it and a script that
-    hands on behind a wrapper that execs; `time` the first word a shell reads is its keyword; `sudo` and `doas`
-    hand their words to a shell where told to (`-s`, `-i`, `--shell`, `--login`: sudo's and doas's own
-    manuals, which the forge's stub cannot show); every other wrapper execs a program."""
+    hands on behind a wrapper that execs; `time` the first word a shell reads is its keyword; every other
+    wrapper execs a program -- but `sudo` told to hand its words to a shell (`-s`, `-i`, `--shell`, `--login`).
+    That is DOC-PINNED, not forge-verified: sudo's manual says the command "is passed to the shell as a simple
+    command using the -c option", and the forge's `sudo` is a stand-in written from that sentence. `doas -s`
+    is read as sudo's is, though doas's manual gives `-s` no command: the reading that reports more."""
     if head == "command":
         return ("child" if where == "exec" else where), False
     if head == "time" and front:
