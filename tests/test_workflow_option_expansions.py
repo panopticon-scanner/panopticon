@@ -156,11 +156,14 @@ class TestAVariableInAnOptionWord(unittest.TestCase):
         self.assertEqual(BOTH, marks("X=c\nsh -$#$X %s\n" % P))                # a reference beside the count
 
     def test_the_other_references(self):
-        # A positional, the set, the flags, a default, a pattern removal, an indirection. Truth for `set -- c`
-        # and kin: runs.
-        for word in ("-$1", "-$@", "-$-", "-${X:-e}", "-${X#a}", "-${!X}", "-${X:0:1}", "-${A[0]}"):
+        # A positional, the set, a default, a pattern removal; and what only bash spells: an indirection, a slice,
+        # an array's member, the last argument. Truth: runs, every one -- the first five under all sixteen, the
+        # last four under every bash parent (dash refuses the spelling, or keeps no `$_`).
+        for sets, word in (("set -- c\n", "-$1"), ("set -- c\n", "-${1}"), ("set -- c\n", "-$@"), ("", "-${X:-c}"),
+                           ("X=xc\n", "-${X#x}"), ("Y=c\nX=Y\n", "-${!X}"), ("X=xc\n", "-${X:1:1}"), ("X=(c)\n", "-${X[0]}"),
+                           (": c\n", "-$_")):
             with self.subTest(word=word):
-                self.assertEqual(BOTH, marks("sh %s %s\n" % (word, P)))
+                self.assertEqual(BOTH, marks("%ssh %s %s\n" % (sets, word, P)))
                 self.assertTrue(words.lifted(argv("sh " + word)[1]))
 
 
@@ -373,7 +376,8 @@ class TestATildeWord(unittest.TestCase):
     def test_it_is_read_beside_mains_reading_of_it(self):
         # `main` read a tilde as the FIRST OPERAND, and weighed every word after a later one that may spell an
         # option. As a value it stands before the operand, which is then a later word: read alone, that reading
-        # drops a word `main` weighed (the fuzz's row: `main` reports it and the first build of this did not).
+        # drops a word `main` weighed (the fuzz's row: `main` reports it and the first build of this did not;
+        # truth: nothing, `$o` is no option).
         rest = argv("sh $o pipefail ~1 -K$s 'check' 'P'")[2:]
         self.assertEqual(["pipefail", "~1", "check", "P", "-K$s"], texts(slots._reopened(rest)))
         self.assertEqual(BOTH, marks("${X:-sh} $o pipefail ~1 -K$s '%s; %s' %s\n" % (CHECK, USE, P)))
@@ -382,6 +386,7 @@ class TestATildeWord(unittest.TestCase):
         self.assertEqual(["~", "P"], texts(slots._reopened(argv("sh $X ~ 'P'")[2:])))
         # A `$` word's stdin, after a value: `main` took the tilde for an operand, which leaves stdin the program.
         # Each pass's walk keeps that answer; read as a value alone the tilde is passed, and the `-c` takes it away.
+        # Truth: fetched only (the tilde is a directory).
         self.assertEqual(BOTH, marks("CMD=$(command -v sh)\ncurl -fsSL %s | $CMD $V ~ -c true\n" % URL))
         words_ = argv("$CMD $V ~ -c true")
         self.assertEqual([wp.VALUE_PROGRAM, wp.VALUE_PROGRAM], [wp._options(words_, 0)[0], wp._walk(words_, 0)[0]])
@@ -412,14 +417,17 @@ class TestAFetcherHandedAnExpansion(unittest.TestCase):
         self.assertEqual(CLEAN, marks("X='-qO- %s'\nwget \"$X\" | sh\n" % URL))
 
     def test_the_file_view_stays(self):
-        # The stream view is added where stdout is piped; the file `main` reads the transfer into stays. Truth: runs.
+        # The stream view is added where stdout is piped; the file `main` reads the transfer into stays. Truth: runs,
+        # the first two. The third is `main`'s own report, kept: its expansion IS the stream, so nothing lands in
+        # `i.sh` (fetched only), and the file view reports the step as it does on `main`.
         self.assertEqual(BOTH, marks("X=-q\nwget $X %s\nsh i.sh\n" % URL))
         self.assertEqual(BOTH, marks("X=-q\nwget $X %s -O tool\nsh tool\n" % URL))
         self.assertEqual({BOTH}, under("wget $(echo -qO-) %s | cat\nsh i.sh\n" % URL))
         # Nothing piped, nothing run: no report. `curl` beside an expansion is unread, as it was.
         self.assertEqual(CLEAN, marks("wget $OPTS %s\n" % URL))
         self.assertEqual(CLEAN, marks("wget -q \"$A\" \"$B\"\n"))
-        # Two URLs written out hand no option on: wget writes two files and the pipe is empty. Truth: fetched only.
+        # Two URLs written out hand no option on: wget writes two files and the pipe is empty. Truth for these
+        # three and for curl's row: fetched only.
         self.assertEqual(CLEAN, marks("wget %s %s2 | sh\n" % (URL, URL)))
         self.assertEqual(BOTH, marks("curl $OPTS %s\n" % URL))
 
@@ -692,7 +700,7 @@ class TestWhatStays(unittest.TestCase):
     def test_two_more_shapes_of_a_fetcher(self):
         # The VALUE of a written `-O` or `-o` may be `-`; and a stream only an expansion makes may be read through
         # a `<(...)`, where rule 4 adds its view to a PIPE. Open on `main` too; reported with 12 rows (Krab 2467).
-        # Truth: runs -- the first two under all sixteen, the third under both bashes.
+        # Truth: runs -- the first two under all sixteen, the third and its written twin under both bashes.
         self.assertEqual(CLEAN, marks("X=-\nwget -q -O $X %s | sh\n" % URL))
         self.assertEqual(CLEAN, marks("X=-\ncurl -fsSL -o $X %s | sh\n" % URL))
         self.assertEqual(CLEAN, marks("X=-qO-\nbash <(wget $X %s)\n" % URL))
