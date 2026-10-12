@@ -583,6 +583,12 @@ class TestPipelineStdinProvenance(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertEqual(expected, stage(script).stdin_reads)
 
+    def test_a_read_write_stdin_keeps_one_read_and_one_write_fact(self):
+        parsed = stage("cat 3<>tool <&3")
+        self.assertEqual(["tool"], parsed.writes)
+        self.assertEqual([], parsed.reads)
+        self.assertEqual(("tool",), parsed.stdin_reads)
+
     def test_other_descriptor_reads_leave_stdin_connected(self):
         self.assertTrue(stage("cat 3<local").stdin_from_pipe)
         self.assertFalse(stage("cat <local").stdin_from_pipe)
