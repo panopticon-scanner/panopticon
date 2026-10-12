@@ -37,8 +37,9 @@ from workflow_values import (Values as Values, assigned as assigned, record as r
 from workflow_values import PAST, _as_word, _for_parts, _literals, emptied
 
 
-INTERPRETERS = ("sh", "bash", "dash", "zsh", "ksh", "ash", "python", "python3",
-                "perl", "ruby", "node", "php", "pwsh", "eval", "source", ".")
+INTERPRETERS = ("sh", "bash", "dash", "zsh", "ksh", "ash", "csh", "tcsh", "fish", "mksh",
+                "python", "python3", "perl", "ruby", "node", "php", "pwsh", "eval", "source",
+                ".")
 # Unpacking a downloaded archive executes its bytes too: they choose what
 # lands on disk and under what name.
 UNPACKERS = ("tar", "unzip", "install", "gunzip", "bsdtar")

@@ -1187,6 +1187,29 @@ class TestADownloadRunFromADollarSpelledRedirection(unittest.TestCase):
         self.assertEqual(1, len(here_string), here_string)
         self.assertNotIn("from standard input", here_string[0])
 
+    def test_2792_other_named_shells_run_a_download_from_stdin_or_a_file(self):
+        for reader in ("csh", "tcsh", "fish", "mksh"):
+            for operand in ("< x.sh", "x.sh"):
+                script = self.GET + "%s %s\n" % (reader, operand)
+                for shell in (None, "bash", "sh", "bash {0}", "sh {0}"):
+                    with self.subTest(reader=reader, operand=operand, shell=shell):
+                        found = wg.job_defects([wg.Step("step", script, shell)])
+                        self.assertEqual(1, len(found), found)
+                        self.assertIn("running it under `%s`" % reader, found[0][1])
+
+    def test_2792_unknown_data_reader_stays_clean_and_dash_c_keeps_the_known_price(self):
+        self.assertEqual([], self.job(self.GET + "awk < x.sh\n"))
+        # `sudo -s` was another CLEAN row when #2792 was filed. Current main
+        # already refuses the wrapper because it has no named command.
+        sudo = self.job(self.GET + "sudo -s < x.sh\n")
+        self.assertEqual(1, len(sudo), sudo)
+        self.assertIn("cannot read command behind wrapper", sudo[0])
+        # Like the existing `sh -c` reading, this is deliberately fail-closed:
+        # the command string may leave the redirected program unread.
+        found = self.job(self.GET + "csh -c 'echo safe' < x.sh\n")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("running it under `csh` from standard input", found[0])
+
     def test_a_check_keeps_its_exact_spelling(self):
         self.assertEqual([], self.job(
             self.GET + self.CHECK % "x.sh" + 'bash < "$PWD/x.sh"\n'
