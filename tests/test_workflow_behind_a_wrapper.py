@@ -547,6 +547,33 @@ class TestWhatStaysForOtherIssues(unittest.TestCase):
         for front in (QUOTE + "time" + QUOTE, BACKSLASH + "time", "echo x | ! time"):
             with self.subTest(front=front):
                 self.assertEqual(BEFORE, marks("%s eval '%s'" % (front, P)))
+        # The same word in front of what would set a name: /usr/bin/time unsets nothing, and without `-e` every
+        # shell leaves `T` and runs `t` (measured). Read as the keyword's: CLEAN, as on `main`.
+        for front in (QUOTE + "time" + QUOTE, BACKSLASH + "time"):
+            with self.subTest(front=front, sets="T"):
+                self.assertEqual(CLEAN, marks("T=t\n%s%s unset T\nsh $T" % (FETCH, front)))
+
+    def test_time_in_an_action_of_find(self):
+        # `find` looks `time` up as a program, and /usr/bin/time execs: truth, nothing. The reader reads the
+        # word `find` looks up as it reads a step's own first word, the keyword: reported, as on `main`.
+        self.assertEqual(BEFORE, marks("find . -maxdepth 0 -exec time eval '%s' %s;" % (P, BACKSLASH)))
+
+    def test_a_word_in_doubt_in_front_of_a_shell_handed_the_words(self):
+        # Truth: `T` stays and `t` runs -- under every shell for the default, every one but dash under `-e` for
+        # the alias, the ones without `-e` for the function. Both readings of such a stage read the `eval`'s
+        # text as the step's own; the one where the stage is the wrapper's has no fold of its own behind a word
+        # in doubt, as it has behind a written `sudo -s` (`TestAShellHandedTheWords`). CLEAN, as on `main`.
+        for define, front in (("alias sudo=''\n", "sudo -s"), ("sudo() { %s$@%s; }\n" % (QUOTE, QUOTE), "sudo -s"),
+                              ("", "${S:-sudo -s}")):
+            with self.subTest(define=define, front=front):
+                self.assertEqual(CLEAN, marks("%sT=t\n%s%s eval 'T=x'\nsh $T" % (define, FETCH, front)))
+
+    def test_a_function_of_a_wrappers_name_in_front_of_builtin(self):
+        # Truth: both bashes run it (the function runs `builtin eval 'P'`), and dash has no `builtin`. As
+        # written `sudo builtin` runs nothing, and `main`'s reading of the word leaves a `builtin` behind a
+        # wrapper unread: neither reads the text. CLEAN, as on `main`. Batch C's limit of a function that hands
+        # its words to `builtin` (`test_workflow_in_front_of_a_command`), met by another road.
+        self.assertEqual(CLEAN, marks("sudo() { %s$@%s; }\nsudo builtin eval '%s'" % (QUOTE, QUOTE, P)))
 
     def test_a_text_sudo_escapes_the_newlines_of(self):
         # `sudo -s eval "$(cat t)"`: sudo puts a backslash in front of each newline, the child reads one
