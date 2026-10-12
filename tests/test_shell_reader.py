@@ -566,6 +566,22 @@ class TestPipelineStdinProvenance(unittest.TestCase):
         self.assertEqual(("3",), stage("cat 3<&0 <local /dev/fd/3").pipe_input_fds)
         legacy = shell_reader.Stage([], [], [], None, [], [])
         self.assertEqual(("0",), legacy.pipe_input_fds)
+        self.assertEqual((), legacy.stdin_reads)
+
+    def test_file_inputs_copy_current_descriptor_origin(self):
+        for script, expected in (("cat <tool", ("tool",)),
+                                 ("cat 0<tool", ("tool",)),
+                                 ("cat 3<tool <&3", ("tool",)),
+                                 ("cat 3<>tool <&3", ("tool",)),
+                                 ("cat 3<tool 4<&3 <&4", ("tool",)),
+                                 ("cat 3<tool", ()),
+                                 ("cat <other 3<tool", ("other",)),
+                                 ("cat 3<tool <other", ("other",)),
+                                 ("cat <other 3>tool", ("other",)),
+                                 ("cat 3<tool <&3 <other", ("other",)),
+                                 ("cat <tool <&-", ())):
+            with self.subTest(script=script):
+                self.assertEqual(expected, stage(script).stdin_reads)
 
     def test_other_descriptor_reads_leave_stdin_connected(self):
         self.assertTrue(stage("cat 3<local").stdin_from_pipe)
@@ -583,6 +599,7 @@ class TestPipelineStdinProvenance(unittest.TestCase):
             "sh 3<&0 <<EOF 0<&3\necho safe\nEOF").stdin_from_pipe)
         self.assertFalse(stage(
             "sh 3<&0 0<&3 <<EOF\necho safe\nEOF").stdin_from_pipe)
+        self.assertEqual((), stage("cat <tool <<EOF\nsafe\nEOF").stdin_reads)
 
 
 class TestHeredocOnStandardInput(unittest.TestCase):

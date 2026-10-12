@@ -25,6 +25,7 @@ from workflow_forms import (BIN_DIRS, CONTAINERS, at_directory, chmod_executable
                             chmod_targets, covers, described, in_container, may_run,
                             same_file, stdin_program)
 from workflow_programs import _SHELL_STRING, VALUE_PROGRAM, scripts
+from workflow_printers import _cat_reads_stdin
 from workflow_use_scopes import (_COMPOUNDS as _COMPOUNDS, _body_end, _forked,
                                  _function_changes, _function_ranges,
                                  _openers as _openers, _opens as _opens,
@@ -282,6 +283,8 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset()):
     name, rest = os.path.basename(argv[0]), argv[1:]
     if name == "chmod":
         rest = chmod_targets(argv)
+    if name == "cat" and stage.stdout_to_pipe and _cat_reads_stdin(argv):
+        rest += stage.stdin_reads
     rest = [at_directory(word, directory) for word in rest]
     handed = [at_directory(word, directory) for word in handed]
     mentions = [word for word in rest + handed
