@@ -6481,6 +6481,42 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
         ):
             self.assert_reported_in_every_shell(script)
 
+    def test_2937_mixed_keyword_closes_beside_subshells_keep_the_outer_file(self):
+        # M5a's 8-parent truth is RRRRRRRR for each row. These five local
+        # shell postures pin the same command text at the guard boundary.
+        rows = (
+            ("HNP-012",
+             "{ for i in 1; do :; done | ( %s; ); } > tool\nsh tool\n"),
+            ("HNP-013",
+             "{ if true; then :; fi | ( %s; ); } > tool\nsh tool\n"),
+            ("HNP-014",
+             "{ { :; } | ( %s; ); } > tool\nsh tool\n"),
+        )
+        for row, template in rows:
+            with self.subTest(row=row):
+                self.assert_reported_in_every_shell(template % self.FETCH)
+
+    def test_2937_fetches_after_inner_file_closes_keep_the_outer_file(self):
+        # M9c's 8-parent truth is RRRRRRRR for each row. The fetch stage is
+        # outside the just-closed inner compound and writes through the outer.
+        rows = (
+            ("HNC-403",
+             "{ if true; then :; fi > /dev/null | %s; } > tool\nsh tool\n"),
+            ("HNC-412",
+             "{ { :; } > /dev/null | %s; } > tool\nsh tool\n"),
+            ("HNC-421",
+             "{ for v in 1; do :; done > /dev/null | %s; } > tool\nsh tool\n"),
+            ("HNC-430",
+             "{ while false; do :; done > /dev/null | %s; } > tool\nsh tool\n"),
+            ("HNC-439",
+             "{ case x in x) :;; esac > /dev/null | %s; } > tool\nsh tool\n"),
+            ("HNC-448",
+             "{ until true; do :; done > /dev/null | %s; } > tool\nsh tool\n"),
+        )
+        for row, template in rows:
+            with self.subTest(row=row):
+                self.assert_reported_in_every_shell(template % self.FETCH)
+
     def test_a_file_writing_compound_tee_also_feeds_its_outer_reader(self):
         tee = "{ %s; } | tee tool" % self.FETCH
         consumers = (
@@ -6576,18 +6612,17 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
         cut = "{ %s; } >&2 | tee tool\nsh tool\n" % self.FETCH
         self.assert_clean_in_every_shell(cut)
 
-        # `level = after` lends the outer close across this inner file boundary (M9c).
+        # #2937's M9c rows fetch after an inner close. Here the fetch remains
+        # inside a subshell whose own close writes `f`, so the outer `tool`
+        # close must not capture it.
         inner = ("{ for i in 1; do :; done | ( %s; ) > f; } > tool\n"
                  "sh tool\n") % self.FETCH
         self.assert_clean_in_every_shell(inner)
 
-    def test_file_close_depth_excludes_lexical_groups(self):
-        # The reader gives array assignments and subshells the same group
-        # markers. File-close inheritance therefore tracks keyword compounds
-        # only, preserving the array-assignment boundary (M5a). This also
-        # preserves HNP-012's known mixed keyword-close/subshell gap.
-        script = ("{ for i in 1; do :; done | ( %s; ); } > tool\n"
-                  "sh tool\n") % self.FETCH
+    def test_file_close_depth_excludes_array_literal_groups(self):
+        # #2937 must count a subshell's group markers without treating an
+        # array literal as a compound whose closing redirect captures a fetch.
+        script = "a=(\n  %s\n) > tool\nsh tool\n" % self.FETCH
         self.assert_clean_in_every_shell(script)
 
 
