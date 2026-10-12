@@ -37,8 +37,11 @@ evidence exposed.
   string is a positional parameter; no report is lost on any grid in either pass, and no mark
   depends on a marker. The issue's own rows -- 36 of PR #2858's round-5 matrix and round 9's
   tilde case -- all report. Left for other issues: a `$` command word whose cluster is not its
-  first word (#2671, #2900), three shapes of `wget` (#3033, #3034, #3035), and the tightening that
-  would follow the step's own assignment, which needs the value table.
+  first word (#2671, #2900), three shapes of `wget` (#3033, #3034, #3035), four families a probe
+  of the rule's own nouns found open on `main` as well -- an expansion in FRONT of a written
+  option word (`sh $X-c '...'`, #3042), a substitution where the `-c` string stands (#3043), the
+  value of a written `-O` (#3044), a stream read through a `<(...)` (#3045) -- and the tightening
+  that would follow the step's own assignment, which needs the value table.
 - **`scripts/workflow_options.py` splits the readers of a word in a shell's option slot into
   `scripts/workflow_option_slots.py` (for #2889, programs lane).** A pure move at the module's size
   (699 of its 700 lines), in two pieces, each byte for byte with the comments above it and the two
@@ -59,7 +62,8 @@ evidence exposed.
   sets of #2955, #2963 and #2997, and the probes behind #3002, #3003 and #3007 -- every finding of
   every row, its name and its reason, is the same under `main`'s scripts and the move's, under
   each of the five `shell:` settings and in each of three readings (the job, its main pass, its
-  walk pass): 92,700 cells holding 56,528 findings under each tree, and the two dumps are
+  walk pass): 92,700 cells holding 56,153 findings under each tree (56,528 before #2861 was
+  folded in, the count this entry first carried), and the two dumps are
   equal byte for byte; and the eleven grids of #3019, #3020 and #2889, 14,238 rows that put an
   expansion in or beside a shell's option words, read the same under each of two pinned markers,
   marks and findings. The room is for #2889's rule, the next change to this module. Sizes:

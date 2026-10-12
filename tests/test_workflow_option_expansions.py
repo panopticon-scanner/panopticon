@@ -32,8 +32,8 @@ that run nothing: 937 of those are steps that fail where they stand (the shell t
 name) and 139 of the rest are the `X=s` rows, whose string is a positional parameter. `TestThePrice` pins the shapes.
 Left for other issues, pinned in `TestWhatStays`: the `$CMD` command word whose cluster is not its first word
 (#2671, #2900), three shapes of wget (#3033, #3034, #3035), the first pass alone, and four families a probe of the
-rule's own nouns found open on `main` as well (Krab 2466, 2467): an expansion in FRONT of a written option word, a
-substitution in the string's slot, the value of a written `-O`, and a stream read through a `<(...)`.
+rule's own nouns found open on `main` as well: an expansion in FRONT of a written option word (#3042), a substitution
+in the string's slot (#3043), the value of a written `-O` (#3044), and a stream read through a `<(...)` (#3045).
 """
 import contextlib
 import itertools
@@ -678,9 +678,8 @@ class TestWhatStays(unittest.TestCase):
         self.assertEqual(CLEAN, marks("X=-qO-\nwget $X %s > tool\nsh tool\n" % URL))
 
     def test_an_expansion_in_front_of_a_written_option_word(self):
-        # `_VALUE`'s limit (#2344): a word that begins with an expansion is a value only where nothing but letters
-        # follows it, and with `X` unset `$X-c` IS `-c`. Open on `main` too; reported with 26 rows (Krab 2466).
-        # Truth: runs, every one.
+        # #3042. `_VALUE`'s limit (#2344): a word that begins with an expansion is a value only where nothing but
+        # letters follows it, and with `X` unset `$X-c` IS `-c`. Open on `main` too. Truth: runs, every one.
         for word in ("$X-c", "${X}-c", "$(true)-c"):
             with self.subTest(word=word):
                 self.assertEqual({CLEAN}, under("sh %s %s\n" % (word, P)))
@@ -689,21 +688,22 @@ class TestWhatStays(unittest.TestCase):
         self.assertEqual(BOTH, marks("sh $X-e -c %s\n" % P))
 
     def test_a_substitution_in_the_strings_slot(self):
-        # A `$Y` after the `-c` cluster may be an option word or nothing, so the words after it are weighed (#2858
-        # round 7); a `$(...)` there is `dynamic_program`'s, and the string behind it is not read. Open on `main`
-        # too; reported with 22 rows (Krab 2466). Truth: runs, every one.
+        # #3043. A `$Y` after the `-c` cluster may be an option word or nothing, so the words after it are weighed
+        # (#2858 round 7); a `$(...)` there is `dynamic_program`'s, and the string behind it is not read. Open on
+        # `main` too. Truth: runs, every one.
         for word in ("$(true)", "$(echo -e)", "$(nosuchtool)"):
             with self.subTest(word=word):
                 self.assertEqual({CLEAN}, under("sh -c %s %s\n" % (word, P)))
         self.assertEqual(WALK, marks("sh -c $X %s\n" % P))
 
     def test_two_more_shapes_of_a_fetcher(self):
-        # The VALUE of a written `-O` or `-o` may be `-`; and a stream only an expansion makes may be read through
-        # a `<(...)`, where rule 4 adds its view to a PIPE. Open on `main` too; reported with 12 rows (Krab 2467).
-        # Truth: runs -- the first two under all sixteen, the third and its written twin under both bashes.
+        # #3044: the VALUE of a written `-O` or `-o` may be `-`. Open on `main` too. Truth: runs, all sixteen.
         self.assertEqual(CLEAN, marks("X=-\nwget -q -O $X %s | sh\n" % URL))
         self.assertEqual(CLEAN, marks("X=-\ncurl -fsSL -o $X %s | sh\n" % URL))
+        # #3045: a stream only an expansion makes may be read through a `<(...)`, where rule 4 adds its view to a
+        # PIPE. Open on `main` too. Truth: runs under both bashes, these two and the written twin `main` reports.
         self.assertEqual(CLEAN, marks("X=-qO-\nbash <(wget $X %s)\n" % URL))
+        self.assertEqual(CLEAN, marks("X=-qO-\nsh < <(wget $X %s)\n" % URL))
         self.assertEqual(BOTH, marks("bash <(wget -qO- %s)\n" % URL))
 
     def test_the_mark_the_table_withdraws(self):
