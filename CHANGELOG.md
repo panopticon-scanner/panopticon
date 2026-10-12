@@ -7,6 +7,40 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader: the other words bash makes nothing of in front of a command (#3002, #3007,
+  #3038).** `$T ${S:+sudo -E} sh -c 'curl ... | sh'`, `${S:- } sh -c '...'`, `${SUDO:-sudo} -E sh
+  -c '...'`, `$SUDO echo '...' | sh` and `S=command; ${S:-sudo} eval '...'` each read CLEAN under
+  every `shell:` setting while the parent shells ran the pipeline: three holes in one reader,
+  `shell_defaults._optional`, which drops a `$` word in front of a name it knows. It kept only a
+  stage's first `${…}` with a bare blank whole, and read an empty default but not one that is only
+  a blank (#3002); it dropped a default naming a wrapper only where the very next word is a known
+  name, and knew no printer behind a dropped word (#3007); and it read such a default as its
+  wrapper whatever the step set its name to (#3038). The limits #2997's and #3003's fixes pinned as
+  shared with `main` were the same reader's: the other words that are nothing with their name
+  unset -- `$1`, `$@` and a double-quoted `"$@"`, an array, an indirection, a pattern taken off, a
+  substring, a case change, a default that holds one more name, an alternate of any of them. The
+  second walk reads them all now, **in folds of its own** (`_drops`, `_masks`): every fold `main`
+  reads is read as it was, and each once more with these words read as nothing, so the guard
+  reports where either reading does and the main pass is `main`'s. That is what keeps a check
+  behind such a word from taking a report (#3037's class): a first port that dropped the words in
+  every fold of the second walk turned 195 of 4,960 check rows from REPORT to CLEAN, and this one
+  turns none. The reader now says where a kept word stood whole in double quotes (`double`), as
+  `'$@'` is two characters; `_split` keeps a `${…}` whole behind words that may each be nothing;
+  and the names a job's steps set to `command`, to `builtin` or to nothing are read beside the
+  wrappers they define (`shell_wrappers.set_to`). Five pins move from limit to fixed, three of them
+  by the coordinator's ruling as they name no issue; `shell_command.py` stays at 699 lines. Against
+  `main` on 12,502 rows with 16-run truth -- the three issues' kits, a hunt of the new rule's whole
+  grammar, a hunt of checks behind each new word, and every row the new tests assert: **no cell
+  goes from REPORT to CLEAN**, the main pass's own marks move on none, and 15,139 cells report that
+  a parent runs. The price, named and pinned: a form dash refuses reports under the two `sh`
+  settings too, as #2997's `source` does (the reader has one grammar); a word is read as nothing
+  whatever the step did to its name, so `set -- echo; $1 sh -c '...'` reports though it only
+  prints; and a check the guard does not credit still stops the step where its written twin
+  reports the same. Left for their own issues: a substitution that prints nothing (#2693), two
+  references glued (#3016), `coproc` (#2894), a quoted reference to a name the step set (#2769),
+  and the shapes the hunt found and this PR pins as limits, a double-quoted default naming a
+  wrapper (`"${SUDO:-sudo}" sh -c '...'`), a `$` word where a default wrapper's own words end and
+  an alternate naming a wrapper in front of its own words among them.
 - **Workflow reader: a written path of one of the stage's own descriptors (#2744).** `curl -fsSL U
   > //dev/stdout | sh` read CLEAN and runs under every shell: the reader knew `/dev/stdout` and
   `/dev/fd/1` as written, and descriptor 1 alone, so `> /proc/self/fd/1`, `2>&1 > /dev/stderr |
