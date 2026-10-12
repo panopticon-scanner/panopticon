@@ -13,7 +13,9 @@ string read where either reads it, a check counted only where both count it) -- 
 (`long_option`), the option run (`_run`), the stdin walk (`_stdin_walk`, `_counted`), the `-c`
 strings (`_dash_c_strings`) and the candidates (`_shell_candidates`). A leaf: it reads
 `shell_reader` and nothing above it. `workflow_programs` re-exports every name, so nothing that
-imported one from there moved.
+imported one from there moved. The readers of a word in the option slot (`_value`, `_before_operand`,
+`_may_spell_option`, `_one_word`, `_literal`, with their patterns) stand in `workflow_option_slots`
+since this module reached its own ceiling (#2889), and are bound here under their names.
 
 Stdlib only, like everything under it.
 """
@@ -24,6 +26,10 @@ import re
 
 import shell_command
 import shell_reader
+from workflow_option_slots import (_BARE as _BARE, _DEFAULT_PARAMETER as _DEFAULT_PARAMETER,
+                                   _ONE_DEFAULT as _ONE_DEFAULT, _ONE_PARAMETER as _ONE_PARAMETER,
+                                   _VALUE as _VALUE, _before_operand, _literal, _may_spell_option,
+                                   _one_word, _value)
 from workflow_option_words import lifted, spells, written
 
 
@@ -531,61 +537,6 @@ def _shell_candidates(argv):
     return None, []
 
 
-# The quoted forms proven to be exactly one word (#2858 round 8, an allowlist): text, `"$X"`,
-# `"${X}"`, `"$1"`, `"$*"`, `"${A[*]}"`, `"$#"` and kin, and `"${X:-…}"`/`"${X:=…}"` whose default
-# is text or such a `$Y`. Anything else -- `@`, `${!X}` (with `X=@`, `"$@"`), `${#X}`, `${X%…}` -- is not.
-# Read by a scan, one token at a time, not one regular expression: a `$NAME` beside text could be
-# split two ways there, and a failing match backtracked exponentially (CodeQL).
-_ONE_PARAMETER = re.compile(r"\$(?:[A-Za-z_]\w*|[0-9#?$*!-])|\$\{(?:[A-Za-z_]\w*(?:\[\*\])?|[0-9]+|[*#?])\}")
-_ONE_DEFAULT = re.compile(r"\$\{[A-Za-z_]\w*:?[-=]")
-_DEFAULT_PARAMETER = re.compile(r"\$[A-Za-z_]\w*|\$\{[A-Za-z_]\w*\}")
-
-
-def _one_word(word):
-    """Whether `word` is a quoted expansion that is always exactly ONE word (#2858 rounds 7-8): every
-    `$` of it quoted (`shell_reader.kept`) and nothing in it but the forms the allowlist above names.
-    `"$@"`, `"${A[@]}"` and `"${!X}"` may be no word or several, and an unknown form is read as they
-    are: as an expansion like `$X` (`bash --rcfile "$@" -nor -c P` runs `P` with no parameters)."""
-    if not getattr(word, "kept", False):
-        return False
-    text, at = str(word), 0
-    while at < len(text):
-        if text[at] not in "$`\\":
-            at += 1
-            continue
-        found = _ONE_PARAMETER.match(text, at) if text[at] == "$" else None
-        if found:
-            at = found.end()
-            continue
-        found = _ONE_DEFAULT.match(text, at) if text[at] == "$" else None
-        if not found:
-            return False
-        at = found.end()
-        while at < len(text) and text[at] != "}":   # the default: text or a plain `$Y`
-            if text[at] in "`\\{!@":
-                return False
-            found = _DEFAULT_PARAMETER.match(text, at) if text[at] == "$" else None
-            if text[at] == "$" and not found:
-                return False
-            at = found.end() if found else at + 1
-        if at >= len(text):
-            return False
-        at += 1
-    return True
-
-
-def _literal(word):
-    """Whether `word` is written as itself, with nothing in it a shell expands (#2858 round 9): a
-    plain `str`, which the reader leaves only for text no pattern, brace or lifted
-    substitution reaches -- it types an unquoted `*`, `?`, `[x]`, `{a,b}` or `@(x)` as `Rewritten`
-    (`/nonexistent*` may vanish under `nullglob`), and `"*"` or `\\*` as the plain `*` they are --
-    holding no `$` or backquote it could not lift (`${X:-${Y}}`, nested, stays plain) and not
-    beginning with a `~`, which it leaves plain quoted or not (`HOME=-i; bash ~`). Such a `-o` value
-    outside the name table is a refusal whether it is a misspelt name or no name at all (`-`,
-    `/dev/stdin`: both bashes answer `invalid option name` and exit 2, #2606)."""
-    return type(word) is str and "$" not in word and "`" not in word and word[:1] != "~"
-
-
 def _refused(argv, at):
     """Whether the shell `argv[0]` refuses the option word `argv[at]`
     outright, running nothing: a cluster of LETTERS with one outside
@@ -659,41 +610,3 @@ def _operand_past(argv, at, past=False):
             return argv[at + 1:at + 2]
         if not argv[at].startswith(("-", "+")):
             return [argv[at]]
-
-
-# A word bash expands, where a shell reads its options, that may spell one (#2344): past the
-# `$NAME`, `${...}` or `$(...)` it begins with, nothing but letters -- `$X`, `"${X:--c}"`,
-# `$(echo -c)`, `${X}c`, not `$X/x.sh` -- a `$'…'` beginning with an unknown or non-ASCII escape
-# that `shell_quote.ansi_c` cannot spell, such as `$'\q'` or `$'\u00e9'`, or a word xargs puts a
-# line of its input in (`{}`).
-_VALUE = re.compile(r"(?:\$(?:\{[^{}]*\}|\w+|\(\.\.\.\)|[^\w{(\\]))+[A-Za-z]*|\$\\.*", re.S)
-
-
-def _value(word):
-    """Whether `word` is such a value; a pattern is `leads`'s to read."""
-    if isinstance(word, shell_reader.Rewritten):
-        return getattr(word, "lead", None) is None
-    return bool(_VALUE.fullmatch(shell_reader.readable(word)))
-
-
-# The letters an option's value is spelled with, as every `-o` or `-O` name of
-# bash, dash, zsh and ksh is: letters, digits, `_` and `-` (#2484).
-_BARE = re.compile(r"[A-Za-z0-9_-]+")
-
-
-def _before_operand(word):
-    """Whether `word`, after a value in a shell's options, may still stand
-    before its program: an option word (`-…`, `+…`, `-`, `--`), an option's
-    value (`_BARE`), or a word bash expands -- a `$`, a lifted substitution,
-    a pattern (`shell_reader.dynamic`) -- which may vanish or be either."""
-    return (word[:1] in ("-", "+") or bool(_BARE.fullmatch(word))
-            or shell_reader.dynamic(word, shell_reader.has_substitution))
-
-
-def _may_spell_option(word):
-    """Whether `word`, PAST the first operand, may be an option word once it is expanded: a word
-    bash expands (`shell_reader.dynamic`) that begins with `-`, a `$` or a lifted substitution, or a
-    pattern or an `xargs -I` replacement (`Rewritten`). One that begins with literal text of its own
-    (`x$Y`, `echo $Y`) is none."""
-    return shell_reader.dynamic(word, shell_reader.has_substitution) and (
-        shell_reader.readable(word)[:1] in ("-", "$") or isinstance(word, shell_reader.Rewritten))
