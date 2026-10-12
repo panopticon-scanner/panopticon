@@ -175,9 +175,18 @@ def _source_words(stage, before):
 
 
 def _direct_program_words(argv):
-    """Program words this reader can execute: a readable script or the expansion catch-all."""
+    """Program words this reader can execute directly.
+
+    `eval` joins and executes each of its program words, including a substitution embedded in
+    literal text.  For a shell's `-c` operand, keep this binding to the all-expansion word: a
+    substitution spliced into a larger `-c` string remains #2693's separately pinned gap.
+    """
     words = _program_words(argv) + ([] if _MAINS.get() else _added_strings(argv))
     _how, bare = dynamic_program(argv)
+    name = os.path.basename(argv[0]) if argv else ""
+
+    if name != "eval":
+        return [bare] if bare is not None else []
 
     def runnable(word):
         text = shell_reader.readable(getattr(word, "spelled", word)).strip()
