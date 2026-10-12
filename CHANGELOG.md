@@ -14,6 +14,51 @@ evidence exposed.
   `-n auto`. `pytest-cov` combines the workers' data, so `--cov-fail-under=90` stays the gate on
   the combined total. A band-aid before the full file-shard matrix (#2933): no behavior change,
   no new check names, workflow file only.
+- **Workflow reader: a written path of one of the stage's own descriptors (#2744).** `curl -fsSL U
+  > //dev/stdout | sh` read CLEAN and runs under every shell: the reader knew `/dev/stdout` and
+  `/dev/fd/1` as written, and descriptor 1 alone, so `> /proc/self/fd/1`, `2>&1 > /dev/stderr |
+  sh`, `3>&1 > /dev/fd/3 | sh` and `2> t > /dev/stderr; sh t` (the download lands in `t`) read
+  CLEAN too, and so did the issue's own rows, `tee //dev/stdout` and `tee /dev/stderr 2>&1`
+  between a printer and a shell. `shell_reader.output_alias_fd` reads a path a stage writes as the
+  descriptor of its own that it names -- `/dev/stdout`, `/dev/stderr`, `/dev/fd/N`,
+  `/proc/self/fd/N`, `/proc/thread-self/fd/N`, in any spelling a kernel opens as that file:
+  repeated slashes, `.` and `..` among them, a climb to the root -- and `_stage` sends what is
+  written there where THAT descriptor points when the redirection is read: the pipe, a file,
+  nowhere. Linux refuses `/dev/stdout/` and `/dev/fd/01`, which macOS opens, and macOS has no
+  `/proc`; the reading is of either kernel, measured on both. The stage now says which descriptors
+  feed the next stage (`Stage.pipe_output_fds`, the twin of `pipe_input_fds`), and two readers
+  that asked the literal tables ask the reader by one line each, as the coordinator ruled:
+  `workflow_printers._passes_through` for a `tee` operand that is the pipe (`writes_pipe`), and
+  `workflow_fetch` for a `-o` that spells descriptor 1 or another descriptor on the pipe beside it
+  (`stdout_named`: `curl -o //dev/stdout U | sh`, `curl -o /dev/stderr U 2>&1 | sh`). One pin of
+  another lane moves by that ruling, the `Stage` shape from 12 fields to 13; the six-argument
+  shape still builds. On a 635-row hunt with 16-run truth against `main`: 1,229 cells in 261 rows
+  report that a parent runs, 10 in 2 rows stop reporting a file `main` took the path for (`curl …
+  > //dev/stdout; sh //dev/stdout`: the fetch alone), and none goes from REPORT to CLEAN where a
+  parent runs. The price, REPORT where no parent of that setting runs, is 256 cells in 74 rows: a
+  spelling Linux refuses, of which macOS opens two of the three (165), a dash setting of a
+  bash-only form such as `&>` or `|&` (76), and a climb from `~` that the harness's home is too
+  deep for (15). A fuzz of 3,000 random redirection chains with truth: 765 cells in 175 rows
+  report, none stops, and none goes from REPORT to CLEAN; 500 cells in 133 rows are price -- a
+  redirection that fails, so that the command never runs (360), the dash settings of bash's forms
+  (110), a group's own redirection read behind the ones inside it (20), a closed descriptor (10)
+  -- as `main` reads the same shapes for a dup or a listed spelling. Its 265 cells still CLEAN
+  where a parent runs are three classes with no path of a descriptor in what makes them: a file's
+  or a printer's text through `cat` or `tee` to a shell, a group whose own redirection carries
+  another descriptor, and a printer's text into a file a later line runs (#3027). None of the
+  31,046 standing rows, the #2939 seat's 2,164 class rows or its 20,000 fuzz rows moves, with the
+  parse nonce pinned under `0` and under `c`: 93 standing rows redirect to a path of a descriptor,
+  4 hand one to `tee` and 14 give one to a fetcher's `-o`, and each reads as it did. Still as
+  `main` reads them, each pinned and named: a target a value or a pattern decides (`> $O`, `>
+  /dev/stdou[t]`), a path a `cd` or a link gives, a group whose own redirection carries another
+  descriptor (`( curl … >&2 ) 2>&1 | sh`), a fetcher or a `tee` that writes the pipe by another
+  descriptor while its standard output is elsewhere. The cost, `job_defects` against `main` on the
+  forge, three passes, each a process of its own: the standing sample (3,881 rows) 67.09 / 66.86 /
+  66.23 s on `main` and 67.58 / 66.72 / 66.81 s on the head (-0.1% by the medians); the hunt (635
+  rows) 8.93 / 9.09 / 8.99 s on `main` and 9.16 / 9.10 / 9.10 s on the head (+1.3% by the
+  medians); my fuzz's first 1,500 rows 26.97 / 27.08 / 26.97 s on `main` and 27.02 / 26.73 / 27.00
+  s on the head (+0.1% by the medians) (32 cores, Neoverse-N2, Python 3.12.3; load 14.31 to 3.61).
+  The load at the start was another run's marks; `main` and the head alternate within each pass.
 - **`scripts/workflow_options.py` splits the readers of a word in a shell's option slot into
   `scripts/workflow_option_slots.py` (for #2889, programs lane).** A pure move at the module's size
   (699 of its 700 lines), in two pieces, each byte for byte with the comments above it and the two
