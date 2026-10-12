@@ -186,7 +186,17 @@ def _direct_program_words(argv):
     name = os.path.basename(argv[0]) if argv else ""
 
     if name != "eval":
-        return [bare] if bare is not None else []
+        def substitutions_only(word):
+            markers = getattr(word, "markers", {})
+            if not markers or any(kind != "subst" or isinstance(value, Process)
+                                  for kind, value in markers.values()):
+                return False
+            remainder = str(word)
+            for key in markers:
+                remainder = remainder.replace(key, "")
+            return not remainder.strip()
+
+        return [word for word in words if word is bare or substitutions_only(word)]
 
     def runnable(word):
         text = shell_reader.readable(getattr(word, "spelled", word)).strip()

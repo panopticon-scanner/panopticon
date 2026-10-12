@@ -129,7 +129,8 @@ class TestDownloadedFileReaderHandoffs(unittest.TestCase):
         for use in (
                 'eval "$(printf true; cat tool)"',
                 'eval "$(cat tool; printf true)"',
-                'eval "$(cat other.sh tool)"'):
+                'eval "$(cat other.sh tool)"',
+                'sh -c "$(cat other.sh) $(cat tool)"'):
             with self.subTest(use=use):
                 self.assert_bound(use)
 
