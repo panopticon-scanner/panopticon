@@ -349,6 +349,21 @@ class TestAPrinterBehindAWordThatIsNothing(unittest.TestCase):
             with self.subTest(text=text[:28]):
                 self.assertEqual(NOW, marks(text))
 
+    def test_cat_reading_the_fetched_file_on_its_input(self):
+        # Since #3057 `main` reads the file `cat` reads on its standard input as the program a shell behind the
+        # pipe runs, written out and behind the words `main` drops; behind the other words that are nothing the
+        # second walk reads it. Truth: runs, every one.
+        for front in ("", "$A $B ", "${S:-} ", "${S:-sudo} ", "${S:-command} "):
+            with self.subTest(front=front):
+                self.assertEqual(BEFORE, marks("%s%scat < t | sh" % (FETCH, front)))
+        for front in ("$S", "${S:+sudo}", "$1", '"$@"'):
+            with self.subTest(front=front):
+                self.assertEqual(NOW, marks("%s%s cat < t | sh" % (FETCH, front)))
+        # No shell reads it, or the file is not the fetched one. Truth: the fetch alone.
+        for text in ("%s$S cat < t" % FETCH, "%s$S cat < u | sh" % FETCH):
+            with self.subTest(text=text[-14:]):
+                self.assertEqual(CLEAN, marks(text))
+
     def test_the_controls(self):
         self.assertEqual(BEFORE, marks("echo '%s' | sh" % P))                              # truth: runs
         # No shell reads it; what it prints fetches nothing; a quoted word is one; `true` prints nothing; the
@@ -591,9 +606,10 @@ class TestWhatStaysForOtherIssues(unittest.TestCase):
         self.assertEqual(CLEAN, marks("coproc $S eval '%s'\nwait" % P))        # truth: bash 5.2.21 runs
 
     def test_a_filter_that_passes_its_input_on(self):
-        # `cat < t | sh`, `head -n 99 t | sh` and `tee /dev/null < t | sh` read CLEAN written out too: the
-        # printers' lane, whatever stands in front. Truth: runs, every one.
-        for stage in ("cat < t", "head -n 99 t", "sed -n p t", "tee /dev/null < t"):
+        # `head -n 99 t | sh`, `sed -n p t | sh` and `tee /dev/null < t | sh` read CLEAN written out too: the
+        # printers' lane, whatever stands in front. Truth: runs, every one. (`cat < t | sh` is read since #3057:
+        # `TestAPrinterBehindAWordThatIsNothing`.)
+        for stage in ("head -n 99 t", "sed -n p t", "tee /dev/null < t"):
             for front in ("", "$S "):
                 with self.subTest(stage=stage, front=front):
                     self.assertEqual(CLEAN, marks("%s%s%s | sh" % (FETCH, front, stage)))
