@@ -142,9 +142,10 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
             argv, before = shell_reader.acted(stage.argv), statement.stages[:position]
             # Asked once per stage, not per script it hands on (an `eval` chain was cubic, #2500) --
             # as the runner is where the reader is the stage's own argv or none, which `runs_under`
-            # asks only whether there is one (#2889: a word that holds an expansion may hand on
-            # every word after it, and each asked again cost the square of the words).
-            name, runners = _runner(argv) if argv else "", {}
+            # asks only whether there is one, and a reader's `-e` and `pipefail` once a reader (#2889:
+            # a word that holds an expansion may hand on every word after it, and each asked again
+            # cost the square of the words).
+            name, runners, postures = _runner(argv) if argv else "", {}, {}
             for text in scripts(argv) + stdin_scripts(argv, stage, before, shell):
                 ordinal += 1
                 who = getattr(text, "reader", argv)     # a stdin text's READER, `()` or None
@@ -160,11 +161,12 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
                     runner = runners[bool(who)]
                 who = who or argv
                 own = name in ("eval", "source", ".") and who is argv     # in this shell, its `-e`
+                if not own and id(who) not in postures:
+                    postures[id(who)] = _errexit(who[1:], invocation=True), _errexit(who[1:], False, "pipefail", True)
                 read = flattened(
                     statements(text), gates,
-                    on[index] and statement.separator not in ("&&", "||") if own
-                    else _errexit(who[1:], invocation=True),
-                    fails[index] if own else _errexit(who[1:], False, "pipefail", True),
+                    on[index] and statement.separator not in ("&&", "||") if own else postures[id(who)][0],
+                    fails[index] if own else postures[id(who)][1],
                     runner, region,
                     key + ((index, ordinal),))
                 if isinstance(text, Opaque):    # a `$(...)` prints part of it: no check counts

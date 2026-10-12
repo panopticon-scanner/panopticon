@@ -50,6 +50,7 @@ from unittest import mock
 
 import shell_reader
 import shell_tokens
+import workflow_forms as wf
 import workflow_guard as wg
 import workflow_option_slots as slots
 import workflow_option_words as words
@@ -644,25 +645,27 @@ class TestBesideNeverInstead(unittest.TestCase):
         # such words reaches none. (`sh` and two hundred `-$X errexit` took 178 s before this; each count below
         # was the square of the words.)
         def steps(text):
-            asked = {"walks": 0, "searches": 0}
-            after, strings = wo._after, ws._strings
+            asked = {"walks": 0, "searches": 0, "postures": 0}
+            after, strings, posture = wo._after, ws._strings, wf._errexit
 
-            def walk(*args):
-                asked["walks"] += 1
-                return after(*args)
-
-            def search(*args):
-                asked["searches"] += 1
-                return strings(*args)
-            with mock.patch.object(wo, "_after", walk), mock.patch.object(ws, "_strings", search):
+            def counted(kind, real):
+                def ask(*args, **kwargs):
+                    asked[kind] += 1
+                    return real(*args, **kwargs)
+                return ask
+            with mock.patch.object(wo, "_after", counted("walks", after)), mock.patch.object(ws, "_strings", counted("searches", strings)), \
+                    mock.patch.object(wf, "_errexit", counted("postures", posture)):
                 wg.job_defects([wg.Step("step", text, None)])
             return asked
+        # ... and a reader's `-e` and `pipefail` are asked once a reader, not once a script the rule hands on: each
+        # asking reads the whole command (`sh` and eight thousand `-$Xo`/`errexit` words: 11 s, the second pre-review).
         for shape in (lambda n: "sh" + " -$X errexit" * n + " %s\n" % P,      # a NAME behind each word
                       lambda n: "sh" + " -$X" * n + "\n",                     # no operand at all
-                      lambda n: "sh" + " -$X" * n + " -K %s\n" % P):         # a word the shell refuses
+                      lambda n: "sh" + " -$X" * n + " -K %s\n" % P,          # a word the shell refuses
+                      lambda n: "sh" + " -$Xo" * n + " errexit" * n + " %s\n" % P):   # every word a script handed on
             with self.subTest(row=shape(1)):
                 small, large = steps(shape(20)), steps(shape(40))
-                self.assertEqual(small["searches"], large["searches"])
+                self.assertEqual((small["searches"], small["postures"]), (large["searches"], large["postures"]))
                 self.assertLess(large["walks"], 2.1 * small["walks"])
 
     def test_each_word_is_read_once_a_walk_and_a_few_times_a_search(self):
