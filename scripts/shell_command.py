@@ -25,14 +25,14 @@ from shell_defaults import (OPTIONAL_NEXT as OPTIONAL_NEXT, WALKED_DEFAULTS as W
                             _FETCHERS as _FETCHERS, _HALF_CAP as _HALF_CAP, _HALVES as _HALVES,
                             _INTERPRETERS as _INTERPRETERS, _OPTIONAL as _OPTIONAL,
                             _PARAMETER as _PARAMETER, _SHELLS as _SHELLS, _VANISHING as _VANISHING,
-                            _WHOLE_DEFAULTS as _WHOLE_DEFAULTS, _alternate as _alternate,
+                            _THROUGH as _THROUGH, _WHOLE_DEFAULTS as _WHOLE_DEFAULTS, _alternate as _alternate,
                             _default_words as _default_words, _half as _half, _masks as _masks,
                             _optional as _optional, _shell_default as _shell_default,
-                            _strips as _strips)
+                            _strips as _strips, _through as _through)
 from shell_patterns import shell_words
 from shell_quote import Unreadable
 from shell_tokens import _Token, has_substitution, is_arm, readable, spelled
-from shell_wrappers import WRAPPERS, Defaulted, Found, Rewritten, dynamic, unwrap
+from shell_wrappers import BUILTINS, WRAPPERS, Defaulted, Found, Rewritten, dynamic, idles, unwrap
 
 
 # Shell keywords that stand in FRONT of the command: `if curl ...; then`,
@@ -80,6 +80,23 @@ def _runs(argv):
     return 1, command_
 
 
+def _runs_builtin(argv, heads, optional):
+    """The words of `argv` behind its `builtin`, where bash runs the builtin they start with and this fold reads
+    the word through (`_through`, #2665); else None. `builtin NAME …` runs NAME past a `--` and the `$` words
+    that may each be nothing (`_optional`) -- NAME as written, or the one-word default the reader reads as its word
+    (`${E:-eval}`) -- and nothing where NAME is no builtin. Bash alone, so only where nothing that execs stands
+    in front: `command` runs one, by name or by path (#2997), and so does `time` as bash's keyword, in front of
+    them all; `sudo`, `env`, `exec` and `command time` look for a program. And not an `exec` with nothing to
+    run: behind `builtin` bash undoes the redirections it is given, where `exec 3<>F` alone keeps them."""
+    named = argv[1 + (argv[1:2] == ["--"]):]
+    named = named[_optional(named, True) if optional else 0:]
+    if not named or (_shell_default(named[0]) or named)[0] not in BUILTINS or [
+            word for word in named if word not in ("builtin", "command", "--")] == ["exec"]:
+        return None
+    runs = all(os.path.basename(word) == "command" for word in itertools.dropwhile(lambda word: word == "time", heads))
+    return named if runs and _through() else None
+
+
 def _command_result(argv, optional=True, finds=False):
     """Shared parse result for execution extraction and unread decisions: the
     command, why it or a wrapper in front of it cannot be read (or None), and
@@ -88,16 +105,20 @@ def _command_result(argv, optional=True, finds=False):
     of a known name are dropped (`_optional`) unless `optional` is False, the
     reading `workflow_annotate` takes to find the word a step's table resolves. Where `finds`,
     a `find` is unwrapped as a wrapper is, into the action a fold reads (`_found`, #2935): the
-    reading `acted` answers with, and no other."""
+    reading `acted` answers with, and no other. A `builtin` in front of a builtin's name is read through
+    in the folds that read one so (#2665), and a shell an assignment in front may start to run nothing
+    is marked `idle` (#2648)."""
     argv = list(argv)
     heads: list[str] = []
     # `xargs` appends words from its input to the argv behind it, so the
     # innermost wrapper read after one (`behind`, with its argv) was read from
     # an argv that is not the one that runs (#2227).
-    appended, behind, vanished = False, None, None
+    appended, behind, vanished, idle = False, None, None, False
     while argv:
-        if (_ENVIRONMENT if heads else _ASSIGNMENT).match(argv[0]):
-            argv.pop(0)
+        # A word that spells an assignment but for a quote or a backslash in its name or its operator is the
+        # command, of that name: the reader marks one where bash reads it (`shell_reader._named`, #2480).
+        if (_ENVIRONMENT if heads else _ASSIGNMENT).match(argv[0]) and not getattr(argv[0], "quoted", False):
+            idle = idles(argv.pop(0), idle, has_substitution)
             continue
         if argv[0] in KEYWORDS:
             keyword = argv.pop(0)
@@ -134,7 +155,7 @@ def _command_result(argv, optional=True, finds=False):
                 # names (#2899).
                 # The guard asks a stage's command many times: its halves are read once for its words.
                 halves = getattr(argv[0], "halves", {})
-                if (rest := tuple(map(str, argv[span:]))) not in halves:
+                if (rest := (_THROUGH["on"], *map(str, argv[span:]))) not in halves:    # each fold's own reading
                     empty = ([spelled(vanishing[3], whole)] if vanishing[3] else []) + argv[span:]
                     alternate = _alternate(argv, whole, span) if vanishing[2][-1:] in "+-=" else None
                     # `$-` and `$0` are never unset: `${0+W}` is always its W, and `${--W}` never is.
@@ -167,6 +188,9 @@ def _command_result(argv, optional=True, finds=False):
             continue
         if words := None if heads else _shell_default(argv[0]):
             argv[0:1] = [Defaulted(words[0]), *words[1:]]   # the NAME, marked as unwritten
+        if argv[0] == "builtin" and (named := _runs_builtin(argv, heads, optional)):
+            argv = named                        # (#2665) bash runs the builtin it names
+            continue
         head = os.path.basename(argv[0])
         if heads and dynamic(argv[0], has_substitution):
             return argv, "has a dynamic command operand behind a wrapper", heads
@@ -189,6 +213,9 @@ def _command_result(argv, optional=True, finds=False):
         inner, reason = unwrap(argv, head, has_substitution)
         if reason:
             return argv, "`%s` %s" % (head, reason), heads
+        # (#2648) `env` takes its assignments for itself, a `-S` string's too: every word it does not hand on.
+        for word in argv[1:] if head == "env" else ():
+            idle = idle if any(word is handed for handed in inner) else idles(word, idle, has_substitution)
         behind = (head, argv) if appended else None
         appended = appended or head == "xargs"
         argv = inner
@@ -204,6 +231,11 @@ def _command_result(argv, optional=True, finds=False):
         if word is not None:
             reason = "`%s` is a pattern bash expands where `%s` looks for `-c` or a script" % (
                 readable(word), os.path.basename(argv[0]))
+    if idle and argv and os.path.basename(argv[0]) in ("bash", "sh"):
+        # (#2648) Bash, and `sh` where it is bash, may run nothing of what it is handed: the mark `unsure` and
+        # `sure_reader` read, on the word itself -- a token, where it was a plain `str`, which holds none.
+        argv[0] = _Token(argv[0], {}) if type(argv[0]) is str else argv[0]
+        argv[0].idle = True
     return argv, reason or vanished, heads
 
 
@@ -242,6 +274,21 @@ def acted(argv, own=False):
 
 
 def folds(unsure):
+    """`_folds`, the folds a job is read in -- and where one of them met a `builtin` it may read through
+    (`_through`), each of them once more with every such word read through to the builtin it names, as bash runs
+    it (#2665). So the reading that leaves the word alone, `main`'s and what dash does with it, is never lost,
+    and the guard REPORTs where either reads a defect."""
+    _THROUGH.update(on=False, met=False)
+    try:
+        yield from _folds(unsure)
+        if _THROUGH["met"]:
+            _THROUGH["on"] = True
+            yield from _folds(unsure)
+    finally:
+        _THROUGH.update(on=False, met=False)
+
+
+def _folds(unsure):
     """The folds `workflow_guard.job_defects` reads a job in, each its `sure`: one, and a second that
     leaves every `Unsure` statement out where `unsure()` then finds one -- every command word bash
     may expand to nothing read as its W, as `main` reads it; then, for each set of those whose halves
@@ -320,13 +367,13 @@ def command_as_written(argv):
 # #2881 round 4, every one #2918) -- `workflow_operands.described` reads them here.
 _FIND_EXEC = ("-exec", "-execdir", "-ok", "-okdir")
 # The command words no `find` can run, of those a reader of an action follows: a shell's `.`, `source`,
-# `eval` and `exec`, which no system ships as a program (`command`, `cd`, `read` and their kind are
-# programs on macOS, and stay read). An action whose OWN first word is one -- the word `find` itself
+# `eval`, `exec` and `builtin` (#2665), which no system ships as a program (`command`, `cd`, `read` and their
+# kind are programs on macOS, and stay read). An action whose OWN first word is one -- the word `find` itself
 # looks up, not one behind a wrapper or a path (round 3) -- or is an assignment with no `/` in it,
 # which `find` looks up as a program's name, runs nothing, and its `find` is read as `main` reads it
 # (`_found`, #2935 round 2). Each word has a row that reports when it is dropped; the eighteen other
 # builtins round 2 listed are words no reader of an action follows, and left the list (round 3).
-_NO_PROGRAM = frozenset((".", "eval", "exec", "source"))
+_NO_PROGRAM = frozenset((".", "builtin", "eval", "exec", "source"))
 # The distinct actions of one `find` the guard reads; one with more reads as a command it cannot
 # read (`_unread`), so neither the scan nor the folds grow with the words (#2918).
 _FIND_CAP = 8
@@ -408,8 +455,9 @@ def unsure(argv, scripts):
     """`scripts`, the programs `workflow_programs.scripts` reads off `argv`, each one no shell is sure
     to read (`reader` None) where `argv` is a command a `find` action runs (`Found`, #2935): `find`
     may run it never or many times and exits 0 though it fails, so `workflow_forms.flattened` reads
-    it `Unsure` and no check in it is the step's own."""
-    if not argv or not isinstance(argv[0], Found):
+    it `Unsure` and no check in it is the step's own. So where it is a shell an assignment may start to
+    run nothing (`idle`, #2648): bash then exits 0 with the script read and none of it run."""
+    if not argv or not (isinstance(argv[0], Found) or getattr(argv[0], "idle", False)):
         return scripts
     scripts = [script if type(script) is not str else _Token(script, {}) for script in scripts]
     for script in scripts:
@@ -419,8 +467,9 @@ def unsure(argv, scripts):
 
 def sure_reader(argv, reader):
     """`reader`, the shell `workflow_programs.stdin_scripts` reads a program on standard input under,
-    or None where `argv` is a command a `find` action runs (`unsure`, #2935)."""
-    return None if argv and isinstance(argv[0], Found) else reader
+    or None where `argv` is a command a `find` action runs (`unsure`, #2935) or a shell an assignment may
+    start to run nothing (#2648)."""
+    return None if argv and (isinstance(argv[0], Found) or getattr(argv[0], "idle", False)) else reader
 
 
 def _unread(argv):

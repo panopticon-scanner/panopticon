@@ -67,7 +67,7 @@ from shell_command import (CONDITIONS as CONDITIONS, KEYWORDS as KEYWORDS,
                            sources, track, credited_zero as credited_zero, sure_reader as sure_reader, unsure as unsure,
                            command_as_written as command_as_written, conditional as conditional,
                            negated as negated, unresolved_wrapper as unresolved_wrapper,
-                           folds as folds, wrapper_words as wrapper_words)
+                           folds as folds, fronts, wrapper_words as wrapper_words)
 from shell_split import (_BLANK as _BLANK, _BRACED_HEADER as _BRACED_HEADER, _ESCAPED as _ESCAPED,
                          _HEADER as _HEADER, _NESTED_CASE as _NESTED_CASE, _REDIRECT as _REDIRECT,
                          _bare_blanks as _bare_blanks, _negated as _negated, _split as _split)
@@ -105,6 +105,13 @@ Statement = collections.namedtuple("Statement", "stages separator")
 # The builtins whose words bash reads as assignments too: `declare -a a=(1 2)`.
 _DECLARATIONS = ("declare", "typeset", "local", "export", "readonly")
 _STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
+# Put in front of a word that spells an assignment but for a quote or a backslash in its name or its operator,
+# where a command word may stand (`_named`, #2480). `_WORD` is a word as written, quotes and all, to the blank
+# shlex ends it at; `_SPELLED` one whose name and operator would read as an assignment's with every quote and
+# backslash among them taken off -- which `_ASSIGNMENT` then says is one as written, or is not.
+_NAMED = "\ue005"
+_WORD = re.compile(r"""(?:[^ \t\r\n'"\\]|\\.|'[^']*'|"(?:[^"\\]|\\.)*")+""", re.S)
+_SPELLED = re.compile(r"""["'\\]*[A-Za-z_](?:["'\\]*[A-Za-z0-9_])*["'\\]*(?:\[[^]]*\]["'\\]*)?(?:\+["'\\]*)?=""")
 # The paths of N a carry reads as N, past slashes or a climb: `//dev/fd/N`, `../proc/thread-self/fd/N` (#2881)
 _FD_SPELLINGS = re.compile(r"^(?:/+|(?:\.\./+)+)(?:dev|proc/(?:thread-)?self)/+fd/")
 
@@ -157,12 +164,36 @@ def _whole(raw, context, span):
     return word
 
 
+def _named(text, context):
+    """`text`, a stage's, with `_NAMED` in front of the word that stands where its command word may and spells
+    an assignment but for a quote or a backslash in its name or its operator (`"X=1"`, `X\\=1`, `"A"+=x`,
+    `X""=1`): bash reads an assignment off the word as written, so this one is a command of that name, which
+    `shell_command._command_result` reads it as (#2480). A quote in the value or in a subscript leaves an
+    assignment one (`X="1"`, `a["k"]=1`). The command word may stand behind a `(`, a `case` arm's token or a
+    redirection as behind a keyword (`fronts`); behind a wrapper the word is the wrapper's, its quotes off."""
+    front: bool | str = True
+    target = False                      # the word a redirection's operator takes
+    for word in _WORD.finditer(text):
+        raw = word[0]
+        entry = _markers(token := context.token(raw)).get(raw)
+        if target or is_arm(token) or entry and entry[0] in ("group", "redirect", "heredoc"):
+            target = not target and bool(entry) and entry[0] == "redirect"
+            continue
+        if _SPELLED.match(raw) and not _ASSIGNMENT.match(raw):
+            return text[:word.start()] + _NAMED + text[word.start():]
+        front = fronts(raw, front, text, word.end())
+        if not front:
+            break
+    return text
+
+
 def _stage(text, context):
     """Read lexical redirect operators in order, copying fd sinks by value, and an array literal
     as part of the word that assigns it (#2348). A word with a double-quoted `\\$` or `` \\` ``
     in it carries the text bash makes of it, `spelled`, which is the program a shell handed it
     runs (#2342): the backslash of each gone, a live `$` word beside them kept as the value word
     it is (#2466), a lifted substitution as its marker; it reads as before."""
+    text = _named(text, context)
     try:
         tokens = shlex.split(patterned(text))
     except ValueError:                          # an unbalanced quote
@@ -193,6 +224,7 @@ def _stage(text, context):
     held: int | None = None
     literal: int | None = None          # where an array literal's words start
     words: list[str] = []               # argv with no literal folded
+    folds: list[tuple[int, list[str]]] = []     # each literal folded: its opener in `words`, its elements
 
     def take(word):
         substitutions.extend(value for kind, value in _markers(word).values()
@@ -215,6 +247,7 @@ def _stage(text, context):
         whole = raw.replace(_BLANK, " ") if len(parts) > 1 else None
         pieces.extend((part, None if at else whole, len(parts)) for at, part in enumerate(parts))
     for raw, whole, span in pieces:
+        named, raw = raw.startswith(_NAMED), raw.replace(_NAMED, "")
         plain = context.restore_arithmetic(
             raw.replace(MARK, "").replace(QUOTED, "").replace(QUOTED_DOLLAR, ""))
         raw, word = raw.replace(_ESCAPED, "\\"), context.token(plain.replace(_ESCAPED, "\\"))
@@ -226,6 +259,9 @@ def _stage(text, context):
             setattr(word, "spelled", context.token(plain.replace(_ESCAPED, "")))
         elif raw.count(QUOTED_DOLLAR) == plain.count("$") > 0 and not _markers(word):
             word = kept(word)               # every `$` of it quoted: bash keeps the word (#2472)
+        if named:                           # `"X=1"`, `X\=1`: a command of that name (#2480)
+            word = word if isinstance(word, _Token) else _Token(word, {})
+            setattr(word, "quoted", True)
         entry = _markers(word).get(word)
         if entry and entry[0] == "group":
             if entry[1] == "(":
@@ -237,8 +273,14 @@ def _stage(text, context):
             else:
                 group_close += 1
                 if literal is not None:
-                    argv[literal - 1:] = [context.token(
-                        "%s(%s)" % (argv[literal - 1], " ".join(argv[literal:])))]
+                    # The folded word carries its `elements`, the words as bash splits them, each the
+                    # token of this parse, beside the text it always read as; a word that only looks
+                    # like a literal has none (the array-literal cluster, #2772).
+                    folded = context.token("%s(%s)" % (argv[literal - 1], " ".join(argv[literal:])))
+                    folded = folded if isinstance(folded, _Token) else _Token(folded, {})
+                    setattr(folded, "elements", list(argv[literal:]))
+                    folds.append((len(words) - len(argv[literal:]) - 1, list(argv[literal:])))
+                    argv[literal - 1:] = [folded]
                 literal = None
             continue
         if entry and entry[0] == "redirect":
@@ -325,6 +367,9 @@ def _stage(text, context):
         words.append(word)
     if all(word in KEYWORDS or _ASSIGNMENT.match(word) for word in argv):
         argv = words        # it only assigns: an array of a command is read as run
+        for opener, elements in folds:          # and the opener keeps the literal's `elements`
+            words[opener] = words[opener] if isinstance(words[opener], _Token) else _Token(words[opener], {})
+            setattr(words[opener], "elements", elements)
     # An interpreter -- one any action of a `find` runs too (round 4; #2918) -- or a command word the step's
     # values decide (`$SH`, but not `$X/sha256sum`: a check is credited by its basename, round 5) reads what
     # `N<>` still holds open when its redirections end, on any descriptor, as `main` reads `N<` -- by a dup, a

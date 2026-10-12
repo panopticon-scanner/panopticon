@@ -19,6 +19,125 @@ evidence exposed.
   spelling adds ten more; its two explicit-`sh` settings are the bounded fail-closed price (four
   scanner cells), because dash fetches the file but refuses that syntax before running it. A proved
   call before the use, a bare uncalled check and an inline rescue keep all 30 existing answers.
+- **Workflow reader asks an option word for its letters, never its parse marker (#3020, #3023).**
+  `sh -$(echo c) 'curl ... | sh'` runs the string under every parent shell and read CLEAN in one
+  call and reported in the next; `curl -fsSL$(true) URL | sh` runs and read CLEAN in every call. A
+  lifted substitution stands in a word as a marker of its parse, `@@shell-<hex>-N@@`, and the
+  readers of the programs lane asked an option word for its letters as text: the hex is drawn at
+  random for every parse, so a shell's word held a `c` or none by chance, and the marker's fixed
+  text spells `h`, which is `curl -h`. Each reader now asks the word (`workflow_option_words`,
+  new): what is written in it, and whether lifted text begins in it, anywhere or where a letter
+  would be read. `main` had two readings of such a word and chance chose between them; the job now
+  reads both. A finder of a `-c` cluster (`_after_dash_c`, `_candidates`' `$` rule,
+  `_dash_c_operand`) takes a word that holds lifted text for one, `main`'s reading under a marker
+  with a `c`; and where no `c` is written in the word the search goes on past it, as past `-x`,
+  and so do the two walks for a value among a shell's options, `main`'s reading under a marker
+  without -- the second beside the first, never instead of it (`Y=-c; sh -$(echo x) $Y '...'` and
+  `sh -$(echo x) w.sh -c '...'`, `w.sh` an `eval "$2"`, run the string). The walks for the program
+  on stdin read `c` as written and `s` as written or lifted, so a `c` the word only may print
+  never makes them drop the body. The fetch reader leaves a transfer unread where lifted text
+  stands among an option's letters or in a long option's name, as it does for a `$X` there; in an
+  option's value it is a value still (`-o"$(mktemp)"`). A marker is known by the word that carries
+  it and, in a text the guard reads again -- `echo "sh -$(echo c) '...'" | sh`, a candidate behind
+  a `$X` option, what a `$(echo ...)` prints, where the first parse's marker stands in plain words
+  -- by its shape and the nonce this process alone mints, so text the target writes in a marker's
+  shape stays its text. Measured with the marker pinned, all `0`s and all `c`s, on five grids
+  (6,540 rows, each run under eight parent shells in two passes): a shell's option word that holds
+  a substitution or a variable, in six frames (4,356 rows: 636 read by the marker on `main`, 138
+  open there under a marker without a `c`, 54 still, each a letter a VARIABLE makes, #2889); a
+  fetcher's (77 rows: 39 open on `main` under every marker, 2 still, a variable in wget's word and
+  a word that is all substitution); a text read again, each row beside a twin whose letter is
+  written (1,150 rows: 206 read by the marker, and now 477 of the 575 read as their twin and the
+  rest, whose substitution no printer spells, as a possible `-c`); a check behind the word (375);
+  a word that prints no `c` (582). At the head no reading depends on the marker, no report `main`
+  makes under either marker is lost in either pass, and no row is newly open. A seeded fuzz of
+  12,000 steps -- up to three option words from a pool of 46 for a shell, up to four of 37 for a
+  fetcher, in ten kinds of step -- run twice: the job's marks never depend on the marker, and a
+  cell `main`'s job reports under any of five markers the job reports. The first pass gives one
+  answer for stdin and cannot hold both readings: on 18 and 14 of those steps it reads CLEAN where
+  `main`'s first pass reports under one of the markers, and the job reports every one. On the
+  53,210 standing, class and fuzz rows the issue was measured on, the 12 rows `main` reads by the
+  marker go from CLEAN to reported under a marker without a `c` and nothing else moves; on the
+  #2942 seat's 68,248 round-2 rows and on 10,664 rows of this lane's own sets no row moves at all.
+  The price: a shell's row `main` reported under one marker is reported under both -- most in 199
+  calls of 200 already -- and a fetch whose option letters hold lifted text is reported as unread
+  though nothing may run it (`curl -s$(true) URL`), as `curl -s$X URL` is on `main`. Left for
+  other issues: a letter a variable makes, and a value a word may owe for an `o` it prints (`sh
+  -$(echo oc) errexit '...'`, #2889); a `$` command word whose cluster is not its first word
+  (#2671); the other readers that ask a marker for letters. `job_defects` costs 0.99x on the 35
+  standing sets.
+- **Workflow reader: an array literal's word carries its `elements` (the array-literal cluster,
+  #2772, #2783, #2784, #2812; reader half).** A folded `NAME=(…)` / `NAME+=(…)` word, and the
+  `NAME=` opener where a statement that only assigns is still handed unfolded, now carry the
+  literal's words as bash splits them -- each the token of the same parse, a lifted `$(…)` keeping
+  its marker -- beside the text they always read as; a word that only looks like a literal (`T='(x
+  y)'`, a subshell's `T=`) carries none. Additive: nothing folds or unfolds differently and no
+  verdict moves. With the parse nonce pinned, none of 64,031 rows reads differently: the standing
+  sets, the #2939 seat's class and fuzz rows, the hunt and the fuzz of #2857, and 2,982 array
+  literals -- 27 shapes behind 12 words by 9 uses, and in 11 places. `workflow_values` reads
+  `elements` only when the cluster's switch lands.
+- **Workflow reader: three words in front of a command (#2665, #2648, #2480).** `builtin eval
+  'curl … | sh'` read CLEAN while both bashes run the pipe: the reader left `builtin` where it
+  stood, a command the guard does not follow. Bash runs `builtin NAME …` as the builtin NAME; dash
+  has no `builtin`, takes the word for a command not found, and without `-e` goes on. Taking the
+  word off, as `command` is taken off, reads the step as bash runs it and forgets dash: read that
+  way alone, 35 rows of the hunt below lose a report `main` gives, 13 of them in the cell whose
+  shell runs the download, dash without `-e`, where under bash the builtin behind the word sets a
+  name, leaves the directory or counts a check. So the reading is added. `shell_command.folds`
+  reads a job that holds such a word in every fold it reads any job in, the word left alone, then
+  in each of them once more with the word read through to the builtin it names; the second walk
+  alone, the main pass as `main`. The word is read through in front of a builtin's name (`builtin
+  sh tool` runs nothing; the 61 names of bash 5.2.21), past `--` and the `$` words that may each
+  be nothing, behind a keyword, an assignment, `command`, the keyword `time` or a `$` word bash
+  may drop, and where a one-word default names it or the builtin behind it; not behind a wrapper
+  that execs (`sudo builtin`, `env builtin`, `command time builtin`), nor as the word a `find`
+  action starts with, nor to an `exec` with nothing to run, whose redirections bash undoes behind
+  `builtin` and keeps behind `command`. `env SHELLOPTS=noexec bash -s` credited a check no shell
+  runs: bash takes `SHELLOPTS` from its environment, runs nothing of its program under `noexec`
+  and its first command alone under `onecmd`, and exits 0. The reader now marks the `bash` or `sh`
+  such an assignment stands in front of -- the step's own prefix, or one `env` or `sudo` hands on;
+  the last decides; a value the guard cannot read counts (`shell_wrappers.idles`) -- and `unsure`
+  and `sure_reader` make that shell's scripts ones no shell is sure to read, as for a `find`
+  action: read, since dash ignores the variable and a bash step refuses to assign it, and nothing
+  in them the step's own. And `"X=1" sh tool` reported though every shell runs a command named
+  `X=1` and nothing of `tool`: a quote or a backslash in the name or the operator makes a word no
+  assignment, and the reader took the quotes off first. `shell_reader._named` marks such a word
+  where a command word may stand -- behind a keyword, an assignment, a function's header, a `(`, a
+  `case` arm's token or a redirection -- and `_command_result` does not pop it; a quote in the
+  value or a subscript leaves an assignment one, and a wrapper is handed the word with its quotes
+  off. On a 1,839-row hunt with 16-run truth (the harness's `env` and `sudo` stubs drop the
+  assignments they are handed, so this truth was taken with two that apply them) against `main`:
+  1,078 cells in 370 rows report that a parent runs, 715 in 143 rows stop reporting what no shell
+  runs, and none goes from REPORT to CLEAN where a parent runs. The price, REPORT where no parent
+  of that setting runs, is 748 cells in 338 rows: the dash settings of a step bash runs (544; bash
+  5.2.21 and 3.2.57 started as `sh`, the `sh` of a macOS runner, run every one), `command` by path
+  (55, #2997's stance), the step's own prefix, which a bash step refuses to assign (48), a value
+  the guard cannot read (24), `onecmd` over a script of one command (21), what the same step reads
+  without `builtin` (20), an `sh` that is dash (19), `sudo` between the assignment and the shell
+  (12) and a function named `builtin` (5). A fuzz of 6,000 random steps with truth, mixing the
+  three words with the others the reader takes off the front of a command: 166 cells in 64 rows
+  report, 717 in 148 stop, and one goes from REPORT to CLEAN under `sh {0}` where dash runs --
+  `main` reported that row for the mis-read word and never saw the run, which stands behind
+  `builtin read T`: the value table reads that as `read T` under every shell (#3024), and `main`
+  reads the row CLEAN once the word is replaced by a command no shell finds. On the standing sets,
+  the #2939 seat's class rows and its fuzz rows, marked with the parse nonce pinned, 8 of 53,210
+  rows move, all from CLEAN to REPORT and each run by both bashes. Still CLEAN, each pinned and
+  named: a wrapper that hands its words to a shell (`sudo -s builtin eval 'P'`, for #2861's rule);
+  a function that hands its words to `builtin`; a step that exports `SHELLOPTS` earlier; `bash -t
+  -s`, `main`'s gap already. Pins that waited for #2665 move with it
+  (`test_builtin_in_front_was_2665`, its printer twin, the `builtin eval sh tool` row of the
+  printers' catch-all test, `builtin command sh +c` in the plus cluster's), `SHELLOPTS=noexec bash
+  -s` leaves the list of `main`'s gaps for the reported one, and `builtin` joins the words no
+  `find` can run, with its row. The cost, `job_defects` against `main` on the forge, three passes,
+  each a process of its own: 1.01x to 1.02x on the #2942 seat's 3,881-row sample of the standing
+  rows, where `_named` looks at the head of every stage; 1.44x to 1.47x on the hunt and 1.31x to
+  1.33x on the fuzz, whose rows all hold the words -- a job with a `builtin` it may read through
+  is read in twice the second walk's folds, and no other job.
+- **Workflow guard: downloaded-use scope readers move to
+  `scripts/workflow_use_scopes.py`.** A pure move out of `scripts/workflow_uses.py`, which stood at
+  its 699-line ceiling: function ranges and removal, the compound/group walk whose assignments
+  live in another shell, and function-body bounds now live in a 153-line leaf. The old module
+  re-exports every moved name and falls to 563 lines; no expectation moved.
 - **Workflow reader reads a shell's `c` in a `+` cluster as its `-c` (#3019).** `sh +c 'curl ... |
   sh'` and `bash +xc '...'` read CLEAN under every `shell:` setting while every parent shell runs
   the string: a `+` turns an option OFF and `c` is none to turn, so bash, dash, zsh, ksh and

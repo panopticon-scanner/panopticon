@@ -14,7 +14,8 @@ import shell_reader
 MOVED = ("OPTIONAL_NEXT", "_ALL", "_DEFAULTS", "_FETCHERS", "_HALF_CAP", "_HALVES", "_INTERPRETERS",
          "_OPTIONAL", "_PARAMETER", "_SHELLS", "_VANISHING", "_WHOLE_DEFAULTS", "_alternate",
          "_default_words", "_half", "_masks", "_optional", "_shell_default", "_strips",
-         "WALKED_DEFAULTS")      # #2963's flag, which came after the move: defined beside the readers that read it
+         "WALKED_DEFAULTS",      # #2963's flag, which came after the move: defined beside the readers that read it
+         "_THROUGH", "_through")  # #2665's fold state and its reader, after it too: two of those readers ask it
 
 
 def _tree():
