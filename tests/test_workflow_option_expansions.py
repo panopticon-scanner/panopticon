@@ -530,6 +530,18 @@ class TestThePrice(unittest.TestCase):
                 self.assertEqual(BOTH, marks("HOME=%s\nsh ~ %s\n" % (home, P)))
         self.assertEqual(BOTH, marks("sh ~ %s\n" % P))
 
+    def test_a_fetchers_letters_that_hold_a_reference_leave_the_transfer_unread(self):
+        # Nothing is piped and nothing runs, and the step is reported for a transfer the guard cannot read: as its
+        # `$(...)` twin is since #3023 (`wget -q$(true) URL`), and as curl's was on `main`, whose letters are a table.
+        # Truth: fetched only.
+        for fetch in ("wget -q$X", "wget --quiet$X", "curl -s$X", "wget -q$(true)"):
+            with self.subTest(fetch=fetch):
+                self.assertEqual({BOTH}, under("%s %s\n" % (fetch, URL)))
+        # In an option's VALUE a reference is a value, as it was: the transfer is read, and nothing runs it.
+        for fetch in ("wget -O$OUT", 'wget -q -O "$OUT"', "curl -fsSL -o$OUT", 'curl -fsS -H "X: $TOKEN" -o out'):
+            with self.subTest(fetch=fetch):
+                self.assertEqual(CLEAN, marks("%s %s\n" % (fetch, URL)))
+
     def test_a_wget_that_streams_nothing(self):
         # Truth: fetched only.
         for row in ("X=qO-\nwget $X %s | sh\n", "wget $X %s | sh\n", "X=-q\nwget $X %s | sh\n", "wget $(true) %s | sh\n"):
