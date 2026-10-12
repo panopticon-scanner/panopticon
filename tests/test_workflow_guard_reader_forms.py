@@ -4787,8 +4787,8 @@ class TestALiteralStringHoldingASubstitution(unittest.TestCase):
             (4, 'zsh -c "%s"\n' % sub, piped % (URL + "i.sh")),
             (4, 'eval "%s"\n' % sub, piped % (URL + "i.sh")),
             (4, '${X:-sh} -c "%s"\n' % sub, piped % (URL + "i.sh")),
-            # 5: a program word all substitution, `_DYNAMIC`'s; the file run by its name; and the
-            # value twin, whose `Idle` sentence speaks first.
+            # 5: #2428 replaces the literal file-reader word's `_DYNAMIC` reason with its exact
+            # source-bound use; the file run by name and the value twin keep their own sentences.
             (5, prog + 'sh -c "$(cat prog.sh)"\n', "fetches %si.sh -> prog.sh and running it through" % URL),
             (5, prog + "sh prog.sh\n", "fetches %si.sh -> prog.sh and running it" % URL),
             (5, prog + 'X=-c\nsh $X "$(cat prog.sh)"\n', "passes `sh` `$X` where it reads"),
