@@ -7,6 +7,38 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader reads an expansion in a shell's option word as text the word does not write
+  (#2889).** `X=c; sh -$X 'curl ... | sh'` runs the string under every parent shell and read CLEAN,
+  and so did `HOME=-c; sh ~ '...'`, `sh -$(echo oc) errexit '...'` and `wget $(echo -qO-) URL | sh`.
+  The readers of the programs lane asked an option word for its letters, and `-$X` writes none: they
+  read the NAME's instead, so `-$cmd` was a `-c` and `-$s` was not. #3020 gave a lifted `$(...)` in
+  such a word both readings a shell may give it; this is that rule for every other expansion, in
+  four parts. A parameter reference in an option word -- `$X`, `${...}`, `$1`, `$@`, `$-` -- is
+  text the word does not write, as a marker is (`workflow_option_words`), so every reader of #3020
+  reads the word both ways and a name's letters are no option letters; a reference that prints
+  digits alone (`$#`, `$?`, `$$`, `$!`, `${#X}`) stays written. A word that holds an expansion may
+  print an `o` or an `O`, which takes the next word: each word after it that may be a NAME may be
+  its value, however many, at every option word the walk passes -- one search beside `main`'s own
+  walk past the options (`_reached`), `main`'s operand first -- and a refusal by NAME is read only
+  from an `o` written before the word's first expansion (`X=O; bash -c${X}o extglob errexit '...'`
+  runs the string, and read CLEAN as a refusal). No table of names is asked: bash's `-O` takes a
+  shopt name and zsh's `-o` one of its own, so a word shaped as a name may be one. A tilde alone
+  (`~`, `~+`, `~-`, `~1`) is a value, as `$X` is, read beside `main`'s reading of it as an operand.
+  And `wget` handed a whole-word expansion may be handed `-O-`: where its stdout is piped the
+  stream view is added, and the file view stays `main`'s. Every new reading stands BESIDE `main`'s,
+  never instead of it. The price was measured and ruled before the code: the guard follows no
+  value, so a word that MAY spell `-c` is read as one whatever the step assigns -- `X=e; sh -$X
+  '...'` is reported and runs nothing, as its whole-word twin `X=-e; sh $X '...'` has been since
+  #2344. On 14,322 rows in 13 grids with truth from eight parent shells, the rows a
+  parent runs and the guard read CLEAN go 699 -> 195, each one left another
+  issue's or open with its letter written out too; 507 rows that run are newly reported
+  and 1,089 that run nothing, of which 937 are steps that fail where they stand (the
+  shell takes the program text for a FILE's name) and 139 more are the `X=s` rows, whose
+  string is a positional parameter; no report is lost on any grid in either pass, and no mark
+  depends on a marker. The issue's own rows -- 36 of PR #2858's round-5 matrix and round 9's
+  tilde case -- all report. Left for other issues: a `$` command word whose cluster is not its
+  first word (#2671, #2900), three shapes of `wget` (#3033, #3034, #3035), and the tightening that
+  would follow the step's own assignment, which needs the value table.
 - **`scripts/workflow_options.py` splits the readers of a word in a shell's option slot into
   `scripts/workflow_option_slots.py` (for #2889, programs lane).** A pure move at the module's size
   (699 of its 700 lines), in two pieces, each byte for byte with the comments above it and the two
