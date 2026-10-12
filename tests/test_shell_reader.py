@@ -21,6 +21,8 @@ import gc
 import time
 import unittest
 
+import pytest
+
 import shell_heredoc
 import shell_lex
 import shell_quote
@@ -186,6 +188,7 @@ class TestTheCaseHeaderProbeIsNotQuadratic(LinearGrowth, unittest.TestCase):
     slower, as it does on a loaded box or traced for coverage (#2295).
     """
 
+    @pytest.mark.serial
     def test_a_50kb_single_statement_parses_in_linear_time(self):
         def make(words):
             return "echo " + "a " * words + "\n"
@@ -214,6 +217,7 @@ class TestTheCaseHeaderProbeIsNotQuadratic(LinearGrowth, unittest.TestCase):
         self.assertTrue(arms[0].endswith("a)"), arms)
         self.assertTrue(arms[1].endswith("b)"), arms)
 
+    @pytest.mark.serial
     def test_a_50kb_statement_that_really_is_a_case_header_is_fast_too(self):
         # The probe survives on a buffer whose first word IS `case`, so the
         # bound cannot be "give up once the statement is long".
@@ -1100,6 +1104,7 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
                 self.assertEqual(("script", False), parsed.stdin_heredoc)
                 self.assertEqual("script", parsed.heredoc)
 
+    @pytest.mark.serial
     def test_hostile_heredoc_shapes_read_in_linear_time(self):
         # The old heredoc pass searched every line below each `<<` for its
         # terminator, so N unterminated operators were N scans to the end of
@@ -1129,6 +1134,7 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
             with self.subTest(script=script):
                 self.assertIn([['echo', 'a']], argvs(script))
 
+    @pytest.mark.serial
     def test_nested_double_parens_are_decided_in_bounded_time(self):
         # A command's `((` is decided by reading its first group, and one bash
         # makes two subshells is read again as code -- so `((((` nested is
@@ -1144,6 +1150,7 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
         self.assert_linear_growth(400, lambda size: "".join(
             "((((((: <<E%d) ) ) ) ) )\nit's\nE%d\n" % (k, k) for k in range(size)), check)
 
+    @pytest.mark.serial
     def test_past_the_cap_the_reader_raises_instead_of_guessing(self):
         # One group 3000 `(` deep is 3000 readings of the same text: past
         # eight times the script, `shell_lex.Unreadable`, which the guard
@@ -1159,6 +1166,7 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
             shell_reader.statements(script)
         self.assertLess(time.monotonic() - start, 10.0)
 
+    @pytest.mark.serial
     def test_a_statement_of_many_parentheses_reads_in_linear_time(self):
         # #2664 fix round (B3): the function-header test at every `(` joined and split the
         # whole buffer before `_HEADER` had matched, so one `(( 0 + (1) + … ))` statement
@@ -1203,6 +1211,7 @@ class TestOneLexicalPass(LinearGrowth, unittest.TestCase):
         plain = shell_tokens.bang("y")
         self.assertEqual(("y", True, {}), (plain, plain.negated, plain.markers))
 
+    @pytest.mark.serial
     def test_a_nested_blank_free_expansion_reads_in_linear_time(self):
         # PR #2856 fix round (B3): `_expansion_end` ran at every `${`, and a blank-free
         # expansion was read on character by character, so each `${` nested in it was
@@ -1670,6 +1679,7 @@ class TestASubstitutionHeredocEndsWhereBashEndsIt(LinearGrowth, unittest.TestCas
         self.assertEqual(["b"], self.lexed(script)[1])
         self.assertIn([['echo', 'a']], argvs(script))
 
+    @pytest.mark.serial
     def test_heredocs_inside_substitutions_read_in_linear_time(self):
         # Each body is read line by line up to its end, which is no line of
         # code; a body with no end leaves the rest to the terminator index.
@@ -1813,6 +1823,7 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.
         self.assertEqual((2 + len(word), word.replace(" ", shell_reader._BLANK)),
                          shell_reader._bare_blanks("x %s y" % word, 2))
 
+    @pytest.mark.serial
     def test_an_unended_expansion_is_read_in_linear_time(self):
         # PR #2856 round 9, the round-8 verdict's B4: the scan ran at every unquoted `${` before
         # the splitter asked whether it starts a command word, and read one nothing ends to the end
@@ -1831,6 +1842,7 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.
                         (size + 1, size + 1), (len(parsed) if statements else len(parsed[0].stages),
                                                sum(len(s.stages) for s in parsed))))
 
+    @pytest.mark.serial
     def test_a_defaults_words_are_marked_in_linear_time(self):
         # PR #2856 round 12, the round-11 verdict's B3: each word of a whole default took its marks by
         # testing every mark of the whole word against it (`derived`), quadratic in a default of n
@@ -2012,6 +2024,7 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.
                 stage = shell_reader.statements(row + "\n")[-1].stages[0]
                 self.assertEqual(expected, [str(w) for w in shell_reader.command(stage.argv)])
 
+    @pytest.mark.serial
     def test_a_word_read_both_ways_reads_no_step_text(self):
         # PR #2856 round 13, the round-12 verdict's B6: `_sets` read the step's text for the names it
         # sets, its subscript scan backtracking from every `[` to the end of the line -- 7.24x the
@@ -2036,6 +2049,7 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.
             small, large = min(small, read(4000)), min(large, read(16000))
         self.assertLessEqual(large, 8 * small + 0.05, (small, large))
 
+    @pytest.mark.serial
     def test_a_checkers_reads_on_zero_are_sorted_in_linear_time(self):
         # B6's second: `credited_zero` tested each read against a list of the ones it drops -- 2.48x
         # the base at 64,000 `0<>` on one checker. `dropped` is a set: t(4n) <= 8 t(n).
@@ -2143,6 +2157,7 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.
                 left = shell_command.fronts(closed, state, text, at)
                 self.assertEqual((want, type(want)), (left, type(left)))
 
+    @pytest.mark.serial
     def test_a_statement_of_function_headers_is_read_in_linear_time(self):
         # #2954: what a header leaves is carried from word to word, never read back off the stage's
         # text, so a statement of `function f` after `function f` costs what its length does.
@@ -2195,6 +2210,7 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.
                 self.assertNotIn(["case", "x", "in"], shape(script))
                 self.assertFalse([words for words in shape(script) if words[0].startswith("arm:")])
 
+    @pytest.mark.serial
     def test_a_case_behind_a_run_of_leads_is_read_in_linear_time(self):
         # #2974: each word in front of the header is passed by without a probe, and the probe reads
         # the words behind them alone, so a header behind n keywords costs what its length does.
