@@ -28,8 +28,10 @@ written after them (`shell_quote.ansi_c`): to the word's end it is such a refere
 
 That rule has ONE switch, and it is here (`ruled`). Every reader the rule changed asks it before
 it answers by the rule, so with it off (`as_before`) each of them answers word for word as `main`
-did; and an answer the rule gave is noted, so a caller can read BOTH ways wherever one was given
-and neither where none was (`beside`). The guard does, for the whole job: what `main` reported is
+did -- wherever `main` answers at all: its search for a cluster called itself once a word and ran
+out of stack past a thousand of them, where the loop that stands for it answers; and an answer the
+rule gave is noted, so a caller can read BOTH ways wherever one was given and neither where none
+was (`beside`). The guard does, for the whole job: what `main` reported is
 reported still, whatever a reader makes of the words the rule finds.
 
 Below every reader that asks it: it reads the word it is handed and those two patterns of
@@ -73,26 +75,33 @@ def ruled(answer=True):
     return True
 
 
-def beside(read):
+def beside(read, refused=()):
     """(`read()` as `main` answers it, `read()` under the rule): the SAME object twice where the
     rule answered nothing in it, since that reading is `main`'s; else `read()` once more with the
     rule off (`as_before`), for a caller to keep `main`'s answer first and whole and the rule's
-    beside it. A reading inside another tells that one what it heard."""
+    beside it. A reading inside another tells that one what it heard. Where the rule's reading
+    raises an error of `refused`'s kind, `main`'s reading alone is the answer, twice: what the rule
+    alone reads may be text a reader refuses, which `main`'s reading never met (a reading that
+    raises it with the rule off too raises it still)."""
     if _OFF.get():
         found = read()
         return found, found
-    outer, heard = _HEARD.get(), [False]
+    outer = _HEARD.get()
+    heard: list[bool | None] = [False]           # None: the rule's reading was refused
     token = _HEARD.set(heard)
     try:
         found = read()
+    except refused:
+        found = heard[0] = None
     finally:
         _HEARD.reset(token)
-    if not heard[0]:
+    if heard[0] is False:
         return found, found
     if outer is not None:
         outer[0] = True
     with as_before():
-        return read(), found
+        mains = read()
+    return mains, (mains if heard[0] is None else found)
 
 
 # The characters of a parameter's NAME: ASCII letters and `_`, and digits after the first.

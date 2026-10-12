@@ -44,6 +44,7 @@ import os
 import random
 import re
 import secrets
+import sys
 import unittest
 from unittest import mock
 
@@ -109,7 +110,7 @@ def readings(text):
     for shell in SHELLS:
         step = [wg.Step("step", text, shell)]
         job += "R" if wg.job_defects(step) else "C"
-        with mock.patch.object(wg, "beside", lambda read: (read(),) * 2):
+        with mock.patch.object(wg, "beside", lambda read, refused=(): (read(),) * 2):
             alone += "R" if wg.job_defects(step) else "C"
         with words.as_before():
             before += "R" if wg.job_defects(step) else "C"
@@ -708,6 +709,28 @@ class TestBesideNeverInstead(unittest.TestCase):
                          {key: count for key, count in most.items() if key != ("walk", "step")})
         self.assertLessEqual(most[("walk", "step")], 2)     # `main`'s step and the walk's own, at the word it starts from
 
+    def test_the_words_handed_on_are_looked_up_in_a_set(self):
+        # Where the rule hands on a word for each place, the readers that keep the step's own words (`_in_every_reading`)
+        # and drop the strings `main` found (`_added_strings`) look each word up in a set: a scan of every word for each
+        # was the square of them (`sh` and four thousand `-$X errexit`, 13 s: the second pre-review). Counted in the
+        # generator steps they take, twice the words is twice the steps.
+        def steps(pairs):
+            words_, count, before = argv("sh" + " -$X errexit" * pairs + " 'P'"), [0], sys.getprofile()
+
+            def profile(frame, event, _arg):
+                if event == "call" and frame.f_code.co_name == "<genexpr>":
+                    count[0] += 1
+            sys.setprofile(profile)
+            try:
+                wo._dash_c_strings(words_)
+                ws._added_strings(words_)
+            finally:
+                sys.setprofile(before)
+            return count[0], len(words_)
+        (small, _), (large, size) = steps(150), steps(300)
+        self.assertLess(large, 2.2 * small)
+        self.assertLess(large, 100 * size)
+
     def test_the_first_operand_a_walk_reaches_is_kept_for_every_word(self):
         # `_first_place` is `_operand_past`'s first operand, kept: asked of every word of these argvs, fresh and with
         # one table for all, it gives the place of the word the walk hands on first, wherever `main` reaches none.
@@ -731,6 +754,8 @@ class TestBesideNeverInstead(unittest.TestCase):
         # ... and it is the one a `-c` cluster's `$Y` is asked for where `main` reaches none: `-$foo` owed `main` two
         # words, by the name's letters, and writes no `o` (`foo=x; sh -c -$foo $Y P` with `Y` empty runs `P`).
         self.assertEqual(3, wo._value_after_dash_c(argv("sh -c -$foo $Y 'P'"), 1, {}, {}))
+        # ... only there: where `main` reaches an operand, it is the one asked, a value or not.
+        self.assertIsNone(wo._value_after_dash_c(argv("sh -c -$foo $Y Z 'P'"), 1, {}, {}))
         with words.as_before():
             self.assertIsNone(wo._value_after_dash_c(argv("sh -c -$foo $Y 'P'"), 1, {}, {}))
 
@@ -819,10 +844,42 @@ class TestWhatMainReportedIsReported(unittest.TestCase):
                      "sh -c -$(echo o) errexit %s\n" % P,                  # a NAME a lifted word may owe (`_may_be_name`)
                      "bash -c$(echo O)o extglob errexit %s\n" % P,         # a refusal read before the expansion (`_refused_name`),
                      "sh -c$(true)o bogus %s\n" % P,                       # ... which `main` read from the whole word
-                     "wget $X %s | sh\n" % URL):                           # a wget that may stream (`_parse_fetch`)
+                     "wget $X %s | sh\n" % URL,                            # a wget that may stream (`_parse_fetch`)
+                     "$CMD ~ %s" % BODY,                                    # a `$` word's stdin, a tilde after it (`_value`)
+                     "$CMD -x ~ %s" % BODY,
+                     "echo %s | $CMD ~\n" % P):
             for digit in "0c":
                 with self.subTest(text=text, digit=digit), nonce(digit):
                     self.assertEqual(RULED, readings(text))
+
+    def test_where_the_rule_adds_nothing_the_shared_walks_answer_as_mains(self):
+        # The walks the rule shares with `main` answer as `main`'s: its operand past a cluster, where a one-dash long
+        # option after `-c` refuses (`-norc`), and its operand kept for every word, where the options end at the last
+        # word. These read as `main`'s tree reads them, every way -- each was a one-line change the module did not
+        # see before (the second pre-review's mutants). Truth: nothing runs the first two; the third runs the download.
+        for text, expected in (("bash -$(echo c) -norc errexit $Y %s\n" % P, "CCCCC"),
+                               ('bash -$(echo c) -norc errexit "$Y" %s\n' % P, "CCCCC"), ("sh -c -\n%s\n" % PIPE, "RRRRR")):
+            for digit in "0c":
+                with self.subTest(text=text, digit=digit), nonce(digit):
+                    self.assertEqual((expected,) * 3, readings(text))
+
+    def test_strict_mode_keeps_mains_reading_where_the_rule_alone_meets_a_refusal(self):
+        # `fetch_exec_defects` is strict: it raises where the reader refuses a step's text. A string only the rule
+        # finds may be such text, which `main` never met: there `main`'s reading of the job is the answer (`beside`'s
+        # `refused`), and the guard's own reading, not strict, reports the step unread. The second pre-review found
+        # it: 591 of its generated jobs raised where `main` answered.
+        refused = "'cat <<$(a b)\nx\n$(a b)'"
+        for text in ("%s\nsh -$X %s\n" % (PIPE, refused), "%s\nsudo bash -c -$X o %s\n" % (PIPE, refused),
+                     "%s\n${SH:-sh} -c -${X} pipefail 'x=$(cat <<EOF\n)\nEOF\n)'\n" % PIPE):
+            with self.subTest(text=text):
+                with words.as_before():
+                    mains = wg.fetch_exec_defects(text)
+                self.assertEqual(1, len(mains))
+                self.assertEqual(mains, wg.fetch_exec_defects(text))
+                self.assertEqual("RRRRR", marks(text)[0])
+        # A text `main` refuses too is refused still.
+        with self.assertRaises(wg.shell_lex.Unreadable):
+            wg.fetch_exec_defects("sh -c %s\n" % refused)
 
     def test_mains_findings_stand_first_and_whole(self):
         # Two steps: the first only the rule reports, the second `main` reports too. The job's findings are `main`'s,
@@ -885,6 +942,18 @@ class TestWhatMainReportedIsReported(unittest.TestCase):
         del asked[:]
         self.assertEqual(([False, False], [False, True]), words.beside(lambda: [x for part in words.beside(read) for x in part]))
         self.assertEqual([True, False, False], asked)
+        # An error of `refused`'s kind in the rule's reading leaves `main`'s reading alone, the same object twice;
+        # where `main`'s reading raises it too, it is raised.
+        def refusing():
+            if words.ruled():
+                raise KeyError
+            return ["main"]
+        mains, found = words.beside(refusing, KeyError)
+        self.assertEqual((["main"], True), (mains, mains is found))
+        with self.assertRaises(KeyError), words.as_before():
+            words.beside(lambda: {}[0], KeyError)
+        with self.assertRaises(KeyError):
+            words.beside(lambda: (words.ruled(), {}[0]), KeyError)
         # A reading that raises leaves no note behind: the next reading starts unheard.
         with self.assertRaises(KeyError):
             words.beside(lambda: read() and {}[0])
@@ -926,6 +995,7 @@ class TestTheLeafKnowsAReference(unittest.TestCase):
                             ("-${#X[1]}", []), ("-${#X[@]}", []), ("-${#12}", []), ("-${#@}", []), ("-${#*}", []), ("-${#?}", []),
                             ("-${#-}", []), ("-${##}c", []), ("-${#_x9}", []),
                             # ... and any other `${#` is the count under an operator, which prints its word: `${#+c}` is `c`.
+                            ("-${#$}", []), ("-${#!}", []),
                             ("-${#+c}", [(1, 7)]), ("-${#:+o}", [(1, 8)]), ("-${#-o}", [(1, 7)]), ("-${#:-c}x", [(1, 8)]), ("-${#X:-c}", [(1, 9)])):
             with self.subTest(text=text):
                 self.assertEqual(spans, words._spans(text))

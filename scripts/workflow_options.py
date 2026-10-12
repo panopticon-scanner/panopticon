@@ -293,12 +293,14 @@ def _in_every_reading(argv, walk):
     if first >= len(argv):
         return walk(argv)
     found: list = []
+    mine, seen = set(map(id, argv)), set()      # by identity, as a set: #2889 hands on a word a place
     for reading in _READINGS:                   # the words the options end at stay as written
         words = [argv[0]] + [part for at, word in enumerate(argv[1:], start=1) for part in (
             (word,) if reading is None or at >= end or _literal(word)
             or not reading and _one_word(word) else reading)]    # `"$X"` never vanishes; `"$@"` may
         for word in walk(words):
-            if any(word is mine for mine in argv) and not any(word is seen for seen in found):
+            if id(word) in mine and id(word) not in seen:
+                seen.add(id(word))
                 found.append(word)
     return found
 
@@ -523,9 +525,8 @@ def _printed(argv):
 
 
 def _first_place(argv, at, firsts):
-    """The place of the first operand `_operand_past` reaches past the option word `argv[at]`, or None. Each
-    word's is decided by the words after it alone, so `firsts` keeps it for every option word walked: a run
-    of them that reaches none is walked ONCE however many clusters ask (#2889: `sh -$X -$X ...` was not)."""
+    """The place of the first operand `_operand_past` reaches past the option word `argv[at]`, or None, kept in
+    `firsts` for every option word walked: the words after it decide it alone, so each is walked once (#2889)."""
     todo = [at]
     while todo:
         if (k := todo[-1]) in firsts:

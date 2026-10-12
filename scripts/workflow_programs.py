@@ -226,9 +226,9 @@ def _stdin_details(argv, depth):
 def _details(argv, depth, walk):
     """`main`'s `_stdin_details` (7e9223e6), the options and strings it reads `walk`'s (`_MAIN`, `_WALK`).
 
-    The strings `main` found are joined as it joined them and read FIRST; a string only the
-    any-expansion rule finds is one more reading of the words, so each is read after that and
-    ALONE (`beside`, #2889): `bash -c -$X sh foo <<'EOF'` names `sh` in one reading and `foo` in
+    The strings `main` found are joined as it joined them and read FIRST; a string the any-expansion
+    rule finds whose text is none of theirs is one more reading of the words, so each is read after
+    that and ALONE (`beside`, #2889): `bash -c -$X sh foo <<'EOF'` names `sh` in one reading and `foo` in
     another, never `sh foo`, and its body is the program of the `sh` `main` read."""
     if not argv:
         return None, None, argv

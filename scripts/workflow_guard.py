@@ -550,7 +550,7 @@ def job_defects(steps, strict=False):
         with mains_answer():
             mains = _job_defects(steps, strict)
         return [mains, _job_defects(steps, strict)]
-    read, more = beside(passes)
+    read, more = beside(passes, shell_lex.Unreadable if strict else ())  # strict: what only the rule reads may be refused
     mains = read[0]
     for at, (name, why) in enumerate(sum(read if read is more else read + more, [])):
         key = (name, why) if getattr(name, "__hash__", None) else why  # a step's name is YAML's own:

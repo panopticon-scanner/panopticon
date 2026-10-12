@@ -77,8 +77,8 @@ def _main_scripts(argv):
 
 def _added_strings(argv):
     """A shell's `-c` strings this walk reads (`_dash_c_strings`, #2858) that `main`'s does not."""
-    shell, mains = bool(argv) and os.path.basename(argv[0]) in _SHELL_STRING, _program_words(argv)
-    return [word for word in _dash_c_strings(argv) if not any(word is seen for seen in mains)] if shell else []
+    shell, mains = bool(argv) and os.path.basename(argv[0]) in _SHELL_STRING, set(map(id, _program_words(argv)))
+    return [word for word in _dash_c_strings(argv) if id(word) not in mains] if shell else []
 
 
 def _program_words(argv):
