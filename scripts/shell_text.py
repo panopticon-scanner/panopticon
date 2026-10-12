@@ -10,7 +10,7 @@ nothing the reader builds from it. `_lift_substitutions` takes the `$(...)`,
 are split, each replaced by a marker the parse it is handed (`context`) records,
 a `$(...)`, `<(...)` or `>(...)` text as a `Lifted` carrying the heredoc
 bodies read around it (#2336), a `<(...)` or `>(...)` one as a `Process`: a
-file bash hands the command.
+file bash hands the command, retaining whether that file is an input or output.
 `without_comments` and `join_continuations` are the whole-line passes the
 reader made before `scripts/shell_lex.py` settled comments and continuations
 in one quote-aware pass; the tests that read workflow and Dockerfile text
@@ -49,6 +49,13 @@ class Backquoted(str):
 class Process(Lifted):
     """The text of a `<(...)` or `>(...)`: bash hands the command a FILE to
     read or write, where a `$(...)` or backquote hands it the OUTPUT as words."""
+
+    direction: str
+
+    def __new__(cls, text, heredocs=None, direction=""):
+        lifted = super().__new__(cls, text, heredocs)
+        lifted.direction = direction
+        return lifted
 
 
 def without_comments(script):
@@ -128,7 +135,9 @@ def _lift_substitutions(text, context, arithmetic_body=False):
             if end and not inner.startswith("("):   # `$((...))` is arithmetic
                 bodies = {key: context.entries[key] for key in context.pattern.findall(inner)
                           if context.entries.get(key, ("",))[0] == "heredoc"}
-                inners.append((Lifted if opening.group() == "$(" else Process)(inner, bodies))
+                lifted = (Lifted(inner, bodies) if opening.group() == "$(" else
+                          Process(inner, bodies, opening.group()[0]))
+                inners.append(lifted)
                 out.append(context.new("subst", inners[-1]))
                 i = end
                 continue

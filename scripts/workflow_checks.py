@@ -12,6 +12,7 @@ import re
 from shell_reader import command, statements
 from workflow_forms import (STDOUT, at_directory, clears, regions, step_credit,
                             statement_analysis, swallowed, working_directories)
+from workflow_programs import statement_file_handoffs
 
 
 CHECKSUM_TOOLS = ("sha256sum", "sha512sum", "sha384sum", "shasum")
@@ -111,12 +112,14 @@ def checks(stmts, credit=None, working=None, outer=None, path=(), scope=None,
     return found
 
 
-def inside(statement, outer, directory=".", scope=0, path=(), index=None):
-    """Stages under one outer statement, retaining each nested shell position."""
+def inside(statement, outer, directory=".", scope=0, path=(), index=None, handoff=None):
+    """Stages under one outer statement, retaining nested position and file hand-off context."""
     point = outer if index is None else Nested(outer, path, index, directory)
+    handoffs = statement_file_handoffs(statement)
     for position, stage in enumerate(statement.stages):
         where = " inside a command substitution" if path else ""
-        yield point, statement, position, stage, where, directory
+        carries = handoff if statement.stages[-1].stdout_to_pipe else None
+        yield point, statement, position, stage, where, directory, carries
         for nested, text in enumerate(stage.substitutions):
             inner = list(statements(text))
             child_scope = "%sS%d_%d" % (scope, position, nested)
@@ -126,7 +129,7 @@ def inside(statement, outer, directory=".", scope=0, path=(), index=None):
             for child_index, child in enumerate(inner):
                 yield from inside(child, outer, working[child_index],
                                   "%sI%d" % (child_scope, child_index),
-                                  child_path, child_index)
+                                  child_path, child_index, handoffs.get(id(text)))
 
 
 def clears_nested(why, check, use):

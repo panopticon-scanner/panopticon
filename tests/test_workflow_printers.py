@@ -1772,16 +1772,16 @@ class TestAPrinterThroughASubstitution(unittest.TestCase):
         # tool')"` (b5 b3 dash gh: F- F- F- F-), e06b with `true` first (FR FR FR FR), e07 a
         # pipeline `eval "$(echo 'sh tool' | cat)"` (FR FR FR FR), e14/e14b a printer whose output
         # leaves the substitution `sh -c "$(echo 'sh tool' >&2)"` / `> /dev/null` (F- F- F- F-),
-        # and e03 an operand `eval "$(cat prog.sh)"` (F- F- F- F-): `_DYNAMIC`'s `Idle` beside the
-        # download, as at the base -- a fail-closed over-report where nothing runs it.
+        # At the base, e03 `eval "$(cat prog.sh)"` (F- F- F- F-) had the same `_DYNAMIC` `Idle`;
+        # #2428 binds a file reader to its own path, so that unrelated-file twin is now CLEAN.
         for script, how in (("eval \"$(echo a; echo 'sh tool')\"\n", "eval"),
                             ("eval \"$(echo true; echo 'sh tool')\"\n", "eval"),
                             ("eval \"$(echo 'sh tool' | cat)\"\n", "eval"),
                             ("sh -c \"$(echo 'sh tool' >&2)\"\n", "sh -c"),
-                            ("sh -c \"$(echo 'sh tool' > /dev/null)\"\n", "sh -c"),
-                            ('eval "$(cat prog.sh)"\n', "eval")):
+                            ("sh -c \"$(echo 'sh tool' > /dev/null)\"\n", "sh -c")):
             with self.subTest(script=script):
                 self.assertTrue(said(defects(GET + script), self.UNREAD % how, forms._Quiet))
+        self.assertEqual([], defects(GET + 'eval "$(cat prog.sh)"\n'))
 
     def test_d13_e11_the_r_p3_corner_where_the_readings_disagree(self):
         # d13 `sh -c "$(echo 'sh\ttool')"` and e11 `eval "$(echo 'sh\ttool')"` (b5 b3 dash gh: F-
@@ -1987,10 +1987,10 @@ class TestAPrinterThroughASubstitution(unittest.TestCase):
 
     def test_rc12_a_write_side_process_substitution_is_read_as_a_file_the_price(self):
         # Fix round 1, m-3, a documented price: `sh >(echo 'sh tool')` hands `sh` a file to
-        # WRITE, and nothing of the text runs (rc12, b5 b3 dash gh: F- F- F- F-), but the reader
-        # keeps no direction on a lifted `<(...)`/`>(...)` (`shell_text.Process`), so the FILE is
-        # handed on: the fetch-and-run sentence, an over-report (main / base / 19423415 / now: C
-        # / C / FX / FX, both keys). Telling them apart is a reader change.
+        # WRITE, and nothing of the text runs (rc12, b5 b3 dash gh: F- F- F- F-). #2428 records
+        # the direction on `shell_text.Process`; this older printer rule deliberately still hands
+        # either FILE on, so its documented fetch-and-run over-report remains (main / base /
+        # 19423415 / now: C / C / FX / FX, both keys).
         for shell in (None, "sh"):
             with self.subTest(shell=shell):
                 self.assertTrue(said(defects(GET + "sh >(echo 'sh tool')\n", shell),
