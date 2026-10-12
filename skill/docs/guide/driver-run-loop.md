@@ -292,13 +292,12 @@ An override beginning with `{` must be valid JSON; a malformed object stops `dri
 `driver loop` before host work and the error names the environment key without printing its value.
 
 Every Codex role uses `delivery: return_json`; the shared loop validates and persists replies,
-records launches and denials, and handles retries. Codex does **not yet** claim
-`artifact_write_guard`: return delivery is transport, not proof that its effective surface has no
-reviewer-selectable write path. The existing shared review gate still requires
-`--allow-unenforced` when that capability is unproven, even with write tools omitted. Obtain the
-operator's explicit acceptance before supplying the flag; it records an acknowledgement, not proof
-of confinement. This is a shared-gate limitation, not a reason to claim proof the current probes do
-not establish.
+records launches and denials, and handles retries. Delivery is transport, not evidence. Codex
+separately claims `artifact_write_guard` through `codex-write-surface-absent`, which proves that the
+effective reviewer surface has no selectable artifact-write route. A healthy headless run therefore
+needs no `--allow-unenforced`; an unknown or refuted omission proof still refuses unless the operator
+explicitly accepts and records that unproven boundary. Generic has no corresponding proof and keeps
+the refusal even though its roles also return JSON.
 
 Codex's `--output-schema` accepts only the provider's strict subset: the root must be an object;
 recursively, every property must also be required and each object must set

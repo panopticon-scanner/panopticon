@@ -44,9 +44,13 @@ undefined unescape
 
 # The COMPLETE non-ECMAScript set measured on the live Code Mode host.  These
 # are output/state helpers only; none accepts a filesystem or network path.
+# Codex 0.162.1 added `as_settled` (an async settlement iterator) and
+# `stream_settled` (that iterator forwarded to a callback); their live function
+# bodies expose only Promise/iteration mechanics, with no host primitive.
 CODE_MODE_HOST_GLOBALS = frozenset({
-    "ALL_TOOLS", "audio", "clearTimeout", "exit", "generatedImage", "image",
-    "load", "notify", "setTimeout", "store", "text", "tools", "yield_control",
+    "ALL_TOOLS", "as_settled", "audio", "clearTimeout", "exit", "generatedImage",
+    "image", "load", "notify", "setTimeout", "store", "stream_settled", "text",
+    "tools", "yield_control",
 })
 _SHELLLESS_SETUP = "setup-scan (native default model and directory scope)"
 

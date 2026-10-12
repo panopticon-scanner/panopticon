@@ -14,8 +14,9 @@ import scripts.probes.common as probes_common
 
 
 HOST_GLOBALS = {
-    "ALL_TOOLS", "audio", "clearTimeout", "exit", "generatedImage", "image",
-    "load", "notify", "setTimeout", "store", "text", "tools", "yield_control",
+    "ALL_TOOLS", "as_settled", "audio", "clearTimeout", "exit", "generatedImage",
+    "image", "load", "notify", "setTimeout", "store", "stream_settled", "text",
+    "tools", "yield_control",
 }
 MODULE_IMPORTS = {
     "node:fs", "fs", "node:fs/promises", "node:child_process", "node:module",

@@ -351,7 +351,7 @@ scratch directory `--cd` names, outside the review root (`codex_host.launch_cwd`
 #1657): both roots are one directory, so whichever the CLI keys discovery off,
 the target's `AGENTS.md`, `.codex/skills` and `.codex/config.toml` are out of
 reach -- `features.skip_host_skill_discovery` is measured NOT to close them.
-Evidence: a live Codex 0.161.0 localhost measurement inspected the five
+Evidence: a live Codex 0.162.1 localhost measurement inspected the five
 registered roles plus the shell-less setup fallback without a model override;
 all three claimed capabilities were `proven`, leaving only `model_binding` and
 `usage_ledger` `unknown`.
