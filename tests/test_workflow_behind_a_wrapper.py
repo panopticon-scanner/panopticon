@@ -303,6 +303,8 @@ class TestAShellHandedTheWords(unittest.TestCase):
         self.assertEqual(["sudo", "-s", "unset", "T"], read("sudo -s unset T", through=True))
         self.assertEqual(["sh", "t"], read("sudo -s exec sh t"))                # a program: every fold
         self.assertEqual(["sudo", "-s", "env", "eval", "P"], read("sudo -s env eval P", through=True))
+        self.assertEqual(["sudo", "eval", "-s", "P"], read("sudo eval -s P", through=True))     # the builtin's own word
+        self.assertEqual(["sudo", "X=1", "eval", "-i"], read("sudo X=1 eval -i", through=True))
         self.assertEqual(["eval", "P"], read("env command eval P", through=True))
         self.assertEqual(["env", "command", "eval", "P"], read("env command eval P"))
         self.assertEqual(["env", "command", "unset", "T"], read("env command unset T", through=True))

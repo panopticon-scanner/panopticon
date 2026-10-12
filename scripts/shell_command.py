@@ -121,12 +121,12 @@ def _command_result(argv, optional=True, finds=False, written=None):
     # (#2670) Who runs the word behind and whether it is the first a shell reads (`shell_wrappers.behind`); the
     # stage as it stood where the step's shell stopped being the one, which is what it IS where nothing behind
     # runs; and `doubt`, whether a word in front may not be the program it names -- one a table or a default put
-    # there (`made`), one the job's steps define (`_SHADOWED`). Such a word, and a builtin's name that was made,
-    # is read both ways: as `main` reads it, and as written in the folds that read a `builtin` through.
-    where, front, doubt = "own", not (argv and getattr(argv[0], "piped", False)), False
+    # there (none of `theirs`, the written argv's words), one the job's steps define (`_SHADOWED`). Such a word,
+    # and a builtin's name so made, is read both ways: as `main` reads it, and as written in the folds that read
+    # a `builtin` through.
+    where, front, doubt = "own", not (argv and type(argv[0]) is not str and getattr(argv[0], "piped", False)), False
     outer: tuple[list[str], int] | None = None
-    def made(word):
-        return written is not None and not any(word is one for one in written)
+    theirs = None if written is None else {id(word) for word in written}
     while argv:
         # A word that spells an assignment but for a quote or a backslash in its name or its operator is the
         # command, of that name: the reader marks one where bash reads it (`shell_reader._named`, #2480).
@@ -202,12 +202,12 @@ def _command_result(argv, optional=True, finds=False, written=None):
             continue
         if words := None if heads else _shell_default(argv[0]):
             argv[0:1] = [Defaulted(words[0]), *words[1:]]   # the NAME, marked as unwritten
-        if (argv[0] == "builtin" or os.path.basename(argv[0]) == "jobs") and (named := _runs_builtin(argv, where, optional)):
+        head = os.path.basename(argv[0])
+        if (argv[0] == "builtin" or head == "jobs") and (named := _runs_builtin(argv, where, optional)):
             if where == "exec" or "/" in argv[0]:   # macOS's `jobs`, by a wrapper or a path: a script, a shell of its own
                 where, outer = "child", outer or (argv, len(heads))
             front, argv = False, named              # (#2665, #2836) bash runs what it names, in the shell reading it
             continue
-        head = os.path.basename(argv[0])
         if heads and dynamic(argv[0], has_substitution):
             return argv, "has a dynamic command operand behind a wrapper", heads
         if isinstance(argv[0], Rewritten):
@@ -225,7 +225,7 @@ def _command_result(argv, optional=True, finds=False, written=None):
         # a child: `env eval 'P'` runs nothing and `sudo unset T` unsets nothing. In a shell handed the words
         # a builtin that runs nothing else changes that shell alone. The stage is the wrapper's own.
         if where != "own" and argv[0] in BUILTINS and not runs_behind(where, argv[0], lambda: _through(True)) and (
-                not (doubt or made(argv[0])) or _through()):
+                not (doubt or theirs is not None and id(argv[0]) not in theirs) or _through()):
             argv, kept = outer or (argv, 0)
             del heads[kept:]
             break
@@ -237,12 +237,12 @@ def _command_result(argv, optional=True, finds=False, written=None):
         inner, reason = unwrap(argv, head, has_substitution)
         if reason:
             return argv, "`%s` %s" % (head, reason), heads
-        own = [word for word in argv[1:] if not any(word is handed for handed in inner)]
         # (#2648) `env` takes its assignments for itself, a `-S` string's too: every word it does not hand on.
-        for word in own if head == "env" else ():
-            idle = idles(word, idle, has_substitution)
-        doubt = doubt or made(argv[0]) or head in (_SHADOWED["names"] or ())
-        where, front = behind_wrapper(where, front, head, own)
+        for word in argv[1:] if head == "env" else ():
+            idle = idle if any(word is handed for handed in inner) else idles(word, idle, has_substitution)
+        doubt = doubt or theirs is not None and id(argv[0]) not in theirs or head in (_SHADOWED["names"] or ())
+        # `sudo` and `doas` hand on the words behind their own: what stands in front of those is what they were told.
+        where, front = behind_wrapper(where, front, head, argv[1:len(argv) - len(inner)] if head in ("sudo", "doas") else ())
         outer = outer if outer or where == "own" else (argv, len(heads) - 1)
         behind = (head, argv) if appended else None
         appended = appended or head == "xargs"
