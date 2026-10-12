@@ -41,6 +41,7 @@ import ast
 import contextlib
 import itertools
 import os
+import random
 import re
 import secrets
 import unittest
@@ -662,6 +663,50 @@ class TestBesideNeverInstead(unittest.TestCase):
                 small, large = steps(shape(20)), steps(shape(40))
                 self.assertEqual(small["searches"], large["searches"])
                 self.assertLess(large["walks"], 2.1 * small["walks"])
+
+    def test_each_word_is_read_once_a_walk_and_a_few_times_a_search(self):
+        # What keeps a long command cheap is a standing fact, not a measurement. A walk past the options (`_reached`)
+        # asks what follows a word (`_after`) once at most for each word; a search -- for the `-c` cluster (`_strings`),
+        # or the second walk's for a value (`_shell_candidates`) -- asks it three times at most: once where a walk
+        # reaches the word, and once from each scan that starts a walk at it (a `+` cluster's search reads the `-`
+        # ones again), and `main`'s walk (`_refused`, a step of it) once more. A walk asked afresh, or a table not
+        # kept, asks it once for every word before it: the square of the words, which no cap stands in for.
+        pool = [argv("sh " + word)[1] for word in ("-c", "+c", "-x", "-o", "-co", "-$X", "+$X", "-$foo", "-$Xo", "-$(echo o)",
+                                                    "--norc", "--", "-", "errexit", "$Y", "~", "P", "-K", "./f")]
+        rows = [[argv("sh " + word)[1] for word in tail] for size in (1, 2, 3) for tail in itertools.product(self.TURNS, repeat=size)]
+        draw = random.Random(2889)                  # and long ones, drawn: the same draw on every run
+        rows += [[draw.choice(pool) for _ in range(draw.randint(10, 80))] for _ in range(300)]
+        open_: list = []
+        most: dict = {}
+        after, refused, reached, strings = wo._after, wo._refused, wo._reached, ws._strings
+
+        def counted(kind, real):
+            def ask(words_, at, *rest):
+                for level, seen in open_:
+                    seen[(kind, at)] = seen.get((kind, at), 0) + 1
+                return real(words_, at, *rest)
+            return ask
+
+        def level(name, real):
+            def run(*args):
+                open_.append((name, {}))
+                try:
+                    return real(*args)
+                finally:
+                    _name, seen = open_.pop()
+                    for (kind, _at), count in seen.items():
+                        most[(name, kind)] = max(most.get((name, kind), 0), count)
+            return run
+        with mock.patch.object(wo, "_after", counted("after", after)), mock.patch.object(wo, "_refused", counted("step", refused)), \
+                mock.patch.object(wo, "_reached", level("walk", reached)), mock.patch.object(ws, "_strings", level("search", strings)):
+            candidates = level("search", wo._shell_candidates)
+            for shell in ("sh", "zsh"):
+                for row in rows:
+                    ws._after_dash_c([shell] + row)
+                    candidates([shell] + row)
+        self.assertEqual({("walk", "after"): 1, ("search", "after"): 3, ("search", "step"): 4},
+                         {key: count for key, count in most.items() if key != ("walk", "step")})
+        self.assertLessEqual(most[("walk", "step")], 2)     # `main`'s step and the walk's own, at the word it starts from
 
     def test_the_first_operand_a_walk_reaches_is_kept_for_every_word(self):
         # `_first_place` is `_operand_past`'s first operand, kept: asked of every word of these argvs, fresh and with
