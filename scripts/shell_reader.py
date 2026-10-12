@@ -90,12 +90,14 @@ from shell_split import (_BLANK as _BLANK, _BRACED_HEADER as _BRACED_HEADER, _ES
 # stdin somewhere else afterwards, and only the second question can say whether a heredoc is the
 # SCRIPT of the interpreter in front of it (#1839). A here-string is a body the second question
 # reads too (`sh <<< '...'`, #2293) -- expanding unless `lex` spelled its word -- and never the
-# first's.
+# first's. `pipe_output_fds` are the descriptors that feed the next stage when the stage's
+# redirections end, as `pipe_input_fds` are the ones the last stage feeds: `2>&1` adds 2, `>file`
+# takes 1 away (#2744).
 Stage = collections.namedtuple(
     "Stage", "argv writes reads heredoc substitutions stdout_writes "
              "group_open group_close stdin_from_pipe stdout_to_pipe pipe_input_fds "
-             "stdin_heredoc",
-    defaults=(0, 0, True, True, ("0",), None))
+             "stdin_heredoc pipe_output_fds",
+    defaults=(0, 0, True, True, ("0",), None, ("1",)))
 # One `;`/`&&`/`||`/newline-separated statement: its pipeline stages in order,
 # and the separator that FOLLOWS it -- which is where a shell says whether the
 # command's exit status is allowed to matter (`... || true`, `... &`).
@@ -104,7 +106,6 @@ Statement = collections.namedtuple("Statement", "stages separator")
 
 # The builtins whose words bash reads as assignments too: `declare -a a=(1 2)`.
 _DECLARATIONS = ("declare", "typeset", "local", "export", "readonly")
-_STDOUT_ALIASES = ("/dev/stdout", "/dev/fd/1")
 # Put in front of a word that spells an assignment but for a quote or a backslash in its name or its operator,
 # where a command word may stand (`_named`, #2480). `_WORD` is a word as written, quotes and all, to the blank
 # shlex ends it at; `_SPELLED` one whose name and operator would read as an assignment's with every quote and
@@ -141,6 +142,34 @@ def input_alias_fd(word):
     if word.startswith("/dev/fd/") or re.match(r"/proc/.*/fd/", word):
         return "?"
     return None
+
+
+def output_alias_fd(word):
+    """The descriptor of its own that a path a stage WRITES names, or None for a file of its own (#2744):
+    `/dev/stdout`, `/dev/stderr`, `/dev/fd/N`, `/proc/self/fd/N` and `/proc/thread-self/fd/N`, in any spelling
+    a kernel opens as that file -- repeated slashes, `.` and `..` among them, a climb to the root
+    (`input_alias_fd` past `_FD_SPELLINGS`). Linux refuses `/dev/stdout/` and `/dev/fd/01`, which macOS opens,
+    and macOS has no `/proc`: the reading is of either kernel (measured on both), and of `/dev/fd/1/` too,
+    which neither opens. What a command writes there lands where THAT descriptor points -- the pipe, a file,
+    nowhere. A word a value decides, and a path of another process's descriptor, are read as files, as before."""
+    fd = input_alias_fd(_FD_SPELLINGS.sub("/dev/fd/", os.path.normpath(word)))
+    return None if fd == "?" else fd
+
+
+def writes_pipe(word, stage):
+    """Whether a path a command of `stage` writes is the stage's standard output, as the two listed spellings
+    were to `main`, or another descriptor its redirections left feeding the next stage (`tee /dev/stderr
+    2>&1`, `tee /dev/fd/3 3>&1`; #2744): what such a command writes there, the next stage reads."""
+    fd = output_alias_fd(word)
+    return fd == "1" or fd in stage.pipe_output_fds
+
+
+def stdout_named(path, stage):
+    """`/dev/stdout` for a path a command of `stage` writes that names the stage's descriptor 1 in any spelling
+    (`output_alias_fd`), or another descriptor that feeds the next stage beside it (`-o /dev/stderr 2>&1`);
+    else the path as it is: for a reader that asks a table of the listed names (`workflow_fetch`, #2744)."""
+    fd = output_alias_fd(path) if path else None
+    return "/dev/stdout" if fd == "1" or fd in stage.pipe_output_fds and stage.stdout_to_pipe else path
 
 
 def _assigns(words):
@@ -337,10 +366,10 @@ def _stage(text, context):
                 if op == "<>":                 # open for reading too: what reads N reads it (#2881)
                     opened[number] = (*carried, word)
                 writes.append(word)
-                sinks[number] = sinks.get("1") if word in _STDOUT_ALIASES else word
+                alias = output_alias_fd(word)   # a path of N: where N points now (`2>&1 >/dev/stderr`, #2744)
+                sinks[number] = word if alias is None else sinks.get(alias)
                 pipe_inputs[number] = False
-                pipe_outputs[number] = (pipe_outputs.get("1", False)
-                                        if word in _STDOUT_ALIASES else False)
+                pipe_outputs[number] = alias is not None and pipe_outputs.get(alias, False)
                 reads_body(number, None)
                 if op.startswith("&"):
                     sinks["2"] = sinks[number]
@@ -384,7 +413,8 @@ def _stage(text, context):
                  substitutions, [stdout] if stdout is not None else [], group_open,
                  group_close, pipe_inputs["0"], pipe_outputs["1"],
                  tuple(fd for fd, connected in pipe_inputs.items() if connected),
-                 stdin[:2] if stdin else None))
+                 stdin[:2] if stdin else None,
+                 tuple(fd for fd, connected in pipe_outputs.items() if connected)))
 
 
 def statements(script):

@@ -208,7 +208,7 @@ def _passes_through(argv, stage):
     whose words are all plain -- no marker, no `$` value, no pattern (`shell_reader.dynamic`: a
     `>(...)` operand may write into the stream too) -- each a FILE operand or one of
     `_TEE_OPTIONS`, `--output-error` or `--output-error=…`, and no operand the pipe itself
-    (`shell_reader._STDOUT_ALIASES`: `tee /dev/stdout` hands the text on twice, review I-3a); or
+    (`shell_reader.writes_pipe`: `tee /dev/stdout` hands the text on twice, review I-3a); or
     a `cat` reading its own stdin (`_cat_reads_stdin`) with no heredoc or here-string there and no
     OPTION word -- only `-` and the `--` that ends the options (R-P5): `cat -n` numbers the lines
     it hands on. Neither behind `xargs` (`shell_reader.wrapper_words`, review I-2), which hands
@@ -231,7 +231,7 @@ def _passes_through(argv, stage):
         return False
     words = [getattr(w, "spelled", w) for w in argv[1:]]
     if name == "tee":
-        return all((not w.startswith("-") and w not in shell_reader._STDOUT_ALIASES)
+        return all((not w.startswith("-") and not shell_reader.writes_pipe(w, stage))
                    or w in _TEE_OPTIONS or w == "--output-error"
                    or w.startswith("--output-error=") for w in words)
     if stage.stdin_heredoc is not None or not _cat_reads_stdin(argv):
