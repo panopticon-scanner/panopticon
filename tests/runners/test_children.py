@@ -23,6 +23,8 @@ import time
 import unittest
 from unittest import mock
 
+import pytest
+
 import scripts.procgroup as procgroup
 import scripts.runners.base as base
 import scripts.runners.children as children
@@ -244,6 +246,7 @@ class TestATimeoutEndsTheWholeTree(GrandchildCase):
     # real launch, and well under "never".
     HANG_BOUND = 8.0
 
+    @pytest.mark.serial
     def test_a_child_that_survives_the_kill_does_not_hang_the_launch(self):
         """The entry timeout is a BOUND, and everything after the kill has to
         respect it too.

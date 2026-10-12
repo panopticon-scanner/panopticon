@@ -13,6 +13,8 @@ $CMD` as `sh`), so a row that tests a dynamic command word -- or a holder,
 """
 import unittest
 
+import pytest
+
 import shell_lex
 import shell_reader
 import workflow_guard as wg
@@ -559,6 +561,7 @@ class TestTheStandInHoldsItsKeysAndAProductItsBound(unittest.TestCase):
                     with self.subTest(row=row, shell=shell):
                         self.assertEqual(expected, reported(filled(row), shell))
 
+    @pytest.mark.serial
     def test_a_call_site_carries_once_per_step(self):
         # B5: a body of K statements called K times reads in about main's time, not K times its
         # cube: each call site's carry from one state of its bodies' names is made once
@@ -641,6 +644,7 @@ class TestACallSiteCarriesAFixedNumberOfTimes(unittest.TestCase):
             bare = cost()
         return cost() / bare
 
+    @pytest.mark.serial
     def test_each_shape_costs_a_constant_factor_of_the_step_without_the_carry(self):
         while_head, while_tail = "n=0\nwhile [ $n -lt 2 ]; do\n", "n=$((n+1))\ndone\n"
         for name, script, bound in (

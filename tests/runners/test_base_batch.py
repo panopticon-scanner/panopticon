@@ -9,6 +9,8 @@ import time
 import unittest
 from unittest import mock
 
+import pytest
+
 import scripts.runners.base as base
 
 
@@ -420,6 +422,7 @@ class TestAnInterruptStopsTheBatch(unittest.TestCase):
             r, [{"id": "e%d" % i} for i in range(6)])
         self.assertEqual(1, len(terminated), "terminate_children was not called once")
 
+    @pytest.mark.serial
     def test_a_child_that_ignores_the_terminate_is_not_waited_out(self):
         # The grace is a BOUND, not a promise: a runner whose terminate does
         # not end the child still returns from the interrupt, instead of

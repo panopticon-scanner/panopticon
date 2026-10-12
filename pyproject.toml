@@ -74,6 +74,14 @@ markers = [
     # that builds the default host's runner by accident says so loudly instead
     # of collecting one more failed entry.
     "claude_runner: test drives the claude family's own run_entry (with an injected runner=<fake>)",
+    # ci/perf-serial-split: time-bound / performance tests -- they assert an upper
+    # bound on elapsed CPU/wall time, a ratio of measured times, or completion within
+    # a wall-clock deadline. Under `pytest -n auto` parallel workers inflate even
+    # `time.process_time()` on large inputs via CPU/memory/cache contention, red-failing
+    # tight bounds like `assert_linear_growth` (large <= 8*small + 0.25) by a few percent.
+    # CI runs them in a separate SERIAL pass (`-m "serial"`) after the parallel
+    # `-m "not serial"` pass, and gates coverage on the combined data.
+    "serial: run outside the xdist pool; its pass/fail depends on how long an operation takes",
 ]
 
 [tool.mypy]
