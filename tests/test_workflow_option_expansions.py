@@ -1,0 +1,566 @@
+"""#2889: an expansion in a shell's option word is text the word does not write.
+
+`X=c; sh -$X 'P'` runs `P` under every parent shell, and read CLEAN: the readers of the programs lane asked an option
+word for its letters, and `-$X` writes none of them. #3020 gave a lifted `$(...)` in such a word both readings a
+shell may give it; this is the same rule for every other expansion, in four parts.
+
+ 1. A parameter reference in an option word (`$X`, `${...}`, `$1`, `$@`, `$-`) is text the word does not write, as a
+    lifted substitution is (`workflow_option_words`): the word may spell any cluster, so every reader of #3020 reads
+    it both ways. A NAME's letters stop being option letters: `sh -$cmd` writes no `c`. A reference that prints digits
+    alone (`$#`, `$?`, `$$`, `$!`, `${#X}`) stays written.
+ 2. A word that holds an expansion may print an `o` or an `O`, which takes the next word: each word after it that
+    may be a NAME may be its value, however many, at every option word the walk passes (`workflow_options._reached`).
+    `sh -$(echo oc) errexit 'P'` and `X=o; sh -c -$X errexit 'P'` run `P`.
+ 3. A tilde alone (`~`, `~+`, `~-`, `~1`) is a value, as `$X` is: `HOME=-c; sh ~ 'P'` runs `P`.
+ 4. wget handed a whole-word expansion may be handed `-O-`: where its stdout is piped the stream view is added, and
+    the file view stays `main`'s.
+
+Every new reading stands BESIDE `main`'s, never instead of it (`TestBesideNeverInstead`).
+
+Marks are a letter a `shell:` setting -- unset, `bash`, `sh`, `bash {0}`, `sh {0}` -- R where the guard reports, C
+where it reads the step CLEAN: first the job's, then the main pass's. Rows that hold a lifted substitution are read
+under two pinned markers (`under`), as #3020's are.
+
+Truth, in the comments, is what eight parent shells do with the step in two passes on the forge: bash 5.2.21 and
+bash 3.2.57 under `-e` and under `-eo pipefail`, dash under `-e`, then each without `-e`; pass 2 gives each parent a
+child shell of its own family. "runs" is all sixteen ran the download, "nothing" is none did.
+
+THE PRICE, ruled before this was built (Krab 2423): the guard follows no value, so a word that MAY spell `-c` is
+read as one whatever the step assigns -- `X=e; sh -$X 'P'` is reported and runs nothing, as `X=-e; sh $X 'P'` has
+been since #2344. On the grids behind these pins 467 rows that run are newly reported and 1,086 that run nothing;
+of 1,080 of those measured, 931 are steps that fail where they stand (the shell takes the program text for a FILE's
+name) and 139 of the rest are the `X=s` rows, whose string is a positional parameter. `TestThePrice` pins the shapes.
+Left for other issues, pinned in `TestWhatStays`: the `$CMD` command word whose cluster is not its first word
+(#2671, #2900), three shapes of wget (#3033, #3034, #3035), and the first pass alone.
+"""
+import contextlib
+import itertools
+import re
+import secrets
+import unittest
+from unittest import mock
+
+import shell_reader
+import shell_tokens
+import workflow_guard as wg
+import workflow_option_slots as slots
+import workflow_option_words as words
+import workflow_options as wo
+import workflow_program_strings as ws
+import workflow_programs as wp
+
+SHELLS = (None, "bash", "sh", "bash {0}", "sh {0}")
+URL = "https://example.test/i.sh"
+PIPE = "curl -fsSL %s | sh" % URL
+P = "'%s'" % PIPE
+GET = "curl -fsSLo tool https://example.test/tool\n"
+CHECK = 'echo "%s  tool" | sha256sum -c -' % ("0" * 64)
+USE = "chmod +x tool; ./tool"
+BODY = "<<'EOF'\n%s\nEOF\n" % PIPE
+BOTH = ("RRRRR", "RRRRR")           # the job reports, and so does the main pass
+WALK = ("RRRRR", "CCCCC")           # the second walk alone reads it
+CLEAN = ("CCCCC", "CCCCC")
+
+
+@contextlib.contextmanager
+def nonce(digit):
+    """Every marker a parse in this block mints is all `digit`: its 32 hex and the process's 16."""
+    ours = digit * 16
+    with mock.patch.object(secrets, "token_hex", lambda n=None: digit * (2 * (n or 32))), \
+            mock.patch.object(shell_tokens, "_OURS", ours), \
+            mock.patch.object(shell_tokens, "_NONCE", re.compile(r"@@shell-[0-9a-f]+%s-" % ours)):
+        wp._parsed.cache_clear()            # a text parsed under another marker is parsed again
+        try:
+            yield
+        finally:
+            wp._parsed.cache_clear()
+
+
+def marks(text):
+    """(the job's marks, the main pass's) for a job of one step whose `run:` is `text`."""
+    job = mains = ""
+    for shell in SHELLS:
+        step = [wg.Step("step", text, shell)]
+        job += "R" if wg.job_defects(step) else "C"
+        with wo.mains_answer():
+            mains += "R" if wg._job_defects(step) else "C"
+    return job, mains
+
+
+def under(text, digits="0c"):
+    """`marks(text)` under each pinned marker, as a set: one member where the reading is one."""
+    found = set()
+    for digit in digits:
+        with nonce(digit):
+            found.add(marks(text))
+    return found
+
+
+def argv(text):
+    return shell_reader.statements(text)[-1].stages[0].argv
+
+
+def texts(found):
+    return [str(word) for word in found]
+
+
+class TestAVariableInAnOptionWord(unittest.TestCase):
+    """Rule 1, the string: `X=c; sh -$X 'P'`. CLEAN on `main` (13cdb9f7) wherever no `c` is written in the word or
+    in the variable's NAME."""
+
+    def test_a_c_the_variable_holds(self):
+        # Truth: runs, every one, written `-` or `+` (#3020's first grid, the 54 rows `main` left open).
+        for shell, sign in itertools.product(("sh", "bash", "dash"), "-+"):
+            for word in ("%s$X", "%s${X}", '"%s$X"', "%se$X", "%s${X}e", "%sc$X", "%s${X}c", "%s${X:-c}", "%s${X:+c}"):
+                with self.subTest(shell=shell, word=word % sign):
+                    self.assertEqual(BOTH, marks("X=c\n%s %s %s\n" % (shell, word % sign, P)))
+
+    def test_a_names_letters_are_no_option_letters(self):
+        # `main` read the NAME for letters: `-$cmd` was a `-c` and `-$s` none. Truth: runs wherever the VALUE is `c`.
+        for name in ("X", "s", "e", "o", "opts", "c", "cmd", "cfg"):
+            for form in ("-$%s", "-${%s}", "-x$%s", '"-$%s"'):
+                with self.subTest(name=name, form=form):
+                    self.assertEqual(BOTH, marks("%s=c\nsh %s %s\n" % (name, form % name, P)))
+        # A `c` WRITTEN beside the reference is the word's own, and read as it was.
+        self.assertEqual(["P"], texts(ws._after_dash_c(argv("sh -c$opts 'P'"))))
+        self.assertEqual(["one"], texts(ws._after_dash_c(argv("sh -c 'one' -$X 'P'"))))
+
+    def test_however_the_step_sets_it(self):
+        # Truth: runs, every one (the last, under bash: dash has no `+=`). The guard follows no value here.
+        for sets in ("X=c\n", 'X="c"\n', "export X=c\n", "X=$(echo c)\n", ": ${X:=c}\n", "X=${Y:-c}\n",
+                     "if true; then X=c; fi\n", "X=x\nX=c\n", "readonly X=c\n", "X=x\nX+=c\n"):
+            with self.subTest(sets=sets):
+                self.assertEqual({BOTH}, under("%ssh -$X %s\n" % (sets, P)))
+        self.assertEqual(BOTH, marks("for X in c; do\nsh -$X %s\ndone\n" % P))
+
+    def test_where_the_word_stands(self):
+        # Beside other option words, behind a wrapper, a `$` command word, a default, in a string read again.
+        # Truth: runs, every one (after `--norc` under bash alone).
+        for row in ("sh -e -$X %s\n", "sh -$X -e %s\n", "sh -o errexit -$X %s\n", "bash --norc -$X %s\n", "env sh -$X %s\n",
+                    "sudo sh -$X %s\n", "CMD=sh\n$CMD -$X %s\n", "${Z:-sh} -$X %s\n", "sh -$X$Y %s\n", "sh +$X %s\n"):
+            with self.subTest(row=row[:22]):
+                self.assertEqual(BOTH, marks("X=c\n" + row % P))
+        self.assertEqual(BOTH, marks('X=c\nsh -c "sh -$X %s"\n' % P))
+        self.assertEqual(BOTH, marks('X=c\necho "sh -$X %s" | sh\n' % P))
+
+    def test_a_reference_that_prints_digits_alone_stays_written(self):
+        # A count, a process id, a length: no digit is an option's letter, and bash and dash refuse a digit in a
+        # cluster. Read as `main` read them. Truth: nothing.
+        for word in ("-$#", "-$$", "-$!", "-${#X}", "-${#}", "-e$#"):
+            with self.subTest(word=word):
+                self.assertEqual(CLEAN, marks("sh %s %s\n" % (word, P)))
+                self.assertFalse(words.lifted(argv("sh " + word)[1]))
+        self.assertEqual(BOTH, marks("sh -c$# %s\n" % P))                      # the `c` is written
+        self.assertEqual(BOTH, marks("X=c\nsh -$#$X %s\n" % P))                # a reference beside the count
+
+    def test_the_other_references(self):
+        # A positional, the set, the flags, a default, a pattern removal, an indirection. Truth for `set -- c`
+        # and kin: runs.
+        for word in ("-$1", "-$@", "-$-", "-${X:-e}", "-${X#a}", "-${!X}", "-${X:0:1}", "-${A[0]}"):
+            with self.subTest(word=word):
+                self.assertEqual(BOTH, marks("sh %s %s\n" % (word, P)))
+                self.assertTrue(words.lifted(argv("sh " + word)[1]))
+
+
+class TestAVariableAndTheProgramOnStdin(unittest.TestCase):
+    """Rule 1, the body: a name's letters hid it from the first pass. `main` read the `c` of `-$cmd` for the
+    cluster and took the body for data; `cmd=x` runs the body, all sixteen."""
+
+    def test_the_body_is_the_program_whatever_the_name(self):
+        for name in ("X", "s", "e", "o", "c", "cmd", "cfg"):
+            for form in ("-$%s", "-${%s}", "-x$%s", '"-$%s"'):
+                with self.subTest(name=name, form=form):
+                    self.assertEqual(BOTH, marks("%s=x\nsh %s %s" % (name, form % name, BODY)))
+
+    def test_a_string_beside_the_body(self):
+        # `sh -$X true <<EOF`: with `X=s` the body runs and `true` is a parameter, with `X=c` the string does.
+        # Both are read. Truth: runs for `s`, nothing for `c`, `x`, `e`.
+        for name in ("X", "s", "cmd", "e"):
+            with self.subTest(name=name):
+                self.assertEqual(BOTH, marks("%s=s\nsh -$%s true %s" % (name, name, BODY)))
+
+    def test_a_check_in_what_the_word_may_hand_over_is_not_counted(self):
+        # Truth: `X=x` runs the body, and its check stops the step under `-e`; `X=c` runs the string. The job
+        # reports each: the second walk counts no check behind a word that may expand.
+        for name in ("X", "s", "o", "cmd"):
+            with self.subTest(name=name):
+                self.assertEqual(BOTH, marks("%s%s=c\nsh -$%s '%s; %s'\n" % (GET, name, name, CHECK, USE)))
+                self.assertEqual(BOTH, marks("%s%s=x\nsh -$%s <<'EOF'\n%s\n%s\nEOF\n" % (GET, name, name, CHECK, USE)))
+
+
+class TestAValueTheWordMayOwe(unittest.TestCase):
+    """Rule 2: an `o` or `O` the expansion prints takes the next word. CLEAN on `main`: its walk counted the values
+    a word owes by the letters in its text."""
+
+    def test_the_cluster_owes_a_name(self):
+        # Truth: runs, every one.
+        for shell in ("sh", "bash", "dash"):
+            for words_ in ("-$(echo oc) errexit", "-$(echo o)c errexit", "+$(echo oc) errexit", "-x$(echo oc) errexit"):
+                with self.subTest(shell=shell, words=words_):
+                    self.assertEqual({BOTH}, under("%s %s %s\n" % (shell, words_, P)))
+            for value, words_ in (("oc", "-$X errexit"), ("co", "-$X errexit"), ("oc", "-x$X errexit"), ("ooc", "-$X errexit nounset")):
+                with self.subTest(shell=shell, value=value, words=words_):
+                    self.assertEqual(BOTH, marks("X=%s\n%s %s %s\n" % (value, shell, words_, P)))
+
+    def test_a_word_after_the_cluster_owes_one(self):
+        # The word that holds the expansion stands AFTER the cluster that writes the `c`. Truth: runs, every one.
+        for words_ in ("-c -$X errexit", "-c -e$X errexit", "-ec -$X errexit", "-c -x -$X errexit", "-c -$X errexit -x",
+                       "-c +$X errexit", "+c -$X errexit"):
+            with self.subTest(words=words_):
+                self.assertEqual(BOTH, marks("X=o\nsh %s %s\n" % (words_, P)))
+                self.assertEqual({BOTH}, under("sh %s %s\n" % (words_.replace("$X", "$(echo o)"), P)))
+
+    def test_however_many(self):
+        # Truth: runs, every one.
+        for value, names in (("oooc", "errexit nounset xtrace"), ("ooooc", "errexit nounset xtrace pipefail")):
+            with self.subTest(value=value):
+                self.assertEqual(BOTH, marks("X=%s\nbash -$X %s %s\n" % (value, names, P)))
+                self.assertEqual({BOTH}, under("bash -$(echo %s) %s %s\n" % (value, names, P)))
+        self.assertEqual(BOTH, marks("X=oooc\nsh -c -$X errexit nounset xtrace %s\n" % P))
+
+    def test_any_word_shaped_as_a_name_may_be_one(self):
+        # bash's `-O` takes a shopt name and no table of those is kept. Truth: runs under bash, every one.
+        for words_ in ("-$X extglob", "-$X nullglob", "+$X extglob"):
+            with self.subTest(words=words_):
+                self.assertEqual(BOTH, marks("X=Oc\nbash %s %s\n" % (words_, P)))
+        self.assertEqual(BOTH, marks("X=O\nbash -c -$X extglob %s\n" % P))
+        self.assertEqual(BOTH, marks("X=Ooc\nbash -$X extglob errexit %s\n" % P))
+        self.assertEqual({BOTH}, under("bash -$(echo Oc) extglob %s\n" % P))
+        # A name that holds an expansion of its own, or is one.
+        self.assertEqual(BOTH, marks("X=oc\nZ=exit\nsh -$X err$Z %s\n" % P))
+        self.assertEqual(BOTH, marks("X=oc\nN=errexit\nsh -$X $N %s\n" % P))
+
+    def test_what_is_no_name(self):
+        # An option word is no NAME, nor a path, nor a program: the operand is the word itself. Truth: nothing.
+        for word, found in (("-x", ["P"]), ("./x.sh", ["./x.sh"]), ("'a b'", ["a b"]), ("a/b", ["a/b"])):
+            with self.subTest(word=word):
+                self.assertEqual(found, texts(wo._past_options(argv("sh -$X %s 'P' q" % word), 1)))
+        self.assertTrue(all(slots._may_be_name(argv("sh " + word)[1]) for word in ("errexit", "interactive-comments", "x_1", "err$X", "$N", "$(echo x)")))
+        self.assertFalse(any(slots._may_be_name(argv("sh " + word)[1]) for word in ("-x", "+x", "./x", "a/b", "$X/y", "'a b'", "a=b")))
+
+    def test_a_value_then_a_name_then_a_value(self):
+        # The walk for a value among the options passes a NAME the word before it may owe. Truth: runs, the first
+        # three; nothing for the last (`-x errexit`: the name is a FILE).
+        for sets, words_ in (("X=o\nY=-c\n", "-$X errexit $Y"), ("X=oo\nY=-c\n", "-$X errexit nounset $Y"), ("X=x\nY=-c\n", "-$X $Y")):
+            with self.subTest(words=words_):
+                self.assertEqual(BOTH, marks("%ssh %s %s\n" % (sets, words_, P)))
+        self.assertEqual({BOTH}, under("Y=-c\nsh -$(echo o) errexit $Y %s\n" % P))
+        self.assertEqual(BOTH, marks("X=x\nY=-c\nsh -$X errexit $Y %s\n" % P))
+        # Each pass has its walk, and each passes the NAME: only behind a word that holds an expansion, and not
+        # past a long word, which owes none.
+        for walk in (ws._candidates, wo._shell_candidates):
+            with self.subTest(walk=walk.__name__):
+                for words_ in ("-$X errexit $Y", "-$X errexit nounset $Y", "-e -$X errexit $Y"):
+                    value, found = walk(argv("sh %s 'P'" % words_))
+                    self.assertEqual(("$Y", ["P"]), (str(value), texts(found)), words_)
+                for words_ in ("-x errexit $Y", "-$X --norc errexit $Y", "-$X ./f $Y"):
+                    self.assertEqual((None, []), walk(argv("sh %s 'P'" % words_)), words_)
+
+    def test_a_refusal_by_name_is_read_before_the_first_expansion_only(self):
+        # `X=O; bash -c${X}o extglob errexit 'P'` runs `P` (bash, all of its runs): the `O` takes `extglob`, the
+        # written `o` takes `errexit`. `main` read the written `o` to take `extglob`, no `-o` name: refused, CLEAN.
+        self.assertEqual(BOTH, marks("X=O\nbash -c${X}o extglob errexit %s\n" % P))
+        self.assertEqual({BOTH}, under("bash -c$(echo O)o extglob errexit %s\n" % P))
+        self.assertFalse(wo._refused_name(argv("bash -c${X}o extglob errexit 'P'"), 1))
+        # An `o` written BEFORE the expansion takes the first word whatever follows: a refusal still. Truth: nothing.
+        self.assertTrue(wo._refused_name(argv("sh -co$X bogus 'P'"), 1))
+        self.assertEqual(CLEAN, marks("sh -co$X bogus %s\n" % P))
+        self.assertEqual(CLEAN, marks("sh -co bogus %s\n" % P))
+
+    def test_a_files_parameters(self):
+        # `printf 'exec bash "$@"' > w.sh; X=oc; sh w.sh -$X errexit 'P'` runs `P`: past an operand the words are
+        # the FILE's parameters, and a FILE may hand them to a shell. Truth: runs, every one.
+        for words_ in ("-$X errexit", "-$(echo oc) errexit"):
+            with self.subTest(words=words_):
+                self.assertEqual({BOTH}, under("printf 'exec bash \"$@\"\\n' > w.sh\nX=oc\nsh w.sh %s %s\n" % (words_, P)))
+        self.assertEqual(["errexit", "P"], texts(wo._operand_past(argv("sh w.sh -$X errexit 'P'"), 2, True)))
+        # A long word there is one more parameter and owes no NAME, whatever it holds: no cluster is spelled `--`.
+        self.assertEqual(["x"], texts(wo._operand_past(argv("sh f -$i --$n x 'P'"), 2, True)))
+        self.assertEqual(["x", "P"], texts(wo._operand_past(argv("sh f -$i x 'P'"), 2, True)))
+
+
+class TestATildeWord(unittest.TestCase):
+    """Rule 3: `HOME=-c; sh ~ 'P'`. CLEAN on `main`, which read the tilde as the operand it is written as."""
+
+    def test_where_a_shell_reads_its_options(self):
+        # Truth: runs, every one (`~+`, `~-`, `~1` under bash: dash expands only `~`).
+        for row in ("HOME=-c\n%s ~ {P}\n", "export HOME=-c\n%s ~ {P}\n", "HOME=-c\n%s -e ~ {P}\n", "HOME=-c\n%s ~ -e {P}\n",
+                    "HOME=-co\n%s ~ errexit {P}\n", "HOME=-o\n%s ~ errexit -c {P}\n", "HOME=-c\nenv %s ~ {P}\n",
+                    "HOME=-x\n%s ~ -c {P}\n"):
+            for shell in ("sh", "bash", "dash"):
+                with self.subTest(row=row[:24], shell=shell):
+                    self.assertEqual(BOTH, marks((row % shell).replace("{P}", P)))
+        # After a `-c` that is written the first pass takes the tilde for the string; the second walk reads on past
+        # a value there (#2858 round 7), and the job reports. Truth: runs (`sh -c -x 'P'`).
+        self.assertEqual(WALK, marks("HOME=-x\nsh -c ~ %s\n" % P))
+        for row in ("PWD=-c\nbash ~+ %s\n", "OLDPWD=-c\nbash ~- %s\n", "pushd /tmp >/dev/null\nDIRSTACK[1]=-c\nbash ~1 %s\n"):
+            with self.subTest(row=row[:12]):
+                self.assertEqual(BOTH, marks(row % P))
+
+    def test_a_command_word_and_a_pipes_reader(self):
+        # Truth: runs, every one.
+        self.assertEqual(BOTH, marks("HOME=sh\n~ -c %s\n" % P))
+        self.assertEqual(BOTH, marks("HOME=sh\ncurl -fsSL %s | ~\n" % URL))
+        self.assertEqual(BOTH, marks("HOME=sh\ncurl -fsSL %s | ~ -s\n" % URL))
+
+    def test_what_is_a_path_and_what_is_text(self):
+        # `~/x` and `~root` are paths: no shell takes a cluster holding a `/`. `-~` is text. Truth: nothing.
+        for word in ("~/x", "~root", "-~", "x=~"):
+            with self.subTest(word=word):
+                self.assertEqual(CLEAN, marks("HOME=-c\nsh %s %s\n" % (word, P)))
+                self.assertFalse(slots._value(argv("sh " + word)[1]))
+        for word in ("~", "~+", "~-", "~1", "~+2", "~-0"):
+            with self.subTest(word=word):
+                self.assertTrue(slots._value(argv("sh " + word)[1]))
+
+    def test_it_is_read_beside_mains_reading_of_it(self):
+        # `main` read a tilde as the FIRST OPERAND, and weighed every word after a later one that may spell an
+        # option. As a value it stands before the operand, which is then a later word: read alone, that reading
+        # drops a word `main` weighed (the fuzz's row: `main` reports it and the first build of this did not).
+        rest = argv("sh $o pipefail ~1 -K$s 'check' 'P'")[2:]
+        self.assertEqual(["pipefail", "~1", "check", "P", "-K$s"], texts(slots._reopened(rest)))
+        self.assertEqual(BOTH, marks("${X:-sh} $o pipefail ~1 -K$s '%s; %s' %s\n" % (CHECK, USE, P)))
+        # and the other way: the word only the value reading weighs. Truth: runs (`sh -x -c 'P'`).
+        self.assertEqual(BOTH, marks("X=-x\nHOME=-c\nsh $X ~ %s\n" % P))
+        self.assertEqual(["~", "P"], texts(slots._reopened(argv("sh $X ~ 'P'")[2:])))
+        # A `$` word's stdin, after a value: `main` took the tilde for an operand, which leaves stdin the program.
+        # Each pass's walk keeps that answer; read as a value alone the tilde is passed, and the `-c` takes it away.
+        self.assertEqual(BOTH, marks("CMD=$(command -v sh)\ncurl -fsSL %s | $CMD $V ~ -c true\n" % URL))
+        words_ = argv("$CMD $V ~ -c true")
+        self.assertEqual([wp.VALUE_PROGRAM, wp.VALUE_PROGRAM], [wp._options(words_, 0)[0], wp._walk(words_, 0)[0]])
+        twin = argv("$CMD $V $W -c true")
+        self.assertEqual([None, None], [wp._options(twin, 0)[0], wp._walk(twin, 0)[0]])
+
+
+class TestAFetcherHandedAnExpansion(unittest.TestCase):
+    """Rule 4, and rule 1 in a fetcher's option word. `wget $(echo -qO-) URL | sh` and `wget -q$X -O- URL | sh`
+    read CLEAN on `main`: the first an operand beside the URL, the second wget's `-X`, which takes the next word."""
+
+    def test_a_variable_among_the_letters_leaves_the_transfer_unread(self):
+        # Truth: runs, both, with `X=qO-` and with X never set.
+        for fetch in ("wget -q$X -O-", "wget -q${X} -O-", "curl -fsSL$X", "curl -fsS$X -L"):
+            with self.subTest(fetch=fetch):
+                self.assertEqual(BOTH, marks("%s %s | sh\n" % (fetch, URL)))
+        self.assertEqual(BOTH, marks("wget -q$X -O tool %s\nsh tool\n" % URL))
+
+    def test_a_whole_word_expansion_may_be_the_option_that_streams(self):
+        # Truth: runs, every one (the wget of the truth runner writes files as wget does).
+        for row in ("wget $(echo -qO-) %s | sh\n", "X=-qO-\nwget $X %s | sh\n", 'X=-qO-\nwget "$X" %s | sh\n', "X=-O-\nwget -q $X %s | sh\n",
+                    "X=-qO-\nwget %s $X | sh\n".replace("%s $X", "{U} $X").replace("{U}", "%s"), "X=-O-\nwget -O tool $X %s | sh\n",
+                    "X=-qO-\nwget $X %s | bash -s\n", "wget $(echo -qO-) %s | cat | sh\n", "HOME=-qO-\nwget ~ %s | sh\n"):
+            with self.subTest(row=row[:26]):
+                self.assertEqual({BOTH}, under(row % URL))
+        # One unquoted and alone may be the option and the URL both; one quoted is ONE word. Truth: runs; fetched only.
+        self.assertEqual(BOTH, marks("X='-qO- %s'\nwget $X | sh\n" % URL))
+        self.assertEqual(CLEAN, marks("X='-qO- %s'\nwget \"$X\" | sh\n" % URL))
+
+    def test_the_file_view_stays(self):
+        # The stream view is added where stdout is piped; the file `main` reads the transfer into stays. Truth: runs.
+        self.assertEqual(BOTH, marks("X=-q\nwget $X %s\nsh i.sh\n" % URL))
+        self.assertEqual(BOTH, marks("X=-q\nwget $X %s -O tool\nsh tool\n" % URL))
+        self.assertEqual({BOTH}, under("wget $(echo -qO-) %s | cat\nsh i.sh\n" % URL))
+        # Nothing piped, nothing run: no report. `curl` beside an expansion is unread, as it was.
+        self.assertEqual(CLEAN, marks("wget $OPTS %s\n" % URL))
+        self.assertEqual(CLEAN, marks("wget -q \"$A\" \"$B\"\n"))
+        # Two URLs written out hand no option on: wget writes two files and the pipe is empty. Truth: fetched only.
+        self.assertEqual(CLEAN, marks("wget %s %s2 | sh\n" % (URL, URL)))
+        self.assertEqual(BOTH, marks("curl $OPTS %s\n" % URL))
+
+
+class TestBesideNeverInstead(unittest.TestCase):
+    """Each new reading stands beside `main`'s: its two walks past the options, kept here as they stood on
+    13cdb9f7, find nothing the search does not, and their operand comes first."""
+
+    WORDS = ("-c", "-e", "-x", "-o", "-O", "-co", "-oc", "-$X", "-c$X", "-$Xo", "-o$X", "-$foo", "-$(echo o)", "+$X", "--norc",
+             "--", "-", "errexit", "bogus", "extglob", "$Y", "err$Z", "./f", "P", "-K", "-cK")
+
+    @staticmethod
+    def _mains_past(words_, at):
+        while True:                             # `_past_options` on 13cdb9f7, word for word
+            if wo._refused(words_, at) or TestBesideNeverInstead._mains_refused_name(words_, at):
+                return []
+            at += 1 + sum(letter in wo.VALUE_OPTIONS for letter in words_[at][1:])
+            if at >= len(words_) or words_[at].startswith("--") and words_[at] != "--":
+                return []
+            if words_[at] in ("-", "--"):
+                return words_[at + 1:at + 2]
+            if not words_[at].startswith(("-", "+")):
+                return [words_[at]]
+
+    @staticmethod
+    def _mains_operand(words_, at, past):
+        while True:                             # `_operand_past` on 13cdb9f7, word for word
+            if not past and (wo._refused(words_, at) or TestBesideNeverInstead._mains_refused_name(words_, at)):
+                return []
+            at += 1 + (words_[at][:2] != "--" and sum(letter in wo.VALUE_OPTIONS for letter in words_[at][1:]))
+            if at >= len(words_):
+                return []
+            if not past and (words_[at].startswith("--") and words_[at] != "--" or wo.long_option(words_, at)):
+                return []
+            if words_[at] in ("-", "--"):
+                return words_[at + 1:at + 2]
+            if not words_[at].startswith(("-", "+")):
+                return [words_[at]]
+
+    @staticmethod
+    def _mains_refused_name(words_, at):
+        if type(words_[0]) is not str or words_[0] not in wo._MEASURED_SHELLS:   # `_refused_name` on 13cdb9f7
+            return False
+        value = at
+        for letter in words_[at][1:]:
+            value += letter in wo.VALUE_OPTIONS
+            if letter == "o" and value < len(words_) and words_[value].replace("-", "").isalpha():
+                if words_[value] not in wo.SHELL_OPTION_NAMES:
+                    return True
+        return False
+
+    def test_the_walks_find_what_mains_found_and_mains_first(self):
+        # Every run of one, two and three of the words behind each cluster, under a shell whose refusals are
+        # measured and one whose are not. Each word is read once, as the reader hands it on, and stands in every
+        # argv it is part of: a word's reading does not depend on its neighbours.
+        read = {word: argv("sh " + word)[1] for word in self.WORDS}
+        # `-c$foo`: `main` counted the two `o`s of the name, so its operand is one this rule's own reading never reaches.
+        clusters = [argv("sh " + cluster)[1] for cluster in ("-c", "-c$X", "-c$foo", "-$X", "-$(echo o)", "-co")]
+        self.assertEqual("-$(...)", shell_reader.readable(read["-$(echo o)"]))        # a lifted word, as the reader hands it on
+        count = 0
+        for shell in ("sh", "zsh"):
+            for size in (1, 2, 3):
+                for tail in itertools.product(self.WORDS, repeat=size):
+                    for cluster in clusters:
+                        words_ = [shell, cluster] + [read[word] for word in tail]
+                        count += 1
+                        mains = self._mains_past(words_, 1)
+                        found = wo._past_options(words_, 1)
+                        self.assertEqual(mains, found[:len(mains)], texts(words_))
+                        for past in (False, True):
+                            mains = self._mains_operand(words_, 1, past)
+                            found = wo._operand_past(words_, 1, past)
+                            self.assertEqual(mains, found[:len(mains)], (texts(words_), past))
+        self.assertEqual(2 * 6 * (26 + 26 ** 2 + 26 ** 3), count)
+
+    def test_a_word_is_handed_on_once_and_a_long_run_costs_a_walk(self):
+        words_ = argv("sh -$X " + " ".join(["errexit"] * 400) + " 'P'")
+        found = wo._past_options(words_, 1)
+        self.assertEqual(401, len(found))
+        self.assertTrue(all(word is words_[2 + place] for place, word in enumerate(found)))    # each place once, in order
+        # One object may stand at two places (Python keeps one `P` for both): each place is handed on.
+        twice = argv("sh -$X P P")
+        self.assertEqual(["P", "P"], texts(wo._past_options(twice, 1)))
+
+    def test_the_words_after_a_value_are_mains_and_more(self):
+        # `_reopened` against `main`'s formula (13cdb9f7), over every run of four of these words.
+        pool = ("-x", "pipefail", "~", "~1", "$Y", "-$Y", "x$Y", "./f", "P", "--", "$(echo -c)")
+        for rest_text in itertools.product(pool, repeat=4):
+            rest = argv("sh $V " + " ".join(rest_text))[2:]
+            end = next((k for k, after in enumerate(rest, 1) if not slots._before_operand(after)), len(rest))
+            more = next((k for k in range(end, len(rest)) if slots._may_spell_option(rest[k])), len(rest))
+            mains = rest[:end] + rest[more + 1:]
+            found = slots._reopened(rest)
+            self.assertEqual(mains, found[:len(mains)], rest_text)
+
+
+class TestTheLeafKnowsAReference(unittest.TestCase):
+    """`workflow_option_words`: a parameter reference stands in a word as a marker does."""
+
+    def test_where_a_reference_stands(self):
+        for text, spans in (("-$X", [(1, 3)]), ("-e$X", [(2, 4)]), ("-${X}c", [(1, 5)]), ("-${X:-${Y}}c", [(1, 11)]), ("-$1a", [(1, 3)]),
+                            ("-x$@K", [(2, 4)]), ("-$*o", [(1, 3)]), ("-$-", [(1, 3)]), ("-$_x9o", [(1, 6)]), ("-$X$Y", [(1, 3), (3, 5)]),
+                            ("-$#$X", [(3, 5)]), ("-${#X}$Y", [(6, 8)]), ("-${", [(1, 3)]), ("-$\\q", [(1, 4)]),
+                            ("-$#", []), ("-$?", []), ("-$$", []), ("-$$X", []), ("-$!", []), ("-${#X}", []), ("-${#}", []), ("-e$", []),
+                            ("-$", []), ("-c", []), ("", [])):
+            with self.subTest(text=text):
+                self.assertEqual(spans, words._spans(text))
+                self.assertEqual(bool(spans), words.lifted(text))
+
+    def test_written_before_and_spells(self):
+        for text, written, before in (("-$X", "-", "-"), ("-e$X", "-e", "-e"), ("-${X}c", "-c", "-"), ("-x$@K", "-xK", "-x"),
+                                      ("-o$Xo", "-o", "-o"), ("-$cmd", "-", "-"), ("-c$#", "-c$#", "-c$#"), ("-c", "-c", "-c")):
+            with self.subTest(text=text):
+                self.assertEqual(written, words.written(text))
+                self.assertEqual(before, words.before(text))
+        self.assertEqual([True, True], [words.spells("-$X", letter) for letter in "cs"])
+        self.assertEqual([False, True], [words.spells("-s$#", letter) for letter in "cs"])
+        self.assertEqual([1], [k for k in range(5) if words.lifted("-$Xab", k, k + 1)])
+
+    def test_a_name_is_ascii(self):
+        # bash names are ASCII letters, digits and `_`: a `$` before any other letter begins no expansion.
+        self.assertEqual([], words._spans("-$" + chr(233) + "x"))
+        self.assertEqual([(1, 4)], words._spans("-$Xa" + chr(233)))
+
+    def test_a_reference_beside_a_marker(self):
+        for digit in "0c":
+            with nonce(digit):
+                word = argv("sh -$X$(echo c)e")[1]
+                self.assertEqual("-e", words.written(word))
+                self.assertEqual("-", words.before(word))
+                self.assertEqual(2, len(words._spans(word)))
+
+
+class TestThePrice(unittest.TestCase):
+    """What the rule reports that runs nothing, each shape pinned as it reads (the ruling: Krab 2423)."""
+
+    def test_a_variable_that_spells_no_c(self):
+        # Truth: nothing. `X=e`, `x`, `n`, empty, never set: the shell takes the program text for a FILE's name and
+        # the step fails (exit 127 or 2); `X=s`: the string is a positional parameter, the shell reads its stdin.
+        for sets in ("X=e\n", "X=x\n", "X=n\n", "X=s\n", "X=\n", "", "X=c\nunset X\n", "X=c\nX=x\n"):
+            with self.subTest(sets=sets):
+                self.assertEqual(BOTH, marks("%ssh -$X %s\n" % (sets, P)))
+        # as its whole-word twin has been since #2344
+        self.assertEqual(BOTH, marks("X=-e\nsh $X %s\n" % P))
+
+    def test_a_quoted_dollar_or_tilde_reaches_the_readers_unquoted(self):
+        # `sh '-$X' 'P'` hands the shell the text `-$X`. The reader drops the quotes, as it does for `sh '$X' 'P'`,
+        # which `main` reports too. Truth: nothing.
+        self.assertEqual(BOTH, marks("sh '-$X' %s\n" % P))
+        self.assertEqual(BOTH, marks("sh '$X' %s\n" % P))
+        self.assertEqual(BOTH, marks('HOME=-c\nsh "~" %s\n' % P))
+
+    def test_a_word_that_owes_nothing(self):
+        # Truth: nothing: `X=c`: `errexit` is the string and `P` its `$0`; `-oc bogus`: no such name.
+        self.assertEqual(BOTH, marks("X=c\nsh -$X errexit %s\n" % P))
+        self.assertEqual(BOTH, marks("X=oc\nsh -$X bogus %s\n" % P))
+        self.assertEqual({BOTH}, under("sh -c$(true) one -c %s\n" % P))
+        # ... and a word that is no name is the operand still: `P` is its parameter. Truth: nothing.
+        self.assertEqual(CLEAN, marks("X=c\nsh -$X ./x.sh %s\n" % P))
+
+    def test_a_tilde_that_is_no_option(self):
+        # Truth: nothing (`sh -s 'P'` reads an empty stdin; a directory is no script).
+        for home in ("-s", "-x", "-", "/nonexistent"):
+            with self.subTest(home=home):
+                self.assertEqual(BOTH, marks("HOME=%s\nsh ~ %s\n" % (home, P)))
+        self.assertEqual(BOTH, marks("sh ~ %s\n" % P))
+
+    def test_a_wget_that_streams_nothing(self):
+        # Truth: fetched only.
+        for row in ("X=qO-\nwget $X %s | sh\n", "wget $X %s | sh\n", "X=-q\nwget $X %s | sh\n", "wget $(true) %s | sh\n"):
+            with self.subTest(row=row[:20]):
+                self.assertEqual({BOTH}, under(row % URL))
+
+
+class TestWhatStays(unittest.TestCase):
+    """Rows this rule does not move, each pinned as it reads."""
+
+    def test_a_dollar_words_cluster_that_is_not_its_first_word(self):
+        # #2671, #2900. Truth: runs, every one.
+        for words_ in ("$CMD +x -c", "$CMD -e -$X -c", "$CMD -c $Y"):
+            with self.subTest(words=words_):
+                self.assertEqual(CLEAN, marks("CMD=$(command -v sh)\nY=-c\n%s %s\n" % (words_, P)))
+
+    def test_three_shapes_of_wget(self):
+        # #3033: two URLs read as the first. #3034: the destination in a variable. #3035: a stream only an expansion
+        # makes, saved to a file. Truth: runs, every one.
+        self.assertEqual(CLEAN, marks("wget https://example.test/a https://example.test/tool\nsh tool\n"))
+        self.assertEqual(CLEAN, marks("X='-O tool'\nwget $X %s\nsh tool\n" % URL))
+        self.assertEqual({CLEAN}, under("wget $(echo -qO-) %s | tee tool\nsh tool\n" % URL))
+        self.assertEqual(CLEAN, marks("X=-qO-\nwget $X %s > tool\nsh tool\n" % URL))
+
+    def test_the_first_pass_alone(self):
+        # The first pass counts a check in a string it reads; the second walk counts none behind a word that may
+        # expand, so the JOB reports. `-$e`: `workflow_posture._errexit` still reads the name's letter for `-e`.
+        # Truth: `e=c` runs, all sixteen.
+        self.assertEqual(WALK, marks("%se=c\nsh -$e '%s; %s'\n" % (GET, CHECK, USE)))
+        self.assertEqual(WALK, marks("%se=x\nsh -$e <<'EOF'\n%s\n%s\nEOF\n" % (GET, CHECK, USE)))
+
+
+if __name__ == "__main__":
+    unittest.main()

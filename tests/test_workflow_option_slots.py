@@ -10,7 +10,10 @@ rebinds a moved name through any of the three. No watcher of `tests/test_workflo
 (`_one_word`, `_literal`) are looked up by readers that stayed, in `workflow_options`' own globals;
 `TABLES` wraps every binding of a table's object, and the three patterns `_one_word` reads are one
 object under both modules' names. Both facts are held here, so a later move cannot break them
-unseen."""
+unseen.
+
+#2889's rule then came to live here: three names of its own (`ADDED`), an import of the leaf that says
+what is written in a word, and one answer that moved -- a tilde alone is a value (`ANSWERS`)."""
 import ast
 import os
 import unittest
@@ -25,9 +28,12 @@ MOVED = ("_BARE", "_DEFAULT_PARAMETER", "_ONE_DEFAULT", "_ONE_PARAMETER", "_VALU
 # The five `workflow_programs` re-exported from `workflow_options` when the readers moved (13cdb9f7).
 THROUGH_PROGRAMS = ("_BARE", "_VALUE", "_before_operand", "_may_spell_option", "_value")
 PATTERNS = ("_DEFAULT_PARAMETER", "_ONE_DEFAULT", "_ONE_PARAMETER")
+# #2889's own, defined here and bound in `workflow_options` as the moved names are.
+ADDED = ("_TILDE", "_may_be_name", "_reopened")
 BINDERS = ("workflow_option_slots", "workflow_options", "workflow_programs")
 # `main`'s answers (13cdb9f7) for a word as the reader hands it on, the second word of each line:
-# (`_value`, `_before_operand`, `_may_spell_option`, `_one_word`, `_literal`).
+# (`_value`, `_before_operand`, `_may_spell_option`, `_one_word`, `_literal`) -- but for the tilde's
+# first, which #2889 turned: `HOME=-c; sh ~ 'P'` runs `P`.
 ANSWERS = (
     ("sh -c P", (False, True, False, False, True)),
     ("sh pipefail", (False, True, False, False, True)),
@@ -46,7 +52,7 @@ ANSWERS = (
     ('sh "${X:-$Y}"', (True, True, True, True, False)),
     ('sh "$@" P', (True, True, True, False, False)),
     ('sh "${!X}"', (True, True, True, False, False)),
-    ("sh ~ P", (False, False, False, False, False)),
+    ("sh ~ P", (True, False, False, False, False)),
     ("sh *.sh", (False, True, True, False, False)),
     ("sh -[c] P", (False, True, True, False, False)),
     ("sh $'\\q' P", (True, True, True, False, False)),
@@ -91,15 +97,19 @@ class TestWorkflowOptionsBindsEveryMovedName(unittest.TestCase):
                 self.assertIs(getattr(workflow_programs, name), getattr(workflow_option_slots, name))
 
     def test_the_names_are_all_the_module_defines(self):
-        self.assertEqual(set(MOVED), _defined(_tree(workflow_option_slots)))
+        self.assertEqual(set(MOVED) | set(ADDED), _defined(_tree(workflow_option_slots)))
+        for name in ADDED:
+            with self.subTest(name=name):
+                self.assertIs(getattr(workflow_options, name), getattr(workflow_option_slots, name))
 
     def test_workflow_options_defines_none_of_them_itself(self):
         # A definition left behind would shadow the import: two objects under one name.
-        self.assertFalse(_defined(_tree(workflow_options)) & set(MOVED))
-        self.assertFalse(_defined(_tree(workflow_programs)) & set(MOVED))
+        self.assertFalse(_defined(_tree(workflow_options)) & (set(MOVED) | set(ADDED)))
+        self.assertFalse(_defined(_tree(workflow_programs)) & (set(MOVED) | set(ADDED)))
 
     def test_the_module_imports_the_reader_and_nothing_above_it(self):
-        self.assertEqual({"re", "shell_reader"}, _imported(_tree(workflow_option_slots)))
+        # ... and since #2889 the leaf that says what is written in a word, which stands below every reader
+        self.assertEqual({"re", "shell_reader", "workflow_option_words"}, _imported(_tree(workflow_option_slots)))
         self.assertEqual(os.path.basename(workflow_option_slots.__file__), "workflow_option_slots.py")
         self.assertIn("workflow_option_slots", _imported(_tree(workflow_options)))
         # and the reader reads nothing of this lane back up

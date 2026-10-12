@@ -319,9 +319,15 @@ class TestTheProgramAfterDashC(unittest.TestCase):
         # bash, dash and ksh refuse `-1`, `-I{}` and `-nw5`, but zsh RUNS `-1`
         # (review NIT 5), and all five shells run the program after
         # `sh -c -u$X P` wherever `X` is empty.
-        for spelling in ("sh -c -1", "sh -c -I{}", "sh -c -nw5", "sh -c -u$X"):
+        for spelling in ("sh -c -1", "sh -c -I{}", "sh -c -nw5"):
             with self.subTest(spelling=spelling):
                 self.assertEqual(["P"], self.program(spelling + " P x"))
+        # `-u$X` is read on too, and is no refusal -- and since #2889 it may
+        # print an `o`, so a word after it shaped as a NAME may be its value
+        # and the word after that the program: `P` here is such a word (a
+        # program's text never is), so both are handed on, `main`'s first.
+        self.assertEqual(["P", "x"], self.program("sh -c -u$X P x"))
+        self.assertEqual(["curl a | sh"], self.program("sh -c -u$X 'curl a | sh' x"))
         # The controls: a letter both shells take reads on to the program as
         # it did, `-O` is one bash takes WITH a value, and a value where the
         # shell reads its options is unfollowed still (#2344).

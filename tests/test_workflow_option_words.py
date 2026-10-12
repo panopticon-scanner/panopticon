@@ -26,10 +26,11 @@ a child shell of its own family. "runs" is all sixteen ran the download, "nothin
 
 The price is none that is new: every shell's row reported here was reported on `main` under one marker or the
 other -- most under a marker with a `c`, 199 calls in 200 on a row the #2942 seat measured -- and the fetchers'
-rows read as `curl -$X URL | sh` reads. Left for other issues,
-pinned in `TestWhatStaysForOtherIssues`: a letter a VARIABLE makes (`X=c; sh -$X 'P'`, #2889), where the readers
-still read the name's letters; a VALUE a word may owe for an `o` it prints (`sh -$(echo oc) errexit 'P'`), which
-that family needs too; and the other readers that ask a marker for letters, which no row here reaches.
+rows read as `curl -$X URL | sh` reads. Two families this left open are #2889's since, and pinned where that
+rule is (`tests/test_workflow_option_expansions.py`): a letter a VARIABLE makes (`X=c; sh -$X 'P'`), and a VALUE a
+word may owe for an `o` it prints (`sh -$(echo oc) errexit 'P'`). The pins here that moved with it are each named
+where they stand. Left for other issues, pinned in `TestWhatStaysForOtherIssues`: the first pass alone, and the other
+readers that ask a marker for letters, which no row here reaches.
 """
 import ast
 import contextlib
@@ -43,6 +44,7 @@ import shell_reader
 import shell_tokens
 import workflow_fetch
 import workflow_guard as wg
+import workflow_option_slots
 import workflow_option_words as words
 import workflow_options as wo
 import workflow_program_strings as ws
@@ -216,7 +218,9 @@ class TestAWordThatMayPrintNoC(unittest.TestCase):
         for digit in "0c":
             with nonce(digit):
                 for text, found in (("sh -$(echo x) w.sh -c 'P'", ["w.sh", "P"]), ("sh -x$(true) -c 'P'", ["P"]),
-                                    ("sh -$(echo x) -$(echo e) one -c 'P'", ["one", "P"]), ("sh -c$(true) one -c 'P'", ["one"]),
+                                    ("sh -$(echo x) -$(echo e) one -c 'P'", ["one", "P"]),
+                                    # #2889: the word may print an `o`, `one` may be its NAME, and `P` the string then
+                                    ("sh -c$(true) one -c 'P'", ["one", "P"]), ("sh -c$(true) ./one -c 'P'", ["./one"]),
                                     ("sh +$(echo x) w.sh +c 'P'", ["w.sh", "P"]), ("sh -$(echo x) w.sh -- -c 'P'", ["w.sh"])):
                     with self.subTest(digit=digit, text=text):
                         self.assertEqual(found, ws._after_dash_c(argv(text)))
@@ -416,11 +420,15 @@ class TestTheReadingDoesNotDependOnTheMarker(unittest.TestCase):
     def test_the_finders_find_the_string_under_either_marker(self):
         for digit in "0c":
             with nonce(digit):
-                for text in ("sh -$(echo c) 'P' x", "bash -e$(true) 'P'", "sh +`echo c` 'P'"):
+                for text in ("bash -e$(true) 'P'", "sh +`echo c` 'P'"):
                     with self.subTest(digit=digit, text=text):
                         words_ = argv(text)
                         self.assertEqual(["P"], ws._after_dash_c(words_))
                         self.assertEqual(["P"], wo._dash_c_strings(words_))
+                # #2889: a word shaped as a NAME may be the value the word owes, and the word after it the string
+                # then. (`P` stands for a program here and is such a word; a program's text never is.)
+                self.assertEqual(["P", "x"], ws._after_dash_c(argv("sh -$(echo c) 'P' x")))
+                self.assertEqual(["P", "x"], wo._dash_c_strings(argv("sh -$(echo c) 'P' x")))
                 self.assertEqual(("$CMD", ["P"]), ws._candidates(argv("$CMD -$(echo c) 'P'")))
                 self.assertEqual([], ws._after_dash_c(argv("sh -x 'P'")))
                 self.assertEqual([], ws._after_dash_c(argv("sh ++$(echo c) 'P'")))
@@ -490,7 +498,7 @@ class TestTheLeaf(unittest.TestCase):
         for digit in "0c":
             with nonce(digit):
                 for text, plain in (("sh -e$(echo c)x", "-ex"), ("sh -`echo c`", "-"), ('sh "-fsSL$(true)"', "-fsSL"),
-                                    ("sh -c", "-c"), ("sh -$X", "-$X"), ("sh -<(echo c)", "-")):
+                                    ("sh -c", "-c"), ("sh -$X", "-"), ("sh -<(echo c)", "-")):    # a reference: #2889
                     with self.subTest(digit=digit, text=text):
                         word = argv(text)[1]
                         self.assertEqual(plain, words.written(word))
@@ -513,7 +521,8 @@ class TestTheLeaf(unittest.TestCase):
                 word = argv("sh -e$(echo c)")[1]
                 self.assertEqual([True, True, True], [words.spells(word, letter) for letter in "ecs"])
         self.assertEqual([True, False, False], [words.spells("-e", letter) for letter in "ecs"])
-        self.assertEqual([False, False], [words.spells("-$X", letter) for letter in "cs"])     # a variable: #2889
+        self.assertEqual([True, True], [words.spells("-$X", letter) for letter in "cs"])       # a variable may: #2889
+        self.assertEqual([False, False], [words.spells("-$#", letter) for letter in "cs"])     # a count prints digits
 
     def test_a_marker_in_a_plain_word_is_known_by_its_shape_and_this_processs_nonce(self):
         for digit in "0c":
@@ -561,9 +570,10 @@ class TestTheLeaf(unittest.TestCase):
                         queue.append(node.module)
         self.assertIn("shell_tokens", reached)
         self.assertEqual([], sorted(name for name in reached if name.startswith("workflow")))
-        self.assertEqual(["_spans", "written", "lifted", "spells"], [node.name for node in tree.body if isinstance(node, ast.FunctionDef)])
-        for module, names in ((wo, {"lifted", "spells", "written"}), (ws, {"spells", "written"}), (wp, {"lifted", "written"}),
-                              (workflow_fetch, {"lifted"})):
+        self.assertEqual(["_references", "_spans", "before", "written", "lifted", "spells"],       # two of #2889's
+                         [node.name for node in tree.body if isinstance(node, ast.FunctionDef)])
+        for module, names in ((wo, {"before", "lifted", "spells", "written"}), (ws, {"lifted", "spells", "written"}),
+                              (wp, {"lifted", "written"}), (workflow_fetch, {"lifted"}), (workflow_option_slots, {"lifted", "written"})):
             with open(module.__file__, encoding="utf-8") as source:
                 imported = {alias.name for node in ast.walk(ast.parse(source.read())) if isinstance(node, ast.ImportFrom)
                             and node.module == "workflow_option_words" for alias in node.names}
@@ -576,24 +586,15 @@ class TestTheLeaf(unittest.TestCase):
 class TestWhatStaysForOtherIssues(unittest.TestCase):
     """Rows this fix does not move, each pinned as it reads."""
 
-    def test_a_letter_a_variable_makes_is_2889(self):
-        # The readers read the NAME's letters: `cmd` holds a `c`, `X` holds none. Truth: `X=c` runs, all sixteen.
-        self.assertEqual({CLEAN}, under("X=c\nsh -$X %s\n" % P))
-        self.assertEqual({CLEAN}, under("sh -$X %s\n" % P))                            # truth: nothing
-        self.assertEqual({BOTH}, under("sh -$cmd %s\n" % P))                           # truth: nothing
-        self.assertEqual({CLEAN}, under("sh -$((1)) %s\n" % P))                        # an arithmetic stays text
+    def test_an_arithmetic_stays_text(self):
+        # `$((1))` prints a number, and no digit is an option's letter. (A letter a VARIABLE makes was pinned
+        # beside this as #2889's, CLEAN: it is reported since, `tests/test_workflow_option_expansions.py`.)
+        self.assertEqual({CLEAN}, under("sh -$((1)) %s\n" % P))
 
-    def test_a_value_the_word_may_owe_goes_with_2889(self):
-        # A lifted word may print an `o`, which takes the next word for its name; the string is then one word on.
-        # The finders count the values a cluster owes by the `o` WRITTEN in it. Truth: runs, all sixteen, the first
-        # three; nothing for `bogus`, a name both shells refuse. Open on `main` under every marker; the same
-        # mechanism as `X=oc; sh -$X errexit 'P'`.
-        for words_ in ("-$(echo oc) errexit", "-$(echo o)c errexit", "+$(echo oc) errexit", "-$(echo oc) bogus"):
-            with self.subTest(words=words_):
-                self.assertEqual({CLEAN}, under("sh %s %s\n" % (words_, P)))
-        self.assertEqual({CLEAN}, under("X=oc\nsh -$X errexit %s\n" % P))
+    def test_a_value_that_is_written(self):
         # Where the `o` or the `-c` is written, the string is found -- a `-c` after the word the lifted one takes
         # for its string too, since the search reads on past a word that only may print the `c`. Truth: runs, both.
+        # (The value a word may OWE for an `o` it only prints was pinned beside these as #2889's, CLEAN: reported since.)
         self.assertEqual({BOTH}, under("sh -o$(echo c) errexit %s\n" % P))
         self.assertEqual({BOTH}, under("sh -$(echo o) errexit -c %s\n" % P))
 
@@ -616,12 +617,6 @@ class TestWhatStaysForOtherIssues(unittest.TestCase):
         # counts this check (`test_a_check_in_the_string_is_not_counted`), and reads the step CLEAN under every
         # marker where the job reports it.
         self.assertEqual({WALK}, under("%ssh -$(echo c) '%s; %s'\n" % (GET, CHECK, USE)))
-
-    def test_a_variable_in_wgets_option_word_and_a_word_that_is_all_substitution(self):
-        # `-q$X`: the `X` reads as wget's `-X`, which takes the next word. `$(echo -qO-)` is an operand to the
-        # reader. Truth: runs, both.
-        self.assertEqual({CLEAN}, under("wget -q$X -O- %s | sh\n" % URL))
-        self.assertEqual({CLEAN}, under("wget $(echo -qO-) %s | sh\n" % URL))
 
 
 if __name__ == "__main__":
