@@ -7,6 +7,8 @@ import shlex
 import unittest
 from unittest import mock
 
+import pytest
+
 import scripts.runners.base as base
 import scripts.runners.outage as outage
 import scripts.runners.resume as resume
@@ -362,6 +364,7 @@ class TestNoCatastrophicBacktrackingInTheFiller(unittest.TestCase):
     can claim, so there is nothing left to backtrack over.
     """
 
+    @pytest.mark.serial
     def test_a_50kb_pathological_filler_stays_well_under_a_second(self):
         # Shaped like the reviewer's own repro (`"exceeded your " + "a-"*n`),
         # ~50 KB total, with an `API Error: 500` head so this ALSO drives

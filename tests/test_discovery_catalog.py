@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+import pytest
+
 import yaml
 
 import scripts.coverage_model as coverage_model
@@ -52,6 +54,7 @@ class TestGlobSemantics(unittest.TestCase):
         self.assertFalse(rx.match("a/" * 19 + "file.py"))
         self.assertTrue(self._m(path, ["*/" * 20 + "file.py"]))
 
+    @pytest.mark.serial
     def test_catastrophic_single_star_pattern_is_capped(self):
         # #run7 SEC-H4A: `a*a*...Z` compiles to `a[^/]*a[^/]*...Z` -- the (.*a)+
         # ReDoS shape, UNaffected by the **-collapse. An over-wildcarded pattern
@@ -66,6 +69,7 @@ class TestGlobSemantics(unittest.TestCase):
         self.assertTrue(
             orchestrator._glob_to_re("tests/fixtures/**").match("tests/fixtures/x.py"))
 
+    @pytest.mark.serial
     def test_accepted_twenty_star_pattern_finishes_in_subprocess(self):
         # The cap accepts exactly twenty separated stars. Keep the old regex
         # failure isolated: subprocess.run kills/reaps it after the deadline.

@@ -26,6 +26,8 @@ import time
 import unittest
 from unittest import mock
 
+import pytest
+
 import shell_reader
 import workflow_guard as wg
 import workflow_options as wo
@@ -417,6 +419,7 @@ class TestALongOptionOfTheShell(unittest.TestCase):
                 script = "echo '%s' > w.sh\nbash w.sh %s -c '%s'\n" % (body_text, words, PIPE)
                 self.assertTrue(any(STREAM in why for why in defects(script)), script)
 
+    @pytest.mark.serial
     def test_a_run_of_one_dash_long_options_costs_what_the_walk_does(self):
         # #2858 round 3 (B3): `_run` is one pass per argv, kept by identity -- twenty and two
         # thousand one-dash words cost within 2x of the same run of two-dash words (the seat
@@ -765,6 +768,7 @@ class TestAClearingRuleFiresOnlyOnSureInput(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertTrue(defects(script), script)
 
+    @pytest.mark.serial
     def test_the_one_word_scan_is_linear(self):
         # CodeQL on eb6da4e0 (high): `_ONE_WORD` could split a `$NAME` beside text two ways inside a
         # default, so a failing match backtracked exponentially -- `'${X:-' + '0$A' * 24 + '@}'` took

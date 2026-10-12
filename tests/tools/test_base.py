@@ -12,6 +12,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from tests._test_helpers import FakePopen, FakeStream, hard_link_or_skip
 import scripts.tools.base as base
 
@@ -911,6 +913,7 @@ class TestTimeoutKillReachesTheWholeGroup(unittest.TestCase):
             time.sleep(0.05)
         self.fail("wrapper never reported its grandchild pid")
 
+    @pytest.mark.serial
     def test_a_grandchild_does_not_outlive_the_deadline(self):
         with tempfile.TemporaryDirectory() as d:
             pidfile = os.path.join(d, "pid")
