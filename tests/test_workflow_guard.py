@@ -7790,3 +7790,34 @@ class TestAnUnreadProgramStandsBesideAnUnverifiedFetch(unittest.TestCase):
                        "sudo $CMD -c 'echo hi'\n"):
             with self.subTest(script=script):
                 self.assertTrue(self.job(script))
+
+
+class TestACatReadingTheDownloadOnStdinIsAUse(unittest.TestCase):
+    """#2884: a redirected stdin is a cat input, not an argv mention."""
+
+    GET = "curl -fsSLo tool https://example.test/tool\n"
+
+    def job(self, use):
+        return [why for _name, why in wg.job_defects([("step", self.GET + use + "\n")])]
+
+    def test_each_stdin_spelling_piped_into_a_shell_is_a_use(self):
+        for use in ("cat < tool | sh", "cat 0< tool | sh",
+                    "cat 3< tool <&3 | sh", "cat 3<> tool <&3 | sh"):
+            with self.subTest(use=use):
+                why = self.job(use)
+                self.assertEqual(1, len(why), why)
+                self.assertIn("piping it into `sh`", why[0])
+
+    def test_the_file_must_reach_stdin_and_stdout_must_reach_a_shell(self):
+        for use in ("cat 3< tool | sh", "cat 3<> tool | sh",
+                    "cat < other 3< tool | sh", "cat 3< tool < other | sh",
+                    "cat < other 3> tool | sh", "cat < other 3>> tool | sh",
+                    "cat other < tool | sh", "cat -- other < tool | sh",
+                    "cat < tool > /dev/null | sh", "cat < tool | cat"):
+            with self.subTest(use=use):
+                self.assertEqual([], self.job(use))
+
+        self.assertIn("piping it into `sh`", self.job("cat tool | sh")[0])
+        for use in ("cat - other < tool | sh", "cat -- - other < tool | sh"):
+            with self.subTest(use=use):
+                self.assertIn("piping it into `sh`", self.job(use)[0])

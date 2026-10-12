@@ -7,6 +7,30 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader: `cat` reads a download on redirected standard input (#2884; the pipe half of
+  #2793).** `cat < tool | sh`, `cat 0< tool | sh`, `cat 3< tool <&3 | sh` and
+  `cat 3<> tool <&3 | sh` read CLEAN although all four run the download: 32 of 32 runtime cells
+  across eight parent-shell postures. `Stage.stdin_reads` now records the ordinary-file origins
+  descriptor 0 finally reads, following opens, descriptor copies and moves, descriptor-path
+  aliases, replacement and close in shell order; a heredoc replaces the origin too. That fact is
+  separate from the broad `reads` and `writes` lists: an `N<>` path remains one write and one
+  standard-input origin, while an unused side-descriptor read or a write-only redirect is not a
+  `cat` input. `workflow_uses` adds those origins to a `cat`'s mentions only when its existing
+  `_cat_reads_stdin` predicate says it reads standard input and its standard output still reaches
+  the next pipeline stage. Thus a later fd-0 replacement, a file-only operand, an unused side fd,
+  a write-only fd and disconnected stdout remain CLEAN, while `cat - other < tool | sh` reports.
+  The predicate's documented conservative option price remains deliberate: 11 report-only rows
+  (`-n`, `-b`, `-e`, `-E`, `-A`, `-l`, `--number`, `--number-nonblank`, `--show-ends`, `--help`
+  and `--version`) account for 55 guard cells and zero of 88 runtime cells; the transforming
+  options still expose the downloaded content, and distinguishing the two GNU informational
+  options would make this shared GNU/BSD rule platform-specific. Six byte-preserving option rows
+  (`-T`, `-v`, `-s`, `-u`, `--show-tabs`, `--show-nonprinting`) run in all 48 runtime cells. On a
+  5,948-row targeted, product and fuzz differential, reports across five shell settings rise from
+  2,535 to 9,715 -- 7,180 gained cells out of 29,740, with no lost verdict or reason. Six mutants
+  show each boundary matters: substituting broad reads, substituting writes, dropping the `cat`
+  stdin predicate, dropping the stdout-pipe gate, dropping `<>` input provenance, or dropping
+  descriptor-copy provenance each fails its own pin. Copy-then-run and intermediate-command forms
+  remain the unclosed parts of #2793.
 - **Workflow reader: a written path of one of the stage's own descriptors (#2744).** `curl -fsSL U
   > //dev/stdout | sh` read CLEAN and runs under every shell: the reader knew `/dev/stdout` and
   `/dev/fd/1` as written, and descriptor 1 alone, so `> /proc/self/fd/1`, `2>&1 > /dev/stderr |
