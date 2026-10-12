@@ -54,8 +54,18 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[test]"
-      - name: Test
-        run: python -m pytest tests/ -q --cov --cov-fail-under=90 --cov-report=term-missing --cov-report=xml:coverage.xml
+      # #2933 follow-up: the suite runs in two passes so it is safe under xdist.
+      # Everything that is not a timing/performance test runs in parallel; the
+      # `serial`-marked time-bound tests then run on their own, because parallel
+      # workers inflate even `time.process_time()` on large inputs (CPU/memory/
+      # cache contention) and red-fail tight bounds like `assert_linear_growth`.
+      # The parallel pass writes coverage data with no report and no gate; the
+      # serial pass appends to it and the COMBINED total is what `--cov-fail-under`
+      # judges and what `coverage.xml` carries for the upload step.
+      - name: Test (parallel, not serial)
+        run: python -m pytest tests/ -q -n auto -m "not serial" --cov --cov-report=
+      - name: Test (serial timing/performance)
+        run: python -m pytest tests/ -q -m "serial" --cov --cov-append --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=90
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
