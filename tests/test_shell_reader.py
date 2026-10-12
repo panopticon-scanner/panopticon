@@ -839,6 +839,8 @@ class TestDocumentedShellReading(unittest.TestCase):
         self.assertEqual(5, len(parsed.argv))
         self.assertEqual(['printf a; printf b', 'printf c',
                           'printf d', 'printf e'], parsed.substitutions)
+        self.assertEqual(['<', '>'],
+                         [sub.direction for sub in parsed.substitutions[-2:]])
         for argument in parsed.argv[1:]:
             self.assertTrue(shell_reader.has_substitution(argument))
             self.assertEqual('$(...)', shell_reader.readable(argument))

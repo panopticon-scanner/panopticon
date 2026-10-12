@@ -1773,7 +1773,9 @@ class TestAPrinterThroughASubstitution(unittest.TestCase):
         # pipeline `eval "$(echo 'sh tool' | cat)"` (FR FR FR FR), e14/e14b a printer whose output
         # leaves the substitution `sh -c "$(echo 'sh tool' >&2)"` / `> /dev/null` (F- F- F- F-),
         # and e03 an operand `eval "$(cat prog.sh)"` (F- F- F- F-): `_DYNAMIC`'s `Idle` beside the
-        # download, as at the base -- a fail-closed over-report where nothing runs it.
+        # download, as at the base -- a fail-closed over-report where nothing runs it. #2428 keeps
+        # that generic verdict while adding an exact source-bound verdict where the paths match;
+        # narrowing the generic over-report belongs to #3059.
         for script, how in (("eval \"$(echo a; echo 'sh tool')\"\n", "eval"),
                             ("eval \"$(echo true; echo 'sh tool')\"\n", "eval"),
                             ("eval \"$(echo 'sh tool' | cat)\"\n", "eval"),
@@ -1987,10 +1989,10 @@ class TestAPrinterThroughASubstitution(unittest.TestCase):
 
     def test_rc12_a_write_side_process_substitution_is_read_as_a_file_the_price(self):
         # Fix round 1, m-3, a documented price: `sh >(echo 'sh tool')` hands `sh` a file to
-        # WRITE, and nothing of the text runs (rc12, b5 b3 dash gh: F- F- F- F-), but the reader
-        # keeps no direction on a lifted `<(...)`/`>(...)` (`shell_text.Process`), so the FILE is
-        # handed on: the fetch-and-run sentence, an over-report (main / base / 19423415 / now: C
-        # / C / FX / FX, both keys). Telling them apart is a reader change.
+        # WRITE, and nothing of the text runs (rc12, b5 b3 dash gh: F- F- F- F-). #2428 records
+        # the direction on `shell_text.Process`; this older printer rule deliberately still hands
+        # either FILE on, so its documented fetch-and-run over-report remains (main / base /
+        # 19423415 / now: C / C / FX / FX, both keys).
         for shell in (None, "sh"):
             with self.subTest(shell=shell):
                 self.assertTrue(said(defects(GET + "sh >(echo 'sh tool')\n", shell),
