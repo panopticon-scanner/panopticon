@@ -693,7 +693,8 @@ class TestTheSecondWalkAlone(unittest.TestCase):
     )
 
     def setUp(self):
-        self.addCleanup(shell_defaults._HALVES.update, empty=frozenset(), words={}, both=False, on=False, drops=False)
+        self.addCleanup(shell_defaults._HALVES.update, empty=frozenset(), words={}, both=False, on=False, drops=False,
+                        both_dropped=False)
 
     def fold(self, dropped):
         shell_defaults._HALVES.update(on=True, empty=frozenset({shell_defaults._DROPPED} if dropped else ()))
@@ -721,15 +722,25 @@ class TestTheSecondWalkAlone(unittest.TestCase):
 
     def test_the_folds_mains_reading_stays_among(self):
         # One word dropped, and a two-halved word behind it that only the fold that drops the first one meets:
-        # `main`'s fold, that one again with the word dropped (`sudo -E sh`, whose command is `sh`), then both
-        # with the two-halved word read empty. No fold `main` reads is lost.
+        # `main`'s fold, that one again with the word dropped (`sudo -E sh`, whose command is `sh`), then that
+        # one with the two-halved word read empty. `main`'s own fold is not read again with it empty: no fold of
+        # `main`'s reaches the word, and each would read as the first. No fold `main` reads is lost.
         argv = shell_reader.statements("$T ${S:+sudo -E} sh -c 'true'")[0].stages[0].argv
         seen = []
         for _sure in shell_command.folds(lambda: False):
             seen.append((shell_command.command(argv)[0], shell_defaults._HALVES["empty"]))
         dropped = frozenset({shell_defaults._DROPPED})
-        self.assertEqual([("$T", frozenset()), ("sh", dropped), ("$T", shell_defaults._ALL),
-                          ("sh", shell_defaults._ALL | dropped)], seen)
+        self.assertEqual([("$T", frozenset()), ("sh", dropped), ("sh", shell_defaults._ALL | dropped)], seen)
+        # Where one of `main`'s folds meets one too, the sets of halves are read in both kinds of fold.
+        argvs = [statement.stages[0].argv for statement in
+                 shell_reader.statements("${S:+sudo -E} sh -c 'true'\n$T ${U:+env A=1} sh -c 'true'")]
+        seen = []
+        for _sure in shell_command.folds(lambda: False):
+            for argv in argvs:
+                shell_command.command(argv)
+            seen.append(shell_defaults._HALVES["empty"])
+        self.assertEqual([frozenset(), shell_defaults._ALL, dropped], seen[:3])
+        self.assertIn(shell_defaults._ALL | dropped, seen)
 
     def test_what_main_drops_is_dropped_in_every_fold(self):
         for argv, count in ((["$S", "sh", "-c", P], 1), (["${S:-sudo}", "sh", "-c", P], 1),

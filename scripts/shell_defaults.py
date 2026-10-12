@@ -45,8 +45,10 @@ _VANISHING = re.compile(r"\$\{(!?[A-Za-z_]\w*(?:\[[^]]*\])?|[0-9]+|[@*!-])(:?\+|
                         r"[^{}]*\}([^\s{}$`'\"\\*?[]*)")
 # The halves `_command_result` reads of the command words bash may expand to nothing (`folds`): the
 # ones this fold reads empty -- none, as `main` reads them, then all (`_ALL`), then each other set of
-# those whose halves read apart, by place (`_half`, #2929) -- and whether one with both halves was met.
-_HALVES: dict = {"empty": frozenset(), "words": {}, "both": False, "on": False, "drops": False}
+# those whose halves read apart, by place (`_half`, #2929) -- and whether one with both halves was met,
+# in one of `main`'s folds ("both") or only in the folds that read the second walk's newer words as nothing
+# ("both_dropped", `_drops`).
+_HALVES: dict = {"empty": frozenset(), "words": {}, "both": False, "on": False, "drops": False, "both_dropped": False}
 _ALL = frozenset({None})
 # In a fold's set (`_masks`), the mark of the folds that read the second walk's newer words as nothing (`_drops`):
 # each of the others once more, where one of them met such a word ("drops").
@@ -312,7 +314,7 @@ def _half(whole, differs):
     (`shell_tokens._Parse.whole`), the same in every parse of that place and never its text."""
     if not _HALVES["on"]:
         return False, None
-    _HALVES["both"], words, past = True, _HALVES["words"], None
+    _HALVES["both_dropped" if _DROPPED in _HALVES["empty"] else "both"], words, past = True, _HALVES["words"], None
     if differs and whole.at not in words and len(words) >= _HALF_CAP:
         past = "`%s` is a command word bash may expand to nothing beside %d more, whose readings the guard does not combine" % (
             readable(whole), _HALF_CAP)
@@ -326,8 +328,13 @@ def _masks():
     where one has both halves, then each other set of those whose halves read apart -- of the first
     `_HALF_CAP` alone, so the folds never grow past 8 (#2929). Where a fold met a word the second walk's newer
     reading drops (`_drops`), each of those once more with `_DROPPED` in it: the same halves, and such words
-    read as nothing -- 16 at most, and `main`'s own all among them."""
+    read as nothing -- 16 at most, and `main`'s own all among them. `main`'s readings take the sets of halves
+    only where one of `main`'s folds met a word with both: one met behind a dropped word alone is read in the
+    dropped words' folds, and every fold of `main`'s would read the same whatever its set."""
     words = list(_HALVES["words"])[:_HALF_CAP]
     some = [frozenset(word for at, word in enumerate(words) if bits >> at & 1) for bits in range(1, (1 << len(words)) - 1)]
     masks: list[frozenset] = [frozenset()] + ([_ALL] + some if _HALVES["both"] else [])
-    return masks + [mask | {_DROPPED} for mask in masks] if _HALVES["drops"] else masks
+    if not _HALVES["drops"]:
+        return masks
+    dropped: list[frozenset] = [frozenset()] + ([_ALL] + some if _HALVES["both"] or _HALVES["both_dropped"] else [])
+    return masks + [mask | {_DROPPED} for mask in dropped]

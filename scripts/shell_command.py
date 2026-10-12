@@ -334,7 +334,7 @@ def _folds(unsure):
     met a `find` with an action in them, each of those follows again with each action in its `find`'s
     place (#2935 round 3: `main`'s reading is never lost, and the guard REPORTs where either reads a
     defect)."""
-    _HALVES.update(empty=frozenset(), words={}, both=False, on=True, drops=False)
+    _HALVES.update(empty=frozenset(), words={}, both=False, on=True, drops=False, both_dropped=False)
     _ACTIONS["acts"] = False
     try:
         for body in range(1 + _BODY_FOLDS):     # `main`'s, then at most `_BODY_FOLDS` others (`body_read`)
@@ -356,7 +356,7 @@ def _folds(unsure):
             if not _BODIES["more"]:
                 return
     finally:
-        _HALVES.update(empty=frozenset(), words={}, both=False, on=False, drops=False)
+        _HALVES.update(empty=frozenset(), words={}, both=False, on=False, drops=False, both_dropped=False)
         _ACTIONS.update(_NO_FOLD)
         _BODIES.update(at=0, more=False)
 
