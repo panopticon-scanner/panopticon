@@ -28,9 +28,10 @@ import shell_command
 import shell_reader
 from workflow_option_slots import (_BARE as _BARE, _DEFAULT_PARAMETER as _DEFAULT_PARAMETER,
                                    _ONE_DEFAULT as _ONE_DEFAULT, _ONE_PARAMETER as _ONE_PARAMETER,
-                                   _VALUE as _VALUE, _before_operand, _literal, _may_spell_option,
-                                   _one_word, _value)
-from workflow_option_words import lifted, spells, written
+                                   _TILDE, _VALUE as _VALUE, _before_operand as _before_operand, _literal,
+                                   _may_be_name, _may_spell_option as _may_spell_option, _one_word,
+                                   _reopened, _value)
+from workflow_option_words import before, lifted, spells, written
 
 
 # Set while the guard's main pass runs (`mains_answer`, #2858 round 11): every join of
@@ -236,11 +237,14 @@ def _refused_name(argv, at):
     name: `-O` takes a shopt name, and a table of those is not kept here. A value that is not all
     letters -- bar the hyphen of `interactive-comments` -- is read ON and fail-closed, as an option
     word that is not all letters is: `sh -c -o $X P` runs `P` wherever `X` holds a name the shell
-    takes, and `${X:-pipefail}` is one spelling of that."""
+    takes, and `${X:-pipefail}` is one spelling of that. Only an `o` WRITTEN before the word's first
+    expansion is read (`before`, #2889): what an expansion prints may be an `o` or an `O` of its
+    own, which takes the first value, so a letter after it takes a word no text names -- `X=O;
+    bash -c${X}o extglob errexit P` runs `P`, where the written `o` was read to take `extglob`."""
     if type(argv[0]) is not str or os.path.basename(argv[0]) not in _MEASURED_SHELLS:
         return False
     value = at
-    for letter in argv[at][1:]:
+    for letter in before(argv[at])[1:]:
         value += letter in VALUE_OPTIONS
         if letter == "o" and value < len(argv) and argv[value].replace("-", "").isalpha():
             if argv[value] not in SHELL_OPTION_NAMES:
@@ -367,11 +371,7 @@ def _after_value(argv, at):
     """`workflow_programs.candidates`' answer for the value `argv[at]`: the words after it up to the
     first operand, and any after a later word that may spell an option -- or the value itself,
     where its output is words (`sh $(echo tool)`)."""
-    rest = argv[at + 1:]
-    end = next((k for k, after in enumerate(rest, 1) if not _before_operand(after)), len(rest))
-    more = next((k for k in range(end, len(rest)) if _may_spell_option(rest[k])), len(rest))
-    return argv[at], rest[:end] + rest[more + 1:] or (
-        [argv[at]] if shell_reader.yields_words(argv[at]) else [])
+    return argv[at], _reopened(argv[at + 1:]) or ([argv[at]] if shell_reader.yields_words(argv[at]) else [])
 
 
 class Handed(str):
@@ -434,6 +434,8 @@ def _stdin_walk(argv, answer, reader, shell, value):
         if not token.startswith(("-", "+")) or not options:
             if parameters:
                 return answer, reader       # `bash -s arg -c x`: a parameter, not a `-c` (#2647)
+            if value_option and not shell and _TILDE.fullmatch(token):
+                return answer, reader       # a `$` word's tilde, as `main` read it: an operand (#2889)
             if (shell or value) and _value(token) and (
                     not shell_reader.has_substitution(token) or shell_reader.yields_words(token)) or (
                     shell and options and not _literal(token) and not shell_reader.has_substitution(token)):
@@ -517,23 +519,27 @@ def _printed(argv):
 
 def _shell_candidates(argv):
     """`workflow_programs.candidates`' answer for a shell as this walk reads its option words (#2858):
-    a long option's FILE is its value, and a `$Y` after a `-c` cluster may be no string."""
-    owed = 0
+    a long option's FILE is its value, and a `$Y` after a `-c` cluster may be no string. A word after
+    an option word that holds an expansion may be the NAME that word owes (`may`, #2889), and is
+    passed as one: `X=o; Y=-c; sh -$X errexit $Y P` runs `P`."""
+    owed, may = 0, False
     for at, word in enumerate(argv[1:], start=1):
         if owed:
             owed -= 1
         elif _value(word):
             return _after_value(argv, at)
+        elif may and _may_be_name(word):
+            continue                            # a NAME the expansion before it may owe
         elif word in ("-", "--") or word[:1] not in ("-", "+"):
             break                               # the options end: a program, or `-`/`--`
         elif (long := long_option(argv, at)) or word[:2] == "--":
-            owed = long in LONG_VALUE_OPTIONS    # `bash -rcfile FILE $X '…'`: the FILE is its value
+            owed, may = long in LONG_VALUE_OPTIONS, False    # `bash -rcfile FILE $X '…'`: the FILE is its value
         elif spells(word, "c") and ((k := _value_after_dash_c(argv, at)) is not None or "c" in written(word)):
             if k is not None:                   # a `-c` cluster, whose string `scripts` reads -- unless it is a
                 return _after_value(argv, k)    # `$Y` (`Y=-c; bash -c $Y P`, round 7); the walk goes on past
             break                               # a word that only MAY print the `c` (#3020), as past `-x`
         else:
-            owed = sum(letter in VALUE_OPTIONS for letter in word[1:])
+            owed, may = sum(letter in VALUE_OPTIONS for letter in word[1:]), lifted(word)
     return None, []
 
 
@@ -570,43 +576,88 @@ def _past_options(argv, at):
     nothing runs. So is a word of letters one of which the shell in hand refuses (`sh -c -K P`, `sh
     -cK P`, `_refused`): it exits before it reads `P`, so no program is handed over (#2475), and an
     `-o` whose value is no option NAME is one too (`_refused_name`, #2560).
+
+    That is one reading, `main`'s, and its operand comes first. A word that holds an expansion has
+    more (#2889): it may print an `o` or an `O` no text of it writes, so each word after it that may
+    be a NAME may be its value, and the operand is then a later word -- `sh -$(echo oc) errexit P`
+    and `X=o; sh -c -$X errexit P` run `P`. Those readings are walked too (`_reached`), and each
+    operand one reaches is handed on BESIDE `main`'s: more words than it found, never fewer.
     """
-    while True:
-        if _refused(argv, at) or _refused_name(argv, at):
-            return []                           # the shell exits before the program
-        at += 1 + sum(letter in VALUE_OPTIONS for letter in argv[at][1:])
-        if at >= len(argv) or argv[at].startswith("--") and argv[at] != "--":
-            return []
-        if argv[at] in ("-", "--"):
-            return argv[at + 1:at + 2]
-        if not argv[at].startswith(("-", "+")):
-            return [argv[at]]
+    return _reached(argv, at, False, False)
 
 
 def _operand_past(argv, at, past=False):
-    """`_past_options` as this walk reads the words (#2858): the first operand after `argv[at]`, the
-    cluster that carries `-c`.
-
-    Bash and dash read on through the option words after `-c` (#2332): `sh -c -e P`, `bash -c -x P`
-    and `sh -c +x P` all run `P`. Each `o` or `O` in a word takes the next word as its value (`-c -o
-    pipefail P`, `-co pipefail P`); a `-` or `--` ends the options, and the word after it is the
-    program even if it begins with `-`; a `--long` word after `-c` is one both shells refuse, and
-    nothing runs. So is a word of letters one of which the shell in hand refuses (`sh -c -K P`, `sh
-    -cK P`, `_refused`): it exits before it reads `P`, so no program is handed over (#2475), and an
-    `-o` whose value is no option NAME is one too (`_refused_name`, #2560). Past an operand (`past`)
-    the words are the FILE's parameters, which no shell parses: none refuses or exits and a long one
-    takes no value, so the first that is no option word is the one handed on (`echo 'eval "$4"' >
-    w.sh; bash w.sh -c -o - P` runs `P`, #2858 round 6).
+    """`_past_options` as this walk reads the words (#2858): a long option in either spelling is one
+    the shell refuses after `-c` (`long_option`), and past an operand (`past`) the words are the
+    FILE's parameters, which no shell parses: none refuses or exits and a long one takes no value, so
+    the first that is no option word is the one handed on (`echo 'eval "$4"' > w.sh; bash w.sh -c -o
+    - P` runs `P`, #2858 round 6) -- in every reading of a word that holds an expansion there too
+    (`printf 'exec bash "$@"' > w.sh; X=oc; sh w.sh -$X errexit P` runs `P`, #2889).
     """
+    return _reached(argv, at, past, True)
+
+
+def _owed(word):
+    """The values the option word `word` owes by what is WRITTEN in it: one for each `o` or `O`."""
+    return sum(letter in VALUE_OPTIONS for letter in written(word)[1:])
+
+
+def _mains_operand(argv, at, past, strict):
+    """The place of the first operand after `argv[at]` as `main` walks the words (13cdb9f7), or None
+    where it finds none: one value for each `o` or `O` in a word's TEXT, a name's letters and all,
+    and one way on from each word."""
     while True:
         if not past and (_refused(argv, at) or _refused_name(argv, at)):
-            return []                           # the shell exits before the program
+            return None                         # the shell exits before the program
         at += 1 + (argv[at][:2] != "--" and sum(letter in VALUE_OPTIONS for letter in argv[at][1:]))
-        if at >= len(argv):
-            return []
-        if not past and (argv[at].startswith("--") and argv[at] != "--" or long_option(argv, at)):
-            return []                           # a long option after `-c`: refused
+        if at >= len(argv) or not past and (
+                argv[at].startswith("--") and argv[at] != "--" or strict and long_option(argv, at)):
+            return None                         # a long option after `-c`: refused
         if argv[at] in ("-", "--"):
-            return argv[at + 1:at + 2]
+            return at + 1 if at + 1 < len(argv) else None
         if not argv[at].startswith(("-", "+")):
-            return [argv[at]]
+            return at
+
+
+def _after(argv, at, past):
+    """The indexes the shell may read its next word at, past the option word `argv[at]`, by what is
+    WRITTEN in it: none where it refuses the word; else past the values written (`_owed`) and,
+    where the word holds an expansion, past each word after those that may be a NAME, one more at
+    a time (`_may_be_name`). A long word, met only among a FILE's parameters, takes none."""
+    if not past and (_refused(argv, at) or _refused_name(argv, at)):
+        return []                               # the shell exits before the program
+    word = argv[at]
+    if word[:2] == "--":
+        return [at + 1]
+    nexts = [at + 1 + _owed(word)]
+    while lifted(word) and nexts[-1] < len(argv) and _may_be_name(argv[nexts[-1]]):
+        nexts.append(nexts[-1] + 1)
+    return nexts
+
+
+def _reached(argv, at, past, strict):
+    """The operands a walk past the option word `argv[at]` reaches: `main`'s FIRST, found as it
+    found it (`_mains_operand`), then each one a reading of the words by what is WRITTEN in them
+    reaches (`_after`), every reading walked and each word read once however many reach it. A `-`
+    or `--` ends the options and hands on the word after it; a long word is refused where the shell
+    parses (`--x`, and where `strict` either spelling of a long option), and is one more parameter
+    past an operand (`past`). An operand is handed on once, by its PLACE."""
+    mains = _mains_operand(argv, at, past, strict)
+    places: dict = {} if mains is None else {mains: None}
+    seen: set = set()
+    todo = _after(argv, at, past)[::-1]
+    while todo:
+        k = todo.pop()
+        if k in seen or k >= len(argv):
+            continue
+        seen.add(k)
+        word = argv[k]
+        if not past and (word.startswith("--") and word != "--" or strict and long_option(argv, k)):
+            continue                            # a long option after `-c`: refused
+        if word in ("-", "--"):
+            places[k + 1] = None                # the options end: the word after it, if there is one
+        elif word.startswith(("-", "+")):
+            todo.extend(_after(argv, k, past)[::-1])
+        else:
+            places[k] = None
+    return [argv[place] for place in places if place < len(argv)]

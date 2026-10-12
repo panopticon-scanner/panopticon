@@ -66,7 +66,7 @@ from workflow_options import (SET_OPTION_NAMES as SET_OPTION_NAMES, SET_OPTIONS 
                               _past_options as _past_options,
                               _refused as _refused, _refused_name as _refused_name, _value)
 from workflow_option_words import lifted, written
-from workflow_options import _MAINS, _counted, _dash_c_strings, _stdin_walk
+from workflow_options import _MAINS, _TILDE, _counted, _dash_c_strings, _stdin_walk
 from workflow_program_strings import (Opaque as Opaque, _EDGE as _EDGE, _NAME as _NAME,
                                       _SHELL_STRING as _SHELL_STRING, _added_strings as _added_strings,
                                       _after_dash_c as _after_dash_c, _all_expansion as _all_expansion,
@@ -309,6 +309,8 @@ def _options(argv, depth):
             options = False
             continue
         if not token.startswith(("-", "+")):
+            if value_option and _TILDE.fullmatch(token):
+                return answer, reader       # a tilde alone after a value, as `main` read it: an operand (#2889)
             if (shell or value) and _value(token) and (
                     not shell_reader.has_substitution(token) or shell_reader.yields_words(token)):
                 reader = None               # ... but it may name a FILE: no check counts

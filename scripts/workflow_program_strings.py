@@ -20,9 +20,9 @@ import re
 import shell_lex
 import shell_reader
 from shell_text import Process
-from workflow_options import (VALUE_OPTIONS, Handed, _MAINS, _before_operand, _dash_c_strings,
-                              _may_spell_option, _past_options, _shell_candidates, _sure_string, _value)
-from workflow_option_words import spells, written
+from workflow_options import (VALUE_OPTIONS, Handed, _MAINS, _dash_c_strings, _may_be_name, _past_options,
+                              _reopened, _shell_candidates, _sure_string, _value)
+from workflow_option_words import lifted, spells, written
 from workflow_printers import rendered
 
 
@@ -225,25 +225,25 @@ def _candidates(argv):
     """`candidates`' answer as `main` reads it (7e9223e6), word for word but for the sign of the
     cluster a `$` command word is handed: `$CMD +c P` is `$CMD -c P` (#3019, as `_after_dash_c`).
     A `$` word's cluster may be one lifted text spells (`spells`, #3020); a shell's walk for a value
-    ends at a `c` that is WRITTEN, and goes on past a word that only may print one."""
+    ends at a `c` that is WRITTEN, and goes on past a word that only may print one -- and past each
+    word after it that may be the NAME it owes (`may`, #2889: `X=o; Y=-c; sh -$X errexit $Y P` runs
+    `P`). The words behind the value are `_reopened`'s, which reads a tilde word both ways."""
     if argv[1:] and _value(argv[0]) and argv[1][:1] in ("-", "+") and argv[1][:2] not in ("--", "++") and spells(argv[1], "c"):
         return argv[0], _past_options(argv, 1)
     if not argv or os.path.basename(argv[0]) not in _SHELL_STRING:
         return None, []
-    owed = 0
+    owed, may = 0, False
     for at, word in enumerate(argv[1:], start=1):
         if owed:
             owed -= 1
         elif _value(word):
-            rest = argv[at + 1:]
-            end = next((k for k, after in enumerate(rest, 1) if not _before_operand(after)), len(rest))
-            more = next((k for k in range(end, len(rest)) if _may_spell_option(rest[k])), len(rest))
-            return word, rest[:end] + rest[more + 1:] or (
-                [word] if shell_reader.yields_words(word) else [])
+            return word, _reopened(argv[at + 1:]) or ([word] if shell_reader.yields_words(word) else [])
+        elif may and _may_be_name(word):
+            continue                            # a NAME the expansion before it may owe
         elif word in ("-", "--") or word[:1] not in ("-", "+") or word[:2] != "--" and "c" in written(word):
             break
-        elif word[:2] != "--":
-            owed = sum(letter in VALUE_OPTIONS for letter in word[1:])
+        else:
+            owed, may = (0, False) if word[:2] == "--" else (sum(letter in VALUE_OPTIONS for letter in word[1:]), lifted(word))
     return None, []
 
 

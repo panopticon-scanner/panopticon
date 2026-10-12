@@ -12,11 +12,17 @@ re-exports the ones it did before, so nothing that read `workflow_options._value
 `workflow_programs._before_operand` moved; this module imports nothing from either, so the layers
 still run one way: the reader below it, the option grammar and its walks above.
 
+Since #2889 a word here may be read for what an expansion makes of it: a tilde alone is a value
+(`_TILDE`, read BESIDE `main`'s reading of it, `_reopened`), and a word after an option word that
+holds an expansion may be the NAME that word owes (`_may_be_name`, which asks the word what is
+written in it, `workflow_option_words`).
+
 Stdlib only, like everything under it.
 """
 import re
 
 import shell_reader
+from workflow_option_words import lifted, written
 
 
 # The quoted forms proven to be exactly one word (#2858 round 8, an allowlist): text, `"$X"`,
@@ -82,11 +88,19 @@ def _literal(word):
 _VALUE = re.compile(r"(?:\$(?:\{[^{}]*\}|\w+|\(\.\.\.\)|[^\w{(\\]))+[A-Za-z]*|\$\\.*", re.S)
 
 
+# A tilde alone (#2889): bash and dash write `$HOME` for `~`, and bash `$PWD`, `$OLDPWD` and a
+# directory of its stack for `~+`, `~-` and `~1` -- ONE word, whatever the variable holds, so where
+# a shell reads its options it is a value as `$X` is: `HOME=-c; sh ~ 'P'` runs `P`, and
+# `HOME=sh; ~ -c 'P'` does. Not `~/x` or `~user`, a path: no shell takes a cluster holding a `/`.
+# The reader hands a quoted `"~"` on as the same word, so that one is read as a value too.
+_TILDE = re.compile(r"~[+-]?[0-9]*")
+
+
 def _value(word):
-    """Whether `word` is such a value; a pattern is `leads`'s to read."""
+    """Whether `word` is such a value, or a tilde alone (`_TILDE`); a pattern is `leads`'s to read."""
     if isinstance(word, shell_reader.Rewritten):
         return getattr(word, "lead", None) is None
-    return bool(_VALUE.fullmatch(shell_reader.readable(word)))
+    return bool(_VALUE.fullmatch(shell_reader.readable(word)) or _TILDE.fullmatch(word))
 
 
 # The letters an option's value is spelled with, as every `-o` or `-O` name of
@@ -94,19 +108,45 @@ def _value(word):
 _BARE = re.compile(r"[A-Za-z0-9_-]+")
 
 
-def _before_operand(word):
+def _before_operand(word, tilde=False):
     """Whether `word`, after a value in a shell's options, may still stand
     before its program: an option word (`-…`, `+…`, `-`, `--`), an option's
     value (`_BARE`), or a word bash expands -- a `$`, a lifted substitution,
-    a pattern (`shell_reader.dynamic`) -- which may vanish or be either."""
-    return (word[:1] in ("-", "+") or bool(_BARE.fullmatch(word))
+    a pattern (`shell_reader.dynamic`) -- which may vanish or be either. A tilde alone is such a
+    word where `tilde` (#2889), and the operand `main` read it as where not."""
+    return (word[:1] in ("-", "+") or bool(_BARE.fullmatch(word) or tilde and _TILDE.fullmatch(word))
             or shell_reader.dynamic(word, shell_reader.has_substitution))
 
 
-def _may_spell_option(word):
+def _may_spell_option(word, tilde=False):
     """Whether `word`, PAST the first operand, may be an option word once it is expanded: a word
     bash expands (`shell_reader.dynamic`) that begins with `-`, a `$` or a lifted substitution, or a
     pattern or an `xargs -I` replacement (`Rewritten`). One that begins with literal text of its own
-    (`x$Y`, `echo $Y`) is none."""
-    return shell_reader.dynamic(word, shell_reader.has_substitution) and (
+    (`x$Y`, `echo $Y`) is none. A tilde alone is one where `tilde` (#2889)."""
+    return bool(tilde and _TILDE.fullmatch(word)) or shell_reader.dynamic(word, shell_reader.has_substitution) and (
         shell_reader.readable(word)[:1] in ("-", "$") or isinstance(word, shell_reader.Rewritten))
+
+
+def _reopened(rest):
+    """The words after a value that may be the program (#2344, #2484): up to the FIRST OPERAND, and
+    every word after a later one that may spell an option. Read twice since #2889, once with a
+    tilde alone the operand `main` read it as and once with it the value it is, the second BESIDE
+    the first: `X=-x; HOME=-c; sh $X ~ 'P'` runs `P`, which only the second weighs, and where the
+    first operand moves a word only the first weighed is weighed still. A word is kept by its
+    PLACE, so `main`'s words stand first and exactly as it handed them on."""
+    places: dict = {}
+    for tilde in (False, True):
+        end = next((k for k, after in enumerate(rest, 1) if not _before_operand(after, tilde)), len(rest))
+        more = next((k for k in range(end, len(rest)) if _may_spell_option(rest[k], tilde)), len(rest))
+        places.update(dict.fromkeys([*range(end), *range(more + 1, len(rest))]))
+    return [rest[place] for place in places]
+
+
+def _may_be_name(word):
+    """Whether `word` may be the NAME an `o` or `O` takes (#2889): letters, digits, `_` and `-`, as
+    every such name of bash, dash, zsh and ksh is (`_BARE`), beside whatever an expansion in it
+    prints (`err$X`, `$N`) -- and never an option word, which no shell takes for a name. No table
+    is asked: bash's `-O` takes a shopt name and zsh's `-o` one of its own, and both lists move
+    with the version, so a word shaped as a name may be one."""
+    text = written(word)
+    return word[:1] not in ("-", "+") and bool(_BARE.fullmatch(text) or not text and lifted(word))
