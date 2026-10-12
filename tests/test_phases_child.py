@@ -20,6 +20,8 @@ import time
 import unittest
 from unittest import mock
 
+import pytest
+
 import scripts.phases.child as child
 import scripts.phases.runio as runio
 
@@ -459,6 +461,7 @@ class TestAnInterruptReachesTheWholeProcessTree(_ChildCase):
         except Exception:  # noqa: BLE001 - cleanup must not mask an assertion
             pass
 
+    @pytest.mark.serial
     def test_a_ctrl_c_ends_the_group_and_does_not_wait_out_the_join(self):
         if signal.getsignal(signal.SIGINT) is not signal.default_int_handler:
             # A suite started with SIGINT ignored (a background job) gives
@@ -568,6 +571,7 @@ class TestTheHeadSurvivesAReaderThatIsCutOff(_ChildCase):
         except OSError:
             pass
 
+    @pytest.mark.serial
     def test_the_diagnostic_survives_and_the_join_is_bounded(self):
         pidfile = os.path.join(self.root, "worker.pid")
         self.addCleanup(self._reap, pidfile)
