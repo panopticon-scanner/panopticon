@@ -73,6 +73,18 @@ evidence exposed.
   The fuzz pays for the folds its rows are read in a second time (a `jobs`, a shell handed the
   words, a word in doubt), as a row with `builtin` has since #2665; no standing row holds such a
   word.
+- **A checksum gate inside a shell function is credited only where the function is proved to run
+  (#2949).** `f() { sha256sum -c sums || exit 1; }; sh tool` read CLEAN even when `f` was never
+  called, was called after the use, or appeared only as `find -exec f`: the stopping-rescue path
+  returned before the existing function-call bound was applied. That rescue now carries its
+  outside reach through the same `_function_status` bound as an unrescued check. On 65,894 standing
+  rows and five `shell:` settings (329,470 cells), 18 rows move, all in this class: 86 CLEAN to
+  REPORT, no REPORT to CLEAN, and no reason-only changes. All 288 Bash 5.2.21, Bash 3.2.57 and dash
+  truth cells for those rows run the payload. Called-after, one-line and skipped-call extensions
+  add 30 true CLEAN-to-REPORT cells across six bad/right-digest rows. Bash's `function f { ...; }`
+  spelling adds ten more; its two explicit-`sh` settings are the bounded fail-closed price (four
+  scanner cells), because dash fetches the file but refuses that syntax before running it. A proved
+  call before the use, a bare uncalled check and an inline rescue keep all 30 existing answers.
 - **Workflow reader asks an option word for its letters, never its parse marker (#3020, #3023).**
   `sh -$(echo c) 'curl ... | sh'` runs the string under every parent shell and read CLEAN in one
   call and reported in the next; `curl -fsSL$(true) URL | sh` runs and read CLEAN in every call. A
