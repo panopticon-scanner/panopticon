@@ -84,13 +84,14 @@ class TestGate(unittest.TestCase):
         self.assertFalse(os.path.exists(
             runio._pano(root, requests.UNENFORCED_ACK)))
 
-    def test_codex_remains_unclaimed_and_ack_gated_in_the_core_pr(self):
+    def test_codexs_proven_omission_needs_no_ack(self):
         root = self._root()
-        self.assertNotIn(hosts.ARTIFACT_WRITE_GUARD, hosts.spec("codex").claims)
-        # Even a foreign/stale PROVEN row cannot grant an unclaimed capability.
+        self.assertIn(hosts.ARTIFACT_WRITE_GUARD, hosts.spec("codex").claims)
         write_host_evidence(root, {hosts.ARTIFACT_WRITE_GUARD: hosts.PROVEN})
-        with self.assertRaises(runio.DriverError):
-            requests.require_unenforced_ack(root, _manifest("codex"), ENTRIES)
+        self.assertIsNone(requests.require_unenforced_ack(
+            root, _manifest("codex"), ENTRIES))
+        self.assertFalse(os.path.exists(
+            runio._pano(root, requests.UNENFORCED_ACK)))
 
     def test_generic_without_the_flag_refuses_loudly(self):
         root = self._root()

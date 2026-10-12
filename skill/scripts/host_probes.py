@@ -47,6 +47,7 @@ PROBE_IDS = (probes_common.REGISTERED_SHELL_TOOLS,
             claude_probes.WRITE_GUARD_ARMED, claude_probes.USAGE_SOURCE,
             claude_probes.ENTRY_MODEL_BOUND, claude_probes.READ_GUARD_ARMED,
             codex_probes.CODEX_EFFECTIVE_TOOLS, codex_probes.CODEX_READ_SCOPE,
+            codex_probes.CODEX_WRITE_SURFACE_ABSENT,
             kimi_probes.KIMI_SHELL_SURFACE, kimi_probes.KIMI_READ_GUARD,
             kimi_probes.KIMI_WRITE_GUARD, kimi_probes.KIMI_MODEL_ALIAS,
             kimi_probes.KIMI_USAGE_WIRE)
@@ -63,6 +64,7 @@ PROBE_CAPABILITY = {probes_common.REGISTERED_SHELL_TOOLS: hosts.TOOL_POLICY_ENFO
                     claude_probes.READ_GUARD_ARMED: hosts.READ_SCOPE_CONFINED,
                     codex_probes.CODEX_EFFECTIVE_TOOLS: hosts.TOOL_POLICY_ENFORCED,
                     codex_probes.CODEX_READ_SCOPE: hosts.READ_SCOPE_CONFINED,
+                    codex_probes.CODEX_WRITE_SURFACE_ABSENT: hosts.ARTIFACT_WRITE_GUARD,
                     kimi_probes.KIMI_SHELL_SURFACE: hosts.TOOL_POLICY_ENFORCED,
                     kimi_probes.KIMI_READ_GUARD: hosts.READ_SCOPE_CONFINED,
                     kimi_probes.KIMI_WRITE_GUARD: hosts.ARTIFACT_WRITE_GUARD,
@@ -197,6 +199,9 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
                 host, registration_dir, settings_path, codex_measure),
         codex_probes.CODEX_READ_SCOPE:
             lambda: codex_probes.probe_codex_read_scope(
+                host, registration_dir, settings_path, codex_measure),
+        codex_probes.CODEX_WRITE_SURFACE_ABSENT:
+            lambda: codex_probes.probe_codex_write_surface(
                 host, registration_dir, settings_path, codex_measure),
         kimi_probes.KIMI_SHELL_SURFACE:
             # `run_home` is the live runner's scratch home, handed down by the

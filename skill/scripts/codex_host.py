@@ -44,6 +44,14 @@ MAX_BYTES = 8 * 1024 * 1024
 # keeping both that localhost-only measurement and the bundled-catalog dump
 # bounded (#2923 B).
 PROBE_TIMEOUT = 180
+# Import routes whose availability would give Code Mode filesystem, process or
+# network primitives outside the controller-bound read broker.  The live
+# omission probe attempts every one plus a real file: URL on each role.
+WRITE_SURFACE_IMPORTS = (
+    "node:fs", "fs", "node:fs/promises", "node:child_process", "node:module",
+    "node:worker_threads", "node:net", "node:http", "node:https", "node:dgram",
+    "node:tls",
+)
 # Everything one launch allocated, keyed by the scratch cwd -- the one path
 # cleanup can recover from argv. The value is (per-entry runtime dir, run
 # path): BOTH are removed, and only ever when this module recorded them.
@@ -467,7 +475,7 @@ def validate_command(argv, env, review_root):
     return config
 
 
-def _probe_script(probe_paths):
+def _probe_script(probe_paths, probe_module="file:///panopticon-probe.mjs"):
     """The inspection script, reading each of `probe_paths` through the broker.
 
     The paths are the inside/outside/hard-link TRIPLE the codex probe plants
@@ -479,10 +487,27 @@ def _probe_script(probe_paths):
     paths = list(probe_paths or ())
     if len(paths) not in (0, 3) or any(not isinstance(path, str) for path in paths):
         raise ValueError("probe_paths must be the inside/outside/hard-link probe triple")
-    return ("const result = {tools: ALL_TOOLS.map(t => t.name), forbidden: {"
+    probe_module = probe_module or "file:///panopticon-probe.mjs"
+    if not isinstance(probe_module, str) or not probe_module.startswith("file:"):
+        raise ValueError("probe_module must be a file URL")
+    imports = (*WRITE_SURFACE_IMPORTS, probe_module)
+    return ("const attempt = async call => { try { return {ok: true, value: await call()}; } "
+            "catch (error) { return {ok: false, error: String(error)}; } }; "
+            "const result = {tools: ALL_TOOLS.map(t => t.name), globals: "
+            "Object.getOwnPropertyNames(globalThis).sort(), mcp_servers: Array.from(new Set("
+            "ALL_TOOLS.map(t => t.name.split('__')).filter(p => p[0] === 'mcp' && p.length > 2)"
+            ".map(p => p[1]))).sort(), imports: {}, resources: {}, forbidden: {"
             "exec: typeof tools.exec_command, patch: typeof tools.apply_patch, "
             "spawn: typeof tools.multi_agent_v1__spawn_agent, fetch: typeof fetch, "
             "process: typeof process, require: typeof require}, reads: []}; "
+            "for (const specifier of " + json.dumps(imports) + ") { "
+            "result.imports[specifier] = await attempt(async () => "
+            "Object.keys(await import(specifier)).sort()); } "
+            "result.resources.list = await attempt(async () => await tools.list_mcp_resources({})); "
+            "result.resources.templates = await attempt(async () => "
+            "await tools.list_mcp_resource_templates({})); "
+            "result.resources.read = await attempt(async () => await tools.read_mcp_resource("
+            "{server: 'panopticon_scope', uri: 'panopticon://write-surface-probe'})); "
             "for (const path of " + json.dumps(paths) + ") { "
             "try { result.reads.push(await tools.mcp__panopticon_scope__read_file({path})); } "
             "catch (error) { result.reads.push({isError: true, error: String(error)}); } } "
@@ -608,7 +633,8 @@ def _surface_result(requests):
 
 
 def inspect_surface(entry, env, review_root, run_dir, runner=None,
-                    registration_dir=None, probe_paths=None, catalog=None):
+                    registration_dir=None, probe_paths=None, probe_module=None,
+                    catalog=None):
     """Interrogate the same native launch, replacing only its model endpoint.
 
     All real-runtime work is explicit here, never in unit tests. Callers map
@@ -617,7 +643,8 @@ def inspect_surface(entry, env, review_root, run_dir, runner=None,
     runner = DEFAULT_RUNNER if runner is None else runner
     argv = command(entry, env, review_root, run_dir, runner, registration_dir, catalog)
     try:
-        requests = _capture_requests(argv, env, runner, _probe_script(probe_paths))
+        requests = _capture_requests(
+            argv, env, runner, _probe_script(probe_paths, probe_module))
         return _surface_result(requests)
     finally:
         cleanup_command(argv)

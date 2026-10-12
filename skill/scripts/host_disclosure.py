@@ -99,8 +99,9 @@ _REMEDY = {
 _REMEDY_BY_HOST = {
     "codex": {
         hosts.ARTIFACT_WRITE_GUARD:
-            "Codex has no write guard; every role is return_json and the loop "
-            "writes the artifact -- expected, nothing to do",
+            "run headless with the Codex CLI on PATH and freshly emitted shells so "
+            "codex-write-surface-absent can inspect every role; remove or classify "
+            "any newly exposed write-capable tool, global, import or MCP resource route",
         hosts.USAGE_LEDGER:
             "Codex reports tokens but no dollars or model identity; bound the "
             "run with --max-iterations / --entry-timeout",
