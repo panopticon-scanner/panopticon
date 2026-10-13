@@ -34,6 +34,25 @@ evidence exposed.
   byte. The guard's command line, run as a script over 4,635 jobs, prints the same 4,256 findings
   under both. Sizes: 700 -> 586, and 138 for the new module.
 
+- **Workflow guard applies a prefix assignment after its command's words expand (#2433).**
+  `x=$(curl ...) eval "$x"` and its `sh -c` twin reported as handing the new value straight to
+  the executor, although the live `$x` expands before the assignment applies; both now read CLEAN,
+  as does a prefix before `true`, while `x=$(curl ...); eval "$x"` remains the must-trip control.
+  The reader gives each quoted dollar its own live-double-quote provenance, so embedded strings and
+  equal-looking arguments retain their lexical distinction: single-quoted and escaped references
+  are re-read after the prefix applies and still REPORT. The hand-off follows only a substitution
+  that contributes to the final scalar assignment; a replacing assignment drops earlier values,
+  while `+=` keeps them. A live reference can still read the old value, which remains reported when
+  an earlier statement supplied a download. The issue's claim that every prefix expires with its
+  command has a POSIX boundary: dash and Bash POSIX mode retain assignments before special builtins.
+  The guard therefore carries those values to later commands, while `command eval`, `unset x`, and
+  `export x=...` discard or replace them as the shells do. Conservative readings remain for an
+  executor with no known script word and for a program string whose construction loses quote
+  provenance. On a 154-row cross-product, the 63 base-REPORT/head-CLEAN rows produced zero payload
+  runs in 189 executions across Bash 3.2.57, GNU Bash 5.2.21, and dash. Eight additional rows now
+  report; all eight run under dash and Bash 5.2.21 in POSIX mode and stop under both default Bash
+  versions.
+
 - **Workflow reader reads an expansion in a shell's option word as text the word does not write
   (#2889).** `X=c; sh -$X 'curl ... | sh'` runs the string under every parent shell and read CLEAN,
   and so did `HOME=-c; sh ~ '...'`, `sh -$(echo oc) errexit '...'` and `wget $(echo -qO-) URL | sh`.

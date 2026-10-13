@@ -346,6 +346,9 @@ _READS_CARRIES = ("carries %s in `$%s` and hands it to `%s`%s in this guard's co
 _NAMED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(\+?)=")
 _WHOLE = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
 _DECLARES = ("export", "local", "declare", "typeset", "readonly")
+# Prefix assignments before these builtins persist in dash and bash's POSIX mode.
+_SPECIAL = (":", ".", "break", "continue", "eval", "exec", "exit", "export", "readonly",
+            "return", "set", "shift", "times", "trap", "unset")
 
 
 def _held(word, embedded=False, names=None):
@@ -403,10 +406,12 @@ def _assigned(stage, held):
     right side; `unset` empties one, `unset -f` a function."""
     argv = command(stage.argv)
     name = os.path.basename(argv[0]) if argv else ""
-    if name == "unset":
-        return {} if "-f" in argv else dict.fromkeys((w for w in argv[1:] if w[:1] != "-"), None)
+    words = argv[1:] if name in _DECLARES else [] if argv else stage.argv
+    if name in _SPECIAL and not shell_reader.wrapper_words(stage.argv):
+        _names, _substitutions, prefixes, _replaced = _prefix_assignments(stage)
+        words = prefixes + list(words)
     now = {}
-    for word in argv[1:] if name in _DECLARES else [] if argv else stage.argv:
+    for word in words:
         match = _NAMED.match(word)
         if match:
             value = shell_reader.derived(word[match.end():], word)
@@ -415,7 +420,86 @@ def _assigned(stage, held):
                 now[match[1]] = (fetch, True)
             elif not match[2]:
                 now[match[1]] = held.get(_held(value))
+    if name == "unset" and "-f" not in argv:
+        now.update(dict.fromkeys((w for w in argv[1:] if w[:1] != "-"), None))
     return now
+
+
+def _prefix_assignments(stage):
+    """The scalar assignments before this simple command, and the substitutions each holds."""
+    names: dict[str, str] = {}
+    assignments: list[tuple[str, bool, str]] = []
+    words: list[str] = []
+    timed = False
+    for word in stage.argv:
+        if word in shell_reader.KEYWORDS or shell_reader.is_arm(word):
+            continue
+        if word == "time" and not names:
+            timed = True
+            continue
+        if timed and word in ("-p", "--"):
+            continue
+        if not shell_reader._ASSIGNMENT.match(word) or getattr(word, "quoted", False):
+            break
+        if match := _NAMED.match(word):
+            words.append(word)
+            names[match[1]] = word
+            assignments.append((match[1], bool(match[2]), word))
+    substitutions: dict[int, tuple[str, bool]] = {}
+    replaced: set[str] = set()
+    for name, appended, word in reversed(assignments):
+        active = name not in replaced
+        substitutions.update((id(text), (name, active)) for kind, text in
+                             getattr(word, "markers", {}).values() if kind == "subst")
+        if not appended:
+            replaced.add(name)
+    return names, substitutions, words, replaced
+
+
+def _after_prefix(word, name, argv):
+    """Whether an executor re-reads `name` after applying its prefix environment.
+
+    A bare or double-quoted reference expands in the caller before the assignment is applied.
+    A single-quoted or escaped one is literal text until `eval` or a `-c` child reads it. A string
+    assembled by the program reader has lost that lexical distinction, so it stays fail-closed."""
+    if not _held(word, embedded=True, names={name}):
+        return False
+    sources = [source for source in argv if source is word]
+    if not sources:
+        sources = [source for source in argv if str(source) == str(word)
+                   or str(getattr(source, "spelled", "")) == str(word)]
+    if not sources:
+        return True
+    return any(hasattr(source, "spelled") or getattr(source, "kept", False)
+               and not getattr(source, "live_dollar", False) for source in sources)
+
+
+def prefix_handoff(stage, substitution, argv):
+    """Whether `substitution` can feed the executor in its own prefix-assigned command (#2433)."""
+    _names, substitutions, _words, _replaced = _prefix_assignments(stage)
+    binding = substitutions.get(id(substitution))
+    if binding is None:
+        return True
+    name, active = binding
+    if not active:
+        return False
+    programs = list(scripts(argv))
+    if not shell_reader.unresolved_wrapper(stage.argv):
+        programs += candidates(argv)[1]
+    _how, dynamic = dynamic_program(argv)
+    if dynamic is not None:
+        programs.append(dynamic)
+    if not programs:
+        return bool(argv and os.path.basename(argv[0]) not in ("source", "."))
+    return any(_after_prefix(word, name, argv) for word in programs)
+
+
+def prefix_expanded_program(stage, argv):
+    """Whether the unread program is a live reference expanded before its prefix is applied."""
+    _how, word = dynamic_program(argv)
+    names, _substitutions, _words, _replaced = _prefix_assignments(stage)
+    name = word is not None and _held(word, names=set(names))
+    return bool(name and not _after_prefix(word, name, argv))
 
 
 def carried(stmts, executors):
@@ -438,22 +522,25 @@ def carried(stmts, executors):
                         if key not in escaped}
         for inner, position, stage, where, _directory in within(statement):
             argv = command(stage.argv)
+            _prefixes, _substitutions, _words, replaced = _prefix_assignments(stage)
             printed, piped = _prints(stage), stage.stdout_to_pipe
             to = (stream_consumer(inner.stages[position + 1:], executors)
                   if printed and piped else None)
             if printed and piped and not to and not where and position == len(inner.stages) - 1:
                 to = compound_stream_consumer(stmts, index, executors)
-            words = [(word, getattr(word, "kept", False)) for word in scripts(argv)]
-            words += [(word, True) for word in printed if to]
-            words += [(word, getattr(word, "kept", False)) for word in (
+            words = [(word, getattr(word, "kept", False), True) for word in scripts(argv)]
+            words += [(word, True, False) for word in printed if to]
+            words += [(word, getattr(word, "kept", False), True) for word in (
                 [] if shell_reader.unresolved_wrapper(stage.argv) else candidates(argv)[1])]
             if argv and os.path.basename(argv[0]) in executors:
-                words += [(word, True) for text in stage.substitutions
+                words += [(word, True, False) for text in stage.substitutions
                           for inside in statements(text) for word in _prints(inside.stages[-1])]
-            for word, embedded in words:
+            for word, embedded, program in words:
                 available = {name for name, value in held.items() if value and (
                     isinstance(statement, Inlined) or name not in inlined_handoffs)}
                 variable = _held(word, embedded=embedded, names=available)
+                if program and variable in replaced and _after_prefix(word, variable, argv):
+                    continue
                 kept = held.get(variable)
                 if kept:
                     fetch, certain = kept
