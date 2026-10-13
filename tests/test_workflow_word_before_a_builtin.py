@@ -23,14 +23,16 @@ step did to its name, as `main` reads it in front of a shell: `S=sudo` makes bas
 nothing, and the row reports. A default naming `command` by path reports too; `/usr/bin/command` is a real file on
 macOS, where it runs the builtin, and no file on the forge. And a quoted nothing beside the word (`$S""`) leaves
 an empty argument, which bash fails to run; the reader takes the quotes off first, as `main` does in front of a
-shell, and the row reports. `builtin` in front was #2665's, and reports since. A front that is no name (`$1`, `"$@"`), a substitution
-that prints nothing and two references glued are not dropped in front of a shell on `main` either, and are not
-this fix's; nor is a default that is only a blank (`${S:- }`), or a word in front of a default or an alternate of
-several words (`$T ${S:+sudo -E}`): #3002. An alternate naming a word that is no wrapper (`${DRY_RUN:+echo}`)
-was not this fix's either: it too is nothing with its name unset, and #3003 drops it since
-(`tests/test_workflow_alternate_in_front.py`). Nor is any other word that is nothing with its name unset: a
-pattern taken off, a substring, an array, an indirection, a default that holds a reference. A `trap`'s action is
-not read at all (#2830), and a fetched file's text that the parent splices into a `-c` string is #2693.
+shell, and the row reports. `builtin` in front was #2665's, and reports since. A substitution that prints nothing
+and two references glued are not dropped in front of a shell on `main` either, and are not this fix's. A front
+that is no name (`$1`, `"$@"`) was not this fix's either, nor a default that is only a blank (`${S:- }`), nor a
+word in front of a default or an alternate of several words (`$T ${S:+sudo -E}`): #3002, whose batch drops all
+three since (`tests/test_workflow_words_that_are_nothing.py`). An alternate naming a word that is no wrapper
+(`${DRY_RUN:+echo}`) was not this fix's either: it too is nothing with its name unset, and #3003 drops it since
+(`tests/test_workflow_alternate_in_front.py`). Nor was any other word that is nothing with its name unset -- a
+pattern taken off, a substring, an array, an indirection, a default that holds a reference: #3002's batch drops
+those since too. A `trap`'s action is not read at all (#2830), and a fetched file's text that the parent splices
+into a `-c` string is #2693.
 """
 import unittest
 
@@ -331,14 +333,16 @@ class TestWhatStaysForOtherIssues(unittest.TestCase):
             with self.subTest(runner=name):
                 self.assertEqual(NOW, marks(step("${S:-builtin}", runner)))
 
-    def test_a_front_that_is_no_name_is_not_dropped_in_front_of_a_shell_either(self):
-        # `$1`, `$@` and `"$@"` are nothing in a step's script unless the step sets them. Truth: runs, every one.
+    def test_a_front_that_is_no_name_was_dropped_with_3002(self):
+        # `$1`, `$@` and `"$@"` are nothing in a step's script unless the step sets them, and `main` dropped
+        # none of them in front of a shell either. #3002's batch moved these rows: the second walk drops them
+        # now, in folds of its own. Truth: runs, every one.
         for front in ("$1", "${1}", "$@", '"$@"'):
             for command in ("eval '%s'" % P, "sh -c '%s'" % P):
                 with self.subTest(front=front, command=command[:4]):
-                    self.assertEqual(CLEAN, marks("%s %s" % (front, command)))
+                    self.assertEqual(NOW, marks("%s %s" % (front, command)))
             with self.subTest(front=front, command=". ./t"):
-                self.assertEqual(CLEAN, marks("%s%s . ./t" % (FETCH, front)))
+                self.assertEqual(NOW, marks("%s%s . ./t" % (FETCH, front)))
 
     def test_a_substitution_that_prints_nothing_and_two_references_glued(self):
         for front in ("$(true)", "$S$T"):                   # truth: runs, every one
@@ -346,15 +350,15 @@ class TestWhatStaysForOtherIssues(unittest.TestCase):
                 with self.subTest(front=front, command=command[:4]):
                     self.assertEqual(CLEAN, marks("%s %s" % (front, command)))
 
-    def test_a_default_that_is_a_blank_and_a_word_in_front_of_several_words_is_3002(self):
-        # `${S:- }` is nothing to bash, and so is each word of `$T ${S:+sudo -E}`; `main` drops neither front in
-        # front of a shell. Truth: runs, every one.
+    def test_a_default_that_is_a_blank_and_a_word_in_front_of_several_words_was_3002(self):
+        # `${S:- }` is nothing to bash, and so is each word of `$T ${S:+sudo -E}`; `main` dropped neither front
+        # in front of a shell. #3002 moved these rows: the second walk reads both now. Truth: runs, every one.
         for front in ("${S:- }", "$T ${S:+sudo -E}", "$T ${S:- }"):
             for command in ("eval '%s'" % P, "sh -c '%s'" % P):
                 with self.subTest(front=front, command=command[:4]):
-                    self.assertEqual(CLEAN, marks("%s %s" % (front, command)))
+                    self.assertEqual(NOW, marks("%s %s" % (front, command)))
         with self.subTest(front="$T ${S:+sudo -E}", command=". ./t"):
-            self.assertEqual(CLEAN, marks("%s$T ${S:+sudo -E} . ./t" % FETCH))
+            self.assertEqual(NOW, marks("%s$T ${S:+sudo -E} . ./t" % FETCH))
 
     def test_an_alternate_naming_no_wrapper_was_3003(self):
         # `${DRY_RUN:+echo} sh -c 'P'`: with its name unset an alternate is nothing whatever it names, and `main`
@@ -365,17 +369,18 @@ class TestWhatStaysForOtherIssues(unittest.TestCase):
                 with self.subTest(front=front, command=command[:4]):
                     self.assertEqual(NOW, marks("%s %s" % (front, command)))
 
-    def test_other_words_that_are_nothing_are_not_dropped_in_front_of_a_shell_either(self):
+    def test_other_words_that_are_nothing_were_dropped_with_3002(self):
         # A pattern taken off, a replacement, a substring, a case change, an array, an indirection, a default
-        # that holds a reference: each is nothing with its name unset, and `main` drops none of them in front
-        # of a shell. Truth: a parent runs every one -- all sixteen runs for `#`, `%` and the two defaults, the
+        # that holds a reference: each is nothing with its name unset, and `main` dropped none of them in front
+        # of a shell. #3002's batch moved these rows: the second walk drops them now, in folds of its own.
+        # Truth: a parent runs every one -- all sixteen runs for `#`, `%` and the two defaults, the
         # twelve bash runs for the replacement, the substring and the array, bash 5.2 alone for `^^` and bash
         # 3.2 alone for `${!S}`, which 5.2 refuses with the name unset.
         for front in ("${S#x}", "${S%x}", "${S/x/y}", "${S:0}", "${S^^}", "${S[@]}", "${!S}", "${S:-$T}",
                       "${S:-${T}}"):
             for command in ("eval '%s'" % P, "sh -c '%s'" % P):
                 with self.subTest(front=front, command=command[:4]):
-                    self.assertEqual(CLEAN, marks("%s %s" % (front, command)))
+                    self.assertEqual(NOW, marks("%s %s" % (front, command)))
 
     def test_a_fetched_files_text_spliced_into_a_c_string_is_2693(self):
         # The parent shell expands `$(cat t)` inside the double quotes, so the child parses the file's text as

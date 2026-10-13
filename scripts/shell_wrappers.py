@@ -72,6 +72,21 @@ _DEFINES = re.compile(r"(?<![\w.-])(?:(%s)[ \t]*\([ \t]*\)|function[ \t]+(%s)(?!
 _ALIASES, _ALIASED = re.compile(r"(?<![\w.-])alias\b([^\n;&|]*)"), re.compile(r"(?<![\w.-])(%s)=" % _NAMES)
 
 
+# The names the steps of the job now being read set to `command` or `builtin`, the words a builtin runs behind
+# ("runs"), and the ones they set to nothing ("empty"); they are the job's as long as `_SHADOWED`'s set is its own
+# (#3038). A default naming a wrapper is the wrapper with its name unset -- and with it set, what the step set:
+# `S=command; ${S:-sudo} eval 'P'` runs `P`, and so does `S=; ${S-sudo} eval 'P'`, where bash makes no word of it.
+_SET: dict = {"job": None, "runs": frozenset(), "empty": frozenset()}
+_SET_RUNS = re.compile(r"(?<![\w.$-])([A-Za-z_]\w*)=([\"']?)(?:command|builtin)\2(?=[\s;&|)]|$)")
+_SET_EMPTY = re.compile(r"(?<![\w.$-])([A-Za-z_]\w*)=(?:\"\"|'')?(?=[\s;&|)]|$)")
+
+
+def set_to(kind, name):
+    """Whether a text of the job being read sets `name` to a word a builtin runs behind ("runs": `command`,
+    `builtin`) or to nothing ("empty"), wherever it spells the assignment (`shadows`)."""
+    return _SET["job"] is not None and _SET["job"] is _SHADOWED["names"] and name in _SET[kind]
+
+
 def defined(text):
     """The wrappers' names `text` defines as a function (`sudo()`, `function sudo`) or an alias (`alias
     sudo=…`), wherever it spells one, a quoted string too: an `eval` may be what defines it."""
@@ -82,9 +97,15 @@ def defined(text):
 def shadows(text):
     """Note the names `text` defines (`defined`) while a job is read (`_SHADOWED`). A step's definition is read
     for every step after it, which a fresh shell has none of: the word then keeps `main`'s reading beside the
-    rule's, and no report is lost to it."""
+    rule's, and no report is lost to it. And note the names it sets to `command`, to `builtin` or to nothing
+    (`_SET`, #3038), read the same way."""
     if _SHADOWED["names"] is not None and ("(" in text or "alias" in text or "function" in text):
         _SHADOWED["names"].update(defined(text))
+    if _SHADOWED["names"] is not None and "=" in text:
+        if _SET["job"] is not _SHADOWED["names"]:       # a new job's read: its own sets
+            _SET.update(job=_SHADOWED["names"], runs=set(), empty=set())
+        _SET["runs"].update(found[1] for found in _SET_RUNS.finditer(text))
+        _SET["empty"].update(found[1] for found in _SET_EMPTY.finditer(text))
 
 
 def runs_behind(where, name, through):
