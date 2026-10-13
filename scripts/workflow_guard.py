@@ -51,13 +51,10 @@ an `eval`/`sh -c` STRING, and `continue-on-error: true`. What remains keeps its 
 reason, and `TestTheGapsTheGuardDocuments` or tests/test_workflow_guard_reader_forms.py runs each
 live, so a change that catches one fails there and edits this list.
 
-* fetchers that are not curl/wget -- `gh release download`, `aws s3 cp`,
-  `python3 -c "...urlretrieve..."`, an action that downloads for you. Reporting every command that
-  might reach the network would be noise, not a gate, and the `uses:` pin rule covers the action
-  half. If one of these lands in a workflow, the fetch-and-exec rule will not see it.
-  KEPT: every download this repo writes -- the fleet's two, the Dockerfiles' ten -- is curl. A
-  second tool needs a second option grammar (`gh`'s `-O` is not curl's, and `aws s3 cp` copies
-  locally too), and a fetch inside `python3 -c` needs another language entirely.
+* fetchers beyond #2829's bounded adapters -- `aws s3 cp`, a download action, raw socket or foreign
+  one-liner -- still do not bind to later execution. aria2c, axel, FreeBSD fetch, HTTPie, `gh release
+  download`, `git clone` and `pip download` now have separate grammars whose unknown options fail
+  closed. KEPT: the rest need an action/aws contract or #2829's network-stream-producer rule.
 * variable expansion: `${VERSION}` and `$TMP` stay literal, because the guard tracks the NAME a step
   writes -- except a name the step itself assigns a literal or an array literal, which a use reads
   through that value (`workflow_uses.static_values`, #2425, #2489: `T=cuda_1.run; sh "$T"`,
@@ -452,6 +449,9 @@ def _binds(conditions, check, use):
 
 def _defect(fetch, index, stmts, checks, conditions=None, unread=(), working=None, scopes=None):
     """Why this fetch is unverified; unread forms add uses, never replace parsed uses."""
+    if fetch.tool in ("http --download", "https --download") and fetch.dest is None and not fetch.piped_to:
+        return ("runs `%s` without a bindable output filename; HTTPie may choose one from response "
+                "headers -- use `--output <path>` and verify that file" % fetch.tool)
     if fetch.url is None and fetch.dest is None:
         # `wget -i list.txt`, an argv assembled in a variable, `xargs curl -O`: a download whose
         # target this guard cannot name is not a clean step, it is an unread one.

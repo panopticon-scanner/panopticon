@@ -265,10 +265,16 @@ def copies(statement, names, directory):
         name = os.path.basename(argv[0])
         operands = [at_directory(word, directory) for word in _operands(argv)]
         if name in ("cp", "mv", "ln") and len(operands) > 1:
-            if any(same_file(old, known) for old in operands[:-1] for known in names):
-                new.add(operands[-1])
+            for old in operands[:-1]:
+                for known in names:
+                    if (same_file(old, known)
+                            or getattr(known, "tree", False) and covers(old, known)):
+                        copied = operands[-1]
+                        new.add(type(known)(copied) if getattr(known, "tree", False) else copied)
         if name == "cat" and stage.writes:
-            if any(same_file(old, known) for old in operands for known in names):
+            if any(same_file(old, known) or (
+                    getattr(known, "tree", False) and covers(old, known)
+            ) for old in operands for known in names):
                 new.update(at_directory(word, directory) for word in stage.writes)
     return new
 

@@ -220,13 +220,14 @@ def same_file(token, path):
     return os.path.normpath(token) == os.path.normpath(path)
 
 
-def _inside_tree(token, tree):
+def _inside_tree(token, tree, command_word=False):
     """Whether a concrete operand is beneath a fetched tree root."""
     if not getattr(tree, "tree", False):
         return False
     root, path = os.path.normpath(tree), os.path.normpath(token)
     if root == ".":
-        return not os.path.isabs(path) and path != "." and not path.startswith("../")
+        return (not os.path.isabs(path) and path != "." and not path.startswith("../")
+                and (not command_word or "/" in path))
     return path != root and path.startswith(root.rstrip("/") + "/")
 
 
@@ -297,7 +298,7 @@ def may_run(word, dest):
     then `./tool`), wherever a PATH lookup would have found it or not.
     """
     name = os.path.basename(os.path.normpath(dest))
-    return same_file(word, dest) or _inside_tree(word, dest) or _last_part(word, dest) or (
+    return same_file(word, dest) or _inside_tree(word, dest, True) or _last_part(word, dest) or (
         word == name and os.path.dirname(os.path.normpath(dest)) in PATH_DIRS)
 
 
@@ -312,6 +313,8 @@ def names_file(content, dest, directory="."):
     accepting it is the unbound checksum this rule exists to refuse, wearing a
     shorter path.
     """
+    if getattr(dest, "tree", False):
+        return False
     base = os.path.basename(dest)
     bare = not os.path.dirname(dest)
     return any(same_file(at_directory(word, directory), dest)

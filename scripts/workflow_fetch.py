@@ -66,6 +66,7 @@ _DIR_SHORT = {"curl": "", "wget": "P"}
 # Only these destinations follow fd 1. Discarding a response in /dev/null
 # is independent of stdout, although both are suppressed in the final result.
 _STDOUT_DESTINATIONS = ("-", "/dev/stdout", "/dev/fd/1")
+_DESCRIPTOR_STDOUT = ("/dev/stdout", "/dev/fd/1")
 STDOUT = _STDOUT_DESTINATIONS + ("/dev/null",)
 # `curl --version` in a diagnostics step downloads nothing; without this it
 # parses as a fetch with no URL, which the rule now REPORTS rather than drops.
@@ -271,23 +272,36 @@ def _parse_adapter(tool, args, stage, piped_to):
         return None, False
     if transfer.unread:
         return Fetch(transfer.tool, None, None, None), False
-    dest = transfer.dest
-    to_stdout = transfer.stdout or transfer.named and dest in _STDOUT_DESTINATIONS
+    ambiguous = transfer.ambiguous
+    dest = (shell_reader.stdout_named(transfer.dest, stage)
+            if transfer.named and not transfer.tree else transfer.dest)
+    # Only tools whose own grammar documents `-` as stdout set `stdout`.
+    # `/dev/stdout` and `/dev/fd/1` are OS-level fd aliases for every tool;
+    # aria2c and axel, by contrast, really open a file named `-` for `-o -`.
+    to_stdout = transfer.stdout or transfer.named and dest in _DESCRIPTOR_STDOUT
+    discarded = transfer.named and dest == "/dev/null"
     streams = bool(to_stdout and stage.stdout_to_pipe)
+    if to_stdout and not stage.stdout_to_pipe:
+        ambiguous = False
+    redirected = False
     if to_stdout and stage.stdout_writes:
+        redirected = True
+        ambiguous = False
         dest = stage.stdout_writes[-1]
-        if dest == "/dev/stderr":
+        if shell_reader.stdout_named(dest, stage) == "/dev/stdout" or dest in (
+                "/dev/null", "/dev/stderr"):
             dest = None
-    if transfer.named and dest in _STDOUT_DESTINATIONS:
+    if not redirected and to_stdout and dest in _STDOUT_DESTINATIONS:
         dest = None
-    if dest is None and piped_to and os.path.basename(piped_to[0]) == "tee":
+    if streams and dest is None and piped_to and os.path.basename(piped_to[0]) == "tee":
         written = [word for word in piped_to[1:] if not word.startswith("-")]
         dest = written[0] if written else None
-    if dest in STDOUT and (transfer.named or to_stdout):
+    if discarded:
         dest = None
     if transfer.tree and dest is not None:
         dest = _TreeDestination(dest)
-    return Fetch(transfer.tool, transfer.url, dest, piped_to), streams
+    label = transfer.tool + (" --download" if ambiguous else "")
+    return Fetch(label, transfer.url, dest, piped_to), streams
 
 
 def _parse_fetch(tool, args, stage, piped_to):
@@ -587,5 +601,8 @@ def _describe(fetch):
 
 
 def _remedy(dest):
+    if getattr(dest, "tree", False):
+        return ("use a pinned source archive instead, verify that file's sha256, then unpack it "
+                "before that use")
     return ('verify it first: `echo "<sha256>  %s" | sha256sum -c -` between '
             "the download and that use" % shell_reader.readable(dest))

@@ -7,6 +7,30 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard recognizes bounded, named download clients (#2829, adapter slice).** aria2c,
+  Axel, FreeBSD `fetch`, HTTPie `http`/`https`, `gh release download`, network `git clone`, and a
+  direct `pip download --no-deps` archive now bind the URL to the file or fetched tree their own
+  option grammar names. Documented stdout forms bind a following shell, exact checks clear exact
+  files, and an unknown
+  option fails closed as an unresolved transfer. Tool-specific controls keep diagnostics, HTTPie
+  offline/quiet output, local clones, non-download subcommands, and literal `-` output files clean.
+  A file checksum cannot bless a cloned tree, including one moved or copied before execution;
+  server-chosen HTTPie filenames and dependency- or index-selected pip artifacts remain
+  deliberately unresolved, while raw sockets and unmodeled network producers remain for #2829's
+  second slice.
+  Across 165 targeted cells under five workflow shell settings, report cells rise 15 -> 105 with
+  90 new detections, no REPORT -> CLEAN cell, and no pre-existing reason lost; `aws s3 cp` stays
+  CLEAN while `gh release download` moves to REPORT in all five settings.
+- **Workflow guard keeps an explicit stdout download through an adjacent `tee` (#2916).** `curl`
+  or `wget` naming `-`, `/dev/stdout`, or descriptor 1 now binds the file `tee` writes before the
+  stdout marker is discarded; `/dev/null` and an inferred remote filename `-` remain non-streams.
+- **Workflow guard recognizes four more shells that consume downloaded programs (#2792).** `csh`,
+  `tcsh`, `fish`, and `mksh` now bind fetched stdin and file operands without claiming support for
+  their command-string option grammars; non-shell consumers and unsupported option forms stay clean.
+- **Workflow guard resolves fetch commands held in array command words (#2770).** A whole
+  `${array[@]}` or `${array[*]}` command word is read through the step's value table when an
+  alternative starts with a modeled fetcher; scalar defaults and unrelated dynamic commands keep
+  their existing boundaries.
 - **Workflow reader reads an expansion in a shell's option word as text the word does not write
   (#2889).** `X=c; sh -$X 'curl ... | sh'` runs the string under every parent shell and read CLEAN,
   and so did `HOME=-c; sh ~ '...'`, `sh -$(echo oc) errexit '...'` and `wget $(echo -qO-) URL | sh`.

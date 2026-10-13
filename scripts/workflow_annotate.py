@@ -147,7 +147,7 @@ _EXPANDS = re.compile(r"[$`]|[<>]\(")
 _PLAIN = re.compile(r"[\w./+-]+", re.A)
 _NAMES = (*shell_reader._SHELLS, *_FOREIGN, *_PRINTERS, "cat", "true")
 _SYSTEM = ("/bin", "/usr/bin", "/usr/local/bin", "/sbin", "/usr/sbin")
-_FETCH_WORD = re.compile(r"(?<![\w./-])(?:%s)(?![\w.:-])" % "|".join(FETCHERS), re.A)
+_FETCH_WORD = re.compile(r"(?<![\w./-])(?:%s)(?![\w.:+-])" % "|".join(FETCHERS), re.A)
 # The names bash sets itself, and the prefixes of its completion and `bind -x` ones: a step's
 # assignment to one is not what a later word reads (`$_` is the last command's last word).
 _BASH_SETS = frozenset((
