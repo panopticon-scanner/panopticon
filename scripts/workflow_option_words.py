@@ -36,7 +36,10 @@ reported still, whatever a reader makes of the words the rule finds.
 
 An expansion may stand in FRONT of an option word too (#3042): with `X` unset `$X-c` is `-c`, and
 `sh $X-c P` runs `P`, where `main` read the word as the FILE the shell runs. The rule reads such a
-word both ways (`uncovered`): as written, and as the option word behind its expansions.
+word both ways (`uncovered`): as written, and as the option word behind its expansions. That
+reading has a switch of its own (`ruled`'s `new`, `as_main`), since `main` has had #2889's rule on
+since it merged: with it off, every reader answers as `main` does now, and the job's floor reads
+that whole answer first wherever the reading answered (`passes`).
 
 Below every reader that asks it: it reads the word it is handed and those two patterns of
 `shell_tokens`, and nothing else.
@@ -48,9 +51,11 @@ import re
 
 import shell_tokens
 
-# Set while the readers answer as they did before the rule (`as_before`), and the note of the
-# reading in hand: whether the rule has answered in it (`ruled`, `beside`).
+# Set while the readers answer as they did before the rule (`as_before`), and while #3042's reading
+# answers nothing and every other reader as `main` has it (`as_main`); and the note of the reading in
+# hand: whether a rule has answered in it, and whether #3042's has (`ruled`, `beside`, `passes`).
 _OFF: contextvars.ContextVar[bool] = contextvars.ContextVar("as_before", default=False)
+_NEW_OFF: contextvars.ContextVar[bool] = contextvars.ContextVar("as_main", default=False)
 _HEARD: contextvars.ContextVar[list | None] = contextvars.ContextVar("heard", default=None)
 
 
@@ -66,16 +71,29 @@ def as_before():
         _OFF.reset(token)
 
 
-def ruled(answer=True):
-    """Whether the rule answers here: `answer`, and never while `as_before` holds. A reader asks
-    EVERY answer it owes the rule through this and reads the switch nowhere else, so where this
-    was never true a reading is, step for step, the one it is with the rule off; and where it was,
-    the reading in hand is told (`beside`)."""
-    if _OFF.get() or not answer:
+@contextlib.contextmanager
+def as_main():
+    """While this holds, #3042's reading answers nothing (`ruled`'s `new`): a word with an expansion
+    in front of an option word is the operand `main` reads it as -- every reader as `main` has it
+    since #2889 merged, that rule's readings on."""
+    token = _NEW_OFF.set(True)
+    try:
+        yield
+    finally:
+        _NEW_OFF.reset(token)
+
+
+def ruled(answer=True, new=False):
+    """Whether the rule answers here: `answer`, and never while `as_before` holds -- nor, for an
+    answer #3042's reading owes (`new`), while `as_main` does. A reader asks EVERY answer it owes
+    the rule through this and reads the switch nowhere else, so where this was never true a reading
+    is, step for step, the one it is with the rule off; and where it was, the reading in hand is
+    told (`beside`), and told whether the answer was #3042's (`passes`)."""
+    if _OFF.get() or not answer or new and _NEW_OFF.get():
         return False
     heard = _HEARD.get()
     if heard is not None:
-        heard[0] = True
+        heard[0], heard[1] = True, heard[1] or new
     return True
 
 
@@ -91,7 +109,7 @@ def beside(read, refused=()):
         found = read()
         return found, found
     outer = _HEARD.get()
-    heard: list[bool | None] = [False]           # None: the rule's reading was refused
+    heard: list[bool | None] = [False, False]    # None: the rule's reading was refused
     token = _HEARD.set(heard)
     try:
         found = read()
@@ -102,7 +120,7 @@ def beside(read, refused=()):
     if heard[0] is False:
         return found, found
     if outer is not None:
-        outer[0] = True
+        outer[0], outer[1] = True, bool(outer[1] or heard[1])
     with as_before():
         mains = read()
     return mains, (mains if heard[0] is None else found)
@@ -110,12 +128,35 @@ def beside(read, refused=()):
 
 def passes(read, first, refused=()):
     """`beside` over a job's two passes -- `read()` under `first()` (`mains_answer`), then alone --
-    each reading a list of the two: `main`'s, then the rule's, the SAME list where it answered nothing."""
+    each reading a list of the two: `main`'s, then the rule's, the SAME list where it answered nothing.
+    Where #3042's reading answered, `main`'s is its WHOLE answer -- the job read with that reading off
+    (`as_main`), #2889's floor in it -- a list for each pass that answer read; where the rules' reading
+    raises an error of `refused`'s kind, that whole answer alone, twice."""
     def both():
         with first():
             mains = read()
         return [mains, read()]
-    return beside(both, refused)
+    if _OFF.get() or _NEW_OFF.get():
+        return beside(both, refused)
+    outer, heard = _HEARD.get(), [False, False]
+    token = _HEARD.set(heard)
+    try:
+        found = both()
+    except refused:
+        found = None
+    finally:
+        _HEARD.reset(token)
+    if found is not None and not heard[0]:
+        return found, found
+    if outer is not None:
+        outer[0], outer[1] = True, bool(outer[1] or heard[1])
+    if found is not None and not heard[1]:      # #2889's readings alone answered: as `main` reads the job
+        with as_before():
+            return both(), found
+    with as_main():
+        mains, more = beside(both, refused)
+    whole = mains if mains is more else mains + more
+    return (whole, whole) if found is None else (whole, found)
 
 
 # The characters of a parameter's NAME: ASCII letters and `_`, and digits after the first.
@@ -208,8 +249,8 @@ def uncovered(word):
     """`word` where the expansions it BEGINS with print nothing (#3042): the option word written behind
     them -- `$X-c`, `${X:-}-ec`, `"$X"+c` and `$(true)-c` are then `-c`, `-ec`, `+c` and `-c` -- where
     that text begins with `-` or `+`, else None. What stands behind it is read as it would be in any
-    option word (`-c$(echo e)` may be `-ce`). None with the rule off (`ruled`), as `main` read every
-    such word: an operand."""
+    option word (`-c$(echo e)` may be `-ce`). None with this reading off (`as_main`, `as_before`),
+    as `main` reads every such word: an operand."""
     text, at = str(word), 0
     if text[:1] not in ("$", "@"):                 # no expansion begins it
         return None
@@ -217,7 +258,7 @@ def uncovered(word):
         if start > at:
             break
         at = max(at, end)
-    return text[at:] if ruled(text[at:at + 1] in ("-", "+")) else None
+    return text[at:] if ruled(text[at:at + 1] in ("-", "+"), new=True) else None
 
 
 def uncovered_argv(argv):
