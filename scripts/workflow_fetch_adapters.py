@@ -228,7 +228,7 @@ def _axel(args):
 
 def _fetch(args):
     scan = _scan(
-        args, "BSTNowhcf", {
+        args, "BSTNowhcfi", {
             "buffer-size", "bind-address", "ca-cert", "ca-path", "cert", "crl",
             "if-modified-since", "key", "netrc", "no-proxy", "output", "referer",
             "require-size", "timeout", "user-agent", "retry-delay",
@@ -347,7 +347,7 @@ def _repo_name(repository):
 
 def _git(args):
     args = _prefixed(
-        args, "clone", "c", {"config"}, "", (), {"config-env"},
+        args, "clone", "c", {"config", "config-env"}, "", (), (),
         {"no-pager", "paginate", "literal-pathspecs", "glob-pathspecs",
          "noglob-pathspecs", "icase-pathspecs", "no-optional-locks", "no-replace-objects"},
         ("-h", "--help", "--version"),
@@ -360,7 +360,7 @@ def _git(args):
         args, "obucj", {
             "origin", "branch", "upload-pack", "config", "jobs", "template", "reference",
             "reference-if-able", "separate-git-dir", "depth", "shallow-since", "shallow-exclude",
-            "filter", "server-option", "revision", "ref-format", "bundle-uri",
+            "filter", "server-option", "revision", "ref-format", "bundle-uri", "config-env",
         }, "lsqnv46", {
             "local", "no-hardlinks", "shared", "dissociate", "quiet", "verbose", "progress",
             "no-checkout", "bare", "mirror", "single-branch", "no-single-branch", "no-tags",
@@ -373,6 +373,11 @@ def _git(args):
         return _unread("git clone")
     repository = scan.operands[0]
     if not _remote_repo(repository):
+        network_enabled = (bool({"recurse-submodules", "recursive"} & scan.flags)
+                           or any(scan.values.get(name) for name in
+                                  ("c", "config", "config-env", "bundle-uri")))
+        if network_enabled:
+            return _unread("git clone")
         return None
     dest = scan.operands[1] if len(scan.operands) == 2 else _repo_name(repository)
     return Transfer("git clone", repository, dest, tree=True, named=len(scan.operands) == 2,

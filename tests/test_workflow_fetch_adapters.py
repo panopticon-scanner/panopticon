@@ -109,6 +109,7 @@ class TestNamedDownloadAdapters(unittest.TestCase):
             "aria2c --load-cookies https://example.test/cookies -o tool " + URL,
             "axel --header https://example.test/header -o tool " + URL,
             "fetch -N https://example.test/netrc -o tool " + URL,
+            "fetch -i https://example.test/stamp -o tool " + URL,
             "http --proxy https:https://example.test/proxy -o tool " + URL,
             "http --raw https://example.test/request-body -I -o tool " + URL,
             "git clone --reference https://example.test/reference "
@@ -182,6 +183,16 @@ class TestNamedDownloadAdapters(unittest.TestCase):
         script = clone + "\ngit -C source checkout HEAD -- install.sh\nsh source/install.sh"
         self.assertIsNotNone(guard.fetch_exec_defect(script))
 
+    def test_explicit_network_enablers_make_a_local_clone_fail_closed(self):
+        for script in (
+                "git clone --bundle-uri=https://example.test/repo.bundle ./local source",
+                "git clone --recurse-submodules ./local source",
+                "git -c url.https://example.test/.insteadOf=local clone local source",
+                "git --config-env=url.https://example.test/.insteadOf=REWRITE clone ./local source",
+        ):
+            with self.subTest(script=script):
+                self.assertIn("unresolved transfers", guard.fetch_exec_defect(script))
+
     def test_only_the_named_subcommands_and_network_clone_are_fetches(self):
         controls = (
             "aria2c --version",
@@ -219,7 +230,7 @@ class TestNamedDownloadAdapters(unittest.TestCase):
                 self.assertEqual(1, len(found), found)
                 self.assertIn("unresolved transfers", found[0])
 
-    def test_axel_does_not_collapse_multiple_transfers_into_the_first(self):
+    def test_axel_mirror_lists_fail_closed_instead_of_naming_one_source(self):
         script = "axel %s https://example.test/other" % URL
         self.assertIn("unresolved transfers", guard.fetch_exec_defect(script))
 
@@ -235,6 +246,9 @@ class TestNamedDownloadAdapters(unittest.TestCase):
                 self.assertEqual([], guard.fetch_exec_defects(
                     "http --download %s > %s" % (URL, discard),
                 ))
+        self.assertEqual([], guard.fetch_exec_defects(
+            "http --download %s | wc -c" % URL,
+        ))
 
     def test_adapters_are_read_inside_a_fed_shell_body(self):
         for fetch in (
@@ -264,6 +278,13 @@ class TestNamedDownloadAdapters(unittest.TestCase):
                 defect = guard.fetch_exec_defect(script)
                 self.assertIsNotNone(defect)
                 self.assertIn("pinned source archive", defect)
+
+    def test_conditional_capital_x_does_not_make_tree_files_executable(self):
+        clone = "git clone https://example.test/repo.git source"
+        self.assertIsNone(guard.fetch_exec_defect(clone + "\nchmod -R a+rX source"))
+        for chmod in ("chmod -R a+rx source", "chmod 755 source/install.sh"):
+            with self.subTest(chmod=chmod):
+                self.assertIsNotNone(guard.fetch_exec_defect(clone + "\n" + chmod))
 
     def test_a_copied_or_moved_clone_remains_a_fetched_tree(self):
         for command, dest in (("cp -R source copy", "copy"), ("mv source moved", "moved")):

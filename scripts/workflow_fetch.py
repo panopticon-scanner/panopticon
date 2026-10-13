@@ -300,6 +300,8 @@ def _parse_adapter(tool, args, stage, piped_to):
         dest = None
     if transfer.tree and dest is not None:
         dest = _TreeDestination(dest)
+    if piped_to:
+        ambiguous = False
     label = transfer.tool + (" --download" if ambiguous else "")
     return Fetch(label, transfer.url, dest, piped_to), streams
 

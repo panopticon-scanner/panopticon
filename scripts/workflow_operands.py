@@ -79,6 +79,12 @@ def chmod_executable(argv):
                for op, permissions in re.findall(r"([+=-])([rwxXstugo]*)", mode))
 
 
+def chmod_conditional_executable(argv):
+    """Whether chmod can add execute only through conditional capital X."""
+    mode, _targets = _chmod_operands(argv)
+    return "X" in mode and "x" not in mode
+
+
 def _joined(directory, token):
     """Join a relative token without letting `..` erase an unknown cwd."""
     if not directory.startswith("$CWD"):

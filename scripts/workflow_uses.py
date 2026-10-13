@@ -21,9 +21,9 @@ import shell_reader
 from shell_reader import command
 from workflow_called import record_called
 from workflow_checks import inside
-from workflow_forms import (BIN_DIRS, CONTAINERS, at_directory, chmod_executable,
-                            chmod_targets, covers, described, in_container, may_run,
-                            same_file, stdin_program)
+from workflow_forms import (BIN_DIRS, CONTAINERS, at_directory,
+                            chmod_conditional_executable, chmod_executable, chmod_targets,
+                            covers, described, in_container, may_run, same_file, stdin_program)
 from workflow_programs import (_SHELL_STRING, VALUE_PROGRAM, reader_files,
                                redirection_handoffs, scripts)
 from workflow_printers import _cat_reads_stdin
@@ -320,6 +320,8 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset(), ha
             name in INTERPRETERS or stdin_program(argv) == VALUE_PROGRAM):
         return "running it under `%s` from standard input" % name
     if name == "chmod" and mentions and chmod_executable(argv):
+        if getattr(dest, "tree", False) and chmod_conditional_executable(argv):
+            return None
         return "making it executable"
     if _reference(argv[0]) in bound or may_run(at_directory(argv[0], directory, True), dest):
         return "running it"

@@ -13,7 +13,8 @@ evidence exposed.
   option grammar names. Documented stdout forms bind a following shell, exact checks clear exact
   files, and an unknown
   option fails closed as an unresolved transfer. Tool-specific controls keep diagnostics, HTTPie
-  offline/quiet output, local clones, non-download subcommands, and literal `-` output files clean.
+  offline/quiet output, plain local clones, non-download subcommands, and literal `-` output files
+  clean.
   A file checksum cannot bless a cloned tree, including one moved or copied before execution;
   server-chosen HTTPie filenames and dependency- or index-selected pip artifacts remain
   deliberately unresolved, while raw sockets and unmodeled network producers remain for #2829's
