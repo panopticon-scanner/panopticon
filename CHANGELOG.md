@@ -32,7 +32,7 @@ evidence exposed.
   candidate where the dynamic program was), the JOB is the floor. The rule has one switch
   (`workflow_option_words.ruled`, off under `as_before`) that every reader it changed answers
   through, and where it answers in a job, `job_defects` reads the job again with it off and keeps
-  those findings first and whole (`beside`; in strict mode a text only the rule reads that the
+  those findings first and whole (`passes`; in strict mode a text only the rule reads that the
   reader refuses leaves `main`'s reading the answer). What `main` reports is reported, in `main`'s
   words, by construction: with the rule off the findings equal `main`'s tree byte for byte wherever
   `main` answers, on 224,074 rows -- the grids, my standing sets, the #2942 seat's, and the first
@@ -40,9 +40,9 @@ evidence exposed.
   CLEAN on 305. The walks are loops that read each word a bounded number of times (a standing
   test), and the readers they feed look words up in sets: a command of 8,000 option words reads in
   seconds (the first build took 178 s on 200 pairs and raised RecursionError at 1,100 words). The
-  floor's price is that second reading: 1.58x over the cost sets, where #3020's and #3019's grids
-  hold such a word in most jobs (2.5x on the densest) and my standing sets in almost none (1.02x to
-  1.04x); none of the seat's sets or of this repository's workflows does. The rule's price was
+  floor's price is that second reading, about 1.6x over the cost sets: #3020's and #3019's
+  grids hold such a word in most jobs, my standing sets in almost none, and none of the seat's sets
+  or of this repository's workflows does. The rule's price was
   measured and ruled before the code: the guard follows no
   value, so a word that MAY spell `-c` is read as one whatever the step assigns -- `X=e; sh -$X
   '...'` is reported and runs nothing, as its whole-word twin `X=-e; sh $X '...'` has been since
