@@ -6367,11 +6367,17 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         self.assertEqual(1, len(found), found)
         return found[0][1]
 
-    # 1. a fetcher that is not curl/wget.
-    def test_a_fetcher_that_is_not_curl_or_wget(self):
-        for fetch in ("gh release download v1.2.3 -O /tmp/payload\n",
-                      "aws s3 cp s3://bucket/payload /tmp/payload\n"):
-            self.accepted(("get", fetch), ("run", "chmod +x /tmp/payload\n"))
+    # 1. An unmodeled copy client remains #1697's accepted gap.
+    def test_an_unmodeled_copy_client(self):
+        self.accepted(("get", "aws s3 cp s3://bucket/payload /tmp/payload\n"),
+                      ("run", "chmod +x /tmp/payload\n"))
+
+    def test_2829_models_gh_release_download(self):
+        # Issue #2829 authorizes this CLEAN -> REPORT move: `gh release download` now has its own
+        # bounded adapter, while the aws row beside it retains #1697's accepted-gap expectation.
+        self.assertIn("fetches v1.2.3 -> /tmp/payload",
+                      self.flagged(("get", "gh release download v1.2.3 -O /tmp/payload\n"),
+                                   ("run", "chmod +x /tmp/payload\n")))
 
     # 2. variable expansion: the same file under two spellings.
     def test_a_destination_spelled_one_way_and_used_another(self):
