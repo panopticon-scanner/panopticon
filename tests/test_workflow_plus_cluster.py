@@ -25,9 +25,10 @@ a `+` argument that holds a `c` (`$TOOL +check all`), keeps its hand-off beside 
 -check all` does.
 
 Left for other issues, pinned in `TestWhatStaysForOtherIssues` as they read: a `$` command word whose cluster is
-not its first word (#2671), a cluster's letter made by an expansion (#2889), zsh's `O`, which takes no value,
-`busybox sh`, and a string that is a value, which this guard follows nowhere. `builtin command sh` was among
-them until #2665 read `builtin` through.
+not its first word (#2671), zsh's `O`, which takes no value, `busybox sh`, and a string that is a value, which
+this guard follows nowhere. `builtin command sh` was among them until #2665 read `builtin` through, and a
+cluster's letter made by an expansion until #2889 read it (`X=c; sh +$X 'P'`, pinned with its `-` twin in
+`tests/test_workflow_option_expansions.py`).
 """
 import itertools
 import unittest
@@ -441,9 +442,6 @@ class TestWhatStaysForOtherIssues(unittest.TestCase):
                 self.assertEqual((CLEAN, CLEAN), signs("CMD=$(command -v sh)\n%s %s\n" % (words, P)))
         # A word the step assigns reads as its literal twin, but not past a `+` word.
         self.assertEqual((CLEAN, BOTH), signs("CMD=sh\n$CMD -e {S}c %s\n" % P))
-
-    def test_a_letter_an_expansion_makes_is_2889(self):
-        self.assertEqual((CLEAN, CLEAN), signs("X=c\nsh {S}$X %s\n" % P))              # truth: runs, both
 
     def test_zshs_O_takes_no_value(self):
         for words in ("{S}cO", "{S}Oc"):                                               # truth: runs, both

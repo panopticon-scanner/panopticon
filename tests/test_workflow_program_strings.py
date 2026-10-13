@@ -21,6 +21,9 @@ import workflow_programs
 MOVED = ("Opaque", "_EDGE", "_NAME", "_SHELL_STRING", "_added_strings", "_after_dash_c",
          "_all_expansion", "_candidates", "_joined", "_main_scripts", "_program_words", "_script",
          "candidates", "dynamic_program", "scripts")
+# Defined here since the move, by later pieces, and read through no other module: #2889's search for a
+# `-c` cluster, a loop over the words that may be it (`_after_dash_c`).
+ADDED = ("_clusters", "_strings")
 # Every name a file under `scripts/`, `tests/` or `skill/` read through `workflow_programs` on `main`
 # when the half moved (5c4d00bd): by a `from` import, as an attribute, as a `patch.object` target, or
 # by `getattr` over a list of names -- the pins of the two earlier moves out of this module, the option
@@ -66,7 +69,7 @@ class TestWorkflowProgramsBindsEveryMovedName(unittest.TestCase):
             elif isinstance(node, (ast.Assign, ast.AnnAssign)):
                 for target in (node.targets if isinstance(node, ast.Assign) else [node.target]):
                     defined |= {leaf.id for leaf in ast.walk(target) if isinstance(leaf, ast.Name)}
-        self.assertEqual(set(MOVED), defined)
+        self.assertEqual(set(MOVED) | set(ADDED), defined)
 
     def test_workflow_programs_defines_none_of_them_itself(self):
         # A definition left behind would shadow the import: two objects under one name.

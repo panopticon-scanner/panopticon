@@ -4070,7 +4070,6 @@ class TestValuesBeforeAShellsProgram(unittest.TestCase):
         said = "passes `bash` `$X` where it reads its options"
         for script in ("X=--rcfile\nY=-c\nbash $X /dev/null $Y '%s'\n" % PIPE,
                        "X=--rcfile\nY=-c\nbash $X /dev/null \"$Y\" '%s'\n" % PIPE,
-                       "X=--rcfile\nY=c\nbash $X /dev/null -$Y '%s'\n" % PIPE,
                        "X=--rcfile\nbash $X /dev/null $(echo -c) '%s'\n" % PIPE,
                        "X=--rcfile\nbash $X /dev/null `echo -c` '%s'\n" % PIPE,
                        "X=--rcfile\nY=-c\nbash $X /dev/null --norc $Y '%s'\n" % PIPE,
@@ -4080,6 +4079,15 @@ class TestValuesBeforeAShellsProgram(unittest.TestCase):
                 self.assertEqual(1, len(found), found)
                 self.assertTrue(found[0][1].startswith(said), found)
                 self.assertNotIsInstance(found[0][1], wg.Idle)
+        # `-$Y` was the third of these. Since #2889 the word is a cluster that
+        # may spell `-c` too, so the string behind it is read as one as well:
+        # the value's sentence first, as it was and loud, and BESIDE it the
+        # string's own. bash 5.2.21 and 3.2.57 run the download.
+        found = defects("X=--rcfile\nY=c\nbash $X /dev/null -$Y '%s'\n" % PIPE)
+        self.assertEqual(2, len(found), found)
+        self.assertTrue(found[0][1].startswith(said), found)
+        self.assertNotIsInstance(found[0][1], wg.Idle)
+        self.assertTrue(found[1][1].startswith("hands %si.sh straight to `sh`" % URL), found)
         # A download carried there is handed to the shell (#2479); all three
         # run it.
         found = defects("x=$(curl -fsSL %si.sh)\nX=--rcfile\nY=-c\nbash $X /dev/null $Y \"$x\"\n"
