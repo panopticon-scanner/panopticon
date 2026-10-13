@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Bounded curl/wget transfer shapes and descriptor-aware pipe consumption.
+"""Bounded download-command shapes and descriptor-aware pipe consumption.
 
-Single curl transfers are modeled; complex transfers remain explicitly unread.
+Single transfers are modeled; complex transfers remain explicitly unread.
 This layer uses shell_reader and the stdin-program classifier. workflow_forms re-exports its API.
 """
 import collections
@@ -11,6 +11,7 @@ from typing import cast
 
 import shell_reader
 from shell_reader import command
+import workflow_fetch_adapters
 from workflow_option_words import lifted
 from workflow_programs import VALUE_PROGRAM, stdin_program
 
@@ -24,7 +25,7 @@ Fetch = collections.namedtuple("Fetch", "tool url dest piped_to")
 class _ForwardedTee(tuple):
     """A tee argv whose file output also continues to an outer reader."""
 
-FETCHERS = ("curl", "wget")
+FETCHERS = ("curl", "wget", *workflow_fetch_adapters.FETCHERS)
 
 # curl and wget spell the same options differently, and the difference is
 # load-bearing: curl's `-o` is the output file, wget's `-o` is the LOG file and
@@ -111,7 +112,7 @@ def _pick_url(operands):
     return operands[0] if operands else None
 
 
-def _parse_fetch(tool, args, stage, piped_to):
+def _parse_curl_wget(tool, args, stage, piped_to):
     """A Fetch and whether its response still leaves on standard output."""
     value_short, value_long = _VALUE_SHORT[tool], _VALUE_LONG[tool]
     dest_short, dest_long = _DEST_SHORT[tool], _DEST_LONG[tool]
@@ -250,8 +251,47 @@ def _parse_fetch(tool, args, stage, piped_to):
     return Fetch(tool, url, dest, piped_to), streams
 
 
+class _TreeDestination(str):
+    """The root of a fetched tree; uses beneath it are unverified too."""
+
+    tree = True
+
+
+def _parse_adapter(tool, args, stage, piped_to):
+    """One non-curl/wget adapter, with shell stdout routing applied."""
+    transfer = workflow_fetch_adapters.parse(tool, args)
+    if transfer is None:
+        return None, False
+    if transfer.unread:
+        return Fetch(transfer.tool, None, None, None), False
+    dest = transfer.dest
+    to_stdout = transfer.stdout or transfer.named and dest in _STDOUT_DESTINATIONS
+    streams = bool(to_stdout and stage.stdout_to_pipe)
+    if to_stdout and stage.stdout_writes:
+        dest = stage.stdout_writes[-1]
+        if dest == "/dev/stderr":
+            dest = None
+    if transfer.named and dest in _STDOUT_DESTINATIONS:
+        dest = None
+    if dest is None and piped_to and os.path.basename(piped_to[0]) == "tee":
+        written = [word for word in piped_to[1:] if not word.startswith("-")]
+        dest = written[0] if written else None
+    if dest in STDOUT and (transfer.named or to_stdout):
+        dest = None
+    if transfer.tree and dest is not None:
+        dest = _TreeDestination(dest)
+    return Fetch(transfer.tool, transfer.url, dest, piped_to), streams
+
+
+def _parse_fetch(tool, args, stage, piped_to):
+    """One recognized fetcher argv and whether its response leaves on stdout."""
+    if tool in ("curl", "wget"):
+        return _parse_curl_wget(tool, args, stage, piped_to)
+    return _parse_adapter(tool, args, stage, piped_to)
+
+
 def parse_fetch(tool, args, stage, piped_to):
-    """One `curl`/`wget` argv -> the Fetch it performs."""
+    """One recognized download argv -> the Fetch it performs."""
     return _parse_fetch(tool, args, stage, piped_to)[0]
 
 

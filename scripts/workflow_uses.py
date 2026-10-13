@@ -275,6 +275,10 @@ def copies(statement, names, directory):
 
 def use(statement, position, stage, argv, dest, directory, bound=frozenset(), handoff=None):
     """How this stage uses `dest`, including whole bound value words and program hand-offs."""
+    # A clone into `.` makes every relative child part of the fetched tree;
+    # the producing `git clone` argv is not itself an execution of that tree.
+    if getattr(dest, "tree", False) and argv[:2] == ["git", "clone"]:
+        return None
     wrappers = shell_reader.wrapper_words(stage.argv)
     if any(_reference(word) in bound or
            may_run(at_directory(word, directory, True), dest) for word in wrappers):

@@ -74,7 +74,8 @@ _PARAMETER = re.compile(r"\$\{(!?[A-Za-z_]\w*(?:\[[^]]*\])?|[#?$!@*-]|[0-9]+)(:?
 # `workflow_programs._FOREIGN` and `workflow_fetch.FETCHERS` by test.
 _OPTIONAL = re.compile(r"\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*(?::?[-+=]([^{}$`'\"\\\s]*))?\})")
 _INTERPRETERS = ("python", "python3", "perl", "ruby", "node", "php", "pwsh")
-_FETCHERS = ("curl", "wget")
+_FETCHERS = ("curl", "wget", "aria2c", "axel", "fetch", "http", "https", "gh", "git",
+             "pip", "pip3")
 OPTIONAL_NEXT = (*_SHELLS, *WRAPPERS, *_INTERPRETERS, *_FETCHERS)
 # The second walk's own, beside `_OPTIONAL` (#3002, #3007, and the limits #2997's fix named): the other words that
 # are nothing with their name unset. A positional parameter, `$@`, `$!` with no background job; an element or all of

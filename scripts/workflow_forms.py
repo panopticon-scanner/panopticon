@@ -459,7 +459,8 @@ def _written_on(statement):
     digits, and neither of those is the download (review r1 finding 10)."""
     for stage in statement.stages:
         argv = command(stage.argv)
-        if argv and os.path.basename(argv[0]) in FETCHERS:
+        if (argv and os.path.basename(argv[0]) in FETCHERS
+                and parse_fetch(os.path.basename(argv[0]), argv[1:], stage, None) is not None):
             continue
         if [name for name in stage.stdout_writes if name not in STDOUT]:
             return True
