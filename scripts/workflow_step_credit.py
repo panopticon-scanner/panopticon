@@ -306,6 +306,7 @@ def _static_eval(argv):
     inner = statements(" ".join(map(str, words[1:])))
     return bool(len(inner) == 1 and len(inner[0].stages) == 1
                 and inner[0].separator not in ("&", "&&", "||")
+                and _plain_stage(inner[0].stages[0])
                 and _body_words(inner[0].stages[0].argv)[:1] == ["set"])
 
 

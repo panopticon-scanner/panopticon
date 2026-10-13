@@ -122,6 +122,7 @@ class TestAnOptionTurnedOnInAProvedBranch(unittest.TestCase):
         found = self.job("set +e\nvalue='set -e'\neval \"$value\"\n")
         self.assertTrue(any("program this guard does not follow" in reason for _step, reason in found), found)
         self.assertTrue(any("runs after a `set +e`" in reason for _step, reason in found), found)
+        self.assertReported("set +e\neval 'set -e < /definitely/missing'\n")
 
     def test_a_setter_that_may_be_skipped_by_a_list_stays_fail_closed(self):
         for form in (
