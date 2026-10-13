@@ -7,6 +7,33 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`scripts/workflow_guard.py` splits the judgment of one fetch into `scripts/workflow_defect.py`
+  (for #3050, #3051 and #2433, reader lane).** A pure move at the module's size: 700 of its 700
+  lines, before #3040 and after it. Two pieces move, each byte for byte with the comments above it
+  and in their old order. Lines 405 to 422 (of `main` after #3040) hold the three reasons a checksum
+  the job ran clears nothing (`_SOFT_STEP`, `_UNSHARED_IF`, `_UNSHARED_BRANCH`) and `_unshared`,
+  which picks the half of a check's condition that a use lacks. Lines 427 to 521 hold
+  `_runs_after_failure`, `_binds` (whether a check may clear a use) and `_defect` (why one fetch is
+  unverified). The new module imports nothing from `workflow_guard`, which imports all seven back
+  under their own names. Each of the new module's 14 imports is the import `workflow_guard` held, so
+  every name the moved code reads is the object it read before. `uses as _uses` stays importable
+  from `workflow_guard` for `tests/test_dockerfile.py`. No caller moved and no test moved. The tests
+  swap five names on `workflow_guard`: `_job_defects`, `read`, `_defects` and `statements` by patch,
+  and `folds` by assignment. The new module binds none of them, so each swap still reaches every
+  lookup. The step walk stays where it is, because it looks up `statements` there. The new test
+  module holds these facts. No verdict changes, on 26,836 rows: this lane's kit, the #2942 seat's
+  three samples, and 360 rows that put a checksum in a branch its use is not in. Every finding of
+  every row, its name and its reason, is the same under `main`'s scripts (d8581828, after #3040) and
+  under the move's. That holds under each of the five `shell:` settings and in each of three
+  readings (the job, its main pass, its walk pass). Each row is read as one step and, where it has 2
+  to 12 lines, also as a job of one step a line in four forms: no `if:`; every other step under
+  `always()`; every step but the last under one `if:`; and every step but the last under
+  `continue-on-error: true`. That is 1,989,000 cells holding 1,570,117 findings under each tree. Of
+  the job's 619,284 findings, 533,960 are `_defect`'s, and 28,180 carry a moved reason: 15,497
+  `_SOFT_STEP`, 12,203 `_UNSHARED_IF` and 480 `_UNSHARED_BRANCH`. The two dumps are equal byte for
+  byte. The guard's command line, run as a script over 4,635 jobs, prints the same 4,256 findings
+  under both. Sizes: 700 -> 586, and 138 for the new module.
+
 - **Workflow reader reads an expansion in a shell's option word as text the word does not write
   (#2889).** `X=c; sh -$X 'curl ... | sh'` runs the string under every parent shell and read CLEAN,
   and so did `HOME=-c; sh ~ '...'`, `sh -$(echo oc) errexit '...'` and `wget $(echo -qO-) URL | sh`.
