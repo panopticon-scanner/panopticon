@@ -14,7 +14,10 @@ import workflow_step_credit
 
 
 MOVED = ("_BRANCH_ALTERNATE", "_BRANCH_CLOSE", "_BRANCH_OPEN", "_SETTERS",
-         "_arm", "_as_set", "_errexit_states", "regions", "step_credit")
+         "_arm", "_arm_pattern", "_as_set", "_body_words", "_case_match",
+         "_case_subject", "_errexit_states", "_literal_for", "_plain_stage",
+         "_proved_branch_statements", "_safe_case_literal", "_same_shell_setter",
+         "_static", "_static_eval", "regions", "step_credit")
 
 
 def _tree():
