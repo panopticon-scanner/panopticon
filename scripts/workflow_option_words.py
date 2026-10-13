@@ -34,6 +34,10 @@ rule gave is noted, so a caller can read BOTH ways wherever one was given and ne
 was (`beside`). The guard does, for the whole job: what `main` reported is
 reported still, whatever a reader makes of the words the rule finds.
 
+An expansion may stand in FRONT of an option word too (#3042): with `X` unset `$X-c` is `-c`, and
+`sh $X-c P` runs `P`, where `main` read the word as the FILE the shell runs. The rule reads such a
+word both ways (`uncovered`): as written, and as the option word behind its expansions.
+
 Below every reader that asks it: it reads the word it is handed and those two patterns of
 `shell_tokens`, and nothing else.
 """
@@ -151,14 +155,15 @@ def _references(text):
         at = text.find("$", max(end, at + 2))
 
 
-def _spans(word):
+def _spans(word, every=False):
     """Where each marker and, by the rule (`ruled`), each parameter reference stands in `word`:
-    (start, end) pairs, in order. A marker may stand INSIDE a reference (`${X:-$(...)}`)."""
+    (start, end) pairs, in order. A marker may stand INSIDE a reference (`${X:-$(...)}`). `every`:
+    each reference too, the rule unasked (`uncovered` asks it once, of its own answer)."""
     text, own = str(word), getattr(word, "markers", None)
     references = list(_references(text)) if "$" in text else []
     if not own and "@@" not in text and not references:
         return []
-    spans = set(references) if ruled(references) else set()
+    spans = set(references) if every or ruled(references) else set()
     for key in own or ():
         at = 0
         for before in text.split(key)[:-1]:
@@ -197,3 +202,26 @@ def spells(word, letter):
     """Whether the option word `word` may carry `letter`: it is written in it, or the word holds
     lifted text or a reference, which may print it."""
     return letter in written(word) or lifted(word)
+
+
+def uncovered(word):
+    """`word` where the expansions it BEGINS with print nothing (#3042): the option word written behind
+    them -- `$X-c`, `${X:-}-ec`, `"$X"+c` and `$(true)-c` are then `-c`, `-ec`, `+c` and `-c` -- where
+    that text begins with `-` or `+`, else None. What stands behind it is read as it would be in any
+    option word (`-c$(echo e)` may be `-ce`). None with the rule off (`ruled`), as `main` read every
+    such word: an operand."""
+    text, at = str(word), 0
+    if text[:1] not in ("$", "@"):                 # no expansion begins it
+        return None
+    for start, end in _spans(word, True):
+        if start > at:
+            break
+        at = max(at, end)
+    return text[at:] if ruled(text[at:at + 1] in ("-", "+")) else None
+
+
+def uncovered_argv(argv):
+    """`argv` with each word after the command read as the option word it is `uncovered`, or None where
+    none is: a reader reads it BESIDE `argv` and hands on the step's own words alone."""
+    alt = [*argv[:1], *(uncovered(word) or word for word in argv[1:])]
+    return alt if any(new is not old for new, old in zip(alt, argv)) else None
