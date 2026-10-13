@@ -26,7 +26,24 @@ evidence exposed.
   (`~`, `~+`, `~-`, `~1`) is a value, as `$X` is, read beside `main`'s reading of it as an operand.
   And `wget` handed a whole-word expansion may be handed `-O-`: where its stdout is piped the
   stream view is added, and the file view stays `main`'s. Every new reading stands BESIDE `main`'s,
-  never instead of it. The price was measured and ruled before the code: the guard follows no
+  never instead of it -- and since a reader handed more may still choose a quieter reading of a
+  step (an independent pre-review of the first build found 13 shapes `main` reports that it read
+  CLEAN: two `-c` strings joined into one, a quiet stdin hand-off before the loud reason, a
+  candidate where the dynamic program was), the JOB is the floor. The rule has one switch
+  (`workflow_option_words.ruled`, off under `as_before`) that every reader it changed answers
+  through, and where it answers in a job, `job_defects` reads the job again with it off and keeps
+  those findings first and whole (`beside`; in strict mode a text only the rule reads that the
+  reader refuses leaves `main`'s reading the answer). What `main` reports is reported, in `main`'s
+  words, by construction: with the rule off the findings equal `main`'s tree byte for byte wherever
+  `main` answers, on 224,074 rows -- the grids, my standing sets, the #2942 seat's, and the first
+  pre-review's own texts -- where the rule's reading alone would have read a setting `main` reports
+  CLEAN on 305. The walks are loops that read each word a bounded number of times (a standing
+  test), and the readers they feed look words up in sets: a command of 8,000 option words reads in
+  seconds (the first build took 178 s on 200 pairs and raised RecursionError at 1,100 words). The
+  floor's price is that second reading: 1.58x over the cost sets, where #3020's and #3019's grids
+  hold such a word in most jobs (2.5x on the densest) and my standing sets in almost none (1.02x to
+  1.04x); none of the seat's sets or of this repository's workflows does. The rule's price was
+  measured and ruled before the code: the guard follows no
   value, so a word that MAY spell `-c` is read as one whatever the step assigns -- `X=e; sh -$X
   '...'` is reported and runs nothing, as its whole-word twin `X=-e; sh $X '...'` has been since
   #2344. On 14,322 rows in 13 grids with truth from eight parent shells, the rows a
@@ -34,8 +51,8 @@ evidence exposed.
   issue's or open with its letter written out too; 507 rows that run are newly reported
   and 1,089 that run nothing, of which 937 are steps that fail where they stand (the
   shell takes the program text for a FILE's name) and 139 more are the `X=s` rows, whose
-  string is a positional parameter; no report is lost on any grid in either pass, and no mark
-  depends on a marker. The issue's own rows -- 36 of PR #2858's round-5 matrix and round 9's
+  string is a positional parameter; no report of `main`'s is lost, and no mark depends on a
+  marker. The issue's own rows -- 36 of PR #2858's round-5 matrix and round 9's
   tilde case -- all report. Left for other issues: a `$` command word whose cluster is not its
   first word (#2671, #2900), three shapes of `wget` (#3033, #3034, #3035), four families a probe
   of the rule's own nouns found open on `main` as well -- an expansion in FRONT of a written
