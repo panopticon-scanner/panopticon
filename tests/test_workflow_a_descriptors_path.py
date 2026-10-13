@@ -337,18 +337,24 @@ class TestWhatStaysForOtherIssues(unittest.TestCase):
     """Rows this PR does not move, each pinned as it reads and named with what it waits for."""
 
     def test_a_path_a_value_or_a_pattern_decides(self):
-        # Truth: runs, every one (the pattern: under bash). The reader has the word, not its value.
+        # Truth: runs, every one. The reader has the word, not its value: the four value rows stay CLEAN.
         for lines in ("O=/dev/stdout\n%s > $O | sh", "O=//dev/stdout\n%s > \"$O\" | sh", "%s > ${O:-/dev/stdout} | sh",
-                      "D=/dev\n%s > $D/stdout | sh", "%s > /dev/stdou[t] | sh"):
+                      "D=/dev\n%s > $D/stdout | sh"):
             with self.subTest(lines=lines):
                 self.assertEqual(CLEAN, marks(lines % STREAM))
+        # The pattern (under bash): CLEAN on `main`, a written path read as written, until #3051 reads an
+        # unquoted pattern as the one listed name it matches, so it REPORTs (the coordinator's ruling, Krab
+        # seq 2837, moved this row here; the four value rows beside it stay).
+        self.assertEqual(REPORT, marks("%s > /dev/stdou[t] | sh" % STREAM))
 
     def test_a_path_a_cd_or_a_link_gives(self):
-        # Truth: runs, every one. The reader reads a written path as written; what a `cd` or a link makes of
-        # it, it reads for a path a command READS (#2919) and not for one it writes.
+        # Truth: runs, every one. CLEAN on `main`: the reader read a written path as written, and what a `cd`
+        # or a link makes of it, it read for a path a command READS (#2919) and not for one it writes, until
+        # #3051 asks `sources` for a written path too, so all three REPORT (the coordinator's ruling, Krab
+        # seq 2837, moved these rows here).
         for lines in ("cd /dev\n%s > stdout | sh", "cd /\n%s > dev/stdout | sh", "ln -s /dev/stdout o\n%s > o | sh"):
             with self.subTest(lines=lines):
-                self.assertEqual(CLEAN, marks(lines % STREAM))
+                self.assertEqual(REPORT, marks(lines % STREAM))
 
     def test_a_group_whose_own_redirection_carries_another_descriptor(self):
         # Truth: runs, every one -- the group's `2>&1` is made first, and the command inside writes descriptor 2.
