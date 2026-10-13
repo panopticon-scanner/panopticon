@@ -7,6 +7,58 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader reads an expansion in a shell's option word as text the word does not write
+  (#2889).** `X=c; sh -$X 'curl ... | sh'` runs the string under every parent shell and read CLEAN,
+  and so did `HOME=-c; sh ~ '...'`, `sh -$(echo oc) errexit '...'` and `wget $(echo -qO-) URL | sh`.
+  The readers of the programs lane asked an option word for its letters, and `-$X` writes none: they
+  read the NAME's instead, so `-$cmd` was a `-c` and `-$s` was not. #3020 gave a lifted `$(...)` in
+  such a word both readings a shell may give it; this is that rule for every other expansion, in
+  four parts. A parameter reference in an option word -- `$X`, `${...}`, `$1`, `$@`, `$-` -- is
+  text the word does not write, as a marker is (`workflow_option_words`), so every reader of #3020
+  reads the word both ways and a name's letters are no option letters; a reference that prints
+  digits alone (`$#`, `$?`, `$$`, `$!`, `${#X}`) stays written. A word that holds an expansion may
+  print an `o` or an `O`, which takes the next word: each word after it that may be a NAME may be
+  its value, however many, at every option word the walk passes -- one search beside `main`'s own
+  walk past the options (`_reached`), `main`'s operand first -- and a refusal by NAME is read only
+  from an `o` written before the word's first expansion (`X=O; bash -c${X}o extglob errexit '...'`
+  runs the string, and read CLEAN as a refusal). No table of names is asked: bash's `-O` takes a
+  shopt name and zsh's `-o` one of its own, so a word shaped as a name may be one. A tilde alone
+  (`~`, `~+`, `~-`, `~1`) is a value, as `$X` is, read beside `main`'s reading of it as an operand.
+  And `wget` handed a whole-word expansion may be handed `-O-`: where its stdout is piped the
+  stream view is added, and the file view stays `main`'s. Every new reading stands BESIDE `main`'s,
+  never instead of it -- and since a reader handed more may still choose a quieter reading of a
+  step (an independent pre-review of the first build found 13 shapes `main` reports that it read
+  CLEAN: two `-c` strings joined into one, a quiet stdin hand-off before the loud reason, a
+  candidate where the dynamic program was), the JOB is the floor. The rule has one switch
+  (`workflow_option_words.ruled`, off under `as_before`) that every reader it changed answers
+  through, and where it answers in a job, `job_defects` reads the job again with it off and keeps
+  those findings first and whole (`passes`; in strict mode a text only the rule reads that the
+  reader refuses leaves `main`'s reading the answer). What `main` reports is reported, in `main`'s
+  words, by construction: with the rule off the findings equal `main`'s tree byte for byte wherever
+  `main` answers, on 224,074 rows -- the grids, my standing sets, the #2942 seat's, and the first
+  pre-review's own texts -- where the rule's reading alone would have read a setting `main` reports
+  CLEAN on 305. The walks are loops that read each word a bounded number of times (a standing
+  test), and the readers they feed look words up in sets: a command of 8,000 option words reads in
+  seconds (the first build took 178 s on 200 pairs and raised RecursionError at 1,100 words). The
+  floor's price is that second reading, about 1.6x over the cost sets: #3020's and #3019's
+  grids hold such a word in most jobs, my standing sets in almost none, and none of the seat's sets
+  or of this repository's workflows does. The rule's price was
+  measured and ruled before the code: the guard follows no
+  value, so a word that MAY spell `-c` is read as one whatever the step assigns -- `X=e; sh -$X
+  '...'` is reported and runs nothing, as its whole-word twin `X=-e; sh $X '...'` has been since
+  #2344. On 14,322 rows in 13 grids with truth from eight parent shells, the rows a
+  parent runs and the guard read CLEAN go 699 -> 195, each one left another
+  issue's or open with its letter written out too; 507 rows that run are newly reported
+  and 1,089 that run nothing, of which 937 are steps that fail where they stand (the
+  shell takes the program text for a FILE's name) and 139 more are the `X=s` rows, whose
+  string is a positional parameter; no report of `main`'s is lost, and no mark depends on a
+  marker. The issue's own rows -- 36 of PR #2858's round-5 matrix and round 9's
+  tilde case -- all report. Left for other issues: a `$` command word whose cluster is not its
+  first word (#2671, #2900), three shapes of `wget` (#3033, #3034, #3035), four families a probe
+  of the rule's own nouns found open on `main` as well -- an expansion in FRONT of a written
+  option word (`sh $X-c '...'`, #3042), a substitution where the `-c` string stands (#3043), the
+  value of a written `-O` (#3044), a stream read through a `<(...)` (#3045) -- and the tightening
+  that would follow the step's own assignment, which needs the value table.
 - **Workflow reader: the other words bash makes nothing of in front of a command (#3002, #3007,
   #3038).** `$T ${S:+sudo -E} sh -c 'curl ... | sh'`, `${S:- } sh -c '...'`, `${SUDO:-sudo} -E sh
   -c '...'`, `$SUDO echo '...' | sh` and `S=command; ${S:-sudo} eval '...'` each read CLEAN under
@@ -152,7 +204,8 @@ evidence exposed.
   sets of #2955, #2963 and #2997, and the probes behind #3002, #3003 and #3007 -- every finding of
   every row, its name and its reason, is the same under `main`'s scripts and the move's, under
   each of the five `shell:` settings and in each of three readings (the job, its main pass, its
-  walk pass): 92,700 cells holding 56,528 findings under each tree, and the two dumps are
+  walk pass): 92,700 cells holding 56,153 findings under each tree (56,528 before #2861 was
+  folded in, the count this entry first carried), and the two dumps are
   equal byte for byte; and the eleven grids of #3019, #3020 and #2889, 14,238 rows that put an
   expansion in or beside a shell's option words, read the same under each of two pinned markers,
   marks and findings. The room is for #2889's rule, the next change to this module. Sizes:
