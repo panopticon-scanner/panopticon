@@ -19,6 +19,10 @@ evidence exposed.
   server-chosen HTTPie filenames and dependency- or index-selected pip artifacts remain
   deliberately unresolved, while raw sockets and unmodeled network producers remain for #2829's
   second slice.
+  The Dockerfile integrity suite documents one owner-accepted exception: the exact RustSec
+  `advisory-db` clone into `/home/scanner/.cargo/advisory-db` is fresh-required security-advisory
+  data, not a binary, and checksum-pinning it would stale the advisories the scan depends on. No
+  other recognized fetch is exempt.
   Across 165 targeted cells under five workflow shell settings, report cells rise 15 -> 105 with
   90 new detections, no REPORT -> CLEAN cell, and no pre-existing reason lost; `aws s3 cp` stays
   CLEAN while `gh release download` moves to REPORT in all five settings.

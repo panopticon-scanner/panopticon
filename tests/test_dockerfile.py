@@ -103,6 +103,13 @@ def _download_checksum_defects(text):
         checks = workflow_guard._checks(statements)
         conditions = {i: (None, branch) for i, branch in regions(statements).items()}
         for index, fetch in workflow_guard._fetch_records(statements):
+            # #2829 owner-approved accepted gap: this exact clone is fresh-required
+            # security-advisory DATA for cargo-audit, not a binary. Pinning it would
+            # stale the advisories the scan depends on; no other clone is exempt.
+            if (fetch.tool, str(fetch.url), str(fetch.dest)) == (
+                    "git clone", "https://github.com/rustsec/advisory-db",
+                    "/home/scanner/.cargo/advisory-db"):
+                continue
             if fetch.dest is None:
                 continue  # streamed execution has its own guard below
             _names, uses = workflow_guard._uses(statements, fetch.dest, after=index)
@@ -196,6 +203,23 @@ class TestDownloadChecksumGuard(unittest.TestCase):
         self.assertEqual(_download_checksum_defects(
             '# RUN curl https://example.invalid/decoy -o /tmp/decoy\n'
             'RUN echo "curl https://example.invalid/decoy -o /tmp/decoy"\n'), [])
+
+    def test_only_fresh_rustsec_advisory_data_clone_is_accepted(self):
+        url = "https://github.com/rustsec/advisory-db"
+        dest = "/home/scanner/.cargo/advisory-db"
+        clone = "RUN timeout 60 git clone --depth 1 %s %s" % (url, dest)
+        self.assertEqual([], _download_checksum_defects(clone))
+        for command, fetched in (
+                ("git clone %s /tmp/advisory-db" % url, "/tmp/advisory-db"),
+                ("git clone %s.git %s" % (url, dest), dest),
+                ("git clone https://example.invalid/advisory-db %s" % dest, dest),
+                ("curl %s -o %s" % (url, dest), dest),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual([(1, fetched)], _download_checksum_defects("RUN " + command))
+        self.assertIsNotNone(workflow_guard.fetch_exec_defect(
+            clone[4:] + "\nsh %s/tool" % dest,
+        ))
 
 
 class TestDockerfile(unittest.TestCase):
