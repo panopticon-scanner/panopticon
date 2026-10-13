@@ -663,6 +663,7 @@ groups:
       # #2586: keep the guard's proof layers and focused tests in one review.
       match:
       - scripts/workflow_guard.py
+      - scripts/workflow_defect.py
       - scripts/workflow_checks.py
       - scripts/workflow_failure_contexts.py
       - scripts/workflow_forms.py
@@ -683,6 +684,7 @@ groups:
       - scripts/workflow_annotate.py
       tests:
       - tests/test_workflow_guard.py
+      - tests/test_workflow_defect.py
       - tests/test_workflow_branch_option_state.py
       - tests/test_workflow_called.py
       - tests/test_workflow_function_gate_calls.py
