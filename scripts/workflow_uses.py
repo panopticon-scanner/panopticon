@@ -21,9 +21,9 @@ import shell_reader
 from shell_reader import command
 from workflow_called import record_called
 from workflow_checks import inside
-from workflow_forms import (BIN_DIRS, CONTAINERS, at_directory, chmod_executable,
-                            chmod_targets, covers, described, in_container, may_run,
-                            same_file, stdin_program)
+from workflow_forms import (BIN_DIRS, CONTAINERS, at_directory,
+                            chmod_conditional_executable, chmod_executable, chmod_targets,
+                            covers, described, in_container, may_run, same_file, stdin_program)
 from workflow_programs import (_SHELL_STRING, VALUE_PROGRAM, reader_files,
                                redirection_handoffs, scripts)
 from workflow_printers import _cat_reads_stdin
@@ -265,16 +265,26 @@ def copies(statement, names, directory):
         name = os.path.basename(argv[0])
         operands = [at_directory(word, directory) for word in _operands(argv)]
         if name in ("cp", "mv", "ln") and len(operands) > 1:
-            if any(same_file(old, known) for old in operands[:-1] for known in names):
-                new.add(operands[-1])
+            for old in operands[:-1]:
+                for known in names:
+                    if (same_file(old, known)
+                            or getattr(known, "tree", False) and covers(old, known)):
+                        copied = operands[-1]
+                        new.add(type(known)(copied) if getattr(known, "tree", False) else copied)
         if name == "cat" and stage.writes:
-            if any(same_file(old, known) for old in operands for known in names):
+            if any(same_file(old, known) or (
+                    getattr(known, "tree", False) and covers(old, known)
+            ) for old in operands for known in names):
                 new.update(at_directory(word, directory) for word in stage.writes)
     return new
 
 
 def use(statement, position, stage, argv, dest, directory, bound=frozenset(), handoff=None):
     """How this stage uses `dest`, including whole bound value words and program hand-offs."""
+    # A clone into `.` makes every relative child part of the fetched tree;
+    # the producing `git clone` argv is not itself an execution of that tree.
+    if getattr(dest, "tree", False) and argv[:2] == ["git", "clone"]:
+        return None
     wrappers = shell_reader.wrapper_words(stage.argv)
     if any(_reference(word) in bound or
            may_run(at_directory(word, directory, True), dest) for word in wrappers):
@@ -310,6 +320,8 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset(), ha
             name in INTERPRETERS or stdin_program(argv) == VALUE_PROGRAM):
         return "running it under `%s` from standard input" % name
     if name == "chmod" and mentions and chmod_executable(argv):
+        if getattr(dest, "tree", False) and chmod_conditional_executable(argv):
+            return None
         return "making it executable"
     if _reference(argv[0]) in bound or may_run(at_directory(argv[0], directory, True), dest):
         return "running it"

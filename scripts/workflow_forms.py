@@ -63,8 +63,17 @@ from workflow_step_credit import (_BRANCH_ALTERNATE as _BRANCH_ALTERNATE,
                                   _LOST as _LOST, _NO_E as _NO_E,
                                   _NO_PIPEFAIL as _NO_PIPEFAIL, _SET_E as _SET_E,
                                   _stops_step as _stops_step,
-                                  _arm as _arm, _as_set as _as_set,
+                                  _arm as _arm, _arm_pattern as _arm_pattern,
+                                  _as_set as _as_set, _body_words as _body_words,
+                                  _case_match as _case_match,
+                                  _case_subject as _case_subject,
                                   _errexit_states as _errexit_states,
+                                  _literal_for as _literal_for,
+                                  _plain_stage as _plain_stage,
+                                  _proved_branch_statements as _proved_branch_statements,
+                                  _safe_case_literal as _safe_case_literal,
+                                  _same_shell_setter as _same_shell_setter,
+                                  _static as _static, _static_eval as _static_eval,
                                   paths as paths, reach as reach, regions as regions,
                                   step_credit as step_credit)
 
@@ -78,7 +87,9 @@ from workflow_gating import (Inlined as Inlined, Reach as Reach, _errexit,
                              seed as seed, statement_analysis,
                              swallowed as swallowed)
 from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
-                               at_directory as at_directory, chmod_executable as chmod_executable,
+                               at_directory as at_directory,
+                               chmod_conditional_executable as chmod_conditional_executable,
+                               chmod_executable as chmod_executable,
                                chmod_targets as chmod_targets, covers as covers,
                                described as described, located as located, may_run as may_run,
                                names_file as names_file, same_file as same_file,
@@ -515,7 +526,8 @@ def _written_on(statement):
     digits, and neither of those is the download (review r1 finding 10)."""
     for stage in statement.stages:
         argv = command(stage.argv)
-        if argv and os.path.basename(argv[0]) in FETCHERS:
+        if (argv and os.path.basename(argv[0]) in FETCHERS
+                and parse_fetch(os.path.basename(argv[0]), argv[1:], stage, None) is not None):
             continue
         if [name for name in stage.stdout_writes if name not in STDOUT]:
             return True

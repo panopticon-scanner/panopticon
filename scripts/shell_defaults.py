@@ -74,7 +74,8 @@ _PARAMETER = re.compile(r"\$\{(!?[A-Za-z_]\w*(?:\[[^]]*\])?|[#?$!@*-]|[0-9]+)(:?
 # `workflow_programs._FOREIGN` and `workflow_fetch.FETCHERS` by test.
 _OPTIONAL = re.compile(r"\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*(?::?[-+=]([^{}$`'\"\\\s]*))?\})")
 _INTERPRETERS = ("python", "python3", "perl", "ruby", "node", "php", "pwsh")
-_FETCHERS = ("curl", "wget")
+_FETCHERS = ("curl", "wget", "aria2c", "axel", "fetch", "http", "https", "gh", "git",
+             "pip", "pip3")
 OPTIONAL_NEXT = (*_SHELLS, *WRAPPERS, *_INTERPRETERS, *_FETCHERS)
 # The second walk's own, beside `_OPTIONAL` (#3002, #3007, and the limits #2997's fix named): the other words that
 # are nothing with their name unset. A positional parameter, `$@`, `$!` with no background job; an element or all of
@@ -173,7 +174,90 @@ def _optional(argv, nothing=False, drops=None):
         return count
     if drops and count > 1 and _shell_default(argv[count - 1], argv[count - 1:]):
         return count - 1                        # (#3007) the words in front of a default that reads on as its wrapper
-    return count if count and os.path.basename(name) in OPTIONAL_NEXT else 0
+
+    def named_fetch_subcommand(program, words):
+        """Whether a multi-command fetcher reaches the one adapter models.
+
+        `_FETCHERS` mirrors the guard's command vocabulary, but `git push`,
+        `gh issue` and `pip list` are not downloads. Keep their bounded root
+        options here so an optional word is dropped only where the command
+        behind it can reach the adapter; an unknown option still reaches a
+        later expected subcommand so that adapter can fail closed.
+        """
+        commands = {
+            "git": ("clone",),
+            "gh": ("release", "download"),
+            "pip": ("download",),
+            "pip3": ("download",),
+        }.get(program)
+        if commands is None:
+            return True
+        short_values, long_values, short_flags, long_flags, informational = {
+            "git": ("c", {"config", "config-env"}, "", {
+                "no-pager", "paginate", "literal-pathspecs", "glob-pathspecs",
+                "noglob-pathspecs", "icase-pathspecs", "no-optional-locks",
+                "no-replace-objects",
+            }, {"-h", "--help", "--version"}),
+            "gh": ("R", {"repo", "hostname"}, "", {
+                "no-update-notifier", "prompt", "no-prompt",
+            }, {"-h", "--help", "--version"}),
+            "pip": ("", {
+                "proxy", "timeout", "retries", "cert", "client-cert", "cache-dir",
+                "log", "python", "keyring-provider", "exists-action", "trusted-host",
+                "use-feature", "use-deprecated",
+            }, "qv", {
+                "quiet", "verbose", "isolated", "require-virtualenv", "no-input",
+                "no-proxy-env", "no-cache-dir", "disable-pip-version-check", "no-color",
+            }, {"-h", "--help", "-V", "--version"}),
+            "pip3": ("", {
+                "proxy", "timeout", "retries", "cert", "client-cert", "cache-dir",
+                "log", "python", "keyring-provider", "exists-action", "trusted-host",
+                "use-feature", "use-deprecated",
+            }, "qv", {
+                "quiet", "verbose", "isolated", "require-virtualenv", "no-input",
+                "no-proxy-env", "no-cache-dir", "disable-pip-version-check", "no-color",
+            }, {"-h", "--help", "-V", "--version"}),
+        }[program]
+        words, expected, at = list(words), 0, 0
+        while at < len(words):
+            word, at = str(words[at]), at + 1
+            if word == commands[expected]:
+                expected += 1
+                if expected == len(commands):
+                    return True
+                continue
+            if word in informational:
+                return False
+            if word == "--":
+                continue
+            if not word.startswith("-") or word == "-":
+                return False
+            if word.startswith("--"):
+                option, separator, inline = word[2:].partition("=")
+                if option in long_values:
+                    if not separator:
+                        if at >= len(words):
+                            return False
+                        at += 1
+                elif option not in long_flags or separator and inline not in ("true", "false"):
+                    return commands[expected] in map(str, words[at:])
+                continue
+            offset = 1
+            while offset < len(word):
+                option, offset = word[offset], offset + 1
+                if option in short_values:
+                    if offset == len(word):
+                        if at >= len(words):
+                            return False
+                        at += 1
+                    break
+                if option not in short_flags:
+                    return commands[expected] in map(str, words[at:])
+        return False
+
+    head = os.path.basename(name)
+    known = head in OPTIONAL_NEXT and named_fetch_subcommand(head, argv[count + 1:])
+    return count if count and known else 0
 
 
 def _set(word, default):

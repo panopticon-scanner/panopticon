@@ -36,6 +36,35 @@ evidence exposed.
   loses as it does the inline group's. Sizes: workflow_called.py 388 -> 491, workflow_guard.py 586
   -> 601.
 
+- **Workflow guard recognizes bounded, named download clients (#2829, adapter slice).** aria2c,
+  Axel, FreeBSD `fetch`, HTTPie `http`/`https`, `gh release download`, network `git clone`, and a
+  direct `pip download --no-deps` archive now bind the URL to the file or fetched tree their own
+  option grammar names. Documented stdout forms bind a following shell, exact checks clear exact
+  files, and an unknown
+  option fails closed as an unresolved transfer. Tool-specific controls keep diagnostics, HTTPie
+  offline/quiet output, plain local clones, non-download subcommands, and literal `-` output files
+  clean.
+  A file checksum cannot bless a cloned tree, including one moved or copied before execution;
+  server-chosen HTTPie filenames and dependency- or index-selected pip artifacts remain
+  deliberately unresolved, while raw sockets and unmodeled network producers remain for #2829's
+  second slice.
+  The Dockerfile integrity suite documents one owner-accepted exception: the exact RustSec
+  `advisory-db` clone into `/home/scanner/.cargo/advisory-db` is fresh-required security-advisory
+  data, not a binary, and checksum-pinning it would stale the advisories the scan depends on. No
+  other recognized fetch is exempt.
+  Across 165 targeted cells under five workflow shell settings, report cells rise 15 -> 105 with
+  90 new detections, no REPORT -> CLEAN cell, and no pre-existing reason lost; `aws s3 cp` stays
+  CLEAN while `gh release download` moves to REPORT in all five settings.
+- **Workflow guard keeps an explicit stdout download through an adjacent `tee` (#2916).** `curl`
+  or `wget` naming `-`, `/dev/stdout`, or descriptor 1 now binds the file `tee` writes before the
+  stdout marker is discarded; `/dev/null` and an inferred remote filename `-` remain non-streams.
+- **Workflow guard recognizes four more shells that consume downloaded programs (#2792).** `csh`,
+  `tcsh`, `fish`, and `mksh` now bind fetched stdin and file operands without claiming support for
+  their command-string option grammars; non-shell consumers and unsupported option forms stay clean.
+- **Workflow guard resolves fetch commands held in array command words (#2770).** A whole
+  `${array[@]}` or `${array[*]}` command word is read through the step's value table when an
+  alternative starts with a modeled fetcher; scalar defaults and unrelated dynamic commands keep
+  their existing boundaries.
 - **`scripts/workflow_guard.py` splits the judgment of one fetch into `scripts/workflow_defect.py`
   (for #3050, #3051 and #2433, reader lane).** A pure move at the module's size: 700 of its 700
   lines, before #3040 and after it. Two pieces move, each byte for byte with the comments above it
