@@ -234,6 +234,11 @@ def _parse_fetch(tool, args, stage, piped_to):
             # and STDOUT must not silence that explicit destination too
             # (round 1 NIT: it did, while this lived in the STDOUT tuple).
             dest = None
+    # Resolve an explicitly named stdout before asking whether an adjacent
+    # tee saves that stream (#2916). `/dev/null` is a discard, and an inferred
+    # remote basename of `-` remains a file, so neither takes this path.
+    if named and dest in _STDOUT_DESTINATIONS:
+        dest = None
     if dest is None and piped_to and os.path.basename(piped_to[0]) == "tee":
         # `curl ... | sudo tee /usr/local/bin/tool`: the pipeline IS the
         # download's destination, and what tee wrote is what runs next.

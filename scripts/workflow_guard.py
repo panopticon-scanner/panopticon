@@ -261,7 +261,7 @@ from workflow_programs import ANY, VALUE_PROGRAM, handed, stdin_command
 from workflow_options import mains_answer
 from workflow_stdin import bound_stdin as bind_stdin, mark_reason
 from workflow_uses import (EXECUTORS as EXECUTORS, INTERPRETERS as INTERPRETERS,
-                           UNPACKERS as UNPACKERS, uses as _uses)
+                           UNPACKERS as UNPACKERS, _resolved, static_values, uses as _uses)
 
 
 # One `run:` step: its name, its script, the shell it will run under, the `if:`
@@ -290,15 +290,21 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
         under = ANY if isinstance(statement, Inlined) else shell
         for position, stage in enumerate(statement.stages):
             argv, before = shell_reader.acted(stage.argv), statement.stages[:position]
-            if argv and os.path.basename(argv[0]) in FETCHERS:
+            argvs = [argv]
+            if argv and re.fullmatch(r"\$\{[A-Za-z_]\w*\[(?:@|\*)\]\}", str(argv[0])):
+                argvs += _resolved(argv, static_values(stmts, index))
+            for fetch_argv in argvs:
+                if not fetch_argv or os.path.basename(fetch_argv[0]) not in FETCHERS:
+                    continue
                 following = statement.stages[position + 1:]
                 fetch_stage, piped_to = compound_output(stmts, out, index, stage, following)
-                fetch = parse_fetch(os.path.basename(argv[0]), argv[1:], fetch_stage, piped_to)
+                fetch = parse_fetch(os.path.basename(fetch_argv[0]), fetch_argv[1:],
+                                    fetch_stage, piped_to)
                 if fetch is not None:
                     if stream_exec:
                         compound = compound_stream_consumer(stmts, index, EXECUTORS)
                         stream = compound_streamed_fetch(
-                            os.path.basename(argv[0]), argv[1:], fetch_stage, following,
+                            os.path.basename(fetch_argv[0]), fetch_argv[1:], fetch_stage, following,
                             EXECUTORS, compound,
                         )
                         fetch = stream or (fetch._replace(piped_to=None) if fetch.dest is None
