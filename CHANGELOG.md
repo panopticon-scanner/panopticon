@@ -7,6 +7,31 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader: a written path a pattern, a `cd`, a link or `/proc/self/root` gives names the
+  descriptor it reaches (#3051).** `curl -fsSL URL > /dev/stdou[t] | sh`, `cd /dev` then `> stdout |
+  sh`, `ln -s /dev/stdout o` then `> o | sh`, and `> /proc/self/root/dev/stdout | sh` read CLEAN
+  while every shell ran the download (the pattern: under bash): #2744's reader read a written path
+  as written. `output_alias_fd` now reads an unquoted pattern bash expands as the one listed
+  descriptor name it matches, where it matches one (dash expands no redirection's pattern, a price
+  under `sh`), and drops `/proc/self/root` and `/proc/thread-self/root`, the process's own root, in
+  front of a path as often as they stand; and the stage's redirections ask `sources` for a written
+  path as they do for a read one (#2919), so a `cd` or a link the step may have made adds the
+  descriptor's reading beside the file's, fail-closed as the reads are (a `cd` in a subshell, or one
+  a later `cd` replaced, still counts: two prices, pinned). Measured on 26,946 rows, `main` f5c66d7f
+  against this change, under each of the five `shell:` settings, in three readings (the job, its
+  main pass, its walk pass) and, for a row of 2 to 12 lines, in four step forms beside the one-step
+  reading: 26,924 rows read the same, byte for byte -- #3064's kit of 26,836 and #3050's 63 among
+  them -- and 22 move CLEAN -> REPORT (390 cells): the issue's 16 rows whose truth runs (the four
+  patterns, `>` and `>>` to `/dev/stdou[t]` and `/dev/fd/[1]`; `cd /dev` then `> stdout` and `cd /`
+  then `> dev/stdout`; `ln -s /dev/stdout o` and `ln -s /proc/self/fd/1 o` then `> o`; eight
+  spellings through the own root, `-o` and a `tee` operand among them) and six twins (`2>&1 >
+  /dev/fd/[2]`, `2>&1 > /proc/self/root/dev/stderr`, `cd /proc/self/root` then `> dev/stdout`, `ln
+  -sf`, and the two prices, `( cd /dev )` and `cd /dev; cd /tmp`); none moves the other way or
+  changes a finding it had. The 160 cells of those rows that stay CLEAN are the pattern rows under
+  `sh` and the `cd` or link rows split so the `cd` or link is a step of its own. 1,996,230 cells, 0
+  failures. Limits, pinned: `-o o` behind a link (`stdout_named` asks the path alone), and a link to
+  a link (`sources` follows one). Sizes: shell_reader.py 466 -> 484.
+
 - **Workflow guard recognizes bounded, named download clients (#2829, adapter slice).** aria2c,
   Axel, FreeBSD `fetch`, HTTPie `http`/`https`, `gh release download`, network `git clone`, and a
   direct `pip download --no-deps` archive now bind the URL to the file or fetched tree their own
