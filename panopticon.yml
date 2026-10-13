@@ -683,6 +683,7 @@ groups:
       - scripts/workflow_annotate.py
       tests:
       - tests/test_workflow_guard.py
+      - tests/test_workflow_branch_option_state.py
       - tests/test_workflow_called.py
       - tests/test_workflow_function_gate_calls.py
       - tests/test_workflow_guard_reader_forms.py
