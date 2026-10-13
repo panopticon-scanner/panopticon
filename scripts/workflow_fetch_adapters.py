@@ -121,7 +121,7 @@ _PREFIX_UNREAD = object()
 def _prefixed(args, command, short_values="", long_values=(), short_flags="",
               long_flags=(), drop_long_values=(), drop_long_flags=(), informational=()):
     """Move bounded root options behind `command`; distinguish no command from an unread prefix."""
-    kept = []
+    kept: list = []
     i = 0
     all_long_values = set(long_values) | set(drop_long_values)
     all_long_flags = set(long_flags) | set(drop_long_flags)
