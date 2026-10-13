@@ -118,20 +118,212 @@ def _as_set(argv):
     return ["set"] + [word for option in rest for word in (sign, option)]
 
 
+def _body_words(argv):
+    """The command in a branch-body statement, before wrapper resolution."""
+    words = list(argv)
+    while words and (words[0] in ("then", "do", "else") or shell_reader.is_arm(words[0])):
+        words.pop(0)
+    return words
+
+
+def _static(word):
+    """Whether a word is independent of shell expansion."""
+    return not shell_reader.dynamic(word, shell_reader.has_substitution)
+
+
+def _literal_for(words):
+    """Whether this is a ``for`` over at least one wholly literal word."""
+    return (len(words) >= 4 and words[0] == "for" and words[2] == "in"
+            and all(_static(word) for word in words[3:]))
+
+
+def _case_subject(words):
+    """A literal ``case`` subject, or None where its value is not fixed."""
+    return str(words[1]) if (len(words) == 3 and words[0] == "case"
+                             and words[2] == "in" and _static(words[1])) else None
+
+
+def _arm_pattern(word):
+    """A case arm's pattern text, without the reader's structural marker."""
+    markers = getattr(word, "markers", {})
+    keys = [key for key, (kind, _value) in markers.items()
+            if kind == "arm" and word.startswith(key)]
+    if len(keys) != 1 or not word.endswith(")"):
+        return None
+    return str(word)[len(keys[0]):-1]
+
+
+def _safe_case_literal(text):
+    """Whether quote removal cannot change this case word's meaning."""
+    return all(character.isalnum() or character in "_./-" for character in text)
+
+
+def _plain_stage(stage):
+    """Whether a stage has no redirect or group syntax that can skip it."""
+    return (not stage.reads and not stage.writes and not stage.heredoc
+            and not stage.substitutions and not stage.group_open and not stage.group_close
+            and stage.stdin_heredoc is None and stage.pipe_input_fds == ("0",)
+            and stage.pipe_output_fds == ("1",))
+
+
+def _case_match(subject, word):
+    """True/False for a proved case match, None for an unread pattern."""
+    pattern = _arm_pattern(word)
+    if pattern is None or shell_reader.has_substitution(word):
+        return None
+    # Only an unquoted pathname-pattern token proves the catch-all. A quoted
+    # or escaped ``*`` has the same text after parsing but remains a plain
+    # token, and is a literal star to the shell.
+    if pattern == "*" and isinstance(word, shell_reader.Rewritten):
+        return True
+    if subject is None:
+        return None
+    # Quoting is gone at this layer.  Restrict exact matches to characters
+    # whose shell meaning is unchanged by quoting: in particular, treating a
+    # quoted ``|`` as an arm alternation or an unquoted ``~`` as literal would
+    # make a branch look certain when it is not.
+    return (subject == pattern
+            if _safe_case_literal(subject) and _safe_case_literal(pattern) else None)
+
+
+def _proved_branch_statements(stmts):
+    """Indexes inside every branch this bounded reader proves will run.
+
+    This is deliberately narrower than shell execution. It recognizes only
+    the three #2439 forms: ``if true``, a proved case arm, and ``for`` over a
+    literal non-empty list. Unknown, alternate, while and until bodies stay
+    fail-closed.
+    """
+    proved: set[int] = set()
+    stack: list[dict] = []
+    pending_if: list[tuple[bool, int]] = []
+    pending_loop: list[tuple[bool, int]] = []
+    # A redirect, pipeline, or background marker on compound syntax applies
+    # to the whole compound command. The flat reader sees it only at one end,
+    # so decline every branch proof rather than retroactively revoke indexes.
+    for statement in stmts:
+        if isinstance(statement, Inlined) or not statement.stages:
+            continue
+        head = statement.stages[0].argv
+        token = head[0] if head else None
+        if (token in _BRANCH_OPEN + _BRANCH_ALTERNATE + _BRANCH_CLOSE
+                or token in ("if", "for", "while", "until") or _arm(statement)):
+            if (len(statement.stages) != 1 or statement.separator == "&"
+                    or not _plain_stage(statement.stages[0])):
+                return proved
+    for index, statement in enumerate(stmts):
+        if isinstance(statement, Inlined):
+            continue
+        head = statement.stages[0].argv if statement.stages else []
+        token = head[0] if head else None
+        if token in _BRANCH_CLOSE:
+            while stack and stack[-1]["kind"] == "arm":
+                stack.pop()
+            if stack:
+                stack.pop()
+        elif token in _BRANCH_ALTERNATE:
+            if stack:
+                stack.pop()
+            if token == "else":
+                stack.append({"kind": "branch", "proved": False})
+            else:
+                pending_if.append((False, index))
+        elif token == "then":
+            candidate, opened = pending_if.pop() if pending_if else (False, -2)
+            stack.append({"kind": "branch", "proved": candidate and opened == index - 1})
+        elif token == "do":
+            candidate, opened = pending_loop.pop() if pending_loop else (False, -2)
+            stack.append({"kind": "loop", "proved": candidate and opened == index - 1})
+        elif token == "case":
+            entry = not index or stmts[index - 1].separator not in ("&&", "||")
+            stack.append({"kind": "case", "proved": entry,
+                          "subject": _case_subject(head), "seen": False})
+        elif _arm(statement):
+            if stack and stack[-1]["kind"] == "arm":
+                stack.pop()
+            if not stack or stack[-1]["kind"] != "case":
+                stack.append({"kind": "case", "proved": False,
+                              "subject": None, "seen": False})
+            case = stack[-1]
+            word = next(stage.argv[0] for stage in statement.stages
+                        if stage.argv and shell_reader.is_arm(stage.argv[0]))
+            # A prior arm can match under shell options the reader does not
+            # model (for example bash's nocasematch), so only the first arm
+            # can be proved from the flattened syntax alone.
+            sure = not case["seen"] and _case_match(case["subject"], word) is True
+            case["seen"] = True
+            stack.append({"kind": "arm", "proved": sure})
+
+        words = _body_words(head)
+        if words[:1] == ["case"] and token != "case":
+            stack.append({"kind": "case", "proved": True,
+                          "subject": _case_subject(words), "seen": False})
+        if words[:1] == ["if"]:
+            entry = not index or stmts[index - 1].separator not in ("&&", "||")
+            pending_if.append((entry and words == ["if", "true"], index))
+        elif words[:1] == ["for"]:
+            entry = not index or stmts[index - 1].separator not in ("&&", "||")
+            pending_loop.append((entry and _literal_for(words), index))
+        elif words[:1] in (["while"], ["until"]):
+            pending_loop.append((False, index))
+
+        if stack and all(frame["proved"] for frame in stack):
+            proved.add(index)
+
+        effective = command(head)
+        if effective[:1] in (["break"], ["continue"]):
+            for frame in reversed(stack):
+                if frame["kind"] == "loop":
+                    frame["proved"] = False
+                    break
+        # An arbitrary earlier body command can hide a loop transfer (a
+        # function call or ``eval break``).  The first executable statement
+        # is still certain to run; later statements are not proved here.
+        structural = ("if", "case", "for", "while", "until", "fi", "done", "esac", "elif")
+        if words and words[0] not in structural:
+            for frame in stack:
+                if frame["kind"] == "loop":
+                    frame["proved"] = False
+    return proved
+
+
+def _same_shell_setter(argv, bash):
+    """Whether static wrappers leave a written setter in this shell."""
+    words = _body_words(argv)
+    if not words or not all(_static(word) for word in words):
+        return False
+    return (words[0] == "set"
+            or bash and words[0] == "shopt"
+            or len(words) > 1 and words[0] in ("command", "eval") and words[1] == "set")
+
+
+def _static_eval(argv):
+    """Whether this argv reaches an expansion-free ``eval`` of one ``set``."""
+    words = _body_words(argv)
+    if not (len(words) > 1 and words[0] == "eval"
+            and all(_static(word) for word in words[1:])):
+        return False
+    inner = statements(" ".join(map(str, words[1:])))
+    return bool(len(inner) == 1 and len(inner[0].stages) == 1
+                and inner[0].separator not in ("&", "&&", "||")
+                and _body_words(inner[0].stages[0].argv)[:1] == ["set"])
+
+
 def _errexit_states(stmts, state, where, name="errexit", shell=None):
     """Whether `-e` (or `-o name`) holds as each of `stmts` runs, from `state`
     at the top, and after the last, in `shell` (a step's `shell:`, None for
     the default, or the name of a script's runner).
 
-    A `set` turns an option on only as a plain statement outside a branch,
-    group, list or background job, and off within its current subshell; visible
-    `( )` restores caller state. `shopt -s -o` and `shopt -u -o` become `set`
-    forms (`_as_set`, #2335, #2338); plain `shopt` turns on only under bash. A
-    setter behind `builtin`, `command` or `eval`, including an `eval` script
-    (#2335, review N-6), runs in this shell. The guard reads those as able only
-    to turn off, a fail-closed choice, though bash can turn them on."""
+    A `set` turns an option on as a plain statement outside a group, list or
+    background job, including in a branch `_proved_branch_statements` knows
+    runs; everywhere else it can only turn one off. Visible `( )` restores
+    caller state. `shopt -s -o` and `shopt -u -o` become `set` forms
+    (`_as_set`, #2335, #2338), and turn on only under bash. A static `command`
+    or `eval` around `set` runs that setter in this shell too; `builtin`, a
+    wrapped `shopt`, and a dynamic eval retain their fail-closed reading."""
     depth, states, subshells = 0, [], []
     bash = os.path.basename((shell or "bash").split()[0]) == "bash"
+    proved = _proved_branch_statements(stmts)
     for index, statement in enumerate(stmts):
         states.append(state)
         for stage in statement.stages:
@@ -141,8 +333,13 @@ def _errexit_states(stmts, state, where, name="errexit", shell=None):
                 argv = command(argv[1:])        # `builtin set`, `eval set`, either way round
             argv = _as_set(argv)
             if argv and argv[0] == "set":
-                plain = (not depth and not stage.group_open and index not in where
-                         and (stage.argv[0] == "set" or bash and stage.argv[0] == "shopt")
+                direct = bool(stage.argv and (stage.argv[0] == "set"
+                                              or bash and stage.argv[0] == "shopt"))
+                certain = ((index not in where and direct)
+                           or (index not in where or index in proved)
+                           and _same_shell_setter(stage.argv, bash) and _plain_stage(stage))
+                plain = (not depth and not stage.group_open
+                         and certain
                          and len(statement.stages) == 1
                          and statement.separator not in ("&", "&&", "||")
                          and not (index and stmts[index - 1].separator in ("&&", "||")))
@@ -150,7 +347,14 @@ def _errexit_states(stmts, state, where, name="errexit", shell=None):
                          else state and _errexit(argv[1:], state, name))
             for text in scripts(argv) if argv[:1] == ["eval"] else ():
                 inner = statements(text)
-                state = state and _errexit_states(inner, state, regions(inner), name, shell)[-1]
+                inner_state = _errexit_states(inner, state, regions(inner), name, shell)[-1]
+                plain = (not depth and not stage.group_open
+                         and (index not in where or index in proved)
+                         and _static_eval(stage.argv) and _plain_stage(stage)
+                         and len(statement.stages) == 1
+                         and statement.separator not in ("&", "&&", "||")
+                         and not (index and stmts[index - 1].separator in ("&&", "||")))
+                state = inner_state if plain else state and inner_state
             depth = max(0, depth + stage.group_open + stage.argv.count("{")
                         - stage.group_close - stage.argv.count("}"))
             for _close in range(min(stage.group_close, len(subshells))):
