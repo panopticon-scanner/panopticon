@@ -607,6 +607,24 @@ class TestBesideNeverInstead(unittest.TestCase):
             with self.subTest(rule=rule), (contextlib.nullcontext() if rule else words.as_before()):
                 self.assertEqual(["P", "Q"], texts(ws._after_dash_c(argv("sh +c P -c Q"))))
 
+    def test_a_walk_after_others_hands_on_what_it_would_alone(self):
+        # The search's walks share what they read (`walked`): a place an earlier walk read is handed on there, and a
+        # later walk that meets it reads on past it. `sh -${A}o -${B}o -x P Q`: the first walk reads `-x` (its `o` owes
+        # `-${B}o`) and hands on `P`; the walk from `-${B}o` starts its run of NAMEs at that `P` and hands on `Q` too.
+        self.assertEqual(["P", "Q"], texts(ws._after_dash_c(argv("sh -${A}o -${B}o -x P Q"))))
+        for pool, sizes in ((("-${A}o", "-$X", "+${A}o", "-x", "-co", "errexit", "P", "--"), (1, 2, 3)),
+                            (("-${A}o", "-x", "errexit", "P"), (4, 5))):
+            for tail in itertools.chain.from_iterable(itertools.product(pool, repeat=size) for size in sizes):
+                words_ = argv("sh " + " ".join(tail))             # read whole, as the guard reads a step
+                for plus, switch in itertools.product((False, True), (contextlib.nullcontext, words.as_before)):
+                    with switch():
+                        places, signed = ws._clusters(words_, plus)
+                        alone = []
+                        for place in places + (ws._clusters(words_, False)[0] if signed else []):
+                            for word in wo._past_options(words_, place):
+                                alone += [] if any(word is v for v in alone) else [word]
+                        self.assertEqual(list(map(id, alone)), list(map(id, ws._strings(words_, plus))), (tail, plus, switch))
+
     def test_the_first_pass_counts_the_values_as_main_counted_them(self):
         # `main`'s walk for a value counted an `o` or `O` in a word's TEXT, a name's letters among them, and the first
         # pass does still: `-$FOO` owes two there, so `$Y` is the value it finds. Counted by what is written, the
@@ -621,6 +639,12 @@ class TestBesideNeverInstead(unittest.TestCase):
         # and each walk keeps its reading there -- `main`'s operand first in both, as everywhere.
         words_ = argv("bash -rcfile -posix errexit 'P'")
         self.assertEqual((["P"], []), (texts(wo._past_options(words_, 1)), texts(wo._operand_past(words_, 1))))
+        # The rule's own branch of the first walk reads it so too, where `main`'s finds no operand: `-${X:-o}` writes
+        # no `o` (`main` counted the one in its text), so past `-posix`, read as its letters, `P` may be the string.
+        words_ = argv("bash -c$X -posix errexit -${X:-o} P")
+        self.assertEqual((["P"], []), (texts(wo._past_options(words_, 1)), texts(wo._operand_past(words_, 1))))
+        with words.as_before():
+            self.assertEqual([], texts(wo._past_options(words_, 1)))
         pool = [argv("sh " + word)[1] for word in ("-posix", "-norc", "-rcfile", "--norc", "errexit", "f", "P", "-c", "--", "-$X")]
         parted = 0
         for shell in ("bash", "dash"):
