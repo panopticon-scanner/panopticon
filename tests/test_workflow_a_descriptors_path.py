@@ -388,5 +388,81 @@ class TestWhatStaysForOtherIssues(unittest.TestCase):
                 self.assertEqual(CLEAN, marks("f() { %s; }\nf | sh" % (body % STREAM)))
 
 
+class TestAPathAPatternACdOrALinkGives(unittest.TestCase):
+    """#3051: a written path that names one of the stage's own descriptors only by a pattern bash expands
+    (`/dev/stdou[t]`), by the directory a `cd` gave the step (`cd /dev`, then `> stdout`), by a link of the
+    step's own (`ln -s /dev/stdout o`, then `> o`) or through `/proc/self/root`, the process's own root, read
+    CLEAN while every shell ran the download: the reader read a written path as written. `output_alias_fd`
+    now reads an unquoted pattern as the one listed name it matches, where it matches one (dash expands no
+    redirection's pattern: a price under `sh`), and drops the own root in front of a path as often as it
+    stands; and the stage's redirections ask `sources` for a written path as they do for a read one (#2919),
+    so a `cd` or a link the step MAY have made adds the descriptor's reading beside the file's, fail-closed as
+    the reads are -- a `cd` in a subshell, or one a later `cd` replaced, still counts, a price named below.
+    Marks on `main` (04e06272) were CLEAN for each of the issue's 16 rows whose truth runs."""
+
+    def last(self, text):
+        return shell_reader.statements(text)[-1].stages[0]
+
+    def test_a_pattern_bash_expands_to_one_listed_name(self):
+        for word, fd in (("/dev/stdou[t]", "1"), ("/dev/fd/[1]", "1"), ("/dev/std[e]rr", "2"), ("/proc/self/fd/[2]", "2"),
+                         ("/dev/fd/?", None), ("/dev/std*", None), ("/dev/stdou[x]", None), ("/dev/{stdout,x}", None)):
+            with self.subTest(word=word):
+                self.assertEqual(fd, shell_reader.output_alias_fd(self.last("curl U > %s" % word).writes[0]))
+        self.assertIsNone(shell_reader.output_alias_fd(self.last('curl U > "/dev/stdou[t]"').writes[0]))  # quoted: a file
+        for lines in ("%s > /dev/stdou[t] | sh", "%s > /dev/fd/[1] | sh", "%s >> /dev/stdou[t] | sh", "%s >> /dev/fd/[1] | sh",
+                      "%s 2>&1 > /dev/fd/[2] | sh"):
+            with self.subTest(lines=lines):
+                self.assertEqual(REPORT, marks(lines % STREAM))
+        for lines in ('%s > "/dev/stdou[t]" | sh', "%s > /dev/std* | sh", "%s > /dev/stdou[x] | sh", "%s > /dev/{stdout,x} | sh"):
+            with self.subTest(lines=lines):
+                self.assertEqual(CLEAN, marks(lines % STREAM))
+
+    def test_the_own_root_in_front_of_a_path_is_dropped_as_often_as_it_stands(self):
+        for word, fd in (("/proc/self/root/dev/stdout", "1"), ("/proc/self/root/dev/fd/1", "1"),
+                         ("/proc/self/root/proc/self/fd/1", "1"), ("/proc/thread-self/root/dev/stdout", "1"),
+                         ("/proc/self/root/proc/self/root/dev/stdout", "1"), ("/dev/../proc/self/root/dev/stdout", "1"),
+                         ("/proc/self/root//dev//stdout", "1"), ("/proc/self/root/dev/stderr", "2"),
+                         ("/proc/self/root/dev/null", None), ("/proc/self/root/tmp/x", None), ("/proc/self/root", None),
+                         ("/proc/self/rootx/dev/stdout", None), ("/proc/1/root/dev/stdout", None),
+                         ("/proc/self/task/self/fd/1", None)):
+            with self.subTest(word=word):
+                self.assertEqual(fd, shell_reader.output_alias_fd(word))
+        for lines in ("%s > /proc/self/root/dev/stdout | sh", "%s > /proc/self/root/dev/fd/1 | sh",
+                      "%s > /proc/self/root/proc/self/fd/1 | sh", "%s > /proc/thread-self/root/dev/stdout | sh",
+                      "%s > /proc/self/root/proc/self/root/dev/stdout | sh", "%s > /dev/../proc/self/root/dev/stdout | sh",
+                      "%s -o /proc/self/root/dev/stdout | sh", "%s 2>&1 > /proc/self/root/dev/stderr | sh"):
+            with self.subTest(lines=lines):
+                self.assertEqual(REPORT, marks(lines % STREAM))
+        self.assertEqual(REPORT, marks(DOUBLED % "/proc/self/root/dev/stdout"))
+        for lines in ("%s > /proc/self/root/dev/null | sh", "%s > /proc/self/root/tmp/x | sh", "%s > /proc/self/root | sh"):
+            with self.subTest(lines=lines):
+                self.assertEqual(CLEAN, marks(lines % STREAM))
+
+    def test_a_cd_or_a_link_of_the_steps_may_make_a_written_path_the_descriptor(self):
+        for before in ("cd /dev\n", "ln -s /dev/stdout stdout\n", "ln -sf /proc/self/fd/1 stdout\n",
+                       "( cd /dev )\n", "cd /dev\ncd /tmp\n"):             # the last two: may, a price
+            with self.subTest(before=before):
+                read = self.last(before + "curl U > stdout | sh")
+                self.assertTrue(read.stdout_to_pipe)
+                self.assertEqual(["stdout"], [str(word) for word in read.stdout_writes])    # the file kept beside
+                self.assertEqual(REPORT, marks(before + "%s > stdout | sh" % STREAM))
+        for lines in ("cd /\n%s > dev/stdout | sh", "cd /proc/self/root\n%s > dev/stdout | sh", "ln -s /dev/stdout o\n%s > o | sh",
+                      "ln -s /proc/self/fd/1 o\n%s > o | sh"):
+            with self.subTest(lines=lines):
+                self.assertEqual(REPORT, marks(lines % STREAM))
+        for before, written in (("cd /dev\n", "null"), ("cd /dev\n", "../tmp/x"), ("cd /tmp\n", "stdout"),
+                                ("ln -s /dev/null o\n", "o"), ("ln -s /tmp/x o\n", "o")):
+            with self.subTest(before=before, written=written):
+                self.assertFalse(self.last(before + "curl U > %s | sh" % written).stdout_to_pipe)
+                self.assertEqual(CLEAN, marks(before + "%s > %s | sh" % (STREAM, written)))
+
+    def test_the_limits_pinned(self):
+        # `-o o` through a link: `stdout_named` asks the path alone, without the step's links or `cd`s. A link to
+        # a link: `sources` follows one link. Both read CLEAN while the download runs.
+        for lines in ("ln -s /dev/stdout o\n%s -o o | sh", "ln -s /dev/stdout o\nln -s o p\n%s > p | sh"):
+            with self.subTest(lines=lines):
+                self.assertEqual(CLEAN, marks(lines % STREAM))
+
+
 if __name__ == "__main__":
     unittest.main()
