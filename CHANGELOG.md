@@ -7,6 +7,28 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard binds downloaded files whose bytes become a shell program (#2428).** After
+  `curl -o tool …`, `eval "$(cat tool)"`, `sh -c "$(cat tool)"`, and
+  `echo "$(cat tool)" | sh` reported only through a generic dynamic-program fallback, which also
+  reported the unrelated `cat other.sh` twin and could not name the file a checksum must gate;
+  `bash <(cat tool)` remained CLEAN. A new file-reader layer now carries the exact inputs of
+  `cat`, `head`, `tail`, `sed`, `tr`, and Bash's `$(< file)` shorthand from a command substitution
+  to the `eval`/`-c`/printed program that executes their bytes. The same source binding follows an
+  input process substitution used as a shell or `source` script operand. A checksum of that file
+  ahead of the handoff clears it and one after the handoff does not. The existing generic verdict
+  remains beside the exact source-bound verdict so the change is a strict reporting superset; an
+  unrelated reader beside a download keeps that generic verdict, while a job with no download
+  stays CLEAN. Narrowing that pre-existing generic over-report is tracked separately in #3059.
+  Dynamic reader paths, unsupported reader arguments, output
+  discarded inside the substitution, in-place `sed`, non-stdin descriptors, and a reader file an
+  earlier redirect or bounded writer generated retain the generic fail-safe. `shell_text.Process`
+  now records `<` or `>`: the input form binds, while `bash >(cat tool)` stays CLEAN as runtime
+  does; the older printer rule's documented output-side over-report is unchanged. The narrower
+  `bash < <(cat tool)` stdin-redirection form remains a pre-existing CLEAN gap. A 16-row
+  no-network probe under GNU Bash 5.2.21, GNU Bash 3.2.57, and dash marked the payload for the
+  direct command-substitution forms under all three, and for the process-substitution target
+  under both bashes; dash refuses that syntax. It never marked the output-side or unrelated-file
+  controls; the failing checksum control ran and stopped the payload under every shell.
 - **Workflow reader: `cat` reads a download on redirected standard input (#2884; the pipe half of
   #2793).** `cat < tool | sh`, `cat 0< tool | sh`, `cat 3< tool <&3 | sh` and
   `cat 3<> tool <&3 | sh` read CLEAN although all four run the download: 32 of 32 runtime cells
