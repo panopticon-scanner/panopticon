@@ -104,6 +104,16 @@ def beside(read, refused=()):
     return mains, (mains if heard[0] is None else found)
 
 
+def passes(read, first, refused=()):
+    """`beside` over a job's two passes -- `read()` under `first()` (`mains_answer`), then alone --
+    each reading a list of the two: `main`'s, then the rule's, the SAME list where it answered nothing."""
+    def both():
+        with first():
+            mains = read()
+        return [mains, read()]
+    return beside(both, refused)
+
+
 # The characters of a parameter's NAME: ASCII letters and `_`, and digits after the first.
 _LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_"
 

@@ -105,13 +105,21 @@ def under(text, digits="0c"):
     return found
 
 
+def both(read, first, refused=()):
+    """The job's two passes as `workflow_option_words.passes` reads them, the floor taken out: the rule's reading alone."""
+    with first():
+        mains = read()
+    found = [mains, read()]
+    return found, found
+
+
 def readings(text):
     """(the job's marks, the rule's reading ALONE -- the job's floor taken out -- and the job's with the rule off)."""
     job = alone = before = ""
     for shell in SHELLS:
         step = [wg.Step("step", text, shell)]
         job += "R" if wg.job_defects(step) else "C"
-        with mock.patch.object(wg, "beside", lambda read, refused=(): (read(),) * 2):
+        with mock.patch.object(wg, "passes", both):
             alone += "R" if wg.job_defects(step) else "C"
         with words.as_before():
             before += "R" if wg.job_defects(step) else "C"
