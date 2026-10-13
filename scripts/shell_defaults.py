@@ -18,8 +18,8 @@ import contextvars
 import os
 import re
 
-from shell_tokens import derived, readable, spelled
-from shell_wrappers import WRAPPERS, Defaulted, Rewritten
+from shell_tokens import derived, has_substitution, readable, spelled
+from shell_wrappers import WRAPPERS, Defaulted, Rewritten, dynamic, set_to, unwrap
 
 
 # The shells whose options and program word a pattern may rewrite into a `-c`
@@ -45,9 +45,14 @@ _VANISHING = re.compile(r"\$\{(!?[A-Za-z_]\w*(?:\[[^]]*\])?|[0-9]+|[@*!-])(:?\+|
                         r"[^{}]*\}([^\s{}$`'\"\\*?[]*)")
 # The halves `_command_result` reads of the command words bash may expand to nothing (`folds`): the
 # ones this fold reads empty -- none, as `main` reads them, then all (`_ALL`), then each other set of
-# those whose halves read apart, by place (`_half`, #2929) -- and whether one with both halves was met.
-_HALVES: dict = {"empty": frozenset(), "words": {}, "both": False, "on": False}
+# those whose halves read apart, by place (`_half`, #2929) -- and whether one with both halves was met,
+# in one of `main`'s folds ("both") or only in the folds that read the second walk's newer words as nothing
+# ("both_dropped", `_drops`).
+_HALVES: dict = {"empty": frozenset(), "words": {}, "both": False, "on": False, "drops": False, "both_dropped": False}
 _ALL = frozenset({None})
+# In a fold's set (`_masks`), the mark of the folds that read the second walk's newer words as nothing (`_drops`):
+# each of the others once more, where one of them met such a word ("drops").
+_DROPPED = "dropped"
 # The command words bash may expand to nothing whose every reading the folds read; one more reads as
 # a command the guard cannot read, wherever it runs (#2929).
 _HALF_CAP = 3
@@ -71,9 +76,43 @@ _OPTIONAL = re.compile(r"\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*(?::?[-+=]([^{}$`'\"\\\
 _INTERPRETERS = ("python", "python3", "perl", "ruby", "node", "php", "pwsh")
 _FETCHERS = ("curl", "wget")
 OPTIONAL_NEXT = (*_SHELLS, *WRAPPERS, *_INTERPRETERS, *_FETCHERS)
+# The second walk's own, beside `_OPTIONAL` (#3002, #3007, and the limits #2997's fix named): the other words that
+# are nothing with their name unset. A positional parameter, `$@`, `$!` with no background job; an element or all of
+# an array, an indirection; a pattern taken off or replaced, a case change, a substring, an `@` transformation; an
+# alternate, whatever it holds; a default that is only blanks, or only one more name that may be unset. None holds a
+# blank but that default and a substring counted from the end (`${S: -1}`): a word the reader kept whole for its two
+# halves is `_command_result`'s to read. `$0` is the script's name, and `$*` a pattern `main` reports. Two that no
+# shell makes nothing of are left out: a default that would assign to a positional parameter, `$@` or `$*`
+# (`${1:=}`: bash and dash both refuse it), and a case change or a transformation of an indirection (`${!S^^}`,
+# `${!S@Q}`: bash 5.2.21 refuses the unset name, and 3.2.57 has neither).
+_NOTHING = re.compile(
+    r"\$(?:[1-9@!]|\{(?![0-9@*]+:?=|![A-Za-z_]\w*[\^,@])(?:!?(?:[A-Za-z_]\w*(?:\[[^]{}\s]*\])?|[1-9][0-9]*)|[@*])"
+    r"(?:(?:##?|%%?|//?|\^\^?|,,?|:[0-9]|@[A-Za-z]|:?\+)[^{}\s]*|:[ \t]+-?[0-9][^{}\s]*"
+    r"|:?[-=](?:[ \t\n]*|\$[A-Za-z_]\w*|\$\{[A-Za-z_]\w*(?::?[-=])?\}))?\})")
+# A word that stood whole in double quotes (`double`, `shell_reader._stage`) and that bash makes no word of all the
+# same: every positional parameter or every element of an array (`"$@"`, `"${a[@]}"`), cut, changed or replaced
+# by an alternate, and an array's keys (`"${!a[@]}"`). Not with a default, whose word the quotes keep where there
+# is no element (`"${a[@]:-}"`); and not in single quotes, where `$@` is two characters.
+_SPLAT = re.compile(r"\$(?:@|\{(?:![A-Za-z_]\w*\[@\]|(?:@|[A-Za-z_]\w*\[@\])"
+                    r"(?:(?:##?|%%?|//?|\^\^?|,,?|:[0-9]|@[A-Za-z]|:?\+)[^{}\s]*)?)\})")
+# The printers a word that is nothing may stand in front of (#3007): what they write is what a shell behind the
+# pipe runs (`workflow_printers`), and a `cat` hands on the file it reads.
+PRINTERS_NEXT = ("echo", "printf", "cat")
 
 
-def _optional(argv, nothing=False):
+def _drops():
+    """Whether this fold reads as nothing the words the second walk alone drops since #3002 -- and reads on from
+    a default that names a wrapper (#3007, #3038): never in the main pass or outside `shell_command.folds`, and in
+    the second walk only in the folds `_masks` adds once a fold asked, which this notes. So every fold `main` reads
+    is read as it was, and the guard REPORTs where either reading does: a check one of these words stands in front
+    of is credited in the folds that drop the word, and never takes a report from the ones that keep it (#3037)."""
+    if not WALKED_DEFAULTS.get() or not _HALVES["on"]:
+        return False
+    _HALVES["drops"] = True
+    return _DROPPED in _HALVES["empty"]
+
+
+def _optional(argv, nothing=False, drops=None):
     """How many leading words of `argv` bash may drop in front of a name the
     reader knows (`_OPTIONAL`, #2472): each unquoted, one reference, with no
     default or one that is itself a wrapper (`${X:-sudo}`); 0 where the word
@@ -84,12 +123,25 @@ def _optional(argv, nothing=False):
     name unset `${S:+echo}` is nothing, as `${S:+sudo}` is. And it knows
     `builtin` and `jobs` as it knows `eval`, in the folds that read them through
     (#2665, #2836); behind `builtin` (`nothing`) it counts the words that may each be
-    nothing, whatever follows them, as bash looks up the first word it keeps there."""
+    nothing, whatever follows them, as bash looks up the first word it keeps there.
+    In folds of its own (`_drops`) the second walk drops the other words that are nothing with their name unset
+    too (`_NOTHING`, and a quoted `"$@"`: `_SPLAT`), and knows a printer behind such words, and a word the reader
+    kept whole, which `_command_result` then reads as it reads one that stands first (#3002, #3007); there a
+    default naming a wrapper is a word a builtin runs behind where the job's steps set its name so (`_set`,
+    #3038). `drops` is whether this count reads so: unsaid, it is the count that does where the two differ and
+    the fold is one of those, and the count `main`'s folds read everywhere else."""
     walked = WALKED_DEFAULTS.get()
+    if drops is None:
+        count = _optional(argv, nothing, False)
+        return more if walked and (more := _optional(argv, nothing, True)) != count and _drops() else count
     count, loose = 0, True
     while count < len(argv) - 1:
         word = argv[count]
         match = None if getattr(word, "kept", False) else _OPTIONAL.fullmatch(word)
+        if not match and drops and (_SPLAT.fullmatch(word) if getattr(word, "double", False)
+                                    else not getattr(word, "kept", False) and _NOTHING.fullmatch(word)):
+            count += 1                          # (#3002) nothing with its name unset: a builtin runs behind it too
+            continue
         if not match:
             break
         if match[1] and os.path.basename(match[1]) not in WRAPPERS:
@@ -97,15 +149,17 @@ def _optional(argv, nothing=False):
             # word stays where its name is unset. An alternate's does not, so the second walk goes on
             # past one -- but for one the reader reads as the command it names (`_shell_default`: a
             # shell, a fetcher, `eval`). `$T ${X:+sh} -c P` runs `sh -c P` where `X` is set, and reads
-            # so, as `main` read it.
-            if not walked or word[-len(match[1]) - 2] != "+" or _shell_default(word):
+            # so, as `main` read it. And past a default whose name the job's steps set to `command` or to
+            # nothing (`_set`, #3038): the word is that, whatever the default names.
+            if not (drops and _set(word, match[1])) and (
+                    not walked or word[-len(match[1]) - 2] != "+" or _shell_default(word)):
                 break
         # (#2997) A builtin runs behind a word that is NOTHING with its name unset -- a bare reference, an
         # empty default, an alternate (`${S:+sudo}`) -- or that is `command`, by name or by path (macOS has
         # a `/usr/bin/command` that runs one). No wrapper that execs can run a builtin: `sudo eval 'P'` and
         # `env . ./t` run nothing of `P` or of `t`.
         loose = loose and (not match[1] or word[-len(match[1]) - 2] == "+"
-                           or os.path.basename(match[1]) == "command")
+                           or os.path.basename(match[1]) == "command" or drops and _set(word, match[1]))
         count += 1
     if nothing:
         return count if loose else 0
@@ -114,7 +168,37 @@ def _optional(argv, nothing=False):
     if count and loose and walked and (name in ("eval", ".", "source")                        # (#2997)
                                        or name in ("builtin", "jobs") and _through()):       # (#2665, #2836)
         return count
+    if count and drops and (getattr(argv[count], "whole", None) is not None                  # (#3002)
+                            or os.path.basename(argv[count]) in PRINTERS_NEXT):               # (#3007)
+        return count
+    if drops and count > 1 and _shell_default(argv[count - 1], argv[count - 1:]):
+        return count - 1                        # (#3007) the words in front of a default that reads on as its wrapper
     return count if count and os.path.basename(name) in OPTIONAL_NEXT else 0
+
+
+def _set(word, default):
+    """Whether a builtin runs behind `word`, a default, by what the job's steps set its name to
+    (`shell_wrappers.set_to`, #3038): `command` or `builtin` -- or nothing, where no colon stands in the word and
+    bash then makes no word of it (`S=; ${S-sudo} eval 'P'`). An alternate is its own word where its name is set."""
+    name = re.match(r"\$\{([A-Za-z_]\w*)", word)
+    if not name or word[-len(default) - 2] == "+":
+        return False
+    return set_to("runs", name[1]) or word[-len(default) - 3] != ":" and set_to("empty", name[1])
+
+
+# A default of several words that names a wrapper, where the job's steps set its name to `command` or `builtin`
+# (#3038): the word is that one there and a builtin runs behind it, so the folds read it as they read a word bash
+# may expand to nothing -- its own words, and the words behind it alone. The groups are `_VANISHING`'s.
+_SET_DEFAULT = re.compile(r"\$\{([A-Za-z_]\w*)(:?[-=])[^{}]*\}([^\s{}$`'\"\\*?[]*)")
+
+
+def _vanishing(whole):
+    """`_VANISHING`'s reading of a command word the reader kept whole, or -- the second walk's -- `_SET_DEFAULT`'s."""
+    found = _VANISHING.fullmatch(whole)
+    if not found and WALKED_DEFAULTS.get() and (default := _SET_DEFAULT.fullmatch(whole)) and set_to("runs", default[1]):
+        words = _default_words(whole)
+        return default if words and os.path.basename(words[0]) in WRAPPERS and _drops() else None
+    return found
 
 
 # Whether a ONE-WORD default is read as the command it names where that is a fetcher or `eval`, as
@@ -145,14 +229,26 @@ def _through(mains=False):
     return _THROUGH["on"]
 
 
-def _shell_default(word):
+def _shell_default(word, argv=()):
     """The words a command word that is a one-word default runs as, where the default names a shell
     (`${X:-sh}`: `sh`) or, in the second walk (`WALKED_DEFAULTS`, #2963), a fetcher or `eval`; else
     None: `"${SH:-bash}"` is `bash` (#2337), and `"${SH:- bash}"`, `${X:-"bash -s"}` and
     `${X:-bash\\ -s}` name no shell. A default holding a blank the reader marks is read whole
     (`_default_words`). One naming `builtin` or `jobs` is that word in the folds that read it through (#2665,
-    #2836)."""
+    #2836). With `argv`, the stage the word starts, the second walk reads a default naming a WRAPPER too
+    (#3007): `_optional` drops one in front of a name it knows, and in front of the wrapper's own words
+    (`${SUDO:-sudo} -E sh -c 'P'`) nothing read the command behind them. It is that wrapper where it takes one
+    of the words for itself and they read on to a command word that is written out -- but `time`, a reserved
+    word no expansion makes, an alternate, which is nothing with its name unset, and a word the step's table
+    holds another literal for (`kept`). In the folds that read the second walk's newer words (`_drops`); a `$`
+    word where the wrapper's words end stays a command the guard does not follow, as behind a written wrapper
+    it is one it cannot read."""
     default = _DEFAULTS.fullmatch(word)
+    if default and argv and WALKED_DEFAULTS.get() and word[-len(default[1]) - 2] != "+" and (
+            head := os.path.basename(default[1])) in WRAPPERS and head != "time" and not getattr(word, "kept", False):
+        inner, reason = unwrap([default[1], *argv[1:]], head, has_substitution)
+        return [default[1]] if inner and not reason and len(inner) < len(argv) - 1 and not dynamic(
+            inner[0], has_substitution) and _drops() else None
     known = (*_SHELLS, *_FETCHERS, "eval") if WALKED_DEFAULTS.get() else _SHELLS
     return [default[1]] if default and (os.path.basename(default[1]) in known          # (#2665, #2836)
                                         or default[1] in ("builtin", "jobs") and _through()) else None
@@ -218,19 +314,27 @@ def _half(whole, differs):
     (`shell_tokens._Parse.whole`), the same in every parse of that place and never its text."""
     if not _HALVES["on"]:
         return False, None
-    _HALVES["both"], words, past = True, _HALVES["words"], None
+    _HALVES["both_dropped" if _DROPPED in _HALVES["empty"] else "both"], words, past = True, _HALVES["words"], None
     if differs and whole.at not in words and len(words) >= _HALF_CAP:
         past = "`%s` is a command word bash may expand to nothing beside %d more, whose readings the guard does not combine" % (
             readable(whole), _HALF_CAP)
     elif differs:
         words.setdefault(whole.at)
-    return _HALVES["empty"] is _ALL or differs and whole.at in _HALVES["empty"], past
+    return None in _HALVES["empty"] or differs and whole.at in _HALVES["empty"], past
 
 
 def _masks():
     """The sets of command words bash may expand to nothing a fold reads empty, in order: none, all
     where one has both halves, then each other set of those whose halves read apart -- of the first
-    `_HALF_CAP` alone, so the folds never grow past 8 (#2929)."""
+    `_HALF_CAP` alone, so the folds never grow past 8 (#2929). Where a fold met a word the second walk's newer
+    reading drops (`_drops`), each of those once more with `_DROPPED` in it: the same halves, and such words
+    read as nothing -- 16 at most, and `main`'s own all among them. `main`'s readings take the sets of halves
+    only where one of `main`'s folds met a word with both: one met behind a dropped word alone is read in the
+    dropped words' folds, and every fold of `main`'s would read the same whatever its set."""
     words = list(_HALVES["words"])[:_HALF_CAP]
     some = [frozenset(word for at, word in enumerate(words) if bits >> at & 1) for bits in range(1, (1 << len(words)) - 1)]
-    return [frozenset()] + ([_ALL] + some if _HALVES["both"] else [])
+    masks: list[frozenset] = [frozenset()] + ([_ALL] + some if _HALVES["both"] else [])
+    if not _HALVES["drops"]:
+        return masks
+    dropped: list[frozenset] = [frozenset()] + ([_ALL] + some if _HALVES["both"] or _HALVES["both_dropped"] else [])
+    return masks + [mask | {_DROPPED} for mask in dropped]

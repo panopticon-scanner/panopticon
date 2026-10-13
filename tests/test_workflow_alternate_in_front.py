@@ -24,8 +24,9 @@ Named limits, pinned in `TestThePrice` and `TestWhatStaysForOtherIssues`. The al
 step did to its name, as `main` drops `$S` in front of a shell: `S=1` makes `${S:+echo} sh -c 'P'` print its
 words, and the row reports. An alternate naming a shell, a fetcher or `eval` is read as that command and no other
 way: `${X:+sh} curl ... | sh` runs the pipe with `X` unset, and reads CLEAN as it did. An alternate of what is no
-name (`${1:+W}`), of an indirection or of an element, and one whose word holds a reference, is not dropped in
-front of a shell on `main` either, and is not this fix's.
+name (`${1:+W}`), of an indirection or of an element, and one whose word holds a reference, was not dropped in
+front of a shell on `main` either, and was not this fix's: #3002's batch drops those since
+(`tests/test_workflow_words_that_are_nothing.py`).
 """
 import unittest
 
@@ -284,14 +285,15 @@ class TestWhatStaysForOtherIssues(unittest.TestCase):
             with self.subTest(text=text[:22]):
                 self.assertEqual(CLEAN, marks(text))
 
-    def test_an_alternate_of_what_is_no_name_or_whose_word_holds_a_reference(self):
+    def test_an_alternate_of_what_is_no_name_or_whose_word_holds_a_reference_was_dropped_with_3002(self):
         # `${1:+W}`, `${!S:+W}`, `${S[0]:+W}` and `${S:+$T}` are nothing in a step's script too: `_OPTIONAL`
-        # reads a name and a literal word, and `main` drops none of them in front of a shell. Truth: runs under
+        # reads a name and a literal word, and `main` dropped none of them in front of a shell. #3002's batch
+        # moved these rows: the second walk drops them now, in folds of its own. Truth: runs under
         # all sixteen for the first and the last; an element under bash; an indirection under bash 3.2.57.
         for front in ("${1:+echo}", "${!S:+echo}", "${S[0]:+echo}", "${S:+$T}"):
             for name in ("a shell's string", "eval"):
                 with self.subTest(front=front, runner=name):
-                    self.assertEqual(CLEAN, marks(step(front, RUNNERS[name])))
+                    self.assertEqual(NOW, marks(step(front, RUNNERS[name])))
 
 
 if __name__ == "__main__":

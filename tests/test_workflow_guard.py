@@ -188,6 +188,27 @@ class TestFetchParsing(unittest.TestCase):
             Fetch("wget", "https://example.test/i.sh", None, ("bash",)),
             self.one("wget -qO- https://example.test/i.sh | bash\n"))
 
+    def test_2916_explicit_stdout_is_bound_to_the_adjacent_tee_file(self):
+        for fetch in (
+                "wget -qO- https://example.test/i.sh",
+                "wget -O - https://example.test/i.sh",
+                "curl -fsSL -o - https://example.test/i.sh",
+        ):
+            with self.subTest(fetch=fetch):
+                script = fetch + " | tee tool\nsh tool\n"
+                self.assertEqual("tool", self.one(script).dest)
+                self.assertIsNotNone(wg.fetch_exec_defect(script))
+
+    def test_2916_discard_and_inferred_dash_file_do_not_bind_the_tee(self):
+        for fetch in (
+                "curl -fsSL -o /dev/null https://example.test/i.sh",
+                "wget https://example.test/-",
+        ):
+            with self.subTest(fetch=fetch):
+                script = fetch + " | tee tool\nsh tool\n"
+                self.assertNotEqual("tool", self.one(script).dest)
+                self.assertIsNone(wg.fetch_exec_defect(script))
+
     def test_wgets_lowercase_o_is_a_LOG_file_not_the_destination(self):
         # curl's `-o` and wget's `-o` are different options; one parser that
         # treats them alike writes the log path into the guard's dest field.
@@ -1165,6 +1186,29 @@ class TestADownloadRunFromADollarSpelledRedirection(unittest.TestCase):
         here_string = self.job(self.DYNAMIC_GET + "sh <<< 'x.sh'\n")
         self.assertEqual(1, len(here_string), here_string)
         self.assertNotIn("from standard input", here_string[0])
+
+    def test_2792_other_named_shells_run_a_download_from_stdin_or_a_file(self):
+        for reader in ("csh", "tcsh", "fish", "mksh"):
+            for operand in ("< x.sh", "x.sh"):
+                script = self.GET + "%s %s\n" % (reader, operand)
+                for shell in (None, "bash", "sh", "bash {0}", "sh {0}"):
+                    with self.subTest(reader=reader, operand=operand, shell=shell):
+                        found = wg.job_defects([wg.Step("step", script, shell)])
+                        self.assertEqual(1, len(found), found)
+                        self.assertIn("running it under `%s`" % reader, found[0][1])
+
+    def test_2792_unknown_data_reader_stays_clean_and_dash_c_keeps_the_known_price(self):
+        self.assertEqual([], self.job(self.GET + "awk < x.sh\n"))
+        # `sudo -s` was another CLEAN row when #2792 was filed. Current main
+        # already refuses the wrapper because it has no named command.
+        sudo = self.job(self.GET + "sudo -s < x.sh\n")
+        self.assertEqual(1, len(sudo), sudo)
+        self.assertIn("cannot read command behind wrapper", sudo[0])
+        # Like the existing `sh -c` reading, this is deliberately fail-closed:
+        # the command string may leave the redirected program unread.
+        found = self.job(self.GET + "csh -c 'echo safe' < x.sh\n")
+        self.assertEqual(1, len(found), found)
+        self.assertIn("running it under `csh` from standard input", found[0])
 
     def test_a_check_keeps_its_exact_spelling(self):
         self.assertEqual([], self.job(
