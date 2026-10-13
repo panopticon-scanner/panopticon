@@ -343,30 +343,64 @@ _CARRIES = ("carries %s in `$%s` and hands it to `%s`%s, so there is no file to 
 _READS_CARRIES = ("carries %s in `$%s` and hands it to `%s`%s in this guard's conservative "
                   "reading, so there is no file to check -- download it to a file, `sha256sum "
                   "-c` that file, then run it")
-_NAMED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=")
+_NAMED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(\+?)=")
 _WHOLE = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
 _DECLARES = ("export", "local", "declare", "typeset", "readonly")
 
 
-def _held(word):
-    """The name of the variable `word` is whole (`$x`, `${x}`), or ''."""
-    match = _WHOLE.fullmatch(word)
-    return (match[1] or match[2]) if match else ""
+def _held(word, embedded=False, names=None):
+    """The held variable named whole by `word`, or embedded in its program text."""
+    matches = _WHOLE.finditer(word) if embedded else (_WHOLE.fullmatch(word),)
+    for match in matches:
+        if match is None:
+            continue
+        outside = word[:match.start()] + word[match.end():]
+        if embedded and outside and not outside.strip():
+            continue                    # padding alone keeps #2483's existing answer
+        name = match[1] or match[2]
+        if names is None or name in names:
+            return name
+    return ""
 
 
 def _prints(stage):
-    """The words an `echo` or `printf` stage writes to its standard output."""
+    """The words a supported printer stage writes to its standard output."""
     argv = command(stage.argv)
+    if (argv and os.path.basename(argv[0]) == "cat"
+            and stage.stdin_heredoc is not None):
+        return [stage.stdin_heredoc[0]]
     return argv[1:] if argv and os.path.basename(argv[0]) in ("echo", "printf") else []
+
+
+def _assignment_fetch(value):
+    """The stdout fetch held by one substitution assignment value, or None."""
+    if not (shell_reader.has_substitution(value)
+            and shell_reader.readable(value) == "$(...)"):
+        return None
+    substitutions = [text for kind, text in getattr(value, "markers", {}).values()
+                     if kind == "subst"]
+    if len(substitutions) != 1:
+        return None
+    text = substitutions[0]
+    if fetch := stdout_fetch(text):
+        return fetch
+    inner = list(statements(text))
+    first = inner[0] if inner and inner[0].separator == "||" else None
+    stage = first.stages[0] if first and len(first.stages) == 1 else None
+    argv = command(stage.argv) if stage else []
+    tool = os.path.basename(argv[0]) if argv else ""
+    fetch = parse_fetch(tool, argv[1:], stage, None) if tool in FETCHERS else None
+    return (fetch if stage is not None and fetch and fetch.url and fetch.dest is None
+            and stage.stdout_to_pipe else None)
 
 
 def _assigned(stage, held):
     """{name: (download, certain), or None} for what this stage assigns,
     in whatever shell runs it (`carried` weighs that). A bare assignment or a
     declaration's (`export x=...`) holds one when its value is the stage's one
-    substitution and that is one fetch to standard output (`stdout_fetch`), or
-    is a variable that holds one, whole (`y="$x"`); `unset` empties one,
-    `unset -f` a function."""
+    substitution and that is one fetch to standard output (`_assignment_fetch`), or
+    is a variable that holds one, whole (`y="$x"`); `+=` holds a fetch on its
+    right side; `unset` empties one, `unset -f` a function."""
     argv = command(stage.argv)
     name = os.path.basename(argv[0]) if argv else ""
     if name == "unset":
@@ -376,10 +410,11 @@ def _assigned(stage, held):
         match = _NAMED.match(word)
         if match:
             value = shell_reader.derived(word[match.end():], word)
-            whole = (len(stage.substitutions) == 1 and shell_reader.has_substitution(value)
-                     and shell_reader.readable(value) == "$(...)")
-            fetch = stdout_fetch(stage.substitutions[0]) if whole else None
-            now[match[1]] = (fetch, True) if fetch else held.get(_held(value))
+            fetch = _assignment_fetch(value)
+            if fetch:
+                now[match[1]] = (fetch, True)
+            elif not match[2]:
+                now[match[1]] = held.get(_held(value))
     return now
 
 
@@ -388,10 +423,11 @@ def carried(stmts, executors):
     Follows `$x`/`${x}` through `eval`, `-c`, candidate programs, supported printers, piped
     compounds, and executor substitutions; each substitution has its own assignment state.
     Uncertain scope, status, or quote loss keeps a name held and identifies the guard's reading
-    (#2424). Saved files, compound assignments, `+=`, and embedded `$x` are not followed."""
+    (#2424). Saved files and compound assignments are not followed."""
     held: dict[str, tuple[Fetch, bool] | None] = {}
     out, branches, depth, subshells = [], regions(stmts), 0, 0
     child_values: dict[str, tuple[int | None, bool, bool]] = {}  # boundary, introduced, uncertain
+    inlined_handoffs: set[str] = set()          # a flattened child owns its wrapper's same handoff
     for index, statement in enumerate(stmts):
         escaped = {key for key, (boundary, _introduced, _uncertain) in child_values.items()
                    if boundary is None and not isinstance(statement, Inlined)
@@ -407,22 +443,29 @@ def carried(stmts, executors):
                   if printed and piped else None)
             if printed and piped and not to and not where and position == len(inner.stages) - 1:
                 to = compound_stream_consumer(stmts, index, executors)
-            words = scripts(argv) + (printed if to else []) + (
-                [] if shell_reader.unresolved_wrapper(stage.argv) else candidates(argv)[1])
+            words = [(word, getattr(word, "kept", False)) for word in scripts(argv)]
+            words += [(word, True) for word in printed if to]
+            words += [(word, getattr(word, "kept", False)) for word in (
+                [] if shell_reader.unresolved_wrapper(stage.argv) else candidates(argv)[1])]
             if argv and os.path.basename(argv[0]) in executors:
-                words += [w for text in stage.substitutions for inside in statements(text)
-                          for w in _prints(inside.stages[-1])]
-            for word in words:
-                kept = held.get(_held(word))
+                words += [(word, True) for text in stage.substitutions
+                          for inside in statements(text) for word in _prints(inside.stages[-1])]
+            for word, embedded in words:
+                available = {name for name, value in held.items() if value and (
+                    isinstance(statement, Inlined) or name not in inlined_handoffs)}
+                variable = _held(word, embedded=embedded, names=available)
+                kept = held.get(variable)
                 if kept:
                     fetch, certain = kept
                     consumer = to or [w for w in argv if getattr(w, "spelled", w) is not word
                                       and not shell_reader.is_marker(w)]
-                    scope = child_values.get(_held(word))
+                    scope = child_values.get(variable)
                     certain = certain and not (scope and scope[2]) and "-c" not in consumer
                     out.append((index, (_CARRIES if certain else _READS_CARRIES) % (
-                        shell_reader.readable(fetch.url), _held(word),
+                        shell_reader.readable(fetch.url), variable,
                         " ".join(shell_reader.readable(w) for w in consumer), where)))
+                    if isinstance(statement, Inlined):
+                        inlined_handoffs.add(variable)
                     break
         if len(statement.stages) == 1:
             stage = statement.stages[0]
@@ -449,6 +492,8 @@ def carried(stmts, executors):
             depth = max(0, depth + stage.group_open + stage.argv.count("{")
                         - stage.group_close - stage.argv.count("}"))
             subshells = max(0, subshells + stage.group_open - stage.group_close)
+        if not isinstance(statement, Inlined):
+            inlined_handoffs.clear()
     return out
 
 
