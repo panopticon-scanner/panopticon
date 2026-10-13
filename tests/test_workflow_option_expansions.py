@@ -520,14 +520,14 @@ class TestAnExpansionInFrontOfAnOptionWord(unittest.TestCase):
 
     def test_where_the_word_stands(self):
         # Behind an option, a long option, a value's name, the cluster; two of them; past a FILE that runs its
-        # parameter; in front of a value, and of a word the second walk reads as one that may vanish (`$Y`) or a
-        # FILE it skips. Truth: runs, all sixteen, every one.
+        # parameter -- where the second walk alone reads on past a word the shell would refuse (`-K`); in front of a
+        # value, and of a word that may vanish (`$Y`) or a FILE the value's search skips. Truth: runs, all sixteen.
         self.assertRead(RULED, *(row % P for row in (
             "SHELL -e $X-c %s\n", "SHELL -o errexit $X-c %s\n", "SHELL -c $X-e $Y-x %s\n", "SHELL -c $X+e %s\n",
             "SHELL $X-e $Y-c %s\n", "SHELL $X-c $Y-e %s\n", "printf 'eval \"$2\"' > ./a; SHELL ./a $X-c %s\n",
             "SHELL -s $X-c %s\n", "Y=-c; SHELL $X-e $Y %s\n", "Y=-c; SHELL $X-o errexit $Y %s\n", "Y=-c\nSHELL $X-e $Y %s\n",
             "bash --norc $X-c %s\n", "bash --rcfile /dev/null $X-c %s\n", "SHELL $X-c $Y %s\n",
-            "Y=-c; bash --rcfile f $X-e $Y %s\n")))
+            "Y=-c; bash --rcfile f $X-e $Y %s\n", "printf 'eval \"$3\"' > ./a; SHELL ./a $X-c -K %s\n")))
 
     def test_the_command_around_the_shell(self):
         # Truth: runs, all sixteen, every one -- but `exec -a`, which dash's `exec` refuses.
