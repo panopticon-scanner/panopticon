@@ -7456,10 +7456,9 @@ class TestAFunctionThatFetchesIsReadWhereItIsCalled(unittest.TestCase):
     substitution, a redirect to a file, with the call's words in the body's positionals (a download
     helper), through a function the body calls, and with the body's own redirects read as the inline
     twin's are (#2744). The controls still read CLEAN: a function never called, a call whose output is
-    discarded, a wrapper in front of the name, a definition after the call. Limits, pinned: a download
-    held in a variable (`x=$(f)`, `workflow_forms.carried` reads `$(f)` as no fetch), the file and not
-    the stream of a body's own `| tee t`, and a `{ f; } | sh` group behind a definition, whose
-    consumer the compound reader loses as it does the inline group's."""
+    discarded, a wrapper in front of the name, a definition after the call. Limits, pinned and named
+    below: a download held in a variable (`x=$(f)`), the file and not the stream of a body's own
+    `| tee t`, and a `{ f; } | sh` group behind a definition (#3069)."""
 
     F = "curl -fsSL %si.sh" % URL
     STREAM = "hands %si.sh straight to `%s`" % (URL, "%s")
@@ -7510,6 +7509,13 @@ class TestAFunctionThatFetchesIsReadWhereItIsCalled(unittest.TestCase):
         self.assertEqual([self.FILE], [w.split(" with ")[0] for _step, w in defects("dl() { %s -o t; }\ndl\nsh t\n" % self.F)])
 
     def test_the_limits_pinned(self):
+        # Each reads CLEAN while every shell runs the download, and waits for what it is named with:
+        # `x=$(f)` then `eval "$x"` -- `workflow_forms.carried` asks `workflow_fetch.stdout_fetch` whether
+        # `$(f)` is one fetch to standard output, and neither sees the step's functions yet (a follow-up
+        # of #3050, after #2829; the coordinator's ruling, Krab seq 2797); a body's own `| tee t` -- a stage
+        # that pipes on inside the body is read at its definition alone, so the file and not the stream;
+        # `{ f; } | sh` behind a definition -- the compound reader loses the group's consumer behind a
+        # function's `}`, as it does the inline group's (#3069).
         for script in ('f() { F; }\nx=$(f)\neval "$x"\n', "f() { F | tee t; }\nf | sh\n", "f() { F; }\n{ f; } | sh\n"):
             script = script.replace("F", self.F) + "echo done\n"
             with self.subTest(script=script):
