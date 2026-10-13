@@ -291,7 +291,7 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
         for position, stage in enumerate(statement.stages):
             argv, before = shell_reader.acted(stage.argv), statement.stages[:position]
             argvs = [argv]
-            if argv and "$" in str(argv[0]):
+            if argv and re.fullmatch(r"\$\{[A-Za-z_]\w*\[(?:@|\*)\]\}", str(argv[0])):
                 argvs += _resolved(argv, static_values(stmts, index))
             for fetch_argv in argvs:
                 if not fetch_argv or os.path.basename(fetch_argv[0]) not in FETCHERS:
