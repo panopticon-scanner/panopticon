@@ -319,6 +319,40 @@ class TestNamedDownloadAdapters(unittest.TestCase):
         self.assertEqual(expected, set(workflow_fetch.FETCHERS))
         self.assertEqual(expected, set(shell_reader._FETCHERS))
 
+    def test_optional_prefix_only_drops_before_named_fetch_subcommands(self):
+        for command in (
+                "git clone https://example.test/repo.git source",
+                "git -c protocol.version=2 clone https://example.test/repo.git source",
+                "git --future-option clone https://example.test/repo.git source",
+                "gh release download v1 -R owner/repo -O tool",
+                "gh --repo owner/repo release --future-option download v1 -O tool",
+                "pip download --no-deps -d out https://example.test/tool.whl",
+                "pip --disable-pip-version-check download --no-deps "
+                "https://example.test/tool.whl",
+                "pip --future-option download --no-deps https://example.test/tool.whl",
+        ):
+            with self.subTest(command=command):
+                argv = shell_reader.statements("${S:+echo} " + command)[0].stages[0].argv
+                self.assertEqual(1, shell_reader._optional(argv))
+        for command in (
+                "git push origin main", "git -c protocol.version=2 push origin main",
+                "gh issue view 1", "gh -R owner/repo issue view 1",
+                "pip list", "pip --disable-pip-version-check list",
+        ):
+            with self.subTest(command=command):
+                argv = shell_reader.statements("${S:+echo} " + command)[0].stages[0].argv
+                self.assertEqual(0, shell_reader._optional(argv))
+        for command, use in (
+                ("git clone https://example.test/repo.git source", "sh source/install.sh"),
+                ("gh release download v1 -R owner/repo -O tool", "sh tool"),
+                ("pip download --no-deps -d out https://example.test/tool.whl",
+                 "sh out/tool.whl"),
+        ):
+            with self.subTest(command=command, use=use):
+                self.assertIsNotNone(guard.fetch_exec_defect(
+                    "${S:+echo} " + command + "\n" + use,
+                ))
+
     def test_an_https_url_is_not_itself_an_httpie_command_word(self):
         self.assertIsNone(workflow_annotate._FETCH_WORD.search(URL))
         self.assertIsNone(workflow_annotate._FETCH_WORD.search("http+unix://socket/path"))
