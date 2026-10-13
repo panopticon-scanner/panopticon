@@ -137,17 +137,16 @@ from workflow_programs import _FOREIGN, _MEASURED_SHELLS, scripts, stdin_scripts
 from workflow_uses import _WHOLE, _cleared, _control_kinds, _forked, _table_certainty
 from workflow_values import _OPENER, Values, _literals, record, valued
 
-# The name a whole reference reads; what makes a value no literal -- a `$`, a backquote or a
-# process substitution, each expanded by the shell that reads it or by the runner; the plain
-# name a command word's value must be, with no blank, pattern, quote or operator in it; the
-# names whose literal reading the guard models; the directories a bare name's lookup reaches
-# too (`_bare`); and a fetcher's word in a printed text.
+# A whole reference's name; what makes a value nonliteral; the plain name a command value must
+# be; modeled command names; directories a bare lookup reaches (`_bare`); and a fetcher word in
+# printed text.
 _NAMED = re.compile(r"\$\{?([A-Za-z_]\w*)", re.A)
 _EXPANDS = re.compile(r"[$`]|[<>]\(")
 _PLAIN = re.compile(r"[\w./+-]+", re.A)
 _NAMES = (*shell_reader._SHELLS, *_FOREIGN, *_PRINTERS, "cat", "true")
 _SYSTEM = ("/bin", "/usr/bin", "/usr/local/bin", "/sbin", "/usr/sbin")
-_FETCH_WORD = re.compile(r"(?<![\w./-])(?:%s)(?![\w.:+-])" % "|".join(FETCHERS), re.A)
+_FETCH_WORD = re.compile(
+    r"(?<![\w./-])(?:(?:curl|wget)(?![\w.-])|(?:%s)(?![\w.:+-]))" % "|".join(FETCHERS[2:]), re.A)
 # The names bash sets itself, and the prefixes of its completion and `bind -x` ones: a step's
 # assignment to one is not what a later word reads (`$_` is the last command's last word).
 _BASH_SETS = frozenset((

@@ -303,6 +303,9 @@ class TestNamedDownloadAdapters(unittest.TestCase):
         self.assertIsNone(workflow_annotate._FETCH_WORD.search("http+unix://socket/path"))
         self.assertIsNone(workflow_annotate._FETCH_WORD.search("git+https://example.test/repo"))
         self.assertIsNotNone(workflow_annotate._FETCH_WORD.search("https " + URL))
+        # #2829's URL boundary may not narrow the legacy curl/wget arm.
+        self.assertIsNotNone(workflow_annotate._FETCH_WORD.search("curl:payload"))
+        self.assertIsNotNone(workflow_annotate._FETCH_WORD.search("wget+payload"))
 
 
 if __name__ == "__main__":  # pragma: no cover
