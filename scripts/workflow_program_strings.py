@@ -20,9 +20,9 @@ import re
 import shell_lex
 import shell_reader
 from shell_text import Process
-from workflow_options import (VALUE_OPTIONS, Handed, _MAINS, _before_operand, _dash_c_strings,
-                              _may_spell_option, _past_options, _shell_candidates, _sure_string, _value)
-from workflow_option_words import spells, written
+from workflow_options import (VALUE_OPTIONS, Handed, _MAINS, _dash_c_strings, _may_be_name, _past_options,
+                              _reopened, _shell_candidates, _sure_string, _value)
+from workflow_option_words import beside, lifted, spells, written
 from workflow_printers import rendered
 
 
@@ -77,8 +77,8 @@ def _main_scripts(argv):
 
 def _added_strings(argv):
     """A shell's `-c` strings this walk reads (`_dash_c_strings`, #2858) that `main`'s does not."""
-    shell, mains = bool(argv) and os.path.basename(argv[0]) in _SHELL_STRING, _program_words(argv)
-    return [word for word in _dash_c_strings(argv) if not any(word is seen for seen in mains)] if shell else []
+    shell, mains = bool(argv) and os.path.basename(argv[0]) in _SHELL_STRING, set(map(id, _program_words(argv)))
+    return [word for word in _dash_c_strings(argv) if id(word) not in mains] if shell else []
 
 
 def _program_words(argv):
@@ -142,7 +142,7 @@ def _script(word):
     return Opaque(text)
 
 
-def _after_dash_c(argv, plus=True, start=1):
+def _after_dash_c(argv, plus=True):
     """The script operand of a shell's `-c`, wherever the flag was clustered.
 
     `sh -ec`, `bash -lc`, `bash -euc` are the ordinary CI idiom, not an
@@ -169,22 +169,51 @@ def _after_dash_c(argv, plus=True, start=1):
     `$(...)` stands in the text as a marker whose random hex may hold a `c` or none, so `sh -$(echo
     c) P` was a cluster in one parse and none in the next. A word that holds lifted text MAY spell
     `-c`, whatever the marker's letters, so its string is read in every parse -- and it may spell
-    none, so where no `c` is written in it the search goes on past it from `start` too, as it goes
-    past `-x`: both of `main`'s two readings, the second BESIDE the first (`Y=-c; sh -$(echo x) $Y
-    P` and `sh -$(echo x) w.sh -c P`, `w.sh` an `eval "$2"`, run `P`).
+    none, so where no `c` is written in it the search goes on past it too, as it goes past `-x`:
+    both of `main`'s two readings, the second BESIDE the first (`Y=-c; sh -$(echo x) $Y P` and `sh
+    -$(echo x) w.sh -c P`, `w.sh` an `eval "$2"`, run `P`).
+
+    A parameter reference is such a word too (#2889), and there `main` read on alone: so the words
+    `main` found stand FIRST and as it found them, and what the rule's reading adds after them
+    (`beside`; `X=x; sh -$X ./a -c P` hands on `P`, then `./a`).
     """
-    for position in range(start, len(argv)):
+    mains, found = beside(lambda: _strings(argv, plus))
+    seen = set(map(id, mains))
+    return mains + [word for word in found if id(word) not in seen]
+
+
+def _clusters(argv, plus):
+    """Where each word that may be the `-c` cluster stands, up to the first that WRITES its `c`
+    or a `--`, and whether one of them is signed `+`."""
+    places, signed = [], False
+    for position in range(1, len(argv)):
         token = argv[position]
         if token == "--":
             break
         if token[:1] in ("-", "+" if plus else "-") and token[:2] not in ("--", "++") and spells(token, "c"):
-            found = _past_options(argv, position)
-            if "c" not in written(token):
-                found = found + [word for word in _after_dash_c(argv, plus, position + 1) if not any(word is seen for seen in found)]
-            if token[0] == "-":
-                return found
-            return found + [word for word in _after_dash_c(argv, False) if not any(word is seen for seen in found)]
-    return []
+            places.append(position)
+            signed = signed or token[0] == "+"
+            if "c" in written(token):
+                break
+    return places, signed
+
+
+def _strings(argv, plus):
+    """`_after_dash_c` in ONE reading of the words: the operands past each word that may be the
+    cluster (`_clusters`), in their order, then -- where one is signed `+` -- those past each `-`
+    one, wherever it stands. Each word is handed on once, and walked once (`_past_options`'s
+    `walked`): a loop and no recursion, so a thousand such words are a thousand steps."""
+    places, signed = _clusters(argv, plus)
+    if signed:
+        places += _clusters(argv, False)[0]
+    found, seen = [], set()
+    walked: tuple[set, dict] = (set(), {})
+    for place in places:
+        for word in _past_options(argv, place, walked):
+            if id(word) not in seen:
+                seen.add(id(word))
+                found.append(word)
+    return found
 
 
 def candidates(argv):
@@ -225,25 +254,25 @@ def _candidates(argv):
     """`candidates`' answer as `main` reads it (7e9223e6), word for word but for the sign of the
     cluster a `$` command word is handed: `$CMD +c P` is `$CMD -c P` (#3019, as `_after_dash_c`).
     A `$` word's cluster may be one lifted text spells (`spells`, #3020); a shell's walk for a value
-    ends at a `c` that is WRITTEN, and goes on past a word that only may print one."""
+    ends at a `c` that is WRITTEN, and goes on past a word that only may print one -- and past each
+    word after it that may be the NAME it owes (`may`, #2889: `X=o; Y=-c; sh -$X errexit $Y P` runs
+    `P`). The words behind the value are `_reopened`'s, which reads a tilde word both ways."""
     if argv[1:] and _value(argv[0]) and argv[1][:1] in ("-", "+") and argv[1][:2] not in ("--", "++") and spells(argv[1], "c"):
         return argv[0], _past_options(argv, 1)
     if not argv or os.path.basename(argv[0]) not in _SHELL_STRING:
         return None, []
-    owed = 0
+    owed, may = 0, False
     for at, word in enumerate(argv[1:], start=1):
         if owed:
             owed -= 1
         elif _value(word):
-            rest = argv[at + 1:]
-            end = next((k for k, after in enumerate(rest, 1) if not _before_operand(after)), len(rest))
-            more = next((k for k in range(end, len(rest)) if _may_spell_option(rest[k])), len(rest))
-            return word, rest[:end] + rest[more + 1:] or (
-                [word] if shell_reader.yields_words(word) else [])
+            return word, _reopened(argv[at + 1:]) or ([word] if shell_reader.yields_words(word) else [])
+        elif may and _may_be_name(word):
+            continue                            # a NAME the expansion before it may owe
         elif word in ("-", "--") or word[:1] not in ("-", "+") or word[:2] != "--" and "c" in written(word):
             break
-        elif word[:2] != "--":
-            owed = sum(letter in VALUE_OPTIONS for letter in word[1:])
+        else:
+            owed, may = (0, False) if word[:2] == "--" else (sum(letter in VALUE_OPTIONS for letter in word[1:]), lifted(word))
     return None, []
 
 
