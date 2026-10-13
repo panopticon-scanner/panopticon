@@ -879,6 +879,20 @@ class TestWhatMainReportedIsReported(unittest.TestCase):
         # first alone; `main`'s words stand first now (`_after_dash_c`).
         self.assertEqual(EITHER, readings("sh -$X - \"$A\" -c %s\n" % self.D))
 
+    def test_mains_strings_are_read_joined_as_main_joined_them(self):
+        # `_details` joins `main`'s strings as `main` did: as bash spells each (`spelled`, #2342) -- `eval`'s words keep
+        # theirs, and `eval "\`echo sh\`"` hands its body to the `sh` the backquotes print, where `` \`echo `` read as
+        # written would be a command's name -- and with a blank between them: `bash +c env -c sh` reads its body as
+        # `env sh`'s, the join #3058 is about. Every reading reports both, the rule's and `main`'s.
+        self.assertEqual(EITHER, readings('eval "\\`echo sh\\`" <<\'EOF\'\n%s%s\n%s\nEOF\n' % (GET, CHECK, USE)))
+        self.assertEqual(EITHER, readings("bash +c env -c sh " + BODY))
+
+    def test_an_eval_in_an_and_list_runs_with_errexit_off_as_main_read_it(self):
+        # `flattened` asks a reader's `-e` once a reader now (#2889), and the text an `eval` runs in this shell keeps
+        # `main`'s: in an and-list `-e` is off, so a check that fails there stops nothing and the step is reported --
+        # the twin of the guard's own `eval '...' || exit 1` row.
+        self.assertEqual(EITHER, readings("eval '%s; %s; %s; echo ok' && echo done\n" % (GET.strip(), CHECK, USE)))
+
     def test_with_the_rule_off_each_part_reads_as_main_read_it(self):
         # One row for each answer a reader owes the rule (each `ruled` in the scripts): reported by the rule, and
         # CLEAN with it off -- as on `main`, whose own tree reads every one of them CLEAN. A reader that ignored the
