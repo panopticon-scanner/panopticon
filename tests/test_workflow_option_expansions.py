@@ -520,12 +520,14 @@ class TestAnExpansionInFrontOfAnOptionWord(unittest.TestCase):
 
     def test_where_the_word_stands(self):
         # Behind an option, a long option, a value's name, the cluster; two of them; past a FILE that runs its
-        # parameter; and in front of a value. Truth: runs, all sixteen, every one.
+        # parameter; in front of a value, and of a word the second walk reads as one that may vanish (`$Y`) or a
+        # FILE it skips. Truth: runs, all sixteen, every one.
         self.assertRead(RULED, *(row % P for row in (
             "SHELL -e $X-c %s\n", "SHELL -o errexit $X-c %s\n", "SHELL -c $X-e $Y-x %s\n", "SHELL -c $X+e %s\n",
             "SHELL $X-e $Y-c %s\n", "SHELL $X-c $Y-e %s\n", "printf 'eval \"$2\"' > ./a; SHELL ./a $X-c %s\n",
             "SHELL -s $X-c %s\n", "Y=-c; SHELL $X-e $Y %s\n", "Y=-c; SHELL $X-o errexit $Y %s\n", "Y=-c\nSHELL $X-e $Y %s\n",
-            "bash --norc $X-c %s\n", "bash --rcfile /dev/null $X-c %s\n")))
+            "bash --norc $X-c %s\n", "bash --rcfile /dev/null $X-c %s\n", "SHELL $X-c $Y %s\n",
+            "Y=-c; bash --rcfile f $X-e $Y %s\n")))
 
     def test_the_command_around_the_shell(self):
         # Truth: runs, all sixteen, every one -- but `exec -a`, which dash's `exec` refuses.
@@ -550,7 +552,10 @@ class TestAnExpansionInFrontOfAnOptionWord(unittest.TestCase):
             "wget $X-qO - %s | sh\n", "wget -q $X-O- %s | sh\n", "wget $X--output-document=- %s | sh\n",
             "wget $(true)-qO- %s | sh\n", 'wget "$X"-qO- %s | sh\n', "wget $X-qO- %s | tee f | sh\n",
             "wget $X-qO- %s | cat | sh\n", "bash <(wget $X-qO- %s)\n",
-            "wget $X-O f %s && sh f\n", "wget $X-qO f %s && sh f\n", "wget $X-Of %s && sh f\n")))
+            "wget $X-O f %s && sh f\n", "wget $X-qO f %s && sh f\n", "wget $X-Of %s && sh f\n", "wget -O f $X-qO- %s | sh\n")))
+        # ... and the stream `main` read stays beside a file the words read so name. Truth: fetched only with `X` unset
+        # (the last `-O` wins); with `X=x` the transfer streams, `main`'s reading.
+        self.assertRead(EITHER, "wget -qO- $X-O f %s | sh\n" % URL)
         # Where the words read so name no URL (`-l` takes the rest of `-linux.tgz`), `main`'s transfer is the one: and
         # nothing runs these. Truth: fetched only, every one.
         self.assertRead((CLEAN[0],) * 3, "wget ${BASE}-linux.tgz\n", "wget $BASE-linux.tgz | sh\n", "wget $X-O f %s\n" % URL,
@@ -638,6 +643,9 @@ class TestAnExpansionInFrontOfAnOptionWord(unittest.TestCase):
                     self.assertTrue(set(map(id, found)) - set(map(id, written)) <= set(map(id, words_)), (texts(words_), at))
                     count, more = count + 1, more + (len(found) > len(written))
         self.assertEqual((3 * (10 + 10 ** 2 + 10 ** 3), True), (count, more > 300))
+        # One word handed twice by the reading of the words read so (here an object the argv holds twice) is added once.
+        sh, word, value, name, program = argv("sh $W-e $Y $Z P")
+        self.assertEqual(["$Z", "P"], texts(ws.candidates([sh, word, value, name, name, program])[1]))
 
 
 class TestBesideNeverInstead(unittest.TestCase):
@@ -1396,6 +1404,12 @@ class TestThePrice(unittest.TestCase):
                 with self.subTest(row=row, shell=shell):
                     self.assertEqual(RULED, readings(row.replace("SHELL", shell) % P))
         self.assertEqual(RULED, readings("sh %s$X-c %s\n" % (chr(92), P)))
+        # ... and a word after them the guard reads as one that may be the string or a value, as it reads their
+        # written twins on `main` (`sh -c "$Y" P`, `sh -e $Y $Z $Z P`). Truth: nothing.
+        for row in ('SHELL $X-c "$Y" %s\n', "SHELL $W-e $Y $Z $Z %s\n"):
+            for shell in ("sh", "bash"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertEqual(RULED, readings(row.replace("SHELL", shell) % P))
 
 
 class TestWhatStays(unittest.TestCase):
