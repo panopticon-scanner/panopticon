@@ -2452,16 +2452,16 @@ class TestACheckInsideAScriptMustStopTheStep(unittest.TestCase):
 
     def test_an_exit_behind_the_check_in_a_script_without_e_is_not_read(self):
         # Fail-closed, and the rule's known over-reports (re-review N-D): bash
-        # stops each of these scripts at the failing check -- at `exit 1`, at
-        # `exit $?`, and under a `set -e` or `set -o pipefail` written inside
-        # a branch -- but only `-e` or pipefail from the script's options or
-        # a plain `set`, or its last command, are read as stopping it.
+        # stops each of these scripts at the failing check through the exit,
+        # but the guard does not model the exit-status handoff.
         self.assertReported("sh -c '%s || exit 1; echo ok'", "carries on past its failure")
         self.assertReported("sh -c '%s; exit $?'", "carries on past its failure")
-        self.assertReported("sh -c 'if true; then set -e; fi; %s; echo ok'",
-                            "carries on past its failure")
-        self.assertReported("bash -c 'if true; then set -o pipefail; fi; %s | cat'",
-                            "piped into a command whose status the pipeline takes")
+        # PR #3066 moves the two proved-branch expectations for #2439: their
+        # `set` runs in the child shell before the check, so failure stops it.
+        for form in ("sh -c 'if true; then set -e; fi; %s; echo ok'",
+                     "bash -c 'if true; then set -o pipefail; fi; %s | cat'"):
+            with self.subTest(form=form):
+                self.assertEqual([], self.job(form))
 
 
 class TestASetPlusEAtTheStepsTopLevel(unittest.TestCase):
@@ -4060,8 +4060,8 @@ class TestTheShoptAndBuiltinSpellingsOfSetAreRead(unittest.TestCase):
                 self.assertEqual([], self.job("eval 'set +e; shopt -so errexit'\n%s\n", shell))
 
     def test_the_readings_that_stay_fail_closed(self):
-        # Bash turns the option on in the first five, which the guard does not
-        # read on: behind `builtin`, `command` or `eval`, or inside a branch.
+        # Bash turns the option on in the first four, which the guard does not
+        # read on: behind `builtin`, or behind `command`/`eval` around shopt.
         # The last two turn nothing on: `shopt -o` alone only reports, and
         # `pipefail` is not one of `shopt`'s own options. Each sentence says it
         # is this guard's reading (review N-7).
@@ -4070,13 +4070,15 @@ class TestTheShoptAndBuiltinSpellingsOfSetAreRead(unittest.TestCase):
                           ("set +e\ncommand shopt -so errexit\n%s\n", "runs after a `set +e`"),
                           ("set +e\neval shopt -so errexit\n%s\n", "runs after a `set +e`"),
                           ("builtin set -o pipefail\n" + self.PIPED, off),
-                          ("if true; then shopt -so pipefail; fi\n" + self.PIPED, off),
                           ("shopt -o pipefail\n" + self.PIPED, off),
                           ("shopt -s pipefail\n" + self.PIPED, off)):
             with self.subTest(body=body):
                 found = self.job(body)
                 self.assertEqual(1, len(found), found)
                 self.assertIn(why, found[0][1])
+        # PR #3066 moves #2439's proved-branch expectation: bash runs this
+        # shopt in the step shell, so pipefail carries to the check.
+        self.assertEqual([], self.job("if true; then shopt -so pipefail; fi\n" + self.PIPED))
         self.assertEqual([], self.job("shopt -s extglob\n%s\n"))
 
 
