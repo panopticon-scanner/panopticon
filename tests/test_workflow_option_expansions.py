@@ -279,7 +279,8 @@ class TestAValueTheWordMayOwe(unittest.TestCase):
         for value in ("c", "oc", "ooc"):
             with self.subTest(value=value):
                 self.assertEqual(CLEAN, marks("X=%s\nsh -$X errexit ./x.sh %s\n" % (value, P)))
-        self.assertTrue(all(slots._may_be_name(argv("sh " + word)[1]) for word in ("errexit", "interactive-comments", "x_1", "err$X", "$N", "$(echo x)")))
+        self.assertTrue(all(slots._may_be_name(argv("sh " + word)[1]) for word in ("errexit", "interactive-comments", "x_1", "err$X", "$N", "$(echo x)",
+                                                                                  "Q", "Zx")))
         self.assertFalse(any(slots._may_be_name(argv("sh " + word)[1]) for word in ("-x", "+x", "./x", "a/b", "$X/y", "'a b'", "a=b")))
 
     def test_the_search_reads_on_as_mains_walk_does(self):
@@ -393,7 +394,7 @@ class TestATildeWord(unittest.TestCase):
 
     def test_what_is_a_path_and_what_is_text(self):
         # `~/x` and `~root` are paths: no shell takes a cluster holding a `/`. `-~` is text. Truth: nothing.
-        for word in ("~/x", "~root", "-~", "x=~"):
+        for word in ("~/x", "~root", "-~", "x=~", "~++", "~+-", "~--1"):     # no shell expands two signs
             with self.subTest(word=word):
                 self.assertEqual(CLEAN, marks("HOME=-c\nsh %s %s\n" % (word, P)))
                 self.assertFalse(slots._value(argv("sh " + word)[1]))
@@ -712,6 +713,11 @@ class TestBesideNeverInstead(unittest.TestCase):
                          {key: count for key, count in most.items() if key != ("walk", "step")})
         self.assertLessEqual(most[("walk", "step")], 2)     # `main`'s step and the walk's own, at the word it starts from
 
+    def test_each_string_is_handed_on_once_whatever_readings_find_it(self):
+        # `X=; bash $X -c 'P'` and `X=-e; ...` find `P` in each reading of the word that may expand
+        # (`_in_every_reading`): it is handed on once.
+        self.assertEqual(["P"], texts(wo._dash_c_strings(argv("bash $X -c 'P'"))))
+
     def test_the_words_handed_on_are_looked_up_in_a_set(self):
         # Where the rule hands on a word for each place, the readers that keep the step's own words (`_in_every_reading`)
         # and drop the strings `main` found (`_added_strings`) look each word up in a set: a scan of every word for each
@@ -738,7 +744,7 @@ class TestBesideNeverInstead(unittest.TestCase):
         # `_first_place` is `_operand_past`'s first operand, kept: asked of every word of these argvs, fresh and with
         # one table for all, it gives the place of the word the walk hands on first, wherever `main` reaches none.
         pool = [argv("sh " + word)[1] for word in ("-c", "-o", "-co", "-$X", "-$foo", "-$Xo", "-$(echo o)", "--norc", "--", "-",
-                                                    "errexit", "$Y", "P", "-K", "-login")]
+                                                    "errexit", "$Y", "P", "-K", "-login", "-x", "+x")]
         asked = 0
         for size in (1, 2, 3):
             for tail in itertools.product(pool, repeat=size):
@@ -757,8 +763,14 @@ class TestBesideNeverInstead(unittest.TestCase):
         # ... and it is the one a `-c` cluster's `$Y` is asked for where `main` reaches none: `-$foo` owed `main` two
         # words, by the name's letters, and writes no `o` (`foo=x; sh -c -$foo $Y P` with `Y` empty runs `P`).
         self.assertEqual(3, wo._value_after_dash_c(argv("sh -c -$foo $Y 'P'"), 1, {}, {}))
-        # ... only there: where `main` reaches an operand, it is the one asked, a value or not.
+        # ... only there: where `main` reaches an operand, it is the one asked, a value or not -- `main`'s operand kept
+        # for a word the walk passed through, when the search reaches that word again from a later cluster.
         self.assertIsNone(wo._value_after_dash_c(argv("sh -c -$foo $Y Z 'P'"), 1, {}, {}))
+        self.assertEqual((None, []), wo._shell_candidates(argv("sh -$X -c -$foo $Y Z 'P'")))
+        # The operand is found AFTER its cluster, where one object stands at two places (Python keeps one `~`).
+        words_ = argv("zsh --rcfile ~ -co -${X:-o} -$X$Y ~")
+        self.assertIs(words_[2], words_[6])
+        self.assertEqual(("~", []), wo._shell_candidates(words_))
         with words.as_before():
             self.assertIsNone(wo._value_after_dash_c(argv("sh -c -$foo $Y 'P'"), 1, {}, {}))
 
@@ -895,6 +907,13 @@ class TestWhatMainReportedIsReported(unittest.TestCase):
         self.assertEqual((["two"], ["two", "one"]), ([name for name, _why in before], [name for name, _why in found]))
         self.assertEqual(before, found[:1])
         self.assertIn("b.sh", found[1][1])
+        # `main`'s first pass is what stands first and whole -- each of its findings kept, a repeat too -- and the second
+        # walk's findings after it, each once: with the first pass finding A and the walk A then B, the job is A, B. (The
+        # passes stood in for, as `main`'s `job_defects` reads them.)
+        def passes(steps_, strict=False):
+            return [("one", "A"), ("one", "A")] if wo._MAINS.get() else [("one", "A"), ("two", "B"), ("one", "A")]
+        with mock.patch.object(wg, "_job_defects", passes):
+            self.assertEqual([("one", "A"), ("one", "A"), ("two", "B")], wg.job_defects([]))
         # Inside the switch the job is `main`'s own: read once, and no reading of the rule's beside it.
         with words.as_before(), mock.patch.object(wg, "_job_defects", wraps=wg._job_defects) as passes:
             wg.job_defects(steps)
@@ -998,7 +1017,7 @@ class TestTheLeafKnowsAReference(unittest.TestCase):
                             ("-${#X[1]}", []), ("-${#X[@]}", []), ("-${#12}", []), ("-${#@}", []), ("-${#*}", []), ("-${#?}", []),
                             ("-${#-}", []), ("-${##}c", []), ("-${#_x9}", []),
                             # ... and any other `${#` is the count under an operator, which prints its word: `${#+c}` is `c`.
-                            ("-${#$}", []), ("-${#!}", []),
+                            ("-${#$}", []), ("-${#!}", []), ("-${#X[12]}", []),
                             ("-${#+c}", [(1, 7)]), ("-${#:+o}", [(1, 8)]), ("-${#-o}", [(1, 7)]), ("-${#:-c}x", [(1, 8)]), ("-${#X:-c}", [(1, 9)])):
             with self.subTest(text=text):
                 self.assertEqual(spans, words._spans(text))
