@@ -87,7 +87,9 @@ from workflow_gating import (Inlined as Inlined, Reach as Reach, _errexit,
                              seed as seed, statement_analysis,
                              swallowed as swallowed)
 from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
-                               at_directory as at_directory, chmod_executable as chmod_executable,
+                               at_directory as at_directory,
+                               chmod_conditional_executable as chmod_conditional_executable,
+                               chmod_executable as chmod_executable,
                                chmod_targets as chmod_targets, covers as covers,
                                described as described, located as located, may_run as may_run,
                                names_file as names_file, same_file as same_file,
@@ -524,7 +526,8 @@ def _written_on(statement):
     digits, and neither of those is the download (review r1 finding 10)."""
     for stage in statement.stages:
         argv = command(stage.argv)
-        if argv and os.path.basename(argv[0]) in FETCHERS:
+        if (argv and os.path.basename(argv[0]) in FETCHERS
+                and parse_fetch(os.path.basename(argv[0]), argv[1:], stage, None) is not None):
             continue
         if [name for name in stage.stdout_writes if name not in STDOUT]:
             return True
