@@ -1657,6 +1657,7 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
             "is no file to check")
     READ = ("carries https://example.test/i.sh in `$x` and hands it to `%s`%s in this "
             "guard's conservative reading, so there is no file to check")
+    SHELLS = (None, "bash", "sh", "bash {0}", "sh {0}")
 
     def job(self, *scripts):
         return [why for _n, why in wg.job_defects(
@@ -1696,6 +1697,52 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
                 self.assertEqual(1, len(why), why)
                 self.assertTrue(why[0].startswith("runs `%s` on `$x`" % how), why)
                 self.assertIsInstance(why[0], wg.Idle)
+
+    def test_2434_extended_assignment_and_program_spellings_are_carried(self):
+        # Issue #2434 moves these four CLEAN expectations to REPORT. Each spelling runs the
+        # fetched stdout as shell text; the non-fetch twin below remains CLEAN.
+        cases = (
+            'x=$(curl -fsSL https://example.test/i.sh || true)\neval "$x"\n',
+            'x=$(curl -fsSL https://example.test/i.sh) y=$(date)\neval "$x"\n',
+            'x=""\nx+=$(curl -fsSL https://example.test/i.sh)\neval "$x"\n',
+            'x=$(curl -fsSL https://example.test/i.sh)\neval "echo $x"\n',
+        )
+        for script in cases:
+            for shell in self.SHELLS:
+                with self.subTest(script=script, shell=shell):
+                    why = [reason for _step, reason in wg.job_defects([
+                        wg.Step("step", script, shell)
+                    ])]
+                    carried = [reason for reason in why if str(reason).startswith(
+                        "carries https://example.test/i.sh in `$x` and hands it to `eval`"
+                    )]
+                    self.assertEqual(1, len(carried), why)
+
+    def test_2434_cat_stdin_printers_keep_the_generic_verdict_beside_provenance(self):
+        # Issue #2434 adds the source-bound carried verdict beside #2467's existing generic
+        # expanding-stdin verdict. Keeping both makes the CLEAN -> REPORT change monotone.
+        get = 'x=$(curl -fsSL https://example.test/i.sh)\n'
+        uses = ('cat <<< "$x" | sh\n', 'cat <<EOF | sh\n$x\nEOF\n')
+        for use in uses:
+            for shell in self.SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    why = [reason for _step, reason in wg.job_defects([
+                        wg.Step("step", get + use, shell)
+                    ])]
+                    self.assertEqual(1, sum(
+                        "hands an EXPANDING heredoc body or here-string to `sh`" in str(reason)
+                        for reason in why
+                    ), why)
+                    self.assertEqual(1, sum(str(reason).startswith(
+                        "carries https://example.test/i.sh in `$x` and hands it to `sh`"
+                    ) for reason in why), why)
+
+    def test_2434_non_fetch_assignment_stays_clean(self):
+        for shell in self.SHELLS:
+            with self.subTest(shell=shell):
+                self.assertEqual([], wg.job_defects([
+                    wg.Step("step", 'x=$(date)\neval "$x"\n', shell)
+                ]))
 
     def test_wherever_the_step_hands_it_over(self):
         for script, to, where in (
@@ -6318,16 +6365,24 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         # a value the guard does not follow.
         get = "x=$(curl -fsSL https://example.test/i.sh)\n"
         for run in (get + 'echo "$x" > f\nsh f\n',
-                    "x=$(curl -fsSL https://example.test/i.sh | tr -d '\\r')\neval \"$x\"\n",
-                    'x=$(curl -fsSL https://example.test/i.sh || true)\neval "$x"\n'):
+                    "x=$(curl -fsSL https://example.test/i.sh | tr -d '\\r')\neval \"$x\"\n"):
             with self.subTest(run=run):
                 self.accepted(("run", run))
-        # `cat <<< "$x" | sh` no longer belongs beside those: #2467's `handed` carries ANY
-        # here-string or heredoc on a `cat` printer's own stdin down the pipe, EXPANDING or not, so
-        # a `$x` here-string is read as `sh <<< "$x"` already was -- reported unread, not `$x`'s
-        # value (#2341's gap stays open), but no longer silent.
-        self.assertIn("EXPANDING heredoc",
-                      self.flagged(("run", get + 'cat <<< "$x" | sh\n')))
+        # Issue #2434 moves the `|| true` assignment from CLEAN to REPORT by binding the fetch at
+        # the head of the substitution's first pipeline.
+        self.assertIn("carries https://example.test/i.sh in `$x`",
+                      self.flagged(("run", 'x=$(curl -fsSL https://example.test/i.sh || true)\n'
+                                             'eval "$x"\n')))
+        # Issue #2434 adds the source-bound `$x` reading beside #2467's existing generic expanding
+        # here-string reading. This expectation moves from one REPORT reason to their monotone union.
+        found = [reason for _step, reason in wg.job_defects([
+            ("run", get + 'cat <<< "$x" | sh\n')
+        ])]
+        self.assertEqual(2, len(found), found)
+        self.assertTrue(any("EXPANDING heredoc" in reason for reason in found), found)
+        self.assertTrue(any(reason.startswith(
+            "carries https://example.test/i.sh in `$x` and hands it to `sh`"
+        ) for reason in found), found)
         # Two of those hand a shell a word that is ALL expansion, and #2483
         # reports THAT, beside a download no checksum clears: the cut and the
         # copy are still not followed, so the sentence names the word and
