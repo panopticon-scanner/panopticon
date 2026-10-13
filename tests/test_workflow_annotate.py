@@ -873,11 +873,11 @@ class TestWhereTheBaseReadingStands(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertSaid([UNSPELLED % "sh"], defects(script))
 
-    def test_a_fetch_into_a_runner_the_guard_does_not_list_reads_clean(self):
-        # FR FR FR FR, the base the unspelled printer: the spelled program `curl … | csh` reads
-        # as the literal does, CLEAN -- #2792's gap here as at the top level, the named price.
-        self.assertEqual([], defects(GET + "X='curl -fsSL %si.sh | csh'\necho \"$X\" | sh\n"
-                                     % URL))
+    def test_2792_a_fetch_into_a_named_runner_is_reported(self):
+        # FR FR FR FR. #2792 names `csh` as a shell, so the printed program's literal reading
+        # now reports the same direct download hand-off as its top-level twin.
+        self.assertSaid(["hands %si.sh straight to `csh`" % URL],
+                        defects(GET + "X='curl -fsSL %si.sh | csh'\necho \"$X\" | sh\n" % URL))
 
     def test_a_foreign_interpreters_program_is_not_read(self):
         # #2601's price. FR FR FR FR on each, every interpreter running the download: `perl` and
