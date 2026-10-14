@@ -104,8 +104,8 @@ def _download_checksum_defects(text):
         conditions = {i: (None, branch) for i, branch in regions(statements).items()}
         for index, fetch in workflow_guard._fetch_records(statements):
             # #2829 owner-approved accepted gap: this exact clone is fresh-required
-            # security-advisory DATA for cargo-audit, not a binary. Pinning it would
-            # stale the advisories the scan depends on; no other clone is exempt.
+            # security-advisory DATA for cargo-audit, not a binary, and is intentionally
+            # unpinned: pinning it would stale the advisories; no other clone is exempt.
             if (fetch.tool, str(fetch.url), str(fetch.dest)) == (
                     "git clone", "https://github.com/rustsec/advisory-db",
                     "/home/scanner/.cargo/advisory-db"):
