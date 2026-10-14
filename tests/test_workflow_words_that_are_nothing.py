@@ -797,15 +797,16 @@ class TestTheSecondWalkAlone(unittest.TestCase):
 
     def test_a_word_behind_words_that_are_nothing_is_kept_whole(self):
         # `_split` keeps a stage's first `${…}` with bare blanks whole; behind words bash may make nothing of it
-        # is still the first that may be the command (#3002). Not behind one kept whole itself (#2976), a
-        # written word, or a quoted one that is a word.
-        for text, at in (("$T ${S:+sudo -E} sh", 1), ("$A $B ${S:+sudo -E} sh", 2), ("$1 ${S:+sudo -E} sh", 1),
-                         ('"$@" ${S:+sudo -E} sh', 1), ("${S:- } ${T:+sudo -E} sh", None),
-                         ("x ${S:+sudo -E} sh", None), ('"$1" ${S:+sudo -E} sh', None)):
+        # is still the first that may be the command (#3002) -- behind one kept whole itself too, since #2976
+        # (`${S:- }` is two of `main`'s words, so the next whole word stands at 2). Not behind a written
+        # word, or a quoted one that is a word.
+        for text, wholes in (("$T ${S:+sudo -E} sh", [1]), ("$A $B ${S:+sudo -E} sh", [2]), ("$1 ${S:+sudo -E} sh", [1]),
+                             ('"$@" ${S:+sudo -E} sh', [1]), ("${S:- } ${T:+sudo -E} sh", [0, 2]),
+                             ("x ${S:+sudo -E} sh", []), ('"$1" ${S:+sudo -E} sh', [])):
             with self.subTest(text=text):
                 argv = shell_reader.statements(text)[0].stages[0].argv
-                wholes = [index for index, word in enumerate(argv) if getattr(word, "whole", None) is not None]
-                self.assertEqual([0] if text.startswith("${") else ([at] if at else []), wholes)
+                self.assertEqual(wholes, [index for index, word in enumerate(argv)
+                                          if getattr(word, "whole", None) is not None])
 
     def test_a_default_naming_a_wrapper_reads_on_through_its_own_words(self):
         self.fold(True)
