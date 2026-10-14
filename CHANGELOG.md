@@ -7,6 +7,13 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Skill: `description`/`whenToUse` scoped to what Panopticon is -- a comprehensive, heavyweight
+  multi-agent audit, not a default review.** The frontmatter listed "code, pull requests, branches,
+  security posture, test quality, architecture, or database surfaces", which reads as "use for any
+  review" and drew agents to Panopticon as a first-reach tool for small or routine work. The line
+  now names the shape -- discovery, scouting, parallel specialized reviewers, a validated CI-gating
+  synthesis -- and says to reach for it when breadth and depth justify the cost. No behaviour
+  change; `dispatch` still mirrors `whenToUse` from the description.
 - **Workflow reader: a written path a pattern, a `cd`, a link or `/proc/self/root` gives names the
   descriptor it reaches (#3051).** `curl -fsSL URL > /dev/stdou[t] | sh`, `cd /dev` then `> stdout |
   sh`, `ln -s /dev/stdout o` then `> o | sh`, and `> /proc/self/root/dev/stdout | sh` read CLEAN
