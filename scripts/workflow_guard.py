@@ -38,6 +38,15 @@ Stdlib only, so the test suite imports it with no dependency. `main()` is the sa
 CI gets NO separate lint step for it: `tests/test_workflow_pins.py` applies this module to every
 `run:` step in the fleet and `ci.yml` runs the suite on every PR, so a second invocation would rot.
 
+#2829's raw-stream complement treats a socket pseudo-device, a connecting netcat/socat client,
+`openssl s_client`, or a foreign one-liner naming a network API as a destination-less fetch when
+its stdout reaches an executor. The same record is carried through command/process substitutions
+and literal child-shell bodies. It invents no downloaded file and therefore cannot let a checksum
+bless those bytes; explicit listener/diagnostic forms remain controls. A descriptor-only `exec`
+followed by an unnamed descriptor-fed `cat` is paired conservatively because the flattened reader
+does not retain descriptor numbers across statements: a hidden close or reassignment may
+over-report, but cannot make another input trusted.
+
 What it does not model. Within the shell it reads, the requirement is to fail CLOSED -- an unparsed
 form must be REPORTED, not accepted (as the two regexes did not). `tests/test_workflow_guard.py`
 states every form probed and found open before parsing. The classes below are accepted SILENT gaps.
@@ -51,10 +60,11 @@ an `eval`/`sh -c` STRING, and `continue-on-error: true`. What remains keeps its 
 reason, and `TestTheGapsTheGuardDocuments` or tests/test_workflow_guard_reader_forms.py runs each
 live, so a change that catches one fails there and edits this list.
 
-* fetchers beyond #2829's bounded adapters -- `aws s3 cp`, a download action, raw socket or foreign
-  one-liner -- still do not bind to later execution. aria2c, axel, FreeBSD fetch, HTTPie, `gh release
-  download`, `git clone` and `pip download` now have separate grammars whose unknown options fail
-  closed. KEPT: the rest need an action/aws contract or #2829's network-stream-producer rule.
+* fetchers beyond #2829's bounded adapters -- `aws s3 cp` and a download action -- still do not
+  bind to later execution. aria2c, axel, FreeBSD fetch, HTTPie, `gh release download`, `git clone`
+  and `pip download` have separate grammars whose unknown options fail closed; raw socket and
+  unmodeled-command output handed straight to an executor is the destination-less rule above.
+  KEPT: the remaining forms need an action/aws contract.
 * variable expansion: `${VERSION}` and `$TMP` stay literal, because the guard tracks the NAME a step
   writes -- except a name the step itself assigns a literal or an array literal, which a use reads
   through that value (`workflow_uses.static_values`, #2425, #2489: `T=cuda_1.run; sh "$T"`,
@@ -253,13 +263,15 @@ from workflow_fetch import (Fetch, compound_output, compound_streamed_fetch, for
                             is_forwarded_tee)
 from workflow_forms import (FETCHERS, SHELL_PROGRAM, Idle, Inlined, Reach, Unsure, carried,
                             compound_stream_consumer, file_bound_reasons, flattened, kept, located,
-                            parse_fetch, regions, stdin_program, step_credit,
+                            parse_fetch, prefix_expanded_program, prefix_handoff, regions,
+                            stdin_program, step_credit,
                             streamed_fetch as streamed_fetch, unbound, unread_program,
                             working_directories)
 from workflow_printers import fed, operand
 from workflow_programs import ANY, VALUE_PROGRAM, handed, stdin_command
 from workflow_option_words import passes
 from workflow_options import mains_answer
+from workflow_network import descriptor_network_fetch, network_fetch, opens_socket
 from workflow_stdin import bound_stdin as bind_stdin, mark_reason
 from workflow_uses import (EXECUTORS as EXECUTORS, INTERPRETERS as INTERPRETERS,
                            UNPACKERS as UNPACKERS, _resolved, static_values)
@@ -293,8 +305,12 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
     for index, statement in enumerate(stmts):
         here = working.get(index, directory)
         under = ANY if isinstance(statement, Inlined) else shell
+        descriptor_fetch = descriptor_network_fetch(stmts, index, EXECUTORS)
+        if descriptor_fetch is not None:
+            found.append((index, descriptor_fetch))
         for position, stage in enumerate(statement.stages):
             argv, before = shell_reader.acted(stage.argv), statement.stages[:position]
+            following = statement.stages[position + 1:]
             argvs = [argv]
             if argv and re.fullmatch(r"\$\{[A-Za-z_]\w*\[(?:@|\*)\]\}", str(argv[0])):
                 argvs += _resolved(argv, static_values(stmts, index))
@@ -311,15 +327,15 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                         (named := parse_fetch(tool, fetch_argv[1:], body, None)) is not None
                         and named.dest is not None):
                     continue
-                following = statement.stages[position + 1:] if leaves else ()
-                fetch_stage, piped_to = compound_output(stmts, out, index, stage, following) if leaves \
+                reader_following = following if leaves else ()
+                fetch_stage, piped_to = compound_output(stmts, out, index, stage, reader_following) if leaves \
                     else (body, None)
                 fetch = parse_fetch(tool, fetch_argv[1:], fetch_stage, piped_to)
                 if fetch is not None:
                     if stream_exec:
                         compound = compound_stream_consumer(stmts, index, EXECUTORS)
                         stream = compound_streamed_fetch(
-                            os.path.basename(fetch_argv[0]), fetch_argv[1:], fetch_stage, following,
+                            os.path.basename(fetch_argv[0]), fetch_argv[1:], fetch_stage, reader_following,
                             EXECUTORS, compound,
                         )
                         fetch = stream or (fetch._replace(piped_to=None) if fetch.dest is None
@@ -327,12 +343,21 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                     if fetch.dest is not None:
                         fetch = fetch._replace(dest=located(fetch.dest, here))
                     found.append((index, fetch))
+            network = network_fetch(argv, stage, following, EXECUTORS)
+            if network is not None and network.piped_to is None:
+                compound = compound_stream_consumer(stmts, index, EXECUTORS)
+                if compound is not None:
+                    network = network_fetch(argv, stage, following, EXECUTORS, compound)
+            if network is not None:
+                found.append((index, network))
             reason = shell_reader.unresolved_wrapper(stage.argv)
-            if reason:
+            if reason and not (descriptor_fetch is not None and opens_socket(stage, argv)):
                 behind = " behind wrapper" if shell_reader.wrapper_words(stage.argv) else ""
                 unread.append((index, "cannot read command%s: %s; the guard cannot "
                                "determine what it runs" % (behind, reason)))
             program = unread_program(argv, stage, _walk, inside, before, under)
+            if program and prefix_expanded_program(stage, argv):
+                program = None
             reason = program if inside and program else _unread_stdin(stage, before) or program
             if reason:
                 unread.append((index, reason))
@@ -350,7 +375,8 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                     calls.fixed(index))
                 unread.extend((index, why) for _inner, why in nested)
                 found.extend((index, fetch._replace(piped_to=forwarded_consumer(fetch, consumer))
-                              if (executes or fetch.piped_to is None
+                              if (executes and prefix_handoff(stage, text, argv)
+                                  or not executes and fetch.piped_to is None
                                   or value_exec and is_forwarded_tee(fetch)) else fetch)
                              for _inner, fetch in fetched)
     return found, unread + (carried(stmts, EXECUTORS) if found else [])

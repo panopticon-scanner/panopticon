@@ -35,6 +35,9 @@ QUOTED = "\ue001"
 # quotes gone, `shell_reader._stage` must still tell `"$SUDO"`, a word bash
 # keeps empty, from `$SUDO`, one it drops (#2472).
 QUOTED_DOLLAR = "\ue003"
+# The quoted-dollar mark whose quote is specifically a live double quote. A
+# shell expands this one before applying a simple command's prefix assignments (#2433).
+DOUBLE_DOLLAR = "\ue006"
 # The members of a `[...]` that matches no `-`: letters, digits, `_` and `.`,
 # and ranges between two letters or digits (`leads`).
 _PLAIN = re.compile(r"(?:[A-Za-z0-9](?:-[A-Za-z0-9])?|[_.])+")
@@ -50,8 +53,9 @@ def patterned(text: str) -> str:
     review N-1 of #1793's follow-ups), and not the `[` right after a `$` no
     backslash takes, which opens `$[...]`. An arithmetic command's reach here
     escaped (`shell_lex.lex`), and a `$((...))` lifted. `QUOTED` goes before
-    each quote or backslash inside a marked `[...]`, `QUOTED_DOLLAR` before
-    each `$` a quote or a backslash covers (#2472)."""
+    each quote or backslash inside a marked `[...]`; `QUOTED_DOLLAR` goes before
+    a literal `$` covered by a single quote or backslash, and `DOUBLE_DOLLAR`
+    before one a double quote leaves live (#2472, #2433)."""
     out, i, quote, dollar, bracket = [], 0, "", -2, -1
     while i < len(text):
         ch = text[i]
@@ -63,7 +67,9 @@ def patterned(text: str) -> str:
         size = 2 if ch == "\\" and quote != "'" or not quote and text.startswith("$'", i) else 1
         if bracket >= 0 and (size == 2 or not quote and ch in "'\""):
             out.append(QUOTED)
-        if quote and ch == "$" or size == 2 and text.startswith("\\$", i):
+        if quote and ch == "$":
+            out.append(DOUBLE_DOLLAR if quote == '"' else QUOTED_DOLLAR)
+        elif size == 2 and text.startswith("\\$", i):
             out.append(QUOTED_DOLLAR)
         if quote and size == 1 and ch == quote[-1]:
             quote = ""

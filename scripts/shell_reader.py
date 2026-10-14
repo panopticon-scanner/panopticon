@@ -41,13 +41,14 @@ Stdlib only. `statements(script)` is the entry point; `command(argv)` strips
 what stands in front of a command; `readable(text)` puts lifted substitutions
 back for a human reading an error message."""
 import collections
+import fnmatch
 import os
 import re
 import shlex
 
 from shell_lex import lex
-from shell_patterns import (MARK, QUOTED, QUOTED_DOLLAR, is_pattern, leads, patterned,
-                            shell_words as shell_words)
+from shell_patterns import (DOUBLE_DOLLAR, MARK, QUOTED, QUOTED_DOLLAR, is_pattern, leads,
+                            patterned, shell_words as shell_words)
 from shell_text import (_lift_substitutions, join_continuations as join_continuations,
                         without_comments as without_comments)
 from shell_tokens import (_Expanded as _Expanded, _Parse as _Parse, _Token as _Token, placed as placed,
@@ -114,11 +115,16 @@ _DECLARATIONS = ("declare", "typeset", "local", "export", "readonly")
 _NAMED = "\ue005"
 _WORD = re.compile(r"""(?:[^ \t\r\n'"\\]|\\.|'[^']*'|"(?:[^"\\]|\\.)*")+""", re.S)
 _SPELLED = re.compile(r"""["'\\]*[A-Za-z_](?:["'\\]*[A-Za-z0-9_])*["'\\]*(?:\[[^]]*\]["'\\]*)?(?:\+["'\\]*)?=""")
-# A `$` word written whole in double quotes (`_stage`'s `double`): what stands between them. Read once for a stage,
-# as a search for each kept word's own spelling costs the square of a long stage's length.
+# A `$` word written whole in double quotes (`_stage`'s `double`): what stands between them.
 _DOUBLE = re.compile(r'"(\$[^"\\\s]*)"')
 # The paths of N a carry reads as N, past slashes or a climb: `//dev/fd/N`, `../proc/thread-self/fd/N` (#2881)
 _FD_SPELLINGS = re.compile(r"^(?:/+|(?:\.\./+)+)(?:dev|proc/(?:thread-)?self)/+fd/")
+# `/proc/self/root` and `/proc/thread-self/root` are the process's own root: in front of an absolute path they
+# spell it once more, as often as they stand (#3051).
+_OWN_ROOT = re.compile(r"^(?:/proc/(?:thread-)?self/root)+(?=/)")
+# The listed names of a descriptor a pattern bash expands may match (`/dev/stdou[t]`, `/dev/fd/[1]`, #3051).
+_DESCRIPTOR_NAMES = ("/dev/stdin", "/dev/stdout", "/dev/stderr", *("/dev/fd/%d" % n for n in range(10)),
+                     *("/proc/self/fd/%d" % n for n in range(10)), *("/proc/thread-self/fd/%d" % n for n in range(10)))
 
 
 # --- reading the shell -------------------------------------------------------
@@ -155,8 +161,16 @@ def output_alias_fd(word):
     (`input_alias_fd` past `_FD_SPELLINGS`). Linux refuses `/dev/stdout/` and `/dev/fd/01`, which macOS opens,
     and macOS has no `/proc`: the reading is of either kernel (measured on both), and of `/dev/fd/1/` too,
     which neither opens. What a command writes there lands where THAT descriptor points -- the pipe, a file,
-    nowhere. A word a value decides, and a path of another process's descriptor, are read as files, as before."""
-    fd = input_alias_fd(_FD_SPELLINGS.sub("/dev/fd/", os.path.normpath(word)))
+    nowhere. A word a value decides, and a path of another process's descriptor, are read as files, as before.
+    A pattern bash expands is the one listed name it matches, where it matches one (`/dev/stdou[t]`; dash expands
+    no redirection's pattern, a price under `sh`), and `/proc/self/root` in front of the path is dropped as often
+    as it stands (#3051). What a `cd` or a link of the step's may make of the path is `sources`' to ask."""
+    path = str(word)
+    if isinstance(word, _Expanded):
+        names = [name for name in _DESCRIPTOR_NAMES if fnmatch.fnmatchcase(name, path)]
+        path = names[0] if len(names) == 1 else path
+    path = _OWN_ROOT.sub("", os.path.normpath(path)) or "/"
+    fd = input_alias_fd(_FD_SPELLINGS.sub("/dev/fd/", path))
     return None if fd == "?" else fd
 
 
@@ -189,7 +203,8 @@ def _whole(raw, context, span):
     `span` of `main`'s words it is: for the one reading that takes it whole, the command word
     (`shell_command._command_result`, #2731). Every other reading has `main`'s words (#2856
     round 8)."""
-    plain = context.restore_arithmetic(raw.replace(MARK, "").replace(QUOTED, "").replace(QUOTED_DOLLAR, ""))
+    plain = context.restore_arithmetic(raw.replace(MARK, "").replace(QUOTED, "")
+                                       .replace(QUOTED_DOLLAR, "").replace(DOUBLE_DOLLAR, ""))
     word = context.token(plain.replace(_ESCAPED, "\\"))
     word = word if isinstance(word, _Token) else _Token(word, _markers(word))
     word.span = span
@@ -285,21 +300,26 @@ def _stage(text, context):
         pieces.extend((part, None if at else whole, len(parts)) for at, part in enumerate(parts))
     for raw, whole, span in pieces:
         named, raw = raw.startswith(_NAMED), raw.replace(_NAMED, "")
-        plain = context.restore_arithmetic(
-            raw.replace(MARK, "").replace(QUOTED, "").replace(QUOTED_DOLLAR, ""))
+        plain = context.restore_arithmetic(raw.replace(MARK, "").replace(QUOTED, "")
+                                           .replace(QUOTED_DOLLAR, "")
+                                           .replace(DOUBLE_DOLLAR, ""))
         raw, word = raw.replace(_ESCAPED, "\\"), context.token(plain.replace(_ESCAPED, "\\"))
         if is_pattern(raw):             # bash expands it first (#2294)
             word = _Expanded(word, _markers(word))
-            setattr(word, "lead", leads(context.pattern.sub("${}", raw).replace(QUOTED_DOLLAR, "")))
+            unquoted = raw.replace(QUOTED_DOLLAR, "").replace(DOUBLE_DOLLAR, "")
+            setattr(word, "lead", leads(context.pattern.sub("${}", unquoted)))
         elif _ESCAPED in plain:
             word = word if _markers(word) else _Token(word, {})
             setattr(word, "spelled", context.token(plain.replace(_ESCAPED, "")))
-        elif raw.count(QUOTED_DOLLAR) == plain.count("$") > 0 and not _markers(word):
+        elif (raw.count(QUOTED_DOLLAR) + raw.count(DOUBLE_DOLLAR)
+              == plain.count("$") > 0 and not _markers(word)):
             word = kept(word)               # every `$` of it quoted: bash keeps the word (#2472)
-            # ...and where the quotes are double ones around the whole of it, `"$@"` is no word at all (#3002);
-            # in single quotes or behind a backslash it is the two characters (`shell_defaults._SPLAT`).
+            # ...and where the whole value is double-quoted, `"$@"` may be no word at all (#3002).
             doubles = set(_DOUBLE.findall(text)) if doubles is None else doubles
             setattr(word, "double", plain in doubles)
+            # A separate fact says whether every `$` is live. A single quote or backslash makes
+            # eval or a child shell re-read it after applying a prefix assignment (#2433).
+            setattr(word, "live_dollar", raw.count(DOUBLE_DOLLAR) == plain.count("$"))
         if named:                           # `"X=1"`, `X\=1`: a command of that name (#2480)
             word = word if isinstance(word, _Token) else _Token(word, {})
             setattr(word, "quoted", True)
@@ -387,10 +407,13 @@ def _stage(text, context):
                     opened[number] = (*carried, word)
                     input_files[number] = tuple(dict.fromkeys((*input_files.get(number, ()), word)))
                 writes.append(word)
-                alias = output_alias_fd(word)   # a path of N: where N points now (`2>&1 >/dev/stderr`, #2744)
+                # A path of N: where N points now (`2>&1 >/dev/stderr`, #2744) -- as written, or as a `cd` or a
+                # link of the step's may make it (`sources`, #3051): what is written there may then reach the
+                # next stage, the file kept beside, the reader knowing no `cd` or `ln` to have run.
+                alias, *others = sources(word, context, output_alias_fd)
                 sinks[number] = word if alias is None else sinks.get(alias)
                 pipe_inputs[number] = False
-                pipe_outputs[number] = alias is not None and pipe_outputs.get(alias, False)
+                pipe_outputs[number] = any(fd == "?" or pipe_outputs.get(fd, False) for fd in (alias, *others) if fd)
                 reads_body(number, None)
                 if op.startswith("&"):
                     sinks["2"] = sinks[number]
@@ -446,7 +469,8 @@ def statements(script):
     context = _Parse(script)
     shadows(script)                     # a wrapper's name the text defines is the step's own (#2670)
     # A step that spells a mark the reader puts in its text reads as `main` (#2856 round 8).
-    context.blanks = not any(mark in script for mark in (MARK, QUOTED, _ESCAPED, QUOTED_DOLLAR, _BLANK))
+    context.blanks = not any(mark in script for mark in (
+        MARK, QUOTED, _ESCAPED, QUOTED_DOLLAR, DOUBLE_DOLLAR, _BLANK))
     text = lex(script, lambda *heredoc: context.new("heredoc", heredoc))
     for marker, (kind, value) in getattr(script, "heredocs", {}).items():
         text = text.replace(marker, context.new(kind, value))

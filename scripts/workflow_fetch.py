@@ -447,6 +447,11 @@ def _stream_forwarded(following):
     return True
 
 
+def stream_forwarded(following):
+    """Whether every local stage can carry a producer's stdout outward."""
+    return _stream_forwarded(following)
+
+
 _COMPOUND_OPEN = ("if", "while", "until", "for", "case", "{")
 _COMPOUND_CLOSE = ("fi", "done", "esac", "}")
 

@@ -7,6 +7,31 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader: a written path a pattern, a `cd`, a link or `/proc/self/root` gives names the
+  descriptor it reaches (#3051).** `curl -fsSL URL > /dev/stdou[t] | sh`, `cd /dev` then `> stdout |
+  sh`, `ln -s /dev/stdout o` then `> o | sh`, and `> /proc/self/root/dev/stdout | sh` read CLEAN
+  while every shell ran the download (the pattern: under bash): #2744's reader read a written path
+  as written. `output_alias_fd` now reads an unquoted pattern bash expands as the one listed
+  descriptor name it matches, where it matches one (dash expands no redirection's pattern, a price
+  under `sh`), and drops `/proc/self/root` and `/proc/thread-self/root`, the process's own root, in
+  front of a path as often as they stand; and the stage's redirections ask `sources` for a written
+  path as they do for a read one (#2919), so a `cd` or a link the step may have made adds the
+  descriptor's reading beside the file's, fail-closed as the reads are (a `cd` in a subshell, or one
+  a later `cd` replaced, still counts: two prices, pinned). Measured on 26,946 rows, `main` f5c66d7f
+  against this change, under each of the five `shell:` settings, in three readings (the job, its
+  main pass, its walk pass) and, for a row of 2 to 12 lines, in four step forms beside the one-step
+  reading: 26,924 rows read the same, byte for byte -- #3064's kit of 26,836 and #3050's 63 among
+  them -- and 22 move CLEAN -> REPORT (390 cells): the issue's 16 rows whose truth runs (the four
+  patterns, `>` and `>>` to `/dev/stdou[t]` and `/dev/fd/[1]`; `cd /dev` then `> stdout` and `cd /`
+  then `> dev/stdout`; `ln -s /dev/stdout o` and `ln -s /proc/self/fd/1 o` then `> o`; eight
+  spellings through the own root, `-o` and a `tee` operand among them) and six twins (`2>&1 >
+  /dev/fd/[2]`, `2>&1 > /proc/self/root/dev/stderr`, `cd /proc/self/root` then `> dev/stdout`, `ln
+  -sf`, and the two prices, `( cd /dev )` and `cd /dev; cd /tmp`); none moves the other way or
+  changes a finding it had. The 160 cells of those rows that stay CLEAN are the pattern rows under
+  `sh` and the `cd` or link rows split so the `cd` or link is a step of its own. 1,996,230 cells, 0
+  failures. Limits, pinned: `-o o` behind a link (`stdout_named` asks the path alone), and a link to
+  a link (`sources` follows one). Sizes: shell_reader.py 466 -> 484.
+
 - **Workflow reader: a function that streams a download is read where a shell reads its output
   (#3050).** `f() { curl -fsSL URL; }` then `f | sh` -- and `sh <(f)`, `eval "$(f)"`, `sh -c
   "$(f)"`, `f > t; sh t`, a download helper `dl() { curl -fsSL "$1" -o "$2"; }; dl URL t; sh t`, a
@@ -46,8 +71,7 @@ evidence exposed.
   clean.
   A file checksum cannot bless a cloned tree, including one moved or copied before execution;
   server-chosen HTTPie filenames and dependency- or index-selected pip artifacts remain
-  deliberately unresolved, while raw sockets and unmodeled network producers remain for #2829's
-  second slice.
+  deliberately unresolved; the raw-stream complement is the next entry.
   The Dockerfile integrity suite documents one owner-accepted exception: the exact RustSec
   `advisory-db` clone into `/home/scanner/.cargo/advisory-db` is fresh-required security-advisory
   data, not a binary, and checksum-pinning it would stale the advisories the scan depends on. No
@@ -55,6 +79,15 @@ evidence exposed.
   Across 165 targeted cells under five workflow shell settings, report cells rise 15 -> 105 with
   90 new detections, no REPORT -> CLEAN cell, and no pre-existing reason lost; `aws s3 cp` stays
   CLEAN while `gh release download` moves to REPORT in all five settings.
+- **Workflow guard fails closed on raw network streams handed to executors (#2829, network
+  slice).** `/dev/tcp` and `/dev/udp` input, connecting `nc`/`ncat`/`netcat` and `socat` forms,
+  `openssl s_client`, and foreign one-liners naming `urllib`, `requests`, HTTP modules or `fetch(`
+  now become destination-less fetch records when their bytes feed a shell directly, through
+  pass-through stages, inside a literal child-shell body, or through command/process substitution.
+  Explicit netcat/socat listeners, other OpenSSL subcommands, plain foreign code, redirected output
+  and producers not feeding an executor remain clean. The descriptor form
+  `exec 3<>/dev/tcp/...; cat <&3 | sh` is paired conservatively: because the flattened reader does
+  not retain descriptor numbers across statements, a hidden close or reassignment can over-report.
 - **Workflow guard keeps an explicit stdout download through an adjacent `tee` (#2916).** `curl`
   or `wget` naming `-`, `/dev/stdout`, or descriptor 1 now binds the file `tee` writes before the
   stdout marker is discarded; `/dev/null` and an inferred remote filename `-` remain non-streams.
@@ -91,6 +124,25 @@ evidence exposed.
   `_SOFT_STEP`, 12,203 `_UNSHARED_IF` and 480 `_UNSHARED_BRANCH`. The two dumps are equal byte for
   byte. The guard's command line, run as a script over 4,635 jobs, prints the same 4,256 findings
   under both. Sizes: 700 -> 586, and 138 for the new module.
+
+- **Workflow guard applies a prefix assignment after its command's words expand (#2433).**
+  `x=$(curl ...) eval "$x"` and its `sh -c` twin reported as handing the new value straight to
+  the executor, although the live `$x` expands before the assignment applies; both now read CLEAN,
+  as does a prefix before `true`, while `x=$(curl ...); eval "$x"` remains the must-trip control.
+  The reader gives each quoted dollar its own live-double-quote provenance, so embedded strings and
+  equal-looking arguments retain their lexical distinction: single-quoted and escaped references
+  are re-read after the prefix applies and still REPORT. The hand-off follows only a substitution
+  that contributes to the final scalar assignment; a replacing assignment drops earlier values,
+  while `+=` keeps them. A live reference can still read the old value, which remains reported when
+  an earlier statement supplied a download. The issue's claim that every prefix expires with its
+  command has a POSIX boundary: dash and Bash POSIX mode retain assignments before special builtins.
+  The guard therefore carries those values to later commands, while `command eval`, `unset x`, and
+  `export x=...` discard or replace them as the shells do. Conservative readings remain for an
+  executor with no known script word and for a program string whose construction loses quote
+  provenance. On a 154-row cross-product, the 63 base-REPORT/head-CLEAN rows produced zero payload
+  runs in 189 executions across Bash 3.2.57, GNU Bash 5.2.21, and dash. Eight additional rows now
+  report; all eight run under dash and Bash 5.2.21 in POSIX mode and stop under both default Bash
+  versions.
 
 - **Workflow reader reads an expansion in a shell's option word as text the word does not write
   (#2889).** `X=c; sh -$X 'curl ... | sh'` runs the string under every parent shell and read CLEAN,
