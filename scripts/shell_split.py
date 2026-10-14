@@ -243,7 +243,7 @@ def _split(text, context):
                 cond = int(closed == "[[")
             at_head = at_head and bool(not closed or closed in KEYWORDS
                                        or _ASSIGNMENT.match(closed))
-            leads = (in_front or leads) and _BLANK not in closed and bool(
+            leads = (in_front or leads) and bool(
                 fronts(closed, in_front, text, i) or _OPTIONAL.fullmatch(closed) or _NOTHING.fullmatch(closed)
                 or closed[:1] == '"' == closed[-1:] and _SPLAT.fullmatch(closed[1:-1]))
             in_front = in_front and fronts(closed, in_front, text, i)
