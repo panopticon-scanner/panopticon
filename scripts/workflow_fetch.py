@@ -13,7 +13,7 @@ import shell_reader
 from shell_reader import command
 import workflow_fetch_adapters
 from workflow_option_slots import _one_word, _value
-from workflow_option_words import lifted, ruled
+from workflow_option_words import lifted, ruled, uncovered_argv
 from workflow_programs import VALUE_PROGRAM, stdin_program
 
 
@@ -115,6 +115,18 @@ def _pick_url(operands):
 
 
 def _parse_curl_wget(tool, args, stage, piped_to):
+    """A Fetch and whether its response still leaves on standard output: the transfer the words name
+    (`_transfer`), or -- where a word's expansions in front of an option word may print nothing
+    (`uncovered`, #3042: `wget $X-qO- URL | sh`, `wget $X-O f URL && sh f`) -- the one they name
+    then, where it has a URL, its stream beside the first's. The guard's job keeps `main`'s reading
+    of the words as written first and whole (`workflow_guard.job_defects`)."""
+    fetch, streams = _transfer(tool, args, stage, piped_to)
+    alt = uncovered_argv([tool, *args])
+    other, more = _transfer(tool, alt[1:], stage, piped_to) if alt else (None, False)
+    return (other, streams or more) if other is not None and other.url is not None else (fetch, streams)
+
+
+def _transfer(tool, args, stage, piped_to):
     """A Fetch and whether its response still leaves on standard output."""
     value_short, value_long = _VALUE_SHORT[tool], _VALUE_LONG[tool]
     dest_short, dest_long = _DEST_SHORT[tool], _DEST_LONG[tool]
