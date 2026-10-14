@@ -40,6 +40,24 @@ evidence exposed.
   synthesis -- and says to reach for it when breadth and depth justify the cost. The line keeps the
   `Use when` trigger form, so `test_skill_md.py`'s trigger-only/host-neutral guard holds. No
   behaviour change; `dispatch` still mirrors `whenToUse` from the description.
+- **CI: the `test` job timeout is 60 -> 90 minutes (stopgap, #2933).** The 3.11 matrix leg
+  was cancelled at the 60-minute job limit when its parallel pass ran slow under runner
+  contention, leaving no room for the serial timing pass. 90 minutes restores headroom while
+  the suite stays unsharded, and drops back once #2933 shards it.
+- **CI records per-test durations for the coming shard split (#2933).** The parallel test
+  pass now runs under `pytest-split`'s `--store-durations`, writing `.test_durations` and
+  uploading it per Python version. The data lets the eventual shard split balance groups by
+  measured time rather than test count; no gate or behaviour change.
+- **CI: the test suite is sharded (#2933, rough first cut).** One job per Python version ran
+  both passes, and the 3.11 leg took 18 to 56 minutes depending on runner contention. Now
+  `test-cov` (3.12, unsharded) carries both passes, the single 90% coverage gate and the
+  complete `.test_durations` profile; `test` runs the parallel pass for 3.11/3.13/3.14 in two
+  groups balanced by the committed `.test_durations` (`pytest-split`, `least_duration`);
+  `test-serial` runs the timing-bound tests alone on a fresh runner; and `tests-passed` is the
+  one always-reporting gate over all of them, so branch protection names a single check from
+  here. Coverage is interpreter-independent in this repo (no version-gated branches), so gating
+  it on one version loses nothing. The matrices no longer fail-fast, so one red leg no longer
+  cancels the others. Expected: about 12 minutes per 3.11 shard.
 - **Workflow reader: a written path a pattern, a `cd`, a link or `/proc/self/root` gives names the
   descriptor it reaches (#3051).** `curl -fsSL URL > /dev/stdou[t] | sh`, `cd /dev` then `> stdout |
   sh`, `ln -s /dev/stdout o` then `> o | sh`, and `> /proc/self/root/dev/stdout | sh` read CLEAN
