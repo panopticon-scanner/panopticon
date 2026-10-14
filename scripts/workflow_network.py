@@ -167,12 +167,12 @@ def descriptor_network_fetch(stmts, index, executors):
     trusted download.
     """
     source = next((path for stage in stmts[index].stages
-                   if (path := opens_socket(stage, shell_reader.acted(stage.argv)))), None)
+                   if (path := opens_socket(stage, shell_reader.command(stage.argv)))), None)
     if source is None:
         return None
     for statement in stmts[index + 1:]:
         for position, stage in enumerate(statement.stages):
-            argv = shell_reader.acted(stage.argv)
+            argv = shell_reader.command(stage.argv)
             if not _descriptor_cat(stage, argv) or not stage.stdout_to_pipe:
                 continue
             consumer = stream_consumer(statement.stages[position + 1:], executors)
