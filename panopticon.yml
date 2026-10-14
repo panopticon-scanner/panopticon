@@ -163,6 +163,11 @@
 #   - 2026-10-13 (#2829): `WorkflowGuard` claims the named-fetch adapter and
 #     its focused test beside `workflow_fetch.py`. Measured with discovery's
 #     assignment after #3064: `WorkflowGuard` 38, below its 40-file fence.
+#   - 2026-10-13 (#2829, network slice): the raw network producer and its
+#     focused test would bring `WorkflowGuard` from 40 to 42. Split the three
+#     fetch parsers and their two focused tests into `WorkflowFetch`; measured
+#     after the subsequent #2433 forms split: `WorkflowGuard` 22,
+#     `WorkflowFetch` 5.
 #   - 2026-10-14 (#2433): `WorkflowGuard` crossed the fence at 41 when the
 #     prefix-assignment proof met #2829 and #3050 at a fold. Split out
 #     `WorkflowForms`: the command-shape and failure-gating modules descended
@@ -676,8 +681,6 @@ groups:
       - scripts/workflow_failure_contexts.py
       - scripts/workflow_printers.py
       - scripts/workflow_printer_writes.py
-      - scripts/workflow_fetch.py
-      - scripts/workflow_fetch_adapters.py
       - scripts/workflow_stdin.py
       - scripts/workflow_uses.py
       - scripts/workflow_use_scopes.py
@@ -687,7 +690,6 @@ groups:
       - scripts/workflow_annotate.py
       tests:
       - tests/test_workflow_guard.py
-      - tests/test_workflow_fetch_adapters.py
       - tests/test_workflow_defect.py
       - tests/test_workflow_called.py
       - tests/test_workflow_printers.py
@@ -718,6 +720,17 @@ groups:
       - tests/test_workflow_alternate_in_front.py
       - tests/test_workflow_in_front_of_a_command.py
       - tests/test_workflow_prefix_assignment.py
+      panels:
+      - SEC
+    WorkflowFetch:
+      # #2829: bounded named fetches and destination-less network producers.
+      match:
+      - scripts/workflow_fetch.py
+      - scripts/workflow_fetch_adapters.py
+      - scripts/workflow_network.py
+      tests:
+      - tests/test_workflow_fetch_adapters.py
+      - tests/test_workflow_network_producers.py
       panels:
       - SEC
     WorkflowPrograms:

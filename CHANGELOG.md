@@ -46,8 +46,7 @@ evidence exposed.
   clean.
   A file checksum cannot bless a cloned tree, including one moved or copied before execution;
   server-chosen HTTPie filenames and dependency- or index-selected pip artifacts remain
-  deliberately unresolved, while raw sockets and unmodeled network producers remain for #2829's
-  second slice.
+  deliberately unresolved; the raw-stream complement is the next entry.
   The Dockerfile integrity suite documents one owner-accepted exception: the exact RustSec
   `advisory-db` clone into `/home/scanner/.cargo/advisory-db` is fresh-required security-advisory
   data, not a binary, and checksum-pinning it would stale the advisories the scan depends on. No
@@ -55,6 +54,15 @@ evidence exposed.
   Across 165 targeted cells under five workflow shell settings, report cells rise 15 -> 105 with
   90 new detections, no REPORT -> CLEAN cell, and no pre-existing reason lost; `aws s3 cp` stays
   CLEAN while `gh release download` moves to REPORT in all five settings.
+- **Workflow guard fails closed on raw network streams handed to executors (#2829, network
+  slice).** `/dev/tcp` and `/dev/udp` input, connecting `nc`/`ncat`/`netcat` and `socat` forms,
+  `openssl s_client`, and foreign one-liners naming `urllib`, `requests`, HTTP modules or `fetch(`
+  now become destination-less fetch records when their bytes feed a shell directly, through
+  pass-through stages, inside a literal child-shell body, or through command/process substitution.
+  Explicit netcat/socat listeners, other OpenSSL subcommands, plain foreign code, redirected output
+  and producers not feeding an executor remain clean. The descriptor form
+  `exec 3<>/dev/tcp/...; cat <&3 | sh` is paired conservatively: because the flattened reader does
+  not retain descriptor numbers across statements, a hidden close or reassignment can over-report.
 - **Workflow guard keeps an explicit stdout download through an adjacent `tee` (#2916).** `curl`
   or `wget` naming `-`, `/dev/stdout`, or descriptor 1 now binds the file `tee` writes before the
   stdout marker is discarded; `/dev/null` and an inferred remote filename `-` remain non-streams.
