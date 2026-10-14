@@ -406,10 +406,10 @@ def _function_use(stmts, definition, args, dest, directory, named, inherited, ta
     for index, statement in enumerate(body):
         for position, stage in enumerate(statement.stages):
             bound = _live(local_named if called else {}, positional, here)
-            # Each stage as written where the walk never reads it: a body defined before the fetch
-            # (`literal`, #2982), and a stage the call's own input changes (`f < t` runs the body's `sh`
-            # on `t`, #2973) -- a body written after the fetch is read where it stands, with its own
-            # checks ahead of its uses, and not again here; a binding call weighs the bound words, as before.
+            # Each stage as written where the walk never reads it: a body whose definition closes before
+            # the fetch (`literal`, #2982), and a stage the call's own input changes (`f < t` runs the body's
+            # `sh` on `t`, #2973) -- a body written after the fetch, or holding it, is read where it stands,
+            # with its own order and checks, and not again here; a binding call weighs the bound words, as before.
             read = with_call_stdin(call, stage) if call is not None else stage
             argv = command(read.argv)
             if (called or literal or read is not stage) and (
@@ -577,7 +577,7 @@ def uses(stmts, dest, after, working=None, scopes=None):
                 if not how and call:
                     how = _function_use(stmts, functions[argv[0]], argv[1:], name, here, named,
                                         {**named, **positional}, table, scopes, call=stage,
-                                        literal=functions[argv[0]][0] < after)
+                                        literal=functions[argv[0]][1] < after)
                 if how:
                     if not same_file(name, dest):
                         shown = re.sub(r"^\$CWD[^/]*/", "", name).replace("$UP", "..")
