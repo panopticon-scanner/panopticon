@@ -388,10 +388,12 @@ class TestWhatStaysForOtherIssues(unittest.TestCase):
                 self.assertEqual(CLEAN, marks(GET + lines))
 
     def test_a_function_that_streams_called_in_front_of_a_shell(self):
-        # Truth: runs, both. CLEAN on `main` with no redirection at all: the call's stream is not followed.
+        # Truth: runs, both. CLEAN on `main` with no redirection at all, the call's stream not followed,
+        # until #3050: the call is read as the body's fetch where it stands, so both REPORT (the
+        # coordinator's ruling, Krab seq 2797, moved these two rows here).
         for body in ("%s", "%s > //dev/stdout"):
             with self.subTest(body=body):
-                self.assertEqual(CLEAN, marks("f() { %s; }\nf | sh" % (body % STREAM)))
+                self.assertEqual(REPORT, marks("f() { %s; }\nf | sh" % (body % STREAM)))
 
 
 class TestAPathAPatternACdOrALinkGives(unittest.TestCase):
