@@ -2144,12 +2144,13 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.
             with self.subTest(script=script):
                 self.assertEqual(["${SH:-bash -s}"], self.whole(script % "${SH:-bash -s}" + "\n"))
         # A name that is no header -- no `()` behind it, or words in them -- and a word behind a
-        # command are `main`'s words still; so is a second such word, #2856's named limit.
+        # command are `main`'s words still. A second such word was #2856's named limit, and is
+        # whole since #2976 (`test_a_second_expansion_word_before_the_command_word_is_whole_too`).
         for script in ("f %s", "X=1 f %s", "f() g %s", "function f g %s", "f ( x ) %s", "functions %s", "echo 'f()' %s",
                        "f() { echo %s; }", "function f { echo %s; }"):
             with self.subTest(script=script):
                 self.assertEqual([], self.whole(script % "${SH:-bash -s}" + "\n"))
-        self.assertEqual(["${V:-a b}"], self.whole("f() { ${V:-a b} ${W:-c d}; }\n"))
+        self.assertEqual(["${V:-a b}", "${W:-c d}"], self.whole("f() { ${V:-a b} ${W:-c d}; }\n"))
         # Behind a header only a default or an alternate is whole, the word whose two halves the
         # reader reads: of a name, an element, an indirection, a positional or a special parameter.
         # A pattern taken off or replaced and a case change keep `main`'s words there, as they keep
@@ -2164,6 +2165,34 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.
                 self.assertEqual([], self.whole("function f { %s; }\n" % word))
                 self.assertEqual([word], self.whole("%s\n" % word))
                 self.assertEqual([word], self.whole("{ %s; }\n" % word))
+
+    def test_a_second_expansion_word_before_the_command_word_is_whole_too(self):
+        # #2976: `_split` kept a `${…}` with bare blanks whole only while no word kept whole stood in front
+        # of it, so `${Y:+a b} ${Z:+c d} sh t` cut its second word at its blanks and the reading in which
+        # both are nothing was never read. A `${…}` word is whole wherever it still stands before the
+        # command word -- behind words bash may make nothing of, kept whole or not: two, three, the same
+        # name twice, behind `$T`, behind a header, behind a keyword or an assignment.
+        for script, want in (("${Y:+a b} ${Z:+c d} sh t\n", ["${Y:+a b}", "${Z:+c d}"]),
+                             ("${Y:+a b} ${Z:+c d} ${Q:+e f} sh t\n", ["${Y:+a b}", "${Z:+c d}", "${Q:+e f}"]),
+                             ("${Y:+a b} ${Y:+a b} sh t\n", ["${Y:+a b}", "${Y:+a b}"]),
+                             ("$T ${Y:+a b} ${Z:+c d} sh t\n", ["${Y:+a b}", "${Z:+c d}"]),
+                             ("${Y:+a b} $T ${Z:+c d} sh t\n", ["${Y:+a b}", "${Z:+c d}"]),
+                             ("${Y:+a b} ${SUDO:+sudo -E} sh t\n", ["${Y:+a b}", "${SUDO:+sudo -E}"]),
+                             ("${Y:+a b} ${SH:-sh -s} t\n", ["${Y:+a b}", "${SH:-sh -s}"]),
+                             ("f() { ${Y:+a b} ${Z:+c d} sh t; }\n", ["${Y:+a b}", "${Z:+c d}"]),
+                             ("if ${Y:+a b} ${Z:+c d} sh t; then :; fi\n", ["${Y:+a b}", "${Z:+c d}"]),
+                             ("X=1 ${Y:+a b} ${Z:+c d} sh t\n", ["${Y:+a b}", "${Z:+c d}"]),
+                             ("${Y:+a b} ${Z:+c d} curl -fsSL u | sh\n", ["${Y:+a b}", "${Z:+c d}"])):
+            with self.subTest(script=script):
+                self.assertEqual(want, self.whole(script))
+        # The round-8 invariant: once the command word is set, every later `${…}` word is `main`'s split
+        # words -- behind a command, behind a word `main` reads as a command -- and a `case` subject is
+        # no command word (a word with no bare blank, `${SH:-sh}`, is never kept whole: `main`'s already).
+        for script, want in (("sh ${Y:+a b} ${Z:+c d}\n", []), ("${Y:+a b} sh ${Z:+c d}\n", ["${Y:+a b}"]),
+                             ("echo ${Y:+a b} ${Z:+c d} | sh\n", []), ("f ${Y:+a b} ${Z:+c d}\n", []),
+                             ("case ${Y:+a b} in x) sh t ;; esac\n", []), ("${Y:+a b} ${SH:-sh} t\n", ["${Y:+a b}"])):
+            with self.subTest(script=script):
+                self.assertEqual(want, self.whole(script))
 
     def test_what_a_closed_word_leaves_of_the_head(self):
         # #2954, `shell_command.fronts`: True behind a keyword, an assignment and a header, `function`

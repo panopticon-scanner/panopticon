@@ -1,8 +1,8 @@
 ---
 name: panopticon
-description: Use when reviewing code, pull requests, branches, security posture, test quality, architecture, or database surfaces in a codebase
+description: Use when a whole codebase or a substantial change needs a comprehensive, heavyweight multi-agent audit -- discovery, scouting, parallel specialized reviewers, and a validated CI-gating report -- and not for a quick, routine, or default code review.
 type: prompt
-whenToUse: When reviewing code, pull requests, branches, security posture, test quality, architecture, or database surfaces in a codebase
+whenToUse: Use when a whole codebase or a substantial change needs a comprehensive, heavyweight multi-agent audit -- discovery, scouting, parallel specialized reviewers, and a validated CI-gating report -- and not for a quick, routine, or default code review.
 arguments:
   - target
   - host

@@ -7,6 +7,47 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader keeps a stage's second `${…}` word whole where it still stands before the
+  command word (#2976).** `curl -fsSLo t …` ⏎ `${Y:+/usr/bin/env true} ${Z:+/usr/bin/env true} sh t`
+  ran the download under every parent and read CLEAN: `shell_split._split` kept a `${…}` with bare
+  blanks whole only while no word kept whole stood in front of it (#2856 round 8's one command word;
+  the #3002 round's `leads` flag stopped at a word kept whole, naming this as #2976's), so the first
+  word was read whole, the second cut at its blanks, and the reading in which both are nothing --
+  `sh t` -- was never read. The flag now carries past a word kept whole as it carries past any word
+  bash may make nothing of, so a `${…}` word is whole wherever it still stands before the command
+  word; the round-8 invariant holds -- once the command word is set, every later `${…}` word is
+  `main`'s split words -- and `shell_command._command_result` reads the second word as it reads the
+  first (the empty half on to the next word, the W half to its words). The kit's six rows (s7.two,
+  s7.three, s7.two-fetch, s7.two-pipe, s7.two-same, s7.two-sudo) report under every setting; s7.one,
+  s7.sudo-two, s7.two-default and s7.two-check read as they did. The price, named: both halves of
+  every such word are read whatever the step sets (#2856 round 13), so `Y=1` ⏎ `${Y:+…} ${Z:+…} sh
+  t` (s7.two-set, nothing runs) now reports as its one-word twin did on `main`; a read that knows a
+  name set for sure before the stage is #3077's. Differential on the forge, b449b260 against main
+  1cfb16de on 27,010 rows (the 26,946-row kit and 64 of this PR's own): 0 failures, 0 REPORT->CLEAN
+  cells, 26,139 rows identical, 156 rows CLEAN->REPORT -- 150 where a parent runs (138 of them the
+  halves kit's rows that carry `${S:- } $T ${U:+sudo -E} sh -c '…'`, the #3002 shape whose pin named
+  #2976), 6 where nothing runs (s7.two-set and five set-before twins, the price) -- and 717 rows
+  REPORT->REPORT with a finding added or sharpened. `tests/test_workflow_second_whole_word.py`, and
+  the splitter's side in `tests/test_shell_reader.py`; the two pins of the named limit (#2954's in
+  that file, #3002's in `tests/test_workflow_words_that_are_nothing.py`) move with it.
+  `scripts/shell_split.py` is 391 lines (+1, the comment); the reader's other modules are untouched.
+
+- **Skill: `description`/`whenToUse` scoped to what Panopticon is -- a comprehensive, heavyweight
+  multi-agent audit, not a default review.** The frontmatter listed "code, pull requests, branches,
+  security posture, test quality, architecture, or database surfaces", which reads as "use for any
+  review" and drew agents to Panopticon as a first-reach tool for small or routine work. The line
+  now names the shape -- discovery, scouting, parallel specialized reviewers, a validated CI-gating
+  synthesis -- and says to reach for it when breadth and depth justify the cost. The line keeps the
+  `Use when` trigger form, so `test_skill_md.py`'s trigger-only/host-neutral guard holds. No
+  behaviour change; `dispatch` still mirrors `whenToUse` from the description.
+- **CI: the `test` job timeout is 60 -> 90 minutes (stopgap, #2933).** The 3.11 matrix leg
+  was cancelled at the 60-minute job limit when its parallel pass ran slow under runner
+  contention, leaving no room for the serial timing pass. 90 minutes restores headroom while
+  the suite stays unsharded, and drops back once #2933 shards it.
+- **CI records per-test durations for the coming shard split (#2933).** The parallel test
+  pass now runs under `pytest-split`'s `--store-durations`, writing `.test_durations` and
+  uploading it per Python version. The data lets the eventual shard split balance groups by
+  measured time rather than test count; no gate or behaviour change.
 - **Workflow reader: a written path a pattern, a `cd`, a link or `/proc/self/root` gives names the
   descriptor it reaches (#3051).** `curl -fsSL URL > /dev/stdou[t] | sh`, `cd /dev` then `> stdout |
   sh`, `ln -s /dev/stdout o` then `> o | sh`, and `> /proc/self/root/dev/stdout | sh` read CLEAN
