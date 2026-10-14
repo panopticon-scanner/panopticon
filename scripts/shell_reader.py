@@ -41,6 +41,7 @@ Stdlib only. `statements(script)` is the entry point; `command(argv)` strips
 what stands in front of a command; `readable(text)` puts lifted substitutions
 back for a human reading an error message."""
 import collections
+import fnmatch
 import os
 import re
 import shlex
@@ -118,6 +119,12 @@ _SPELLED = re.compile(r"""["'\\]*[A-Za-z_](?:["'\\]*[A-Za-z0-9_])*["'\\]*(?:\[[^
 _DOUBLE = re.compile(r'"(\$[^"\\\s]*)"')
 # The paths of N a carry reads as N, past slashes or a climb: `//dev/fd/N`, `../proc/thread-self/fd/N` (#2881)
 _FD_SPELLINGS = re.compile(r"^(?:/+|(?:\.\./+)+)(?:dev|proc/(?:thread-)?self)/+fd/")
+# `/proc/self/root` and `/proc/thread-self/root` are the process's own root: in front of an absolute path they
+# spell it once more, as often as they stand (#3051).
+_OWN_ROOT = re.compile(r"^(?:/proc/(?:thread-)?self/root)+(?=/)")
+# The listed names of a descriptor a pattern bash expands may match (`/dev/stdou[t]`, `/dev/fd/[1]`, #3051).
+_DESCRIPTOR_NAMES = ("/dev/stdin", "/dev/stdout", "/dev/stderr", *("/dev/fd/%d" % n for n in range(10)),
+                     *("/proc/self/fd/%d" % n for n in range(10)), *("/proc/thread-self/fd/%d" % n for n in range(10)))
 
 
 # --- reading the shell -------------------------------------------------------
@@ -154,8 +161,16 @@ def output_alias_fd(word):
     (`input_alias_fd` past `_FD_SPELLINGS`). Linux refuses `/dev/stdout/` and `/dev/fd/01`, which macOS opens,
     and macOS has no `/proc`: the reading is of either kernel (measured on both), and of `/dev/fd/1/` too,
     which neither opens. What a command writes there lands where THAT descriptor points -- the pipe, a file,
-    nowhere. A word a value decides, and a path of another process's descriptor, are read as files, as before."""
-    fd = input_alias_fd(_FD_SPELLINGS.sub("/dev/fd/", os.path.normpath(word)))
+    nowhere. A word a value decides, and a path of another process's descriptor, are read as files, as before.
+    A pattern bash expands is the one listed name it matches, where it matches one (`/dev/stdou[t]`; dash expands
+    no redirection's pattern, a price under `sh`), and `/proc/self/root` in front of the path is dropped as often
+    as it stands (#3051). What a `cd` or a link of the step's may make of the path is `sources`' to ask."""
+    path = str(word)
+    if isinstance(word, _Expanded):
+        names = [name for name in _DESCRIPTOR_NAMES if fnmatch.fnmatchcase(name, path)]
+        path = names[0] if len(names) == 1 else path
+    path = _OWN_ROOT.sub("", os.path.normpath(path)) or "/"
+    fd = input_alias_fd(_FD_SPELLINGS.sub("/dev/fd/", path))
     return None if fd == "?" else fd
 
 
@@ -392,10 +407,13 @@ def _stage(text, context):
                     opened[number] = (*carried, word)
                     input_files[number] = tuple(dict.fromkeys((*input_files.get(number, ()), word)))
                 writes.append(word)
-                alias = output_alias_fd(word)   # a path of N: where N points now (`2>&1 >/dev/stderr`, #2744)
+                # A path of N: where N points now (`2>&1 >/dev/stderr`, #2744) -- as written, or as a `cd` or a
+                # link of the step's may make it (`sources`, #3051): what is written there may then reach the
+                # next stage, the file kept beside, the reader knowing no `cd` or `ln` to have run.
+                alias, *others = sources(word, context, output_alias_fd)
                 sinks[number] = word if alias is None else sinks.get(alias)
                 pipe_inputs[number] = False
-                pipe_outputs[number] = alias is not None and pipe_outputs.get(alias, False)
+                pipe_outputs[number] = any(fd == "?" or pipe_outputs.get(fd, False) for fd in (alias, *others) if fd)
                 reads_body(number, None)
                 if op.startswith("&"):
                     sinks["2"] = sinks[number]
