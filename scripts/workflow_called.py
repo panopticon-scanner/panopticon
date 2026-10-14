@@ -36,6 +36,7 @@ import shell_reader
 from shell_command import _ASSIGNMENT, _heads, command
 from shell_tokens import is_arm
 from workflow_function_calls import _function_syntax
+from workflow_programs import stdin_reader
 from workflow_use_scopes import _body_end, _function_ranges
 from workflow_values import _CANDIDATES, PAST, Values, emptied, record, stand_in
 
@@ -367,6 +368,16 @@ def _with_arguments(words, arguments):
     return out
 
 
+def with_call_stdin(call, stage):
+    """`stage`, a body's, reading the standard input its `call` has -- the pipe, the file, the heredoc or
+    here-string, the descriptors the call's redirections leave -- where it reads none of its own (#2973)."""
+    if stage.stdin_reads or stage.stdin_heredoc is not None:
+        return stage
+    return stage._replace(reads=tuple(dict.fromkeys((*call.reads, *stage.reads))), stdin_reads=call.stdin_reads,
+                          stdin_heredoc=call.stdin_heredoc, heredoc=call.heredoc if stage.heredoc is None else stage.heredoc,
+                          stdin_from_pipe=call.stdin_from_pipe, pipe_input_fds=call.pipe_input_fds)
+
+
 class CalledFetches:
     """What a step's function calls run where the call stands (#3050). For a call of a function the
     step defines before it, `at` gives the last stage of each statement of its body, and of the
@@ -385,7 +396,8 @@ class CalledFetches:
 
     def __init__(self, stmts):
         self.stmts, self.defined = stmts, {}   # type: tuple | list, dict[str, list[tuple[int, int]]]
-        for entries in _function_ranges(stmts)[0].values():
+        ranges, self.occupied = _function_ranges(stmts)
+        for entries in ranges.values():
             for name, head, close in entries:
                 self.defined.setdefault(name, []).append((head, _body_end(stmts, head, close)[0]))
 
@@ -424,6 +436,76 @@ class CalledFetches:
         return found
 
 
+    def consumers(self, position, following):
+        """`following`, the stages behind a fetch in its statement, with the stage that reads the fetch's
+        output as a shell put where a call of a function the step defines before `position` stands --
+        or a bare `{`/`(` that opens a group on its own (#2973). The body's statements in order, or the
+        group's, and the bodies they call in turn (`_DEPTH`): the first stage whose command reads stdin
+        as a shell (`workflow_programs.stdin_reader`) -- where a stage pipes on, the first such stage
+        behind it in its pipeline -- given the call's own standard input (`with_call_stdin`); one that
+        reads a file or a heredoc of its own reads nothing of the call's, and the walk goes on,
+        fail-closed: a stage in front that is no shell is read as leaving stdin to the next. A statement
+        inside a definition in the group runs only when called. A body with no such stage leaves the
+        call as written (`f() { wc -l; }`: nothing runs). The stages behind the call stay."""
+        out = list(following)
+        for at, stage in enumerate(out):
+            rest = _rest(stage.argv)
+            head = str(rest[0]) if rest else None
+            words = [str(word) for word in stage.argv]
+            if words == ["{"] or stage.group_open and not words:        # a bare `{` or `(`
+                found = self._reading(self._group(position), stage, position, [])
+            elif head is not None and head in self.defined:
+                found = self._reading([], stage, position, [(head, position)])
+            else:
+                continue
+            if found is not None:
+                out[at] = found
+                return out
+        return out
+
+    def _group(self, position):
+        """The indices of the statements of the group a bare opener ends statement `position` with."""
+        depth, inner = 1, []
+        for at in range(position + 1, len(self.stmts)):
+            for stage in self.stmts[at].stages:
+                depth += stage.group_open - stage.group_close
+            if depth <= 0:
+                break
+            inner.append(at)
+        return inner
+
+    def _reading(self, group, call, position, queue):
+        """The first stage -- among the group's statements `group` (a definition's skipped), then those of
+        each body `queue` names with the index its call stands at, and the bodies they call -- that reads
+        `call`'s standard input as a shell, given that input (`with_call_stdin`); None where none does."""
+        pending, skipping, seen = list(group), True, set[str]()
+        while pending or queue:
+            if not pending:
+                name, called_at = queue.pop(0)
+                seen.add(name)
+                pending = [at for head_at, end in self.defined[name] if head_at < called_at
+                           for at in range(head_at, end + 1)]
+                skipping = False
+                continue
+            at, pending = pending[0], pending[1:]
+            if skipping and at in self.occupied:
+                continue
+            for inner in self.stmts[at].stages:
+                words = shell_reader.acted(inner.argv)
+                if not words:
+                    continue
+                if inner.stdin_reads or inner.stdin_heredoc is not None:
+                    continue
+                if stdin_reader(list(map(str, words))) is not None:
+                    return with_call_stdin(call, inner)
+                rest = _rest(inner.argv)
+                named = str(rest[0]) if rest else None
+                if named in self.defined and named not in seen and all(named != q for q, _a in queue) and len(seen) < _DEPTH:
+                    queue.append((named, at))
+                if not inner.stdout_to_pipe:
+                    break
+        return None
+
 class _Fixed:
     """`CalledFetches` for the statements of a substitution: every call read at the step's statement
     that holds it, so a definition after that statement is no function to them either."""
@@ -436,6 +518,9 @@ class _Fixed:
 
     def at(self, _position, argv):
         return self.reader.at(self.position, argv)
+
+    def consumers(self, _position, following):
+        return self.reader.consumers(self.position, following)
 
 
 class _Shared(list):

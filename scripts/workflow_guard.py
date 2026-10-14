@@ -327,7 +327,9 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                         (named := parse_fetch(tool, fetch_argv[1:], body, None)) is not None
                         and named.dest is not None):
                     continue
-                reader_following = following if leaves else ()
+                # A call of a function the step defines, or a bare group opener, behind the fetch is read as the
+                # stage of its body that reads the fetch's output as a shell (`CalledFetches.consumers`, #2973).
+                reader_following = calls.consumers(index, following) if leaves else ()
                 fetch_stage, piped_to = compound_output(stmts, out, index, stage, reader_following) if leaves \
                     else (body, None)
                 fetch = parse_fetch(tool, fetch_argv[1:], fetch_stage, piped_to)
@@ -361,7 +363,8 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
             reason = program if inside and program else _unread_stdin(stage, before) or program
             if reason:
                 unread.append((index, reason))
-            consumer = tuple(t for t in argv if not shell_reader.is_marker(t)) or None
+            consumer = tuple(t for t in shell_reader.acted(calls.consumers(index, [stage])[0].argv)
+                             if not shell_reader.is_marker(t)) or None     # the body's reader for a call (#2973)
             executes = consumer and os.path.basename(consumer[0]) in EXECUTORS
             value_exec = consumer and stdin_program(consumer[:1]) == VALUE_PROGRAM
             for subno, text in enumerate(stage.substitutions):
