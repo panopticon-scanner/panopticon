@@ -132,6 +132,33 @@ evidence exposed.
   byte. The guard's command line, run as a script over 4,635 jobs, prints the same 4,256 findings
   under both. Sizes: 700 -> 586, and 138 for the new module.
 
+- **Workflow guard retires a carried stdout download after a certain same-shell replacement
+  (#2437).** A plain `x=1` or `unset x`, an assignment in `{ ...; }`, and an assignment in a
+  function the step then calls all left `x=$(curl ...)` held at a later `eval "$x"`; a literal
+  argument `{`, balanced `{}` arguments, and a line-only closing `)` exposed the same stale
+  answer through either the carried-download reason or #2483's generic dynamic-program fallback.
+  The carried-value walk now records the exact `(statement, variable)` where an expansion-free
+  replacement proves that fallback cannot be the download, and the existing quiet reason carries
+  the variable metadata needed to remove only that reason. A brace compound is read as the step's
+  shell unless its enclosing list can skip it, a boundary redirection can stop it, or the shell
+  forks it. A directly called function contributes
+  only caller-visible, unconditional assignments from one top-level definition that still exists;
+  a local, return path, branch, nested compound, child definition, `unset -f`, `eval`/source, or an
+  intervening known function keeps the old value fail-closed. Failed redirections, unseen writes
+  (`read`, arithmetic and parameter assignments), tilde expansion, aliases and traps retain the
+  generic reason. The child and skipped controls still
+  report, byte for byte: a 675-cell extension covering those boundaries under three fetch forms,
+  five uses, and five `shell:` settings is identical to `main`.
+  Across the 2,175-cell target/control cross-product against `main` 1cfb16de, 1,275 reports are
+  identical, 780 target reports become CLEAN, no CLEAN row becomes a report, and 120 reports keep
+  reporting with a narrower reason. Those 120 are the eight brace/function/literal target
+  spellings printed through `printf ... | sh`: the stale carried reason leaves while the existing
+  conservative printer fallback remains, a retained price. Runtime truth on Bash 3.2.57, GNU Bash
+  5.2.21 in default and POSIX modes, and dash suppresses the payload for all seven target families
+  and runs it for all seven must-trip controls. The state layer moved from the 700-line
+  `workflow_forms.py` into `workflow_carried.py` (440 and 539 lines) so the new proof stays below
+  the flat-module ceiling; the compatibility imports remain in `workflow_forms`.
+
 - **Workflow guard applies a prefix assignment after its command's words expand (#2433).**
   `x=$(curl ...) eval "$x"` and its `sh -c` twin reported as handing the new value straight to
   the executor, although the live `$x` expands before the assignment applies; both now read CLEAN,

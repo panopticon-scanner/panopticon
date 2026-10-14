@@ -28,10 +28,11 @@ Three questions live here, each one a shape a step writes down:
                                `unread_program` reports the programs it cannot
                                read in place (`candidates`, `unprinted`,
                                `dynamic_program`);
-                               `within` the scripts a statement's command
-                               substitutions run, where a use may be (#2345);
-                               `carried` a download a step keeps in a variable
-                               and hands to a shell (#2341);
+                               compatibility imports from workflow_carried,
+                               split when this module reached 700 lines, provide
+                               `within` for scripts a command substitution runs
+                               (#2345) and `carried` for a download a step keeps
+                               in a variable and hands to a shell (#2341);
                                and `in_container` the operand a `docker run`
                                hands to a shell on the far side of a bind mount
     whether a failure matters  `regions` reads the branch bodies a command was
@@ -51,8 +52,6 @@ through this module.
 Stdlib only, like everything under it.
 """
 import os
-import re
-from typing import cast
 
 import shell_reader
 from shell_reader import command, statements
@@ -78,6 +77,10 @@ from workflow_step_credit import (_BRANCH_ALTERNATE as _BRANCH_ALTERNATE,
                                   step_credit as step_credit)
 
 # Compatibility bindings share the fetch, operand and gating owners with existing callers.
+from workflow_carried import (_assigned as _assigned, _held as _held,
+                              carried as carried,
+                              prefix_expanded_program as prefix_expanded_program,
+                              prefix_handoff as prefix_handoff)
 from workflow_fetch import (FETCHERS as FETCHERS, STDOUT as STDOUT, Fetch as Fetch,
                             compound_stream_consumer as compound_stream_consumer,
                             parse_fetch as parse_fetch, stdout_fetch as stdout_fetch,
@@ -210,6 +213,8 @@ class _Quiet(Idle):
     program word (#2483, #2486), both of which `carried` says louder where a variable carries
     the download -- `echo "$x" | sh` and `sh -c "$x"` are its own."""
 
+    program_variable: str | None = None
+
 
 class FileBound(_Quiet):
     """A catch-all whose dynamic text is bounded to the named reader files (#2428).
@@ -316,6 +321,8 @@ def unread_program(argv, stage, walk, inside, before=None, shell=None):
                 if printer_files and isinstance(answer, _Quiet) else answer)
     answer = said or _weighed(          # the LAST resort (r0 finding 1), its printer weighed (#2955)
         _DYNAMIC % (how, shell_reader.readable(bare).strip()), worded(bare), walk, _Quiet)
+    if not said and isinstance(answer, _Quiet) and (variable := _held(bare)):
+        answer.program_variable = variable
     return FileBound(answer, bare_files) if bare_files and isinstance(answer, _Quiet) else answer
 
 
@@ -325,273 +332,6 @@ _DYNAMIC = ("runs `%s` on `%s`, a program this guard does not follow -- the word
 _PRINTED = ("pipes `%s` its program from `%s`, whose words this guard does not spell out -- it "
             "cannot say whether that program fetches or runs a download unchecked; print literal "
             "text or write it in a quoted heredoc, or exempt the step with a reason")
-INSIDE = " inside a command substitution"
-
-
-def within(statement, where="", directory=".", scope=0):
-    """Each stage and cwd, recursively through command substitutions.
-
-    A substitution inherits and restores its caller's cwd. A shell string is
-    reported by `kept`, not read; checks inside stay unread and fail closed
-    (#2345)."""
-    for position, stage in enumerate(statement.stages):
-        yield statement, position, stage, where, directory
-        for nested, text in enumerate(stage.substitutions):
-            inner = list(statements(text))
-            child_scope = "%sS%d_%d" % (scope, position, nested)
-            working = working_directories(inner, regions(inner), child_scope,
-                                           step_credit(inner, "bash {0}"), directory)
-            for index, child in enumerate(inner):
-                yield from within(child, INSIDE, working[index], "%sI%d" % (child_scope, index))
-
-
-# A download a step keeps in a variable and hands a shell as its script
-# (#2341): `x=$(curl -fsSL URL)`, then `eval "$x"`, `sh -c "$x"` or `echo "$x"
-# | sh`. No file ever holds it, so no checksum clears it, as none clears
-# `eval "$(curl URL)"`; the sentence names the variable.
-_CARRIES = ("carries %s in `$%s` and hands it to `%s`%s, so there is no file to check -- "
-            "download it to a file, `sha256sum -c` that file, then run it")
-_READS_CARRIES = ("carries %s in `$%s` and hands it to `%s`%s in this guard's conservative "
-                  "reading, so there is no file to check -- download it to a file, `sha256sum "
-                  "-c` that file, then run it")
-_NAMED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(\+?)=")
-_WHOLE = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
-_DECLARES = ("export", "local", "declare", "typeset", "readonly")
-# Prefix assignments before these builtins persist in dash and bash's POSIX mode.
-_SPECIAL = (":", ".", "break", "continue", "eval", "exec", "exit", "export", "readonly",
-            "return", "set", "shift", "times", "trap", "unset")
-
-
-def _held(word, embedded=False, names=None):
-    """The held variable named whole by `word`, or embedded in its program text."""
-    matches = _WHOLE.finditer(word) if embedded else (_WHOLE.fullmatch(word),)
-    for match in matches:
-        if match is None:
-            continue
-        outside = word[:match.start()] + word[match.end():]
-        if embedded and outside and not outside.strip():
-            continue                    # padding alone keeps #2483's existing answer
-        name = match[1] or match[2]
-        if names is None or name in names:
-            return name
-    return ""
-
-
-def _prints(stage):
-    """The words a supported printer stage writes to its standard output."""
-    argv = command(stage.argv)
-    if (argv and os.path.basename(argv[0]) == "cat"
-            and stage.stdin_heredoc is not None):
-        return [stage.stdin_heredoc[0]]
-    return argv[1:] if argv and os.path.basename(argv[0]) in ("echo", "printf") else []
-
-
-def _assignment_fetch(value):
-    """The stdout fetch held by one substitution assignment value, or None."""
-    if not (shell_reader.has_substitution(value)
-            and shell_reader.readable(value) == "$(...)"):
-        return None
-    substitutions = [text for kind, text in getattr(value, "markers", {}).values()
-                     if kind == "subst"]
-    if len(substitutions) != 1:
-        return None
-    text = substitutions[0]
-    if fetch := stdout_fetch(text):
-        return fetch
-    inner = list(statements(text))
-    first = inner[0] if inner and inner[0].separator == "||" else None
-    stage = first.stages[0] if first and len(first.stages) == 1 else None
-    argv = command(stage.argv) if stage else []
-    tool = os.path.basename(argv[0]) if argv else ""
-    fetch = parse_fetch(tool, argv[1:], stage, None) if tool in FETCHERS else None
-    return (fetch if stage is not None and fetch and fetch.url and fetch.dest is None
-            and stage.stdout_to_pipe else None)
-
-
-def _assigned(stage, held):
-    """{name: (download, certain), or None} for what this stage assigns,
-    in whatever shell runs it (`carried` weighs that). A bare assignment or a
-    declaration's (`export x=...`) holds one when its value is the stage's one
-    substitution and that is one fetch to standard output (`_assignment_fetch`), or
-    is a variable that holds one, whole (`y="$x"`); `+=` holds a fetch on its
-    right side; `unset` empties one, `unset -f` a function."""
-    argv = command(stage.argv)
-    name = os.path.basename(argv[0]) if argv else ""
-    words = argv[1:] if name in _DECLARES else [] if argv else stage.argv
-    if name in _SPECIAL and not shell_reader.wrapper_words(stage.argv):
-        _names, _substitutions, prefixes, _replaced = _prefix_assignments(stage)
-        words = prefixes + list(words)
-    now = {}
-    for word in words:
-        match = _NAMED.match(word)
-        if match:
-            value = shell_reader.derived(word[match.end():], word)
-            fetch = _assignment_fetch(value)
-            if fetch:
-                now[match[1]] = (fetch, True)
-            elif not match[2]:
-                now[match[1]] = held.get(_held(value))
-    if name == "unset" and "-f" not in argv:
-        now.update(dict.fromkeys((w for w in argv[1:] if w[:1] != "-"), None))
-    return now
-
-
-def _prefix_assignments(stage):
-    """The scalar assignments before this simple command, and the substitutions each holds."""
-    names: dict[str, str] = {}
-    assignments: list[tuple[str, bool, str]] = []
-    words: list[str] = []
-    timed = False
-    for word in stage.argv:
-        if word in shell_reader.KEYWORDS or shell_reader.is_arm(word):
-            continue
-        if word == "time" and not names:
-            timed = True
-            continue
-        if timed and word in ("-p", "--"):
-            continue
-        if not shell_reader._ASSIGNMENT.match(word) or getattr(word, "quoted", False):
-            break
-        if match := _NAMED.match(word):
-            words.append(word)
-            names[match[1]] = word
-            assignments.append((match[1], bool(match[2]), word))
-    substitutions: dict[int, tuple[str, bool]] = {}
-    replaced: set[str] = set()
-    for name, appended, word in reversed(assignments):
-        active = name not in replaced
-        substitutions.update((id(text), (name, active)) for kind, text in
-                             getattr(word, "markers", {}).values() if kind == "subst")
-        if not appended:
-            replaced.add(name)
-    return names, substitutions, words, replaced
-
-
-def _after_prefix(word, name, argv):
-    """Whether an executor re-reads `name` after prefixing: live references expand first;
-    delayed literals are reread by `eval`/`-c`; ambiguous reader-built strings fail closed."""
-    if not _held(word, embedded=True, names={name}):
-        return False
-    sources = [source for source in argv if source is word]
-    if not sources:
-        sources = [source for source in argv if str(source) == str(word)
-                   or str(getattr(source, "spelled", "")) == str(word)]
-    if not sources:
-        return True
-    return any(hasattr(source, "spelled") or getattr(source, "kept", False)
-               and not getattr(source, "live_dollar", False) for source in sources)
-
-
-def prefix_handoff(stage, substitution, argv):
-    """Whether `substitution` can feed the executor in its own prefix-assigned command (#2433)."""
-    _names, substitutions, _words, _replaced = _prefix_assignments(stage)
-    binding = substitutions.get(id(substitution))
-    if binding is None:
-        return True
-    name, active = binding
-    if not active:
-        return False
-    programs = list(scripts(argv))
-    if not shell_reader.unresolved_wrapper(stage.argv):
-        programs += candidates(argv)[1]
-    _how, dynamic = dynamic_program(argv)
-    if dynamic is not None:
-        programs.append(dynamic)
-    if not programs:
-        return bool(argv and os.path.basename(argv[0]) not in ("source", "."))
-    return any(_after_prefix(word, name, argv) for word in programs)
-
-
-def prefix_expanded_program(stage, argv):
-    """Whether the unread program is a live reference expanded before its prefix is applied."""
-    _how, word = dynamic_program(argv)
-    names, _substitutions, _words, _replaced = _prefix_assignments(stage)
-    name = word is not None and _held(word, names=set(names))
-    return bool(name and not _after_prefix(word, name, argv))
-
-
-def carried(stmts, executors):
-    """Reasons for a download held in a variable and handed whole to a shell (#2341).
-    Follows `$x`/`${x}` through `eval`, `-c`, candidate programs, supported printers, piped
-    compounds, and executor substitutions; each substitution has its own assignment state.
-    Uncertain scope, status, or quote loss keeps a name held and identifies the guard's reading
-    (#2424). Saved files and compound assignments are not followed."""
-    held: dict[str, tuple[Fetch, bool] | None] = {}
-    out, branches, depth, subshells = [], regions(stmts), 0, 0
-    child_values: dict[str, tuple[int | None, bool, bool]] = {}  # boundary, introduced, uncertain
-    inlined_handoffs: set[str] = set()          # a flattened child owns its wrapper's same handoff
-    for index, statement in enumerate(stmts):
-        escaped = {key for key, (boundary, _introduced, _uncertain) in child_values.items()
-                   if boundary is None and not isinstance(statement, Inlined)
-                   or boundary is not None and subshells < boundary}
-        held.update({key: (cast(tuple[Fetch, bool], held[key])[0], False)
-                     for key in escaped if child_values[key][1] and held.get(key)})
-        child_values = {key: value for key, value in child_values.items()
-                        if key not in escaped}
-        for inner, position, stage, where, _directory in within(statement):
-            argv = command(stage.argv)
-            _prefixes, _substitutions, _words, replaced = _prefix_assignments(stage)
-            printed, piped = _prints(stage), stage.stdout_to_pipe
-            to = (stream_consumer(inner.stages[position + 1:], executors)
-                  if printed and piped else None)
-            if printed and piped and not to and not where and position == len(inner.stages) - 1:
-                to = compound_stream_consumer(stmts, index, executors)
-            words = [(word, getattr(word, "kept", False), True) for word in scripts(argv)]
-            words += [(word, True, False) for word in printed if to]
-            words += [(word, getattr(word, "kept", False), True) for word in (
-                [] if shell_reader.unresolved_wrapper(stage.argv) else candidates(argv)[1])]
-            if argv and os.path.basename(argv[0]) in executors:
-                words += [(word, True, False) for text in stage.substitutions
-                          for inside in statements(text) for word in _prints(inside.stages[-1])]
-            for word, embedded, program in words:
-                available = {name for name, value in held.items() if value and (
-                    isinstance(statement, Inlined) or name not in inlined_handoffs)}
-                variable = _held(word, embedded=embedded, names=available)
-                if program and variable in replaced and _after_prefix(word, variable, argv):
-                    continue
-                kept = held.get(variable)
-                if kept:
-                    fetch, certain = kept
-                    consumer = to or [w for w in argv if getattr(w, "spelled", w) is not word
-                                      and not shell_reader.is_marker(w)]
-                    scope = child_values.get(variable)
-                    certain = certain and not (scope and scope[2]) and "-c" not in consumer
-                    out.append((index, (_CARRIES if certain else _READS_CARRIES) % (
-                        shell_reader.readable(fetch.url), variable,
-                        " ".join(shell_reader.readable(w) for w in consumer), where)))
-                    if isinstance(statement, Inlined):
-                        inlined_handoffs.add(variable)
-                    break
-        if len(statement.stages) == 1:
-            stage = statement.stages[0]
-            now = _assigned(stage, held)
-            sure = not (isinstance(statement, Inlined) or branches.get(index) or depth
-                        or stage.group_open or "{" in stage.argv or statement.separator == "&"
-                        or index and stmts[index - 1].separator in ("&&", "||"))
-            inlined_child = (isinstance(statement, Inlined)
-                             and "script `eval` runs" not in str(statement.credit))
-            child = bool(statement.separator == "&" or stage.group_open or subshells
-                         or inlined_child)
-            held.update(now if sure else {
-                key: (cast(tuple[Fetch, bool], value or held[key])[0],
-                      bool(value and (child or isinstance(statement, Inlined))))
-                for key, value in now.items()
-                if value or not child and held.get(key)})
-            if child:
-                boundary = None if inlined_child else max(1, subshells + stage.group_open)
-                for key, value in now.items():
-                    prior = child_values.get(key)
-                    child_values[key] = (boundary, bool(value) or bool(prior and prior[1]),
-                                         not bool(value))
-        for stage in statement.stages:              # a `( )` or `{ }` group, as `_errexit_states`
-            depth = max(0, depth + stage.group_open + stage.argv.count("{")
-                        - stage.group_close - stage.argv.count("}"))
-            subshells = max(0, subshells + stage.group_open - stage.group_close)
-        if not isinstance(statement, Inlined):
-            inlined_handoffs.clear()
-    return out
-
-
 # A stage that writes on the bytes it READS, where the fetcher named no file
 # of its own: the stdout sink of a stage BEHIND the fetcher (`> f`) and the
 # writers that name the file in their argv. An ADJACENT `tee` is bound to its

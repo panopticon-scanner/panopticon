@@ -1845,8 +1845,13 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
         # Where the shell IS handed a word, the download is not what it runs,
         # and #2483 reports the word itself (as it does the `$CMD -c "$x"`
         # twin beside the same download): one sentence, and not this one.
+        # Issue #2437 retires #2483's fallback too when this shell certainly
+        # replaces or unsets the exact program variable.
         for script in (self.GET + 'x=1\neval "$x"\n', self.GET + 'unset x\neval "$x"\n',
-                       self.GET + 'eval "$y"\n', self.GET + 'y="$x"\ny=1\neval "$y"\n',
+                       self.GET + 'y="$x"\ny=1\neval "$y"\n'):
+            with self.subTest(script=script):
+                self.assertEqual([], self.job(script))
+        for script in (self.GET + 'eval "$y"\n',
                        "x=$(curl -fsSLo f https://example.test/i.sh)\neval \"$x\"\n",
                        'eval "$x"\n' + self.GET):
             with self.subTest(script=script):
@@ -1882,30 +1887,106 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
         # Review I-2: bash runs `x=1 &` and `( x=1 )` in subshells, a function
         # body only when the function is called, and `local`/`declare` there in
         # the function's own scope, so each of these still runs the download.
-        # A `{ }` group and a function body are read as `_errexit_states` reads
-        # them, not as the step's own scope, though bash runs `{ x=1; }` and a
-        # called `f() { x=1; }` in it and then runs nothing: accepted
-        # over-reports. A group closed before the reassignment is out of the way,
-        # its `(` or `)` on a line of its own too (#2420 keeps such a line).
+        # An uncalled body changes nothing either. Issue #2437 moves a plain
+        # brace group's and a called body's assignment to the CLEAN rows below.
         strong = ("x=1 &\nwait\n", "( x=1 )\n", "( cd .; x=1 )\n", "( ( x=1 ) )\n",
-                  "(\n  x=1\n)\n")
-        readings = ("f() { x=1; }\n", "f() {\n  x=1\n}\n", "function f { x=1; }\n",
-                    "f() { local x=1; }\nf\n", "f() { declare x=1; }\nf\n",
-                    "f() { x=1; }\nf\n", "{ x=1; }\n")
-        for between in strong + readings:
+                  "(\n  x=1\n)\n", "f() { x=1; }\n", "f() {\n  x=1\n}\n",
+                  "function f { x=1; }\n", "f() { local x=1; }\nf\n",
+                  "f() { declare x=1; }\nf\n")
+        for between in strong:
             with self.subTest(between=between):
                 why = self.job(self.GET + between + 'eval "$x"\n')
                 self.assertEqual(1, len(why), why)
-                said = self.SAID if between in strong else self.READ
+                said = self.SAID if between.startswith("(") or between.startswith("x=1 &") else self.READ
                 self.assertIn(said % ("eval", ""), why[0])
-        for between in ("x=1\n", "{ :; }\nx=1\n", "( cd . )\nx=1\n", "( cd .\n)\nx=1\n",
-                        "(\n  cd .\n)\nx=1\n", "f() { :; }\nx=1\n"):
-            with self.subTest(between=between):
-                self.not_carried(self.GET + between + 'eval "$x"\n')
+
+    def test_2437_a_certain_same_shell_reassignment_clears_both_reasons(self):
+        # These are the issue's four filed spellings and their multiline/plain
+        # twins. Bash reaches `eval` only after its own shell replaced `x`, so
+        # neither the carried-download sentence nor #2483's generic fallback
+        # may keep the original fetch alive.
+        for between in ("x=1\n", "{ x=1; }\n", "{\n  x=1\n}\n",
+                        "f() { x=1; }\nf\n", "f() {\n  x=1\n}\nf\n",
+                        "function f { x=1; }\nf\n", "echo {\nx=1\n",
+                        "find . -exec echo {} \\;\nx=1\n", "( cd .\n)\nx=1\n"):
+            for shell in self.SHELLS:
+                with self.subTest(between=between, shell=shell):
+                    self.assertEqual([], wg.job_defects([wg.Step(
+                        "run", self.GET + between + 'eval "$x"\n', shell)]))
+
+    def test_2437_a_skipped_or_child_reassignment_keeps_the_download(self):
+        controls = ("{ x=1; } | cat\n", "{ x=1; } &\nwait\n",
+                    ("{\n  x=1\n} 2>/dev/null < "
+                     "/panopticon-2437-missing/in || true\n"),
+                    "false && {\n  x=1\n}\n", "true || {\n  x=1\n}\n",
+                    "f() { x=1; }\nfalse && f\n", "f() { x=1; }\nf &\nwait\n",
+                    "f() { x=1; }\n( f )\n",
+                    ("f() { x=1; }\n"
+                     "f 2>/dev/null < /panopticon-2437-missing/in || true\n"),
+                    "f() { x=1; }\nunset -f f\nf || true\n",
+                    "f() { x=1; }\nname=f\nunset -f \"$name\"\nf || true\n",
+                    "f() { x=1; }\ng() { unset -f f; }\ng\nf || true\n",
+                    "f() { x=1; }\neval 'unset -f f'\nf || true\n",
+                    "(\n  f() { x=1; }\n)\nf || true\n",
+                    "{\n  f() { x=1; }\n} &\nwait\nf || true\n",
+                    "{\n  f() { x=1; }\n} | cat\nf || true\n",
+                    "if true; then\n  f() { x=1; }\nfi\nf\n",
+                    "f() { if true; then x=1; fi; }\nf\n",
+                    "f() { return 0; x=1; }\nf\n",
+                    "f() { local x=1; }\nf\n")
+        for between in controls:
+            for shell in self.SHELLS:
+                with self.subTest(between=between, shell=shell):
+                    why = wg.job_defects([wg.Step(
+                        "run", self.GET + between + 'eval "$x"\n', shell)])
+                    self.assertEqual(1, len(why), why)
+                    self.assertIn("carries https://example.test/i.sh in `$x`", why[0][1])
+
+    def test_2437_only_a_portable_expansion_free_value_clears_the_fallback(self):
+        # `read`, arithmetic and traps can replace a prior literal with text
+        # the reader cannot prove. Redirections can stop a replacement, tilde
+        # can recover a held HOME, the Bash declarations can fail under `sh`,
+        # and option-bearing export/unset forms have different effects. They
+        # may retire the carried value, but never #2483's generic reason.
+        uncertain = (
+            "x=1\nread x <<'EOF'\necho changed\nEOF\n",
+            "x=1\nprintf -v x 'echo changed'\n",
+            "local x=1 2>/dev/null || true\n",
+            "declare x=1 2>/dev/null || true\n",
+            "typeset x=1 2>/dev/null || true\n",
+            "unset -fv x 2>/dev/null || true\n",
+            "export -n x=1 2>/dev/null || true\n",
+            "x=1 2>/dev/null > /panopticon-2437-missing/out || true\n",
+            "unset x 2>/dev/null < /panopticon-2437-missing/in || true\n",
+            'x=1\nunset x\n: "${x:=echo changed}"\n',
+            "x=1\ntrap 'x=\"echo changed\"' DEBUG\n:\n",
+            "trap 'x=\"echo changed\"' DEBUG\nx=1\n:\n",
+            "alias unset=':'\nunset x\n",
+            "source setup.sh 2>/dev/null || true\nx=1\n",
+            'x=1\n: "$((x=2))"\n',
+            'HOME="$x"\nx=~\n',
+        )
+        for between in uncertain:
+            for shell in self.SHELLS:
+                with self.subTest(between=between, shell=shell):
+                    why = wg.job_defects([wg.Step(
+                        "run", self.GET + between + 'eval "$x"\n', shell
+                    )])
+                    self.assertEqual(1, len(why), why)
+                    self.assertIn("a program this guard does not follow", why[0][1])
+
+        called = "f() { x=1; read x <<'EOF'\necho changed\nEOF\n}\nf\n"
+        nested = ("h() { read x <<'EOF'\necho changed\nEOF\n}\n"
+                  "g() { h; }\nx=1\ng\n")
+        for between in (called, nested):
+            for shell in self.SHELLS:
+                with self.subTest(called=between, shell=shell):
+                    self.assertEqual(1, len(wg.job_defects([wg.Step(
+                        "run", self.GET + between + 'eval "$x"\n', shell
+                    )])))
 
     def test_a_fail_closed_carry_says_that_it_is_the_guards_reading(self):
-        for between in ("if true; then x=1; fi\n", "{ x=1; }\n",
-                        "f() { x=1; }\nf\n", "eval 'x=:'\n"):
+        for between in ("if true; then x=1; fi\n", "eval 'x=:'\n"):
             with self.subTest(between=between):
                 why = self.job(self.GET + between + 'eval "$x"\n')
                 self.assertEqual(1, len(why), why)

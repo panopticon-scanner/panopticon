@@ -379,7 +379,13 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                                   or not executes and fetch.piped_to is None
                                   or value_exec and is_forwarded_tee(fetch)) else fetch)
                              for _inner, fetch in fetched)
-    return found, unread + (carried(stmts, EXECUTORS) if found else [])
+    if found:
+        carried_reasons, cleared = carried(stmts, EXECUTORS)
+        unread = [(index, reason) for index, reason in unread
+                  if not (variable := getattr(reason, "program_variable", None))
+                  or (index, variable) not in cleared]
+        unread += carried_reasons
+    return found, unread
 
 
 def _fetch_records(stmts, stream_exec=False):
