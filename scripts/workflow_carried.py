@@ -420,6 +420,12 @@ def carried(stmts, executors):
     # Names that held a fetch and were then certainly replaced with plain text.
     plain: set[str] = set()
     starts, occupied = _function_ranges(stmts)
+    assigning_bodies = {
+        (start, close) for entries in starts.values()
+        for _name, start, close in entries
+        if any(_assigned(stage, {}) for statement in stmts[start:close + 1]
+               for stage in statement.stages)
+    }
     forked = _forked(stmts, len(stmts))
     conditionals = conditional_contexts(stmts)
     outer, outer_subshells = _outer_group_depths(stmts, occupied)
@@ -523,7 +529,10 @@ def carried(stmts, executors):
                 # A refused or nested call may write any holder. Exact direct
                 # calls add their proved plain replacements back below.
                 plain.clear()
-            if sure:
+            # A body with no scalar assignment cannot alter either carried
+            # state.  Avoid re-reading it at every call site: large, repeatedly
+            # called bodies are a deliberate bounded-work contract (#2855).
+            if sure and any(body in assigning_bodies for body in bodies):
                 called, called_plain = _called_assignments(
                     stmts, index, starts, held, branches, conditionals, outer, probe, bodies
                 )
