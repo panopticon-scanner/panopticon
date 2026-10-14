@@ -62,8 +62,11 @@ jobs:
       # The parallel pass writes coverage data with no report and no gate; the
       # serial pass appends to it and the COMBINED total is what `--cov-fail-under`
       # judges and what `coverage.xml` carries for the upload step.
+      # The parallel pass also records per-test durations (#2933 sharding
+      # metrics): `--store-durations` writes `.test_durations`, uploaded below, so
+      # a later shard split can balance groups by real time, not test count.
       - name: Test (parallel, not serial)
-        run: python -m pytest tests/ -q -n auto -m "not serial" --cov --cov-report=
+        run: python -m pytest tests/ -q -n auto -m "not serial" --cov --cov-report= --store-durations --durations-path .test_durations
       - name: Test (serial timing/performance)
         run: python -m pytest tests/ -q -m "serial" --cov --cov-append --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=90
       - name: Upload coverage
@@ -72,4 +75,12 @@ jobs:
         with:
           name: coverage-python-${{ matrix.python-version }}
           path: coverage.xml
+          if-no-files-found: warn
+      - name: Upload test durations
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-durations-python-${{ matrix.python-version }}
+          path: .test_durations
+          include-hidden-files: true
           if-no-files-found: warn
