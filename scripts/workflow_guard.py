@@ -379,7 +379,11 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                                   or not executes and fetch.piped_to is None
                                   or value_exec and is_forwarded_tee(fetch)) else fetch)
                              for _inner, fetch in fetched)
-    if found:
+    # A carried value can only begin with a fetch to stdout; file-bound
+    # downloads cannot produce `_assignment_fetch`'s held value.  Keep the
+    # state pass out of ordinary file-download steps, including large called
+    # bodies whose bounded-work guard measures this walk (#2855).
+    if any(fetch.dest is None for _index, fetch in found):
         carried_reasons, cleared = carried(stmts, EXECUTORS)
         unread = [(index, reason) for index, reason in unread
                   if not (variable := getattr(reason, "program_variable", None))
