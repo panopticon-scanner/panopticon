@@ -140,8 +140,9 @@ def _split(text, context):
     cond, at_head, in_front = 0, True, True
     # Whether the next word may still be the command though `in_front` has ended: every word closed since is one
     # bash may make nothing of (`_OPTIONAL`, `_NOTHING`, a quoted `_SPLAT`), so a default or an alternate there is
-    # kept whole too, as the first word is (#3002: `$T ${S:+sudo -E} sh -c 'P'`). Not behind a word kept whole
-    # itself: the second such word of a stage is #2976's.
+    # kept whole too, as the first word is (#3002: `$T ${S:+sudo -E} sh -c 'P'`) -- behind a word kept whole
+    # itself as behind any other (#2976: `${Y:+/usr/bin/env true} ${Z:+/usr/bin/env true} sh t` reads both
+    # empty), and never behind a command word, whose later `${…}` words are `main`'s (#2856 round 8).
     leads = True
     # `! { ... }`: bash negates the GROUP's status, and errexit is off for every command inside
     # a negated compound, so each statement the group holds is read under the `!` (#2664, the
