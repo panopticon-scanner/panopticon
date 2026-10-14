@@ -1914,6 +1914,94 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
                     self.assertEqual([], wg.job_defects([wg.Step(
                         "run", self.GET + between + 'eval "$x"\n', shell)]))
 
+    def test_2437_a_dynamic_wget_output_still_enters_the_carried_state_pass(self):
+        get = "X=$(wget $WOPTS https://e.test/x)\n"
+        uses = ('bash -c "set -e; $X"\n', '{ echo "$X"; } | sh\n',
+                'echo "$X" | xargs -0 sh -c\n')
+        for use in uses:
+            for shell in self.SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    why = [reason for _step, reason in wg.job_defects([
+                        wg.Step("run", get + use, shell)
+                    ])]
+                    # #2437 keeps the holder and its performance gate on one stream predicate.
+                    self.assertEqual(1, sum(
+                        str(reason).startswith(
+                            "carries https://e.test/x in `$X` and hands it to `"
+                        ) for reason in why
+                    ), why)
+
+    def test_2437_a_special_builtin_prefix_replaces_only_in_a_posix_shell(self):
+        prefixes = (
+            ("X=safe :\n", 'sh -c "$X"\n'),
+            ("X=safe export\n", 'sh -c "$X"\n'),
+            ("X=safe readonly Y\n", 'sh -c "$X"\n'),
+            ("X=safe set --\n", 'sh -c "$X"\n'),
+            ("X=safe shift 0\n", 'sh -c "$X"\n'),
+            ("X=safe times\n", 'sh -c "$X"\n'),
+            ('X="echo hi" :\n', 'eval "$X"\n'),
+            ("unset X\nX=safe :\n", 'sh -c "$X"\n'),
+        )
+        get = "X=$(curl -fsSL https://e.test/x)\n"
+        for between, use in prefixes:
+            for shell in self.SHELLS:
+                with self.subTest(between=between, shell=shell):
+                    why = wg.job_defects([wg.Step(
+                        "run", get + between + use, shell
+                    )])
+                    # #2437 follows #3068's shell boundary for persistent prefixes.
+                    if shell in ("sh", "sh {0}"):
+                        self.assertEqual([], why)
+                    else:
+                        self.assertEqual(1, len(why), why)
+
+    def test_2437_a_bash_nameref_invalidates_its_targets_replacement(self):
+        get = "X=$(curl -fsSL https://e.test/x)\n"
+        cases = (
+            (get + "declare -n R=X\nX=safe\nR=$(curl -fsSL https://e.test/x)\n",
+             'sh -c "$X"\n'),
+            (get + "X=safe\ndeclare -n R=X\nR=$(curl -fsSL https://e.test/x)\n",
+             'sh -c "$X"\n'),
+            ("declare -n R=X\n" + get
+             + "X=safe\nR=$(curl -fsSL https://e.test/x)\n", 'sh -c "$X"\n'),
+            (get + "typeset -n R=X\nX=safe\nR=$(cat g)\n", 'sh -c "$X"\n'),
+            (get + "declare -n R=X\nX=safe\nread -r R < g\n", 'sh -c "$X"\n'),
+            (get + "declare -n R=X\nX=safe\nR=$(cat g)\n", 'sh -c "$X"\n'),
+            (get + "X=safe\ndeclare -n R=X\nR=$(cat g)\n", 'eval "$X"\n'),
+        )
+        for script, use in cases:
+            for shell in self.SHELLS:
+                with self.subTest(script=script, shell=shell):
+                    why = wg.job_defects([wg.Step(
+                        "run", script + use, shell
+                    )])
+                    # #2437 keeps a nameref target fail-closed in Bash's state model.
+                    if shell in (None, "bash", "bash {0}"):
+                        self.assertEqual(1, len(why), why)
+                    else:
+                        self.assertEqual([], why)
+
+    def test_2437_readonly_time_and_hidden_writers_do_not_prove_replacement(self):
+        get = "X=$(curl -fsSL https://e.test/x)\n"
+        controls = (
+            "X=safe\ncommand read -r X < g\n",
+            "X=safe\n$CMD\n",
+            "g() { X=$(cat h); }\nF=g\nX=safe\n$F\n",
+            "time X=safe\n",
+            "readonly X\nX=safe\n",
+            "declare -r X\nX=safe\n",
+        )
+        scripts = ("readonly X=$(curl -fsSL https://e.test/x)\nX=safe\n",
+                   *(get + control for control in controls))
+        for script in scripts:
+            for shell in self.SHELLS:
+                with self.subTest(script=script, shell=shell):
+                    # #2437 retires a carried value only after a certain writable assignment.
+                    why = wg.job_defects([wg.Step(
+                        "run", script + 'sh -c "$X"\n', shell
+                    )])
+                    self.assertEqual(1, len(why), why)
+
     def test_2437_a_skipped_or_child_reassignment_keeps_the_download(self):
         controls = ("{ x=1; } | cat\n", "{ x=1; } &\nwait\n",
                     ("{\n  x=1\n} 2>/dev/null < "
@@ -1986,6 +2074,8 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
                     )])))
 
     def test_a_fail_closed_carry_says_that_it_is_the_guards_reading(self):
+        # #2437 moved the brace-group and directly called function expectations
+        # to the certain same-shell replacement test above.
         for between in ("if true; then x=1; fi\n", "eval 'x=:'\n"):
             with self.subTest(between=between):
                 why = self.job(self.GET + between + 'eval "$x"\n')

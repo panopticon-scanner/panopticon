@@ -79,6 +79,7 @@ from workflow_step_credit import (_BRANCH_ALTERNATE as _BRANCH_ALTERNATE,
 # Compatibility bindings share the fetch, operand and gating owners with existing callers.
 from workflow_carried import (_assigned as _assigned, _held as _held,
                               carried as carried,
+                              may_carry_fetch as may_carry_fetch,
                               prefix_expanded_program as prefix_expanded_program,
                               prefix_handoff as prefix_handoff)
 from workflow_fetch import (FETCHERS as FETCHERS, STDOUT as STDOUT, Fetch as Fetch,

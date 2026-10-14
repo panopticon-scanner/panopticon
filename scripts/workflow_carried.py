@@ -19,7 +19,7 @@ from workflow_fetch import (FETCHERS, Fetch, compound_stream_consumer, parse_fet
 from workflow_gating import (Inlined, _piped_group_stage, _structural_groups,
                              conditional_contexts)
 from workflow_operands import working_directories
-from workflow_programs import candidates, dynamic_program, scripts
+from workflow_programs import ANY, candidates, dynamic_program, scripts
 from workflow_step_credit import _plain_stage, _static, regions, step_credit
 from workflow_use_scopes import _forked, _function_ranges
 
@@ -57,6 +57,8 @@ _NAMED = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(\+?)=")
 _WHOLE = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
 _DECLARES = ("export", "local", "declare", "typeset", "readonly")
 _OPAQUE_STATE = (".", "alias", "eval", "source", "trap", "unalias")
+_WRITERS = ("declare", "export", "getopts", "local", "mapfile", "read", "readarray",
+            "readonly", "select", "typeset", "unset", "wait")
 # Prefix assignments before these builtins persist in dash and bash's POSIX mode.
 _SPECIAL = (":", ".", "break", "continue", "eval", "exec", "exit", "export", "readonly",
             "return", "set", "shift", "times", "trap", "unset")
@@ -136,7 +138,23 @@ def _assigned(stage, held):
     return now
 
 
-def _plain_assignments(stage):
+def may_carry_fetch(stmts):
+    """Whether the holder's own assignment predicate finds a streamed fetch."""
+    return any(value for statement in stmts for stage in statement.stages
+               for value in _assigned(stage, {}).values())
+
+
+def _posix_prefix_shell(shell):
+    """Whether a declared shell keeps special-builtin prefix assignments."""
+    words = (shell or "bash").split()
+    name = os.path.basename(words[0]) if words else ""
+    return bool(name == "sh" or name == "bash" and (
+        "--posix" in words or any(left == "-o" and right == "posix"
+                                  for left, right in zip(words, words[1:]))
+    ))
+
+
+def _plain_assignments(stage, shell=None):
     """Names this stage certainly replaces with expansion-free text, or unsets."""
     if not _plain_stage(stage):
         return set()
@@ -146,7 +164,11 @@ def _plain_assignments(stage):
     if name in ("export", "readonly") and any(
             str(word).startswith(("-", "+")) and str(word) != "--" for word in words):
         words = []
-    if name in _SPECIAL and not shell_reader.wrapper_words(stage.argv):
+    wrappers = shell_reader.wrapper_words(stage.argv)
+    if any(os.path.basename(str(word)) == "time" for word in wrappers):
+        return set()
+    if (name in _SPECIAL and _posix_prefix_shell(shell)
+            and not wrappers):
         _names, _substitutions, prefixes, _replaced = _prefix_assignments(stage)
         words = prefixes + list(words)
     plain = set()
@@ -166,12 +188,27 @@ def _plain_assignments(stage):
     return plain
 
 
+def _hidden_writer(stage):
+    """Whether this command may write names hidden from ``_written``."""
+    written = shell_reader.command_as_written(stage.argv)
+    dynamic = bool(written and shell_reader.dynamic(
+        written[0], shell_reader.has_substitution
+    ))
+    argv = command(stage.argv)
+    wrappers = {os.path.basename(str(word)) for word in shell_reader.wrapper_words(stage.argv)}
+    wrapped = bool(argv and "command" in wrappers
+                   and os.path.basename(str(argv[0])) in _WRITERS)
+    return dynamic or wrapped
+
+
 def _unseen_write(statement):
     """Whether this statement may write a name its direct assignment view misses."""
     texts = [str(text) for stage in statement.stages
              for text in (*stage.argv, *stage.writes, *stage.reads, stage.heredoc or "")]
     commands = [list(command(stage.argv)) for stage in statement.stages]
     return (any(map(_UNSURE.search, texts)) or "let" in texts
+            or (not isinstance(statement, Inlined)
+                and any(_hidden_writer(stage) for stage in statement.stages))
             or any(argv[:1] in (["trap"], ["coproc"])
                    or argv[:1] == ["wait"] and "-p" in argv[1:]
                    for argv in commands))
@@ -184,6 +221,40 @@ def _opaque_state(statement):
         if argv and os.path.basename(str(argv[0])) in _OPAQUE_STATE:
             return True
     return False
+
+
+def _bash(shell):
+    """Whether Bash-only declaration attributes may take effect."""
+    if shell == ANY:
+        return True
+    words = (shell or "bash").split()
+    return bool(words and os.path.basename(words[0]) == "bash")
+
+
+def _declaration_attributes(stage, shell):
+    """(readonly names, nameref targets, unknown target) declared here."""
+    argv = list(command(stage.argv))
+    name = os.path.basename(str(argv[0])) if argv else ""
+    if name not in ("declare", "local", "readonly", "typeset"):
+        return set(), set(), False
+    options = [str(word) for word in argv[1:] if str(word).startswith(("-", "+"))]
+    minus = "".join(word[1:] for word in options if word.startswith("-") and word != "--")
+    operands = [str(word) for word in argv[1:] if not str(word).startswith(("-", "+"))]
+    readonly = name == "readonly" or name in ("declare", "typeset") and "r" in minus
+    readonly_names = set()
+    if readonly:
+        readonly_names = {word.split("=", 1)[0] for word in operands
+                          if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:=.*)?", word)}
+    nameref = _bash(shell) and name in ("declare", "local", "typeset") and "n" in minus
+    targets, unknown = set(), False
+    if nameref:
+        for word in operands:
+            _holder, equals, target = word.partition("=")
+            if equals and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", target):
+                targets.add(target)
+            else:
+                unknown = True
+    return readonly_names, targets, unknown
 
 
 def _prefix_assignments(stage):
@@ -336,7 +407,7 @@ def _function_barrier(stmts, start, stop, name, starts):
 
 
 def _called_assignments(stmts, index, starts, held, branches, conditionals, outer, probe,
-                        bodies=None):
+                        shell=None, bodies=None):
     """Certain caller-visible assignments made by one directly called body."""
     bodies = _reached(stmts, index, starts) if bodies is None else bodies
     if len(bodies) != 1:
@@ -361,6 +432,9 @@ def _called_assignments(stmts, index, starts, held, branches, conditionals, oute
     changed: dict[str, tuple[Fetch, bool] | None] = {}
     plain: set[str] = set()
     local: set[str] = set()
+    readonly: set[str] = set()
+    blocked: set[str] = set()
+    block_all = False
     subshells, compounds, may_return = 0, 0, False
     for at in range(start, close + 1):
         statement = stmts[at]
@@ -379,8 +453,16 @@ def _called_assignments(stmts, index, starts, held, branches, conditionals, oute
             if words and not any(str(word).startswith(("-", "+")) and "g" in str(word)
                                  for word in words):
                 local.update(match[1] for word in words if (match := _NAMED.match(word)))
+            made_readonly, targets, unknown = _declaration_attributes(stage, shell)
+            blocked.update(targets)
+            plain.difference_update(targets)
+            if unknown:
+                block_all = True
+                plain.clear()
             now = _assigned(stage, {**held, **changed})
-            stage_plain = _plain_assignments(stage)
+            stage_plain = _plain_assignments(stage, shell) - readonly - blocked
+            if block_all:
+                stage_plain.clear()
             certain = (at not in nested and at not in branches and at not in conditionals
                        and not may_return and not subshells and not compounds
                        and not stage.group_open
@@ -399,6 +481,7 @@ def _called_assignments(stmts, index, starts, held, branches, conditionals, oute
                 else:
                     changed.pop(variable, None)
                     plain.discard(variable)
+            readonly.update(made_readonly)
             if name == "return":
                 if certain:
                     return changed, plain
@@ -409,7 +492,7 @@ def _called_assignments(stmts, index, starts, held, branches, conditionals, oute
     return changed, plain
 
 
-def carried(stmts, executors):
+def carried(stmts, executors, shell=None):
     """Reasons for a download held in a variable and handed whole to a shell (#2341).
     Follows `$x`/`${x}` through `eval`, `-c`, candidate programs, supported printers, piped
     compounds, and executor substitutions; each substitution has its own assignment state.
@@ -419,6 +502,9 @@ def carried(stmts, executors):
     out, cleared, branches, subshells = [], set(), regions(stmts), 0
     # Names that held a fetch and were then certainly replaced with plain text.
     plain: set[str] = set()
+    readonly: set[str] = set()
+    blocked: set[str] = set()
+    block_all = False
     starts, occupied = _function_ranges(stmts)
     assigning_bodies = {
         (start, close) for entries in starts.values()
@@ -499,6 +585,14 @@ def carried(stmts, executors):
                              and "script `eval` runs" not in str(statement.credit))
             child = bool(statement.separator == "&" or stage.group_open or subshells
                          or inlined_child)
+            stateful = not child and index not in occupied and index not in detached_definitions
+            made_readonly, targets, unknown = _declaration_attributes(stage, shell)
+            if stateful:
+                blocked.update(targets)
+                plain.difference_update(targets)
+                if unknown:
+                    block_all = True
+                    plain.clear()
             if not child:
                 written = _written(statement, probe)
                 if probe in written or _unseen_write(statement):
@@ -512,12 +606,16 @@ def carried(stmts, executors):
                 for key, value in now.items()
                 if value or not child and held.get(key)})
             if sure:
-                stage_plain = _plain_assignments(stage)
+                stage_plain = _plain_assignments(stage, shell) - readonly - blocked
+                if block_all:
+                    stage_plain.clear()
                 plain.difference_update(now)
                 plain.update(key for key, value in now.items()
                              if value is None and key in stage_plain and key in replaced_carry)
             else:
                 plain.difference_update(now)
+            if stateful:
+                readonly.update(made_readonly)
             if child:
                 boundary = None if inlined_child else max(1, subshells + stage.group_open)
                 for key, value in now.items():
@@ -534,8 +632,11 @@ def carried(stmts, executors):
             # called bodies are a deliberate bounded-work contract (#2855).
             if sure and any(body in assigning_bodies for body in bodies):
                 called, called_plain = _called_assignments(
-                    stmts, index, starts, held, branches, conditionals, outer, probe, bodies
+                    stmts, index, starts, held, branches, conditionals, outer, probe, shell, bodies
                 )
+                called_plain.difference_update(readonly | blocked)
+                if block_all:
+                    called_plain.clear()
                 replaced_carry = {key for key in called_plain if held.get(key) or key in plain}
                 held.update(called)
                 plain.difference_update(called)

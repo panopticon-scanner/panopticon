@@ -190,8 +190,20 @@ evidence exposed.
   conservative printer fallback remains, a retained price. Runtime truth on Bash 3.2.57, GNU Bash
   5.2.21 in default and POSIX modes, and dash suppresses the payload for all seven target families
   and runs it for all seven must-trip controls. The state layer moved from the 700-line
-  `workflow_forms.py` into `workflow_carried.py` (440 and 539 lines) so the new proof stays below
-  the flat-module ceiling; the compatibility imports remain in `workflow_forms`.
+  `workflow_forms.py` into `workflow_carried.py` (441 and 649 lines) so the new proof stays below
+  the flat-module ceiling; the compatibility imports remain in `workflow_forms`. Review round 2
+  found that the performance gate used a file destination where the holder uses stream capability:
+  a wget option supplied through `$WOPTS` may write stdout while its parallel file reading names the
+  URL basename. The gate now calls the holder's own assignment predicate, restoring the carried
+  verdict for that form while file-only fetches retain the fast path. Replacement state is also
+  shell-aware at a POSIX special-builtin prefix (kept under the two `sh` postures, discarded under
+  the three Bash postures), and stays fail-closed after a Bash nameref target, a possibly-readonly
+  name, `time` around an assignment, `command read`, or a dynamic command/function call. On the
+  review seat's 189 rows under five shell settings (945 cells), 675 remain REPORT and 30 remain
+  CLEAN across `main`, round 1 and round 2; 139 intended REPORT -> CLEAN cells remain, and round 2
+  restores all 101 unsafe round-1 CLEAN cells to `main`'s REPORT, with no errors. The 150-line,
+  150-call file-fetch timing guard still passes; the measured stdout-fetch state pass costs about
+  14% over `main`, the bounded cost of tracking values that can actually carry a download.
 
 - **Workflow guard applies a prefix assignment after its command's words expand (#2433).**
   `x=$(curl ...) eval "$x"` and its `sh -c` twin reported as handing the new value straight to
