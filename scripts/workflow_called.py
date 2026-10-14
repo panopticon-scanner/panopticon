@@ -32,9 +32,11 @@ Beside `scripts/workflow_values.py` and its lower expansion layer; imports nothi
 import os
 import re
 
+import shell_reader
 from shell_command import _ASSIGNMENT, _heads, command
 from shell_tokens import is_arm
 from workflow_function_calls import _function_syntax
+from workflow_use_scopes import _body_end, _function_ranges
 from workflow_values import _CANDIDATES, PAST, Values, emptied, record, stand_in
 
 _DEPTH = 8          # calls followed inside a body, in all
@@ -65,6 +67,12 @@ def _head(argv):
     `eval`, each read again after (`time { f; }`, `time X=1 f`, `x) time ! f`, `eval time f`):
     bash runs the function behind them (rounds 3 and 4). A wrapper there is the word itself:
     `env f` calls no function unless the step defines one named `env` (`sudo() {…}; sudo x`)."""
+    rest = _rest(argv)
+    return str(rest[0]) if rest else None
+
+
+def _rest(argv):
+    """The words of a statement's command from the one it starts with (`_head`) on."""
     rest = list(argv)
     while True:
         if rest and is_arm(rest[0]):
@@ -79,7 +87,7 @@ def _head(argv):
             rest = rest[1:]
         if rest and str(rest[0]) == "--":
             rest = rest[1:]
-    return str(rest[0]) if rest else None
+    return rest
 
 
 def _calls(stmts, head, close):
@@ -333,6 +341,101 @@ def record_called(table, stmts, position, starts):
     for name in names:
         _stood(table, name)
     step.last[key] = (table, position, ())
+
+
+# A positional parameter a body's word spells whole: `$1`, `${1}`, `"$1"`. In single quotes it spells
+# none (`'$1'`: the reader's `double` is False). `$@` and `$*` are left as written: a body that runs
+# its arguments (`w() { "$@"; }`) is #3047's, and a fetcher given them reads them as a `$` word.
+_POSITIONAL = re.compile(r"^\$(?:\{([1-9][0-9]*)\}|([1-9][0-9]*))$")
+
+
+def _positional(word):
+    """The number of the positional `word` spells whole, else None."""
+    if getattr(word, "double", True) is False:
+        return None
+    match = _POSITIONAL.match(str(word))
+    return int(match[1] or match[2]) if match else None
+
+
+def _with_arguments(words, arguments):
+    """`words` with each positional they spell whole given the call's `arguments` -- `$1` the first
+    -- and one the call did not pass as it is written, unsure."""
+    out = []
+    for word in words:
+        which = _positional(word)
+        out.append(word if which is None or which > len(arguments) else arguments[which - 1])
+    return out
+
+
+class CalledFetches:
+    """What a step's function calls run where the call stands (#3050). For a call of a function the
+    step defines before it, `at` gives the last stage of each statement of its body, and of the
+    bodies that body calls in turn, `_DEPTH` functions deep: its words with the call's in their
+    positionals (`_with_arguments`; `$@` stays as written, #3047's), and whether its output LEAVES on
+    the call's standard output --
+    `stdout_to_pipe` at every link, so `f() { curl … > /dev/null; }` leaves nothing, nor does `f` in
+    `g() { f > /dev/null; }`. The guard reads a fetcher among them as a fetch of the call's stage,
+    where its pipe or its redirect is the consumer (`f | sh`, `sh <(f)`, `f > t`); one that writes
+    elsewhere keeps its own stage. Either is read again at the call where the call gave a positional
+    a word (`dl URL t`, `changed`): the walk read it as written at its definition. A wrapper in front
+    of the name runs no function (`env f`, as `_head` reads it); a definition after the call is no
+    function yet; a subshell body is read to its parentheses (`_body_end`). A body's stage that pipes
+    on inside the body is not read here -- the walk reads it at its definition -- so `f() { curl … |
+    tee t; }`, `f | sh` reads the file and not the stream, a limit."""
+
+    def __init__(self, stmts):
+        self.stmts, self.defined = stmts, {}   # type: tuple | list, dict[str, list[tuple[int, int]]]
+        for entries in _function_ranges(stmts)[0].values():
+            for name, head, close in entries:
+                self.defined.setdefault(name, []).append((head, _body_end(stmts, head, close)[0]))
+
+    def fixed(self, position):
+        """This reader for a substitution's statements, each call in them read at `position`."""
+        return _Fixed(self, position)
+
+    def at(self, position, argv):
+        """[(stage, its words, leaves, changed)] for the call the statement's `argv` -- as written,
+        its wrappers in place -- makes at `position`, else []."""
+        rest = _rest(argv)
+        head = str(rest[0]) if rest else None
+        if head is None or head not in self.defined:
+            return []
+        found, queue, seen = [], [(head, list(rest[1:]), True)], set[str]()
+        while queue and len(seen) < _DEPTH:
+            name, arguments, leaves = queue.pop(0)
+            seen.add(name)
+            for head_at, end in self.defined[name]:
+                if name == head and head_at >= position:
+                    continue
+                for statement in self.stmts[head_at:end + 1]:
+                    stage = statement.stages[-1] if statement.stages else None
+                    if stage is None:
+                        continue
+                    inner = _rest(_with_arguments(list(stage.argv), arguments))
+                    called = str(inner[0]) if inner else None
+                    if called is not None and called in self.defined and len(statement.stages) == 1:
+                        if called not in seen and all(called != queued for queued, _a, _l in queue):
+                            queue.append((called, list(inner[1:]), bool(leaves and stage.stdout_to_pipe)))
+                        continue
+                    written = shell_reader.acted(stage.argv)
+                    words = _with_arguments(written, arguments)
+                    if words and (leaves and stage.stdout_to_pipe or words != written):
+                        found.append((stage, words, leaves and stage.stdout_to_pipe, words != written))
+        return found
+
+
+class _Fixed:
+    """`CalledFetches` for the statements of a substitution: every call read at the step's statement
+    that holds it, so a definition after that statement is no function to them either."""
+
+    def __init__(self, reader, position):
+        self.reader, self.position = reader, position
+
+    def fixed(self, _position):
+        return self
+
+    def at(self, _position, argv):
+        return self.reader.at(self.position, argv)
 
 
 class _Shared(list):

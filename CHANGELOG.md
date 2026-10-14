@@ -7,6 +7,35 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader: a function that streams a download is read where a shell reads its output
+  (#3050).** `f() { curl -fsSL URL; }` then `f | sh` -- and `sh <(f)`, `eval "$(f)"`, `sh -c
+  "$(f)"`, `f > t; sh t`, a download helper `dl() { curl -fsSL "$1" -o "$2"; }; dl URL t; sh t`, a
+  body of several statements, and a function the body calls -- read CLEAN while every shell runs the
+  download: the stream rule asked the stage's command, the function's name, and a `$(f)` was a
+  substitution the guard did not follow into the body. A call of a function the step defines is now
+  read as the body's fetches where the call stands (`workflow_called.CalledFetches`, the walk): the
+  last stage of each statement of the body, and of the bodies it calls `_DEPTH` deep, with the
+  call's words in its positionals (`$1`, `"$1"`, `$@`; in single quotes none). A stage whose output
+  leaves on the function's standard output -- `stdout_to_pipe` at every link, so `> /dev/null` and
+  `g() { f > /dev/null; }` leave nothing -- takes the call's stage, so the call's pipe, substitution
+  or redirect is its consumer, and its own redirects read as the inline twin's do (`2>&1 >
+  /dev/stderr` streams, `> /dev/stderr` does not, #2744); one that writes elsewhere keeps its own
+  stage. A file the body names as written (`-o t`) was read at the definition and is not read again
+  at the call; a wrapper in front of the name runs no function (`env f`); a definition after the
+  call is no function yet. Measured on 26,899 rows, `main` 04e06272 against this change, under each
+  of the five `shell:` settings, in three readings (the job, its main pass, its walk pass) and, for
+  a row of 2 to 12 lines, in four step forms beside the one-step reading: #3064's kit of 26,836 rows
+  reads the same, byte for byte, and of this lane's 63 -- the issue's 17, their 14 context rows, 32
+  inline and compound twins -- 27 move CLEAN -> REPORT as one step (135 cells: 11 of the issue's 12
+  CLEAN rows, 12 of the 14 context rows, and `f 2>/dev/null | sh`, `f | tee t | sh`, a body of
+  several statements and a body with `&&`), each as its inline twin reads, and none moves the other
+  way or changes a finding it had; split one step a line they stay CLEAN, a function not crossing
+  steps. 1,992,705 cells, 0 failures. Limits, pinned: a download held in a variable (`x=$(f)`, `eval
+  "$x"`: `workflow_forms.carried` reads `$(f)` as no fetch), a body's own `| tee t` (the file, not
+  the stream), and a `{ f; } | sh` group behind a definition, whose consumer the compound reader
+  loses as it does the inline group's. Sizes: workflow_called.py 388 -> 491, workflow_guard.py 586
+  -> 601.
+
 - **Workflow guard recognizes bounded, named download clients (#2829, adapter slice).** aria2c,
   Axel, FreeBSD `fetch`, HTTPie `http`/`https`, `gh release download`, network `git clone`, and a
   direct `pip download --no-deps` archive now bind the URL to the file or fetched tree their own
@@ -70,6 +99,25 @@ evidence exposed.
   `_SOFT_STEP`, 12,203 `_UNSHARED_IF` and 480 `_UNSHARED_BRANCH`. The two dumps are equal byte for
   byte. The guard's command line, run as a script over 4,635 jobs, prints the same 4,256 findings
   under both. Sizes: 700 -> 586, and 138 for the new module.
+
+- **Workflow guard applies a prefix assignment after its command's words expand (#2433).**
+  `x=$(curl ...) eval "$x"` and its `sh -c` twin reported as handing the new value straight to
+  the executor, although the live `$x` expands before the assignment applies; both now read CLEAN,
+  as does a prefix before `true`, while `x=$(curl ...); eval "$x"` remains the must-trip control.
+  The reader gives each quoted dollar its own live-double-quote provenance, so embedded strings and
+  equal-looking arguments retain their lexical distinction: single-quoted and escaped references
+  are re-read after the prefix applies and still REPORT. The hand-off follows only a substitution
+  that contributes to the final scalar assignment; a replacing assignment drops earlier values,
+  while `+=` keeps them. A live reference can still read the old value, which remains reported when
+  an earlier statement supplied a download. The issue's claim that every prefix expires with its
+  command has a POSIX boundary: dash and Bash POSIX mode retain assignments before special builtins.
+  The guard therefore carries those values to later commands, while `command eval`, `unset x`, and
+  `export x=...` discard or replace them as the shells do. Conservative readings remain for an
+  executor with no known script word and for a program string whose construction loses quote
+  provenance. On a 154-row cross-product, the 63 base-REPORT/head-CLEAN rows produced zero payload
+  runs in 189 executions across Bash 3.2.57, GNU Bash 5.2.21, and dash. Eight additional rows now
+  report; all eight run under dash and Bash 5.2.21 in POSIX mode and stop under both default Bash
+  versions.
 
 - **Workflow reader reads an expansion in a shell's option word as text the word does not write
   (#2889).** `X=c; sh -$X 'curl ... | sh'` runs the string under every parent shell and read CLEAN,

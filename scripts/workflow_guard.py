@@ -254,6 +254,7 @@ import shell_lex
 import shell_reader
 from shell_reader import folds, statements
 from workflow_annotate import annotate
+from workflow_called import CalledFetches
 from workflow_checks import CHECKSUM_TOOLS as CHECKSUM_TOOLS, checks as _checks
 from workflow_defect import (_SOFT_STEP as _SOFT_STEP, _UNSHARED_BRANCH as _UNSHARED_BRANCH,
                              _UNSHARED_IF as _UNSHARED_IF, _binds as _binds, _defect as _defect,
@@ -262,7 +263,8 @@ from workflow_fetch import (Fetch, compound_output, compound_streamed_fetch, for
                             is_forwarded_tee)
 from workflow_forms import (FETCHERS, SHELL_PROGRAM, Idle, Inlined, Reach, Unsure, carried,
                             compound_stream_consumer, file_bound_reasons, flattened, kept, located,
-                            parse_fetch, regions, stdin_program, step_credit,
+                            parse_fetch, prefix_expanded_program, prefix_handoff, regions,
+                            stdin_program, step_credit,
                             streamed_fetch as streamed_fetch, unbound, unread_program,
                             working_directories)
 from workflow_printers import fed, operand
@@ -288,9 +290,12 @@ UNNAMED = "<unnamed step>"
 # --- which statements fetch --------------------------------------------------
 
 def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, directory=".",
-          shell=ANY):   # the step's shell; `ANY` for an `Inlined` one, its `$(…)` too (#2728)
+          shell=ANY,    # the step's shell; `ANY` for an `Inlined` one, its `$(…)` too (#2728)
+          calls=None):  # the step's function calls, read where each stands (#3050)
     """Fetches and unread forms under `shell`; nested cwd kept, attributed to the outer line."""
     stmts = list(stmts)
+    if calls is None:
+        calls = CalledFetches(stmts)
     if working is None:
         credit = step_credit(stmts, "bash {0}" if inside else None)
         dirs = working_directories(stmts, regions(stmts), 0, credit, directory)
@@ -309,17 +314,28 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
             argvs = [argv]
             if argv and re.fullmatch(r"\$\{[A-Za-z_]\w*\[(?:@|\*)\]\}", str(argv[0])):
                 argvs += _resolved(argv, static_values(stmts, index))
-            for fetch_argv in argvs:
-                if not fetch_argv or os.path.basename(fetch_argv[0]) not in FETCHERS:
+            # A call of a function the step defines is read as its body's fetches where the call stands
+            # (#3050): one whose output leaves on the call's standard output takes the call's stage, so
+            # the call's pipe or redirect is its consumer; one that writes elsewhere keeps its own stage.
+            # A file the body names as written (`-o t`) was read at the definition: not again here.
+            readings = [(fetch_argv, None, True, True) for fetch_argv in argvs]
+            readings += [(words, body, leaves, changed)
+                         for body, words, leaves, changed in calls.at(index, stage.argv)]
+            for fetch_argv, body, leaves, changed in readings:
+                tool = os.path.basename(fetch_argv[0]) if fetch_argv else ""
+                if tool not in FETCHERS or body is not None and not changed and (
+                        (named := parse_fetch(tool, fetch_argv[1:], body, None)) is not None
+                        and named.dest is not None):
                     continue
-                fetch_stage, piped_to = compound_output(stmts, out, index, stage, following)
-                fetch = parse_fetch(os.path.basename(fetch_argv[0]), fetch_argv[1:],
-                                    fetch_stage, piped_to)
+                reader_following = following if leaves else ()
+                fetch_stage, piped_to = compound_output(stmts, out, index, stage, reader_following) if leaves \
+                    else (body, None)
+                fetch = parse_fetch(tool, fetch_argv[1:], fetch_stage, piped_to)
                 if fetch is not None:
                     if stream_exec:
                         compound = compound_stream_consumer(stmts, index, EXECUTORS)
                         stream = compound_streamed_fetch(
-                            os.path.basename(fetch_argv[0]), fetch_argv[1:], fetch_stage, following,
+                            os.path.basename(fetch_argv[0]), fetch_argv[1:], fetch_stage, reader_following,
                             EXECUTORS, compound,
                         )
                         fetch = stream or (fetch._replace(piped_to=None) if fetch.dest is None
@@ -340,6 +356,8 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                 unread.append((index, "cannot read command%s: %s; the guard cannot "
                                "determine what it runs" % (behind, reason)))
             program = unread_program(argv, stage, _walk, inside, before, under)
+            if program and prefix_expanded_program(stage, argv):
+                program = None
             reason = program if inside and program else _unread_stdin(stage, before) or program
             if reason:
                 unread.append((index, reason))
@@ -353,10 +371,12 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                                            step_credit(inner, "bash {0}"), here)
                 fetched, nested = _walk(
                     inner, stream_exec, True, dict(enumerate(dirs)),
-                    ["%sI%d" % (child_scope, i) for i in range(len(inner))], here, under)
+                    ["%sI%d" % (child_scope, i) for i in range(len(inner))], here, under,
+                    calls.fixed(index))
                 unread.extend((index, why) for _inner, why in nested)
                 found.extend((index, fetch._replace(piped_to=forwarded_consumer(fetch, consumer))
-                              if (executes or fetch.piped_to is None
+                              if (executes and prefix_handoff(stage, text, argv)
+                                  or not executes and fetch.piped_to is None
                                   or value_exec and is_forwarded_tee(fetch)) else fetch)
                              for _inner, fetch in fetched)
     return found, unread + (carried(stmts, EXECUTORS) if found else [])
