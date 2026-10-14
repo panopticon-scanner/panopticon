@@ -409,5 +409,68 @@ class TestAStandInMakesNoListItNeedsNot(unittest.TestCase):
         self.assertEqual([PAST, ""], workflow_called._NOTHING)
 
 
+
+class TestWhatACallRunsWhereItStands(unittest.TestCase):
+    """#3050: a call of a function whose body fetches, read as the body's fetches at the call
+    (`CalledFetches`): the bodies a call reaches, the call's words in their positionals, and
+    whether each stage's output leaves on the call's standard output."""
+
+    def reads(self, script, at=-1):
+        stmts = stmts_of(script)
+        at %= len(stmts)
+        return [([str(word) for word in words], leaves, changed) for _stage, words, leaves, changed
+                in workflow_called.CalledFetches(stmts).at(at, stmts[at].stages[0].argv)]
+
+    def test_the_calls_words_stand_in_the_bodys_positionals(self):
+        self.assertEqual([(["curl", "-fsSL", "U"], True, True)], self.reads('f() { curl -fsSL "$1"; }\nf U | sh\n'))
+        self.assertEqual([(["curl", "-fsSL", "U", "-o", "t"], True, True)],
+                         self.reads('dl() { curl -fsSL "$1" -o "$2"; }\ndl U t\nsh t\n', at=2))
+        self.assertEqual([(["curl", "$@", "-o", "c"], True, True)], self.reads('f() { curl "$@" -o "${3}"; }\nf a b c | sh\n'))
+        self.assertEqual([(["curl", "$*"], True, False)], self.reads("f() { curl $*; }\nf a b | sh\n"))     # #3047's: as written
+        self.assertEqual([(["curl", "$2"], True, False)], self.reads("f() { curl $2; }\nf U | sh\n"))       # not passed: as written
+        self.assertEqual([(["curl", "$1"], True, False)], self.reads("f() { curl '$1'; }\nf U | sh\n"))     # single quotes spell none
+        self.assertEqual([(["curl", "$1/x"], True, False)], self.reads('f() { curl "$1/x"; }\nf U | sh\n'))  # not whole: as written
+
+    def test_whether_the_output_leaves_on_the_calls_standard_output(self):
+        for body, leaves in (("curl U", [True]), ("curl U 2>&1 > /dev/stderr", [True]), ("curl U > //dev/stdout", [True]),
+                             ("curl U -o /dev/null", [True]), ("curl U 2>/dev/null", [True]),
+                             ("curl U > /dev/null", []), ("curl U > t2", [])):     # read as written at the definition
+            with self.subTest(body=body):
+                self.assertEqual(leaves, [leaves for _words, leaves, _changed in self.reads("f() { %s; }\nf | sh\n" % body)])
+        self.assertEqual([(["curl", "U"], False, True)], self.reads('f() { curl "$1" > t2; }\nf U\n'))
+
+    def test_every_statement_of_a_body_and_of_the_bodies_it_calls(self):
+        self.assertEqual([(["echo", "start"], True, False), (["curl", "U"], True, False), (["echo", "end"], True, False)],
+                         self.reads("f() { echo start; curl U; echo end; }\nf | sh\n"))
+        self.assertEqual([(["curl", "U"], True, True)], self.reads('f() { curl "$1"; }\ng() { f U; }\ng | sh\n'))
+        self.assertEqual([(["curl", "U"], True, True)], self.reads('f() { curl "$1"; }\ng() { f "$1"; }\ng U | sh\n'))
+        self.assertEqual([(["curl", "U"], False, True)], self.reads('f() { curl "$1"; }\ng() { f U > /dev/null; }\ng | sh\n'))
+        self.assertEqual([(["curl", "U"], True, False)], self.reads("f() { f; curl U; }\nf | sh\n"))   # a recursion, once
+        eight = "".join("f%d() { f%d; }\n" % (i, i + 1) for i in range(7)) + "f7() { curl U; }\nf0 | sh\n"
+        self.assertEqual([(["curl", "U"], True, False)], self.reads(eight))
+        ten = "".join("f%d() { f%d; }\n" % (i, i + 1) for i in range(9)) + "f9() { curl U; }\nf0 | sh\n"
+        self.assertEqual([], self.reads(ten))                                                # `_DEPTH` functions deep
+
+    def test_no_function_for_a_wrapper_a_definition_after_the_call_or_a_name_the_step_does_not_define(self):
+        self.assertEqual([], self.reads("f() { curl U; }\nenv f | sh\n"))
+        self.assertEqual([(["curl", "U"], True, False)], self.reads("f() { curl U; }\ntime f | sh\n"))
+        self.assertEqual([(["curl", "U"], True, False)], self.reads("sudo() { curl U; }\nsudo x | sh\n"))
+        self.assertEqual([], self.reads("f | sh\nf() { curl U; }\n", at=0))
+        self.assertEqual([], self.reads("curl U | sh\n"))
+
+    def test_a_subshell_body_the_function_keyword_and_a_body_on_its_own_lines(self):
+        self.assertEqual([(["curl", "U"], True, False)], self.reads("f() ( curl U )\nf | sh\n"))
+        self.assertEqual([(["curl", "U"], True, False)], self.reads("function f { curl U; }\nf | sh\n"))
+        self.assertEqual([(["curl", "U"], True, False)], self.reads("f() {\n  curl U\n}\nf > t\n"))
+
+    def test_the_statements_of_a_substitution_are_read_at_the_statement_holding_it(self):
+        stmts = stmts_of("f() { curl U; }\nsh <(f)\n")
+        inner = shell_reader.statements("f")[0].stages[0].argv
+        reader = workflow_called.CalledFetches(stmts)
+        fixed = reader.fixed(2)
+        self.assertEqual([["curl", "U"]], [[str(word) for word in words] for _stage, words, _leaves, _changed in fixed.at(0, inner)])
+        self.assertEqual([], reader.fixed(0).at(0, inner))      # before the definition: no function yet
+        self.assertIs(fixed, fixed.fixed(5))
+
 if __name__ == "__main__":
     unittest.main()
