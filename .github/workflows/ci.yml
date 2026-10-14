@@ -40,7 +40,7 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 60  # until the suite is sharded (#2933)
+    timeout-minutes: 90  # stopgap for the slow 3.11 leg (cancelled at 60); restore when the suite is sharded (#2933)
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
