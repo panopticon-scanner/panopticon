@@ -253,7 +253,8 @@ from workflow_fetch import (Fetch, compound_output, compound_streamed_fetch, for
                             is_forwarded_tee)
 from workflow_forms import (FETCHERS, SHELL_PROGRAM, Idle, Inlined, Reach, Unsure, carried,
                             compound_stream_consumer, file_bound_reasons, flattened, kept, located,
-                            parse_fetch, regions, stdin_program, step_credit,
+                            parse_fetch, prefix_expanded_program, prefix_handoff, regions,
+                            stdin_program, step_credit,
                             streamed_fetch as streamed_fetch, unbound, unread_program,
                             working_directories)
 from workflow_printers import fed, operand
@@ -333,6 +334,8 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                 unread.append((index, "cannot read command%s: %s; the guard cannot "
                                "determine what it runs" % (behind, reason)))
             program = unread_program(argv, stage, _walk, inside, before, under)
+            if program and prefix_expanded_program(stage, argv):
+                program = None
             reason = program if inside and program else _unread_stdin(stage, before) or program
             if reason:
                 unread.append((index, reason))
@@ -350,7 +353,8 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                     calls.fixed(index))
                 unread.extend((index, why) for _inner, why in nested)
                 found.extend((index, fetch._replace(piped_to=forwarded_consumer(fetch, consumer))
-                              if (executes or fetch.piped_to is None
+                              if (executes and prefix_handoff(stage, text, argv)
+                                  or not executes and fetch.piped_to is None
                                   or value_exec and is_forwarded_tee(fetch)) else fetch)
                              for _inner, fetch in fetched)
     return found, unread + (carried(stmts, EXECUTORS) if found else [])
