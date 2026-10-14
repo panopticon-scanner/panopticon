@@ -69,6 +69,9 @@ def _binds(conditions, check, use):
 
 def _defect(fetch, index, stmts, checks, conditions=None, unread=(), working=None, scopes=None):
     """Why this fetch is unverified; unread forms add uses, never replace parsed uses."""
+    if fetch.tool in ("http --download", "https --download") and fetch.dest is None and not fetch.piped_to:
+        return ("runs `%s` without a bindable output filename; HTTPie may choose one from response "
+                "headers -- use `--output <path>` and verify that file" % fetch.tool)
     if fetch.url is None and fetch.dest is None:
         # `wget -i list.txt`, an argv assembled in a variable, `xargs curl -O`: a download whose
         # target this guard cannot name is not a clean step, it is an unread one.

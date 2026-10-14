@@ -160,6 +160,9 @@
 #     focused tests -- the modules a programs-lane change touches together.
 #     Measured with discovery's assignment: `WorkflowPrograms` 8,
 #     `WorkflowGuard` 34.
+#   - 2026-10-13 (#2829): `WorkflowGuard` claims the named-fetch adapter and
+#     its focused test beside `workflow_fetch.py`. Measured with discovery's
+#     assignment after #3064: `WorkflowGuard` 38, below its 40-file fence.
 #
 # Fixtures: deliberately-vulnerable hostile test corpora. Redteam mode keeps
 # fixtures in review scope by design (discovery.py include_fixtures=redteam),
@@ -675,6 +678,7 @@ groups:
       - scripts/workflow_printers.py
       - scripts/workflow_printer_writes.py
       - scripts/workflow_fetch.py
+      - scripts/workflow_fetch_adapters.py
       - scripts/workflow_stdin.py
       - scripts/workflow_uses.py
       - scripts/workflow_use_scopes.py
@@ -684,6 +688,7 @@ groups:
       - scripts/workflow_annotate.py
       tests:
       - tests/test_workflow_guard.py
+      - tests/test_workflow_fetch_adapters.py
       - tests/test_workflow_defect.py
       - tests/test_workflow_branch_option_state.py
       - tests/test_workflow_called.py

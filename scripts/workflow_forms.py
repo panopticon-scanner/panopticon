@@ -87,7 +87,9 @@ from workflow_gating import (Inlined as Inlined, Reach as Reach, _errexit,
                              seed as seed, statement_analysis,
                              swallowed as swallowed)
 from workflow_operands import (BIN_DIRS as BIN_DIRS, PATH_DIRS as PATH_DIRS,
-                               at_directory as at_directory, chmod_executable as chmod_executable,
+                               at_directory as at_directory,
+                               chmod_conditional_executable as chmod_conditional_executable,
+                               chmod_executable as chmod_executable,
                                chmod_targets as chmod_targets, covers as covers,
                                described as described, located as located, may_run as may_run,
                                names_file as names_file, same_file as same_file,
@@ -466,11 +468,8 @@ def _prefix_assignments(stage):
 
 
 def _after_prefix(word, name, argv):
-    """Whether an executor re-reads `name` after applying its prefix environment.
-
-    A bare or double-quoted reference expands in the caller before the assignment is applied.
-    A single-quoted or escaped one is literal text until `eval` or a `-c` child reads it. A string
-    assembled by the program reader has lost that lexical distinction, so it stays fail-closed."""
+    """Whether an executor re-reads `name` after prefixing: live references expand first;
+    delayed literals are reread by `eval`/`-c`; ambiguous reader-built strings fail closed."""
     if not _held(word, embedded=True, names={name}):
         return False
     sources = [source for source in argv if source is word]
@@ -611,7 +610,8 @@ def _written_on(statement):
     digits, and neither of those is the download (review r1 finding 10)."""
     for stage in statement.stages:
         argv = command(stage.argv)
-        if argv and os.path.basename(argv[0]) in FETCHERS:
+        if (argv and os.path.basename(argv[0]) in FETCHERS
+                and parse_fetch(os.path.basename(argv[0]), argv[1:], stage, None) is not None):
             continue
         if [name for name in stage.stdout_writes if name not in STDOUT]:
             return True
