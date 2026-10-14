@@ -369,10 +369,12 @@ def _with_arguments(words, arguments):
 
 
 def with_call_stdin(call, stage):
-    """`stage`, a body's, reading the standard input its `call` has -- the pipe, the file, the heredoc or
-    here-string, the descriptors the call's redirections leave -- where it reads none of its own (#2973)."""
-    if stage.stdin_reads or stage.stdin_heredoc is not None:
-        return stage
+    """`stage`, a body's, reading the standard input its `call` has -- the file, the heredoc or here-string,
+    the descriptors the call's redirections leave -- where it reads none of its own and the call gives one;
+    else the stage itself, so a reader may tell the two apart (#2973)."""
+    if stage.stdin_reads or stage.stdin_heredoc is not None or not (
+            call.reads or call.stdin_reads or call.stdin_heredoc is not None or call.heredoc is not None):
+        return stage                    # its own input, or a call that gives none: the stage as it is
     return stage._replace(reads=tuple(dict.fromkeys((*call.reads, *stage.reads))), stdin_reads=call.stdin_reads,
                           stdin_heredoc=call.stdin_heredoc, heredoc=call.heredoc if stage.heredoc is None else stage.heredoc,
                           stdin_from_pipe=call.stdin_from_pipe, pipe_input_fds=call.pipe_input_fds)
@@ -451,8 +453,8 @@ class CalledFetches:
         for at, stage in enumerate(out):
             rest = _rest(stage.argv)
             head = str(rest[0]) if rest else None
-            words = [str(word) for word in stage.argv]
-            if words == ["{"] or stage.group_open and not words:        # a bare `{` or `(`
+            raw = [str(word) for word in stage.argv]
+            if raw == ["{"] or stage.group_open and not raw:            # a bare `{` or `(`, as written
                 found = self._reading(self._group(position), stage, position, [])
             elif head is not None and head in self.defined:
                 found = self._reading([], stage, position, [(head, position)])
@@ -462,6 +464,12 @@ class CalledFetches:
                 out[at] = found
                 return out
         return out
+
+    def consumer_words(self, position, stage):
+        """The words of the stage that reads `stage`'s standard input, a call's, as `consumers` puts it
+        -- as a reader that unwraps a `find`'s action reads them (`shell_reader.acted`) -- or the stage's
+        own: what a substitution the stage holds is handed to (`f <<< "$(curl …)"`, #2973)."""
+        return shell_reader.acted(self.consumers(position, [stage])[0].argv)
 
     def _group(self, position):
         """The indices of the statements of the group a bare opener ends statement `position` with."""
@@ -521,6 +529,9 @@ class _Fixed:
 
     def consumers(self, _position, following):
         return self.reader.consumers(self.position, following)
+
+    def consumer_words(self, _position, stage):
+        return self.reader.consumer_words(self.position, stage)
 
 
 class _Shared(list):

@@ -363,7 +363,7 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
             reason = program if inside and program else _unread_stdin(stage, before) or program
             if reason:
                 unread.append((index, reason))
-            consumer = tuple(t for t in shell_reader.acted(calls.consumers(index, [stage])[0].argv)
+            consumer = tuple(t for t in calls.consumer_words(index, stage)
                              if not shell_reader.is_marker(t)) or None     # the body's reader for a call (#2973)
             executes = consumer and os.path.basename(consumer[0]) in EXECUTORS
             value_exec = consumer and stdin_program(consumer[:1]) == VALUE_PROGRAM
