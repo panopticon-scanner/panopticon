@@ -363,8 +363,10 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
             reason = program if inside and program else _unread_stdin(stage, before) or program
             if reason:
                 unread.append((index, reason))
-            consumer = tuple(t for t in calls.consumer_words(index, stage)
-                             if not shell_reader.is_marker(t)) or None     # the body's reader for a call (#2973)
+            # What a substitution the stage holds is handed to: the body's reader for a call (#2973), asked
+            # only where there is a substitution -- a call's body is walked for nothing otherwise.
+            consumer = tuple(t for t in (calls.consumer_words(index, stage, argv) if stage.substitutions else argv)
+                             if not shell_reader.is_marker(t)) or None
             executes = consumer and os.path.basename(consumer[0]) in EXECUTORS
             value_exec = consumer and stdin_program(consumer[:1]) == VALUE_PROGRAM
             for subno, text in enumerate(stage.substitutions):

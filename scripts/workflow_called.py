@@ -465,11 +465,13 @@ class CalledFetches:
                 return out
         return out
 
-    def consumer_words(self, position, stage):
+    def consumer_words(self, position, stage, argv):
         """The words of the stage that reads `stage`'s standard input, a call's, as `consumers` puts it
-        -- as a reader that unwraps a `find`'s action reads them (`shell_reader.acted`) -- or the stage's
-        own: what a substitution the stage holds is handed to (`f <<< "$(curl …)"`, #2973)."""
-        return shell_reader.acted(self.consumers(position, [stage])[0].argv)
+        -- as a reader that unwraps a `find`'s action reads them (`shell_reader.acted`) -- or `argv`, the
+        stage's own words read so already: what a substitution the stage holds is handed to (`f <<<
+        "$(curl …)"`, #2973). A stage that is no call is read once, by the caller."""
+        read = self.consumers(position, [stage])[0]
+        return argv if read is stage else shell_reader.acted(read.argv)
 
     def _group(self, position):
         """The indices of the statements of the group a bare opener ends statement `position` with."""
@@ -530,8 +532,8 @@ class _Fixed:
     def consumers(self, _position, following):
         return self.reader.consumers(self.position, following)
 
-    def consumer_words(self, _position, stage):
-        return self.reader.consumer_words(self.position, stage)
+    def consumer_words(self, _position, stage, argv):
+        return self.reader.consumer_words(self.position, stage, argv)
 
 
 class _Shared(list):
