@@ -7,6 +7,27 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard: an immediately handled checksum status, or a top-level Bash `ERR` trap, is a
+  failure gate (#2440).** Under `set +e` and a shell template without `-e`, the guard refused
+  `CHECK; rc=$?; if [ "$rc" -ne 0 ]; then exit 1; fi`, its `[ "$rc" -ne 0 ] && exit 1` and
+  `[ "$rc" -eq 0 ] || exit 1` spellings, a direct `$?` test, and `trap 'exit 1' ERR` before the
+  check, although each stops the shell before a later use. `workflow_status` now gives only an
+  immediate, live `$?` capture to a numeric zero test whose failed-check path reaches a literal
+  non-zero `exit`; the bound keeps a use inside the handler reported, and a soft step clears only
+  its own later use. It also follows a literal top-level `ERR` trap through Bash steps, stopping at
+  a replacement, a scope or step boundary, sourced/evaluated text, or a shadowed primitive. The
+  declared step shell travels with the checksum: default, `bash`, and `bash {0}` receive trap
+  credit, while `sh` and `sh {0}` remain reported; inlined child shells inherit none. Literal or
+  escaped `$?`, an intervening command or reassignment, wrong polarity, `exit 0`, a subshell,
+  non-stopping/replaced traps, and `continue-on-error` across steps all stay fail-closed. Runtime
+  evidence on Bash 3.2.57, Bash 5.2.21 (default, template, and POSIX modes), and dash confirms all
+  five POSIX status forms and their success/non-stopping controls. It also corrects the issue
+  text: dash rejects the non-POSIX `ERR` signal and carries on to the payload, so only Bash gets
+  that credit. A 900-row grid over two fetchers, three use forms, five shell postures, and 30
+  target/control handlers is byte-identical on the issue's three historical baselines and current
+  `main`; the branch changes only 234 intended REPORT -> CLEAN rows, with 636 REPORT -> REPORT and
+  30 CLEAN -> CLEAN.
+
 - **Workflow reader keeps a stage's second `${…}` word whole where it still stands before the
   command word (#2976).** `curl -fsSLo t …` ⏎ `${Y:+/usr/bin/env true} ${Z:+/usr/bin/env true} sh t`
   ran the download under every parent and read CLEAN: `shell_split._split` kept a `${…}` with bare

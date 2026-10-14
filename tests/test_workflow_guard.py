@@ -4979,6 +4979,140 @@ class TestChecksumRescueStatus(unittest.TestCase):
                 self.assertIsNotNone(self.checked(rescue))
 
 
+class TestAStatusOrErrTrapCanGateACheck(unittest.TestCase):
+    """#2440: bounded manual status handling and a top-level Bash ERR trap are gates."""
+
+    FETCH = "curl -fsSL https://example.test/payload -o payload\n"
+    CHECK = 'echo "%s  payload" | sha256sum -c -' % HEX
+    USE = "sh payload\n"
+    SHELLS = (None, "bash", "bash {0}", "sh", "sh {0}")
+
+    def findings(self, body, shell=None):
+        script = self.FETCH + "set +e\n" + body.replace("CHECK", self.CHECK)
+        return wg.job_defects([wg.Step("run", script, shell)])
+
+    def test_an_immediately_captured_status_with_a_stopping_test_gates_a_later_use(self):
+        handlers = (
+            'CHECK\nrc=$?\nif [ "$rc" -ne 0 ]; then exit 1; fi\n',
+            'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
+            'CHECK\nexit_code=$?\n[ "$exit_code" -eq 0 ] || exit 1\n',
+            'CHECK\n[ $? -eq 0 ] || exit 1\n',
+            'CHECK\n[ $? -ne 0 ] && exit 1\n',
+        )
+        for shell in self.SHELLS:
+            for handler in handlers:
+                with self.subTest(shell=shell, handler=handler):
+                    # #2440 moves these exact fail-closed status idioms to CLEAN.
+                    self.assertEqual([], self.findings(handler + self.USE, shell))
+
+    def test_a_bash_conditional_status_test_is_a_gate_in_a_bash_step(self):
+        handlers = (
+            'CHECK\nrc=$?\n[[ "$rc" -ne 0 ]] && exit 1\n',
+            'CHECK\nrc=$?\n[[ "$rc" -eq 0 ]] || exit 1\n',
+        )
+        for shell in (None, "bash", "bash {0}"):
+            for handler in handlers:
+                with self.subTest(shell=shell, handler=handler):
+                    # #2440 moves Bash's [[...]] status spellings to CLEAN.
+                    self.assertEqual([], self.findings(handler + self.USE, shell))
+
+    def test_a_status_handoff_does_not_clear_a_use_inside_the_handler(self):
+        body = ('CHECK\nrc=$?\nif [ "$rc" -ne 0 ]; then\n'
+                'sh payload\nexit 1\nfi\n')
+        for shell in self.SHELLS:
+            with self.subTest(shell=shell):
+                found = self.findings(body, shell)
+                self.assertEqual(1, len(found), found)
+
+    def test_stale_reassigned_or_nonstopping_statuses_stay_reported(self):
+        controls = (
+            'CHECK\necho intervening\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
+            'CHECK\nrc=$?\nrc=0\n[ "$rc" -ne 0 ] && exit 1\n',
+            'CHECK\nrc=$? || [ "$rc" -ne 0 ] && exit 1\n',
+            "CHECK\nrc='$?'\n[ \"$rc\" -ne 0 ] && exit 1\n",
+            'CHECK\nrc=\\$?\n[ "$rc" -ne 0 ] && exit 1\n',
+            "CHECK\n[ '$?' -eq 0 ] || exit 1\n",
+            'CHECK\nrc=$?\n[ "$other" -ne 0 ] && exit 1\n',
+            'CHECK\nrc=$?\n[ "$rc" -eq 0 ] && exit 1\n',
+            'CHECK\nrc=$?\n[ "$rc" -ne 0 ] || exit 1\n',
+            'CHECK\nrc=$?\nif [ "$rc" -ne 0 ]; then echo failed; fi\n',
+            'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 0\n',
+            'readonly rc=0\nCHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
+            'exit() { :; }\nCHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
+            'function [ { return 1; }\nCHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
+        )
+        for shell in self.SHELLS:
+            for control in controls:
+                with self.subTest(shell=shell, control=control):
+                    self.assertEqual(1, len(self.findings(control + self.USE, shell)))
+
+    def test_a_top_level_stopping_err_trap_gates_only_bash_steps(self):
+        body = "trap 'exit 1' ERR\nCHECK\n" + self.USE
+        for shell in (None, "bash", "bash {0}"):
+            with self.subTest(shell=shell):
+                # #2440 moves the top-level Bash ERR-trap spelling to CLEAN.
+                self.assertEqual([], self.findings(body, shell))
+        for shell in ("sh", "sh {0}"):
+            with self.subTest(shell=shell):
+                self.assertEqual(1, len(self.findings(body, shell)))
+
+    def test_a_replaced_nonstopping_or_late_err_trap_stays_reported(self):
+        controls = (
+            "trap 'echo failed' ERR\nCHECK\n",
+            "trap 'exit 1' ERR\ntrap - ERR\nCHECK\n",
+            "trap 'exit 1' ERR\ntrap 'echo failed' ERR\nCHECK\n",
+            "trap 'exit 1' ERR\n{ trap - ERR; }\nCHECK\n",
+            "CHECK\ntrap 'exit 1' ERR\n",
+            "if true; then trap 'exit 1' ERR; fi\nCHECK\n",
+            "trap() { :; }\ntrap 'exit 1' ERR\nCHECK\n",
+            "exit() { :; }\ntrap 'exit 1' ERR\nCHECK\n",
+        )
+        for shell in (None, "bash", "bash {0}"):
+            for control in controls:
+                with self.subTest(shell=shell, control=control):
+                    self.assertEqual(1, len(self.findings(control + self.USE, shell)))
+
+    def test_a_parent_err_trap_is_not_inherited_by_an_inlined_child_shell(self):
+        child = ("bash -c 'set +e; %s; sh payload'\n" % self.CHECK)
+        body = "trap 'exit 1' ERR\n" + child
+        for shell in (None, "bash", "bash {0}"):
+            with self.subTest(shell=shell):
+                self.assertEqual(1, len(self.findings(body, shell)))
+
+    def test_manual_gates_do_not_override_continue_on_error(self):
+        gates = (
+            ('CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n'),
+            ("trap 'exit 1' ERR\nCHECK\n"),
+        )
+        for gate in gates:
+            same = wg.Step("check", self.FETCH + "set +e\n" + gate.replace(
+                "CHECK", self.CHECK) + self.USE, "bash {0}", None, True)
+            steps = [
+                wg.Step("check", self.FETCH + "set +e\n" + gate.replace(
+                    "CHECK", self.CHECK), "bash {0}", None, True),
+                wg.Step("use", self.USE, "bash {0}"),
+            ]
+            with self.subTest(gate=gate, use="same step"):
+                # #2440 bounds the manual gate to the soft step it still stops.
+                self.assertEqual([], wg.job_defects([same]))
+            with self.subTest(gate=gate, use="later step"):
+                self.assertEqual(1, len(wg.job_defects(steps)))
+
+    def test_an_err_trap_does_not_cross_a_step_boundary(self):
+        steps = [
+            wg.Step("trap", self.FETCH + "set +e\ntrap 'exit 1' ERR\n", "bash {0}"),
+            wg.Step("check", "set +e\n" + self.CHECK + "\n" + self.USE, "bash {0}"),
+        ]
+        self.assertEqual(1, len(wg.job_defects(steps)))
+
+    def test_a_status_handler_inside_a_subshell_does_not_gate_its_parent(self):
+        body = ('( CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n)\n'
+                + self.USE)
+        for shell in self.SHELLS:
+            with self.subTest(shell=shell):
+                self.assertEqual(1, len(self.findings(body, shell)))
+
+
 class TestSubshellAndNestedGroupStatus(unittest.TestCase):
     """#2431/#2438: a group passes its final status to its enclosing shell."""
 

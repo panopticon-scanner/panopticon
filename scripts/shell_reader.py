@@ -308,6 +308,9 @@ def _stage(text, context):
             word = _Expanded(word, _markers(word))
             unquoted = raw.replace(QUOTED_DOLLAR, "").replace(DOUBLE_DOLLAR, "")
             setattr(word, "lead", leads(context.pattern.sub("${}", unquoted)))
+            if "$" in plain:
+                setattr(word, "live_dollar",
+                        raw.count(QUOTED_DOLLAR) < plain.count("$"))
         elif _ESCAPED in plain:
             word = word if _markers(word) else _Token(word, {})
             setattr(word, "spelled", context.token(plain.replace(_ESCAPED, "")))
