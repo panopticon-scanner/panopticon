@@ -574,6 +574,9 @@ class TestAnExpansionInFrontOfAnOptionWord(unittest.TestCase):
             "SHELL ${#X}-c %s\n", "SHELL $?-c %s\n", "SHELL $#-c %s\n", "SHELL $((0))-c %s\n", "SHELL ~-c %s\n",
             "SHELL $#$X-c %s\n", "SHELL $X/-c %s\n", "SHELL -- $X-c %s\n", "SHELL -c 'true' $X-c %s\n")))
         self.assertRead((CLEAN[0],) * 3, "SHELL -c -- $X-e\n")
+        # A `@` writes itself (a marker begins `@@shell-`): a word that begins with one and holds an expansion after
+        # it is read from its first character, as every word is, and that character is no `-`. Truth: nothing runs.
+        self.assertRead((CLEAN[0],) * 3, "SHELL @$X-c %s\n" % P)
 
     def test_mains_whole_answer_stands_first(self):
         # `main` has had #2889's rule on since it merged, so where #3042's reading answered, the job's floor reads
@@ -703,6 +706,34 @@ class TestAnExpansionInFrontOfAnOptionWord(unittest.TestCase):
             finally:
                 words._HEARD.reset(token)
             self.assertEqual(heard, box)
+
+    def test_the_floor_leaves_the_box_it_found(self):
+        # `passes` and `beside` tell the reading they run inside what they heard -- whether a rule answered, and whether
+        # it was #3042's -- in that reading's box, whatever it held, and leave the box where it was: the job's floor is
+        # read inside a reader's `beside` or none, and the reading after it starts from what IT found.
+        job = lambda: [words.uncovered("$X-c")]          # #3042's reading answers (and so #2889's switch hears it)
+        before = lambda: [words.ruled()]                 # #2889's rule alone answers
+        none = lambda: [words.uncovered("$X")]           # neither
+        for read, heard in ((job, [True, True]), (before, [True, False]), (none, [False, False])):
+            for floor in (lambda: words.passes(read, contextlib.nullcontext), lambda: words.beside(read)):
+                self.assertIsNone(words._HEARD.get())
+                floor()
+                self.assertIsNone(words._HEARD.get())
+                for held in ([False, False], [False, True]):
+                    box = list(held)
+                    token = words._HEARD.set(box)
+                    try:
+                        floor()
+                        self.assertIs(box, words._HEARD.get())
+                    finally:
+                        words._HEARD.reset(token)
+                    self.assertEqual([heard[0] or held[0], heard[1] or held[1]], box)
+
+    def test_mains_whole_answer_is_one_reading_where_only_this_rule_answered(self):
+        # Where #3042's reading answered and #2889's rule is silent with it off, `main`'s whole answer is the job's two
+        # passes read once -- the one list `beside` hands twice -- and this reading's two passes stand beside it.
+        read = lambda: ["new"] if words.uncovered("$X-c") else ["main"]
+        self.assertEqual(([["main"], ["main"]], [["new"], ["new"]]), words.passes(read, contextlib.nullcontext))
 
     def test_beside_the_words_as_written(self):
         # Every run of one to three of these words after `sh`: what the search for the string, the search for a value
