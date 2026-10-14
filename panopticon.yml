@@ -163,6 +163,11 @@
 #   - 2026-10-13 (#2829): `WorkflowGuard` claims the named-fetch adapter and
 #     its focused test beside `workflow_fetch.py`. Measured with discovery's
 #     assignment after #3064: `WorkflowGuard` 38, below its 40-file fence.
+#   - 2026-10-14 (#2433): `WorkflowGuard` crossed the fence at 41 when the
+#     prefix-assignment proof met #2829 and #3050 at a fold. Split out
+#     `WorkflowForms`: the command-shape and failure-gating modules descended
+#     from `workflow_forms.py`, with their focused tests. Measured with
+#     discovery's assignment: `WorkflowForms` 16, `WorkflowGuard` 25.
 #
 # Fixtures: deliberately-vulnerable hostile test corpora. Redteam mode keeps
 # fixtures in review scope by design (discovery.py include_fixtures=redteam),
@@ -669,12 +674,6 @@ groups:
       - scripts/workflow_defect.py
       - scripts/workflow_checks.py
       - scripts/workflow_failure_contexts.py
-      - scripts/workflow_forms.py
-      - scripts/workflow_gating.py
-      - scripts/workflow_step_credit.py
-      - scripts/workflow_function_calls.py
-      - scripts/workflow_posture.py
-      - scripts/workflow_operands.py
       - scripts/workflow_printers.py
       - scripts/workflow_printer_writes.py
       - scripts/workflow_fetch.py
@@ -690,18 +689,30 @@ groups:
       - tests/test_workflow_guard.py
       - tests/test_workflow_fetch_adapters.py
       - tests/test_workflow_defect.py
-      - tests/test_workflow_branch_option_state.py
       - tests/test_workflow_called.py
-      - tests/test_workflow_function_gate_calls.py
-      - tests/test_workflow_guard_reader_forms.py
-      - tests/test_workflow_forms_regressions.py
       - tests/test_workflow_printers.py
       - tests/test_workflow_printed_lines.py
       - tests/test_workflow_printer_writes.py
-      - tests/test_workflow_step_credit.py
       - tests/test_workflow_values.py
       - tests/test_workflow_value_expansion.py
       - tests/test_workflow_annotate.py
+      panels:
+      - SEC
+    WorkflowForms:
+      # #2433: keep command shapes and their failure-gating proof together.
+      match:
+      - scripts/workflow_forms.py
+      - scripts/workflow_gating.py
+      - scripts/workflow_step_credit.py
+      - scripts/workflow_function_calls.py
+      - scripts/workflow_posture.py
+      - scripts/workflow_operands.py
+      tests:
+      - tests/test_workflow_branch_option_state.py
+      - tests/test_workflow_function_gate_calls.py
+      - tests/test_workflow_guard_reader_forms.py
+      - tests/test_workflow_forms_regressions.py
+      - tests/test_workflow_step_credit.py
       - tests/test_workflow_default_command_word.py
       - tests/test_workflow_word_before_a_builtin.py
       - tests/test_workflow_alternate_in_front.py
