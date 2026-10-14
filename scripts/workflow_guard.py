@@ -51,13 +51,10 @@ an `eval`/`sh -c` STRING, and `continue-on-error: true`. What remains keeps its 
 reason, and `TestTheGapsTheGuardDocuments` or tests/test_workflow_guard_reader_forms.py runs each
 live, so a change that catches one fails there and edits this list.
 
-* fetchers that are not curl/wget -- `gh release download`, `aws s3 cp`,
-  `python3 -c "...urlretrieve..."`, an action that downloads for you. Reporting every command that
-  might reach the network would be noise, not a gate, and the `uses:` pin rule covers the action
-  half. If one of these lands in a workflow, the fetch-and-exec rule will not see it.
-  KEPT: every download this repo writes -- the fleet's two, the Dockerfiles' ten -- is curl. A
-  second tool needs a second option grammar (`gh`'s `-O` is not curl's, and `aws s3 cp` copies
-  locally too), and a fetch inside `python3 -c` needs another language entirely.
+* fetchers beyond #2829's bounded adapters -- `aws s3 cp`, a download action, raw socket or foreign
+  one-liner -- still do not bind to later execution. aria2c, axel, FreeBSD fetch, HTTPie, `gh release
+  download`, `git clone` and `pip download` now have separate grammars whose unknown options fail
+  closed. KEPT: the rest need an action/aws contract or #2829's network-stream-producer rule.
 * variable expansion: `${VERSION}` and `$TMP` stay literal, because the guard tracks the NAME a step
   writes -- except a name the step itself assigns a literal or an array literal, which a use reads
   through that value (`workflow_uses.static_values`, #2425, #2489: `T=cuda_1.run; sh "$T"`,
@@ -247,6 +244,7 @@ import shell_lex
 import shell_reader
 from shell_reader import folds, statements
 from workflow_annotate import annotate
+from workflow_called import CalledFetches
 from workflow_checks import CHECKSUM_TOOLS as CHECKSUM_TOOLS, checks as _checks
 from workflow_defect import (_SOFT_STEP as _SOFT_STEP, _UNSHARED_BRANCH as _UNSHARED_BRANCH,
                              _UNSHARED_IF as _UNSHARED_IF, _binds as _binds, _defect as _defect,
@@ -280,9 +278,12 @@ UNNAMED = "<unnamed step>"
 # --- which statements fetch --------------------------------------------------
 
 def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, directory=".",
-          shell=ANY):   # the step's shell; `ANY` for an `Inlined` one, its `$(…)` too (#2728)
+          shell=ANY,    # the step's shell; `ANY` for an `Inlined` one, its `$(…)` too (#2728)
+          calls=None):  # the step's function calls, read where each stands (#3050)
     """Fetches and unread forms under `shell`; nested cwd kept, attributed to the outer line."""
     stmts = list(stmts)
+    if calls is None:
+        calls = CalledFetches(stmts)
     if working is None:
         credit = step_credit(stmts, "bash {0}" if inside else None)
         dirs = working_directories(stmts, regions(stmts), 0, credit, directory)
@@ -297,13 +298,23 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
             argvs = [argv]
             if argv and re.fullmatch(r"\$\{[A-Za-z_]\w*\[(?:@|\*)\]\}", str(argv[0])):
                 argvs += _resolved(argv, static_values(stmts, index))
-            for fetch_argv in argvs:
-                if not fetch_argv or os.path.basename(fetch_argv[0]) not in FETCHERS:
+            # A call of a function the step defines is read as its body's fetches where the call stands
+            # (#3050): one whose output leaves on the call's standard output takes the call's stage, so
+            # the call's pipe or redirect is its consumer; one that writes elsewhere keeps its own stage.
+            # A file the body names as written (`-o t`) was read at the definition: not again here.
+            readings = [(fetch_argv, None, True, True) for fetch_argv in argvs]
+            readings += [(words, body, leaves, changed)
+                         for body, words, leaves, changed in calls.at(index, stage.argv)]
+            for fetch_argv, body, leaves, changed in readings:
+                tool = os.path.basename(fetch_argv[0]) if fetch_argv else ""
+                if tool not in FETCHERS or body is not None and not changed and (
+                        (named := parse_fetch(tool, fetch_argv[1:], body, None)) is not None
+                        and named.dest is not None):
                     continue
-                following = statement.stages[position + 1:]
-                fetch_stage, piped_to = compound_output(stmts, out, index, stage, following)
-                fetch = parse_fetch(os.path.basename(fetch_argv[0]), fetch_argv[1:],
-                                    fetch_stage, piped_to)
+                following = statement.stages[position + 1:] if leaves else ()
+                fetch_stage, piped_to = compound_output(stmts, out, index, stage, following) if leaves \
+                    else (body, None)
+                fetch = parse_fetch(tool, fetch_argv[1:], fetch_stage, piped_to)
                 if fetch is not None:
                     if stream_exec:
                         compound = compound_stream_consumer(stmts, index, EXECUTORS)
@@ -335,7 +346,8 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                                            step_credit(inner, "bash {0}"), here)
                 fetched, nested = _walk(
                     inner, stream_exec, True, dict(enumerate(dirs)),
-                    ["%sI%d" % (child_scope, i) for i in range(len(inner))], here, under)
+                    ["%sI%d" % (child_scope, i) for i in range(len(inner))], here, under,
+                    calls.fixed(index))
                 unread.extend((index, why) for _inner, why in nested)
                 found.extend((index, fetch._replace(piped_to=forwarded_consumer(fetch, consumer))
                               if (executes or fetch.piped_to is None

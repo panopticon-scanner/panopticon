@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Bounded curl/wget transfer shapes and descriptor-aware pipe consumption.
+"""Bounded download-command shapes and descriptor-aware pipe consumption.
 
-Single curl transfers are modeled; complex transfers remain explicitly unread.
+Single transfers are modeled; complex transfers remain explicitly unread.
 This layer uses shell_reader and the stdin-program classifier. workflow_forms re-exports its API.
 """
 import collections
@@ -11,8 +11,9 @@ from typing import cast
 
 import shell_reader
 from shell_reader import command
+import workflow_fetch_adapters
 from workflow_option_slots import _one_word, _value
-from workflow_option_words import lifted, ruled, uncovered_argv
+from workflow_option_words import lifted, ruled
 from workflow_programs import VALUE_PROGRAM, stdin_program
 
 
@@ -25,7 +26,7 @@ Fetch = collections.namedtuple("Fetch", "tool url dest piped_to")
 class _ForwardedTee(tuple):
     """A tee argv whose file output also continues to an outer reader."""
 
-FETCHERS = ("curl", "wget")
+FETCHERS = ("curl", "wget", *workflow_fetch_adapters.FETCHERS)
 
 # curl and wget spell the same options differently, and the difference is
 # load-bearing: curl's `-o` is the output file, wget's `-o` is the LOG file and
@@ -65,6 +66,7 @@ _DIR_SHORT = {"curl": "", "wget": "P"}
 # Only these destinations follow fd 1. Discarding a response in /dev/null
 # is independent of stdout, although both are suppressed in the final result.
 _STDOUT_DESTINATIONS = ("-", "/dev/stdout", "/dev/fd/1")
+_DESCRIPTOR_STDOUT = ("/dev/stdout", "/dev/fd/1")
 STDOUT = _STDOUT_DESTINATIONS + ("/dev/null",)
 # `curl --version` in a diagnostics step downloads nothing; without this it
 # parses as a fetch with no URL, which the rule now REPORTS rather than drops.
@@ -112,19 +114,7 @@ def _pick_url(operands):
     return operands[0] if operands else None
 
 
-def _parse_fetch(tool, args, stage, piped_to):
-    """A Fetch and whether its response still leaves on standard output: the transfer the words name
-    (`_transfer`), or -- where a word's expansions in front of an option word may print nothing
-    (`uncovered`, #3042: `wget $X-qO- URL | sh`, `wget $X-O f URL && sh f`) -- the one they name
-    then, where it has a URL, its stream beside the first's. The guard's job keeps `main`'s reading
-    of the words as written first and whole (`workflow_guard.job_defects`)."""
-    fetch, streams = _transfer(tool, args, stage, piped_to)
-    alt = uncovered_argv([tool, *args])
-    other, more = _transfer(tool, alt[1:], stage, piped_to) if alt else (None, False)
-    return (other, streams or more) if other is not None and other.url is not None else (fetch, streams)
-
-
-def _transfer(tool, args, stage, piped_to):
+def _parse_curl_wget(tool, args, stage, piped_to):
     """A Fetch and whether its response still leaves on standard output."""
     value_short, value_long = _VALUE_SHORT[tool], _VALUE_LONG[tool]
     dest_short, dest_long = _DEST_SHORT[tool], _DEST_LONG[tool]
@@ -269,8 +259,62 @@ def _transfer(tool, args, stage, piped_to):
     return Fetch(tool, url, dest, piped_to), streams
 
 
+class _TreeDestination(str):
+    """The root of a fetched tree; uses beneath it are unverified too."""
+
+    tree = True
+
+
+def _parse_adapter(tool, args, stage, piped_to):
+    """One non-curl/wget adapter, with shell stdout routing applied."""
+    transfer = workflow_fetch_adapters.parse(tool, args)
+    if transfer is None:
+        return None, False
+    if transfer.unread:
+        return Fetch(transfer.tool, None, None, None), False
+    ambiguous = transfer.ambiguous
+    dest = (shell_reader.stdout_named(transfer.dest, stage)
+            if transfer.named and not transfer.tree else transfer.dest)
+    # Only tools whose own grammar documents `-` as stdout set `stdout`.
+    # `/dev/stdout` and `/dev/fd/1` are OS-level fd aliases for every tool;
+    # aria2c and axel, by contrast, really open a file named `-` for `-o -`.
+    to_stdout = transfer.stdout or transfer.named and dest in _DESCRIPTOR_STDOUT
+    discarded = transfer.named and dest == "/dev/null"
+    streams = bool(to_stdout and stage.stdout_to_pipe)
+    if to_stdout and not stage.stdout_to_pipe:
+        ambiguous = False
+    redirected = False
+    if to_stdout and stage.stdout_writes:
+        redirected = True
+        ambiguous = False
+        dest = stage.stdout_writes[-1]
+        if shell_reader.stdout_named(dest, stage) == "/dev/stdout" or dest in (
+                "/dev/null", "/dev/stderr"):
+            dest = None
+    if not redirected and to_stdout and dest in _STDOUT_DESTINATIONS:
+        dest = None
+    if streams and dest is None and piped_to and os.path.basename(piped_to[0]) == "tee":
+        written = [word for word in piped_to[1:] if not word.startswith("-")]
+        dest = written[0] if written else None
+    if discarded:
+        dest = None
+    if transfer.tree and dest is not None:
+        dest = _TreeDestination(dest)
+    if piped_to:
+        ambiguous = False
+    label = transfer.tool + (" --download" if ambiguous else "")
+    return Fetch(label, transfer.url, dest, piped_to), streams
+
+
+def _parse_fetch(tool, args, stage, piped_to):
+    """One recognized fetcher argv and whether its response leaves on stdout."""
+    if tool in ("curl", "wget"):
+        return _parse_curl_wget(tool, args, stage, piped_to)
+    return _parse_adapter(tool, args, stage, piped_to)
+
+
 def parse_fetch(tool, args, stage, piped_to):
-    """One `curl`/`wget` argv -> the Fetch it performs."""
+    """One recognized download argv -> the Fetch it performs."""
     return _parse_fetch(tool, args, stage, piped_to)[0]
 
 
@@ -559,5 +603,8 @@ def _describe(fetch):
 
 
 def _remedy(dest):
+    if getattr(dest, "tree", False):
+        return ("use a pinned source archive instead, verify that file's sha256, then unpack it "
+                "before that use")
     return ('verify it first: `echo "<sha256>  %s" | sha256sum -c -` between '
             "the download and that use" % shell_reader.readable(dest))

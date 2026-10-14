@@ -79,6 +79,12 @@ def chmod_executable(argv):
                for op, permissions in re.findall(r"([+=-])([rwxXstugo]*)", mode))
 
 
+def chmod_conditional_executable(argv):
+    """Whether chmod can add execute only through conditional capital X."""
+    mode, _targets = _chmod_operands(argv)
+    return "X" in mode and "x" not in mode
+
+
 def _joined(directory, token):
     """Join a relative token without letting `..` erase an unknown cwd."""
     if not directory.startswith("$CWD"):
@@ -133,6 +139,8 @@ def at_directory(token, directory, command_word=False):
     path = _joined(directory, token)
     if command_word and "/" in token and "/" not in path:
         path = "./" + path
+    if getattr(token, "tree", False):
+        return type(token)(path)
     if pattern:
         moved = type(token)(path, token.markers)
         moved.lead = token.lead
@@ -218,6 +226,17 @@ def same_file(token, path):
     return os.path.normpath(token) == os.path.normpath(path)
 
 
+def _inside_tree(token, tree, command_word=False):
+    """Whether a concrete operand is beneath a fetched tree root."""
+    if not getattr(tree, "tree", False):
+        return False
+    root, path = os.path.normpath(tree), os.path.normpath(token)
+    if root == ".":
+        return (not os.path.isabs(path) and path != "." and not path.startswith("../")
+                and (not command_word or "/" in path))
+    return path != root and path.startswith(root.rstrip("/") + "/")
+
+
 # `mv`/`cp` of a fetched file into one of these is what makes it runnable by
 # name for the rest of the job.
 BIN_DIRS = ("/usr/local/bin", "/usr/bin", "/usr/local/sbin", "/usr/sbin",
@@ -285,7 +304,7 @@ def may_run(word, dest):
     then `./tool`), wherever a PATH lookup would have found it or not.
     """
     name = os.path.basename(os.path.normpath(dest))
-    return same_file(word, dest) or _last_part(word, dest) or (
+    return same_file(word, dest) or _inside_tree(word, dest, True) or _last_part(word, dest) or (
         word == name and os.path.dirname(os.path.normpath(dest)) in PATH_DIRS)
 
 
@@ -300,6 +319,8 @@ def names_file(content, dest, directory="."):
     accepting it is the unbound checksum this rule exists to refuse, wearing a
     shorter path.
     """
+    if getattr(dest, "tree", False):
+        return False
     base = os.path.basename(dest)
     bare = not os.path.dirname(dest)
     return any(same_file(at_directory(word, directory), dest)
@@ -428,6 +449,8 @@ def covers(token, dest, recursive=False):
     side only, as in `may_run`: a checksum binds by `names_file`.
     """
     if same_file(token, dest):
+        return True
+    if _inside_tree(token, dest):
         return True
     glob, loose = token, False
     pattern = (isinstance(token, _Reparsed)
