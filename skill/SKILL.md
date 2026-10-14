@@ -1,8 +1,8 @@
 ---
 name: panopticon
-description: Comprehensive heavyweight multi-agent code audit of a whole codebase or substantial change; runs discovery, scouting, parallel specialized reviewers, and a validated CI-gating synthesis. Reach for it when breadth and depth justify the cost, not for a quick, routine, or default review.
+description: Use when a whole codebase or a substantial change needs a comprehensive, heavyweight multi-agent audit -- discovery, scouting, parallel specialized reviewers, and a validated CI-gating report -- and not for a quick, routine, or default code review.
 type: prompt
-whenToUse: Comprehensive heavyweight multi-agent code audit of a whole codebase or substantial change; runs discovery, scouting, parallel specialized reviewers, and a validated CI-gating synthesis. Reach for it when breadth and depth justify the cost, not for a quick, routine, or default review.
+whenToUse: Use when a whole codebase or a substantial change needs a comprehensive, heavyweight multi-agent audit -- discovery, scouting, parallel specialized reviewers, and a validated CI-gating report -- and not for a quick, routine, or default code review.
 arguments:
   - target
   - host
