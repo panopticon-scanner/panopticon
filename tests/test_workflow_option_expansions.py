@@ -711,9 +711,15 @@ class TestAnExpansionInFrontOfAnOptionWord(unittest.TestCase):
         # `passes` and `beside` tell the reading they run inside what they heard -- whether a rule answered, and whether
         # it was #3042's -- in that reading's box, whatever it held, and leave the box where it was: the job's floor is
         # read inside a reader's `beside` or none, and the reading after it starts from what IT found.
-        job = lambda: [words.uncovered("$X-c")]          # #3042's reading answers (and so #2889's switch hears it)
-        before = lambda: [words.ruled()]                 # #2889's rule alone answers
-        none = lambda: [words.uncovered("$X")]           # neither
+        def job():
+            return [words.uncovered("$X-c")]            # #3042's reading answers (and so #2889's switch hears it)
+
+        def before():
+            return [words.ruled()]                      # #2889's rule alone answers
+
+        def none():
+            return [words.uncovered("$X")]              # neither
+
         for read, heard in ((job, [True, True]), (before, [True, False]), (none, [False, False])):
             for floor in (lambda: words.passes(read, contextlib.nullcontext), lambda: words.beside(read)):
                 self.assertIsNone(words._HEARD.get())
@@ -732,7 +738,9 @@ class TestAnExpansionInFrontOfAnOptionWord(unittest.TestCase):
     def test_mains_whole_answer_is_one_reading_where_only_this_rule_answered(self):
         # Where #3042's reading answered and #2889's rule is silent with it off, `main`'s whole answer is the job's two
         # passes read once -- the one list `beside` hands twice -- and this reading's two passes stand beside it.
-        read = lambda: ["new"] if words.uncovered("$X-c") else ["main"]
+        def read():
+            return ["new"] if words.uncovered("$X-c") else ["main"]
+
         self.assertEqual(([["main"], ["main"]], [["new"], ["new"]]), words.passes(read, contextlib.nullcontext))
 
     def test_beside_the_words_as_written(self):
