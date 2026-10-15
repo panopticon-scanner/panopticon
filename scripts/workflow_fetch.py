@@ -114,8 +114,12 @@ def _pick_url(operands):
     return operands[0] if operands else None
 
 
-def _parse_curl_wget(tool, args, stage, piped_to):
-    """A Fetch and whether its response still leaves on standard output."""
+def _parse_curl_wget(tool, args, stage, piped_to, file_view=True):
+    """A Fetch and whether its response still leaves on standard output.
+
+    ``file_view`` is false for the separate #2889 stream reading, whose
+    possible ``-O-`` must stay available even when #3034 cannot name a file.
+    """
     value_short, value_long = _VALUE_SHORT[tool], _VALUE_LONG[tool]
     dest_short, dest_long = _DEST_SHORT[tool], _DEST_LONG[tool]
     dir_short, dir_long = _DIR_SHORT[tool], _DIR_LONG[tool]
@@ -207,6 +211,17 @@ def _parse_curl_wget(tool, args, stage, piped_to):
     url = _pick_url(operands)
     if tool == "curl" and (unread or len(operands) > 1 or outputs > 1 or header_name
                            or (url and not globoff and _curl_glob(url))):
+        return Fetch(tool, None, None, None), False
+    # A whole-word expansion beside a written URL may be wget's destination
+    # option and value (`X='-O tool'; wget $X URL`, #3034). With no shell
+    # stdout route there is no bounded file view: the URL basename may never
+    # be written. Piped and redirected output keep their existing stream view;
+    # binding a stream that only an expansion creates is #3035's separate arm.
+    may_name_destination = any(_value(operand) for operand in operands)
+    has_written_url = any("://" in operand and not _value(operand)
+                          for operand in operands)
+    if ruled(file_view and tool == "wget" and may_name_destination and has_written_url
+             and piped_to is None and not stage.stdout_writes):
         return Fetch(tool, None, None, None), False
     remote_name |= remote_all and outputs == 0
     named = dest is not _UNSET
@@ -306,10 +321,10 @@ def _parse_adapter(tool, args, stage, piped_to):
     return Fetch(label, transfer.url, dest, piped_to), streams
 
 
-def _parse_fetch(tool, args, stage, piped_to):
+def _parse_fetch(tool, args, stage, piped_to, file_view=True):
     """One recognized fetcher argv and whether its response leaves on stdout."""
     if tool in ("curl", "wget"):
-        return _parse_curl_wget(tool, args, stage, piped_to)
+        return _parse_curl_wget(tool, args, stage, piped_to, file_view)
     return _parse_adapter(tool, args, stage, piped_to)
 
 
@@ -378,7 +393,7 @@ def _streamed_fetch(tool, args, stage, following, executors, compound=None):
     onward. The ordinary Fetch keeps that destination; this view supplies a
     stdout-only record for the execution check.
     """
-    fetch, streams = _parse_fetch(tool, args, stage, None)
+    fetch, streams = _parse_fetch(tool, args, stage, None, file_view=False)
     consumer = stream_consumer(following, executors) if fetch and streams else None
     if (not consumer and fetch and streams and compound
             and (not following or _stream_forwarded(following))):
@@ -403,7 +418,8 @@ def stdout_fetch(text):
     stage = stmts[0].stages[0] if len(stmts) == 1 and len(stmts[0].stages) == 1 else None
     argv = shell_reader.acted(stage.argv) if stage else []
     tool = os.path.basename(argv[0]) if argv else ""
-    fetch, streams = _parse_fetch(tool, argv[1:], stage, None) if tool in FETCHERS else (None, False)
+    fetch, streams = (_parse_fetch(tool, argv[1:], stage, None, file_view=False)
+                      if tool in FETCHERS else (None, False))
     return fetch if fetch and streams and fetch.url else None
 
 
