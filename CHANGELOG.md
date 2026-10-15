@@ -43,6 +43,39 @@ evidence exposed.
   (+15); `shell_command.py` 699 and `shell_reader.py` 490 (0 net); `workflow_function_calls.py` 0
   net.
 
+- **Workflow reader reads an expansion in FRONT of an option word as that option word too (#3042).**
+  `sh $X-c 'curl ... | sh'` runs the string under every parent shell with `X` unset, and read CLEAN,
+  and so did `wget $X-qO- URL | sh`, `wget $X-O f URL && sh f` and `sh $(true)-s <<'EOF'` with a
+  download in its body: every reader took an option word to be one that begins with a written `-` or
+  `+`, so `$X-c` was the FILE the shell runs and the string that FILE's parameter.
+  `workflow_option_words.uncovered` reads a word whose leading expansions may print nothing -- `$X`,
+  `${X:-}`, `"$X"`, `$X$Y`, `$(true)`, `$1`, `$@` -- as the option word written behind them, where
+  that begins with `-` or `+`. The search for the `-c` string, the second walk's strings, the search
+  for a value and the second walk's program on stdin read the words that way too, after reading them
+  as written, and hand on the step's own words alone; the fetch reader takes the transfer the words
+  then name where it has a URL, its stream beside the first. The reading has a switch of its own
+  (`as_main`), because `main` has had #2889's rule on since that merged: with it off every reader
+  answers as `main` does, and wherever it answered the job's floor reads `main`'s whole answer first
+  -- the job with this reading off, #2889's floor in it -- so what `main` reports stands first and
+  whole (an independent pre-review found fourteen steps a floor of #2889's one switch would have
+  lost). Measured against `main` `c4690b3c`: on 421 rows in seven hunts with truth from eight parent
+  shells, 249 rows a parent runs and `main` reads CLEAN report, 60 that run nothing are newly
+  reported (the price above), 5 stay open (`main`'s own limits: a dynamic program beside no
+  download, and `wget $""-qO-`, `$"-qO-"` and `{,}-qO-`), and no report of `main`'s is lost; on the
+  14,322 rows of #2889's thirteen grids no row moves, under either marker (195 stay open on both
+  trees, as #2889 left them); with the reading off the findings equal `main`'s byte for byte on
+  240,847 rows in 111 sets, in strict mode too; where it answered, 550 rows, the head reports more
+  in 458 and loses none; in 36,000 fuzzed steps a third of whose option words are fronted the job
+  loses no report of `main`'s -- the first pass alone reads 221 fetcher steps quieter, and the job's
+  floor keeps `main`'s marks in every one -- and reports 648 more, 116 of which a parent runs. The
+  price, as #2889's: the guard follows no value, so `X=x; sh $X-c '...'` is reported and runs
+  nothing; a quoted or escaped `$` reaches the readers unquoted; an expansion that always prints
+  (`$0`, `$_`, `${#+c}`, `<(...)`) is read as any other; and a word after such a word is read as one
+  that may be the string or a value, as its written twin is on `main` (`bash
+  ${TOOL}-${VERSION}/install.sh "$PREFIX"` beside a download is reported, as `bash
+  -${VERSION}/install.sh "$PREFIX"` is).
+  `workflow_guard.py` and `workflow_options.py` are untouched.
+
 - **Workflow reader reads a call of a function the step defines as the body's shell reading the
   call's input, and as the body's use of the file (#2973, #2982).** `f() { bash -s; }` ⏎ `curl … |
   f` ran the download under every parent and read CLEAN: the fetch's consumer is the call's command

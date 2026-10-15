@@ -570,11 +570,13 @@ class TestTheLeaf(unittest.TestCase):
                         queue.append(node.module)
         self.assertIn("shell_tokens", reached)
         self.assertEqual([], sorted(name for name in reached if name.startswith("workflow")))
-        self.assertEqual(["as_before", "ruled", "beside", "passes",       # #2889's switch and the job's two passes
-                          "_references", "_spans", "before", "written", "lifted", "spells"],
+        self.assertEqual(["as_before", "as_main", "ruled", "beside", "passes",   # the two switches and the job's two passes
+                          "_references", "_spans", "before", "written", "lifted", "spells",
+                          "uncovered", "uncovered_argv"],                    # #3042's word with an expansion in front
                          [node.name for node in tree.body if isinstance(node, ast.FunctionDef)])
-        for module, names in ((wo, {"before", "lifted", "ruled", "spells", "written"}), (ws, {"beside", "lifted", "spells", "written"}),
-                              (wp, {"beside", "lifted", "written"}), (workflow_fetch, {"lifted", "ruled"}),
+        for module, names in ((wo, {"before", "lifted", "ruled", "spells", "written"}),
+                              (ws, {"beside", "lifted", "spells", "uncovered_argv", "written"}),
+                              (wp, {"beside", "lifted", "uncovered_argv", "written"}), (workflow_fetch, {"lifted", "ruled", "uncovered_argv"}),
                               (workflow_option_slots, {"lifted", "ruled", "written"}), (wg, {"passes"})):
             with open(module.__file__, encoding="utf-8") as source:
                 imported = {alias.name for node in ast.walk(ast.parse(source.read())) if isinstance(node, ast.ImportFrom)
