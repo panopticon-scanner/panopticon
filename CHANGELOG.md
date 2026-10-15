@@ -126,6 +126,25 @@ evidence exposed.
   Local differential on 14 rows under five settings and both guard passes: the five issue rows,
   unused-options price and two #3045 rows move CLEAN -> REPORT (80 cells, 40 in the job reading),
   six controls are unchanged (60 cells), and 0 cells move REPORT -> CLEAN.
+- **Workflow compound depth stays balanced after a function definition (#3069).** A definition
+  such as `f() { :; }` was read as an opening statement with delta zero and a later `}` with delta
+  -1. The negative depth made a subsequent brace group, `if`, or `while` lose the pipe or redirect
+  on its own close, so downloads inside it read CLEAN. `_compound_delta` now uses the existing
+  function-syntax reader to count every compound opener after `f()` / `function f` in the header's
+  statement: both the structural `{` and an immediate `if`, `while`, `for`, or `until`. Twenty-three
+  issue shapes—including multiline and consecutive definitions, each keyword-body form, nested
+  groups, pipes, and a file redirect—now report under all five shell settings; this also retires
+  #3050's named `{ f; } | sh` limit. A nested one-line definition remains a named CLEAN limit of
+  #2975 part A rather than treating its inner header's `{` as an ordinary group. The #3034 wget
+  expansion rule also distinguishes a fetch stage's own output from a pipe or redirect inherited
+  from its enclosing compound: five definition/compound interaction rows keep `main`'s REPORT, the
+  group redirect, tee and discard twins now report, and a harmless inherited `| cat` is the named
+  fail-closed price; the corresponding stage-owned outputs remain #3035's CLEAN limits. A
+  subshell's trailing redirect is attached to its inner stage, so its redirect and discard rows
+  report too; the indistinguishable `( wget $X URL > tool )` is the named fallback price. Local
+  differential on 47 pinned row IDs (46 distinct scripts), under the direct reader plus five job
+  settings: 180 CLEAN -> REPORT cells across 30 issue/price rows, 102 unchanged cells across nine
+  prior controls/limits, five interaction IDs and three #3035 limits, and 0 REPORT -> CLEAN cells.
 
 - **Workflow reader keeps a stage's second `${…}` word whole where it still stands before the
   command word (#2976).** `curl -fsSLo t …` ⏎ `${Y:+/usr/bin/env true} ${Z:+/usr/bin/env true} sh t`
