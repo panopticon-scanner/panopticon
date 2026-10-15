@@ -15,8 +15,8 @@ evidence exposed.
   immediate, live `$?` capture to a numeric zero test whose failed-check path reaches a literal
   non-zero `exit`; the bound keeps a use inside the handler reported, and a soft step clears only
   its own later use. It also follows a literal top-level `ERR` trap through Bash steps, stopping at
-  a replacement, a scope or step boundary, sourced/evaluated text, or a shadowed primitive at any
-  brace depth. The
+  a replacement, a scope or step boundary, sourced/evaluated text, a dynamic command, or a
+  shadowed primitive at any brace depth. The
   declared step shell travels with the checksum: default, `bash`, and `bash {0}` receive trap
   credit, while `sh` and `sh {0}` remain reported; inlined child shells inherit none. Literal or
   escaped `$?`, an intervening command or reassignment, wrong polarity, `exit 0`, a subshell,

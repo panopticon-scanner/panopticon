@@ -5509,6 +5509,8 @@ class TestAStatusOrErrTrapCanGateACheck(unittest.TestCase):
             "eval ':'\n",
             ". ./status-primitives\n",
             "source ./status-primitives\n",
+            "REWRITE=source\n$REWRITE ./status-primitives\n",
+            "REWRITE=source\n{ { $REWRITE ./status-primitives; }; }\n",
             "alias exit=':'\n",
             "enable -n [\n",
             "f() { :; }\nf\n",
@@ -5544,6 +5546,11 @@ class TestAStatusOrErrTrapCanGateACheck(unittest.TestCase):
             "f() { g() { exit() { :; }; }; }\ntrap 'exit 1' ERR\nCHECK\n",
             "trap 'exit 1' ERR\neval ':'\nCHECK\n",
             "trap 'exit 1' ERR\nsource ./trap-rewrite\nCHECK\n",
+            "REWRITE=source\n$REWRITE ./trap-rewrite\n"
+            "trap 'exit 1' ERR\nCHECK\n",
+            "trap 'exit 1' ERR\nREWRITE=source\n"
+            "$REWRITE ./trap-rewrite\nCHECK\n",
+            "f() { trap - ERR; }\nF=f\ntrap 'exit 1' ERR\n$F\nCHECK\n",
         )
         for shell in (None, "bash", "bash {0}"):
             for control in controls:

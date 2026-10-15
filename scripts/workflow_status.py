@@ -125,6 +125,14 @@ def _functions(stmts, owner, postures):
     return found
 
 
+def _dynamic_command(stage):
+    """Whether expansion decides the command this same-shell stage runs."""
+    written = shell_reader.command_as_written(stage.argv)
+    return bool(written and shell_reader.dynamic(
+        written[0], shell_reader.has_substitution
+    ))
+
+
 def _status_prefix_safe(stmts, index, name, owner, postures, functions):
     """Whether prior same-shell text cannot replace the status primitives."""
     for at, statement in enumerate(stmts[:index]):
@@ -133,6 +141,8 @@ def _status_prefix_safe(stmts, index, name, owner, postures, functions):
         for stage in statement.stages:
             if _function_syntax(stage.argv)[0] is not None:
                 continue
+            if _dynamic_command(stage):
+                return False
             words = command(stage.argv)
             tool = os.path.basename(words[0]) if words else ""
             if tool in ("trap", "eval", ".", "source", "alias", "enable") or tool in functions:
@@ -225,6 +235,7 @@ def stopping_err_trap(stmts, index, shell, analysis, owner=None, postures=None):
                 active = (not tainted and ("trap" not in functions or forced)
                           and analysis.enclosing[at] is None
                           and _stopping_trap(statement))
-            elif name in ("eval", ".", "source", "alias", "enable") + tuple(functions):
+            elif (_dynamic_command(stage)
+                  or name in ("eval", ".", "source", "alias", "enable") + tuple(functions)):
                 active, tainted = False, True
     return active
