@@ -126,6 +126,16 @@ evidence exposed.
   Local differential on 14 rows under five settings and both guard passes: the five issue rows,
   unused-options price and two #3045 rows move CLEAN -> REPORT (80 cells, 40 in the job reading),
   six controls are unchanged (60 cells), and 0 cells move REPORT -> CLEAN.
+- **Workflow compound depth stays balanced after a function definition (#3069).** A definition
+  such as `f() { :; }` was read as an opening statement with delta zero and a later `}` with delta
+  -1. The negative depth made a subsequent brace group, `if`, or `while` lose the pipe or redirect
+  on its own close, so downloads inside it read CLEAN. `_compound_delta` now uses the existing
+  function-syntax reader to count the structural `{` after `f()` / `function f`, excluding leading
+  group braces it already counted. Eight issue shapes—including multiline and consecutive
+  definitions, nested groups, and a file redirect—now report under all five shell settings; this
+  also retires #3050's named `{ f; } | sh` limit. Local differential on the direct reader plus five
+  job settings: 48 CLEAN -> REPORT cells across the eight issue rows, three reporting and three
+  clean controls unchanged (36 cells), and 0 REPORT -> CLEAN cells.
 
 - **Workflow reader keeps a stage's second `${…}` word whole where it still stands before the
   command word (#2976).** `curl -fsSLo t …` ⏎ `${Y:+/usr/bin/env true} ${Z:+/usr/bin/env true} sh t`

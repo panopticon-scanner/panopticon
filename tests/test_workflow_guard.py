@@ -5972,6 +5972,33 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
             with self.subTest(script=script):
                 self.assert_reported(script)
 
+    def test_3069_a_function_definition_does_not_steal_a_later_compound_close(self):
+        definition = "f() { :; }\n"
+        affected = (
+            definition + "{ %s; } | sh\n" % self.FETCH,
+            definition + "if true; then %s; fi | sh\n" % self.FETCH,
+            definition + ("while read -r x; do %s; done < /dev/null | sh\n"
+                          % self.FETCH),
+            definition + "{ { %s; }; } | sh\n" % self.FETCH,
+            definition + "{ %s; } > tool\nsh tool\n" % self.FETCH,
+            "f() {\n  :\n}\n{ %s; } | sh\n" % self.FETCH,
+            "function f { :; }\n{ %s; } | sh\n" % self.FETCH,
+            definition + "g() { :; }\n{ %s; } | sh\n" % self.FETCH,
+        )
+        for script in affected:
+            self.assert_reported_in_every_shell(script)
+
+        # A subshell never had the missing brace, a definition after the group
+        # cannot affect its close, and command substitution already keeps its
+        # own stream consumer. These reporting controls stay unchanged.
+        controls = (
+            definition + "( %s ) | sh\n" % self.FETCH,
+            "{ %s; } | sh\n" % self.FETCH + definition,
+            definition + 'eval "$({ %s; })"\n' % self.FETCH,
+        )
+        for script in controls:
+            self.assert_reported_in_every_shell(script)
+
     def test_a_redirected_compound_does_not_hide_an_inner_subshell_stream(self):
         for script in (
                 "{ ( %s; ) | sh; } > log\n" % self.FETCH,
