@@ -15,7 +15,7 @@ from shell_reader import command
 from workflow_function_calls import _FUNCTION_NAME, _function_syntax
 
 
-_CAPTURE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=\$\?$")
+_CAPTURE = re.compile(r"([a-z][a-z0-9_]*)=\$\?$")
 
 
 def _plain(statement):
@@ -47,9 +47,9 @@ def _capture(statement):
 def _test(statement, name):
     """(``if`` form, true on failed status, Bash-only, command), or None."""
     stage = _plain(statement)
-    raw = stage.argv if stage is not None else ()
-    words = command(raw)
+    raw = list(stage.argv) if stage is not None else []
     conditional = bool(raw[:1] == ["if"])
+    words = raw[1:] if conditional else raw
     bash = bool(words[:1] == ["[["] and words[-1:] == ["]]"])
     if words[:1] == ["["] and words[-1:] == ["]"] or bash:
         expression = words[1:-1]
@@ -68,9 +68,10 @@ def _exit(statement, leading_then=False):
     stage = _plain(statement)
     if stage is None:
         return False
-    raw, words = stage.argv, command(stage.argv)
+    raw = list(stage.argv)
     if leading_then != bool(raw[:1] == ["then"]):
         return False
+    words = raw[1:] if leading_then else raw
     return (len(words) == 2 and words[0] == "exit"
             and re.fullmatch(r"[+-]?[0-9]+", str(words[1])) is not None
             and int(words[1]) % 256 != 0)
@@ -133,6 +134,14 @@ def _dynamic_command(stage):
     ))
 
 
+def _literal_command(stage):
+    """Static command words past same-shell ``command``/``builtin`` wrappers."""
+    words = list(command(stage.argv))
+    while len(words) > 1 and words[0] in ("builtin", "command"):
+        words = list(command(words[1:]))
+    return words
+
+
 def _status_prefix_safe(stmts, index, name, owner, postures, functions):
     """Whether prior same-shell text cannot replace the status primitives."""
     for at, statement in enumerate(stmts[:index]):
@@ -143,12 +152,14 @@ def _status_prefix_safe(stmts, index, name, owner, postures, functions):
                 continue
             if _dynamic_command(stage):
                 return False
-            words = command(stage.argv)
+            words = _literal_command(stage)
             tool = os.path.basename(words[0]) if words else ""
             if tool in ("trap", "eval", ".", "source", "alias", "enable") or tool in functions:
                 return False
             flags = "".join(word[1:] for word in words[1:] if word.startswith("-"))
-            if (tool == "readonly" or tool in ("declare", "typeset") and "r" in flags):
+            if (tool == "readonly"
+                    or tool in ("declare", "typeset")
+                    and any(attribute in flags for attribute in "rn")):
                 operands = [str(word).split("=", 1)[0] for word in words[1:]
                             if not word.startswith("-")]
                 if name in operands:
@@ -202,16 +213,12 @@ def status_gate(stmts, index, shell, analysis, owner=None, postures=None):
 def _stopping_trap(statement):
     """Whether this is a literal ``trap 'exit N' ERR`` with non-zero N."""
     stage = _plain(statement)
-    raw = stage.argv if stage is not None else []
-    if not (raw[:1] == ["trap"] or raw[:2] in (["builtin", "trap"],
-                                                ["command", "trap"])):
+    raw = list(stage.argv) if stage is not None else []
+    if raw[:1] != ["trap"]:
         return False
-    words = command(stage.argv) if stage is not None else []
-    if words[:1] == ["builtin"]:
-        words = words[1:]
-    if len(words) < 3 or words[0] != "trap" or "ERR" not in words[2:]:
+    if raw[2:] != ["ERR"]:
         return False
-    body = list(shell_reader.statements(words[1]))
+    body = list(shell_reader.statements(raw[1]))
     return len(body) == 1 and _exit(body[0])
 
 
@@ -227,14 +234,16 @@ def stopping_err_trap(stmts, index, shell, analysis, owner=None, postures=None):
         if not _same_step(at, owner, postures):
             continue
         for stage in statement.stages:
-            words = command(stage.argv)
+            words = _literal_command(stage)
             name = os.path.basename(words[0]) if words else ""
             is_trap = name == "trap" or words[:2] == ["builtin", "trap"]
             if is_trap:
                 forced = stage.argv[:2] in (["builtin", "trap"], ["command", "trap"])
-                active = (not tainted and ("trap" not in functions or forced)
-                          and analysis.enclosing[at] is None
-                          and _stopping_trap(statement))
+                stopping = (("trap" not in functions or forced)
+                            and analysis.enclosing[at] is None
+                            and _stopping_trap(statement))
+                active = not tainted and stopping
+                tainted = tainted or not stopping
             elif (_dynamic_command(stage)
                   or name in ("eval", ".", "source", "alias", "enable") + tuple(functions)):
                 active, tainted = False, True

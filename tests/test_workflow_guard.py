@@ -5454,7 +5454,14 @@ class TestAStatusOrErrTrapCanGateACheck(unittest.TestCase):
             'CHECK\nrc=$?\n[ "$rc" -ne 0 ] || exit 1\n',
             'CHECK\nrc=$?\nif [ "$rc" -ne 0 ]; then echo failed; fi\n',
             'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 0\n',
+            'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && time exit 1\n',
+            'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && command exit 1\n',
+            'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && env exit 1\n',
+            'CHECK\nrc=$?\ncommand [ "$rc" -ne 0 ] && exit 1\n',
+            'CHECK\nrc=$?\nenv [ "$rc" -ne 0 ] && exit 1\n',
             'readonly rc=0\nCHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
+            'declare -n rc=PIPESTATUS\nCHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
+            'typeset -n rc=PIPESTATUS\nCHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
             'exit() { :; }\nCHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
             'function [ { return 1; }\nCHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
         )
@@ -5503,12 +5510,26 @@ class TestAStatusOrErrTrapCanGateACheck(unittest.TestCase):
                         definition + handler + self.USE, shell
                     )))
 
+    def test_special_or_uppercase_capture_names_stay_reported(self):
+        for name in ("PIPESTATUS", "SHELLOPTS", "BASHOPTS", "RANDOM", "RC", "_"):
+            body = ('CHECK\n%s=$?\n[ "$%s" -ne 0 ] && exit 1\n' % (name, name)
+                    + self.USE)
+            for shell in self.SHELLS:
+                with self.subTest(name=name, shell=shell):
+                    # Bash reads several of these back differently from the
+                    # value assigned. Uppercase and special names therefore
+                    # stay outside the bounded lowercase-variable proof.
+                    self.assertEqual(1, len(self.findings(body, shell)))
+
     def test_text_that_can_rewrite_a_proof_primitive_stays_reported(self):
         handler = 'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n'
         rewrites = (
             "eval ':'\n",
+            "builtin eval ':'\n",
+            "command builtin eval ':'\n",
             ". ./status-primitives\n",
             "source ./status-primitives\n",
+            "builtin source ./status-primitives\n",
             "REWRITE=source\n$REWRITE ./status-primitives\n",
             "REWRITE=source\n{ { $REWRITE ./status-primitives; }; }\n",
             "alias exit=':'\n",
@@ -5535,6 +5556,15 @@ class TestAStatusOrErrTrapCanGateACheck(unittest.TestCase):
     def test_a_replaced_nonstopping_or_late_err_trap_stays_reported(self):
         controls = (
             "trap 'echo failed' ERR\nCHECK\n",
+            "command trap 'exit 1' ERR\nCHECK\n",
+            "builtin trap 'exit 1' ERR\nCHECK\n",
+            "trap 'time exit 1' ERR\nCHECK\n",
+            "trap 'command exit 1' ERR\nCHECK\n",
+            "trap 'exit 1' ERR DEBUG\nCHECK\n",
+            "trap 'exit 1' ERR NOSUCH\nCHECK\n",
+            "trap 'trap - ERR' DEBUG\ntrap 'exit 1' ERR\nCHECK\n",
+            "trap 'exit 1' ERR\ntrap 'trap - ERR' DEBUG\n"
+            "trap 'exit 1' ERR\nCHECK\n",
             "trap 'exit 1' ERR\ntrap - ERR\nCHECK\n",
             "trap 'exit 1' ERR\ntrap 'echo failed' ERR\nCHECK\n",
             "trap 'exit 1' ERR\n{ trap - ERR; }\nCHECK\n",
@@ -5545,6 +5575,7 @@ class TestAStatusOrErrTrapCanGateACheck(unittest.TestCase):
             "f() { g() { trap() { :; }; }; }\ntrap 'exit 1' ERR\nCHECK\n",
             "f() { g() { exit() { :; }; }; }\ntrap 'exit 1' ERR\nCHECK\n",
             "trap 'exit 1' ERR\neval ':'\nCHECK\n",
+            "trap 'exit 1' ERR\nbuiltin eval 'trap - ERR'\nCHECK\n",
             "trap 'exit 1' ERR\nsource ./trap-rewrite\nCHECK\n",
             "REWRITE=source\n$REWRITE ./trap-rewrite\n"
             "trap 'exit 1' ERR\nCHECK\n",
