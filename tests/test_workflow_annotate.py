@@ -799,14 +799,15 @@ class TestWhereTheBaseReadingStands(unittest.TestCase):
         evals = "runs `eval` on `$(...)`, a program this guard does not follow"
         wrapped = "cannot read command behind wrapper: has a dynamic command operand"
         # The file the step wrote is read as its `printf`'s text now (#3027), which `printed` does not
-        # spell (a format with text around its `%s`): reported unspelled first, as its pipe twin is;
+        # spell (a format with text around its `%s`): reported unspelled (first; behind `builtin`, last), as
+        # its pipe twin is;
         # https://github.com/panopticon-scanner/panopticon/issues/3097 spells the format.
         unspelled = "pipes `.` its program from `printf`, whose words this guard does not spell out"
         for script, starts in (
                 (defs + ". ./defs.sh\n" + GET + run, [unspelled, HANDED % "$CMD", INSIDE]),
                 ("eval \"$(printf '%s() { :; }' sh)\"\n" + GET + run,
                  [evals, HANDED % "$CMD", INSIDE]),
-                (defs + "builtin . ./defs.sh\n" + GET + run, [unspelled, HANDED % "$CMD", INSIDE]),
+                (defs + "builtin . ./defs.sh\n" + GET + run, [HANDED % "$CMD", INSIDE, unspelled]),
                 (defs + "S=.\n$S ./defs.sh\n" + GET + run, [HANDED % "$CMD", INSIDE]),
                 (GET + "CMD=bash\n" + body("env 'BASH_FUNC_sha256sum%%=() { :; }' $CMD", CHECK,
                                            USE), [wrapped, INSIDE])):
