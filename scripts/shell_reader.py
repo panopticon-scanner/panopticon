@@ -169,7 +169,7 @@ def output_alias_fd(word):
     if isinstance(word, _Expanded):
         names = [name for name in _DESCRIPTOR_NAMES if fnmatch.fnmatchcase(name, path)]
         path = names[0] if len(names) == 1 else path
-    path = _OWN_ROOT.sub("", os.path.normpath(path)) or "/"
+    path = _OWN_ROOT.sub("", os.path.normpath(path))     # never empty: the root is dropped only in front of a `/`
     fd = input_alias_fd(_FD_SPELLINGS.sub("/dev/fd/", path))
     return None if fd == "?" else fd
 
