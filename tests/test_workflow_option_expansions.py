@@ -1405,6 +1405,52 @@ class TestWhatMainReportedIsReported(unittest.TestCase):
                           ("workflow_option_words.py", "passes"): ["_HEARD", "_NEW_OFF", "_OFF"]}, named)
 
 
+    # Round 1 of #3065's review: rows the fetch site loses INSIDE the passes -- the seat's `seat3065.mp.*` rows and
+    # the ruling's others. Where the words read `uncovered` name a transfer with a URL, `workflow_fetch._parse_curl_wget`
+    # returns that Fetch instead of `main`'s, and `main`'s was the fail-closed one: a download whose file is unsure
+    # (`$X-O a`: `main` reads three operands, the file the remote name; `$X-O $Y`: #3034's file view) and then a shell
+    # of a file. The job reports every one because its first pass is `main`'s whole answer (`as_main`) and
+    # `job_defects` is the only entry point: the pass-level loss is the reason these pins exist. Keeping `main`'s
+    # Fetch first at the fetch site and adding the alt beside it, so the passes are monotone too, is #3093's.
+    # Truth: runs, every one.
+    SEAT = (
+        "wget $X-O a %s\nsh i.sh\n" % URL,                                      # seat3065.mp.wget-O-a
+        "wget $X-P d %s\nsh i.sh\n" % URL,                                      # seat3065.mp.wget-P
+        "wget $X-O a %s\necho \\\"0000000000000000000000000000000000000000000000000000000000000000  i.sh\\\" | sha256sum -c -\nsh i.sh\n" % URL, # seat3065.mp.wget-O-f-chk
+        "wget $X-qO- %s > f\nsh i.sh\n" % URL,
+        "wget $X-O $Y %s\nsh i.sh\n" % URL,                                     # the delta: #3034's file view, read in the passes
+        "Y=tool\nwget $X-O $Y %s\nsh tool\n" % URL,
+        "wget $X-O a %s\nsh a\n" % URL,                                         # seat3065.mp.wget-O-a-use-a
+    )
+    REASON = (                                              # three that lose only the reason in the passes
+        "curl $X-fsSL %s | sh\n" % URL,
+        "curl $X-o a %s\nsh a\n" % URL,
+        "wget $X-qO- %s | sh\nsh i.sh\n" % URL,
+    )
+
+    def test_what_the_fetch_site_loses_in_the_passes(self):
+        # Pinned at `job_defects`, the five postures (the review's round 1).
+        for text in self.SEAT + self.REASON:
+            with self.subTest(text=text):
+                self.assertEqual("RRRRR", marks(text)[0])
+
+    def test_which_pass_loses_it(self):
+        # The first five: the rule's reading alone reads them CLEAN and `main`'s reports them, the floor's rows.
+        for text in self.SEAT[:5]:
+            with self.subTest(text=text):
+                self.assertEqual(FLOOR, readings(text))
+        # `Y=tool` set on the line before: with #2889's rule off the row is CLEAN as well (the guard follows that
+        # value and reads `tool` as one more operand of `wget`, as it did before #2889); the job's first pass, #2889's
+        # rule on, reports it, and this rule's reading alone does not.
+        self.assertEqual(("RRRRR", "CCCCC", "CCCCC"), readings(self.SEAT[5]))
+        # `wget $X-O a URL` then `sh a`: this rule's own report -- `main` reads `a` as an operand of `wget` and `sh a`
+        # as another file's -- the seat's row, kept beside the others.
+        self.assertEqual(RULED, readings(self.SEAT[6]))
+        for text in self.REASON:
+            with self.subTest(text=text):
+                self.assertEqual(EITHER, readings(text))
+
+
 class TestTheLeafKnowsAReference(unittest.TestCase):
     """`workflow_option_words`: a parameter reference stands in a word as a marker does."""
 
@@ -1620,6 +1666,11 @@ class TestWhatStays(unittest.TestCase):
         for text in ('wget $""-qO- https://example.test/i.sh | sh\n', 'wget $"-qO-" https://example.test/i.sh | sh\n', 'wget {,}-qO- https://example.test/i.sh | sh\n'):
             with self.subTest(text=text):
                 self.assertEqual(CLEAN, marks(text))
+
+    def test_a_cluster_written_after_such_a_word(self):
+        # ... and where a cluster is written after a word read so, `main` reads that one, and the rule reads the
+        # same: the control the first build of this rule pinned, restored in the review's round 1. Truth: runs.
+        self.assertEqual(BOTH, marks("sh $X-e -c %s\n" % P))
 
     def test_a_substitution_in_the_strings_slot(self):
         # #3043. A `$Y` after the `-c` cluster may be an option word or nothing, so the words after it are weighed

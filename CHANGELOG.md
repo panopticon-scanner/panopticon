@@ -34,9 +34,10 @@ evidence exposed.
   floor keeps `main`'s marks in every one -- and reports 648 more, 116 of which a parent runs. The
   price, as #2889's: the guard follows no value, so `X=x; sh $X-c '...'` is reported and runs
   nothing; a quoted or escaped `$` reaches the readers unquoted; an expansion that always prints
-  (`$0`, `<(...)`) is read as any other; and a word after such a word is read as one that may be the
-  string or a value, as its written twin is on `main` (`bash ${TOOL}-${VERSION}/install.sh
-  "$PREFIX"` beside a download is reported, as `bash -${VERSION}/install.sh "$PREFIX"` is).
+  (`$0`, `$_`, `${#+c}`, `<(...)`) is read as any other; and a word after such a word is read as one
+  that may be the string or a value, as its written twin is on `main` (`bash
+  ${TOOL}-${VERSION}/install.sh "$PREFIX"` beside a download is reported, as `bash
+  -${VERSION}/install.sh "$PREFIX"` is).
   `workflow_guard.py` and `workflow_options.py` are untouched.
 
 - **Workflow reader reads a call of a function the step defines as the body's shell reading the
