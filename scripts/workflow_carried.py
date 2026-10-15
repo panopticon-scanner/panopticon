@@ -408,15 +408,15 @@ def _function_barrier(stmts, start, stop, name, starts):
 
 def _called_assignments(stmts, index, starts, held, branches, conditionals, outer, probe,
                         shell=None, bodies=None):
-    """Certain caller-visible assignments made by one directly called body."""
+    """Certain caller-visible assignments and readonly names from one direct call."""
     bodies = _reached(stmts, index, starts) if bodies is None else bodies
     if len(bodies) != 1:
-        return {}, set()
+        return {}, set(), set()
     start, close = bodies[0]
     definitions = [(name, head, end) for entries in starts.values()
                    for name, head, end in entries if (head, end) == (start, close)]
     if len(definitions) != 1:
-        return {}, set()
+        return {}, set(), set()
     name = definitions[0][0]
     call_stage = stmts[index].stages[0]
     call = command(call_stage.argv)
@@ -425,7 +425,7 @@ def _called_assignments(stmts, index, starts, held, branches, conditionals, oute
             or conditionals.get(start) or _piped_group_stage(stmts, start) is not None
             or stmts[close].separator == "&"
             or _function_barrier(stmts, 0, index, name, starts)):
-        return {}, set()
+        return {}, set(), set()
     nested = {at for entries in _function_ranges(stmts)[0].values()
               for _name, head, end in entries if head > start
               for at in range(head, end + 1)}
@@ -433,6 +433,7 @@ def _called_assignments(stmts, index, starts, held, branches, conditionals, oute
     plain: set[str] = set()
     local: set[str] = set()
     readonly: set[str] = set()
+    caller_readonly: set[str] = set()
     blocked: set[str] = set()
     block_all = False
     subshells, compounds, may_return = 0, 0, False
@@ -452,7 +453,8 @@ def _called_assignments(stmts, index, starts, held, branches, conditionals, oute
             words = argv[1:] if name in ("local", "declare", "typeset") else ()
             if words and not any(str(word).startswith(("-", "+")) and "g" in str(word)
                                  for word in words):
-                local.update(match[1] for word in words if (match := _NAMED.match(word)))
+                local.update(str(word).split("=", 1)[0] for word in words
+                             if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:=.*)?", str(word)))
             made_readonly, targets, unknown = _declaration_attributes(stage, shell)
             blocked.update(targets)
             plain.difference_update(targets)
@@ -469,6 +471,8 @@ def _called_assignments(stmts, index, starts, held, branches, conditionals, oute
                        and _piped_group_stage(stmts, at) is None
                        and len(statement.stages) == 1 and statement.separator != "&"
                        and not (at and stmts[at - 1].separator in ("&&", "||")))
+            if certain:
+                caller_readonly.update(made_readonly - local)
             for variable, value in now.items():
                 if variable in local:
                     continue
@@ -484,12 +488,12 @@ def _called_assignments(stmts, index, starts, held, branches, conditionals, oute
             readonly.update(made_readonly)
             if name == "return":
                 if certain:
-                    return changed, plain
+                    return changed, plain, caller_readonly
                 may_return = True
             subshells = max(0, subshells + stage.group_open - stage.group_close)
             opens, closes = _structural_groups(stage)
             compounds = max(0, compounds + opens - closes)
-    return changed, plain
+    return changed, plain, caller_readonly
 
 
 def carried(stmts, executors, shell=None):
@@ -506,10 +510,11 @@ def carried(stmts, executors, shell=None):
     blocked: set[str] = set()
     block_all = False
     starts, occupied = _function_ranges(stmts)
-    assigning_bodies = {
+    stateful_bodies = {
         (start, close) for entries in starts.values()
         for _name, start, close in entries
-        if any(_assigned(stage, {}) for statement in stmts[start:close + 1]
+        if any(_assigned(stage, {}) or any(_declaration_attributes(stage, shell))
+               for statement in stmts[start:close + 1]
                for stage in statement.stages)
     }
     forked = _forked(stmts, len(stmts))
@@ -627,11 +632,11 @@ def carried(stmts, executors, shell=None):
                 # A refused or nested call may write any holder. Exact direct
                 # calls add their proved plain replacements back below.
                 plain.clear()
-            # A body with no scalar assignment cannot alter either carried
-            # state.  Avoid re-reading it at every call site: large, repeatedly
-            # called bodies are a deliberate bounded-work contract (#2855).
-            if sure and any(body in assigning_bodies for body in bodies):
-                called, called_plain = _called_assignments(
+            # A body with no scalar assignment or declaration attribute cannot
+            # alter either carried state. Avoid re-reading it at every call site:
+            # large, repeatedly called bodies are a bounded-work contract (#2855).
+            if sure and any(body in stateful_bodies for body in bodies):
+                called, called_plain, called_readonly = _called_assignments(
                     stmts, index, starts, held, branches, conditionals, outer, probe, shell, bodies
                 )
                 called_plain.difference_update(readonly | blocked)
@@ -641,6 +646,7 @@ def carried(stmts, executors, shell=None):
                 held.update(called)
                 plain.difference_update(called)
                 plain.update(replaced_carry)
+                readonly.update(called_readonly)
         for stage in statement.stages:              # a `( )` or `{ }` group, as `_errexit_states`
             subshells = max(0, subshells + stage.group_open - stage.group_close)
         if not isinstance(statement, Inlined):

