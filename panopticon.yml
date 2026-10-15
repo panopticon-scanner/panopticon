@@ -719,6 +719,7 @@ groups:
       - tests/test_workflow_word_before_a_builtin.py
       - tests/test_workflow_alternate_in_front.py
       - tests/test_workflow_second_whole_word.py
+      - tests/test_workflow_called_bodies.py
       - tests/test_workflow_in_front_of_a_command.py
       - tests/test_workflow_prefix_assignment.py
       panels:
