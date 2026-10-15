@@ -12,6 +12,7 @@ from typing import cast
 import shell_reader
 from shell_reader import command
 import workflow_fetch_adapters
+from workflow_function_calls import _function_syntax
 from workflow_option_slots import _one_word, _value
 from workflow_option_words import lifted, ruled, uncovered_argv
 from workflow_programs import VALUE_PROGRAM, stdin_program
@@ -23,7 +24,11 @@ from workflow_programs import VALUE_PROGRAM, stdin_program
 Fetch = collections.namedtuple("Fetch", "tool url dest piped_to")
 
 
-class _ForwardedTee(tuple):
+class _InheritedOutput(tuple):
+    """A pipe argv or redirect sink inherited from a compound close."""
+
+
+class _ForwardedTee(_InheritedOutput):
     """A tee argv whose file output also continues to an outer reader."""
 
 FETCHERS = ("curl", "wget", *workflow_fetch_adapters.FETCHERS)
@@ -226,15 +231,19 @@ def _transfer(tool, args, stage, piped_to, file_view=True):
                            or (url and not globoff and _curl_glob(url))):
         return Fetch(tool, None, None, None), False
     # A whole-word expansion beside a written URL may be wget's destination
-    # option and value (`X='-O tool'; wget $X URL`, #3034). With no shell
-    # stdout route there is no bounded file view: the URL basename may never
-    # be written. Piped and redirected output keep their existing stream view;
-    # binding a stream that only an expansion creates is #3035's separate arm.
+    # option and value (`X='-O tool'; wget $X URL`, #3034). Only this stage's
+    # own pipe or redirect bounds the file view; an enclosing compound's route
+    # says nothing about the destination the expansion may name. Stage-owned
+    # output keeps its stream view under #3035's separate arm.
     may_name_destination = any(_value(operand) for operand in operands)
     has_written_url = any("://" in operand and not _value(operand)
                           for operand in operands)
+    owns_output = ((bool(stage.stdout_writes) and not stage.group_close
+                    and not isinstance(stage.stdout_writes, _InheritedOutput))
+                   or (piped_to is not None
+                       and not isinstance(piped_to, _InheritedOutput)))
     if ruled(file_view and tool == "wget" and may_name_destination and has_written_url
-             and piped_to is None and not stage.stdout_writes):
+             and not owns_output):
         return Fetch(tool, None, None, None), False
     remote_name |= remote_all and outputs == 0
     named = dest is not _UNSET
@@ -479,10 +488,28 @@ def _compound_delta(statement, groups=True):
     for stage in statement.stages:
         if groups:
             depth += stage.group_open - stage.group_close
-        for token in stage.argv:
-            if token not in shell_reader.KEYWORDS:
-                break
+        name, _ = _function_syntax(stage.argv)
+        header = 0
+        while (header < len(stage.argv)
+               and stage.argv[header] in shell_reader.KEYWORDS
+               and stage.argv[header] != "function"):
+            token = stage.argv[header]
             depth += (token in _COMPOUND_OPEN) - (token in _COMPOUND_CLOSE)
+            header += 1
+        if name is not None:
+            # The command walk stops at `f()` / `function f`, but the reader
+            # emits the body's closes later. Count every compound opener in
+            # the header's statement, including an immediate `if` or loop
+            # (#3069); a nested function header still stops this prefix.
+            header += (
+                2 if (stage.argv[header] == "function"
+                      or stage.argv[header + 1:header + 2] == ["()"])
+                else 1
+            )
+            for token in stage.argv[header:]:
+                if token not in shell_reader.KEYWORDS:
+                    break
+                depth += (token in _COMPOUND_OPEN) - (token in _COMPOUND_CLOSE)
     return depth
 
 
@@ -601,9 +628,11 @@ def compound_output(stmts, outputs, position, stage, following):
     if output is None:
         return stage, None
     close, piped_to = output
+    inherited_pipe = (piped_to if isinstance(piped_to, _InheritedOutput)
+                      else _InheritedOutput(piped_to) if piped_to is not None else None)
     return stage._replace(
-        stdout_writes=close.stdout_writes,
-    ), piped_to
+        stdout_writes=_InheritedOutput(close.stdout_writes),
+    ), inherited_pipe
 
 
 def compound_stream_consumer(stmts, position, executors):
