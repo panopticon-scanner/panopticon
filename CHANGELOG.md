@@ -39,6 +39,40 @@ evidence exposed.
   "$PREFIX"` beside a download is reported, as `bash -${VERSION}/install.sh "$PREFIX"` is).
   `workflow_guard.py` and `workflow_options.py` are untouched.
 
+- **Workflow reader reads a call of a function the step defines as the body's shell reading the
+  call's input, and as the body's use of the file (#2973, #2982).** `f() { bash -s; }` ⏎ `curl … |
+  f` ran the download under every parent and read CLEAN: the fetch's consumer is the call's command
+  word, `f`, which names no executor. And `f() { sh tool; }` ⏎ `curl -fsSLo tool …` ⏎ `f` ran it and
+  read CLEAN: the use reader weighed a body's stage as written only on a call that passes the file,
+  and a body before the fetch is one the walk never reaches.
+  `workflow_called.CalledFetches.consumers` now puts, where a call stands behind a fetch -- or a
+  bare `{` or `(` that opens a group on its own -- the stage of the body (the group's statements,
+  and the bodies they call, eight deep) that reads the call's standard input as a shell: the first
+  such stage, or the first behind one that pipes on (`cat | sh`, `tee log | sh`); one reading a file
+  or a heredoc of its own, or no shell at all, is passed over, fail-closed. One price, named: where
+  the call redirects the fetched file in, a body whose shell runs a file other than the call's input
+  (`f() { sh other; }` ⏎ `f < tool`) is still read as the call's consumer, as `main` reads `sh other
+  < tool` -- an over-report, fail-closed. The stage carries the call's own input (`with_call_stdin`:
+  the pipe, a file, a here-string, the descriptors its redirections leave), and
+  `workflow_guard._walk` hands the fetch's following stages and a stage's substitutions through it
+  (`f <<< "$(curl …)"`, `f < <(curl …)`). `workflow_uses._function_use` weighs each body stage as
+  written on any call, with the call's input (`f < t`). The kit's twenty S9 rows and Z01 report
+  under every setting; s9.benign (a body that counts lines), the group and inline controls and Z02
+  read as they did; a piped group on lines of its own with a plain shell inside, CLEAN on `main` by
+  the same cut, reports now. Differential on the forge, c4d29f3b against main c3528daa on 27,020
+  rows (the 26,982-row kit and 38 of this PR's own): 0 failures, **0 REPORT->CLEAN cells**, 26,995
+  rows identical, **25 rows CLEAN->REPORT** (185 cells) and nothing else -- the kit's twenty S9
+  rows, Z01, its check-between twin (an unbound `sha256sum -c sums || exit 1` between the fetch and
+  the call: reported as `main` reports it before a plain `sh tool`, no `sums` written), the kit's
+  owntw:AV036 (`f() { sh "$@"; }` ⏎ `f /dev/fd/3 3< tool`: the body's `sh` on the call's descriptor,
+  runs), and the two own-line piped group rows. No REPORT->REPORT change. The first run, at
+  2ec9f11b, had moved ten more rows of the halves kit's `xr.*.function` family -- a body that holds
+  the fetch behind a run of the file, called once, which runs nothing -- and that is 668d15cb's fix
+  (the definition must close before the fetch); 4,379 s wall on eight shards at nice 10; run 2, at
+  668d15cb, moved the same 25 rows (4,475 s). `tests/test_workflow_called_bodies.py`.
+  `scripts/workflow_called.py` is 589 lines (+98), `workflow_guard.py` 629 (+5), `workflow_uses.py`
+  597 (+7).
+
 - **Workflow reader keeps a stage's second `${…}` word whole where it still stands before the
   command word (#2976).** `curl -fsSLo t …` ⏎ `${Y:+/usr/bin/env true} ${Z:+/usr/bin/env true} sh t`
   ran the download under every parent and read CLEAN: `shell_split._split` kept a `${…}` with bare
