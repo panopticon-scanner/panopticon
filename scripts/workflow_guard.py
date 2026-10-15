@@ -255,6 +255,7 @@ import shell_reader
 from shell_reader import folds, statements
 from workflow_annotate import annotate
 from workflow_called import CalledFetches
+from workflow_written import bind_written
 from workflow_checks import CHECKSUM_TOOLS as CHECKSUM_TOOLS, checks as _checks
 from workflow_defect import (_SOFT_STEP as _SOFT_STEP, _UNSHARED_BRANCH as _UNSHARED_BRANCH,
                              _UNSHARED_IF as _UNSHARED_IF, _binds as _binds, _defect as _defect,
@@ -440,7 +441,7 @@ def read(script, shell=None):
     `$CMD` command word the step surely runs, and a printer's `"$X"` whose text fetches, the step
     assigns one literal read as that text (`workflow_annotate`, #2468), a mark no `$(...)` child
     or handed script inherits."""
-    return flattened(annotate(statements(script), shell), shell=shell)
+    return flattened(bind_written(annotate(statements(script), shell)), shell=shell)
 
 
 def fetches(script):

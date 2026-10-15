@@ -615,9 +615,12 @@ class TestWhatStaysForOtherIssues(unittest.TestCase):
                     self.assertEqual(CLEAN, marks("%s%s%s | sh" % (FETCH, front, stage)))
 
     def test_a_file_a_printer_writes_and_a_shell_runs_is_3027(self):
-        for front in ("", "$S "):                           # truth: runs, both
+        # Moved by #3027 (this test named it): the written file is read as its writer's text, and the plain row
+        # reports; behind `$S` the job's pass drops the unset word and reports, the main pass keeps a word it cannot
+        # read in front of the printer and binds nothing (its posture for a `$` word in front, as above).
+        for front, expected in (("", ("RRRRR", "RRRRR")), ("$S ", ("RRRRR", "CCCCC"))):     # truth: runs, both
             with self.subTest(front=front):
-                self.assertEqual(CLEAN, marks("%secho '%s' > run.sh\nsh run.sh" % (front, P)))
+                self.assertEqual(expected, marks("%secho '%s' > run.sh\nsh run.sh" % (front, P)))
 
     def test_a_dollar_word_where_a_default_wrappers_own_words_end(self):
         # Behind a WRITTEN wrapper `main` reads a `$` command word as one it cannot read, and reports
