@@ -24,7 +24,11 @@ from workflow_programs import VALUE_PROGRAM, stdin_program
 Fetch = collections.namedtuple("Fetch", "tool url dest piped_to")
 
 
-class _ForwardedTee(tuple):
+class _InheritedOutput(tuple):
+    """A pipe argv or redirect sink inherited from a compound close."""
+
+
+class _ForwardedTee(_InheritedOutput):
     """A tee argv whose file output also continues to an outer reader."""
 
 FETCHERS = ("curl", "wget", *workflow_fetch_adapters.FETCHERS)
@@ -227,15 +231,19 @@ def _transfer(tool, args, stage, piped_to, file_view=True):
                            or (url and not globoff and _curl_glob(url))):
         return Fetch(tool, None, None, None), False
     # A whole-word expansion beside a written URL may be wget's destination
-    # option and value (`X='-O tool'; wget $X URL`, #3034). With no shell
-    # stdout route there is no bounded file view: the URL basename may never
-    # be written. Piped and redirected output keep their existing stream view;
-    # binding a stream that only an expansion creates is #3035's separate arm.
+    # option and value (`X='-O tool'; wget $X URL`, #3034). Only this stage's
+    # own pipe or redirect bounds the file view; an enclosing compound's route
+    # says nothing about the destination the expansion may name. Stage-owned
+    # output keeps its stream view under #3035's separate arm.
     may_name_destination = any(_value(operand) for operand in operands)
     has_written_url = any("://" in operand and not _value(operand)
                           for operand in operands)
+    owns_output = ((bool(stage.stdout_writes)
+                    and not isinstance(stage.stdout_writes, _InheritedOutput))
+                   or (piped_to is not None
+                       and not isinstance(piped_to, _InheritedOutput)))
     if ruled(file_view and tool == "wget" and may_name_destination and has_written_url
-             and piped_to is None and not stage.stdout_writes):
+             and not owns_output):
         return Fetch(tool, None, None, None), False
     remote_name |= remote_all and outputs == 0
     named = dest is not _UNSET
@@ -620,9 +628,11 @@ def compound_output(stmts, outputs, position, stage, following):
     if output is None:
         return stage, None
     close, piped_to = output
+    inherited_pipe = (piped_to if isinstance(piped_to, _InheritedOutput)
+                      else _InheritedOutput(piped_to) if piped_to is not None else None)
     return stage._replace(
-        stdout_writes=close.stdout_writes,
-    ), piped_to
+        stdout_writes=_InheritedOutput(close.stdout_writes),
+    ), inherited_pipe
 
 
 def compound_stream_consumer(stmts, position, executors):

@@ -135,9 +135,14 @@ evidence exposed.
   issue shapes—including multiline and consecutive definitions, each keyword-body form, nested
   groups, pipes, and a file redirect—now report under all five shell settings; this also retires
   #3050's named `{ f; } | sh` limit. A nested one-line definition remains a named CLEAN limit of
-  #2975 part A rather than treating its inner header's `{` as an ordinary group. Local differential
-  on the direct reader plus five job settings: 138 CLEAN -> REPORT cells across the 23 issue rows,
-  six prior controls and three #2975 limits unchanged (54 cells), and 0 REPORT -> CLEAN cells.
+  #2975 part A rather than treating its inner header's `{` as an ordinary group. The #3034 wget
+  expansion rule also distinguishes a fetch stage's own output from a pipe or redirect inherited
+  from its enclosing compound: five definition/compound interaction rows keep `main`'s REPORT, the
+  group redirect, tee and discard twins now report, and a harmless inherited `| cat` is the named
+  fail-closed price; the corresponding stage-owned outputs remain #3035's CLEAN limits. Local
+  differential on 44 pinned row IDs (43 distinct scripts), under the direct reader plus five job
+  settings: 162 CLEAN -> REPORT cells across 27 issue/price rows, 102 unchanged cells across nine
+  prior controls/limits, five interaction IDs and three #3035 limits, and 0 REPORT -> CLEAN cells.
 
 - **Workflow reader keeps a stage's second `${…}` word whole where it still stands before the
   command word (#2976).** `curl -fsSLo t …` ⏎ `${Y:+/usr/bin/env true} ${Z:+/usr/bin/env true} sh t`

