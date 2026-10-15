@@ -72,6 +72,23 @@ evidence exposed.
   668d15cb, moved the same 25 rows (4,475 s). `tests/test_workflow_called_bodies.py`.
   `scripts/workflow_called.py` is 589 lines (+98), `workflow_guard.py` 629 (+5), `workflow_uses.py`
   597 (+7).
+- **Workflow guard fails closed when a whole-word expansion may name `wget`'s output
+  (#3034).** `X='-O tool'; wget $X URL; sh tool` read CLEAN under all five `shell:`
+  settings while every truth runner wrote and ran `tool`; so did the quoted attached form
+  (`X=-Otool`), an unquoted substitution, a bare `-O` before a written name, and the row whose
+  checksum names the URL basename that was never written. The file reading now refuses a bounded
+  basename where an expansion operand stands beside a written-scheme URL and stdout has no pipe or
+  redirect, yielding the existing unresolved-transfer finding. That reading is under #2889's
+  switch and therefore stands beside the old basename view; its separate stream reading opts out,
+  preserving every direct-pipe report and leaving #3035's routed `tee`/redirect shapes pinned.
+  The price, named: an otherwise unused `wget $OPTS URL` now reports; a `wget` whose words hold an
+  expansion stays reported even where a bound checksum of the named file precedes its run, as
+  `curl` already does; and so do #3045's two dynamic process-substitution rows through the
+  unresolved file view (their direct stream binding remains the more precise follow-up). Two
+  unknown operands with no written URL remain bounded CLEAN.
+  Local differential on 14 rows under five settings and both guard passes: the five issue rows,
+  unused-options price and two #3045 rows move CLEAN -> REPORT (80 cells, 40 in the job reading),
+  six controls are unchanged (60 cells), and 0 cells move REPORT -> CLEAN.
 
 - **Workflow reader keeps a stage's second `${…}` word whole where it still stands before the
   command word (#2976).** `curl -fsSLo t …` ⏎ `${Y:+/usr/bin/env true} ${Z:+/usr/bin/env true} sh t`
