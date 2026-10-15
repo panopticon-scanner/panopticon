@@ -21,8 +21,8 @@ evidence exposed.
   declared step shell travels with the checksum: default, `bash`, and `bash {0}` receive trap
   credit, while `sh` and `sh {0}` remain reported; inlined child shells inherit none. Literal or
   escaped `$?`, an intervening command or reassignment, a readonly or nameref capture, wrong
-  polarity, `exit 0`, wrapped test/exit/trap commands, a subshell, non-stopping/replaced traps, and
-  `continue-on-error` across steps all stay fail-closed. Runtime
+  polarity, `exit 0`, wrapped or redirected test/exit/trap commands, a subshell,
+  non-stopping/replaced traps, and `continue-on-error` across steps all stay fail-closed. Runtime
   evidence on Bash 3.2.57, Bash 5.2.21 (default, template, and POSIX modes), and dash confirms all
   five POSIX status forms and their success/non-stopping controls. It also corrects the issue
   text: dash rejects the non-POSIX `ERR` signal and carries on to the payload, so only Bash gets

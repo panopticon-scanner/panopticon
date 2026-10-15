@@ -5470,6 +5470,19 @@ class TestAStatusOrErrTrapCanGateACheck(unittest.TestCase):
                 with self.subTest(shell=shell, control=control):
                     self.assertEqual(1, len(self.findings(control + self.USE, shell)))
 
+    def test_redirected_status_primitives_stay_reported(self):
+        controls = (
+            'CHECK\nrc=$?\n[ "$rc" -ne 0 ] 2>&999 && exit 1\n',
+            'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1 2>&999\n',
+            "trap 'exit 1' ERR 2>&999\nCHECK\n",
+        )
+        for shell in self.SHELLS:
+            for control in controls:
+                with self.subTest(shell=shell, control=control):
+                    # #2440: a redirect may fail before the test, exit, or
+                    # trap runs; Bash then reaches the payload under set +e.
+                    self.assertEqual(1, len(self.findings(control + self.USE, shell)))
+
     def test_a_shadowed_status_primitive_at_any_body_depth_stays_reported(self):
         handler = 'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n'
         definitions = (

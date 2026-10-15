@@ -23,7 +23,7 @@ def _plain(statement):
     if len(statement.stages) != 1 or statement.separator == "&":
         return None
     stage = statement.stages[0]
-    if (stage.reads or stage.writes or stage.heredoc or stage.substitutions
+    if (stage.redirected or stage.reads or stage.writes or stage.heredoc or stage.substitutions
             or stage.group_open or stage.group_close or stage.stdin_heredoc is not None
             or stage.pipe_input_fds != ("0",) or stage.pipe_output_fds != ("1",)):
         return None

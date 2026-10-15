@@ -94,12 +94,13 @@ from shell_split import (_BLANK as _BLANK, _BRACED_HEADER as _BRACED_HEADER, _ES
 # first's. `pipe_output_fds` are the descriptors that feed the next stage when the stage's
 # redirections end, as `pipe_input_fds` are the ones the last stage feeds: `2>&1` adds 2, `>file`
 # takes 1 away (#2744). `stdin_reads` are the file words descriptor 0 finally reads, copied in
-# redirect order through a dup or a path of another descriptor (#2884).
+# redirect order through a dup or a path of another descriptor (#2884). `redirected` says whether
+# any redirect was written, including a descriptor copy or close that names no file.
 Stage = collections.namedtuple(
     "Stage", "argv writes reads heredoc substitutions stdout_writes "
              "group_open group_close stdin_from_pipe stdout_to_pipe pipe_input_fds "
-             "stdin_heredoc pipe_output_fds stdin_reads",
-    defaults=(0, 0, True, True, ("0",), None, ("1",), ()))
+             "stdin_heredoc pipe_output_fds stdin_reads redirected",
+    defaults=(0, 0, True, True, ("0",), None, ("1",), (), False))
 # One `;`/`&&`/`||`/newline-separated statement: its pipeline stages in order,
 # and the separator that FOLLOWS it -- which is where a shell says whether the
 # command's exit status is allowed to matter (`... || true`, `... &`).
@@ -269,6 +270,7 @@ def _stage(text, context):
     # its CURRENT sink, so `>file >/dev/stdout` still writes to file.
     pipe_outputs = {"1": True}
     pending = None
+    redirected = False
     opened: dict[str, tuple[str, ...]] = {}  # the files `N<>` opened on N but 0, on each N they stand on
     # Where in `reads` each `0<>` put its file, and the one fd 0 still holds (`credited_zero`).
     zero: list[int] = []
@@ -349,6 +351,7 @@ def _stage(text, context):
             continue
         if entry and entry[0] == "redirect":
             pending = entry[1]
+            redirected = True
             continue
         if pending is not None:
             fd, op = pending
@@ -463,7 +466,7 @@ def _stage(text, context):
                  tuple(fd for fd, connected in pipe_inputs.items() if connected),
                  stdin[:2] if stdin else None,
                  tuple(fd for fd, connected in pipe_outputs.items() if connected),
-                 input_files.get("0", ())))
+                 input_files.get("0", ()), redirected))
 
 
 def statements(script):
