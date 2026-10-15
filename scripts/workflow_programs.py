@@ -75,7 +75,7 @@ from workflow_options import (SET_OPTION_NAMES as SET_OPTION_NAMES, SET_OPTIONS 
                               _before_operand as _before_operand, _may_spell_option,
                               _past_options as _past_options,
                               _refused as _refused, _refused_name as _refused_name, _value)
-from workflow_option_words import beside, lifted, written
+from workflow_option_words import beside, lifted, uncovered_argv, written
 from workflow_options import _MAINS, _TILDE, _counted, _dash_c_strings, _stdin_walk
 from workflow_program_strings import (Opaque as Opaque, _EDGE as _EDGE, _NAME as _NAME,
                                       _SHELL_STRING as _SHELL_STRING, _added_strings as _added_strings,
@@ -357,15 +357,20 @@ def _options(argv, depth):
 
 
 def _walk(argv, depth):
-    """`_options` as this walk reads a shell's or `$` word's options (`_stdin_walk`, `_counted`)."""
+    """`_options` as this walk reads a shell's or `$` word's options (`_stdin_walk`, `_counted`) -- and,
+    where those leave stdin no program, as it reads the words `uncovered` (#3042: `sh $(true)-s <<'EOF'`
+    reads its body), the body then read for what it runs, no check in it counted."""
     name = os.path.basename(argv[0])
     shell, foreign = name in _SHELL_STRING, name in _FOREIGN
     value = not shell and not foreign and _value(argv[0]) and (
         not shell_reader.has_substitution(argv[0]) or shell_reader.yields_words(argv[0]))
     if foreign or not (shell or value):
         return _options(argv, depth)
-    kind, reader = _stdin_walk(argv, SHELL_PROGRAM if shell else VALUE_PROGRAM,
-                               argv if shell and not depth else None, shell, value)
+    answer = SHELL_PROGRAM if shell else VALUE_PROGRAM
+    kind, reader = _stdin_walk(argv, answer, argv if shell and not depth else None, shell, value)
+    alt = uncovered_argv(argv) if kind is None else None
+    if alt is not None:                     # `reader` stays None: no program, no reader
+        kind = _stdin_walk(alt, answer, None, shell, value)[0]
     return kind, _counted(argv, reader)
 
 
