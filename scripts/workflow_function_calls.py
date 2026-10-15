@@ -30,8 +30,8 @@ from shell_reader import command, conditional, negated
 # The `|| ...` branches that keep a check a check: they fail the step, which
 # is exactly what errexit would have done.
 _GROUP_OPEN = ("{", "(")
-_FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
-_FUNCTION_TOKEN = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*)\(\)$")
+_FUNCTION_NAME = re.compile(r"^[A-Za-z_@][A-Za-z0-9_.:+@-]*$")
+_FUNCTION_TOKEN = re.compile(r"^([A-Za-z_@][A-Za-z0-9_.:+@-]*)\(\)$")
 _CONTROL_OPEN = ("if", "while", "until", "for", "case")
 _CONTROL_CLOSE = ("fi", "done", "esac")
 
