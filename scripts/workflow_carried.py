@@ -13,7 +13,7 @@ from typing import cast
 
 import shell_reader
 from shell_reader import command, statements
-from workflow_called import (_UNSURE, _possible_called_readonly, _reached, _skipped_call,
+from workflow_called import (_UNSURE, _possible_called_readonly, _reached, _skipped_call, _status_shadows,
                              _written)
 from workflow_fetch import (FETCHERS, Fetch, compound_stream_consumer, parse_fetch,
                             stdout_fetch, stream_consumer)
@@ -190,7 +190,7 @@ def _plain_assignments(stage, shell=None):
 
 
 def _dynamic_command(stage):
-    written = shell_reader.command_as_written(stage.argv)
+    written = shell_reader.command_as_written(stage.argv if hasattr(stage, "argv") else stage)
     return bool(written and shell_reader.dynamic(
         written[0], shell_reader.has_substitution
     ))
@@ -514,6 +514,7 @@ def carried(stmts, executors, shell=None):
     blocked: set[str] = set()
     block_all = False
     starts, occupied = _function_ranges(stmts)
+    status_shadows = _status_shadows(stmts, starts)
     conditionals = conditional_contexts(stmts)
     body_attributes = {
         (start, close): _possible_called_readonly(
@@ -651,7 +652,7 @@ def carried(stmts, executors, shell=None):
                 set().union(*(body_attributes[body][0] for body in bodies)),
                 any(body_attributes[body][1] for body in bodies)
             ) if bodies and not child and stateful_call
-                and not _skipped_call(stmts, index, branches, starts) else (set(), False))
+                and not _skipped_call(stmts, index, branches, status_shadows) else (set(), False))
             if possible_unknown:
                 block_all = True
                 plain.clear()

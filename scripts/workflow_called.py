@@ -91,6 +91,29 @@ def _rest(argv):
     return rest
 
 
+def _command_views(stage):
+    """Each command view folded into ``stage``, with a function name defined there.
+
+    The reader keeps a one-line inner definition in its outer header stage and drops the
+    inner ``()``.  Its command begins after the next opening brace; enumerating every such
+    tail makes call, status, dynamic-word, and declaration proofs independent of brace depth.
+    """
+    words = list(stage.argv)
+    yield words, _function_syntax(words)[0]
+    braces = [place for place, word in enumerate(words) if str(word) == "{"]
+    for place in braces[1:]:
+        before = str(words[place - 1]) if place else ""
+        yield words[place + 1:], before if _SPELLED.fullmatch(before) else None
+
+
+def _status_shadows(stmts, starts):
+    """Literal status commands redefined anywhere in this step."""
+    return ({name for entries in starts.values() for name, _head, _close in entries
+             if name in (":", "false", "true")} |
+            {name for statement in stmts for stage in statement.stages
+             for _words, name in _command_views(stage) if name in (":", "false", "true")})
+
+
 def _calls(stmts, head, close):
     """The functions the body `stmts[head:close + 1]` calls: a single-stage statement whose
     head word is bare and no assignment, in a list the body does not send to the background
@@ -103,9 +126,7 @@ def _calls(stmts, head, close):
         if at == close or statement.separator not in ("&&", "||"):
             backgrounded = statement.separator == "&"      # this statement ends its list
         if len(statement.stages) == 1 and not backgrounded:
-            words = list(statement.stages[0].argv)
-            heads = [_head(words)] + [_head(words[place + 1:]) for place, word in enumerate(words)
-                                      if str(word) == "{"][1:]
+            heads = [_head(words) for words, _defined in _command_views(statement.stages[0])]
             found.update(word for word in heads if word and not _ASSIGNMENT.match(word))
     return found
 
@@ -240,14 +261,12 @@ def _reached(stmts, position, starts):
     return bodies
 
 
-def _skipped_call(stmts, index, branches, starts):
+def _skipped_call(stmts, index, branches, shadowed):
     """Whether a bounded literal status proves this call cannot run."""
-    shadowed = {name for entries in starts.values() for name, _head, _close in entries
-                if name in (":", "false", "true")}
-
     def status(stage):
-        raw = [str(word) for word in stage.argv]
-        argv = list(command(stage.argv))
+        views = list(_command_views(stage))
+        raw = [str(word) for words, _name in views for word in words]
+        argv = list(command(views[0][0]))
         if "!" in raw or len(argv) != 1 or str(argv[0]) in shadowed:
             return None
         return False if argv == ["false"] else True if argv == ["true"] else None
@@ -280,7 +299,8 @@ def _possible_called_readonly(stmts, bodies, branches, conditionals, shell, attr
         for at in range(start, close + 1):
             statement = stmts[at]
             for stage in statement.stages:
-                argv = list(command(stage.argv))
+                views = list(_command_views(stage))
+                argv = list(command(views[0][0]))
                 name = os.path.basename(str(argv[0])) if argv else ""
                 words = argv[1:] if name in ("local", "declare", "typeset") else ()
                 local_here = {str(word).split("=", 1)[0] for word in words
@@ -294,19 +314,17 @@ def _possible_called_readonly(stmts, bodies, branches, conditionals, shell, attr
                                or at and stmts[at - 1].separator in ("&&", "||"))
                 if certain:
                     local.update(local_here)
-                direct = attributes(stage, shell)
-                # A one-line nested definition is folded into its parent's
-                # header stage (`f() { g() { readonly X; ...`); read the
-                # command after each inner brace.  The first brace belongs to
-                # the body we are already walking, and a later word merely
-                # *spelling* `readonly` is not a declaration.
-                braces = [place for place, word in enumerate(stage.argv) if str(word) == "{"]
-                lexical = [attributes(stage.argv[place + 1:], shell) for place in braces[1:]]
+                proofs = [(attributes(words, shell), dynamic(words))
+                          for words, _name in views]
+                direct = proofs[0][0]
+                lexical = [row for row, _dynamic in proofs[1:]]
                 made_readonly = set().union(direct[0], *(row[0] for row in lexical))
-                embedded = name not in declaration_names and any(row[0] for row in lexical)
+                embedded_dynamic = any(is_dynamic for _row, is_dynamic in proofs[1:])
+                embedded = (name not in declaration_names and any(row[0] for row in lexical)
+                            or embedded_dynamic)
                 if not child or embedded:
                     found.update(made_readonly - local - local_here)
-                    unknown = unknown or dynamic(stage) or direct[2] or any(
+                    unknown = unknown or any(is_dynamic for _row, is_dynamic in proofs) or direct[2] or any(
                         row[2] for row in lexical)
                 if name == "return" and certain and at not in nested:
                     break

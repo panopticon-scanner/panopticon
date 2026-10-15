@@ -367,8 +367,14 @@ evidence exposed.
   body's return cannot stop the outer body's readonly scan. In a 285-cell round-5/round-6
   differential, all 270 banked seat cells are byte-identical, Q14 and Q20 supply the only ten
   CLEAN-to-REPORT changes, Q21 remains REPORT under all five shell postures, and no cell errors.
-  Final module sizes are 677 lines for `workflow_carried.py` and 668 for `workflow_called.py`;
-  the other two remain 441 and 638 lines.
+  Review round 7 takes option A: one command-view enumeration applies the call, status-shadow,
+  negation, dynamic-command and readonly proofs at every brace depth, including definitions folded
+  into an outer header stage. A nested redefinition of `true` now defeats the dead-branch proof,
+  and a dynamic command inside an inner function makes the reachable body unknown; nested calls in
+  pipelines, background lists and parenthesized bodies remain CLEAN. In a 1,515-cell replay of all
+  posted seat rows, only W609b and W616 change from CLEAN to REPORT under the five shell postures.
+  Final module sizes are 678 lines for `workflow_carried.py` and 686 for `workflow_called.py`; the
+  other two remain 441 and 638 lines.
 
 - **Workflow guard applies a prefix assignment after its command's words expand (#2433).**
   `x=$(curl ...) eval "$x"` and its `sh -c` twin reported as handing the new value straight to

