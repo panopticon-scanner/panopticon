@@ -130,6 +130,20 @@ class TestWhatReadAsItDid(unittest.TestCase):
             with self.subTest(text=text[:30]):
                 self.assertEqual(CLEAN, marks(text))
 
+    def test_the_named_limits_read_as_they_did(self):
+        # The review seat's rows, each defined before the fetch, CLEAN on main and here; the issue named
+        # moves its row. A nested call -- `f() { g; }`, the file run in `g`'s body -- is #2804's (the use
+        # reader weighs the called body's own stages). A function called through a variable word (`F=f`
+        # ⏎ `$F`) is #3090's, read at its definition. The fetched file handed to the body indirectly --
+        # as an argument (`f tool`, the body `sh "$1"`) or piped by `cat tool | f` -- is #3091's. Truth:
+        # runs under bash 3.2.57, /bin/sh and zsh 5.9, with and without `-e`.
+        for issue, text in (("#2804", "g() { sh tool; }\nf() { g; }\ncurl -fsSLo tool https://example.test/tool\nf\n"),
+                            ("#3090", "f() { sh tool; }\nF=f\ncurl -fsSLo tool https://example.test/tool\n$F\n"),
+                            ("#3091", "f() { sh \"$1\"; }\ncurl -fsSLo tool https://example.test/tool\nf tool\n"),
+                            ("#3091", "f() { sh; }\ncurl -fsSLo tool https://example.test/tool\ncat tool | f\n")):
+            with self.subTest(issue=issue, text=text[:24]):
+                self.assertEqual(CLEAN, marks(text))
+
 
 class TestTheReader(unittest.TestCase):
     """`CalledFetches.consumers` on its own: which stage it puts where the call stands."""
