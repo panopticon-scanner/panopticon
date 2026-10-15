@@ -200,6 +200,22 @@ class TestTheCaseHeaderProbeIsNotQuadratic(LinearGrowth, unittest.TestCase):
         self.assertGreater(len(make(26000)), 50 * 1024)
         self.assert_linear_growth(6500, make, check)
 
+    @pytest.mark.serial
+    def test_a_statement_of_many_function_headers_parses_in_linear_time(self):
+        # #2977: the function-header test at every `(` joined and split the whole stage buffer behind
+        # a `()` match, so one statement of n headers cost n joins -- 8,000 `f() ` took 6.1 s on the
+        # forge, about x3.4 a doubling. The words in front are carried word to word now (#2975's
+        # round), and the test is a lookup. The shape is main's: the first `f()` a header, each later
+        # `f` a word before a subshell (bash runs none of it; a cost row, not a reading).
+        def make(headers):
+            return "f() " * headers + "{ :; }\n"
+
+        def check(headers, parsed):
+            self.assertEqual(2, len(parsed), parsed[:1])
+            self.assertEqual(headers + 2, len(parsed[0].stages[0].argv))
+
+        self.assert_linear_growth(1500, make, check)
+
     def test_a_second_case_header_on_the_same_line_is_still_read(self):
         # Caught by differentially parsing a corpus against the unbounded
         # probe: counting words from the SOURCE text read the `;` that ended

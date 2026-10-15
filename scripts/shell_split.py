@@ -24,7 +24,7 @@ _REDIRECT = re.compile(r"<<<|<>|&>>|&>|>>|>\||>&|<&|>|<")
 # The parentheses of a function header, as bash and dash read them: `()` or `( )`, and a
 # group's `{` with a header after it on the same line (#2664).
 _HEADER = re.compile(r"\([ \t]*\)")
-_BRACED_HEADER = re.compile(r"\{[ \t]+(?:function[ \t]+)?[A-Za-z_][A-Za-z0-9_-]*[ \t]*\([ \t]*\)")
+_BRACED_HEADER = re.compile(r"\{[ \t]+(?:function[ \t]+)?[A-Za-z_@][A-Za-z0-9_.:+@-]*[ \t]*\([ \t]*\)")
 _NESTED_CASE = re.compile(r"\s*case(?:\s|$)")
 # Put in place of the backslash of a `\$` or `` \` `` inside "..." (`_split`),
 # which bash drops and shlex keeps (#2342): a private-use character, as `MARK`.
@@ -128,6 +128,14 @@ def _split(text, context):
     # of its own: what reads a `case` asks for it as its statement's first word (#2974). `time`
     # goes with neither: a statement of its own, it would be a wrapper with no command.
     header_words, header_live, header_at = 0, True, 0
+    # The function-header test at a `(` asks three things of the words in front: the word the `(`
+    # closes (or the last word closed), whether every word before it is a keyword, and whether the
+    # one before it is `function`. They are carried word to word here (#2977: joining the whole
+    # buffer at each header cost n headers n joins); a group's `(` starts the front over, so a header
+    # behind it is one, and a closed group ends it (#2975 B). A header on the line of another header's
+    # `{` is still no header (#2975 A): read as one, a gate in its body would be credited as the
+    # outer body's own, the nested definition being no entry of the function table.
+    front_plain, front_before, last_closed, prev_closed, closed_words = True, True, "", "", 0
     # `[[ ... ]]` is ONE compound command: the `&&`, `||`, `(`, `)`, `<` and `>` in it are the
     # conditional's operators, not list separators, subshells or redirections (#2441) -- split
     # at them, `CHECK && [[ -f a || -f b ]] || exit 1` lost the `|| exit 1` that ends the real
@@ -152,9 +160,11 @@ def _split(text, context):
 
     def end_stage():
         nonlocal header_words, header_live, header_at, word_start, redirect_target, at_head, in_front, leads
+        nonlocal front_plain, front_before, last_closed, prev_closed, closed_words
         stages.append("".join(buf))
         del buf[:]
         header_words, header_live, header_at, word_start = 0, True, 0, 0
+        front_plain, front_before, last_closed, prev_closed, closed_words = True, True, "", "", 0
         redirect_target, at_head, in_front, leads = False, True, True, True
 
     def end_statement(separator):
@@ -240,6 +250,8 @@ def _split(text, context):
             # The word that closed, quotes and all: `"[["` is the ordinary
             # word, never the conditional; empty just past a `case` arm token.
             closed = "".join(buf[word_start:])
+            front_before, front_plain = front_plain, front_plain and (not closed or closed in KEYWORDS)
+            prev_closed, last_closed, closed_words = last_closed, closed, closed_words + 1
             if closed == "[[" and at_head or closed == "]]" and cond:
                 cond = int(closed == "[[")
             at_head = at_head and bool(not closed or closed in KEYWORDS
@@ -279,24 +291,26 @@ def _split(text, context):
             # one (`f(){`) is the body's own word, so the body's first command on the
             # header's line is read as a command and not as the header's argument (#2664).
             header = _HEADER.match(text, i)
-            words = "".join(buf[buf[:1] == [arm]:]).split() if header else []     # an arm's token is no word in front
-            if header and words and _NAME.fullmatch(words[-1]) and all(
-                    w in KEYWORDS for w in words[:-1]):
-                if words[-2:-1] != ["function"]:
+            name = "".join(buf[word_start:]).strip() if header else ""   # the word the `(` closes, if one
+            if header and (name and front_plain and _NAME.fullmatch(name)
+                           or not name and front_before and _NAME.fullmatch(last_closed)):
+                if (last_closed if name else prev_closed) != "function":
                     buf.append("()")        # after `function NAME` bash takes them as nothing
                 i = header.end()
                 if i < n and not text[i].isspace():
                     text, n = text[:i] + " " + text[i:], n + 1
                 continue
             buf.append(" " + groups[0] + " ")
-            word_start, redirect_target = len(buf), False
+            word_start, redirect_target, front_plain = len(buf), False, True    # a group's own front
             i += 1
             continue
         if ch == ")":
             cond = max(cond - 1, 0)         # one it did not open ends it
             # `esac )` ends the case and its enclosing subshell. A pattern
             # spelled `esac)` has no separating whitespace and remains an arm.
-            case_end = re.fullmatch(r"\s*esac\s+", "".join(buf))
+            # `esac` alone in the buffer, closed: the same test as a full match of `\s*esac\s+`, without
+            # joining the buffer at every `)` (#2977: n subshells, n joins).
+            case_end = closed_words == 1 and last_closed == "esac" and len(buf) == word_start and buf[:1] != [arm]
             if cases and cases[-1] == "pattern" and not case_end:
                 # The arm's token is a word of its own, whatever stands behind its `)`: glued to a
                 # command (`x)curl … | sh`) it took the command's name with it, and where the arm
@@ -304,6 +318,7 @@ def _split(text, context):
                 arm = context.new("arm") + "".join(buf).lstrip() + ")"
                 buf[:] = [arm, " "]
                 cases[-1], word_start = "body", 2
+                front_plain, front_before, last_closed, prev_closed, closed_words = True, True, "", "", 0
                 # Preserve the parent's arm region before its nested header.
                 # Otherwise the arm marker hides `case` from the three-word
                 # probe, and the inner pattern becomes the command (#2617).
@@ -313,7 +328,7 @@ def _split(text, context):
                 buf.append(ch)              # the `(` the test opened, closed
             else:
                 buf.append(" " + groups[1] + " ")
-                word_start, redirect_target = len(buf), False
+                word_start, redirect_target, front_plain = len(buf), False, False   # a closed group in front
             i += 1
             continue
         redirect = _REDIRECT.match(text, i)
