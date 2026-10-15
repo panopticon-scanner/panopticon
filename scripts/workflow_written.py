@@ -69,15 +69,21 @@ def _literal_heredoc(stage):
     return here[0] if here is not None and here[1] and not any(c in here[0] for c in "$`") else None
 
 
-def _rendered(word):
-    """`word` as a shell spells it: a lifted substitution restored around its own script (`$(…)`,
-    `<(…)`), so the printers read the word again as they read it where it stood; a `$` word double-
-    quoted, live (the reader keeps no quote: fail-closed); any other word quoted as written."""
+def _restored(word):
+    """`word`'s text with each lifted substitution restored around its own script (`$(…)`, `<(…)`)."""
     text = str(word)
     for key, (kind, value) in shell_reader._markers(word).items():
         if kind == "subst":
             opener = getattr(value, "direction", None) or "$"
             text = text.replace(key, "%s(%s)" % (opener if opener in "<>" else "$", value))
+    return text
+
+
+def _rendered(word):
+    """`word` as a shell spells it, its substitutions restored (`_restored`), so the printers read the word
+    again as they read it where it stood; a `$` word double-quoted, live (the reader keeps no quote:
+    fail-closed); any other word quoted as written."""
+    text = _restored(word)
     if "$" in text or "(" in text and shell_reader.is_marker(word):
         return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
     return shlex.quote(text)
@@ -93,19 +99,27 @@ def _heredoc(text):
 
 
 def _script(writers):
-    """A script `substituted` spells as ONE printer's text: the writers' texts joined, or the first
-    unspelled writer's command as written (reported, never read as text)."""
-    texts = []
+    """A script `substituted` spells as ONE printer's text: the writers' texts joined in order under one
+    `printf`. One writer the printers cannot spell, alone, is handed on as its own command (a `cat`'s body as
+    `_heredoc`), so the printers read it as they read it where it stood. Among others, or past `_DEPTH`
+    writers, every text is kept -- an unspelled writer's as its words read, substitutions restored -- in an
+    expanding heredoc behind a live `$` line, which the guard reports as it reports any expanding body a
+    shell runs: a spelled payload beside an unspelled line is never dropped (fail-closed)."""
+    texts, unspelled = [], len(writers) > _DEPTH
     for argv, stage in writers[:_DEPTH]:
         readings = [r for r in spellings(argv, stage, ANY) if r is not None]
         text = readings[0] if readings else _literal_heredoc(stage)
         if text is None:
-            if os.path.basename(argv[0]) == "cat":
-                return _heredoc(stage.stdin_heredoc[0])          # read as `. <(cat <<EOF …)` is
-            return " ".join(_rendered(w) for w in argv)
+            if len(writers) == 1:
+                if os.path.basename(argv[0]) == "cat":
+                    return _heredoc(stage.stdin_heredoc[0])  # read as `. <(cat <<EOF …)` is
+                return " ".join(_rendered(w) for w in argv)
+            unspelled = True
+            text = (stage.stdin_heredoc[0] if os.path.basename(argv[0]) == "cat"
+                    else " ".join(_restored(w) for w in argv[1:]))
         texts.append(text if text.endswith("\n") else text + "\n")
-    if len(writers) > _DEPTH:
-        return 'printf "%s" "$UNSPELLED_PAST_DEPTH"'
+    if unspelled:
+        return _heredoc(': "$UNSPELLED_WRITER"\n' + "".join(texts))
     return "printf '%s' " + "'" + "".join(texts).replace("'", "'\\''") + "'"
 
 

