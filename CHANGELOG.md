@@ -326,6 +326,86 @@ evidence exposed.
   byte. The guard's command line, run as a script over 4,635 jobs, prints the same 4,256 findings
   under both. Sizes: 700 -> 586, and 138 for the new module.
 
+- **Workflow guard retires a carried stdout download after a certain same-shell replacement
+  (#2437).** A plain `x=1` or `unset x`, an assignment in `{ ...; }`, and an assignment in a
+  function the step then calls all left `x=$(curl ...)` held at a later `eval "$x"`; a literal
+  argument `{`, balanced `{}` arguments, and a line-only closing `)` exposed the same stale
+  answer through either the carried-download reason or #2483's generic dynamic-program fallback.
+  The carried-value walk now records the exact `(statement, variable)` where an expansion-free
+  replacement proves that fallback cannot be the download, and the existing quiet reason carries
+  the variable metadata needed to remove only that reason. A brace compound is read as the step's
+  shell unless its enclosing list can skip it, a boundary redirection can stop it, or the shell
+  forks it. A directly called function contributes
+  only caller-visible, unconditional assignments from one top-level definition that still exists;
+  a local, return path, branch, nested compound, child definition, `unset -f`, `eval`/source, or an
+  intervening known function keeps the old value fail-closed. Failed redirections, unseen writes
+  (`read`, arithmetic and parameter assignments), tilde expansion, aliases and traps retain the
+  generic reason. The child and skipped controls still
+  report, byte for byte: a 675-cell extension covering those boundaries under three fetch forms,
+  five uses, and five `shell:` settings is identical to `main`.
+  Across the 2,175-cell target/control cross-product against `main` 1cfb16de, 1,275 reports are
+  identical, 780 target reports become CLEAN, no CLEAN row becomes a report, and 120 reports keep
+  reporting with a narrower reason. Those 120 are the eight brace/function/literal target
+  spellings printed through `printf ... | sh`: the stale carried reason leaves while the existing
+  conservative printer fallback remains, a retained price. Runtime truth on Bash 3.2.57, GNU Bash
+  5.2.21 in default and POSIX modes, and dash suppresses the payload for all seven target families
+  and runs it for all seven must-trip controls. The state layer moved from the 700-line
+  `workflow_forms.py` into `workflow_carried.py` (441 and 655 lines) so the new proof stays below
+  the flat-module ceiling; the compatibility imports remain in `workflow_forms`. Review round 2
+  found that the performance gate used a file destination where the holder uses stream capability:
+  a wget option supplied through `$WOPTS` may write stdout while its parallel file reading names the
+  URL basename. The gate now calls the holder's own assignment predicate, restoring the carried
+  verdict for that form while file-only fetches retain the fast path. Replacement state is also
+  shell-aware at a POSIX special-builtin prefix (kept under the two `sh` postures, discarded under
+  the three Bash postures), and stays fail-closed after a Bash nameref target, a possibly-readonly
+  name, `time` around an assignment, `command read`, or a dynamic command/function call. On the
+  review seat's 189 rows under five shell settings (945 cells), 675 remain REPORT and 30 remain
+  CLEAN across `main`, round 1 and round 2; 139 intended REPORT -> CLEAN cells remain, and round 2
+  restores all 101 unsafe round-1 CLEAN cells to `main`'s REPORT, with no errors. The 150-line,
+  150-call file-fetch timing guard still passes; the measured stdout-fetch state pass costs about
+  14% over `main`, the bounded cost of tracking values that can actually carry a download. Review
+  round 3 carries a certain called body's global `readonly` or `declare -gr` attribute back to its
+  caller, so an assignment that can fail there cannot retire the held download; local and child
+  attributes still do not escape the body. Both review rows and their late-call control report
+  under all five shell postures. Review round 4 applies that rule fail-closed when either the call
+  or the caller-visible readonly declaration is conditional, nested, redirected, or found through
+  multiple definitions. All seven review shapes now REPORT under all five shell postures; a prior
+  pipeline call also retains #3083's finding and the later eval refusal. Dead and child calls,
+  local attributes, and a replacement made in the body before readonly remain CLEAN. A
+  caller-side assignment after that last control conservatively over-reports because the readonly
+  makes the assignment uncertain. After folding #3086, the expanded 1,000-cell review matrix has
+  811 cells that stay REPORT, 139 intended cells that stay CLEAN, 15 controls that stay CLEAN, and
+  35 round-4 target cells that move from CLEAN to REPORT. The 960 previously banked cells and all
+  120 workflow-guard cells from #3083 are byte-identical. Round-4 module sizes are 699 lines for
+  `workflow_carried.py`, 607 for `workflow_called.py`, 441 for `workflow_forms.py`, and 638 for
+  `workflow_guard.py`. Review round 5 makes the skip exception a proof: negated conditions and a
+  step-defined `true` or `false` cannot prove a call dead. A dynamic command word now makes later
+  plain replacements uncertain for the rest of the step, and the once-per-body attribute scan
+  reads readonly declarations folded into one-line nested definitions. The complete 54-row review
+  seat has 270 cells under the five shell postures: 195 expected reports and 75 expected clean
+  readings, with no mismatches. Exactly the 11 rejected rows, 55 cells, move from round 4's CLEAN
+  to REPORT; all other seat cells keep round 4's answer. An expanded 1,150-cell differential keeps
+  all prior 1,000 cells byte-identical, moves 75 target cells to REPORT (the 11 rows plus nested
+  declaration spellings and a redefined-`true` boundary), and leaves 70 clean control cells plus
+  the five accepted `while false` reports unchanged. The cached scan keeps the existing serial
+  cost gate green; alternating round-4/round-5 measurements were +4.6% for the file-only shape and
+  -5.7% for the stdout-holder shape. Round-5 module sizes were 677 lines for
+  `workflow_carried.py` and 663 for `workflow_called.py`; the other two remained 441 and 638
+  lines. Review round 6 follows a known function command folded behind an inner definition's
+  opening brace as a possible transitive call, rather than losing that call with the nested
+  function header. A certain `return` ends only the body at its own function depth, so a nested
+  body's return cannot stop the outer body's readonly scan. In a 285-cell round-5/round-6
+  differential, all 270 banked seat cells are byte-identical, Q14 and Q20 supply the only ten
+  CLEAN-to-REPORT changes, Q21 remains REPORT under all five shell postures, and no cell errors.
+  Review round 7 takes option A: one command-view enumeration applies the call, status-shadow,
+  negation, dynamic-command and readonly proofs at every brace depth, including definitions folded
+  into an outer header stage. A nested redefinition of `true` now defeats the dead-branch proof,
+  and a dynamic command inside an inner function makes the reachable body unknown; nested calls in
+  pipelines, background lists and parenthesized bodies remain CLEAN. In a 1,515-cell replay of all
+  posted seat rows, only W609b and W616 change from CLEAN to REPORT under the five shell postures.
+  Final module sizes are 678 lines for `workflow_carried.py` and 686 for `workflow_called.py`; the
+  other two remain 441 and 638 lines.
+
 - **Workflow guard applies a prefix assignment after its command's words expand (#2433).**
   `x=$(curl ...) eval "$x"` and its `sh -c` twin reported as handing the new value straight to
   the executor, although the live `$x` expands before the assignment applies; both now read CLEAN,

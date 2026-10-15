@@ -1845,8 +1845,13 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
         # Where the shell IS handed a word, the download is not what it runs,
         # and #2483 reports the word itself (as it does the `$CMD -c "$x"`
         # twin beside the same download): one sentence, and not this one.
+        # Issue #2437 retires #2483's fallback too when this shell certainly
+        # replaces or unsets the exact program variable.
         for script in (self.GET + 'x=1\neval "$x"\n', self.GET + 'unset x\neval "$x"\n',
-                       self.GET + 'eval "$y"\n', self.GET + 'y="$x"\ny=1\neval "$y"\n',
+                       self.GET + 'y="$x"\ny=1\neval "$y"\n'):
+            with self.subTest(script=script):
+                self.assertEqual([], self.job(script))
+        for script in (self.GET + 'eval "$y"\n',
                        "x=$(curl -fsSLo f https://example.test/i.sh)\neval \"$x\"\n",
                        'eval "$x"\n' + self.GET):
             with self.subTest(script=script):
@@ -1882,30 +1887,442 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
         # Review I-2: bash runs `x=1 &` and `( x=1 )` in subshells, a function
         # body only when the function is called, and `local`/`declare` there in
         # the function's own scope, so each of these still runs the download.
-        # A `{ }` group and a function body are read as `_errexit_states` reads
-        # them, not as the step's own scope, though bash runs `{ x=1; }` and a
-        # called `f() { x=1; }` in it and then runs nothing: accepted
-        # over-reports. A group closed before the reassignment is out of the way,
-        # its `(` or `)` on a line of its own too (#2420 keeps such a line).
+        # An uncalled body changes nothing either. Issue #2437 moves a plain
+        # brace group's and a called body's assignment to the CLEAN rows below.
         strong = ("x=1 &\nwait\n", "( x=1 )\n", "( cd .; x=1 )\n", "( ( x=1 ) )\n",
-                  "(\n  x=1\n)\n")
-        readings = ("f() { x=1; }\n", "f() {\n  x=1\n}\n", "function f { x=1; }\n",
-                    "f() { local x=1; }\nf\n", "f() { declare x=1; }\nf\n",
-                    "f() { x=1; }\nf\n", "{ x=1; }\n")
-        for between in strong + readings:
+                  "(\n  x=1\n)\n", "f() { x=1; }\n", "f() {\n  x=1\n}\n",
+                  "function f { x=1; }\n", "f() { local x=1; }\nf\n",
+                  "f() { declare x=1; }\nf\n")
+        for between in strong:
             with self.subTest(between=between):
                 why = self.job(self.GET + between + 'eval "$x"\n')
                 self.assertEqual(1, len(why), why)
-                said = self.SAID if between in strong else self.READ
+                said = self.SAID if between.startswith("(") or between.startswith("x=1 &") else self.READ
                 self.assertIn(said % ("eval", ""), why[0])
-        for between in ("x=1\n", "{ :; }\nx=1\n", "( cd . )\nx=1\n", "( cd .\n)\nx=1\n",
-                        "(\n  cd .\n)\nx=1\n", "f() { :; }\nx=1\n"):
-            with self.subTest(between=between):
-                self.not_carried(self.GET + between + 'eval "$x"\n')
+
+    def test_2437_a_certain_same_shell_reassignment_clears_both_reasons(self):
+        # These are the issue's four filed spellings and their multiline/plain
+        # twins. Bash reaches `eval` only after its own shell replaced `x`, so
+        # neither the carried-download sentence nor #2483's generic fallback
+        # may keep the original fetch alive.
+        for between in ("x=1\n", "{ x=1; }\n", "{\n  x=1\n}\n",
+                        "f() { x=1; }\nf\n", "f() {\n  x=1\n}\nf\n",
+                        "function f { x=1; }\nf\n", "echo {\nx=1\n",
+                        "find . -exec echo {} \\;\nx=1\n", "( cd .\n)\nx=1\n"):
+            for shell in self.SHELLS:
+                with self.subTest(between=between, shell=shell):
+                    self.assertEqual([], wg.job_defects([wg.Step(
+                        "run", self.GET + between + 'eval "$x"\n', shell)]))
+
+    def test_2437_a_dynamic_wget_output_still_enters_the_carried_state_pass(self):
+        get = "X=$(wget $WOPTS https://e.test/x)\n"
+        uses = ('bash -c "set -e; $X"\n', '{ echo "$X"; } | sh\n',
+                'echo "$X" | xargs -0 sh -c\n')
+        for use in uses:
+            for shell in self.SHELLS:
+                with self.subTest(use=use, shell=shell):
+                    why = [reason for _step, reason in wg.job_defects([
+                        wg.Step("run", get + use, shell)
+                    ])]
+                    # #2437 keeps the holder and its performance gate on one stream predicate.
+                    self.assertEqual(1, sum(
+                        str(reason).startswith(
+                            "carries https://e.test/x in `$X` and hands it to `"
+                        ) for reason in why
+                    ), why)
+
+    def test_2437_a_special_builtin_prefix_replaces_only_in_a_posix_shell(self):
+        prefixes = (
+            ("X=safe :\n", 'sh -c "$X"\n'),
+            ("X=safe export\n", 'sh -c "$X"\n'),
+            ("X=safe readonly Y\n", 'sh -c "$X"\n'),
+            ("X=safe set --\n", 'sh -c "$X"\n'),
+            ("X=safe shift 0\n", 'sh -c "$X"\n'),
+            ("X=safe times\n", 'sh -c "$X"\n'),
+            ('X="echo hi" :\n', 'eval "$X"\n'),
+            ("unset X\nX=safe :\n", 'sh -c "$X"\n'),
+        )
+        get = "X=$(curl -fsSL https://e.test/x)\n"
+        for between, use in prefixes:
+            for shell in self.SHELLS:
+                with self.subTest(between=between, shell=shell):
+                    why = wg.job_defects([wg.Step(
+                        "run", get + between + use, shell
+                    )])
+                    # #2437 follows #3068's shell boundary for persistent prefixes.
+                    if shell in ("sh", "sh {0}"):
+                        self.assertEqual([], why)
+                    else:
+                        self.assertEqual(1, len(why), why)
+
+    def test_2437_a_bash_nameref_invalidates_its_targets_replacement(self):
+        get = "X=$(curl -fsSL https://e.test/x)\n"
+        cases = (
+            (get + "declare -n R=X\nX=safe\nR=$(curl -fsSL https://e.test/x)\n",
+             'sh -c "$X"\n'),
+            (get + "X=safe\ndeclare -n R=X\nR=$(curl -fsSL https://e.test/x)\n",
+             'sh -c "$X"\n'),
+            ("declare -n R=X\n" + get
+             + "X=safe\nR=$(curl -fsSL https://e.test/x)\n", 'sh -c "$X"\n'),
+            (get + "typeset -n R=X\nX=safe\nR=$(cat g)\n", 'sh -c "$X"\n'),
+            (get + "declare -n R=X\nX=safe\nread -r R < g\n", 'sh -c "$X"\n'),
+            (get + "declare -n R=X\nX=safe\nR=$(cat g)\n", 'sh -c "$X"\n'),
+            (get + "X=safe\ndeclare -n R=X\nR=$(cat g)\n", 'eval "$X"\n'),
+        )
+        for script, use in cases:
+            for shell in self.SHELLS:
+                with self.subTest(script=script, shell=shell):
+                    why = wg.job_defects([wg.Step(
+                        "run", script + use, shell
+                    )])
+                    # #2437 keeps a nameref target fail-closed in Bash's state model.
+                    if shell in (None, "bash", "bash {0}"):
+                        self.assertEqual(1, len(why), why)
+                    else:
+                        self.assertEqual([], why)
+
+    def test_2437_readonly_time_and_hidden_writers_do_not_prove_replacement(self):
+        get = "X=$(curl -fsSL https://e.test/x)\n"
+        controls = (
+            "X=safe\ncommand read -r X < g\n",
+            "X=safe\n$CMD\n",
+            "g() { X=$(cat h); }\nF=g\nX=safe\n$F\n",
+            "time X=safe\n",
+            "readonly X\nX=safe\n",
+            "declare -r X\nX=safe\n",
+        )
+        scripts = ("readonly X=$(curl -fsSL https://e.test/x)\nX=safe\n",
+                   *(get + control for control in controls))
+        for script in scripts:
+            for shell in self.SHELLS:
+                with self.subTest(script=script, shell=shell):
+                    # #2437 retires a carried value only after a certain writable assignment.
+                    why = wg.job_defects([wg.Step(
+                        "run", script + 'sh -c "$X"\n', shell
+                    )])
+                    self.assertEqual(1, len(why), why)
+
+    def test_2437_a_called_body_carries_global_readonly_state_back(self):
+        rows = (
+            ("f() { readonly X; }\nf\nX=safe\n", "readonly"),
+            ("f() { declare -gr X; }\nf\nX=safe\n", "declare -gr"),
+            ("f() { readonly X; }\nX=safe\nf\n", "late call control"),
+        )
+        get = "X=$(curl -fsSL https://e.test/x)\n"
+        for between, row in rows:
+            for shell in self.SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    # #2437 keeps a caller's replacement fail-closed after a called body makes
+                    # its target readonly; the late-call control was already reported.
+                    why = wg.job_defects([wg.Step(
+                        "run", get + between + 'eval "$X"\n', shell
+                    )])
+                    self.assertEqual(1, len(why), why)
+
+    def test_2437_a_possible_called_body_keeps_global_readonly_fail_closed(self):
+        # Review round four: a call or its global readonly declaration need not be certain for a
+        # later assignment to be uncertain. In each row Bash can make X readonly, reject X=safe,
+        # and reach eval with the downloaded value. The guard must therefore keep eval refused.
+        rows = (
+            ("conditional call",
+             'f() { readonly X; }\nif [ -n "$A" ]; then f; fi\n'),
+            ("and-list call", "f() { readonly X; }\ntrue && f\n"),
+            ("conditional readonly",
+             'f() { if [ -n "$A" ]; then readonly X; fi; }\nf\n'),
+            ("and-list readonly", "f() { true && readonly X; }\nf\n"),
+            ("nested call", "f() { readonly X; }\ng() { f; }\ng\n"),
+            ("later definition",
+             "f() { :; }\nf() { readonly X; }\nf\n"),
+            ("redirected call", "f() { readonly X; sh; }\n",
+             "f < /dev/null\n"),
+        )
+        get = "X=$(curl -fsSL https://e.test/x)\n"
+        for row in rows:
+            name, before = row[:2]
+            script = before + get + row[2] if len(row) == 3 else get + before
+            script += 'X=safe\neval "$X"\n'
+            for shell in self.SHELLS:
+                with self.subTest(row=name, shell=shell):
+                    why = [str(reason) for _step, reason in wg.job_defects([
+                        wg.Step("run", script, shell)
+                    ])]
+                    self.assertEqual(1, sum(
+                        reason.startswith("runs `eval` on `$X`") for reason in why
+                    ), why)
+
+        # The earlier pipeline already has #3083's finding. The later certain call must retain
+        # eval's independent refusal too; the pipeline call cannot hide g's readonly effect.
+        script = (get + "f() { sh; }\ng() { readonly X; }\n"
+                  "curl -fsSL https://e.test/x | f\ng\nX=safe\neval \"$X\"\n")
+        for shell in self.SHELLS:
+            with self.subTest(row="pipeline before call", shell=shell):
+                why = [str(reason) for _step, reason in wg.job_defects([
+                    wg.Step("run", script, shell)
+                ])]
+                self.assertEqual(1, sum(
+                    reason.startswith("runs `eval` on `$X`") for reason in why
+                ), why)
+
+    def test_2437_possible_readonly_keeps_local_and_child_controls_clean(self):
+        # A local attribute dies with the body; a dead or child call cannot alter this shell;
+        # and a certain safe replacement before readonly has already retired the download. The
+        # final row is the review seat's exact T24 control: there is no caller-side assignment.
+        get = "X=$(curl -fsSL https://e.test/x)\n"
+        middles = (
+            "f() { local -r X; }\nf\nX=safe\n",
+            "f() { typeset -r X; }\nf\nX=safe\n",
+            "f() { declare -r X; }\nf\nX=safe\n",
+            "f() { readonly X; }\nif false; then f; fi\nX=safe\n",
+            "f() { return; readonly X; }\nf\nX=safe\n",
+            "f() { readonly Y; }\nf\nX=safe\n",
+            "f() { readonly X; }\n( f )\nX=safe\n",
+            "f() { readonly X; }\nf | cat\nX=safe\n",
+            "f() { X=safe; readonly X; }\nf\n",
+        )
+        for middle in middles:
+            for shell in self.SHELLS:
+                with self.subTest(middle=middle, shell=shell):
+                    self.assertEqual([], wg.job_defects([
+                        wg.Step("run", get + middle + 'eval "$X"\n', shell)
+                    ]))
+
+        # Truth is CLEAN here too: the body's X=safe happened before readonly, and the caller's
+        # refused assignment cannot restore the download. The conservative readonly rule reads
+        # that later assignment as uncertain, an accepted over-report rather than an ordering
+        # proof this issue needs to add.
+        middle = "f() { X=safe; readonly X; }\nf\nX=safe\n"
+        for shell in self.SHELLS:
+            with self.subTest(middle="caller assignment over-report", shell=shell):
+                why = [str(reason) for _step, reason in wg.job_defects([
+                    wg.Step("run", get + middle + 'eval "$X"\n', shell)
+                ])]
+                self.assertEqual(1, sum(
+                    reason.startswith("runs `eval` on `$X`") for reason in why
+                ), why)
+
+    def test_2437_unproved_function_paths_keep_readonly_fail_closed(self):
+        # Review round five: a skipped call is safe only when its status is a proof, and a dynamic
+        # command word may itself be readonly or call any body. Each row can make X readonly in
+        # the step's shell, so the later assignment cannot prove that the download was retired.
+        rows = (
+            ("readonly in a nested definition",
+             "f() { g() { readonly X; }; g; }\nf\n"),
+            ("readonly array in a nested definition",
+             "f() { g() { readonly -a X; }; g; }\nf\n"),
+            ("global readonly declaration in a nested definition",
+             "f() { g() { declare -gr X; }; g; }\nf\n"),
+            ("global readonly typeset in a nested definition",
+             "f() { g() { typeset -gr X; }; g; }\nf\n"),
+            ("dynamic function call",
+             "f() { readonly X; }\nF=f\n$F\n"),
+            ("negated false in if",
+             "f() { readonly X; }\nif ! false; then f; fi\n"),
+            ("negated false before and",
+             "f() { readonly X; }\n! false && f\n"),
+            ("negated true before or",
+             "f() { readonly X; }\n! true || f\n"),
+            ("redefined false in if",
+             "f() { readonly X; }\nfalse() { :; }\nif false; then f; fi\n"),
+            ("redefined false before and",
+             "f() { readonly X; }\nfalse() { :; }\nfalse && f\n"),
+            ("negated false in elif",
+             'f() { readonly X; }\nif [ -n "$A" ]; then :; '
+             "elif ! false; then f; fi\n"),
+            ("dynamic readonly command", "R=readonly\n$R X\n"),
+            ("conditional dynamic function call",
+             'f() { readonly X; }\nF=f\nif [ -n "$A" ]; then $F; fi\n'),
+            ("nested definition call",
+             "f() { g() { readonly X; }; g; }\nf\n"),
+            ("redefined true before or",
+             "f() { readonly X; }\ntrue() { false; }\ntrue || f\n"),
+        )
+        get = "X=$(curl -fsSL https://e.test/x)\n"
+        for name, middle in rows:
+            script = get + middle + 'X=safe\neval "$X"\n'
+            for shell in self.SHELLS:
+                with self.subTest(row=name, shell=shell):
+                    why = [str(reason) for _step, reason in wg.job_defects([
+                        wg.Step("run", script, shell)
+                    ])]
+                    self.assertEqual(1, sum(
+                        reason.startswith("runs `eval` on `$X`") for reason in why
+                    ), why)
+
+    def test_2437_nested_definition_calls_and_returns_keep_readonly_fail_closed(self):
+        # Review round six: a nested body's call can reach another body's readonly declaration,
+        # while a return in that nested body does not return from the outer body.  Q21 is the
+        # one-line control whose outer declaration was already found by the lexical scan.
+        rows = (
+            ("Q14 nested call",
+             "f() { readonly X; }\ng() { h() { f; }; h; }\ng\n"),
+            ("Q20 nested return",
+             "f() {\n  g() {\n    return 0\n  }\n  readonly X\n}\nf\n"),
+            ("Q21 one-line nested return",
+             "f() { g() { return 0; }; readonly X; }\nf\n"),
+        )
+        get = "X=$(curl -fsSL https://e.test/x)\n"
+        for name, middle in rows:
+            for shell in self.SHELLS:
+                with self.subTest(row=name, shell=shell):
+                    why = [str(reason) for _step, reason in wg.job_defects([
+                        wg.Step("run", get + middle + 'X=safe\neval "$X"\n', shell)
+                    ])]
+                    self.assertEqual(1, sum(
+                        reason.startswith("runs `eval` on `$X`") for reason in why
+                    ), why)
+
+    def test_2437_nested_proof_inputs_are_depth_blind(self):
+        # Review round seven: a function definition folded into an outer body's stage can
+        # shadow a status command or hide a dynamic command word.  Neither can support the
+        # proof that a later assignment certainly replaces the downloaded value.
+        reports = (
+            ("W609b nested shadowed true",
+             "f() { readonly X; }\ng() { true() { return 1; }; true || f; }\ng\n"),
+            ("W616 nested dynamic command",
+             "g() { h() { $F; }; h; }\nF=f\nf() { readonly X; }\ng\n"),
+        )
+        get = "X=$(curl -fsSL https://e.test/x)\n"
+        for name, middle in reports:
+            for shell in self.SHELLS:
+                with self.subTest(row=name, shell=shell):
+                    why = [str(reason) for _step, reason in wg.job_defects([
+                        wg.Step("run", get + middle + 'X=safe\neval "$X"\n', shell)
+                    ])]
+                    self.assertEqual(1, sum(
+                        reason.startswith("runs `eval` on `$X`") for reason in why
+                    ), why)
+
+        # The shared enumeration retains the same-shell boundary: calls made in a pipeline,
+        # in the background, or from a parenthesized function body cannot make X readonly here.
+        clean = (
+            ("W617 nested pipeline",
+             "f() { readonly X; }\ng() { h() { f | cat; }; h; }\ng\n"),
+            ("W618 nested background",
+             "f() { readonly X; }\ng() { h() { f & wait; }; h; }\ng\n"),
+            ("W621 parenthesized nested body",
+             "f() { readonly X; }\ng() { h() ( f ); h; }\ng\n"),
+        )
+        for name, middle in clean:
+            for shell in self.SHELLS:
+                with self.subTest(row=name, shell=shell):
+                    self.assertEqual([], wg.job_defects([
+                        wg.Step("run", get + middle + 'X=safe\neval "$X"\n', shell)
+                    ]))
+
+    def test_2437_round_five_keeps_proved_dead_and_child_controls_clean(self):
+        get = "X=$(curl -fsSL https://e.test/x)\n"
+        middles = (
+            "f() { readonly X; }\nif false; then f; fi\nX=safe\n",
+            "f() { readonly X; }\nif false\nthen\n  f\nfi\nX=safe\n",
+            "f() { readonly X; }\nfalse && f\nX=safe\n",
+            ('f() { readonly X; }\nif [ -n "$A" ]; then :; '
+             "elif false; then f; fi\nX=safe\n"),
+            "f() { local X; readonly X; }\nf\nX=safe\n",
+            "f() { local -r X; declare -g X; }\nf\nX=safe\n",
+            "f() { ( readonly X ); }\nf\nX=safe\n",
+            "f() { readonly X; }\nf | cat\nX=safe\n",
+            "f() { readonly X; }\nf & wait\nX=safe\n",
+            "f() { readonly X; }\n( f )\nX=safe\n",
+            "f || true\nf() { readonly X; }\nX=safe\n",
+            "f() { readonly Y; }\nf\nX=safe\n",
+            "f() { readonly X; }\ntime false && f\nX=safe\n",
+            "f() { g() { echo readonly X; }; g; }\nf\nX=safe\n",
+        )
+        for middle in middles:
+            for shell in self.SHELLS:
+                with self.subTest(middle=middle, shell=shell):
+                    self.assertEqual([], wg.job_defects([
+                        wg.Step("run", get + middle + 'eval "$X"\n', shell)
+                    ]))
+
+        # The reader does not prove a loop dead from its condition, an accepted safe-direction
+        # price: preserving this report keeps the skip exception narrower than shell execution.
+        script = (get + "f() { readonly X; }\nwhile false; do f; done\n"
+                  'X=safe\neval "$X"\n')
+        for shell in self.SHELLS:
+            with self.subTest(middle="while false price", shell=shell):
+                why = [str(reason) for _step, reason in wg.job_defects([
+                    wg.Step("run", script, shell)
+                ])]
+                self.assertEqual(1, sum(
+                    reason.startswith("runs `eval` on `$X`") for reason in why
+                ), why)
+
+    def test_2437_a_skipped_or_child_reassignment_keeps_the_download(self):
+        controls = ("{ x=1; } | cat\n", "{ x=1; } &\nwait\n",
+                    ("{\n  x=1\n} 2>/dev/null < "
+                     "/panopticon-2437-missing/in || true\n"),
+                    "false && {\n  x=1\n}\n", "true || {\n  x=1\n}\n",
+                    "f() { x=1; }\nfalse && f\n", "f() { x=1; }\nf &\nwait\n",
+                    "f() { x=1; }\n( f )\n",
+                    ("f() { x=1; }\n"
+                     "f 2>/dev/null < /panopticon-2437-missing/in || true\n"),
+                    "f() { x=1; }\nunset -f f\nf || true\n",
+                    "f() { x=1; }\nname=f\nunset -f \"$name\"\nf || true\n",
+                    "f() { x=1; }\ng() { unset -f f; }\ng\nf || true\n",
+                    "f() { x=1; }\neval 'unset -f f'\nf || true\n",
+                    "(\n  f() { x=1; }\n)\nf || true\n",
+                    "{\n  f() { x=1; }\n} &\nwait\nf || true\n",
+                    "{\n  f() { x=1; }\n} | cat\nf || true\n",
+                    "if true; then\n  f() { x=1; }\nfi\nf\n",
+                    "f() { if true; then x=1; fi; }\nf\n",
+                    "f() { return 0; x=1; }\nf\n",
+                    "f() { local x=1; }\nf\n")
+        for between in controls:
+            for shell in self.SHELLS:
+                with self.subTest(between=between, shell=shell):
+                    why = wg.job_defects([wg.Step(
+                        "run", self.GET + between + 'eval "$x"\n', shell)])
+                    self.assertEqual(1, len(why), why)
+                    self.assertIn("carries https://example.test/i.sh in `$x`", why[0][1])
+
+    def test_2437_only_a_portable_expansion_free_value_clears_the_fallback(self):
+        # `read`, arithmetic and traps can replace a prior literal with text
+        # the reader cannot prove. Redirections can stop a replacement, tilde
+        # can recover a held HOME, the Bash declarations can fail under `sh`,
+        # and option-bearing export/unset forms have different effects. They
+        # may retire the carried value, but never #2483's generic reason.
+        uncertain = (
+            "x=1\nread x <<'EOF'\necho changed\nEOF\n",
+            "x=1\nprintf -v x 'echo changed'\n",
+            "local x=1 2>/dev/null || true\n",
+            "declare x=1 2>/dev/null || true\n",
+            "typeset x=1 2>/dev/null || true\n",
+            "unset -fv x 2>/dev/null || true\n",
+            "export -n x=1 2>/dev/null || true\n",
+            "x=1 2>/dev/null > /panopticon-2437-missing/out || true\n",
+            "unset x 2>/dev/null < /panopticon-2437-missing/in || true\n",
+            'x=1\nunset x\n: "${x:=echo changed}"\n',
+            "x=1\ntrap 'x=\"echo changed\"' DEBUG\n:\n",
+            "trap 'x=\"echo changed\"' DEBUG\nx=1\n:\n",
+            "alias unset=':'\nunset x\n",
+            "source setup.sh 2>/dev/null || true\nx=1\n",
+            'x=1\n: "$((x=2))"\n',
+            'HOME="$x"\nx=~\n',
+        )
+        for between in uncertain:
+            for shell in self.SHELLS:
+                with self.subTest(between=between, shell=shell):
+                    why = wg.job_defects([wg.Step(
+                        "run", self.GET + between + 'eval "$x"\n', shell
+                    )])
+                    self.assertEqual(1, len(why), why)
+                    self.assertIn("a program this guard does not follow", why[0][1])
+
+        called = "f() { x=1; read x <<'EOF'\necho changed\nEOF\n}\nf\n"
+        nested = ("h() { read x <<'EOF'\necho changed\nEOF\n}\n"
+                  "g() { h; }\nx=1\ng\n")
+        for between in (called, nested):
+            for shell in self.SHELLS:
+                with self.subTest(called=between, shell=shell):
+                    self.assertEqual(1, len(wg.job_defects([wg.Step(
+                        "run", self.GET + between + 'eval "$x"\n', shell
+                    )])))
 
     def test_a_fail_closed_carry_says_that_it_is_the_guards_reading(self):
-        for between in ("if true; then x=1; fi\n", "{ x=1; }\n",
-                        "f() { x=1; }\nf\n", "eval 'x=:'\n"):
+        # #2437 moved the brace-group and directly called function expectations
+        # to the certain same-shell replacement test above.
+        for between in ("if true; then x=1; fi\n", "eval 'x=:'\n"):
             with self.subTest(between=between):
                 why = self.job(self.GET + between + 'eval "$x"\n')
                 self.assertEqual(1, len(why), why)

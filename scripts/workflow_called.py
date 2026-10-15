@@ -91,20 +91,43 @@ def _rest(argv):
     return rest
 
 
+def _command_views(stage):
+    """Each command view folded into ``stage``, with a function name defined there.
+
+    The reader keeps a one-line inner definition in its outer header stage and drops the
+    inner ``()``.  Its command begins after the next opening brace; enumerating every such
+    tail makes call, status, dynamic-word, and declaration proofs independent of brace depth.
+    """
+    words = list(stage.argv)
+    yield words, _function_syntax(words)[0]
+    braces = [place for place, word in enumerate(words) if str(word) == "{"]
+    for place in braces[1:]:
+        before = str(words[place - 1]) if place else ""
+        yield words[place + 1:], before if _SPELLED.fullmatch(before) else None
+
+
+def _status_shadows(stmts, starts):
+    """Literal status commands redefined anywhere in this step."""
+    return ({name for entries in starts.values() for name, _head, _close in entries
+             if name in (":", "false", "true")} |
+            {name for statement in stmts for stage in statement.stages
+             for _words, name in _command_views(stage) if name in (":", "false", "true")})
+
+
 def _calls(stmts, head, close):
     """The functions the body `stmts[head:close + 1]` calls: a single-stage statement whose
     head word is bare and no assignment, in a list the body does not send to the background
     (`g() { f & wait; }`: as at the top level, what the child assigns dies with it) -- each
     list's end read once, walking the body backwards (round 8, B3)."""
-    found, backgrounded = set(), False
+    found: set[str] = set()
+    backgrounded = False
     for at in range(close, head - 1, -1):
         statement = stmts[at]
         if at == close or statement.separator not in ("&&", "||"):
             backgrounded = statement.separator == "&"      # this statement ends its list
         if len(statement.stages) == 1 and not backgrounded:
-            word = _head(list(statement.stages[0].argv))
-            if word and not _ASSIGNMENT.match(word):
-                found.add(word)
+            heads = [_head(words) for words, _defined in _command_views(statement.stages[0])]
+            found.update(word for word in heads if word and not _ASSIGNMENT.match(word))
     return found
 
 
@@ -236,6 +259,80 @@ def _reached(stmts, position, starts):
             queue.extend(call for call in _calls(stmts, start, close)
                          if call in defined and call not in seen and call not in queue)
     return bodies
+
+
+def _skipped_call(stmts, index, branches, shadowed):
+    """Whether a bounded literal status proves this call cannot run."""
+    def status(stage):
+        views = list(_command_views(stage))
+        raw = [str(word) for words, _name in views for word in words]
+        argv = list(command(views[0][0]))
+        if "!" in raw or len(argv) != 1 or str(argv[0]) in shadowed:
+            return None
+        return False if argv == ["false"] else True if argv == ["true"] else None
+
+    if index:
+        before = stmts[index - 1]
+        before_status = status(before.stages[-1]) if before.stages else None
+        if (before.separator == "&&" and before_status is False
+                or before.separator == "||" and before_status is True):
+            return True
+    region = branches.get(index)
+    first = next((at for at in range(index + 1) if branches.get(at) == region), None)
+    if not region or first is None or not first:
+        return False
+    stage = stmts[first].stages[0]
+    before = stmts[first - 1].stages[-1]
+    return (stage.argv[:1] == ["then"] and before.argv[:1] in (["if"], ["elif"])
+            and status(before) is False)
+
+
+def _possible_called_readonly(stmts, bodies, branches, conditionals, shell, attributes, dynamic):
+    """Caller-visible readonly names, and whether a dynamic command can name any target."""
+    found, unknown = set(), False
+    declaration_names = ("declare", "local", "readonly", "typeset")
+    for start, close in bodies:
+        local, subshells = set(), 0
+        nested = {at for entries in _function_ranges(stmts)[0].values()
+                  for _name, head, end in entries if start < head <= close
+                  for at in range(head, min(end, close) + 1)}
+        for at in range(start, close + 1):
+            statement = stmts[at]
+            for stage in statement.stages:
+                views = list(_command_views(stage))
+                argv = list(command(views[0][0]))
+                name = os.path.basename(str(argv[0])) if argv else ""
+                words = argv[1:] if name in ("local", "declare", "typeset") else ()
+                local_here = {str(word).split("=", 1)[0] for word in words
+                              if not str(word).startswith(("-", "+"))}
+                if any(str(word).startswith(("-", "+")) and "g" in str(word)[1:]
+                       for word in words):
+                    local_here.clear()
+                child = bool(subshells or stage.group_open
+                             or len(statement.stages) != 1 or statement.separator == "&")
+                certain = not (child or at in branches or at in conditionals
+                               or at and stmts[at - 1].separator in ("&&", "||"))
+                if certain:
+                    local.update(local_here)
+                proofs = [(attributes(words, shell), dynamic(words))
+                          for words, _name in views]
+                direct = proofs[0][0]
+                lexical = [row for row, _dynamic in proofs[1:]]
+                made_readonly = set().union(direct[0], *(row[0] for row in lexical))
+                embedded_dynamic = any(is_dynamic for _row, is_dynamic in proofs[1:])
+                embedded = (name not in declaration_names and any(row[0] for row in lexical)
+                            or embedded_dynamic)
+                if not child or embedded:
+                    found.update(made_readonly - local - local_here)
+                    unknown = unknown or any(is_dynamic for _row, is_dynamic in proofs) or direct[2] or any(
+                        row[2] for row in lexical)
+                if name == "return" and certain and at not in nested:
+                    break
+                subshells = max(0, subshells + stage.group_open - stage.group_close)
+            else:
+                continue
+            break
+    return found, unknown
 
 
 def _subshell(stmts, start, close):
