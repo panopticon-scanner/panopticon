@@ -57,8 +57,8 @@ CONDITIONS = ("if", "elif", "while", "until")
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?\+?=")
 _ENVIRONMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
-_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
-_FUNCTION = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*\(\)$")
+_NAME = re.compile(r"^[A-Za-z_@][A-Za-z0-9_.:+@-]*$")
+_FUNCTION = re.compile(r"^[A-Za-z_@][A-Za-z0-9_.:+@-]*\(\)$")
 _PARENS = re.compile(r"[ \t]+\([ \t]*\)")    # a header's `()` behind a blank: `f ()`, `f ( )`
 
 
