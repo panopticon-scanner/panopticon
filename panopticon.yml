@@ -704,6 +704,7 @@ groups:
       # #2433: keep command shapes and their failure-gating proof together.
       match:
       - scripts/workflow_forms.py
+      - scripts/workflow_carried.py
       - scripts/workflow_gating.py
       - scripts/workflow_step_credit.py
       - scripts/workflow_function_calls.py
