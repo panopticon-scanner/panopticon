@@ -118,6 +118,19 @@ class TestANameBashTakes(unittest.TestCase):
             with self.subTest(text=text[:40]):
                 self.assertEqual(REPORTED, marks(text))
 
+    def test_a_gate_in_a_function_of_the_wider_name_reads_as_a_plain_names_does(self):
+        # The function table's patterns take the four characters too (the grant: workflow_function_calls'
+        # `_FUNCTION_TOKEN` and `_FUNCTION_NAME`), so `a.b() { CHECK || exit 1; }` ⏎ `sh t` -- `a.b` never
+        # called, the download runs under bash -- is REPORTED as `f() { … }` ⏎ `sh t` is (#2949), and called
+        # before the run it is credited (CLEAN; dash refuses the name and runs nothing: CLEAN there too).
+        # With the splitter's names widened alone, the table saw no definition, and the gate was the step's own.
+        sums = "echo '%s  t' > sums\n" % ("a" * 64)
+        check = "sha256sum -c sums || exit 1"
+        self.assertEqual(REPORTED, marks(FETCH + sums + "a.b() { %s; }\nsh t\n" % check))
+        self.assertEqual(REPORTED, marks(FETCH + sums + "f() { %s; }\nsh t\n" % check))
+        self.assertEqual(CLEAN, marks(FETCH + sums + "a.b() { %s; }\na.b\nsh t\n" % check))
+        self.assertEqual(CLEAN, marks(FETCH + sums + "a.b() {\n  %s\n}\na.b\nsh t\n" % check))
+
 
 class TestTheSplitter(unittest.TestCase):
     """`shell_reader.statements` on the shapes: the header is a header, the body's command its own stage."""
