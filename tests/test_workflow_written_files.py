@@ -66,6 +66,15 @@ class TestAWrittenFileIsReadAsItsWritersText(unittest.TestCase):
             with self.subTest(text=text[:34]):
                 self.assertEqual(REPORTED, marks(text))
 
+    def test_a_cat_with_an_expanding_heredoc_is_read_as_its_pipe_twin_is(self):
+        # `cat > s.sh <<EOF` holding `curl … | sh $(echo -s)` runs the download under every parent; the body expands,
+        # so it is handed on as an expanding `cat` heredoc and read as `cat <<EOF | sh` and `. <(cat <<EOF …)` are on
+        # `main`: reported. The price, named, the same as those twins': a benign expanding body (`echo $(date)`, nothing
+        # fetched) reports too.
+        self.assertEqual(REPORTED, marks("cat > s.sh <<EOF\n%s $(echo -s)\nEOF\nsh s.sh\n" % P))
+        self.assertEqual(REPORTED, marks("cat > s.sh <<EOF\necho $(date)\nEOF\nsh s.sh\n"))
+        self.assertEqual(REPORTED, marks("cat <<EOF | sh\necho $(date)\nEOF\n"))
+
     def test_a_write_the_step_may_make_counts(self):
         # Fail-closed, the prices named: every write is read as an append (the stage keeps the written words, not
         # the operator), so a benign re-write after the payload still reads it -- `echo PAYLOAD > s.sh; echo 'echo

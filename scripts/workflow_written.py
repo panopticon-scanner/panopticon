@@ -83,6 +83,15 @@ def _rendered(word):
     return shlex.quote(text)
 
 
+def _heredoc(text):
+    """A `cat` printing `text` from an EXPANDING heredoc: the script `_filed` hands on is read as `. <(cat <<EOF …)`
+    is -- the guard's expanding-body reading, reported where a shell takes it as its program."""
+    end = "EOF_%d" % len(text)
+    while end in text:
+        end += "_"
+    return "cat <<%s\n%s\n%s\n" % (end, text, end)
+
+
 def _script(writers):
     """A script `substituted` spells as ONE printer's text: the writers' texts joined, or the first
     unspelled writer's command as written (reported, never read as text)."""
@@ -92,7 +101,7 @@ def _script(writers):
         text = readings[0] if readings else _literal_heredoc(stage)
         if text is None:
             if os.path.basename(argv[0]) == "cat":
-                return 'printf "%s" "$UNSPELLED_HEREDOC"'        # an unspelled printer: reported
+                return _heredoc(stage.stdin_heredoc[0])          # read as `. <(cat <<EOF …)` is
             return " ".join(_rendered(w) for w in argv)
         texts.append(text if text.endswith("\n") else text + "\n")
     if len(writers) > _DEPTH:

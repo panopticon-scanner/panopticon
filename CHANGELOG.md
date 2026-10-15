@@ -23,24 +23,27 @@ evidence exposed.
   fail-closed where the reader cannot know: every write is read as an append (the stage keeps the
   written words, not the operator), so a benign re-write after the payload still reads it; a write
   under a condition counts; a write in a function body counts where the definition stands before the
-  run (never called, or called after the run, over-reports); a write after the run binds nothing.
-  Limits named and pinned: a command-word run of the written file (`chmod +x s.sh` ⏎ `./s.sh`), a
-  run inside a `-c` string (`bash -c 'sh s.sh'`), a value path (`echo … > "$F"` ⏎ `sh "$F"`). The
-  issue's four rows and 33 more (every writer, `>>`, `tee -a`, a subdirectory, a subshell or group,
-  a conditional or function-body write, the payload written last) report under every setting; the
-  controls (another file, a benign file, the run before the write) read as they did; `. s.sh` runs
-  under bash and sh (zsh's `.` searches PATH), `echo -e` under bash and zsh. Differential on the
-  forge, 76a4c705 against main 3e083f96 on 27,258 rows (the 26,982-row kit, 15 of the #2973 rows,
-  the 103-row #2954-side kit, this PR's 37 and the 121 file-then-run rows of the #3020 hunt): 0
-  failures, **0 REPORT->CLEAN cells**, 27,166 rows identical, **92 rows CLEAN->REPORT** (460 cells)
-  -- 27 of this PR's rows (the 10 that stay CLEAN are the controls, the limits and the unspelled
-  writers), 61 of the hunt's (a written file that runs the payload, and the lifted-letter rows), and
-  4 of the kit's, each a write-then-run the download runs under (the two rows of the pin that names
-  #3027, and `export T=cuda_1.run` ⏎ `echo 'sh $T' > run.sh` ⏎ `sh run.sh` and its `.` twin); 4,478
-  s wall on eight shards at nice 10. `tests/test_workflow_written_files.py`, with a growth pin (n
-  writes then n runs, CPU time). Three pins of the old gap move with it, authorized by name, and one
-  that names #3027 (the PR body quotes each). `scripts/workflow_written.py` is new (129 lines);
-  `workflow_printers.py` 523 and `workflow_guard.py` 630 (+1, the import).
+  run (never called, or called after the run, over-reports); a write after the run binds nothing. A
+  `cat` writing an EXPANDING heredoc (`cat > s.sh <<EOF` ⏎ `curl … | sh $(echo -s)` ⏎ `EOF` ⏎ `sh
+  s.sh`) is read as its `cat <<EOF | sh` and `. <(cat <<EOF …)` twins are on `main`: reported -- and
+  so, as there, is a benign expanding body (`echo $(date)`). Limits named and pinned: a command-word
+  run of the written file (`chmod +x s.sh` ⏎ `./s.sh`), a run inside a `-c` string (`bash -c 'sh
+  s.sh'`), a value path (`echo … > "$F"` ⏎ `sh "$F"`). The issue's four rows and 33 more (every
+  writer, `>>`, `tee -a`, a subdirectory, a subshell or group, a conditional or function-body write,
+  the payload written last) report under every setting; the controls (another file, a benign file,
+  the run before the write) read as they did; `. s.sh` runs under bash and sh (zsh's `.` searches
+  PATH), `echo -e` under bash and zsh. Differential on the forge, 76a4c705 against main 3e083f96 on
+  27,258 rows (the 26,982-row kit, 15 of the #2973 rows, the 103-row #2954-side kit, this PR's 37
+  and the 121 file-then-run rows of the #3020 hunt): 0 failures, **0 REPORT->CLEAN cells**, 27,166
+  rows identical, **92 rows CLEAN->REPORT** (460 cells) -- 27 of this PR's rows (the 10 that stay
+  CLEAN are the controls, the limits and the unspelled writers), 61 of the hunt's (a written file
+  that runs the payload, and the lifted-letter rows), and 4 of the kit's, each a write-then-run the
+  download runs under (the two rows of the pin that names #3027, and `export T=cuda_1.run` ⏎ `echo
+  'sh $T' > run.sh` ⏎ `sh run.sh` and its `.` twin); 4,478 s wall on eight shards at nice 10.
+  `tests/test_workflow_written_files.py`, with a growth pin (n writes then n runs, CPU time). Three
+  pins of the old gap move with it, authorized by name, and one that names #3027 (the PR body quotes
+  each). `scripts/workflow_written.py` is new (129 lines); `workflow_printers.py` 523 and
+  `workflow_guard.py` 630 (+1, the import).
 
 - **Workflow reader reads a function header behind a group's `(` and a name bash takes, and the
   header test costs one lookup a `(` (#2977; #2975 parts B and C).** `( f() { sh t; }; f )` and
