@@ -277,9 +277,21 @@ evidence exposed.
   makes the assignment uncertain. After folding #3086, the expanded 1,000-cell review matrix has
   811 cells that stay REPORT, 139 intended cells that stay CLEAN, 15 controls that stay CLEAN, and
   35 round-4 target cells that move from CLEAN to REPORT. The 960 previously banked cells and all
-  120 workflow-guard cells from #3083 are byte-identical. Final module sizes are 699 lines for
+  120 workflow-guard cells from #3083 are byte-identical. Round-4 module sizes are 699 lines for
   `workflow_carried.py`, 607 for `workflow_called.py`, 441 for `workflow_forms.py`, and 638 for
-  `workflow_guard.py`.
+  `workflow_guard.py`. Review round 5 makes the skip exception a proof: negated conditions and a
+  step-defined `true` or `false` cannot prove a call dead. A dynamic command word now makes later
+  plain replacements uncertain for the rest of the step, and the once-per-body attribute scan
+  reads readonly declarations folded into one-line nested definitions. The complete 54-row review
+  seat has 270 cells under the five shell postures: 195 expected reports and 75 expected clean
+  readings, with no mismatches. Exactly the 11 rejected rows, 55 cells, move from round 4's CLEAN
+  to REPORT; all other seat cells keep round 4's answer. An expanded 1,150-cell differential keeps
+  all prior 1,000 cells byte-identical, moves 75 target cells to REPORT (the 11 rows plus nested
+  declaration spellings and a redefined-`true` boundary), and leaves 70 clean control cells plus
+  the five accepted `while false` reports unchanged. The cached scan keeps the existing serial
+  cost gate green; alternating round-4/round-5 measurements were +4.6% for the file-only shape and
+  -5.7% for the stdout-holder shape. Final module sizes are 677 lines for `workflow_carried.py` and
+  663 for `workflow_called.py`; the other two remain 441 and 638 lines.
 
 - **Workflow guard applies a prefix assignment after its command's words expand (#2433).**
   `x=$(curl ...) eval "$x"` and its `sh -c` twin reported as handing the new value straight to

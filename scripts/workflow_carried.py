@@ -13,7 +13,8 @@ from typing import cast
 
 import shell_reader
 from shell_reader import command, statements
-from workflow_called import _UNSURE, _reached, _skipped_call, _written
+from workflow_called import (_UNSURE, _possible_called_readonly, _reached, _skipped_call,
+                             _written)
 from workflow_fetch import (FETCHERS, Fetch, compound_stream_consumer, parse_fetch,
                             stdout_fetch, stream_consumer)
 from workflow_gating import (Inlined, _piped_group_stage, _structural_groups,
@@ -188,17 +189,20 @@ def _plain_assignments(stage, shell=None):
     return plain
 
 
-def _hidden_writer(stage):
-    """Whether this command may write names hidden from ``_written``."""
+def _dynamic_command(stage):
     written = shell_reader.command_as_written(stage.argv)
-    dynamic = bool(written and shell_reader.dynamic(
+    return bool(written and shell_reader.dynamic(
         written[0], shell_reader.has_substitution
     ))
+
+
+def _hidden_writer(stage):
+    """Whether this command may write names hidden from ``_written``."""
     argv = command(stage.argv)
     wrappers = {os.path.basename(str(word)) for word in shell_reader.wrapper_words(stage.argv)}
     wrapped = bool(argv and "command" in wrappers
                    and os.path.basename(str(argv[0])) in _WRITERS)
-    return dynamic or wrapped
+    return _dynamic_command(stage) or wrapped
 
 
 def _unseen_write(statement):
@@ -233,7 +237,7 @@ def _bash(shell):
 
 def _declaration_attributes(stage, shell):
     """(readonly names, nameref targets, unknown target) declared here."""
-    argv = list(command(stage.argv))
+    argv = list(command(stage.argv if hasattr(stage, "argv") else stage))
     name = os.path.basename(str(argv[0])) if argv else ""
     if name not in ("declare", "local", "readonly", "typeset"):
         return set(), set(), False
@@ -406,43 +410,6 @@ def _function_barrier(stmts, start, stop, name, starts):
     return False
 
 
-def _possible_called_readonly(stmts, bodies, branches, conditionals, shell):
-    """Global readonly names any reachable execution of these bodies may establish."""
-    found = set()
-    starts = _function_ranges(stmts)[0]
-    for start, close in bodies:
-        nested = {at for entries in starts.values() for _name, head, end in entries
-                  if head > start for at in range(head, end + 1)}
-        local, subshells = set(), 0
-        for at in range(start, close + 1):
-            statement = stmts[at]
-            for stage in statement.stages:
-                argv = list(command(stage.argv))
-                name = os.path.basename(str(argv[0])) if argv else ""
-                words = argv[1:] if name in ("local", "declare", "typeset") else ()
-                local_here = {str(word).split("=", 1)[0] for word in words
-                              if not str(word).startswith(("-", "+"))}
-                if any(str(word).startswith(("-", "+")) and "g" in str(word)[1:]
-                       for word in words):
-                    local_here.clear()
-                child = bool(at in nested or subshells or stage.group_open
-                             or len(statement.stages) != 1 or statement.separator == "&")
-                certain = not (child or at in branches or at in conditionals
-                               or at and stmts[at - 1].separator in ("&&", "||"))
-                if certain:
-                    local.update(local_here)
-                made_readonly = _declaration_attributes(stage, shell)[0]
-                if not child:
-                    found.update(made_readonly - local - local_here)
-                if name == "return" and certain:
-                    break
-                subshells = max(0, subshells + stage.group_open - stage.group_close)
-            else:
-                continue
-            break
-    return found
-
-
 def _called_assignments(stmts, index, starts, held, branches, conditionals, outer, probe,
                         shell=None, bodies=None):
     """Certain caller-visible assignments and readonly names from one direct call."""
@@ -547,15 +514,22 @@ def carried(stmts, executors, shell=None):
     blocked: set[str] = set()
     block_all = False
     starts, occupied = _function_ranges(stmts)
+    conditionals = conditional_contexts(stmts)
+    body_attributes = {
+        (start, close): _possible_called_readonly(
+            stmts, [(start, close)], branches, conditionals, shell,
+            _declaration_attributes, _dynamic_command
+        )
+        for entries in starts.values() for _name, start, close in entries
+    }
     stateful_bodies = {
         (start, close) for entries in starts.values()
         for _name, start, close in entries
-        if any(_assigned(stage, {}) or any(_declaration_attributes(stage, shell))
-               for statement in stmts[start:close + 1]
-               for stage in statement.stages)
+        if any(body_attributes[(start, close)]) or any(
+            _assigned(stage, {}) for statement in stmts[start:close + 1]
+            for stage in statement.stages)
     }
     forked = _forked(stmts, len(stmts))
-    conditionals = conditional_contexts(stmts)
     outer, outer_subshells = _outer_group_depths(stmts, occupied)
     safe_groups = _safe_enclosing_groups(stmts, occupied)
     probe = "_" * (2 + max((len(str(word)) for statement in stmts
@@ -632,7 +606,7 @@ def carried(stmts, executors, shell=None):
             if stateful:
                 blocked.update(targets)
                 plain.difference_update(targets)
-                if unknown:
+                if unknown or not isinstance(statement, Inlined) and _dynamic_command(stage):
                     block_all = True
                     plain.clear()
             if not child:
@@ -673,10 +647,14 @@ def carried(stmts, executors, shell=None):
             # alter either carried state. Avoid re-reading it at every call site:
             # large, repeatedly called bodies are a bounded-work contract (#2855).
             stateful_call = any(body in stateful_bodies for body in bodies)
-            possible_readonly = (_possible_called_readonly(
-                stmts, bodies, branches, conditionals, shell
+            possible_readonly, possible_unknown = ((
+                set().union(*(body_attributes[body][0] for body in bodies)),
+                any(body_attributes[body][1] for body in bodies)
             ) if bodies and not child and stateful_call
-                and not _skipped_call(stmts, index, branches) else set())
+                and not _skipped_call(stmts, index, branches, starts) else (set(), False))
+            if possible_unknown:
+                block_all = True
+                plain.clear()
             called_readonly: set[str] = set()
             if sure and stateful_call:
                 called, called_plain, called_readonly = _called_assignments(
