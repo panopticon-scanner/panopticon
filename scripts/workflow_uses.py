@@ -19,7 +19,7 @@ import re
 import shell_lex
 import shell_reader
 from shell_reader import command
-from workflow_called import record_called
+from workflow_called import record_called, with_call_stdin
 from workflow_checks import inside
 from workflow_forms import (BIN_DIRS, CONTAINERS, at_directory,
                             chmod_conditional_executable, chmod_executable, chmod_targets,
@@ -388,7 +388,7 @@ def _resolved(argv, table):
             yield kept
 
 
-def _function_use(stmts, definition, args, dest, directory, named, inherited, table, scopes):
+def _function_use(stmts, definition, args, dest, directory, named, inherited, table, scopes, call=None, literal=False):
     """A use reached by one direct call carrying a matching glob argument, or by a value of the
     caller's `table` (#2425, #2489), which the body's table starts from (`static_values`' `start`);
     only a binding call weighs a stage as written, as before. A call made inside a body is not
@@ -406,8 +406,14 @@ def _function_use(stmts, definition, args, dest, directory, named, inherited, ta
     for index, statement in enumerate(body):
         for position, stage in enumerate(statement.stages):
             bound = _live(local_named if called else {}, positional, here)
-            argv = command(stage.argv)
-            if called and (answer := use(statement, position, stage, argv, dest, here, bound)):
+            # Each stage as written where the walk never reads it: a body whose definition closes before
+            # the fetch (`literal`, #2982), and a stage the call's own input changes (`f < t` runs the body's
+            # `sh` on `t`, #2973) -- a body written after the fetch, or holding it, is read where it stands,
+            # with its own order and checks, and not again here; a binding call weighs the bound words, as before.
+            read = with_call_stdin(call, stage) if call is not None else stage
+            argv = command(read.argv)
+            if (called or literal or read is not stage) and (
+                    answer := use(statement, position, read, argv, dest, here, bound)):
                 return answer
             if any("$" in word for word in argv):
                 values = static_values(stmts, start + index, scopes=scopes, start=table)
@@ -570,7 +576,8 @@ def uses(stmts, dest, after, working=None, scopes=None):
                                              for made in _resolved(argv, table))), None)
                 if not how and call:
                     how = _function_use(stmts, functions[argv[0]], argv[1:], name, here, named,
-                                        {**named, **positional}, table, scopes)
+                                        {**named, **positional}, table, scopes, call=stage,
+                                        literal=functions[argv[0]][1] < after)
                 if how:
                     if not same_file(name, dest):
                         shown = re.sub(r"^\$CWD[^/]*/", "", name).replace("$UP", "..")
