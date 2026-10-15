@@ -5463,6 +5463,63 @@ class TestAStatusOrErrTrapCanGateACheck(unittest.TestCase):
                 with self.subTest(shell=shell, control=control):
                     self.assertEqual(1, len(self.findings(control + self.USE, shell)))
 
+    def test_a_shadowed_status_primitive_at_any_body_depth_stays_reported(self):
+        handler = 'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n'
+        definitions = (
+            "exit() { :; }\n",
+            "{ { exit() { :; }; }; }\n",
+            "f() { g() { exit() { :; }; }; }\n",
+            "function [ { return 0; }\n",
+            "{ { function [ { return 0; }; }; }\n",
+            "f() { g() { function [ { return 0; }; }; }\n",
+        )
+        for shell in self.SHELLS:
+            for definition in definitions:
+                with self.subTest(shell=shell, definition=definition):
+                    # #2440 follows #2437: a lexical shadow at any brace depth
+                    # withholds a proof, even where its body may not run.
+                    self.assertEqual(1, len(self.findings(
+                        definition + handler + self.USE, shell
+                    )))
+            with self.subTest(shell=shell, definition="later exit"):
+                self.assertEqual(1, len(self.findings(
+                    handler + "exit() { :; }\n" + self.USE, shell
+                )))
+
+    def test_a_shadowed_or_unread_test_command_stays_reported(self):
+        handler = ('CHECK\nrc=$?\nif test "$rc" -ne 0; '
+                   'then exit 1; fi\n')
+        definitions = (
+            "test() { return 0; }\n",
+            "{ { test() { return 0; }; }; }\n",
+            "f() { g() { test() { return 0; }; }; }\n",
+        )
+        for shell in self.SHELLS:
+            for definition in definitions:
+                with self.subTest(shell=shell, definition=definition):
+                    # `test` is not one of this bounded proof's accepted
+                    # commands, and redefining it at any depth cannot widen it.
+                    self.assertEqual(1, len(self.findings(
+                        definition + handler + self.USE, shell
+                    )))
+
+    def test_text_that_can_rewrite_a_proof_primitive_stays_reported(self):
+        handler = 'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n'
+        rewrites = (
+            "eval ':'\n",
+            ". ./status-primitives\n",
+            "source ./status-primitives\n",
+            "alias exit=':'\n",
+            "enable -n [\n",
+            "f() { :; }\nf\n",
+        )
+        for shell in self.SHELLS:
+            for rewrite in rewrites:
+                with self.subTest(shell=shell, rewrite=rewrite):
+                    self.assertEqual(1, len(self.findings(
+                        rewrite + handler + self.USE, shell
+                    )))
+
     def test_a_top_level_stopping_err_trap_gates_only_bash_steps(self):
         body = "trap 'exit 1' ERR\nCHECK\n" + self.USE
         for shell in (None, "bash", "bash {0}"):
@@ -5483,6 +5540,10 @@ class TestAStatusOrErrTrapCanGateACheck(unittest.TestCase):
             "if true; then trap 'exit 1' ERR; fi\nCHECK\n",
             "trap() { :; }\ntrap 'exit 1' ERR\nCHECK\n",
             "exit() { :; }\ntrap 'exit 1' ERR\nCHECK\n",
+            "f() { g() { trap() { :; }; }; }\ntrap 'exit 1' ERR\nCHECK\n",
+            "f() { g() { exit() { :; }; }; }\ntrap 'exit 1' ERR\nCHECK\n",
+            "trap 'exit 1' ERR\neval ':'\nCHECK\n",
+            "trap 'exit 1' ERR\nsource ./trap-rewrite\nCHECK\n",
         )
         for shell in (None, "bash", "bash {0}"):
             for control in controls:
@@ -5522,11 +5583,28 @@ class TestAStatusOrErrTrapCanGateACheck(unittest.TestCase):
         ]
         self.assertEqual(1, len(wg.job_defects(steps)))
 
+    def test_a_status_handoff_does_not_cross_a_step_boundary(self):
+        steps = [
+            wg.Step("check", self.FETCH + "set +e\n" + self.CHECK + "\nrc=$?\n",
+                    "bash {0}"),
+            wg.Step("handle", '[ "$rc" -ne 0 ] && exit 1\n' + self.USE, "bash {0}"),
+        ]
+        self.assertEqual(1, len(wg.job_defects(steps)))
+
     def test_a_status_handler_inside_a_subshell_does_not_gate_its_parent(self):
         body = ('( CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n)\n'
                 + self.USE)
         for shell in self.SHELLS:
             with self.subTest(shell=shell):
+                self.assertEqual(1, len(self.findings(body, shell)))
+
+    def test_a_status_handler_inside_a_brace_group_stays_fail_closed(self):
+        body = ('{ CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n}\n'
+                + self.USE)
+        for shell in self.SHELLS:
+            with self.subTest(shell=shell):
+                # The exit really stops these shells, but the bounded #2440
+                # proof accepts only a top-level handoff.
                 self.assertEqual(1, len(self.findings(body, shell)))
 
 

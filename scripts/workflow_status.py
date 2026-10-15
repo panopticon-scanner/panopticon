@@ -12,7 +12,7 @@ import re
 
 import shell_reader
 from shell_reader import command
-from workflow_function_calls import _function_syntax
+from workflow_function_calls import _FUNCTION_NAME, _function_syntax
 
 
 _CAPTURE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=\$\?$")
@@ -93,17 +93,35 @@ def step_end(stmts, index, owner=None, postures=None):
     return end
 
 
+def _defined_functions(stage):
+    """Function names folded into ``stage``, at every brace depth.
+
+    A one-line nested definition loses its inner ``()`` in the reader, so its
+    name is the word immediately before the next opening brace.  This is the
+    same depth-blind lexical boundary used by the carried-command proof: a
+    possible shadow is enough to withhold status credit.
+    """
+    words = list(stage.argv)
+    name = _function_syntax(words)[0]
+    if name is None and len(words) > 1 and words[0] == "function":
+        name = str(words[1])
+    if name is not None:
+        yield str(name)
+    braces = [place for place, word in enumerate(words) if str(word) == "{"]
+    for place in braces[1:]:
+        before = str(words[place - 1]) if place else ""
+        keyword = place > 1 and str(words[place - 2]) == "function"
+        if keyword or _FUNCTION_NAME.fullmatch(before):
+            yield before
+
+
 def _functions(stmts, owner, postures):
     found = set()
     for at, statement in enumerate(stmts):
         if not _same_step(at, owner, postures):
             continue
         for stage in statement.stages:
-            name = _function_syntax(stage.argv)[0]
-            if name is None and len(stage.argv) > 1 and stage.argv[0] == "function":
-                name = str(stage.argv[1])
-            if name is not None:
-                found.add(name)
+            found.update(_defined_functions(stage))
     return found
 
 
