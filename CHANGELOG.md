@@ -139,9 +139,11 @@ evidence exposed.
   expansion rule also distinguishes a fetch stage's own output from a pipe or redirect inherited
   from its enclosing compound: five definition/compound interaction rows keep `main`'s REPORT, the
   group redirect, tee and discard twins now report, and a harmless inherited `| cat` is the named
-  fail-closed price; the corresponding stage-owned outputs remain #3035's CLEAN limits. Local
-  differential on 44 pinned row IDs (43 distinct scripts), under the direct reader plus five job
-  settings: 162 CLEAN -> REPORT cells across 27 issue/price rows, 102 unchanged cells across nine
+  fail-closed price; the corresponding stage-owned outputs remain #3035's CLEAN limits. A
+  subshell's trailing redirect is attached to its inner stage, so its redirect and discard rows
+  report too; the indistinguishable `( wget $X URL > tool )` is the named fallback price. Local
+  differential on 47 pinned row IDs (46 distinct scripts), under the direct reader plus five job
+  settings: 180 CLEAN -> REPORT cells across 30 issue/price rows, 102 unchanged cells across nine
   prior controls/limits, five interaction IDs and three #3035 limits, and 0 REPORT -> CLEAN cells.
 
 - **Workflow reader keeps a stage's second `${…}` word whole where it still stands before the

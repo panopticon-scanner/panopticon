@@ -238,7 +238,7 @@ def _transfer(tool, args, stage, piped_to, file_view=True):
     may_name_destination = any(_value(operand) for operand in operands)
     has_written_url = any("://" in operand and not _value(operand)
                           for operand in operands)
-    owns_output = ((bool(stage.stdout_writes)
+    owns_output = ((bool(stage.stdout_writes) and not stage.group_close
                     and not isinstance(stage.stdout_writes, _InheritedOutput))
                    or (piped_to is not None
                        and not isinstance(piped_to, _InheritedOutput)))

