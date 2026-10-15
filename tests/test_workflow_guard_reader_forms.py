@@ -2204,6 +2204,10 @@ class TestEveryFindActionIsACommand(unittest.TestCase):
         ("workflow_printers", "_printer"): GET + "source <(find /dev/null -exec echo 'sh tool' \\;)\n",
         ("workflow_uses", "copies"): GET + "find /dev/null -exec cp tool t2 \\;\nsh t2\n",
         ("workflow_uses", "use"): GET + "cat tool | find /dev/null -exec sh \\;\n",
+        # #3027: the written file's run, its writer, and a `tee`'s operands, each behind a `find` action.
+        ("workflow_written", "bind_written"): GET + "echo 'sh tool' > s.sh\nfind /dev/null -exec sh s.sh \\;\n",
+        ("workflow_written", "_writer"): GET + "find /dev/null -exec echo 'sh tool' \\; > s.sh\nsh s.sh\n",
+        ("workflow_written", "_paths"): GET + "echo 'sh tool' | find /dev/null -exec tee s.sh \\;\nsh s.sh\n",
     }
 
     def test_every_caller_of_the_unwrapped_reading_is_named(self):
@@ -2249,7 +2253,7 @@ class TestEveryFindActionIsACommand(unittest.TestCase):
         # `workflow_printers.producer` names a stage by what it runs, and each reader that takes its
         # answer must read that stage as it did: `unspelled` raises where the two differ.
         self.assertEqual([("workflow_printers", "handed"), ("workflow_printers", "unspelled"),
-                          ("workflow_programs", "stdin_scripts")], sorted(chain))
+                          ("workflow_programs", "stdin_scripts"), ("workflow_written", "_writer")], sorted(chain))
         self.assertLessEqual(set(chain), set(self.ACTED))
 
     def test_each_named_caller_has_a_row_that_needs_it(self):

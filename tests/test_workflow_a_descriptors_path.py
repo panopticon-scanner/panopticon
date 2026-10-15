@@ -382,10 +382,13 @@ class TestWhatStaysForOtherIssues(unittest.TestCase):
 
     def test_a_files_text_through_a_stage_that_hands_it_on(self):
         # Truth: runs, every one. No path of a descriptor in them: found by this PR's fuzz, CLEAN on `main`.
-        for lines in ("cat tool | cat | sh", "cat tool | tee log | sh", "printf 'sh tool\\n' > t\nsh t",
-                      "printf 'sh tool\\n' | tee //dev/stdout > t\nsh t"):
+        for lines in ("cat tool | cat | sh", "cat tool | tee log | sh"):
             with self.subTest(lines=lines):
                 self.assertEqual(CLEAN, marks(GET + lines))
+        # (moved by #3027: a file the step writes is read) -- the written text `sh tool` runs the fetched tool.
+        for lines in ("printf 'sh tool\\n' > t\nsh t", "printf 'sh tool\\n' | tee //dev/stdout > t\nsh t"):
+            with self.subTest(lines=lines):
+                self.assertEqual(REPORT, marks(GET + lines))
 
     def test_a_function_that_streams_called_in_front_of_a_shell(self):
         # Truth: runs, both. CLEAN on `main` with no redirection at all, the call's stream not followed,

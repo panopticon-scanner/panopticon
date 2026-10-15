@@ -687,6 +687,7 @@ groups:
       - scripts/workflow_values.py
       - scripts/workflow_value_expansion.py
       - scripts/workflow_called.py
+      - scripts/workflow_written.py
       - scripts/workflow_annotate.py
       tests:
       - tests/test_workflow_guard.py
@@ -722,6 +723,7 @@ groups:
       - tests/test_workflow_second_whole_word.py
       - tests/test_workflow_called_bodies.py
       - tests/test_workflow_function_headers.py
+      - tests/test_workflow_written_files.py
       - tests/test_workflow_in_front_of_a_command.py
       - tests/test_workflow_prefix_assignment.py
       panels:
