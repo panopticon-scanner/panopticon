@@ -13,7 +13,7 @@ from typing import cast
 
 import shell_reader
 from shell_reader import command, statements
-from workflow_called import _UNSURE, _reached, _written
+from workflow_called import _UNSURE, _reached, _skipped_call, _written
 from workflow_fetch import (FETCHERS, Fetch, compound_stream_consumer, parse_fetch,
                             stdout_fetch, stream_consumer)
 from workflow_gating import (Inlined, _piped_group_stage, _structural_groups,
@@ -406,6 +406,43 @@ def _function_barrier(stmts, start, stop, name, starts):
     return False
 
 
+def _possible_called_readonly(stmts, bodies, branches, conditionals, shell):
+    """Global readonly names any reachable execution of these bodies may establish."""
+    found = set()
+    starts = _function_ranges(stmts)[0]
+    for start, close in bodies:
+        nested = {at for entries in starts.values() for _name, head, end in entries
+                  if head > start for at in range(head, end + 1)}
+        local, subshells = set(), 0
+        for at in range(start, close + 1):
+            statement = stmts[at]
+            for stage in statement.stages:
+                argv = list(command(stage.argv))
+                name = os.path.basename(str(argv[0])) if argv else ""
+                words = argv[1:] if name in ("local", "declare", "typeset") else ()
+                local_here = {str(word).split("=", 1)[0] for word in words
+                              if not str(word).startswith(("-", "+"))}
+                if any(str(word).startswith(("-", "+")) and "g" in str(word)[1:]
+                       for word in words):
+                    local_here.clear()
+                child = bool(at in nested or subshells or stage.group_open
+                             or len(statement.stages) != 1 or statement.separator == "&")
+                certain = not (child or at in branches or at in conditionals
+                               or at and stmts[at - 1].separator in ("&&", "||"))
+                if certain:
+                    local.update(local_here)
+                made_readonly = _declaration_attributes(stage, shell)[0]
+                if not child:
+                    found.update(made_readonly - local - local_here)
+                if name == "return" and certain:
+                    break
+                subshells = max(0, subshells + stage.group_open - stage.group_close)
+            else:
+                continue
+            break
+    return found
+
+
 def _called_assignments(stmts, index, starts, held, branches, conditionals, outer, probe,
                         shell=None, bodies=None):
     """Certain caller-visible assignments and readonly names from one direct call."""
@@ -635,7 +672,13 @@ def carried(stmts, executors, shell=None):
             # A body with no scalar assignment or declaration attribute cannot
             # alter either carried state. Avoid re-reading it at every call site:
             # large, repeatedly called bodies are a bounded-work contract (#2855).
-            if sure and any(body in stateful_bodies for body in bodies):
+            stateful_call = any(body in stateful_bodies for body in bodies)
+            possible_readonly = (_possible_called_readonly(
+                stmts, bodies, branches, conditionals, shell
+            ) if bodies and not child and stateful_call
+                and not _skipped_call(stmts, index, branches) else set())
+            called_readonly: set[str] = set()
+            if sure and stateful_call:
                 called, called_plain, called_readonly = _called_assignments(
                     stmts, index, starts, held, branches, conditionals, outer, probe, shell, bodies
                 )
@@ -647,6 +690,7 @@ def carried(stmts, executors, shell=None):
                 plain.difference_update(called)
                 plain.update(replaced_carry)
                 readonly.update(called_readonly)
+            blocked.update(possible_readonly - called_readonly)
         for stage in statement.stages:              # a `( )` or `{ }` group, as `_errexit_states`
             subshells = max(0, subshells + stage.group_open - stage.group_close)
         if not isinstance(statement, Inlined):

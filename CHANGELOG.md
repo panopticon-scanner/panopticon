@@ -251,7 +251,17 @@ evidence exposed.
   round 3 carries a certain called body's global `readonly` or `declare -gr` attribute back to its
   caller, so an assignment that can fail there cannot retire the held download; local and child
   attributes still do not escape the body. Both review rows and their late-call control report
-  under all five shell postures.
+  under all five shell postures. Review round 4 applies that rule fail-closed when either the call
+  or the caller-visible readonly declaration is conditional, nested, redirected, or found through
+  multiple definitions. All seven review shapes now REPORT under all five shell postures; a prior
+  pipeline call also retains #3083's finding and the later eval refusal. Dead and child calls,
+  local attributes, and a replacement made in the body before readonly remain CLEAN. A
+  caller-side assignment after that last control conservatively over-reports because the readonly
+  makes the assignment uncertain. Across the expanded 1,000-cell review matrix, 796 cells stay
+  REPORT, 139 intended cells stay CLEAN, 30 controls stay CLEAN, and the 35 round-4 target cells
+  move from CLEAN to REPORT. The 960 previously banked cells and all 120 workflow-guard cells from
+  #3083 are byte-identical. Final module sizes are 699 lines for `workflow_carried.py`, 607 for
+  `workflow_called.py`, 441 for `workflow_forms.py`, and 638 for `workflow_guard.py`.
 
 - **Workflow guard applies a prefix assignment after its command's words expand (#2433).**
   `x=$(curl ...) eval "$x"` and its `sh -c` twin reported as handing the new value straight to

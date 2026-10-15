@@ -238,6 +238,24 @@ def _reached(stmts, position, starts):
     return bodies
 
 
+def _skipped_call(stmts, index, branches):
+    """Whether a bounded literal status proves this call cannot run."""
+    if index:
+        before = stmts[index - 1]
+        argv = command(before.stages[-1].argv) if before.stages else []
+        if (before.separator == "&&" and argv == ["false"]
+                or before.separator == "||" and argv == ["true"]):
+            return True
+    region = branches.get(index)
+    first = next((at for at in range(index + 1) if branches.get(at) == region), None)
+    if not region or first is None or not first:
+        return False
+    stage = stmts[first].stages[0]
+    before = stmts[first - 1].stages[-1]
+    return (stage.argv[:1] == ["then"] and before.argv[:1] in (["if"], ["elif"])
+            and command(before.argv) == ["false"])
+
+
 def _subshell(stmts, start, close):
     """Whether the body defined at `start` runs in a subshell: its header's stage opens a `(`
     that no `{` follows (`f() ( T=x )`, `f() ( echo { ; T=x )`) or that the body's `}` does not
