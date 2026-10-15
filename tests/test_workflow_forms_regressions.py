@@ -212,11 +212,12 @@ class TestCombinedPipeline(unittest.TestCase):
 class TestFetchCompatibility(unittest.TestCase):
     def test_single_owner_and_legacy_shapes(self):
         # The #2884 PR moves this expectation from 13 to 14: `stdin_reads`, the final fd-0 file
-        # provenance, defaults to `()`. #2744's `pipe_output_fds` still defaults to `("1",)`, and
-        # the legacy six-argument shape still builds.
-        self.assertEqual(14, len(shell_reader.Stage._fields))
+        # provenance, defaults to `()`. #2440 moves it to 15: `redirected` defaults to false so a
+        # descriptor copy can be rejected by a status proof without becoming a file read/write.
+        # #2744's `pipe_output_fds` still defaults to `("1",)`, and the legacy six-argument shape builds.
+        self.assertEqual(15, len(shell_reader.Stage._fields))
         legacy = shell_reader.Stage([], [], [], None, [], [])
-        self.assertEqual((0, 0, True, True, ("0",), None, ("1",), ()), tuple(legacy)[6:])
+        self.assertEqual((0, 0, True, True, ("0",), None, ("1",), (), False), tuple(legacy)[6:])
         self.assertEqual(("tool", "url", "dest", "piped_to"), forms.Fetch._fields)
         for name in ("Fetch", "FETCHERS", "STDOUT", "parse_fetch", "streamed_fetch"):
             self.assertIs(getattr(forms, name), getattr(fetches, name))
