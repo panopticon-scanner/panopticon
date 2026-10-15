@@ -7,6 +7,42 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader reads a function header behind a group's `(` and a name bash takes, and the
+  header test costs one lookup a `(` (#2977; #2975 parts B and C).** `( f() { sh t; }; f )` and
+  `a.b() { sh t; }` ⏎ `a.b` ran the download under every parent (the bash parents for the name: dash
+  refuses it) and read CLEAN: the splitter asked, at every `(` behind a `()`, whether every word in
+  front was a keyword, and the group's own token stood in front; and `shell_command._NAME` stopped
+  at `[A-Za-z0-9_-]`, where bash takes `.`, `:`, `+` and `@`. To ask, the test joined and split the
+  whole stage buffer, and the `esac` test at every `)` joined it again, so one statement of n
+  headers cost n joins and a walk over n words each: 8,000 `f() ` took 6.1 s on the forge, about
+  x3.4 a doubling (#2977). The three facts the header test asks -- the word the `(` closes, whether
+  every word in front is a keyword, whether the one before is `function` -- and the one the `esac`
+  test asks are carried word to word now; a group's `(` starts the front over, a closed group `)`
+  and any other word end it, and a case arm's token starts it over as `main`'s slice did. `_NAME`,
+  `_FUNCTION` and the function table's two patterns (`workflow_function_calls`, by grant) take the
+  four characters, so a never-called `a.b() { CHECK || exit 1; }` is no gate, as `f() { … }` is none
+  (#2949). The #2954-side kit's three S2 and six S3 rows report under every setting; its own-line,
+  `function` and substitution twins read as they did (the S3 own-line rows over-report under `sh` as
+  they did: `main`'s posture); `( f() { CHECK || exit 1; }; f )` ⏎ `sh t` reads as the plain `(
+  CHECK || exit 1 )` ⏎ `sh t` does on `main` (CLEAN under `-e`, where the subshell's status stops
+  the step; REPORTED under `{0}`), where `main` reported it with the function unread. Part A, a
+  header on the line of another header's `{` (`f() { g() { sh t; }; g; }`, the five S6 rows), is
+  held back and pinned as a limit: read as a header there, a gate in the inner body is credited as
+  the outer body's own -- the function table holds no nested one-line definition -- and `f() { g() {
+  CHECK || exit 1; }; }` ⏎ `f` ⏎ `sh t` (`g` never called, every parent runs the download) would
+  read CLEAN; #2975 stays open for it. Differential on the forge, 61d0db7c against main d88f89c8 on
+  27,100 rows (the 26,982-row kit, 15 of the #2973 rows and the 103-row #2954-side kit): 0 failures,
+  **0 REPORT->CLEAN cells**, 27,091 rows identical, **9 rows CLEAN->REPORT** (225 cells) -- the
+  three S2 and six S3 rows -- and nothing else; no REPORT->REPORT change; 4,378 s wall on eight
+  shards at nice 10. The growth pin's text on the forge (CPU time, load 14-17): `f() ` x 1,000 /
+  2,000 / 4,000 / 8,000 reads in 0.10 / 0.21 / 0.41 / 0.82 s here, x2.0 a doubling, where `main`
+  takes 0.19 / 0.57 / 1.93 / 6.91 s, x3.1 to x3.6. `shell_reader.output_alias_fd` drops its
+  unreachable `or "/"` (the root is dropped only in front of a `/`). Pins:
+  `tests/test_workflow_function_headers.py`, and the growth pin in `tests/test_shell_reader.py`
+  (`f() ` x 1,500 and x 6,000, `main`'s shape, CPU time). `scripts/shell_split.py` is 406 lines
+  (+15); `shell_command.py` 699 and `shell_reader.py` 490 (0 net); `workflow_function_calls.py` 0
+  net.
+
 - **Workflow reader reads a call of a function the step defines as the body's shell reading the
   call's input, and as the body's use of the file (#2973, #2982).** `f() { bash -s; }` ⏎ `curl … |
   f` ran the download under every parent and read CLEAN: the fetch's consumer is the call's command
