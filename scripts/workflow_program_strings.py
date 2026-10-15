@@ -22,7 +22,7 @@ import shell_reader
 from shell_text import Process
 from workflow_options import (VALUE_OPTIONS, Handed, _MAINS, _dash_c_strings, _may_be_name, _past_options,
                               _reopened, _shell_candidates, _sure_string, _value)
-from workflow_option_words import beside, lifted, spells, written
+from workflow_option_words import beside, lifted, spells, uncovered_argv, written
 from workflow_printers import rendered
 
 
@@ -78,7 +78,25 @@ def _main_scripts(argv):
 def _added_strings(argv):
     """A shell's `-c` strings this walk reads (`_dash_c_strings`, #2858) that `main`'s does not."""
     shell, mains = bool(argv) and os.path.basename(argv[0]) in _SHELL_STRING, set(map(id, _program_words(argv)))
-    return [word for word in _dash_c_strings(argv) if id(word) not in mains] if shell else []
+    return [word for word in _also(argv, _dash_c_strings) if id(word) not in mains] if shell else []
+
+
+def _also(argv, read):
+    """What `read` finds in `argv`, then what it finds in the words read with each one `uncovered`
+    (#3042) -- the step's own words alone, each once (`_added`)."""
+    found, alt = read(argv), uncovered_argv(argv)
+    return found if alt is None else _added(argv, found, read(alt))
+
+
+def _added(argv, found, more):
+    """`found`, then each word of `more` that is the step's own (`argv`'s) and not in `found`, once: an
+    uncovered word is none of the step's, and where it is a string `found` holds it as written."""
+    mine, seen, out = set(map(id, argv)), set(map(id, found)), list(found)
+    for word in more:
+        if id(word) in mine and id(word) not in seen:
+            seen.add(id(word))
+            out.append(word)
+    return out
 
 
 def _program_words(argv):
@@ -176,8 +194,12 @@ def _after_dash_c(argv, plus=True):
     A parameter reference is such a word too (#2889), and there `main` read on alone: so the words
     `main` found stand FIRST and as it found them, and what the rule's reading adds after them
     (`beside`; `X=x; sh -$X ./a -c P` hands on `P`, then `./a`).
+
+    An expansion in FRONT of an option word may print nothing too (#3042): `sh $X-c P` runs `P` with
+    `X` unset, as `sh -c P` does, where `main` read `$X-c` as the FILE. So the rule's reading reads
+    the words that way as well (`uncovered`), after reading them as written (`_also`).
     """
-    mains, found = beside(lambda: _strings(argv, plus))
+    mains, found = beside(lambda: _also(argv, lambda words: _strings(words, plus)))
     seen = set(map(id, mains))
     return mains + [word for word in found if id(word) not in seen]
 
@@ -242,12 +264,18 @@ def candidates(argv):
     value with no word after it is its own: bash makes the shell's words of its output, the program
     among them (`sh $(echo tool)`), where a `<(…)` hands it a file (`shell_reader.yields_words`).
 
-    `main`'s answer (`_candidates`), then the words this walk adds (`_shell_candidates`, #2858)."""
+    `main`'s answer (`_candidates`), then the words this walk adds (`_shell_candidates`, #2858), then
+    both over the words `uncovered` (#3042: `Y=-c; sh $X-e $Y P` runs `P`), the step's own alone."""
     value, words = _candidates(argv)
     shell = bool(argv) and not _MAINS.get() and os.path.basename(argv[0]) in _SHELL_STRING
     more, added = _shell_candidates(argv) if shell else (None, [])
     seen = set(map(id, words))
-    return (more if value is None else value), words + [word for word in added if id(word) not in seen]
+    value, words = (more if value is None else value), words + [word for word in added if id(word) not in seen]
+    alt = uncovered_argv(argv)
+    if alt is None:
+        return value, words
+    other, also = candidates(alt)               # no word of `alt` is uncovered again: one level
+    return (other if value is None else value), _added(argv, words, also)
 
 
 def _candidates(argv):

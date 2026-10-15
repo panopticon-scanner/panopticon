@@ -22,8 +22,9 @@ MOVED = ("Opaque", "_EDGE", "_NAME", "_SHELL_STRING", "_added_strings", "_after_
          "_all_expansion", "_candidates", "_joined", "_main_scripts", "_program_words", "_script",
          "candidates", "dynamic_program", "scripts")
 # Defined here since the move, by later pieces, and read through no other module: #2889's search for a
-# `-c` cluster, a loop over the words that may be it (`_after_dash_c`).
-ADDED = ("_clusters", "_strings")
+# `-c` cluster, a loop over the words that may be it (`_after_dash_c`), and #3042's reading of the words
+# with each one `uncovered` beside them as written (`_also`, `_added`).
+ADDED = ("_added", "_also", "_clusters", "_strings")
 # Every name a file under `scripts/`, `tests/` or `skill/` read through `workflow_programs` on `main`
 # when the half moved (5c4d00bd): by a `from` import, as an attribute, as a `patch.object` target, or
 # by `getattr` over a list of names -- the pins of the two earlier moves out of this module, the option
