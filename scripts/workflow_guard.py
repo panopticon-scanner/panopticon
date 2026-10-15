@@ -263,7 +263,7 @@ from workflow_fetch import (Fetch, compound_output, compound_streamed_fetch, for
                             is_forwarded_tee)
 from workflow_forms import (FETCHERS, SHELL_PROGRAM, Idle, Inlined, Reach, Unsure, carried,
                             compound_stream_consumer, file_bound_reasons, flattened, kept, located,
-                            parse_fetch, prefix_expanded_program, prefix_handoff, regions,
+                            may_carry_fetch, parse_fetch, prefix_expanded_program, prefix_handoff, regions,
                             stdin_program, step_credit,
                             streamed_fetch as streamed_fetch, unbound, unread_program,
                             working_directories)
@@ -327,7 +327,9 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                         (named := parse_fetch(tool, fetch_argv[1:], body, None)) is not None
                         and named.dest is not None):
                     continue
-                reader_following = following if leaves else ()
+                # A call of a function the step defines, or a bare group opener, behind the fetch is read as the
+                # stage of its body that reads the fetch's output as a shell (`CalledFetches.consumers`, #2973).
+                reader_following = calls.consumers(index, following) if leaves else ()
                 fetch_stage, piped_to = compound_output(stmts, out, index, stage, reader_following) if leaves \
                     else (body, None)
                 fetch = parse_fetch(tool, fetch_argv[1:], fetch_stage, piped_to)
@@ -361,7 +363,10 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
             reason = program if inside and program else _unread_stdin(stage, before) or program
             if reason:
                 unread.append((index, reason))
-            consumer = tuple(t for t in argv if not shell_reader.is_marker(t)) or None
+            # What a substitution the stage holds is handed to: the body's reader for a call (#2973), asked
+            # only where there is a substitution -- a call's body is walked for nothing otherwise.
+            consumer = tuple(t for t in (calls.consumer_words(index, stage, argv) if stage.substitutions else argv)
+                             if not shell_reader.is_marker(t)) or None
             executes = consumer and os.path.basename(consumer[0]) in EXECUTORS
             value_exec = consumer and stdin_program(consumer[:1]) == VALUE_PROGRAM
             for subno, text in enumerate(stage.substitutions):
@@ -379,7 +384,16 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                                   or not executes and fetch.piped_to is None
                                   or value_exec and is_forwarded_tee(fetch)) else fetch)
                              for _inner, fetch in fetched)
-    return found, unread + (carried(stmts, EXECUTORS) if found else [])
+    # Ask the holder's own predicate whether an assignment can carry a stream;
+    # a dynamic wget option can stream even while its parallel file reading has
+    # a destination. Keep ordinary file-only steps off this state pass (#2855).
+    if found and may_carry_fetch(stmts):
+        carried_reasons, cleared = carried(stmts, EXECUTORS, shell)
+        unread = [(index, reason) for index, reason in unread
+                  if not (variable := getattr(reason, "program_variable", None))
+                  or (index, variable) not in cleared]
+        unread += carried_reasons
+    return found, unread
 
 
 def _fetch_records(stmts, stream_exec=False):

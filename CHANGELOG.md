@@ -27,6 +27,125 @@ evidence exposed.
   target/control handlers is byte-identical on the issue's three historical baselines and current
   `main`; the branch changes only 234 intended REPORT -> CLEAN rows, with 636 REPORT -> REPORT and
   30 CLEAN -> CLEAN.
+- **Workflow reader reads a function header behind a group's `(` and a name bash takes, and the
+  header test costs one lookup a `(` (#2977; #2975 parts B and C).** `( f() { sh t; }; f )` and
+  `a.b() { sh t; }` ⏎ `a.b` ran the download under every parent (the bash parents for the name: dash
+  refuses it) and read CLEAN: the splitter asked, at every `(` behind a `()`, whether every word in
+  front was a keyword, and the group's own token stood in front; and `shell_command._NAME` stopped
+  at `[A-Za-z0-9_-]`, where bash takes `.`, `:`, `+` and `@`. To ask, the test joined and split the
+  whole stage buffer, and the `esac` test at every `)` joined it again, so one statement of n
+  headers cost n joins and a walk over n words each: 8,000 `f() ` took 6.1 s on the forge, about
+  x3.4 a doubling (#2977). The three facts the header test asks -- the word the `(` closes, whether
+  every word in front is a keyword, whether the one before is `function` -- and the one the `esac`
+  test asks are carried word to word now; a group's `(` starts the front over, a closed group `)`
+  and any other word end it, and a case arm's token starts it over as `main`'s slice did. `_NAME`,
+  `_FUNCTION` and the function table's two patterns (`workflow_function_calls`, by grant) take the
+  four characters, so a never-called `a.b() { CHECK || exit 1; }` is no gate, as `f() { … }` is none
+  (#2949). The #2954-side kit's three S2 and six S3 rows report under every setting; its own-line,
+  `function` and substitution twins read as they did (the S3 own-line rows over-report under `sh` as
+  they did: `main`'s posture); `( f() { CHECK || exit 1; }; f )` ⏎ `sh t` reads as the plain `(
+  CHECK || exit 1 )` ⏎ `sh t` does on `main` (CLEAN under the `-e` settings, where bash 5.2.21 and
+  dash stop the step at the subshell's status and bash 3.2.57 runs on -- #2846, inherited, on both
+  trees; REPORTED under `{0}`), where `main` reported it with the function unread. Part A, a header
+  on the line of another header's `{` (`f() { g() { sh t; }; g; }`, the five S6 rows), is held back
+  and pinned as a limit: read as a header there, a gate in the inner body is credited as the outer
+  body's own -- the function table holds no nested one-line definition -- and `f() { g() { CHECK ||
+  exit 1; }; }` ⏎ `f` ⏎ `sh t` (`g` never called, every parent runs the download) would read CLEAN;
+  #2975 stays open for it. Differential on the forge, 61d0db7c against main d88f89c8 on 27,100 rows
+  (the 26,982-row kit, 15 of the #2973 rows and the 103-row #2954-side kit): 0 failures, **0
+  REPORT->CLEAN cells**, 27,091 rows identical, **9 rows CLEAN->REPORT** (225 cells) -- the three S2
+  and six S3 rows -- and nothing else; no REPORT->REPORT change; 4,378 s wall on eight shards at
+  nice 10. The growth pin's text on the forge (CPU time, load 14-17): `f() ` x 1,000 / 2,000 / 4,000
+  / 8,000 reads in 0.10 / 0.21 / 0.41 / 0.82 s here, x2.0 a doubling, where `main` takes 0.19 / 0.57
+  / 1.93 / 6.91 s, x3.1 to x3.6. `shell_reader.output_alias_fd` drops its unreachable `or "/"` (the
+  root is dropped only in front of a `/`). Pins: `tests/test_workflow_function_headers.py`, and the
+  growth pin in `tests/test_shell_reader.py` (`f() ` x 1,500 and x 6,000, `main`'s shape, CPU time).
+  `scripts/shell_split.py` is 406 lines (+15); `shell_command.py` 699 and `shell_reader.py` 490 (0
+  net); `workflow_function_calls.py` 0 net.
+
+- **Workflow reader reads an expansion in FRONT of an option word as that option word too (#3042).**
+  `sh $X-c 'curl ... | sh'` runs the string under every parent shell with `X` unset, and read CLEAN,
+  and so did `wget $X-qO- URL | sh`, `wget $X-O f URL && sh f` and `sh $(true)-s <<'EOF'` with a
+  download in its body: every reader took an option word to be one that begins with a written `-` or
+  `+`, so `$X-c` was the FILE the shell runs and the string that FILE's parameter.
+  `workflow_option_words.uncovered` reads a word whose leading expansions may print nothing -- `$X`,
+  `${X:-}`, `"$X"`, `$X$Y`, `$(true)`, `$1`, `$@` -- as the option word written behind them, where
+  that begins with `-` or `+`. The search for the `-c` string, the second walk's strings, the search
+  for a value and the second walk's program on stdin read the words that way too, after reading them
+  as written, and hand on the step's own words alone; the fetch reader takes the transfer the words
+  then name where it has a URL, its stream beside the first. The reading has a switch of its own
+  (`as_main`), because `main` has had #2889's rule on since that merged: with it off every reader
+  answers as `main` does, and wherever it answered the job's floor reads `main`'s whole answer first
+  -- the job with this reading off, #2889's floor in it -- so what `main` reports stands first and
+  whole (an independent pre-review found fourteen steps a floor of #2889's one switch would have
+  lost). Measured against `main` `c4690b3c`: on 421 rows in seven hunts with truth from eight parent
+  shells, 249 rows a parent runs and `main` reads CLEAN report, 60 that run nothing are newly
+  reported (the price above), 5 stay open (`main`'s own limits: a dynamic program beside no
+  download, and `wget $""-qO-`, `$"-qO-"` and `{,}-qO-`), and no report of `main`'s is lost; on the
+  14,322 rows of #2889's thirteen grids no row moves, under either marker (195 stay open on both
+  trees, as #2889 left them); with the reading off the findings equal `main`'s byte for byte on
+  240,847 rows in 111 sets, in strict mode too; where it answered, 550 rows, the head reports more
+  in 458 and loses none; in 36,000 fuzzed steps a third of whose option words are fronted the job
+  loses no report of `main`'s -- the first pass alone reads 221 fetcher steps quieter, and the job's
+  floor keeps `main`'s marks in every one -- and reports 648 more, 116 of which a parent runs. The
+  price, as #2889's: the guard follows no value, so `X=x; sh $X-c '...'` is reported and runs
+  nothing; a quoted or escaped `$` reaches the readers unquoted; an expansion that always prints
+  (`$0`, `$_`, `${#+c}`, `<(...)`) is read as any other; and a word after such a word is read as one
+  that may be the string or a value, as its written twin is on `main` (`bash
+  ${TOOL}-${VERSION}/install.sh "$PREFIX"` beside a download is reported, as `bash
+  -${VERSION}/install.sh "$PREFIX"` is).
+  `workflow_guard.py` and `workflow_options.py` are untouched.
+
+- **Workflow reader reads a call of a function the step defines as the body's shell reading the
+  call's input, and as the body's use of the file (#2973, #2982).** `f() { bash -s; }` ⏎ `curl … |
+  f` ran the download under every parent and read CLEAN: the fetch's consumer is the call's command
+  word, `f`, which names no executor. And `f() { sh tool; }` ⏎ `curl -fsSLo tool …` ⏎ `f` ran it and
+  read CLEAN: the use reader weighed a body's stage as written only on a call that passes the file,
+  and a body before the fetch is one the walk never reaches.
+  `workflow_called.CalledFetches.consumers` now puts, where a call stands behind a fetch -- or a
+  bare `{` or `(` that opens a group on its own -- the stage of the body (the group's statements,
+  and the bodies they call, eight deep) that reads the call's standard input as a shell: the first
+  such stage, or the first behind one that pipes on (`cat | sh`, `tee log | sh`); one reading a file
+  or a heredoc of its own, or no shell at all, is passed over, fail-closed. One price, named: where
+  the call redirects the fetched file in, a body whose shell runs a file other than the call's input
+  (`f() { sh other; }` ⏎ `f < tool`) is still read as the call's consumer, as `main` reads `sh other
+  < tool` -- an over-report, fail-closed. The stage carries the call's own input (`with_call_stdin`:
+  the pipe, a file, a here-string, the descriptors its redirections leave), and
+  `workflow_guard._walk` hands the fetch's following stages and a stage's substitutions through it
+  (`f <<< "$(curl …)"`, `f < <(curl …)`). `workflow_uses._function_use` weighs each body stage as
+  written on any call, with the call's input (`f < t`). The kit's twenty S9 rows and Z01 report
+  under every setting; s9.benign (a body that counts lines), the group and inline controls and Z02
+  read as they did; a piped group on lines of its own with a plain shell inside, CLEAN on `main` by
+  the same cut, reports now. Differential on the forge, c4d29f3b against main c3528daa on 27,020
+  rows (the 26,982-row kit and 38 of this PR's own): 0 failures, **0 REPORT->CLEAN cells**, 26,995
+  rows identical, **25 rows CLEAN->REPORT** (185 cells) and nothing else -- the kit's twenty S9
+  rows, Z01, its check-between twin (an unbound `sha256sum -c sums || exit 1` between the fetch and
+  the call: reported as `main` reports it before a plain `sh tool`, no `sums` written), the kit's
+  owntw:AV036 (`f() { sh "$@"; }` ⏎ `f /dev/fd/3 3< tool`: the body's `sh` on the call's descriptor,
+  runs), and the two own-line piped group rows. No REPORT->REPORT change. The first run, at
+  2ec9f11b, had moved ten more rows of the halves kit's `xr.*.function` family -- a body that holds
+  the fetch behind a run of the file, called once, which runs nothing -- and that is 668d15cb's fix
+  (the definition must close before the fetch); 4,379 s wall on eight shards at nice 10; run 2, at
+  668d15cb, moved the same 25 rows (4,475 s). `tests/test_workflow_called_bodies.py`.
+  `scripts/workflow_called.py` is 589 lines (+98), `workflow_guard.py` 629 (+5), `workflow_uses.py`
+  597 (+7).
+- **Workflow guard fails closed when a whole-word expansion may name `wget`'s output
+  (#3034).** `X='-O tool'; wget $X URL; sh tool` read CLEAN under all five `shell:`
+  settings while every truth runner wrote and ran `tool`; so did the quoted attached form
+  (`X=-Otool`), an unquoted substitution, a bare `-O` before a written name, and the row whose
+  checksum names the URL basename that was never written. The file reading now refuses a bounded
+  basename where an expansion operand stands beside a written-scheme URL and stdout has no pipe or
+  redirect, yielding the existing unresolved-transfer finding. That reading is under #2889's
+  switch and therefore stands beside the old basename view; its separate stream reading opts out,
+  preserving every direct-pipe report and leaving #3035's routed `tee`/redirect shapes pinned.
+  The price, named: an otherwise unused `wget $OPTS URL` now reports; a `wget` whose words hold an
+  expansion stays reported even where a bound checksum of the named file precedes its run, as
+  `curl` already does; and so do #3045's two dynamic process-substitution rows through the
+  unresolved file view (their direct stream binding remains the more precise follow-up). Two
+  unknown operands with no written URL remain bounded CLEAN.
+  Local differential on 14 rows under five settings and both guard passes: the five issue rows,
+  unused-options price and two #3045 rows move CLEAN -> REPORT (80 cells, 40 in the job reading),
+  six controls are unchanged (60 cells), and 0 cells move REPORT -> CLEAN.
 
 - **Workflow reader keeps a stage's second `${…}` word whole where it still stands before the
   command word (#2976).** `curl -fsSLo t …` ⏎ `${Y:+/usr/bin/env true} ${Z:+/usr/bin/env true} sh t`
@@ -196,6 +315,86 @@ evidence exposed.
   `_SOFT_STEP`, 12,203 `_UNSHARED_IF` and 480 `_UNSHARED_BRANCH`. The two dumps are equal byte for
   byte. The guard's command line, run as a script over 4,635 jobs, prints the same 4,256 findings
   under both. Sizes: 700 -> 586, and 138 for the new module.
+
+- **Workflow guard retires a carried stdout download after a certain same-shell replacement
+  (#2437).** A plain `x=1` or `unset x`, an assignment in `{ ...; }`, and an assignment in a
+  function the step then calls all left `x=$(curl ...)` held at a later `eval "$x"`; a literal
+  argument `{`, balanced `{}` arguments, and a line-only closing `)` exposed the same stale
+  answer through either the carried-download reason or #2483's generic dynamic-program fallback.
+  The carried-value walk now records the exact `(statement, variable)` where an expansion-free
+  replacement proves that fallback cannot be the download, and the existing quiet reason carries
+  the variable metadata needed to remove only that reason. A brace compound is read as the step's
+  shell unless its enclosing list can skip it, a boundary redirection can stop it, or the shell
+  forks it. A directly called function contributes
+  only caller-visible, unconditional assignments from one top-level definition that still exists;
+  a local, return path, branch, nested compound, child definition, `unset -f`, `eval`/source, or an
+  intervening known function keeps the old value fail-closed. Failed redirections, unseen writes
+  (`read`, arithmetic and parameter assignments), tilde expansion, aliases and traps retain the
+  generic reason. The child and skipped controls still
+  report, byte for byte: a 675-cell extension covering those boundaries under three fetch forms,
+  five uses, and five `shell:` settings is identical to `main`.
+  Across the 2,175-cell target/control cross-product against `main` 1cfb16de, 1,275 reports are
+  identical, 780 target reports become CLEAN, no CLEAN row becomes a report, and 120 reports keep
+  reporting with a narrower reason. Those 120 are the eight brace/function/literal target
+  spellings printed through `printf ... | sh`: the stale carried reason leaves while the existing
+  conservative printer fallback remains, a retained price. Runtime truth on Bash 3.2.57, GNU Bash
+  5.2.21 in default and POSIX modes, and dash suppresses the payload for all seven target families
+  and runs it for all seven must-trip controls. The state layer moved from the 700-line
+  `workflow_forms.py` into `workflow_carried.py` (441 and 655 lines) so the new proof stays below
+  the flat-module ceiling; the compatibility imports remain in `workflow_forms`. Review round 2
+  found that the performance gate used a file destination where the holder uses stream capability:
+  a wget option supplied through `$WOPTS` may write stdout while its parallel file reading names the
+  URL basename. The gate now calls the holder's own assignment predicate, restoring the carried
+  verdict for that form while file-only fetches retain the fast path. Replacement state is also
+  shell-aware at a POSIX special-builtin prefix (kept under the two `sh` postures, discarded under
+  the three Bash postures), and stays fail-closed after a Bash nameref target, a possibly-readonly
+  name, `time` around an assignment, `command read`, or a dynamic command/function call. On the
+  review seat's 189 rows under five shell settings (945 cells), 675 remain REPORT and 30 remain
+  CLEAN across `main`, round 1 and round 2; 139 intended REPORT -> CLEAN cells remain, and round 2
+  restores all 101 unsafe round-1 CLEAN cells to `main`'s REPORT, with no errors. The 150-line,
+  150-call file-fetch timing guard still passes; the measured stdout-fetch state pass costs about
+  14% over `main`, the bounded cost of tracking values that can actually carry a download. Review
+  round 3 carries a certain called body's global `readonly` or `declare -gr` attribute back to its
+  caller, so an assignment that can fail there cannot retire the held download; local and child
+  attributes still do not escape the body. Both review rows and their late-call control report
+  under all five shell postures. Review round 4 applies that rule fail-closed when either the call
+  or the caller-visible readonly declaration is conditional, nested, redirected, or found through
+  multiple definitions. All seven review shapes now REPORT under all five shell postures; a prior
+  pipeline call also retains #3083's finding and the later eval refusal. Dead and child calls,
+  local attributes, and a replacement made in the body before readonly remain CLEAN. A
+  caller-side assignment after that last control conservatively over-reports because the readonly
+  makes the assignment uncertain. After folding #3086, the expanded 1,000-cell review matrix has
+  811 cells that stay REPORT, 139 intended cells that stay CLEAN, 15 controls that stay CLEAN, and
+  35 round-4 target cells that move from CLEAN to REPORT. The 960 previously banked cells and all
+  120 workflow-guard cells from #3083 are byte-identical. Round-4 module sizes are 699 lines for
+  `workflow_carried.py`, 607 for `workflow_called.py`, 441 for `workflow_forms.py`, and 638 for
+  `workflow_guard.py`. Review round 5 makes the skip exception a proof: negated conditions and a
+  step-defined `true` or `false` cannot prove a call dead. A dynamic command word now makes later
+  plain replacements uncertain for the rest of the step, and the once-per-body attribute scan
+  reads readonly declarations folded into one-line nested definitions. The complete 54-row review
+  seat has 270 cells under the five shell postures: 195 expected reports and 75 expected clean
+  readings, with no mismatches. Exactly the 11 rejected rows, 55 cells, move from round 4's CLEAN
+  to REPORT; all other seat cells keep round 4's answer. An expanded 1,150-cell differential keeps
+  all prior 1,000 cells byte-identical, moves 75 target cells to REPORT (the 11 rows plus nested
+  declaration spellings and a redefined-`true` boundary), and leaves 70 clean control cells plus
+  the five accepted `while false` reports unchanged. The cached scan keeps the existing serial
+  cost gate green; alternating round-4/round-5 measurements were +4.6% for the file-only shape and
+  -5.7% for the stdout-holder shape. Round-5 module sizes were 677 lines for
+  `workflow_carried.py` and 663 for `workflow_called.py`; the other two remained 441 and 638
+  lines. Review round 6 follows a known function command folded behind an inner definition's
+  opening brace as a possible transitive call, rather than losing that call with the nested
+  function header. A certain `return` ends only the body at its own function depth, so a nested
+  body's return cannot stop the outer body's readonly scan. In a 285-cell round-5/round-6
+  differential, all 270 banked seat cells are byte-identical, Q14 and Q20 supply the only ten
+  CLEAN-to-REPORT changes, Q21 remains REPORT under all five shell postures, and no cell errors.
+  Review round 7 takes option A: one command-view enumeration applies the call, status-shadow,
+  negation, dynamic-command and readonly proofs at every brace depth, including definitions folded
+  into an outer header stage. A nested redefinition of `true` now defeats the dead-branch proof,
+  and a dynamic command inside an inner function makes the reachable body unknown; nested calls in
+  pipelines, background lists and parenthesized bodies remain CLEAN. In a 1,515-cell replay of all
+  posted seat rows, only W609b and W616 change from CLEAN to REPORT under the five shell postures.
+  Final module sizes are 678 lines for `workflow_carried.py` and 686 for `workflow_called.py`; the
+  other two remain 441 and 638 lines.
 
 - **Workflow guard applies a prefix assignment after its command's words expand (#2433).**
   `x=$(curl ...) eval "$x"` and its `sh -c` twin reported as handing the new value straight to
