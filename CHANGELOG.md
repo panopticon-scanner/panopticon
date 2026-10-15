@@ -359,8 +359,16 @@ evidence exposed.
   declaration spellings and a redefined-`true` boundary), and leaves 70 clean control cells plus
   the five accepted `while false` reports unchanged. The cached scan keeps the existing serial
   cost gate green; alternating round-4/round-5 measurements were +4.6% for the file-only shape and
-  -5.7% for the stdout-holder shape. Final module sizes are 677 lines for `workflow_carried.py` and
-  663 for `workflow_called.py`; the other two remain 441 and 638 lines.
+  -5.7% for the stdout-holder shape. Round-5 module sizes were 677 lines for
+  `workflow_carried.py` and 663 for `workflow_called.py`; the other two remained 441 and 638
+  lines. Review round 6 follows a known function command folded behind an inner definition's
+  opening brace as a possible transitive call, rather than losing that call with the nested
+  function header. A certain `return` ends only the body at its own function depth, so a nested
+  body's return cannot stop the outer body's readonly scan. In a 285-cell round-5/round-6
+  differential, all 270 banked seat cells are byte-identical, Q14 and Q20 supply the only ten
+  CLEAN-to-REPORT changes, Q21 remains REPORT under all five shell postures, and no cell errors.
+  Final module sizes are 677 lines for `workflow_carried.py` and 668 for `workflow_called.py`;
+  the other two remain 441 and 638 lines.
 
 - **Workflow guard applies a prefix assignment after its command's words expand (#2433).**
   `x=$(curl ...) eval "$x"` and its `sh -c` twin reported as handing the new value straight to
