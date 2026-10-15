@@ -83,10 +83,11 @@ from workflow_program_strings import (Opaque as Opaque, _EDGE as _EDGE, _NAME as
                                       _candidates as _candidates, _joined as _joined, _main_scripts as _main_scripts,
                                       _program_words as _program_words, _script as _script, candidates as candidates,
                                       dynamic_program as dynamic_program, scripts as scripts)
-from workflow_printers import (ANY as ANY, Named as Named, _PRINTERS as _PRINTERS, _piped as _piped,
-                               file_operand as file_operand, handed as handed, operand, rendered,
-                               printed as printed, producer as producer, spellings as spellings,
-                               substituted, unspelled as unspelled, unsubstituted, worded as worded)
+from workflow_printers import (_piped as _piped, _PRINTERS as _PRINTERS, ANY as ANY,
+                               file_operand as file_operand, grouped as grouped, GROUPED as GROUPED,
+                               handed as handed, Named as Named, operand, printed as printed,
+                               producer as producer, rendered, spellings as spellings, substituted,
+                               unspelled as unspelled, unsubstituted, worded as worded)
 
 
 # An interpreter given no program to run reads one from its STANDARD INPUT, and
@@ -405,7 +406,7 @@ def runs_under(argv, reader, name):
     return Named(name)                      # a string, a value, a default, or no reader: both ways
 
 
-def stdin_scripts(argv, stage, before=None, shell=None):
+def stdin_scripts(argv, stage, before=None, shell=None, statements=None):
     """The script this stage hands an interpreter on its stdin, if it does, or as a `<(...)` FILE.
 
     A quoted delimiter hands over the body as written, so reading it is as sound as an `eval`
@@ -433,12 +434,15 @@ def stdin_scripts(argv, stage, before=None, shell=None):
     `bound_stdin` drops that uncertain read when a job fetch binds the word (#2607). Inside a
     `$(...)`, `workflow_forms.substitution_script` weighs printed text as a shell's. `unprinted`
     weighs a shell's printer only, so `echo "$X" | $CMD` remains unread, filed under #2331."""
-    here = stage.stdin_heredoc or handed(stage, before)
+    here = stage.stdin_heredoc or handed(stage, before, statements)
     if (filed := substituted(operand(argv))) is not None or here is not None:   # `<(...)` FILE
         readings = texts = [here[0] if filed is None else filed]
+    elif (joined := grouped(stage, before, shell, statements)) is not None:     # (#3026) a group's statements
+        readings = texts = joined
     else:
-        source, intact = producer(stage, before)
-        readings = spellings(shell_reader.acted(source.argv), source, shell) if intact else []
+        source, intact = producer(stage, before, statements)
+        readings = spellings(shell_reader.acted(source.argv), source, shell) if intact and intact is not GROUPED \
+            else []
         texts = [t for t in readings if t is not None]
     if not texts:
         return []
@@ -469,7 +473,7 @@ def stdin_scripts(argv, stage, before=None, shell=None):
     return out
 
 
-def unprinted(argv, stage, before, shell=None):
+def unprinted(argv, stage, before, shell=None, statements=None):
     """The name and texts `unread_program` weighs (each text apart, review N-1) for the program this
     shell reads where no printer spells it out, or [] (`unspelled`, once `stdin_program` names a
     shell reading stdin; else a `<(...)` FILE's, `unsubstituted`, #2487): the `echo` or `printf`
@@ -481,4 +485,4 @@ def unprinted(argv, stage, before, shell=None):
     on intact (`printed` or `_unread_stdin` has it, R-F13)."""
     if stage.stdin_heredoc is not None or stdin_program(argv) != SHELL_PROGRAM:
         return unsubstituted(operand(argv))
-    return unspelled(stage, before, shell)
+    return unspelled(stage, before, shell, statements)

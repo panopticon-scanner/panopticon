@@ -5458,8 +5458,15 @@ class TestACompoundCommandFeedsItsClosingPipeline(unittest.TestCase):
                          "{ { echo \"$payload\"; }; } | sh\n"):
             with self.subTest(compound=compound):
                 why = wg.fetch_exec_defects(assignment + compound)
-                self.assertEqual(1, len(why), why)
-                self.assertIn("carries %s in `$payload`" % self.URL, why[0])
+                # #3026 reads a group's printer down the pipe, so the three the parser splits into statements
+                # (a `;` or a newline before the closer) carry one more finding: the quiet "pipes `sh` its
+                # program from `echo`" the plain `echo "$payload" | sh` makes too, which `kept` drops there
+                # beside the loud carried one at the same statement, and keeps here, the shell standing at the
+                # closer's statement and the carried reason at the printer's. One finding again under #3095.
+                split = compound in ("{ echo \"$payload\"; } | sh\n", "{\necho \"$payload\"\n} | sh\n",
+                                     "(\necho \"$payload\"\n) | sh\n")
+                self.assertEqual(2 if split else 1, len(why), why)
+                self.assertIn("carries %s in `$payload`" % self.URL, why[-1])
 
     def test_a_local_stdout_redirect_disconnects_a_carried_printer(self):
         assignment = "payload=$(%s)\n" % self.FETCH
@@ -5472,8 +5479,8 @@ class TestACompoundCommandFeedsItsClosingPipeline(unittest.TestCase):
             with self.subTest(compound=compound):
                 self.assertEqual([], wg.fetch_exec_defects(assignment + compound))
         why = wg.fetch_exec_defects(assignment + "{ echo \"$payload\" 2>f; } | sh\n")
-        self.assertEqual(1, len(why), why)
-        self.assertIn("carries %s in `$payload`" % self.URL, why[0])
+        self.assertEqual(2, len(why), why)          # stdout still the pipe's: the carried one and #3026's quiet one
+        self.assertIn("carries %s in `$payload`" % self.URL, why[-1])
 
     def test_nonexecutors_disconnected_streams_and_local_filters_stay_clean(self):
         for script in (

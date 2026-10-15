@@ -2138,5 +2138,201 @@ class TestTheSubstitutionWalkReadsPerShell(unittest.TestCase):
         self.assert_reported(script, shells=("sh",))
 
 
+class TestAGroupHandsItsPrintedTextDownThePipe(unittest.TestCase):
+    """#3026: `{ P; } | sh` and `( P; ) | sh` read as `( P ) | sh` reads -- the parser keeps `{` as a word and a
+    `;` or a newline before the closer ends the statement, so the pipe had no printer in front. `_grouped` walks
+    back from the closer through the statements in front of its own; `producer` walks a one-pipeline group as if
+    it stood in the pipe, and `grouped` spells several single-stage printers in order."""
+
+    @staticmethod
+    def _closing(text):
+        """The shell's stage, the stages in front of it in its pipeline, and the statements in front of its own."""
+        stmts = list(shell_reader.statements(text))
+        statement = stmts[-1]
+        return statement.stages[-1], statement.stages[:-1], stmts[:-1]
+
+    def _pipelines(self, text):
+        stage, before, statements = self._closing(text)
+        found = wp._grouped(before[-1], before, statements)
+        return None if found is None else [[list(s.argv) for s in pipeline] for pipeline in found]
+
+    def test_the_closers_the_look_back_knows(self):
+        # A bare `}`; an empty stage closing a subshell after a `;` or a newline; the opener's `{` dropped.
+        self.assertEqual([[["echo", "ok"]]], self._pipelines("{ echo ok; } | cat\n"))
+        self.assertEqual([[["echo", "ok"]]], self._pipelines("{ echo ok\n} | cat\n"))
+        self.assertEqual([[["echo", "ok"]]], self._pipelines("( echo ok; ) | cat\n"))
+        self.assertEqual([[["echo", "ok"]]], self._pipelines("(\necho ok\n) | cat\n"))
+        self.assertEqual([[["echo", "ok"]], [["echo", "hi"]]], self._pipelines("{ echo ok; echo hi; } | cat\n"))
+        self.assertEqual([[["echo", "ok"]], [["echo", "hi"]]], self._pipelines("( echo ok; echo hi ) | cat\n"))
+        self.assertEqual([[["echo", "ok"], ["tee", "log"]]], self._pipelines("{ echo ok | tee log; } | cat\n"))
+
+    def test_what_the_look_back_passes_over(self):
+        # No statements in front; a closer that is none; a nested group; a redirect that takes the stdout away
+        # (#2430's reading of a compound's closing pipe); the opener alone on its line.
+        stage, before, _statements = self._closing("{ echo ok; } | cat\n")
+        self.assertIsNone(wp._grouped(before[-1], before, None))
+        self.assertIsNone(wp._grouped(before[-1], before, []))
+        self.assertIsNone(self._pipelines("echo ok | cat\n"))
+        self.assertIsNone(self._pipelines("{ { echo ok; }; } | cat\n"))
+        self.assertIsNone(self._pipelines("{ echo ok > f; } | cat\n"))
+        self.assertIsNone(self._pipelines("{ echo ok >> f; } | cat\n"))
+        self.assertEqual([[["echo", "hi"]]], self._pipelines("{ echo ok > f; echo hi; } | cat\n"))
+        self.assertEqual([[["echo", "ok"]]], self._pipelines("{\necho ok\n} | cat\n"))
+        self.assertEqual([[["echo", "ok"]]], self._pipelines("(\necho ok\n) | cat\n"))
+        # A statement `workflow_forms.flattened` read into place is not the step's own.
+        stage, before, statements = self._closing("{ echo ok; } | cat\n")
+        inlined = forms.Inlined(statements[0].stages, statements[0].separator, (), None)
+        self.assertEqual([[["echo", "ok"]]], [[list(s.argv) for s in p] for p in wp._grouped(before[-1], before, statements + [inlined])])
+
+    def test_the_producer_walks_a_one_pipeline_group(self):
+        for text in ("{ echo ok; } | cat\n", "{ echo ok\n} | cat\n", "( echo ok; ) | cat\n", "{ echo ok | tee log; } | cat\n"):
+            with self.subTest(text=text):
+                stage, before, statements = self._closing(text)
+                source, intact = wp.producer(stage, before, statements)
+                self.assertEqual(["echo", "ok"], list(source.argv))
+                self.assertIs(True, intact)
+        stage, before, statements = self._closing("{ echo ok | tr a-z A-Z; } | cat\n")
+        self.assertEqual((["echo", "ok"], False), (list(wp.producer(stage, before, statements)[0].argv), wp.producer(stage, before, statements)[1]))
+        stage, before, statements = self._closing("{ echo ok; } | cat\n")
+        self.assertEqual((None, False), wp.producer(stage, before))          # without the statements: as `main`
+
+    def test_several_statements_are_spelled_or_loud(self):
+        stage, before, statements = self._closing("{ echo ok; echo hi; } | cat\n")
+        self.assertIs(wp.GROUPED, wp.producer(stage, before, statements)[1])
+        self.assertEqual(["ok\nhi\n"], wp.grouped(stage, before, "bash", statements))
+        stage, before, statements = self._closing("{ printf '%s\\n' ok; echo hi; } | cat\n")
+        self.assertEqual(["ok\nhi\n"], wp.grouped(stage, before, "bash", statements))
+        # One no printer: nothing spelled, and `unspelled` answers LOUD; none a printer: no printer's at all.
+        stage, before, statements = self._closing("{ echo ok; cat f; } | cat\n")
+        self.assertIsNone(wp.grouped(stage, before, "bash", statements))
+        self.assertEqual(list(wp._GROUPED), wp.unspelled(stage, before, "bash", statements))
+        stage, before, statements = self._closing("{ echo \"$X\"; echo ok; } | cat\n")
+        self.assertIsNone(wp.grouped(stage, before, "bash", statements))
+        self.assertEqual(["echo", "$X", "ok"], wp.unspelled(stage, before, "bash", statements))
+        stage, before, statements = self._closing("{ cat f; cat g; } | cat\n")
+        self.assertEqual((None, False), wp.producer(stage, before, statements))
+        self.assertEqual([], wp.unspelled(stage, before, "bash", statements))
+        # A printer whose words spell two readings doubles the texts, up to the cap.
+        stage, before, statements = self._closing("{ echo 'a\\tb'; echo hi; } | sh\n")
+        self.assertEqual(2, len(wp.grouped(stage, before, wp.ANY, statements)))
+        many = "{ " + "echo 'a\\tb'; " * 4 + "} | sh\n"
+        stage, before, statements = self._closing(many)
+        self.assertIsNone(wp.grouped(stage, before, wp.ANY, statements))
+
+    def test_n_groups_read_in_linear_time(self):
+        # The growth pin: the look-back is local to each group, so a step of n groups costs n (the coordinator's
+        # ask, as `test_shell_reader.LinearGrowth` measures a parse: two sizes in this process's CPU time).
+        import gc
+        import time
+
+        def read(n, shape):
+            script = shape * n
+            enabled = gc.isenabled()
+            gc.disable()
+            try:
+                start = time.process_time()
+                found = defects(script)
+                elapsed = time.process_time() - start
+            finally:
+                if enabled:
+                    gc.enable()
+            self.assertEqual([], found)
+            return elapsed
+
+        for shape in ("{ echo ok; } | sh\n", "( echo ok; ) | sh\n"):
+            with self.subTest(shape=shape):
+                small, large = read(60, shape), read(240, shape)
+                if large > 8 * small + 0.25:
+                    small, large = min(small, read(60, shape)), min(large, read(240, shape))
+                self.assertLessEqual(large, 8 * small + 0.25, (small, large))
+
+
+class TestTheIssuesRowsAndTheirPrices(unittest.TestCase):
+    """#3026's shapes at the job, five postures each: the group family read as the plain pipe is; the forms
+    the look-back leaves as `main` reads them; the prefix control (#3007, the second walk); and the prices."""
+
+    SHELLS = (None, "bash", "sh", "bash {0}", "sh {0}")
+
+    def marks(self, text):
+        job = mains = ""
+        for shell in self.SHELLS:
+            step = [wg.Step("step", text, shell)]
+            job += "R" if wg.job_defects(step) else "C"
+            with wo.mains_answer():
+                mains += "R" if wg._job_defects(step) else "C"
+        return job, mains
+
+    ISSUE = (
+        ('brace', "{ echo \"sh -c '%s'\"; } | sh\n" % PIPE),
+        ('brace-nl', "{ echo \"sh -c '%s'\"\n} | sh\n" % PIPE),
+        ('sub-semi', "( echo \"sh -c '%s'\"; ) | sh\n" % PIPE),
+        ('sub-first', "( echo \"sh -c '%s'\"; echo ok ) | sh\n" % PIPE),
+        ('brace-first', "{ echo \"sh -c '%s'\"; echo ok; } | sh\n" % PIPE),
+        ('brace-second', "{ echo ok; echo \"sh -c '%s'\"; } | sh\n" % PIPE),
+        ('printf', "{ printf '%%s\\n' \"sh -c '%s'\"; } | sh\n" % PIPE),
+        ('plain-pipe', "{ echo '%s'; } | sh\n" % PIPE),
+    )
+    AS_MAIN = (
+        ('sub-nosemi', "( echo \"sh -c '%s'\" ) | sh\n" % PIPE),
+        ('sub-second', "( echo ok; echo \"sh -c '%s'\" ) | sh\n" % PIPE),
+    )
+    STAYS = (
+        ('nested', "{ { echo \"sh -c '%s'\"; }; } | sh\n" % PIPE),
+        ('redirect', "{ echo \"sh -c '%s'\" > f; } | sh\n" % PIPE),
+        ('to-cat', "{ echo \"sh -c '%s'\"; } | cat\n" % PIPE),
+    )
+    PREFIX = (
+        ('dflt-echo', "${S:-} echo \"sh -c '%s'\" | sh\n" % PIPE),
+        ('alt-echo', "${S:+sudo} echo \"sh -c '%s'\" | sh\n" % PIPE),
+        ('bare-echo', "$S echo \"sh -c '%s'\" | sh\n" % PIPE),
+        ('dflt-printf', "${S:-} printf '%%s\\n' \"sh -c '%s'\" | sh\n" % PIPE),
+    )
+    PRICE = (
+        ('subst-option-plain', "echo \"sh -$(echo c) '%s'\" | sh\n" % PIPE),
+        ('subst-option-group', "{ echo \"sh -$(echo c) '%s'\"; } | sh\n" % PIPE),
+    )
+
+    def test_the_group_family_is_read(self):
+        # The issue's two shapes and the family the parser's split makes of them: truth runs, every one, under
+        # all eight parents (k3026/rows-grp, truth-grp). RED on `main`: CLEAN under every posture.
+        for name, text in self.ISSUE:
+            with self.subTest(name=name):
+                self.assertEqual(("RRRRR", "RRRRR"), self.marks(text))
+
+    def test_what_main_already_read_reads_the_same(self):
+        # The subshell with no `;` before `)`, and the one whose last statement is the printer.
+        for name, text in self.AS_MAIN:
+            with self.subTest(name=name):
+                self.assertEqual(("RRRRR", "RRRRR"), self.marks(text))
+
+    def test_what_the_look_back_leaves_as_main_reads_it(self):
+        # A nested group (passed over); a redirect that takes the stdout away (#2430); a pipe to no shell.
+        for name, text in self.STAYS:
+            with self.subTest(name=name):
+                self.assertEqual(("CCCCC", "CCCCC"), self.marks(text))
+
+    def test_the_prefix_control(self):
+        # The issue's first shape was read before this PR: #3007's PRINTERS_NEXT lets the second walk find the
+        # printer behind a word that may be nothing, so the job reports where the main pass reads CLEAN. Pinned
+        # here so it stays read (k3026/rows-pre: 240 running rows reported, 36 run nothing).
+        for name, text in self.PREFIX:
+            with self.subTest(name=name):
+                self.assertEqual(("RRRRR", "CCCCC"), self.marks(text))
+
+    def test_the_prices(self):
+        # An option made of a substitution runs nothing (`sh -$(echo c)` is a FILE to the shell that reads the
+        # printed text), and the plain pipe over-reports it on `main`: the group reads as its written twin.
+        plain, group = dict(self.PRICE)["subst-option-plain"], dict(self.PRICE)["subst-option-group"]
+        self.assertEqual(("RRRRR", "RRRRR"), self.marks(plain))
+        self.assertEqual(self.marks(plain), self.marks(group))
+        # A group with a statement no printer spells is LOUD, fail-closed; harmless groups stay CLEAN.
+        self.assertEqual(("RRRRR", "RRRRR"), self.marks("{ echo ok; cat setup.sh; } | sh\n"))
+        self.assertEqual(("RRRRR", "RRRRR"), self.marks("( cat setup.sh; echo ok ) | sh\n"))
+        self.assertEqual(("CCCCC", "CCCCC"), self.marks("{ echo ok; echo hi; } | sh\n"))
+        # An unspelled printer among printers is weighed as the plain `echo "$X" | sh` is: quiet, not LOUD.
+        self.assertEqual(("CCCCC", "CCCCC"), self.marks("{ echo \"$X\"; } | sh\n"))
+        self.assertEqual(("CCCCC", "CCCCC"), self.marks("{ echo \"$X\"; echo ok; } | sh\n"))
+
+
 if __name__ == "__main__":
     unittest.main()

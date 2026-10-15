@@ -20,6 +20,10 @@ a `$(...)` in a `-c` or `eval` string, a `<(...)` a shell or `source` reads as i
                  a pass-through (`_passes_through`: `tee` writing plain files, a bare `cat`)
                  handing it on unchanged -- unknown (None) where the walk stops at `_DEPTH`
     `handed`     the heredoc or here-string a `cat` printer in front hands a stage down the pipe
+    `_grouped`   the pipelines a `{ ...; }` or `( ...; )` group that closes at a stage holds, read back
+                 through the statements in front of it (#3026): `producer` walks a one-pipeline group
+                 as if it stood in the pipe, and answers `GROUPED` for several -- `grouped`, the texts
+                 they write where every one is a spelled printer, else `unspelled`'s LOUD `_GROUPED`
     `unspelled`  what `unprinted` hands `unread_program`: a name, then texts it weighs each apart
                  (N-1) -- an unspelled printer's words, or, where a stage between rewrites the
                  text, that text and the stage's words (I-1), or past `_DEPTH` a LOUD stand-in
@@ -250,11 +254,97 @@ _DEPTH = 64
 # wrapper -- one `workflow_guard._walk` "cannot read" -- so the answer is LOUD alone. The program
 # may come from any stage further back, a printer whose text fetches or none at all, so it is
 # never `_Quiet` there, and never CLEAN for want of a printer further back.
+_GROUPED = ("a group of several statements whose text no one printer spells out",
+            'exec "$PROGRAM"')
 _PAST_DEPTH = ("a pipeline longer than the %d stages this guard follows" % _DEPTH,
                'exec "$PROGRAM"')
 
 
-def producer(stage, before):
+GROUPED = "grouped"      # `producer`'s `intact` for a group of several statements: `grouped` has their texts
+
+
+def _grouped(front, before, statements):
+    """The pipelines (lists of stages, in order) a `{ ...; }` or `( ...; )` group that ends at `front` holds, or
+    None (#3026). `front` closes the group: a bare `}` word, a stage with no words that closes a subshell (`;`
+    before the `)`: the closer is a statement of its own), or a stage closing a subshell whose own pipeline is the
+    group's last. `statements` are the statements in front of the closer's own, in order; `before` the stages in
+    front of the stage read, `front` among them. Back to the opener -- a statement whose first stage's first word is
+    `{`, or whose first stage opens a subshell -- the group's pipelines are handed back, the `{` dropped from the
+    opener's words. None without `statements`, where no opener is met, or where another group's closer stands
+    between: nested groups are left to the walk as before, fail-closed where a stage between rewrites the text. A
+    statement `workflow_forms.flattened` read into the list (an `Inlined` or `Unsure` one: a program a shell in
+    front was handed) is passed over, as the step's text has no such line."""
+    if statements is None:
+        return None
+    argv = front.argv
+    brace = list(argv) == ["}"]
+    if not (brace or front.group_close):
+        return None
+    last = list(before[:before.index(front) + 1]) if front in before else [front]
+    last = [] if brace or not last[-1].argv else last
+    if not brace and front.group_open and last:
+        return _fed([last])                 # `( P ) | sh`: one statement, the closer its own opener
+    body: list[list] = []
+    for statement in reversed(statements):
+        if type(statement) is not shell_reader.Statement:
+            continue                        # a statement `workflow_forms.flattened` read into place: not the step's own
+        stages = list(statement.stages)
+        if not stages or any(list(s.argv) == ["}"] or s.group_close for s in stages):
+            return None
+        first = stages[0]
+        if brace and list(first.argv[:1]) == ["{"]:
+            stages[0] = first._replace(argv=first.argv[1:])
+            return _fed(([stages] if stages[0].argv else []) + body + ([last] if last else []))
+        if not brace and first.group_open:
+            return _fed(([stages] if first.argv else []) + body + ([last] if last else []))
+        if list(first.argv[:1]) == ["{"] or first.group_open:
+            return None
+        body.insert(0, stages)
+    return None
+
+
+def _fed(pipelines):
+    """The pipelines of a group that write the group's stdout (#3026), or None where none does: a pipeline whose
+    last stage sends its stdout elsewhere (`> f`, `>> f`: `stdout_to_pipe` off) hands the pipe nothing, as the
+    guard reads a compound's closing pipe (#2430, `workflow_fetch.compound_output`); the opener alone on its line
+    (`{` or `(`, no words) is no pipeline."""
+    fed = [p for p in pipelines if p and p[-1].stdout_to_pipe]
+    return fed or None
+
+
+_COMBINATIONS = 8
+
+
+def grouped(stage, before, shell=None, statements=None):
+    """The texts a group of several statements writes down the pipe, one per combination of its printers'
+    readings, or None: `before`'s last stage closes a group (`_grouped`) of two or more pipelines, every one a
+    single stage that is an `echo` or `printf` whose words spell every reading `spellings` gives under `shell`,
+    the texts joined in order (#3026), at most `_COMBINATIONS` of them. None where a pipeline is longer, is no
+    printer, or spells no text under some reading, and where the combinations exceed the cap: `unspelled`
+    answers LOUD for that group (`_GROUPED`). The words are the stage's own as `shell_reader.command` strips
+    their wrappers, not an action's (`acted`): a `find -exec printf` among several statements is one no printer
+    spells, LOUD, where `producer` alone reads it as the printer it runs."""
+    front = before[-1] if before else None
+    if front is None or not _piped(stage, front):
+        return None
+    pipelines = _grouped(front, before, statements)
+    if pipelines is None or len(pipelines) < 2:
+        return None
+    texts = [""]
+    for pipeline in pipelines:
+        argv = shell_reader.command(pipeline[-1].argv)
+        if len(pipeline) != 1 or not argv or os.path.basename(argv[0]) not in _PRINTERS:
+            return None
+        read = spellings(argv, pipeline[-1], shell)
+        if not read or None in read:
+            return None
+        texts = [t + r for t in texts for r in read]
+        if len(texts) > _COMBINATIONS:
+            return None
+    return texts
+
+
+def producer(stage, before, statements=None):
     """`(source, intact)`: the printer whose text reaches `stage`'s stdin down its pipeline, and
     whether every stage between hands that text on unchanged (#2478) -- or `(None, False)`.
     `before` is the LIST of stages in front of `stage` in its pipeline, in order (None or `[]`:
@@ -270,13 +360,29 @@ def producer(stage, before):
     stage it reached stands as the source with `intact` None -- neither intact nor rewritten, but
     unknown -- which `handed` and `stdin_scripts` read as not intact and `unspelled` answers LOUD
     (`_PAST_DEPTH`): never read, and never CLEAN for want of a printer further back."""
-    intact, current = True, stage
-    for walked, front in enumerate(reversed(before or [])):
+    intact, current, queue, walked, spliced = True, stage, list(reversed(before or [])), 0, False
+    while queue:
+        front = queue.pop(0)
         if not _piped(current, front):
             return None, False
         if walked == _DEPTH:
             return front, None              # too far back to look: unknown, fail-closed
+        walked += 1
         argv = shell_reader.acted(front.argv)
+        # A group's closer (#3026), asked before the printer test, since the closing line may be a printer of its
+        # own (`( P; echo ok ) | sh`): the group's one pipeline is walked as if it stood in the pipe itself -- `{ P;
+        # } | sh` and `( P; ) | sh` read as `( P ) | sh` does -- and several pipelines are `grouped`'s to spell.
+        group = None if spliced else _grouped(front, before or [], statements)
+        if group is not None:
+            if len(group) > 1:
+                # Several pipelines: `grouped`'s to spell where a printer is among them (by the stage's own words,
+                # `shell_reader.command`, as `grouped` reads them), LOUD where one is not spelled; none a printer, and
+                # the group is no printer's -- a download or a compound inside it is the stream reader's (#2430,
+                # `workflow_fetch.compound_output`), not a program this module reads.
+                printers = [p for p in group if (a := shell_reader.command(p[-1].argv)) and os.path.basename(a[0]) in _PRINTERS]
+                return (front, GROUPED) if printers else (None, False)
+            queue, spliced = list(reversed(group[0])), True
+            continue
         if ((bool(argv) and os.path.basename(argv[0]) in _PRINTERS)
                 or (front.stdin_heredoc is not None and _cat_reads_stdin(argv))):
             return front, intact
@@ -285,20 +391,20 @@ def producer(stage, before):
     return None, False
 
 
-def handed(stage, before):
+def handed(stage, before, statements=None):
     """The `(body, expands)` a `cat` printer hands `stage` down the pipe (#2467), or None: the
     source `producer` finds behind `before` (the stages in front, through pass-throughs, #2478),
     with `intact` True, must read a heredoc or here-string on ITS OWN stdin, and read its own
     stdin, options or not (`_cat_reads_stdin`, R-P5, R-F5, R-F14). The EXPANDING case is what
     `_unread_stdin` reports; `printed` answers only the QUOTED one."""
-    source, intact = producer(stage, before)
-    if not intact or source.stdin_heredoc is None:
+    source, intact = producer(stage, before, statements)
+    if not intact or intact is GROUPED or source.stdin_heredoc is None:
         return None
     return (source.stdin_heredoc if _cat_reads_stdin(shell_reader.acted(source.argv))
             else None)
 
 
-def unspelled(stage, before, shell=None):
+def unspelled(stage, before, shell=None, statements=None):
     """What `workflow_forms.unread_program` weighs for the program `stage` (a shell's) reads down
     its pipeline where no printer's words spell it out, or [] -- the answer of
     `workflow_programs.unprinted` once it knows the stage is a shell reading stdin (#2478): the
@@ -325,10 +431,23 @@ def unspelled(stage, before, shell=None):
       the price is a harmless printer that far back (`echo 'echo hi'` behind 64 `cat`s), and a
       second row beside a stream's own sentence (a `curl … | sh` stream through 70 `cat`s).
 
+    * a group of several statements (#3026, `producer`'s `GROUPED`): [] where `grouped` spells them all; where
+      every pipeline is a printer and one is unspelled, the first printer's name, then each printer's words as
+      one text and apart, as an unspelled printer's are weighed; where one is no printer, `_GROUPED`, LOUD.
+
     A stage with no command word in front (`echo x | X=1 | sh`) prints nothing: []."""
-    source, intact = producer(stage, before)
+    source, intact = producer(stage, before, statements)
     if source is None:
         return []
+    if intact is GROUPED:                   # (#3026) several statements, not every one spelled
+        if grouped(stage, before, shell, statements) is not None:
+            return []
+        pipelines = _grouped(source, before, statements) or []
+        words = [shell_reader.command(p[-1].argv) for p in pipelines]
+        if all(len(p) == 1 and w and os.path.basename(w[0]) in _PRINTERS for p, w in zip(pipelines, words)):
+            # Printers all, one or more unspelled: their words weighed as one unspelled printer's are.
+            return [words[0][0]] + [" ".join(w[1:]) for w in words] + [t for w in words for t in _apart(w, shell)]
+        return list(_GROUPED)               # a statement no printer spells: LOUD
     words = shell_reader.acted(source.argv)
     printer = bool(words) and os.path.basename(words[0]) in _PRINTERS
     if intact:
