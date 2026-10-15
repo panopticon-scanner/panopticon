@@ -264,7 +264,7 @@ from workflow_fetch import (Fetch, compound_output, compound_streamed_fetch, for
                             is_forwarded_tee)
 from workflow_forms import (FETCHERS, SHELL_PROGRAM, Idle, Inlined, Reach, Unsure, carried,
                             compound_stream_consumer, file_bound_reasons, flattened, kept, located,
-                            parse_fetch, prefix_expanded_program, prefix_handoff, regions,
+                            may_carry_fetch, parse_fetch, prefix_expanded_program, prefix_handoff, regions,
                             stdin_program, step_credit,
                             streamed_fetch as streamed_fetch, unbound, unread_program,
                             working_directories)
@@ -385,7 +385,16 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                                   or not executes and fetch.piped_to is None
                                   or value_exec and is_forwarded_tee(fetch)) else fetch)
                              for _inner, fetch in fetched)
-    return found, unread + (carried(stmts, EXECUTORS) if found else [])
+    # Ask the holder's own predicate whether an assignment can carry a stream;
+    # a dynamic wget option can stream even while its parallel file reading has
+    # a destination. Keep ordinary file-only steps off this state pass (#2855).
+    if found and may_carry_fetch(stmts):
+        carried_reasons, cleared = carried(stmts, EXECUTORS, shell)
+        unread = [(index, reason) for index, reason in unread
+                  if not (variable := getattr(reason, "program_variable", None))
+                  or (index, variable) not in cleared]
+        unread += carried_reasons
+    return found, unread
 
 
 def _fetch_records(stmts, stream_exec=False):
