@@ -7,6 +7,36 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader reads a group's printed text down the pipe (#3026).** `{ echo "sh -c '...'"; } |
+  sh` ran the download the string names under every parent shell and read CLEAN, and so did `( P; )
+  | sh` and a group of two statements with the printer first: the parser keeps `{` as a word and a
+  `;` or a newline before the closer ends the statement, so the pipe into the shell had no printer
+  in front, and the subshell twin was read only with no `;` before its `)`.
+  `workflow_printers._grouped` walks back from a group's closer -- a bare `}`, or a stage closing a
+  subshell -- through the statements in front of its own to the opener, passing over the statements
+  `workflow_forms.flattened` reads into place; `producer` asks it before the printer test and walks
+  a one-pipeline group as if it stood in the pipe; several pipelines with a printer among them are
+  `grouped`'s, every one a single-stage `echo` or `printf` spelled under each reading and the texts
+  joined in order (eight combinations at most), else `unspelled` answers LOUD; a group with no
+  printer stays the stream reader's (#2430). A pipeline whose stdout goes elsewhere (`> f`) hands
+  the pipe nothing, and an opener alone on its line is no pipeline. The readers take the statements
+  from their callers: four argument-only lines in `workflow_forms.py` and `workflow_guard.py`,
+  granted under this issue. The issue's first shape, a word that may be nothing in front of the
+  printer (`${S:-} echo ... | sh`), was read before this change by #3007's second walk: 276 derived
+  rows with truth from eight parents, the 240 that run all reported at the job, pinned here as a
+  control. Measured against `main` `f1edf301` on the review kit's printer families and the rows
+  derived from them (`k3026`, truth from eight parents): the brace group's 34 running rows and the
+  five derived group families' 34 each go CLEAN -> REPORT, nothing else among 368 kit rows moves,
+  and 18 harmless groups read as before but one. The price, named: an option made of a substitution
+  in the printed text (`sh -$(echo c) '...'`) runs nothing, and the group reads as its written twin,
+  which `main` reports -- six rows per family; a group holding a statement no printer spells (`{
+  echo ok; cat f; } | sh`) is LOUD, fail-closed; a `find -exec printf` among several statements is
+  LOUD rather than read; a nested group is passed over, as `main` reads it; and #2430's carried
+  twins (`{ echo "$payload"; } | sh` after `payload=$(curl ...)`) carry one more finding, the quiet
+  printer reason the plain pipe makes too, which `kept` drops there beside the loud one at the same
+  statement and cannot pair here, the shell standing at the closer's statement: #3095 pairs them in
+  `workflow_forms`.
+
 - **Workflow reader reads a function header behind a group's `(` and a name bash takes, and the
   header test costs one lookup a `(` (#2977; #2975 parts B and C).** `( f() { sh t; }; f )` and
   `a.b() { sh t; }` ⏎ `a.b` ran the download under every parent (the bash parents for the name: dash
