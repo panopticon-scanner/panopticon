@@ -24,24 +24,24 @@ evidence exposed.
   (#2949). The #2954-side kit's three S2 and six S3 rows report under every setting; its own-line,
   `function` and substitution twins read as they did (the S3 own-line rows over-report under `sh` as
   they did: `main`'s posture); `( f() { CHECK || exit 1; }; f )` ⏎ `sh t` reads as the plain `(
-  CHECK || exit 1 )` ⏎ `sh t` does on `main` (CLEAN under `-e`, where the subshell's status stops
-  the step; REPORTED under `{0}`), where `main` reported it with the function unread. Part A, a
-  header on the line of another header's `{` (`f() { g() { sh t; }; g; }`, the five S6 rows), is
-  held back and pinned as a limit: read as a header there, a gate in the inner body is credited as
-  the outer body's own -- the function table holds no nested one-line definition -- and `f() { g() {
-  CHECK || exit 1; }; }` ⏎ `f` ⏎ `sh t` (`g` never called, every parent runs the download) would
-  read CLEAN; #2975 stays open for it. Differential on the forge, 61d0db7c against main d88f89c8 on
-  27,100 rows (the 26,982-row kit, 15 of the #2973 rows and the 103-row #2954-side kit): 0 failures,
-  **0 REPORT->CLEAN cells**, 27,091 rows identical, **9 rows CLEAN->REPORT** (225 cells) -- the
-  three S2 and six S3 rows -- and nothing else; no REPORT->REPORT change; 4,378 s wall on eight
-  shards at nice 10. The growth pin's text on the forge (CPU time, load 14-17): `f() ` x 1,000 /
-  2,000 / 4,000 / 8,000 reads in 0.10 / 0.21 / 0.41 / 0.82 s here, x2.0 a doubling, where `main`
-  takes 0.19 / 0.57 / 1.93 / 6.91 s, x3.1 to x3.6. `shell_reader.output_alias_fd` drops its
-  unreachable `or "/"` (the root is dropped only in front of a `/`). Pins:
-  `tests/test_workflow_function_headers.py`, and the growth pin in `tests/test_shell_reader.py`
-  (`f() ` x 1,500 and x 6,000, `main`'s shape, CPU time). `scripts/shell_split.py` is 406 lines
-  (+15); `shell_command.py` 699 and `shell_reader.py` 490 (0 net); `workflow_function_calls.py` 0
-  net.
+  CHECK || exit 1 )` ⏎ `sh t` does on `main` (CLEAN under the `-e` settings, where bash 5.2.21 and
+  dash stop the step at the subshell's status and bash 3.2.57 runs on -- #2846, inherited, on both
+  trees; REPORTED under `{0}`), where `main` reported it with the function unread. Part A, a header
+  on the line of another header's `{` (`f() { g() { sh t; }; g; }`, the five S6 rows), is held back
+  and pinned as a limit: read as a header there, a gate in the inner body is credited as the outer
+  body's own -- the function table holds no nested one-line definition -- and `f() { g() { CHECK ||
+  exit 1; }; }` ⏎ `f` ⏎ `sh t` (`g` never called, every parent runs the download) would read CLEAN;
+  #2975 stays open for it. Differential on the forge, 61d0db7c against main d88f89c8 on 27,100 rows
+  (the 26,982-row kit, 15 of the #2973 rows and the 103-row #2954-side kit): 0 failures, **0
+  REPORT->CLEAN cells**, 27,091 rows identical, **9 rows CLEAN->REPORT** (225 cells) -- the three S2
+  and six S3 rows -- and nothing else; no REPORT->REPORT change; 4,378 s wall on eight shards at
+  nice 10. The growth pin's text on the forge (CPU time, load 14-17): `f() ` x 1,000 / 2,000 / 4,000
+  / 8,000 reads in 0.10 / 0.21 / 0.41 / 0.82 s here, x2.0 a doubling, where `main` takes 0.19 / 0.57
+  / 1.93 / 6.91 s, x3.1 to x3.6. `shell_reader.output_alias_fd` drops its unreachable `or "/"` (the
+  root is dropped only in front of a `/`). Pins: `tests/test_workflow_function_headers.py`, and the
+  growth pin in `tests/test_shell_reader.py` (`f() ` x 1,500 and x 6,000, `main`'s shape, CPU time).
+  `scripts/shell_split.py` is 406 lines (+15); `shell_command.py` 699 and `shell_reader.py` 490 (0
+  net); `workflow_function_calls.py` 0 net.
 
 - **Workflow reader reads an expansion in FRONT of an option word as that option word too (#3042).**
   `sh $X-c 'curl ... | sh'` runs the string under every parent shell with `X` unset, and read CLEAN,

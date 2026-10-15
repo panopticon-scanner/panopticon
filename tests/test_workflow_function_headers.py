@@ -88,10 +88,12 @@ class TestAHeaderBehindAGroupsParenthesis(unittest.TestCase):
                 self.assertEqual(REPORTED, marks(text))
 
     def test_a_gate_in_the_groups_function_reads_as_the_plain_subshell_gate(self):
-        # `( f() { CHECK || exit 1; }; f )` ⏎ `sh t`: the `exit 1` ends the subshell, and the parent runs the
-        # download where no `-e` stops it at the subshell's status -- `main` reported every setting, the
-        # function unread; now the row reads as `( CHECK || exit 1 )` ⏎ `sh t` does on `main`, CLEAN under
-        # the `-e` settings, REPORTED under `{0}`. Never called, the gate is no gate: reported.
+        # `( f() { CHECK || exit 1; }; f )` ⏎ `sh t`: the `exit 1` ends the subshell; under `-e` bash 5.2.21
+        # and dash stop the step at the subshell's status, bash 3.2.57 runs on (#2846, inherited: the
+        # unset and `bash` cells miss it on both trees), and under `{0}` every shell runs on. `main`
+        # reported every setting, the function unread; now the row reads as `( CHECK || exit 1 )` ⏎
+        # `sh t` does on `main`, CLEAN under the `-e` settings, REPORTED under `{0}`. Never called, the
+        # gate is no gate: reported.
         sums = "echo '%s  t' > sums\n" % ("a" * 64)
         check = "sha256sum -c sums || exit 1"
         self.assertEqual(("CCCRR", "CCCRR"), marks(FETCH + sums + "( f() { %s; }; f )\nsh t\n" % check))
