@@ -130,12 +130,14 @@ evidence exposed.
   such as `f() { :; }` was read as an opening statement with delta zero and a later `}` with delta
   -1. The negative depth made a subsequent brace group, `if`, or `while` lose the pipe or redirect
   on its own close, so downloads inside it read CLEAN. `_compound_delta` now uses the existing
-  function-syntax reader to count the structural `{` after `f()` / `function f`, excluding leading
-  group braces it already counted. Eight issue shapes—including multiline and consecutive
-  definitions, nested groups, and a file redirect—now report under all five shell settings; this
-  also retires #3050's named `{ f; } | sh` limit. Local differential on the direct reader plus five
-  job settings: 48 CLEAN -> REPORT cells across the eight issue rows, three reporting and three
-  clean controls unchanged (36 cells), and 0 REPORT -> CLEAN cells.
+  function-syntax reader to count every compound opener after `f()` / `function f` in the header's
+  statement: both the structural `{` and an immediate `if`, `while`, `for`, or `until`. Twenty-three
+  issue shapes—including multiline and consecutive definitions, each keyword-body form, nested
+  groups, pipes, and a file redirect—now report under all five shell settings; this also retires
+  #3050's named `{ f; } | sh` limit. A nested one-line definition remains a named CLEAN limit of
+  #2975 part A rather than treating its inner header's `{` as an ordinary group. Local differential
+  on the direct reader plus five job settings: 138 CLEAN -> REPORT cells across the 23 issue rows,
+  six prior controls and three #2975 limits unchanged (54 cells), and 0 REPORT -> CLEAN cells.
 
 - **Workflow reader keeps a stage's second `${…}` word whole where it still stands before the
   command word (#2976).** `curl -fsSLo t …` ⏎ `${Y:+/usr/bin/env true} ${Z:+/usr/bin/env true} sh t`

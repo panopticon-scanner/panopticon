@@ -5999,6 +5999,32 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
         for script in controls:
             self.assert_reported_in_every_shell(script)
 
+    def test_3069_a_compound_at_the_start_of_a_function_body_stays_balanced(self):
+        definitions = (
+            "f() { if true; then :; fi; }\n",
+            "f() { if true; then :; else :; fi; }\n",
+            "f() { while false; do :; done; }\n",
+            "f() { for i in 1; do :; done; }\n",
+            "f() { until true; do :; done; }\n",
+        )
+        followers = (
+            "{ %s; } | sh\n",
+            "if true; then %s; fi | sh\n",
+            "{ %s; } > tool\nsh tool\n",
+        )
+        for definition in definitions:
+            for follower in followers:
+                self.assert_reported_in_every_shell(
+                    definition + follower % self.FETCH
+                )
+
+        # A nested one-line function definition is #2975 part A: the
+        # function table cannot yet hold its inner header. Keep that separate
+        # limit CLEAN rather than treating its `{` as an ordinary group.
+        nested = "f() { g() { :; }; }\n"
+        for follower in followers:
+            self.assert_clean_in_every_shell(nested + follower % self.FETCH)
+
     def test_a_redirected_compound_does_not_hide_an_inner_subshell_stream(self):
         for script in (
                 "{ ( %s; ) | sh; } > log\n" % self.FETCH,

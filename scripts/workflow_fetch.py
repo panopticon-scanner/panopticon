@@ -480,20 +480,28 @@ def _compound_delta(statement, groups=True):
     for stage in statement.stages:
         if groups:
             depth += stage.group_open - stage.group_close
-        name, braces = _function_syntax(stage.argv)
-        leading_braces = 0
-        for token in stage.argv:
-            if token not in shell_reader.KEYWORDS:
-                break
+        name, _ = _function_syntax(stage.argv)
+        header = 0
+        while (header < len(stage.argv)
+               and stage.argv[header] in shell_reader.KEYWORDS
+               and stage.argv[header] != "function"):
+            token = stage.argv[header]
             depth += (token in _COMPOUND_OPEN) - (token in _COMPOUND_CLOSE)
-            leading_braces += (token == "{") - (token == "}")
+            header += 1
         if name is not None:
             # The command walk stops at `f()` / `function f`, but the reader
-            # leaves the body's `}` as a later leading keyword. Count the
-            # matching structural `{` past the header too (#3069), excluding
-            # any leading group braces the loop above already counted.
-            depth += sum((token == "{") - (token == "}")
-                         for token in braces) - leading_braces
+            # emits the body's closes later. Count every compound opener in
+            # the header's statement, including an immediate `if` or loop
+            # (#3069); a nested function header still stops this prefix.
+            header += (
+                2 if (stage.argv[header] == "function"
+                      or stage.argv[header + 1:header + 2] == ["()"])
+                else 1
+            )
+            for token in stage.argv[header:]:
+                if token not in shell_reader.KEYWORDS:
+                    break
+                depth += (token in _COMPOUND_OPEN) - (token in _COMPOUND_CLOSE)
     return depth
 
 
