@@ -7459,8 +7459,8 @@ class TestAFunctionThatFetchesIsReadWhereItIsCalled(unittest.TestCase):
     helper), through a function the body calls, and with the body's own redirects read as the inline
     twin's are (#2744). The controls still read CLEAN: a function never called, a call whose output is
     discarded, a wrapper in front of the name, a definition after the call. Limits, pinned and named
-    below: a download held in a variable (`x=$(f)`), the file and not the stream of a body's own
-    `| tee t`, and a `{ f; } | sh` group behind a definition (#3069)."""
+    below: a download held in a variable (`x=$(f)`), and the file and not the stream of a body's own
+    `| tee t`. #3069 closes the former `{ f; } | sh` limit behind a definition."""
 
     F = "curl -fsSL %si.sh" % URL
     STREAM = "hands %si.sh straight to `%s`" % (URL, "%s")
@@ -7515,13 +7515,17 @@ class TestAFunctionThatFetchesIsReadWhereItIsCalled(unittest.TestCase):
         # `x=$(f)` then `eval "$x"` -- `workflow_forms.carried` asks `workflow_fetch.stdout_fetch` whether
         # `$(f)` is one fetch to standard output, and neither sees the step's functions yet (a follow-up
         # of #3050, after #2829; the coordinator's ruling, Krab seq 2797); a body's own `| tee t` -- a stage
-        # that pipes on inside the body is read at its definition alone, so the file and not the stream;
-        # `{ f; } | sh` behind a definition -- the compound reader loses the group's consumer behind a
-        # function's `}`, as it does the inline group's (#3069).
-        for script in ('f() { F; }\nx=$(f)\neval "$x"\n', "f() { F | tee t; }\nf | sh\n", "f() { F; }\n{ f; } | sh\n"):
+        # that pipes on inside the body is read at its definition alone, so the file and not the stream.
+        for script in ('f() { F; }\nx=$(f)\neval "$x"\n', "f() { F | tee t; }\nf | sh\n"):
             script = script.replace("F", self.F) + "echo done\n"
             with self.subTest(script=script):
                 self.assertEqual("CCCCC", "".join("CR"[reported(script, shell)] for shell in SHELLS))
+
+        # #3069 balances the definition's braces, so the later group's close now
+        # carries the called body's stream to `sh` under every setting.
+        closed = ("f() { F; }\n{ f; } | sh\n".replace("F", self.F)
+                  + "echo done\n")
+        self.assertEqual("RRRRR", "".join("CR"[reported(closed, shell)] for shell in SHELLS))
 
 if __name__ == "__main__":
     unittest.main()
