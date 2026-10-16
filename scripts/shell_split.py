@@ -214,6 +214,11 @@ def _split(text, context):
             buf.append("$$")
             i += 2
             continue
+        if text.startswith('$"', i):
+            # A locale string, `$"…"`: bash reads it as the double-quoted string, translated (the
+            # `$` dropped; dash keeps it, a price under `sh`, as `$'…'` has, #3048).
+            i += 1
+            continue
         if ch in "'\"" or text.startswith("$'", i):
             quote, opened = text[i:i + 2] if ch == "$" else ch, len(buf)
             buf.append(quote)

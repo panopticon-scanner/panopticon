@@ -1348,7 +1348,7 @@ class TestTheEdgesOfTheDollarBraceWord(unittest.TestCase):
              ('${D:-a "b}" c}', ["${D:-a", "b}", "c}"]),        # [a][b}][c] x3
              ('${D:-"tool x"}', ["${D:-tool x}"]),               # [tool x] x3
              ("${D:-tool\\ x}", ["${D:-tool x}"]),               # [tool x] x3
-             ('${D:-$"tool x"}', ["${D:-$tool x}"]),             # [tool x]; dash [$tool x]
+             ('${D:-$"tool x"}', ["${D:-tool x}"]),              # [tool x]; dash [$tool x]: bash's, as `$'…'` is (#3048)
              ("${D:-$'tool x'}", ["${D:-tool x}"]),              # [tool x]; dash [$tool x]
              ("${D:-tool\\\nx}", ["${D:-toolx}"]),               # [toolx] x3: a line joined
              ('${D:-"a b"}" c"', ["${D:-a b} c"]))               # [a b c] x3
