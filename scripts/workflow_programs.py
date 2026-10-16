@@ -59,6 +59,7 @@ Stdlib only, like everything under it.
 import functools
 import os
 
+import shell_folds
 import shell_lex
 import shell_reader
 from workflow_file_readers import (FileHandoff as FileHandoff,
@@ -301,6 +302,9 @@ def _parsed(text):
     and the walk below reads up to 64 of them each time, so the same suffix is parsed many times
     over (final review F1: two hundred `eval`s). Read only, never mutated, by `_stdin_details`."""
     return shell_reader.statements(text)
+
+
+shell_folds._STALE.append(_parsed.cache_clear)    # a `$"…"` read in the locale fold is read again outside it (#3048)
 
 
 def _options(argv, depth):

