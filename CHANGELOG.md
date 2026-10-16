@@ -7,6 +7,20 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader reads a function header immediately after an outer function's opening brace
+  (#2975 part A).** `f() { g() { sh t; }; g; }` ran the downloaded file under every parent and
+  read CLEAN: the splitter took the inner `()` as a subshell and the rest of the inner body as
+  arguments to `g`. The outer header now ends at its `{`, as it does at a newline, when the next
+  words form a nested header; the inner header and body therefore become their own statements and
+  both definitions enter the function table. This covers the spaced and tight `name()` forms and
+  the `function name {` form without changing a group's existing `{ name() {` reading. A gate in
+  the inner body belongs only to that function: an outer call with no inner call still reports,
+  while an inner call before the use receives its gate. Calls lexically inside a nested definition
+  are likewise excluded from the outer body's direct-call set and followed only through an
+  explicit call, so a parenthesized nested body cannot make its child's `readonly` effect escape
+  into the caller. The #2954-side kit's five S6 rows now report under every setting (the download
+  runs in 16 of 16 runtime pairings), their five already-reported controls keep their marks, and
+  #3069's nested one-line compound-balance pin reports under all five shells.
 - **Workflow guard: an immediately handled checksum status, or a top-level Bash `ERR` trap, is a
   failure gate (#2440).** Under `set +e` and a shell template without `-e`, the guard refused
   `CHECK; rc=$?; if [ "$rc" -ne 0 ]; then exit 1; fi`, its `[ "$rc" -ne 0 ] && exit 1` and

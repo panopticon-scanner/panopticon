@@ -39,7 +39,7 @@ from workflow_called_fetches import (_DEPTH as _DEPTH, _POSITIONAL as _POSITIONA
                                      _Fixed as _Fixed, _positional as _positional, _rest as _rest,
                                      _with_arguments as _with_arguments, with_call_stdin as with_call_stdin)
 from workflow_function_calls import _function_syntax
-from workflow_use_scopes import _function_ranges
+from workflow_use_scopes import _body_end, _function_ranges
 from workflow_values import _CANDIDATES, PAST, Values, emptied, record, stand_in
 
 # `static_values` rebuilds the table at each statement that reads one, and carrying every earlier
@@ -96,14 +96,22 @@ def _status_shadows(stmts, starts):
              for _words, name in _command_views(stage) if name in (":", "false", "true")})
 
 
-def _calls(stmts, head, close):
+def _calls(stmts, head, close, starts):
     """The functions the body `stmts[head:close + 1]` calls: a single-stage statement whose
     head word is bare and no assignment, in a list the body does not send to the background
     (`g() { f & wait; }`: as at the top level, what the child assigns dies with it) -- each
-    list's end read once, walking the body backwards (round 8, B3)."""
+    list's end read once, walking the body backwards (round 8, B3). Statements belonging to a
+    nested definition are that body's calls, not the outer body's; the explicit call after its
+    close reaches it in turn. This also keeps a nested subshell body's effects in its child
+    (`g() { h() ( f ); h; }`, #2975 part A and #2437 W621)."""
     found: set[str] = set()
     backgrounded = False
+    nested = {at for entries in starts.values()
+              for _name, start, end in entries if head < start <= close
+              for at in range(start, min(_body_end(stmts, start, end)[0], close) + 1)}
     for at in range(close, head - 1, -1):
+        if at in nested:
+            continue
         statement = stmts[at]
         if at == close or statement.separator not in ("&&", "||"):
             backgrounded = statement.separator == "&"      # this statement ends its list
@@ -238,7 +246,7 @@ def _reached(stmts, position, starts):
             if name == head and at >= position or _subshell(stmts, start, close):
                 continue
             bodies.append((start, close))
-            queue.extend(call for call in _calls(stmts, start, close)
+            queue.extend(call for call in _calls(stmts, start, close, starts)
                          if call in defined and call not in seen and call not in queue)
     return bodies
 
