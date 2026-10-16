@@ -18,13 +18,18 @@ evidence exposed.
   its own later use. It also follows a literal top-level `ERR` trap through Bash steps, stopping at
   a replacement, a scope or step boundary, sourced/evaluated text, a dynamic command, or a
   shadowed primitive at any brace depth. Status operands receive credit only for the exact `$?`,
-  `"$?"`, `$NAME`, `"$NAME"`, `${NAME}`, and `"${NAME}"` lexemes; touching `IFS` or Bash alias and
-  builtin lookup state anywhere in the step withholds both status and trap credit. The
-  declared step shell travels with the checksum: default, `bash`, and `bash {0}` receive trap
-  credit, while `sh` and `sh {0}` remain reported; inlined child shells inherit none. Literal or
-  escaped `$?`, an intervening command or reassignment, a readonly or nameref capture, wrong
-  polarity, `exit 0`, wrapped or redirected test/exit/trap commands, a subshell,
-  non-stopping/replaced traps, and `continue-on-error` across steps all stay fail-closed. Runtime
+  `"$?"`, `$NAME`, `"$NAME"`, `${NAME}`, and `"${NAME}"` lexemes. A failure-true `[ ]` test used by
+  `&& exit` or `if` must quote that complete operand; an unquoted success-true test used by
+  `|| exit` remains a gate because splitting makes the test fail and takes the exit path, and
+  Bash `[[ ]]` does not split. This structural rule covers every way the step can write `IFS`
+  without enumerating writers. Bash alias and builtin lookup state anywhere in the step still
+  withholds both status and trap credit. The declared step shell travels with the checksum:
+  default, `bash`, and `bash {0}` receive trap credit, while `sh` and `sh {0}` remain reported;
+  inlined child shells inherit none. Literal or escaped `$?`, an intervening command or
+  reassignment, a readonly or nameref capture, wrong polarity, `exit 0`, wrapped or redirected
+  test/exit/trap commands, a subshell, non-stopping/replaced traps, and `continue-on-error` across
+  steps all stay fail-closed. Named conservative prices are an unquoted operand in the `&&` or
+  `if` polarity, `"${?}"`, and `declare rc=$?`. Runtime
   evidence on Bash 3.2.57, Bash 5.2.21 (default, template, and POSIX modes), and dash confirms all
   five POSIX status forms and their success/non-stopping controls. It also corrects the issue
   text: dash rejects the non-POSIX `ERR` signal and carries on to the payload, so only Bash gets

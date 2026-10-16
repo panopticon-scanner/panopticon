@@ -5403,6 +5403,16 @@ class TestAStatusOrErrTrapCanGateACheck(unittest.TestCase):
     CHECK = 'echo "%s  payload" | sha256sum -c -' % HEX
     USE = "sh payload\n"
     SHELLS = (None, "bash", "bash {0}", "sh", "sh {0}")
+    IFS_WRITERS = (
+        "for IFS in 1; do :; done\n",
+        ": $((IFS=1))\n",
+        "(( IFS = 1 ))\n",
+        "printf -v IFS 1\n",
+        "mapfile -t IFS <<< 1\n",
+        "declare -n r=IFS\nr=1\n",
+        "IFS[0]=1\n",
+        "set -- -1\ngetopts 1 IFS\n",
+    )
 
     def findings(self, body, shell=None):
         script = self.FETCH + "set +e\n" + body.replace("CHECK", self.CHECK)
@@ -5412,13 +5422,12 @@ class TestAStatusOrErrTrapCanGateACheck(unittest.TestCase):
         handlers = (
             'CHECK\nrc=$?\nif [ "$rc" -ne 0 ]; then exit 1; fi\n',
             'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
-            'CHECK\nrc="$?"\n[ $rc -ne 0 ] && exit 1\n',
-            'CHECK\nrc=$?\n[ ${rc} -ne 0 ] && exit 1\n',
+            'CHECK\nrc="$?"\n[ "$rc" -ne 0 ] && exit 1\n',
             'CHECK\nrc=$?\n[ "${rc}" -ne 0 ] && exit 1\n',
             'CHECK\nexit_code=$?\n[ "$exit_code" -eq 0 ] || exit 1\n',
+            'CHECK\nrc=$?\n[ $rc -eq 0 ] || exit 1\n',
             'CHECK\n[ $? -eq 0 ] || exit 1\n',
             'CHECK\n[ "$?" -ne 0 ] && exit 1\n',
-            'CHECK\n[ $? -ne 0 ] && exit 1\n',
         )
         for shell in self.SHELLS:
             for handler in handlers:
@@ -5511,22 +5520,65 @@ class TestAStatusOrErrTrapCanGateACheck(unittest.TestCase):
                     # trap runs; Bash then reaches the payload under set +e.
                     self.assertEqual(1, len(self.findings(control + self.USE, shell)))
 
-    def test_an_ifs_touch_withholds_manual_status_credit(self):
+    def test_unquoted_failure_true_status_operands_stay_reported(self):
+        handlers = (
+            'CHECK\nrc=$?\n[ $rc -ne 0 ] && exit 1\n',
+            'CHECK\n[ $? -ne 0 ] && exit 1\n',
+            'CHECK\nif [ $? -ne 0 ]; then exit 1; fi\n',
+        )
+        for shell in self.SHELLS:
+            for writer in self.IFS_WRITERS:
+                for handler in handlers:
+                    with self.subTest(shell=shell, writer=writer, handler=handler):
+                        # #2440 review round two: an IFS writer can split an
+                        # unquoted digit, so the test may miss the exit path.
+                        self.assertEqual(1, len(self.findings(
+                            writer + handler + self.USE, shell
+                        )))
+
+    def test_quoted_status_operands_ignore_every_ifs_writer(self):
+        handlers = (
+            'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
+            'CHECK\n[ "$?" -ne 0 ] && exit 1\n',
+            'CHECK\nif [ "$?" -ne 0 ]; then exit 1; fi\n',
+        )
+        for shell in self.SHELLS:
+            for writer in self.IFS_WRITERS:
+                for handler in handlers:
+                    with self.subTest(shell=shell, writer=writer, handler=handler):
+                        # A whole double-quoted operand cannot split on IFS.
+                        self.assertEqual([], self.findings(
+                            writer + handler + self.USE, shell
+                        ))
+
+    def test_ifs_does_not_block_safe_or_bash_conditional_and_trap_gates(self):
+        for shell in self.SHELLS:
+            with self.subTest(shell=shell, gate="or-exit"):
+                self.assertEqual([], self.findings(
+                    'IFS=1\nCHECK\n[ $? -eq 0 ] || exit 1\n' + self.USE, shell
+                ))
+            quoted = ('while IFS= read -r line; do :; done <<EOF\nx\nEOF\n'
+                      'CHECK\n[ "$?" -ne 0 ] && exit 1\n' + self.USE)
+            with self.subTest(shell=shell, gate="while-read"):
+                self.assertEqual([], self.findings(quoted, shell))
+        for shell in (None, "bash", "bash {0}"):
+            for gate in (
+                'IFS=1\nCHECK\nrc=$?\n[[ $rc -ne 0 ]] && exit 1\n',
+                "IFS=1\ntrap 'exit 1' ERR\nCHECK\n",
+            ):
+                with self.subTest(shell=shell, gate=gate):
+                    self.assertEqual([], self.findings(gate + self.USE, shell))
+
+    def test_the_remaining_status_spelling_prices_stay_reported(self):
         controls = (
-            'IFS=1\nCHECK\nrc=$?\n[ $rc -ne 0 ] && exit 1\n',
-            'IFS=1\nCHECK\n[ $? -ne 0 ] && exit 1\n',
-            'IFS=1\nCHECK\nif [ $? -ne 0 ]; then exit 1; fi\n',
-            'export IFS\nCHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
-            'read IFS <<EOF\n1\nEOF\nCHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
-            'f() { local IFS; }\nCHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
-            'f() { declare IFS; }\nCHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
-            "IFS=1\ntrap 'exit 1' ERR\nCHECK\n",
+            'CHECK\nrc=$?\n[ $rc -ne 0 ] && exit 1\n',
+            'CHECK\nif [ $? -ne 0 ]; then exit 1; fi\n',
+            'CHECK\n[ "${?}" -ne 0 ] && exit 1\n',
+            'CHECK\ndeclare rc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
         )
         for shell in self.SHELLS:
             for control in controls:
                 with self.subTest(shell=shell, control=control):
-                    # #2440 review: an IFS value can split an unquoted digit;
-                    # the bounded proof prices every IFS touch in the step.
                     self.assertEqual(1, len(self.findings(control + self.USE, shell)))
 
     def test_alias_or_builtin_rewriting_withholds_manual_gate_credit(self):

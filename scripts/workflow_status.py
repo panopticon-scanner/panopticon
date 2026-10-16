@@ -4,8 +4,10 @@
 This layer recognizes only status paths whose failed-check branch is fixed by
 the parsed statements.  It does not evaluate shell expressions: the status
 must be captured immediately, compared numerically with zero, and handed to a
-literal non-zero ``exit``.  The trap proof is narrower still: a literal,
-top-level Bash ``ERR`` handler whose one command exits non-zero.
+literal non-zero ``exit``.  A failure-true ``[ ]`` operand must be wholly
+double quoted; an unquoted operand is accepted only where a false test takes
+``|| exit``.  The trap proof is narrower still: a literal, top-level Bash
+``ERR`` handler whose one command exits non-zero.
 """
 import os
 import re
@@ -17,7 +19,6 @@ from workflow_function_calls import _FUNCTION_NAME, _function_syntax
 
 _CAPTURE = re.compile(r"([a-z][a-z0-9_]*)=\$\?$")
 _ALIAS_STATE = re.compile(r"(?<![A-Za-z0-9_])BASH_ALIASES(?![A-Za-z0-9_])")
-_IFS_NAMERS = ("read", "local", "declare", "typeset", "export", "readonly", "unset")
 
 
 def _plain(statement):
@@ -48,7 +49,7 @@ def _capture(statement):
 
 
 def _test(statement, name):
-    """(``if`` form, true on failed status, Bash-only, command), or None."""
+    """(``if`` form, true on failure, Bash-only, command, quoted), or None."""
     stage = _plain(statement)
     raw = list(stage.argv) if stage is not None else []
     conditional = bool(raw[:1] == ["if"])
@@ -63,8 +64,9 @@ def _test(statement, name):
     references = ("$?",) if name is None else ("$" + name, "${%s}" % name)
     left = _live(expression[0], references) and str(expression[2]) == "0"
     right = _live(expression[2], references) and str(expression[0]) == "0"
-    return ((conditional, expression[1] == "-ne", bash, str(words[0]))
-            if left or right else None)
+    operand = expression[0] if left else expression[2]
+    return ((conditional, expression[1] == "-ne", bash, str(words[0]),
+             getattr(operand, "double", False)) if left or right else None)
 
 
 def _exit(statement, leading_then=False):
@@ -130,17 +132,14 @@ def _functions(stmts, owner, postures):
 
 
 def _unsafe_step_state(stmts, owner, postures):
-    """Whether mutable splitting or command lookup makes a proof unsafe."""
+    """Whether mutable command lookup makes a proof unsafe."""
     for at, statement in enumerate(stmts):
         if not _same_step(at, owner, postures):
             continue
         for stage in statement.stages:
             words = [str(word) for word in stage.argv]
-            if (any(word in ("alias", "enable", "expand_aliases")
-                    or _ALIAS_STATE.search(word) for word in words)
-                    or any(word.startswith(("IFS=", "IFS+=")) for word in words)
-                    or any(word in _IFS_NAMERS for word in words)
-                    and "IFS" in words):
+            if any(word in ("alias", "enable", "expand_aliases")
+                   or _ALIAS_STATE.search(word) for word in words):
                 return True
     return False
 
@@ -200,11 +199,12 @@ def status_gate(stmts, index, shell, analysis, owner=None, postures=None):
     tested = _test(stmts[at], name)
     if tested is None or _unsafe_step_state(stmts, owner, postures):
         return None
-    conditional, failure_true, bash_only, test_command = tested
+    conditional, failure_true, bash_only, test_command, quoted = tested
     functions = _functions(stmts, owner, postures)
     if ("exit" in functions or test_command in functions
             or not _status_prefix_safe(stmts, index, name, owner, postures, functions)
-            or bash_only and not _bash(shell)):
+            or bash_only and not _bash(shell)
+            or not bash_only and (conditional or failure_true) and not quoted):
         return None
     if not conditional:
         branch = "&&" if failure_true else "||"
