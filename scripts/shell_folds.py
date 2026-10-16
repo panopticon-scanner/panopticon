@@ -12,10 +12,18 @@ Stdlib only, like everything under it.
 """
 import itertools
 import os
+from typing import Callable
 
 from shell_defaults import _HALVES, _THROUGH, _masks
 from shell_quote import Unreadable
 from shell_wrappers import _SHADOWED
+
+# A locale string `$"…"`: bash reads the double-quoted string, dash keeps the `$`. `main`'s reading is dash's;
+# where a job met one, `folds` reads it once more bash's way (#3048): the union, `main`'s reading never lost.
+_LOCALE = {"on": False, "met": False}
+# The caches a flip of `_LOCALE["on"]` leaves stale, each a `cache_clear` (#3048 review round 2): one keyed on the
+# text alone, `workflow_programs._parsed`, held bash's reading of a `$"…"` past the fold, for the jobs after it.
+_STALE: list[Callable[[], None]] = []
 
 
 # The action of each `find` a fold reads where the guard asks how a stage uses a file
@@ -106,20 +114,37 @@ def body_read(bodies, reached):
     return others[min(at, len(others)) - 1]
 
 
+def _locale(on):
+    """`_LOCALE["on"] = on`; where that flips, every `_STALE` cache is cleared: keyed on a text alone, it holds the
+    other fold's reading of a `$"…"` (#3048 review round 2)."""
+    if _LOCALE["on"] != on:
+        _LOCALE["on"] = on
+        for clear in _STALE:
+            clear()
+
+
 def folds(unsure):
     """`_folds`, the folds a job is read in -- and where one of them met a `builtin` it may read through
     (`_through`), each of them once more with every such word read through to the builtin it names, as bash runs
     it (#2665). So the reading that leaves the word alone, `main`'s and what dash does with it, is never lost,
     and the guard REPORTs where either reads a defect."""
     _THROUGH.update(on=False, met=False)
+    _locale(False)
+    _LOCALE["met"] = False
     _SHADOWED["names"] = set()                  # (#2670) the wrappers' names this job's steps define
     try:
         yield from _folds(unsure)
         if _THROUGH["met"]:
             _THROUGH["on"] = True
             yield from _folds(unsure)
+        if _LOCALE["met"]:                      # `$"…"` bash's way (#3048)
+            _THROUGH["on"] = False
+            _locale(True)
+            yield from _folds(unsure)
     finally:
         _THROUGH.update(on=False, met=False)
+        _locale(False)
+        _LOCALE["met"] = False
         _SHADOWED["names"] = None
 
 

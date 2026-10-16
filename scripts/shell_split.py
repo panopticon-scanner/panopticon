@@ -16,6 +16,7 @@ Stdlib only, like everything under it.
 import re
 import shlex
 
+from shell_folds import _LOCALE
 from shell_quote import ansi_c
 from shell_command import (CONDITIONS, KEYWORDS, fronts, _ASSIGNMENT, _FUNCTION, _NAME,
                            _NOTHING, _OPTIONAL, _PARAMETER, _SPLAT)
@@ -220,6 +221,14 @@ def _split(text, context):
             # is the PID and a brace, `$$'x'` the PID and a quote (#2756 fix round, B1).
             buf.append("$$")
             i += 2
+            continue
+        if text.startswith('$"', i):
+            # A locale string `$"…"`: bash's double-quoted string, dash's `$` and string. `main`'s fold
+            # reads it dash's way, as it always did; `folds` reads it bash's way too (#3048): the union.
+            _LOCALE["met"] = True
+            if not _LOCALE["on"]:                       # the `$` kept: dash's, `main`'s
+                buf.append("$")
+            i += 1
             continue
         if ch in "'\"" or text.startswith("$'", i):
             quote, opened = text[i:i + 2] if ch == "$" else ch, len(buf)
