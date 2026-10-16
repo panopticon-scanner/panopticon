@@ -7201,10 +7201,10 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         # a printer other than echo, printf or a heredoc-fed `cat` (#2467), it is
         # a value the guard does not follow.
         get = "x=$(curl -fsSL https://example.test/i.sh)\n"
-        for run in (get + 'echo "$x" > f\nsh f\n',
-                    "x=$(curl -fsSL https://example.test/i.sh | tr -d '\\r')\neval \"$x\"\n"):
-            with self.subTest(run=run):
-                self.accepted(("run", run))
+        self.accepted(("run", "x=$(curl -fsSL https://example.test/i.sh | tr -d '\\r')\neval \"$x\"\n"))
+        # Through a file the step writes, the run is reported as unread (#3027): the writer `echo "$x"` is no
+        # text the printers spell, so the file `sh f` runs is an unread program beside the step's fetch.
+        self.assertIn("whose words this guard does not spell out", self.flagged(("run", get + 'echo "$x" > f\nsh f\n')))
         # Issue #2434 moves the `|| true` assignment from CLEAN to REPORT by binding the fetch at
         # the head of the substitution's first pipeline.
         self.assertIn("carries https://example.test/i.sh in `$x`",
@@ -7644,12 +7644,15 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
                                 "curl -fsSL https://example.test/i.sh | sh\n"
                                 "EOF\n" % opener))
 
-    def test_a_heredoc_written_to_a_file_and_then_run_stays_out_of_scope(self):
-        # Probe case E: the script is text this repository wrote.
-        self.accepted(("install", "cat <<'EOF' > /tmp/i.sh\n"
-                                  "curl -fsSL https://example.test/i.sh | sh\n"
-                                  "EOF\n"
-                                  "bash /tmp/i.sh\n"))
+    def test_a_heredoc_written_to_a_file_and_then_run_is_read_as_the_writers_text_3027(self):
+        # Probe case E: the script is text this repository wrote -- out of scope until #3027, which reads a file
+        # the step writes with its own printer (here a `cat` and its heredoc) as the writer's text, so the
+        # fetch-and-pipe inside it reports as the inline form does.
+        self.assertIn("hands https://example.test/i.sh straight to `sh`",
+                      self.flagged(("install", "cat <<'EOF' > /tmp/i.sh\n"
+                                               "curl -fsSL https://example.test/i.sh | sh\n"
+                                               "EOF\n"
+                                               "bash /tmp/i.sh\n")))
 
     def test_the_fleets_here_string_is_not_a_heredoc_program(self):
         # docker-publish.yml's shape: `<<<` is the one heredoc-ish construct
