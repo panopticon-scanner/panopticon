@@ -16,6 +16,8 @@ from workflow_function_calls import _FUNCTION_NAME, _function_syntax
 
 
 _CAPTURE = re.compile(r"([a-z][a-z0-9_]*)=\$\?$")
+_ALIAS_STATE = re.compile(r"(?<![A-Za-z0-9_])BASH_ALIASES(?![A-Za-z0-9_])")
+_IFS_NAMERS = ("read", "local", "declare", "typeset", "export", "readonly", "unset")
 
 
 def _plain(statement):
@@ -31,8 +33,9 @@ def _plain(statement):
 
 
 def _live(word, values):
-    """Whether ``word`` is one of ``values`` and its dollar is expanded."""
-    return str(word) in values and getattr(word, "live_dollar", True)
+    """Whether ``word`` is an exact, live spelling of one of ``values``."""
+    return (str(word) in values and getattr(word, "live_dollar", False)
+            and getattr(word, "exact_dollar", False))
 
 
 def _capture(statement):
@@ -126,6 +129,22 @@ def _functions(stmts, owner, postures):
     return found
 
 
+def _unsafe_step_state(stmts, owner, postures):
+    """Whether mutable splitting or command lookup makes a proof unsafe."""
+    for at, statement in enumerate(stmts):
+        if not _same_step(at, owner, postures):
+            continue
+        for stage in statement.stages:
+            words = [str(word) for word in stage.argv]
+            if (any(word in ("alias", "enable", "expand_aliases")
+                    or _ALIAS_STATE.search(word) for word in words)
+                    or any(word.startswith(("IFS=", "IFS+=")) for word in words)
+                    or any(word in _IFS_NAMERS for word in words)
+                    and "IFS" in words):
+                return True
+    return False
+
+
 def _dynamic_command(stage):
     """Whether expansion decides the command this same-shell stage runs."""
     written = shell_reader.command_as_written(stage.argv)
@@ -179,7 +198,7 @@ def status_gate(stmts, index, shell, analysis, owner=None, postures=None):
             or analysis.enclosing[at] is not None):
         return None
     tested = _test(stmts[at], name)
-    if tested is None:
+    if tested is None or _unsafe_step_state(stmts, owner, postures):
         return None
     conditional, failure_true, bash_only, test_command = tested
     functions = _functions(stmts, owner, postures)
@@ -247,4 +266,4 @@ def stopping_err_trap(stmts, index, shell, analysis, owner=None, postures=None):
             elif (_dynamic_command(stage)
                   or name in ("eval", ".", "source", "alias", "enable") + tuple(functions)):
                 active, tainted = False, True
-    return active
+    return active and not _unsafe_step_state(stmts, owner, postures)

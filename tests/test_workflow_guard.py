@@ -5412,8 +5412,12 @@ class TestAStatusOrErrTrapCanGateACheck(unittest.TestCase):
         handlers = (
             'CHECK\nrc=$?\nif [ "$rc" -ne 0 ]; then exit 1; fi\n',
             'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
+            'CHECK\nrc="$?"\n[ $rc -ne 0 ] && exit 1\n',
+            'CHECK\nrc=$?\n[ ${rc} -ne 0 ] && exit 1\n',
+            'CHECK\nrc=$?\n[ "${rc}" -ne 0 ] && exit 1\n',
             'CHECK\nexit_code=$?\n[ "$exit_code" -eq 0 ] || exit 1\n',
             'CHECK\n[ $? -eq 0 ] || exit 1\n',
+            'CHECK\n[ "$?" -ne 0 ] && exit 1\n',
             'CHECK\n[ $? -ne 0 ] && exit 1\n',
         )
         for shell in self.SHELLS:
@@ -5421,6 +5425,29 @@ class TestAStatusOrErrTrapCanGateACheck(unittest.TestCase):
                 with self.subTest(shell=shell, handler=handler):
                     # #2440 moves these exact fail-closed status idioms to CLEAN.
                     self.assertEqual([], self.findings(handler + self.USE, shell))
+
+    def test_only_exact_status_reference_lexemes_are_credited(self):
+        controls = (
+            'CHECK\n[ $"?" -ne 0 ] && exit 1\n',
+            'CHECK\n[ "$"? -ne 0 ] && exit 1\n',
+            'CHECK\n[ $\\? -ne 0 ] && exit 1\n',
+            'CHECK\n[ "$"\'?\' -ne 0 ] && exit 1\n',
+            'CHECK\n[ $""? -ne 0 ] && exit 1\n',
+            'CHECK\n[ "$""?" -ne 0 ] && exit 1\n',
+            'CHECK\nif [ "$"? -ne 0 ]; then exit 1; fi\n',
+            'CHECK\nrc=$"?"\n[ "$rc" -ne 0 ] && exit 1\n',
+            'CHECK\nrc="$"?\n[ "$rc" -ne 0 ] && exit 1\n',
+            'CHECK\nrc=$\\?\n[ "$rc" -ne 0 ] && exit 1\n',
+            'CHECK\nrc=$?\n[ $"rc" -ne 0 ] && exit 1\n',
+            'CHECK\nrc=$?\n[ "$"rc -ne 0 ] && exit 1\n',
+            'CHECK\n[[ $"?" -ne 0 ]] && exit 1\n',
+        )
+        for shell in self.SHELLS:
+            for control in controls:
+                with self.subTest(shell=shell, control=control):
+                    # #2440 review: these words collapse to `$?`/`$rc` after
+                    # quote removal, but their dollar is literal at runtime.
+                    self.assertEqual(1, len(self.findings(control + self.USE, shell)))
 
     def test_a_bash_conditional_status_test_is_a_gate_in_a_bash_step(self):
         handlers = (
@@ -5472,6 +5499,7 @@ class TestAStatusOrErrTrapCanGateACheck(unittest.TestCase):
 
     def test_redirected_status_primitives_stay_reported(self):
         controls = (
+            'CHECK\n2>&999 [ $? -ne 0 ] && exit 1\n',
             'CHECK\nrc=$?\n[ "$rc" -ne 0 ] 2>&999 && exit 1\n',
             'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1 2>&999\n',
             "trap 'exit 1' ERR 2>&999\nCHECK\n",
@@ -5481,6 +5509,45 @@ class TestAStatusOrErrTrapCanGateACheck(unittest.TestCase):
                 with self.subTest(shell=shell, control=control):
                     # #2440: a redirect may fail before the test, exit, or
                     # trap runs; Bash then reaches the payload under set +e.
+                    self.assertEqual(1, len(self.findings(control + self.USE, shell)))
+
+    def test_an_ifs_touch_withholds_manual_status_credit(self):
+        controls = (
+            'IFS=1\nCHECK\nrc=$?\n[ $rc -ne 0 ] && exit 1\n',
+            'IFS=1\nCHECK\n[ $? -ne 0 ] && exit 1\n',
+            'IFS=1\nCHECK\nif [ $? -ne 0 ]; then exit 1; fi\n',
+            'export IFS\nCHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
+            'read IFS <<EOF\n1\nEOF\nCHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
+            'f() { local IFS; }\nCHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
+            'f() { declare IFS; }\nCHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
+            "IFS=1\ntrap 'exit 1' ERR\nCHECK\n",
+        )
+        for shell in self.SHELLS:
+            for control in controls:
+                with self.subTest(shell=shell, control=control):
+                    # #2440 review: an IFS value can split an unquoted digit;
+                    # the bounded proof prices every IFS touch in the step.
+                    self.assertEqual(1, len(self.findings(control + self.USE, shell)))
+
+    def test_alias_or_builtin_rewriting_withholds_manual_gate_credit(self):
+        controls = (
+            ('shopt -s expand_aliases\nBASH_ALIASES[exit]=:\n'
+             'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n'),
+            ('shopt -s expand_aliases\nBASH_ALIASES[exit]=:\n'
+             "trap 'exit 1' ERR\nCHECK\n"),
+            ('shopt -s expand_aliases\n'
+             'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n'),
+            ('BASH_ALIASES[exit]=:\n'
+             'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n'),
+            ('f() { alias exit=:; }\n'
+             'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n'),
+            ("trap 'exit 1' ERR\nCHECK\nf() { enable -n exit; }\n"),
+        )
+        for shell in (None, "bash", "bash {0}"):
+            for control in controls:
+                with self.subTest(shell=shell, control=control):
+                    # #2440 review: Bash aliases and builtin enablement can
+                    # replace a proven primitive from anywhere in the step.
                     self.assertEqual(1, len(self.findings(control + self.USE, shell)))
 
     def test_a_shadowed_status_primitive_at_any_body_depth_stays_reported(self):

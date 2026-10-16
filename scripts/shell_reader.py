@@ -114,6 +114,14 @@ _DECLARATIONS = ("declare", "typeset", "local", "export", "readonly")
 # shlex ends it at; `_SPELLED` one whose name and operator would read as an assignment's with every quote and
 # backslash among them taken off -- which `_ASSIGNMENT` then says is one as written, or is not.
 _NAMED = "\ue005"
+# Prefix a shell word whose complete spelling is one live, simple parameter
+# expansion (optionally the value of one assignment). Quotes disappear before
+# `_stage` sees argv, so this bit lets a bounded caller distinguish `$?` and
+# `"$?"` from the literal-dollar spellings `$"?"`, `"$"?`, and `$\?`.
+_EXACT_DOLLAR = "\ue007"
+_REFERENCE = r"(?:\$\?|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})"
+_EXACT_DOLLAR_WORD = re.compile(
+    r"(?:[A-Za-z_][A-Za-z0-9_]*=)?(?:%s|\"%s\")" % (_REFERENCE, _REFERENCE))
 _WORD = re.compile(r"""(?:[^ \t\r\n'"\\]|\\.|'[^']*'|"(?:[^"\\]|\\.)*")+""", re.S)
 _SPELLED = re.compile(r"""["'\\]*[A-Za-z_](?:["'\\]*[A-Za-z0-9_])*["'\\]*(?:\[[^]]*\]["'\\]*)?(?:\+["'\\]*)?=""")
 # A `$` word written whole in double quotes (`_stage`'s `double`): what stands between them.
@@ -123,6 +131,12 @@ _FD_SPELLINGS = re.compile(r"^(?:/+|(?:\.\./+)+)(?:dev|proc/(?:thread-)?self)/+f
 # `/proc/self/root` and `/proc/thread-self/root` are the process's own root: in front of an absolute path they
 # spell it once more, as often as they stand (#3051).
 _OWN_ROOT = re.compile(r"^(?:/proc/(?:thread-)?self/root)+(?=/)")
+
+
+def _exact_dollars(text):
+    """Mark complete words that spell one simple live parameter expansion."""
+    return _WORD.sub(lambda word: (_EXACT_DOLLAR + word[0]
+                                   if _EXACT_DOLLAR_WORD.fullmatch(word[0]) else word[0]), text)
 # The listed names of a descriptor a pattern bash expands may match (`/dev/stdou[t]`, `/dev/fd/[1]`, #3051).
 _DESCRIPTOR_NAMES = ("/dev/stdin", "/dev/stdout", "/dev/stderr", *("/dev/fd/%d" % n for n in range(10)),
                      *("/proc/self/fd/%d" % n for n in range(10)), *("/proc/thread-self/fd/%d" % n for n in range(10)))
@@ -243,8 +257,9 @@ def _stage(text, context):
     runs (#2342): the backslash of each gone, a live `$` word beside them kept as the value word
     it is (#2466), a lifted substitution as its marker; it reads as before."""
     text = _named(text, context)
+    exact = _exact_dollars(text)
     try:
-        tokens = shlex.split(patterned(text))
+        tokens = shlex.split(patterned(exact))
     except ValueError:                          # an unbalanced quote
         tokens = text.split()
     argv: list[str] = []
@@ -301,6 +316,7 @@ def _stage(text, context):
         whole = raw.replace(_BLANK, " ") if len(parts) > 1 else None
         pieces.extend((part, None if at else whole, len(parts)) for at, part in enumerate(parts))
     for raw, whole, span in pieces:
+        exact_dollar, raw = raw.startswith(_EXACT_DOLLAR), raw.removeprefix(_EXACT_DOLLAR)
         named, raw = raw.startswith(_NAMED), raw.replace(_NAMED, "")
         plain = context.restore_arithmetic(raw.replace(MARK, "").replace(QUOTED, "")
                                            .replace(QUOTED_DOLLAR, "")
@@ -325,6 +341,10 @@ def _stage(text, context):
             # A separate fact says whether every `$` is live. A single quote or backslash makes
             # eval or a child shell re-read it after applying a prefix assignment (#2433).
             setattr(word, "live_dollar", raw.count(DOUBLE_DOLLAR) == plain.count("$"))
+        if exact_dollar:
+            word = word if isinstance(word, _Token) else _Token(word, _markers(word))
+            setattr(word, "exact_dollar", True)
+            setattr(word, "live_dollar", True)
         if named:                           # `"X=1"`, `X\=1`: a command of that name (#2480)
             word = word if isinstance(word, _Token) else _Token(word, {})
             setattr(word, "quoted", True)

@@ -17,7 +17,9 @@ evidence exposed.
   reported, and a soft step clears only
   its own later use. It also follows a literal top-level `ERR` trap through Bash steps, stopping at
   a replacement, a scope or step boundary, sourced/evaluated text, a dynamic command, or a
-  shadowed primitive at any brace depth. The
+  shadowed primitive at any brace depth. Status operands receive credit only for the exact `$?`,
+  `"$?"`, `$NAME`, `"$NAME"`, `${NAME}`, and `"${NAME}"` lexemes; touching `IFS` or Bash alias and
+  builtin lookup state anywhere in the step withholds both status and trap credit. The
   declared step shell travels with the checksum: default, `bash`, and `bash {0}` receive trap
   credit, while `sh` and `sh {0}` remain reported; inlined child shells inherit none. Literal or
   escaped `$?`, an intervening command or reassignment, a readonly or nameref capture, wrong
