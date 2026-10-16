@@ -139,7 +139,8 @@ def _descriptor_script(stage, operand):
     operand's path names (`. /dev/stdin <<'EOF'`, `sh /dev/fd/3 3<<'EOF'`, #2972), or None: a quoted body as
     written, an expanding one as `_heredoc` hands it on."""
     fd = shell_reader.input_alias_fd(str(operand)) if not shell_reader.is_marker(operand) else None
-    body = next(((text, expands) for number, text, expands in stage.fd_bodies if number == fd), None)
+    body = stage.stdin_heredoc if fd == "0" else next(
+        ((text, expands) for number, text, expands in stage.fd_bodies if number == fd), None)
     if body is None:
         return None
     text, expands = body

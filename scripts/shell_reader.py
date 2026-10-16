@@ -464,7 +464,7 @@ def _stage(text, context):
                  stdin[:2] if stdin else None,
                  tuple(fd for fd, connected in pipe_outputs.items() if connected),
                  input_files.get("0", ()),
-                 tuple((fd, body[0], body[1]) for fd, body in bodies.items())))
+                 tuple((fd, body[0], body[1]) for fd, body in bodies.items() if fd != "0")))   # fd 0's: `stdin_heredoc`
 
 
 def statements(script):

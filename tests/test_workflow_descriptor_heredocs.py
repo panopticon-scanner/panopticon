@@ -83,8 +83,10 @@ class TestWhatReadsAsItDid(unittest.TestCase):
 class TestTheReader(unittest.TestCase):
 
     def test_each_descriptors_final_body_is_on_the_stage(self):
+        # Every descriptor's but 0's, which `stdin_heredoc` holds (and which alone differs across the folds).
         stage = shell_reader.statements("sh /dev/fd/3 3<<'EOF' <<'END'\na\nEOF\nb\nEND\n")[0].stages[0]
-        self.assertEqual({("3", "a", False), ("0", "b", False)}, set(stage.fd_bodies))
+        self.assertEqual((("3", "a", False),), stage.fd_bodies)
+        self.assertEqual(("b", False), stage.stdin_heredoc)
         self.assertEqual((), shell_reader.statements("sh t\n")[0].stages[0].fd_bodies)
 
 
