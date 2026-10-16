@@ -712,6 +712,7 @@ groups:
       - scripts/workflow_step_credit.py
       - scripts/workflow_function_calls.py
       - scripts/workflow_posture.py
+      - scripts/workflow_status.py
       - scripts/workflow_operands.py
       tests:
       - tests/test_workflow_branch_option_state.py

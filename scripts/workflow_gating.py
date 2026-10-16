@@ -15,6 +15,8 @@ around it decides that, not the command:
     `_stops_step`              the imported function-call/status proof: how
                                far a failure reaches in the step's own shell
                                (`workflow_function_calls`)
+    `workflow_status`          an immediate `$?` handoff and a top-level Bash
+                               `ERR` trap that stop the shell
     `conditional_reach`        how far a use shares the path that reaches a
                                check written behind `&&` or `||`
 
@@ -56,6 +58,7 @@ from workflow_function_calls import (FunctionGate, PipelineGate, Reach as Reach,
                                      _stops_the_job, _stops_step as _stops_step, clears as _clears)
 from workflow_posture import (_errexit as _errexit, _rejected as _rejected,
                               _takes_value as _takes_value, seed as seed)
+from workflow_status import status_gate, step_end, stopping_err_trap
 
 
 # A statement of a script handed to a shell, as `flattened` inlines it, with
@@ -236,6 +239,10 @@ _NEGATED_GROUP = ("is inside a negated compound list whose failure reach this gu
                   "exactly, so it cannot prove that the checksum gates that use")
 _CONDITIONAL_GROUP = ("is inside a compound `if`/`while` test whose failure reach this guard cannot "
                       "place exactly, so it cannot prove that the checksum gates that use")
+_STATUS_HANDOFF = ("is followed by that use before its captured exit status reaches the "
+                   "branch that stops the step")
+_SOFT_MANUAL = ("is in a step carrying `continue-on-error: true`, so a manual failure gate "
+                "stops that step but the job can still reach a later step")
 _BARRIER_REASONS = {
     "ambiguous": _AMBIGUOUS_GROUP,
     "negated": _NEGATED_GROUP,
@@ -450,7 +457,8 @@ def _function_status(stmts, index, answer, errexit, analysis=None):
     )
 
 
-def swallowed(stmts, index, statement, stage, credit=_UNMEASURED, analysis=None):
+def swallowed(stmts, index, statement, stage, credit=_UNMEASURED, analysis=None,
+              shell=None, soft=False, top=False, owner=None, postures=None):
     """Why this check's failure would go nowhere, or None.
 
     Phrased to follow "the checksum that names <file>", because that is the
@@ -572,6 +580,16 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED, analysis=None)
         piped_end = function_end
     answer = (PipelineGate(piped_end, why)
               if piped_end is not None and (why is None or isinstance(why, Reach)) else why)
+    no_errexit = (answer == _SET_E or
+                  isinstance(answer, str) and answer.startswith("runs under `shell:"))
+    if measuring_uses and top and not isinstance(statement, Inlined) and no_errexit:
+        outside = (Reach(step_end(stmts, index, owner, postures) - index, _SOFT_MANUAL)
+                   if soft else None)
+        through = status_gate(stmts, index, shell, analysis, owner, postures)
+        if through is not None:
+            return ContextGate(through, _STATUS_HANDOFF, outside)
+        if stopping_err_trap(stmts, index, shell, analysis, owner, postures):
+            answer = outside
     pair = credit if isinstance(credit, tuple) else (None, None)
     errexit = not (pair[0] == _SET_E or
                    isinstance(pair[0], str) and pair[0].startswith("runs under `shell:"))
