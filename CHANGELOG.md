@@ -7,6 +7,26 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader reads a heredoc reached through its descriptor path as the program (#2972).** `.
+  /dev/stdin <<'EOF'`, `source /dev/stdin <<'EOF'` and `sh /dev/fd/3 3<<'EOF'` ran the body under
+  every parent (`source`: bash) and read CLEAN: a shell's own stdin operand was read as its program,
+  but `.`'s and `source`'s FILE operand was read as a file, and a body on a descriptor other than 0
+  was exposed by no field of the stage. `shell_reader` now keeps every descriptor's final heredoc or
+  here-string body but 0's on the stage (`fd_bodies`, last, with a default; fd 0's is
+  `stdin_heredoc`) and resolves `/proc/self/fd/N` and `/proc/thread-self/fd/N` to N, as
+  `output_alias_fd` already reads them; `workflow_written.bind_written` binds a FILE operand whose
+  descriptor path names such a descriptor to that body, read as #3098 reads a file the step writes.
+  `. /proc/self/fd/0 <<'EOF'` and its thread-self twin, CLEAN on `main` and running on Linux, report
+  too. The prices, named: an expanding body is read as `sh <<EOF` is on `main`, so `. /dev/stdin
+  <<EOF` holding `echo $(date)` or `echo $HOME` reports; and `source /dev/stdin` reports under the
+  `sh` settings, where dash has no `source` and nothing runs. `cat /proc/self/fd/5 | sh` with fd 5
+  not open now reads CLEAN, as `main` reads `/dev/fd/5` (nothing runs; with `5<&0` both report).
+  Differential on the forge, 95eb83ab against main a16e0fa3 on 27,293 rows: 0 failures, **0
+  REPORT->CLEAN cells**, 27,282 rows identical, **11 rows CLEAN->REPORT** -- the #2939 kit's six
+  rows, three of this PR's, and two of the kit's own of the same shape, each running.
+  `tests/test_workflow_descriptor_heredocs.py`; the Stage field-count pin moves to 15, authorized.
+  `scripts/shell_reader.py` is 494 lines (+4), `workflow_written.py` 174 (+22).
+
 - **Workflow reader reads a file the step writes with its own printer, and then runs, as the
   writer's text (#3027).** `echo 'curl … | sh' > s.sh` ⏎ `sh s.sh` ran the download under every
   parent and read CLEAN: the reader bound a `<(…)` FILE operand to the printer that fills it, and a

