@@ -16,7 +16,7 @@ Stdlib only, like everything under it.
 import re
 import shlex
 
-from shell_defaults import _LOCALE
+from shell_folds import _LOCALE
 from shell_quote import ansi_c
 from shell_command import CONDITIONS, KEYWORDS, fronts, _ASSIGNMENT, _NAME, _NOTHING, _OPTIONAL, _PARAMETER, _SPLAT
 
@@ -215,18 +215,14 @@ def _split(text, context):
             buf.append("$$")
             i += 2
             continue
-        if text.startswith(('$"', "$'"), i):
-            # A locale string `$"…"` is bash's double-quoted string and dash's `$` and string; an ANSI-C
-            # one `$'…'` bash's decoded string and dash's `$` and string. `main`'s fold reads the first
-            # dash's way, the second bash's; `folds` reads each the other way too (#3048): the union.
+        if text.startswith('$"', i):
+            # A locale string `$"…"`: bash's double-quoted string, dash's `$` and string. `main`'s fold
+            # reads it dash's way, as it always did; `folds` reads it bash's way too (#3048): the union.
             _LOCALE["met"] = True
-            if _LOCALE["on"] == (text[i + 1] == "'"):     # the `$` kept: dash's
+            if not _LOCALE["on"]:                       # the `$` kept: dash's, `main`'s
                 buf.append("$")
-                i += 1
-                continue
-            if text[i + 1] == '"':
-                i += 1
-                continue
+            i += 1
+            continue
         if ch in "'\"" or text.startswith("$'", i):
             quote, opened = text[i:i + 2] if ch == "$" else ch, len(buf)
             buf.append(quote)

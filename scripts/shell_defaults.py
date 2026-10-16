@@ -300,9 +300,6 @@ WALKED_DEFAULTS: contextvars.ContextVar[bool] = contextvars.ContextVar("walked_d
 # not follow, is dash's, and stays: the second walk reads a job that holds such a word in every fold it reads any
 # job in, then in each of them again with the word read through, and the guard REPORTs where either reading does.
 _THROUGH = {"on": False, "met": False}
-# A locale string `$"…"` and an ANSI-C string `$'…'`: `main`'s reading keeps the `$` of the one (dash's) and drops
-# the other's (bash's); where a job met either, `folds` reads it once more the other way round (#3048): the union.
-_LOCALE = {"on": False, "met": False}
 
 
 def _through(mains=False):

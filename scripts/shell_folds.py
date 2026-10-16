@@ -13,9 +13,13 @@ Stdlib only, like everything under it.
 import itertools
 import os
 
-from shell_defaults import _HALVES, _LOCALE, _THROUGH, _masks
+from shell_defaults import _HALVES, _THROUGH, _masks
 from shell_quote import Unreadable
 from shell_wrappers import _SHADOWED
+
+# A locale string `$"…"`: bash reads the double-quoted string, dash keeps the `$`. `main`'s reading is dash's;
+# where a job met one, `folds` reads it once more bash's way (#3048): the union, `main`'s reading never lost.
+_LOCALE = {"on": False, "met": False}
 
 
 # The action of each `find` a fold reads where the guard asks how a stage uses a file
@@ -119,7 +123,7 @@ def folds(unsure):
         if _THROUGH["met"]:
             _THROUGH["on"] = True
             yield from _folds(unsure)
-        if _LOCALE["met"]:                      # `$"…"` and `$'…'` the other way round (#3048)
+        if _LOCALE["met"]:                      # `$"…"` bash's way (#3048)
             _THROUGH["on"], _LOCALE["on"] = False, True
             yield from _folds(unsure)
     finally:
