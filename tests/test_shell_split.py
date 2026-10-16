@@ -11,8 +11,8 @@ import shell_reader
 import shell_split
 from shell_tokens import _Parse
 
-MOVED = ("_BLANK", "_BRACED_HEADER", "_ESCAPED", "_HEADER", "_NESTED_CASE", "_REDIRECT",
-         "_bare_blanks", "_negated", "_split")
+MOVED = ("_BLANK", "_BRACED_HEADER", "_ESCAPED", "_HEADER", "_NESTED_CASE", "_NESTED_HEADER",
+         "_REDIRECT", "_bare_blanks", "_negated", "_split")
 
 
 def _tree():
