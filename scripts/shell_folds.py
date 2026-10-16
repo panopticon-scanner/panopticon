@@ -26,7 +26,8 @@ _LOCALE = {"on": False, "met": False}
 _STALE: list[Callable[[], None]] = []
 # A call of a function the step defines (#3047, #3091): `main` reads it as it did; where a job holds one, `folds`
 # reads the job once more with each such call standing for its body as the call makes it, the call's words in
-# the body's positionals (`workflow_called_fetches.called`) -- the union, `main`'s reading never lost.
+# the body's positionals, and the body read nowhere else there (`workflow_called_fetches.called`) -- the union,
+# `main`'s reading never lost.
 _CALLED = {"on": False, "met": False}
 
 

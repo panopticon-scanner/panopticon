@@ -6,7 +6,9 @@ cuda_1.run`, a retry loop around `"$@"`, `f() { sh "$1"; }; f cuda_1.run`; and a
 call, in a fold of its own (`shell_folds._CALLED`) beside `main`'s, as the body's statements with the call's words in its
 positionals -- `$N`, `"$@"` spliced, `NAME=$N` set, a `shift` dropping them -- the guard reporting where either fold
 reads a run; `main`'s reading of the call never changes (the issue's trap: a check a body credits is credited in the
-fold alone, and takes no report away).
+fold alone, and takes no report away). The fold reads a body at its calls alone: a definition stood for is emptied
+there, its header's words and its closer kept (`_emptied`), so a body that fetches after it runs is no run of its own
+fetch where one call makes it.
 
 Marks are a letter a `shell:` setting -- unset, `bash`, `sh`, `bash {0}`, `sh {0}` -- R where the guard reports, C where
 it reads the step CLEAN: first the job's, then the main pass's. Truth: the #2863 record's kit `F5-positional` (eight
@@ -173,13 +175,13 @@ class TestWhatACallStandsFor(unittest.TestCase):
         read = in_fold('retry() { for i in 1 2 3; do "$@" && return 0; sleep 0; done; return 1; }\nretry sh t || exit 1\n')
         self.assertEqual([([["for", "i", "in", "1", "2", "3"]], ";"), ([["do", "sh", "t"]], "&&"), ([["return", "0"]], ";"),
                           ([["sleep", "0"]], ";"), ([["done"]], ";"), ([["return", "1"]], "||"), ([["exit", "1"]], "\n")],
-                         words(read)[7:])
+                         words(read)[2:])
 
     def test_a_shift_drops_the_calls_words_and_a_copy_sets_the_name(self):
         # The copy is an assignment the walk reads (`workflow_annotate` marks `$c` as its literal `sh`); the binder
         # leaves `$c` as written.
         read = in_fold('f() { local c="$1"; shift; "$c" "$@" || :; }\nf sh t\ng() { shift 2; "$@"; }\ng a b sh t\n')
-        self.assertEqual([([["local", "c=sh"]], ";"), ([["$c", "t"]], "||"), ([[":"]], "\n")], words(read)[5:8])
+        self.assertEqual([([["local", "c=sh"]], ";"), ([["$c", "t"]], "||"), ([[":"]], "\n")], words(read)[2:5])
         self.assertEqual(([["sh", "t"]], "\n"), words(read)[-1])
 
     def test_a_call_in_a_body_is_followed_and_a_header_line_is_no_word(self):
@@ -188,7 +190,8 @@ class TestWhatACallStandsFor(unittest.TestCase):
         read = in_fold('g() { sh "$1"; }\nf() { g "$1"; }\nf tool\nfunction h {\n  sh "$1"\n  echo "$#"\n}\nh t\n'
                        'k() (sh "$1")\nk t\n')
         self.assertEqual([([["sh", "tool"]], "\n")], words(read)[4:5])
-        self.assertEqual([([["sh", "t"]], "\n"), ([["echo", "$#"]], "\n")], words(read)[9:11])
+        self.assertEqual([([["function", "h", "{"]], "\n"), ([["}"]], "\n")], words(read)[5:7])  # emptied
+        self.assertEqual([([["sh", "t"]], "\n"), ([["echo", "$#"]], "\n")], words(read)[7:9])
         self.assertEqual(([["k", "t"]], "\n"), words(read)[-1])
 
     def test_a_body_that_reads_nothing_of_its_call_is_not_stood_for(self):
@@ -210,8 +213,8 @@ class TestWhatACallStandsFor(unittest.TestCase):
         read = in_fold('f() { cd /; sh "$1"; }\nf ./t\nf /opt/t\ng() { set -- other; sh "$1"; }\ng t\n'
                        'h() { sh "$1"; }\nunset -f h\nh t\n')
         self.assertEqual([([["cd", "/"]], ";"), ([["sh", "$1"]], "\n"), ([["cd", "/"]], ";"), ([["sh", "/opt/t"]], "\n")],
-                         words(read)[3:7])
-        self.assertEqual(([["sh", "other"]], "\n"), words(read)[10])
+                         words(read)[2:6])
+        self.assertEqual(([["sh", "other"]], "\n"), words(read)[8])
         self.assertEqual(([["h", "t"]], "\n"), words(read)[-1])
         # A definition that may never have run (in a branch, behind `&&`) is no function to stand for, and an
         # `unset -f` there takes none away: as `main` installs them (`workflow_uses._functions_before`).
@@ -235,8 +238,42 @@ class TestWhatACallStandsFor(unittest.TestCase):
     def test_the_step_grows_by_the_budget_at_most(self):
         text = 'f() { echo a; sh "$1"; }\n' + "f t\n" * 100
         read = in_fold(text)
-        self.assertEqual(len(shell_reader.statements(text)) + _INLINED, len(read))
+        self.assertEqual(len(shell_reader.statements(text)) + _INLINED - 1, len(read))     # the definition emptied: one fewer
         self.assertEqual(([["f", "t"]], "\n"), words(read)[-1])
+
+
+class TestADefinitionStoodForIsEmptied(unittest.TestCase):
+    """The fold reads a body at its calls, not where it stands too (`_emptied`): a definition stood for keeps its
+    header's words and its closer there -- the step still defines the name (`workflow_annotate`'s rule 7) -- and
+    nothing else. Read in both places, the body's fetch where it stands paired with its run at the call: a REPORT
+    for one call that runs before anything fetched (the forge's xr.0128, xr.1576, xr.2192, xr.1967)."""
+
+    def test_a_body_that_fetches_after_it_runs_is_no_run_of_its_own_fetch_where_one_call_makes_it(self):
+        body = "f() {\nsh t\n$1 echo\ncurl -fsSLo t https://example.test/t\n}\n"
+        self.assertEqual([([["f()", "{"]], "\n"), ([["}"]], "\n"), ([["sh", "t"]], "\n"), ([["$1", "echo"]], "\n"),
+                          ([["curl", "-fsSLo", "t", "https://example.test/t"]], "\n")], words(in_fold(body + "f\n")))
+        self.assertEqual(CLEAN, marks(body + "f\n"))
+        # Two calls are that run, once: the second runs what the first fetched.
+        self.assertEqual(REPORTED, marks(body + "f\nf\n"))
+        self.assertEqual(1, len(wg.job_defects([wg.Step("step", body + "f\nf\n", None)])))
+        # A body that reads nothing of its call is not stood for: where it stands, as `main` reads it, in the fold
+        # too -- and a second call's run of its own fetch is `main`'s to miss, a limit.
+        plain = "g() {\nsh t\ncurl -fsSLo t https://example.test/t\n}\ng\ng\n"
+        self.assertEqual(words(shell_reader.statements(plain)), words(in_fold(plain)))
+        self.assertEqual(CLEAN, marks(plain))
+
+    def test_a_definition_inside_a_body_stood_for_is_emptied_in_the_copy_too(self):
+        # On a statement of its own or sharing the outer header's (`outer() { inner() {`: the outer takes it,
+        # `_emptying`), the inner definition's header and closer stand in the copy, its body at its calls.
+        self.assertEqual([([["outer()", "{"]], "\n"), ([["}"]], "\n"), ([["inner()", "{"]], ";"), ([["}"]], "\n"),
+                          ([["sh", "t"]], "\n")], words(in_fold('outer() {\ninner() { sh "$1"; }\ninner "$1"\n}\nouter t\n')))
+        shared = 'outer() { inner() { sh "$1"; }; inner "$1"; }\n'
+        self.assertEqual([([["outer()", "{"]], ";"), ([["}"]], "\n"), ([["inner()", "{"]], ";"), ([["}"]], ";"),
+                          ([["sh", "t"]], "\n")], words(in_fold(shared + "outer t\n")))
+        self.assertEqual(REPORTED, marks(shared + "curl -fsSLo t https://example.test/t\nouter t\n"))
+        nested = "outer() {\ninner() {\nsh t\n$1 echo\ncurl -fsSLo t https://example.test/t\n}\ninner\n%s}\nouter\n"
+        self.assertEqual(CLEAN, marks(nested % ""))
+        self.assertEqual(REPORTED, marks(nested % "inner\n"))
 
 
 class TestTheFoldsFlipClearsTheCaches(unittest.TestCase):

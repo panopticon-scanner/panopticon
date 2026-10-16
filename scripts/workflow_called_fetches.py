@@ -283,7 +283,7 @@ def _header_end(argv):
 
 
 def _body(stmts, head, end):
-    """The statements of the body defined at `head` through `end`: the header's words off its first statement
+    """[(index, statement)] for the body defined at `head` through `end`: the header's words off its first statement
     (`f() {`, a line of its own dropped), its `}` closer dropped -- what a call of it stands for."""
     out = []
     for at in range(head, end + 1):
@@ -296,7 +296,7 @@ def _body(stmts, head, end):
             stages[0] = stages[0]._replace(argv=argv)
         if [str(word) for stage in stages for word in stage.argv] == ["}"]:
             continue
-        out.append(stmts[at]._replace(stages=stages))
+        out.append((at, stmts[at]._replace(stages=stages)))
     return out
 
 
@@ -321,7 +321,7 @@ def _body_reads(reader, name, position, depth=1):
     entries = [entry for entry in reader.defined.get(name, ()) if entry[0] < position]
     if not entries or depth > _DEPTH:
         return False, False
-    body = _body(reader.stmts, *entries[-1])
+    body = [item for _at, item in _body(reader.stmts, *entries[-1])]
     words = any(_SPELLS.search(str(word)) for item in body for stage in item.stages for word in stage.argv) or any(
         str(rest[0]) == "shift" for item in body for stage in item.stages if (rest := _rest(stage.argv)))
     if len(body) != 1 or len(body[0].stages) != 1:
@@ -376,7 +376,7 @@ def _with_call(call, stage, heads):
     return read._replace(argv=[*heads, *read.argv], substitutions=[*stage.substitutions, *call.substitutions])
 
 
-def _expanded(reader, stmts, statement, position, depth, room, gone=frozenset()):
+def _expanded(reader, stmts, statement, position, depth, room, gone=frozenset(), used=None):
     """`statement` as the statements its call stands for (`_inlined`) -- the body the name last got before
     `position` (`_body`), its words as the call makes them (`_bound`), a `shift` of its own dropping the call's
     words for the statements after it, a `set --` giving them its own, a `cd` (`pushd`, `popd`) leaving only the
@@ -385,7 +385,8 @@ def _expanded(reader, stmts, statement, position, depth, room, gone=frozenset())
     body takes the call's place in its pipeline, with its input and output (`_with_call`); a longer one the call's
     words in front and its separator behind, where the call is a statement of its own with no redirection;
     else, past the depth or the room, or where the header's line opens a group (`f() ( … )`), the statement as
-    written."""
+    written. The (head, end) of each definition stood for, here and in the bodies followed, goes into `used`; one
+    inside the body stood for in turn is emptied in the copy (`_emptied`), as `called` empties one the step holds."""
     call = _inlined(reader, statement, position, gone)
     if call is None or depth > _DEPTH or room < 1:
         return [statement]
@@ -393,8 +394,8 @@ def _expanded(reader, stmts, statement, position, depth, room, gone=frozenset())
     head, end = [entry for entry in reader.defined[name] if entry[0] < position][-1]
     if stmts[head].stages and stmts[head].stages[0].group_open:
         return [statement]
-    out = []
-    for item in _body(stmts, head, end):
+    out, origins = [], []            # the body's statements as the call makes them, each with its index in `stmts`
+    for origin, item in _body(stmts, head, end):
         words = [str(word) for word in _rest(item.stages[0].argv)] if item.stages else []
         if len(item.stages) == 1 and words[:1] == ["shift"] and len(words) < 3 and (len(words) == 1 or words[1].isdigit()):
             del arguments[:int(words[1]) if len(words) == 2 else 1]
@@ -406,6 +407,7 @@ def _expanded(reader, stmts, statement, position, depth, room, gone=frozenset())
             arguments = [given if given is None or str(given).startswith(("/", "~", "$")) or shell_reader.has_substitution(given)
                          else None for given in arguments]
         out.append(item._replace(stages=[stage._replace(argv=_bound(stage.argv, arguments)) for stage in item.stages]))
+        origins.append(origin)
     stage = statement.stages[at]
     if len(out) == 1 and len(out[0].stages) == 1:
         stages = list(statement.stages)
@@ -417,18 +419,54 @@ def _expanded(reader, stmts, statement, position, depth, room, gone=frozenset())
         out[-1] = out[-1]._replace(separator=statement.separator)
     else:
         return [statement]
-    followed: list = []
+    used = set() if used is None else used
+    used.add((head, end))
+    parts: list[list] = []
+    grown = 0
     for item in out:
-        followed.extend(_expanded(reader, stmts, item, position, depth + 1, room - len(followed), gone))
+        parts.append(_expanded(reader, stmts, item, position, depth + 1, room - grown, gone, used))
+        grown += len(parts[-1])
+    emptied = _emptying(pair for pair in used if head <= pair[0] <= end and pair != (head, end))
+    followed: list = []
+    for origin, item, part in zip(origins, out, parts):
+        if origin not in emptied:
+            followed.extend(part)
+        elif emptied[origin][0] == origin:
+            followed.extend(_emptied(item, stmts[emptied[origin][1]]))
     return followed
+
+
+def _emptied(header, closer):
+    """A definition with its body gone: `header`, the statement its header's words start, with those words alone,
+    then `closer`, the statement of its `}`, where that is another -- what stands where a definition stood in the
+    fold, a call of it standing for its body (`called`). The step still defines the name, as `workflow_annotate`'s
+    rule 7 and `_function_ranges` read it; the body is read at its calls, not where it stands too (that reading
+    is `main`'s, kept beside the fold's)."""
+    first = header.stages[0]
+    heads = list(first.argv[:_header_end(list(first.argv))])
+    stage = first._replace(argv=heads, writes=[], reads=[], heredoc=None, substitutions=[], stdout_writes=[],
+                           stdin_heredoc=None, stdin_reads=(), fd_bodies=(), redirected=False)
+    return [header._replace(stages=[stage]), *([closer] if closer is not None else [])]
+
+
+def _emptying(pairs):
+    """Each statement of the definitions `pairs` -- (head, end) each -- to the pair it is emptied with: the outer
+    one where two share a head (`outer() { inner() {`, one statement), which takes the inner one's statements."""
+    out: dict[int, tuple[int, int]] = {}
+    for head, end in sorted(pairs, key=lambda pair: (pair[0], -pair[1])):
+        for at in range(head, end + 1):
+            out.setdefault(at, (head, end))
+    return out
 
 
 def called(stmts):
     """`stmts` with each call of a function the step defines before it -- a statement not inside a definition --
     standing for its body as the call makes it (`_expanded`), in the fold `shell_folds._CALLED` reads -- a
-    definition that surely ran (`_certain`), the last before the call; outside the fold, `stmts` as they are, the
-    fold asked for where such a call stands (`met`). `main`'s reading of the call is kept beside it, so a check a
-    body credits in the fold alone takes no report away (#3047, #3091)."""
+    definition that surely ran (`_certain`), the last before the call -- and each definition stood for emptied
+    (`_emptied`): the fold reads a body at its calls, not where it stands too, so a body that fetches after it
+    runs is no run of its own fetch where one call makes it (two are). Outside the fold, `stmts` as they are, the
+    fold asked for where such a call stands (`met`). `main`'s reading of the definition and of the call is kept
+    beside the fold's, so a check a body credits in the fold alone takes no report away (#3047, #3091)."""
     stmts = list(stmts)
     reader = CalledFetches(stmts)
     if not reader.defined:
@@ -439,18 +477,31 @@ def called(stmts):
     certain = _certain(stmts)
     reader.defined = {name: kept for name, entries in reader.defined.items()
                       if (kept := [entry for entry in entries if entry[0] in certain])}
-    out: list = []
+    stood: dict[int, list] = {}         # the statements each call stands for, by the call's index
+    used: set[tuple[int, int]] = set()  # (head, end) of each definition stood for, there and in the bodies followed
     gone: set = set()                   # the names a certain `unset -f` took away, until defined again
+    added = 0                           # the statements the step grew by, against `_INLINED`
     for index, statement in enumerate(stmts):
         gone -= {name for name, entries in reader.defined.items() if any(head == index for head, _end in entries)}
         words = [str(word) for word in _rest(statement.stages[0].argv)] if len(statement.stages) == 1 else []
         if words[:2] == ["unset", "-f"] and index in certain:
             gone.update(words[2:])
         if index in occupied or _inlined(reader, statement, index, gone) is None:
-            out.append(statement)
-        elif not _CALLED["on"]:
+            continue
+        if not _CALLED["on"]:
             _CALLED["met"] = True
+            continue
+        stood[index] = _expanded(reader, stmts, statement, index, 1, _INLINED - added, frozenset(gone), used)
+        added += len(stood[index]) - 1
+    if not stood:
+        return stmts
+    emptied = _emptying(used)
+    out: list = []
+    for index, statement in enumerate(stmts):
+        if index in stood:
+            out.extend(stood[index])
+        elif index not in emptied:
             out.append(statement)
-        else:
-            out.extend(_expanded(reader, stmts, statement, index, 1, _INLINED - (len(out) - index), frozenset(gone)))
+        elif emptied[index][0] == index:
+            out.extend(_emptied(statement, stmts[emptied[index][1]] if emptied[index][1] != index else None))
     return out
