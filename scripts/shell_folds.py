@@ -24,6 +24,10 @@ _LOCALE = {"on": False, "met": False}
 # The caches a flip of `_LOCALE["on"]` leaves stale, each a `cache_clear` (#3048 review round 2): one keyed on the
 # text alone, `workflow_programs._parsed`, held bash's reading of a `$"…"` past the fold, for the jobs after it.
 _STALE: list[Callable[[], None]] = []
+# A call of a function the step defines (#3047, #3091): `main` reads it as it did; where a job holds one, `folds`
+# reads the job once more with each such call standing for its body as the call makes it, the call's words in
+# the body's positionals (`workflow_called_fetches.called`) -- the union, `main`'s reading never lost.
+_CALLED = {"on": False, "met": False}
 
 
 # The action of each `find` a fold reads where the guard asks how a stage uses a file
@@ -114,11 +118,11 @@ def body_read(bodies, reached):
     return others[min(at, len(others)) - 1]
 
 
-def _locale(on):
-    """`_LOCALE["on"] = on`; where that flips, every `_STALE` cache is cleared: keyed on a text alone, it holds the
-    other fold's reading of a `$"…"` (#3048 review round 2)."""
-    if _LOCALE["on"] != on:
-        _LOCALE["on"] = on
+def _flip(state, on):
+    """`state["on"] = on` -- `_LOCALE`'s or `_CALLED`'s; where that flips, every `_STALE` cache is cleared: keyed on a
+    text alone, it holds the other fold's reading of a `$"…"` or of a call (#3048 review round 2, #3047)."""
+    if state["on"] != on:
+        state["on"] = on
         for clear in _STALE:
             clear()
 
@@ -129,8 +133,10 @@ def folds(unsure):
     it (#2665). So the reading that leaves the word alone, `main`'s and what dash does with it, is never lost,
     and the guard REPORTs where either reads a defect."""
     _THROUGH.update(on=False, met=False)
-    _locale(False)
+    _flip(_LOCALE, False)
     _LOCALE["met"] = False
+    _flip(_CALLED, False)
+    _CALLED["met"] = False
     _SHADOWED["names"] = set()                  # (#2670) the wrappers' names this job's steps define
     try:
         yield from _folds(unsure)
@@ -139,12 +145,19 @@ def folds(unsure):
             yield from _folds(unsure)
         if _LOCALE["met"]:                      # `$"…"` bash's way (#3048)
             _THROUGH["on"] = False
-            _locale(True)
+            _flip(_LOCALE, True)
+            yield from _folds(unsure)
+        if _CALLED["met"]:                      # each call of a function the step defines, as its body (#3047)
+            _THROUGH["on"] = False
+            _flip(_LOCALE, False)
+            _flip(_CALLED, True)
             yield from _folds(unsure)
     finally:
         _THROUGH.update(on=False, met=False)
-        _locale(False)
+        _flip(_LOCALE, False)
         _LOCALE["met"] = False
+        _flip(_CALLED, False)
+        _CALLED["met"] = False
         _SHADOWED["names"] = None
 
 
