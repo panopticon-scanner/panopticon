@@ -94,13 +94,15 @@ from shell_split import (_BLANK as _BLANK, _BRACED_HEADER as _BRACED_HEADER, _ES
 # first's. `pipe_output_fds` are the descriptors that feed the next stage when the stage's
 # redirections end, as `pipe_input_fds` are the ones the last stage feeds: `2>&1` adds 2, `>file`
 # takes 1 away (#2744). `stdin_reads` are the file words descriptor 0 finally reads, copied in
-# redirect order through a dup or a path of another descriptor (#2884). `redirected` says whether
-# any redirect was written, including a descriptor copy or close that names no file.
+# redirect order through a dup or a path of another descriptor (#2884). `fd_bodies` keeps every
+# descriptor's final heredoc or here-string body except fd 0's, which is `stdin_heredoc` (#2972).
+# `redirected` says whether any redirect was written, including a descriptor copy or close that
+# names no file.
 Stage = collections.namedtuple(
     "Stage", "argv writes reads heredoc substitutions stdout_writes "
              "group_open group_close stdin_from_pipe stdout_to_pipe pipe_input_fds "
-             "stdin_heredoc pipe_output_fds stdin_reads redirected",
-    defaults=(0, 0, True, True, ("0",), None, ("1",), (), False))
+             "stdin_heredoc pipe_output_fds stdin_reads fd_bodies redirected",
+    defaults=(0, 0, True, True, ("0",), None, ("1",), (), (), False))
 # One `;`/`&&`/`||`/newline-separated statement: its pipeline stages in order,
 # and the separator that FOLLOWS it -- which is where a shell says whether the
 # command's exit status is allowed to matter (`... || true`, `... &`).
@@ -162,6 +164,9 @@ def input_alias_fd(word):
     if word in (std := ("/dev/stdin", "/dev/stdout", "/dev/stderr")):
         return str(std.index(word))
     match = re.fullmatch(r"/dev/fd/([0-9]+)", word)
+    if match:
+        return match[1].lstrip("0") or "0"
+    match = re.fullmatch(r"/proc/(?:thread-)?self/fd/([0-9]+)", word)      # this process's own (#2972)
     if match:
         return match[1].lstrip("0") or "0"
     if word.startswith("/dev/fd/") or re.match(r"/proc/.*/fd/", word):
@@ -486,7 +491,9 @@ def _stage(text, context):
                  tuple(fd for fd, connected in pipe_inputs.items() if connected),
                  stdin[:2] if stdin else None,
                  tuple(fd for fd, connected in pipe_outputs.items() if connected),
-                 input_files.get("0", ()), redirected))
+                 input_files.get("0", ()),
+                 tuple((fd, body[0], body[1]) for fd, body in bodies.items() if fd != "0"),  # fd 0: `stdin_heredoc`
+                 redirected))
 
 
 def statements(script):

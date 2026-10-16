@@ -725,6 +725,7 @@ groups:
       - tests/test_workflow_called_bodies.py
       - tests/test_workflow_function_headers.py
       - tests/test_workflow_written_files.py
+      - tests/test_workflow_descriptor_heredocs.py
       - tests/test_workflow_in_front_of_a_command.py
       - tests/test_workflow_prefix_assignment.py
       panels:
