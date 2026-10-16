@@ -134,6 +134,24 @@ def _bind(stage, path):
     return None
 
 
+def _descriptor_script(stage, operand):
+    """A one-printer script of the body the stage's own heredoc or here-string puts on the descriptor its FILE
+    operand's path names (`. /dev/stdin <<'EOF'`, `sh /dev/fd/3 3<<'EOF'`, #2972), or None: a quoted body as
+    written, an expanding one as `_heredoc` hands it on."""
+    fd = shell_reader.input_alias_fd(str(operand)) if not shell_reader.is_marker(operand) else None
+    body = stage.stdin_heredoc if fd == "0" else next(
+        ((text, expands) for number, text, expands in stage.fd_bodies if number == fd), None)
+    if body is None:
+        return None
+    text, expands = body
+    if expands and any(c in text for c in "$`"):
+        return _heredoc(text)
+    end = "EOF_%d" % len(text)
+    while end in text:
+        end += "_"
+    return "cat <<'%s'\n%s\n%s\n" % (end, text, end)
+
+
 def bind_written(stmts):
     """Mark, in place and in statement order, every FILE operand that names a path an earlier stage of
     the step wrote with a printer; return `stmts`."""
@@ -143,6 +161,10 @@ def bind_written(stmts):
             argv = shell_reader.acted(stage.argv)
             operand = file_operand(argv) if argv else None
             path = _path(operand) if operand is not None else None
+            if operand is not None and (script := _descriptor_script(stage, operand)) is not None:
+                if (token := _bind(stage, path)) is not None:
+                    setattr(token, "written", script)
+                    continue
             if path is not None and path in files and (token := _bind(stage, path)) is not None:
                 setattr(token, "written", _script(files[path]))
             writer = _writer(stage, statement.stages[:position])
