@@ -2283,7 +2283,7 @@ class TestTheIssuesRowsAndTheirPrices(unittest.TestCase):
         # A group WRITTEN to a file the step then runs: #3027's writer (`workflow_written._writer`) takes the
         # stage that writes the file as the printer, and here that is the closer, which prints nothing. Truth:
         # runs under all eight parents (k3026/rows-written: 102 running rows, CLEAN on `main` and here alike);
-        # the single printer written so is reported. A limit of #3027's reader, not this reading's: follow-up.
+        # the single printer written so is reported. A limit of #3027's reader, not this reading's: #3110.
         ('written-group', "{ echo \"sh -c '%s'\"; echo ok; } > s.sh\nsh s.sh\n" % PIPE),
     )
     PREFIX = (
