@@ -260,7 +260,15 @@ _PAST_DEPTH = ("a pipeline longer than the %d stages this guard follows" % _DEPT
                'exec "$PROGRAM"')
 
 
-GROUPED = "grouped"      # `producer`'s `intact` for a group of several statements: `grouped` has their texts
+class _Grouped:
+    """`producer`'s `intact` for a group of several statements (#3026): `grouped` has their texts. A sentinel
+    of its own, compared by identity, true as `intact` is where the walk found a source."""
+
+    def __repr__(self):
+        return "GROUPED"
+
+
+GROUPED = _Grouped()
 
 
 def _grouped(front, before, statements):
