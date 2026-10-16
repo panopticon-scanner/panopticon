@@ -40,6 +40,20 @@ evidence exposed.
   them. Open, filed: a nested group, a compound or function body, other consumers (#3117); a group
   written to a file and then run (#3110).
 
+- **Workflow reader reads a function header immediately after an outer function's opening brace
+  (#2975 part A).** `f() { g() { sh t; }; g; }` ran the downloaded file under every parent and
+  read CLEAN: the splitter took the inner `()` as a subshell and the rest of the inner body as
+  arguments to `g`. The outer header now ends at its `{`, as it does at a newline, when the next
+  words form a nested header; the inner header and body therefore become their own statements and
+  both definitions enter the function table. This covers the spaced and tight `name()` forms and
+  the `function name {` form without changing a group's existing `{ name() {` reading. A gate in
+  the inner body belongs only to that function: an outer call with no inner call still reports,
+  while an inner call before the use receives its gate. Calls lexically inside a nested definition
+  are likewise excluded from the outer body's direct-call set and followed only through an
+  explicit call, so a parenthesized nested body cannot make its child's `readonly` effect escape
+  into the caller. The #2954-side kit's five S6 rows now report under every setting (the download
+  runs in 16 of 16 runtime pairings), their five already-reported controls keep their marks, and
+  #3069's nested one-line compound-balance pin reports under all five shells.
 - **Workflow reader reads a locale string `$"…"` both ways, as bash and as dash read it (#3048).**
   `sh $"cuda_1.run"` ran the download under the bash parents and read CLEAN: the reader kept the `$`
   -- dash's reading -- and read `$cuda_1.run`, a name the step never sets. Bash drops the `$` of

@@ -6407,12 +6407,11 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
                     definition + follower % self.FETCH
                 )
 
-        # A nested one-line function definition is #2975 part A: the
-        # function table cannot yet hold its inner header. Keep that separate
-        # limit CLEAN rather than treating its `{` as an ordinary group.
+        # #2975 part A puts a nested one-line function definition in the
+        # function table, so both of its braces balance before the follower.
         nested = "f() { g() { :; }; }\n"
         for follower in followers:
-            self.assert_clean_in_every_shell(nested + follower % self.FETCH)
+            self.assert_reported_in_every_shell(nested + follower % self.FETCH)
 
     def test_3069_an_inherited_output_keeps_wgets_expansion_unresolved(self):
         url = "https://example.test/i.sh"
