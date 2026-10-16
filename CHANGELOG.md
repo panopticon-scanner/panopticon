@@ -30,12 +30,74 @@ evidence exposed.
   and 18 harmless groups read as before but one. The price, named: an option made of a substitution
   in the printed text (`sh -$(echo c) '...'`) runs nothing, and the group reads as its written twin,
   which `main` reports -- six rows per family; a group holding a statement no printer spells (`{
-  echo ok; cat f; } | sh`) is LOUD, fail-closed; a `find -exec printf` among several statements is
-  LOUD rather than read; a nested group is passed over, as `main` reads it; and #2430's carried
-  twins (`{ echo "$payload"; } | sh` after `payload=$(curl ...)`) carry one more finding, the quiet
-  printer reason the plain pipe makes too, which `kept` drops there beside the loud one at the same
-  statement and cannot pair here, the shell standing at the closer's statement: #3095 pairs them in
-  `workflow_forms`.
+  echo ok; cat f; } | sh`) is LOUD, fail-closed, while a group whose statements are all printers,
+  one of them unspelled (`{ echo "$X"; echo ok; } | sh`), is weighed as the plain unspelled pipe is,
+  quiet; a `find -exec printf` among several statements is LOUD rather than read; a nested group is
+  passed over, as `main` reads it; and #2430's carried twins (`{ echo "$payload"; } | sh` after
+  `payload=$(curl ...)`) carry one more finding, the quiet printer reason the plain pipe makes too,
+  which `kept` drops there beside the loud one at the same statement and cannot pair here, the shell
+  standing at the closer's statement: #3095 pairs them in `workflow_forms`.
+
+- **Workflow reader reads a heredoc reached through its descriptor path as the program (#2972).** `.
+  /dev/stdin <<'EOF'`, `source /dev/stdin <<'EOF'` and `sh /dev/fd/3 3<<'EOF'` ran the body under
+  every parent (`source`: bash) and read CLEAN: a shell's own stdin operand was read as its program,
+  but `.`'s and `source`'s FILE operand was read as a file, and a body on a descriptor other than 0
+  was exposed by no field of the stage. `shell_reader` now keeps every descriptor's final heredoc or
+  here-string body but 0's on the stage (`fd_bodies`, last, with a default; fd 0's is
+  `stdin_heredoc`) and resolves `/proc/self/fd/N` and `/proc/thread-self/fd/N` to N, as
+  `output_alias_fd` already reads them; `workflow_written.bind_written` binds a FILE operand whose
+  descriptor path names such a descriptor to that body, read as #3098 reads a file the step writes.
+  `. /proc/self/fd/0 <<'EOF'` and its thread-self twin, CLEAN on `main` and running on Linux, report
+  too. The prices, named: an expanding body is read as `sh <<EOF` is on `main`, so `. /dev/stdin
+  <<EOF` holding `echo $(date)` or `echo $HOME` reports; and `source /dev/stdin` reports under the
+  `sh` settings, where dash has no `source` and nothing runs. `cat /proc/self/fd/5 | sh` with fd 5
+  not open now reads CLEAN, as `main` reads `/dev/fd/5` (nothing runs; with `5<&0` both report).
+  Differential on the forge, 95eb83ab against main a16e0fa3 on 27,293 rows: 0 failures, **0
+  REPORT->CLEAN cells**, 27,282 rows identical, **11 rows CLEAN->REPORT** -- the #2939 kit's six
+  rows, three of this PR's, and two of the kit's own of the same shape, each running.
+  `tests/test_workflow_descriptor_heredocs.py`; the Stage field-count pin moves to 15, authorized.
+  `scripts/shell_reader.py` is 494 lines (+4), `workflow_written.py` 174 (+22).
+
+- **Workflow reader reads a file the step writes with its own printer, and then runs, as the
+  writer's text (#3027).** `echo 'curl … | sh' > s.sh` ⏎ `sh s.sh` ran the download under every
+  parent and read CLEAN: the reader bound a `<(…)` FILE operand to the printer that fills it, and a
+  fetched file to the run that uses it, but nothing bound a path the step itself WROTE -- with
+  `echo`, `printf`, a `cat` and its heredoc, or `tee` -- to the later run of that path.
+  `workflow_written.bind_written` now marks, in statement order, a FILE operand (a shell's, `.`'s or
+  `source`'s) that names a path an earlier stage wrote, with the writer's script on the word;
+  `workflow_printers._filed` reads it as it reads a `<(…)` FILE's script, and `workflow_guard.read`
+  binds before it flattens, so `stdin_scripts` reads the file's text and the walk reads its
+  statements. The writers' texts are joined in order under one `printf`; a writer the printers
+  cannot spell (`echo "$T"`, a `printf` with two words, a printed word holding `$(…)`) is handed on
+  as written, each lifted substitution restored around its own script, so a lifted letter in it is
+  read as the letter (#3065); beside other writers, or past 64 of them, every text is kept in an
+  expanding heredoc the guard reports, so an unspelled line never hides a spelled payload (and two
+  benign writers one of which is unspelled report: a price). A lone unspelled writer (`echo "$T" >
+  s.sh`) stays unread, a limit: `main` reports the pipe twin, its value reading spelling `$T`. The
+  prices, fail-closed where the reader cannot know: every write is read as an append (the stage
+  keeps the written words, not the operator), so a benign re-write after the payload still reads it;
+  a write under a condition counts; a write in a function body counts where the definition stands
+  before the run (never called, or called after the run, over-reports); a write after the run binds
+  nothing. A `cat` writing an EXPANDING heredoc (`cat > s.sh <<EOF` ⏎ `curl … | sh $(echo -s)` ⏎
+  `EOF` ⏎ `sh s.sh`) is read as its `cat <<EOF | sh` and `. <(cat <<EOF …)` twins are on `main`:
+  reported -- and so, as there, is a benign expanding body (`echo $(date)`). Limits named and
+  pinned: a command-word run of the written file (`chmod +x s.sh` ⏎ `./s.sh`), a run inside a `-c`
+  string (`bash -c 'sh s.sh'`), a value path (`echo … > "$F"` ⏎ `sh "$F"`). The issue's four rows
+  and 33 more (every writer, `>>`, `tee -a`, a subdirectory, a subshell or group, a conditional or
+  function-body write, the payload written last) report under every setting; the controls (another
+  file, a benign file, the run before the write) read as they did; `. s.sh` runs under bash and sh
+  (zsh's `.` searches PATH), `echo -e` under bash and zsh. Differential on the forge, 76a4c705
+  against main 3e083f96 on 27,258 rows (the 26,982-row kit, 15 of the #2973 rows, the 103-row
+  #2954-side kit, this PR's 37 and the 121 file-then-run rows of the #3020 hunt): 0 failures, **0
+  REPORT->CLEAN cells**, 27,166 rows identical, **92 rows CLEAN->REPORT** (460 cells) -- 27 of this
+  PR's rows (the 10 that stay CLEAN are the controls, the limits and the unspelled writers), 61 of
+  the hunt's (a written file that runs the payload, and the lifted-letter rows), and 4 of the kit's,
+  each a write-then-run the download runs under (the two rows of the pin that names #3027, and
+  `export T=cuda_1.run` ⏎ `echo 'sh $T' > run.sh` ⏎ `sh run.sh` and its `.` twin); 4,478 s wall on
+  eight shards at nice 10. `tests/test_workflow_written_files.py`, with a growth pin (n writes then
+  n runs, CPU time). Three pins of the old gap move with it, authorized by name, and one that names
+  #3027 (the PR body quotes each). `scripts/workflow_written.py` is new (129 lines);
+  `workflow_printers.py` 523 and `workflow_guard.py` 639 (+1, the import).
 
 - **Workflow reader reads a function header behind a group's `(` and a name bash takes, and the
   header test costs one lookup a `(` (#2977; #2975 parts B and C).** `( f() { sh t; }; f )` and
@@ -156,6 +218,25 @@ evidence exposed.
   Local differential on 14 rows under five settings and both guard passes: the five issue rows,
   unused-options price and two #3045 rows move CLEAN -> REPORT (80 cells, 40 in the job reading),
   six controls are unchanged (60 cells), and 0 cells move REPORT -> CLEAN.
+- **Workflow compound depth stays balanced after a function definition (#3069).** A definition
+  such as `f() { :; }` was read as an opening statement with delta zero and a later `}` with delta
+  -1. The negative depth made a subsequent brace group, `if`, or `while` lose the pipe or redirect
+  on its own close, so downloads inside it read CLEAN. `_compound_delta` now uses the existing
+  function-syntax reader to count every compound opener after `f()` / `function f` in the header's
+  statement: both the structural `{` and an immediate `if`, `while`, `for`, or `until`. Twenty-three
+  issue shapes—including multiline and consecutive definitions, each keyword-body form, nested
+  groups, pipes, and a file redirect—now report under all five shell settings; this also retires
+  #3050's named `{ f; } | sh` limit. A nested one-line definition remains a named CLEAN limit of
+  #2975 part A rather than treating its inner header's `{` as an ordinary group. The #3034 wget
+  expansion rule also distinguishes a fetch stage's own output from a pipe or redirect inherited
+  from its enclosing compound: five definition/compound interaction rows keep `main`'s REPORT, the
+  group redirect, tee and discard twins now report, and a harmless inherited `| cat` is the named
+  fail-closed price; the corresponding stage-owned outputs remain #3035's CLEAN limits. A
+  subshell's trailing redirect is attached to its inner stage, so its redirect and discard rows
+  report too; the indistinguishable `( wget $X URL > tool )` is the named fallback price. Local
+  differential on 47 pinned row IDs (46 distinct scripts), under the direct reader plus five job
+  settings: 180 CLEAN -> REPORT cells across 30 issue/price rows, 102 unchanged cells across nine
+  prior controls/limits, five interaction IDs and three #3035 limits, and 0 REPORT -> CLEAN cells.
 
 - **Workflow reader keeps a stage's second `${…}` word whole where it still stands before the
   command word (#2976).** `curl -fsSLo t …` ⏎ `${Y:+/usr/bin/env true} ${Z:+/usr/bin/env true} sh t`

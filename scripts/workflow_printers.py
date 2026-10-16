@@ -633,7 +633,7 @@ def _filed(word):
     direction (`shell_text.Process`), so `sh >(echo 'sh tool')` over-reports (review m-3)."""
     entry = getattr(word, "markers", {}).get(word)
     return (entry[1] if entry and entry[0] == "subst" and not shell_reader.yields_words(word)
-            else None)
+            else getattr(word, "written", None))      # a FILE the step wrote: its writer's script (#3027)
 
 
 def operand(argv):

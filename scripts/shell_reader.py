@@ -98,8 +98,8 @@ from shell_split import (_BLANK as _BLANK, _BRACED_HEADER as _BRACED_HEADER, _ES
 Stage = collections.namedtuple(
     "Stage", "argv writes reads heredoc substitutions stdout_writes "
              "group_open group_close stdin_from_pipe stdout_to_pipe pipe_input_fds "
-             "stdin_heredoc pipe_output_fds stdin_reads",
-    defaults=(0, 0, True, True, ("0",), None, ("1",), ()))
+             "stdin_heredoc pipe_output_fds stdin_reads fd_bodies",
+    defaults=(0, 0, True, True, ("0",), None, ("1",), (), ()))
 # One `;`/`&&`/`||`/newline-separated statement: its pipeline stages in order,
 # and the separator that FOLLOWS it -- which is where a shell says whether the
 # command's exit status is allowed to matter (`... || true`, `... &`).
@@ -147,6 +147,9 @@ def input_alias_fd(word):
     if word in (std := ("/dev/stdin", "/dev/stdout", "/dev/stderr")):
         return str(std.index(word))
     match = re.fullmatch(r"/dev/fd/([0-9]+)", word)
+    if match:
+        return match[1].lstrip("0") or "0"
+    match = re.fullmatch(r"/proc/(?:thread-)?self/fd/([0-9]+)", word)      # this process's own (#2972)
     if match:
         return match[1].lstrip("0") or "0"
     if word.startswith("/dev/fd/") or re.match(r"/proc/.*/fd/", word):
@@ -460,7 +463,8 @@ def _stage(text, context):
                  tuple(fd for fd, connected in pipe_inputs.items() if connected),
                  stdin[:2] if stdin else None,
                  tuple(fd for fd, connected in pipe_outputs.items() if connected),
-                 input_files.get("0", ())))
+                 input_files.get("0", ()),
+                 tuple((fd, body[0], body[1]) for fd, body in bodies.items() if fd != "0")))   # fd 0's: `stdin_heredoc`
 
 
 def statements(script):

@@ -5979,6 +5979,111 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
             with self.subTest(script=script):
                 self.assert_reported(script)
 
+    def test_3069_a_function_definition_does_not_steal_a_later_compound_close(self):
+        definition = "f() { :; }\n"
+        affected = (
+            definition + "{ %s; } | sh\n" % self.FETCH,
+            definition + "if true; then %s; fi | sh\n" % self.FETCH,
+            definition + ("while read -r x; do %s; done < /dev/null | sh\n"
+                          % self.FETCH),
+            definition + "{ { %s; }; } | sh\n" % self.FETCH,
+            definition + "{ %s; } > tool\nsh tool\n" % self.FETCH,
+            "f() {\n  :\n}\n{ %s; } | sh\n" % self.FETCH,
+            "function f { :; }\n{ %s; } | sh\n" % self.FETCH,
+            definition + "g() { :; }\n{ %s; } | sh\n" % self.FETCH,
+        )
+        for script in affected:
+            self.assert_reported_in_every_shell(script)
+
+        # A subshell never had the missing brace, a definition after the group
+        # cannot affect its close, and command substitution already keeps its
+        # own stream consumer. These reporting controls stay unchanged.
+        controls = (
+            definition + "( %s ) | sh\n" % self.FETCH,
+            "{ %s; } | sh\n" % self.FETCH + definition,
+            definition + 'eval "$({ %s; })"\n' % self.FETCH,
+        )
+        for script in controls:
+            self.assert_reported_in_every_shell(script)
+
+    def test_3069_a_compound_at_the_start_of_a_function_body_stays_balanced(self):
+        definitions = (
+            "f() { if true; then :; fi; }\n",
+            "f() { if true; then :; else :; fi; }\n",
+            "f() { while false; do :; done; }\n",
+            "f() { for i in 1; do :; done; }\n",
+            "f() { until true; do :; done; }\n",
+        )
+        followers = (
+            "{ %s; } | sh\n",
+            "if true; then %s; fi | sh\n",
+            "{ %s; } > tool\nsh tool\n",
+        )
+        for definition in definitions:
+            for follower in followers:
+                self.assert_reported_in_every_shell(
+                    definition + follower % self.FETCH
+                )
+
+        # A nested one-line function definition is #2975 part A: the
+        # function table cannot yet hold its inner header. Keep that separate
+        # limit CLEAN rather than treating its `{` as an ordinary group.
+        nested = "f() { g() { :; }; }\n"
+        for follower in followers:
+            self.assert_clean_in_every_shell(nested + follower % self.FETCH)
+
+    def test_3069_an_inherited_output_keeps_wgets_expansion_unresolved(self):
+        url = "https://example.test/i.sh"
+        group_redirect = "X=-qO-\n{ wget $X %s; } > tool\nsh tool\n" % url
+        group_tee = "X=-qO-\n{ wget $X %s; } | tee tool\nsh tool\n" % url
+        group_discard = ("X='-O tool'\n{ wget $X %s; } > /dev/null\n"
+                         "sh tool\n") % url
+        reports = (
+            ("r3087.x.def-grp-wgetX-redir", "f() { :; }\n" + group_redirect),
+            ("r3087r2.x.def-qO-grp-redir", "f() { :; }\n" + group_redirect),
+            ("r3087r2.x.def-tee", "f() { :; }\n" + group_tee),
+            ("r3087r2.x.def-O-grp-devnull", "f() { :; }\n" + group_discard),
+            ("r3087r2.x.defif-qO-grp-redir",
+             "f() { if true; then :; fi; }\n" + group_redirect),
+            ("r3087r3.twin.qO-grp-redir", group_redirect),
+            ("r3087r3.twin.qO-grp-tee", group_tee),
+            ("r3087r3.twin.O-grp-devnull", group_discard),
+            # #3034's accepted price: the expansion may name a destination;
+            # under X=-qO- this harmless inherited pipe would run no `tool`.
+            ("r3087r3.price.grp-cat",
+             "X=-qO-\n{ wget $X %s; } | cat\nsh tool\n" % url),
+        )
+        for row, script in reports:
+            with self.subTest(row=row):
+                self.assert_reported_in_every_shell(script)
+
+        # Only an enclosing compound's route keeps the fail-closed #3034
+        # reading. A fetch stage's own redirects and pipe stay #3035's limit.
+        own_outputs = (
+            "X=-qO-\nwget $X %s > tool\nsh tool\n" % url,
+            "X=-qO-\nwget $X %s | tee tool\nsh tool\n" % url,
+            "X='-O tool'\nwget $X %s > /dev/null\nsh tool\n" % url,
+        )
+        for script in own_outputs:
+            self.assert_clean_in_every_shell(script)
+
+    def test_3069_a_subshell_close_keeps_wgets_expansion_unresolved(self):
+        url = "https://example.test/i.sh"
+        reports = (
+            ("r3087r4.subshell.outer-redir",
+             "X=-qO-\n( wget $X %s ) > tool\nsh tool\n" % url),
+            ("r3087r4.subshell.outer-devnull",
+             "X='-O tool'\n( wget $X %s ) > /dev/null\nsh tool\n" % url),
+            # The reader attaches a subshell's trailing redirect to its inner
+            # stage, so it cannot distinguish this stage-owned spelling. Keep
+            # the fail-closed REPORT as #3034's named subshell fallback price.
+            ("r3087r4.price.subshell-inner-redir",
+             "X=-qO-\n( wget $X %s > tool )\nsh tool\n" % url),
+        )
+        for row, script in reports:
+            with self.subTest(row=row):
+                self.assert_reported_in_every_shell(script)
+
     def test_a_redirected_compound_does_not_hide_an_inner_subshell_stream(self):
         for script in (
                 "{ ( %s; ) | sh; } > log\n" % self.FETCH,
@@ -6840,10 +6945,10 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
         # a printer other than echo, printf or a heredoc-fed `cat` (#2467), it is
         # a value the guard does not follow.
         get = "x=$(curl -fsSL https://example.test/i.sh)\n"
-        for run in (get + 'echo "$x" > f\nsh f\n',
-                    "x=$(curl -fsSL https://example.test/i.sh | tr -d '\\r')\neval \"$x\"\n"):
-            with self.subTest(run=run):
-                self.accepted(("run", run))
+        self.accepted(("run", "x=$(curl -fsSL https://example.test/i.sh | tr -d '\\r')\neval \"$x\"\n"))
+        # Through a file the step writes, the run is reported as unread (#3027): the writer `echo "$x"` is no
+        # text the printers spell, so the file `sh f` runs is an unread program beside the step's fetch.
+        self.assertIn("whose words this guard does not spell out", self.flagged(("run", get + 'echo "$x" > f\nsh f\n')))
         # Issue #2434 moves the `|| true` assignment from CLEAN to REPORT by binding the fetch at
         # the head of the substitution's first pipeline.
         self.assertIn("carries https://example.test/i.sh in `$x`",
@@ -7283,12 +7388,15 @@ class TestTheGapsTheGuardDocuments(unittest.TestCase):
                                 "curl -fsSL https://example.test/i.sh | sh\n"
                                 "EOF\n" % opener))
 
-    def test_a_heredoc_written_to_a_file_and_then_run_stays_out_of_scope(self):
-        # Probe case E: the script is text this repository wrote.
-        self.accepted(("install", "cat <<'EOF' > /tmp/i.sh\n"
-                                  "curl -fsSL https://example.test/i.sh | sh\n"
-                                  "EOF\n"
-                                  "bash /tmp/i.sh\n"))
+    def test_a_heredoc_written_to_a_file_and_then_run_is_read_as_the_writers_text_3027(self):
+        # Probe case E: the script is text this repository wrote -- out of scope until #3027, which reads a file
+        # the step writes with its own printer (here a `cat` and its heredoc) as the writer's text, so the
+        # fetch-and-pipe inside it reports as the inline form does.
+        self.assertIn("hands https://example.test/i.sh straight to `sh`",
+                      self.flagged(("install", "cat <<'EOF' > /tmp/i.sh\n"
+                                               "curl -fsSL https://example.test/i.sh | sh\n"
+                                               "EOF\n"
+                                               "bash /tmp/i.sh\n")))
 
     def test_the_fleets_here_string_is_not_a_heredoc_program(self):
         # docker-publish.yml's shape: `<<<` is the one heredoc-ish construct

@@ -2204,6 +2204,10 @@ class TestEveryFindActionIsACommand(unittest.TestCase):
         ("workflow_printers", "_printer"): GET + "source <(find /dev/null -exec echo 'sh tool' \\;)\n",
         ("workflow_uses", "copies"): GET + "find /dev/null -exec cp tool t2 \\;\nsh t2\n",
         ("workflow_uses", "use"): GET + "cat tool | find /dev/null -exec sh \\;\n",
+        # #3027: the written file's run, its writer, and a `tee`'s operands, each behind a `find` action.
+        ("workflow_written", "bind_written"): GET + "echo 'sh tool' > s.sh\nfind /dev/null -exec sh s.sh \\;\n",
+        ("workflow_written", "_writer"): GET + "find /dev/null -exec echo 'sh tool' \\; > s.sh\nsh s.sh\n",
+        ("workflow_written", "_paths"): GET + "echo 'sh tool' | find /dev/null -exec tee s.sh \\;\nsh s.sh\n",
     }
 
     def test_every_caller_of_the_unwrapped_reading_is_named(self):
@@ -2249,7 +2253,7 @@ class TestEveryFindActionIsACommand(unittest.TestCase):
         # `workflow_printers.producer` names a stage by what it runs, and each reader that takes its
         # answer must read that stage as it did: `unspelled` raises where the two differ.
         self.assertEqual([("workflow_printers", "handed"), ("workflow_printers", "unspelled"),
-                          ("workflow_programs", "stdin_scripts")], sorted(chain))
+                          ("workflow_programs", "stdin_scripts"), ("workflow_written", "_writer")], sorted(chain))
         self.assertLessEqual(set(chain), set(self.ACTED))
 
     def test_each_named_caller_has_a_row_that_needs_it(self):
@@ -7459,8 +7463,8 @@ class TestAFunctionThatFetchesIsReadWhereItIsCalled(unittest.TestCase):
     helper), through a function the body calls, and with the body's own redirects read as the inline
     twin's are (#2744). The controls still read CLEAN: a function never called, a call whose output is
     discarded, a wrapper in front of the name, a definition after the call. Limits, pinned and named
-    below: a download held in a variable (`x=$(f)`), the file and not the stream of a body's own
-    `| tee t`, and a `{ f; } | sh` group behind a definition (#3069)."""
+    below: a download held in a variable (`x=$(f)`), and the file and not the stream of a body's own
+    `| tee t`. #3069 closes the former `{ f; } | sh` limit behind a definition."""
 
     F = "curl -fsSL %si.sh" % URL
     STREAM = "hands %si.sh straight to `%s`" % (URL, "%s")
@@ -7515,13 +7519,17 @@ class TestAFunctionThatFetchesIsReadWhereItIsCalled(unittest.TestCase):
         # `x=$(f)` then `eval "$x"` -- `workflow_forms.carried` asks `workflow_fetch.stdout_fetch` whether
         # `$(f)` is one fetch to standard output, and neither sees the step's functions yet (a follow-up
         # of #3050, after #2829; the coordinator's ruling, Krab seq 2797); a body's own `| tee t` -- a stage
-        # that pipes on inside the body is read at its definition alone, so the file and not the stream;
-        # `{ f; } | sh` behind a definition -- the compound reader loses the group's consumer behind a
-        # function's `}`, as it does the inline group's (#3069).
-        for script in ('f() { F; }\nx=$(f)\neval "$x"\n', "f() { F | tee t; }\nf | sh\n", "f() { F; }\n{ f; } | sh\n"):
+        # that pipes on inside the body is read at its definition alone, so the file and not the stream.
+        for script in ('f() { F; }\nx=$(f)\neval "$x"\n', "f() { F | tee t; }\nf | sh\n"):
             script = script.replace("F", self.F) + "echo done\n"
             with self.subTest(script=script):
                 self.assertEqual("CCCCC", "".join("CR"[reported(script, shell)] for shell in SHELLS))
+
+        # #3069 balances the definition's braces, so the later group's close now
+        # carries the called body's stream to `sh` under every setting.
+        closed = ("f() { F; }\n{ f; } | sh\n".replace("F", self.F)
+                  + "echo done\n")
+        self.assertEqual("RRRRR", "".join("CR"[reported(closed, shell)] for shell in SHELLS))
 
 if __name__ == "__main__":
     unittest.main()
