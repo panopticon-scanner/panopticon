@@ -14,6 +14,7 @@ import unittest
 import shell_reader
 import workflow_guard as wg
 import workflow_options as wo
+import workflow_programs as wp
 
 SHELLS = (None, "bash", "sh", "bash {0}", "sh {0}")
 FETCH = "curl -fsSLo cuda_1.run https://example.test/cuda_1.run\n"
@@ -77,6 +78,27 @@ class TestALocaleStringIsTheDoubleQuotedString(unittest.TestCase):
         finally:
             _LOCALE["on"] = False
         self.assertEqual(["echo", '$"x"'], words("echo '$\"x\"'\n"))
+
+    def test_a_reading_cached_in_the_locale_fold_never_serves_a_job_outside_it(self):
+        # Seat round 2: `workflow_programs._parsed`, a cache keyed on the text alone, served bash's reading of
+        # `$"true"`, cached inside the locale fold of `curl … | sh -c $"$\"true\""`, to every job after it. The fold's
+        # flip clears it (`shell_folds._STALE`), both ways: dash's reading, cached outside the fold, never serves it.
+        from shell_folds import _locale
+
+        def words(text):
+            return [str(w) for w in wp._parsed(text)[0].stages[0].argv]
+        wp._parsed.cache_clear()
+        self.assertEqual(["$true"], words('$"true"'))                 # dash's, cached outside the fold
+        try:
+            _locale(True)
+            self.assertEqual(["true"], words('$"true"'))              # bash's: not the cached reading
+        finally:
+            _locale(False)
+        self.assertEqual(["$true"], words('$"true"'))
+        wp._parsed.cache_clear()
+        step = [wg.Step("step", 'curl -fsSL https://example.test/i.sh | sh -c $"$\\"true\\""\n', None)]
+        self.assertTrue(wg.job_defects(step))                         # primes `$"true"` inside the fold
+        self.assertEqual(["$true"], words('$"true"'))                 # fresh: dash's, as on `main`
 
 
 
