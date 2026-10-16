@@ -7,6 +7,21 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader reads a locale string `$"…"` as bash reads it, the double-quoted string
+  (#3048).** `sh $"cuda_1.run"` ran the download under the bash parents and read CLEAN: the reader
+  kept the `$` and read `$cuda_1.run`, a name the step never sets. `shell_split._split` now drops a
+  `$` right before a `"`, so the double quote opens as bash reads it -- the posture `$'…'` already
+  has. `sh $"cuda_1.run"`, `sh $"$T"`, `$"sh" cuda_1.run` and `sh -c $"sh cuda_1.run"` report under
+  every setting; `\$"x"`, `'$"x"'` and `$$"x"` read as they did. The price, named: dash keeps the
+  `$` and runs nothing, so under the `sh` settings these rows over-report, as their `$'…'` twins do.
+  Differential on the forge, 4db5bbd5 against main 90272a5f on 27,303 rows (the full kit and this
+  PR's rows): 0 failures, **0 REPORT->CLEAN cells**, 27,295 rows identical, **8 rows CLEAN->REPORT**
+  (160 cells) -- the issue's four rows, each held twice in the kit, and nothing else. Three pins
+  move, authorized by name: `${D:-$"tool x"}` to bash's words; `wget $"-qO-" URL | sh` and its `$""`
+  twin to REPORT (the download runs under bash); `sh -$"x" P` to CLEAN (bash's `-x`, nothing runs),
+  its twin with `P` the download pinned REPORT. `tests/test_workflow_locale_strings.py`;
+  `scripts/shell_split.py` is 411 lines (+5).
+
 - **Workflow reader reads a heredoc reached through its descriptor path as the program (#2972).** `.
   /dev/stdin <<'EOF'`, `source /dev/stdin <<'EOF'` and `sh /dev/fd/3 3<<'EOF'` ran the body under
   every parent (`source`: bash) and read CLEAN: a shell's own stdin operand was read as its program,
