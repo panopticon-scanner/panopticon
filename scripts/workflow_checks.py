@@ -80,7 +80,7 @@ def _record_writes(statement, written, directory):
 
 
 def checks(stmts, credit=None, working=None, outer=None, path=(), scope=None,
-           written=None, directory="."):
+           written=None, directory=".", postures=None):
     """[(outer statement, checked text, refusal or None)], including substitutions."""
     found, analysis = [], statement_analysis(stmts)
     written = {} if written is None else dict(written)
@@ -104,9 +104,13 @@ def checks(stmts, credit=None, working=None, outer=None, path=(), scope=None,
             if not _has_check_flag(argv):
                 continue
             text = _checked_text(statement, position, stage, argv, written, here) or ""
+            shell, soft, owner = ((postures or {}).get(index, (None, False, None))
+                                  if outer is None else (None, False, None))
             why = (_NO_DIGEST if not _DIGEST.search(text) else
                    swallowed(stmts, index, statement, stage,
-                             (credit or {}).get(index), analysis))
+                             (credit or {}).get(index), analysis,
+                             shell=shell, soft=soft, top=outer is None,
+                             owner=owner, postures=postures))
             found.append((point, text, why))
         _record_writes(statement, written, here)
     return found

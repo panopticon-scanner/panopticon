@@ -380,13 +380,12 @@ def step_credit(flat, shell=None):
     script's carrier. `conditional_reach` bounds skipped conditional checks; a
     check ending a group answers as `_stops_step` says.
 
-    The guard has no model of an exit status or a trap, so four readings
-    here are fail-closed, and bash stops the step on each (review N-1): with
-    `-e` off, a check the step then tests through `$?` (`rc=$?; if [ $rc -ne
-    0 ]; then exit 1; fi`), or through `[ $rc -eq 0 ] || exit 1`, or that
-    `trap 'exit 1' ERR` guards, is still refused; and so is `CHECK && [[ -f a
-    || -f b ]] || exit 1`, whose rescue is lost where the reader splits the
-    `[[ ]]` at its inner `||`.
+    This option pass deliberately leaves a check under `set +e` refused.
+    `workflow_gating.swallowed` narrows that answer only when
+    `workflow_status` proves an immediate `$?` handoff or a top-level Bash
+    `ERR` trap (#2440). `CHECK && [[ -f a || -f b ]] || exit 1` remains
+    fail-closed: the reader loses its rescue when it splits the `[[ ]]` at the
+    inner `||` (review N-1).
     """
     at = [index for index, statement in enumerate(flat) if not isinstance(statement, Inlined)]
     stmts = [flat[index] for index in at]
