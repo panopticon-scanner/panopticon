@@ -86,16 +86,19 @@ class TestFdDuplicationIsNeitherReadNorWrite(unittest.TestCase):
         self.assertEqual([], s.reads)
         self.assertEqual([], s.writes)
         self.assertEqual([], s.stdout_writes)
+        self.assertTrue(s.redirected)
 
     def test_greater_ampersand_2_is_recorded_nowhere(self):
         s = stage("curl https://example.test/x >&2\n")
         self.assertEqual([], s.writes)
         self.assertEqual([], s.reads)
         self.assertEqual([], s.stdout_writes)
+        self.assertTrue(s.redirected)
 
     def test_fd_close_is_recorded_nowhere(self):
         s = stage("curl https://example.test/x >&-\n")
         self.assertEqual([], s.writes)
+        self.assertTrue(s.redirected)
 
 
 class TestStdoutWrites(unittest.TestCase):
