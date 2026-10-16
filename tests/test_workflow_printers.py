@@ -2280,6 +2280,11 @@ class TestTheIssuesRowsAndTheirPrices(unittest.TestCase):
         ('nested', "{ { echo \"sh -c '%s'\"; }; } | sh\n" % PIPE),
         ('redirect', "{ echo \"sh -c '%s'\" > f; } | sh\n" % PIPE),
         ('to-cat', "{ echo \"sh -c '%s'\"; } | cat\n" % PIPE),
+        # A group WRITTEN to a file the step then runs: #3027's writer (`workflow_written._writer`) takes the
+        # stage that writes the file as the printer, and here that is the closer, which prints nothing. Truth:
+        # runs under all eight parents (k3026/rows-written: 102 running rows, CLEAN on `main` and here alike);
+        # the single printer written so is reported. A limit of #3027's reader, not this reading's: follow-up.
+        ('written-group', "{ echo \"sh -c '%s'\"; echo ok; } > s.sh\nsh s.sh\n" % PIPE),
     )
     PREFIX = (
         ('dflt-echo', "${S:-} echo \"sh -c '%s'\" | sh\n" % PIPE),
@@ -2306,7 +2311,8 @@ class TestTheIssuesRowsAndTheirPrices(unittest.TestCase):
                 self.assertEqual(("RRRRR", "RRRRR"), self.marks(text))
 
     def test_what_the_look_back_leaves_as_main_reads_it(self):
-        # A nested group (passed over); a redirect that takes the stdout away (#2430); a pipe to no shell.
+        # A nested group (passed over); a redirect that takes the stdout away (#2430); a pipe to no shell; a group
+        # written to a file and run (#3027's writer).
         for name, text in self.STAYS:
             with self.subTest(name=name):
                 self.assertEqual(("CCCCC", "CCCCC"), self.marks(text))
