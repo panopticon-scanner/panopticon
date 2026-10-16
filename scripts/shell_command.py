@@ -9,14 +9,14 @@ a statement may open with, and the one walk that strips them all
 `reads_held` and `find_action`, the commands a `find` runs past them (#2881
 round 4, #2918). The shells and the default or optional `$` words that may
 stand for a command word (#2337, #2472) went on to `scripts/shell_defaults.py`
-at this module's size in turn (#2993), byte for byte, and are imported back.
+at this module's size in turn (#2993), byte for byte, and are imported back;
+the folds a job is read in went on to `scripts/shell_folds.py` the same way (#3112).
 The reader imports every name back under its own, so nothing that read
 `shell_reader.command` or `shell_reader.KEYWORDS` moved; this module imports
 nothing from the reader, so the layers still run one way.
 
 Stdlib only, like everything under it.
 """
-import itertools
 import os
 import re
 
@@ -29,8 +29,10 @@ from shell_defaults import (OPTIONAL_NEXT as OPTIONAL_NEXT, WALKED_DEFAULTS as W
                             _default_words as _default_words, _half as _half, _masks as _masks, _DROPPED as _DROPPED,
                             _optional as _optional, _shell_default as _shell_default, PRINTERS_NEXT as PRINTERS_NEXT,
                             _strips as _strips, _through as _through, _SET_DEFAULT as _SET_DEFAULT)
+from shell_folds import (_ACTIONS as _ACTIONS, _BODIES as _BODIES, _BODY_FOLDS as _BODY_FOLDS, _NO_FOLD as _NO_FOLD,
+                         _PLACES as _PLACES, _folds as _folds, _reached as _reached, body_read as body_read,
+                         carrier as carrier, folds as folds, sources as sources)
 from shell_patterns import shell_words
-from shell_quote import Unreadable
 from shell_tokens import _Token, has_substitution, is_arm, readable, spelled
 from shell_wrappers import (_SHADOWED, BUILTINS, WRAPPERS, Defaulted, Found, Rewritten, dynamic, idles, jobs_runs,
                             runs_behind, unwrap)
@@ -302,65 +304,6 @@ def acted(argv, own=False):
     return argv if own and not (run and isinstance(run[0], Found)) else run
 
 
-def folds(unsure):
-    """`_folds`, the folds a job is read in -- and where one of them met a `builtin` it may read through
-    (`_through`), each of them once more with every such word read through to the builtin it names, as bash runs
-    it (#2665). So the reading that leaves the word alone, `main`'s and what dash does with it, is never lost,
-    and the guard REPORTs where either reads a defect."""
-    _THROUGH.update(on=False, met=False)
-    _SHADOWED["names"] = set()                  # (#2670) the wrappers' names this job's steps define
-    try:
-        yield from _folds(unsure)
-        if _THROUGH["met"]:
-            _THROUGH["on"] = True
-            yield from _folds(unsure)
-    finally:
-        _THROUGH.update(on=False, met=False)
-        _SHADOWED["names"] = None
-
-
-def _folds(unsure):
-    """The folds `workflow_guard.job_defects` reads a job in, each its `sure`: one, and a second that
-    leaves every `Unsure` statement out where `unsure()` then finds one -- every command word bash
-    may expand to nothing read as its W, as `main` reads it; then, for each set of those whose halves
-    read apart, the first `_HALF_CAP` a job holds, those folds again with that set read empty, so the
-    guard REPORTs where any reading of them runs (#2856 round 13, the round-13 ruling: the union, no
-    half ranked; every reading, #2929). Each reads every `find`'s first action where the guard asks
-    how a stage uses a file, then, while one held another, its next (`find_action`), so the guard
-    REPORTs where any action uses it (#2918). Those are `main`'s folds, each descriptor reading the
-    body `main` reads there; where a link or a `cd` may put another on one (`body_read`), all of them
-    follow again once for each such body, so the guard REPORTs where either is the one read and no
-    reading of `main`'s is lost (#2919 round 3). And where `acted`
-    met a `find` with an action in them, each of those follows again with each action in its `find`'s
-    place (#2935 round 3: `main`'s reading is never lost, and the guard REPORTs where either reads a
-    defect)."""
-    _HALVES.update(empty=frozenset(), words={}, both=False, on=True, drops=False, both_dropped=False)
-    _ACTIONS["acts"] = False
-    try:
-        for body in range(1 + _BODY_FOLDS):     # `main`'s, then at most `_BODY_FOLDS` others (`body_read`)
-            _BODIES.update(at=body, more=False)
-            for act in (False, True):
-                read: set = set()
-                while masks := [mask for mask in _masks() if mask not in read]:
-                    _HALVES["empty"] = masks[0]
-                    read.add(masks[0])
-                    for at in itertools.count():
-                        _ACTIONS.update(at=at, more=False, act=act)
-                        yield False
-                        if unsure():
-                            yield True
-                        if not _ACTIONS["more"]:
-                            break
-                if not _ACTIONS["acts"]:
-                    break
-            if not _BODIES["more"]:
-                return
-    finally:
-        _HALVES.update(empty=frozenset(), words={}, both=False, on=False, drops=False, both_dropped=False)
-        _ACTIONS.update(_NO_FOLD)
-        _BODIES.update(at=0, more=False)
-
-
 # The checksum tools a check is credited with (`workflow_checks.CHECKSUM_TOOLS`, pinned equal by test).
 _CHECKERS = ("sha256sum", "sha512sum", "sha384sum", "shasum")
 # The unpackers the guard reads as running what they unpack (`workflow_uses.UNPACKERS`, pinned equal).
@@ -408,12 +351,6 @@ _NO_PROGRAM = frozenset((".", "builtin", "eval", "exec", "source"))
 # The distinct actions of one `find` the guard reads; one with more reads as a command it cannot
 # read (`_unread`), so neither the scan nor the folds grow with the words (#2918).
 _FIND_CAP = 8
-# The action of each `find` a fold reads where the guard asks how a stage uses a file
-# (`find_action`), and whether one held another: `folds` reads each of them (#2918). And whether the
-# fold reads that action in its `find`'s place (`act`, for `acted`), and whether a fold of `main`'s
-# met a `find` with one (`acts`; #2935 round 3). `_NO_FOLD` is the state outside `folds`: `main`'s.
-_NO_FOLD = {"at": 0, "more": False, "act": False, "acts": False}
-_ACTIONS = dict(_NO_FOLD)
 
 
 def _actions(argv):
@@ -555,86 +492,6 @@ def track(context, stage):
         if len(context.cwds) > _PLACES:         # past them, any place: a directory a value decides
             context.cwds[:] = ["$PWD", *context.cwds[1 - _PLACES:]]
     return stage
-
-
-# The places a step may stand in, and the paths a word may reach, that the reader keeps: past them
-# the oldest places read as one a value decides, and a word reaches every file held (`sources`).
-_PLACES = 16
-# The body a fold reads on a descriptor a link or a `cd` may give another (`body_read`): 0 `main`'s,
-# then each other in turn; and whether a stage held one more, which `folds` then reads (round 3).
-_BODIES = {"at": 0, "more": False}
-# The other bodies one stage may be given that the folds read. Each is one more reading of the whole
-# job, on top of every fold `main` reads, so the count is kept small: the steps that hold any hold one
-# or two, 4 is twice that, and one more is a step the reader refuses, reported whole (`body_read`).
-_BODY_FOLDS = 4
-
-
-def _reached(word, context):
-    """The other paths `word` may name where the step's links and `cd`s took effect (`track`): a name it
-    linked, or a path below one, as each target the link was given; then each relative one in each
-    directory a `cd` may have moved the step to -- a `$` word where a value decides a link's name, as
-    `shell_reader.input_alias_fd` reads a word a value decides. A word bash expands is read as any other (round 3)."""
-    if not context or not (context.links or context.cwds):
-        return []
-    path = os.path.normpath(word)
-    paths = [target + path[len(link):] for link, targets in context.links.items() for target in targets
-             if link and (path == link or path.startswith(link + "/"))]
-    if "" in context.links and not path.startswith("/"):
-        paths.append("$" + path)
-    paths += [cwd.rstrip("/") + "/" + relative for relative in (path, *paths) for cwd in context.cwds
-              if not relative.startswith(("/", "$"))]
-    return paths
-
-
-def sources(word, context, read):
-    """What `word`, the operand of an input redirection, may reach (#2919): `read` of it as written,
-    first -- `shell_reader.input_alias_fd`'s answer, `main`'s reading -- then the answers that differ
-    from it among the other paths the step's links and `cd`s may give it (`_reached`), `?` where
-    they are more than the reader keeps; with no `context`, a here-string's text, as written alone.
-    A record adds a reading and takes none away, the reader knowing no `ln` or `cd` to have run:
-    the pipe and the files held are read off every answer (`carrier`), and a body off the first in
-    every fold `main` reads, off each other in a fold of its own (`body_read`, round 3 -- round 2
-    read the first body any answer held, in place of `main`'s)."""
-    first = read(word)
-    more: list[str] = []
-    reached = _reached(word, context)
-    for path in reached[:_PLACES]:
-        answer = read(path)
-        if answer not in (None, first, *more):
-            more.append(answer)
-    if len(reached) > _PLACES and "?" not in (first, *more):
-        more.append("?")
-    return (first, *more)
-
-
-def carrier(word, context, read):
-    """`sources` as the one descriptor whose holdings a redirection carries: the one `word` reaches
-    as written, another a link or a `cd` may give it, or `?` -- every file held -- where they are
-    two."""
-    first, *more = sources(word, context, read)
-    reached = [answer for answer in (first, *more) if answer]
-    return "?" if len(reached) > 1 else reached[0] if reached else first
-
-
-def body_read(bodies, reached):
-    """The heredoc or here-string body a descriptor reads, its operand reaching `reached` (`sources`),
-    of the `bodies` each descriptor holds (#2919 round 3): the one its operand names as written, or
-    none -- `main`'s reading, and the one every fold `main` reads takes, so a link or a `cd` the
-    shell never makes takes no reading away. Each OTHER body a record may put there -- on a
-    descriptor it reaches, or on any one where it reaches more than the reader keeps (`?`) -- is one
-    more reading beside it, read in a fold of its own (`folds`); more of them than `_BODY_FOLDS` are a
-    step the reader refuses there (`Unreadable`), reported whole."""
-    first, *more = reached
-    main = bodies.get(first) if first and first != "?" else None
-    others = list(dict.fromkeys(body for fd, body in bodies.items() if ("?" in more or fd in more) and body != main))
-    at = _BODIES["at"]
-    if not others or not at:
-        _BODIES["more"] = _BODIES["more"] or bool(others)
-        return main
-    if len(others) > _BODY_FOLDS:
-        raise Unreadable("a link or a `cd` may put more than %d bodies on one descriptor" % _BODY_FOLDS)
-    _BODIES["more"] = _BODIES["more"] or len(others) > at
-    return others[min(at, len(others)) - 1]
 
 
 def unresolved_wrapper(argv):

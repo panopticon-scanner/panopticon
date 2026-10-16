@@ -651,6 +651,7 @@ groups:
       - scripts/shell_reader.py
       - scripts/shell_split.py
       - scripts/shell_command.py
+      - scripts/shell_folds.py
       - scripts/shell_defaults.py
       - scripts/shell_tokens.py
       - scripts/shell_lex.py
@@ -687,6 +688,7 @@ groups:
       - scripts/workflow_values.py
       - scripts/workflow_value_expansion.py
       - scripts/workflow_called.py
+      - scripts/workflow_called_fetches.py
       - scripts/workflow_written.py
       - scripts/workflow_annotate.py
       tests:
