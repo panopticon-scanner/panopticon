@@ -7,6 +7,26 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader reads a locale string `$"…"` both ways, as bash and as dash read it (#3048).**
+  `sh $"cuda_1.run"` ran the download under the bash parents and read CLEAN: the reader kept the `$`
+  -- dash's reading -- and read `$cuda_1.run`, a name the step never sets. Bash drops the `$` of
+  `$"…"`; dash keeps it. The reader now reads both: `main`'s fold as it did (dash's), and, where a
+  job holds one, a fold of its own bash's way (`shell_folds.folds`, `shell_folds._LOCALE`), the
+  guard reporting where either reads a run -- the union, `main`'s reading never lost. So `sh
+  $"cuda_1.run"`, `sh $"$T"`, `$"sh" cuda_1.run` and `sh -c $"sh cuda_1.run"` report; and a file the
+  step downloaded to a name with a `$` in it, run as `sh $"NAME"`, still reports, as on `main` (dash
+  runs it). The price, named: the bash reading reports under a dash parent, where `sh` keeps the `$`
+  and runs nothing, and the dash reading under bash. `$'…'` is read as on `main` (its dash reading
+  stays #3115's). Differential on the 27,308-row forge kit, 0e576f6f against `main` 90272a5f: 8 rows
+  CLEAN->REPORT (the issue's four, each held twice), 0 REPORT->CLEAN, 27,300 identical; the seat's
+  27,426-row run the same. One pin pair moves, authorized: `wget $"-qO-" URL | sh` and its `$""`
+  twin report (the download runs under bash). `workflow_programs._parsed`, a cache keyed on the text
+  alone, held bash's reading of a `$"…"` past the fold for the jobs after it (review round 2); the
+  fold's flip clears it (`shell_folds._STALE`, `_locale`), so each fold reads a string its own way.
+  `tests/test_workflow_locale_strings.py`. After the #3112 split (`folds` in
+  `scripts/shell_folds.py`): `scripts/shell_split.py` is 415 lines (+9), `shell_folds.py` 190 (+25),
+  `workflow_programs.py` 488 (+4).
+
 - **Workflow guard: an immediately handled checksum status, or a top-level Bash `ERR` trap, is a
   failure gate (#2440).** Under `set +e` and a shell template without `-e`, the guard refused
   `CHECK; rc=$?; if [ "$rc" -ne 0 ]; then exit 1; fi`, its `[ "$rc" -ne 0 ] && exit 1` and
