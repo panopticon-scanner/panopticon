@@ -1573,10 +1573,8 @@ class TestThePrice(unittest.TestCase):
         self.assertEqual(BOTH, marks("sh '-$X' %s\n" % P))
         self.assertEqual(BOTH, marks("sh '$X' %s\n" % P))
         self.assertEqual(BOTH, marks('HOME=-c\nsh "~" %s\n' % P))
-        # A locale string is read as bash reads it (#3048): `-$"x"` is bash's `-x`, and `P` a file no step wrote --
-        # CLEAN, nothing runs (#3048: bash's `-x`; nothing runs). Where `P` IS the download, it runs: reported.
-        self.assertEqual(CLEAN, marks('sh -$"x" %s\n' % P))
-        self.assertEqual(BOTH, marks('curl -fsSL -o P https://example.test/P\nsh -$"x" P\n'))
+        # A locale string reaches them as a reference to its text: `-$"x"` is `-$x`. Truth: nothing.
+        self.assertEqual(BOTH, marks('sh -$"x" %s\n' % P))
 
     def test_a_word_that_owes_nothing(self):
         # Truth: nothing: `X=c`: `errexit` is the string and `P` its `$0`; `-oc bogus`: no such name.

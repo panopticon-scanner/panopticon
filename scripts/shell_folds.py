@@ -13,7 +13,7 @@ Stdlib only, like everything under it.
 import itertools
 import os
 
-from shell_defaults import _HALVES, _THROUGH, _masks
+from shell_defaults import _HALVES, _LOCALE, _THROUGH, _masks
 from shell_quote import Unreadable
 from shell_wrappers import _SHADOWED
 
@@ -112,14 +112,19 @@ def folds(unsure):
     it (#2665). So the reading that leaves the word alone, `main`'s and what dash does with it, is never lost,
     and the guard REPORTs where either reads a defect."""
     _THROUGH.update(on=False, met=False)
+    _LOCALE.update(on=False, met=False)
     _SHADOWED["names"] = set()                  # (#2670) the wrappers' names this job's steps define
     try:
         yield from _folds(unsure)
         if _THROUGH["met"]:
             _THROUGH["on"] = True
             yield from _folds(unsure)
+        if _LOCALE["met"]:                      # `$"…"` and `$'…'` the other way round (#3048)
+            _THROUGH["on"], _LOCALE["on"] = False, True
+            yield from _folds(unsure)
     finally:
         _THROUGH.update(on=False, met=False)
+        _LOCALE.update(on=False, met=False)
         _SHADOWED["names"] = None
 
 

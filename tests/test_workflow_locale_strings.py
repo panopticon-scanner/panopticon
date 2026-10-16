@@ -1,8 +1,10 @@
 """#3048: a locale string `$"..."` is read as bash reads it, the double-quoted string (translated), the `$` dropped.
 
 The reader kept the `$`: `sh $"cuda_1.run"` was read as `sh $cuda_1.run`, a reference to a name the step never sets,
-and read CLEAN while bash ran the download. `shell_split._split` now drops a `$` right before a `"`, so the double
-quote opens as bash reads it -- the posture `$'…'` already has: dash keeps the `$` and runs nothing, a price under `sh`.
+and read CLEAN while bash ran the download. Bash and dash read both strings
+apart -- bash drops the `$` of `$"…"` and decodes `$'…'`; dash keeps the `$` of each -- so the reader reads both ways:
+`main`'s fold as it did (dash's `$"…"`, bash's `$'…'`), and a fold of its own (`shell_folds.folds`) the other way
+round, the guard reporting where either reads a run (#2856's union, the review's ruling).
 
 Marks are a letter a `shell:` setting -- unset, `bash`, `sh`, `bash {0}`, `sh {0}` -- R where the guard reports, C where
 it reads the step CLEAN: first the job's, then the main pass's. Truth: the #2863 quoting record's kit (eight parents,
@@ -40,6 +42,17 @@ class TestALocaleStringIsTheDoubleQuotedString(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(REPORTED, marks(FETCH + line))
 
+    def test_dashs_reading_is_kept_beside_bashs(self):
+        # The review seat's rows: dash keeps the `$`, so a file literally named `$NAME` the step downloaded runs under
+        # dash -- `main` reported them, and still does: `main`'s fold reads `$"…"` dash's way and the fold of its own
+        # bash's (#3048, the union). And `$'…'`, which `main` read bash's way only: with a file named `$x`, dash runs
+        # it (forge: dash RAN, bash none) -- read dash's way in the same fold now, the under-report #3115 named closed.
+        for line in ("curl -fsSLo '$cuda_1.run' URL ; sh $\"cuda_1.run\" || :\n", "curl -fsSLo '$T' URL ; sh $\"T\" || :\n",
+                     "curl -fsSLo '$T' URL ; sh $\"T\"\n", "curl -fsSL URL > '$x' ; sh $\"x\"\n",
+                     "curl -fsSLo '$x' URL ; sh $'x'\n"):
+            with self.subTest(line=line):
+                self.assertEqual(REPORTED, marks(line.replace("URL", "https://example.test/x")))
+
     def test_the_controls(self):
         # The ANSI-C and double-quoted spellings reported on `main`; a quoted or escaped `$"` is no locale string, and
         # `$$"x"` is the PID glued to `x`: nothing runs.
@@ -50,12 +63,24 @@ class TestALocaleStringIsTheDoubleQuotedString(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(CLEAN, marks(FETCH + line))
 
-    def test_the_splitter_drops_the_dollar(self):
+    def test_the_splitter_reads_each_string_both_ways(self):
+        # `main`'s fold keeps the `$` of `$"…"` and decodes `$'…'` (dash's reading of the one, bash's of the other);
+        # the fold `folds` adds where a job met either reads each the other way round: the union.
+        from shell_defaults import _LOCALE
+
         def words(text):
             return [str(w) for w in shell_reader.statements(text)[0].stages[0].argv]
-        self.assertEqual(["sh", "cuda_1.run"], words('sh $"cuda_1.run"\n'))
-        self.assertEqual(["echo", "a b"], words('echo $"a b"\n'))
+        self.assertEqual(["sh", "$cuda_1.run"], words('sh $"cuda_1.run"\n'))
+        self.assertEqual(["sh", "cuda_1.run"], words("sh $'cuda_1.run'\n"))
+        try:
+            _LOCALE["on"] = True
+            self.assertEqual(["sh", "cuda_1.run"], words('sh $"cuda_1.run"\n'))
+            self.assertEqual(["sh", "$cuda_1.run"], words("sh $'cuda_1.run'\n"))
+            self.assertEqual(["echo", "a b"], words('echo $"a b"\n'))
+        finally:
+            _LOCALE["on"] = False
         self.assertEqual(["echo", '$"x"'], words("echo '$\"x\"'\n"))
+
 
 
 if __name__ == "__main__":
