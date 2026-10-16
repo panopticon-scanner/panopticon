@@ -94,12 +94,15 @@ from shell_split import (_BLANK as _BLANK, _BRACED_HEADER as _BRACED_HEADER, _ES
 # first's. `pipe_output_fds` are the descriptors that feed the next stage when the stage's
 # redirections end, as `pipe_input_fds` are the ones the last stage feeds: `2>&1` adds 2, `>file`
 # takes 1 away (#2744). `stdin_reads` are the file words descriptor 0 finally reads, copied in
-# redirect order through a dup or a path of another descriptor (#2884).
+# redirect order through a dup or a path of another descriptor (#2884). `fd_bodies` keeps every
+# descriptor's final heredoc or here-string body except fd 0's, which is `stdin_heredoc` (#2972).
+# `redirected` says whether any redirect was written, including a descriptor copy or close that
+# names no file.
 Stage = collections.namedtuple(
     "Stage", "argv writes reads heredoc substitutions stdout_writes "
              "group_open group_close stdin_from_pipe stdout_to_pipe pipe_input_fds "
-             "stdin_heredoc pipe_output_fds stdin_reads fd_bodies",
-    defaults=(0, 0, True, True, ("0",), None, ("1",), (), ()))
+             "stdin_heredoc pipe_output_fds stdin_reads fd_bodies redirected",
+    defaults=(0, 0, True, True, ("0",), None, ("1",), (), (), False))
 # One `;`/`&&`/`||`/newline-separated statement: its pipeline stages in order,
 # and the separator that FOLLOWS it -- which is where a shell says whether the
 # command's exit status is allowed to matter (`... || true`, `... &`).
@@ -113,6 +116,14 @@ _DECLARATIONS = ("declare", "typeset", "local", "export", "readonly")
 # shlex ends it at; `_SPELLED` one whose name and operator would read as an assignment's with every quote and
 # backslash among them taken off -- which `_ASSIGNMENT` then says is one as written, or is not.
 _NAMED = "\ue005"
+# Prefix a shell word whose complete spelling is one live, simple parameter
+# expansion (optionally the value of one assignment). Quotes disappear before
+# `_stage` sees argv, so this bit lets a bounded caller distinguish `$?` and
+# `"$?"` from the literal-dollar spellings `$"?"`, `"$"?`, and `$\?`.
+_EXACT_DOLLAR = "\ue007"
+_REFERENCE = r"(?:\$\?|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})"
+_EXACT_DOLLAR_WORD = re.compile(
+    r"(?:[A-Za-z_][A-Za-z0-9_]*=)?(?:%s|\"%s\")" % (_REFERENCE, _REFERENCE))
 _WORD = re.compile(r"""(?:[^ \t\r\n'"\\]|\\.|'[^']*'|"(?:[^"\\]|\\.)*")+""", re.S)
 _SPELLED = re.compile(r"""["'\\]*[A-Za-z_](?:["'\\]*[A-Za-z0-9_])*["'\\]*(?:\[[^]]*\]["'\\]*)?(?:\+["'\\]*)?=""")
 # A `$` word written whole in double quotes (`_stage`'s `double`): what stands between them.
@@ -122,6 +133,12 @@ _FD_SPELLINGS = re.compile(r"^(?:/+|(?:\.\./+)+)(?:dev|proc/(?:thread-)?self)/+f
 # `/proc/self/root` and `/proc/thread-self/root` are the process's own root: in front of an absolute path they
 # spell it once more, as often as they stand (#3051).
 _OWN_ROOT = re.compile(r"^(?:/proc/(?:thread-)?self/root)+(?=/)")
+
+
+def _exact_dollars(text):
+    """Mark complete words that spell one simple live parameter expansion."""
+    return _WORD.sub(lambda word: (_EXACT_DOLLAR + word[0]
+                                   if _EXACT_DOLLAR_WORD.fullmatch(word[0]) else word[0]), text)
 # The listed names of a descriptor a pattern bash expands may match (`/dev/stdou[t]`, `/dev/fd/[1]`, #3051).
 _DESCRIPTOR_NAMES = ("/dev/stdin", "/dev/stdout", "/dev/stderr", *("/dev/fd/%d" % n for n in range(10)),
                      *("/proc/self/fd/%d" % n for n in range(10)), *("/proc/thread-self/fd/%d" % n for n in range(10)))
@@ -245,8 +262,9 @@ def _stage(text, context):
     runs (#2342): the backslash of each gone, a live `$` word beside them kept as the value word
     it is (#2466), a lifted substitution as its marker; it reads as before."""
     text = _named(text, context)
+    exact = _exact_dollars(text)
     try:
-        tokens = shlex.split(patterned(text))
+        tokens = shlex.split(patterned(exact))
     except ValueError:                          # an unbalanced quote
         tokens = text.split()
     argv: list[str] = []
@@ -272,6 +290,7 @@ def _stage(text, context):
     # its CURRENT sink, so `>file >/dev/stdout` still writes to file.
     pipe_outputs = {"1": True}
     pending = None
+    redirected = False
     opened: dict[str, tuple[str, ...]] = {}  # the files `N<>` opened on N but 0, on each N they stand on
     # Where in `reads` each `0<>` put its file, and the one fd 0 still holds (`credited_zero`).
     zero: list[int] = []
@@ -302,6 +321,7 @@ def _stage(text, context):
         whole = raw.replace(_BLANK, " ") if len(parts) > 1 else None
         pieces.extend((part, None if at else whole, len(parts)) for at, part in enumerate(parts))
     for raw, whole, span in pieces:
+        exact_dollar, raw = raw.startswith(_EXACT_DOLLAR), raw.removeprefix(_EXACT_DOLLAR)
         named, raw = raw.startswith(_NAMED), raw.replace(_NAMED, "")
         plain = context.restore_arithmetic(raw.replace(MARK, "").replace(QUOTED, "")
                                            .replace(QUOTED_DOLLAR, "")
@@ -311,6 +331,9 @@ def _stage(text, context):
             word = _Expanded(word, _markers(word))
             unquoted = raw.replace(QUOTED_DOLLAR, "").replace(DOUBLE_DOLLAR, "")
             setattr(word, "lead", leads(context.pattern.sub("${}", unquoted)))
+            if "$" in plain:
+                setattr(word, "live_dollar",
+                        raw.count(QUOTED_DOLLAR) < plain.count("$"))
         elif _ESCAPED in plain:
             word = word if _markers(word) else _Token(word, {})
             setattr(word, "spelled", context.token(plain.replace(_ESCAPED, "")))
@@ -323,6 +346,10 @@ def _stage(text, context):
             # A separate fact says whether every `$` is live. A single quote or backslash makes
             # eval or a child shell re-read it after applying a prefix assignment (#2433).
             setattr(word, "live_dollar", raw.count(DOUBLE_DOLLAR) == plain.count("$"))
+        if exact_dollar:
+            word = word if isinstance(word, _Token) else _Token(word, _markers(word))
+            setattr(word, "exact_dollar", True)
+            setattr(word, "live_dollar", True)
         if named:                           # `"X=1"`, `X\=1`: a command of that name (#2480)
             word = word if isinstance(word, _Token) else _Token(word, {})
             setattr(word, "quoted", True)
@@ -349,6 +376,7 @@ def _stage(text, context):
             continue
         if entry and entry[0] == "redirect":
             pending = entry[1]
+            redirected = True
             continue
         if pending is not None:
             fd, op = pending
@@ -464,7 +492,8 @@ def _stage(text, context):
                  stdin[:2] if stdin else None,
                  tuple(fd for fd, connected in pipe_outputs.items() if connected),
                  input_files.get("0", ()),
-                 tuple((fd, body[0], body[1]) for fd, body in bodies.items() if fd != "0")))   # fd 0's: `stdin_heredoc`
+                 tuple((fd, body[0], body[1]) for fd, body in bodies.items() if fd != "0"),  # fd 0: `stdin_heredoc`
+                 redirected))
 
 
 def statements(script):

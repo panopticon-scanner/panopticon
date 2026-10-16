@@ -5396,6 +5396,388 @@ class TestChecksumRescueStatus(unittest.TestCase):
                 self.assertIsNotNone(self.checked(rescue))
 
 
+class TestAStatusOrErrTrapCanGateACheck(unittest.TestCase):
+    """#2440: bounded manual status handling and a top-level Bash ERR trap are gates."""
+
+    FETCH = "curl -fsSL https://example.test/payload -o payload\n"
+    CHECK = 'echo "%s  payload" | sha256sum -c -' % HEX
+    USE = "sh payload\n"
+    SHELLS = (None, "bash", "bash {0}", "sh", "sh {0}")
+    IFS_WRITERS = (
+        "for IFS in 1; do :; done\n",
+        ": $((IFS=1))\n",
+        "(( IFS = 1 ))\n",
+        "printf -v IFS 1\n",
+        "mapfile -t IFS <<< 1\n",
+        "declare -n r=IFS\nr=1\n",
+        "IFS[0]=1\n",
+        "set -- -1\ngetopts 1 IFS\n",
+    )
+
+    def findings(self, body, shell=None):
+        script = self.FETCH + "set +e\n" + body.replace("CHECK", self.CHECK)
+        return wg.job_defects([wg.Step("run", script, shell)])
+
+    def test_an_immediately_captured_status_with_a_stopping_test_gates_a_later_use(self):
+        handlers = (
+            'CHECK\nrc=$?\nif [ "$rc" -ne 0 ]; then exit 1; fi\n',
+            'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
+            'CHECK\nrc="$?"\n[ "$rc" -ne 0 ] && exit 1\n',
+            'CHECK\nrc=$?\n[ "${rc}" -ne 0 ] && exit 1\n',
+            'CHECK\nexit_code=$?\n[ "$exit_code" -eq 0 ] || exit 1\n',
+            'CHECK\nrc=$?\n[ $rc -eq 0 ] || exit 1\n',
+            'CHECK\n[ $? -eq 0 ] || exit 1\n',
+            'CHECK\n[ "$?" -ne 0 ] && exit 1\n',
+        )
+        for shell in self.SHELLS:
+            for handler in handlers:
+                with self.subTest(shell=shell, handler=handler):
+                    # #2440 moves these exact fail-closed status idioms to CLEAN.
+                    self.assertEqual([], self.findings(handler + self.USE, shell))
+
+    def test_only_exact_status_reference_lexemes_are_credited(self):
+        controls = (
+            'CHECK\n[ $"?" -ne 0 ] && exit 1\n',
+            'CHECK\n[ "$"? -ne 0 ] && exit 1\n',
+            'CHECK\n[ $\\? -ne 0 ] && exit 1\n',
+            'CHECK\n[ "$"\'?\' -ne 0 ] && exit 1\n',
+            'CHECK\n[ $""? -ne 0 ] && exit 1\n',
+            'CHECK\n[ "$""?" -ne 0 ] && exit 1\n',
+            'CHECK\nif [ "$"? -ne 0 ]; then exit 1; fi\n',
+            'CHECK\nrc=$"?"\n[ "$rc" -ne 0 ] && exit 1\n',
+            'CHECK\nrc="$"?\n[ "$rc" -ne 0 ] && exit 1\n',
+            'CHECK\nrc=$\\?\n[ "$rc" -ne 0 ] && exit 1\n',
+            'CHECK\nrc=$?\n[ $"rc" -ne 0 ] && exit 1\n',
+            'CHECK\nrc=$?\n[ "$"rc -ne 0 ] && exit 1\n',
+            'CHECK\n[[ $"?" -ne 0 ]] && exit 1\n',
+        )
+        for shell in self.SHELLS:
+            for control in controls:
+                with self.subTest(shell=shell, control=control):
+                    # #2440 review: these words collapse to `$?`/`$rc` after
+                    # quote removal, but their dollar is literal at runtime.
+                    self.assertEqual(1, len(self.findings(control + self.USE, shell)))
+
+    def test_a_bash_conditional_status_test_is_a_gate_in_a_bash_step(self):
+        handlers = (
+            'CHECK\nrc=$?\n[[ "$rc" -ne 0 ]] && exit 1\n',
+            'CHECK\nrc=$?\n[[ "$rc" -eq 0 ]] || exit 1\n',
+        )
+        for shell in (None, "bash", "bash {0}"):
+            for handler in handlers:
+                with self.subTest(shell=shell, handler=handler):
+                    # #2440 moves Bash's [[...]] status spellings to CLEAN.
+                    self.assertEqual([], self.findings(handler + self.USE, shell))
+
+    def test_a_status_handoff_does_not_clear_a_use_inside_the_handler(self):
+        body = ('CHECK\nrc=$?\nif [ "$rc" -ne 0 ]; then\n'
+                'sh payload\nexit 1\nfi\n')
+        for shell in self.SHELLS:
+            with self.subTest(shell=shell):
+                found = self.findings(body, shell)
+                self.assertEqual(1, len(found), found)
+
+    def test_stale_reassigned_or_nonstopping_statuses_stay_reported(self):
+        controls = (
+            'CHECK\necho intervening\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
+            'CHECK\nrc=$?\nrc=0\n[ "$rc" -ne 0 ] && exit 1\n',
+            'CHECK\nrc=$? || [ "$rc" -ne 0 ] && exit 1\n',
+            "CHECK\nrc='$?'\n[ \"$rc\" -ne 0 ] && exit 1\n",
+            'CHECK\nrc=\\$?\n[ "$rc" -ne 0 ] && exit 1\n',
+            "CHECK\n[ '$?' -eq 0 ] || exit 1\n",
+            'CHECK\nrc=$?\n[ "$other" -ne 0 ] && exit 1\n',
+            'CHECK\nrc=$?\n[ "$rc" -eq 0 ] && exit 1\n',
+            'CHECK\nrc=$?\n[ "$rc" -ne 0 ] || exit 1\n',
+            'CHECK\nrc=$?\nif [ "$rc" -ne 0 ]; then echo failed; fi\n',
+            'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 0\n',
+            'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && time exit 1\n',
+            'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && command exit 1\n',
+            'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && env exit 1\n',
+            'CHECK\nrc=$?\ncommand [ "$rc" -ne 0 ] && exit 1\n',
+            'CHECK\nrc=$?\nenv [ "$rc" -ne 0 ] && exit 1\n',
+            'readonly rc=0\nCHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
+            'declare -n rc=PIPESTATUS\nCHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
+            'typeset -n rc=PIPESTATUS\nCHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
+            'exit() { :; }\nCHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
+            'function [ { return 1; }\nCHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
+        )
+        for shell in self.SHELLS:
+            for control in controls:
+                with self.subTest(shell=shell, control=control):
+                    self.assertEqual(1, len(self.findings(control + self.USE, shell)))
+
+    def test_redirected_status_primitives_stay_reported(self):
+        controls = (
+            'CHECK\n2>&999 [ $? -ne 0 ] && exit 1\n',
+            'CHECK\nrc=$?\n[ "$rc" -ne 0 ] 2>&999 && exit 1\n',
+            'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1 2>&999\n',
+            "trap 'exit 1' ERR 2>&999\nCHECK\n",
+        )
+        for shell in self.SHELLS:
+            for control in controls:
+                with self.subTest(shell=shell, control=control):
+                    # #2440: a redirect may fail before the test, exit, or
+                    # trap runs; Bash then reaches the payload under set +e.
+                    self.assertEqual(1, len(self.findings(control + self.USE, shell)))
+
+    def test_unquoted_failure_true_status_operands_stay_reported(self):
+        handlers = (
+            'CHECK\nrc=$?\n[ $rc -ne 0 ] && exit 1\n',
+            'CHECK\n[ $? -ne 0 ] && exit 1\n',
+            'CHECK\nif [ $? -ne 0 ]; then exit 1; fi\n',
+        )
+        for shell in self.SHELLS:
+            for writer in self.IFS_WRITERS:
+                for handler in handlers:
+                    with self.subTest(shell=shell, writer=writer, handler=handler):
+                        # #2440 review round two: an IFS writer can split an
+                        # unquoted digit, so the test may miss the exit path.
+                        self.assertEqual(1, len(self.findings(
+                            writer + handler + self.USE, shell
+                        )))
+
+    def test_quoted_status_operands_ignore_every_ifs_writer(self):
+        handlers = (
+            'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
+            'CHECK\n[ "$?" -ne 0 ] && exit 1\n',
+            'CHECK\nif [ "$?" -ne 0 ]; then exit 1; fi\n',
+        )
+        for shell in self.SHELLS:
+            for writer in self.IFS_WRITERS:
+                for handler in handlers:
+                    with self.subTest(shell=shell, writer=writer, handler=handler):
+                        # A whole double-quoted operand cannot split on IFS.
+                        self.assertEqual([], self.findings(
+                            writer + handler + self.USE, shell
+                        ))
+
+    def test_ifs_does_not_block_safe_or_bash_conditional_and_trap_gates(self):
+        for shell in self.SHELLS:
+            with self.subTest(shell=shell, gate="or-exit"):
+                self.assertEqual([], self.findings(
+                    'IFS=1\nCHECK\n[ $? -eq 0 ] || exit 1\n' + self.USE, shell
+                ))
+            quoted = ('while IFS= read -r line; do :; done <<EOF\nx\nEOF\n'
+                      'CHECK\n[ "$?" -ne 0 ] && exit 1\n' + self.USE)
+            with self.subTest(shell=shell, gate="while-read"):
+                self.assertEqual([], self.findings(quoted, shell))
+        for shell in (None, "bash", "bash {0}"):
+            for gate in (
+                'IFS=1\nCHECK\nrc=$?\n[[ $rc -ne 0 ]] && exit 1\n',
+                "IFS=1\ntrap 'exit 1' ERR\nCHECK\n",
+            ):
+                with self.subTest(shell=shell, gate=gate):
+                    self.assertEqual([], self.findings(gate + self.USE, shell))
+
+    def test_the_remaining_status_spelling_prices_stay_reported(self):
+        controls = (
+            'CHECK\nrc=$?\n[ $rc -ne 0 ] && exit 1\n',
+            'CHECK\nif [ $? -ne 0 ]; then exit 1; fi\n',
+            'CHECK\n[ "${?}" -ne 0 ] && exit 1\n',
+            'CHECK\ndeclare rc=$?\n[ "$rc" -ne 0 ] && exit 1\n',
+        )
+        for shell in self.SHELLS:
+            for control in controls:
+                with self.subTest(shell=shell, control=control):
+                    self.assertEqual(1, len(self.findings(control + self.USE, shell)))
+
+    def test_alias_or_builtin_rewriting_withholds_manual_gate_credit(self):
+        controls = (
+            ('shopt -s expand_aliases\nBASH_ALIASES[exit]=:\n'
+             'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n'),
+            ('shopt -s expand_aliases\nBASH_ALIASES[exit]=:\n'
+             "trap 'exit 1' ERR\nCHECK\n"),
+            ('shopt -s expand_aliases\n'
+             'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n'),
+            ('BASH_ALIASES[exit]=:\n'
+             'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n'),
+            ('f() { alias exit=:; }\n'
+             'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n'),
+            ("trap 'exit 1' ERR\nCHECK\nf() { enable -n exit; }\n"),
+        )
+        for shell in (None, "bash", "bash {0}"):
+            for control in controls:
+                with self.subTest(shell=shell, control=control):
+                    # #2440 review: Bash aliases and builtin enablement can
+                    # replace a proven primitive from anywhere in the step.
+                    self.assertEqual(1, len(self.findings(control + self.USE, shell)))
+
+    def test_a_shadowed_status_primitive_at_any_body_depth_stays_reported(self):
+        handler = 'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n'
+        definitions = (
+            "exit() { :; }\n",
+            "{ { exit() { :; }; }; }\n",
+            "f() { g() { exit() { :; }; }; }\n",
+            "function [ { return 0; }\n",
+            "{ { function [ { return 0; }; }; }\n",
+            "f() { g() { function [ { return 0; }; }; }\n",
+        )
+        for shell in self.SHELLS:
+            for definition in definitions:
+                with self.subTest(shell=shell, definition=definition):
+                    # #2440 follows #2437: a lexical shadow at any brace depth
+                    # withholds a proof, even where its body may not run.
+                    self.assertEqual(1, len(self.findings(
+                        definition + handler + self.USE, shell
+                    )))
+            with self.subTest(shell=shell, definition="later exit"):
+                self.assertEqual(1, len(self.findings(
+                    handler + "exit() { :; }\n" + self.USE, shell
+                )))
+
+    def test_a_shadowed_or_unread_test_command_stays_reported(self):
+        handler = ('CHECK\nrc=$?\nif test "$rc" -ne 0; '
+                   'then exit 1; fi\n')
+        definitions = (
+            "test() { return 0; }\n",
+            "{ { test() { return 0; }; }; }\n",
+            "f() { g() { test() { return 0; }; }; }\n",
+        )
+        for shell in self.SHELLS:
+            for definition in definitions:
+                with self.subTest(shell=shell, definition=definition):
+                    # `test` is not one of this bounded proof's accepted
+                    # commands, and redefining it at any depth cannot widen it.
+                    self.assertEqual(1, len(self.findings(
+                        definition + handler + self.USE, shell
+                    )))
+
+    def test_special_or_uppercase_capture_names_stay_reported(self):
+        for name in ("PIPESTATUS", "SHELLOPTS", "BASHOPTS", "RANDOM", "RC", "_"):
+            body = ('CHECK\n%s=$?\n[ "$%s" -ne 0 ] && exit 1\n' % (name, name)
+                    + self.USE)
+            for shell in self.SHELLS:
+                with self.subTest(name=name, shell=shell):
+                    # Bash reads several of these back differently from the
+                    # value assigned. Uppercase and special names therefore
+                    # stay outside the bounded lowercase-variable proof.
+                    self.assertEqual(1, len(self.findings(body, shell)))
+
+    def test_text_that_can_rewrite_a_proof_primitive_stays_reported(self):
+        handler = 'CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n'
+        rewrites = (
+            "eval ':'\n",
+            "builtin eval ':'\n",
+            "command builtin eval ':'\n",
+            ". ./status-primitives\n",
+            "source ./status-primitives\n",
+            "builtin source ./status-primitives\n",
+            "REWRITE=source\n$REWRITE ./status-primitives\n",
+            "REWRITE=source\n{ { $REWRITE ./status-primitives; }; }\n",
+            "alias exit=':'\n",
+            "enable -n [\n",
+            "f() { :; }\nf\n",
+        )
+        for shell in self.SHELLS:
+            for rewrite in rewrites:
+                with self.subTest(shell=shell, rewrite=rewrite):
+                    self.assertEqual(1, len(self.findings(
+                        rewrite + handler + self.USE, shell
+                    )))
+
+    def test_a_top_level_stopping_err_trap_gates_only_bash_steps(self):
+        body = "trap 'exit 1' ERR\nCHECK\n" + self.USE
+        for shell in (None, "bash", "bash {0}"):
+            with self.subTest(shell=shell):
+                # #2440 moves the top-level Bash ERR-trap spelling to CLEAN.
+                self.assertEqual([], self.findings(body, shell))
+        for shell in ("sh", "sh {0}"):
+            with self.subTest(shell=shell):
+                self.assertEqual(1, len(self.findings(body, shell)))
+
+    def test_a_replaced_nonstopping_or_late_err_trap_stays_reported(self):
+        controls = (
+            "trap 'echo failed' ERR\nCHECK\n",
+            "command trap 'exit 1' ERR\nCHECK\n",
+            "builtin trap 'exit 1' ERR\nCHECK\n",
+            "trap 'time exit 1' ERR\nCHECK\n",
+            "trap 'command exit 1' ERR\nCHECK\n",
+            "trap 'exit 1' ERR DEBUG\nCHECK\n",
+            "trap 'exit 1' ERR NOSUCH\nCHECK\n",
+            "trap 'trap - ERR' DEBUG\ntrap 'exit 1' ERR\nCHECK\n",
+            "trap 'exit 1' ERR\ntrap 'trap - ERR' DEBUG\n"
+            "trap 'exit 1' ERR\nCHECK\n",
+            "trap 'exit 1' ERR\ntrap - ERR\nCHECK\n",
+            "trap 'exit 1' ERR\ntrap 'echo failed' ERR\nCHECK\n",
+            "trap 'exit 1' ERR\n{ trap - ERR; }\nCHECK\n",
+            "CHECK\ntrap 'exit 1' ERR\n",
+            "if true; then trap 'exit 1' ERR; fi\nCHECK\n",
+            "trap() { :; }\ntrap 'exit 1' ERR\nCHECK\n",
+            "exit() { :; }\ntrap 'exit 1' ERR\nCHECK\n",
+            "f() { g() { trap() { :; }; }; }\ntrap 'exit 1' ERR\nCHECK\n",
+            "f() { g() { exit() { :; }; }; }\ntrap 'exit 1' ERR\nCHECK\n",
+            "trap 'exit 1' ERR\neval ':'\nCHECK\n",
+            "trap 'exit 1' ERR\nbuiltin eval 'trap - ERR'\nCHECK\n",
+            "trap 'exit 1' ERR\nsource ./trap-rewrite\nCHECK\n",
+            "REWRITE=source\n$REWRITE ./trap-rewrite\n"
+            "trap 'exit 1' ERR\nCHECK\n",
+            "trap 'exit 1' ERR\nREWRITE=source\n"
+            "$REWRITE ./trap-rewrite\nCHECK\n",
+            "f() { trap - ERR; }\nF=f\ntrap 'exit 1' ERR\n$F\nCHECK\n",
+        )
+        for shell in (None, "bash", "bash {0}"):
+            for control in controls:
+                with self.subTest(shell=shell, control=control):
+                    self.assertEqual(1, len(self.findings(control + self.USE, shell)))
+
+    def test_a_parent_err_trap_is_not_inherited_by_an_inlined_child_shell(self):
+        child = ("bash -c 'set +e; %s; sh payload'\n" % self.CHECK)
+        body = "trap 'exit 1' ERR\n" + child
+        for shell in (None, "bash", "bash {0}"):
+            with self.subTest(shell=shell):
+                self.assertEqual(1, len(self.findings(body, shell)))
+
+    def test_manual_gates_do_not_override_continue_on_error(self):
+        gates = (
+            ('CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n'),
+            ("trap 'exit 1' ERR\nCHECK\n"),
+        )
+        for gate in gates:
+            same = wg.Step("check", self.FETCH + "set +e\n" + gate.replace(
+                "CHECK", self.CHECK) + self.USE, "bash {0}", None, True)
+            steps = [
+                wg.Step("check", self.FETCH + "set +e\n" + gate.replace(
+                    "CHECK", self.CHECK), "bash {0}", None, True),
+                wg.Step("use", self.USE, "bash {0}"),
+            ]
+            with self.subTest(gate=gate, use="same step"):
+                # #2440 bounds the manual gate to the soft step it still stops.
+                self.assertEqual([], wg.job_defects([same]))
+            with self.subTest(gate=gate, use="later step"):
+                self.assertEqual(1, len(wg.job_defects(steps)))
+
+    def test_an_err_trap_does_not_cross_a_step_boundary(self):
+        steps = [
+            wg.Step("trap", self.FETCH + "set +e\ntrap 'exit 1' ERR\n", "bash {0}"),
+            wg.Step("check", "set +e\n" + self.CHECK + "\n" + self.USE, "bash {0}"),
+        ]
+        self.assertEqual(1, len(wg.job_defects(steps)))
+
+    def test_a_status_handoff_does_not_cross_a_step_boundary(self):
+        steps = [
+            wg.Step("check", self.FETCH + "set +e\n" + self.CHECK + "\nrc=$?\n",
+                    "bash {0}"),
+            wg.Step("handle", '[ "$rc" -ne 0 ] && exit 1\n' + self.USE, "bash {0}"),
+        ]
+        self.assertEqual(1, len(wg.job_defects(steps)))
+
+    def test_a_status_handler_inside_a_subshell_does_not_gate_its_parent(self):
+        body = ('( CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n)\n'
+                + self.USE)
+        for shell in self.SHELLS:
+            with self.subTest(shell=shell):
+                self.assertEqual(1, len(self.findings(body, shell)))
+
+    def test_a_status_handler_inside_a_brace_group_stays_fail_closed(self):
+        body = ('{ CHECK\nrc=$?\n[ "$rc" -ne 0 ] && exit 1\n}\n'
+                + self.USE)
+        for shell in self.SHELLS:
+            with self.subTest(shell=shell):
+                # The exit really stops these shells, but the bounded #2440
+                # proof accepts only a top-level handoff.
+                self.assertEqual(1, len(self.findings(body, shell)))
+
+
 class TestSubshellAndNestedGroupStatus(unittest.TestCase):
     """#2431/#2438: a group passes its final status to its enclosing shell."""
 

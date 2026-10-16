@@ -460,13 +460,14 @@ def fetches(script):
 
 # --- the rule ----------------------------------------------------------------
 
-def _defects(stmts, conditions=None, credit=None, walked=None, working=None, scopes=None):
+def _defects(stmts, conditions=None, credit=None, walked=None, working=None, scopes=None,
+             postures=None):
     """[(statement index, why, what: its `Fetch`)] for every unverified fetch in parsed shell.
 
     Conditions, failure credit and cwd bind checks and uses; `kept` weighs unread forms
     beside fetch defects (#2481, #2490)."""
     working, conditions = working or {}, conditions or {}
-    checks = _checks(stmts, credit, working)
+    checks = _checks(stmts, credit, working, postures=postures)
     fetched, unread = walked or _walk(stmts, stream_exec=True)
     unread = file_bound_reasons(unread, stmts, working)
     found = [(index, why, fetch) for index, fetch in fetched
@@ -513,7 +514,8 @@ def _job_defects(steps, strict=False):
     # The second fold leaves every `Unsure` statement out; `folds` reads each half (#2856 round 13).
     for sure in folds(lambda: any(isinstance(statement, Unsure) for statement in stmts)):
         stmts: list[shell_reader.Statement] = []
-        owner, conditions, credit, working, entries, fetched, unread = [], {}, {}, {}, [], [], []
+        owner, conditions, credit, working, postures = [], {}, {}, {}, {}
+        entries, fetched, unread = [], [], []
         bound: list[Fetch] = []
         for number, item in enumerate(steps):
             step = item if isinstance(item, Step) else Step(*item)
@@ -551,12 +553,14 @@ def _job_defects(steps, strict=False):
                 credit[len(stmts)] = (tuple(why or soft for why in answer or (None, None))
                                       if step.soft else answer)
                 working[len(stmts)] = directories[local]
+                postures[len(stmts)] = (step.shell, step.soft, number)
                 stmts.append(statement)
                 owner.append((step.name, (number, back[local])))
         scopes = {index: place[1][0] for index, place in enumerate(owner)}
         entries += [((owner[index][1], what), owner[index][0], why)
                     for index, why, what in _defects(
-                        stmts, conditions, credit, (fetched, unread), working, scopes)]
+                        stmts, conditions, credit, (fetched, unread), working, scopes,
+                        postures)]
         found += [entry for entry in entries if entry[0] not in seen]
         seen = {key for key, _name, _why in found}
     return [(name, why) for _key, name, why in found]
