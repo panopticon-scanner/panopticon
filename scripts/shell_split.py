@@ -18,14 +18,21 @@ import shlex
 
 from shell_folds import _LOCALE
 from shell_quote import ansi_c
-from shell_command import CONDITIONS, KEYWORDS, fronts, _ASSIGNMENT, _NAME, _NOTHING, _OPTIONAL, _PARAMETER, _SPLAT
+from shell_command import (CONDITIONS, KEYWORDS, fronts, _ASSIGNMENT, _FUNCTION, _NAME,
+                           _NOTHING, _OPTIONAL, _PARAMETER, _SPLAT)
 
 
 _REDIRECT = re.compile(r"<<<|<>|&>>|&>|>>|>\||>&|<&|>|<")
 # The parentheses of a function header, as bash and dash read them: `()` or `( )`, and a
 # group's `{` with a header after it on the same line (#2664).
 _HEADER = re.compile(r"\([ \t]*\)")
-_BRACED_HEADER = re.compile(r"\{[ \t]+(?:function[ \t]+)?[A-Za-z_@][A-Za-z0-9_.:+@-]*[ \t]*\([ \t]*\)")
+_BRACED_HEADER = re.compile(
+    r"\{[ \t]+(?:function[ \t]+)?[A-Za-z_@][A-Za-z0-9_.:+@-]*[ \t]*\([ \t]*\)"
+)
+_NESTED_HEADER = re.compile(
+    r"\{[ \t]+(?:(?:function[ \t]+)?[A-Za-z_@][A-Za-z0-9_.:+@-]*[ \t]*\([ \t]*\)"
+    r"|function[ \t]+[A-Za-z_@][A-Za-z0-9_.:+@-]*(?=[ \t]+\{))"
+)
 _NESTED_CASE = re.compile(r"\s*case(?:\s|$)")
 # Put in place of the backslash of a `\$` or `` \` `` inside "..." (`_split`),
 # which bash drops and shlex keeps (#2342): a private-use character, as `MARK`.
@@ -133,9 +140,9 @@ def _split(text, context):
     # closes (or the last word closed), whether every word before it is a keyword, and whether the
     # one before it is `function`. They are carried word to word here (#2977: joining the whole
     # buffer at each header cost n headers n joins); a group's `(` starts the front over, so a header
-    # behind it is one, and a closed group ends it (#2975 B). A header on the line of another header's
-    # `{` is still no header (#2975 A): read as one, a gate in its body would be credited as the
-    # outer body's own, the nested definition being no entry of the function table.
+    # behind it is one, and a closed group ends it (#2975 B). Before a nested header on the line of
+    # another header's `{`, the outer header ends as it does at a newline, so both definitions reach
+    # the function table and the inner body starts with its own command word (#2975 A).
     front_plain, front_before, last_closed, prev_closed, closed_words = True, True, "", "", 0
     # `[[ ... ]]` is ONE compound command: the `&&`, `||`, `(`, `)`, `<` and `>` in it are the
     # conditional's operators, not list separators, subshells or redirections (#2441) -- split
@@ -398,13 +405,22 @@ def _split(text, context):
                 cases[-1] = "pattern"
             i += len(arm_end) if arm_end else len(separator)
             continue
-        if ch == "{" and at_head and _BRACED_HEADER.match(text, i):
+        if ch == "{":
+            function_header = (len(buf) == word_start and (
+                bool(_FUNCTION.fullmatch(last_closed))
+                or last_closed == "()" and bool(_NAME.fullmatch(prev_closed))
+                or prev_closed == "function" and bool(_NAME.fullmatch(last_closed))
+            ))
             # `{ f() {`: the group's `{` is a statement of its own, as it is on a line of
-            # its own, so the first brace after the name is the body's (#2664).
-            buf.append(ch)
-            end_statement(";")
-            i += 1
-            continue
+            # its own, so the first brace after the name is the body's (#2664). The same boundary
+            # separates `f() { g() {`: the first brace opens f's body and g's header starts the next
+            # statement, putting both definitions in the function table (#2975 part A).
+            if (at_head and _BRACED_HEADER.match(text, i)
+                    or function_header and _NESTED_HEADER.match(text, i)):
+                buf.append(ch)
+                end_statement(";")
+                i += 1
+                continue
         if ch.isspace() and len(buf) > word_start:
             redirect_target = False
         buf.append(ch)

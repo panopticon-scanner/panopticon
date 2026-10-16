@@ -70,7 +70,8 @@ from shell_command import (CONDITIONS as CONDITIONS, KEYWORDS as KEYWORDS,
                            negated as negated, unresolved_wrapper as unresolved_wrapper,
                            folds as folds, fronts, wrapper_words as wrapper_words)
 from shell_split import (_BLANK as _BLANK, _BRACED_HEADER as _BRACED_HEADER, _ESCAPED as _ESCAPED,
-                         _HEADER as _HEADER, _NESTED_CASE as _NESTED_CASE, _REDIRECT as _REDIRECT,
+                         _HEADER as _HEADER, _NESTED_CASE as _NESTED_CASE,
+                         _NESTED_HEADER as _NESTED_HEADER, _REDIRECT as _REDIRECT,
                          _bare_blanks as _bare_blanks, _negated as _negated, _split as _split)
 
 # One shell command: its argv, the files it redirects into / reads from, the heredoc body

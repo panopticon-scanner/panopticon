@@ -1,10 +1,9 @@
 """#2975: three function-header spellings the reader did not take as headers, so the body was read as the name's
-arguments and a run inside it was never seen -- a header right behind a group's `(` (`( f() { sh t; }; f )`, part B) and
-a name bash takes and the reader's pattern did not (`a.b`, `a:b`, `a+b`, `@f`, part C) read their headers now; a header
-on the line of another header's `{` (`f() { g() { sh t; }; g; }`, part A) still does not, pinned below as a limit: read as
-a header, a gate in its body would be credited as the outer body's own, the nested one-line definition being no entry
-of the function table, and `f() { g() { CHECK || exit 1; }; }` ⏎ `f` ⏎ `sh t` (every parent runs the download: `g` is
-never called) would read CLEAN. #2977: the header test at every `(` joined and split the whole stage, and the `esac`
+arguments and a run inside it was never seen -- a header right behind a group's `(` (`( f() { sh t; }; f )`, part B),
+a name bash takes and the reader's pattern did not (`a.b`, `a:b`, `a+b`, `@f`, part C), and a header on the line of
+another header's `{` (`f() { g() { sh t; }; g; }`, part A) read their headers now. The split before a nested header also
+puts both definitions in the function table: `f() { g() { CHECK || exit 1; }; }` ⏎ `f` ⏎ `sh t` still reports because
+`g` is never called. #2977: the header test at every `(` joined and split the whole stage, and the `esac`
 test at every `)` joined it again, so one statement of n headers cost n joins (8,000 `f() `: 6 s on the forge, about
 x3.4 a doubling); the words in front are carried word to word now, and both tests are lookups.
 
@@ -38,26 +37,29 @@ def marks(text):
 
 
 class TestAHeaderOnTheLineOfAnotherHeadersBrace(unittest.TestCase):
-    """S6 (part A): the inner `()` is read as a subshell and the body as the inner name's arguments, as on
-    `main` -- a limit pinned here, not a fix. The front starts over at a header's `{` in a scratch build, and
-    the five rows report; but the function table holds no nested one-line definition, so a gate in the inner
-    body is credited as the outer body's own, and `f() { g() { CHECK || exit 1; }; }` ⏎ `f` ⏎ `sh t` -- `g`
-    never called, every parent runs the download, REPORTED on `main` -- reads CLEAN. Part A lands with the
-    table's reading of a nested definition (#2975 stays open for it)."""
+    """S6 (part A): the inner header starts a statement, so its body is read and its definition is scoped."""
 
-    def test_the_kits_rows_read_as_they_did(self):
-        # s6.run, s6.tight, s6.call-outside, s6.fetch, s6.pipe: CLEAN on main and here; truth: runs, 16 of 16.
+    def test_the_kits_rows_report(self):
+        # s6.run, s6.tight, s6.call-outside, s6.fetch, s6.pipe: CLEAN on main; truth: runs, 16 of 16.
         for text in (FETCH + "f() { g() { sh t; }; g; }\nf\n", FETCH + "f(){ g(){ sh t; }; g; }\nf\n",
                      FETCH + "f() { g() { sh t; }; }\nf\ng\n",
                      "f() { g() { curl -fsSLo t https://example.test/t; }; g; }\nf\nsh t\n",
                      "f() { g() { curl -fsSL https://example.test/t | sh; }; g; }\nf\n"):
             with self.subTest(text=text[:40]):
-                self.assertEqual(CLEAN, marks(text))
+                self.assertEqual(REPORTED, marks(text))
 
-    def test_the_gate_in_a_nested_definition_never_called_still_reports(self):
-        # The row that holds part A back (`tests/test_workflow_guard_reader_forms.py` pins it as `main`'s too).
+    def test_the_gate_in_a_nested_definition_is_credited_only_at_the_inner_call(self):
+        # Both headers are in the function table, so the inner gate is not credited to the called outer body.
         sums = "echo '%s  t' > sums\n" % ("a" * 64)
-        self.assertEqual(REPORTED, marks(FETCH + sums + "f() { g() { sha256sum -c sums || exit 1; }; }\nf\nsh t\n"))
+        check = "sha256sum -c sums || exit 1"
+        for definition in ("f() { g() { %s; }; }" % check,
+                           "f() { function g { %s; }; }" % check,
+                           "function f { function g { %s; }; }" % check):
+            with self.subTest(definition=definition, call="never"):
+                self.assertEqual(REPORTED, marks(FETCH + sums + definition + "\nf\nsh t\n"))
+            with self.subTest(definition=definition, call="before run"):
+                called = definition[:-2] + " g; }"
+                self.assertEqual(CLEAN, marks(FETCH + sums + called + "\nf\nsh t\n"))
 
     def test_the_spellings_that_reported_keep_their_marks(self):
         # s6.second (a `;` before the inner header), s6.kw, s6.kw~nl, s6.run~nl, s6.pipe~nl.
@@ -147,10 +149,15 @@ class TestTheSplitter(unittest.TestCase):
         self.assertIn(["sh", "t"], self.commands("a.b() { sh t; }\n"))
         self.assertIn(["sh", "t"], self.commands("@f() { sh t; }\n"))
 
-    def test_a_header_on_another_headers_line_reads_as_it_did(self):
-        # Part A, the limit: the inner body is the inner name's arguments, as on `main`.
-        self.assertIn(["g", "{", "sh", "t"], self.commands("f() { g() { sh t; }; g; }\n"))
-        self.assertIn(["g", "{", "sh", "t"], self.commands("f(){ g(){ sh t; }; g; }\n"))
+    def test_a_header_on_another_headers_line_is_a_header(self):
+        for text in ("f() { g() { sh t; }; g; }\n", "f(){ g(){ sh t; }; g; }\n",
+                     "function f { g() { sh t; }; g; }\n",
+                     "f() { function g { sh t; }; g; }\n",
+                     "function f { function g { sh t; }; g; }\n"):
+            with self.subTest(text=text):
+                commands = self.commands(text)
+                self.assertIn(["sh", "t"], commands)
+                self.assertNotIn(["g", "{", "sh", "t"], commands)
 
     def test_what_is_no_header_stays_a_subshell_or_a_word(self):
         # `f (x)` is no header; `echo (a)` is a syntax error bash never runs; `x=1 (f)` a subshell.
