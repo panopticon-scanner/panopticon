@@ -12,6 +12,7 @@ run one way.
 """
 import re
 
+import shell_lex
 import shell_reader
 from shell_command import _FUNCTION, _heads
 from shell_folds import _CALLED
@@ -44,7 +45,14 @@ def _rest(argv):
 # A positional parameter a body's word spells whole: `$1`, `${1}`, `"$1"`. In single quotes it spells
 # none (`'$1'`: the reader's `double` is False). `$@` and `$*` are left as written: a body that runs
 # its arguments (`w() { "$@"; }`) is #3047's, and a fetcher given them reads them as a `$` word.
-_POSITIONAL = re.compile(r"^\$(?:\{([1-9][0-9]*)\}|([1-9][0-9]*))$")
+_POSITIONAL = re.compile(r"^\$(?:\{([1-9][0-9]*)\}|([1-9]))$")
+# `$10` is `${1}0` to bash and dash -- the first word with a `0` behind it -- and the tenth word to zsh alone (#3127):
+_DIGITS_BEHIND = re.compile(r"^\$([1-9])([0-9]+)$")
+# A positional with a default or an alternative (#3127): `${1:-t}` / `${1-t}` the call's word, else the default;
+# `${1:+x}` / `${1+x}` the alternative where the call gave the word, else no word. The other forms stay as written.
+_DEFAULTED = re.compile(r"^\$\{([1-9][0-9]*)(:?[-+])([^}]*)\}$")
+# A slice of the call's words, `"${@:2}"` / `"${@:2:3}"` (#3127): from the word numbered, that many of them.
+_SLICED = re.compile(r"^\$\{@:([0-9]+)(?::([0-9]+))?\}$")
 
 
 def _positional(word):
@@ -96,9 +104,14 @@ class CalledFetches:
     def __init__(self, stmts):
         self.stmts, self.defined = stmts, {}   # type: tuple | list, dict[str, list[tuple[int, int]]]
         ranges, self.occupied = _function_ranges(stmts)
+        from workflow_called import _subshell      # at call time: `workflow_called` re-exports this module's `called`
+        self.subshell: set[tuple[int, int]] = set()  # (head, end) of each `f() ( … )`, a body read to its parentheses
         for entries in ranges.values():
             for name, head, close in entries:
-                self.defined.setdefault(name, []).append((head, _body_end(stmts, head, close)[0]))
+                end = _body_end(stmts, head, close)[0]
+                self.defined.setdefault(name, []).append((head, end))
+                if _subshell(stmts, head, close):
+                    self.subshell.add((head, end))
 
     def fixed(self, position):
         """This reader for a substitution's statements, each call in them read at `position`."""
@@ -248,15 +261,33 @@ def _bound(words, arguments):
     word (`_positional`), `"$@"` or `$*` the call's words spliced in, `NAME=$N` the name set to the call's word; a
     positional the call did not pass or one gone stale (None: a relative word behind a `cd` of the body's own,
     `_expanded`), one single-quoted (`'$1'`, `c='$1'`: no `$` of it live) and every other word, as written."""
-    out = []
+    out: list = []
     for word in words:
         which = _positional(word)
         if which is not None:
-            out.append(word if which > len(arguments) or arguments[which - 1] is None else arguments[which - 1])
+            given = word if which > len(arguments) or arguments[which - 1] is None else arguments[which - 1]
+            # An unquoted positional is split on blanks, as bash and dash split it (zsh does not); `"$1"` is one word.
+            split = given is not word and getattr(word, "double", None) is None and any(c in str(given) for c in " \t")
+            out.extend(shell_reader.derived(part, given) for part in str(given).split()) if split else out.append(given)
         elif getattr(word, "live_dollar", True) is False:     # a `$` single-quoted or escaped: no word of the call's
             out.append(word)
         elif _SPLICED.match(str(word)):
             out.extend(given for given in arguments if given is not None)
+        elif (sliced := _SLICED.match(str(word))) and int(sliced[1]) >= 1:
+            start = int(sliced[1]) - 1
+            stop = start + int(sliced[2]) if sliced[2] else len(arguments)
+            out.extend(given for given in arguments[start:stop] if given is not None)
+        elif (behind := _DIGITS_BEHIND.match(str(word))) and int(behind[1]) <= len(arguments) and (
+                given := arguments[int(behind[1]) - 1]) is not None:
+            out.append(shell_reader.derived("%s%s" % (given, behind[2]), given))
+        elif (defaulted := _DEFAULTED.match(str(word))):
+            which, given = int(defaulted[1]), None
+            if which <= len(arguments) and arguments[which - 1] is not None:
+                given = arguments[which - 1]
+            if defaulted[2].endswith("-"):
+                out.append(given if given is not None else shell_reader.derived(defaulted[3], word))
+            elif given is not None:                 # `${N:+x}`: the alternative where the call gave the word
+                out.append(shell_reader.derived(defaulted[3], word))
         elif (copy := _COPIED.match(str(word))) and int(copy[2] or copy[3]) <= len(arguments) and (
                 given := arguments[int(copy[2] or copy[3]) - 1]) is not None:
             out.append(shell_reader.derived("%s=%s" % (copy[1], given), given))
@@ -306,10 +337,31 @@ def _call(reader, statement, position, gone=frozenset()):
     keywords and assignments in front (`_rest`) -- else None."""
     for at, stage in enumerate(statement.stages):
         rest = _rest(stage.argv)
+        front, rest = _evaluated(list(stage.argv[:len(stage.argv) - len(rest)]), rest)
         name = str(rest[0]) if rest else None
         if name in reader.defined and name not in gone and any(head < position for head, _end in reader.defined[name]):
-            return at, name, list(stage.argv[:len(stage.argv) - len(rest)]), list(rest[1:])
+            return at, name, front, list(rest[1:])
     return None
+
+
+def _evaluated(front, rest):
+    """(front, rest) -- the words in front of a statement's command and the command's own -- or, where `front` ends
+    with an `eval` and `rest` is ONE literal word that reads as one statement of one stage, the `eval` off the front
+    and that statement's words as the command (#3127): `eval 'f t'` calls `f` as `f t` does. An `eval` of several
+    words, of a word with a live `$` or a substitution, or of a string of more than one statement or stage is read
+    as `main` reads it."""
+    if not (front and str(front[-1]) == "eval" and len(rest) == 1 and str(rest[0]).strip()):
+        return front, rest
+    word = rest[0]
+    if "$" in str(word) and getattr(word, "live_dollar", True) is not False or shell_reader.has_substitution(word):
+        return front, rest
+    try:
+        inner = shell_reader.statements(str(word) + "\n")
+    except shell_lex.Unreadable:
+        return front, rest
+    if len(inner) != 1 or len(inner[0].stages) != 1 or inner[0].stages[0].reads or inner[0].stages[0].writes:
+        return front, rest
+    return front[:-1], list(inner[0].stages[0].argv)
 
 
 def _body_reads(reader, name, position, depth=1):
@@ -330,7 +382,17 @@ def _body_reads(reader, name, position, depth=1):
     named = str(rest[0]) if rest else None
     if named is not None and stdin_reader(list(map(str, rest))) is not None:
         return words, True
+    if _passes_on(body[0].stages[0]):          # `f() { cat; }`: its input goes on down the call's pipe (#3127)
+        return words, True
     return words, named in reader.defined and _body_reads(reader, named, position, depth + 1)[1]
+
+
+def _passes_on(stage):
+    """Whether `stage`, a one-stage body's, hands its standard input on unchanged and reads none of its own -- a bare
+    `cat` or `cat -` with no redirection (#3127): where its call stands in a pipeline, the fold takes the stage out,
+    so the stage in front pipes into the one behind (`{ P; } | f | sh` reads as `{ P; } | sh`, #3111's group)."""
+    rest = [str(word) for word in _rest(stage.argv)]
+    return rest in (["cat"], ["cat", "-"]) and not stage.reads and not stage.writes and stage.stdin_heredoc is None
 
 
 def _certain(stmts):
@@ -361,7 +423,8 @@ def _inlined(reader, statement, position, gone=frozenset()):
     words, reads = _body_reads(reader, name, position)
     stage = statement.stages[at]
     given = at > 0 or bool(stage.stdin_reads) or stage.stdin_heredoc is not None or bool(stage.reads)
-    return call if words or (reads and given) else None
+    head, end = [entry for entry in reader.defined[name] if entry[0] < position][-1]
+    return call if words or (reads and given) or _pipes_a_group(reader, head, end) else None
 
 
 def _with_call(call, stage, heads):
@@ -374,6 +437,19 @@ def _with_call(call, stage, heads):
         read = read._replace(writes=call.writes, stdout_writes=call.stdout_writes, stdout_to_pipe=call.stdout_to_pipe,
                              pipe_output_fds=call.pipe_output_fds, redirected=stage.redirected or call.redirected)
     return read._replace(argv=[*heads, *read.argv], substitutions=[*stage.substitutions, *call.substitutions])
+
+
+def _pipes_a_group(reader, head, end):
+    """Whether a body holds a group piped on -- `{ P; echo hi; } | sh`, `( P ) | sh`: a statement with a stage that
+    closes a group in front of another stage (#3127). `main` reads such a body where it stands with the header's
+    words in front of the opener (`f() { {`), so #3111's group reading never found the opener; the fold stands for
+    the body at its calls even where it reads nothing of them. No other body that reads nothing of its call is
+    stood for: a gate or a check in it keeps `main`'s reading (#3047's rule, the guard's B43 pins). A subshell body
+    (`f() ( … )`, `reader.subshell`) is none."""
+    if (head, end) in reader.subshell:
+        return False
+    return any(list(map(str, stage.argv)) == ["}"] or stage.group_close
+               for _at, item in _body(reader.stmts, head, end) for stage in item.stages[:-1])
 
 
 def _expanded(reader, stmts, statement, position, depth, room, gone=frozenset(), used=None):
@@ -392,7 +468,7 @@ def _expanded(reader, stmts, statement, position, depth, room, gone=frozenset(),
         return [statement]
     at, name, heads, arguments = call
     head, end = [entry for entry in reader.defined[name] if entry[0] < position][-1]
-    if stmts[head].stages and stmts[head].stages[0].group_open:
+    if (head, end) in reader.subshell:      # `f() ( … )`: read as `main` reads it
         return [statement]
     out, origins = [], []            # the body's statements as the call makes them, each with its index in `stmts`
     for origin, item in _body(stmts, head, end):
@@ -409,7 +485,12 @@ def _expanded(reader, stmts, statement, position, depth, room, gone=frozenset(),
         out.append(item._replace(stages=[stage._replace(argv=_bound(stage.argv, arguments)) for stage in item.stages]))
         origins.append(origin)
     stage = statement.stages[at]
-    if len(out) == 1 and len(out[0].stages) == 1:
+    if len(out) == 1 and len(out[0].stages) == 1 and _passes_on(out[0].stages[0]) and 0 < at < len(statement.stages) - 1 and (
+            not stage.reads and not stage.writes and stage.stdin_heredoc is None):
+        stages = list(statement.stages)         # a pass-through body between two stages: taken out of the pipe
+        del stages[at]
+        out = [statement._replace(stages=stages)]
+    elif len(out) == 1 and len(out[0].stages) == 1:
         stages = list(statement.stages)
         stages[at] = _with_call(stage, out[0].stages[0], heads)
         out = [statement._replace(stages=stages)]
@@ -481,8 +562,12 @@ def called(stmts):
     used: set[tuple[int, int]] = set()  # (head, end) of each definition stood for, there and in the bodies followed
     gone: set = set()                   # the names a certain `unset -f` took away, until defined again
     added = 0                           # the statements the step grew by, against `_INLINED`
+    heads: dict[int, set] = {}          # the names defined at each statement, once (not a scan a statement, #3127)
+    for name, entries in reader.defined.items():
+        for head, _end in entries:
+            heads.setdefault(head, set()).add(name)
     for index, statement in enumerate(stmts):
-        gone -= {name for name, entries in reader.defined.items() if any(head == index for head, _end in entries)}
+        gone -= heads.get(index, set())
         words = [str(word) for word in _rest(statement.stages[0].argv)] if len(statement.stages) == 1 else []
         if words[:2] == ["unset", "-f"] and index in certain:
             gone.update(words[2:])
