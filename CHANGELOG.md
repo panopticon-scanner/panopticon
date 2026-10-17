@@ -7,6 +7,13 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Grouped quiet printer reasons pair with loud reasons at the printer's statement (#3095).**
+  A carried download printed through `{ echo "$payload"; } | sh` produced two findings: `carried`
+  put the loud hand-off reason on the printer's statement, while #3026 put the quiet unread-printer
+  reason on the group's closing shell statement, so `kept` could not pair them as it does for the
+  plain `echo "$payload" | sh` twin. A quiet grouped answer now records its printer's source
+  statement, and `kept` uses that source when looking for a louder reason. The brace, newline,
+  subshell, and stderr-redirection forms return the one carried finding; no verdict changes.
 - **Workflow program flattening grows linearly with the text a job hands to shells (#3105).**
   `flattened` asked `swallowed` how each handed program's parent command failed, and that proof
   rescanned the outer statement list twice even when the list contained no structural group or
