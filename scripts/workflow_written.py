@@ -23,7 +23,7 @@ import os
 import shlex
 
 import shell_reader
-from workflow_printers import ANY, _PRINTERS, file_operand, producer, spellings
+from workflow_printers import ANY, _PRINTERS, _grouped, _printer_of, file_operand, producer, spellings
 
 _DEPTH = 64                 # writers kept per path; past it the text is unspelled (fail-closed)
 
@@ -51,6 +51,26 @@ def _writer(stage, before):
         if chosen is None or not intact:
             return None
     return None
+
+
+def _writers(stage, before, statements, index):
+    """The writers whose texts land where `stage` writes, in order: `_writer`'s one; or, where `stage` closes a
+    `{ ...; }` or `( ...; )` group (#3110), the printer of each pipeline of the group `_grouped` hands back
+    (`_printer_of`), as #3026 reads a group piped to a shell -- a pipeline that is no printer's stands in as a
+    writer the printers cannot spell, so `_script` hands the group on LOUD (fail-closed); a group with no printer
+    in it binds nothing, as the file it writes is no printer's text."""
+    one = _writer(stage, before)
+    if one is not None:
+        return [one]
+    if list(stage.argv) != ["}"] and not stage.group_close:   # the slice below for a closer alone: linear
+        return []
+    pipelines = _grouped(stage, before, statements[:index]) or []
+    printers = [_printer_of(pipeline) for pipeline in pipelines]
+    if not any(printers):
+        return []
+    return [(shell_reader.command(printer.argv), printer) if printer is not None   # by its words, as
+            else (["}"] + list(shell_reader.command(pipeline[-1].argv)), pipeline[-1])  # `_printer_of` read
+            for printer, pipeline in zip(printers, pipelines)]                          # it; none: unspellable
 
 
 def _paths(stage):
@@ -156,7 +176,7 @@ def bind_written(stmts):
     """Mark, in place and in statement order, every FILE operand that names a path an earlier stage of
     the step wrote with a printer; return `stmts`."""
     files: dict[str, list] = {}
-    for statement in stmts:
+    for index, statement in enumerate(stmts):
         for position, stage in enumerate(statement.stages):
             argv = shell_reader.acted(stage.argv)
             operand = file_operand(argv) if argv else None
@@ -167,8 +187,7 @@ def bind_written(stmts):
                     continue
             if path is not None and path in files and (token := _bind(stage, path)) is not None:
                 setattr(token, "written", _script(files[path]))
-            writer = _writer(stage, statement.stages[:position])
-            if writer is not None:
+            for writer in _writers(stage, statement.stages[:position], stmts, index):
                 for written in _paths(stage):
                     files.setdefault(written, []).append(writer)
     return stmts
