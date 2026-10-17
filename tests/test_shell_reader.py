@@ -413,6 +413,65 @@ class TestOrderedRedirects(unittest.TestCase):
                 self.assertEqual(['f'] if literal == '"2">f' else [], parsed.writes)
 
 
+class TestTheExactStatusInsideAConditional(unittest.TestCase):
+    """#3116 item 1 + the reader part of item 2 (the split ruling): inside `[[ ... ]]` the lexer escapes every pattern
+    character, so a direct `$?` reached `_stage` as `$\\?` and the exact-dollar pass, which spells the reference as
+    `$?`, never marked it -- the status gate (`workflow_status`) then saw the same bare `$?` for the exact word and for
+    the locale-quoted `$"?"`, and could credit neither without reopening #2440's F1. Now `_exact_dollars` marks the
+    direct `$?` inside a conditional exact and live by the one mechanism every exact `$NAME` word has (a `_Token`, its
+    type otherwise the plain token kind: never `_Expanded`, since bash expands no pattern there); `$"?"`, `$""?`, the
+    split-quote `"$"?`, `$'?'`, `$?x` and `${?}` keep their types and stay unmarked. Outside a conditional `$\\?` is a
+    user's escape, a literal, and stays unmarked -- `[ $\\? -ne 0 ]` credited would be fail-open (test(1) rejects the
+    string). Inside one, a user's `$\\?` reads as the exact status too, a named reading: bash evaluates an
+    arithmetic operand's string, so `-ne` compares the status, and a string operator compares the literal `$?`, so the
+    gate fires every time -- never fail-open either way."""
+
+    @staticmethod
+    def words(script):
+        return [w for st in shell_reader.statements(script) for s in st.stages for w in s.argv if "?" in str(w)]
+
+    def marks(self, script):
+        """(text, is a `_Token`, is `_Expanded`, exact_dollar, live_dollar) of the one `?` word of `script`."""
+        found = self.words(script)
+        self.assertEqual(1, len(found), found)
+        word = found[0]
+        return (str(word), isinstance(word, shell_tokens._Token), isinstance(word, shell_tokens._Expanded),
+                getattr(word, "exact_dollar", None), getattr(word, "live_dollar", None))
+
+    def test_the_direct_status_is_marked_exact_and_live(self):
+        for script in ("[[ $? -ne 0 ]] && exit 1\n", "[[ $? -ne 0 ]] || exit 1\n", "if [[ $? -ne 0 ]]; then exit 1; fi\n",
+                       "! [[ $? -eq 0 ]] && exit 1\n", "[[ ( $? -ne 0 ) ]] && exit 1\n", "[[ -n $? ]]\n",
+                       "f() { [[ $? -ne 0 ]] && return 1; }\n", "[[ \"$?\" -ne 0 ]] && exit 1\n"):
+            with self.subTest(script=script):
+                self.assertEqual(("$?", True, False, True, True), self.marks(script))
+
+    def test_the_lookalikes_keep_their_type_and_stay_unmarked(self):
+        # `$"?"` (a locale string), `$""?` and `"$"?` (split quotes), `$'?'` (an ANSI-C string, the `$` gone), a longer
+        # word, and `${?}` (not the direct spelling): none is the exact status, and none becomes one.
+        for script, expected in (("[[ $\"?\" -ne 0 ]] && exit 1\n", ("$?", False, False, None, None)),
+                                 ("[[ $\"\"? -ne 0 ]] && exit 1\n", ("$?", False, False, None, None)),
+                                 ("[[ \"$\"? -ne 0 ]] && exit 1\n", ("$?", True, False, None, True)),
+                                 ("[[ $'?' -ne 0 ]] && exit 1\n", ("?", False, False, None, None)),
+                                 ("[[ $?x -ne 0 ]] && exit 1\n", ("$?x", False, False, None, None)),
+                                 ("[[ ${?} -ne 0 ]] && exit 1\n", ("${?}", False, False, None, None))):
+            with self.subTest(script=script):
+                self.assertEqual(expected, self.marks(script))
+
+    def test_outside_a_conditional_nothing_changes(self):
+        # `$?` where bash expands patterns stays the `_Expanded` exact word it was; a user's `$\\?` stays a literal; an
+        # arithmetic command and an array literal, which the lexer escapes the same way, stay unmarked.
+        for script, expected in (("echo $?\n", ("$?", True, True, True, True)), ("[ $? -ne 0 ] && exit 1\n", ("$?", True, True, True, True)),
+                                 ("echo $\\?\n", ("$?", False, False, None, None)), ("[ $\\? -ne 0 ] && exit 1\n", ("$?", False, False, None, None)),
+                                 ("echo [[ $? ]]\n", ("$?", True, True, True, True)),
+                                 ("(( $? != 0 )) && exit 1\n", ("$?", False, False, None, None)), ("x=($?)\n", ("$?", False, False, None, None))):
+            with self.subTest(script=script):
+                self.assertEqual(expected, self.marks(script))
+
+    def test_a_users_escape_inside_a_conditional_reads_as_the_status(self):
+        # Named: the lexer's spelling and the user's coincide in the stage text, and the reading is never fail-open.
+        self.assertEqual(("$?", True, False, True, True), self.marks("[[ $\\? -ne 0 ]] && exit 1\n"))
+
+
 class TestMarkerProvenance(unittest.TestCase):
     LITERALS = ('@@subst0@@', '@@heredoc0@@', '@@casearm@@curl',
                 '@@group-open@@', '@@group-close@@')

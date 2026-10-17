@@ -136,8 +136,16 @@ _FD_SPELLINGS = re.compile(r"^(?:/+|(?:\.\./+)+)(?:dev|proc/(?:thread-)?self)/+f
 _OWN_ROOT = re.compile(r"^(?:/proc/(?:thread-)?self/root)+(?=/)")
 
 
+# Inside `[[ ... ]]` the lexer escapes every pattern character, so a direct `$?` reaches a stage as `$\?` (#3116):
+_CONDITIONAL = re.compile(r"\[\[\s.*?\s\]\]", re.S)
+_CONDITIONAL_STATUS = re.compile(r"(?<![^\s])\$\\\?(?![^\s])")
+
+
 def _exact_dollars(text):
-    """Mark complete words that spell one simple live parameter expansion."""
+    r"""Mark complete words that spell one simple live parameter expansion -- among them, inside `[[ ... ]]`, the
+    direct `$?` the lexer spells `$\?` (#3116: bash expands no pattern there, and the word is the exact status; a
+    `$"?"`, `$""?` or `"$"?` keeps its quotes and is none). Outside a conditional `$\?` is a user's escape, a literal."""
+    text = _CONDITIONAL.sub(lambda span: _CONDITIONAL_STATUS.sub(_EXACT_DOLLAR + r"$\\?", span[0]), text)
     return _WORD.sub(lambda word: (_EXACT_DOLLAR + word[0]
                                    if _EXACT_DOLLAR_WORD.fullmatch(word[0]) else word[0]), text)
 # The listed names of a descriptor a pattern bash expands may match (`/dev/stdou[t]`, `/dev/fd/[1]`, #3051).
