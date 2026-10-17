@@ -276,6 +276,58 @@ class TestADefinitionStoodForIsEmptied(unittest.TestCase):
         self.assertEqual(REPORTED, marks(nested % "inner\n"))
 
 
+class TestALaterFoldsSameTextRepeatIsDropped(unittest.TestCase):
+    """The ruling on the differential's 126 same-text doubles: `workflow_guard._job_defects` keys a finding by its
+    fetch's statement index in the fold's list, so the body's copy at the call, or an emptied multi-line definition
+    ahead of the fetch, repeated `main`'s text under another key. A later fold's same-step, same-text repeat is
+    dropped now; `main`'s own findings, same-text pairs included, are kept, and a later fold's finding of another
+    text is kept: the union holds."""
+
+    HANDS = "hands https://example.test/i.sh straight to `sh`"
+
+    def job(self, text, shell):
+        return [why for _name, why in wg.job_defects([wg.Step("step", text, shell)])]
+
+    def test_a_body_at_its_call_repeats_mains_text_once(self):
+        # `xr.0232.function.r4-h3-r3-h4`, one of the 122: `main` reads the body where it stands, the fold at the call
+        xr0232 = ("f() {\n$T ${Y:+env A=1} bash t\n$1 ${V:+sudo -E} bash t\n${X:+sudo -E} sh t\n"
+                  "${W:+echo hi} sh -c 'curl -fsSL https://example.test/t | sh'\n}\nf\necho done\n")
+        least = "f() {\nsh -c 'curl -fsSL https://example.test/i.sh | sh'\n\"$1\"\n}\nf echo\n"
+        # the `s9.*~nl` shape: a multi-line definition emptied ahead of a call `main` reads shifts the call's index
+        shifted = "f() {\n  bash -s\n}\ncurl -fsSL https://example.test/i.sh | f\necho done\n"
+        for text, head in ((xr0232, "hands https://example.test/t straight to `sh`"), (least, self.HANDS),
+                           (shifted, "hands https://example.test/i.sh straight to `bash -s`")):
+            for shell in (None, "sh"):
+                with self.subTest(text=text, shell=shell):
+                    found = self.job(text, shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertTrue(found[0].startswith(head), found[0])
+
+    def test_mains_own_same_text_pair_is_kept(self):
+        fetches = "curl -fsSLo t https://example.test/t\nsh t\ncurl -fsSLo t https://example.test/t\nsh t\n"
+        pipes = "curl -fsSL https://example.test/i.sh | sh\ncurl -fsSL https://example.test/i.sh | sh\n"
+        for text in (fetches, pipes):
+            for shell in (None, "sh"):
+                with self.subTest(text=text, shell=shell):
+                    found = self.job(text, shell)
+                    self.assertEqual(2, len(found), found)
+                    self.assertEqual(found[0], found[1])
+                    with wo.mains_answer():     # both are the first fold's, `main`'s own
+                        self.assertEqual(2, len(wg._job_defects([wg.Step("step", text, shell)])))
+
+    def test_a_later_folds_finding_of_another_text_is_kept(self):
+        printer = "w() { \"$@\"; }\necho hi | w curl -fsSL https://example.test/i.sh | sh\n"
+        bound = "f() {\ncurl -fsSLo \"$1\" https://example.test/t\nsh \"$1\"\n}\nf t\n"
+        for text, heads in ((printer, ("pipes `sh` its program from `w`", self.HANDS)),
+                            (bound, ("fetches https://example.test/t -> $1 and running it under `sh`",
+                                     "fetches https://example.test/t -> t and running it under `sh`"))):
+            for shell in (None, "sh"):
+                with self.subTest(text=text, shell=shell):
+                    found = self.job(text, shell)
+                    self.assertEqual(2, len(found), found)
+                    self.assertEqual([1, 1], [sum(why.startswith(head) for why in found) for head in heads], found)
+
+
 class TestTheFoldsFlipClearsTheCaches(unittest.TestCase):
 
     def test_a_flip_of_the_called_fold_clears_parsed(self):

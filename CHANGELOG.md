@@ -44,20 +44,26 @@ evidence exposed.
   of the `f() { sh $1; }; f tool` shape, the two `ae.function-value` rows, and three rows where two
   calls make a body's run of its own fetch), 0 REPORT->CLEAN; 24 REPORT rows gain a finding read at
   the call that `main` lacks (a bound word named, `t` beside `main`'s `$1`; `verifies t only AFTER`
-  a body's run; a bound printer's run), 126 repeat a finding `main` has with the same text (the
-  guard keys a finding by its fetch's statement index, and the fold's list runs the body's copy, or
-  an emptied multi-line definition, ahead of that fetch -- a price, named), 18 reorder theirs, 228
-  change a pass's reading alone, the job's kept. Pins moved, authorized: the two #3091 rows of
-  `tests/test_workflow_called_bodies.py` report; the five `w() { "$@"; }` rows of
-  `tests/test_workflow_printers.py` gain the download-runs finding beside `main`'s unread one, and
-  the four `w env 'A=…' curl …` gap rows (two words, two shells) close; the `sudo() { "$@"; }` row
-  of `tests/test_workflow_behind_a_wrapper.py` with `sudo -s eval 'T=x'` in front reports: the fold
-  reads the function as bash runs it, `-s` no command, the `eval` never run, `T` kept and `t` run
-  (truth CCCRR; an over-report under the three `-e` settings, where the step stops at `-s: command
-  not found`, which the guard does not model -- a price). `workflow_guard.read` wraps the statements
-  in `called` and imports it, two lines granted; `shell_folds._locale` is `_flip(state, on)` now,
-  clearing `_STALE` for either flag. Sizes: `scripts/workflow_called_fetches.py` 507 (+275),
-  `scripts/shell_folds.py` 204 (+14). `tests/test_workflow_positional_handoff.py`.
+  a body's run; a bound printer's run), 126 repeated a finding `main` has with the same text (the
+  guard keys a finding by its fetch's statement index, and the fold's list ran the body's copy, or
+  an emptied multi-line definition, ahead of that fetch): a later fold's same-step, same-text repeat
+  is dropped now (`workflow_guard._job_defects`, the `texts` set beside `seen`, granted as #3111's
+  duplicates were ruled), `main`'s own findings kept, same-text pairs included, and a later fold's
+  finding of another text kept; the key stays positional, so a fold's finding whose fetch of the
+  same tool, url and destination stands at the shifted index would be dropped as `main`'s -- none in
+  the kit, a limit named; 18 reorder theirs, 228 change a pass's reading alone, the job's kept. Pins
+  moved, authorized: the two #3091 rows of `tests/test_workflow_called_bodies.py` report; the five
+  `w() { "$@"; }` rows of `tests/test_workflow_printers.py` gain the download-runs finding beside
+  `main`'s unread one, and the four `w env 'A=…' curl …` gap rows (two words, two shells) close; the
+  `sudo() { "$@"; }` row of `tests/test_workflow_behind_a_wrapper.py` with `sudo -s eval 'T=x'` in
+  front reports: the fold reads the function as bash runs it, `-s` no command, the `eval` never run,
+  `T` kept and `t` run (truth CCCRR; an over-report under the three `-e` settings, where the step
+  stops at `-s: command not found`, which the guard does not model -- a price).
+  `workflow_guard.read` wraps the statements in `called` and imports it, two lines granted, and
+  `_job_defects` drops a later fold's same-step, same-text repeat, two lines granted (the ruling of
+  #3111's duplicates); `shell_folds._locale` is `_flip(state, on)` now, clearing `_STALE` for either
+  flag. Sizes: `scripts/workflow_called_fetches.py` 507 (+275), `scripts/shell_folds.py` 204 (+14),
+  `scripts/workflow_guard.py` 645 (+2). `tests/test_workflow_positional_handoff.py`.
 
 - **Workflow reader reads a function header immediately after an outer function's opening brace
   (#2975 part A).** `f() { g() { sh t; }; g; }` ran the downloaded file under every parent and

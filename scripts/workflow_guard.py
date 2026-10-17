@@ -510,7 +510,7 @@ def job_defects(steps, strict=False):
 def _job_defects(steps, strict=False):
     """Defects for a job: steps share files but start fresh shells and cwd. Conditions and failure
     gates bind checks. `Unsure` scripts get a second fold; `strict` rejects an unread step."""
-    found, seen, steps = [], set(), list(steps)     # read twice: a one-shot iterable, once
+    found, seen, texts, steps = [], set(), set(), list(steps)     # read twice: a one-shot iterable, once
     # The second fold leaves every `Unsure` statement out; `folds` reads each half (#2856 round 13).
     for sure in folds(lambda: any(isinstance(statement, Unsure) for statement in stmts)):
         stmts: list[shell_reader.Statement] = []
@@ -561,8 +561,10 @@ def _job_defects(steps, strict=False):
                     for index, why, what in _defects(
                         stmts, conditions, credit, (fetched, unread), working, scopes,
                         postures)]
-        found += [entry for entry in entries if entry[0] not in seen]
+        found += [entry for entry in entries
+                  if entry[0] not in seen and ((entry[0][0] or entry[0])[0], entry[2]) not in texts]
         seen = {key for key, _name, _why in found}
+        texts = {((key[0] or key)[0], why) for key, _name, why in found}  # a later fold's same-text repeat is noise
     return [(name, why) for _key, name, why in found]
 
 
