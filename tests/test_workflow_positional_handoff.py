@@ -276,17 +276,24 @@ class TestADefinitionStoodForIsEmptied(unittest.TestCase):
         self.assertEqual(REPORTED, marks(nested % "inner\n"))
 
 
-class TestALaterFoldsSameTextRepeatIsDropped(unittest.TestCase):
-    """The ruling on the differential's 126 same-text doubles: `workflow_guard._job_defects` keys a finding by its
-    fetch's statement index in the fold's list, so the body's copy at the call, or an emptied multi-line definition
-    ahead of the fetch, repeated `main`'s text under another key. A later fold's same-step, same-text repeat is
-    dropped now; `main`'s own findings, same-text pairs included, are kept, and a later fold's finding of another
-    text is kept: the union holds."""
+class TestTheCalledFoldsSameTextRepeatIsDropped(unittest.TestCase):
+    """The ruling on the differential's 126 same-text doubles, scoped in review round 1: `workflow_guard._job_defects`
+    keys a finding by its fetch's statement index in the fold's list, so the body's copy at the call, or an emptied
+    multi-line definition ahead of the fetch, repeated `main`'s text under another key. The called fold's same-step,
+    same-text repeat is dropped now, and that fold's alone: `main`'s folds are filtered by key alone, as before, so a
+    text `main` finds under two keys -- its halves read `${W:+echo hi} sh -c '…'` twice as three findings -- keeps its
+    multiplicity (the first cut filtered every fold and lost one in 86 rows of the kit); a later fold's finding of
+    another text is kept: the union holds."""
 
     HANDS = "hands https://example.test/i.sh straight to `sh`"
+    HANDS_T = "hands https://example.test/t straight to `sh`"
 
     def job(self, text, shell):
         return [why for _name, why in wg.job_defects([wg.Step("step", text, shell)])]
+
+    def heads(self, found, heads):
+        """Each finding's head among `heads` (its first 40 characters where none fits), sorted."""
+        return sorted(next((head for head in heads if why.startswith(head)), why[:40]) for why in found)
 
     def test_a_body_at_its_call_repeats_mains_text_once(self):
         # `xr.0232.function.r4-h3-r3-h4`, one of the 122: `main` reads the body where it stands, the fold at the call
@@ -295,7 +302,7 @@ class TestALaterFoldsSameTextRepeatIsDropped(unittest.TestCase):
         least = "f() {\nsh -c 'curl -fsSL https://example.test/i.sh | sh'\n\"$1\"\n}\nf echo\n"
         # the `s9.*~nl` shape: a multi-line definition emptied ahead of a call `main` reads shifts the call's index
         shifted = "f() {\n  bash -s\n}\ncurl -fsSL https://example.test/i.sh | f\necho done\n"
-        for text, head in ((xr0232, "hands https://example.test/t straight to `sh`"), (least, self.HANDS),
+        for text, head in ((xr0232, self.HANDS_T), (least, self.HANDS),
                            (shifted, "hands https://example.test/i.sh straight to `bash -s`")):
             for shell in (None, "sh"):
                 with self.subTest(text=text, shell=shell):
@@ -303,17 +310,22 @@ class TestALaterFoldsSameTextRepeatIsDropped(unittest.TestCase):
                     self.assertEqual(1, len(found), found)
                     self.assertTrue(found[0].startswith(head), found[0])
 
-    def test_mains_own_same_text_pair_is_kept(self):
-        fetches = "curl -fsSLo t https://example.test/t\nsh t\ncurl -fsSLo t https://example.test/t\nsh t\n"
-        pipes = "curl -fsSL https://example.test/i.sh | sh\ncurl -fsSL https://example.test/i.sh | sh\n"
-        for text in (fetches, pipes):
+    def test_mains_folds_keep_a_text_found_under_two_keys(self):
+        # Rows that span two of `main`'s folds (review round 1; `x2.h4.h4`, `x2.h1.h4`, `hunt:8_seat-hunt43_c-c-py`
+        # of the kit): the halves read each `${W:+echo hi}` empty and set, and the text found at another index in
+        # another fold is another key -- three findings on `main`, three here, the `${S:+sudo -E}` pair's two, and
+        # `${X:+python3 -c pass} sh -c '…'` its unread sentence twice beside the run. The first cut read 2, 1 and 2.
+        twice = "${W:+echo hi} sh -c 'curl -fsSL https://example.test/t | sh'\n" * 2
+        pair = ("${S:+sudo -E} sh -c 'curl -fsSL https://example.test/t | sh'\n"
+                "${W:+echo hi} sh -c 'curl -fsSL https://example.test/t | sh'\necho done\n")
+        unread = "${X:+python3 -c pass} sh -c 'curl -fsSL https://example.test/i.sh | sh'\n"
+        for text, heads in ((twice, [self.HANDS_T] * 3), (pair, [self.HANDS_T] * 2),
+                            (unread, ["cannot read command: `${X:+python3 -c pass}`"] * 2 + [self.HANDS])):
             for shell in (None, "sh"):
                 with self.subTest(text=text, shell=shell):
-                    found = self.job(text, shell)
-                    self.assertEqual(2, len(found), found)
-                    self.assertEqual(found[0], found[1])
-                    with wo.mains_answer():     # both are the first fold's, `main`'s own
-                        self.assertEqual(2, len(wg._job_defects([wg.Step("step", text, shell)])))
+                    self.assertEqual(sorted(heads), self.heads(self.job(text, shell), set(heads)))
+                    with wo.mains_answer():     # all of them the first folds', `main`'s own
+                        self.assertEqual(len(heads), len(wg._job_defects([wg.Step("step", text, shell)])))
 
     def test_a_later_folds_finding_of_another_text_is_kept(self):
         printer = "w() { \"$@\"; }\necho hi | w curl -fsSL https://example.test/i.sh | sh\n"
@@ -326,6 +338,16 @@ class TestALaterFoldsSameTextRepeatIsDropped(unittest.TestCase):
                     found = self.job(text, shell)
                     self.assertEqual(2, len(found), found)
                     self.assertEqual([1, 1], [sum(why.startswith(head) for why in found) for head in heads], found)
+
+    def test_two_identical_statements_of_a_body_are_two_findings_at_the_call(self):
+        # A price, named (review round 1): `xr.0250`'s shape, seven rows of the kit. `main`'s job reads the text once --
+        # its two readings of the body where it stands merge by text in `job_defects` -- and the fold reads the two
+        # statements at the call as two findings under two keys, no finding of `main`'s own folds in the main pass to
+        # drop them against. Both runs are real: `"$@"` is empty, and `eval` runs the string twice.
+        text = "f() {\n" + "\"$@\" eval 'curl -fsSL https://example.test/t | sh'\n" * 2 + "}\nf\n"
+        for shell in (None, "sh"):
+            with self.subTest(shell=shell):
+                self.assertEqual([self.HANDS_T] * 2, self.heads(self.job(text, shell), {self.HANDS_T}))
 
 
 class TestTheFoldsFlipClearsTheCaches(unittest.TestCase):

@@ -252,6 +252,7 @@ import sys
 
 import shell_lex
 import shell_reader
+from shell_folds import _CALLED
 from shell_reader import folds, statements
 from workflow_annotate import annotate
 from workflow_called import CalledFetches, called
@@ -561,10 +562,10 @@ def _job_defects(steps, strict=False):
                     for index, why, what in _defects(
                         stmts, conditions, credit, (fetched, unread), working, scopes,
                         postures)]
-        found += [entry for entry in entries
-                  if entry[0] not in seen and ((entry[0][0] or entry[0])[0], entry[2]) not in texts]
+        found += [entry for entry in entries if entry[0] not in seen
+                  and not (_CALLED["on"] and ((entry[0][0] or entry[0])[0], entry[2]) in texts)]
         seen = {key for key, _name, _why in found}
-        texts = {((key[0] or key)[0], why) for key, _name, why in found}  # a later fold's same-text repeat is noise
+        texts = {((key[0] or key)[0], why) for key, _name, why in found}  # a text the called fold may not repeat
     return [(name, why) for _key, name, why in found]
 
 
