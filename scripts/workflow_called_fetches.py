@@ -13,7 +13,8 @@ run one way.
 import re
 
 import shell_reader
-from shell_command import _heads
+from shell_command import _FUNCTION, _heads
+from shell_folds import _CALLED
 from shell_tokens import is_arm
 from workflow_programs import stdin_reader
 from workflow_use_scopes import _body_end, _function_ranges
@@ -230,3 +231,277 @@ class _Fixed:
 
     def consumer_words(self, _position, stage, argv):
         return self.reader.consumer_words(self.position, stage, argv)
+
+
+# What a call stands for in the fold `shell_folds._CALLED` reads (#3047, #3091): the step grows by `_INLINED`
+# statements at most from its calls' bodies, past which the rest read as written. A word that spells the call's words
+# whole -- `"$@"`, `$@`, `$*`, and `"$*"` (one word, read spliced too: an over-read, named) -- and an assignment of
+# one positional to a name (`c="$1"`, `local` or not), the body's copy of the call's word.
+_INLINED = 64
+_SPLICED = re.compile(r"^\$(?:@|\*|\{@\}|\{\*\})$")
+_SPELLS = re.compile(r"\$\{?[1-9@*#]")     # a word spelling a positional, `$@`, `$*` or `$#`: the body reads its call's words
+_COPIED = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$(?:\{([1-9][0-9]*)\}|([1-9][0-9]*))$")
+
+
+def _bound(words, arguments):
+    """`words`, a body's, as the call's `arguments` make them: each positional they spell whole given the call's
+    word (`_positional`), `"$@"` or `$*` the call's words spliced in, `NAME=$N` the name set to the call's word; a
+    positional the call did not pass or one gone stale (None: a relative word behind a `cd` of the body's own,
+    `_expanded`), one single-quoted (`'$1'`, `c='$1'`: no `$` of it live) and every other word, as written."""
+    out = []
+    for word in words:
+        which = _positional(word)
+        if which is not None:
+            out.append(word if which > len(arguments) or arguments[which - 1] is None else arguments[which - 1])
+        elif getattr(word, "live_dollar", True) is False:     # a `$` single-quoted or escaped: no word of the call's
+            out.append(word)
+        elif _SPLICED.match(str(word)):
+            out.extend(given for given in arguments if given is not None)
+        elif (copy := _COPIED.match(str(word))) and int(copy[2] or copy[3]) <= len(arguments) and (
+                given := arguments[int(copy[2] or copy[3]) - 1]) is not None:
+            out.append(shell_reader.derived("%s=%s" % (copy[1], given), given))
+        else:
+            out.append(word)
+    return out
+
+
+def _header_end(argv):
+    """The index past a function header's words in `argv` -- the keywords in front, then `function NAME`, `NAME()`
+    or `NAME ()`, then a `{` -- or 0 where it starts with none."""
+    at = 0
+    while at < len(argv) and argv[at] in shell_reader.KEYWORDS and argv[at] != "function":
+        at += 1
+    if at < len(argv) and argv[at] == "function" and at + 1 < len(argv):
+        at += 2 + (at + 2 < len(argv) and argv[at + 2] == "()")
+    elif at < len(argv) and _FUNCTION.match(argv[at]):
+        at += 1
+    elif at + 1 < len(argv) and argv[at + 1] == "()":
+        at += 2
+    else:
+        return 0
+    return at + (at < len(argv) and argv[at] == "{")
+
+
+def _body(stmts, head, end):
+    """[(index, statement)] for the body defined at `head` through `end`: the header's words off its first statement
+    (`f() {`, a line of its own dropped), its `}` closer dropped -- what a call of it stands for."""
+    out = []
+    for at in range(head, end + 1):
+        stages = list(stmts[at].stages)
+        if at == head and stages:
+            argv = list(stages[0].argv)
+            del argv[:_header_end(argv)]
+            if not argv and len(stages) == 1:
+                continue
+            stages[0] = stages[0]._replace(argv=argv)
+        if [str(word) for stage in stages for word in stage.argv] == ["}"]:
+            continue
+        out.append((at, stmts[at]._replace(stages=stages)))
+    return out
+
+
+def _call(reader, statement, position, gone=frozenset()):
+    """(stage index, name, the words in front, the call's words) where a stage of `statement` calls a function
+    `reader` has defined before `position` and no `unset -f` took away (`gone`) -- its command word, past the
+    keywords and assignments in front (`_rest`) -- else None."""
+    for at, stage in enumerate(statement.stages):
+        rest = _rest(stage.argv)
+        name = str(rest[0]) if rest else None
+        if name in reader.defined and name not in gone and any(head < position for head, _end in reader.defined[name]):
+            return at, name, list(stage.argv[:len(stage.argv) - len(rest)]), list(rest[1:])
+    return None
+
+
+def _body_reads(reader, name, position, depth=1):
+    """(words, input): whether the body `name` last got before `position` reads its call's words -- a word
+    spelling a positional, `$@`, `$*` or `$#` (`_SPELLS`), or a `shift` -- and whether, one stage, it reads its
+    call's standard input as a shell (`workflow_programs.stdin_reader`), or calls a function whose body does,
+    `_DEPTH` deep. A body that reads neither is read where it stands, as `main` reads it, and its call as
+    written: the carries, the checks and the gates of a call keep their readings (#3047)."""
+    entries = [entry for entry in reader.defined.get(name, ()) if entry[0] < position]
+    if not entries or depth > _DEPTH:
+        return False, False
+    body = [item for _at, item in _body(reader.stmts, *entries[-1])]
+    words = any(_SPELLS.search(str(word)) for item in body for stage in item.stages for word in stage.argv) or any(
+        str(rest[0]) == "shift" for item in body for stage in item.stages if (rest := _rest(stage.argv)))
+    if len(body) != 1 or len(body[0].stages) != 1:
+        return words, False
+    rest = _rest(body[0].stages[0].argv)
+    named = str(rest[0]) if rest else None
+    if named is not None and stdin_reader(list(map(str, rest))) is not None:
+        return words, True
+    return words, named in reader.defined and _body_reads(reader, named, position, depth + 1)[1]
+
+
+def _certain(stmts):
+    """The indices of the statements that run where the step does: outside every `if`, `for`, `while`, `until`
+    and `case`, and not behind `&&` or `||`. A definition or an `unset -f` elsewhere may never run: `main`
+    installs no function from it (`workflow_uses._functions_before`), and the fold stands for none."""
+    out, depth = set(), 0
+    for index, statement in enumerate(stmts):
+        opened = closed = 0
+        for stage in statement.stages:
+            for token in _heads(stage.argv):
+                opened += token in ("if", "for", "while", "until", "case")
+                closed += token in ("fi", "done", "esac")
+        header = bool(statement.stages) and _header_end(list(statement.stages[0].argv)) > 0   # `f() { for …`: the body's
+        if depth == 0 and (header or not opened) and not (index and stmts[index - 1].separator in ("&&", "||")):
+            out.add(index)
+        depth = max(0, depth + opened - closed)
+    return out
+
+
+def _inlined(reader, statement, position, gone=frozenset()):
+    """`_call` where the call stands for its body in the fold: the body reads the call's words, or its input where
+    the call gives one -- a pipe, a file, a heredoc or a here-string (`_body_reads`); else None."""
+    call = _call(reader, statement, position, gone)
+    if call is None:
+        return None
+    at, name, _heads, _arguments = call
+    words, reads = _body_reads(reader, name, position)
+    stage = statement.stages[at]
+    given = at > 0 or bool(stage.stdin_reads) or stage.stdin_heredoc is not None or bool(stage.reads)
+    return call if words or (reads and given) else None
+
+
+def _with_call(call, stage, heads):
+    """`stage`, a one-statement body's, where its `call` stands: behind the call's `heads`, reading the call's
+    standard input where it reads none of its own (`with_call_stdin`), writing the call's standard output where
+    it writes none, the call's substitutions beside its own."""
+    read = with_call_stdin(call, stage)
+    read = read._replace(reads=list(read.reads))         # a list, as every stage's: the checks reader adds to it
+    if not stage.writes and not stage.stdout_writes:
+        read = read._replace(writes=call.writes, stdout_writes=call.stdout_writes, stdout_to_pipe=call.stdout_to_pipe,
+                             pipe_output_fds=call.pipe_output_fds, redirected=stage.redirected or call.redirected)
+    return read._replace(argv=[*heads, *read.argv], substitutions=[*stage.substitutions, *call.substitutions])
+
+
+def _expanded(reader, stmts, statement, position, depth, room, gone=frozenset(), used=None):
+    """`statement` as the statements its call stands for (`_inlined`) -- the body the name last got before
+    `position` (`_body`), its words as the call makes them (`_bound`), a `shift` of its own dropping the call's
+    words for the statements after it, a `set --` giving them its own, a `cd` (`pushd`, `popd`) leaving only the
+    absolute ones, a `~` or a `$` word, live (a relative one named a file where the call stood, as the use reader
+    reads a body's `cd`), each call among them followed in turn to `_DEPTH` and `room` statements. A one-stage
+    body takes the call's place in its pipeline, with its input and output (`_with_call`); a longer one the call's
+    words in front and its separator behind, where the call is a statement of its own with no redirection;
+    else, past the depth or the room, or where the header's line opens a group (`f() ( … )`), the statement as
+    written. The (head, end) of each definition stood for, here and in the bodies followed, goes into `used`; one
+    inside the body stood for in turn is emptied in the copy (`_emptied`), as `called` empties one the step holds."""
+    call = _inlined(reader, statement, position, gone)
+    if call is None or depth > _DEPTH or room < 1:
+        return [statement]
+    at, name, heads, arguments = call
+    head, end = [entry for entry in reader.defined[name] if entry[0] < position][-1]
+    if stmts[head].stages and stmts[head].stages[0].group_open:
+        return [statement]
+    out, origins = [], []            # the body's statements as the call makes them, each with its index in `stmts`
+    for origin, item in _body(stmts, head, end):
+        words = [str(word) for word in _rest(item.stages[0].argv)] if item.stages else []
+        if len(item.stages) == 1 and words[:1] == ["shift"] and len(words) < 3 and (len(words) == 1 or words[1].isdigit()):
+            del arguments[:int(words[1]) if len(words) == 2 else 1]
+            continue
+        if len(item.stages) == 1 and words[:2] == ["set", "--"]:
+            arguments = _bound(list(item.stages[0].argv), arguments)[2:]
+            continue
+        if len(item.stages) == 1 and words[:1] in (["cd"], ["pushd"], ["popd"]):
+            arguments = [given if given is None or str(given).startswith(("/", "~", "$")) or shell_reader.has_substitution(given)
+                         else None for given in arguments]
+        out.append(item._replace(stages=[stage._replace(argv=_bound(stage.argv, arguments)) for stage in item.stages]))
+        origins.append(origin)
+    stage = statement.stages[at]
+    if len(out) == 1 and len(out[0].stages) == 1:
+        stages = list(statement.stages)
+        stages[at] = _with_call(stage, out[0].stages[0], heads)
+        out = [statement._replace(stages=stages)]
+    elif out and len(statement.stages) == 1 and not stage.redirected and stage.stdin_heredoc is None:
+        first = out[0].stages[0]
+        out[0] = out[0]._replace(stages=[first._replace(argv=[*heads, *first.argv]), *out[0].stages[1:]])
+        out[-1] = out[-1]._replace(separator=statement.separator)
+    else:
+        return [statement]
+    used = set() if used is None else used
+    used.add((head, end))
+    parts: list[list] = []
+    grown = 0
+    for item in out:
+        parts.append(_expanded(reader, stmts, item, position, depth + 1, room - grown, gone, used))
+        grown += len(parts[-1])
+    emptied = _emptying(pair for pair in used if head <= pair[0] <= end and pair != (head, end))
+    followed: list = []
+    for origin, item, part in zip(origins, out, parts):
+        if origin not in emptied:
+            followed.extend(part)
+        elif emptied[origin][0] == origin:
+            followed.extend(_emptied(item, stmts[emptied[origin][1]]))
+    return followed
+
+
+def _emptied(header, closer):
+    """A definition with its body gone: `header`, the statement its header's words start, with those words alone,
+    then `closer`, the statement of its `}`, where that is another -- what stands where a definition stood in the
+    fold, a call of it standing for its body (`called`). The step still defines the name, as `workflow_annotate`'s
+    rule 7 and `_function_ranges` read it; the body is read at its calls, not where it stands too (that reading
+    is `main`'s, kept beside the fold's)."""
+    first = header.stages[0]
+    heads = list(first.argv[:_header_end(list(first.argv))])
+    stage = first._replace(argv=heads, writes=[], reads=[], heredoc=None, substitutions=[], stdout_writes=[],
+                           stdin_heredoc=None, stdin_reads=(), fd_bodies=(), redirected=False)
+    return [header._replace(stages=[stage]), *([closer] if closer is not None else [])]
+
+
+def _emptying(pairs):
+    """Each statement of the definitions `pairs` -- (head, end) each -- to the pair it is emptied with: the outer
+    one where two share a head (`outer() { inner() {`, one statement), which takes the inner one's statements."""
+    out: dict[int, tuple[int, int]] = {}
+    for head, end in sorted(pairs, key=lambda pair: (pair[0], -pair[1])):
+        for at in range(head, end + 1):
+            out.setdefault(at, (head, end))
+    return out
+
+
+def called(stmts):
+    """`stmts` with each call of a function the step defines before it -- a statement not inside a definition --
+    standing for its body as the call makes it (`_expanded`), in the fold `shell_folds._CALLED` reads -- a
+    definition that surely ran (`_certain`), the last before the call -- and each definition stood for emptied
+    (`_emptied`): the fold reads a body at its calls, not where it stands too, so a body that fetches after it
+    runs is no run of its own fetch where one call makes it (two are). Outside the fold, `stmts` as they are, the
+    fold asked for where such a call stands (`met`). `main`'s reading of the definition and of the call is kept
+    beside the fold's, so a check a body credits in the fold alone takes no report away (#3047, #3091)."""
+    stmts = list(stmts)
+    reader = CalledFetches(stmts)
+    if not reader.defined:
+        return stmts
+    # The statements the definitions hold, each body read to its end (`_body_end`): `_function_ranges` takes a
+    # parenthesised body (`h() (…)`) to reach the step's end, and would take every call after it for a body's.
+    occupied = {at for entries in reader.defined.values() for head, end in entries for at in range(head, end + 1)}
+    certain = _certain(stmts)
+    reader.defined = {name: kept for name, entries in reader.defined.items()
+                      if (kept := [entry for entry in entries if entry[0] in certain])}
+    stood: dict[int, list] = {}         # the statements each call stands for, by the call's index
+    used: set[tuple[int, int]] = set()  # (head, end) of each definition stood for, there and in the bodies followed
+    gone: set = set()                   # the names a certain `unset -f` took away, until defined again
+    added = 0                           # the statements the step grew by, against `_INLINED`
+    for index, statement in enumerate(stmts):
+        gone -= {name for name, entries in reader.defined.items() if any(head == index for head, _end in entries)}
+        words = [str(word) for word in _rest(statement.stages[0].argv)] if len(statement.stages) == 1 else []
+        if words[:2] == ["unset", "-f"] and index in certain:
+            gone.update(words[2:])
+        if index in occupied or _inlined(reader, statement, index, gone) is None:
+            continue
+        if not _CALLED["on"]:
+            _CALLED["met"] = True
+            continue
+        stood[index] = _expanded(reader, stmts, statement, index, 1, _INLINED - added, frozenset(gone), used)
+        added += len(stood[index]) - 1
+    if not stood:
+        return stmts
+    emptied = _emptying(used)
+    out: list = []
+    for index, statement in enumerate(stmts):
+        if index in stood:
+            out.extend(stood[index])
+        elif index not in emptied:
+            out.append(statement)
+        elif emptied[index][0] == index:
+            out.extend(_emptied(statement, stmts[emptied[index][1]] if emptied[index][1] != index else None))
+    return out

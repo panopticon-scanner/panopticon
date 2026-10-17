@@ -563,10 +563,13 @@ class TestWhatStaysForOtherIssues(unittest.TestCase):
         # the alias, the ones without `-e` for the function. Both readings of such a stage read the `eval`'s
         # text as the step's own; the one where the stage is the wrapper's has no fold of its own behind a word
         # in doubt, as it has behind a written `sudo -s` (`TestAShellHandedTheWords`). CLEAN, as on `main`.
-        for define, front in (("alias sudo=''\n", "sudo -s"), ("sudo() { %s$@%s; }\n" % (QUOTE, QUOTE), "sudo -s"),
-                              ("", "${S:-sudo -s}")):
+        for define, front in (("alias sudo=''\n", "sudo -s"), ("", "${S:-sudo -s}")):
             with self.subTest(define=define, front=front):
                 self.assertEqual(CLEAN, marks("%sT=t\n%s%s eval 'T=x'\nsh $T" % (define, FETCH, front)))
+        # The function's row, moved by #3047: its fold stands the call for the body as bash runs it, `-s eval 'T=x'`
+        # -- `-s` is no command, the `eval` never runs, `T` stays and `t` runs (truth CCCRR: under `-e` the step stops
+        # at `-s: command not found`, which the guard does not model -- an over-report there, named).
+        self.assertEqual(BEFORE, marks("sudo() { %s$@%s; }\nT=t\n%ssudo -s eval 'T=x'\nsh $T" % (QUOTE, QUOTE, FETCH)))
 
     def test_a_function_of_a_wrappers_name_in_front_of_builtin(self):
         # Truth: both bashes run it (the function runs `builtin eval 'P'`), and dash has no `builtin`. As
