@@ -7,6 +7,31 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader marks the direct `$?` inside `[[ ... ]]` as the exact, live status (#3116 item 1
+  and the reader part of item 2).** The lexer escapes every pattern character inside a conditional,
+  so a direct `$?` reached the exact-dollar pass as `$\?` and was never marked, while `$"?"`, `$""?`
+  and `"$"?` lex to the same bare `$?` word: the status gate could credit none of them without
+  reopening #2440's F1. Now `shell_reader._exact_dollars` marks the direct `$?` inside `[[ ... ]]`
+  -- with `if`, `!`, `||`, parentheses or a function body around it -- exact and live by the one
+  mechanism every exact `$NAME` word has (a `_Token`, the plain token kind: never `_Expanded`, since
+  bash expands no pattern there); `$"?"`, `$""?`, `"$"?`, `$'?'`, `$?x` and `${?}` keep their types
+  and stay unmarked; outside a conditional `$\?` is a user's escape and stays a literal (`[ $\? -ne
+  0 ]` credited would be fail-open: test(1) rejects the string); an arithmetic command and an array
+  literal are untouched. A user's own `$\?` inside `[[ ... ]]` reads as the status too, a named
+  reading that is never fail-open (an arithmetic operator evaluates the string, a string operator
+  compares the literal, so the gate fires every time). Item 1's audit of the str-to-`_Token` re-wrap
+  of exact words: the six callers that test `type(word) is str` (`shell_command` 267,
+  `workflow_options` 136, 164, 225, 350, 507, `workflow_programs` 408) ask of a word whether it is
+  `bash`/`sh`, a `--`/`++` option, an exit-or-file option, `--pretty-print`, or a command name that
+  spells no option -- none of which an exact word (`$NAME`, its braced form, `X=$Y`, `$?`) can be --
+  so the re-wrap changes no answer; the kit reads byte-identical. Provenance only: no reading moves
+  until Daybreak's item 2 credits the marked operand. Forge differential, 74909bf8 against `main`
+  68c75d2c over the 27,551-row kit (the kit's rows, #3110's 166 and 13 status rows; three readings a
+  cell, 2,040,645 in all, 79 min): the dumps are byte-identical -- 0 rows differ, 0 texts or
+  multiplicities lost: provenance only, as ruled. `tests/test_shell_reader.py` pins the marked
+  forms, the lookalikes, what stays outside a conditional, and the named reading. Sizes:
+  `scripts/shell_reader.py` 532 (+8).
+
 - **Workflow reader reads a call of a function the step defines as its body, the call's words in its
   positionals (#3047, the function half; #3091).** `run() { "$@"; }; run sh cuda_1.run`, a retry
   loop around `"$@"`, `f() { sh "$1"; }; f cuda_1.run` and a fetched file handed to a body
