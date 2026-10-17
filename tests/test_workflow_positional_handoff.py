@@ -350,6 +350,26 @@ class TestTheCalledFoldsSameTextRepeatIsDropped(unittest.TestCase):
                 self.assertEqual([self.HANDS_T] * 2, self.heads(self.job(text, shell), {self.HANDS_T}))
 
 
+class TestTheConditionalStatusMarkCreditsNothingYet(unittest.TestCase):
+    """#3116, round 1's seat: `workflow_status._test` credits a `[[ ]]` operand in bash steps once its `$?` word is exact and
+    live, so the mark of the direct `$?` must not be that one until Daybreak's item 2 reads it -- and a user's `$\\?`
+    must never be credited: bash rejects it there, status 1, the handler behind it skipped (fail-open). A check, then
+    the handler, then the run: every row reads as on `main` cc398401. Truth: the direct forms stop under bash (CLEAN
+    where the check fails), the user's `$\\?` never stops (runs), the lookalikes compare a literal (runs)."""
+
+    F = "curl -fsSLo t https://example.test/t\n"
+    C = "echo \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  t\" | sha256sum -c -\n"
+
+    def test_the_rows_that_reach_the_gate_read_as_on_main(self):
+        for word, plain, plus_e in (("$?", "CCCRR", "RRRRR"), ("$\\?", "CCCRR", "RRRRR"), ('$"?"', "CCCRR", "RRRRR"),
+                                    ('$""?', "CCCRR", "RRRRR"), ('"$"?', "CCCRR", "RRRRR"), ('"$?"', "CCCCR", "CCRCR")):
+            for handler in ("[[ %s -ne 0 ]] && exit 1\n", "if [[ %s -ne 0 ]]; then exit 1; fi\n", "[[ 0 -ne %s ]] && exit 1\n"):
+                for lead, expected in (("", plain), ("set +e\n", plus_e)):
+                    text = lead + self.F + self.C + (handler % word) + "sh t\n"
+                    with self.subTest(word=word, handler=handler[:12], lead=lead):
+                        self.assertEqual((expected, expected), marks(text))
+
+
 class TestTheFoldsFlipClearsTheCaches(unittest.TestCase):
 
     def test_a_flip_of_the_called_fold_clears_parsed(self):
