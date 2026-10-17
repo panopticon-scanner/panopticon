@@ -22,23 +22,25 @@ evidence exposed.
   whole group is handed on as the expanding heredoc behind `$UNSPELLED_WRITER` -- reported as any
   expanding body a shell runs, fail-closed, the spelled payload beside it kept, as #3026's
   `_GROUPED` reads the pipe twin; a group with no printer in it binds nothing, as `cat f > s.sh`
-  binds nothing (a limit, `main`'s). The statements in front of the closer are sliced for the walk
-  at a closer alone, so the binding stays a dict lookup a stage: n groups written and run bind, and
-  read, in linear time (pinned beside #3126's). Limits and prices, named: a nested group (`{ { echo
-  P; }; echo ok; } > s.sh`) is #3117's shape and reads CLEAN; the lifted-letter rows the printers
-  cannot spell (`sh -$(echo x) '…'`: 18 of the 138, nothing runs) read LOUD, as their single-printer
-  twins do on `main` -- its price, inherited; every write is still an append (#3027). Forge
-  differential, 65e56576 against `main` 9a2a7257 over the 27,538-row kit (the kit's 27,372 rows,
-  Claudia's 138, ten controls and the 18 single-printer twins; three readings a cell, 2,039,670 in
-  all): 124 rows differ, every one CLEAN->REPORT -- the 102 running rows, the 18 lifted-letter rows
-  (LOUD, as their twins read on `main`), and four controls (`{ echo ok; cat f; }`, `. ./s.sh`, `bash
-  s.sh`, `>> s.sh`); 0 REPORT->CLEAN; the 27,372 rows of the kit and the 18 twins read
-  byte-identical; 0 rows lose a same-text multiplicity in the job, main-pass or walk reading. Pin
-  moved, authorized by its own comment: the `written-group` row of `tests/test_workflow_printers.py`
-  (#3026's named limit, "A limit of #3027's reader, not this reading's: #3110") from CLEAN to
-  REPORT. `tests/test_workflow_written_files.py`: the issue's rows, the LOUD and no-printer
-  controls, the twins, the nested limit, two growth pins. Sizes: `scripts/workflow_written.py` 193
-  (+19).
+  binds nothing (a limit, `main`'s). The walk back to a group's opener reads the statements in front
+  of the closer through a view, no copy, and only where the closer writes a file -- the first cut
+  copied the front once a closer, quadratic in the step (round 1's seat: x8.6 for 3,200 -> 12,800 on
+  4n plain lines then n groups) -- so the binder stays linear: that shape binds in linear time at
+  3,200 and 12,800, and n groups written and run read in linear time (pinned beside #3126's). Limits
+  and prices, named: a nested group (`{ { echo P; }; echo ok; } > s.sh`) is #3117's shape and reads
+  CLEAN; the lifted-letter rows the printers cannot spell (`sh -$(echo x) '…'`: 18 of the 138,
+  nothing runs) read LOUD, as their single-printer twins do on `main` -- its price, inherited; every
+  write is still an append (#3027). Forge differential, 65e56576 against `main` 9a2a7257 over the
+  27,538-row kit (the kit's 27,372 rows, Claudia's 138, ten controls and the 18 single-printer
+  twins; three readings a cell, 2,039,670 in all): 124 rows differ, every one CLEAN->REPORT -- the
+  102 running rows, the 18 lifted-letter rows (LOUD, as their twins read on `main`), and four
+  controls (`{ echo ok; cat f; }`, `. ./s.sh`, `bash s.sh`, `>> s.sh`); 0 REPORT->CLEAN; the 27,372
+  rows of the kit and the 18 twins read byte-identical; 0 rows lose a same-text multiplicity in the
+  job, main-pass or walk reading. Pin moved, authorized by its own comment: the `written-group` row
+  of `tests/test_workflow_printers.py` (#3026's named limit, "A limit of #3027's reader, not this
+  reading's: #3110") from CLEAN to REPORT. `tests/test_workflow_written_files.py`: the issue's rows,
+  the LOUD and no-printer controls, the twins, the nested limit, two growth pins. Sizes:
+  `scripts/workflow_written.py` 193 (+19).
 
 - **Workflow reader reads a call of a function the step defines as its body, the call's words in its
   positionals (#3047, the function half; #3091).** `run() { "$@"; }; run sh cuda_1.run`, a retry

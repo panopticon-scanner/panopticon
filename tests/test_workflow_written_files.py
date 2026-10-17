@@ -261,8 +261,8 @@ class TestTheBindingIsLinear(LinearGrowth, unittest.TestCase):
 
     @pytest.mark.serial
     def test_n_groups_written_and_n_runs_bind_in_linear_time(self):
-        # #3110: a closer's writers are the group's printers, found by one walk back to the opener (`_grouped`), and
-        # the statements in front of it are sliced at a closer alone: the binding stays a dict lookup a stage.
+        # #3110: a closer's writers are the group's printers, found by one walk back to the opener (`_grouped`) through
+        # a view of the statements in front, no copy: the binding stays a dict lookup a stage.
         real = shell_reader.statements
 
         def check(n, parsed):
@@ -270,6 +270,29 @@ class TestTheBindingIsLinear(LinearGrowth, unittest.TestCase):
 
         with mock.patch.object(shell_reader, "statements", lambda script: workflow_written.bind_written(real(script))):
             self.assert_linear_growth(500, self.make_groups, check)
+
+    @staticmethod
+    def make_lines_then_groups(n):
+        return "echo ok\n" * (4 * n) + TestTheBindingIsLinear.make_groups(n)
+
+    @pytest.mark.serial
+    def test_n_plain_lines_then_n_groups_bind_in_linear_time(self):
+        # #3110 round 1: the walk back to a group's opener took a copy of the step's front once a closer -- quadratic,
+        # and paid by a closer that writes no file too (x8.6 for 3,200 -> 12,800 on this shape, past the bound). A
+        # view, and the lookup only where the closer writes a file, keep the binder linear where the curve showed.
+        # The binder alone is timed: the parse is done in `make` (its growth is #3126's pin), so the helper's cap
+        # falls on the binding, not on 76,800 lines parsed on a traced runner.
+        parsed = {}
+
+        def make(n):
+            script = self.make_lines_then_groups(n)
+            parsed[script] = shell_reader.statements(script)
+            return script
+
+        def check(n, bound):
+            self.assertEqual(n, sum(1 for s in bound for st in s.stages for w in st.argv if getattr(w, "written", None)))
+
+        self.assert_linear_growth(3200, make, check, parser=lambda script: workflow_written.bind_written(parsed[script]))
 
     @pytest.mark.serial
     def test_n_groups_written_and_n_runs_read_in_linear_time(self):
