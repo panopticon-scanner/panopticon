@@ -439,14 +439,14 @@ class TestTheCallsTheFoldDidNotFollow(unittest.TestCase):
 
     def test_a_pass_through_body_is_taken_out_of_the_pipe(self):
         # `f() { cat; }`: `{ P; } | f | sh` reads as `{ P; } | sh` (#3111's group), the argument of `f cat` ignored as
-        # `cat` ignores it, the multi-line body the same (truth: runs). `f() { tee log; }` stays in the pipe and CLEAN,
-        # as `{ P; } | cat | sh` is on `main` while truth runs both: the `| cat |` and `| tee |` links are #3111's
-        # `_grouped`, which reads the stage in front of the shell alone -- named.
+        # `cat` ignores it, the multi-line body the same (truth: runs). `f() { tee log; }` stays in the pipe and CLEAN
+        # while truth runs it -- named; the plain `{ P; } | cat | sh` reads REPORTED since #3117, whose group reading
+        # walks back through a pass-through stage to the closer.
         for text, expected in (("f() { cat; }\n{ echo '%s'; } | f | sh\n" % self.P, REPORTED),
                                ("f() { cat; }\n{ echo '%s'; } | f cat | sh\n" % self.P, REPORTED),
                                ("f() {\ncat\n}\n{ echo '%s'; } | f | sh\n" % self.P, REPORTED),
                                ("f() { tee log; }\n{ echo '%s'; } | f | sh\n" % self.P, CLEAN),
-                               ("{ echo '%s'; } | cat | sh\n" % self.P, CLEAN)):
+                               ("{ echo '%s'; } | cat | sh\n" % self.P, REPORTED)):
             with self.subTest(text=text[:22]):
                 self.assertEqual(expected, marks(text))
 

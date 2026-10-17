@@ -6259,9 +6259,10 @@ class TestACompoundCommandFeedsItsClosingPipeline(unittest.TestCase):
                          "{ { echo \"$payload\"; }; } | sh\n"):
             with self.subTest(compound=compound):
                 why = wg.fetch_exec_defects(assignment + compound)
-                # #3026 reads a group's printer down the pipe. Where the parser splits that printer
-                # from the closing shell, #3095 pairs its quiet reason with the loud carried reason
-                # at the printer's statement, leaving the one carried finding.
+                # #3026 reads a group's printer down the pipe (#3117 the nested group's and the case arm's
+                # too). Where the parser splits that printer from the closing shell, #3095 pairs its quiet
+                # reason with the loud carried reason at the printer's statement, leaving the one carried
+                # finding.
                 self.assertEqual(1, len(why), why)
                 self.assertIn("carries %s in `$payload`" % self.URL, why[-1])
 

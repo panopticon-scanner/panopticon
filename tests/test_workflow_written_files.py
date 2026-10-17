@@ -166,9 +166,10 @@ class TestAGroupOfPrintersWrittenToAFileIsReadAsTheirText(unittest.TestCase):
                 self.assertEqual(expected, marks(group))
                 self.assertEqual(marks(twin), marks(group))
 
-    def test_a_nested_group_is_a_named_limit(self):
-        # `{ { echo P; }; echo ok; } > s.sh` ⏎ `sh s.sh`: `_grouped` stops at an inner closer, #3117's shape. Truth: runs.
-        self.assertEqual(CLEAN, marks("{ { echo '%s'; }; echo ok; } > s.sh\nsh s.sh\n" % P))
+    def test_a_nested_group_is_read_through(self):
+        # `{ { echo P; }; echo ok; } > s.sh` ⏎ `sh s.sh`: #3117 reads the nested group through, so the group's writers
+        # are both printers and the file is their text (a named limit of #3110 until then). Truth: runs.
+        self.assertEqual(REPORTED, marks("{ { echo '%s'; }; echo ok; } > s.sh\nsh s.sh\n" % P))
 
 
 class TestWhatReadsAsItDid(unittest.TestCase):

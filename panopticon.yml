@@ -682,6 +682,7 @@ groups:
       - scripts/workflow_failure_contexts.py
       - scripts/workflow_printers.py
       - scripts/workflow_printer_writes.py
+      - scripts/workflow_groups.py
       - scripts/workflow_stdin.py
       - scripts/workflow_uses.py
       - scripts/workflow_use_scopes.py

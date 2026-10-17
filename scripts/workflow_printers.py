@@ -42,7 +42,9 @@ a `$(...)` in a `-c` or `eval` string, a `<(...)` a shell or `source` reads as i
 
 `_decoded` with its tables, and what an unspelled printer WRITES (`_written`, `_formatted`, `_echoed`
 and their tables, #2955), live in `scripts/workflow_printer_writes.py` (#3013), split out at this
-module's size and imported back here, so no caller moved.
+module's size and imported back here, so no caller moved; the walk back through a group piped to a
+shell (#3026, #3117) and the pipe's plumbing it rests on (`_piped`, `_passes_through`) live in
+`scripts/workflow_groups.py` (#3117), split out the same way.
 
 Stdlib only, like everything under it.
 """
@@ -53,17 +55,19 @@ import shell_lex
 import shell_reader
 import shell_text
 from workflow_options import _MAINS
+from workflow_groups import (_CALL_REACH as _CALL_REACH, _GROUP_LINES as _GROUP_LINES, _PAST_GROUP as _PAST_GROUP,
+                             _TEE_OPTIONS as _TEE_OPTIONS, _behind as _behind, _cat_reads_stdin as _cat_reads_stdin,
+                             _closing as _closing, _fed as _fed, _function_body as _function_body,
+                             _grouped as _grouped, _kin as _kin, _own as _own, _passes_through as _passes_through,
+                             _past as _past, _piped as _piped, _silent as _silent, _stopped as _stopped,
+                             _stripped as _stripped, _structure as _structure, _walk as _walk,
+                             piped_group_member as piped_group_member)
 from workflow_printer_writes import (_CONVERSION as _CONVERSION, _COUNT as _COUNT,
                                      _ESCAPE as _ESCAPE, _ESCAPES as _ESCAPES, _KNOWN as _KNOWN,
                                      _LONG as _LONG, _OCTAL as _OCTAL, _PAD as _PAD,
                                      _PLAIN as _PLAIN, _WRITERS as _WRITERS, _decoded as _decoded,
                                      _echoed as _echoed, _formatted as _formatted,
                                      _written as _written)
-
-
-def _piped(stage, before):
-    """Whether this stage's descriptor 0 finally reads what `before` writes."""
-    return before is not None and before.stdout_to_pipe and stage.stdin_from_pipe
 
 
 # The commands whose output is the text of their words (#2333). A heredoc-fed `cat` prints a text
@@ -100,22 +104,6 @@ _ECHO_OPTIONS = re.compile("-[neE]+")
 _ECHO_N = re.compile("-n")
 _ECHO = {"bash": (_ECHO_OPTIONS, False, None), "zsh": (_ECHO_OPTIONS, True, None),
          "sh": (_ECHO_N, True, 1), "dash": (_ECHO_N, True, 1)}
-
-
-def _cat_reads_stdin(argv):
-    """Whether `argv` is a `cat` reading its own stdin (R-P5, R-F5, R-F14): no operand, or a `-`
-    among its operands -- every word after the FIRST `--` (R-F10: it ends the options, itself none),
-    and before it each `-` or word not beginning with `-`. So `cat - f` and `cat f -` read stdin
-    among `f`'s own text (fail-closed for the body; `f` stays unread unless it is itself a download,
-    as `cat f | sh` already is), and an option word changes nothing: the body is read whole, as
-    `-u`, `-s` and `-v` (ASCII) print it. The price, over-reported: `-n`/`-b` number each line, so
-    its first command never runs, `-e` (GNU's `-E`/`-A`) ends it with `$`, spoiling its last word,
-    BSD's `cat` prints nothing given `-E`, `-T`, `-A` or a piped `-l`, and GNU refuses `-l` too;
-    `--help`/`--version` print their own text and read nothing (GNU; BSD refuses them)."""
-    words = [getattr(w, "spelled", w) for w in argv[1:]]
-    at = words.index("--") if "--" in words else len(words)
-    operands = [w for w in words[:at] if w == "-" or not w.startswith("-")] + words[at + 1:]
-    return bool(argv) and os.path.basename(argv[0]) == "cat" and (not operands or "-" in operands)
 
 
 def _reading(shell):
@@ -202,48 +190,6 @@ def spellings(argv, stage=None, shell=None):
     return [bash] if bash == decoding else [bash, decoding]
 
 
-# The options a `tee` takes that leave the text it hands on as it read it (#2478): append to the
-# files rather than truncate them, and what to do on a write error or an interrupt.
-_TEE_OPTIONS = ("-a", "-p", "-i", "--append")
-
-
-def _passes_through(argv, stage):
-    """Whether this stage hands what its stdin reads on to its stdout UNCHANGED (#2478): a `tee`
-    whose words are all plain -- no marker, no `$` value, no pattern (`shell_reader.dynamic`: a
-    `>(...)` operand may write into the stream too) -- each a FILE operand or one of
-    `_TEE_OPTIONS`, `--output-error` or `--output-error=…`, and no operand the pipe itself
-    (`shell_reader.writes_pipe`: `tee /dev/stdout` hands the text on twice, review I-3a); or
-    a `cat` reading its own stdin (`_cat_reads_stdin`) with no heredoc or here-string there and no
-    OPTION word -- only `-` and the `--` that ends the options (R-P5): `cat -n` numbers the lines
-    it hands on. Neither behind `xargs` (`shell_reader.wrapper_words`, review I-2), which hands
-    `cat` the piped words as FILE operands: of the wrappers the reader strips it alone changes WHAT
-    the command reads, where `sudo tee f`, `nice cat` or `stdbuf -oL tee f` changes only how it
-    runs, and passes (fix round 1b). Any other stage that reads the pipe -- `tr`, `sed`,
-    `base64 -d`, `tee -x`, `tee >(...)`, `cat file` -- rewrites or adds to the text, and a shell
-    after it reads a program no printer's words spell out."""
-    name = os.path.basename(argv[0]) if argv else ""
-    # A `tee` or `cat` is no wrapper, so where `shell_reader.command` hands back the stage's own
-    # first word, nothing stood in front of it and there is no wrapper to ask `wrapper_words`
-    # about (asking at every stage made a long `cat` chain 1.5x slower). Not a length test:
-    # `command` can SPLICE as well as strip -- `env -S 'xargs cat - -'` (`--split-string=`) gives
-    # back as many words as the stage has, `xargs` among the wrappers (review N-2).
-    if name not in ("tee", "cat") or (argv[:1] != stage.argv[:1] and any(
-            os.path.basename(w) == "xargs" for w in shell_reader.wrapper_words(stage.argv))):
-        return False
-    if any(shell_reader.dynamic(w, shell_reader.has_substitution) or shell_reader.is_marker(w)
-           for w in argv[1:]):
-        return False
-    words = [getattr(w, "spelled", w) for w in argv[1:]]
-    if name == "tee":
-        return all((not w.startswith("-") and not shell_reader.writes_pipe(w, stage))
-                   or w in _TEE_OPTIONS or w == "--output-error"
-                   or w.startswith("--output-error=") for w in words)
-    if stage.stdin_heredoc is not None or not _cat_reads_stdin(argv):
-        return False
-    at = words.index("--") if "--" in words else len(words)
-    return all(w == "-" for w in words[:at] + words[at + 1:])
-
-
 # How many stages `producer` walks back before it stops looking (#2478), as `_stdin` reads 64
 # strings deep (final review F1): every stage of a pipeline asks, so an unbounded walk made a long
 # one quadratic -- 2 s for 800 `cat`s, which the guard read in 0.04 s before the walk.
@@ -260,42 +206,6 @@ _PAST_DEPTH = ("a pipeline longer than the %d stages this guard follows" % _DEPT
 
 _GROUPED = ("a group of statements whose text no one printer spells out",
             'exec "$PROGRAM"')
-
-
-def _grouped(front, before, statements):
-    """The pipelines of a `{ ...; }` or `( ...; )` group that closes at `front` which `producer`'s walk never
-    reaches (#3026), in order, or None. `front` closes the group: a bare `}` word, or a stage closing a subshell.
-    The closer's own pipeline -- `echo P` in `( X; echo P ) | sh` -- stands in the pipe, so `producer` reads it as
-    `main` does and it is not among these; `( P ) | sh` has no other. Back through `statements` (those in front of
-    the closer's own, in order) to the opener -- a statement whose first stage's first word is `{`, or whose first
-    stage opens a subshell -- the pipelines are handed back, the `{` dropped from the opener's words. Passed over:
-    a statement `workflow_forms.flattened` read into the list (`Inlined`, `Unsure`), which the step never wrote; a
-    pipeline whose last stage sends its stdout elsewhere (`> f`), which hands the pipe nothing (#2430's reading of a
-    compound's closing pipe); the opener alone on its line. None without `statements`, where no opener is met, or
-    where another group's closer stands between: a nested group is #3117's."""
-    if statements is None:
-        return None
-    brace = list(front.argv) == ["}"]
-    if not (brace or front.group_close) or not brace and front.group_open:
-        return None
-    body: list[list] = []
-    for statement in reversed(statements):
-        if type(statement) is not shell_reader.Statement:
-            continue
-        stages = list(statement.stages)
-        if not stages or any(list(s.argv) == ["}"] or s.group_close for s in stages):
-            return None
-        first = stages[0]
-        if brace and list(first.argv[:1]) == ["{"] or not brace and first.group_open:
-            if brace:
-                stages[0] = first._replace(argv=first.argv[1:])
-            pipelines = ([stages] if stages[0].argv else []) + body
-            fed = [p for p in pipelines if p[-1].stdout_to_pipe]
-            return fed or None
-        if list(first.argv[:1]) == ["{"] or first.group_open:
-            return None
-        body.insert(0, stages)
-    return None
 
 
 def _printer_of(pipeline):
@@ -325,7 +235,13 @@ def group_reading(stage, before, shell=None, statements=None):
     front = before[-1] if before else None
     if front is None or not _piped(stage, front):
         return None
-    pipelines = _grouped(front, before, statements)
+    at = len(before) - 1            # back through pass-through stages to the closer (`} | cat | sh`, #3117)
+    while at and _passes_through(shell_reader.command(before[at].argv), before[at]) and _piped(before[at], before[at - 1]):
+        at -= 1
+    front = before[at]
+    pipelines = _grouped(front, before[:at + 1], statements)
+    if _stopped(pipelines):
+        return [], list(_PAST_GROUP)        # bounded, fail-closed: never read, never CLEAN (#3117)
     printers = [_printer_of(p) for p in pipelines or ()]
     if not any(printers):
         return None
@@ -476,8 +392,36 @@ def substituted(value):
     a `cat` are spelled; `echo 'sh\\ttool'`, which bash prints as written and dash decodes, is not,
     and neither is an EXPANDING heredoc (`fed` has it) nor anything `printed` cannot spell."""
     found = _printer(value)
-    readings = spellings(found[0], found[1], ANY) if found else [None]
+    if found is None:
+        return _group_substituted(value)
+    readings = spellings(found[0], found[1], ANY)
     return readings[0] if len(readings) == 1 else None
+
+
+def _group_substituted(value):
+    """The text a substitution's script writes where it is ONE group of printers (#3117: `sh <({ P; })`), the
+    same under every reading, else None: the script's statements must open a `{ ... }` or `( ... )` group and
+    close it with their last statement, and every pipeline in it end in a spelled printer."""
+    try:
+        parsed = shell_reader.statements(value) if value is not None else []
+    except shell_lex.Unreadable:
+        return None
+    if len(parsed) < 2 or not parsed[-1].stages:
+        return None
+    front = parsed[-1].stages[-1]
+    pipelines = _grouped(front, [front], parsed)
+    if not pipelines or _stopped(pipelines):
+        return None
+    printers = [_printer_of(p) for p in pipelines]
+    if not all(printers):
+        return None
+    texts = set()
+    for reading in ("bash", "sh"):
+        parts = [printed(shell_reader.command(p.argv), p, reading) for p in printers]
+        if None in parts:
+            return None
+        texts.add("".join(parts))
+    return texts.pop() if len(texts) == 1 else None
 
 
 def unsubstituted(value):
@@ -486,10 +430,35 @@ def unsubstituted(value):
     text as `unspelled` weighs an unspelled printer's (`sh <(echo "$X")`), else []. Never a `cat`:
     `substituted` spells its QUOTED heredoc, and `fed` hands the guard its EXPANDING one."""
     found = _printer(value)
-    if not found or os.path.basename(found[0][0]) not in _PRINTERS:
+    if not found:
+        return _group_unsubstituted(value)
+    if os.path.basename(found[0][0]) not in _PRINTERS:
         return []
     return [] if substituted(value) is not None else [
         found[0][0], " ".join(found[0][1:])] + _apart(found[0])
+
+
+def _group_unsubstituted(value):
+    """`unsubstituted` for a script that is one group of printers (#3117): where `_group_substituted` spells it,
+    []; where every pipeline ends in a printer and one is unspelled, the first printer's name, then each one's
+    words as one text and apart; where one is no printer, `_GROUPED`, LOUD."""
+    if _group_substituted(value) is not None:
+        return []
+    try:
+        parsed = shell_reader.statements(value) if value is not None else []
+    except shell_lex.Unreadable:
+        return []
+    if len(parsed) < 2 or not parsed[-1].stages:
+        return []
+    front = parsed[-1].stages[-1]
+    pipelines = _grouped(front, [front], parsed) or []
+    printers = [_printer_of(p) for p in pipelines]
+    if not pipelines or not any(printers):
+        return []
+    if not all(printers):
+        return list(_GROUPED)
+    argvs = [shell_reader.command(p.argv) for p in printers]
+    return [argvs[0][0]] + [" ".join(a[1:]) for a in argvs] + [t for a in argvs for t in _apart(a)]
 
 
 def _apart(words, shell=ANY):
