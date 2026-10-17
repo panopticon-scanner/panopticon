@@ -41,7 +41,7 @@ def stage(script):
 class LinearGrowth:
     """The reader's scaling checks, shared by every class that times it."""
 
-    def assert_linear_growth(self, n, make, check):
+    def assert_linear_growth(self, n, make, check, parser=None):
         """Read `make(n)` and `make(4 * n)`, `check(size, parsed)` each, and
         require t(4n) <= 8 * t(n) + 0.25 s. Two sizes timed in one process
         measure how the reader grows -- about 4x for a linear pass, 16x for a
@@ -63,7 +63,7 @@ class LinearGrowth:
             gc.disable()
             try:
                 start = time.process_time()
-                parsed = shell_reader.statements(script)
+                parsed = (parser or shell_reader.statements)(script)
                 elapsed = time.process_time() - start
             finally:
                 if enabled:

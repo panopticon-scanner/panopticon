@@ -17,6 +17,9 @@ from unittest import mock
 import pytest
 
 import shell_reader
+import workflow_failure_contexts
+import workflow_function_calls
+import workflow_gating
 import workflow_guard as wg
 import workflow_options as wo
 import workflow_written
@@ -196,6 +199,102 @@ class TestTheBindingIsLinear(LinearGrowth, unittest.TestCase):
     def test_the_files_are_read_where_the_step_runs_them(self):
         # `workflow_guard.read` flattens each run's text into the statements the walk reads: 3n for n of each.
         self.assertEqual(900, len(wg.read(self.make(300))))
+
+
+class TestProgramFlatteningIsLinear(LinearGrowth, unittest.TestCase):
+    """#3105: reading each program text takes one pass over the job."""
+
+    @staticmethod
+    def make(n):
+        program = "echo 'echo ok' | sh\n"
+        return (program * n
+                + "sh <(echo 'echo ok')\n" * n
+                + "sh <<'EOF'\necho ok\nEOF\n" * n
+                + "".join("echo 'echo ok' > s%d.sh\n" % i for i in range(n))
+                + "".join("sh s%d.sh\n" % i for i in range(n)))
+
+    @staticmethod
+    def enclosed(n):
+        program = "echo 'echo ok' | sh\n"
+        return ("{\n" + program * n + "} | cat\n"
+                + "f() {\n" + program * n + "}\nf\n")
+
+    @staticmethod
+    def job(script):
+        return wg.job_defects([wg.Step("step", script)])
+
+    @pytest.mark.serial
+    def test_each_program_form_is_linear_when_read(self):
+        def check(n, parsed):
+            self.assertEqual(9 * n, len(parsed))
+
+        self.assert_linear_growth(150, self.make, check, parser=wg.read)
+
+    @pytest.mark.serial
+    def test_each_program_form_is_linear_at_job_level(self):
+        def check(_n, defects):
+            self.assertEqual([], defects)
+
+        self.assert_linear_growth(150, self.make, check, parser=self.job)
+
+    @pytest.mark.serial
+    def test_group_and_function_boundaries_are_indexed_once(self):
+        def check(_n, defects):
+            self.assertEqual([], defects)
+
+        self.assert_linear_growth(150, self.enclosed, check, parser=self.job)
+
+    def test_indexed_and_legacy_answers_match_on_a_corpus_sample(self):
+        corpus = (
+            "echo 'echo ok' | sh\nsh <(echo 'echo ok')\n",
+            "{\necho 'echo ok' | sh\necho later\n} && echo kept\n",
+            "(\necho 'echo ok' | sh\necho later\n) || exit 1\n",
+            "f() {\necho 'echo ok' | sh\necho later\n}\nf\n",
+            "f() {\necho 'echo ok' | sh\n}\n{ f; } | cat\necho after\n",
+            "outer() {\ninner() {\necho 'echo ok' | sh\n}\ninner\n}\nouter\n",
+            "T=/dev/null\nf() { T=@P@; }\n{ f; } | cat\nsh \"$T\"\n",
+            "if true; then\n{ echo 'echo ok' | sh; } && echo later\nfi\n",
+            "{ { echo 'echo ok' | sh; }; echo tail; } || exit 1\n",
+            "f() {\n( echo 'echo ok' | sh; echo tail ) && return 0\n}\nf | cat\n",
+        )
+
+        def signature(answer):
+            return (type(answer).__name__, str(answer),
+                    getattr(answer, "span", None), getattr(answer, "through", None))
+
+        compared = 0
+        for script in corpus:
+            stmts = list(shell_reader.statements(script))
+            analysis = workflow_failure_contexts.statement_analysis(stmts)
+            for index in range(len(stmts)):
+                frame = analysis.function_scope(index)
+                indexed_scope = (frame.name, frame.close) if frame is not None else None
+                self.assertEqual(
+                    workflow_function_calls._function_scope(stmts, index), indexed_scope)
+                self.assertEqual(
+                    workflow_gating._piped_group_end(stmts, index),
+                    workflow_gating._piped_group_end(stmts, index, analysis))
+                self.assertEqual(
+                    workflow_gating._piped_function_end(stmts, index),
+                    workflow_gating._piped_function_end(stmts, index, analysis))
+                compared += 3
+                for errexit in (False, True):
+                    self.assertEqual(
+                        signature(workflow_function_calls._conditional_group_tail(
+                            stmts, index, errexit)),
+                        signature(workflow_function_calls._conditional_group_tail(
+                            stmts, index, errexit, analysis)))
+                    compared += 1
+                    for pipefail in (False, True):
+                        on, fails = [errexit] * len(stmts), [pipefail] * len(stmts)
+                        self.assertEqual(
+                            signature(workflow_function_calls._stops_step(
+                                stmts, index, on, fails)),
+                            signature(workflow_function_calls._stops_step(
+                                stmts, index, on, fails, analysis)))
+                        compared += 1
+
+        self.assertGreater(compared, 300)
 
 
 if __name__ == "__main__":

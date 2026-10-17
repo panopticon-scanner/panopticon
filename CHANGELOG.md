@@ -80,6 +80,19 @@ evidence exposed.
   `shell_folds._locale` is `_flip(state, on)` now, clearing `_STALE` for either flag. Sizes:
   `scripts/workflow_called_fetches.py` 507 (+275), `scripts/shell_folds.py` 204 (+14),
   `scripts/workflow_guard.py` 646 (+3). `tests/test_workflow_positional_handoff.py`.
+- **Workflow program flattening grows linearly with the text a job hands to shells (#3105).**
+  `flattened` asked `swallowed` how each handed program's parent command failed, and that proof
+  rescanned the outer statement list twice even when the list contained no structural group or
+  function definition. Jobs with repeated `echo … | sh`, process-substitution, heredoc, or
+  written-file programs therefore grew superlinearly. The shared source-order statement analysis
+  now indexes each statement's structural depth, next executable command, enclosing piped group,
+  and function definition. The status proof uses that same index for conditional group tails,
+  function scopes, and step stops; each function body also shares one cached call proof.
+  Indexed and legacy answers match across 23,948 statements and 95,792 step-stop comparisons from
+  the workflow test corpus. Three serial pins cover `read`, all four program forms at job level,
+  and repeated programs inside one piped group and one function body. For fourfold input locally,
+  those paths grew 0.400→3.568, 1.671→15.784, and 1.016→12.514 seconds on `main`; here they grow
+  0.238→0.951, 0.903→3.551, and 0.303→1.180 seconds, with no finding in either job reading.
 - **Workflow reader reads a group's printed text down the pipe (#3026).** `{ echo "sh -c '...'"; } |
   sh` ran the download the string names under every parent shell and read CLEAN, and so did `( P; )
   | sh` and a group of two statements with the printer first: the parser keeps `{` as a word and a

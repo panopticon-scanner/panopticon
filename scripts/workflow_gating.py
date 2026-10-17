@@ -55,7 +55,8 @@ from workflow_function_calls import (FunctionGate, PipelineGate, Reach as Reach,
                                      _READ_RESCUED, _SET_E as _SET_E, _UNPROVED_RESCUE,
                                      _closes, _control_depths, _function_scope, _function_syntax,
                                      _gating_function_call, _posture_barrier,
-                                     _stops_the_job, _stops_step as _stops_step, clears as _clears)
+                                     _stops_the_job, _stops_step as _stops_step,
+                                     clears as _clears)
 from workflow_posture import (_errexit as _errexit, _rejected as _rejected,
                               _takes_value as _takes_value, seed as seed)
 from workflow_status import status_gate, step_end, stopping_err_trap
@@ -97,12 +98,20 @@ def _pipeline_end(stmts, index, position):
     return len(stmts) - 1
 
 
-def _piped_group_end(stmts, index):
+def _piped_group_end(stmts, index, analysis=None):
     """The piped close of a structural group open at `index`, or None.
 
     A group opened later is a sequential sibling or child, so its pipeline
-    is not concurrent with the check.
+    is not concurrent with the check. A shared `analysis` indexes the first
+    such close and caches its pipeline end for every handed program in it.
     """
+    if analysis is not None:
+        start = analysis.piped_group(index)
+        if start is None:
+            return None
+        if start not in analysis.piped_group_ends:
+            analysis.piped_group_ends[start] = _pipeline_end(stmts, *start)
+        return analysis.piped_group_ends[start]
     depth = 0
     for statement in stmts[:index + 1]:
         for stage in statement.stages:
@@ -180,21 +189,36 @@ _PIPED_RESCUE = ("hands its failure to a rescue inside a group piped into anothe
                  "pipeline takes the last stage's status and the step carries on past its failure")
 
 
-def _piped_function_end(stmts, index):
+def _piped_function_end(stmts, index, analysis=None):
     """The first pipeline entered by a call of this function, directly
     (`f | cat`) or inside a group that is a pipeline stage (`{ f; } | cat`).
 
     A top-level call has the pipeline's readable end. Where a prior statement
     makes posture uncertain, or the call is conditional, nested, or in a list,
-    use the step's end: no later use is cleared by an unproved boundary.
+    use the step's end: no later use is cleared by an unproved boundary. The
+    shared analysis indexes each definition's scope and caches its answer.
     """
-    function = _function_scope(stmts, index)
+    frame = analysis.function_scope(index) if analysis is not None else None
+    function = ((frame.name, frame.close) if frame is not None
+                else _function_scope(stmts, index) if analysis is None else None)
     if function is None:
         return None
+    if analysis is not None and frame in analysis.function_ends:
+        return analysis.function_ends[frame]
+
+    def done(answer):
+        if analysis is not None:
+            analysis.function_ends[frame] = answer
+        return answer
+
     name, close = function
-    controls = _control_depths(stmts)
-    functions = {function for statement in stmts for stage in statement.stages
-                 if (function := _function_syntax(stage.argv)[0]) is not None}
+    if analysis is not None and analysis.control_depths is None:
+        analysis.control_depths = _control_depths(stmts)
+    controls = analysis.control_depths if analysis is not None else _control_depths(stmts)
+    functions = analysis.function_names if analysis is not None else {
+        function for statement in stmts for stage in statement.stages
+        if (function := _function_syntax(stage.argv)[0]) is not None
+    }
     uncertain = False
     for call in range(close + 1, len(stmts)):
         statement = stmts[call]
@@ -205,26 +229,32 @@ def _piped_function_end(stmts, index):
             if command(stage.argv)[:1] == [name]:
                 if (uncertain or controls[call] or negated(stage.argv)
                         or conditional(stage.argv)):
-                    return len(stmts) - 1
-                scope = _function_scope(stmts, call)
+                    return done(len(stmts) - 1)
+                scope = (analysis.function_scope(call) if analysis is not None
+                         else _function_scope(stmts, call))
                 if scope is not None or statement.separator in ("&", "&&", "||"):
-                    return len(stmts) - 1
-                return _pipeline_end(stmts, call, position + 1)
+                    return done(len(stmts) - 1)
+                return done(_pipeline_end(stmts, call, position + 1))
         # A call written as the last stage of its statement is not piped on its
         # own, but one inside a group that is a pipeline stage (`{ f; } | cat`)
         # loses the function's status to that pipeline, the call twin of a piped
         # group ending a check.
         tail = statement.stages[-1] if statement.stages else None
         if tail is not None and command(tail.argv)[:1] == [name]:
-            group_end = _piped_group_stage(stmts, call)
+            if analysis is not None and call not in analysis.piped_group_stages:
+                analysis.piped_group_stages[call] = _piped_group_stage(stmts, call)
+            group_end = (analysis.piped_group_stages[call] if analysis is not None
+                         else _piped_group_stage(stmts, call))
             if group_end is not None:
                 if (uncertain or controls[call] or negated(tail.argv)
-                        or conditional(tail.argv) or _function_scope(stmts, call) is not None):
-                    return len(stmts) - 1
-                return group_end
+                        or conditional(tail.argv)
+                        or (analysis.function_scope(call) if analysis is not None
+                            else _function_scope(stmts, call)) is not None):
+                    return done(len(stmts) - 1)
+                return done(group_end)
         if _posture_barrier(statement, functions):
             uncertain = True
-    return None
+    return done(None)
 
 
 _OWN_RESCUE = ("is followed by that use in its own `||` rescue branch, which runs only after "
@@ -311,7 +341,8 @@ def clears(why, check, use):
     return _clears(why, check, use)
 
 
-def conditional_reach(why, stmts, contexts, indexes, index, inner, on, fails):
+def conditional_reach(why, stmts, contexts, indexes, index, inner, on, fails,
+                      analysis=None):
     """Bound a conditional check to uses that require its carrier to run.
 
     A failure before `&&` skips the check and the same suffix its failure
@@ -325,7 +356,7 @@ def conditional_reach(why, stmts, contexts, indexes, index, inner, on, fails):
     spans = []
     for source, carrier in contexts:
         if stmts[source].separator == "&&":
-            end = _stops_step(stmts, source, on, fails)
+            end = _stops_step(stmts, source, on, fails, analysis)
             if end is None:
                 continue
         else:
@@ -361,7 +392,7 @@ def inlined_stops(stmts, start, carrier, index, on=None, fails=None, analysis=No
         statement = statement._replace(credit=(None, None))
     enabled = [True] * len(body) if on is None else on[start:carrier]
     piped = [False] * len(body) if fails is None else fails[start:carrier]
-    return (_stops_step(body, position, enabled, piped) is None
+    return (_stops_step(body, position, enabled, piped, analysis) is None
             and swallowed(body, position, statement, statement.stages[-1],
                           analysis=analysis) is None)
 
@@ -378,7 +409,7 @@ def inlined_reaches(flat, stmts, indexes, on, fails):
     for position, index in enumerate(indexes):
         if analysis.blocks_reach(position):
             continue
-        stops = _stops_step(stmts, position, on, fails)
+        stops = _stops_step(stmts, position, on, fails, analysis)
         why = (Reach(0, _LOST) if stops is _LOST
                else Reach(indexes[stops] - index)
                if isinstance(stops, int) and stops >= position else None)
@@ -405,14 +436,14 @@ def _rescue_bounds(stmts, branch):
     return None
 
 
-def _stopping_rescue(stmts, index, errexit=True, pipefail=False):
+def _stopping_rescue(stmts, index, errexit=True, pipefail=False, analysis=None):
     """Bounds and status proof for this check's later stopping rescue."""
     branch = index
     while branch < len(stmts) and stmts[branch].separator == "&&":
         branch += 1
     if branch >= len(stmts) or stmts[branch].separator != "||":
         return None
-    stops = _stops_the_job(stmts, branch, errexit, pipefail)
+    stops = _stops_the_job(stmts, branch, errexit, pipefail, analysis)
     bounds = _rescue_bounds(stmts, branch) if stops else None
     return (*bounds, stops) if bounds is not None else None
 
@@ -424,11 +455,12 @@ _FUNCTION_BODY = ("is inside a function that has not run through a failure gate 
 
 def _function_status(stmts, index, answer, errexit, analysis=None):
     """Bind definition-time credit to a proved call, preserving body reach."""
-    function, carrier = _function_scope(stmts, index), index
+    analysis = statement_analysis(stmts) if analysis is None else analysis
+    function, carrier = _function_scope(stmts, index, analysis), index
     if function is None and isinstance(stmts[index], Inlined):
         carrier = next((at for at in range(index + 1, len(stmts))
                         if not isinstance(stmts[at], Inlined)), index)
-        function = _function_scope(stmts, carrier)
+        function = _function_scope(stmts, carrier, analysis)
     if function is None or answer is not None and type(answer) is not Reach:
         return answer
     name, close = function
@@ -441,10 +473,10 @@ def _function_status(stmts, index, answer, errexit, analysis=None):
         _closes(item) for item in stmts[carrier + 1:close + 1]
     )) or carrier == index
     calls: list[int] = []
-    call = _gating_function_call(stmts, name, close, errexit, returned, calls=calls)
+    call = _gating_function_call(
+        stmts, name, close, errexit, returned, calls=calls, analysis=analysis)
     if call is None:
         return _FUNCTION_BODY
-    analysis = statement_analysis(stmts) if analysis is None else analysis
     call_contexts = [context for position in calls
                      for context in _enclosing_failure_contexts(stmts, position, analysis)]
     if any(_is_negated_context(context) for context in call_contexts):
@@ -527,11 +559,13 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED, analysis=None,
         errexit = not (why == _SET_E or
                        isinstance(why, str) and why.startswith("runs under `shell:"))
         pipefail = isinstance(credit, tuple) and credit[1] is None
-        stops = _stops_the_job(stmts, index, errexit, pipefail)
+        stops = _stops_the_job(stmts, index, errexit, pipefail, analysis)
         # The walk reads an `exit`/`return` rescue as stopping the step, but one
         # written inside a group that is a pipeline stage stops only that stage;
         # where pipefail is off its failure goes to the pipeline, not the step.
-        piped_group = not pipefail and _piped_group_stage(stmts, index) is not None
+        if index not in analysis.piped_group_stages:
+            analysis.piped_group_stages[index] = _piped_group_stage(stmts, index)
+        piped_group = not pipefail and analysis.piped_group_stages[index] is not None
         # The full walk includes an enclosing pipeline or rescue. Ask the local
         # slice too so an exiting rescue still gets the established piped-group
         # diagnosis when that carrier, rather than the rescue itself, swallows it.
@@ -568,10 +602,11 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED, analysis=None,
         # Keep the ambiguity conservative; a real parent refusal stays more
         # specific and wins through ``why`` above.
         why = _BARRIER_REASONS[analysis.reach_barrier(index)]
-    piped_end = (_piped_group_end(stmts, index)
+    piped_end = (_piped_group_end(stmts, index, analysis)
                  if not inherited_child_reach
                  and (why is None or isinstance(why, Reach)) else None)
-    function_end = _piped_function_end(stmts, index) if piped_end is None else None
+    function_end = (_piped_function_end(stmts, index, analysis)
+                    if piped_end is None else None)
     if function_end is not None:
         # The definition is not itself piped. `step_credit`'s pipeline slot
         # nevertheless carries the call site's pipefail posture across these
@@ -595,7 +630,8 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED, analysis=None,
                    isinstance(pair[0], str) and pair[0].startswith("runs under `shell:"))
     if measuring_uses and (answer is None or isinstance(answer, Reach)):
         rescue = _stopping_rescue(
-            stmts, index, errexit, isinstance(credit, tuple) and pair[1] is None
+            stmts, index, errexit, isinstance(credit, tuple) and pair[1] is None,
+            analysis
         )
         if rescue is not None:
             start, through, stops = rescue
