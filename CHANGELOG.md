@@ -7,6 +7,19 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow program flattening grows linearly with the text a job hands to shells (#3105).**
+  `flattened` asked `swallowed` how each handed program's parent command failed, and that proof
+  rescanned the outer statement list twice even when the list contained no structural group or
+  function definition. Jobs with repeated `echo … | sh`, process-substitution, heredoc, or
+  written-file programs therefore grew superlinearly. The shared source-order statement analysis
+  now indexes each statement's structural depth, next executable command, enclosing piped group,
+  and function definition. The status proof uses that same index for conditional group tails,
+  function scopes, and step stops; each function body also shares one cached call proof.
+  Indexed and legacy answers match across 23,948 statements and 95,792 step-stop comparisons from
+  the workflow test corpus. Three serial pins cover `read`, all four program forms at job level,
+  and repeated programs inside one piped group and one function body. For fourfold input locally,
+  those paths grew 0.400→3.568, 1.671→15.784, and 1.016→12.514 seconds on `main`; here they grow
+  0.238→0.951, 0.903→3.551, and 0.303→1.180 seconds, with no finding in either job reading.
 - **Workflow reader reads a function header immediately after an outer function's opening brace
   (#2975 part A).** `f() { g() { sh t; }; g; }` ran the downloaded file under every parent and
   read CLEAN: the splitter took the inner `()` as a subshell and the rest of the inner body as
