@@ -519,12 +519,10 @@ _STDOUT_REDIRECT = re.compile(r"^(?:1)?(?:>|>>|>&)")
 
 
 def _redirected(words, pattern):
-    """Whether `words` contains a redirect of the descriptor `pattern` names."""
     return any(pattern.match(shell_reader.readable(word)) for word in words)
 
 
 def _inline_pipeline(stage):
-    """Stages after a close whose whole pipeline stayed in one argv."""
     if "|" not in stage.argv:
         return []
     pipeline: list[list[str]] = []
@@ -552,7 +550,6 @@ def _inline_pipeline(stage):
 
 
 def _closing_stream(statement, executors):
-    """The consumer at a close and whether its output can reach an outer close."""
     for position, stage in enumerate(statement.stages):
         one = shell_reader.Statement([stage], statement.separator)
         if _compound_delta(one) >= 0:
@@ -568,7 +565,6 @@ def _closing_stream(statement, executors):
 
 
 def _closing_output(statement):
-    """A compound close's stdout boundary, or None when it passes outward."""
     for position, close in enumerate(statement.stages):
         one = shell_reader.Statement([close], statement.separator)
         if _compound_delta(one) >= 0:
@@ -586,14 +582,7 @@ def _closing_output(statement):
 
 
 def _compound_outputs(stmts):
-    """Map enclosed stages to the first closing stdout boundary.
-
-    The reverse walk sees an outer close before its nested transparent closes,
-    so each depth inherits its parent's redirect or following pipeline in one
-    pass rather than rescanning the suffix for every fetch. Stage-level depths
-    distinguish a fetch after a close from one inside a group opened beside it.
-    Array-literal parentheses are words, not executable compound boundaries.
-    """
+    """Map stages to closing outputs, excluding array literals from depth."""
     levels, depth, literal_depth = {}, 0, 0
     for position, statement in enumerate(stmts):
         for number, stage in enumerate(statement.stages):
@@ -604,8 +593,7 @@ def _compound_outputs(stmts):
             literal_depth -= literal_closes
             groups = stage.group_open - literals - stage.group_close + literal_closes
             one = shell_reader.Statement([stage], statement.separator)
-            # A function body's `}` has no opener in the keyword view. It must
-            # not make the next top-level statement look nested (M10).
+            # A function body's unmatched `}` must not make a follower nested.
             depth = max(0, depth + groups + _compound_delta(one, False))
             levels[position, number] = before, depth
     inherited: dict[int, tuple] = {}
@@ -629,6 +617,18 @@ def _compound_outputs(stmts):
     return outputs
 
 
+def _forwarded_output(stmts, mapped, locations, output):
+    piped_to = output[1]
+    while output is not None and output[1] is not None:
+        where = locations.get(id(output[0]))
+        if where is None: break
+        position, number = where
+        following = stmts[position].stages[number + 1:]
+        if not following or not _stream_forwarded(following): break
+        output = mapped.get((position, number + 1))
+    return (output[0], piped_to) if output is not None else None
+
+
 def compound_output(stmts, outputs, position, stage, following):
     """The stage and next argv after its own or its compound's stdout."""
     if following:
@@ -637,25 +637,36 @@ def compound_output(stmts, outputs, position, stage, following):
         return stage, None
     if outputs[0] is None:
         outputs[0] = _compound_outputs(stmts)
-    number = next(number for number, candidate in enumerate(stmts[position].stages)
-                  if candidate is stage)
+        depth = 0
+        outputs.extend(({id(candidate): (p, n) for p, one in enumerate(stmts)
+                         for n, candidate in enumerate(one.stages)},
+                        [(depth := depth + _compound_delta(one, False)) for one in stmts]))
+    number = next(number for number, candidate in enumerate(stmts[position].stages) if candidate is stage)
     output = outputs[0].get((position, number))
     if output is None:
         return stage, None
     close, piped_to = output
+    where = outputs[1].get(id(close))
+    close_following = stmts[where[0]].stages[where[1] + 1:] if where else []
+    depth = outputs[2][position]
+    forwarded = _forwarded_output(stmts, outputs[0], outputs[1], output)
+    if (forwarded is not None and forwarded[0] is not close and depth > 0 and
+            (close.group_close or close_following[0].argv[:1] == ["{"]) and
+            len(forwarded[0].writes) == len(forwarded[0].stdout_writes)):
+        close = forwarded[0]
+    elif (piped_to is None and where and number == 0 and depth > 0 and close.group_close
+          and close.stdout_writes):
+        later = close_following or next((one.stages for one in stmts[where[0] + 1:] if one.stages), ())
+        outer = later[0] if later else None
+        if outer is not None and outer.argv == ["}"] and not outer.group_close and outer.stdout_writes:
+            close = outer
     inherited_pipe = (piped_to if isinstance(piped_to, _InheritedOutput)
                       else _InheritedOutput(piped_to) if piped_to is not None else None)
-    return stage._replace(
-        stdout_writes=_InheritedOutput(close.stdout_writes),
-    ), inherited_pipe
+    return stage._replace(stdout_writes=_InheritedOutput(close.stdout_writes)), inherited_pipe
 
 
 def compound_stream_consumer(stmts, position, executors):
-    """The executor piped from a compound containing statement `position`.
-
-    The reader is intentionally flat. This walk pairs a fetch or printer with
-    each enclosing close, while ignoring compounds opened only after it.
-    """
+    """An executor piped from a compound containing statement `position`."""
     depth = sum(_compound_delta(statement) for statement in stmts[:position + 1])
     if depth <= 0:
         return None

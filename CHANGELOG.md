@@ -68,7 +68,15 @@ evidence exposed.
   stage-level map also avoids the old `level = after` alternative's named no-run price:
   HNP-016, `{ for ...; done | ( curl ...; ) > f; } > tool; sh tool`, fetches in all eight parents
   but runs in none because the download went to `f` and `tool` stayed empty, and remains CLEAN in
-  all five settings. Its no-fetch twin remains CLEAN too.
+  all five settings. Its no-fetch twin remains CLEAN too. Review found that an inner close piped
+  through a forwarding `cat`, `tee`, group, subshell, or loop then stopped at that consumer and
+  lost the consumer stage's own outer `> tool`. The stage map now retains the local pipe beside
+  that consumer route, but restores it only when it reaches the same unshadowed file boundary
+  `main` carried; all 24 forwarding rows from review report again without reopening the accepted
+  no-run cells or the out-of-scope top-level forms. Finally, dash 0.5.12 drops `> f`, `>> f`, or
+  `> /dev/null` from a subshell that is the last command of a redirected group, sending the bytes
+  to the group's outer file. Those three `ffffRffR` truth rows keep `main`'s RRRRR reading. The
+  corresponding bash over-report is an existing, named fail-closed price.
 - **Workflow reader reads a function header immediately after an outer function's opening brace
   (#2975 part A).** `f() { g() { sh t; }; g; }` ran the downloaded file under every parent and
   read CLEAN: the splitter took the inner `()` as a subshell and the rest of the inner body as
