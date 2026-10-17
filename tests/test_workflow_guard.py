@@ -6517,6 +6517,84 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
             with self.subTest(row=row):
                 self.assert_reported_in_every_shell(template % self.FETCH)
 
+    def test_2937_forwarding_consumers_keep_the_outer_file(self):
+        # #3125 review round 1: these rows run the outer `tool` in every
+        # runnable parent (RRRRRRRR in both truth passes, except PR-E-009's
+        # RRRR-RR-). Following the inner close only as far as cat/tee/loops
+        # dropped the forwarding stage's own outer-file route.
+        rows = (
+            ("PR-A-000",
+             "{ ( %s; ) | { cat; }; } > tool\nsh tool\n"),
+            ("PR-A-001",
+             "{ ( %s; ) | cat; } > tool\nsh tool\n"),
+            ("PR-A-002",
+             "{ ( %s; ) | tee x; } > tool\nsh tool\n"),
+            ("PR-A-018",
+             "if true; then ( %s; ) | cat; fi > tool\nsh tool\n"),
+            ("PR-A-019",
+             "for i in 1; do ( %s; ) | cat; done > tool\nsh tool\n"),
+            ("PR-A-021",
+             "{ ( %s; ) | { cat; } | cat; } > tool\nsh tool\n"),
+            ("PR-A-022",
+             "{ { %s; } | { cat; }; } > tool\nsh tool\n"),
+            ("PR-A-024",
+             "{ ( %s; ) | ( cat; ); } > tool\nsh tool\n"),
+            ("PR-A-025",
+             "{ ( %s; ) | while read -r l; do echo \"$l\"; done; } > tool\n"
+             "sh tool\n"),
+            ("PR-A-026",
+             "{ ( %s; ) | for i in 1; do cat; done; } > tool\nsh tool\n"),
+            ("PR-A-034",
+             "{ ( ( %s; ) | cat; ) | cat; } > tool\nsh tool\n"),
+            ("PR-B-448",
+             "( { ( %s; ) | cat; } ) > tool\nsh tool\n"),
+            ("PR-C-011",
+             "{ echo | ( %s; ) | cat; } > tool\nsh tool\n"),
+            ("PR-C-018",
+             "{ ( :; ) | ( %s; ) | cat; } > tool\nsh tool\n"),
+            ("PR-D-056",
+             "case x in x) ( %s; ) | cat;; esac > tool\nsh tool\n"),
+            ("PR-E-009",
+             "{ a=( x ) ; ( %s; ) | cat; } > tool\nsh tool\n"),
+            ("PR-E-021",
+             "{ cat <<'E' > /dev/null\n( x\nE\n"
+             "( %s; ) | cat; } > tool\nsh tool\n"),
+            ("PR-E-025",
+             "{ ( %s; ) | cat; # ) > /dev/null\n"
+             "} > tool\nsh tool\n"),
+            ("PR-E-027",
+             "{ case x in x) ( %s; ) | cat;; esac; } > tool\nsh tool\n"),
+            ("PR-E-030",
+             "f() { :; }; { ( %s; ) | cat; } > tool; sh tool\n"),
+            ("PR-E-032",
+             "f() { :; }\n{ ( %s; ) | { cat; }; } > tool\nsh tool\n"),
+            ("PR-E-033",
+             "f() { g() { :; }; }; { ( %s; ) | cat; } > tool; sh tool\n"),
+            ("PR-E-037",
+             "f() ( :; )\n{ ( %s; ) | cat; } > tool\nsh tool\n"),
+            ("PR-E-039",
+             "f() { ( %s; ) | cat; } > tool\nf\nsh tool\n"),
+        )
+        for row, template in rows:
+            with self.subTest(row=row):
+                self.assert_reported_in_every_shell(template % self.FETCH)
+
+    def test_2937_dash_last_subshell_redirect_keeps_mains_reading(self):
+        # #3125 review round 1: dash 0.5.12 drops these redirects when the
+        # subshell is the last command of the redirected group, so truth is
+        # ffffRffR in both passes. Keep main's RRRRR fail-closed reading; its
+        # bash over-report is an existing price, not a new one from #2937.
+        rows = (
+            ("PR-C-020", "> f"),
+            ("PR-C-021", "> /dev/null"),
+            ("PR-C-022", ">> f"),
+        )
+        for row, redirect in rows:
+            script = ("{ ( %s; ) %s; } > tool\nsh tool\n"
+                      % (self.FETCH, redirect))
+            with self.subTest(row=row):
+                self.assert_reported_in_every_shell(script)
+
     def test_2937_keeps_the_subshell_file_cut_clean(self):
         # HNP-016's 8-parent truth is ffffffff in both passes: the download
         # goes to `f`, `tool` stays empty, and `sh tool` runs nothing. Mapping
