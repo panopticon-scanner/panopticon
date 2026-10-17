@@ -6517,6 +6517,19 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
             with self.subTest(row=row):
                 self.assert_reported_in_every_shell(template % self.FETCH)
 
+    def test_2937_keeps_the_subshell_file_cut_clean(self):
+        # HNP-016's 8-parent truth is ffffffff in both passes: the download
+        # goes to `f`, `tool` stays empty, and `sh tool` runs nothing. Mapping
+        # the fetch stage to its subshell close avoids the no-run price of the
+        # old `level = after` alternative.
+        cut = ("{ for i in 1; do :; done | ( %s; ) > f; } > tool\n"
+               "sh tool\n") % self.FETCH
+        self.assert_clean_in_every_shell(cut)
+
+        no_fetch = ("{ for i in 1; do :; done | ( echo hi; ) > f; } > tool\n"
+                    "sh tool\n")
+        self.assert_clean_in_every_shell(no_fetch)
+
     def test_a_file_writing_compound_tee_also_feeds_its_outer_reader(self):
         tee = "{ %s; } | tee tool" % self.FETCH
         consumers = (
@@ -6611,13 +6624,6 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
         # A close whose stdout was redirected cannot feed its following tee (M18).
         cut = "{ %s; } >&2 | tee tool\nsh tool\n" % self.FETCH
         self.assert_clean_in_every_shell(cut)
-
-        # #2937's M9c rows fetch after an inner close. Here the fetch remains
-        # inside a subshell whose own close writes `f`, so the outer `tool`
-        # close must not capture it.
-        inner = ("{ for i in 1; do :; done | ( %s; ) > f; } > tool\n"
-                 "sh tool\n") % self.FETCH
-        self.assert_clean_in_every_shell(inner)
 
     def test_file_close_depth_excludes_array_literal_groups(self):
         # #2937 must count a subshell's group markers without treating an
