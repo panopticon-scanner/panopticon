@@ -16,6 +16,7 @@ from workflow_function_calls import _function_syntax
 from workflow_option_slots import _one_word, _value
 from workflow_option_words import lifted, ruled, uncovered_argv
 from workflow_programs import VALUE_PROGRAM, stdin_program
+from workflow_values import _literals
 
 
 # A download: the tool that ran, the URL it was given, the file it lands in
@@ -585,34 +586,46 @@ def _closing_output(statement):
 
 
 def _compound_outputs(stmts):
-    """Map enclosed statements to the first closing stdout boundary.
+    """Map enclosed stages to the first closing stdout boundary.
 
     The reverse walk sees an outer close before its nested transparent closes,
     so each depth inherits its parent's redirect or following pipeline in one
-    pass rather than rescanning the suffix for every fetch.
+    pass rather than rescanning the suffix for every fetch. Stage-level depths
+    distinguish a fetch after a close from one inside a group opened beside it.
+    Array-literal parentheses are words, not executable compound boundaries.
     """
-    levels, depth = [], 0
-    for statement in stmts:
-        before = depth
-        # Group markers are lexical subshells, not the keyword-compound
-        # levels whose closing output is lent to their enclosed commands.
-        depth += _compound_delta(statement, False)
-        levels.append((before, depth))
+    levels, depth, literal_depth = {}, 0, 0
+    for position, statement in enumerate(stmts):
+        for number, stage in enumerate(statement.stages):
+            before = depth
+            literals = min(_literals(stage), stage.group_open)
+            literal_depth += literals
+            literal_closes = min(literal_depth, stage.group_close)
+            literal_depth -= literal_closes
+            groups = stage.group_open - literals - stage.group_close + literal_closes
+            one = shell_reader.Statement([stage], statement.separator)
+            # A function body's `}` has no opener in the keyword view. It must
+            # not make the next top-level statement look nested (M10).
+            depth = max(0, depth + groups + _compound_delta(one, False))
+            levels[position, number] = before, depth
     inherited: dict[int, tuple] = {}
-    outputs: dict[int, tuple] = {}
+    outputs: dict[tuple[int, int], tuple] = {}
     for position in range(len(stmts) - 1, -1, -1):
-        before, after = levels[position]
-        if 0 <= after < before:
-            output = _closing_output(stmts[position]) or inherited.get(after)
-            if output is not None:
-                for level in range(after + 1, before + 1):
-                    inherited[level] = output
-        level = max(before, after)
-        if level in inherited:
-            outputs[position] = inherited[level]
-        if after > before:
-            for level in range(before + 1, after + 1):
-                inherited.pop(level, None)
+        statement = stmts[position]
+        for number in range(len(statement.stages) - 1, -1, -1):
+            before, after = levels[position, number]
+            if after < before:
+                suffix = statement._replace(stages=statement.stages[number:])
+                output = _closing_output(suffix) or inherited.get(after)
+                if output is not None:
+                    for level in range(after + 1, before + 1):
+                        inherited[level] = output
+            level = max(before, after)
+            if level in inherited:
+                outputs[position, number] = inherited[level]
+            if after > before:
+                for level in range(before + 1, after + 1):
+                    inherited.pop(level, None)
     return outputs
 
 
@@ -624,7 +637,9 @@ def compound_output(stmts, outputs, position, stage, following):
         return stage, None
     if outputs[0] is None:
         outputs[0] = _compound_outputs(stmts)
-    output = outputs[0].get(position)
+    number = next(number for number, candidate in enumerate(stmts[position].stages)
+                  if candidate is stage)
+    output = outputs[0].get((position, number))
     if output is None:
         return stage, None
     close, piped_to = output
