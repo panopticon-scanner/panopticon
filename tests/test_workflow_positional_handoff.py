@@ -474,6 +474,29 @@ class TestTheReadingIsLinear(LinearGrowth, unittest.TestCase):
         with mock.patch.object(shell_reader, "statements", lambda script: folded(real(script))):
             self.assert_linear_growth(250, self.make, check)
 
+    @staticmethod
+    def chain(n):
+        return "".join('f%d() { f%d "$@"; }\n' % (i, i + 1) for i in range(n)) + 'f%d() { sh "$1"; }\nf0 t\n' % n
+
+    @pytest.mark.serial
+    def test_a_chain_of_n_definitions_is_read_in_linear_time(self):
+        # #3127's cost item: `main` asked `_function_scope` once a definition without #3126's shared analysis, quadratic
+        # in the definitions (x21.8 for 200 -> 800 here, x16.8 for n unrelated ones); `CalledFetches` builds the
+        # analysis once (`statement_analysis`) and `_function_ranges` takes it (two lines in `workflow_use_scopes`,
+        # granted). The fold alone is timed: the parse is done in `make`. The one call is followed `_DEPTH` deep.
+        parsed = {}
+
+        def make(n):
+            script = self.chain(n)
+            parsed[script] = shell_reader.statements(script)
+            return script
+
+        def check(n, read):
+            self.assertEqual(2 * n + 3, len(read))      # a definition is two statements, the call one
+            self.assertEqual(["f%d" % _DEPTH, "t"], [str(w) for w in read[-1].stages[0].argv])
+
+        self.assert_linear_growth(200, make, check, parser=lambda script: folded(parsed[script]))
+
 
 if __name__ == "__main__":
     unittest.main()

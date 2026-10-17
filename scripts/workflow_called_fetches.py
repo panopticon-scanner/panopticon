@@ -17,6 +17,7 @@ import shell_reader
 from shell_command import _FUNCTION, _heads
 from shell_folds import _CALLED
 from shell_tokens import is_arm
+from workflow_failure_contexts import statement_analysis
 from workflow_programs import stdin_reader
 from workflow_use_scopes import _body_end, _function_ranges
 
@@ -103,7 +104,7 @@ class CalledFetches:
 
     def __init__(self, stmts):
         self.stmts, self.defined = stmts, {}   # type: tuple | list, dict[str, list[tuple[int, int]]]
-        ranges, self.occupied = _function_ranges(stmts)
+        ranges, self.occupied = _function_ranges(stmts, statement_analysis(stmts))   # one pass, not one a definition (#3127)
         from workflow_called import _subshell      # at call time: `workflow_called` re-exports this module's `called`
         self.subshell: set[tuple[int, int]] = set()  # (head, end) of each `f() ( … )`, a body read to its parentheses
         for entries in ranges.values():
