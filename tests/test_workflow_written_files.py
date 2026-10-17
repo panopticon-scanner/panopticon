@@ -113,6 +113,64 @@ class TestAWrittenFileIsReadAsItsWritersText(unittest.TestCase):
                 self.assertEqual(REPORTED, marks(text))
 
 
+class TestAGroupOfPrintersWrittenToAFileIsReadAsTheirText(unittest.TestCase):
+    """#3110: a `{ ...; }` or `( ...; )` group written to a file the step then runs. `_writer` read the stage that
+    writes the file as the printer -- for a group the closer, which prints nothing -- so nothing was bound while
+    every parent ran it (Claudia's `k3026/rows-written`: 138 rows, 102 running, all CLEAN). `_writers` reads the
+    group's printers through #3026's `workflow_printers._grouped`, in order, as the file's writers, and the file
+    reads as its single-printer twin reads. Truth: runs, every parent, unless said."""
+
+    def test_the_issues_rows_report(self):
+        # The kit's three kinds with a plain `sh -c` program -- `{ echo P; } > s.sh`, `( echo P; ) > s.sh`,
+        # `{ echo P; echo ok; } > s.sh` -- then a bare pipe text, the payload second, a `printf`, a quoted-heredoc
+        # `cat` inside the group, `>>`, and the file run with `.` and `bash`.
+        for text in ("{ echo \"sh -c '%s'\"; } > s.sh\nsh s.sh\n" % P, "( echo \"sh -c '%s'\"; ) > s.sh\nsh s.sh\n" % P,
+                     "{ echo \"sh -c '%s'\"; echo ok; } > s.sh\nsh s.sh\n" % P,
+                     "{ echo '%s'; } > s.sh\nsh s.sh\n" % P, "{ echo ok; echo '%s'; } > s.sh\nsh s.sh\n" % P,
+                     "{ printf '%%s\\n' '%s'; echo ok; } > s.sh\nsh s.sh\n" % P,
+                     "{ echo ok; cat <<'EOF'\n%s\nEOF\n} > s.sh\nsh s.sh\n" % P,
+                     "{ echo '%s'; } >> s.sh\nsh s.sh\n" % P,
+                     "{ echo '%s'; } > s.sh\n. ./s.sh\n" % P, "{ echo '%s'; } > s.sh\nbash s.sh\n" % P):
+            with self.subTest(text=text[:34]):
+                self.assertEqual(REPORTED, marks(text))
+
+    def test_a_pipeline_no_printer_spells_hands_the_group_on_loud(self):
+        # `{ echo ok; cat f; } > s.sh` ⏎ `sh s.sh`: the file holds what `f` holds, unread, so the group is handed on
+        # as an expanding heredoc behind a live line (`_script`'s unspelled route) and reported as any expanding
+        # body a shell runs -- fail-closed, as #3026's `_GROUPED` reads the pipe twin; a spelled payload beside it
+        # is kept. Truth: runs where `f` holds a payload.
+        self.assertEqual(REPORTED, marks("{ echo ok; cat f; } > s.sh\nsh s.sh\n"))
+        self.assertEqual(REPORTED, marks("{ echo '%s'; cat f; } > s.sh\nsh s.sh\n" % P))
+
+    def test_what_reads_as_it_did(self):
+        # A group with no printer in it binds nothing (`{ cat f; } > s.sh`, as `cat f > s.sh` does: a limit, main's;
+        # truth runs where `f` holds a payload); a benign group; the file never run; the write after the run
+        # (nothing); `( echo P ) > s.sh` without the `;` is main's own, the printer's stage closing the subshell
+        # itself (truth: runs).
+        for text, expected in (("{ cat f; } > s.sh\nsh s.sh\n", CLEAN),
+                               ("{ echo ok; echo done; } > s.sh\nsh s.sh\n", CLEAN),
+                               ("{ echo '%s'; } > s.sh\n" % P, CLEAN), ("sh s.sh\n{ echo '%s'; } > s.sh\n" % P, CLEAN),
+                               ("( echo \"sh -c '%s'\" ) > s.sh\nsh s.sh\n" % P, REPORTED)):
+            with self.subTest(text=text[:30]):
+                self.assertEqual(expected, marks(text))
+
+    def test_the_group_reads_as_its_single_printer_twin_reads(self):
+        # Claudia's `.l` and `.w` rows: the lifted letter `sh -$(echo c) '…'` read as the letter (REPORTED, #3065);
+        # `sh -$(echo x) '…'` LOUD on both, the unspelled printer (main's price for the twin, inherited: truth runs
+        # nothing); `sh -s '…'` and `sh - '…'` run nothing and read CLEAN on both.
+        for inner, expected in (("sh -$(echo c) '%s'" % P, REPORTED), ("sh -$(echo x) '%s'" % P, REPORTED),
+                                ("sh -s '%s'" % P, CLEAN), ("sh - '%s'" % P, CLEAN)):
+            group = "{ echo \"%s\"; echo ok; } > s.sh\nsh s.sh\n" % inner
+            twin = "echo \"%s\" > s.sh\nsh s.sh\n" % inner
+            with self.subTest(inner=inner[:16]):
+                self.assertEqual(expected, marks(group))
+                self.assertEqual(marks(twin), marks(group))
+
+    def test_a_nested_group_is_a_named_limit(self):
+        # `{ { echo P; }; echo ok; } > s.sh` ⏎ `sh s.sh`: `_grouped` stops at an inner closer, #3117's shape. Truth: runs.
+        self.assertEqual(CLEAN, marks("{ { echo '%s'; }; echo ok; } > s.sh\nsh s.sh\n" % P))
+
+
 class TestWhatReadsAsItDid(unittest.TestCase):
     """The controls (nothing runs, CLEAN on `main` and here), and the readers this one reuses."""
 
@@ -195,6 +253,31 @@ class TestTheBindingIsLinear(LinearGrowth, unittest.TestCase):
 
         with mock.patch.object(shell_reader, "statements", lambda script: workflow_written.bind_written(real(script))):
             self.assert_linear_growth(500, self.make, check)
+
+    @staticmethod
+    def make_groups(n):
+        return ("".join("{ echo 'echo %d'; echo ok; } > s%d.sh\n" % (i, i) for i in range(n))
+                + "".join("sh s%d.sh\n" % i for i in range(n)))
+
+    @pytest.mark.serial
+    def test_n_groups_written_and_n_runs_bind_in_linear_time(self):
+        # #3110: a closer's writers are the group's printers, found by one walk back to the opener (`_grouped`), and
+        # the statements in front of it are sliced at a closer alone: the binding stays a dict lookup a stage.
+        real = shell_reader.statements
+
+        def check(n, parsed):
+            self.assertEqual(n, sum(1 for s in parsed for st in s.stages for w in st.argv if getattr(w, "written", None)))
+
+        with mock.patch.object(shell_reader, "statements", lambda script: workflow_written.bind_written(real(script))):
+            self.assert_linear_growth(500, self.make_groups, check)
+
+    @pytest.mark.serial
+    def test_n_groups_written_and_n_runs_read_in_linear_time(self):
+        # The guard's read of the same step (#3126's linear flattening behind the binding): 6n statements.
+        def check(n, parsed):
+            self.assertEqual(6 * n, len(parsed))
+
+        self.assert_linear_growth(150, self.make_groups, check, parser=wg.read)
 
     def test_the_files_are_read_where_the_step_runs_them(self):
         # `workflow_guard.read` flattens each run's text into the statements the walk reads: 3n for n of each.
