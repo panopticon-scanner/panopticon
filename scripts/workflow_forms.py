@@ -161,7 +161,7 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
             # a word that holds an expansion may hand on every word after it, and each asked again
             # cost the square of the words).
             name, runners, postures = _runner(argv) if argv else "", {}, {}
-            for text in scripts(argv) + stdin_scripts(argv, stage, before, shell):
+            for text in scripts(argv) + stdin_scripts(argv, stage, before, shell, stmts[:index]):
                 ordinal += 1
                 who = getattr(text, "reader", argv)     # a stdin text's READER, `()` or None
                 gates = None if who is None or stops is None else not isinstance(text, Opaque) and (
@@ -274,7 +274,7 @@ def _weighed(why, texts, walk, idle=Idle):
                       for found, unread in live) else idle(why)
 
 
-def unread_program(argv, stage, walk, inside, before=None, shell=None):
+def unread_program(argv, stage, walk, inside, before=None, shell=None, statements=None):
     """Why a program this stage hands a shell goes unread, or None: a script handed to one `inside`
     a command substitution (`substitution_script`), the words a value where it reads its options may
     make its program (`candidates`, #2344, #2337), or those of the stage piping it one no printer
@@ -296,7 +296,7 @@ def unread_program(argv, stage, walk, inside, before=None, shell=None):
     LOUD where a word after it fetches (`sh $X -c "$P" 'curl … | sh'`, review r0 finding 1), which
     this rule's droppable `_Quiet` would have replaced."""
     handed = inside and substitution_script(argv, stage, walk, before, shell)
-    (value, words), printer = candidates(argv), unprinted(argv, stage, before, shell)
+    (value, words), printer = candidates(argv), unprinted(argv, stage, before, shell, statements)
     how, bare = (None, None) if handed else dynamic_program(argv)
     bare_files = file_program_files(bare)
     printer_files = file_stdin_files(stage, before) if printer else ()
