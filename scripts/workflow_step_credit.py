@@ -392,10 +392,11 @@ def step_credit(flat, shell=None):
     (errexit, pipefail), where, start = seed(shell), regions(stmts), 0
     on, fails = _errexit_states(stmts, errexit, where, shell=shell), _errexit_states(
         stmts, pipefail, where, "pipefail", shell)
-    path_map = paths(stmts)
+    analysis, path_map = statement_analysis(stmts), paths(stmts)
     credit: dict[int, tuple] = {}
     for position, index in enumerate(at):
-        stops, body = _stops_step(stmts, position, on, fails), flat[start:index]
+        stops = _stops_step(stmts, position, on, fails, analysis)
+        body = flat[start:index]
         body_analysis = statement_analysis(body)
         for inner in range(start, index + 1):
             why = (Reach(index - inner, _LOST) if stops is _LOST
@@ -403,7 +404,9 @@ def step_credit(flat, shell=None):
                    else Reach(at[stops] - inner) if stops >= 0
                    else _SET_E if errexit else _NO_E % shell)
             why = Reach(index - inner, why) if inner < index and type(why) is str and inlined_stops(body, 0, len(body), inner - start, analysis=body_analysis) else why
-            why = reach(why, stmts, path_map.get(position, ()), at, index, inner, on, fails)
+            why = reach(
+                why, stmts, path_map.get(position, ()), at, index, inner,
+                on, fails, analysis)
             piped = why if inner < index or fails[position] else _NO_PIPEFAIL
             if why or piped or fails[position]:
                 credit[inner] = (why, piped)

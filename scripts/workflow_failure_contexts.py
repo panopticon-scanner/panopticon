@@ -7,7 +7,7 @@ callers that already name these helpers there.
 """
 import shell_reader
 from shell_reader import command, conditional
-from workflow_function_calls import _function_syntax, _known_status
+from workflow_function_calls import _closes, _function_syntax, _known_status
 
 
 def _structural_groups(stage):
@@ -249,6 +249,28 @@ class _GroupFrame:
             self.reach_barrier = "conditional"
 
 
+class _PipelineFrame:
+    """One legacy structural group and the pipeline entered when it closes."""
+
+    __slots__ = ("parent", "piped", "resolved")
+
+    def __init__(self, parent):
+        self.parent = parent
+        self.piped = None
+        self.resolved = None
+
+
+class _FunctionFrame:
+    """One function definition shared by every statement in its body."""
+
+    __slots__ = ("close", "depth", "name")
+
+    def __init__(self, name):
+        self.close = None
+        self.depth = None
+        self.name = name
+
+
 class _StageShape:
     """Case-aware group events and arm state for one parser stage."""
 
@@ -429,21 +451,75 @@ def _stage_shape(stage, cases):
 
 
 class _StatementAnalysis:
-    """One source-ordered case/group pass shared by every check in a list."""
+    """One source-ordered structural pass shared by every check in a list.
+
+    Legacy group and function scopes are indexed in the same pass so every
+    pipeline-boundary query can share its answer.
+    """
 
     def __init__(self, stmts):
+        self.control_depths = None
+        self.conditional_group_tails = []
+        self.function_calls = {}
+        self.function_ends = {}
+        self.function_names = set()
+        self.function_scopes = []
         self.leading_arms = {}
         self.opened: dict[int, list[tuple[object, _EnclosingContext]]] = {}
+        self.piped_group_ends = {}
+        self.piped_group_stages = {}
+        self.piped_groups = []
         self.plain_arms = []
         self.enclosing: list[_GroupFrame | None] = []
         self.reach_barriers = []
+        self.structural_depths = []
+        active_functions, pending_functions, function_frames = [], [], []
         cases: list[_CaseState] = []
+        function_depth, pipeline_depth, tail_depth = 0, 0, 0
+        pipeline_top, pipeline_frames, pipeline_at = None, [], []
         top = None
         for index, statement in enumerate(stmts):
             self.enclosing.append(top)
             plain_arm = False
             barrier = top.reach_barrier if top is not None else None
-            for stage in statement.stages:
+            for position, stage in enumerate(statement.stages):
+                name, braces = _function_syntax(stage.argv)
+                if name is not None:
+                    function_frame = _FunctionFrame(name)
+                    pending_functions.append(function_frame)
+                    function_frames.append(function_frame)
+                    self.function_names.add(name)
+                for token in braces:
+                    if token == "{":
+                        function_depth += 1
+                        if pending_functions:
+                            function_frame = pending_functions.pop()
+                            function_frame.depth = function_depth
+                            active_functions.append(function_frame)
+                    else:
+                        if (active_functions and
+                                active_functions[-1].depth == function_depth):
+                            active_functions.pop().close = index
+                        function_depth = max(0, function_depth - 1)
+                opens, closes = _structural_groups(stage)
+                for _open in range(opens):
+                    pipeline_depth += 1
+                    if pipeline_depth > 0:
+                        pipeline_top = _PipelineFrame(pipeline_top)
+                        pipeline_frames.append(pipeline_top)
+                for _close in range(closes):
+                    if pipeline_depth > 0 and pipeline_top is not None:
+                        pipeline_closed, pipeline_top = pipeline_top, pipeline_top.parent
+                        if position + 1 < len(statement.stages):
+                            pipeline_closed.piped = (index, position + 1)
+                    pipeline_depth -= 1
+                leading = []
+                for token in stage.argv:
+                    if token not in shell_reader.KEYWORDS:
+                        break
+                    leading.append(token)
+                tail_depth += (stage.group_open - stage.group_close
+                               + leading.count("{") - leading.count("}"))
                 shape = _stage_shape(stage, cases)
                 if shape.ambiguous:
                     barrier = barrier or "ambiguous"
@@ -455,9 +531,9 @@ class _StatementAnalysis:
                 for event, prefix in shape.events:
                     if event == "close":
                         if top is not None:
-                            closed, top = top, top.previous
-                            closed.closed = True
-                            closed.context.through = closed.carrier
+                            group_closed, top = top, top.previous
+                            group_closed.closed = True
+                            group_closed.context.through = group_closed.carrier
                         continue
                     context = _EnclosingContext(
                         _failure_context(prefix, shape.plain_arm, stage,
@@ -477,6 +553,36 @@ class _StatementAnalysis:
                     self._carry(top, index, index, stmts)
             self.plain_arms.append(plain_arm)
             self.reach_barriers.append(barrier)
+            self.function_scopes.append(
+                active_functions[-1] if active_functions else
+                pending_functions[-1] if pending_functions else None
+            )
+            pipeline_at.append(pipeline_top)
+            self.structural_depths.append(tail_depth)
+        for function_frame in function_frames:
+            if function_frame.close is None:
+                function_frame.close = len(stmts) - 1
+        for pipeline_frame in pipeline_frames:
+            pipeline_frame.resolved = (pipeline_frame.piped or
+                                       (pipeline_frame.parent.resolved
+                                        if pipeline_frame.parent else None))
+        self.piped_groups = [pipeline_frame.resolved if pipeline_frame else None
+                             for pipeline_frame in pipeline_at]
+        next_command: int | None = None
+        next_close: int | None = None
+        self.later_commands: list[int | None] = [None] * len(stmts)
+        self.conditional_group_tails = [False] * len(stmts)
+        for index in range(len(stmts) - 1, -1, -1):
+            self.later_commands[index] = next_command
+            close = next_close if self.structural_depths[index] > 0 else None
+            self.conditional_group_tails[index] = bool(
+                close is not None and next_command is not None
+                and next_command <= close and stmts[close].separator in ("&&", "||")
+            )
+            if not _closes(stmts[index]):
+                next_command = index
+            if self.structural_depths[index] <= 0:
+                next_close = index
         self.reach_barrier_ends: list[int | None] = [None] * len(self.reach_barriers)
         through = None
         for index in range(len(self.reach_barriers) - 1, -1, -1):
@@ -489,6 +595,28 @@ class _StatementAnalysis:
     def blocks_reach(self, index):
         """Whether this list must fall back from a child-local reach."""
         return index < len(self.reach_barriers) and self.reach_barriers[index]
+
+    def function_scope(self, index):
+        """The indexed function definition containing ``index``, if one."""
+        return self.function_scopes[index] if index < len(self.function_scopes) else None
+
+    def has_later_command(self, index, close):
+        """Whether a non-closer follows ``index`` through ``close``."""
+        later = self.later_commands[index] if index < len(self.later_commands) else None
+        return later is not None and later <= close
+
+    def conditional_group_tail(self, index):
+        """Whether the enclosing structural group has a replacing tail."""
+        return (index < len(self.conditional_group_tails)
+                and self.conditional_group_tails[index])
+
+    def piped_group(self, index):
+        """The indexed pipeline start of the first enclosing piped group."""
+        return self.piped_groups[index] if index < len(self.piped_groups) else None
+
+    def structural_depth(self, index):
+        """Legacy structural depth after ``index`` in this statement list."""
+        return self.structural_depths[index] if index < len(self.structural_depths) else 0
 
     def reach_barrier(self, index):
         """The structural reason this list falls back, if any."""
