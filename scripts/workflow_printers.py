@@ -91,6 +91,15 @@ class Named(str):
     runner: str = ANY
 
 
+class SpelledOutput(str):
+    """A written file's already-spelled printer output.
+
+    The file binder has already run ``spellings`` over every writer. Keeping
+    that result tagged avoids parsing one synthetic ``printf`` with the whole
+    file in a single shell word before the actual file text is parsed.
+    """
+
+
 # echo per shell (#2476, fix round 1 R-F1/R-F5/M1): the option word(s) it reads, the cap on how many
 # may stand (None: as many consecutive ones as match), and whether it decodes by default. Bash
 # (GitHub's default, `shell=None`) and zsh (measured here too: `echo -e 'a\tb'` decodes, `echo -E
@@ -206,6 +215,35 @@ _PAST_DEPTH = ("a pipeline longer than the %d stages this guard follows" % _DEPT
 
 _GROUPED = ("a group of statements whose text no one printer spells out",
             'exec "$PROGRAM"')
+
+
+class StatementFront:
+    """A statement prefix, iterable both ways without a list slice.
+
+    The program readers ask once per stage; copying every growing prefix made
+    a large handed script quadratic even when no stage consumed the prefix.
+    """
+
+    __slots__ = ("stmts", "end")
+
+    def __init__(self, stmts, end):
+        self.stmts, self.end = stmts, end
+
+    def __reversed__(self):
+        return (self.stmts[at] for at in range(self.end - 1, -1, -1))
+
+    def __iter__(self):
+        return (self.stmts[at] for at in range(self.end))
+
+    def __len__(self):
+        return self.end
+
+    def __getitem__(self, index):
+        if index < 0:
+            index += self.end
+        if not 0 <= index < self.end:
+            raise IndexError(index)
+        return self.stmts[index]
 
 
 def _printer_of(pipeline):
@@ -391,6 +429,8 @@ def substituted(value):
     `<(…)`. So `echo 'sh tool'`, a `printf` format (decoded in every shell) and a QUOTED heredoc on
     a `cat` are spelled; `echo 'sh\\ttool'`, which bash prints as written and dash decodes, is not,
     and neither is an EXPANDING heredoc (`fed` has it) nor anything `printed` cannot spell."""
+    if isinstance(value, SpelledOutput):
+        return str(value)
     found = _printer(value)
     if found is None:
         return _group_substituted(value)
@@ -429,6 +469,8 @@ def unsubstituted(value):
     `printf` alone in the script `value` where `substituted` cannot spell it, its words as ONE
     text as `unspelled` weighs an unspelled printer's (`sh <(echo "$X")`), else []. Never a `cat`:
     `substituted` spells its QUOTED heredoc, and `fed` hands the guard its EXPANDING one."""
+    if isinstance(value, SpelledOutput):
+        return []
     found = _printer(value)
     if not found:
         return _group_unsubstituted(value)
@@ -510,6 +552,8 @@ def fed(value):
     """The `(body, expands)` of the heredoc or here-string a `cat` alone in the script `value`
     prints (`_printer`, #2495), or None: `workflow_guard._unread_stdin` reports an EXPANDING one a
     shell reads as its FILE (`bash <(cat <<EOF …)`) as it reports `cat <<EOF | sh`."""
+    if isinstance(value, SpelledOutput):
+        return None
     found = _printer(value)
     return (found[1].stdin_heredoc
             if found and os.path.basename(found[0][0]) not in _PRINTERS else None)
