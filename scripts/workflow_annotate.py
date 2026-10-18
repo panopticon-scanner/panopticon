@@ -135,27 +135,18 @@ from workflow_function_calls import _function_syntax
 from workflow_printers import ANY, _PRINTERS, piped_group_member
 from workflow_programs import _FOREIGN, _MEASURED_SHELLS, scripts, stdin_scripts
 from workflow_uses import _WHOLE, _cleared, _control_kinds, _forked, _table_certainty
-from workflow_values import _OPENER, Values, _literals, record, valued
+from workflow_values import (_BASH_PREFIXES as _BASH_PREFIXES, _BASH_SETS as _BASH_SETS,
+                             _EXPANDS as _EXPANDS, _NAMED as _NAMED, _OPENER, Values, _lifted,
+                             _literal as _literal, _literals, record)
 
-# A whole reference's name; what makes a value nonliteral; the plain name a command value must
-# be; modeled command names; directories a bare lookup reaches (`_bare`); and a fetcher word in
-# printed text.
-_NAMED = re.compile(r"\$\{?([A-Za-z_]\w*)", re.A)
-_EXPANDS = re.compile(r"[$`]|[<>]\(")
+# The plain name a command value must be; modeled command names; directories a bare lookup
+# reaches (`_bare`); and a fetcher word in printed text. A whole reference's name, what makes a
+# value nonliteral and the names bash sets itself live with `_literal` in `workflow_values`.
 _PLAIN = re.compile(r"[\w./+-]+", re.A)
 _NAMES = (*shell_reader._SHELLS, *_FOREIGN, *_PRINTERS, "cat", "true")
 _SYSTEM = ("/bin", "/usr/bin", "/usr/local/bin", "/sbin", "/usr/sbin")
 _FETCH_WORD = re.compile(
     r"(?<![\w./-])(?:(?:curl|wget)(?![\w.-])|(?:%s)(?![\w.:+-]))" % "|".join(FETCHERS[2:]), re.A)
-# The names bash sets itself, and the prefixes of its completion and `bind -x` ones: a step's
-# assignment to one is not what a later word reads (`$_` is the last command's last word).
-_BASH_SETS = frozenset((
-    "_", "BASH_ARGC", "BASH_ARGV", "BASH_ARGV0", "BASH_COMMAND", "BASH_EXECUTION_STRING",
-    "BASH_LINENO", "BASH_REMATCH", "BASH_SOURCE", "BASH_SUBSHELL", "BASH_VERSINFO", "BASHPID",
-    "COLUMNS", "COPROC", "DIRSTACK", "EPOCHREALTIME", "EPOCHSECONDS", "EUID", "FUNCNAME",
-    "GROUPS", "HISTCMD", "HOSTNAME", "LINENO", "LINES", "MAPFILE", "OLDPWD", "OPTARG", "OPTIND",
-    "PIPESTATUS", "PPID", "PWD", "RANDOM", "REPLY", "SECONDS", "SHLVL", "SRANDOM", "UID"))
-_BASH_PREFIXES = ("COMP_", "READLINE_")
 
 # What a program a mark hands a shell may not run (`_plain`): every builtin and keyword of bash
 # and dash, the shells that may read it (`_MEASURED_SHELLS`), that ends, sources, waits on or
@@ -250,12 +241,12 @@ def annotate(stmts, shell=None):
                 argv = command(stage.argv)
             if argv and _printer(argv) and (position + 1 < len(statement.stages) or piped_group_member(stmts, index)):
                 _spell(stage, argv, step, index)
-        if any(new is not old for stage, was in zip(statement.stages, written)
-               for new, old in zip(stage.argv, was)):
+        if any(new is not old and not hasattr(new, "weighed") for stage, was in zip(statement.stages, written)
+               for new, old in zip(stage.argv, was)):           # a `weighed` word changes no reading (#3153)
             vetoed = _quiet((shell or "sh").replace("{0}", "").split()) is None or step.vetoed
             if vetoed or not _complete(statement):         # read as written
                 for stage, was in zip(statement.stages, written):
-                    stage.argv[:] = was
+                    stage.argv[:] = was if vetoed else [_as_weighed(new, old) for new, old in zip(stage.argv, was)]
             if vetoed:                                      # and so every later statement
                 break
     return stmts
@@ -311,9 +302,9 @@ class _Fold:
         self.defines = any(_function_syntax(stage.argv)[0] for statement in stmts
                            for stage in statement.stages)
 
-    def at(self, index):
-        """The table live at statement `index`."""
-        if self.defines or index < self.read or not self._folds(index):
+    def at(self, index, forks=False):
+        """The table live at statement `index`; with `forks`, in a forked child too (`_folds`)."""
+        if self.defines or index < self.read or not self._folds(index, forks):
             return Values()
         for position in range(self.read, index):
             stages = self.stmts[position].stages
@@ -325,13 +316,17 @@ class _Fold:
         self.read = index
         return self.table
 
-    def _folds(self, index):
+    def _folds(self, index, forks=False):
         """Whether `static_values` reads statement `index` as the fold does: in no forked child,
         so its `_forked` set is the step's own; in no loop body, which it reads past `index` too
-        (an earlier pass ran it); and in no `while` or `until` head, whose body it reads."""
+        (an earlier pass ran it); and in no `while` or `until` head, whose body it reads. With
+        `forks` (#3153 item 1, a printer's weighing alone), in a forked child too: the fold holds
+        the values from before the fork, which the child inherits, and the child's own assignments
+        unsure (`at`: `_forked` is the step's own set), so a name the child assigns holds two
+        candidates and none is taken -- fewer values than `static_values` gives, never another."""
         head = self.stmts[index].stages[0].argv if self.stmts[index].stages else []
         lead = head[:len(head) - len(command(head))]
-        return index not in self.forked and "do" not in self.kinds[index] and not (
+        return (forks or index not in self.forked) and "do" not in self.kinds[index] and not (
             {"while", "until"} & set(map(str, lead)))
 
 
@@ -388,46 +383,43 @@ def _references(stage, words):
             yield at, word
 
 
-def _literal(word, table):
-    """The ONE literal text whole reference `word` stands for through `table`, or None (rules 1
-    and 13): its name holds one candidate, not empty, and is no name bash sets itself
-    (`_BASH_SETS`, `_BASH_PREFIXES`) nor, unbraced, one a shorter held name prefixes; and the
-    word resolves to one text with no lifted `$(...)` and nothing `_EXPANDS` finds."""
-    named = _NAMED.match(str(word))
-    name = named[1] if named else ""
-    if name in _BASH_SETS or name.startswith(_BASH_PREFIXES) or not str(word).startswith(
-            "${") and any(name[:cut] in table.scalars or name[:cut] in table.arrays
-                          for cut in range(1, len(name))):
-        return None
-    held = [*table.scalars.get(name, []), *table.arrays.get(name, [])]
-    if len(held) != 1 or not held[0]:
-        return None
-    texts = valued(word, table)
-    if len(texts) != 1:
-        return None
-    text = texts[0]
-    if not text or shell_reader.is_marker(text) or _EXPANDS.search(text):
-        return None
-    return str(text)
+def _as_weighed(new, old):
+    """`old`, the word as written, where rule 6 takes back what `new` was given (`annotate`): carrying the
+    text `new` spelled as `weighed` (#3153 item 1), which every reader reads as written and the printer's
+    unspelled reading weighs beside its words; `old` itself where `new` spelled nothing."""
+    if new is old or not hasattr(new, "spelled"):
+        return old
+    token = shell_reader._Token(str(old), shell_reader._markers(old))
+    setattr(token, "weighed", getattr(new, "spelled"))
+    return token
 
 
 def _spell(stage, argv, step, index):
     """Give each whole-reference word of printer `argv`, a stage piped into another, its value's
     `spelled` text, the word itself kept as written so every other reader sees what it saw, as
     `shell_reader._stage` gives a `\\$` word one -- where it stands in no test, its name is spelled
-    only as rule 7 allows, and the text it prints, its words and these values, fetches (rule 14)."""
+    only as rule 7 allows, and the text it prints, its words and these values, fetches (rule 14).
+    Where it spells none, BESIDE that reading and never instead (#3153 item 1): each word's value as a
+    forked child inherits it (`_Fold.at`'s `forks`) or with its lifted `$(...)` written as text no one
+    knows (`_lifted`), in a test too, goes on the word as `weighed` where the text it prints with them
+    fetches -- what the printer's unspelled reading weighs beside its own words
+    (`workflow_printers._inherited`), never a text it spells: a value that fetches makes it LOUD."""
     words = list(_references(stage, argv[1:]))
-    if not words or step.tests[index]:
+    if not words:
         return
-    spelled = []
-    for at, word in words:
-        text = _literal(word, step.fold.at(index))
-        if text is not None and step.plain(word):
-            spelled.append((at, word, text))
-    printed = " ".join([*map(str, argv[1:]), *(text for _at, _word, text in spelled)])
-    for at, word, text in spelled if _FETCH_WORD.search(printed) else ():
-        stage.argv[at] = shell_reader._Token(str(word), shell_reader._markers(word))
-        setattr(stage.argv[at], "spelled", text)
+    for forks, attribute in ((False, "spelled"), (True, "weighed")):
+        found = []
+        for at, word in words if forks or not step.tests[index] else ():
+            table = step.fold.at(index, forks)
+            text = _literal(word, table) if not forks else _literal(word, table) or _lifted(word, table)
+            if text is not None and step.plain(word):
+                found.append((at, word, text))
+        printed = " ".join([*map(str, argv[1:]), *(text for _at, _word, text in found)])
+        if found and _FETCH_WORD.search(printed):
+            for at, word, text in found:
+                stage.argv[at] = shell_reader._Token(str(word), shell_reader._markers(word))
+                setattr(stage.argv[at], attribute, text)
+            return
 
 
 def _mark(stage, at, word, text, sure):
