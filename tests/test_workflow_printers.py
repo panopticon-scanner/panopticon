@@ -2511,22 +2511,25 @@ class TestTheGroupsThisGuardFollowsNow(LinearGrowth, unittest.TestCase):
     # posture the same marks and findings as its twin with another number -- and as `main` reads the shape where
     # `main` reads it (a brace group, one level): CLEAN, or `main`'s one finding for a group holding a statement no
     # printer's. Truth: nothing runs (k3117/rows-forged, 24 rows). Told by text, 15 of the 24 read LOUD as the bound.
-    TYPED = "'%s'" % wp._PAST_GROUP[0]
-    FORGED = (
-        ("only", "{ %s; } | sh\n" % TYPED, "C"),
-        ("last", "{ echo ok; %s; } | sh\n" % TYPED, "R"),
-        ("first", "{ %s; echo ok; } | sh\n" % TYPED, "R"),
-        ("double-quoted", "{ \"%s\"; } | sh\n" % wp._PAST_GROUP[0], "C"),
-        ("nested", "{ { %s; }; } | sh\n" % TYPED, "C"),
-        ("if-body", "if true; then %s; fi | sh\n" % TYPED, "C"),
-        ("fn-only", "f() { %s; }\nf | sh\n" % TYPED, "C"),
-        ("fn-body", "f() { echo ok; %s; }\nf | sh\n" % TYPED, "R"),
-        ("eval", "eval \"{ %s; } | sh\"\n" % TYPED, "C"),
-        ("subst", "x=$({ %s; } | sh)\n" % TYPED, "C"),
-        ("cat-after", "{ %s; } | cat | sh\n" % TYPED, "C"),
-        ("source-stdin", "{ %s; } | source /dev/stdin\n" % TYPED, "C"),
-        ("with-download", "{ echo \"%s\"; %s; } | sh\n" % (C, TYPED), "R"),
-    )
+    # Built at test time, so the module collects on `main`'s scripts and these fail by name there (RED).
+    @classmethod
+    def forged(cls):
+        typed = "'%s'" % wp._PAST_GROUP[0]
+        return (
+            ("only", "{ %s; } | sh\n" % typed, "C"),
+            ("last", "{ echo ok; %s; } | sh\n" % typed, "R"),
+            ("first", "{ %s; echo ok; } | sh\n" % typed, "R"),
+            ("double-quoted", "{ \"%s\"; } | sh\n" % wp._PAST_GROUP[0], "C"),
+            ("nested", "{ { %s; }; } | sh\n" % typed, "C"),
+            ("if-body", "if true; then %s; fi | sh\n" % typed, "C"),
+            ("fn-only", "f() { %s; }\nf | sh\n" % typed, "C"),
+            ("fn-body", "f() { echo ok; %s; }\nf | sh\n" % typed, "R"),
+            ("eval", "eval \"{ %s; } | sh\"\n" % typed, "C"),
+            ("subst", "x=$({ %s; } | sh)\n" % typed, "C"),
+            ("cat-after", "{ %s; } | cat | sh\n" % typed, "C"),
+            ("source-stdin", "{ %s; } | source /dev/stdin\n" % typed, "C"),
+            ("with-download", "{ echo \"%s\"; %s; } | sh\n" % (cls.C, typed), "R"),
+        )
 
     def test_the_shapes_are_read(self):
         # RED on `main`: CLEAN under every posture there.
@@ -2561,7 +2564,7 @@ class TestTheGroupsThisGuardFollowsNow(LinearGrowth, unittest.TestCase):
         self.assertNotIn(wp._PAST_GROUP[0], " ".join(self.findings(text)))
 
     def test_a_step_typing_the_stand_ins_text_reads_as_any_other_word(self):
-        for name, text, mark in self.FORGED:
+        for name, text, mark in self.forged():
             twin = text.replace(wp._PAST_GROUP[0], wp._PAST_GROUP[0].replace(str(wp._GROUP_LINES), str(wp._GROUP_LINES + 1)))
             with self.subTest(name=name):
                 self.assertEqual((mark * 5, mark * 5), self.marks(text))
@@ -2573,7 +2576,7 @@ class TestTheGroupsThisGuardFollowsNow(LinearGrowth, unittest.TestCase):
 
     def test_mains_findings_are_kept(self):
         # The union, per shape and posture: every finding `main` gives stands here (monotone against `main`).
-        for name, text in self.READ + self.AS_MAIN + self.STAYS + self.LIMITS + self.PRICES + tuple(f[:2] for f in self.FORGED):
+        for name, text in self.READ + self.AS_MAIN + self.STAYS + self.LIMITS + self.PRICES + tuple(f[:2] for f in self.forged()):
             for shell in self.SHELLS:
                 with self.subTest(name=name, shell=shell):
                     step = [wg.Step("step", text, shell)]
