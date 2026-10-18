@@ -39,6 +39,7 @@ from workflow_called_fetches import (_DEPTH as _DEPTH, _POSITIONAL as _POSITIONA
                                      _Fixed as _Fixed, _positional as _positional, _rest as _rest,
                                      _with_arguments as _with_arguments, called as called,
                                      with_call_stdin as with_call_stdin)
+from workflow_failure_contexts import statement_analysis
 from workflow_function_calls import _function_syntax
 from workflow_use_scopes import _body_end, _function_ranges
 from workflow_values import _CANDIDATES, PAST, Values, emptied, record, stand_in
@@ -97,21 +98,19 @@ def _status_shadows(stmts, starts):
              for _words, name in _command_views(stage) if name in (":", "false", "true")})
 
 
-def _calls(stmts, head, close, starts):
+def _calls(stmts, head, close, index):
     """The functions the body `stmts[head:close + 1]` calls: a single-stage statement whose
     head word is bare and no assignment, in a list the body does not send to the background
     (`g() { f & wait; }`: as at the top level, what the child assigns dies with it) -- each
     list's end read once, walking the body backwards (round 8, B3). Statements belonging to a
     nested definition are that body's calls, not the outer body's; the explicit call after its
     close reaches it in turn. This also keeps a nested subshell body's effects in its child
-    (`g() { h() ( f ); h; }`, #2975 part A and #2437 W621)."""
+    (`g() { h() ( f ); h; }`, #2975 part A and #2437 W621). `index`, the step's `_Definitions`,
+    answers which statements a nested definition holds (#3124)."""
     found: set[str] = set()
     backgrounded = False
-    nested = {at for entries in starts.values()
-              for _name, start, end in entries if head < start <= close
-              for at in range(start, min(_body_end(stmts, start, end)[0], close) + 1)}
     for at in range(close, head - 1, -1):
-        if at in nested:
+        if index.nested(at, head):
             continue
         statement = stmts[at]
         if at == close or statement.separator not in ("&&", "||"):
@@ -177,6 +176,8 @@ class _Step:
     def __init__(self, stmts):
         self.stmts, self.size, self.sites, self._set, self.last = stmts, len(stmts), {}, {}, {}
         self.effects: dict[tuple, tuple] = {}
+        self.indexes: dict[int, "_Definitions"] = {}      # id(starts) -> its `_Definitions`, the last few
+        self.own: tuple[dict[int, list[tuple[str, int, int]]], set[int]] | None = None
         self.probe = "_" * (2 + max((len(name) for statement in stmts for stage in statement.stages
                                      for word in stage.argv for name in _SPELLED.findall(str(word))), default=0))
 
@@ -199,6 +200,25 @@ class _Step:
             self._set[at] = names
         return self._set[at]
 
+    def definitions(self, starts):
+        """The step's `_Definitions` for `starts`, built once and kept while a pass hands the same `starts` (the
+        last few kept, a pass may hand two) -- or, handed None, for the ranges the step's own shared analysis
+        gives (`_function_ranges` once, not once a body: #3124)."""
+        if starts is None:
+            starts = self.ranges()[0]
+        index = self.indexes.get(id(starts))
+        if index is None or index.starts is not starts:
+            self.indexes[id(starts)] = index = _Definitions(self.stmts, starts)
+            while len(self.indexes) > 4:
+                self.indexes.pop(next(iter(self.indexes)))
+        return index
+
+    def ranges(self):
+        """`_function_ranges` of the step -- (starts, occupied) -- read once, with the step's shared analysis."""
+        if self.own is None:
+            self.own = _function_ranges(self.stmts, statement_analysis(self.stmts))
+        return self.own
+
     def since(self, key, table, position):
         """The names that may have changed in `table` since the last stand-in for `key` left it --
         what the statements between may set, and for a body that may set any name what the bodies
@@ -217,6 +237,66 @@ class _Step:
         return names
 
 
+class _Definitions:
+    """The step's definitions (`starts`, `_function_ranges`' map) indexed once a pass for `_reached`, `_calls` and
+    `_possible_called_readonly` (#3124): `by_name`, each name's (at, head, close) in the step's order, and for each
+    statement the head of the innermost definition whose body holds it, or None -- `inner` with a body's end as
+    `_body_end` finds it (a subshell body's `)`), `inner_close` with the `}` `_function_ranges` found -- so the
+    statements a definition nested in the body (head, close) holds are those at or before `close` whose innermost
+    head lies past `head`, asked a statement, where walking every definition of the step once a reached body and
+    once a body read for its readonly names made a step of n definitions cubic in n (the #3132 seat's rows)."""
+
+    def __init__(self, stmts, starts):
+        self.starts = starts
+        self.by_name: dict[str, list[tuple[int, int, int]]] = {}
+        for at, entries in starts.items():
+            for name, head, close in entries:
+                self.by_name.setdefault(name, []).append((at, head, close))
+        entries = [(head, close) for entries in starts.values() for _name, head, close in entries]
+        ends = [(head, *_body_end(stmts, head, close)) for head, close in entries]
+        self.inner = self._innermost(len(stmts), [(head, end) for head, end, _found in ends])
+        self.inner_close = self._innermost(len(stmts), entries)
+        found = self._innermost(len(stmts), [(head, end) for head, end, found in ends if found], ends=True)
+        self.found_inner, self.found_end = found
+
+    @staticmethod
+    def _innermost(size, ranges, ends=False):
+        """For each of `size` statements, the greatest head among the `ranges` (head, end) holding it, or None --
+        and, `ends`, that range's end beside: one sweep, the ranges begun kept by head, the top dropped once its
+        end is passed."""
+        ranges, begun, held, out, out_ends = sorted(ranges), 0, [], [], []
+        for at in range(size):
+            while begun < len(ranges) and ranges[begun][0] == at:
+                held.append(ranges[begun])
+                begun += 1
+            while held and held[-1][1] < at:
+                held.pop()
+            out.append(held[-1][0] if held else None)
+            out_ends.append(held[-1][1] if held else None)
+        return (out, out_ends) if ends else out
+
+    def enclosing(self, at, last):
+        """(head, end) of the innermost definition whose body, its end found, holds statement `at` -- the body
+        `static_values` walks alone -- or (-1, `last`) outside every one."""
+        head = self.found_inner[at] if at < len(self.found_inner) else None
+        return (-1, last) if head is None else (head, self.found_end[at])
+
+    def nested_found(self, at, first):
+        """Whether statement `at` lies in a found body headed past `first` (`static_values`' nested set)."""
+        inner = self.found_inner[at]
+        return inner is not None and inner > first
+
+    def nested(self, at, head):
+        """Whether statement `at` belongs to a definition nested in the body headed at `head`, by `inner`."""
+        inner = self.inner[at]
+        return inner is not None and inner > head
+
+    def nested_close(self, at, head):
+        """`nested` by `inner_close`: the `}` each nested body was found to end at."""
+        inner = self.inner_close[at]
+        return inner is not None and inner > head
+
+
 def _carried(stmts):
     """The step `stmts`' `_Step`, kept for the last few steps, each with its statements."""
     step = _CARRIED.get(id(stmts))
@@ -233,10 +313,8 @@ def _reached(stmts, position, starts):
     deep; a definition after the call is no function yet, and a subshell body reaches nothing."""
     stage = stmts[position].stages[0] if stmts[position].stages else None
     head = _head(list(stage.argv)) if stage else None
-    defined: dict[str, list[tuple[int, int, int]]] = {}
-    for at, entries in starts.items():
-        for name, start, close in entries:
-            defined.setdefault(name, []).append((at, start, close))
+    index = _carried(stmts).definitions(starts)
+    defined = index.by_name
     if head is None or head not in defined:
         return []
     bodies, queue, seen = [], [head], set[str]()
@@ -247,7 +325,7 @@ def _reached(stmts, position, starts):
             if name == head and at >= position or _subshell(stmts, start, close):
                 continue
             bodies.append((start, close))
-            queue.extend(call for call in _calls(stmts, start, close, starts)
+            queue.extend(call for call in _calls(stmts, start, close, index)
                          if call in defined and call not in seen and call not in queue)
     return bodies
 
@@ -282,11 +360,9 @@ def _possible_called_readonly(stmts, bodies, branches, conditionals, shell, attr
     """Caller-visible readonly names, and whether a dynamic command can name any target."""
     found, unknown = set(), False
     declaration_names = ("declare", "local", "readonly", "typeset")
+    index = _carried(stmts).definitions(None)
     for start, close in bodies:
         local, subshells = set(), 0
-        nested = {at for entries in _function_ranges(stmts)[0].values()
-                  for _name, head, end in entries if start < head <= close
-                  for at in range(head, min(end, close) + 1)}
         for at in range(start, close + 1):
             statement = stmts[at]
             for stage in statement.stages:
@@ -317,7 +393,7 @@ def _possible_called_readonly(stmts, bodies, branches, conditionals, shell, attr
                     found.update(made_readonly - local - local_here)
                     unknown = unknown or any(is_dynamic for _row, is_dynamic in proofs) or direct[2] or any(
                         row[2] for row in lexical)
-                if name == "return" and certain and at not in nested:
+                if name == "return" and certain and not index.nested_close(at, start):
                     break
                 subshells = max(0, subshells + stage.group_open - stage.group_close)
             else:

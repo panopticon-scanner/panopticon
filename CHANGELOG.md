@@ -7,6 +7,37 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard reads a step's function definitions once a pass, not once a use or a body
+  (#3124).** A step of n siblings each called cost the job about x6 a doubling on `main` (1.2 / 6.6
+  / 46.5 s at 80 / 160 / 320; the #3132 seat's rows read cubic) and n nested definitions x3 (0.03 /
+  0.09 / 0.23 s at 40 / 80 / 160): `workflow_uses.static_values`, run once a call or a statement
+  holding `$`, rebuilt `_function_ranges` without #3126's shared analysis (a `_function_scope` scan
+  of the step a definition), `_body_end` a definition and its nested set at every use;
+  `_possible_called_readonly`, run once a definition by the carried pass, rebuilt `_function_ranges`
+  a body; and `_reached` and `_calls` walked every definition a call site and a reached body. Now
+  `workflow_called._Definitions` indexes the step's definitions once a pass on the per-step memo
+  (`_Step.definitions`; `_Step.ranges` is `_function_ranges` with the shared analysis, once): each
+  name's definitions and, for each statement, the innermost body holding it -- three sweeps: ends as
+  `_body_end` finds them, as the `}` was found, found bodies only -- asked a statement by
+  `_reached`, `_calls`, `_possible_called_readonly` and, granted, by `static_values` and `uses`
+  (`workflow_uses`) and `_called_assignments` and `carried` (`workflow_carried`). Readings unchanged
+  by construction: Forge differential of a8ff2aa7 against `main` 5c88603d over the 27,657-row kit
+  (the kit's rows and this issue's 45; three readings a cell, 2,048,295 in all, 83 min):
+  byte-identical dumps -- no row differs, no multiplicity gained or lost in the job, main-pass or
+  walk readings. Measured, `job_defects` CPU, `main` -> here: siblings each called 80 / 160 / 320:
+  1.2 / 6.6 / 46.5 s -> 0.34 / 1.1 / 3.9 s, still x3.2-3.6 a doubling, since the uses pass walks
+  every earlier statement a use (`walk`) and scans the step a use (`_forked`) -- `main`'s design
+  (round 8: "`main` is quadratic"), a follow-up for Blue; nested 40 / 80 / 160: 0.03 / 0.09 / 0.23
+  -> 0.03 / 0.05 / 0.12 s; one of n called, or none, 80 / 160: 0.08 / 0.18 -> 0.07 / 0.12 s (0.23 s
+  at 320). What the job still grows past that is the gating side's (`_gating_function_call` once a
+  definition, each a scan of the step: #3128). Pins:
+  `tests/test_workflow_positional_handoff.py::TestEachDefinitionIsIndexedOnceAPass`, `static_values`
+  at the step's last statement past n definitions and n calls (640 -> 2560: `main` 0.33 -> 4.5 s,
+  the bound 2.9 s; here 0.07 -> 0.30 s) and `_possible_called_readonly` over n bodies (80 -> 320:
+  `main` 0.30 -> 18.1 s, the bound 2.6 s; here 0.01 -> 0.07 s), both RED on `main`; no job-level pin
+  until #3128 makes the gating side linear. Sizes: `scripts/workflow_called.py` 561 (+76),
+  `scripts/workflow_uses.py` 593 (-4), `scripts/workflow_carried.py` 676 (-2).
+
 - **Workflow reader parts a nested function header behind a group's `{` in a one-line body
   (#3123).** `f() { { g() { sh t; }; g; }; }` ⏎ `f` ran the download under every parent and read
   CLEAN: the splitter parted a header's `{` from a nested header after it (`f() { g() {`, #2975 part
