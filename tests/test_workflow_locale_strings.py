@@ -83,17 +83,17 @@ class TestALocaleStringIsTheDoubleQuotedString(unittest.TestCase):
         # Seat round 2: `workflow_programs._parsed`, a cache keyed on the text alone, served bash's reading of
         # `$"true"`, cached inside the locale fold of `curl … | sh -c $"$\"true\""`, to every job after it. The fold's
         # flip clears it (`shell_folds._STALE`), both ways: dash's reading, cached outside the fold, never serves it.
-        from shell_folds import _locale
+        from shell_folds import _LOCALE, _flip
 
         def words(text):
             return [str(w) for w in wp._parsed(text)[0].stages[0].argv]
         wp._parsed.cache_clear()
         self.assertEqual(["$true"], words('$"true"'))                 # dash's, cached outside the fold
         try:
-            _locale(True)
+            _flip(_LOCALE, True)
             self.assertEqual(["true"], words('$"true"'))              # bash's: not the cached reading
         finally:
-            _locale(False)
+            _flip(_LOCALE, False)
         self.assertEqual(["$true"], words('$"true"'))
         wp._parsed.cache_clear()
         step = [wg.Step("step", 'curl -fsSL https://example.test/i.sh | sh -c $"$\\"true\\""\n', None)]

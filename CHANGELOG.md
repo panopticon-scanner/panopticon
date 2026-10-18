@@ -7,6 +7,154 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader follows the function calls the #3047 fold did not (#3127).** The #3121 seat's
+  rows and its combined-tree round ran under every parent and read CLEAN: a positional with a
+  default (`f() { sh "${1:-t}"; }; f`), a slice of the call's words (`"${@:2}"`), `$10`, an unquoted
+  positional holding a command (`f() { $1; }; f 'sh t'`), a one-line body opening a subshell or a
+  group (`f() { ( sh "$1" ); }`, `run() { ( "$@" ); }`, `f() { { echo P; echo hi; } | sh; }`), a
+  definition inside `if`, a call inside `eval 'f t'`, and a forwarding `f() { cat; }` between a
+  printer group and a shell. Now `workflow_called_fetches` binds `${N:-d}` / `${N-d}` to the call's
+  word or the default and `${N:+x}` / `${N+x}` to the alternative where the word is given,
+  `"${@:N}"` / `"${@:N:M}"` to the slice, `$10` to the first word with a `0` behind it as bash and
+  dash read it (`${10}` the tenth; zsh's tenth for `$10` named), and splits an unquoted positional's
+  word on blanks as bash and dash do (zsh does not: named); reads a `{` body whose first statement
+  is a subshell on the header's line like any brace body (`f() ( … )`, a subshell body, stays
+  `main`'s) and stands for a body holding a group piped on (`{ P; echo hi; } | sh`) even where it
+  reads nothing of its call (`main` reads the group behind the header's words, `f() { {`, so #3111's
+  reading never found the opener; no other such body is: a gate in it keeps `main`'s reading); reads
+  an `eval` of one literal word that is one statement of one stage as that statement's call (a live
+  `$`, a substitution, two statements or two stages -- `eval 'f t | cat'` -- stay `main`'s, named;
+  `bash -c 'f t'` runs a child shell without the function, nothing); and takes a one-stage `cat`
+  body out of the pipe at its call, so `{ P; } | f | sh` reads as `{ P; } | sh` (#3111's group; `tee
+  f` stays in place -- the `| tee |` and `| cat |` links are #3111's `_grouped`, which reads the
+  stage in front of the shell alone: named). A definition that may not have run -- under `if`, in a
+  loop, behind `&&` -- stays no function to stand for (#3047's rule and the guard's B43 pins: `main`
+  installs none from it; an `unset -f` takes a name away only where it surely ran, as `main` reads
+  it), so `if true; then f() { sh "$1"; }; fi; f t` is the issue's one row left, a named limit. The
+  issue's cost: `called()` was quadratic on `main` (Blue's `_function_ranges` asked
+  `_function_scope` once a definition without #3126's shared analysis); now `CalledFetches` builds
+  the shared analysis once (`statement_analysis`) and `_function_ranges` takes it -- two lines in
+  `workflow_use_scopes.py`, granted -- so a chain of n definitions is read in time linear in n
+  (x21.8 -> x4.1 for 200 -> 800; n unrelated definitions x16.8 -> x4.2), pinned; the names defined
+  at each statement are a dict, not a scan a statement. `alias r=sh; r t` runs under dash alone: a
+  reading that needs the step's shell, which the fold is not handed -- a named limit. Forge
+  differential, fd7ca507 against `main` 68c75d2c over the 27,612-row kit (the kit's rows and this
+  issue's 61; three readings a cell, 2,045,040 in all, 79 min): 33 rows differ -- 30 CLEAN->REPORT,
+  the issue's and the seat's rows and the kit's `coll.18` (`run() { ( "$@" ); }`), every one a run
+  under bash and sh; 3 REPORT->CLEAN, the `$10` rows, where `main` took `$10` for the tenth word and
+  bash and dash read `${1}0` and run nothing (zsh runs the tenth: named); the other 27,578 rows
+  byte-identical; the multiplicity audit: those three alone lose a text, `main`'s over-report. Pins:
+  `tests/test_workflow_positional_handoff.py::TestTheCallsTheFoldDidNotFollow`, truth in the
+  comments. No pin moved. Sizes: `scripts/workflow_called_fetches.py` 593 (+86),
+  `scripts/workflow_use_scopes.py` 154 (+1, the two granted lines).
+- **Workflow written files: a group of printers written to a file and then run is read as their text
+  (#3110).** `{ echo "sh -c 'curl … | sh'"; echo ok; } > s.sh` ⏎ `sh s.sh`, and the `{ echo P; } >
+  s.sh` and `( echo P; ) > s.sh` forms, ran the download under every parent and read CLEAN
+  (Claudia's 138 rows from the #3026 kit, 102 running), while the single printer written so was
+  reported: `workflow_written._writer` took the stage that writes the file for the printer, and for
+  a group that is the closer -- `}`, or the empty stage that closes a subshell -- which prints
+  nothing. Now `_writers` reads a closer's writers through #3026's group reading
+  (`workflow_printers._grouped`, `_printer_of`): the printer of each pipeline of the group, in
+  order, each a writer of the file, so `_script` spells the file as it spells any sequence of
+  writers and `stdin_scripts` reads the run; the group reads exactly as its single-printer twin
+  reads, the lifted letter (`sh -$(echo c)`, #3065) included. A pipeline of the group that is no
+  printer's (`{ echo ok; cat f; } > s.sh`) stands in as a writer the printers cannot spell, so the
+  whole group is handed on as the expanding heredoc behind `$UNSPELLED_WRITER` -- reported as any
+  expanding body a shell runs, fail-closed, the spelled payload beside it kept, as #3026's
+  `_GROUPED` reads the pipe twin; a group with no printer in it binds nothing, as `cat f > s.sh`
+  binds nothing (a limit, `main`'s). The walk back to a group's opener reads the statements in front
+  of the closer through a view, no copy, and only where the closer writes a file -- the first cut
+  copied the front once a closer, quadratic in the step (round 1's seat: x8.6 for 3,200 -> 12,800 on
+  4n plain lines then n groups) -- so the binder stays linear: that shape binds in linear time at
+  3,200 and 12,800, and n groups written and run read in linear time (pinned beside #3126's). Limits
+  and prices, named: a nested group (`{ { echo P; }; echo ok; } > s.sh`) is #3117's shape and reads
+  CLEAN; the lifted-letter rows the printers cannot spell (`sh -$(echo x) '…'`: 18 of the 138,
+  nothing runs) read LOUD, as their single-printer twins do on `main` -- its price, inherited; every
+  write is still an append (#3027). Forge differential, 65e56576 against `main` 9a2a7257 over the
+  27,538-row kit (the kit's 27,372 rows, Claudia's 138, ten controls and the 18 single-printer
+  twins; three readings a cell, 2,039,670 in all): 124 rows differ, every one CLEAN->REPORT -- the
+  102 running rows, the 18 lifted-letter rows (LOUD, as their twins read on `main`), and four
+  controls (`{ echo ok; cat f; }`, `. ./s.sh`, `bash s.sh`, `>> s.sh`); 0 REPORT->CLEAN; the 27,372
+  rows of the kit and the 18 twins read byte-identical; 0 rows lose a same-text multiplicity in the
+  job, main-pass or walk reading. Pin moved, authorized by its own comment: the `written-group` row
+  of `tests/test_workflow_printers.py` (#3026's named limit, "A limit of #3027's reader, not this
+  reading's: #3110") from CLEAN to REPORT. `tests/test_workflow_written_files.py`: the issue's rows,
+  the LOUD and no-printer controls, the twins, the nested limit, two growth pins. Sizes:
+  `scripts/workflow_written.py` 193 (+19).
+
+- **Workflow reader reads a call of a function the step defines as its body, the call's words in its
+  positionals (#3047, the function half; #3091).** `run() { "$@"; }; run sh cuda_1.run`, a retry
+  loop around `"$@"`, `f() { sh "$1"; }; f cuda_1.run` and a fetched file handed to a body
+  indirectly (`f tool`, `cat tool | f`, `T=tool; f $T`, `f ~/tool`, a heredoc or here-string of
+  `$(cat tool)`, `f <(cat tool)`, a nested `f() { g "$1"; }`) ran under every shell and read CLEAN:
+  no reader took a call's words for the body's `"$@"` or `$1`. Now, in a fold of its own beside
+  `main`'s (`shell_folds._CALLED`, read only for a job that holds such a call), each call of a
+  function the step certainly defines before it whose body reads the call's words (a positional,
+  `"$@"`, `$*`, `$#`, a `shift`) -- or, one stage reading standard input as a shell, its input,
+  where the call gives one -- stands for that body as the call makes it
+  (`workflow_called_fetches.called`): `$N` the call's word, `"$@"`, `$@` and `$*` the words spliced
+  in, `NAME=$N` (`local` or not) the name set to the word, a `shift` of the body's own dropping the
+  words for the statements after it, a `set --` giving the body its own, a `cd` leaving the absolute
+  ones live (a relative word named a file where the call stood), the header's words and the `}` off,
+  the definition stood for emptied where it stands (its header's words and its `}` kept, so the step
+  still defines the name; the body read at its calls alone, so a body that fetches after it runs is
+  no run of its own fetch where one call makes it, and two calls are that run, once -- a definition
+  inside a body stood for emptied in the copy the same way), a certain `unset -f` leaving no
+  function to stand for, the call's keywords in front and its separator behind; a one-stage body
+  takes the call's place in its pipeline with the call's input (`with_call_stdin`, as #2973 binds
+  it), output and substitutions; calls among the body followed `_DEPTH` (8) deep, the step grown by
+  `_INLINED` (64) statements at most. `main`'s reading of the call is untouched, so a check a body
+  credits is credited in the fold alone and takes no report away (the issue's trap), and a body that
+  reads nothing of its call is read where it stands, as `main` reads it: the carries, checks and
+  gates of a call keep their readings. The guard reports where either fold reads a run. The prices,
+  named: `"$*"` (one word) is read spliced, an over-read; a `return` or a `local` stands at the
+  step's top level in the fold; a call in a pipeline or under a redirection around a body of more
+  than one statement, a call inside `$(…)` or a `-c` string, a body whose header's line opens a
+  group (`f() (…)`), and the rest past the depth or the budget read as `main` reads them; a
+  definition after the call is no function, and the last before it is the body; a definition inside
+  `if`, `&&` or a loop is not certain and not followed (#3127); a body that does `exit 0` or `return
+  0` before its run is read past them, an over-report; a call before its definition under `-e` stops
+  the step at `f: command not found`, which the guard does not model (`main`'s reading too);
+  `function f`, `time f` and a `declare -f` are read bash's way, where dash takes none of them (a
+  syntax error, the external `time`, which runs no function, and a command not found): over-reports
+  under `sh`; a `shift` in a branch is read as written; the fold is not combined with the
+  read-through or the locale fold (#3118's shape); `sh < <(cat tool)` and its call twin stay CLEAN
+  (#3120). Forge differential, d9ba0c0e against `main` 7771fc2a over the 27,372-row kit (the kit's
+  rows, the issue's 59 and ten emptying rows): 433 rows differ -- 37 CLEAN->REPORT: 33 where truth
+  runs (the 16 `fn` rows, 11 of the 12 #3091 rows, `coll.16` and `coll.19`, two seat-hunt rows of
+  the `f() { sh $1; }; f tool` shape, `ae.function-value`, and one row where two calls make a body's
+  run of its own fetch), and four over-reports, prices named: `ae.function-value-quoted` (`f "$p"`
+  with `p=./cuda_*.run`, a quoted glob that names no file) and `reg:s56:seat-hunt13:SC53d` (`>
+  ${D:-tool x}`, a redirection to two words) never run; `emp.twice` and `emp.nested-twice` (two
+  calls of a body that runs `t` before it fetches it) run under the two plain settings alone, the
+  step stopping at the first call's failed `sh t` under the three `-e` settings; 0 REPORT->CLEAN; 24
+  REPORT rows gain a finding read at the call that `main` lacks (a bound word named, `t` beside
+  `main`'s `$1`; `verifies t only AFTER` a body's run; a bound printer's run), 126 repeated a
+  finding `main` has with the same text (the guard keys a finding by its fetch's statement index,
+  and the fold's list ran the body's copy, or an emptied multi-line definition, ahead of that
+  fetch): the called fold's same-step, same-text repeat is dropped now
+  (`workflow_guard._job_defects`, the `texts` set beside `seen`, read in that fold alone, granted as
+  #3111's duplicates were ruled) -- `main`'s folds are filtered by key alone, as before, so a text
+  `main` finds under two keys across its halves keeps its multiplicity (the first cut filtered every
+  fold, and lost one in 86 rows of the kit; review round 1), and a later fold's finding of another
+  text is kept; seven rows repeat a text once more than `main`'s job (a body with two identical
+  `"$@" eval 'curl … | sh'` statements, read at the call as two findings, both runs real: a price,
+  pinned); the key stays positional, so a called-fold finding whose fetch of the same tool, url and
+  destination stands at the shifted index would be dropped as `main`'s -- none in the kit, a limit
+  named; 18 reorder theirs, 228 change a pass's reading alone, the job's kept. Pins moved,
+  authorized: the two #3091 rows of `tests/test_workflow_called_bodies.py` report; the five `w() {
+  "$@"; }` rows of `tests/test_workflow_printers.py` gain the download-runs finding beside `main`'s
+  unread one, and the four `w env 'A=…' curl …` gap rows (two words, two shells) close; the `sudo()
+  { "$@"; }` row of `tests/test_workflow_behind_a_wrapper.py` with `sudo -s eval 'T=x'` in front
+  reports: the fold reads the function as bash runs it, `-s` no command, the `eval` never run, `T`
+  kept and `t` run (truth CCCRR; an over-report under the three `-e` settings, where the step stops
+  at `-s: command not found`, which the guard does not model -- a price). `workflow_guard.read`
+  wraps the statements in `called` and imports it, two lines granted, and `_job_defects` drops the
+  called fold's same-step, same-text repeat, three lines granted (the ruling of #3111's duplicates;
+  review round 1 scoped it to that fold, `main`'s folds filtered by key alone, as before);
+  `shell_folds._locale` is `_flip(state, on)` now, clearing `_STALE` for either flag. Sizes:
+  `scripts/workflow_called_fetches.py` 507 (+275), `scripts/shell_folds.py` 204 (+14),
+  `scripts/workflow_guard.py` 646 (+3). `tests/test_workflow_positional_handoff.py`.
 - **Workflow program flattening grows linearly with the text a job hands to shells (#3105).**
   `flattened` asked `swallowed` how each handed program's parent command failed, and that proof
   rescanned the outer statement list twice even when the list contained no structural group or
