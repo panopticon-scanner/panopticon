@@ -26,6 +26,13 @@ evidence exposed.
   `tests/test_shell_reader.py` (the parse) and `tests/test_workflow_positional_handoff.py` (the
   rows' marks). Sizes: `scripts/shell_split.py` 431 (+0: one regex).
 
+- **Grouped quiet printer reasons pair with loud reasons at the printer's statement (#3095).**
+  A carried download printed through `{ echo "$payload"; } | sh` produced two findings: `carried`
+  put the loud hand-off reason on the printer's statement, while #3026 put the quiet unread-printer
+  reason on the group's closing shell statement, so `kept` could not pair them as it does for the
+  plain `echo "$payload" | sh` twin. A quiet grouped answer now records its printer's source
+  statement, and `kept` uses that source when looking for a louder reason. The brace, newline,
+  subshell, and stderr-redirection forms return the one carried finding; no verdict changes.
 - **Workflow reader follows the function calls the #3047 fold did not (#3127).** The #3121 seat's
   rows and its combined-tree round ran under every parent and read CLEAN: a positional with a
   default (`f() { sh "${1:-t}"; }; f`), a slice of the call's words (`"${@:2}"`), `$10`, an unquoted
