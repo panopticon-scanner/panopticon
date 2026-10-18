@@ -25,7 +25,13 @@ import workflow_guard as wg
 import workflow_options as wo
 import workflow_programs as wp
 from tests.test_shell_reader import LinearGrowth
+from workflow_called import _possible_called_readonly
 from workflow_called_fetches import _DEPTH, _INLINED, called
+from workflow_carried import _declaration_attributes, _dynamic_command
+from workflow_failure_contexts import conditional_contexts
+from workflow_step_credit import regions
+from workflow_use_scopes import _function_ranges
+from workflow_uses import static_values
 
 SHELLS = (None, "bash", "sh", "bash {0}", "sh {0}")
 FETCH = "curl -fsSLo cuda_1.run https://example.test/cuda_1.run\n"
@@ -350,6 +356,47 @@ class TestTheCalledFoldsSameTextRepeatIsDropped(unittest.TestCase):
                 self.assertEqual([self.HANDS_T] * 2, self.heads(self.job(text, shell), {self.HANDS_T}))
 
 
+class TestTheConditionalStatusMarkCreditsNothingYet(unittest.TestCase):
+    """#3116, round 1's seat: `workflow_status._test` credits a `[[ ]]` operand in bash steps once its `$?` word is exact and
+    live, so the mark of the direct `$?` must not be that one until Daybreak's item 2 reads it -- and a user's `$\\?`
+    must never be credited: bash rejects it there, status 1, the handler behind it skipped (fail-open). A check, then
+    the handler, then the run: every row reads as on `main` cc398401. Truth: the direct forms stop under bash (CLEAN
+    where the check fails), the user's `$\\?` never stops (runs), the lookalikes compare a literal (runs)."""
+
+    F = "curl -fsSLo t https://example.test/t\n"
+    C = "echo \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  t\" | sha256sum -c -\n"
+
+    def test_the_rows_that_reach_the_gate_read_as_on_main(self):
+        for word, plain, plus_e in (("$?", "CCCRR", "RRRRR"), ("$\\?", "CCCRR", "RRRRR"), ('$"?"', "CCCRR", "RRRRR"),
+                                    ('$""?', "CCCRR", "RRRRR"), ('"$"?', "CCCRR", "RRRRR"), ('"$?"', "CCCCR", "CCRCR")):
+            for handler in ("[[ %s -ne 0 ]] && exit 1\n", "if [[ %s -ne 0 ]]; then exit 1; fi\n", "[[ 0 -ne %s ]] && exit 1\n"):
+                for lead, expected in (("", plain), ("set +e\n", plus_e)):
+                    text = lead + self.F + self.C + (handler % word) + "sh t\n"
+                    with self.subTest(word=word, handler=handler[:12], lead=lead):
+                        self.assertEqual((expected, expected), marks(text))
+
+    def test_a_typed_status_mark_reads_as_on_main(self):
+        # Round 2's seat: a step that types U+E008 (`shell_reader._STATUS`) before a word had it stripped, so
+        # `<U+E008>exit` read as `exit` -- where bash 3.2.57, 5.2.21 and dash print "command not found" and run the
+        # payload -- and the round-2 head credited the forged handler as a stop under the `{0}` settings: CCCCC for
+        # the `[ ]` forms and CCCCR for the `[[ ]]` ones against `main`'s CCCRR. Now the typed mark stays in its word
+        # and every form reads as on `main` b61bbc76: the three handlers with `[ ]` and `[[ ]]`, the mark before
+        # `exit`, before the test and in the `if` form; before the `$?` itself; as a word of its own; inside a word.
+        # The plain controls read as they did.
+        mark = shell_reader._STATUS
+        rows = []
+        for test in ('[ "$?" -ne 0 ]', '[[ "$?" -ne 0 ]]'):
+            rows += [test + " && " + mark + "exit 1\n", mark + test + " && exit 1\n",
+                     "if " + test + "; then " + mark + "exit 1; fi\n"]
+        rows += ["[[ $? -ne 0 ]] && " + mark + "exit 1\n", "[[ " + mark + "$? -ne 0 ]] && exit 1\n", mark + "\n",
+                 "ex" + mark + "it 1\n"]
+        for row in rows:
+            with self.subTest(row=row.replace(mark, "<U+E008>")):
+                self.assertEqual(("CCCRR", "CCCRR"), marks(self.F + self.C + row + "sh t\n"))
+        self.assertEqual(("CCCRR", "CCCRR"), marks(self.F + self.C + "[[ $? -ne 0 ]] && exit 1\nsh t\n"))
+        self.assertEqual(("CCCCC", "CCCCC"), marks(self.F + self.C + '[ "$?" -ne 0 ] && exit 1\nsh t\n'))
+
+
 class TestANestedHeaderBehindAGroupsBraceReports(unittest.TestCase):
     """#3123's rows, at the guard: a header behind a group's `{` in a one-line function body, and a never-called gate
     in a subshell inside one. Truth (bash 3.2.57, dash, zsh 5.9, with and without `-e`): runs, every parent."""
@@ -520,3 +567,101 @@ class TestTheReadingIsLinear(LinearGrowth, unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class TestATypedMarkReadsAsAPlainLiteralInTheJob(unittest.TestCase):
+    """#3138: a step that types one of the reader's private-use marks reads, at the job, as one that types a plain
+    private-use literal there (U+E0FF, no mark). On `main` b61bbc76 six marks (U+E000, U+E001, U+E003, U+E005,
+    U+E006, U+E007) were taken off the word and `<mark>exit` credited as a stop, `sh <mark>$T` as a run of the fetched
+    file: fail-open, where bash prints "command not found" or finds no such file. Truth (bash 3.2.57, dash, zsh):
+    the forged handlers run the payload (fetched only under `-e`, where the check stops the step first), the forged
+    runs run nothing."""
+
+    F = "curl -fsSLo t https://example.test/t\n"
+    C = "echo \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  t\" | sha256sum -c -\n"
+    LITERAL = "\ue0ff"
+
+    def rows(self, mark):
+        return (("exit.sq", self.F + self.C + '[ "$?" -ne 0 ] && ' + mark + "exit 1\nsh t\n"),
+                ("exit.dq", self.F + self.C + '[[ "$?" -ne 0 ]] && ' + mark + "exit 1\nsh t\n"),
+                ("value", self.F + "T=t\nsh " + mark + "$T\n"),
+                ("word", self.F + "sh " + mark + "t\n"),
+                ("mid", self.F + "s" + mark + "h t\n"))
+
+    def test_every_mark_reads_as_the_plain_literal(self):
+        expected = {"exit.sq": ("CCCRR", "CCCRR"), "exit.dq": ("CCCRR", "CCCRR"), "value": ("CCCCC", "CCCCC"),
+                    "word": ("CCCCC", "CCCCC"), "mid": ("CCCCC", "CCCCC")}
+        for shape, text in self.rows(self.LITERAL):
+            with self.subTest(mark="literal", shape=shape):
+                self.assertEqual(expected[shape], marks(text))
+        for mark in shell_reader._MARKS:
+            for shape, text in self.rows(mark):
+                with self.subTest(mark=hex(ord(mark)), shape=shape):
+                    self.assertEqual(expected[shape], marks(text))
+
+    def test_the_controls_read_as_they_did(self):
+        self.assertEqual(("CCCCC", "CCCCC"), marks(self.F + self.C + '[ "$?" -ne 0 ] && exit 1\nsh t\n'))
+        self.assertEqual(("CCCCR", "CCCCR"), marks(self.F + self.C + '[[ "$?" -ne 0 ]] && exit 1\nsh t\n'))
+        for text in (self.F + "T=t\nsh $T\n", self.F + "sh t\n"):
+            self.assertEqual(("RRRRR", "RRRRR"), marks(text))
+
+
+class TestEachDefinitionIsIndexedOnceAPass(LinearGrowth, unittest.TestCase):
+    """#3124: the two passes that read each definition of a step cost time linear in the definitions.
+
+    On `main` 5c88603d, `workflow_uses.static_values` -- run once a call or a statement holding `$` -- rebuilt
+    `_function_ranges` without #3126's shared analysis (a `_function_scope` scan of the step a definition), `_body_end`
+    a definition and its nested set at EVERY use, and `_possible_called_readonly`, run once a definition by the carried
+    pass, rebuilt `_function_ranges` a body: n uses or bodies x n definitions x a scan, cubic in n (the #3132 seat's
+    rows; 42 s for 320 siblings each called). Now `workflow_called._Definitions` indexes the step's definitions once a
+    pass (`_Step.definitions`, `_Step.ranges`) and each asks it a statement. Both pins are RED on `main` (static
+    values 0.40 -> 4.9 s for 640 -> 2560, the bound 3.5; the readonly names 0.30 -> 19.3 s for 80 -> 320, the bound
+    2.7) and the reading is the same: the step's values are empty, no body has a readonly name.
+
+    The job's own growth on the shapes is #3128's (the gating side: `_gating_function_call` once a definition, each
+    a scan of the step), not pinned here; its baseline sits in the CHANGELOG and the hand-off."""
+
+    FETCH = "curl -fsSLo t https://example.test/t\n"
+
+    @classmethod
+    def each_called(cls, n):
+        return (cls.FETCH + "".join("f%d() { sh t; }\n" % i for i in range(n))
+                + "".join("f%d\n" % i for i in range(n)))
+
+    def parsed(self):
+        """`make` for `assert_linear_growth`: the parse done here, so the pass alone is timed."""
+        parsed = {}
+
+        def make(n):
+            script = self.each_called(n)
+            parsed[script] = shell_reader.statements(script)
+            return script
+
+        return make, parsed
+
+    @pytest.mark.serial
+    def test_the_readonly_names_of_n_bodies_are_read_in_linear_time(self):
+        make, parsed = self.parsed()
+
+        def read(script):
+            stmts = parsed[script]
+            branches, conditionals = regions(stmts), conditional_contexts(stmts)
+            return [_possible_called_readonly(stmts, [(start, close)], branches, conditionals, None,
+                                              _declaration_attributes, _dynamic_command)
+                    for entries in _function_ranges(stmts)[0].values() for _name, start, close in entries]
+
+        def check(n, found):
+            self.assertEqual([(set(), False)] * n, found)
+
+        self.assert_linear_growth(80, make, check, parser=read)
+
+    @pytest.mark.serial
+    def test_the_values_at_a_use_past_n_definitions_are_read_in_linear_time(self):
+        make, parsed = self.parsed()
+
+        def check(_n, table):
+            self.assertEqual({}, table.scalars)
+
+        self.assert_linear_growth(640, make, check,
+                                  parser=lambda script: static_values(parsed[script], len(parsed[script]) - 1))
