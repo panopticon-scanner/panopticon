@@ -137,7 +137,7 @@ from workflow_programs import _FOREIGN, _MEASURED_SHELLS, scripts, stdin_scripts
 from workflow_uses import _WHOLE, _cleared, _control_kinds, _forked, _table_certainty
 from workflow_values import (_BASH_PREFIXES as _BASH_PREFIXES, _BASH_SETS as _BASH_SETS,
                              _EXPANDS as _EXPANDS, _NAMED as _NAMED, _OPENER, Values, _lifted,
-                             _literal as _literal, _literals, record)
+                             _literal as _literal, _literals, record, valued as valued)
 
 # The plain name a command value must be; modeled command names; directories a bare lookup
 # reaches (`_bare`); and a fetcher word in printed text. A whole reference's name, what makes a
