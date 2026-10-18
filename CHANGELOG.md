@@ -7,6 +7,23 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow uses shares one value-table walk and one fork index across sibling calls (#3145).** A
+  step with `n` function definitions followed by `n` calls rebuilt `static_values` at every call:
+  each rebuild walked all earlier calls and `_forked` rescanned every statement through `_openers`.
+  Doubling 16 to 32 siblings therefore raised value-walk visits 136 to 528 and opener visits 784
+  to 3,104, nearly 4x. One `_StaticValues` index now owns the step's function, control and fork
+  structure and advances a compatible top-level table only through statements not already read.
+  `_ForkedIndex` records each child range once and represents the ranges covering a statement and
+  the target's same-child ranges as integer bit sets, so membership is a bounded bit operation and
+  deeply nested ranges do not build a set per depth. The forward table is deliberately reused only
+  when every step-defined call leaves values unchanged; a body that may assign, `eval` or source a
+  file keeps the previous fresh walk, including `record_called`'s fixed carry budget and stand-in
+  prices. The structural pin now measures exactly 16 to 32 value visits and 49 to 97 opener visits.
+  On current `main`, the isolated uses pass took 0.132 / 0.491 / 1.919 CPU seconds for 80 / 160 /
+  320 siblings; it now takes 0.020 / 0.038 / 0.077 seconds, 1.9x then 2.0x per doubling and 25x
+  faster at 320. A 1,340-row generated value/use differential is byte-identical. Pin:
+  `tests/test_workflow_positional_handoff.py`; sizes: `scripts/workflow_uses.py` 632,
+  `scripts/workflow_use_scopes.py` 210.
 - **Workflow reader follows a group piped to a shell through what #3026 passed over (#3117).** #3026
   read `{ P; } | sh` and `( P; ) | sh` back from the closer to the opener, one level; the #3111
   seat's rows and the kit's twins ran the download under every parent and read CLEAN: a nested group

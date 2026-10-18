@@ -19,7 +19,7 @@ import re
 import shell_lex
 import shell_reader
 from shell_reader import command
-from workflow_called import _carried, record_called, with_call_stdin
+from workflow_called import _carried, _writes, record_called, with_call_stdin
 from workflow_checks import inside
 from workflow_forms import (BIN_DIRS, CONTAINERS, at_directory,
                             chmod_conditional_executable, chmod_executable, chmod_targets,
@@ -27,7 +27,7 @@ from workflow_forms import (BIN_DIRS, CONTAINERS, at_directory,
 from workflow_programs import (_SHELL_STRING, VALUE_PROGRAM, reader_files,
                                redirection_handoffs, scripts)
 from workflow_printers import _cat_reads_stdin
-from workflow_use_scopes import (_COMPOUNDS as _COMPOUNDS, _forked,
+from workflow_use_scopes import (_COMPOUNDS as _COMPOUNDS, _forked as _forked, _forked_index,
                                  _function_changes, _function_ranges as _function_ranges,
                                  _openers as _openers, _opens as _opens,
                                  _own_parens as _own_parens)
@@ -388,7 +388,8 @@ def _resolved(argv, table):
             yield kept
 
 
-def _function_use(stmts, definition, args, dest, directory, named, inherited, table, scopes, call=None, literal=False):
+def _function_use(stmts, definition, args, dest, directory, named, inherited, table, scopes,
+                  indexed, call=None, literal=False):
     """A use reached by one direct call carrying a matching glob argument, or by a value of the
     caller's `table` (#2425, #2489), which the body's table starts from (`static_values`' `start`);
     only a binding call weighs a stage as written, as before. A call made inside a body is not
@@ -416,7 +417,7 @@ def _function_use(stmts, definition, args, dest, directory, named, inherited, ta
                     answer := use(statement, position, read, argv, dest, here, bound)):
                 return answer
             if any("$" in word for word in argv):
-                values = static_values(stmts, start + index, scopes=scopes, start=table)
+                values = indexed.at(start + index, table)
                 for made in _resolved(argv, values):
                     if answer := use(statement, position, stage, made, dest, here, bound):
                         return answer
@@ -449,6 +450,85 @@ def _functions_before(stmts, starts, kinds, scopes, after):
         if len(stmts[index].stages) == 1:
             _function_changes(stmts[index].stages[0], functions, writable)
     return functions
+
+
+class _StaticValues:
+    """One step's value tables, sharing its structure and forward top-level walk (#3145)."""
+
+    def __init__(self, stmts, scopes=None, kinds=None):
+        self.stmts, self.scopes = stmts, scopes or {}
+        self.forked = _forked_index(stmts)
+        self.step = _carried(stmts)
+        self.definitions = self.step.definitions(None)
+        self.starts = self.definitions.starts
+        self.occupied = self.step.ranges()[1]
+        self.kinds = kinds if kinds is not None else _control_kinds(stmts)
+        self.tables = {}
+        self.readonly = None
+
+    def _readonly_calls(self):
+        """Whether every step-defined call leaves a value table unchanged."""
+        if self.readonly is None:
+            self.readonly = not any(
+                _writes(self.stmts[position], self.step.probe)
+                for position in self.occupied
+            )
+        return self.readonly
+
+    def at(self, index, start=None):
+        """The literal values live at `index`, extending a compatible earlier table once."""
+        stmts, scopes = self.stmts, self.scopes
+        first, last = self.definitions.enclosing(index, len(stmts) - 1)
+        forked = self.forked.at(index)
+        outer = len(self.kinds[first]) if first >= 0 else 0
+        kinds = self.kinds if not outer else [kind[outer:] for kind in self.kinds]
+        loop = kinds[index] if index < len(stmts) else ()
+        head = stmts[index].stages[0].argv if index < len(stmts) and stmts[index].stages else []
+        extended = "do" in loop or bool(
+            {"while", "until"} & set(head[:len(head) - len(command(head))])
+        )
+        key = (scopes.get(index), forked.active)
+        reusable = start is None and first < 0 and not extended and self._readonly_calls()
+        saved = self.tables.get(key) if reusable else None
+        if saved is not None and saved[0] <= index:
+            before, table = saved
+        else:
+            before = max(first, 0)
+            table = start.copy() if start is not None and first >= 0 else Values()
+
+        def walk(positions, sure):
+            for position in positions:
+                stages = stmts[position].stages
+                if (self.definitions.nested_found(position, first)
+                        or scopes.get(position) != scopes.get(index) or not stages):
+                    continue
+                certain, direct_loop = _table_certainty(stmts, position, kinds)
+                looped = direct_loop and index < len(stmts) and all(    # on the pass that reaches it
+                    kind[:1] == ("do",) for kind in kinds[position:index + 1])
+                certain = sure and (certain or looped) and position not in forked and len(stages) == 1
+                _cleared(stages[-1], {}, {}, certain, direct_loop, table)
+                record(table, stages[-1], certain)
+                if len(stages) == 1 and position not in forked:
+                    record_called(table, stmts, position, self.starts)
+
+        walk(range(before, min(index, len(stmts))), True)
+        if "do" in loop:
+            depth = loop.index("do") + 1        # the outermost loop: it re-enters the inner ones
+            after = index + 1
+            while after <= last and kinds[after][:depth] == loop[:depth]:
+                after += 1
+            walk(range(index + 1, after), False)
+        elif extended:
+            body, after, entered = loop + ("do",), index + 1, False
+            while after <= last:                # the rest of the condition, then the body
+                inside = kinds[after][:len(body)] == body
+                if not inside and (entered or kinds[after] != loop):
+                    break
+                entered, after = entered or inside, after + 1
+            walk(range(index + 1, after), False)
+        if reusable and (saved is None or saved[0] <= index):
+            self.tables[key] = (index, table)
+        return table
 
 
 def static_values(stmts, index, working=None, scopes=None, start=None):
@@ -487,49 +567,7 @@ def static_values(stmts, index, working=None, scopes=None, start=None):
     that body is walked as sure code (a limit). `working` is accepted and
     unused: a value resolves at the directory of its USE, bash's rule for a
     relative path."""
-    scopes = scopes or {}
-    forked = _forked(stmts, index)
-    definitions = _carried(stmts).definitions(None)         # the step's definitions, indexed once a step (#3124)
-    starts = definitions.starts
-    first, last = definitions.enclosing(index, len(stmts) - 1)
-    table = start.copy() if start is not None and first >= 0 else Values()
-    kinds = _control_kinds(stmts)
-    # A body's own `then`/`do`/`case`: what wraps the definition wraps no call.
-    outer = len(kinds[first]) if first >= 0 else 0
-    kinds = [kind[outer:] for kind in kinds]
-
-    def walk(positions, sure):
-        for position in positions:
-            stages = stmts[position].stages
-            if definitions.nested_found(position, first) or scopes.get(position) != scopes.get(index) or not stages:
-                continue
-            certain, direct_loop = _table_certainty(stmts, position, kinds)
-            looped = direct_loop and index < len(stmts) and all(    # on the pass that reaches it
-                kind[:1] == ("do",) for kind in kinds[position:index + 1])
-            certain = sure and (certain or looped) and position not in forked and len(stages) == 1
-            _cleared(stages[-1], {}, {}, certain, direct_loop, table)
-            record(table, stages[-1], certain)
-            if len(stages) == 1 and position not in forked:
-                record_called(table, stmts, position, starts)
-
-    walk(range(max(first, 0), min(index, len(stmts))), True)
-    loop = kinds[index] if index < len(stmts) else ()
-    head = stmts[index].stages[0].argv if index < len(stmts) and stmts[index].stages else []
-    if "do" in loop:
-        depth = loop.index("do") + 1        # the outermost loop: it re-enters the inner ones
-        after = index + 1
-        while after <= last and kinds[after][:depth] == loop[:depth]:
-            after += 1
-        walk(range(index + 1, after), False)
-    elif {"while", "until"} & set(head[:len(head) - len(command(head))]):
-        body, after, entered = loop + ("do",), index + 1, False
-        while after <= last:                # the rest of the condition, then the body
-            inside = kinds[after][:len(body)] == body
-            if not inside and (entered or kinds[after] != loop):
-                break
-            entered, after = entered or inside, after + 1
-        walk(range(index + 1, after), False)
-    return table
+    return _StaticValues(stmts, scopes).at(index, start)
 
 
 def uses(stmts, dest, after, working=None, scopes=None):
@@ -539,6 +577,7 @@ def uses(stmts, dest, after, working=None, scopes=None):
     working, scopes = working or {}, scopes or {}
     starts, occupied = _carried(stmts).ranges()
     kinds = _control_kinds(stmts)
+    indexed = _StaticValues(stmts, scopes, kinds)
     functions = _functions_before(stmts, starts, kinds, scopes, after)
     named: dict[str, Binding] = {}
     positional: dict[str, Binding] = {}
@@ -566,13 +605,13 @@ def uses(stmts, dest, after, working=None, scopes=None):
             for name in sorted(names):
                 how = use(inner, position, stage, argv, name, here, bound, handoff)
                 if not how and (call or any("$" in word for word in argv)):
-                    table = table or static_values(stmts, index, working, scopes)
+                    table = table or indexed.at(index)
                     how = next(filter(None, (use(inner, position, stage, made, name, here, bound,
                                                   handoff)
                                              for made in _resolved(argv, table))), None)
                 if not how and call:
                     how = _function_use(stmts, functions[argv[0]], argv[1:], name, here, named,
-                                        {**named, **positional}, table, scopes, call=stage,
+                                        {**named, **positional}, table, scopes, indexed, call=stage,
                                         literal=functions[argv[0]][1] < after)
                 if how:
                     if not same_file(name, dest):

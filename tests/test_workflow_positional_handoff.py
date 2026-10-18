@@ -24,6 +24,8 @@ import shell_reader
 import workflow_guard as wg
 import workflow_options as wo
 import workflow_programs as wp
+import workflow_use_scopes
+import workflow_uses
 from tests.test_shell_reader import LinearGrowth
 from workflow_called import _possible_called_readonly
 from workflow_called_fetches import _DEPTH, _INLINED, called
@@ -665,3 +667,24 @@ class TestEachDefinitionIsIndexedOnceAPass(LinearGrowth, unittest.TestCase):
 
         self.assert_linear_growth(640, make, check,
                                   parser=lambda script: static_values(parsed[script], len(parsed[script]) - 1))
+
+    @pytest.mark.serial
+    def test_sibling_calls_share_one_incremental_value_and_fork_walk(self):
+        """#3145: every statement is indexed once, not once per sibling call."""
+        counts = []
+        for size in (16, 32):
+            stmts = shell_reader.statements(self.each_called(size))
+            certainty = workflow_uses._table_certainty
+            openers = workflow_use_scopes._openers
+            with mock.patch.object(
+                    workflow_uses, "_table_certainty", wraps=certainty) as walked, \
+                    mock.patch.object(
+                        workflow_use_scopes, "_openers", wraps=openers) as opened:
+                _names, uses = workflow_uses.uses(stmts, "t", 0)
+            self.assertEqual(size, len(uses))
+            counts.append((walked.call_count, opened.call_count))
+
+        for small, large in zip(*counts):
+            with self.subTest(small=small, large=large):
+                self.assertGreaterEqual(large * 10, small * 18)
+                self.assertLessEqual(large * 10, small * 22)
