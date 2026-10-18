@@ -279,8 +279,9 @@ def copies(statement, names, directory):
     return new
 
 
-def use(statement, position, stage, argv, dest, directory, bound=frozenset(), handoff=None):
-    """How this stage uses `dest`, including whole bound value words and program hand-offs."""
+def use(statement, position, stage, argv, dest, directory, bound=frozenset(), handoff=None, unresolved=False):
+    """How this stage uses `dest`, including whole bound value words and program hand-offs. `unresolved`: the table
+    gave `argv`'s command word no value at all (`uses`), so a value there may name any program (#3143)."""
     # A clone into `.` makes every relative child part of the fetched tree;
     # the producing `git clone` argv is not itself an execution of that tree.
     if getattr(dest, "tree", False) and argv[:2] == ["git", "clone"]:
@@ -329,7 +330,7 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset(), ha
         return None
     if name in INTERPRETERS:
         return "running it under `%s`" % name
-    if _value_command(argv[0]) and _first_operand(rest) in mentions:      # `$SHELL ./t`, `$RUN ./t`, `"$@" ./t` (#3143)
+    if unresolved and _value_command(argv[0]) and _first_operand(rest) in mentions:    # `$SHELL ./t`, `$RUN ./t` (#3143)
         return "running it under `%s`, a command word this guard cannot resolve" % name
     if name == "install":
         return "installing it"
@@ -361,15 +362,16 @@ _SPLICE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\[[@*]\]\}$")
 
 
 def _value_command(word):
-    """Whether a command word is a value no table resolved -- a live `$` reference (`$SHELL`, `"$RUN"`, `${X}`,
-    `"$@"`, `${X#y}`) or a substitution -- which may name any program, a shell among them: the union rule reads
-    it as a possible runner of the fetched, unchecked file that is its first operand (`_first_operand`, #3143).
-    A single-quoted `'$X'`, no expansion, a default the reader reads its own way (`_OWN_FORM`) and an array spliced
-    whole (`_SPLICE`) are not such words; an alternate is, as the bare reference it reads as."""
+    """Whether a command word is a live `$` reference (`$SHELL`, `"$RUN"`, `${X}`, `"$@"`, `${X#y}`), which may name
+    any program, a shell among them: where the table gives it no value at all, the union rule reads it as a
+    possible runner of the fetched, unchecked file that is its first operand (`_first_operand`, `use`, #3143). A
+    single-quoted `'$X'`, no expansion, a default the reader reads its own way (`_OWN_FORM`) and an array spliced
+    whole (`_SPLICE`) are not such words; an alternate is, as the bare reference it reads as. A command
+    substitution (`$(which sh) ./t`) is left as `main` reads it, a named limit."""
     text = str(word)
     if _OWN_FORM.match(text) or _SPLICE.match(text):
         return False
-    return ("$" in text and getattr(word, "live_dollar", True) is not False) or shell_reader.has_substitution(word)
+    return "$" in text and getattr(word, "live_dollar", True) is not False
 
 
 def _on_stdin(argv):
@@ -596,9 +598,12 @@ def uses(stmts, dest, after, working=None, scopes=None):
                 how = use(inner, position, stage, argv, name, here, bound, handoff)
                 if not how and (call or any("$" in word for word in argv)):
                     table = table or static_values(stmts, index, working, scopes)
-                    how = next(filter(None, (use(inner, position, stage, made, name, here, bound,
-                                                  handoff)
-                                             for made in _resolved(argv, table))), None)
+                    made_any = False
+                    for made in _resolved(argv, table):
+                        made_any = True
+                        how = how or use(inner, position, stage, made, name, here, bound, handoff)
+                    if not how and not made_any:         # no value at all: the command word may name any program (#3143)
+                        how = use(inner, position, stage, argv, name, here, bound, handoff, unresolved=True)
                 if not how and call:
                     how = _function_use(stmts, functions[argv[0]], argv[1:], name, here, named,
                                         {**named, **positional}, table, scopes, call=stage,
