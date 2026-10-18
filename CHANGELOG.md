@@ -231,11 +231,13 @@ evidence exposed.
   when its pipeline enters another compound, and the dash fallback crosses only consecutive
   lexical `}` closes to the first redirected brace. A reader stage that combines two subshell
   closes and their inner and outer files is instead cut at the inner file, keeping the all-no-run
-  R2-G-007 CLEAN in all five settings. The previous 667-row probe and 1,106 HN/HNP rows are
-  unchanged from the round-two head; the accepted baseline loss set in the former is 44 rows / 220
-  no-run cells, not 44 cells. Compound-output tracking moved without other behavior changes to
-  `workflow_compound_outputs.py`, restoring the helper documentation while leaving
-  `workflow_fetch.py` at 473 lines (the new module is 267).
+  R2-G-007 CLEAN in all five settings. A descriptor dup or close (`>&N`, `1>&2`, `>&-`) on an
+  inner subshell wrapped in further subshells and redirected to a file is reported, though the
+  outer file stays empty: an over-report beyond main, named. The previous 667-row probe and 1,106
+  HN/HNP rows are unchanged from the round-two head; the accepted baseline loss set in the former
+  is 44 rows / 220 no-run cells, not 44 cells. Compound-output tracking moved without other
+  behavior changes to `workflow_compound_outputs.py`, restoring the helper documentation while
+  leaving `workflow_fetch.py` at 473 lines (the new module is 267).
 - **Workflow reader reads a function header immediately after an outer function's opening brace
   (#2975 part A).** `f() { g() { sh t; }; g; }` ran the downloaded file under every parent and
   read CLEAN: the splitter took the inner `()` as a subshell and the rest of the inner body as

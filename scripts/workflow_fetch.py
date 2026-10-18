@@ -440,7 +440,11 @@ def _closing_stream(statement, executors):
 
 
 def compound_stream_consumer(stmts, position, executors):
-    """An executor piped from a compound containing statement `position`."""
+    """An executor piped from a compound containing statement `position`.
+
+    The reader is intentionally flat. This walk pairs a fetch or printer with
+    each enclosing close, while ignoring compounds opened only after it.
+    """
     depth = sum(_compound_delta(statement) for statement in stmts[:position + 1])
     if depth <= 0:
         return None

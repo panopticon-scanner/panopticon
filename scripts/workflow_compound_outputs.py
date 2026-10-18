@@ -158,7 +158,12 @@ def _closing_output(statement):
 
 
 def _compound_outputs(stmts):
-    """Map stages to closing outputs, excluding array literals from depth."""
+    """Map stages to closing outputs, excluding array literals from depth.
+
+    The reverse walk sees an outer close before its nested transparent closes,
+    so each depth inherits its parent's redirect or following pipeline in one
+    pass rather than rescanning the suffix for every fetch.
+    """
     levels, depth, literal_depth = {}, 0, 0
     for position, statement in enumerate(stmts):
         for number, stage in enumerate(statement.stages):
