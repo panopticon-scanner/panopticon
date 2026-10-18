@@ -377,7 +377,7 @@ evidence exposed.
   HN/HNP rows are unchanged from the round-two head; the accepted baseline loss set in the former
   is 44 rows / 220 no-run cells, not 44 cells. Compound-output tracking moved without other
   behavior changes to `workflow_compound_outputs.py`, restoring the helper documentation while
-  leaving `workflow_fetch.py` at 473 lines (the new module is 267).
+  leaving `workflow_fetch.py` at 477 lines (the new module is 272).
 - **Workflow reader reads a function header immediately after an outer function's opening brace
   (#2975 part A).** `f() { g() { sh t; }; g; }` ran the downloaded file under every parent and
   read CLEAN: the splitter took the inner `()` as a subshell and the rest of the inner body as
