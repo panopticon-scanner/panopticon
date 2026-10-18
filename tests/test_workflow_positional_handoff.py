@@ -356,6 +356,47 @@ class TestTheCalledFoldsSameTextRepeatIsDropped(unittest.TestCase):
                 self.assertEqual([self.HANDS_T] * 2, self.heads(self.job(text, shell), {self.HANDS_T}))
 
 
+class TestTheConditionalStatusMarkCreditsNothingYet(unittest.TestCase):
+    """#3116, round 1's seat: `workflow_status._test` credits a `[[ ]]` operand in bash steps once its `$?` word is exact and
+    live, so the mark of the direct `$?` must not be that one until Daybreak's item 2 reads it -- and a user's `$\\?`
+    must never be credited: bash rejects it there, status 1, the handler behind it skipped (fail-open). A check, then
+    the handler, then the run: every row reads as on `main` cc398401. Truth: the direct forms stop under bash (CLEAN
+    where the check fails), the user's `$\\?` never stops (runs), the lookalikes compare a literal (runs)."""
+
+    F = "curl -fsSLo t https://example.test/t\n"
+    C = "echo \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  t\" | sha256sum -c -\n"
+
+    def test_the_rows_that_reach_the_gate_read_as_on_main(self):
+        for word, plain, plus_e in (("$?", "CCCRR", "RRRRR"), ("$\\?", "CCCRR", "RRRRR"), ('$"?"', "CCCRR", "RRRRR"),
+                                    ('$""?', "CCCRR", "RRRRR"), ('"$"?', "CCCRR", "RRRRR"), ('"$?"', "CCCCR", "CCRCR")):
+            for handler in ("[[ %s -ne 0 ]] && exit 1\n", "if [[ %s -ne 0 ]]; then exit 1; fi\n", "[[ 0 -ne %s ]] && exit 1\n"):
+                for lead, expected in (("", plain), ("set +e\n", plus_e)):
+                    text = lead + self.F + self.C + (handler % word) + "sh t\n"
+                    with self.subTest(word=word, handler=handler[:12], lead=lead):
+                        self.assertEqual((expected, expected), marks(text))
+
+    def test_a_typed_status_mark_reads_as_on_main(self):
+        # Round 2's seat: a step that types U+E008 (`shell_reader._STATUS`) before a word had it stripped, so
+        # `<U+E008>exit` read as `exit` -- where bash 3.2.57, 5.2.21 and dash print "command not found" and run the
+        # payload -- and the round-2 head credited the forged handler as a stop under the `{0}` settings: CCCCC for
+        # the `[ ]` forms and CCCCR for the `[[ ]]` ones against `main`'s CCCRR. Now the typed mark stays in its word
+        # and every form reads as on `main` b61bbc76: the three handlers with `[ ]` and `[[ ]]`, the mark before
+        # `exit`, before the test and in the `if` form; before the `$?` itself; as a word of its own; inside a word.
+        # The plain controls read as they did.
+        mark = shell_reader._STATUS
+        rows = []
+        for test in ('[ "$?" -ne 0 ]', '[[ "$?" -ne 0 ]]'):
+            rows += [test + " && " + mark + "exit 1\n", mark + test + " && exit 1\n",
+                     "if " + test + "; then " + mark + "exit 1; fi\n"]
+        rows += ["[[ $? -ne 0 ]] && " + mark + "exit 1\n", "[[ " + mark + "$? -ne 0 ]] && exit 1\n", mark + "\n",
+                 "ex" + mark + "it 1\n"]
+        for row in rows:
+            with self.subTest(row=row.replace(mark, "<U+E008>")):
+                self.assertEqual(("CCCRR", "CCCRR"), marks(self.F + self.C + row + "sh t\n"))
+        self.assertEqual(("CCCRR", "CCCRR"), marks(self.F + self.C + "[[ $? -ne 0 ]] && exit 1\nsh t\n"))
+        self.assertEqual(("CCCCC", "CCCCC"), marks(self.F + self.C + '[ "$?" -ne 0 ] && exit 1\nsh t\n'))
+
+
 class TestANestedHeaderBehindAGroupsBraceReports(unittest.TestCase):
     """#3123's rows, at the guard: a header behind a group's `{` in a one-line function body, and a never-called gate
     in a subshell inside one. Truth (bash 3.2.57, dash, zsh 5.9, with and without `-e`): runs, every parent."""

@@ -7,6 +7,46 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader marks the direct `$?` inside `[[ ... ]]` with a mark of its own, from the step's
+  text (#3116 item 1 and the reader part of item 2).** The lexer escapes every pattern character
+  inside a conditional, so a direct `$?` reached the exact-dollar pass as `$\?` and was never
+  marked, while `$"?"`, `$""?` and `"$"?` lex to the same bare `$?` word -- and a user's own `$\?`
+  reaches the stage spelled as the lexer spells the direct one, which bash rejects there (`[[: $?:
+  syntax error`, status 1: a handler behind it never runs). Now `shell_reader` records whether the
+  step's text spells `$\?` anywhere, and where it does not, the direct `$?` of a stage that is a
+  conditional at its head -- behind `if`, `!`, a function header -- and ends with `]]` carries
+  `conditional_status`: a `_Token`, never `_Expanded` (bash expands no pattern there), and neither
+  `exact_dollar` nor `live_dollar`, so the status gate, which credits an exact, live `[[ ]]` operand
+  in bash steps today, credits nothing until item 2 (Daybreak's) reads the mark: no verdict moves,
+  the 36 gate-reaching rows (six spellings, three handlers, with and without `set +e`) read as they
+  did. `"$?"` keeps the exact, live mark it had; `$"?"`, `$""?`, `"$"?`, `$'?'`, `$?x` and `${?}`
+  keep their types and stay unmarked; a user's `$\?` is never marked, inside a conditional or out
+  (`echo [[ $\? ]]`, `printf '%s' [[ $\? ]]`, `eval [[ $\? -ne 0 ]]`); an arithmetic command and an
+  array literal are untouched. The mark asks only whether the stage is a conditional, one pass over
+  its words: no span is searched for (a `[[` with no closer, n times in one stage, reads in linear
+  time, pinned). Prices, named: a step that spells `$\?` anywhere marks no conditional's `$?`; one
+  that types the mark itself -- U+E008 before a word, round 2's seat's `<U+E008>exit`, which
+  `_stage` stripped to `exit` and the status gate then credited as a stop under the `{0}` settings,
+  fail-open -- keeps every typed word whole as a plain literal and reads the rest as any step
+  (#3138's rule, `_STATUS` in `_MARKS`; round 3 read such a step with no conditional's `$?` marked,
+  a price gone with the fold, its gate dead code under the translation and removed); a conditional
+  spanning lines, one that is not the whole stage (a trailing redirection), one whose words tabs
+  part, a second conditional in a list (`[[ a ]] && [[ $? -ne 0 ]]`), one inside `{ }` or `( )` or
+  after `time`, and one in a `case` arm are unmarked -- fail-closed each. Item 1's audit of the
+  str-to-`_Token` re-wrap of exact words: the seven callers that test `type(word) is str`
+  (`shell_command` 267, `workflow_options` 136, 164, 225, 350, 507, `workflow_programs` 408; the
+  seat's six more, none affected) ask of a word whether it is `bash`/`sh`, a `--`/`++` option, an
+  exit-or-file option, `--pretty-print`, or a command name that spells no option -- none of which an
+  exact word (`$NAME`, its braced form, `X=$Y`, `$?`) can be -- so the re-wrap changes no answer.
+  Forge differential of 4ea470db against `main` b61bbc76 over the 27,612-row kit (the kit's rows,
+  the 13 status rows, the 36 gate rows and the 23 forged rows; three readings a cell, 2,045,220 in
+  all, 80 min): byte-identical dumps -- no row differs, no multiplicity gained or lost in the job,
+  main-pass or walk readings: the mark credits nothing yet, and a typed mark reads as `main` reads
+  it. `tests/test_shell_reader.py` pins the mark, the lookalikes, the user's escape, a typed mark
+  kept whole, the named prices, what else stays unmarked and the linear reading;
+  `tests/test_workflow_positional_handoff.py` the 36 gate rows and the twelve forged forms as on
+  `main`. Sizes: `scripts/shell_reader.py` 553 (+29).
+
 - **Workflow reader reads a private-use mark the step types itself as a plain literal -- every mark,
   in one place (#3138).** The reader puts eight private-use characters into a step's text while it
   reads it -- `MARK`, `QUOTED`, `QUOTED_DOLLAR`, `DOUBLE_DOLLAR` (`shell_patterns`), `_ESCAPED`,
