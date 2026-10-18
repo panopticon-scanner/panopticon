@@ -2506,6 +2506,27 @@ class TestTheGroupsThisGuardFollowsNow(LinearGrowth, unittest.TestCase):
         ("bound-65-clean", "{ " + "echo ok; " * 65 + "} | sh\n"),
         ("fn-trail-66-clean", "f() {\n" + "  echo ok\n" * 66 + "}\nf | sh\n"),
     )
+    # The bound's stand-in word, typed by a step as one word of a piped group (#3142 round 1): the stand-in is told
+    # by its type (`_PastGroup`), never by its text, so the typed text reads as any other word reads -- posture by
+    # posture the same marks and findings as its twin with another number -- and as `main` reads the shape where
+    # `main` reads it (a brace group, one level): CLEAN, or `main`'s one finding for a group holding a statement no
+    # printer's. Truth: nothing runs (k3117/rows-forged, 24 rows). Told by text, 15 of the 24 read LOUD as the bound.
+    TYPED = "'%s'" % wp._PAST_GROUP[0]
+    FORGED = (
+        ("only", "{ %s; } | sh\n" % TYPED, "C"),
+        ("last", "{ echo ok; %s; } | sh\n" % TYPED, "R"),
+        ("first", "{ %s; echo ok; } | sh\n" % TYPED, "R"),
+        ("double-quoted", "{ \"%s\"; } | sh\n" % wp._PAST_GROUP[0], "C"),
+        ("nested", "{ { %s; }; } | sh\n" % TYPED, "C"),
+        ("if-body", "if true; then %s; fi | sh\n" % TYPED, "C"),
+        ("fn-only", "f() { %s; }\nf | sh\n" % TYPED, "C"),
+        ("fn-body", "f() { echo ok; %s; }\nf | sh\n" % TYPED, "R"),
+        ("eval", "eval \"{ %s; } | sh\"\n" % TYPED, "C"),
+        ("subst", "x=$({ %s; } | sh)\n" % TYPED, "C"),
+        ("cat-after", "{ %s; } | cat | sh\n" % TYPED, "C"),
+        ("source-stdin", "{ %s; } | source /dev/stdin\n" % TYPED, "C"),
+        ("with-download", "{ echo \"%s\"; %s; } | sh\n" % (C, TYPED), "R"),
+    )
 
     def test_the_shapes_are_read(self):
         # RED on `main`: CLEAN under every posture there.
@@ -2539,9 +2560,20 @@ class TestTheGroupsThisGuardFollowsNow(LinearGrowth, unittest.TestCase):
         self.assertEqual(("RRRRR", "RRRRR"), self.marks(text))
         self.assertNotIn(wp._PAST_GROUP[0], " ".join(self.findings(text)))
 
+    def test_a_step_typing_the_stand_ins_text_reads_as_any_other_word(self):
+        for name, text, mark in self.FORGED:
+            twin = text.replace(wp._PAST_GROUP[0], wp._PAST_GROUP[0].replace(str(wp._GROUP_LINES), str(wp._GROUP_LINES + 1)))
+            with self.subTest(name=name):
+                self.assertEqual((mark * 5, mark * 5), self.marks(text))
+                self.assertEqual(self.marks(twin), self.marks(text))
+                for shell in self.SHELLS:
+                    found = self.findings(text, shell)
+                    self.assertEqual(self.findings(twin, shell), found)
+                    self.assertNotIn(wp._PAST_GROUP[0], " ".join(found))
+
     def test_mains_findings_are_kept(self):
         # The union, per shape and posture: every finding `main` gives stands here (monotone against `main`).
-        for name, text in self.READ + self.AS_MAIN + self.STAYS + self.LIMITS + self.PRICES:
+        for name, text in self.READ + self.AS_MAIN + self.STAYS + self.LIMITS + self.PRICES + tuple(f[:2] for f in self.FORGED):
             for shell in self.SHELLS:
                 with self.subTest(name=name, shell=shell):
                     step = [wg.Step("step", text, shell)]
@@ -2794,3 +2826,11 @@ class TestTheGroupWalksParts(unittest.TestCase):
         found = wp._grouped(front, [front], parsed)
         self.assertFalse(wp._stopped(found))
         self.assertEqual(64, len(found))
+        # Told by type, never by text (#3142 round 1): a step's word spelling the stand-in's text is no stop.
+        self.assertIsInstance(wp._past(front)[0].argv[0], wp._PastGroup)
+        parsed = shell_reader.statements("{ echo ok; '%s'; } | sh\n" % wp._PAST_GROUP[0])
+        front = parsed[-1].stages[0]
+        found = wp._grouped(front, [front], parsed)
+        self.assertEqual([wp._PAST_GROUP[0]], list(found[-1][-1].argv))
+        self.assertFalse(wp._stopped(found))
+        self.assertTrue(wp._stopped(found[:-1] + [wp._past(front)]))

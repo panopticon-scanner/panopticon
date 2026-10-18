@@ -8,7 +8,9 @@ or a step-defined function's piped call) over the statements in front of it to t
 nested groups and compound bodies (`_walk`, `_structure`, `_stripped`), or back from a call to the body
 of the definition it names (`_function_body`); `workflow_annotate` asks `piped_group_member` whether a
 printer stands in such a group; `workflow_written` reads a group written to a file through `_grouped`.
-Bounded: `_GROUP_LINES` statements a walk follows, `_CALL_REACH` statements back to a definition.
+Bounded: `_GROUP_LINES` statements a walk follows, `_CALL_REACH` statements back to a definition; past the
+first the walk ends in a stand-in word told by its type (`_PastGroup`), never by its text, which a step may
+type.
 
 Stdlib only, like everything under it.
 """
@@ -159,16 +161,29 @@ def _stripped(stages):
     return [stages[0]._replace(argv=words)] + list(stages[1:])
 
 
+class _PastGroup(str):
+    """The one word of `_past`'s stand-in pipeline, `_PAST_GROUP`'s reason as its text: told from a step's words
+    by its TYPE (`_stopped`, `isinstance`), never by that text, which a step may type as a word of its own --
+    out of band, as `workflow_forms._Quiet` is (#3142 round 1; the in-band marks of #3138)."""
+
+
+_PAST_WORD = _PastGroup(_PAST_GROUP[0])
+
+
 def _past(stage):
     """The stand-in pipeline of a group the walk stopped in (`_GROUP_LINES`): one stage, no printer's, whose
-    word is `_PAST_GROUP`'s reason -- `group_reading` answers `_PAST_GROUP` for it, and a caller reading the
-    pipelines as `_printer_of` does meets a pipeline no printer spells (LOUD, fail-closed)."""
-    return [stage._replace(argv=[_PAST_GROUP[0]], stdout_to_pipe=True)]
+    word is `_PAST_WORD` -- `group_reading` answers `_PAST_GROUP` for it, and a caller reading the pipelines as
+    `_printer_of` does meets a pipeline no printer spells (LOUD, fail-closed)."""
+    return [stage._replace(argv=[_PAST_WORD], stdout_to_pipe=True)]
 
 
 def _stopped(pipelines):
-    """Whether `pipelines` ends in `_past`'s stand-in."""
-    return bool(pipelines) and bool(pipelines[-1]) and list(pipelines[-1][-1].argv) == [_PAST_GROUP[0]]
+    """Whether `pipelines` ends in `_past`'s stand-in: one word, of `_PastGroup`'s type. A step's word spelling
+    the same text is none, and reads as any other word reads."""
+    if not pipelines or not pipelines[-1]:
+        return False
+    argv = pipelines[-1][-1].argv
+    return len(argv) == 1 and isinstance(argv[0], _PastGroup)
 
 
 def _grouped(front, before, statements):

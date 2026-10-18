@@ -56,12 +56,12 @@ import shell_reader
 import shell_text
 from workflow_options import _MAINS
 from workflow_groups import (_CALL_REACH as _CALL_REACH, _GROUP_LINES as _GROUP_LINES, _PAST_GROUP as _PAST_GROUP,
-                             _TEE_OPTIONS as _TEE_OPTIONS, _behind as _behind, _cat_reads_stdin as _cat_reads_stdin,
-                             _closing as _closing, _fed as _fed, _function_body as _function_body,
-                             _grouped as _grouped, _kin as _kin, _own as _own, _passes_through as _passes_through,
-                             _past as _past, _piped as _piped, _silent as _silent, _stopped as _stopped,
-                             _stripped as _stripped, _structure as _structure, _walk as _walk,
-                             piped_group_member as piped_group_member)
+                             _PastGroup as _PastGroup, _TEE_OPTIONS as _TEE_OPTIONS, _behind as _behind,
+                             _cat_reads_stdin as _cat_reads_stdin, _closing as _closing, _fed as _fed,
+                             _function_body as _function_body, _grouped as _grouped, _kin as _kin, _own as _own,
+                             _passes_through as _passes_through, _past as _past, _piped as _piped,
+                             _silent as _silent, _stopped as _stopped, _stripped as _stripped,
+                             _structure as _structure, _walk as _walk, piped_group_member as piped_group_member)
 from workflow_printer_writes import (_CONVERSION as _CONVERSION, _COUNT as _COUNT,
                                      _ESCAPE as _ESCAPE, _ESCAPES as _ESCAPES, _KNOWN as _KNOWN,
                                      _LONG as _LONG, _OCTAL as _OCTAL, _PAD as _PAD,
