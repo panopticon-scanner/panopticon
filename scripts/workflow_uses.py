@@ -314,7 +314,7 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset(), ha
             stage.stdin_heredoc is None and covers(at_directory(read, directory), dest)
             ) for read in stage.reads) and (
             name in INTERPRETERS or stdin_program(argv) == VALUE_PROGRAM):
-        return "running it under `%s` from standard input" % name
+        return "running it under `%s` from standard input" % os.path.basename(shell_reader.readable(argv[0]))  # (#3156)
     if name == "chmod" and mentions and chmod_executable(argv):
         if getattr(dest, "tree", False) and chmod_conditional_executable(argv):
             return None
