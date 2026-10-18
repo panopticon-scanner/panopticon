@@ -329,6 +329,8 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset(), ha
         return None
     if name in INTERPRETERS:
         return "running it under `%s`" % name
+    if _value_command(argv[0]):         # `$SHELL ./t`, `$RUN ./t`, `"$@" ./t`: a word no table resolves may name a shell (#3143)
+        return "running it under `%s`, a command word this guard cannot resolve" % name
     if name == "install":
         return "installing it"
     if name in UNPACKERS:
@@ -338,9 +340,17 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset(), ha
         return "putting it on PATH with `%s`" % name
     if name == "cat" and position + 1 < len(statement.stages):
         following = shell_reader.acted(statement.stages[position + 1].argv)
-        if following and os.path.basename(following[0]) in INTERPRETERS:
+        if following and (os.path.basename(following[0]) in INTERPRETERS or _value_command(following[0])):
             return "piping it into `%s`" % os.path.basename(following[0])
     return None
+
+
+def _value_command(word):
+    """Whether a command word is a value no table resolved -- a live `$` reference (`$SHELL`, `"$RUN"`, `${X}`,
+    `"$@"`) or a substitution -- which may name any program, a shell among them: the union rule reads it as a
+    possible runner of a fetched, unchecked file it is handed (#3143). A single-quoted `'$X'`, no expansion,
+    and a shell's default (`${X:-sh}`, read as `sh`) are not such words."""
+    return ("$" in str(word) and getattr(word, "live_dollar", True) is not False) or shell_reader.has_substitution(word)
 
 
 def _on_stdin(argv):

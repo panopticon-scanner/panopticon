@@ -7637,3 +7637,53 @@ class TestWhatAnEvalOrDashCStringHandsOn(unittest.TestCase):
         for script in ('sh -c "cat <<$(echo E) >/dev/null\nE\n%s"\n' % PIPE, 'sh -c "cat <<E >/dev/null\nE\n%s"\n' % PIPE):
             with self.subTest(script=script):
                 self.assertTrue(any(self.STREAM in w for _, w in defects(script)), script)
+
+
+class TestAValueCommandWordMayRunTheFetchedFile(unittest.TestCase):
+    """#3143 (the #3140 seat's N1 root): a command word that is a value no table resolves -- `$SHELL`, `${SHELL}`,
+    `"$SHELL"`, `$RUN` unset or set by the runner, `"$@"` -- may name any program, a shell among them, so under the
+    union rule it is a possible runner of the fetched, unchecked file it is handed (`workflow_uses.use`,
+    `_value_command`); the same word behind `cat t |` is a possible reader of the pipe. On `main` ba2a4a5a each read
+    CLEAN while bash 3.2.57, dash and zsh run the payload (`$RUN` unset runs nothing, the runner's value unknown).
+    `RUN=sh` set in the step, a shell's default `${X:-sh}`, `"$@"` in a body called with `sh`, `$SHELL -c` and
+    `$SHELL < t` reported already; a word handed no fetched file, and `cat`, stay CLEAN. The price, named: a value
+    naming a non-runner (`$EDITOR ./t`, `${X:-cat} ./t`, a default that is no shell) is an over-report."""
+
+    FETCH = "curl -fsSLo t %st" % URL
+    REPORT = ("$SHELL ./t", "$SHELL t", "${SHELL} ./t", '"$SHELL" ./t', "$RUN ./t", 'set -- sh\n"$@" ./t', "cat t | $SHELL",
+              "$EDITOR ./t", "${X:-cat} ./t")                                             # the last two: the price
+    REPORTED_BEFORE = ("RUN=sh\n$RUN ./t", "${X:-sh} ./t", 'run() { "$@"; }\nrun sh ./t', "$SHELL -c ./t", "$SHELL < t")
+    CLEAN = ("$SHELL --version", "$SHELL ./other", "cat ./t")
+    CHECK = "echo \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  t\" | sha256sum -c -\n"
+
+    def test_a_value_command_word_handed_the_file_reports(self):
+        for row in self.REPORT + self.REPORTED_BEFORE:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(self.FETCH + "\n" + row + "\necho done\n", shell))
+
+    def test_a_value_command_word_handed_no_fetched_file_stays_clean(self):
+        for row in self.CLEAN:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(self.FETCH + "\n" + row + "\necho done\n", shell))
+
+    def test_a_plain_word_with_a_dollar_is_a_value_command_and_a_quoted_one_is_not(self):
+        # The coordinator's note on the grant: `getattr(word, "live_dollar", True)` defaults to live, the fail-closed
+        # direction -- a plain `str` carrying a `$` (no `_Token` attributes) is a value command, as is a substitution;
+        # a single-quoted `'$X'` (`live_dollar` False) and a shell's default (`${X:-sh}`, read as `sh`) are not.
+        self.assertTrue(workflow_uses._value_command("$SHELL"))
+        self.assertTrue(workflow_uses._value_command("$(which sh)"))
+        self.assertFalse(workflow_uses._value_command("sh"))
+        for script, expected in (("'$SHELL' ./t\n", False), ("$SHELL ./t\n", True), ('"$SHELL" ./t\n', True),
+                                 ("${SHELL} ./t\n", True), ("${X:-sh} ./t\n", False), ('"$@" ./t\n', True)):
+            with self.subTest(script=script):
+                word = shell_reader.command(shell_reader.statements(script)[0].stages[0].argv)[0]
+                self.assertEqual(expected, workflow_uses._value_command(word))
+
+    def test_the_credited_check_before_it_stops_the_step_where_it_fails(self):
+        # The check first, then `$SHELL ./t`: CLEAN where the failed check stops the step (`-e`), REPORT in the `{0}`
+        # settings, which run on -- truth f R f R f R, as the direct `$?` gate rows read.
+        for shell, expected in zip(SHELLS, "CCCRR"):
+            with self.subTest(shell=shell):
+                self.assertEqual(expected == "R", reported(self.FETCH + "\n" + self.CHECK + "$SHELL ./t\necho done\n", shell))
