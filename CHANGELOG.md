@@ -7,6 +7,18 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Large written shell programs stay linear through workflow job analysis (#3128, items 1, 3 and
+  4).** A quoted 1 MiB heredoc written to a file and then run still grew superlinearly after
+  #3105: `workflow_forms.flattened` and the guard walk copied the growing statement prefix once a
+  stage, and the written-file binding wrapped an already-spelled output in one synthetic `printf`
+  whose megabyte argument the shell reader parsed before it parsed the file itself. The program
+  readers now receive a `StatementFront` view, readable in either direction, only where a pipeline
+  can consume it, and an exact sequence of written-file printers carries its `SpelledOutput` to
+  `substituted`, `unsubstituted` and `fed`. No verdict changes: the 667-row forge probe against
+  `main` 5c88603d is byte-identical (0 movers). The written-heredoc job has a serial 64 -> 256 KiB
+  growth pin; #3105's read pin uses 300 -> 1,200 program forms so its old quadratic tree fails with
+  margin; and a committed corpus compares all 13 analysis-aware helper answers with and without a
+  shared statement analysis over both parsed and handed-program statement lists.
 - **Grouped quiet printer reasons pair with loud reasons at the printer's statement (#3095).**
   A carried download printed through `{ echo "$payload"; } | sh` produced two findings: `carried`
   put the loud hand-off reason on the printer's statement, while #3026 put the quiet unread-printer
