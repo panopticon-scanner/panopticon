@@ -7,6 +7,41 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow written files: a group of printers written to a file and then run is read as their text
+  (#3110).** `{ echo "sh -c 'curl … | sh'"; echo ok; } > s.sh` ⏎ `sh s.sh`, and the `{ echo P; } >
+  s.sh` and `( echo P; ) > s.sh` forms, ran the download under every parent and read CLEAN
+  (Claudia's 138 rows from the #3026 kit, 102 running), while the single printer written so was
+  reported: `workflow_written._writer` took the stage that writes the file for the printer, and for
+  a group that is the closer -- `}`, or the empty stage that closes a subshell -- which prints
+  nothing. Now `_writers` reads a closer's writers through #3026's group reading
+  (`workflow_printers._grouped`, `_printer_of`): the printer of each pipeline of the group, in
+  order, each a writer of the file, so `_script` spells the file as it spells any sequence of
+  writers and `stdin_scripts` reads the run; the group reads exactly as its single-printer twin
+  reads, the lifted letter (`sh -$(echo c)`, #3065) included. A pipeline of the group that is no
+  printer's (`{ echo ok; cat f; } > s.sh`) stands in as a writer the printers cannot spell, so the
+  whole group is handed on as the expanding heredoc behind `$UNSPELLED_WRITER` -- reported as any
+  expanding body a shell runs, fail-closed, the spelled payload beside it kept, as #3026's
+  `_GROUPED` reads the pipe twin; a group with no printer in it binds nothing, as `cat f > s.sh`
+  binds nothing (a limit, `main`'s). The walk back to a group's opener reads the statements in front
+  of the closer through a view, no copy, and only where the closer writes a file -- the first cut
+  copied the front once a closer, quadratic in the step (round 1's seat: x8.6 for 3,200 -> 12,800 on
+  4n plain lines then n groups) -- so the binder stays linear: that shape binds in linear time at
+  3,200 and 12,800, and n groups written and run read in linear time (pinned beside #3126's). Limits
+  and prices, named: a nested group (`{ { echo P; }; echo ok; } > s.sh`) is #3117's shape and reads
+  CLEAN; the lifted-letter rows the printers cannot spell (`sh -$(echo x) '…'`: 18 of the 138,
+  nothing runs) read LOUD, as their single-printer twins do on `main` -- its price, inherited; every
+  write is still an append (#3027). Forge differential, 65e56576 against `main` 9a2a7257 over the
+  27,538-row kit (the kit's 27,372 rows, Claudia's 138, ten controls and the 18 single-printer
+  twins; three readings a cell, 2,039,670 in all): 124 rows differ, every one CLEAN->REPORT -- the
+  102 running rows, the 18 lifted-letter rows (LOUD, as their twins read on `main`), and four
+  controls (`{ echo ok; cat f; }`, `. ./s.sh`, `bash s.sh`, `>> s.sh`); 0 REPORT->CLEAN; the 27,372
+  rows of the kit and the 18 twins read byte-identical; 0 rows lose a same-text multiplicity in the
+  job, main-pass or walk reading. Pin moved, authorized by its own comment: the `written-group` row
+  of `tests/test_workflow_printers.py` (#3026's named limit, "A limit of #3027's reader, not this
+  reading's: #3110") from CLEAN to REPORT. `tests/test_workflow_written_files.py`: the issue's rows,
+  the LOUD and no-printer controls, the twins, the nested limit, two growth pins. Sizes:
+  `scripts/workflow_written.py` 193 (+19).
+
 - **Workflow reader reads a call of a function the step defines as its body, the call's words in its
   positionals (#3047, the function half; #3091).** `run() { "$@"; }; run sh cuda_1.run`, a retry
   loop around `"$@"`, `f() { sh "$1"; }; f cuda_1.run` and a fetched file handed to a body
