@@ -350,6 +350,92 @@ class TestTheCalledFoldsSameTextRepeatIsDropped(unittest.TestCase):
                 self.assertEqual([self.HANDS_T] * 2, self.heads(self.job(text, shell), {self.HANDS_T}))
 
 
+class TestTheCallsTheFoldDidNotFollow(unittest.TestCase):
+    """#3127: the calls #3047's fold did not follow, from the #3121 seat and its combined-tree round. Truth, in the
+    comments: bash 3.2.57, /bin/sh (dash) and zsh 5.9, with and without `-e`, a `curl` stub whose payload marks when it
+    RUNS ("runs": every parent; zsh named where it differs -- the five `shell:` settings are bash and sh). Each row
+    reports where truth runs, the union with `main`'s reading; the controls keep their marks."""
+
+    T = "curl -fsSLo t https://example.test/t\n"
+    P = "curl -fsSL https://example.test/i.sh | sh"
+
+    def test_a_positionals_default_alternative_and_slice_are_bound(self):
+        # `${1:-t}` and `${1-t}` with no word: the default; `${1:-x}` with `t`: the word; `"${1:+sh}" t` with a word: the
+        # alternative; `"${@:2}"`: the call's words from the second, `"${@:2:2}"` two of them. Truth: runs.
+        for text in ('f() {\nsh "${1:-t}"\n}\nf\n', 'f() {\nsh "${1-t}"\n}\nf\n', 'f() {\nsh "${1:-x}"\n}\nf t\n',
+                     'f() {\n"${1:+sh}" t\n}\nf x\n', 'f() {\n"${@:2}"\n}\nf x sh t\n', 'f() {\n"${@:2:2}"\n}\nf x sh t y\n'):
+            with self.subTest(text=text[:24]):
+                self.assertEqual(REPORTED, marks(self.T + text))
+        # `${1:+sh} t` with no word leaves `t` alone, a command of that name (truth: not found, nothing): the fold reads
+        # it as `main` reads a bare `t` after the fetch, whatever that is.
+        self.assertEqual(marks(self.T + "t\n"), marks(self.T + 'f() {\n${1:+sh} t\n}\nf\n'))
+
+    def test_ten_is_the_first_word_and_a_zero_to_bash_and_dash(self):
+        # `$10` is `${1}0`: with `t0` fetched and `t` the first word it runs `t0`; with `t` the tenth word it runs `10`,
+        # nothing (zsh reads the tenth word and runs: named); `${10}` is the tenth word to all three. Truth as said.
+        self.assertEqual(REPORTED, marks("curl -fsSLo t0 https://example.test/t0\nf() {\nsh $10\n}\nf t\n"))
+        self.assertEqual(CLEAN, marks(self.T + "f() {\nsh $10\n}\nf 1 2 3 4 5 6 7 8 9 t\n"))
+        self.assertEqual(REPORTED, marks(self.T + 'f() {\nsh "${10}"\n}\nf 1 2 3 4 5 6 7 8 9 t\n'))
+
+    def test_an_unquoted_positional_is_split_on_blanks(self):
+        # `f() { $1; }; f 'sh t'` runs `sh t` (bash and dash split the word; zsh does not: named); `"$1"` is one word, a
+        # command named `sh t`: nothing.
+        self.assertEqual(REPORTED, marks(self.T + "f() {\n$1\n}\nf 'sh t'\n"))
+        self.assertEqual(CLEAN, marks(self.T + "f() {\n\"$1\"\n}\nf 'sh t'\n"))
+
+    def test_a_one_line_body_opening_a_subshell_or_a_group_is_followed(self):
+        # `f() { ( sh "$1" ); }` and `run() { ( "$@" ); }` (coll.18) on one line read as their multi-line twins; a body
+        # whose header's line opens a group reads nothing of its call and is stood for anyway (`main` reads the group
+        # behind the header's words, so #3111's reading never reached it). Truth: runs. A subshell body `f() ( … )`
+        # stays `main`'s (the reader-forms pin: it reaches nothing).
+        for text in (self.T + 'f() { ( sh "$1" ); }\nf t\n', self.T + 'run() { ( "$@" ); }\nrun sh t\n',
+                     "f() { { echo '%s'; echo hi; } | sh; }\nf\n" % self.P):
+            with self.subTest(text=text[-40:]):
+                self.assertEqual(REPORTED, marks(text))
+        self.assertEqual(CLEAN, marks('T=/dev/null\nf() ( { T=t; } )\nf\nsh "$T"\n'))
+
+    def test_a_definition_that_may_not_have_run_is_a_named_limit(self):
+        # A definition under `if` or behind `&&` may never have run: `main` installs no function from it, and the fold
+        # stands for none (#3047's rule, the guard's B43 pins: an and-list inside a child, a false handler, an
+        # unexecuted definition invent no call). `if true; then f() { …; }; fi; f t` runs and reads CLEAN -- named,
+        # this issue's one row left; an `unset -f` that may not have run takes nothing away (as before).
+        for text, expected in ((self.T + 'if true; then f() { sh "$1"; }; fi\nf t\n', CLEAN),
+                               (self.T + 'true && h() { sh "$1"; }\nh t\n', CLEAN),
+                               (self.T + 'g() { sh "$1"; }\nfalse && unset -f g\ng t\n', REPORTED)):
+            with self.subTest(text=text[-44:]):
+                self.assertEqual(expected, marks(text))
+
+    def test_a_call_inside_an_eval_string_is_followed(self):
+        # `eval 'f t'` and `eval 'run sh t'` call as `f t` does (truth: runs); an `eval` of a string with a live `$`
+        # (`eval "f $X"`) or of two statements (`eval 'f t; true'`) stays `main`'s, CLEAN while truth runs -- named;
+        # `bash -c 'f t'` runs a child shell that has no function: nothing, CLEAN.
+        for text, expected in ((self.T + "f() { sh \"$1\"; }\neval 'f t'\n", REPORTED),
+                               (self.T + "run() { \"$@\"; }\neval 'run sh t'\n", REPORTED),
+                               (self.T + "f() { sh \"$1\"; }\nX=t\neval \"f $X\"\n", CLEAN),
+                               (self.T + "f() { sh \"$1\"; }\neval 'f t; true'\n", CLEAN),
+                               (self.T + "f() { sh \"$1\"; }\nbash -c 'f t'\n", CLEAN)):
+            with self.subTest(text=text[-28:]):
+                self.assertEqual(expected, marks(text))
+
+    def test_a_pass_through_body_is_taken_out_of_the_pipe(self):
+        # `f() { cat; }`: `{ P; } | f | sh` reads as `{ P; } | sh` (#3111's group), the argument of `f cat` ignored as
+        # `cat` ignores it, the multi-line body the same (truth: runs). `f() { tee log; }` stays in the pipe and CLEAN,
+        # as `{ P; } | cat | sh` is on `main` while truth runs both: the `| cat |` and `| tee |` links are #3111's
+        # `_grouped`, which reads the stage in front of the shell alone -- named.
+        for text, expected in (("f() { cat; }\n{ echo '%s'; } | f | sh\n" % self.P, REPORTED),
+                               ("f() { cat; }\n{ echo '%s'; } | f cat | sh\n" % self.P, REPORTED),
+                               ("f() {\ncat\n}\n{ echo '%s'; } | f | sh\n" % self.P, REPORTED),
+                               ("f() { tee log; }\n{ echo '%s'; } | f | sh\n" % self.P, CLEAN),
+                               ("{ echo '%s'; } | cat | sh\n" % self.P, CLEAN)):
+            with self.subTest(text=text[:22]):
+                self.assertEqual(expected, marks(text))
+
+    def test_an_alias_is_a_named_limit(self):
+        # `alias r=sh; r t` runs under dash alone (bash expands no alias in a script, nor does zsh): a reading that needs
+        # the step's shell, which the fold is not handed -- CLEAN, named.
+        self.assertEqual(CLEAN, marks(self.T + "alias r=sh\nr t\n"))
+
+
 class TestTheFoldsFlipClearsTheCaches(unittest.TestCase):
 
     def test_a_flip_of_the_called_fold_clears_parsed(self):
@@ -387,6 +473,29 @@ class TestTheReadingIsLinear(LinearGrowth, unittest.TestCase):
 
         with mock.patch.object(shell_reader, "statements", lambda script: folded(real(script))):
             self.assert_linear_growth(250, self.make, check)
+
+    @staticmethod
+    def chain(n):
+        return "".join('f%d() { f%d "$@"; }\n' % (i, i + 1) for i in range(n)) + 'f%d() { sh "$1"; }\nf0 t\n' % n
+
+    @pytest.mark.serial
+    def test_a_chain_of_n_definitions_is_read_in_linear_time(self):
+        # #3127's cost item: `main` asked `_function_scope` once a definition without #3126's shared analysis, quadratic
+        # in the definitions (x21.8 for 200 -> 800 here, x16.8 for n unrelated ones); `CalledFetches` builds the
+        # analysis once (`statement_analysis`) and `_function_ranges` takes it (two lines in `workflow_use_scopes`,
+        # granted). The fold alone is timed: the parse is done in `make`. The one call is followed `_DEPTH` deep.
+        parsed = {}
+
+        def make(n):
+            script = self.chain(n)
+            parsed[script] = shell_reader.statements(script)
+            return script
+
+        def check(n, read):
+            self.assertEqual(2 * n + 3, len(read))      # a definition is two statements, the call one
+            self.assertEqual(["f%d" % _DEPTH, "t"], [str(w) for w in read[-1].stages[0].argv])
+
+        self.assert_linear_growth(200, make, check, parser=lambda script: folded(parsed[script]))
 
 
 if __name__ == "__main__":

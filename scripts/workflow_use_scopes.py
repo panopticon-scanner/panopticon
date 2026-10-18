@@ -14,8 +14,9 @@ from workflow_function_calls import _FUNCTION_TOKEN, _function_scope, _function_
 from workflow_values import _literals
 
 
-def _function_ranges(stmts):
-    """Definition starts and the indices occupied by each function body."""
+def _function_ranges(stmts, analysis=None):
+    """Definition starts and the indices occupied by each function body; `analysis`, the shared statement analysis
+    where one is in hand (#3126), answers each definition's scope in one pass instead of a scan a definition."""
     starts: dict[int, list[tuple[str, int, int]]] = {}
     occupied: set[int] = set()
     for index, statement in enumerate(stmts):
@@ -23,7 +24,7 @@ def _function_ranges(stmts):
             name = _function_syntax(stage.argv)[0]
             if name is None:
                 continue
-            scope = _function_scope(stmts, index)
+            scope = _function_scope(stmts, index, analysis)
             if scope is None:
                 continue
             close = scope[1]
