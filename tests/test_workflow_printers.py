@@ -2298,10 +2298,12 @@ class TestTheIssuesRowsAndTheirPrices(unittest.TestCase):
         ("to-cat", "{ echo \"%s\"; } | cat\n" % C),
         # The closer's own pipeline is `main`'s: an outer subshell's statements are not read as its group.
         ("inner-subshell", "( cat setup.sh; echo hi\n( echo ok ) | sh\n)\n"),
-        # A group WRITTEN to a file the step then runs: #3027's writer (`workflow_written._writer`) takes the
-        # stage that writes the file as the printer, and here that is the closer, which prints nothing. Truth:
-        # runs under all eight parents (k3026/rows-written: 102 running rows, CLEAN on `main` and here alike);
-        # the single printer written so is reported. A limit of #3027's reader, not this reading's: #3110.
+    )
+    # A group WRITTEN to a file the step then runs, #3026's named limit (#3027's writer took the closer, which prints
+    # nothing, for the printer): reported since #3110, `workflow_written._writers` reading the closer's writers
+    # through this group reading (`_grouped`, `_printer_of`). Truth: runs under all eight parents (k3026/rows-written:
+    # 102 running rows); the single printer written so was reported already.
+    MOVED = (
         ("written-group", "{ echo \"%s\"; echo ok; } > s.sh\nsh s.sh\n" % C),
     )
     PREFIX = (
@@ -2345,6 +2347,9 @@ class TestTheIssuesRowsAndTheirPrices(unittest.TestCase):
         for name, text in self.STAYS:
             with self.subTest(name=name):
                 self.assertEqual(("CCCCC", "CCCCC"), self.marks(text))
+        for name, text in self.MOVED:          # #3110's row, moved under its own comment
+            with self.subTest(name=name):
+                self.assertEqual(("RRRRR", "RRRRR"), self.marks(text))
 
     def test_the_prefix_control(self):
         # The issue's first shape was read before this PR: #3007's PRINTERS_NEXT lets the second walk find the
