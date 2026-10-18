@@ -37,7 +37,15 @@ evidence exposed.
   answers whether a wrapper returns its call's status. A structural pin counts both formerly
   repeated predicates as definitions double, independently of machine speed; the sampled helper
   corpus still compares every indexed answer, including the reported call chain, with the legacy
-  path.
+  path. On the forge, serial process CPU at 160, 320 and 640 definitions was
+  0.160/0.331/0.731 s for nested bodies, 0.161/0.335/0.737 s for one-line nested bodies,
+  0.250/0.497/0.989 s with one function called, 0.239/0.478/0.951 s with none called, and
+  0.281/0.560/1.117 s for three-line bodies. The sibling-call shape remains superlinear at
+  2.184/7.915/30.002 s in the separate `workflow_uses` pass (#3145): its profile spends 6.07 of
+  7.09 s there at 160 definitions, while indexed function gating takes 0.06 of 1.98 s for 640
+  nested bodies. The original 86,382-row corpus has no answer differences after normalizing six
+  rows that carry per-process parse nonces, and the separately deduplicated 2,520-row addition is
+  raw byte-identical.
 - **Workflow reader follows a group piped to a shell through what #3026 passed over (#3117).** #3026
   read `{ P; } | sh` and `( P; ) | sh` back from the closer to the opener, one level; the #3111
   seat's rows and the kit's twins ran the download under every parent and read CLEAN: a nested group
