@@ -329,7 +329,7 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset(), ha
         return None
     if name in INTERPRETERS:
         return "running it under `%s`" % name
-    if _value_command(argv[0]):         # `$SHELL ./t`, `$RUN ./t`, `"$@" ./t`: a word no table resolves may name a shell (#3143)
+    if _value_command(argv[0]) and _first_operand(rest) in mentions:      # `$SHELL ./t`, `$RUN ./t`, `"$@" ./t` (#3143)
         return "running it under `%s`, a command word this guard cannot resolve" % name
     if name == "install":
         return "installing it"
@@ -340,17 +340,36 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset(), ha
         return "putting it on PATH with `%s`" % name
     if name == "cat" and position + 1 < len(statement.stages):
         following = shell_reader.acted(statement.stages[position + 1].argv)
-        if following and (os.path.basename(following[0]) in INTERPRETERS or _value_command(following[0])):
+        if following and (os.path.basename(following[0]) in INTERPRETERS
+                          or _value_command(following[0]) and _first_operand(following[1:]) is None):
             return "piping it into `%s`" % os.path.basename(following[0])
     return None
 
 
+def _first_operand(words):
+    """The first word of `words` that is no option: the one a shell named by a value command word would run as its
+    script (#3143) -- the fetched file in `$SHELL ./t`, `head` in `$S head -n 99 t`, where `$S` may be nothing in
+    front of a name the reader knows (#2472, #3003) and a shell there would run `head`, not `t`; None where none."""
+    return next((word for word in words if not str(word).startswith("-")), None)
+
+
+# A default the reader reads its own way (`${X:-sh}` as `sh`, `${X:=cat}` as `cat`, a wrapper's as the wrapper: #2472)
+# and an array spliced whole (`"${CMD[@]}"`), which the guard resolves at its splice (#2770): neither is a value this
+# guard cannot name. An alternate (`${A:+echo}`) is: it reads as a bare reference in its place (#3003).
+_OWN_FORM = re.compile(r"^\$\{[A-Za-z_@*#?0-9]+(?:\[[^]]*\])?:?[-=]")
+_SPLICE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\[[@*]\]\}$")
+
+
 def _value_command(word):
     """Whether a command word is a value no table resolved -- a live `$` reference (`$SHELL`, `"$RUN"`, `${X}`,
-    `"$@"`) or a substitution -- which may name any program, a shell among them: the union rule reads it as a
-    possible runner of a fetched, unchecked file it is handed (#3143). A single-quoted `'$X'`, no expansion,
-    and a shell's default (`${X:-sh}`, read as `sh`) are not such words."""
-    return ("$" in str(word) and getattr(word, "live_dollar", True) is not False) or shell_reader.has_substitution(word)
+    `"$@"`, `${X#y}`) or a substitution -- which may name any program, a shell among them: the union rule reads
+    it as a possible runner of the fetched, unchecked file that is its first operand (`_first_operand`, #3143).
+    A single-quoted `'$X'`, no expansion, a default the reader reads its own way (`_OWN_FORM`) and an array spliced
+    whole (`_SPLICE`) are not such words; an alternate is, as the bare reference it reads as."""
+    text = str(word)
+    if _OWN_FORM.match(text) or _SPLICE.match(text):
+        return False
+    return ("$" in text and getattr(word, "live_dollar", True) is not False) or shell_reader.has_substitution(word)
 
 
 def _on_stdin(argv):

@@ -7643,17 +7643,23 @@ class TestAValueCommandWordMayRunTheFetchedFile(unittest.TestCase):
     """#3143 (the #3140 seat's N1 root): a command word that is a value no table resolves -- `$SHELL`, `${SHELL}`,
     `"$SHELL"`, `$RUN` unset or set by the runner, `"$@"` -- may name any program, a shell among them, so under the
     union rule it is a possible runner of the fetched, unchecked file it is handed (`workflow_uses.use`,
-    `_value_command`); the same word behind `cat t |` is a possible reader of the pipe. On `main` ba2a4a5a each read
-    CLEAN while bash 3.2.57, dash and zsh run the payload (`$RUN` unset runs nothing, the runner's value unknown).
-    `RUN=sh` set in the step, a shell's default `${X:-sh}`, `"$@"` in a body called with `sh`, `$SHELL -c` and
-    `$SHELL < t` reported already; a word handed no fetched file, and `cat`, stay CLEAN. The price, named: a value
-    naming a non-runner (`$EDITOR ./t`, `${X:-cat} ./t`, a default that is no shell) is an over-report."""
+    `_value_command`), where it is the whole command -- not a word bash may drop in front of a name the reader
+    knows (`_optional`), nor a default, an alternate or a spliced array the reader resolves its own way; the same
+    word behind `cat t |` is a possible reader of the pipe. On `main` ba2a4a5a each read CLEAN while bash 3.2.57,
+    dash and zsh run the payload (`$RUN` unset runs nothing, the runner's value unknown). `RUN=sh` set in the
+    step, a shell's default `${X:-sh}`, `"$@"` in a body called with `sh`, `$SHELL -c` and `$SHELL < t` reported
+    already; a word handed no fetched file, and `cat`, stay CLEAN. The price, named: a value naming a non-runner
+    (`$EDITOR ./t`) is an over-report."""
 
     FETCH = "curl -fsSLo t %st" % URL
     REPORT = ("$SHELL ./t", "$SHELL t", "${SHELL} ./t", '"$SHELL" ./t', "$RUN ./t", 'set -- sh\n"$@" ./t', "cat t | $SHELL",
-              "$EDITOR ./t", "${X:-cat} ./t")                                             # the last two: the price
+              "${X#y} ./t", "$(which sh) ./t", "$EDITOR ./t")                           # the last: the price
     REPORTED_BEFORE = ("RUN=sh\n$RUN ./t", "${X:-sh} ./t", 'run() { "$@"; }\nrun sh ./t', "$SHELL -c ./t", "$SHELL < t")
-    CLEAN = ("$SHELL --version", "$SHELL ./other", "cat ./t")
+    # A default or an alternate the reader reads its own way (`${X:-cat}` as `cat`, `${S:+echo}` as nothing or
+    # `echo`), an array spliced whole, and a value in front of a name the reader knows (`$S head -n 99 t`: `head`
+    # reads `t`, `$S` may be nothing) are not value commands: `main`'s readings stand.
+    CLEAN = ("$SHELL --version", "$SHELL ./other", "cat ./t", "${X:-cat} ./t", "${S:+echo} cat ./t", "$S head -n 99 t",
+             'CMD=(cat)\n"${CMD[@]}" ./t')
     CHECK = "echo \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  t\" | sha256sum -c -\n"
 
     def test_a_value_command_word_handed_the_file_reports(self):
