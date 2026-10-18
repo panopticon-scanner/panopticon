@@ -19,6 +19,24 @@ evidence exposed.
   growth pin; #3105's read pin uses 300 -> 1,200 program forms so its old quadratic tree fails with
   margin; and a committed corpus compares all 13 analysis-aware helper answers with and without a
   shared statement analysis over both parsed and handed-program statement lists.
+- **Workflow reader parts a nested function header behind a group's `{` in a one-line body
+  (#3123).** `f() { { g() { sh t; }; g; }; }` ⏎ `f` ran the download under every parent and read
+  CLEAN: the splitter parted a header's `{` from a nested header after it (`f() { g() {`, #2975 part
+  A) and a group's `{` from a header after it (`{ g() {`, #2664), but not a run of braces, so `f() {
+  { g() {` kept `{`, `{` and `g` -- its `()` lost -- as words of the header's statement, and no
+  reader found `g`; the own-line twin and the top-level group reported. Now
+  `shell_split._NESTED_HEADER` takes a run of `{` words: the statement ends after the header's `{`,
+  the next starts at the group's `{`, which ends after the brace, and the nested header stands as it
+  does on a line of its own -- the row and a run of three braces report, the twins and the controls
+  read as they did (a group with no header in it, a subshell with one, stay one statement). The
+  issue's second row, a never-called gate in a subshell inside a body (`f() { ( g() { sha256sum -c
+  sums || exit 1; }; ); }`), reads REPORT on `main` 68c75d2c already (its CCCRR was an earlier
+  `main`'s) and is pinned so it stays. Forge differential of fd7140ff against `main` 68c75d2c over
+  the 27,627-row kit (every reader; the parse changed): 27,625 rows identical, 2 moved -- both this
+  issue's (row 1 and the three-brace run), CLEAN to REPORT under every parent in the job, main-pass
+  and walk readings -- 50 cells gain a finding, none loses one, no multiplicity lost. Pins:
+  `tests/test_shell_reader.py` (the parse) and `tests/test_workflow_positional_handoff.py` (the
+  rows' marks). Sizes: `scripts/shell_split.py` 431 (+0: one regex).
 - **Grouped quiet printer reasons pair with loud reasons at the printer's statement (#3095).**
   A carried download printed through `{ echo "$payload"; } | sh` produced two findings: `carried`
   put the loud hand-off reason on the printer's statement, while #3026 put the quiet unread-printer
