@@ -6333,11 +6333,11 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
         self.assertEqual(1, len(why), why)
         self.assertIn("fetches %s -> tool and running it under `sh`" % self.URL, why[0])
 
-    def assert_reported_in_every_shell(self, script):
+    def assert_reported_in_every_shell(self, script, count=1):
         for shell in self.SHELLS:
             with self.subTest(script=script, shell=shell):
                 found = wg.job_defects([wg.Step("step", script, shell)])
-                self.assertEqual(1, len(found), found)
+                self.assertEqual(count, len(found), found)
 
     def assert_clean_in_every_shell(self, script):
         for shell in self.SHELLS:
@@ -6547,9 +6547,12 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
              "{ { %s; } | { cat; }; } > tool\nsh tool\n"),
             ("PR-A-024",
              "{ ( %s; ) | ( cat; ); } > tool\nsh tool\n"),
+            # #3117 reads the group written to `tool` through its loop: the loop's printer prints `$l`, a text
+            # no printer spells, so the written group is handed on LOUD beside main's forwarding finding --
+            # two findings, as main gives `{ F; echo ok; } > tool` then `sh tool` (its one-level reading).
             ("PR-A-025",
              "{ ( %s; ) | while read -r l; do echo \"$l\"; done; } > tool\n"
-             "sh tool\n"),
+             "sh tool\n", 2),
             ("PR-A-026",
              "{ ( %s; ) | for i in 1; do cat; done; } > tool\nsh tool\n"),
             ("PR-A-034",
@@ -6583,9 +6586,9 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
             ("PR-E-039",
              "f() { ( %s; ) | cat; } > tool\nf\nsh tool\n"),
         )
-        for row, template in rows:
+        for row, template, *count in rows:
             with self.subTest(row=row):
-                self.assert_reported_in_every_shell(template % self.FETCH)
+                self.assert_reported_in_every_shell(template % self.FETCH, *count)
 
     def test_2937_dash_last_subshell_redirect_keeps_mains_reading(self):
         # #3125 review round 1: dash 0.5.12 drops these redirects when the
@@ -6610,17 +6613,17 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
         # four rows are REPORT on main; their runtime truth is RRRRRRRR for
         # F-034/F-037 and ffffRffR for G-013/G-023.
         rows = (
-            ("R2-F-034",
+            ("R2-F-034",             # two findings: #3117's hand-on of the loop's `$l` text, see PR-A-025
              "{ { %s; } | while IFS= read -r l; do printf '%%s\\n' \"$l\"; done; } "
-             "> tool\nsh tool\n"),
+             "> tool\nsh tool\n", 2),
             ("R2-F-037",
              "{ { %s; } | cat | { cat; }; } > tool\nsh tool\n"),
             ("R2-G-013", "{ ( %s; ) >&2; } > tool\nsh tool\n"),
             ("R2-G-023", "{ { ( %s; ) > f; }; } > tool\nsh tool\n"),
         )
-        for row, template in rows:
+        for row, template, *count in rows:
             with self.subTest(row=row):
-                self.assert_reported_in_every_shell(template % self.FETCH)
+                self.assert_reported_in_every_shell(template % self.FETCH, *count)
 
     def test_2937_nested_subshell_files_do_not_reach_an_outer_subshell_file(self):
         # #3125 review round 2: both shells write only `f`; `tool` stays empty.
