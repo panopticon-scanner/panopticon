@@ -16,13 +16,28 @@ evidence exposed.
   can consume it, and an exact sequence of written-file printers whose output contains no `$`
   carries its `SpelledOutput` to `substituted`, `unsubstituted` and `fed`. Dollar-bearing
   output keeps the old synthetic-`printf` parse, including its existing cost, because its dynamic
-  argument produces an observable fail-closed reading. The round-one seat measured the 1 MiB job at
-  57.0 s here against 377.7 s on base; a size-scaled structural pin forbids re-entering the printer
-  parser, so the proof does not depend on a machine-speed budget. The first-round 667-row forge
-  probe against `main` 5c88603d was byte-identical (0 movers). #3105's read pin uses 300 -> 1,200
+  argument produces an observable fail-closed reading. The round-two seat measured the 1 MiB job at
+  51 s here against 362 s on main when the output contains no `$`; the retained dollar-bearing path
+  costs 241 s at 1 MiB and remains superlinear as on main. The round-two full kit was byte-identical
+  over 86,765 rows after nonce normalization. A size-scaled structural pin forbids re-entering the
+  printer parser, so the proof does not depend on a machine-speed budget. #3105's read pin uses
+  300 -> 1,200
   program forms so its old quadratic tree fails with margin; and a committed corpus compares all
   13 analysis-aware helper answers with and without a shared statement analysis over both parsed
   and handed-program statement lists.
+- **Function-body gates index their calls and closing runs once per statement list (#3128, item
+  2).** `_gating_function_call` and `_piped_function_end` each scanned the suffix after a function
+  body, once per body, to find a redefinition, a call, or a shell-posture change; `_stops_step`
+  likewise walked the remaining `}` / `)` run once per statement. The shared function index now
+  records definitions, direct calls, posture barriers, and the structural group around each call;
+  those two proofs visit only events for the function they are answering. A separate lightweight
+  closing index records each closer run and memoizes its first detached or uncredited-pipeline
+  boundary for the caller's pipefail posture. The all-on/all-off posture vectors are shared, a
+  recursive wrapper call carries one backtracked name set, and the existing later-command index
+  answers whether a wrapper returns its call's status. A structural pin counts both formerly
+  repeated predicates as definitions double, independently of machine speed; the sampled helper
+  corpus still compares every indexed answer, including the reported call chain, with the legacy
+  path.
 - **Workflow reader follows a group piped to a shell through what #3026 passed over (#3117).** #3026
   read `{ P; } | sh` and `( P; ) | sh` back from the closer to the opener, one level; the #3111
   seat's rows and the kit's twins ran the download under every parent and read CLEAN: a nested group
