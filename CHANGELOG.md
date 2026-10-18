@@ -7,6 +7,42 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard reads a command word it cannot resolve as a possible runner of the fetched file
+  that is its first operand (#3143).** `curl -fsSLo t URL` then `$SHELL ./t` ran the download under
+  every parent and read CLEAN: `workflow_uses.use` reported a run only where the command word named
+  an interpreter, so `$SHELL`, its braced form, `"$SHELL"`, `$RUN` (unset, or set by the runner or
+  `env:`), `"$@"`, an expansion in front of `sh` and a modified reference fell through, and `cat t |
+  $SHELL` with them -- the #3140 seat's N1 root. `RUN=sh` set in the step resolved through the
+  table, a shell's default read as `sh`, a spliced array at its splice, and `$SHELL < t` read the
+  value word as a stdin runner already. Now, in the guard's second walk, a command word holding a
+  live `$` expansion whose name may end as a shell's does (`_value_command`: the text after its last
+  expansion ends a shell's name and holds no `/`) and that the value table gives no value at all
+  (`_unvalued`) reports as running the fetched, unchecked file that is its first non-option operand
+  ("a command word this guard cannot resolve"), and behind `cat t |`, with nothing but options after
+  it, as piping it: the union rule, fail-closed. The main pass stays `main`'s answer word for word,
+  and the walk's use follows every one `main` names, so `main`'s finding stands wherever it names
+  one -- a body's `$RUN` its call resolves to `sh`, a locale string read bash's way. What stays as
+  `main` reads it: a default the reader reads its own way (`${X:-cat} ./t`; `cat t |
+  x"${SH:-bash}"`, read as `xbash`), a spliced array, a value in front of a name the reader knows
+  (`$S head -n 99 t`), a value after a value, a value the table names (`cmd='$1'` then `"$cmd"`), a
+  value handed no fetched file, a name no shell's can be (`$S/x ./t`, `a$ ./t`, `$'bash\ue004'
+  ./t`), and a command substitution -- lifted before the walk, a named limit; with a credited check
+  before it the step reads as the gate rows do (CCCRR). The price, named: a value naming a
+  non-runner or nothing -- `$EDITOR ./t`; `${X#y} ./t` with `X` unset; `${A:+echo} t`, an alternate,
+  which reads as the bare reference in its place (#3003), and with it a quoted alternate whose value
+  holds a blank -- is an over-report, as #3141 would read it UNVERIFIED; and `$"sh"` gains a second
+  finding beside `main`'s, the walk reading dash's kept `$` as the reference `$sh` (#3048). The kit
+  differential (66fd7108 against `main` b29ab169, 27,633 rows): 54 rows move, none from REPORT to
+  CLEAN; the main pass is unchanged on every row, and no row loses a finding of `main`'s -- this
+  issue's rows; the value rows and seat-hunt13's whose shell is set in a step of its own, which the
+  use's step gives no value; a body in a step of its own, read in place as `main` reads one; the two
+  seat-hunt18 quoted alternates (the price); and second findings beside `main`'s for `$SHELL -c`, a
+  wrapper's alternate, the locale rows and a body its call resolves. Pins:
+  `tests/test_workflow_guard_reader_forms.py::TestAValueCommandWordMayRunTheFetchedFile` (thirteen
+  rows report in all five settings, six that reported already still do, sixteen controls stay CLEAN,
+  the checked row reads CCCRR, `main`'s finding stands, the main pass is unchanged, and the
+  predicate). Sizes: `scripts/workflow_uses.py` 663 (+70).
+
 - **Large written shell programs stay linear through workflow job analysis (#3128, items 1, 3 and
   4).** A quoted 1 MiB heredoc written to a file and then run still grew superlinearly after
   #3105: `workflow_forms.flattened` and the guard walk copied the growing statement prefix once a
