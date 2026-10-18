@@ -66,7 +66,7 @@ from workflow_status import status_gate, step_end, stopping_err_trap
 # its bodies below the command running it (`regions`), and why a checksum there
 # clears nothing: as its pipeline's last command, and as an earlier one (None:
 # it may clear).
-Inlined = collections.namedtuple("Inlined", "stages separator region credit")
+Inlined = collections.namedtuple("Inlined", "stages separator region credit key", defaults=(None,))
 
 
 def _pipeline_groups(stage):

@@ -23,6 +23,70 @@ evidence exposed.
   program forms so its old quadratic tree fails with margin; and a committed corpus compares all
   13 analysis-aware helper answers with and without a shared statement analysis over both parsed
   and handed-program statement lists.
+- **Workflow reader follows a group piped to a shell through what #3026 passed over (#3117).** #3026
+  read `{ P; } | sh` and `( P; ) | sh` back from the closer to the opener, one level; the #3111
+  seat's rows and the kit's twins ran the download under every parent and read CLEAN: a nested group
+  (`{ { P; }; } | sh`), a keyword compound's body (`if`, `while`, `until`, `for`, `case`, piped at
+  `fi`, `done` or `esac`), a step-defined function's body at its piped call (`f | sh`, in every form
+  of header and body), a compound inside a string a shell is handed (`eval`, `sh -c`), a group as a
+  substitution's script (`sh <({ P; })`, `x=$({ P; } | sh)`), `source /dev/stdin` and `. /dev/stdin`
+  fed by a group, and a group piped on through a pass-through stage (`{ P; } | cat | sh`).
+  `workflow_printers._walk` now reads back through the structure a stage carries (`_structure`:
+  braces, subshells, headers and their closers), each body statement's pipeline once its opening
+  words are dropped (`_stripped`: `{`, `then`, `do`, `else`, `time`, a case arm, a function header),
+  a nested group's body kept where its closer hands the stdout on (`| cat` passes, `| tr` stands in
+  LOUD, `> f` drops it), every branch of an `if` or `case` (fail-closed), a loop body's `break` or
+  `continue` as writing nothing, and a function's body from the closer of the definition last met
+  before the call (`_function_body`). BESIDE `main`'s reading, never instead: every finding `main`
+  gives stands (pinned per shape and posture). Statements read into place from a string now carry
+  their script's `key` (`Inlined.key`, granted), so the walk inside a string never meets the program
+  the group's own text hands on -- read into place before the closer's statement under the same
+  region -- and a body statement inside an `if` within the string is kept; and #3095's pairing
+  reaches a `fi`, `done` or `esac` closer (granted), so a carried printer in a compound body gives
+  the one carried finding, as in a brace group. Bounded, fail-closed: a group of more than 64
+  statements (`_GROUP_LINES`) is read LOUD as "a group of more statements than this guard follows",
+  never read, never CLEAN; a function body whose closer lies further back is the same; a piped call
+  looks for its definition 256 statements back (`_CALL_REACH`), beyond which the word reads as
+  `main` reads it; the stand-in word the walk leaves past the bound is told by its type
+  (`_PastGroup`), never by its text, so a step typing that text reads as any other word reads (round
+  1). A `{ }` or `( )` group is read as `main` reads one, wherever it stands: braces and subshells
+  its only structure and every statement a pipeline (`strict`), since the reader hands a keyword a
+  step types as a quoted word back as the keyword's text, and a walk reading such a group by its
+  keywords lost `main`'s findings to typed ones (round 2; 1,067 typed-word rows, 0 REPORT->CLEAN
+  now); a compound piped at its own closer is read in full, a closer counting only as a statement's
+  sole word, a header word alone a word, no printer's, and a walk that popped a nested level and ran
+  out reading LOUD. A case arm's marker is the parser's own (`shell_reader.is_arm`, nonce-aware),
+  never a typed lookalike (round 2's N4: a typed marker emptied its statement and cleared `main`'s
+  report). Named limits, filed: (a) a printer of a variable holding a literal download text inside a
+  piped brace group or compound body stays CLEAN -- `workflow_annotate._Fold.at` holds no value in a
+  forked child (the var-group family's 34 running rows, the seat's `p.var-assign` rows); a printer
+  FIRST in a piped subshell is spelled and reported; (b) the pairing does not reach through a
+  pass-through stage (`} | cat | sh`: two findings); (c) a compound header's own test command writes
+  to the pipe too and is not read; where the reader keeps no quoting, a word typed in a keyword's
+  shape where `main` reads nothing reads as the keyword: (d) `then`, `do` or `else` alone inside a
+  compound body at its own closer, (e) `break` or `continue` alone in a loop body, (f) `{` alone in
+  any group, the opener to `main` too (a quoted-word mark in the lexer would close them). Prices: a
+  group holding a statement no printer's reads LOUD as #3026 read it (a `break` outside a loop among
+  them), now inside a string too (the seat's five `brace-cat` holder twins of a shape `main` reports
+  plain); the bounds report a clean group of 65 statements and a clean 65-line function body; a
+  group inside a function body is reported once at its definition, and the per-call copies `main`
+  gave are dropped by #3050's rule (#3130's `m2.func-body-group2` probe: 3 findings to 2; verdict,
+  reasons and the carried statement unchanged); a keyword compound nested in a `{ }` or `( )` group
+  reads LOUD wherever the group stands, as `main` reads one at the top of a step (the kit's clean
+  `eval-if-body` twins: CLEAN -> REPORT); a group written to a file and holding a statement no
+  printer's is handed on LOUD beside `main`'s forwarding finding (#3125's PR-A-025 and R2-F-034
+  rows: two findings, as `main` gives `{ F; echo ok; } > tool` then `sh tool`). Differential against
+  `main` b61bbc76, pinned nonce, five postures: the kit's 644 rows (14 families x 46), 1,114 more
+  (24 families x 46 + 10 controls) and the seat's 390 re-read from its TSVs: 0 REPORT->CLEAN; misses
+  by truth 34 + 34 + 4, all limit (a) and (c); the pairing line changes no kit row's finding count;
+  the reading costs 1.389x `main`'s time on the group-heavy rows, the suite's time unchanged. Pins:
+  `tests/test_workflow_printers.py` (`TestTheGroupsThisGuardFollowsNow`, `TestTheGroupWalksParts`;
+  the #3026 classes moved to the new reading), `tests/test_workflow_guard.py` (#2430's compound pin,
+  one finding under #3095), `tests/test_workflow_written_files.py` (the nested group, #3110's named
+  limit, read now). Sizes: `scripts/workflow_groups.py` 382 (new: the walk and the pipe's plumbing,
+  split out of the printers module at its size and imported back under each name's own, as #3013
+  did), `scripts/workflow_printers.py` 591 (-31), `scripts/workflow_forms.py` 454 (+1),
+  `scripts/workflow_annotate.py` 699 (+0), `scripts/workflow_programs.py` 496 (+2).
 - **Workflow reader marks the direct `$?` inside `[[ ... ]]` with a mark of its own, from the step's
   text (#3116 item 1 and the reader part of item 2).** The lexer escapes every pattern character
   inside a conditional, so a direct `$?` reached the exact-dollar pass as `$\?` and was never

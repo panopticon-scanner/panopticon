@@ -132,7 +132,7 @@ from shell_reader import command_as_written as command
 from shell_wrappers import WRAPPERS, Defaulted
 from workflow_fetch import FETCHERS
 from workflow_function_calls import _function_syntax
-from workflow_printers import ANY, _PRINTERS
+from workflow_printers import ANY, _PRINTERS, piped_group_member
 from workflow_programs import _FOREIGN, _MEASURED_SHELLS, scripts, stdin_scripts
 from workflow_uses import _WHOLE, _cleared, _control_kinds, _forked, _table_certainty
 from workflow_values import _OPENER, Values, _literals, record, valued
@@ -248,7 +248,7 @@ def annotate(stmts, shell=None):
                     if text is not None and step.plain(word):
                         stage.argv[at] = _mark(stage, at, word, text, step.sure[index]) or word
                 argv = command(stage.argv)
-            if argv and _printer(argv) and position + 1 < len(statement.stages):
+            if argv and _printer(argv) and (position + 1 < len(statement.stages) or piped_group_member(stmts, index)):
                 _spell(stage, argv, step, index)
         if any(new is not old for stage, was in zip(statement.stages, written)
                for new, old in zip(stage.argv, was)):

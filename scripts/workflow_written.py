@@ -29,6 +29,10 @@ from workflow_printers import (ANY, _PRINTERS, SpelledOutput, StatementFront, _g
 
 _DEPTH = 64                 # writers kept per path; past it the text is unspelled (fail-closed)
 
+# Kept for callers that used this module's original no-copy front view.  The
+# shared version also supports indexing for the other program readers.
+_Front = StatementFront
+
 
 def _path(word):
     """The literal path a written word names, or None for a value, a marker or a pattern."""
@@ -66,7 +70,7 @@ def _writers(stage, before, statements, index):
         return [one]
     if list(stage.argv) != ["}"] and not stage.group_close:
         return []
-    pipelines = _grouped(stage, before, StatementFront(statements, index)) or []
+    pipelines = _grouped(stage, before, _Front(statements, index)) or []
     printers = [_printer_of(pipeline) for pipeline in pipelines]
     if not any(printers):
         return []

@@ -361,7 +361,7 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                                "determine what it runs" % (behind, reason)))
             program = unread_program(
                 argv, stage, _walk, inside, before, under,
-                StatementFront(stmts, index) if before else None
+                StatementFront(stmts, index + 1)
             )
             if program and prefix_expanded_program(stage, argv):
                 program = None

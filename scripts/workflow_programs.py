@@ -319,6 +319,8 @@ def _options(argv, depth):
     # `$(true)`). `yields_words` is the one already here that tells them apart.
     value = not shell and not foreign and _value(argv[0]) and (
         not shell_reader.has_substitution(argv[0]) or shell_reader.yields_words(argv[0]))
+    if name in ("source", ".") and len(argv) > 1 and argv[1] in _STDIN_OPERANDS:
+        return SHELL_PROGRAM, (argv if not depth else None)      # `source /dev/stdin` (#3117): the step's shell reads it
     if not (shell or foreign or value):
         return None, None
     answer = SHELL_PROGRAM if shell else FOREIGN_PROGRAM if foreign else VALUE_PROGRAM

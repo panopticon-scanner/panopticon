@@ -201,7 +201,8 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
         indexes.append(len(out))
         out.append((Unsure if stops is None else Inlined)(
             statement.stages, statement.separator, region,
-            (why, why if fails[index] or type(why) is str or len(statement.stages) == 1 and why is not None else _PIPED % shell)))
+            (why, why if fails[index] or type(why) is str or len(statement.stages) == 1 and why is not None else _PIPED % shell),
+            key))
     return out if top else inlined_reaches(out, stmts, indexes, on, fails, analysis)
 
 
@@ -249,7 +250,7 @@ def _runner(argv):
             else os.path.basename(argv[0]))
 
 
-def substitution_script(argv, stage, walk, before=None, shell=None):
+def substitution_script(argv, stage, walk, before=None, shell=None, statements=None):
     """Why the script this stage hands a shell goes unread in a command
     substitution, which `flattened` does not reach (review I-4), or None.
 
@@ -261,7 +262,7 @@ def substitution_script(argv, stage, walk, before=None, shell=None):
     script may still run one the job fetched: `curl -o t.sh …; x=$(sh -c 'bash t.sh')`. `before` is
     the stages in front of this one in its pipeline, whose printer may pipe it a program under
     `shell` (`stdin_scripts`, #2476, #2478)."""
-    handed = scripts(argv) + stdin_scripts(argv, stage, before, shell)
+    handed = scripts(argv) + stdin_scripts(argv, stage, before, shell, statements)
     if not handed:
         return None
     return _weighed("hands a script to `%s` inside a command substitution, where this guard "
@@ -300,7 +301,7 @@ def unread_program(argv, stage, walk, inside, before=None, shell=None, statement
     because a value in the options answers for the whole statement and `_weighed` makes that answer
     LOUD where a word after it fetches (`sh $X -c "$P" 'curl … | sh'`, review r0 finding 1), which
     this rule's droppable `_Quiet` would have replaced."""
-    handed = inside and substitution_script(argv, stage, walk, before, shell)
+    handed = inside and substitution_script(argv, stage, walk, before, shell, statements)
     (value, words), printer = candidates(argv), unprinted(argv, stage, before, shell, statements)
     how, bare = (None, None) if handed else dynamic_program(argv)
     bare_files = file_program_files(bare)
@@ -326,7 +327,7 @@ def unread_program(argv, stage, walk, inside, before=None, shell=None, statement
         answer = (FileBound(answer, printer_files)
                   if printer_files and isinstance(answer, _Quiet) else answer)
         if (isinstance(answer, _Quiet) and statements and before
-                and (list(before[-1].argv) == ["}"] or before[-1].group_close)):
+                and (list(before[-1].argv) in (["}"], ["fi"], ["done"], ["esac"]) or before[-1].group_close)):
             for printer_statement in range(len(statements) - 1, -1, -1):
                 statement = statements[printer_statement]
                 if any(printer[0] is word for item in statement.stages for word in item.argv):
