@@ -7648,18 +7648,22 @@ class TestAValueCommandWordMayRunTheFetchedFile(unittest.TestCase):
     word behind `cat t |` is a possible reader of the pipe. On `main` ba2a4a5a each read CLEAN while bash 3.2.57,
     dash and zsh run the payload (`$RUN` unset runs nothing, the runner's value unknown). `RUN=sh` set in the
     step, a shell's default `${X:-sh}`, `"$@"` in a body called with `sh`, `$SHELL -c` and `$SHELL < t` reported
-    already; a word handed no fetched file, and `cat`, stay CLEAN. The price, named: a value naming a non-runner
-    (`$EDITOR ./t`) is an over-report."""
+    already; a word handed no fetched file, and `cat`, stay CLEAN. The price, named: a value naming a non-runner or
+    nothing (`$EDITOR ./t`; `${X#y} ./t` with `X` unset; `${A:+echo} t`, the alternate read as a bare reference) is
+    an over-report."""
 
     FETCH = "curl -fsSLo t %st" % URL
     REPORT = ("$SHELL ./t", "$SHELL t", "${SHELL} ./t", '"$SHELL" ./t', "$RUN ./t", 'set -- sh\n"$@" ./t', "cat t | $SHELL",
-              "${X#y} ./t", "$(which sh) ./t", "$EDITOR ./t")                           # the last: the price
-    REPORTED_BEFORE = ("RUN=sh\n$RUN ./t", "${X:-sh} ./t", 'run() { "$@"; }\nrun sh ./t', "$SHELL -c ./t", "$SHELL < t")
-    # A default or an alternate the reader reads its own way (`${X:-cat}` as `cat`, `${S:+echo}` as nothing or
-    # `echo`), an array spliced whole, and a value in front of a name the reader knows (`$S head -n 99 t`: `head`
-    # reads `t`, `$S` may be nothing) are not value commands: `main`'s readings stand.
-    CLEAN = ("$SHELL --version", "$SHELL ./other", "cat ./t", "${X:-cat} ./t", "${S:+echo} cat ./t", "$S head -n 99 t",
-             'CMD=(cat)\n"${CMD[@]}" ./t')
+              "$SHELL -e ./t", "cat t | $SHELL -s", "$(which sh) ./t",
+              "$EDITOR ./t", "${X#y} ./t", "${A:+echo} t")        # the last three: the price, a non-runner or nothing named
+    REPORTED_BEFORE = ("RUN=sh\n$RUN ./t", "${X:-sh} ./t", 'run() { "$@"; }\nrun sh ./t', "$SHELL -c ./t", "$SHELL < t",
+                       'CMD=(sh)\n"${CMD[@]}" ./t')
+    # A default the reader reads its own way (`${X:-cat}` as `cat`, `"${SH:- bash}"` as no shell), an array spliced
+    # whole (`"${CMD[@]}"`, resolved at its splice), and a value whose first operand is not the file -- in front of a
+    # name the reader knows (`$S head -n 99 t`: a shell there would run `head`), another value (`$A $B ./t`), or
+    # behind the pipe with a word after it (`cat t | $S head -n 99`) -- are no runners of it: `main`'s readings stand.
+    CLEAN = ("$SHELL --version", "$SHELL ./other", "cat ./t", "${X:-cat} ./t", 'cat t | "${SH:- bash}"', "${S:+echo} cat ./t",
+             "$S head -n 99 t", "$A $B ./t", "cat t | $S head -n 99", 'CMD=(cat)\n"${CMD[@]}" ./t')
     CHECK = "echo \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  t\" | sha256sum -c -\n"
 
     def test_a_value_command_word_handed_the_file_reports(self):
