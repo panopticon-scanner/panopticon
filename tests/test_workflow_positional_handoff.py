@@ -25,7 +25,13 @@ import workflow_guard as wg
 import workflow_options as wo
 import workflow_programs as wp
 from tests.test_shell_reader import LinearGrowth
+from workflow_called import _possible_called_readonly
 from workflow_called_fetches import _DEPTH, _INLINED, called
+from workflow_carried import _declaration_attributes, _dynamic_command
+from workflow_failure_contexts import conditional_contexts
+from workflow_step_credit import regions
+from workflow_use_scopes import _function_ranges
+from workflow_uses import static_values
 
 SHELLS = (None, "bash", "sh", "bash {0}", "sh {0}")
 FETCH = "curl -fsSLo cuda_1.run https://example.test/cuda_1.run\n"
@@ -561,3 +567,63 @@ class TestTheReadingIsLinear(LinearGrowth, unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEachDefinitionIsIndexedOnceAPass(LinearGrowth, unittest.TestCase):
+    """#3124: the two passes that read each definition of a step cost time linear in the definitions.
+
+    On `main` 5c88603d, `workflow_uses.static_values` -- run once a call or a statement holding `$` -- rebuilt
+    `_function_ranges` without #3126's shared analysis (a `_function_scope` scan of the step a definition), `_body_end`
+    a definition and its nested set at EVERY use, and `_possible_called_readonly`, run once a definition by the carried
+    pass, rebuilt `_function_ranges` a body: n uses or bodies x n definitions x a scan, cubic in n (the #3132 seat's
+    rows; 42 s for 320 siblings each called). Now `workflow_called._Definitions` indexes the step's definitions once a
+    pass (`_Step.definitions`, `_Step.ranges`) and each asks it a statement. Both pins are RED on `main` (static
+    values 0.40 -> 4.9 s for 640 -> 2560, the bound 3.5; the readonly names 0.30 -> 19.3 s for 80 -> 320, the bound
+    2.7) and the reading is the same: the step's values are empty, no body has a readonly name.
+
+    The job's own growth on the shapes is #3128's (the gating side: `_gating_function_call` once a definition, each
+    a scan of the step), not pinned here; its baseline sits in the CHANGELOG and the hand-off."""
+
+    FETCH = "curl -fsSLo t https://example.test/t\n"
+
+    @classmethod
+    def each_called(cls, n):
+        return (cls.FETCH + "".join("f%d() { sh t; }\n" % i for i in range(n))
+                + "".join("f%d\n" % i for i in range(n)))
+
+    def parsed(self):
+        """`make` for `assert_linear_growth`: the parse done here, so the pass alone is timed."""
+        parsed = {}
+
+        def make(n):
+            script = self.each_called(n)
+            parsed[script] = shell_reader.statements(script)
+            return script
+
+        return make, parsed
+
+    @pytest.mark.serial
+    def test_the_readonly_names_of_n_bodies_are_read_in_linear_time(self):
+        make, parsed = self.parsed()
+
+        def read(script):
+            stmts = parsed[script]
+            branches, conditionals = regions(stmts), conditional_contexts(stmts)
+            return [_possible_called_readonly(stmts, [(start, close)], branches, conditionals, None,
+                                              _declaration_attributes, _dynamic_command)
+                    for entries in _function_ranges(stmts)[0].values() for _name, start, close in entries]
+
+        def check(n, found):
+            self.assertEqual([(set(), False)] * n, found)
+
+        self.assert_linear_growth(80, make, check, parser=read)
+
+    @pytest.mark.serial
+    def test_the_values_at_a_use_past_n_definitions_are_read_in_linear_time(self):
+        make, parsed = self.parsed()
+
+        def check(_n, table):
+            self.assertEqual({}, table.scalars)
+
+        self.assert_linear_growth(640, make, check,
+                                  parser=lambda script: static_values(parsed[script], len(parsed[script]) - 1))
