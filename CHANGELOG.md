@@ -71,6 +71,46 @@ evidence exposed.
   split out of the printers module at its size and imported back under each name's own, as #3013
   did), `scripts/workflow_printers.py` 591 (-31), `scripts/workflow_forms.py` 454 (+1),
   `scripts/workflow_annotate.py` 699 (+0), `scripts/workflow_programs.py` 496 (+2).
+- **Workflow reader marks the direct `$?` inside `[[ ... ]]` with a mark of its own, from the step's
+  text (#3116 item 1 and the reader part of item 2).** The lexer escapes every pattern character
+  inside a conditional, so a direct `$?` reached the exact-dollar pass as `$\?` and was never
+  marked, while `$"?"`, `$""?` and `"$"?` lex to the same bare `$?` word -- and a user's own `$\?`
+  reaches the stage spelled as the lexer spells the direct one, which bash rejects there (`[[: $?:
+  syntax error`, status 1: a handler behind it never runs). Now `shell_reader` records whether the
+  step's text spells `$\?` anywhere, and where it does not, the direct `$?` of a stage that is a
+  conditional at its head -- behind `if`, `!`, a function header -- and ends with `]]` carries
+  `conditional_status`: a `_Token`, never `_Expanded` (bash expands no pattern there), and neither
+  `exact_dollar` nor `live_dollar`, so the status gate, which credits an exact, live `[[ ]]` operand
+  in bash steps today, credits nothing until item 2 (Daybreak's) reads the mark: no verdict moves,
+  the 36 gate-reaching rows (six spellings, three handlers, with and without `set +e`) read as they
+  did. `"$?"` keeps the exact, live mark it had; `$"?"`, `$""?`, `"$"?`, `$'?'`, `$?x` and `${?}`
+  keep their types and stay unmarked; a user's `$\?` is never marked, inside a conditional or out
+  (`echo [[ $\? ]]`, `printf '%s' [[ $\? ]]`, `eval [[ $\? -ne 0 ]]`); an arithmetic command and an
+  array literal are untouched. The mark asks only whether the stage is a conditional, one pass over
+  its words: no span is searched for (a `[[` with no closer, n times in one stage, reads in linear
+  time, pinned). Prices, named: a step that spells `$\?` anywhere marks no conditional's `$?`; one
+  that types the mark itself -- U+E008 before a word, round 2's seat's `<U+E008>exit`, which
+  `_stage` stripped to `exit` and the status gate then credited as a stop under the `{0}` settings,
+  fail-open -- keeps every typed word whole as a plain literal and reads the rest as any step
+  (#3138's rule, `_STATUS` in `_MARKS`; round 3 read such a step with no conditional's `$?` marked,
+  a price gone with the fold, its gate dead code under the translation and removed); a conditional
+  spanning lines, one that is not the whole stage (a trailing redirection), one whose words tabs
+  part, a second conditional in a list (`[[ a ]] && [[ $? -ne 0 ]]`), one inside `{ }` or `( )` or
+  after `time`, and one in a `case` arm are unmarked -- fail-closed each. Item 1's audit of the
+  str-to-`_Token` re-wrap of exact words: the seven callers that test `type(word) is str`
+  (`shell_command` 267, `workflow_options` 136, 164, 225, 350, 507, `workflow_programs` 408; the
+  seat's six more, none affected) ask of a word whether it is `bash`/`sh`, a `--`/`++` option, an
+  exit-or-file option, `--pretty-print`, or a command name that spells no option -- none of which an
+  exact word (`$NAME`, its braced form, `X=$Y`, `$?`) can be -- so the re-wrap changes no answer.
+  Forge differential of 4ea470db against `main` b61bbc76 over the 27,612-row kit (the kit's rows,
+  the 13 status rows, the 36 gate rows and the 23 forged rows; three readings a cell, 2,045,220 in
+  all, 80 min): byte-identical dumps -- no row differs, no multiplicity gained or lost in the job,
+  main-pass or walk readings: the mark credits nothing yet, and a typed mark reads as `main` reads
+  it. `tests/test_shell_reader.py` pins the mark, the lookalikes, the user's escape, a typed mark
+  kept whole, the named prices, what else stays unmarked and the linear reading;
+  `tests/test_workflow_positional_handoff.py` the 36 gate rows and the twelve forged forms as on
+  `main`. Sizes: `scripts/shell_reader.py` 553 (+29).
+
 - **Workflow reader reads a private-use mark the step types itself as a plain literal -- every mark,
   in one place (#3138).** The reader puts eight private-use characters into a step's text while it
   reads it -- `MARK`, `QUOTED`, `QUOTED_DOLLAR`, `DOUBLE_DOLLAR` (`shell_patterns`), `_ESCAPED`,
@@ -365,6 +405,43 @@ evidence exposed.
   them. Open, filed: a nested group, a compound or function body, other consumers (#3117); a group
   written to a file and then run (#3110).
 
+- **Workflow guard carries a compound's closing output by stage (#2937).** A keyword compound
+  closed beside a subshell, such as `{ for ...; done | ( curl ...; ); } > tool`, and a fetch after
+  an inner file close, such as `{ if ...; fi > /dev/null | curl ...; } > tool`, both ran the
+  downloaded `tool` under every parent but read CLEAN. The output map kept one depth and one close
+  for the whole pipeline statement: it ignored the subshell boundary in the first form and lent
+  the inner `/dev/null` close to the following fetch in the second. Compound-output accounting is
+  now stage-level. It includes executable group markers while subtracting array-literal
+  parentheses, retains the function-header balancing from #3069, and reverse-walks the closing
+  stage's suffix so an inner close applies only to stages inside it while a following fetch
+  inherits the outer close. The three M5a rows HNP-012/013/014 and six M9c rows
+  HNC-403/412/421/430/439/448 now report in all five shell settings (45 cells). An inner
+  subshell's own file, array literal, disconnected close, and later sibling remain cut off. The
+  stage-level map also avoids the old `level = after` alternative's named no-run price:
+  HNP-016, `{ for ...; done | ( curl ...; ) > f; } > tool; sh tool`, fetches in all eight parents
+  but runs in none because the download went to `f` and `tool` stayed empty, and remains CLEAN in
+  all five settings. Its no-fetch twin remains CLEAN too. Review found that an inner close piped
+  through a forwarding `cat`, `tee`, group, subshell, or loop then stopped at that consumer and
+  lost the consumer stage's own outer `> tool`. The stage map now retains the local pipe beside
+  that consumer route, but restores it only when it reaches the same unshadowed file boundary
+  `main` carried; all 24 forwarding rows from review report again without reopening the accepted
+  no-run cells or the out-of-scope top-level forms. Finally, dash 0.5.12 drops `> f`, `>> f`, or
+  `> /dev/null` from a subshell that is the last command of a redirected group, sending the bytes
+  to the group's outer file. Those three `ffffRffR` truth rows keep `main`'s RRRRR reading. The
+  corresponding bash over-report is an existing, named fail-closed price. The round-two seat's
+  wider compound hunt found two more forwarding routes through a brace producer and a compound
+  consumer (R2-F-034/037), plus dash's descriptor close and an intervening unredirected brace
+  (R2-G-013/023). They now keep `main`'s RRRRR reading: a forwarding brace route is admitted only
+  when its pipeline enters another compound, and the dash fallback crosses only consecutive
+  lexical `}` closes to the first redirected brace. A reader stage that combines two subshell
+  closes and their inner and outer files is instead cut at the inner file, keeping the all-no-run
+  R2-G-007 CLEAN in all five settings. A descriptor dup or close (`>&N`, `1>&2`, `>&-`) on an
+  inner subshell wrapped in further subshells and redirected to a file is reported, though the
+  outer file stays empty: an over-report beyond main, named. The previous 667-row probe and 1,106
+  HN/HNP rows are unchanged from the round-two head; the accepted baseline loss set in the former
+  is 44 rows / 220 no-run cells, not 44 cells. Compound-output tracking moved without other
+  behavior changes to `workflow_compound_outputs.py`, restoring the helper documentation while
+  leaving `workflow_fetch.py` at 477 lines (the new module is 272).
 - **Workflow reader reads a function header immediately after an outer function's opening brace
   (#2975 part A).** `f() { g() { sh t; }; g; }` ran the downloaded file under every parent and
   read CLEAN: the splitter took the inner `()` as a subshell and the rest of the inner body as

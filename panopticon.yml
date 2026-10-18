@@ -739,6 +739,7 @@ groups:
       # #2829: bounded named fetches and destination-less network producers.
       match:
       - scripts/workflow_fetch.py
+      - scripts/workflow_compound_outputs.py
       - scripts/workflow_fetch_adapters.py
       - scripts/workflow_network.py
       tests:

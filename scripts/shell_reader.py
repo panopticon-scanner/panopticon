@@ -128,8 +128,6 @@ _EXACT_DOLLAR = "\ue007"
 # round-2 seat). So `statements` moves each typed mark, once, where the text enters, to the private-use character
 # 0x100 past it, which no pass writes or reads: the step reads as `main` reads one that spells a plain literal
 # character there. `tests/test_shell_reader.py` holds every mark constant of the reader's modules to this list.
-_MARKS = (MARK, QUOTED, _ESCAPED, QUOTED_DOLLAR, _BLANK, _NAMED, DOUBLE_DOLLAR, _EXACT_DOLLAR)
-_LITERAL_MARKS = str.maketrans({mark: chr(ord(mark) + 0x100) for mark in _MARKS})
 _REFERENCE = r"(?:\$\?|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})"
 _EXACT_DOLLAR_WORD = re.compile(
     r"(?:[A-Za-z_][A-Za-z0-9_]*=)?(?:%s|\"%s\")" % (_REFERENCE, _REFERENCE))
@@ -142,6 +140,30 @@ _FD_SPELLINGS = re.compile(r"^(?:/+|(?:\.\./+)+)(?:dev|proc/(?:thread-)?self)/+f
 # `/proc/self/root` and `/proc/thread-self/root` are the process's own root: in front of an absolute path they
 # spell it once more, as often as they stand (#3051).
 _OWN_ROOT = re.compile(r"^(?:/proc/(?:thread-)?self/root)+(?=/)")
+
+
+# Inside `[[ ... ]]` the lexer escapes every pattern character, so a direct `$?` reaches a stage as `$\?` -- the
+# spelling a user's own `$\?` has too, which bash rejects there (`[[: $?: syntax error`, status 1: a handler behind
+# it never runs). The parse knows whether the step's text spells `$\?` anywhere (`conditional_status`, set in
+# `statements`); where it does, no conditional's `$?` is marked -- fail-closed, a price named (#3116, round 1).
+_STATUS = "\ue008"
+# ... and the status mark among them (#3131): `_MARKS` stands here, below the last constant it holds.
+_MARKS = (MARK, QUOTED, _ESCAPED, QUOTED_DOLLAR, _BLANK, _NAMED, DOUBLE_DOLLAR, _EXACT_DOLLAR, _STATUS)
+_LITERAL_MARKS = str.maketrans({mark: chr(ord(mark) + 0x100) for mark in _MARKS})
+_CONDITIONAL_HEAD = re.compile(
+    r"^(?:(?:if|elif|while|until|then|do|else|!)[ \t]+)*"                      # the keywords a conditional may follow
+    r"(?:(?:function[ \t]+)?[A-Za-z_@][A-Za-z0-9_.:+@-]*(?:[ \t]*\(\))?[ \t]+\{[ \t]+)?"   # a function header
+    r"\[\[[ \t]")
+
+
+def _conditional_status(text, conditional):
+    r"""`text`, a stage's, with each direct `$?` of a `[[ ... ]]` that is the whole stage -- behind `if`, `!`, a function
+    header -- marked `_STATUS` (#3116): the lexer's `$\?`, where `conditional` says the step's text spells no `$\?` of
+    its own. Else, and where the `[[` is not the stage's head (`echo [[ $? ]]`), has no `]]` on its line, or spans lines,
+    the text as it is. One pass over the stage's words: no span is searched for."""
+    if not conditional or not text.rstrip().endswith("]]") or not _CONDITIONAL_HEAD.match(text):
+        return text
+    return " ".join(_STATUS + word if word == "$\\?" else word for word in text.split(" "))
 
 
 def _exact_dollars(text):
@@ -271,7 +293,7 @@ def _stage(text, context):
     runs (#2342): the backslash of each gone, a live `$` word beside them kept as the value word
     it is (#2466), a lifted substitution as its marker; it reads as before."""
     text = _named(text, context)
-    exact = _exact_dollars(text)
+    exact = _exact_dollars(_conditional_status(text, getattr(context, "conditional_status", False)))
     try:
         tokens = shlex.split(patterned(exact))
     except ValueError:                          # an unbalanced quote
@@ -329,6 +351,7 @@ def _stage(text, context):
         whole = raw.replace(_BLANK, " ") if len(parts) > 1 else None
         pieces.extend((part, None if at else whole, len(parts)) for at, part in enumerate(parts))
     for raw, whole, span in pieces:
+        status, raw = raw.startswith(_STATUS), raw.removeprefix(_STATUS)    # the reader's own mark: a typed one is a literal (#3138)
         exact_dollar, raw = raw.startswith(_EXACT_DOLLAR), raw.removeprefix(_EXACT_DOLLAR)
         named, raw = raw.startswith(_NAMED), raw.replace(_NAMED, "")
         plain = context.restore_arithmetic(raw.replace(MARK, "").replace(QUOTED, "")
@@ -358,6 +381,9 @@ def _stage(text, context):
             word = word if isinstance(word, _Token) else _Token(word, _markers(word))
             setattr(word, "exact_dollar", True)
             setattr(word, "live_dollar", True)
+        if status:                          # the direct `$?` of a conditional: a mark of its own, no credit yet (#3116)
+            word = word if isinstance(word, _Token) else _Token(word, _markers(word))
+            setattr(word, "conditional_status", True)
         if named:                           # `"X=1"`, `X\=1`: a command of that name (#2480)
             word = word if isinstance(word, _Token) else _Token(word, {})
             setattr(word, "quoted", True)
@@ -510,6 +536,9 @@ def statements(script):
     context = _Parse(script)
     typed = script.translate(_LITERAL_MARKS)      # a mark the step types: a plain literal to every pass (#3138)
     shadows(typed)                      # a wrapper's name the text defines is the step's own (#2670)
+    # A `$\?` of the step's own: no conditional's `$?` is marked, nor the mark stripped from any word -- the step
+    # reads as `main` (#3116); a typed U+E008 is a plain literal to every pass already (`_STATUS` in `_MARKS`).
+    context.conditional_status = "$\\?" not in typed
     text = lex(typed, lambda *heredoc: context.new("heredoc", heredoc))
     for marker, (kind, value) in getattr(script, "heredocs", {}).items():
         text = text.replace(marker, context.new(kind, value))

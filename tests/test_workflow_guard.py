@@ -6489,6 +6489,158 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
         ):
             self.assert_reported_in_every_shell(script)
 
+    def test_2937_mixed_keyword_closes_beside_subshells_keep_the_outer_file(self):
+        # M5a's 8-parent truth is RRRRRRRR for each row. These five local
+        # shell postures pin the same command text at the guard boundary.
+        rows = (
+            ("HNP-012",
+             "{ for i in 1; do :; done | ( %s; ); } > tool\nsh tool\n"),
+            ("HNP-013",
+             "{ if true; then :; fi | ( %s; ); } > tool\nsh tool\n"),
+            ("HNP-014",
+             "{ { :; } | ( %s; ); } > tool\nsh tool\n"),
+        )
+        for row, template in rows:
+            with self.subTest(row=row):
+                self.assert_reported_in_every_shell(template % self.FETCH)
+
+    def test_2937_fetches_after_inner_file_closes_keep_the_outer_file(self):
+        # M9c's 8-parent truth is RRRRRRRR for each row. The fetch stage is
+        # outside the just-closed inner compound and writes through the outer.
+        rows = (
+            ("HNC-403",
+             "{ if true; then :; fi > /dev/null | %s; } > tool\nsh tool\n"),
+            ("HNC-412",
+             "{ { :; } > /dev/null | %s; } > tool\nsh tool\n"),
+            ("HNC-421",
+             "{ for v in 1; do :; done > /dev/null | %s; } > tool\nsh tool\n"),
+            ("HNC-430",
+             "{ while false; do :; done > /dev/null | %s; } > tool\nsh tool\n"),
+            ("HNC-439",
+             "{ case x in x) :;; esac > /dev/null | %s; } > tool\nsh tool\n"),
+            ("HNC-448",
+             "{ until true; do :; done > /dev/null | %s; } > tool\nsh tool\n"),
+        )
+        for row, template in rows:
+            with self.subTest(row=row):
+                self.assert_reported_in_every_shell(template % self.FETCH)
+
+    def test_2937_forwarding_consumers_keep_the_outer_file(self):
+        # #3125 review round 1: these rows run the outer `tool` in every
+        # runnable parent (RRRRRRRR in both truth passes, except PR-E-009's
+        # RRRR-RR-). Following the inner close only as far as cat/tee/loops
+        # dropped the forwarding stage's own outer-file route.
+        rows = (
+            ("PR-A-000",
+             "{ ( %s; ) | { cat; }; } > tool\nsh tool\n"),
+            ("PR-A-001",
+             "{ ( %s; ) | cat; } > tool\nsh tool\n"),
+            ("PR-A-002",
+             "{ ( %s; ) | tee x; } > tool\nsh tool\n"),
+            ("PR-A-018",
+             "if true; then ( %s; ) | cat; fi > tool\nsh tool\n"),
+            ("PR-A-019",
+             "for i in 1; do ( %s; ) | cat; done > tool\nsh tool\n"),
+            ("PR-A-021",
+             "{ ( %s; ) | { cat; } | cat; } > tool\nsh tool\n"),
+            ("PR-A-022",
+             "{ { %s; } | { cat; }; } > tool\nsh tool\n"),
+            ("PR-A-024",
+             "{ ( %s; ) | ( cat; ); } > tool\nsh tool\n"),
+            ("PR-A-025",
+             "{ ( %s; ) | while read -r l; do echo \"$l\"; done; } > tool\n"
+             "sh tool\n"),
+            ("PR-A-026",
+             "{ ( %s; ) | for i in 1; do cat; done; } > tool\nsh tool\n"),
+            ("PR-A-034",
+             "{ ( ( %s; ) | cat; ) | cat; } > tool\nsh tool\n"),
+            ("PR-B-448",
+             "( { ( %s; ) | cat; } ) > tool\nsh tool\n"),
+            ("PR-C-011",
+             "{ echo | ( %s; ) | cat; } > tool\nsh tool\n"),
+            ("PR-C-018",
+             "{ ( :; ) | ( %s; ) | cat; } > tool\nsh tool\n"),
+            ("PR-D-056",
+             "case x in x) ( %s; ) | cat;; esac > tool\nsh tool\n"),
+            ("PR-E-009",
+             "{ a=( x ) ; ( %s; ) | cat; } > tool\nsh tool\n"),
+            ("PR-E-021",
+             "{ cat <<'E' > /dev/null\n( x\nE\n"
+             "( %s; ) | cat; } > tool\nsh tool\n"),
+            ("PR-E-025",
+             "{ ( %s; ) | cat; # ) > /dev/null\n"
+             "} > tool\nsh tool\n"),
+            ("PR-E-027",
+             "{ case x in x) ( %s; ) | cat;; esac; } > tool\nsh tool\n"),
+            ("PR-E-030",
+             "f() { :; }; { ( %s; ) | cat; } > tool; sh tool\n"),
+            ("PR-E-032",
+             "f() { :; }\n{ ( %s; ) | { cat; }; } > tool\nsh tool\n"),
+            ("PR-E-033",
+             "f() { g() { :; }; }; { ( %s; ) | cat; } > tool; sh tool\n"),
+            ("PR-E-037",
+             "f() ( :; )\n{ ( %s; ) | cat; } > tool\nsh tool\n"),
+            ("PR-E-039",
+             "f() { ( %s; ) | cat; } > tool\nf\nsh tool\n"),
+        )
+        for row, template in rows:
+            with self.subTest(row=row):
+                self.assert_reported_in_every_shell(template % self.FETCH)
+
+    def test_2937_dash_last_subshell_redirect_keeps_mains_reading(self):
+        # #3125 review round 1: dash 0.5.12 drops these redirects when the
+        # subshell is the last command of the redirected group, so truth is
+        # ffffRffR in both passes. Keep main's RRRRR fail-closed reading; its
+        # bash over-report is an existing price, not a new one from #2937.
+        rows = (
+            ("PR-C-020", "> f"),
+            ("PR-C-021", "> /dev/null"),
+            ("PR-C-022", ">> f"),
+        )
+        for row, redirect in rows:
+            script = ("{ ( %s; ) %s; } > tool\nsh tool\n"
+                      % (self.FETCH, redirect))
+            with self.subTest(row=row):
+                self.assert_reported_in_every_shell(script)
+
+    def test_2937_nested_forwarders_and_redirects_keep_mains_reading(self):
+        # #3125 review round 2: the forwarding walk must pass a brace producer
+        # through a loop or another group, and dash may carry a last
+        # subshell's bytes through descriptor and nested-brace closes. These
+        # four rows are REPORT on main; their runtime truth is RRRRRRRR for
+        # F-034/F-037 and ffffRffR for G-013/G-023.
+        rows = (
+            ("R2-F-034",
+             "{ { %s; } | while IFS= read -r l; do printf '%%s\\n' \"$l\"; done; } "
+             "> tool\nsh tool\n"),
+            ("R2-F-037",
+             "{ { %s; } | cat | { cat; }; } > tool\nsh tool\n"),
+            ("R2-G-013", "{ ( %s; ) >&2; } > tool\nsh tool\n"),
+            ("R2-G-023", "{ { ( %s; ) > f; }; } > tool\nsh tool\n"),
+        )
+        for row, template in rows:
+            with self.subTest(row=row):
+                self.assert_reported_in_every_shell(template % self.FETCH)
+
+    def test_2937_nested_subshell_files_do_not_reach_an_outer_subshell_file(self):
+        # #3125 review round 2: both shells write only `f`; `tool` stays empty.
+        # The dash fallback belongs to a brace close, never a subshell close.
+        script = "( ( %s; ) > f ) > tool\nsh tool\n" % self.FETCH
+        self.assert_clean_in_every_shell(script)
+
+    def test_2937_keeps_the_subshell_file_cut_clean(self):
+        # HNP-016's 8-parent truth is ffffffff in both passes: the download
+        # goes to `f`, `tool` stays empty, and `sh tool` runs nothing. Mapping
+        # the fetch stage to its subshell close avoids the no-run price of the
+        # old `level = after` alternative.
+        cut = ("{ for i in 1; do :; done | ( %s; ) > f; } > tool\n"
+               "sh tool\n") % self.FETCH
+        self.assert_clean_in_every_shell(cut)
+
+        no_fetch = ("{ for i in 1; do :; done | ( echo hi; ) > f; } > tool\n"
+                    "sh tool\n")
+        self.assert_clean_in_every_shell(no_fetch)
+
     def test_a_file_writing_compound_tee_also_feeds_its_outer_reader(self):
         tee = "{ %s; } | tee tool" % self.FETCH
         consumers = (
@@ -6584,18 +6736,10 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
         cut = "{ %s; } >&2 | tee tool\nsh tool\n" % self.FETCH
         self.assert_clean_in_every_shell(cut)
 
-        # `level = after` lends the outer close across this inner file boundary (M9c).
-        inner = ("{ for i in 1; do :; done | ( %s; ) > f; } > tool\n"
-                 "sh tool\n") % self.FETCH
-        self.assert_clean_in_every_shell(inner)
-
-    def test_file_close_depth_excludes_lexical_groups(self):
-        # The reader gives array assignments and subshells the same group
-        # markers. File-close inheritance therefore tracks keyword compounds
-        # only, preserving the array-assignment boundary (M5a). This also
-        # preserves HNP-012's known mixed keyword-close/subshell gap.
-        script = ("{ for i in 1; do :; done | ( %s; ); } > tool\n"
-                  "sh tool\n") % self.FETCH
+    def test_file_close_depth_excludes_array_literal_groups(self):
+        # #2937 must count a subshell's group markers without treating an
+        # array literal as a compound whose closing redirect captures a fetch.
+        script = "a=(\n  %s\n) > tool\nsh tool\n" % self.FETCH
         self.assert_clean_in_every_shell(script)
 
 
