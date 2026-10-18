@@ -212,9 +212,11 @@ class _Quiet(Idle):
     """An `Idle` `kept` keeps only where no other reason reports its statement:
     `unread_program`'s for a printer whose words it cannot spell out (#2333) and for a dynamic
     program word (#2483, #2486), both of which `carried` says louder where a variable carries
-    the download -- `echo "$x" | sh` and `sh -c "$x"` are its own."""
+    the download -- `echo "$x" | sh` and `sh -c "$x"` are its own. A grouped printer may carry
+    `printer_statement`, the statement where its printer stands (#3095)."""
 
     program_variable: str | None = None
+    printer_statement: int
 
 
 class FileBound(_Quiet):
@@ -318,8 +320,16 @@ def unread_program(argv, stage, walk, inside, before=None, shell=None, statement
                                 or handed and scripts(argv) and not isinstance(handed, Idle)):
         answer = handed or _weighed(_PRINTED % (os.path.basename(argv[0]), os.path.basename(
             shell_reader.readable(printer[0]))), list(printer[1:]), walk, _Quiet)
-        return (FileBound(answer, printer_files)
-                if printer_files and isinstance(answer, _Quiet) else answer)
+        answer = (FileBound(answer, printer_files)
+                  if printer_files and isinstance(answer, _Quiet) else answer)
+        if (isinstance(answer, _Quiet) and statements and before
+                and (list(before[-1].argv) == ["}"] or before[-1].group_close)):
+            for printer_statement in range(len(statements) - 1, -1, -1):
+                statement = statements[printer_statement]
+                if any(printer[0] is word for item in statement.stages for word in item.argv):
+                    answer.printer_statement = printer_statement
+                    break
+        return answer
     answer = said or _weighed(          # the LAST resort (r0 finding 1), its printer weighed (#2955)
         _DYNAMIC % (how, shell_reader.readable(bare).strip()), worded(bare), walk, _Quiet)
     if not said and isinstance(answer, _Quiet) and (variable := _held(bare)):
@@ -402,11 +412,13 @@ def kept(unread, found, unverified):
     each `(index, why, its Fetch)`: every loud one, and an `Idle` one only where `unverified` says
     the job holds a fetch this guard REPORTS -- a download no checksum clears, a stream handed to a
     shell, an unresolved transfer (#2481, #2499) -- and no loud reason of either reports its
-    statement (`carried`'s, a stream's, a reported fetch's, #2490)."""
+    statement, or the statement its grouped printer stands in (`carried`'s, a stream's, a reported
+    fetch's, #2490, #3095)."""
     loud = {index for index, why in unread if not isinstance(why, (Idle, BoundStdin))}
     loud |= {index for index, _why, _fetch in found}
     return [(index, why, why) for index, why in unread
-            if not isinstance(why, (Idle, BoundStdin)) or unverified and index not in loud] + found
+            if not isinstance(why, (Idle, BoundStdin))
+            or unverified and getattr(why, "printer_statement", index) not in loud] + found
 
 
 # The container runners, and the subcommands of theirs that run a command. The
