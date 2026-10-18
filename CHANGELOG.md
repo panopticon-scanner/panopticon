@@ -7,6 +7,146 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader marks the direct `$?` inside `[[ ... ]]` with a mark of its own, from the step's
+  text (#3116 item 1 and the reader part of item 2).** The lexer escapes every pattern character
+  inside a conditional, so a direct `$?` reached the exact-dollar pass as `$\?` and was never
+  marked, while `$"?"`, `$""?` and `"$"?` lex to the same bare `$?` word -- and a user's own `$\?`
+  reaches the stage spelled as the lexer spells the direct one, which bash rejects there (`[[: $?:
+  syntax error`, status 1: a handler behind it never runs). Now `shell_reader` records whether the
+  step's text spells `$\?` anywhere, and where it does not, the direct `$?` of a stage that is a
+  conditional at its head -- behind `if`, `!`, a function header -- and ends with `]]` carries
+  `conditional_status`: a `_Token`, never `_Expanded` (bash expands no pattern there), and neither
+  `exact_dollar` nor `live_dollar`, so the status gate, which credits an exact, live `[[ ]]` operand
+  in bash steps today, credits nothing until item 2 (Daybreak's) reads the mark: no verdict moves,
+  the 36 gate-reaching rows (six spellings, three handlers, with and without `set +e`) read as they
+  did. `"$?"` keeps the exact, live mark it had; `$"?"`, `$""?`, `"$"?`, `$'?'`, `$?x` and `${?}`
+  keep their types and stay unmarked; a user's `$\?` is never marked, inside a conditional or out
+  (`echo [[ $\? ]]`, `printf '%s' [[ $\? ]]`, `eval [[ $\? -ne 0 ]]`); an arithmetic command and an
+  array literal are untouched. The mark asks only whether the stage is a conditional, one pass over
+  its words: no span is searched for (a `[[` with no closer, n times in one stage, reads in linear
+  time, pinned). Prices, named: a step that spells `$\?` anywhere marks no conditional's `$?`; one
+  that types the mark itself -- U+E008 before a word, round 2's seat's `<U+E008>exit`, which
+  `_stage` stripped to `exit` and the status gate then credited as a stop under the `{0}` settings,
+  fail-open -- keeps every typed word whole as a plain literal and reads the rest as any step
+  (#3138's rule, `_STATUS` in `_MARKS`; round 3 read such a step with no conditional's `$?` marked,
+  a price gone with the fold, its gate dead code under the translation and removed); a conditional
+  spanning lines, one that is not the whole stage (a trailing redirection), one whose words tabs
+  part, a second conditional in a list (`[[ a ]] && [[ $? -ne 0 ]]`), one inside `{ }` or `( )` or
+  after `time`, and one in a `case` arm are unmarked -- fail-closed each. Item 1's audit of the
+  str-to-`_Token` re-wrap of exact words: the seven callers that test `type(word) is str`
+  (`shell_command` 267, `workflow_options` 136, 164, 225, 350, 507, `workflow_programs` 408; the
+  seat's six more, none affected) ask of a word whether it is `bash`/`sh`, a `--`/`++` option, an
+  exit-or-file option, `--pretty-print`, or a command name that spells no option -- none of which an
+  exact word (`$NAME`, its braced form, `X=$Y`, `$?`) can be -- so the re-wrap changes no answer.
+  Forge differential of 4ea470db against `main` b61bbc76 over the 27,612-row kit (the kit's rows,
+  the 13 status rows, the 36 gate rows and the 23 forged rows; three readings a cell, 2,045,220 in
+  all, 80 min): byte-identical dumps -- no row differs, no multiplicity gained or lost in the job,
+  main-pass or walk readings: the mark credits nothing yet, and a typed mark reads as `main` reads
+  it. `tests/test_shell_reader.py` pins the mark, the lookalikes, the user's escape, a typed mark
+  kept whole, the named prices, what else stays unmarked and the linear reading;
+  `tests/test_workflow_positional_handoff.py` the 36 gate rows and the twelve forged forms as on
+  `main`. Sizes: `scripts/shell_reader.py` 553 (+29).
+
+- **Workflow reader reads a private-use mark the step types itself as a plain literal -- every mark,
+  in one place (#3138).** The reader puts eight private-use characters into a step's text while it
+  reads it -- `MARK`, `QUOTED`, `QUOTED_DOLLAR`, `DOUBLE_DOLLAR` (`shell_patterns`), `_ESCAPED`,
+  `_BLANK` (`shell_split`), `_NAMED`, `_EXACT_DOLLAR` (`shell_reader`) -- each a mark one pass
+  writes and another reads off a word. One the step typed itself was read as the reader's own and
+  taken off: `<U+E007>exit` read as `exit`, so a handler behind a check was credited as a stop where
+  bash prints "command not found" and runs the payload, and `sh <U+E007>$T` as a run of the fetched
+  file where bash finds no such file -- six of the eight (U+E000, U+E001, U+E003, U+E005, U+E006,
+  U+E007), fail-open on `main` (the #3131 round-2 seat's finding, filed as #3138); `_ESCAPED` and
+  `_BLANK` read as a plain literal already (#2856 round 8). Now `statements` moves every typed mark,
+  once, where the text enters, to the private-use character 0x100 past it (`_MARKS`,
+  `_LITERAL_MARKS`), which no pass writes or reads: the step reads as `main` reads one that spells a
+  plain literal character there -- U+E0FF, the reference the pins use: `<mark>exit` behind a check
+  CCCRR (the `{0}` settings report, where the check does not stop the step), a typed mark before a
+  fetched file's name or inside a word CLEAN, as the file bash would run is another -- and the rest
+  of the step reads as any step does (the exact-dollar and named-command readings of the other words
+  stay). The round-8 guard that read a whole step as `main` read before its kept-whole words, where
+  it spelled any of five marks (`context.blanks`), goes: its one pin moves, under the rule the
+  coordinator set for this issue ("a step whose text spells a mark must read as main would read it
+  if the character were a plain literal"): `${SH:-bash -s}` behind a typed mark keeps its kept-whole
+  reading, `bash`, `-s`. Forge differential of ea49b4f2 (the code; the two test commits after it
+  leave `scripts/` the same by patch-id) against `main` b61bbc76 over the 27,644-row kit (the kit's
+  rows and this issue's 55; three readings a cell, 2,047,620 in all, 84 min): 27,480 rows identical,
+  164 move -- every one a step that types a reader mark: this issue's 29 and 135 of the #2856
+  round-8 seat's rows in the kit (`cost-std-sample.tsv`, the `seat-hunt` families) -- and none a
+  control. 34 CLEAN->REPORT: the round-8 rows where a mark sits in an `echo`, a comment, a heredoc
+  body or an `X<mark>=1` word and `${X:-bash -s} <<EOF`, `${RUN:-sh tool}` or `| ${SH:-bash -s}`
+  runs the download, which the whole-step guard read as `main` read before its kept-whole words (22
+  rows; truth: the payload runs under bash 3.2.57 and dash, the three `X<mark>=1` rows without
+  `-e`), and the twelve forged handlers (truth: the payload runs where the check does not stop the
+  step). 32 REPORT->CLEAN: the round-8 rows whose mark sits in the download's name alone -- `-o
+  <mark>tool`, `> tool<mark>`, `wget -O <mark>tool`, then `sh tool` -- where `main` took the mark
+  off and matched the names (15 rows; truth: what was fetched is not run), and this issue's `sh
+  <mark>$T`, `sh <mark>t`, `s<mark>h t` (17; truth: nothing runs). 98 REPORT->REPORT with the
+  finding's text changed: the mark in the name on both sides (`tool<mark>x`, `${D:-tool<mark> }`,
+  `bash -s<mark>`, a URL) now shows as the literal where `main`'s text had it taken off or the word
+  split (the round-8 families 11, 15, 17 and `m06`; truth: the payload runs where both names carry
+  it, nothing for `bash -s<mark>`, an over-report on both trees). No row loses a report in one
+  setting and keeps it in another. Pins: `tests/test_shell_reader.py` (every private-use constant of
+  the reader's eleven modules is in `_MARKS` and moves to a non-mark -- the test that fails when a
+  module gains one; a typed mark stays a literal in its word; it decides no reading of the rest) and
+  `tests/test_workflow_positional_handoff.py` (each mark, five shapes, as U+E0FF reads; the controls
+  as they did), RED on `main`. Sizes: `scripts/shell_reader.py` 529 (+5).
+- **Workflow guard reads a step's function definitions once a pass, not once a use or a body
+  (#3124).** A step of n siblings each called cost the job about x6 a doubling on `main` (1.2 / 6.6
+  / 46.5 s at 80 / 160 / 320; the #3132 seat's rows read cubic) and n nested definitions x3 (0.03 /
+  0.09 / 0.23 s at 40 / 80 / 160): `workflow_uses.static_values`, run once a call or a statement
+  holding `$`, rebuilt `_function_ranges` without #3126's shared analysis (a `_function_scope` scan
+  of the step a definition), `_body_end` a definition and its nested set at every use;
+  `_possible_called_readonly`, run once a definition by the carried pass, rebuilt `_function_ranges`
+  a body; and `_reached` and `_calls` walked every definition a call site and a reached body. Now
+  `workflow_called._Definitions` indexes the step's definitions once a pass on the per-step memo
+  (`_Step.definitions`; `_Step.ranges` is `_function_ranges` with the shared analysis, once): each
+  name's definitions and, for each statement, the innermost body holding it -- three sweeps: ends as
+  `_body_end` finds them, as the `}` was found, found bodies only -- asked a statement by
+  `_reached`, `_calls`, `_possible_called_readonly` and, granted, by `static_values` and `uses`
+  (`workflow_uses`) and `_called_assignments` and `carried` (`workflow_carried`). Readings unchanged
+  by construction: Forge differential of a8ff2aa7 against `main` 5c88603d over the 27,657-row kit
+  (the kit's rows and this issue's 45; three readings a cell, 2,048,295 in all, 83 min):
+  byte-identical dumps -- no row differs, no multiplicity gained or lost in the job, main-pass or
+  walk readings. Measured, `job_defects` CPU, `main` -> here: siblings each called 80 / 160 / 320:
+  1.2 / 6.6 / 46.5 s -> 0.34 / 1.1 / 3.9 s, still x3.2-3.6 a doubling, since the uses pass walks
+  every earlier statement a use (`walk`) and scans the step a use (`_forked`) -- `main`'s design
+  (round 8: "`main` is quadratic"), a follow-up for Blue; nested 40 / 80 / 160: 0.03 / 0.09 / 0.23
+  -> 0.03 / 0.05 / 0.12 s; one of n called, or none, 80 / 160: 0.08 / 0.18 -> 0.07 / 0.12 s (0.23 s
+  at 320). What the job still grows past that is the gating side's (`_gating_function_call` once a
+  definition, each a scan of the step: #3128). Pins:
+  `tests/test_workflow_positional_handoff.py::TestEachDefinitionIsIndexedOnceAPass`, `static_values`
+  at the step's last statement past n definitions and n calls (640 -> 2560: `main` 0.33 -> 4.5 s,
+  the bound 2.9 s; here 0.07 -> 0.30 s) and `_possible_called_readonly` over n bodies (80 -> 320:
+  `main` 0.30 -> 18.1 s, the bound 2.6 s; here 0.01 -> 0.07 s), both RED on `main`; no job-level pin
+  until #3128 makes the gating side linear. Sizes: `scripts/workflow_called.py` 561 (+76),
+  `scripts/workflow_uses.py` 593 (-4), `scripts/workflow_carried.py` 676 (-2).
+
+- **Workflow reader parts a nested function header behind a group's `{` in a one-line body
+  (#3123).** `f() { { g() { sh t; }; g; }; }` ⏎ `f` ran the download under every parent and read
+  CLEAN: the splitter parted a header's `{` from a nested header after it (`f() { g() {`, #2975 part
+  A) and a group's `{` from a header after it (`{ g() {`, #2664), but not a run of braces, so `f() {
+  { g() {` kept `{`, `{` and `g` -- its `()` lost -- as words of the header's statement, and no
+  reader found `g`; the own-line twin and the top-level group reported. Now
+  `shell_split._NESTED_HEADER` takes a run of `{` words: the statement ends after the header's `{`,
+  the next starts at the group's `{`, which ends after the brace, and the nested header stands as it
+  does on a line of its own -- the row and a run of three braces report, the twins and the controls
+  read as they did (a group with no header in it, a subshell with one, stay one statement). The
+  issue's second row, a never-called gate in a subshell inside a body (`f() { ( g() { sha256sum -c
+  sums || exit 1; }; ); }`), reads REPORT on `main` 68c75d2c already (its CCCRR was an earlier
+  `main`'s) and is pinned so it stays. Forge differential of fd7140ff against `main` 68c75d2c over
+  the 27,627-row kit (every reader; the parse changed): 27,625 rows identical, 2 moved -- both this
+  issue's (row 1 and the three-brace run), CLEAN to REPORT under every parent in the job, main-pass
+  and walk readings -- 50 cells gain a finding, none loses one, no multiplicity lost. Pins:
+  `tests/test_shell_reader.py` (the parse) and `tests/test_workflow_positional_handoff.py` (the
+  rows' marks). Sizes: `scripts/shell_split.py` 431 (+0: one regex).
+
+- **Grouped quiet printer reasons pair with loud reasons at the printer's statement (#3095).**
+  A carried download printed through `{ echo "$payload"; } | sh` produced two findings: `carried`
+  put the loud hand-off reason on the printer's statement, while #3026 put the quiet unread-printer
+  reason on the group's closing shell statement, so `kept` could not pair them as it does for the
+  plain `echo "$payload" | sh` twin. A quiet grouped answer now records its printer's source
+  statement, and `kept` uses that source when looking for a louder reason. The brace, newline,
+  subshell, and stderr-redirection forms return the one carried finding; no verdict changes.
 - **Workflow reader follows the function calls the #3047 fold did not (#3127).** The #3121 seat's
   rows and its combined-tree round ran under every parent and read CLEAN: a positional with a
   default (`f() { sh "${1:-t}"; }; f`), a slice of the call's words (`"${@:2}"`), `$10`, an unquoted

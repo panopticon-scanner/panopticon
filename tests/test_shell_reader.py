@@ -19,6 +19,7 @@ destination a step downloaded to.
 """
 import gc
 import time
+import importlib
 import unittest
 
 import pytest
@@ -411,6 +412,115 @@ class TestOrderedRedirects(unittest.TestCase):
                 parsed = stage('echo ' + literal)
                 self.assertEqual(['echo', expected], parsed.argv)
                 self.assertEqual(['f'] if literal == '"2">f' else [], parsed.writes)
+
+
+class TestTheDirectStatusInsideAConditional(unittest.TestCase):
+    r"""#3116 item 1 + the reader part of item 2 (the split ruling; round 1's seat): inside `[[ ... ]]` the lexer escapes
+    every pattern character, so a direct `$?` reached `_stage` as `$\?` and the exact-dollar pass, which spells the
+    reference as `$?`, never marked it -- while a user's own `$\?` reaches the stage with the same spelling, and bash
+    rejects THAT there (`[[: $?: syntax error`, status 1: a handler behind it never runs, so a credit of it is
+    fail-open). Now the direct `$?` of a conditional that is the whole stage carries `conditional_status` -- a mark of
+    its own, which the status gate does not read (that credit is item 2's, Daybreak's): no verdict moves -- and only
+    where the step's text spells no `$\?` of its own (`_Parse.conditional_status`); a step that does leaves every
+    conditional's `$?` unmarked, fail-closed, a price named. `"$?"` keeps the exact, live mark it had; `$"?"`, `$""?`,
+    the split-quote `"$"?`, `$'?'`, `$?x` and `${?}` keep their types and stay unmarked; a `[[` that is not the stage's
+    head, one with no `]]` on its line, and one spanning lines are left as they are (fail-closed)."""
+
+    @staticmethod
+    def words(script):
+        return [w for st in shell_reader.statements(script) for s in st.stages for w in s.argv if "?" in str(w)]
+
+    def marks(self, script):
+        """(text, is a `_Token`, is `_Expanded`, exact_dollar, live_dollar, conditional_status) of each `?` word."""
+        return [(str(w), isinstance(w, shell_tokens._Token), isinstance(w, shell_tokens._Expanded),
+                 getattr(w, "exact_dollar", None), getattr(w, "live_dollar", None), getattr(w, "conditional_status", None))
+                for w in self.words(script)]
+
+    STATUS = ("$?", True, False, None, None, True)
+
+    def test_the_direct_status_is_marked_and_nothing_else_about_it_changes(self):
+        for script in ("[[ $? -ne 0 ]] && exit 1\n", "[[ $? -ne 0 ]] || exit 1\n", "if [[ $? -ne 0 ]]; then exit 1; fi\n",
+                       "! [[ $? -eq 0 ]] && exit 1\n", "[[ ( $? -ne 0 ) ]] && exit 1\n", "[[ -n $? ]]\n",
+                       "f() { [[ $? -ne 0 ]] && return 1; }\n", "[[ 0 -ne $? ]] && exit 1\n"):
+            with self.subTest(script=script):
+                self.assertEqual([self.STATUS], self.marks(script))
+        self.assertEqual([self.STATUS], self.marks("[[ $? == 0 && $X -ne 1 ]]\n"))     # `$X` keeps its exact mark beside it
+        self.assertEqual([("$?", True, False, True, True, None)], self.marks("[[ \"$?\" -ne 0 ]] && exit 1\n"))
+
+    def test_the_lookalikes_keep_their_type_and_stay_unmarked(self):
+        for script, expected in (("[[ $\"?\" -ne 0 ]] && exit 1\n", ("$?", False, False, None, None, None)),
+                                 ("[[ $\"\"? -ne 0 ]] && exit 1\n", ("$?", False, False, None, None, None)),
+                                 ("[[ \"$\"? -ne 0 ]] && exit 1\n", ("$?", True, False, None, True, None)),
+                                 ("[[ $'?' -ne 0 ]] && exit 1\n", ("?", False, False, None, None, None)),
+                                 ("[[ $?x -ne 0 ]] && exit 1\n", ("$?x", False, False, None, None, None)),
+                                 ("[[ ${?} -ne 0 ]] && exit 1\n", ("${?}", False, False, None, None, None))):
+            with self.subTest(script=script):
+                self.assertEqual([expected], self.marks(script))
+
+    def test_a_typed_status_mark_marks_nothing_and_stays_in_its_word(self):
+        # Round 2's seat typed U+E008 (`_STATUS`) before `exit`: `_stage` stripped the mark off every word, so
+        # `<U+E008>exit` read as `exit` and a handler as a stopping gate -- fail-open: bash 3.2.57, 5.2.21 and dash print
+        # "command not found" and run the payload. A step that spells the mark marks no conditional's `$?` and keeps
+        # the typed word whole; since #3138 the mark is a plain literal to every pass (`_STATUS` in `_MARKS`) and the
+        # rest of the step reads as any step -- the price round 3 named ("marks nothing in such a step") is gone.
+        mark = shell_reader._STATUS
+        moved = mark.translate(shell_reader._LITERAL_MARKS)       # kept whole as the plain literal #3138 moves it to
+        for script, kept, status in (("[[ $? -ne 0 ]] && %sexit 1\n" % mark, moved + "exit", True),
+                                     ("%s[[ $? -ne 0 ]] && exit 1\n" % mark, moved + "[[", None),      # no `[[` at the head
+                                     ("if [[ $? -ne 0 ]]; then %sexit 1; fi\n" % mark, moved + "exit", True),
+                                     ("[[ %s$? -ne 0 ]] && exit 1\n" % mark, moved + "$?", None),     # another word than `$?`
+                                     ("[[ $? -ne 0 ]] && exit 1\n%s\n" % mark, moved, True)):
+            with self.subTest(script=script.replace(mark, "<U+E008>")):
+                words = [str(w) for st in shell_reader.statements(script) for s in st.stages for w in s.argv]
+                self.assertIn(kept, words)
+                # The rest of the step reads as any step (#3138's rule): a conditional left whole keeps its `$?`
+                # marked; one whose `[[` or `$?` the typed mark is glued to is no such word, unmarked.
+                self.assertEqual([status], [getattr(w, "conditional_status", None) for w in self.words(script)])
+
+    def test_the_named_prices_stay_unmarked(self):
+        # Round 2's seat named them, each a `$?` the mark passes by, fail-closed: a conditional whose words tabs part;
+        # a second conditional in a list; one inside `{ }`, inside `( )` or after `time`; one in a `case` arm.
+        for script in ("[[\t$?\t-ne\t0\t]] && exit 1\n", "[[ -n a ]] && [[ $? -ne 0 ]] && exit 1\n", "{ [[ $? -ne 0 ]] && exit 1; }\n",
+                       "( [[ $? -ne 0 ]] && exit 1 )\n", "time [[ $? -ne 0 ]]\n", "case x in x) [[ $? -ne 0 ]] && exit 1;; esac\n"):
+            with self.subTest(script=script):
+                self.assertEqual([None], [getattr(w, "conditional_status", None) for w in self.words(script)])
+
+    def test_a_users_escape_leaves_every_conditional_unmarked(self):
+        # Bash 3.2.57 on `[[ $\? -ne 0 ]] && exit 1`: `[[: $?: syntax error: operand expected`, status 1, the `exit`
+        # skipped -- a credit of it would be fail-open (round 1's seat). The lexer's spelling and the user's coincide
+        # in the stage text, so a step that spells `$\?` anywhere marks no conditional's `$?` at all: a price.
+        for script in ("[[ $\\? -ne 0 ]] && exit 1\n", "if [[ $\\? -ne 0 ]]; then exit 1; fi\n", "[[ 0 -ne $\\? ]] && exit 1\n"):
+            with self.subTest(script=script):
+                self.assertEqual([("$?", False, False, None, None, None)], self.marks(script))
+        self.assertEqual([("$?", False, False, None, None, None)] * 2,
+                         self.marks("[[ $? -ne 0 ]] && exit 1\n[[ $\\? -ne 0 ]] && exit 1\n"))
+
+    def test_outside_a_conditional_and_past_one_line_nothing_is_marked(self):
+        # `$?` where bash expands patterns stays the `_Expanded` exact word it was (`echo [[ $? ]]` has no conditional
+        # at its head: as on `main`); a user's `$\?` outside a conditional stays a literal everywhere, `[[` after `echo`,
+        # `printf` or `eval` included; an arithmetic command and an array literal, which the lexer escapes the same way,
+        # stay unmarked; a conditional spanning lines is not marked (fail-closed, a price).
+        for script, expected in (("echo $?\n", ("$?", True, True, True, True, None)), ("[ $? -ne 0 ] && exit 1\n", ("$?", True, True, True, True, None)),
+                                 ("echo [[ $? ]]\n", ("$?", True, True, True, True, None)),
+                                 ("echo $\\?\n", ("$?", False, False, None, None, None)), ("[ $\\? -ne 0 ] && exit 1\n", ("$?", False, False, None, None, None)),
+                                 ("echo [[ $\\? ]]\n", ("$?", False, False, None, None, None)), ("printf '%s' [[ $\\? ]]\n", ("$?", False, False, None, None, None)),
+                                 ("eval [[ $\\? -ne 0 ]]\n", ("$?", False, False, None, None, None)),
+                                 ("(( $? != 0 )) && exit 1\n", ("$?", False, False, None, None, None)), ("x=($?)\n", ("$?", False, False, None, None, None))):
+            with self.subTest(script=script):
+                self.assertEqual([expected], self.marks(script))
+        self.assertEqual([("$?", False, False, None, None, None)], self.marks("[[ $? -ne 0 &&\n$X ]]\n"))
+
+
+class TestAConditionalOpenerIsNeverSearchedFor(LinearGrowth, unittest.TestCase):
+    """Round 1's seat: a span regex for `[[ ... ]]` was quadratic on `[[` openers with no `]]` in one stage
+    (`echo [[ x [[ x ...`). The mark asks only whether the stage IS a conditional, one pass over its words."""
+
+    @pytest.mark.serial
+    def test_n_openers_with_no_closer_read_in_linear_time(self):
+        def check(n, parsed):
+            self.assertEqual(1, len(parsed))
+
+        self.assert_linear_growth(400, lambda n: "echo " + "[[ x " * n + "\n", check)
 
 
 class TestMarkerProvenance(unittest.TestCase):
@@ -1802,6 +1912,35 @@ class TestAFunctionHeaderInEverySpellingBashAccepts(unittest.TestCase):
         self.assertEqual(["x"], [str(w) for w in shell_reader.statements("( x )")[0].stages[0].argv])
 
 
+class TestANestedHeaderBehindAGroupsBraceInABody(unittest.TestCase):
+    """#3123: `f() { { g() { sh t; }; g; }; }` ⏎ `f` ran the download under every parent and read CLEAN. The splitter
+    parted a header's `{` from a NESTED header after it (`f() { g() {`, #2975 part A) and a group's `{` from a header
+    after it (`{ g() {`, #2664), but not a run of braces: `f() { { g() {` kept `{`, `{` and `g` -- its `()` lost -- as
+    words of the header's statement, and no reader found `g`. `_NESTED_HEADER` takes a run of `{` words now: the
+    statement ends after f's `{`, the next starts at the group's `{`, which `_BRACED_HEADER` ends after the brace, and
+    the nested header stands as it does on a line of its own."""
+
+    def words(self, script):
+        return [[str(w) for w in st.stages[0].argv] for st in shell_reader.statements(script)]
+
+    def test_a_run_of_braces_before_a_nested_header_parts_as_its_own_lines_do(self):
+        self.assertEqual(self.words("f() {\n{\ng() { sh t; }\ng\n}\n}\nf\n"), self.words("f() { { g() { sh t; }; g; }; }\nf\n"))
+        self.assertEqual([["f()", "{"], ["{"], ["g()", "{", "sh", "t"], ["}"], ["g"], ["}"], ["}"], ["f"]],
+                         self.words("f() { { g() { sh t; }; g; }; }\nf\n"))
+        # Three braces: the run ends the header's statement once, the rest stand together before the nested header.
+        self.assertEqual([["f()", "{"], ["{", "{"], ["g()", "{", "sh", "t"]], self.words("f() { { { g() { sh t; }; g; }; }; }\nf\n")[:3])
+
+    def test_what_parted_before_and_what_never_parts_stay_as_they_were(self):
+        # A nested header right after the header's brace (#2975 part A), a header after a group's brace (#2664),
+        # a group with no header in it, and a subshell with a header in it: as before.
+        for script, first in (("f() { g() { sh t; }; g; }\nf\n", [["f()", "{"], ["g()", "{", "sh", "t"]]),
+                              ("{ g() { sh t; }; g; }\n", [["{"], ["g()", "{", "sh", "t"]]),
+                              ("f() { { echo x; }; }\nf\n", [["f()", "{", "{", "echo", "x"], ["}"]]),
+                              ("f() { ( g() { sh t; }; g ); }\nf\n", [["f()", "{", "g()", "{", "sh", "t"], ["}"]])):
+            with self.subTest(script=script):
+                self.assertEqual(first, self.words(script)[:2])
+
+
 class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.TestCase):
     """#2756, #2731, #2657: three things the splitter read apart that every shell reads whole --
     a line ending in `|` continues on the next, an unquoted `${X:-bash -s}` is one expansion before
@@ -2293,12 +2432,16 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.
         self.assert_linear_growth(4000, lambda size: "{ " * size + "case x in x) a ;; esac" + "; }" * size + "\n", check)
 
     def test_a_step_that_spells_a_reader_mark_reads_as_main(self):
-        # PR #2856 round 8: no mark the reader puts in its text may decide a reading, so a step
-        # that spells any of them (U+E000-U+E004) reads as `main`, its command word too.
-        for mark in ("\ue000", "\ue001", "\ue002", "\ue003", "\ue004"):
+        # PR #2856 round 8: no mark the reader puts in its text may decide a reading, so a step that spelled any of
+        # them read as `main` read before the kept-whole words, its command word too. #3138 moves the expectation
+        # (the coordinator's rule for it: "a step whose text spells a mark must read as main would read it if the
+        # character were a plain literal"): the typed mark becomes a plain literal where the text enters
+        # (`_LITERAL_MARKS`), decides nothing, and the rest of the step reads as any step does -- `${SH:-bash -s}`
+        # keeps its kept-whole reading, where `["${SH:-bash", "-s}"]` was pinned before.
+        for mark in shell_reader._MARKS:
             with self.subTest(mark=hex(ord(mark))):
                 stage = shell_reader.statements("echo %s\ncurl u | ${SH:-bash -s}\n" % mark)[1].stages[1]
-                self.assertEqual(["${SH:-bash", "-s}"], [str(w) for w in shell_reader.command(stage.argv)])
+                self.assertEqual(["bash", "-s"], [str(w) for w in shell_reader.command(stage.argv)])
 
     def test_a_shells_default_splits_only_at_a_bare_blank(self):
         # PR #2856 round 6, F1 (a): `${X:-"sh -c"}` and `${X:-sh\ -c}` are one word, `main`'s
@@ -2320,3 +2463,55 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.
         for script in ("bash -s <>/dev/null <<'EOF'\nx\nEOF\n", "bash -s <<'EOF' 1<>/dev/null\nx\nEOF\n"):
             with self.subTest(script=script):
                 self.assertEqual(("x", False), shell_reader.statements(script)[0].stages[0].stdin_heredoc)
+
+
+
+class TestATypedMarkIsAPlainLiteral(unittest.TestCase):
+    """#3138 (the #3131 round-2 seat): the reader puts private-use marks into a step's text while it reads it, and
+    one the step typed itself was read as the reader's own and taken off its word: `<U+E007>exit` read as `exit`, a
+    gate credited where bash prints "command not found" and runs the payload -- six of the eight marks, fail-open on
+    `main`. Now `statements` moves every typed mark, once, where the text enters, to the private-use character 0x100
+    past it (`_LITERAL_MARKS`), which no pass writes or reads: the step reads as `main` reads one that spells a plain
+    literal character there, and the rest of the step reads as any step does. One list holds every mark
+    (`_MARKS`); the first test here fails when a reader module gains a private-use constant the list lacks."""
+
+    MODULES = ("shell_patterns", "shell_split", "shell_reader", "shell_lex", "shell_heredoc", "shell_tokens",
+               "shell_text", "shell_folds", "shell_command", "shell_defaults", "shell_wrappers")
+
+    def test_every_private_use_constant_of_the_readers_modules_is_a_mark_the_entry_moves(self):
+        found = {}
+        for name in self.MODULES:
+            module = importlib.import_module(name)
+            for attr, value in vars(module).items():
+                if isinstance(value, str) and len(value) == 1 and "\ue000" <= value <= "\uf8ff":
+                    found.setdefault(value, []).append(f"{name}.{attr}")
+        self.assertEqual(set(found), set(shell_reader._MARKS), found)
+        for mark in shell_reader._MARKS:
+            moved = mark.translate(shell_reader._LITERAL_MARKS)
+            self.assertNotEqual(mark, moved)
+            self.assertNotIn(moved, shell_reader._MARKS)
+            self.assertTrue("\ue000" <= moved <= "\uf8ff", hex(ord(moved)))
+
+    def test_a_typed_mark_stays_a_literal_in_its_word(self):
+        for mark in shell_reader._MARKS:
+            moved = mark.translate(shell_reader._LITERAL_MARKS)
+            with self.subTest(mark=hex(ord(mark))):
+                words = [str(w) for w in shell_reader.statements("%sexit 1\nsh %st\ns%sh t\n" % (mark, mark, mark))
+                         [0].stages[0].argv]
+                self.assertEqual([moved + "exit", "1"], words)
+                stmts = shell_reader.statements("%sexit 1\nsh %st\ns%sh t\n" % (mark, mark, mark))
+                self.assertEqual([moved + "exit", "1"], [str(w) for w in stmts[0].stages[0].argv])
+                self.assertEqual(["sh", moved + "t"], [str(w) for w in stmts[1].stages[0].argv])
+                self.assertEqual(["s" + moved + "h", "t"], [str(w) for w in stmts[2].stages[0].argv])
+                for st in stmts:
+                    for w in st.stages[0].argv:
+                        self.assertFalse(getattr(w, "exact_dollar", False) or getattr(w, "quoted", False), str(w))
+
+    def test_a_typed_mark_decides_no_reading_of_the_rest(self):
+        # The exact-dollar and named-command readings of the other words stay as in a step without the mark.
+        for mark in shell_reader._MARKS:
+            with self.subTest(mark=hex(ord(mark))):
+                stmts = shell_reader.statements("echo %s\n[ \"$?\" -ne 0 ] && exit 1\n\"X=1\" y\n" % mark)
+                status = [w for w in stmts[1].stages[0].argv if str(w) == "$?"]
+                self.assertEqual([True], [getattr(w, "exact_dollar", None) for w in status])
+                self.assertEqual([True], [getattr(w, "quoted", None) for w in stmts[3].stages[0].argv[:1]])
