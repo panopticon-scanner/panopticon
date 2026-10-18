@@ -5,7 +5,11 @@ each name's own, so nothing that read `workflow_printers._grouped`, `_piped`, `_
 `piped_group_member` moved. `workflow_printers.group_reading` asks `_grouped` for the pipelines of the
 group closing in front of a shell -- back from the closer (`}`, `fi`, `done`, `esac`, a subshell's `)`,
 or a step-defined function's piped call) over the statements in front of it to the opener, through
-nested groups and compound bodies (`_walk`, `_structure`, `_stripped`), or back from a call to the body
+nested groups and compound bodies (`_walk`, `_structure`, `_stripped`) -- a group `main` reads, a `{ }` or
+`( )` group among the step's own statements or a substitution script's, read as `main` reads it, braces and
+subshells its only structure and every statement a pipeline (`strict`: a keyword a step types as a word of
+its own, which the reader hands back as the keyword's text, is then no structure; a compound nested there
+reads LOUD, as it does for `main`) -- or back from a call to the body
 of the definition it names (`_function_body`); `workflow_annotate` asks `piped_group_member` whether a
 printer stands in such a group; `workflow_written` reads a group written to a file through `_grouped`.
 Bounded: `_GROUP_LINES` statements a walk follows, `_CALL_REACH` statements back to a definition; past the
@@ -94,11 +98,15 @@ _CLOSERS = ("}",) + _ENDS
 _DROPPED = ("{", "then", "do", "else", "time")                   # a body statement's opening words
 
 
-def _structure(stage):
+def _structure(stage, strict=False):
     """`(opens, closes)`: the groups and compounds a stage opens and closes -- its structural `{` and `}`
     (`_function_syntax`: never an operand's), the subshells the parser counted, and a keyword compound's header
     (`if`, `while`, `until`, `for`, `case`, `select`) or closer (`fi`, `done`, `esac`) among its leading
-    keywords (`{ if x`: two)."""
+    keywords (`{ if x`: two); a closer counts only as a statement's sole word, which is the only place a shell
+    reads one (`} | cat`, `fi`, `done < f`: a `}` typed among a statement's words is that statement's, a word),
+    and a header never as one (`if` alone: a word a step typed, or the rare header whose test starts on the
+    next line -- read as a word, no printer's, so a typed header cannot end a walk early).
+    `strict` (a `{ }` or `( )` group, which `main` reads one level): the braces and subshells alone."""
     words = list(stage.argv)
     name, braces = _function_syntax(words)
     opens, closes = stage.group_open, stage.group_close
@@ -108,8 +116,8 @@ def _structure(stage):
         if not isinstance(word, str) or word == "function" or not (
                 word in shell_reader.KEYWORDS or word in _HEADERS or word == "time"):
             break
-        opens += word == "{" or word in _HEADERS
-        closes += word == "}" or word in _ENDS
+        opens += word == "{" or not strict and word in _HEADERS and len(words) > 1
+        closes += len(words) == 1 and (word == "}" or not strict and word in _ENDS)
     return opens, closes
 
 
@@ -137,26 +145,35 @@ def _kin(statement, own):
     return type(statement) is type(own) and getattr(statement, "key", None) == getattr(own, "key", None)
 
 
-def _arm(word):
-    """A case arm's marker, `@@shell-...@@a)`, as the parser spells it."""
-    return isinstance(word, str) and word.startswith("@@shell-") and word.endswith(")")
-
-
-def _stripped(stages):
+def _stripped(stages, strict=False):
     """The pipeline a body statement runs once its opening words are dropped -- a function header's `f() {`,
-    `{`, `then`, `do`, `else`, `time`, a case arm's marker -- or None where the statement is a compound's header (`if`,
-    `while`, `until`, `for`, `case`, `select`: its own output is not read, a named limit), an `elif` or `in`
-    line, or holds no command."""
+    `{`, `then`, `do`, `else`, `time`, a case arm's marker (the parser's own, `shell_reader.is_arm`: never a word
+    a step types in that shape) -- or None where the statement is a compound's header (`if`, `while`, `until`,
+    `for`, `case`, `select`: its own output is not read, a named limit), an `elif` or `in` line, or holds no
+    command; a header word alone (`if` with nothing behind it on its line) is a word, kept, no printer's --
+    LOUD, so a header a step types cannot end the walk early. `strict` (a `{ }` or `( )` group, which `main`
+    reads one level): the opener's `{` dropped as `main` drops it, a nested opener's too while a word follows
+    (`{ { echo P`; `{ '{'` keeps the typed one), and every other word kept -- `shell_reader.command` reads the
+    pipeline's keywords as `main` reads them, and a keyword a step types as a word of its own is no printer's,
+    LOUD. A function header is dropped only where it opens its body on its line (`f() {`, `h() (`,
+    `function f {`): a bare `f()` is a word (the two-line form's `{` is met first, going back)."""
     words = list(stages[0].argv)
     name = _function_syntax(words)[0]
     if name is not None:
         at = next(i for i, w in enumerate(words) if w in (name, name + "()"))
-        words = words[at + 1 + (words[at + 1:at + 2] == ["()"]):]
-    while words and (words[0] in _DROPPED or _arm(words[0])):
-        words = words[1:]
+        after = words[at + 1 + (words[at + 1:at + 2] == ["()"]):]
+        if after[:1] == ["{"] or stages[0].group_open:          # a header opening its body on its line
+            words = after
+    if strict:
+        words = words[1:] if words[:1] == ["{"] else words
+        while words[:1] == ["{"] and any(w != "{" for w in words):    # a nested opener's, with a word behind
+            words = words[1:]
+    else:
+        while words and (words[0] in _DROPPED or shell_reader.is_arm(words[0])):
+            words = words[1:]
     if not words:
         return list(stages[1:]) or None
-    if words[0] in _HEADERS or words[0] in ("elif", "in"):
+    if not strict and len(words) > 1 and (words[0] in _HEADERS or words[0] in ("elif", "in")):
         return None
     return [stages[0]._replace(argv=words)] + list(stages[1:])
 
@@ -195,7 +212,11 @@ def _grouped(front, before, statements):
     those with the closer's own last; read backwards only (`_behind`). None without `statements`, where no
     opener is met, and for a subshell closer that opens its own group (`( P ) | sh`: nothing beyond
     `producer`'s). Bounded: past `_GROUP_LINES` statements the walk stops and the pipelines end in `_past`'s
-    stand-in, a pipeline no printer spells."""
+    stand-in, a pipeline no printer spells. A `{ }` or `( )` group is read `strict`, as `main` reads one at the
+    top of a step: braces and subshells its only structure, every statement a pipeline -- wherever it stands,
+    since the reader hands a keyword a step types as a quoted word back as the keyword's text (#3142 round 2),
+    and a function's body is one; a keyword compound piped at its own closer (`fi`, `done`, `esac`) is read in
+    full, its header, arms and loop control known from that closer."""
     if statements is None:
         return None
     own = _own(front, statements)
@@ -205,10 +226,10 @@ def _grouped(front, before, statements):
         return _function_body(argv[0], statements, own)
     if not (closer or front.group_close) or not closer and front.group_open:
         return None
-    return _walk(_behind(statements, own), own, closer)
+    return _walk(_behind(statements, own), own, closer, bool(front.group_close) or closer not in _ENDS)
 
 
-def _walk(statements, own, closer=None):
+def _walk(statements, own, closer=None, strict=False):
     """Back from a group's closer over `statements`, the ones in front of it NEAREST FIRST, to its opener: the
     pipelines of the group, in order, or None where no opener is met. Each statement's closers (`_structure`)
     are met first, going back, then its own pipeline (`_stripped`), then its openers; a nested group is read
@@ -217,23 +238,29 @@ def _walk(statements, own, closer=None):
     passed over and every branch of an `if` or `case` is read, fail-closed. Passed over too: a statement not
     written beside the closer's (`_kin`), a pipeline whose last stage sends its stdout elsewhere (`_fed`), and a
     loop body's `break` or `continue` (`_silent`) -- inside a `done` the walk is in (`closer`, or a nested one,
-    `loops`); elsewhere it is no printer's and the group reads LOUD, as `main` reads it."""
+    `loops`); elsewhere it is no printer's and the group reads LOUD, as `main` reads it. `strict` (a `{ }` or
+    `( )` group): braces and subshells are the only structure met and no word is dropped (`_structure`,
+    `_stripped`), so every statement `main` counts is a pipeline here too. A walk that entered a nested group
+    on the way back and runs out of statements without the opener met reads LOUD, fail-closed: a closer's word
+    a step typed, which the nested group's reading took for a closer, popped the opener's level."""
     body: list[list] = []
     nested: list[bool] = []
-    blocked = walked = 0                    # the nested groups entered whose output leaves the pipe; the cost
+    blocked = walked = popped = 0           # the nested groups entered whose output leaves the pipe; the cost
     loops, kinds = int(closer == "done"), []    # the loops the walk is in; per nested group, whether a loop
+    stage = None
     for statement in statements:
         if not _kin(statement, own):
             continue
         stages = list(statement.stages)
         if not stages:
             continue
+        stage = stages[0]
         walked += 1
         if walked > _GROUP_LINES:
             return (_fed(body) or []) + [_past(stages[0])]
         opens = closes = 0
         for stage in stages:
-            opened, closed = _structure(stage)
+            opened, closed = _structure(stage, strict)
             opens, closes = opens + opened, closes + closed
         for _each in range(closes):
             nested.append(stages[-1].stdout_to_pipe)
@@ -248,7 +275,7 @@ def _walk(statements, own, closer=None):
             if tail and not blocked and not all(_passes_through(shell_reader.command(s.argv), s) for s in tail):
                 body.insert(0, tail)
         else:
-            pipeline = _stripped(stages)        # a body pipeline of its own
+            pipeline = _stripped(stages, strict)    # a body pipeline of its own
             if pipeline and not blocked and not (loops and _silent(pipeline)):
                 body.insert(0, pipeline)
         for _each in range(opens):
@@ -256,7 +283,8 @@ def _walk(statements, own, closer=None):
                 return _fed(body)
             blocked -= not nested.pop()
             loops -= kinds.pop()
-    return None
+            popped += 1
+    return (_fed(body) or []) + [_past(stage)] if popped and stage is not None else None
 
 
 def _closing(statements, index, own):
@@ -300,9 +328,9 @@ def _function_body(name, statements, own):
             return [_past(statement.stages[0])] if len(trail) == trail.maxlen else None
         if close == 0:
             stages = list(statement.stages)
-            pipeline = _stripped(stages)
+            pipeline = _stripped(stages, True)
             return _fed([pipeline]) if pipeline and stages[-1].stdout_to_pipe else None
-        return _walk(reversed(body[:close]), own)
+        return _walk(reversed(body[:close]), own, None, True)
     return None
 
 

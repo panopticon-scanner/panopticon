@@ -2484,7 +2484,6 @@ class TestTheGroupsThisGuardFollowsNow(LinearGrowth, unittest.TestCase):
         ("undefined-call", "g | sh\n"),
         ("clean-eval-group", "eval \"{ echo ok; } | sh\"\n"),
         ("clean-sh-c-sub", "sh -c \"( echo ok; echo hi ) | sh\"\n"),
-        ("clean-if-in-eval", "eval \"{ if true; then echo ok; fi; } | sh\"\n"),
         ("clean-break-body", "while true; do echo ok; break; done | sh\n"),
         ("bound-64-clean", "{ " + "echo ok; " * 64 + "} | sh\n"),
         ("fn-trail-63-clean", "f() {\n" + "  echo ok\n" * 63 + "}\nf | sh\n"),
@@ -2498,6 +2497,12 @@ class TestTheGroupsThisGuardFollowsNow(LinearGrowth, unittest.TestCase):
         ("var-in-body", "X='%s'\nif true; then echo \"$X\"; fi | sh\n" % PIPE),
         ("var-in-sub-second", "X='%s'\n( echo ok; echo \"$X\" ) | sh\n" % PIPE),
         ("header-output", "if echo \"%s\"; then :; fi | sh\n" % C),
+        # (d), (e), (f): a word a step types in a keyword's shape where the reader hands back the keyword's text and
+        # `main` reads nothing -- `then`/`do`/`else` alone in a compound body at its own closer, `break`/`continue`
+        # alone in a loop body, and `{` alone in any group, which `main` and this reading take for the opener.
+        ("typed-then-in-body", "if true; then echo ok; 'then'; fi | sh\n"),
+        ("typed-break-in-loop", "for i in 1; do echo ok; 'break'; done | sh\n"),
+        ("typed-brace-open", "{ echo \"%s\"; '{'; echo ok; } | sh\n" % C),
     )
     # The bound's price: a group of more than `_GROUP_LINES` statements, and a function body whose closer lies more
     # than `_GROUP_LINES` statements behind its call, read LOUD (`_PAST_GROUP`) where `main` read nothing. Truth:
@@ -2506,6 +2511,36 @@ class TestTheGroupsThisGuardFollowsNow(LinearGrowth, unittest.TestCase):
         ("bound-65-clean", "{ " + "echo ok; " * 65 + "} | sh\n"),
         ("fn-trail-66-clean", "f() {\n" + "  echo ok\n" * 66 + "}\nf | sh\n"),
     )
+    # A keyword compound nested in a `{ }` or `( )` group reads LOUD wherever the group stands, as `main` reads one at
+    # the top of a step (every statement of the group a pipeline, `if true` and `fi` no printer's): the group is read
+    # `strict` (#3142 round 2), since the reader hands a keyword a step types as a quoted word back as the keyword's
+    # text, and a group read by its keywords lost `main`'s findings to typed ones (k3117/rows-typed, rows-nested).
+    # A compound piped at its own closer (`READ`: if-body, for-body, ...) and one inside a string at its own closer
+    # (if-in-string) are read in full. Truth: nothing runs in these.
+    LOUD = (
+        ("compound-in-brace", "{ if true; then echo ok; fi; } | sh\n"),
+        ("compound-in-sub", "( if true; then echo ok; fi ) | sh\n"),
+        ("compound-in-subst", "x=$({ if true; then echo ok; fi; } | sh)\n"),
+        ("compound-in-eval-group", "eval \"{ if true; then echo ok; fi; } | sh\"\n"),
+        ("compound-in-fn-body", "f() { if true; then echo ok; fi; }\nf | sh\n"),
+        ("loop-in-brace", "{ for i in 1; do echo ok; done; } | sh\n"),
+    )
+    # A word a step types in a keyword's or marker's shape, quoted, as a command word of its own: the reader hands it
+    # back as the bare word's text. In a group read `strict` it is a word, no printer's, LOUD, as `main` reads it; in a
+    # compound at its own closer a typed closer word pops the compound's own opener and the walk runs out (LOUD), a
+    # typed header word alone is a word (LOUD), and a case arm's marker is the parser's own (`shell_reader.is_arm`,
+    # nonce-aware), never a typed lookalike. `zz` is the control: the same step with any other word.
+    TYPED_WORDS = ("}", "then", "do", "else", "fi", "done", "esac", "if", "for", "case", "select", "elif", "in",
+                   "break", "function", "f()", "@@shell-x)", "zz")
+    TYPED_STRICT = ("{ echo ok; %s; } | sh\n", "{ echo ok; %s; echo hi; } | sh\n", "{ echo \"" + C + "\"; %s; } | sh\n",
+                    "x=$({ echo ok; %s; } | sh)\n", "eval \"{ echo ok; %s; } | sh\"\n")
+    TYPED_FULL = {"fi": "R", "done": "R", "esac": "R", "}": "R", "if": "R", "case": "R", "while": "R", "f()": "R",
+                  "@@shell-x)": "R", "zz": "R", "break": "R",
+                  # the named limit (d): a sole `then`, `do` or `else` typed inside a compound body at its own closer
+                  # reads as the keyword line it spells; `main` reads nothing there either.
+                  "then": "C", "do": "C", "else": "C"}
+    PLANTED = ("mkdir -p b\nprintf '#!/bin/sh\\n%s\\n' > 'b/@@shell-x)'\nchmod +x 'b/@@shell-x)'\nPATH=\"$PWD/b:$PATH\"\n" % PIPE
+               + "{ echo ok; '@@shell-x)'; } | sh\n")
     # The bound's stand-in word, typed by a step as one word of a piped group (#3142 round 1): the stand-in is told
     # by its type (`_PastGroup`), never by its text, so the typed text reads as any other word reads -- posture by
     # posture the same marks and findings as its twin with another number -- and as `main` reads the shape where
@@ -2574,9 +2609,28 @@ class TestTheGroupsThisGuardFollowsNow(LinearGrowth, unittest.TestCase):
                     self.assertEqual(self.findings(twin, shell), found)
                     self.assertNotIn(wp._PAST_GROUP[0], " ".join(found))
 
+    def test_a_compound_nested_in_a_group_reads_loud_as_main_reads_it(self):
+        for name, text in self.LOUD:
+            with self.subTest(name=name):
+                self.assertEqual(("RRRRR", "RRRRR"), self.marks(text))
+                self.assertIn(wp._GROUPED[0], " ".join(self.findings(text)))
+
+    def test_a_word_a_step_types_in_a_keywords_shape_is_a_word(self):
+        for shape in self.TYPED_STRICT:
+            for word in self.TYPED_WORDS:
+                with self.subTest(shape=shape, word=word):
+                    self.assertEqual(("RRRRR", "RRRRR"), self.marks(shape % ("'%s'" % word)))
+        for word, mark in self.TYPED_FULL.items():
+            with self.subTest(shape="if-body", word=word):
+                self.assertEqual((mark * 5, mark * 5), self.marks("if true; then echo ok; '%s'; fi | sh\n" % word))
+        with self.subTest(shape="planted"):
+            self.assertEqual(("RRRRR", "RRRRR"), self.marks(self.PLANTED))
+            self.assertEqual(self.findings(self.PLANTED), self.findings(self.PLANTED.replace("@@shell-x)", "zz")))
+
     def test_mains_findings_are_kept(self):
         # The union, per shape and posture: every finding `main` gives stands here (monotone against `main`).
-        for name, text in self.READ + self.AS_MAIN + self.STAYS + self.LIMITS + self.PRICES + tuple(f[:2] for f in self.forged()):
+        for name, text in (self.READ + self.AS_MAIN + self.STAYS + self.LIMITS + self.PRICES + self.LOUD
+                           + tuple(f[:2] for f in self.forged())):
             for shell in self.SHELLS:
                 with self.subTest(name=name, shell=shell):
                     step = [wg.Step("step", text, shell)]
@@ -2590,9 +2644,11 @@ class TestTheGroupsThisGuardFollowsNow(LinearGrowth, unittest.TestCase):
         # without the key, every clean group inside a string read LOUD. The `if` body inside the string is kept.
         for holder in ("eval \"%s\"\n", "bash -c \"%s\"\n", "sh -c \"%s\"\n", "sudo sh -c \"%s\"\n", "bash -ec \"%s\"\n"):
             for body in ("{ echo ok; } | sh", "{ echo ok; echo hi; } | sh", "( echo ok; echo hi ) | sh",
-                         "{ { echo ok; }; } | sh", "{ if true; then echo ok; fi; } | sh"):
+                         "{ { echo ok; }; } | sh", "if true; then echo ok; fi | sh"):
                 with self.subTest(text=holder % body):
                     self.assertEqual([], self.findings(holder % body))
+            with self.subTest(text=holder % "compound-in-group"):     # `LOUD`: a compound nested in a group
+                self.assertEqual(1, len(self.findings(holder % "{ if true; then echo ok; fi; } | sh")))
         with self.subTest(text="if-in-string"):
             self.assertEqual(("RRRRR", "RRRRR"), self.marks("eval \"{ if true; then echo '%s'; fi; } | sh\"\n" % PIPE))
 
@@ -2796,6 +2852,38 @@ class TestTheGroupWalksParts(unittest.TestCase):
         parsed = shell_reader.statements("f() {\n" + "  echo ok\n" * 63 + "}\nf | sh\n")
         front = parsed[-1].stages[0]
         self.assertEqual(63, len(wp._grouped(front, [front], parsed)))
+
+    def test_a_group_main_reads_has_braces_and_subshells_for_structure(self):
+        # `strict`: a keyword compound inside a `{ }` or `( )` group is no structure, a closer counts only alone.
+        for text, opens, closes in (("{ if x; then\n", 1, 0), ("fi\n", 0, 0), ("done < f\n", 0, 0), ("esac | sh\n", 0, 0),
+                                    ("} | cat\n", 0, 1), ("{ echo ok\n", 1, 0), ("( echo ok\n", 1, 0), ("f() {\n", 1, 0)):
+            with self.subTest(text=text):
+                self.assertEqual((opens, closes), wp._structure(self.stages(text)[0], True))
+        for text in ("} x\n", "fi x\n", "{ }\n"):           # a closer among a statement's words is a word
+            with self.subTest(text=text):
+                self.assertEqual(0, wp._structure(self.stages(text)[0])[1])
+        for text, pipeline in (("{ echo ok; }\n", ["echo", "ok"]), ("{ { echo ok; }; }\n", ["echo", "ok"]), ("{ '{'; }\n", ["{"]),
+                               ("{ 'then'; }\n", ["then"]), ("{ then echo ok; }\n", ["then", "echo", "ok"]), ("{ 'f()'; }\n", ["f()"]),
+                               ("f() { echo ok; }\n", ["echo", "ok"]), ("{ if true; }\n", ["if", "true"])):
+            with self.subTest(text=text):
+                found = wp._stripped(shell_reader.statements(text)[0].stages, True)
+                self.assertEqual([pipeline], [list(map(str, s.argv)) for s in found])
+        self.assertIsNone(wp._stripped(shell_reader.statements("{\n")[0].stages, True))
+        self.assertIsNone(wp._stripped(shell_reader.statements("if true\n")[0].stages))        # a header: passed over
+        self.assertEqual([["if"]], [list(map(str, s.argv)) for s in wp._stripped(shell_reader.statements("'if'\n")[0].stages)])
+        self.assertEqual([["f()"]], [list(map(str, s.argv)) for s in wp._stripped(shell_reader.statements("'f()'\n")[0].stages)])
+
+    def test_a_walk_that_popped_a_level_and_ran_out_is_loud(self):
+        # A closer's word a step typed inside a compound at its own closer pops the compound's opener: the walk runs
+        # out of statements, and reads LOUD -- the stand-in past the bound -- rather than nothing.
+        for text in ("if true; then echo ok; '}'; fi | sh\n", "if true; then echo ok; 'fi'; fi | sh\n", "for i in 1; do echo ok; 'done'; done | sh\n"):
+            with self.subTest(text=text):
+                parsed = shell_reader.statements(text)
+                front = parsed[-1].stages[0]
+                self.assertTrue(wp._stopped(wp._grouped(front, [front], parsed)))
+        parsed = shell_reader.statements("if true; then echo ok; fi | sh\n")
+        front = parsed[-1].stages[0]
+        self.assertFalse(wp._stopped(wp._grouped(front, [front], parsed)))
 
     def test_whether_a_statement_lies_in_a_piped_group(self):
         def member(text, index):
