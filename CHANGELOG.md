@@ -7,30 +7,38 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
-- **Workflow reader marks the direct `$?` inside `[[ ... ]]` as the exact, live status (#3116 item 1
-  and the reader part of item 2).** The lexer escapes every pattern character inside a conditional,
-  so a direct `$?` reached the exact-dollar pass as `$\?` and was never marked, while `$"?"`, `$""?`
-  and `"$"?` lex to the same bare `$?` word: the status gate could credit none of them without
-  reopening #2440's F1. Now `shell_reader._exact_dollars` marks the direct `$?` inside `[[ ... ]]`
-  -- with `if`, `!`, `||`, parentheses or a function body around it -- exact and live by the one
-  mechanism every exact `$NAME` word has (a `_Token`, the plain token kind: never `_Expanded`, since
-  bash expands no pattern there); `$"?"`, `$""?`, `"$"?`, `$'?'`, `$?x` and `${?}` keep their types
-  and stay unmarked; outside a conditional `$\?` is a user's escape and stays a literal (`[ $\? -ne
-  0 ]` credited would be fail-open: test(1) rejects the string); an arithmetic command and an array
-  literal are untouched. A user's own `$\?` inside `[[ ... ]]` reads as the status too, a named
-  reading that is never fail-open (an arithmetic operator evaluates the string, a string operator
-  compares the literal, so the gate fires every time). Item 1's audit of the str-to-`_Token` re-wrap
-  of exact words: the six callers that test `type(word) is str` (`shell_command` 267,
-  `workflow_options` 136, 164, 225, 350, 507, `workflow_programs` 408) ask of a word whether it is
-  `bash`/`sh`, a `--`/`++` option, an exit-or-file option, `--pretty-print`, or a command name that
-  spells no option -- none of which an exact word (`$NAME`, its braced form, `X=$Y`, `$?`) can be --
-  so the re-wrap changes no answer; the kit reads byte-identical. Provenance only: no reading moves
-  until Daybreak's item 2 credits the marked operand. Forge differential, 74909bf8 against `main`
-  68c75d2c over the 27,551-row kit (the kit's rows, #3110's 166 and 13 status rows; three readings a
-  cell, 2,040,645 in all, 79 min): the dumps are byte-identical -- 0 rows differ, 0 texts or
-  multiplicities lost: provenance only, as ruled. `tests/test_shell_reader.py` pins the marked
-  forms, the lookalikes, what stays outside a conditional, and the named reading. Sizes:
-  `scripts/shell_reader.py` 532 (+8).
+- **Workflow reader marks the direct `$?` inside `[[ ... ]]` with a mark of its own, from the step's
+  text (#3116 item 1 and the reader part of item 2).** The lexer escapes every pattern character
+  inside a conditional, so a direct `$?` reached the exact-dollar pass as `$\?` and was never
+  marked, while `$"?"`, `$""?` and `"$"?` lex to the same bare `$?` word -- and a user's own `$\?`
+  reaches the stage spelled as the lexer spells the direct one, which bash rejects there (`[[: $?:
+  syntax error`, status 1: a handler behind it never runs). Now `shell_reader` records whether the
+  step's text spells `$\?` anywhere, and where it does not, the direct `$?` of a stage that is a
+  conditional at its head -- behind `if`, `!`, a function header -- and ends with `]]` carries
+  `conditional_status`: a `_Token`, never `_Expanded` (bash expands no pattern there), and neither
+  `exact_dollar` nor `live_dollar`, so the status gate, which credits an exact, live `[[ ]]` operand
+  in bash steps today, credits nothing until item 2 (Daybreak's) reads the mark: no verdict moves,
+  the 36 gate-reaching rows (six spellings, three handlers, with and without `set +e`) read as they
+  did. `"$?"` keeps the exact, live mark it had; `$"?"`, `$""?`, `"$"?`, `$'?'`, `$?x` and `${?}`
+  keep their types and stay unmarked; a user's `$\?` is never marked, inside a conditional or out
+  (`echo [[ $\? ]]`, `printf '%s' [[ $\? ]]`, `eval [[ $\? -ne 0 ]]`); an arithmetic command and an
+  array literal are untouched. The mark asks only whether the stage is a conditional, one pass over
+  its words: no span is searched for (a `[[` with no closer, n times in one stage, reads in linear
+  time, pinned). Prices, named: a step that spells `$\?` anywhere marks no conditional's `$?`; a
+  conditional spanning lines, or one that is not the whole stage (a trailing redirection), is
+  unmarked -- fail-closed each. Item 1's audit of the str-to-`_Token` re-wrap of exact words: the
+  seven callers that test `type(word) is str` (`shell_command` 267, `workflow_options` 136, 164,
+  225, 350, 507, `workflow_programs` 408; the seat's four more, none affected) ask of a word whether
+  it is `bash`/`sh`, a `--`/`++` option, an exit-or-file option, `--pretty-print`, or a command name
+  that spells no option -- none of which an exact word (`$NAME`, its braced form, `X=$Y`, `$?`) can
+  be -- so the re-wrap changes no answer. Forge differential of eb2122c6 against `main` cc398401
+  over the 27,589-row kit (the kit's rows, the 13 status rows and the 36 gate rows; three readings a
+  cell, 2,043,495 in all, 79 min): byte-identical dumps -- no row differs, no multiplicity gained or
+  lost in the job, main-pass or walk readings: the mark credits nothing yet.
+  `tests/test_shell_reader.py` pins the mark, the lookalikes, the user's escape, what stays unmarked
+  and the linear reading; `tests/test_workflow_positional_handoff.py` the 36 gate rows as on `main`.
+  Sizes: `scripts/shell_reader.py` 547 (+23).
+
 - **Workflow written files: a group of printers written to a file and then run is read as their text
   (#3110).** `{ echo "sh -c 'curl … | sh'"; echo ok; } > s.sh` ⏎ `sh s.sh`, and the `{ echo P; } >
   s.sh` and `( echo P; ) > s.sh` forms, ran the download under every parent and read CLEAN
