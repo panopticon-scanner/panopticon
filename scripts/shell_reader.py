@@ -343,7 +343,8 @@ def _stage(text, context):
         whole = raw.replace(_BLANK, " ") if len(parts) > 1 else None
         pieces.extend((part, None if at else whole, len(parts)) for at, part in enumerate(parts))
     for raw, whole, span in pieces:
-        status, raw = raw.startswith(_STATUS), raw.removeprefix(_STATUS)
+        status = raw.startswith(_STATUS) and getattr(context, "conditional_status", False)
+        raw = raw.removeprefix(_STATUS) if status else raw   # a typed U+E008 stays in its word, as `main` reads it
         exact_dollar, raw = raw.startswith(_EXACT_DOLLAR), raw.removeprefix(_EXACT_DOLLAR)
         named, raw = raw.startswith(_NAMED), raw.replace(_NAMED, "")
         plain = context.restore_arithmetic(raw.replace(MARK, "").replace(QUOTED, "")
@@ -527,7 +528,9 @@ def statements(script):
     lifted substitution's text, each heredoc where its marker stands (#2336)."""
     context = _Parse(script)
     shadows(script)                     # a wrapper's name the text defines is the step's own (#2670)
-    context.conditional_status = "$\\?" not in script   # a `$\?` of the step's own: no conditional's `$?` marked (#3116)
+    # A `$\?` of the step's own, or the mark itself typed into the step, and no conditional's `$?` is marked nor the
+    # mark stripped from any word: the step reads as `main` (#3116; the round-2 seat typed U+E008 before `exit`).
+    context.conditional_status = "$\\?" not in script and _STATUS not in script
     # A step that spells a mark the reader puts in its text reads as `main` (#2856 round 8).
     context.blanks = not any(mark in script for mark in (
         MARK, QUOTED, _ESCAPED, QUOTED_DOLLAR, DOUBLE_DOLLAR, _BLANK))
