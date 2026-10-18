@@ -420,8 +420,8 @@ class TestTheDirectStatusInsideAConditional(unittest.TestCase):
     reference as `$?`, never marked it -- while a user's own `$\?` reaches the stage with the same spelling, and bash
     rejects THAT there (`[[: $?: syntax error`, status 1: a handler behind it never runs, so a credit of it is
     fail-open). Now the direct `$?` of a conditional that is the whole stage carries `conditional_status` -- a mark of
-    its own, which the status gate does not read (that credit is item 2's, Daybreak's): no verdict moves -- and only
-    where the step's text spells no `$\?` of its own (`_Parse.conditional_status`); a step that does leaves every
+    its own, which the status gate reads only for Bash `[[ ]]` (#3116 item 2) -- and only where the step's text spells
+    no `$\?` of its own (`_Parse.conditional_status`); a step that does leaves every
     conditional's `$?` unmarked, fail-closed, a price named. `"$?"` keeps the exact, live mark it had; `$"?"`, `$""?`,
     the split-quote `"$"?`, `$'?'`, `$?x` and `${?}` keep their types and stay unmarked; a `[[` that is not the stage's
     head, one with no `]]` on its line, and one spanning lines are left as they are (fail-closed)."""

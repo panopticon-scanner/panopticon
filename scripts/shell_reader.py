@@ -381,7 +381,7 @@ def _stage(text, context):
             word = word if isinstance(word, _Token) else _Token(word, _markers(word))
             setattr(word, "exact_dollar", True)
             setattr(word, "live_dollar", True)
-        if status:                          # the direct `$?` of a conditional: a mark of its own, no credit yet (#3116)
+        if status:                          # the direct `$?` of a conditional: status_gate reads this mark (#3116)
             word = word if isinstance(word, _Token) else _Token(word, _markers(word))
             setattr(word, "conditional_status", True)
         if named:                           # `"X=1"`, `X\=1`: a command of that name (#2480)

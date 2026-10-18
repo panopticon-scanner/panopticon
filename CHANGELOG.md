@@ -96,10 +96,9 @@ evidence exposed.
   step's text spells `$\?` anywhere, and where it does not, the direct `$?` of a stage that is a
   conditional at its head -- behind `if`, `!`, a function header -- and ends with `]]` carries
   `conditional_status`: a `_Token`, never `_Expanded` (bash expands no pattern there), and neither
-  `exact_dollar` nor `live_dollar`, so the status gate, which credits an exact, live `[[ ]]` operand
-  in bash steps today, credits nothing until item 2 (Daybreak's) reads the mark: no verdict moves,
-  the 36 gate-reaching rows (six spellings, three handlers, with and without `set +e`) read as they
-  did. `"$?"` keeps the exact, live mark it had; `$"?"`, `$""?`, `"$"?`, `$'?'`, `$?x` and `${?}`
+  `exact_dollar` nor `live_dollar`. The reader change itself credited nothing and moved no verdict;
+  item 2 below now reads the mark. `"$?"` keeps the exact, live mark it had; `$"?"`, `$""?`, `"$"?`,
+  `$'?'`, `$?x` and `${?}`
   keep their types and stay unmarked; a user's `$\?` is never marked, inside a conditional or out
   (`echo [[ $\? ]]`, `printf '%s' [[ $\? ]]`, `eval [[ $\? -ne 0 ]]`); an arithmetic command and an
   array literal are untouched. The mark asks only whether the stage is a conditional, one pass over
@@ -121,11 +120,22 @@ evidence exposed.
   Forge differential of 4ea470db against `main` b61bbc76 over the 27,612-row kit (the kit's rows,
   the 13 status rows, the 36 gate rows and the 23 forged rows; three readings a cell, 2,045,220 in
   all, 80 min): byte-identical dumps -- no row differs, no multiplicity gained or lost in the job,
-  main-pass or walk readings: the mark credits nothing yet, and a typed mark reads as `main` reads
-  it. `tests/test_shell_reader.py` pins the mark, the lookalikes, the user's escape, a typed mark
+  main-pass or walk readings: at that reader-only head the mark credited nothing, and a typed mark
+  reads as `main` reads it. `tests/test_shell_reader.py` pins the mark, the lookalikes, the user's escape, a typed mark
   kept whole, the named prices, what else stays unmarked and the linear reading;
-  `tests/test_workflow_positional_handoff.py` the 36 gate rows and the twelve forged forms as on
-  `main`. Sizes: `scripts/shell_reader.py` 553 (+29).
+  `tests/test_workflow_positional_handoff.py` initially pinned the 36 gate rows as on `main` and
+  still pins the twelve forged forms. Sizes: `scripts/shell_reader.py` 553 (+29).
+
+- **Workflow status credits the reader-marked direct `$?` operand in Bash `[[ ... ]]` gates
+  (#3116 item 2).** The status proof accepts `conditional_status` only for the literal `$?`,
+  only without a captured variable name, and only in the existing three-word `[[ ]]` comparison;
+  Bash must directly read the step file. A custom Bash command string or an earlier wrapper-script
+  operand can hand `{0}` to another interpreter, so those templates stay fail-closed. The user's own
+  `$\?`, quote-removal lookalikes, typed private-use marks, non-Bash steps and every reader limitation
+  above stay fail-closed. The direct and reversed comparisons and the `if [[ ... ]]` form now stop a
+  failed check, with and without `set +e`, while their controls still report. Pins:
+  `tests/test_workflow_positional_handoff.py` (all six spellings across three handlers and both
+  error-mode postures, typed-mark controls, direct and delegated Bash templates).
 
 - **Workflow reader reads a private-use mark the step types itself as a plain literal -- every mark,
   in one place (#3138).** The reader puts eight private-use characters into a step's text while it

@@ -6,11 +6,13 @@ the parsed statements.  It does not evaluate shell expressions: the status
 must be captured immediately, compared numerically with zero, and handed to a
 literal non-zero ``exit``.  A failure-true ``[ ]`` operand must be wholly
 double quoted; an unquoted operand is accepted only where a false test takes
-``|| exit``.  The trap proof is narrower still: a literal, top-level Bash
-``ERR`` handler whose one command exits non-zero.
+``|| exit``, or where the reader marks a direct ``$?`` inside Bash ``[[ ]]``.
+The trap proof is narrower still: a literal, top-level Bash ``ERR`` handler
+whose one command exits non-zero.
 """
 import os
 import re
+import shlex
 
 import shell_reader
 from shell_reader import command
@@ -49,7 +51,7 @@ def _capture(statement):
 
 
 def _test(statement, name):
-    """(``if`` form, true on failure, Bash-only, command, quoted), or None."""
+    """(``if`` form, true on failure, Bash-only, command, quoted, reader-marked), or None."""
     stage = _plain(statement)
     raw = list(stage.argv) if stage is not None else []
     conditional = bool(raw[:1] == ["if"])
@@ -62,11 +64,19 @@ def _test(statement, name):
     if len(expression) != 3 or expression[1] not in ("-eq", "-ne"):
         return None
     references = ("$?",) if name is None else ("$" + name, "${%s}" % name)
-    left = _live(expression[0], references) and str(expression[2]) == "0"
-    right = _live(expression[2], references) and str(expression[0]) == "0"
+
+    def reference(word):
+        return (_live(word, references) or
+                bash and name is None and str(word) == "$?"
+                and getattr(word, "conditional_status", False))
+
+    left = reference(expression[0]) and str(expression[2]) == "0"
+    right = reference(expression[2]) and str(expression[0]) == "0"
     operand = expression[0] if left else expression[2]
     return ((conditional, expression[1] == "-ne", bash, str(words[0]),
-             getattr(operand, "double", False)) if left or right else None)
+             getattr(operand, "double", False),
+             getattr(operand, "conditional_status", False))
+            if left or right else None)
 
 
 def _exit(statement, leading_then=False):
@@ -85,6 +95,38 @@ def _exit(statement, leading_then=False):
 def _bash(shell):
     words = (shell or "bash").split()
     return bool(words and os.path.basename(words[0]) == "bash")
+
+
+def _bash_reads_script(shell):
+    """Whether Bash itself reads the step file named by this shell template.
+
+    A command string or an earlier script operand can hand ``{0}`` to another
+    interpreter.  Its first word still spells ``bash``, but Bash-only syntax in
+    the workflow step then proves nothing.  Unknown option shapes fail closed.
+    """
+    try:
+        words = shlex.split(shell or "bash")
+    except ValueError:
+        return False
+    if not words or os.path.basename(words[0]) != "bash":
+        return False
+    at = 1
+    while at < len(words):
+        word = words[at]
+        if word == "{0}":
+            return True
+        if word == "--":
+            return at + 1 == len(words) or words[at + 1] == "{0}"
+        if word == "-" or word[:1] not in ("-", "+") or word.startswith("++"):
+            return False
+        if word.startswith("--"):
+            at += 2 if word in ("--init-file", "--rcfile") else 1
+            continue
+        options = word[1:]
+        if "c" in options or "s" in options:
+            return False
+        at += 2 if "o" in options or "O" in options else 1
+    return True
 
 
 def _same_step(index, owner, postures):
@@ -199,11 +241,11 @@ def status_gate(stmts, index, shell, analysis, owner=None, postures=None):
     tested = _test(stmts[at], name)
     if tested is None or _unsafe_step_state(stmts, owner, postures):
         return None
-    conditional, failure_true, bash_only, test_command, quoted = tested
+    conditional, failure_true, bash_only, test_command, quoted, reader_marked = tested
     functions = _functions(stmts, owner, postures)
     if ("exit" in functions or test_command in functions
             or not _status_prefix_safe(stmts, index, name, owner, postures, functions)
-            or bash_only and not _bash(shell)
+            or bash_only and not (_bash_reads_script(shell) if reader_marked else _bash(shell))
             or not bash_only and (conditional or failure_true) and not quoted):
         return None
     if not conditional:
