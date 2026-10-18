@@ -37,6 +37,13 @@ class TestFunctionGatingIsIndexed(unittest.TestCase):
                 findings = wg.job_defects([wg.Step("step", make(n), None)])
         return calls.call_count + pipelines.call_count, findings
 
+    def closer_calls(self, n):
+        with mock.patch.object(
+                workflow_function_calls, "_closes",
+                wraps=workflow_function_calls._closes) as closes:
+            findings = wg.job_defects([wg.Step("step", self.nested_uses(n), None)])
+        return closes.call_count, findings
+
     def test_each_statement_is_examined_once_for_function_call_events(self):
         shapes = ((self.nested_uses, 1), (self.sibling_gates, 0))
         for make, expected_findings in shapes:
@@ -46,6 +53,13 @@ class TestFunctionGatingIsIndexed(unittest.TestCase):
                 self.assertEqual(expected_findings, len(small_findings))
                 self.assertEqual(expected_findings, len(large_findings))
                 self.assertLessEqual(large, 2 * small + 32, (small, large))
+
+    def test_each_closing_run_is_indexed_once(self):
+        small, small_findings = self.closer_calls(16)
+        large, large_findings = self.closer_calls(32)
+        self.assertEqual(1, len(small_findings))
+        self.assertEqual(1, len(large_findings))
+        self.assertLessEqual(large, 2 * small + 32, (small, large))
 
 
 if __name__ == "__main__":

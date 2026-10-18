@@ -156,7 +156,7 @@ def _function_index(stmts, analysis):
     found = getattr(analysis, "function_index", None)
     if found is None:
         found = FunctionIndex(
-            stmts, analysis.function_names, _function_syntax, _posture_barrier
+            stmts, analysis.function_names, _function_syntax, _posture_barrier, _closes
         )
         analysis.function_index = found
     return found
@@ -621,13 +621,18 @@ def _stops_step(stmts, position, on, fails, analysis=None):
     without its open (`_lost_case`, review I-4) leaves the list's end unknown.
     The failure then stops only its own statement (`_LOST`, review I-1, N-7)."""
     last, close = len(stmts) - 1, position
-    while close < last and stmts[close].separator not in ("&", "&&", "||") and _closes(
-            stmts[close + 1]):
-        close += 1                              # the check ends a group: read the group
-        if stmts[close].separator == "&":
-            return _ENDS % _DETACHED
-        if len(stmts[close].stages) > 1 and not fails[close]:
-            return _ENDS % _NO_PIPEFAIL
+    if analysis is not None:
+        close, blocked = _function_index(stmts, analysis).closing_run(position, fails)
+        if blocked is not None:
+            return _ENDS % (_DETACHED if stmts[blocked].separator == "&" else _NO_PIPEFAIL)
+    else:
+        while close < last and stmts[close].separator not in ("&", "&&", "||") and _closes(
+                stmts[close + 1]):
+            close += 1                          # the check ends a group: read the group
+            if stmts[close].separator == "&":
+                return _ENDS % _DETACHED
+            if len(stmts[close].stages) > 1 and not fails[close]:
+                return _ENDS % _NO_PIPEFAIL
     separator = stmts[close].separator
     if separator not in ("&&", "||"):
         tail = _conditional_group_tail(stmts, position, on[position], analysis)
