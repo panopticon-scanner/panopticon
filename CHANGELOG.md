@@ -24,20 +24,27 @@ evidence exposed.
   (`echo [[ $\? ]]`, `printf '%s' [[ $\? ]]`, `eval [[ $\? -ne 0 ]]`); an arithmetic command and an
   array literal are untouched. The mark asks only whether the stage is a conditional, one pass over
   its words: no span is searched for (a `[[` with no closer, n times in one stage, reads in linear
-  time, pinned). Prices, named: a step that spells `$\?` anywhere marks no conditional's `$?`; a
-  conditional spanning lines, or one that is not the whole stage (a trailing redirection), is
-  unmarked -- fail-closed each. Item 1's audit of the str-to-`_Token` re-wrap of exact words: the
-  seven callers that test `type(word) is str` (`shell_command` 267, `workflow_options` 136, 164,
-  225, 350, 507, `workflow_programs` 408; the seat's four more, none affected) ask of a word whether
-  it is `bash`/`sh`, a `--`/`++` option, an exit-or-file option, `--pretty-print`, or a command name
-  that spells no option -- none of which an exact word (`$NAME`, its braced form, `X=$Y`, `$?`) can
-  be -- so the re-wrap changes no answer. Forge differential of eb2122c6 against `main` cc398401
-  over the 27,589-row kit (the kit's rows, the 13 status rows and the 36 gate rows; three readings a
-  cell, 2,043,495 in all, 79 min): byte-identical dumps -- no row differs, no multiplicity gained or
-  lost in the job, main-pass or walk readings: the mark credits nothing yet.
-  `tests/test_shell_reader.py` pins the mark, the lookalikes, the user's escape, what stays unmarked
-  and the linear reading; `tests/test_workflow_positional_handoff.py` the 36 gate rows as on `main`.
-  Sizes: `scripts/shell_reader.py` 550 (+26).
+  time, pinned). Prices, named: a step that spells `$\?` anywhere, or the mark itself -- U+E008
+  typed before a word, round 2's seat's `<U+E008>exit`, which `_stage` stripped to `exit` and the
+  status gate then credited as a stop under the `{0}` settings, fail-open -- marks no conditional's
+  `$?` and keeps every typed word whole, as `main` reads it; a conditional spanning lines, one that
+  is not the whole stage (a trailing redirection), one whose words tabs part, a second conditional
+  in a list (`[[ a ]] && [[ $? -ne 0 ]]`), one inside `{ }` or `( )` or after `time`, and one in a
+  `case` arm are unmarked -- fail-closed each. Item 1's audit of the str-to-`_Token` re-wrap of
+  exact words: the seven callers that test `type(word) is str` (`shell_command` 267,
+  `workflow_options` 136, 164, 225, 350, 507, `workflow_programs` 408; the seat's four more, none
+  affected) ask of a word whether it is `bash`/`sh`, a `--`/`++` option, an exit-or-file option,
+  `--pretty-print`, or a command name that spells no option -- none of which an exact word (`$NAME`,
+  its braced form, `X=$Y`, `$?`) can be -- so the re-wrap changes no answer. Forge differential of
+  4ea470db against `main` b61bbc76 over the 27,612-row kit (the kit's rows, the 13 status rows, the
+  36 gate rows and the 23 forged rows; three readings a cell, 2,045,220 in all, 80 min):
+  byte-identical dumps -- no row differs, no multiplicity gained or lost in the job, main-pass or
+  walk readings: the mark credits nothing yet, and a typed mark reads as `main` reads it.
+  `tests/test_shell_reader.py` pins the mark, the lookalikes, the user's escape, a typed mark kept
+  whole, the named prices, what else stays unmarked and the linear reading;
+  `tests/test_workflow_positional_handoff.py` the 36 gate rows and the twelve forged forms as on
+  `main`. Sizes: `scripts/shell_reader.py` 553 (+29).
+
 - **Workflow reader parts a nested function header behind a group's `{` in a one-line body
   (#3123).** `f() { { g() { sh t; }; g; }; }` ⏎ `f` ran the download under every parent and read
   CLEAN: the splitter parted a header's `{` from a nested header after it (`f() { g() {`, #2975 part
