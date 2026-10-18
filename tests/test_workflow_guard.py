@@ -6595,6 +6595,31 @@ class TestACompoundCommandCarriesItsClosingOutput(unittest.TestCase):
             with self.subTest(row=row):
                 self.assert_reported_in_every_shell(script)
 
+    def test_2937_nested_forwarders_and_redirects_keep_mains_reading(self):
+        # #3125 review round 2: the forwarding walk must pass a brace producer
+        # through a loop or another group, and dash may carry a last
+        # subshell's bytes through descriptor and nested-brace closes. These
+        # four rows are REPORT on main; their runtime truth is RRRRRRRR for
+        # F-034/F-037 and ffffRffR for G-013/G-023.
+        rows = (
+            ("R2-F-034",
+             "{ { %s; } | while IFS= read -r l; do printf '%%s\\n' \"$l\"; done; } "
+             "> tool\nsh tool\n"),
+            ("R2-F-037",
+             "{ { %s; } | cat | { cat; }; } > tool\nsh tool\n"),
+            ("R2-G-013", "{ ( %s; ) >&2; } > tool\nsh tool\n"),
+            ("R2-G-023", "{ { ( %s; ) > f; }; } > tool\nsh tool\n"),
+        )
+        for row, template in rows:
+            with self.subTest(row=row):
+                self.assert_reported_in_every_shell(template % self.FETCH)
+
+    def test_2937_nested_subshell_files_do_not_reach_an_outer_subshell_file(self):
+        # #3125 review round 2: both shells write only `f`; `tool` stays empty.
+        # The dash fallback belongs to a brace close, never a subshell close.
+        script = "( ( %s; ) > f ) > tool\nsh tool\n" % self.FETCH
+        self.assert_clean_in_every_shell(script)
+
     def test_2937_keeps_the_subshell_file_cut_clean(self):
         # HNP-016's 8-parent truth is ffffffff in both passes: the download
         # goes to `f`, `tool` stays empty, and `sh tool` runs nothing. Mapping
