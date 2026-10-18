@@ -456,6 +456,21 @@ class TestTheDirectStatusInsideAConditional(unittest.TestCase):
             with self.subTest(script=script):
                 self.assertEqual([expected], self.marks(script))
 
+    def test_a_typed_status_mark_marks_nothing_and_stays_in_its_word(self):
+        # Round 2's seat typed U+E008 (`_STATUS`) before `exit`: `_stage` stripped the mark off every word, so
+        # `<U+E008>exit` read as `exit` and a handler as a stopping gate -- fail-open: bash 3.2.57, 5.2.21 and dash print
+        # "command not found" and run the payload. A step that spells the mark marks no conditional's `$?` and keeps
+        # the typed word whole (`_Parse.conditional_status`, the strip gated on it): as `main` reads it.
+        mark = shell_reader._STATUS
+        for script, kept in (("[[ $? -ne 0 ]] && %sexit 1\n" % mark, mark + "exit"), ("%s[[ $? -ne 0 ]] && exit 1\n" % mark, mark + "[["),
+                             ("if [[ $? -ne 0 ]]; then %sexit 1; fi\n" % mark, mark + "exit"),
+                             ("[[ %s$? -ne 0 ]] && exit 1\n" % mark, mark + "$?"), ("[[ $? -ne 0 ]] && exit 1\n%s\n" % mark, mark)):
+            with self.subTest(script=script.replace(mark, "<U+E008>")):
+                words = [str(w) for st in shell_reader.statements(script) for s in st.stages for w in s.argv]
+                self.assertIn(kept, words)
+                self.assertEqual([None] * len(self.words(script)),
+                                 [getattr(w, "conditional_status", None) for w in self.words(script)])
+
     def test_a_users_escape_leaves_every_conditional_unmarked(self):
         # Bash 3.2.57 on `[[ $\? -ne 0 ]] && exit 1`: `[[: $?: syntax error: operand expected`, status 1, the `exit`
         # skipped -- a credit of it would be fail-open (round 1's seat). The lexer's spelling and the user's coincide

@@ -369,6 +369,27 @@ class TestTheConditionalStatusMarkCreditsNothingYet(unittest.TestCase):
                     with self.subTest(word=word, handler=handler[:12], lead=lead):
                         self.assertEqual((expected, expected), marks(text))
 
+    def test_a_typed_status_mark_reads_as_on_main(self):
+        # Round 2's seat: a step that types U+E008 (`shell_reader._STATUS`) before a word had it stripped, so
+        # `<U+E008>exit` read as `exit` -- where bash 3.2.57, 5.2.21 and dash print "command not found" and run the
+        # payload -- and the round-2 head credited the forged handler as a stop under the `{0}` settings: CCCCC for
+        # the `[ ]` forms and CCCCR for the `[[ ]]` ones against `main`'s CCCRR. Now the typed mark stays in its word
+        # and every form reads as on `main` b61bbc76: the three handlers with `[ ]` and `[[ ]]`, the mark before
+        # `exit`, before the test and in the `if` form; before the `$?` itself; as a word of its own; inside a word.
+        # The plain controls read as they did.
+        mark = shell_reader._STATUS
+        rows = []
+        for test in ('[ "$?" -ne 0 ]', '[[ "$?" -ne 0 ]]'):
+            rows += [test + " && " + mark + "exit 1\n", mark + test + " && exit 1\n",
+                     "if " + test + "; then " + mark + "exit 1; fi\n"]
+        rows += ["[[ $? -ne 0 ]] && " + mark + "exit 1\n", "[[ " + mark + "$? -ne 0 ]] && exit 1\n", mark + "\n",
+                 "ex" + mark + "it 1\n"]
+        for row in rows:
+            with self.subTest(row=row.replace(mark, "<U+E008>")):
+                self.assertEqual(("CCCRR", "CCCRR"), marks(self.F + self.C + row + "sh t\n"))
+        self.assertEqual(("CCCRR", "CCCRR"), marks(self.F + self.C + "[[ $? -ne 0 ]] && exit 1\nsh t\n"))
+        self.assertEqual(("CCCCC", "CCCCC"), marks(self.F + self.C + '[ "$?" -ne 0 ] && exit 1\nsh t\n'))
+
 
 class TestANestedHeaderBehindAGroupsBraceReports(unittest.TestCase):
     """#3123's rows, at the guard: a header behind a group's `{` in a one-line function body, and a never-called gate
