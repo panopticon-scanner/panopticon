@@ -1883,6 +1883,35 @@ class TestAFunctionHeaderInEverySpellingBashAccepts(unittest.TestCase):
         self.assertEqual(["x"], [str(w) for w in shell_reader.statements("( x )")[0].stages[0].argv])
 
 
+class TestANestedHeaderBehindAGroupsBraceInABody(unittest.TestCase):
+    """#3123: `f() { { g() { sh t; }; g; }; }` ⏎ `f` ran the download under every parent and read CLEAN. The splitter
+    parted a header's `{` from a NESTED header after it (`f() { g() {`, #2975 part A) and a group's `{` from a header
+    after it (`{ g() {`, #2664), but not a run of braces: `f() { { g() {` kept `{`, `{` and `g` -- its `()` lost -- as
+    words of the header's statement, and no reader found `g`. `_NESTED_HEADER` takes a run of `{` words now: the
+    statement ends after f's `{`, the next starts at the group's `{`, which `_BRACED_HEADER` ends after the brace, and
+    the nested header stands as it does on a line of its own."""
+
+    def words(self, script):
+        return [[str(w) for w in st.stages[0].argv] for st in shell_reader.statements(script)]
+
+    def test_a_run_of_braces_before_a_nested_header_parts_as_its_own_lines_do(self):
+        self.assertEqual(self.words("f() {\n{\ng() { sh t; }\ng\n}\n}\nf\n"), self.words("f() { { g() { sh t; }; g; }; }\nf\n"))
+        self.assertEqual([["f()", "{"], ["{"], ["g()", "{", "sh", "t"], ["}"], ["g"], ["}"], ["}"], ["f"]],
+                         self.words("f() { { g() { sh t; }; g; }; }\nf\n"))
+        # Three braces: the run ends the header's statement once, the rest stand together before the nested header.
+        self.assertEqual([["f()", "{"], ["{", "{"], ["g()", "{", "sh", "t"]], self.words("f() { { { g() { sh t; }; g; }; }; }\nf\n")[:3])
+
+    def test_what_parted_before_and_what_never_parts_stay_as_they_were(self):
+        # A nested header right after the header's brace (#2975 part A), a header after a group's brace (#2664),
+        # a group with no header in it, and a subshell with a header in it: as before.
+        for script, first in (("f() { g() { sh t; }; g; }\nf\n", [["f()", "{"], ["g()", "{", "sh", "t"]]),
+                              ("{ g() { sh t; }; g; }\n", [["{"], ["g()", "{", "sh", "t"]]),
+                              ("f() { { echo x; }; }\nf\n", [["f()", "{", "{", "echo", "x"], ["}"]]),
+                              ("f() { ( g() { sh t; }; g ); }\nf\n", [["f()", "{", "g()", "{", "sh", "t"], ["}"]])):
+            with self.subTest(script=script):
+                self.assertEqual(first, self.words(script)[:2])
+
+
 class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.TestCase):
     """#2756, #2731, #2657: three things the splitter read apart that every shell reads whole --
     a line ending in `|` continues on the next, an unquoted `${X:-bash -s}` is one expansion before
