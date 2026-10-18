@@ -23,8 +23,8 @@ import os
 import shlex
 
 import shell_reader
-from workflow_printers import (ANY, _PRINTERS, StatementFront, _grouped, _printer_of,
-                               file_operand, producer, spellings)
+from workflow_printers import (ANY, _PRINTERS, SpelledOutput, StatementFront, _grouped,
+                               _printer_of, file_operand, producer, spellings)
 
 _DEPTH = 64                 # writers kept per path; past it the text is unspelled (fail-closed)
 
@@ -120,8 +120,10 @@ def _heredoc(text):
 
 
 def _script(writers):
-    """A script `substituted` spells as ONE printer's text: the writers' texts joined in order under one
-    `printf`. One writer the printers cannot spell, alone, is handed on as its own command (a `cat`'s body as
+    """What `substituted` spells as the writers' texts joined in order.
+
+    Fully spelled writers return a tagged output directly, without reparsing one synthetic `printf`
+    whose single argument is the whole file. One writer the printers cannot spell, alone, is handed on as its own command (a `cat`'s body as
     `_heredoc`), so the printers read it as they read it where it stood. Among others, or past `_DEPTH`
     writers, every text is kept -- an unspelled writer's as its words read, substitutions restored -- in an
     expanding heredoc behind a live `$` line, which the guard reports as it reports any expanding body a
@@ -141,7 +143,7 @@ def _script(writers):
         texts.append(text if text.endswith("\n") else text + "\n")
     if unspelled:
         return _heredoc(': "$UNSPELLED_WRITER"\n' + "".join(texts))
-    return "printf '%s' " + "'" + "".join(texts).replace("'", "'\\''") + "'"
+    return SpelledOutput("".join(texts))
 
 
 def _bind(stage, path):

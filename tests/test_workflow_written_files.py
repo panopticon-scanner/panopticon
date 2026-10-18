@@ -22,6 +22,7 @@ import workflow_function_calls
 import workflow_gating
 import workflow_guard as wg
 import workflow_options as wo
+import workflow_printers
 import workflow_written
 from tests.test_shell_reader import LinearGrowth
 
@@ -79,6 +80,15 @@ class TestAWrittenFileIsReadAsItsWritersText(unittest.TestCase):
         self.assertEqual(REPORTED, marks("cat > s.sh <<EOF\n%s $(echo -s)\nEOF\nsh s.sh\n" % P))
         self.assertEqual(REPORTED, marks("cat > s.sh <<EOF\necho $(date)\nEOF\nsh s.sh\n"))
         self.assertEqual(REPORTED, marks("cat <<EOF | sh\necho $(date)\nEOF\n"))
+
+    def test_an_exact_written_output_is_not_reparsed_as_one_giant_printer_word(self):
+        stmts = workflow_written.bind_written(shell_reader.statements(
+            "cat > run.sh <<'EOF'\necho ok\nEOF\nsh run.sh\n"))
+        written = workflow_printers.operand(shell_reader.acted(stmts[-1].stages[0].argv))
+        with mock.patch.object(workflow_printers, "_printer", side_effect=AssertionError):
+            self.assertEqual("echo ok\n", workflow_printers.substituted(written))
+            self.assertEqual([], workflow_printers.unsubstituted(written))
+            self.assertIsNone(workflow_printers.fed(written))
 
     def test_an_unspelled_writer_never_hides_a_spelled_payload(self):
         # The review seat's rows: one writer the printers cannot spell beside the payload -- after it, before it, or
