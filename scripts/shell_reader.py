@@ -122,6 +122,14 @@ _NAMED = "\ue005"
 # `_stage` sees argv, so this bit lets a bounded caller distinguish `$?` and
 # `"$?"` from the literal-dollar spellings `$"?"`, `"$"?`, and `$\?`.
 _EXACT_DOLLAR = "\ue007"
+# Every private-use character the reader puts into a step's text while it reads it: each a mark one pass writes and
+# another reads off a word. One the step types itself would be read as the reader's own and taken off -- `<U+E007>exit`
+# read as `exit`, a gate credited where bash prints "command not found" and runs the payload (#3138, the #3131
+# round-2 seat). So `statements` moves each typed mark, once, where the text enters, to the private-use character
+# 0x100 past it, which no pass writes or reads: the step reads as `main` reads one that spells a plain literal
+# character there. `tests/test_shell_reader.py` holds every mark constant of the reader's modules to this list.
+_MARKS = (MARK, QUOTED, _ESCAPED, QUOTED_DOLLAR, _BLANK, _NAMED, DOUBLE_DOLLAR, _EXACT_DOLLAR)
+_LITERAL_MARKS = str.maketrans({mark: chr(ord(mark) + 0x100) for mark in _MARKS})
 _REFERENCE = r"(?:\$\?|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})"
 _EXACT_DOLLAR_WORD = re.compile(
     r"(?:[A-Za-z_][A-Za-z0-9_]*=)?(?:%s|\"%s\")" % (_REFERENCE, _REFERENCE))
@@ -317,8 +325,7 @@ def _stage(text, context):
     pieces: list[tuple[str, str | None, int]] = []
     doubles: set[str] | None = None
     for raw in tokens:
-        parts = ([part for part in raw.split(_BLANK) if part] or [raw]) if (
-            _BLANK in raw and getattr(context, "blanks", True)) else [raw]
+        parts = ([part for part in raw.split(_BLANK) if part] or [raw]) if _BLANK in raw else [raw]
         whole = raw.replace(_BLANK, " ") if len(parts) > 1 else None
         pieces.extend((part, None if at else whole, len(parts)) for at, part in enumerate(parts))
     for raw, whole, span in pieces:
@@ -501,11 +508,9 @@ def statements(script):
     """Every statement in a `run:` script, in order, as parsed stages; in a
     lifted substitution's text, each heredoc where its marker stands (#2336)."""
     context = _Parse(script)
-    shadows(script)                     # a wrapper's name the text defines is the step's own (#2670)
-    # A step that spells a mark the reader puts in its text reads as `main` (#2856 round 8).
-    context.blanks = not any(mark in script for mark in (
-        MARK, QUOTED, _ESCAPED, QUOTED_DOLLAR, DOUBLE_DOLLAR, _BLANK))
-    text = lex(script, lambda *heredoc: context.new("heredoc", heredoc))
+    typed = script.translate(_LITERAL_MARKS)      # a mark the step types: a plain literal to every pass (#3138)
+    shadows(typed)                      # a wrapper's name the text defines is the step's own (#2670)
+    text = lex(typed, lambda *heredoc: context.new("heredoc", heredoc))
     for marker, (kind, value) in getattr(script, "heredocs", {}).items():
         text = text.replace(marker, context.new(kind, value))
     text, _inners = _lift_substitutions(text, context)
