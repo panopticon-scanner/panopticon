@@ -224,7 +224,18 @@ evidence exposed.
   no-run cells or the out-of-scope top-level forms. Finally, dash 0.5.12 drops `> f`, `>> f`, or
   `> /dev/null` from a subshell that is the last command of a redirected group, sending the bytes
   to the group's outer file. Those three `ffffRffR` truth rows keep `main`'s RRRRR reading. The
-  corresponding bash over-report is an existing, named fail-closed price.
+  corresponding bash over-report is an existing, named fail-closed price. The round-two seat's
+  wider compound hunt found two more forwarding routes through a brace producer and a compound
+  consumer (R2-F-034/037), plus dash's descriptor close and an intervening unredirected brace
+  (R2-G-013/023). They now keep `main`'s RRRRR reading: a forwarding brace route is admitted only
+  when its pipeline enters another compound, and the dash fallback crosses only consecutive
+  lexical `}` closes to the first redirected brace. A reader stage that combines two subshell
+  closes and their inner and outer files is instead cut at the inner file, keeping the all-no-run
+  R2-G-007 CLEAN in all five settings. The previous 667-row probe and 1,106 HN/HNP rows are
+  unchanged from the round-two head; the accepted baseline loss set in the former is 44 rows / 220
+  no-run cells, not 44 cells. Compound-output tracking moved without other behavior changes to
+  `workflow_compound_outputs.py`, restoring the helper documentation while leaving
+  `workflow_fetch.py` at 473 lines (the new module is 267).
 - **Workflow reader reads a function header immediately after an outer function's opening brace
   (#2975 part A).** `f() { g() { sh t; }; g; }` ran the downloaded file under every parent and
   read CLEAN: the splitter took the inner `()` as a subshell and the rest of the inner body as
