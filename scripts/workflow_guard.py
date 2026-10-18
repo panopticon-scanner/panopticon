@@ -359,7 +359,7 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                 behind = " behind wrapper" if shell_reader.wrapper_words(stage.argv) else ""
                 unread.append((index, "cannot read command%s: %s; the guard cannot "
                                "determine what it runs" % (behind, reason)))
-            program = unread_program(argv, stage, _walk, inside, before, under, stmts[:index])
+            program = unread_program(argv, stage, _walk, inside, before, under, stmts[:index + 1])
             if program and prefix_expanded_program(stage, argv):
                 program = None
             reason = program if inside and program else _unread_stdin(stage, before) or program
