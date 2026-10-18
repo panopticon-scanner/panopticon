@@ -337,7 +337,7 @@ class TestProgramFlatteningIsLinear(LinearGrowth, unittest.TestCase):
 
     @staticmethod
     def written(kib):
-        line = "echo ok\n"
+        line = "echo xxxxxxxxxx\n"
         body = line * max(1, kib * 1024 // len(line))
         return "cat > run.sh <<'EOF'\n" + body + "EOF\nsh run.sh\n"
 
@@ -372,8 +372,8 @@ class TestProgramFlatteningIsLinear(LinearGrowth, unittest.TestCase):
         def check(_n, defects):
             self.assertEqual([], defects)
 
-        # 64 -> 256 KiB reaches the growing-prefix cost while staying inside
-        # the timing helper's absolute bound under the coverage tracer.
+        # Sixteen-byte lines keep the old giant-printer word over the absolute
+        # bound while the fixed tree stays below it on the slower 3.14 runner.
         self.assert_linear_growth(64, self.written, check, parser=self.job)
 
     def test_indexed_and_legacy_answers_match_on_a_corpus_sample(self):
