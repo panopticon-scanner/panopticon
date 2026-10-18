@@ -471,6 +471,14 @@ class TestTheDirectStatusInsideAConditional(unittest.TestCase):
                 self.assertEqual([None] * len(self.words(script)),
                                  [getattr(w, "conditional_status", None) for w in self.words(script)])
 
+    def test_the_named_prices_stay_unmarked(self):
+        # Round 2's seat named them, each a `$?` the mark passes by, fail-closed: a conditional whose words tabs part;
+        # a second conditional in a list; one inside `{ }`, inside `( )` or after `time`; one in a `case` arm.
+        for script in ("[[\t$?\t-ne\t0\t]] && exit 1\n", "[[ -n a ]] && [[ $? -ne 0 ]] && exit 1\n", "{ [[ $? -ne 0 ]] && exit 1; }\n",
+                       "( [[ $? -ne 0 ]] && exit 1 )\n", "time [[ $? -ne 0 ]]\n", "case x in x) [[ $? -ne 0 ]] && exit 1;; esac\n"):
+            with self.subTest(script=script):
+                self.assertEqual([None], [getattr(w, "conditional_status", None) for w in self.words(script)])
+
     def test_a_users_escape_leaves_every_conditional_unmarked(self):
         # Bash 3.2.57 on `[[ $\? -ne 0 ]] && exit 1`: `[[: $?: syntax error: operand expected`, status 1, the `exit`
         # skipped -- a credit of it would be fail-open (round 1's seat). The lexer's spelling and the user's coincide
