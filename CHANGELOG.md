@@ -39,6 +39,46 @@ evidence exposed.
   and the linear reading; `tests/test_workflow_positional_handoff.py` the 36 gate rows as on `main`.
   Sizes: `scripts/shell_reader.py` 550 (+26).
 
+- **Workflow reader follows the function calls the #3047 fold did not (#3127).** The #3121 seat's
+  rows and its combined-tree round ran under every parent and read CLEAN: a positional with a
+  default (`f() { sh "${1:-t}"; }; f`), a slice of the call's words (`"${@:2}"`), `$10`, an unquoted
+  positional holding a command (`f() { $1; }; f 'sh t'`), a one-line body opening a subshell or a
+  group (`f() { ( sh "$1" ); }`, `run() { ( "$@" ); }`, `f() { { echo P; echo hi; } | sh; }`), a
+  definition inside `if`, a call inside `eval 'f t'`, and a forwarding `f() { cat; }` between a
+  printer group and a shell. Now `workflow_called_fetches` binds `${N:-d}` / `${N-d}` to the call's
+  word or the default and `${N:+x}` / `${N+x}` to the alternative where the word is given,
+  `"${@:N}"` / `"${@:N:M}"` to the slice, `$10` to the first word with a `0` behind it as bash and
+  dash read it (`${10}` the tenth; zsh's tenth for `$10` named), and splits an unquoted positional's
+  word on blanks as bash and dash do (zsh does not: named); reads a `{` body whose first statement
+  is a subshell on the header's line like any brace body (`f() ( … )`, a subshell body, stays
+  `main`'s) and stands for a body holding a group piped on (`{ P; echo hi; } | sh`) even where it
+  reads nothing of its call (`main` reads the group behind the header's words, `f() { {`, so #3111's
+  reading never found the opener; no other such body is: a gate in it keeps `main`'s reading); reads
+  an `eval` of one literal word that is one statement of one stage as that statement's call (a live
+  `$`, a substitution, two statements or two stages -- `eval 'f t | cat'` -- stay `main`'s, named;
+  `bash -c 'f t'` runs a child shell without the function, nothing); and takes a one-stage `cat`
+  body out of the pipe at its call, so `{ P; } | f | sh` reads as `{ P; } | sh` (#3111's group; `tee
+  f` stays in place -- the `| tee |` and `| cat |` links are #3111's `_grouped`, which reads the
+  stage in front of the shell alone: named). A definition that may not have run -- under `if`, in a
+  loop, behind `&&` -- stays no function to stand for (#3047's rule and the guard's B43 pins: `main`
+  installs none from it; an `unset -f` takes a name away only where it surely ran, as `main` reads
+  it), so `if true; then f() { sh "$1"; }; fi; f t` is the issue's one row left, a named limit. The
+  issue's cost: `called()` was quadratic on `main` (Blue's `_function_ranges` asked
+  `_function_scope` once a definition without #3126's shared analysis); now `CalledFetches` builds
+  the shared analysis once (`statement_analysis`) and `_function_ranges` takes it -- two lines in
+  `workflow_use_scopes.py`, granted -- so a chain of n definitions is read in time linear in n
+  (x21.8 -> x4.1 for 200 -> 800; n unrelated definitions x16.8 -> x4.2), pinned; the names defined
+  at each statement are a dict, not a scan a statement. `alias r=sh; r t` runs under dash alone: a
+  reading that needs the step's shell, which the fold is not handed -- a named limit. Forge
+  differential, fd7ca507 against `main` 68c75d2c over the 27,612-row kit (the kit's rows and this
+  issue's 61; three readings a cell, 2,045,040 in all, 79 min): 33 rows differ -- 30 CLEAN->REPORT,
+  the issue's and the seat's rows and the kit's `coll.18` (`run() { ( "$@" ); }`), every one a run
+  under bash and sh; 3 REPORT->CLEAN, the `$10` rows, where `main` took `$10` for the tenth word and
+  bash and dash read `${1}0` and run nothing (zsh runs the tenth: named); the other 27,578 rows
+  byte-identical; the multiplicity audit: those three alone lose a text, `main`'s over-report. Pins:
+  `tests/test_workflow_positional_handoff.py::TestTheCallsTheFoldDidNotFollow`, truth in the
+  comments. No pin moved. Sizes: `scripts/workflow_called_fetches.py` 593 (+86),
+  `scripts/workflow_use_scopes.py` 154 (+1, the two granted lines).
 - **Workflow written files: a group of printers written to a file and then run is read as their text
   (#3110).** `{ echo "sh -c 'curl … | sh'"; echo ok; } > s.sh` ⏎ `sh s.sh`, and the `{ echo P; } >
   s.sh` and `( echo P; ) > s.sh` forms, ran the download under every parent and read CLEAN
