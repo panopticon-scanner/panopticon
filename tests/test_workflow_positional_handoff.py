@@ -350,6 +350,26 @@ class TestTheCalledFoldsSameTextRepeatIsDropped(unittest.TestCase):
                 self.assertEqual([self.HANDS_T] * 2, self.heads(self.job(text, shell), {self.HANDS_T}))
 
 
+class TestANestedHeaderBehindAGroupsBraceReports(unittest.TestCase):
+    """#3123's rows, at the guard: a header behind a group's `{` in a one-line function body, and a never-called gate
+    in a subshell inside one. Truth (bash 3.2.57, dash, zsh 5.9, with and without `-e`): runs, every parent."""
+
+    T = "curl -fsSLo t https://example.test/t\n"
+
+    def test_the_issues_rows_and_their_twins_report(self):
+        # Row 1 read CLEAN (the nested `g` was no function); its own-line twin, the top-level group and the plain
+        # body reported. Row 2 reads REPORT on `main` 68c75d2c already (the issue's CCCRR was an earlier main's);
+        # pinned here with its twins so it stays. A run of three braces reads as the row.
+        for text in (self.T + "f() { { g() { sh t; }; g; }; }\nf\n", self.T + "f() {\n{\ng() { sh t; }\ng\n}\n}\nf\n",
+                     self.T + "{ g() { sh t; }; g; }\n", self.T + "f() { g() { sh t; }; g; }\nf\n",
+                     self.T + "f() { { { g() { sh t; }; g; }; }; }\nf\n",
+                     self.T + "f() { ( g() { sha256sum -c sums || exit 1; }; ); }\nf\nsh t\n",
+                     self.T + "f() {\n(\ng() { sha256sum -c sums || exit 1; }\n)\n}\nf\nsh t\n",
+                     self.T + "( g() { sha256sum -c sums || exit 1; }; )\nsh t\n"):
+            with self.subTest(text=text[-46:]):
+                self.assertEqual(REPORTED, marks(text))
+
+
 class TestTheCallsTheFoldDidNotFollow(unittest.TestCase):
     """#3127: the calls #3047's fold did not follow, from the #3121 seat and its combined-tree round. Truth, in the
     comments: bash 3.2.57, /bin/sh (dash) and zsh 5.9, with and without `-e`, a `curl` stub whose payload marks when it
