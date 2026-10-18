@@ -37,7 +37,7 @@ evidence exposed.
   lost in the job, main-pass or walk readings: the mark credits nothing yet.
   `tests/test_shell_reader.py` pins the mark, the lookalikes, the user's escape, what stays unmarked
   and the linear reading; `tests/test_workflow_positional_handoff.py` the 36 gate rows as on `main`.
-  Sizes: `scripts/shell_reader.py` 547 (+23).
+  Sizes: `scripts/shell_reader.py` 550 (+26).
 
 - **Workflow written files: a group of printers written to a file and then run is read as their text
   (#3110).** `{ echo "sh -c 'curl … | sh'"; echo ok; } > s.sh` ⏎ `sh s.sh`, and the `{ echo P; } >
