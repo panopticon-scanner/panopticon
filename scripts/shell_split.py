@@ -30,7 +30,7 @@ _BRACED_HEADER = re.compile(
     r"\{[ \t]+(?:function[ \t]+)?[A-Za-z_@][A-Za-z0-9_.:+@-]*[ \t]*\([ \t]*\)"
 )
 _NESTED_HEADER = re.compile(
-    r"\{[ \t]+(?:(?:function[ \t]+)?[A-Za-z_@][A-Za-z0-9_.:+@-]*[ \t]*\([ \t]*\)"
+    r"(?:\{[ \t]+)+(?:(?:function[ \t]+)?[A-Za-z_@][A-Za-z0-9_.:+@-]*[ \t]*\([ \t]*\)"
     r"|function[ \t]+[A-Za-z_@][A-Za-z0-9_.:+@-]*(?=[ \t]+\{))"
 )
 _NESTED_CASE = re.compile(r"\s*case(?:\s|$)")
