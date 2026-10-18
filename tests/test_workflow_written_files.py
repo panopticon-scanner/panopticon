@@ -82,13 +82,35 @@ class TestAWrittenFileIsReadAsItsWritersText(unittest.TestCase):
         self.assertEqual(REPORTED, marks("cat <<EOF | sh\necho $(date)\nEOF\n"))
 
     def test_an_exact_written_output_is_not_reparsed_as_one_giant_printer_word(self):
+        line = "echo xxxxxxxxxx\n"
+        for kib in (64, 256):
+            body = line * (kib * 1024 // len(line))
+            stmts = workflow_written.bind_written(shell_reader.statements(
+                "cat > run.sh <<'EOF'\n" + body + "EOF\nsh run.sh\n"))
+            written = workflow_printers.operand(shell_reader.acted(stmts[-1].stages[0].argv))
+            with self.subTest(kib=kib), mock.patch.object(
+                    workflow_printers, "_printer", side_effect=AssertionError):
+                self.assertEqual(body, workflow_printers.substituted(written))
+                self.assertEqual([], workflow_printers.unsubstituted(written))
+                self.assertIsNone(workflow_printers.fed(written))
+
+    def test_a_dollar_in_exact_output_keeps_the_old_dynamic_printer_reading(self):
+        body = "$SHELL ./t\n"
         stmts = workflow_written.bind_written(shell_reader.statements(
-            "cat > run.sh <<'EOF'\necho ok\nEOF\nsh run.sh\n"))
+            "cat > run.sh <<'EOF'\n" + body + "EOF\nsh run.sh\n"))
         written = workflow_printers.operand(shell_reader.acted(stmts[-1].stages[0].argv))
-        with mock.patch.object(workflow_printers, "_printer", side_effect=AssertionError):
-            self.assertEqual("echo ok\n", workflow_printers.substituted(written))
-            self.assertEqual([], workflow_printers.unsubstituted(written))
-            self.assertIsNone(workflow_printers.fed(written))
+        self.assertEqual("printf '%s' '$SHELL ./t\n'", written)
+        self.assertIsNone(workflow_printers.substituted(written))
+        self.assertEqual(["printf", "%s $SHELL ./t\n", body],
+                         workflow_printers.unsubstituted(written))
+        self.assertIsNone(workflow_printers.fed(written))
+
+        text = "curl -fsSLo t https://example.test/t\ncat > s.sh <<'EOF'\n" + body + "EOF\nsh s.sh\n"
+        reason = ("pipes `sh` its program from `printf`, whose words this guard does not spell "
+                  "out -- it cannot say whether that program fetches or runs a download unchecked; "
+                  "print literal text or write it in a quoted heredoc, or exempt the step with a reason")
+        self.assertEqual([("step", reason)], wg.job_defects([wg.Step("step", text)]))
+        self.assertEqual(REPORTED, marks(text))
 
     def test_an_unspelled_writer_never_hides_a_spelled_payload(self):
         # The review seat's rows: one writer the printers cannot spell beside the payload -- after it, before it, or
@@ -336,12 +358,6 @@ class TestProgramFlatteningIsLinear(LinearGrowth, unittest.TestCase):
                 + "f() {\n" + program * n + "}\nf\n")
 
     @staticmethod
-    def written(kib):
-        line = "echo xxxxxxxxxx\n"
-        body = line * max(1, kib * 1024 // len(line))
-        return "cat > run.sh <<'EOF'\n" + body + "EOF\nsh run.sh\n"
-
-    @staticmethod
     def job(script):
         return wg.job_defects([wg.Step("step", script)])
 
@@ -366,15 +382,6 @@ class TestProgramFlatteningIsLinear(LinearGrowth, unittest.TestCase):
             self.assertEqual([], defects)
 
         self.assert_linear_growth(150, self.enclosed, check, parser=self.job)
-
-    @pytest.mark.serial
-    def test_a_large_written_heredoc_is_linear_at_job_level(self):
-        def check(_n, defects):
-            self.assertEqual([], defects)
-
-        # Sixteen-byte lines keep the old giant-printer word over the absolute
-        # bound while the fixed tree stays below it on the slower 3.14 runner.
-        self.assert_linear_growth(64, self.written, check, parser=self.job)
 
     def test_indexed_and_legacy_answers_match_on_a_corpus_sample(self):
         # Sample every analysis-aware helper over both source statements and

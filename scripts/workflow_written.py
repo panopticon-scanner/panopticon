@@ -9,8 +9,9 @@ later run of that path. `bind_written` does, in statement order: each stage's li
 are recorded with their writer, and a later stage whose FILE operand (`file_operand`, a shell's or
 `source`'s) names a recorded path has that word replaced in place by a token carrying `written` --
 a script the printers spell as ONE printer's text (`substituted`), so `stdin_scripts` reads the file
-as it reads a `<(…)` FILE: the writers' texts joined in order under `printf '%s'`, or, where a writer
-cannot be spelled, that writer's command as written, which `unsubstituted` reports (fail-closed).
+as it reads a `<(…)` FILE: the writers' texts joined in order, directly where they contain no `$`
+and under `printf '%s'` where they do, or, where a writer cannot be spelled, that writer's command
+as written, which `unsubstituted` reports (fail-closed).
 
 Rules, fail-closed where the reader cannot know: every write is read as an APPEND (the stage keeps
 the written words, not the `>`/`>>` operator), so a benign re-write after the payload still reads
@@ -122,12 +123,15 @@ def _heredoc(text):
 def _script(writers):
     """What `substituted` spells as the writers' texts joined in order.
 
-    Fully spelled writers return a tagged output directly, without reparsing one synthetic `printf`
-    whose single argument is the whole file. One writer the printers cannot spell, alone, is handed on as its own command (a `cat`'s body as
-    `_heredoc`), so the printers read it as they read it where it stood. Among others, or past `_DEPTH`
-    writers, every text is kept -- an unspelled writer's as its words read, substitutions restored -- in an
-    expanding heredoc behind a live `$` line, which the guard reports as it reports any expanding body a
-    shell runs: a spelled payload beside an unspelled line is never dropped (fail-closed)."""
+    Fully spelled writers whose joined text contains no `$` return a tagged output directly,
+    without reparsing one synthetic `printf` whose single argument is the whole file. A `$`
+    keeps that old parse because its dynamic argument is an observable fail-closed reading. One
+    writer the printers cannot spell, alone, is handed on as its own command (a `cat`'s body as
+    `_heredoc`), so the printers read it as they read it where it stood. Among others, or past
+    `_DEPTH` writers, every text is kept -- an unspelled writer's as its words read, substitutions
+    restored -- in an expanding heredoc behind a live `$` line, which the guard reports as it
+    reports any expanding body a shell runs: a spelled payload beside an unspelled line is never
+    dropped (fail-closed)."""
     texts, unspelled = [], len(writers) > _DEPTH
     for argv, stage in writers[:_DEPTH]:
         readings = [r for r in spellings(argv, stage, ANY) if r is not None]
@@ -143,7 +147,10 @@ def _script(writers):
         texts.append(text if text.endswith("\n") else text + "\n")
     if unspelled:
         return _heredoc(': "$UNSPELLED_WRITER"\n' + "".join(texts))
-    return SpelledOutput("".join(texts))
+    text = "".join(texts)
+    if "$" not in text:
+        return SpelledOutput(text)
+    return "printf '%s' " + "'" + text.replace("'", "'\\''") + "'"
 
 
 def _bind(stage, path):

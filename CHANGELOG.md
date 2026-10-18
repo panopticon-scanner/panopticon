@@ -13,12 +13,16 @@ evidence exposed.
   stage, and the written-file binding wrapped an already-spelled output in one synthetic `printf`
   whose megabyte argument the shell reader parsed before it parsed the file itself. The program
   readers now receive a `StatementFront` view, readable in either direction, only where a pipeline
-  can consume it, and an exact sequence of written-file printers carries its `SpelledOutput` to
-  `substituted`, `unsubstituted` and `fed`. No verdict changes: the 667-row forge probe against
-  `main` 5c88603d is byte-identical (0 movers). The written-heredoc job has a serial 64 -> 256 KiB
-  growth pin; #3105's read pin uses 300 -> 1,200 program forms so its old quadratic tree fails with
-  margin; and a committed corpus compares all 13 analysis-aware helper answers with and without a
-  shared statement analysis over both parsed and handed-program statement lists.
+  can consume it, and an exact sequence of written-file printers whose output contains no `$`
+  carries its `SpelledOutput` to `substituted`, `unsubstituted` and `fed`. Dollar-bearing
+  output keeps the old synthetic-`printf` parse, including its existing cost, because its dynamic
+  argument produces an observable fail-closed reading. The round-one seat measured the 1 MiB job at
+  57.0 s here against 377.7 s on base; a size-scaled structural pin forbids re-entering the printer
+  parser, so the proof does not depend on a machine-speed budget. The first-round 667-row forge
+  probe against `main` 5c88603d was byte-identical (0 movers). #3105's read pin uses 300 -> 1,200
+  program forms so its old quadratic tree fails with margin; and a committed corpus compares all
+  13 analysis-aware helper answers with and without a shared statement analysis over both parsed
+  and handed-program statement lists.
 - **Workflow reader marks the direct `$?` inside `[[ ... ]]` with a mark of its own, from the step's
   text (#3116 item 1 and the reader part of item 2).** The lexer escapes every pattern character
   inside a conditional, so a direct `$?` reached the exact-dollar pass as `$\?` and was never
