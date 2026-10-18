@@ -13,7 +13,7 @@ from typing import cast
 
 import shell_reader
 from shell_reader import command, statements
-from workflow_called import (_UNSURE, _possible_called_readonly, _reached, _skipped_call, _status_shadows,
+from workflow_called import (_UNSURE, _carried, _possible_called_readonly, _reached, _skipped_call, _status_shadows,
                              _written)
 from workflow_fetch import (FETCHERS, Fetch, compound_stream_consumer, parse_fetch,
                             stdout_fetch, stream_consumer)
@@ -22,7 +22,7 @@ from workflow_gating import (Inlined, _piped_group_stage, _structural_groups,
 from workflow_operands import working_directories
 from workflow_programs import ANY, candidates, dynamic_program, scripts
 from workflow_step_credit import _plain_stage, _static, regions, step_credit
-from workflow_use_scopes import _forked, _function_ranges
+from workflow_use_scopes import _forked
 
 
 INSIDE = " inside a command substitution"
@@ -430,9 +430,7 @@ def _called_assignments(stmts, index, starts, held, branches, conditionals, oute
             or stmts[close].separator == "&"
             or _function_barrier(stmts, 0, index, name, starts)):
         return {}, set(), set()
-    nested = {at for entries in _function_ranges(stmts)[0].values()
-              for _name, head, end in entries if head > start
-              for at in range(head, end + 1)}
+    definitions = _carried(stmts).definitions(starts)       # the step's definitions, indexed once a pass (#3124)
     changed: dict[str, tuple[Fetch, bool] | None] = {}
     plain: set[str] = set()
     local: set[str] = set()
@@ -469,7 +467,7 @@ def _called_assignments(stmts, index, starts, held, branches, conditionals, oute
             stage_plain = _plain_assignments(stage, shell) - readonly - blocked
             if block_all:
                 stage_plain.clear()
-            certain = (at not in nested and at not in branches and at not in conditionals
+            certain = (not definitions.nested_close(at, start) and at not in branches and at not in conditionals
                        and not may_return and not subshells and not compounds
                        and not stage.group_open
                        and _piped_group_stage(stmts, at) is None
@@ -513,7 +511,7 @@ def carried(stmts, executors, shell=None):
     readonly: set[str] = set()
     blocked: set[str] = set()
     block_all = False
-    starts, occupied = _function_ranges(stmts)
+    starts, occupied = _carried(stmts).ranges()
     status_shadows = _status_shadows(stmts, starts)
     conditionals = conditional_contexts(stmts)
     body_attributes = {

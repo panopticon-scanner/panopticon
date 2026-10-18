@@ -19,7 +19,7 @@ import re
 import shell_lex
 import shell_reader
 from shell_reader import command
-from workflow_called import record_called, with_call_stdin
+from workflow_called import _carried, record_called, with_call_stdin
 from workflow_checks import inside
 from workflow_forms import (BIN_DIRS, CONTAINERS, at_directory,
                             chmod_conditional_executable, chmod_executable, chmod_targets,
@@ -27,8 +27,8 @@ from workflow_forms import (BIN_DIRS, CONTAINERS, at_directory,
 from workflow_programs import (_SHELL_STRING, VALUE_PROGRAM, reader_files,
                                redirection_handoffs, scripts)
 from workflow_printers import _cat_reads_stdin
-from workflow_use_scopes import (_COMPOUNDS as _COMPOUNDS, _body_end, _forked,
-                                 _function_changes, _function_ranges,
+from workflow_use_scopes import (_COMPOUNDS as _COMPOUNDS, _forked,
+                                 _function_changes, _function_ranges as _function_ranges,
                                  _openers as _openers, _opens as _opens,
                                  _own_parens as _own_parens)
 # Compatibility bindings: the value table moved to `workflow_values` with its
@@ -489,13 +489,9 @@ def static_values(stmts, index, working=None, scopes=None, start=None):
     relative path."""
     scopes = scopes or {}
     forked = _forked(stmts, index)
-    starts = _function_ranges(stmts)[0]
-    bodies = [(head, *_body_end(stmts, head, close)) for entries in starts.values()
-              for _name, head, close in entries]
-    first, last = max([(head, end) for head, end, found in bodies
-                       if found and head <= index <= end], default=(-1, len(stmts) - 1))
-    nested = {position for head, end, found in bodies if found and head > first
-              for position in range(head, end + 1)}
+    definitions = _carried(stmts).definitions(None)         # the step's definitions, indexed once a step (#3124)
+    starts = definitions.starts
+    first, last = definitions.enclosing(index, len(stmts) - 1)
     table = start.copy() if start is not None and first >= 0 else Values()
     kinds = _control_kinds(stmts)
     # A body's own `then`/`do`/`case`: what wraps the definition wraps no call.
@@ -505,7 +501,7 @@ def static_values(stmts, index, working=None, scopes=None, start=None):
     def walk(positions, sure):
         for position in positions:
             stages = stmts[position].stages
-            if position in nested or scopes.get(position) != scopes.get(index) or not stages:
+            if definitions.nested_found(position, first) or scopes.get(position) != scopes.get(index) or not stages:
                 continue
             certain, direct_loop = _table_certainty(stmts, position, kinds)
             looped = direct_loop and index < len(stmts) and all(    # on the pass that reaches it
@@ -541,7 +537,7 @@ def uses(stmts, dest, after, working=None, scopes=None):
     stage as written names none, the step's own values at the use (`_resolved`, #2425)."""
     names, out = {dest}, []
     working, scopes = working or {}, scopes or {}
-    starts, occupied = _function_ranges(stmts)
+    starts, occupied = _carried(stmts).ranges()
     kinds = _control_kinds(stmts)
     functions = _functions_before(stmts, starts, kinds, scopes, after)
     named: dict[str, Binding] = {}
