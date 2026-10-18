@@ -13,7 +13,7 @@ import re
 
 import shell_reader
 from shell_reader import command, conditional, negated
-from workflow_function_index import FunctionIndex
+from workflow_function_index import ClosingIndex, FunctionIndex
 
 
 # --- whether a command's failure is allowed to matter -------------------------
@@ -156,9 +156,18 @@ def _function_index(stmts, analysis):
     found = getattr(analysis, "function_index", None)
     if found is None:
         found = FunctionIndex(
-            stmts, analysis.function_names, _function_syntax, _posture_barrier, _closes
+            stmts, analysis.function_names, _function_syntax, _posture_barrier
         )
         analysis.function_index = found
+    return found
+
+
+def _closing_index(stmts, analysis):
+    """The closing runs shared by each status question in this list."""
+    found = getattr(analysis, "closing_index", None)
+    if found is None:
+        found = ClosingIndex(stmts, _closes)
+        analysis.closing_index = found
     return found
 
 
@@ -622,7 +631,7 @@ def _stops_step(stmts, position, on, fails, analysis=None):
     The failure then stops only its own statement (`_LOST`, review I-1, N-7)."""
     last, close = len(stmts) - 1, position
     if analysis is not None:
-        close, blocked = _function_index(stmts, analysis).closing_run(position, fails)
+        close, blocked = _closing_index(stmts, analysis).run(position, fails)
         if blocked is not None:
             return _ENDS % (_DETACHED if stmts[blocked].separator == "&" else _NO_PIPEFAIL)
     else:

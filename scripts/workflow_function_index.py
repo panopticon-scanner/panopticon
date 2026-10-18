@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Source-order events used by workflow function-gating proofs.
+"""Source-order indexes used by workflow function-gating proofs.
 
 The guard asks about a function once for each check in its body.  This index
 keeps those questions on the definitions, calls, and posture changes that can
@@ -9,6 +9,40 @@ from bisect import bisect_right
 from collections import defaultdict
 
 from shell_reader import command
+
+
+class ClosingIndex:
+    """Closing runs shared by each statement's step-status question."""
+
+    def __init__(self, stmts, is_closer):
+        self.stmts = stmts
+        self.closers = [is_closer(statement) for statement in stmts]
+        self.ends = list(range(len(stmts)))
+        for position in range(len(stmts) - 2, -1, -1):
+            if (stmts[position].separator not in ("&", "&&", "||")
+                    and self.closers[position + 1]):
+                self.ends[position] = self.ends[position + 1]
+        self.blocks: dict[int, tuple[object, list[int | None]]] = {}
+
+    def run(self, position, fails):
+        """End and first detached/uncredited pipeline closer after ``position``."""
+        end = self.ends[position]
+        if end == position:
+            return end, None
+        key, cached = id(fails), self.blocks.get(id(fails))
+        if cached is None or cached[0] is not fails:
+            next_blocks: list[int | None] = [None] * (len(self.closers) + 1)
+            block = None
+            for at in range(len(self.closers) - 1, -1, -1):
+                statement = self.stmts[at]
+                if (self.closers[at] and (statement.separator == "&"
+                        or len(statement.stages) > 1 and not fails[at])):
+                    block = at
+                next_blocks[at] = block
+            cached = fails, next_blocks
+            self.blocks[key] = cached
+        block = cached[1][position + 1]
+        return end, block if block is not None and block <= end else None
 
 
 class _PipelineFrame:
@@ -25,8 +59,7 @@ class _PipelineFrame:
 class FunctionIndex:
     """Definitions, direct calls, barriers, and piped function-body groups."""
 
-    def __init__(self, stmts, names, function_syntax, posture_barrier, is_closer):
-        self.stmts = stmts
+    def __init__(self, stmts, names, function_syntax, posture_barrier):
         definitions, calls = defaultdict(list), defaultdict(list)
         barriers, frames, piped_at = [], [], []
         unmatched: list[tuple[int, tuple[int, int] | None]] = []
@@ -76,13 +109,6 @@ class FunctionIndex:
         self.unmatched_positions = [index for index, _piped in unmatched]
         self.off = (False,) * len(stmts)
         self.on = (True,) * len(stmts)
-        self.closers = [is_closer(statement) for statement in stmts]
-        self.closing_run_ends = list(range(len(stmts)))
-        for position in range(len(stmts) - 2, -1, -1):
-            if (stmts[position].separator not in ("&", "&&", "||")
-                    and self.closers[position + 1]):
-                self.closing_run_ends[position] = self.closing_run_ends[position + 1]
-        self.closing_blocks: dict[int, tuple[object, list[int | None]]] = {}
 
     def events(self, name, after):
         """Positions after ``after`` that redefine ``name`` or change posture."""
@@ -141,22 +167,3 @@ class FunctionIndex:
         at = bisect_right(self.unmatched_positions, position)
         return self.unmatched[at][1] if at < len(self.unmatched) else None
 
-    def closing_run(self, position, fails):
-        """End and first detached/uncredited pipeline closer after ``position``."""
-        end = self.closing_run_ends[position]
-        if end == position:
-            return end, None
-        key, cached = id(fails), self.closing_blocks.get(id(fails))
-        if cached is None or cached[0] is not fails:
-            next_blocks: list[int | None] = [None] * (len(self.closers) + 1)
-            block = None
-            for at in range(len(self.closers) - 1, -1, -1):
-                statement = self.stmts[at]
-                if (self.closers[at] and (statement.separator == "&"
-                        or len(statement.stages) > 1 and not fails[at])):
-                    block = at
-                next_blocks[at] = block
-            cached = fails, next_blocks
-            self.closing_blocks[key] = cached
-        block = cached[1][position + 1]
-        return end, block if block is not None and block <= end else None
