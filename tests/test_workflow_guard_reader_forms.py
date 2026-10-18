@@ -7650,11 +7650,13 @@ class TestAValueCommandWordMayRunTheFetchedFile(unittest.TestCase):
     step, a shell's default `${X:-sh}`, `"$@"` in a body called with `sh`, `$SHELL -c` and `$SHELL < t` reported
     already; a word handed no fetched file, and `cat`, stay CLEAN. The price, named: a value naming a non-runner or
     nothing (`$EDITOR ./t`; `${X#y} ./t` with `X` unset; `${A:+echo} t`, the alternate read as a bare reference) is
-    an over-report."""
+    an over-report. The rule fires only where the table gives the word no value at all: `cmd='$1'` then `"$cmd"`
+    (a literal) and `${S:-sudo} ${X:+sh} t` (resolved behind the dropped wrapper) keep `main`'s readings; a command
+    substitution does too, a named limit."""
 
     FETCH = "curl -fsSLo t %st" % URL
     REPORT = ("$SHELL ./t", "$SHELL t", "${SHELL} ./t", '"$SHELL" ./t', "$RUN ./t", 'set -- sh\n"$@" ./t', "cat t | $SHELL",
-              "$SHELL -e ./t", "cat t | $SHELL -s", "$(which sh) ./t",
+              "$SHELL -e ./t", "cat t | $SHELL -s",
               "$EDITOR ./t", "${X#y} ./t", "${A:+echo} t")        # the last three: the price, a non-runner or nothing named
     REPORTED_BEFORE = ("RUN=sh\n$RUN ./t", "${X:-sh} ./t", 'run() { "$@"; }\nrun sh ./t', "$SHELL -c ./t", "$SHELL < t",
                        'CMD=(sh)\n"${CMD[@]}" ./t')
@@ -7663,7 +7665,9 @@ class TestAValueCommandWordMayRunTheFetchedFile(unittest.TestCase):
     # name the reader knows (`$S head -n 99 t`: a shell there would run `head`), another value (`$A $B ./t`), or
     # behind the pipe with a word after it (`cat t | $S head -n 99`) -- are no runners of it: `main`'s readings stand.
     CLEAN = ("$SHELL --version", "$SHELL ./other", "cat ./t", "${X:-cat} ./t", 'cat t | "${SH:- bash}"', "${S:+echo} cat ./t",
-             "$S head -n 99 t", "$A $B ./t", "cat t | $S head -n 99", 'CMD=(cat)\n"${CMD[@]}" ./t')
+             "$S head -n 99 t", "$A $B ./t", "cat t | $S head -n 99", 'CMD=(cat)\n"${CMD[@]}" ./t',
+             "f() { local cmd='$1'; shift; \"$cmd\" \"$@\"; }\nf sh ./t",     # the table names `$cmd`: a literal `$1`
+             "$(which sh) ./t")                                              # a substitution: `main`'s reading, a named limit
     CHECK = "echo \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  t\" | sha256sum -c -\n"
 
     def test_a_value_command_word_handed_the_file_reports(self):
@@ -7683,10 +7687,10 @@ class TestAValueCommandWordMayRunTheFetchedFile(unittest.TestCase):
         # direction -- a plain `str` carrying a `$` (no `_Token` attributes) is a value command, as is a substitution;
         # a single-quoted `'$X'` (`live_dollar` False) and a shell's default (`${X:-sh}`, read as `sh`) are not.
         self.assertTrue(workflow_uses._value_command("$SHELL"))
-        self.assertTrue(workflow_uses._value_command("$(which sh)"))
         self.assertFalse(workflow_uses._value_command("sh"))
         for script, expected in (("'$SHELL' ./t\n", False), ("$SHELL ./t\n", True), ('"$SHELL" ./t\n', True),
-                                 ("${SHELL} ./t\n", True), ("${X:-sh} ./t\n", False), ('"$@" ./t\n', True)):
+                                 ("${SHELL} ./t\n", True), ("${X:-sh} ./t\n", False), ('"$@" ./t\n', True),
+                                 ("$(which sh) ./t\n", False)):      # a substitution, lifted to a marker: a named limit
             with self.subTest(script=script):
                 word = shell_reader.command(shell_reader.statements(script)[0].stages[0].argv)[0]
                 self.assertEqual(expected, workflow_uses._value_command(word))
