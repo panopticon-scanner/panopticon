@@ -19,6 +19,7 @@ destination a step downloaded to.
 """
 import gc
 import time
+import importlib
 import unittest
 
 import pytest
@@ -2322,12 +2323,16 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.
         self.assert_linear_growth(4000, lambda size: "{ " * size + "case x in x) a ;; esac" + "; }" * size + "\n", check)
 
     def test_a_step_that_spells_a_reader_mark_reads_as_main(self):
-        # PR #2856 round 8: no mark the reader puts in its text may decide a reading, so a step
-        # that spells any of them (U+E000-U+E004) reads as `main`, its command word too.
-        for mark in ("\ue000", "\ue001", "\ue002", "\ue003", "\ue004"):
+        # PR #2856 round 8: no mark the reader puts in its text may decide a reading, so a step that spelled any of
+        # them read as `main` read before the kept-whole words, its command word too. #3138 moves the expectation
+        # (the coordinator's rule for it: "a step whose text spells a mark must read as main would read it if the
+        # character were a plain literal"): the typed mark becomes a plain literal where the text enters
+        # (`_LITERAL_MARKS`), decides nothing, and the rest of the step reads as any step does -- `${SH:-bash -s}`
+        # keeps its kept-whole reading, where `["${SH:-bash", "-s}"]` was pinned before.
+        for mark in shell_reader._MARKS:
             with self.subTest(mark=hex(ord(mark))):
                 stage = shell_reader.statements("echo %s\ncurl u | ${SH:-bash -s}\n" % mark)[1].stages[1]
-                self.assertEqual(["${SH:-bash", "-s}"], [str(w) for w in shell_reader.command(stage.argv)])
+                self.assertEqual(["bash", "-s"], [str(w) for w in shell_reader.command(stage.argv)])
 
     def test_a_shells_default_splits_only_at_a_bare_blank(self):
         # PR #2856 round 6, F1 (a): `${X:-"sh -c"}` and `${X:-sh\ -c}` are one word, `main`'s
@@ -2349,3 +2354,55 @@ class TestAStatementContinuedPastAPipeOrOneExpansionWord(LinearGrowth, unittest.
         for script in ("bash -s <>/dev/null <<'EOF'\nx\nEOF\n", "bash -s <<'EOF' 1<>/dev/null\nx\nEOF\n"):
             with self.subTest(script=script):
                 self.assertEqual(("x", False), shell_reader.statements(script)[0].stages[0].stdin_heredoc)
+
+
+
+class TestATypedMarkIsAPlainLiteral(unittest.TestCase):
+    """#3138 (the #3131 round-2 seat): the reader puts private-use marks into a step's text while it reads it, and
+    one the step typed itself was read as the reader's own and taken off its word: `<U+E007>exit` read as `exit`, a
+    gate credited where bash prints "command not found" and runs the payload -- six of the eight marks, fail-open on
+    `main`. Now `statements` moves every typed mark, once, where the text enters, to the private-use character 0x100
+    past it (`_LITERAL_MARKS`), which no pass writes or reads: the step reads as `main` reads one that spells a plain
+    literal character there, and the rest of the step reads as any step does. One list holds every mark
+    (`_MARKS`); the first test here fails when a reader module gains a private-use constant the list lacks."""
+
+    MODULES = ("shell_patterns", "shell_split", "shell_reader", "shell_lex", "shell_heredoc", "shell_tokens",
+               "shell_text", "shell_folds", "shell_command", "shell_defaults", "shell_wrappers")
+
+    def test_every_private_use_constant_of_the_readers_modules_is_a_mark_the_entry_moves(self):
+        found = {}
+        for name in self.MODULES:
+            module = importlib.import_module(name)
+            for attr, value in vars(module).items():
+                if isinstance(value, str) and len(value) == 1 and "\ue000" <= value <= "\uf8ff":
+                    found.setdefault(value, []).append(f"{name}.{attr}")
+        self.assertEqual(set(found), set(shell_reader._MARKS), found)
+        for mark in shell_reader._MARKS:
+            moved = mark.translate(shell_reader._LITERAL_MARKS)
+            self.assertNotEqual(mark, moved)
+            self.assertNotIn(moved, shell_reader._MARKS)
+            self.assertTrue("\ue000" <= moved <= "\uf8ff", hex(ord(moved)))
+
+    def test_a_typed_mark_stays_a_literal_in_its_word(self):
+        for mark in shell_reader._MARKS:
+            moved = mark.translate(shell_reader._LITERAL_MARKS)
+            with self.subTest(mark=hex(ord(mark))):
+                words = [str(w) for w in shell_reader.statements("%sexit 1\nsh %st\ns%sh t\n" % (mark, mark, mark))
+                         [0].stages[0].argv]
+                self.assertEqual([moved + "exit", "1"], words)
+                stmts = shell_reader.statements("%sexit 1\nsh %st\ns%sh t\n" % (mark, mark, mark))
+                self.assertEqual([moved + "exit", "1"], [str(w) for w in stmts[0].stages[0].argv])
+                self.assertEqual(["sh", moved + "t"], [str(w) for w in stmts[1].stages[0].argv])
+                self.assertEqual(["s" + moved + "h", "t"], [str(w) for w in stmts[2].stages[0].argv])
+                for st in stmts:
+                    for w in st.stages[0].argv:
+                        self.assertFalse(getattr(w, "exact_dollar", False) or getattr(w, "quoted", False), str(w))
+
+    def test_a_typed_mark_decides_no_reading_of_the_rest(self):
+        # The exact-dollar and named-command readings of the other words stay as in a step without the mark.
+        for mark in shell_reader._MARKS:
+            with self.subTest(mark=hex(ord(mark))):
+                stmts = shell_reader.statements("echo %s\n[ \"$?\" -ne 0 ] && exit 1\n\"X=1\" y\n" % mark)
+                status = [w for w in stmts[1].stages[0].argv if str(w) == "$?"]
+                self.assertEqual([True], [getattr(w, "exact_dollar", None) for w in status])
+                self.assertEqual([True], [getattr(w, "quoted", None) for w in stmts[3].stages[0].argv[:1]])
