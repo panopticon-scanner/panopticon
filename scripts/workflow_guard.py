@@ -269,7 +269,7 @@ from workflow_forms import (FETCHERS, SHELL_PROGRAM, Idle, Inlined, Reach, Unsur
                             stdin_program, step_credit,
                             streamed_fetch as streamed_fetch, unbound, unread_program,
                             working_directories)
-from workflow_printers import fed, operand
+from workflow_printers import StatementFront, fed, operand
 from workflow_programs import ANY, VALUE_PROGRAM, handed, stdin_command
 from workflow_option_words import passes
 from workflow_options import mains_answer
@@ -359,7 +359,10 @@ def _walk(stmts, stream_exec=False, inside=False, working=None, scopes=None, dir
                 behind = " behind wrapper" if shell_reader.wrapper_words(stage.argv) else ""
                 unread.append((index, "cannot read command%s: %s; the guard cannot "
                                "determine what it runs" % (behind, reason)))
-            program = unread_program(argv, stage, _walk, inside, before, under, stmts[:index])
+            program = unread_program(
+                argv, stage, _walk, inside, before, under,
+                StatementFront(stmts, index) if before else None
+            )
             if program and prefix_expanded_program(stage, argv):
                 program = None
             reason = program if inside and program else _unread_stdin(stage, before) or program

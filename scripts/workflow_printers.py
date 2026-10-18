@@ -262,6 +262,35 @@ _GROUPED = ("a group of statements whose text no one printer spells out",
             'exec "$PROGRAM"')
 
 
+class StatementFront:
+    """Statements before one index, iterable both ways without a list slice.
+
+    The program readers ask once per stage; copying every growing prefix made
+    a large handed script quadratic even when no stage consumed the prefix.
+    """
+
+    __slots__ = ("stmts", "end")
+
+    def __init__(self, stmts, end):
+        self.stmts, self.end = stmts, end
+
+    def __reversed__(self):
+        return (self.stmts[at] for at in range(self.end - 1, -1, -1))
+
+    def __iter__(self):
+        return (self.stmts[at] for at in range(self.end))
+
+    def __len__(self):
+        return self.end
+
+    def __getitem__(self, index):
+        if index < 0:
+            index += self.end
+        if not 0 <= index < self.end:
+            raise IndexError(index)
+        return self.stmts[index]
+
+
 def _grouped(front, before, statements):
     """The pipelines of a `{ ...; }` or `( ...; )` group that closes at `front` which `producer`'s walk never
     reaches (#3026), in order, or None. `front` closes the group: a bare `}` word, or a stage closing a subshell.

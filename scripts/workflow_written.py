@@ -23,7 +23,8 @@ import os
 import shlex
 
 import shell_reader
-from workflow_printers import ANY, _PRINTERS, _grouped, _printer_of, file_operand, producer, spellings
+from workflow_printers import (ANY, _PRINTERS, StatementFront, _grouped, _printer_of,
+                               file_operand, producer, spellings)
 
 _DEPTH = 64                 # writers kept per path; past it the text is unspelled (fail-closed)
 
@@ -53,20 +54,6 @@ def _writer(stage, before):
     return None
 
 
-class _Front:
-    """The statements in front of `end`, read backwards without a copy (#3110 round 1): what `_grouped` walks back
-    through to a group's opener. A slice copied the step's front once a closer, quadratic in the step."""
-
-    def __init__(self, stmts, end):
-        self.stmts, self.end = stmts, end
-
-    def __reversed__(self):
-        return (self.stmts[at] for at in range(self.end - 1, -1, -1))
-
-    def __iter__(self):
-        return (self.stmts[at] for at in range(self.end))
-
-
 def _writers(stage, before, statements, index):
     """The writers whose texts land where `stage` writes, in order: `_writer`'s one; or, where `stage` closes a
     `{ ...; }` or `( ...; )` group (#3110), the printer of each pipeline of the group `_grouped` hands back
@@ -78,7 +65,7 @@ def _writers(stage, before, statements, index):
         return [one]
     if list(stage.argv) != ["}"] and not stage.group_close:
         return []
-    pipelines = _grouped(stage, before, _Front(statements, index)) or []
+    pipelines = _grouped(stage, before, StatementFront(statements, index)) or []
     printers = [_printer_of(pipeline) for pipeline in pipelines]
     if not any(printers):
         return []

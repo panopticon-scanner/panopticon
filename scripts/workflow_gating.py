@@ -397,7 +397,7 @@ def inlined_stops(stmts, start, carrier, index, on=None, fails=None, analysis=No
                           analysis=analysis) is None)
 
 
-def inlined_reaches(flat, stmts, indexes, on, fails):
+def inlined_reaches(flat, stmts, indexes, on, fails, analysis=None):
     """Give a handed script's bounded failures their reach in flat indices.
 
     `_stops_step` measures an `&&` list in the child statement list, while
@@ -405,7 +405,7 @@ def inlined_reaches(flat, stmts, indexes, on, fails):
     `indexes` maps between them. Keep an existing refusal in either credit
     slot: parent posture and a pipeline without pipefail remain stronger.
     """
-    analysis = statement_analysis(stmts)
+    analysis = statement_analysis(stmts) if analysis is None else analysis
     for position, index in enumerate(indexes):
         if analysis.blocks_reach(position):
             continue
