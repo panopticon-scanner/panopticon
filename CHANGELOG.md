@@ -341,6 +341,43 @@ evidence exposed.
   them. Open, filed: a nested group, a compound or function body, other consumers (#3117); a group
   written to a file and then run (#3110).
 
+- **Workflow guard carries a compound's closing output by stage (#2937).** A keyword compound
+  closed beside a subshell, such as `{ for ...; done | ( curl ...; ); } > tool`, and a fetch after
+  an inner file close, such as `{ if ...; fi > /dev/null | curl ...; } > tool`, both ran the
+  downloaded `tool` under every parent but read CLEAN. The output map kept one depth and one close
+  for the whole pipeline statement: it ignored the subshell boundary in the first form and lent
+  the inner `/dev/null` close to the following fetch in the second. Compound-output accounting is
+  now stage-level. It includes executable group markers while subtracting array-literal
+  parentheses, retains the function-header balancing from #3069, and reverse-walks the closing
+  stage's suffix so an inner close applies only to stages inside it while a following fetch
+  inherits the outer close. The three M5a rows HNP-012/013/014 and six M9c rows
+  HNC-403/412/421/430/439/448 now report in all five shell settings (45 cells). An inner
+  subshell's own file, array literal, disconnected close, and later sibling remain cut off. The
+  stage-level map also avoids the old `level = after` alternative's named no-run price:
+  HNP-016, `{ for ...; done | ( curl ...; ) > f; } > tool; sh tool`, fetches in all eight parents
+  but runs in none because the download went to `f` and `tool` stayed empty, and remains CLEAN in
+  all five settings. Its no-fetch twin remains CLEAN too. Review found that an inner close piped
+  through a forwarding `cat`, `tee`, group, subshell, or loop then stopped at that consumer and
+  lost the consumer stage's own outer `> tool`. The stage map now retains the local pipe beside
+  that consumer route, but restores it only when it reaches the same unshadowed file boundary
+  `main` carried; all 24 forwarding rows from review report again without reopening the accepted
+  no-run cells or the out-of-scope top-level forms. Finally, dash 0.5.12 drops `> f`, `>> f`, or
+  `> /dev/null` from a subshell that is the last command of a redirected group, sending the bytes
+  to the group's outer file. Those three `ffffRffR` truth rows keep `main`'s RRRRR reading. The
+  corresponding bash over-report is an existing, named fail-closed price. The round-two seat's
+  wider compound hunt found two more forwarding routes through a brace producer and a compound
+  consumer (R2-F-034/037), plus dash's descriptor close and an intervening unredirected brace
+  (R2-G-013/023). They now keep `main`'s RRRRR reading: a forwarding brace route is admitted only
+  when its pipeline enters another compound, and the dash fallback crosses only consecutive
+  lexical `}` closes to the first redirected brace. A reader stage that combines two subshell
+  closes and their inner and outer files is instead cut at the inner file, keeping the all-no-run
+  R2-G-007 CLEAN in all five settings. A descriptor dup or close (`>&N`, `1>&2`, `>&-`) on an
+  inner subshell wrapped in further subshells and redirected to a file is reported, though the
+  outer file stays empty: an over-report beyond main, named. The previous 667-row probe and 1,106
+  HN/HNP rows are unchanged from the round-two head; the accepted baseline loss set in the former
+  is 44 rows / 220 no-run cells, not 44 cells. Compound-output tracking moved without other
+  behavior changes to `workflow_compound_outputs.py`, restoring the helper documentation while
+  leaving `workflow_fetch.py` at 477 lines (the new module is 272).
 - **Workflow reader reads a function header immediately after an outer function's opening brace
   (#2975 part A).** `f() { g() { sh t; }; g; }` ran the downloaded file under every parent and
   read CLEAN: the splitter took the inner `()` as a subshell and the rest of the inner body as
