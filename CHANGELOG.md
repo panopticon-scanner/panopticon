@@ -7,6 +7,49 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader reads a private-use mark the step types itself as a plain literal -- every mark,
+  in one place (#3138).** The reader puts eight private-use characters into a step's text while it
+  reads it -- `MARK`, `QUOTED`, `QUOTED_DOLLAR`, `DOUBLE_DOLLAR` (`shell_patterns`), `_ESCAPED`,
+  `_BLANK` (`shell_split`), `_NAMED`, `_EXACT_DOLLAR` (`shell_reader`) -- each a mark one pass
+  writes and another reads off a word. One the step typed itself was read as the reader's own and
+  taken off: `<U+E007>exit` read as `exit`, so a handler behind a check was credited as a stop where
+  bash prints "command not found" and runs the payload, and `sh <U+E007>$T` as a run of the fetched
+  file where bash finds no such file -- six of the eight (U+E000, U+E001, U+E003, U+E005, U+E006,
+  U+E007), fail-open on `main` (the #3131 round-2 seat's finding, filed as #3138); `_ESCAPED` and
+  `_BLANK` read as a plain literal already (#2856 round 8). Now `statements` moves every typed mark,
+  once, where the text enters, to the private-use character 0x100 past it (`_MARKS`,
+  `_LITERAL_MARKS`), which no pass writes or reads: the step reads as `main` reads one that spells a
+  plain literal character there -- U+E0FF, the reference the pins use: `<mark>exit` behind a check
+  CCCRR (the `{0}` settings report, where the check does not stop the step), a typed mark before a
+  fetched file's name or inside a word CLEAN, as the file bash would run is another -- and the rest
+  of the step reads as any step does (the exact-dollar and named-command readings of the other words
+  stay). The round-8 guard that read a whole step as `main` read before its kept-whole words, where
+  it spelled any of five marks (`context.blanks`), goes: its one pin moves, under the rule the
+  coordinator set for this issue ("a step whose text spells a mark must read as main would read it
+  if the character were a plain literal"): `${SH:-bash -s}` behind a typed mark keeps its kept-whole
+  reading, `bash`, `-s`. Forge differential of ea49b4f2 (the code; the two test commits after it
+  leave `scripts/` the same by patch-id) against `main` b61bbc76 over the 27,644-row kit (the kit's
+  rows and this issue's 55; three readings a cell, 2,047,620 in all, 84 min): 27,480 rows identical,
+  164 move -- every one a step that types a reader mark: this issue's 29 and 135 of the #2856
+  round-8 seat's rows in the kit (`cost-std-sample.tsv`, the `seat-hunt` families) -- and none a
+  control. 34 CLEAN->REPORT: the round-8 rows where a mark sits in an `echo`, a comment, a heredoc
+  body or an `X<mark>=1` word and `${X:-bash -s} <<EOF`, `${RUN:-sh tool}` or `| ${SH:-bash -s}`
+  runs the download, which the whole-step guard read as `main` read before its kept-whole words (22
+  rows; truth: the payload runs under bash 3.2.57 and dash, the three `X<mark>=1` rows without
+  `-e`), and the twelve forged handlers (truth: the payload runs where the check does not stop the
+  step). 32 REPORT->CLEAN: the round-8 rows whose mark sits in the download's name alone -- `-o
+  <mark>tool`, `> tool<mark>`, `wget -O <mark>tool`, then `sh tool` -- where `main` took the mark
+  off and matched the names (15 rows; truth: what was fetched is not run), and this issue's `sh
+  <mark>$T`, `sh <mark>t`, `s<mark>h t` (17; truth: nothing runs). 98 REPORT->REPORT with the
+  finding's text changed: the mark in the name on both sides (`tool<mark>x`, `${D:-tool<mark> }`,
+  `bash -s<mark>`, a URL) now shows as the literal where `main`'s text had it taken off or the word
+  split (the round-8 families 11, 15, 17 and `m06`; truth: the payload runs where both names carry
+  it, nothing for `bash -s<mark>`, an over-report on both trees). No row loses a report in one
+  setting and keeps it in another. Pins: `tests/test_shell_reader.py` (every private-use constant of
+  the reader's eleven modules is in `_MARKS` and moves to a non-mark -- the test that fails when a
+  module gains one; a typed mark stays a literal in its word; it decides no reading of the rest) and
+  `tests/test_workflow_positional_handoff.py` (each mark, five shapes, as U+E0FF reads; the controls
+  as they did), RED on `main`. Sizes: `scripts/shell_reader.py` 529 (+5).
 - **Workflow guard reads a step's function definitions once a pass, not once a use or a body
   (#3124).** A step of n siblings each called cost the job about x6 a doubling on `main` (1.2 / 6.6
   / 46.5 s at 80 / 160 / 320; the #3132 seat's rows read cubic) and n nested definitions x3 (0.03 /
