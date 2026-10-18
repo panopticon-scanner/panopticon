@@ -22,6 +22,7 @@ import workflow_function_calls
 import workflow_gating
 import workflow_guard as wg
 import workflow_options as wo
+import workflow_printers
 import workflow_written
 from tests.test_shell_reader import LinearGrowth
 
@@ -79,6 +80,37 @@ class TestAWrittenFileIsReadAsItsWritersText(unittest.TestCase):
         self.assertEqual(REPORTED, marks("cat > s.sh <<EOF\n%s $(echo -s)\nEOF\nsh s.sh\n" % P))
         self.assertEqual(REPORTED, marks("cat > s.sh <<EOF\necho $(date)\nEOF\nsh s.sh\n"))
         self.assertEqual(REPORTED, marks("cat <<EOF | sh\necho $(date)\nEOF\n"))
+
+    def test_an_exact_written_output_is_not_reparsed_as_one_giant_printer_word(self):
+        line = "echo xxxxxxxxxx\n"
+        for kib in (64, 256):
+            body = line * (kib * 1024 // len(line))
+            stmts = workflow_written.bind_written(shell_reader.statements(
+                "cat > run.sh <<'EOF'\n" + body + "EOF\nsh run.sh\n"))
+            written = workflow_printers.operand(shell_reader.acted(stmts[-1].stages[0].argv))
+            with self.subTest(kib=kib), mock.patch.object(
+                    workflow_printers, "_printer", side_effect=AssertionError):
+                self.assertEqual(body, workflow_printers.substituted(written))
+                self.assertEqual([], workflow_printers.unsubstituted(written))
+                self.assertIsNone(workflow_printers.fed(written))
+
+    def test_a_dollar_in_exact_output_keeps_the_old_dynamic_printer_reading(self):
+        body = "$SHELL ./t\n"
+        stmts = workflow_written.bind_written(shell_reader.statements(
+            "cat > run.sh <<'EOF'\n" + body + "EOF\nsh run.sh\n"))
+        written = workflow_printers.operand(shell_reader.acted(stmts[-1].stages[0].argv))
+        self.assertEqual("printf '%s' '$SHELL ./t\n'", written)
+        self.assertIsNone(workflow_printers.substituted(written))
+        self.assertEqual(["printf", "%s $SHELL ./t\n", body],
+                         workflow_printers.unsubstituted(written))
+        self.assertIsNone(workflow_printers.fed(written))
+
+        text = "curl -fsSLo t https://example.test/t\ncat > s.sh <<'EOF'\n" + body + "EOF\nsh s.sh\n"
+        reason = ("pipes `sh` its program from `printf`, whose words this guard does not spell "
+                  "out -- it cannot say whether that program fetches or runs a download unchecked; "
+                  "print literal text or write it in a quoted heredoc, or exempt the step with a reason")
+        self.assertEqual([("step", reason)], wg.job_defects([wg.Step("step", text)]))
+        self.assertEqual(REPORTED, marks(text))
 
     def test_an_unspelled_writer_never_hides_a_spelled_payload(self):
         # The review seat's rows: one writer the printers cannot spell beside the payload -- after it, before it, or
@@ -335,7 +367,8 @@ class TestProgramFlatteningIsLinear(LinearGrowth, unittest.TestCase):
         def check(n, parsed):
             self.assertEqual(9 * n, len(parsed))
 
-        self.assert_linear_growth(150, self.make, check, parser=wg.read)
+        # The old n=150 sample only narrowly failed the pre-#3105 reader.
+        self.assert_linear_growth(300, self.make, check, parser=wg.read)
 
     @pytest.mark.serial
     def test_each_program_form_is_linear_at_job_level(self):
@@ -352,6 +385,8 @@ class TestProgramFlatteningIsLinear(LinearGrowth, unittest.TestCase):
         self.assert_linear_growth(150, self.enclosed, check, parser=self.job)
 
     def test_indexed_and_legacy_answers_match_on_a_corpus_sample(self):
+        # Sample every analysis-aware helper over both source statements and
+        # the handed-program statements `read` inserts into their carriers.
         corpus = (
             "echo 'echo ok' | sh\nsh <(echo 'echo ok')\n",
             "{\necho 'echo ok' | sh\necho later\n} && echo kept\n",
@@ -363,45 +398,133 @@ class TestProgramFlatteningIsLinear(LinearGrowth, unittest.TestCase):
             "if true; then\n{ echo 'echo ok' | sh; } && echo later\nfi\n",
             "{ { echo 'echo ok' | sh; }; echo tail; } || exit 1\n",
             "f() {\n( echo 'echo ok' | sh; echo tail ) && return 0\n}\nf | cat\n",
+            "f() {\necho 'echo ok' | sh\n}\nf | cat\n",
+            "f() {\necho 'echo ok' | sh\n}\nif true; then f; fi\n",
+            "f() {\necho 'echo ok' | sh\n}\nf\nf() {\necho later\n}\nf\n",
+            "f() {\necho 'echo ok' | sh\n}\neval ':'\nf\n",
+            "f() {\necho 'echo ok' | sh\n}\ng() { f; }\ng\n",
+            "f() {\necho 'echo ok' | sh\n}\nf\nf\nf\n",
+            "f() {\necho 'echo ok' | sh\n}\nf && echo kept\n",
+            "{\nf() {\necho 'echo ok' | sh\n}\nf\n} | cat\n",
         )
 
-        def signature(answer):
-            return (type(answer).__name__, str(answer),
-                    getattr(answer, "span", None), getattr(answer, "through", None))
+        def signature(answer, depth=0):
+            if depth > 8:
+                return "<deep>"
+            if answer is None or isinstance(answer, (bool, int, float)):
+                return answer
+            if isinstance(answer, str):
+                attrs = (tuple((key, signature(value, depth + 1))
+                               for key, value in sorted(vars(answer).items()))
+                         if hasattr(answer, "__dict__") else ())
+                return answer if type(answer) is str else (type(answer).__name__, str(answer), attrs)
+            if isinstance(answer, (list, tuple)):
+                return (type(answer).__name__, *(signature(value, depth + 1) for value in answer))
+            if isinstance(answer, dict):
+                return tuple((str(key), signature(value, depth + 1))
+                             for key, value in sorted(answer.items(), key=lambda item: str(item[0])))
+            if hasattr(answer, "__slots__"):
+                return (type(answer).__name__,
+                        tuple((key, signature(getattr(answer, key, None), depth + 1))
+                              for key in answer.__slots__))
+            if hasattr(answer, "__dict__"):
+                return (type(answer).__name__,
+                        tuple((key, signature(value, depth + 1))
+                              for key, value in sorted(vars(answer).items())))
+            return type(answer).__name__, repr(answer)
 
         compared = 0
-        for script in corpus:
-            stmts = list(shell_reader.statements(script))
-            analysis = workflow_failure_contexts.statement_analysis(stmts)
-            for index in range(len(stmts)):
-                frame = analysis.function_scope(index)
-                indexed_scope = (frame.name, frame.close) if frame is not None else None
-                self.assertEqual(
-                    workflow_function_calls._function_scope(stmts, index), indexed_scope)
-                self.assertEqual(
-                    workflow_gating._piped_group_end(stmts, index),
-                    workflow_gating._piped_group_end(stmts, index, analysis))
-                self.assertEqual(
-                    workflow_gating._piped_function_end(stmts, index),
-                    workflow_gating._piped_function_end(stmts, index, analysis))
-                compared += 3
-                for errexit in (False, True):
-                    self.assertEqual(
-                        signature(workflow_function_calls._conditional_group_tail(
-                            stmts, index, errexit)),
-                        signature(workflow_function_calls._conditional_group_tail(
-                            stmts, index, errexit, analysis)))
-                    compared += 1
-                    for pipefail in (False, True):
-                        on, fails = [errexit] * len(stmts), [pipefail] * len(stmts)
-                        self.assertEqual(
-                            signature(workflow_function_calls._stops_step(
-                                stmts, index, on, fails)),
-                            signature(workflow_function_calls._stops_step(
-                                stmts, index, on, fails, analysis)))
-                        compared += 1
 
-        self.assertGreater(compared, 300)
+        def compare(legacy, indexed):
+            nonlocal compared
+            self.assertEqual(signature(legacy), signature(indexed))
+            compared += 1
+
+        for script in corpus:
+            for stmts in (list(shell_reader.statements(script)), list(wg.read(script))):
+                analysis = workflow_failure_contexts.statement_analysis(stmts)
+                mixed_on = [index % 2 == 0 for index in range(len(stmts))]
+                mixed_fails = [index % 3 == 0 for index in range(len(stmts))]
+                for index, statement in enumerate(stmts):
+                    scope = workflow_function_calls._function_scope(stmts, index)
+                    compare(scope, workflow_function_calls._function_scope(
+                        stmts, index, analysis))
+                    compare(
+                        workflow_gating._piped_group_end(stmts, index),
+                        workflow_gating._piped_group_end(stmts, index, analysis))
+                    compare(
+                        workflow_gating._piped_function_end(stmts, index),
+                        workflow_gating._piped_function_end(stmts, index, analysis))
+                    compare(
+                        workflow_function_calls._stops_step(
+                            stmts, index, mixed_on, mixed_fails),
+                        workflow_function_calls._stops_step(
+                            stmts, index, mixed_on, mixed_fails, analysis))
+                    compare(
+                        workflow_gating._stopping_rescue(stmts, index),
+                        workflow_gating._stopping_rescue(stmts, index, analysis=analysis))
+                    compare(
+                        workflow_failure_contexts._enclosing_failure_contexts(stmts, index),
+                        workflow_failure_contexts._enclosing_failure_contexts(
+                            stmts, index, analysis))
+                    compare(
+                        workflow_failure_contexts._inside_unmarked_case(stmts, index),
+                        workflow_failure_contexts._inside_unmarked_case(stmts, index, analysis))
+                    for errexit in (False, True):
+                        compare(
+                            workflow_function_calls._conditional_group_tail(
+                                stmts, index, errexit),
+                            workflow_function_calls._conditional_group_tail(
+                                stmts, index, errexit, analysis))
+                        compare(
+                            workflow_gating._function_status(stmts, index, None, errexit),
+                            workflow_gating._function_status(
+                                stmts, index, None, errexit, analysis))
+                        for pipefail in (False, True):
+                            on = [errexit] * len(stmts)
+                            fails = [pipefail] * len(stmts)
+                            compare(
+                                workflow_function_calls._stops_step(
+                                    stmts, index, on, fails),
+                                workflow_function_calls._stops_step(
+                                    stmts, index, on, fails, analysis))
+                            compare(
+                                workflow_function_calls._stops_the_job(
+                                    stmts, index, errexit, pipefail),
+                                workflow_function_calls._stops_the_job(
+                                    stmts, index, errexit, pipefail, analysis))
+                    if statement.stages:
+                        compare(
+                            workflow_gating.swallowed(
+                                stmts, index, statement, statement.stages[-1]),
+                            workflow_gating.swallowed(
+                                stmts, index, statement, statement.stages[-1],
+                                analysis=analysis))
+                        compare(
+                            workflow_gating.inlined_stops(
+                                stmts, 0, len(stmts), index),
+                            workflow_gating.inlined_stops(
+                                stmts, 0, len(stmts), index, analysis=analysis))
+                    if scope is not None:
+                        name, close = scope
+                        for errexit in (False, True):
+                            for returns_status in (False, True):
+                                compare(
+                                    workflow_function_calls._gating_function_call(
+                                        stmts, name, close, errexit, returns_status),
+                                    workflow_function_calls._gating_function_call(
+                                        stmts, name, close, errexit, returns_status,
+                                        analysis=analysis))
+                                legacy_calls, indexed_calls = [], []
+                                legacy = workflow_function_calls._gating_function_call(
+                                    stmts, name, close, errexit, returns_status,
+                                    calls=legacy_calls)
+                                indexed = workflow_function_calls._gating_function_call(
+                                    stmts, name, close, errexit, returns_status,
+                                    calls=indexed_calls, analysis=analysis)
+                                compare((legacy, legacy_calls), (indexed, indexed_calls))
+
+        self.assertGreater(compared, 1000)
 
 
 if __name__ == "__main__":

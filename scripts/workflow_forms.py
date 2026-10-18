@@ -102,6 +102,7 @@ from workflow_programs import (SHELL_PROGRAM as SHELL_PROGRAM, VALUE_PROGRAM, Na
                                candidates, dynamic_program, file_program_files, file_stdin_files,
                                scripts, stdin_program as stdin_program, stdin_reader, stdin_scripts,
                                runs_under, unprinted as unprinted, worded)
+from workflow_printers import StatementFront
 from workflow_stdin import BoundStdin, bound_stdin as bound_stdin, mark_stdin
 
 
@@ -161,7 +162,9 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
             # a word that holds an expansion may hand on every word after it, and each asked again
             # cost the square of the words).
             name, runners, postures = _runner(argv) if argv else "", {}, {}
-            for text in scripts(argv) + stdin_scripts(argv, stage, before, shell, stmts[:index]):
+            for text in scripts(argv) + stdin_scripts(
+                    argv, stage, before, shell,
+                    StatementFront(stmts, index) if before else None):
                 ordinal += 1
                 who = getattr(text, "reader", argv)     # a stdin text's READER, `()` or None
                 gates = None if who is None or stops is None else not isinstance(text, Opaque) and (
@@ -200,7 +203,7 @@ def flattened(stmts, stops=True, errexit=None, pipefail=True, shell=None, outer=
             statement.stages, statement.separator, region,
             (why, why if fails[index] or type(why) is str or len(statement.stages) == 1 and why is not None else _PIPED % shell),
             key))
-    return out if top else inlined_reaches(out, stmts, indexes, on, fails)
+    return out if top else inlined_reaches(out, stmts, indexes, on, fails, analysis)
 
 
 class Idle(str):

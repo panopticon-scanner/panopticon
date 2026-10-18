@@ -24,6 +24,22 @@ evidence exposed.
   faster at 320. A 1,340-row generated value/use differential is byte-identical. Pin:
   `tests/test_workflow_positional_handoff.py`; sizes: `scripts/workflow_uses.py` 632,
   `scripts/workflow_use_scopes.py` 210.
+- **Large written shell programs stay linear through workflow job analysis (#3128, items 1, 3 and
+  4).** A quoted 1 MiB heredoc written to a file and then run still grew superlinearly after
+  #3105: `workflow_forms.flattened` and the guard walk copied the growing statement prefix once a
+  stage, and the written-file binding wrapped an already-spelled output in one synthetic `printf`
+  whose megabyte argument the shell reader parsed before it parsed the file itself. The program
+  readers now receive a `StatementFront` view, readable in either direction, only where a pipeline
+  can consume it, and an exact sequence of written-file printers whose output contains no `$`
+  carries its `SpelledOutput` to `substituted`, `unsubstituted` and `fed`. Dollar-bearing
+  output keeps the old synthetic-`printf` parse, including its existing cost, because its dynamic
+  argument produces an observable fail-closed reading. The round-one seat measured the 1 MiB job at
+  57.0 s here against 377.7 s on base; a size-scaled structural pin forbids re-entering the printer
+  parser, so the proof does not depend on a machine-speed budget. The first-round 667-row forge
+  probe against `main` 5c88603d was byte-identical (0 movers). #3105's read pin uses 300 -> 1,200
+  program forms so its old quadratic tree fails with margin; and a committed corpus compares all
+  13 analysis-aware helper answers with and without a shared statement analysis over both parsed
+  and handed-program statement lists.
 - **Workflow reader follows a group piped to a shell through what #3026 passed over (#3117).** #3026
   read `{ P; } | sh` and `( P; ) | sh` back from the closer to the opener, one level; the #3111
   seat's rows and the kit's twins ran the download under every parent and read CLEAN: a nested group
@@ -220,7 +236,6 @@ evidence exposed.
   and walk readings -- 50 cells gain a finding, none loses one, no multiplicity lost. Pins:
   `tests/test_shell_reader.py` (the parse) and `tests/test_workflow_positional_handoff.py` (the
   rows' marks). Sizes: `scripts/shell_split.py` 431 (+0: one regex).
-
 - **Grouped quiet printer reasons pair with loud reasons at the printer's statement (#3095).**
   A carried download printed through `{ echo "$payload"; } | sh` produced two findings: `carried`
   put the loud hand-off reason on the printer's statement, while #3026 put the quiet unread-printer

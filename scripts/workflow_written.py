@@ -9,8 +9,9 @@ later run of that path. `bind_written` does, in statement order: each stage's li
 are recorded with their writer, and a later stage whose FILE operand (`file_operand`, a shell's or
 `source`'s) names a recorded path has that word replaced in place by a token carrying `written` --
 a script the printers spell as ONE printer's text (`substituted`), so `stdin_scripts` reads the file
-as it reads a `<(…)` FILE: the writers' texts joined in order under `printf '%s'`, or, where a writer
-cannot be spelled, that writer's command as written, which `unsubstituted` reports (fail-closed).
+as it reads a `<(…)` FILE: the writers' texts joined in order, directly where they contain no `$`
+and under `printf '%s'` where they do, or, where a writer cannot be spelled, that writer's command
+as written, which `unsubstituted` reports (fail-closed).
 
 Rules, fail-closed where the reader cannot know: every write is read as an APPEND (the stage keeps
 the written words, not the `>`/`>>` operator), so a benign re-write after the payload still reads
@@ -23,9 +24,14 @@ import os
 import shlex
 
 import shell_reader
-from workflow_printers import ANY, _PRINTERS, _grouped, _printer_of, file_operand, producer, spellings
+from workflow_printers import (ANY, _PRINTERS, SpelledOutput, StatementFront, _grouped,
+                               _printer_of, file_operand, producer, spellings)
 
 _DEPTH = 64                 # writers kept per path; past it the text is unspelled (fail-closed)
+
+# Kept for callers that used this module's original no-copy front view.  The
+# shared version also supports indexing for the other program readers.
+_Front = StatementFront
 
 
 def _path(word):
@@ -51,20 +57,6 @@ def _writer(stage, before):
         if chosen is None or not intact:
             return None
     return None
-
-
-class _Front:
-    """The statements in front of `end`, read backwards without a copy (#3110 round 1): what `_grouped` walks back
-    through to a group's opener. A slice copied the step's front once a closer, quadratic in the step."""
-
-    def __init__(self, stmts, end):
-        self.stmts, self.end = stmts, end
-
-    def __reversed__(self):
-        return (self.stmts[at] for at in range(self.end - 1, -1, -1))
-
-    def __iter__(self):
-        return (self.stmts[at] for at in range(self.end))
 
 
 def _writers(stage, before, statements, index):
@@ -133,12 +125,17 @@ def _heredoc(text):
 
 
 def _script(writers):
-    """A script `substituted` spells as ONE printer's text: the writers' texts joined in order under one
-    `printf`. One writer the printers cannot spell, alone, is handed on as its own command (a `cat`'s body as
-    `_heredoc`), so the printers read it as they read it where it stood. Among others, or past `_DEPTH`
-    writers, every text is kept -- an unspelled writer's as its words read, substitutions restored -- in an
-    expanding heredoc behind a live `$` line, which the guard reports as it reports any expanding body a
-    shell runs: a spelled payload beside an unspelled line is never dropped (fail-closed)."""
+    """What `substituted` spells as the writers' texts joined in order.
+
+    Fully spelled writers whose joined text contains no `$` return a tagged output directly,
+    without reparsing one synthetic `printf` whose single argument is the whole file. A `$`
+    keeps that old parse because its dynamic argument is an observable fail-closed reading. One
+    writer the printers cannot spell, alone, is handed on as its own command (a `cat`'s body as
+    `_heredoc`), so the printers read it as they read it where it stood. Among others, or past
+    `_DEPTH` writers, every text is kept -- an unspelled writer's as its words read, substitutions
+    restored -- in an expanding heredoc behind a live `$` line, which the guard reports as it
+    reports any expanding body a shell runs: a spelled payload beside an unspelled line is never
+    dropped (fail-closed)."""
     texts, unspelled = [], len(writers) > _DEPTH
     for argv, stage in writers[:_DEPTH]:
         readings = [r for r in spellings(argv, stage, ANY) if r is not None]
@@ -154,7 +151,10 @@ def _script(writers):
         texts.append(text if text.endswith("\n") else text + "\n")
     if unspelled:
         return _heredoc(': "$UNSPELLED_WRITER"\n' + "".join(texts))
-    return "printf '%s' " + "'" + "".join(texts).replace("'", "'\\''") + "'"
+    text = "".join(texts)
+    if "$" not in text:
+        return SpelledOutput(text)
+    return "printf '%s' " + "'" + text.replace("'", "'\\''") + "'"
 
 
 def _bind(stage, path):
