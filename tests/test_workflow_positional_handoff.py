@@ -569,6 +569,44 @@ if __name__ == "__main__":
     unittest.main()
 
 
+
+class TestATypedMarkReadsAsAPlainLiteralInTheJob(unittest.TestCase):
+    """#3138: a step that types one of the reader's private-use marks reads, at the job, as one that types a plain
+    private-use literal there (U+E0FF, no mark). On `main` b61bbc76 six marks (U+E000, U+E001, U+E003, U+E005,
+    U+E006, U+E007) were taken off the word and `<mark>exit` credited as a stop, `sh <mark>$T` as a run of the fetched
+    file: fail-open, where bash prints "command not found" or finds no such file. Truth (bash 3.2.57, dash, zsh):
+    the forged handlers run the payload (fetched only under `-e`, where the check stops the step first), the forged
+    runs run nothing."""
+
+    F = "curl -fsSLo t https://example.test/t\n"
+    C = "echo \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  t\" | sha256sum -c -\n"
+    LITERAL = "\ue0ff"
+
+    def rows(self, mark):
+        return (("exit.sq", self.F + self.C + '[ "$?" -ne 0 ] && ' + mark + "exit 1\nsh t\n"),
+                ("exit.dq", self.F + self.C + '[[ "$?" -ne 0 ]] && ' + mark + "exit 1\nsh t\n"),
+                ("value", self.F + "T=t\nsh " + mark + "$T\n"),
+                ("word", self.F + "sh " + mark + "t\n"),
+                ("mid", self.F + "s" + mark + "h t\n"))
+
+    def test_every_mark_reads_as_the_plain_literal(self):
+        expected = {"exit.sq": ("CCCRR", "CCCRR"), "exit.dq": ("CCCRR", "CCCRR"), "value": ("CCCCC", "CCCCC"),
+                    "word": ("CCCCC", "CCCCC"), "mid": ("CCCCC", "CCCCC")}
+        for shape, text in self.rows(self.LITERAL):
+            with self.subTest(mark="literal", shape=shape):
+                self.assertEqual(expected[shape], marks(text))
+        for mark in shell_reader._MARKS:
+            for shape, text in self.rows(mark):
+                with self.subTest(mark=hex(ord(mark)), shape=shape):
+                    self.assertEqual(expected[shape], marks(text))
+
+    def test_the_controls_read_as_they_did(self):
+        self.assertEqual(("CCCCC", "CCCCC"), marks(self.F + self.C + '[ "$?" -ne 0 ] && exit 1\nsh t\n'))
+        self.assertEqual(("CCCCR", "CCCCR"), marks(self.F + self.C + '[[ "$?" -ne 0 ]] && exit 1\nsh t\n'))
+        for text in (self.F + "T=t\nsh $T\n", self.F + "sh t\n"):
+            self.assertEqual(("RRRRR", "RRRRR"), marks(text))
+
+
 class TestEachDefinitionIsIndexedOnceAPass(LinearGrowth, unittest.TestCase):
     """#3124: the two passes that read each definition of a step cost time linear in the definitions.
 
