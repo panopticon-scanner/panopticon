@@ -21,30 +21,29 @@ evidence exposed.
   is a subshell on the header's line like any brace body (`f() ( … )`, a subshell body, stays
   `main`'s) and stands for a body holding a group piped on (`{ P; echo hi; } | sh`) even where it
   reads nothing of its call (`main` reads the group behind the header's words, `f() { {`, so #3111's
-  reading never found the opener; no other such body is: a gate in it keeps `main`'s reading); keeps
-  a definition that may have run -- under `if`, a loop, behind `&&` -- as one its calls stand for
-  (the union: `if false` reports too, the price; an `unset -f` stays certain-only); reads an `eval`
-  of one literal word that is one statement of one stage as that statement's call (a live `$`, a
-  substitution or two statements stay `main`'s, named; `bash -c 'f t'` runs a child shell without
-  the function, nothing); and takes a one-stage `cat` body out of the pipe at its call, so `{ P; } |
-  f | sh` reads as `{ P; } | sh` (#3111's group; `tee f` stays in place -- the `| tee |` and `| cat
-  |` links are #3111's `_grouped`, which reads the stage in front of the shell alone: named). A
-  definition that may not have run -- under `if`, behind `&&` -- stays no function to stand for
-  (#3047's rule and the guard's B43 pins: `main` installs none from it), so `if true; then f() { sh
-  "$1"; }; fi; f t` is the issue's one row left, a named limit. The issue's cost: `called()` was
-  quadratic on `main` (Blue's `_function_ranges` asked `_function_scope` once a definition without
-  #3126's shared analysis); now `CalledFetches` builds the shared analysis once
-  (`statement_analysis`) and `_function_ranges` takes it -- two lines in `workflow_use_scopes.py`,
-  granted -- so a chain of n definitions is read in time linear in n (x21.8 -> x4.1 for 200 -> 800;
-  n unrelated definitions x16.8 -> x4.2), pinned; the names defined at each statement are a dict,
-  not a scan a statement. `alias r=sh; r t` runs under dash alone: a reading that needs the step's
-  shell, which the fold is not handed -- a named limit. Forge differential, fd7ca507 against `main`
-  68c75d2c over the 27,612-row kit (the kit's rows and this issue's 61; three readings a cell,
-  2,045,040 in all, 79 min): 33 rows differ -- 30 CLEAN->REPORT, the issue's and the seat's rows and
-  the kit's `coll.18` (`run() { ( "$@" ); }`), every one a run under bash and sh; 3 REPORT->CLEAN,
-  the `$10` rows, where `main` took `$10` for the tenth word and bash and dash read `${1}0` and run
-  nothing (zsh runs the tenth: named); the other 27,578 rows byte-identical; the multiplicity audit:
-  those three alone lose a text, `main`'s over-report. Pins:
+  reading never found the opener; no other such body is: a gate in it keeps `main`'s reading); reads
+  an `eval` of one literal word that is one statement of one stage as that statement's call (a live
+  `$`, a substitution, two statements or two stages -- `eval 'f t | cat'` -- stay `main`'s, named;
+  `bash -c 'f t'` runs a child shell without the function, nothing); and takes a one-stage `cat`
+  body out of the pipe at its call, so `{ P; } | f | sh` reads as `{ P; } | sh` (#3111's group; `tee
+  f` stays in place -- the `| tee |` and `| cat |` links are #3111's `_grouped`, which reads the
+  stage in front of the shell alone: named). A definition that may not have run -- under `if`, in a
+  loop, behind `&&` -- stays no function to stand for (#3047's rule and the guard's B43 pins: `main`
+  installs none from it; an `unset -f` takes a name away only where it surely ran, as `main` reads
+  it), so `if true; then f() { sh "$1"; }; fi; f t` is the issue's one row left, a named limit. The
+  issue's cost: `called()` was quadratic on `main` (Blue's `_function_ranges` asked
+  `_function_scope` once a definition without #3126's shared analysis); now `CalledFetches` builds
+  the shared analysis once (`statement_analysis`) and `_function_ranges` takes it -- two lines in
+  `workflow_use_scopes.py`, granted -- so a chain of n definitions is read in time linear in n
+  (x21.8 -> x4.1 for 200 -> 800; n unrelated definitions x16.8 -> x4.2), pinned; the names defined
+  at each statement are a dict, not a scan a statement. `alias r=sh; r t` runs under dash alone: a
+  reading that needs the step's shell, which the fold is not handed -- a named limit. Forge
+  differential, fd7ca507 against `main` 68c75d2c over the 27,612-row kit (the kit's rows and this
+  issue's 61; three readings a cell, 2,045,040 in all, 79 min): 33 rows differ -- 30 CLEAN->REPORT,
+  the issue's and the seat's rows and the kit's `coll.18` (`run() { ( "$@" ); }`), every one a run
+  under bash and sh; 3 REPORT->CLEAN, the `$10` rows, where `main` took `$10` for the tenth word and
+  bash and dash read `${1}0` and run nothing (zsh runs the tenth: named); the other 27,578 rows
+  byte-identical; the multiplicity audit: those three alone lose a text, `main`'s over-report. Pins:
   `tests/test_workflow_positional_handoff.py::TestTheCallsTheFoldDidNotFollow`, truth in the
   comments. No pin moved. Sizes: `scripts/workflow_called_fetches.py` 593 (+86),
   `scripts/workflow_use_scopes.py` 154 (+1, the two granted lines).
