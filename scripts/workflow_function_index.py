@@ -182,4 +182,3 @@ class FunctionIndex:
             return frame.resolved if frame.resolved_depth >= shallowest else None
         at = bisect_right(self.unmatched_positions, position)
         return self.unmatched[at][1] if at < len(self.unmatched) else None
-

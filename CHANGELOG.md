@@ -105,6 +105,8 @@ evidence exposed.
   path. A committed deterministic 153-program sample separately compares 4,465 indexed group
   answers and 4,465 `_piped_function_end` answers with the legacy scans over source and handed
   statements, including the review seat's exact 22 `div*` / `hp*` rows and three generated movers.
+  A direct recheck of the seat's 3,000 generated rows compares another 113,229 group answers and
+  113,229 function-end answers with zero mismatches.
   On the forge, serial process CPU at 160, 320 and 640 definitions was
   0.160/0.331/0.731 s for nested bodies, 0.161/0.335/0.737 s for one-line nested bodies,
   0.250/0.497/0.989 s with one function called, 0.239/0.478/0.951 s with none called, and
