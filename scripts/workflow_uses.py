@@ -16,7 +16,6 @@ from dataclasses import dataclass
 import os
 import re
 
-import shell_lex
 import shell_reader
 from shell_reader import command
 from workflow_called import _carried, _writes, record_called, with_call_stdin
@@ -25,8 +24,7 @@ from workflow_options import _MAINS
 from workflow_forms import (BIN_DIRS, CONTAINERS, at_directory,
                             chmod_conditional_executable, chmod_executable, chmod_targets,
                             covers, described, in_container, may_run, same_file, stdin_program)
-from workflow_programs import (_SHELL_STRING, VALUE_PROGRAM, reader_files,
-                               redirection_handoffs, scripts)
+from workflow_programs import VALUE_PROGRAM, reader_files, redirection_handoffs
 from workflow_printers import _cat_reads_stdin
 from workflow_use_scopes import (_COMPOUNDS as _COMPOUNDS, _forked as _forked, _forked_index,
                                  _function_changes, _function_ranges as _function_ranges,
@@ -36,24 +34,20 @@ from workflow_use_scopes import (_COMPOUNDS as _COMPOUNDS, _forked as _forked, _
 # names, and its callers keep reaching them here.
 from workflow_values import (Values as Values, assigned as assigned, record as record,
                              valued as valued, valued_argvs as valued_argvs)
-from workflow_values import PAST, _as_word, _for_parts, _literals, emptied
+from workflow_values import PAST, _as_word as _as_word, _for_parts, _literals, emptied
+# The command words a use is read through moved to `workflow_use_words` whole; its callers keep reaching them here.
+from workflow_use_words import (EXECUTORS as EXECUTORS, INTERPRETERS as INTERPRETERS, UNPACKERS as UNPACKERS,
+                                _WHOLE as _WHOLE, _copied, _first_operand, _resolved as _resolved,
+                                _on_stdin as _on_stdin, _unvalued, _value_command as _value_command,
+                                _value_stage)
 
 
-INTERPRETERS = ("sh", "bash", "dash", "zsh", "ksh", "ash", "csh", "tcsh", "fish", "mksh",
-                "python", "python3", "perl", "ruby", "node", "php", "pwsh", "eval", "source",
-                ".")
-# Unpacking a downloaded archive executes its bytes too: they choose what
-# lands on disk and under what name.
-UNPACKERS = ("tar", "unzip", "install", "gunzip", "bsdtar")
-EXECUTORS = INTERPRETERS + UNPACKERS
 _REFERENCE = re.compile(
     r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|([1-9][0-9]*)|([@*])|"
     r"\{([A-Za-z_][A-Za-z0-9_]*|[1-9][0-9]*|[@*])\})"
 )
 _ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\+?=")
 _DECLARATIONS = ("declare", "export", "local", "readonly", "typeset")
-# ONE whole reference (`$T`, `${T}`, `${T:-d}`, `${a[0]}`): bash splits its value unquoted.
-_WHOLE = re.compile(r"\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*(?:\[[0-9]+\]|:?[-=][^{}]*)?\})", re.A)
 
 
 @dataclass(frozen=True)
@@ -348,107 +342,6 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset(), ha
                           and _unvalued(following, unresolved)):
             return "piping it into `%s`" % os.path.basename(following[0])
     return None
-
-
-def _first_operand(words):
-    """The first word of `words` that is no option: the one a shell named by a value command word would run as its
-    script (#3143) -- the fetched file in `$SHELL ./t`, `head` in `$S head -n 99 t`, where `$S` may be nothing in
-    front of a name the reader knows (#2472, #3003) and a shell there would run `head`, not `t`; None where none."""
-    return next((word for word in words if not str(word).startswith("-")), None)
-
-
-# A default the reader reads its own way (`${X:-sh}` as `sh`, `${X:=cat}` as `cat`, a wrapper's as the wrapper: #2472)
-# and an array spliced whole (`"${CMD[@]}"`), which the guard resolves at its splice (#2770): neither is a value this
-# guard cannot name. An alternate (`${A:+echo}`) is: it reads as a bare reference in its place (#3003).
-_OWN_FORM = re.compile(r"^\$\{[A-Za-z_@*#?0-9]+(?:\[[^]]*\])?:?[-=]")
-_SPLICE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\[[@*]\]\}$")
-# One expansion in a command word's text: a braced one (one level of braces inside), a name, a positional, `$@`, `$*`.
-_EXPANSION = re.compile(r"\$(?:\{(?:[^{}]|\{[^{}]*\})*\}|[A-Za-z_][A-Za-z0-9_]*|[0-9@*])")
-
-
-def _value_command(word):
-    """Whether a command word holds a live `$` expansion (`$SHELL`, `"$RUN"`, `"$@"`, `${X#y}`, `${P}sh`) whose
-    program may be a shell -- the text after its last expansion ends some name of `INTERPRETERS` and holds no `/`
-    (`$S/x` runs an `x`; `a$` expands nothing) -- so that, where the table gives it no value at all, the union rule
-    reads it as a possible runner of the fetched file that is its first operand (`use`, #3143). Not a single-quoted
-    `'$X'`, a default the reader reads its own way (`_OWN_FORM`) or an array spliced whole (`_SPLICE`); an alternate
-    is one, the bare reference it reads as, and a word with no `_Token` facts reads live: the fail-closed direction.
-    A command substitution (`$(which sh) ./t`) keeps `main`'s reading, a named limit."""
-    text = str(word)
-    if _OWN_FORM.match(text) or _SPLICE.match(text) or getattr(word, "live_dollar", True) is False:
-        return False
-    ends = [found.end() for found in _EXPANSION.finditer(text)]
-    if not ends:
-        return False
-    tail = text[ends[-1]:]
-    return "/" not in tail and any(name.endswith(tail) for name in INTERPRETERS)
-
-
-def _unvalued(argv, table):
-    """Whether `table` gives `argv` no value at all -- `_resolved` makes no argv of it -- so that a value command
-    word there may name any program (`use`, #3143)."""
-    return next(_resolved(argv, table), None) is None
-
-
-def _value_stage(statement, position, argv):
-    """Whether the second walk asks the table about this stage (`uses`, #3143) -- `static_values` walks the step up
-    to it: its command word is a value command word, or it is a `cat` whose next stage holds a `$`."""
-    if argv and os.path.basename(argv[0]) == "cat" and position + 1 < len(statement.stages):
-        return any("$" in str(word) for word in statement.stages[position + 1].argv)
-    return bool(argv) and _value_command(argv[0])
-
-
-def _copied(how, name, dest):
-    """`how`, naming the copy of `dest` it reaches the file through (`uses`)."""
-    if same_file(name, dest):
-        return how
-    shown = re.sub(r"^\$CWD[^/]*/", "", name).replace("$UP", "..")
-    return how + " (as `%s`, copied from it earlier)" % shown
-
-
-def _on_stdin(argv):
-    """Whether a shell argv the table MADE may run its standard input (#2425: a `-c` string's own
-    program), as `_resolved` asks: not where that string is ONE bare `cat` or `tee` (no operand but
-    `-`, no redirection) that only hands its input on (`CMD=sh; $CMD -c 'cat' < f`); any other may,
-    failing closed (`cat "$0"`, `tee x`, `csh`, `echo sh`). The rule is the table's: the use as
-    written keeps main's reading, a printer's stream unfollowed: `sh -c 'cat' < f` over-reports."""
-    strings = scripts(argv) if os.path.basename(argv[0]) in _SHELL_STRING else []
-    try:
-        parsed = list(shell_reader.statements(strings[0])) if len(strings) == 1 else []
-    except shell_lex.Unreadable:
-        parsed = []
-    if len(parsed) != 1 or len(parsed[0].stages) != 1:
-        return True
-    stage, inner = parsed[0].stages[0], command(parsed[0].stages[0].argv)
-    return bool(inner) and (os.path.basename(str(inner[0])) not in ("cat", "tee") or bool(
-        stage.reads or stage.writes) or not set(map(str, inner[1:])) <= {"-"})
-
-
-def _resolved(argv, table):
-    """The argvs `use()` weighs after `argv` as written (#2425, #2489): `valued_argvs`' argvs, on
-    the terms it leaves its caller -- a word that was ONE whole reference (`_WHOLE`) split on its
-    value's blanks, then `command()` re-reading the argv, one left empty or a shell whose `-c`
-    string is a bare printer (`_on_stdin`) dropped -- and none where nothing resolves. A first word
-    the table put there that is an assignment is the command bash runs, so no argv is made of it --
-    behind a written `env`/`sudo` it is theirs, and main's dynamic-operand report stands."""
-    mark = object()     # never resolves: it fences each word, so a made word's source is known
-    fenced = [part for word in argv for part in (mark, word)]
-    for words in valued_argvs(fenced, table):
-        if words is fenced:                 # `[argv]` itself: nothing resolved
-            return
-        sources, source, kept = iter(argv), "", []
-        for word in words:
-            if word is mark:
-                source = next(sources)
-            elif word is not source and _WHOLE.fullmatch(source) and re.search("[ \t\n]", word):
-                kept += [_as_word(shell_reader.derived(part, word), source)
-                         for part in re.split("[ \t\n]+", word) if part]
-            else:
-                kept.append(word)
-        if kept and kept[0] is not argv[0] and shell_reader._ASSIGNMENT.match(kept[0]):
-            continue                        # bash runs it as the command: never an assignment
-        if (kept := command(kept, argv)) and _on_stdin(kept):   # (#2670) which words the table made, by `argv`
-            yield kept
 
 
 def _function_use(stmts, definition, args, dest, directory, named, inherited, table, scopes,
