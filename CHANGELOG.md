@@ -12,6 +12,50 @@ evidence exposed.
   overlapping regex repetitions. Trap options now use the existing path-word repetition, and
   variable names and parameter sequences are consumed possessively. Both keep the same accepted
   language; serial regression tests check scaling when a failing input doubles.
+- **Workflow guard reads a command word it cannot resolve as a possible runner of the fetched file
+  that is its first operand (#3143).** `curl -fsSLo t URL` then `$SHELL ./t` ran the download under
+  every parent and read CLEAN: `workflow_uses.use` reported a run only where the command word named
+  an interpreter, so `$SHELL`, its braced form, `"$SHELL"`, `$RUN` (unset, or set by the runner or
+  `env:`), `"$@"`, an expansion in front of `sh` and a modified reference fell through, and `cat t |
+  $SHELL` with them -- the #3140 seat's N1 root. `RUN=sh` set in the step resolved through the
+  table, a shell's default read as `sh`, a spliced array at its splice, and `$SHELL < t` read the
+  value word as a stdin runner already. Now, in the guard's second walk, a command word holding a
+  live `$` expansion whose name may end as a shell's does (`_value_command`: the text after its last
+  expansion ends a shell's name and holds no `/`) and that the value table gives no value at all
+  (`_unvalued`) reports as running the fetched, unchecked file that is its first non-option operand
+  ("a command word this guard cannot resolve"), and behind `cat t |`, with nothing but options after
+  it, as piping it: the union rule, fail-closed. The main pass stays `main`'s answer word for word,
+  and the walk's use follows every one `main` names, so `main`'s finding stands wherever it names
+  one -- a body's `$RUN` its call resolves to `sh`, a locale string read bash's way. What stays as
+  `main` reads it: a default the reader reads its own way (`${X:-cat} ./t`; `cat t |
+  x"${SH:-bash}"`, read as `xbash`), a spliced array, a value in front of a name the reader knows
+  (`$S head -n 99 t`), a value after a value, a value the table names (`cmd='$1'` then `"$cmd"`), a
+  value handed no fetched file, a name no shell's can be (`$S/x ./t`, `a$ ./t`, `$'bash\ue004'
+  ./t`), and a command substitution as the command word (`` `echo sh` ./t ``, `$(which sh) ./t`),
+  which the reader lifts before the walk: #3157's limit, named. With a credited check before the use
+  the step reads as the gate rows do (CCCRR). The prices, named: a value naming a non-runner or
+  nothing -- `$EDITOR ./t`; `${X#y} ./t` with `X` unset; `${A:+echo} t`, an alternate, which reads
+  as the bare reference in its place (#3003), and with it a quoted alternate whose value holds a
+  blank -- is an over-report, as #3141 would read it UNVERIFIED; `$"sh"` gains a second finding
+  beside `main`'s, the walk reading dash's kept `$` as the reference `$sh` (#3048); and in a folded
+  job the first fold's held fallback text takes its place over a later fold's main-logic text: fuzz
+  `F09407`, whose words that may be nothing are read in halves folds, names its use `${C+true}` in
+  the job where `main` named it `bash`. The row reports in every cell as before and every step
+  `main` reports still reports; the text changes in all 25 cells (45 findings), and in the 20 of one
+  step a line the job also gains a finding for step `s4`. The core differential at this head
+  (a757ba32 against `main` 68f11045: the core sample, 10,000 rows, and this issue's 44): 108 rows
+  move, 62 with cells from CLEAN to REPORT (1,336 cells) and 48 with a second finding (765 cells;
+  #3127's two `p.alt` rows are both), none from REPORT to CLEAN, and the main pass is unchanged on
+  every row -- this issue's rows and the core's copies of them, #3140's `$RUN`/`$SHELL` rows,
+  seat-hunt13's whose shell is set in a step of its own, seat-hunt16's, seat-hunt18's two quoted
+  alternates (the price), #3127's `p.alt` rows and 15 fuzz rows; F09407 is the one text price. Pins:
+  `tests/test_workflow_guard_reader_forms.py::TestAValueCommandWordMayRunTheFetchedFile` (thirteen
+  rows report in all five settings, six that reported already still do, sixteen controls stay CLEAN,
+  the checked row reads CCCRR, `main`'s finding stands, the main pass is unchanged, the predicate,
+  and the second walk's lookup sharing `uses()`'s one lazy table, #3145's). Sizes:
+  `scripts/workflow_uses.py` 670 (699 on `main`: the command-word block moved whole to
+  `scripts/workflow_use_words.py`, 132).
+
 - **Workflow uses shares one value-table walk and one fork index across sibling calls (#3145).** A
   step with `n` function definitions followed by `n` calls rebuilt `static_values` at every call:
   each rebuild walked all earlier calls and `_forked` rescanned every statement through `_openers`.
