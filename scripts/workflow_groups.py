@@ -12,7 +12,8 @@ its own, which the reader hands back as the keyword's text, is then no structure
 reads LOUD, as it does for `main`) -- or back from a call to the body
 of the definition it names (`_function_body`); `workflow_annotate` asks `piped_group_member` whether a
 printer stands in such a group; `workflow_written` reads a group written to a file through `_grouped`.
-Bounded: `_GROUP_LINES` statements a walk follows, `_CALL_REACH` statements back to a definition; past the
+Bounded: `_GROUP_LINES` parsed statements a walk follows (not lines: a `{` alone on its line, a `then` on its
+own, are statements), `_CALL_REACH` statements back to a definition, past which the call reads LOUD; past the
 first the walk ends in a stand-in word told by its type (`_PastGroup`), never by its text, which a step may
 type.
 
@@ -88,7 +89,8 @@ def _passes_through(argv, stage):
     return all(w == "-" for w in words[:at] + words[at + 1:])
 
 
-_GROUP_LINES = 64
+_GROUP_LINES = 64                   # PARSED STATEMENTS a walk follows, not lines: `{` alone on its line and a
+                                    # one-line `if x; then` are one each, so a 63-line body may reach the bound
 _CALL_REACH = 4 * _GROUP_LINES      # how far back a piped call's definition is looked for, in statements
 _PAST_GROUP = ("a group of more statements than this guard follows, %d" % _GROUP_LINES,
                'exec "$PROGRAM"')
@@ -96,6 +98,14 @@ _HEADERS = ("if", "while", "until", "for", "case", "select")     # a compound's 
 _ENDS = ("fi", "done", "esac")                                   # ... and its closer
 _CLOSERS = ("}",) + _ENDS
 _DROPPED = ("{", "then", "do", "else", "time")                   # a body statement's opening words
+_TESTED = ("if", "elif", "while", "until")                       # a header whose test command writes as its body does
+_SILENT_TESTS = ("true", "false", ":", "test", "[", "[[", "((", "read", "shift")    # ... a test that writes nothing
+
+
+class _Header(list):
+    """A compound header's own test command, as a pipeline of the compound (#3153 item 2): `if echo P; then :;
+    fi | sh` runs P. `_grouped` hands it on where it is asked (`headers`), and `workflow_printers.group_reading`
+    reads it BESIDE the body's reading, never instead; every other reader is handed the body alone, as before."""
 
 
 def _structure(stage, strict=False):
@@ -145,12 +155,13 @@ def _kin(statement, own):
     return type(statement) is type(own) and getattr(statement, "key", None) == getattr(own, "key", None)
 
 
-def _stripped(stages, strict=False):
+def _stripped(stages, strict=False, headers=False):
     """The pipeline a body statement runs once its opening words are dropped -- a function header's `f() {`,
     `{`, `then`, `do`, `else`, `time`, a case arm's marker (the parser's own, `shell_reader.is_arm`: never a word
     a step types in that shape) -- or None where the statement is a compound's header (`if`, `while`, `until`,
-    `for`, `case`, `select`: its own output is not read, a named limit), an `elif` or `in` line, or holds no
-    command; a header word alone (`if` with nothing behind it on its line) is a word, kept, no printer's --
+    `for`, `case`, `select`), an `elif` or `in` line, or holds no command; asked for `headers` (#3153 item 2), an
+    `if`, `elif`, `while` or `until` header gives its own test command instead, a `_Header`, unless that command
+    writes nothing (`_SILENT_TESTS` last in it: `true`, `test`, `[`, `read`...); a header word alone (`if` with nothing behind it on its line) is a word, kept, no printer's --
     LOUD, so a header a step types cannot end the walk early. `strict` (a `{ }` or `( )` group, which `main`
     reads one level): the opener's `{` dropped as `main` drops it, a nested opener's too while a word follows
     (`{ { echo P`; `{ '{'` keeps the typed one), and every other word kept -- `shell_reader.command` reads the
@@ -173,6 +184,10 @@ def _stripped(stages, strict=False):
             words = words[1:]
     if not words:
         return list(stages[1:]) or None
+    if headers and not strict and len(words) > 1 and words[0] in _TESTED:
+        test = [stages[0]._replace(argv=words[1:])] + list(stages[1:])
+        last = shell_reader.command(test[-1].argv)
+        return _Header(test) if last and str(last[0]) not in _SILENT_TESTS else None    # a bare name: the builtin
     if not strict and len(words) > 1 and (words[0] in _HEADERS or words[0] in ("elif", "in")):
         return None
     return [stages[0]._replace(argv=words)] + list(stages[1:])
@@ -203,7 +218,7 @@ def _stopped(pipelines):
     return len(argv) == 1 and isinstance(argv[0], _PastGroup)
 
 
-def _grouped(front, before, statements):
+def _grouped(front, before, statements, headers=False):
     """The pipelines of the group that closes at `front` which `producer`'s walk never reaches (#3026, #3117), in
     order, or None. `front` closes the group: a bare `}`, `fi`, `done` or `esac`; a stage closing a subshell; or
     the call of a function the step defines, with no words (`f | sh`: its body is the group, `_function_body`).
@@ -216,7 +231,8 @@ def _grouped(front, before, statements):
     top of a step: braces and subshells its only structure, every statement a pipeline -- wherever it stands,
     since the reader hands a keyword a step types as a quoted word back as the keyword's text (#3142 round 2),
     and a function's body is one; a keyword compound piped at its own closer (`fi`, `done`, `esac`) is read in
-    full, its header, arms and loop control known from that closer."""
+    full, its header, arms and loop control known from that closer, and asked for `headers`, its headers' own
+    test commands among the pipelines (`_Header`, #3153 item 2)."""
     if statements is None:
         return None
     own = _own(front, statements)
@@ -226,10 +242,10 @@ def _grouped(front, before, statements):
         return _function_body(argv[0], statements, own)
     if not (closer or front.group_close) or not closer and front.group_open:
         return None
-    return _walk(_behind(statements, own), own, closer, bool(front.group_close) or closer not in _ENDS)
+    return _walk(_behind(statements, own), own, closer, bool(front.group_close) or closer not in _ENDS, headers)
 
 
-def _walk(statements, own, closer=None, strict=False):
+def _walk(statements, own, closer=None, strict=False, headers=False):
     """Back from a group's closer over `statements`, the ones in front of it NEAREST FIRST, to its opener: the
     pipelines of the group, in order, or None where no opener is met. Each statement's closers (`_structure`)
     are met first, going back, then its own pipeline (`_stripped`), then its openers; a nested group is read
@@ -275,7 +291,7 @@ def _walk(statements, own, closer=None, strict=False):
             if tail and not blocked and not all(_passes_through(shell_reader.command(s.argv), s) for s in tail):
                 body.insert(0, tail)
         else:
-            pipeline = _stripped(stages, strict)    # a body pipeline of its own
+            pipeline = _stripped(stages, strict, headers)   # a body pipeline of its own
             if pipeline and not blocked and not (loops and _silent(pipeline)):
                 body.insert(0, pipeline)
         for _each in range(opens):
@@ -308,9 +324,12 @@ def _function_body(name, statements, own):
     """The pipelines of the body of the function `name` defined last before the call (#3117), read back from its
     closer as a group (`_walk`): the definition's own pipeline with `f() {` dropped, then the body's; a body on
     the definition's line (`h() ( echo ok )`) is that one pipeline. Back from the call to the definition, the
-    last `_GROUP_LINES` statements passed are kept (the body closes among them, or the group is `_past`);
-    None where no definition is met within `_CALL_REACH` statements (bounded: a call is read in time linear in
-    the step, and a word that names no function the step defines -- a program -- costs the same)."""
+    last `_GROUP_LINES` statements passed are kept (the body closes among them, or the group is `_past`).
+    None where the statements run out with no definition met -- the word names a program, read as `main` reads
+    it; `_past`'s stand-in, LOUD, where `_CALL_REACH` statements pass without one (#3153 item 4: a definition
+    further back would run; fail-closed, the union of `main`'s reading and this one, at the price of a program
+    piped to a shell more than `_CALL_REACH` statements into a step). Bounded: a call is read in time linear in
+    the step, and a word that names no function the step defines costs the same."""
     trail: collections.deque = collections.deque(maxlen=_GROUP_LINES + 1)
     reached = 0
     for statement in _behind(statements, own):
@@ -318,7 +337,7 @@ def _function_body(name, statements, own):
             continue
         reached += 1
         if reached > _CALL_REACH:
-            return None
+            return [_past(statement.stages[0])]
         if _function_syntax(list(statement.stages[0].argv))[0] != name:
             trail.append(statement)
             continue

@@ -86,6 +86,7 @@ from workflow_fetch import (FETCHERS as FETCHERS, STDOUT as STDOUT, Fetch as Fet
                             compound_stream_consumer as compound_stream_consumer,
                             parse_fetch as parse_fetch, stdout_fetch as stdout_fetch,
                             stream_consumer as stream_consumer, streamed_fetch as streamed_fetch)
+from workflow_groups import _passes_through, _piped
 from workflow_gating import (Inlined as Inlined, Reach as Reach, _errexit,
                              clears as clears, inlined_reaches, inlined_stops,
                              seed as seed, statement_analysis,
@@ -326,8 +327,11 @@ def unread_program(argv, stage, walk, inside, before=None, shell=None, statement
             shell_reader.readable(printer[0]))), list(printer[1:]), walk, _Quiet)
         answer = (FileBound(answer, printer_files)
                   if printer_files and isinstance(answer, _Quiet) else answer)
+        at = len(before) - 1            # back through pass-through stages to the closer (`} | cat | sh`, #3153)
+        while at > 0 and _passes_through(command(before[at].argv), before[at]) and _piped(before[at], before[at - 1]):
+            at -= 1
         if (isinstance(answer, _Quiet) and statements and before
-                and (list(before[-1].argv) in (["}"], ["fi"], ["done"], ["esac"]) or before[-1].group_close)):
+                and (list(before[at].argv) in (["}"], ["fi"], ["done"], ["esac"]) or before[at].group_close)):
             for printer_statement in range(len(statements) - 1, -1, -1):
                 statement = statements[printer_statement]
                 if any(printer[0] is word for item in statement.stages for word in item.argv):
