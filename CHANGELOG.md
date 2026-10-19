@@ -11,19 +11,23 @@ evidence exposed.
   step with `n` function definitions followed by `n` calls rebuilt `static_values` at every call:
   each rebuild walked all earlier calls and `_forked` rescanned every statement through `_openers`.
   Doubling 16 to 32 siblings therefore raised value-walk visits 136 to 528 and opener visits 784
-  to 3,104, nearly 4x. One `_StaticValues` index now owns the step's function, control and fork
-  structure and advances a compatible top-level table only through statements not already read.
-  `_ForkedIndex` records each child range once and represents the ranges covering a statement and
-  the target's same-child ranges as integer bit sets, so membership is a bounded bit operation and
-  deeply nested ranges do not build a set per depth. The forward table is deliberately reused only
-  when every step-defined call leaves values unchanged; a body that may assign, `eval` or source a
-  file keeps the previous fresh walk, including `record_called`'s fixed carry budget and stand-in
-  prices. The structural pin now measures exactly 16 to 32 value visits and 49 to 97 opener visits.
-  On current `main`, the isolated uses pass took 0.132 / 0.491 / 1.919 CPU seconds for 80 / 160 /
-  320 siblings; it now takes 0.020 / 0.038 / 0.077 seconds, 1.9x then 2.0x per doubling and 25x
-  faster at 320. A 1,340-row generated value/use differential is byte-identical. Pin:
-  `tests/test_workflow_positional_handoff.py`; sizes: `scripts/workflow_uses.py` 632,
-  `scripts/workflow_use_scopes.py` 210.
+  to 3,104, nearly 4x. The first value lookup still takes the exact fresh path, and `uses` builds no
+  `_StaticValues` object before a second lookup can reuse it; only then does it classify the bodies,
+  index the child ranges and advance a compatible top-level table through statements not already
+  read. `_ForkedIndex` represents the ranges covering a statement and the target's same-child ranges
+  as integer bit sets. Reuse requires every step-defined call to leave values unchanged; a body that
+  may assign, `eval` or source a file keeps the previous fresh walk, `record_called` budget and
+  stand-ins. The pins measure 17 to 33 value visits and 98 to 194 opener visits for 16 to 32
+  siblings, while one call among 32 definitions takes zero whole-step `_writes` classifications
+  (64 before the lazy boundary). On current `main`, a parsed sibling pass at 80 / 160 / 320 / 640
+  took 0.139 / 0.635 / 2.725 / 13.099 CPU seconds; it now takes 0.020 / 0.037 / 0.058 / 0.112.
+  Serial n=640 pass/job minima, base to head, are: siblings 23.046/23.945 to 0.332/1.139;
+  nested 0.092/1.317 to 0.072/1.215; three-line bodies 0.083/7.373 to 0.078/7.002;
+  one called 0.123/0.725 to 0.090/0.570; none called 0.079/0.560 to 0.071/0.479. No
+  shape slows; the three-line job remains superlinear in gating (#3128 item 2), outside this pass.
+  No readings move: a refreshed 1,340-row mixed-body value/use differential, including every
+  statement's table, is byte-identical. Pins: `tests/test_workflow_positional_handoff.py`; sizes:
+  `scripts/workflow_uses.py` 699, `scripts/workflow_use_scopes.py` 222.
 - **Large written shell programs stay linear through workflow job analysis (#3128, items 1, 3 and
   4).** A quoted 1 MiB heredoc written to a file and then run still grew superlinearly after
   #3105: `workflow_forms.flattened` and the guard walk copied the growing statement prefix once a

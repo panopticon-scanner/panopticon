@@ -688,3 +688,16 @@ class TestEachDefinitionIsIndexedOnceAPass(LinearGrowth, unittest.TestCase):
             with self.subTest(small=small, large=large):
                 self.assertGreaterEqual(large * 10, small * 18)
                 self.assertLessEqual(large * 10, small * 22)
+
+    @pytest.mark.serial
+    def test_one_call_does_not_classify_every_function_body_for_reuse(self):
+        """#3145: a table used once pays no whole-step readonly classification."""
+        size = 32
+        script = (self.FETCH + "".join("f%d() { sh t; }\n" % i for i in range(size))
+                  + "f%d\n" % (size - 1))
+        stmts = shell_reader.statements(script)
+        writes = workflow_uses._writes
+        with mock.patch.object(workflow_uses, "_writes", wraps=writes) as classified:
+            _names, uses = workflow_uses.uses(stmts, "t", 0)
+        self.assertEqual(size, len(uses))
+        self.assertEqual(0, classified.call_count)

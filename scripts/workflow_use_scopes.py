@@ -49,16 +49,11 @@ _COMPOUNDS = {"{": "}", "if": "fi", "case": "esac", "for": "done", "select": "do
               "while": "done", "until": "done"}
 
 
-def _fork_ranges(stmts):
-    """The child-shell statement ranges `_forked` reads, indexed once."""
-    ranges: list[tuple[int, int, bool]] = []
+def _forks(stmts, fork):
+    """Hand each child-shell range to `fork`, in the order `_forked` finds it."""
     opened: list[tuple[int, bool, str]] = []
     subshells: list[int] = []
     header = False                          # a function header's body is still to come
-
-    def fork(start, end, onward=False):     # `onward`: the close's statement pipes on past it
-        if start <= end:
-            ranges.append((start, end, onward))
 
     for position, statement in enumerate(stmts):
         end = position                      # the end of its `&&`/`||` list
@@ -81,6 +76,17 @@ def _fork_ranges(stmts):
                         fork(start, position, number < last)
     for start in subshells:                 # a group the step leaves open
         fork(start, len(stmts) - 1)
+
+
+def _fork_ranges(stmts):
+    """The child-shell statement ranges `_forked` reads, indexed once."""
+    ranges: list[tuple[int, int, bool]] = []
+
+    def fork(start, end, onward=False):     # `onward`: the close's statement pipes on past it
+        if start <= end:
+            ranges.append((start, end, onward))
+
+    _forks(stmts, fork)
     return ranges
 
 
@@ -98,8 +104,8 @@ class _ForkedView:
 class _ForkedIndex:
     """Every child range and target context of one step, found in one `_openers` walk."""
 
-    def __init__(self, stmts):
-        ranges = _fork_ranges(stmts)
+    def __init__(self, stmts, ranges=None):
+        ranges = _fork_ranges(stmts) if ranges is None else ranges
         self.covered = self._contexts(len(stmts), ranges, False)
         self.targets = self._contexts(len(stmts), ranges, True)
 
@@ -129,9 +135,9 @@ class _ForkedIndex:
         return _ForkedView(self.covered, active)
 
 
-def _forked_index(stmts):
+def _forked_index(stmts, ranges=None):
     """Index the child ranges of `stmts` once for all of its value-table targets."""
-    return _ForkedIndex(stmts)
+    return _ForkedIndex(stmts, ranges)
 
 
 def _forked(stmts, index):
@@ -148,8 +154,14 @@ def _forked(stmts, index):
     closes it is outside it (`{ T=x; } | sh "$T"`). A keyword is one only where the stage's command
     would stand (`_openers`); an array literal's parentheses count as a group's, which marks a
     multi-line literal's word lines unsure."""
-    indexed = _forked_index(stmts).at(index)
-    return {position for position in range(len(stmts)) if position in indexed}
+    forked: set[int] = set()
+
+    def fork(start, end, onward=False):     # `onward`: the close's statement pipes on past it
+        if not (start <= index < end or index == end and not onward):
+            forked.update(range(start, end + 1))
+
+    _forks(stmts, fork)
+    return forked
 
 
 def _openers(stage, header=False):
