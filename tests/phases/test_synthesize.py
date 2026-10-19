@@ -313,6 +313,28 @@ class TestSynthesizePhase(unittest.TestCase):
         self.assertIn(f"<h1>{escaped}</h1>", page)
         self.assertNotIn(f"<h1>{name}</h1>", page)
 
+    def test_real_child_grades_the_review_root_not_the_display_name(self):
+        # #3163: a PR worktree must measure its files, even when the original
+        # checkout has the same filenames with different contents.
+        original = os.path.join(self.root, "original-project")
+        os.makedirs(original)
+        with open(os.path.join(original, "app.py"), "w") as fh:
+            fh.write("original = 1\n" * 9)
+        with open(os.path.join(self.root, "app.py"), "w") as fh:
+            fh.write("first = 1\n\nsecond = 2\n")
+        runio._write_json(runio._pano(self.root, "groups.json"), {
+            "groups": [{"name": "app", "files": ["app.py"]}]})
+
+        for target in (self.root, original):
+            with self.subTest(target=target):
+                manifest = dict(self.manifest, target=target, review_root=self.root)
+                result = synthesize.synthesize_execute(self.root, manifest)
+                report = runio._load_json(runio._pano(self.root, "report.json"))
+                self.assertEqual(result.kind, "advanced")
+                self.assertEqual(report["meta"]["target"], os.path.basename(target))
+                self.assertEqual(report["summary"]["health"]["total_loc"], 2)
+                self.assertEqual(report["summary"]["overall_grade"], "S")
+
     def _assert_real_child_refuses_artifact_leaf(
             self, leaf, action, expected_files, plant=None, still_planted=None,
             detail=None):

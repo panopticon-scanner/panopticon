@@ -243,6 +243,7 @@ def synthesize_execute(review_root, manifest):
            "--out", report,
            "--groups", runio._pano(review_root, "groups.json"),
            "--target=" + target_name,  # = keeps leading '-' in the value
+           "--root=" + review_root,
            "--security", manifest.get("security_mode", "standard"),
            "--run-id", manifest.get("run_id") or "",   # §5.1: X0X report provenance
            "--verdicts-dir", verdicts_dir]
