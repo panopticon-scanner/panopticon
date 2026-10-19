@@ -43,6 +43,67 @@ evidence exposed.
   the checked row reads CCCRR, `main`'s finding stands, the main pass is unchanged, and the
   predicate). Sizes: `scripts/workflow_uses.py` 663 (+70).
 
+- **Workflow uses shares one value-table walk and one fork index across sibling calls (#3145).** A
+  step with `n` function definitions followed by `n` calls rebuilt `static_values` at every call:
+  each rebuild walked all earlier calls and `_forked` rescanned every statement through `_openers`.
+  Doubling 16 to 32 siblings therefore raised value-walk visits 136 to 528 and opener visits 784
+  to 3,104, nearly 4x. The first value lookup still takes the exact fresh path, and `uses` builds no
+  `_StaticValues` object before a second lookup can reuse it; only then does it classify the bodies,
+  index the child ranges and advance a compatible top-level table through statements not already
+  read. `_ForkedIndex` represents the ranges covering a statement and the target's same-child ranges
+  as integer bit sets. Reuse requires every step-defined call to leave values unchanged; a body that
+  may assign, `eval` or source a file keeps the previous fresh walk, `record_called` budget and
+  stand-ins. The pins measure 17 to 33 value visits and 98 to 194 opener visits for 16 to 32
+  siblings, while one call among 32 definitions takes zero whole-step `_writes` classifications
+  (64 before the lazy boundary). On current `main`, a parsed sibling pass at 80 / 160 / 320 / 640
+  took 0.139 / 0.635 / 2.725 / 13.099 CPU seconds; it now takes 0.020 / 0.037 / 0.058 / 0.112.
+  Serial n=640 pass/job minima, base to head, are: siblings 23.046/23.945 to 0.332/1.139;
+  nested 0.092/1.317 to 0.072/1.215; three-line bodies 0.083/7.373 to 0.078/7.002;
+  one called 0.123/0.725 to 0.090/0.570; none called 0.079/0.560 to 0.071/0.479. No
+  shape slows; the three-line job remains superlinear in gating (#3128 item 2), outside this pass.
+  No readings move: a refreshed 1,340-row mixed-body value/use differential, including every
+  statement's table, is byte-identical. Pins: `tests/test_workflow_positional_handoff.py`; sizes:
+  `scripts/workflow_uses.py` 699, `scripts/workflow_use_scopes.py` 222.
+- **Workflow reader reads what #3117 named and `main` reads CLEAN while the payload runs (#3153).**
+  Beside `main`'s reading, never instead. (1) A printer of a variable whose value fetches, where a
+  forked child inherits the value (a piped brace group, a subshell, a compound body), in a test (`if
+  echo "$X" | sh`), on a `then` or `do` line, or with a lifted `$(...)` in it: the value is WEIGHED
+  beside the printer's unspelled words, never spelled -- `workflow_annotate._spell` sets it on the
+  word as `weighed` (`_Fold.at`'s `forks`; `workflow_values._lifted` writes a lifted substitution as
+  `$(...)`, text no one knows) and `workflow_printers._inherited` hands it to the printer's weighing
+  in the second walk, so a value that fetches makes that reading LOUD while every other reader reads
+  the word as written and the main pass gives `main`'s answer; where rule 6 takes a spelling back
+  the value is weighed too (`_as_weighed`), and a weighed word is no mark (it vetoes nothing, and a
+  step no mark stands in still weighs). In a forked child the fold holds the values from before the
+  fork and the child's own assignments unsure, so a name the child assigns holds two candidates and
+  none is taken -- pinned against `static_values` over 406 steps, 400 of them seeded random. (2) A
+  compound header's own test command writes to the pipe too (`if echo P; then :; fi | sh` runs P):
+  read as a pipeline of the compound (`workflow_groups._Header`, asked for by `group_reading` alone)
+  beside the body's reading (`_beside`), unless it is a test that writes nothing (`_SILENT_TESTS`),
+  a no-op of the body passed over in that reading only (`_noop`). (3) #3095's pairing reaches the
+  closer through pass-through stages (`} | cat | sh`): the carried finding alone, as for a brace
+  group. (4) A piped call whose definition lies past `_CALL_REACH` reads LOUD (`_past`'s stand-in),
+  as main read it CLEAN while the body ran. (5) `_GROUP_LINES` counts parsed statements, not lines
+  (documented in the code). Prices, named: a header test that writes nothing but is no known silent
+  one (`grep -q`) reads LOUD, as #3026 reads a group holding a statement no printer's; a clean call,
+  or any one-word program, piped to a shell past the reach reads LOUD; a weighed value behind a
+  stage that rewrites it reads as its literal twin does (LOUD where the text fetches); the pairing
+  through pass-through stages drops the duplicate `main` gave (2 findings to 1). Limits that stay,
+  CLEAN on `main` and here: a printer in a loop body (an earlier pass may have changed the value),
+  in a step that defines a function (rule 7), or inside a command substitution's script (no table
+  reaches it), and a header's output inside a substitution's script or a written file. Differential
+  against `main` 117b11d4, pinned nonce, five postures: #3153's 1,215 rows (26 families x 46 and 19
+  controls and prices; truth under the eight parents: 888 run, `main` misses 809, this reading 102
+  -- the three limits) and the #3117 and #3142 rows (4,419): 0 REPORT->CLEAN, every new family
+  reading as its literal twin variant by variant; the full review kit as assembled before these rows
+  joined it (`kit-adds/mkkit.py`, 86,382 rows): 0 REPORT->CLEAN, no verdict moved and no finding of
+  `main`'s lost. Kit rows added (`kit-adds/3153-*-rows.tsv`): typed 1,067, nested 34, forged 24,
+  planted 968, typed-closer 132, and #3153's own 1,215 with the #3117 kit's 644 and 1,114. Pins:
+  `tests/test_workflow_printers.py` (`TestTheLimitsOf3117AreRead`; the four #3117 limit rows leave
+  `LIMITS`). Sizes: `_literal`, its name patterns and the names bash sets moved from
+  `scripts/workflow_annotate.py` (691) to `scripts/workflow_values.py` (580), imported back under
+  each name's own; `scripts/workflow_printers.py` 691, `scripts/workflow_groups.py` 401,
+  `scripts/workflow_forms.py` 461.
 - **Large written shell programs stay linear through workflow job analysis (#3128, items 1, 3 and
   4).** A quoted 1 MiB heredoc written to a file and then run still grew superlinearly after
   #3105: `workflow_forms.flattened` and the guard walk copied the growing statement prefix once a
@@ -112,16 +173,19 @@ evidence exposed.
   `eval-if-body` twins: CLEAN -> REPORT); a group written to a file and holding a statement no
   printer's is handed on LOUD beside `main`'s forwarding finding (#3125's PR-A-025 and R2-F-034
   rows: two findings, as `main` gives `{ F; echo ok; } > tool` then `sh tool`). Differential against
-  `main` b61bbc76, pinned nonce, five postures: the kit's 644 rows (14 families x 46), 1,114 more
-  (24 families x 46 + 10 controls) and the seat's 390 re-read from its TSVs: 0 REPORT->CLEAN; misses
-  by truth 34 + 34 + 4, all limit (a) and (c); the pairing line changes no kit row's finding count;
-  the reading costs 1.389x `main`'s time on the group-heavy rows, the suite's time unchanged. Pins:
-  `tests/test_workflow_printers.py` (`TestTheGroupsThisGuardFollowsNow`, `TestTheGroupWalksParts`;
-  the #3026 classes moved to the new reading), `tests/test_workflow_guard.py` (#2430's compound pin,
-  one finding under #3095), `tests/test_workflow_written_files.py` (the nested group, #3110's named
-  limit, read now). Sizes: `scripts/workflow_groups.py` 382 (new: the walk and the pipe's plumbing,
-  split out of the printers module at its size and imported back under each name's own, as #3013
-  did), `scripts/workflow_printers.py` 591 (-31), `scripts/workflow_forms.py` 454 (+1),
+  `main` 4285dc5e, the base #3142 merged on, pinned nonce, five postures: 3,273 rows -- the kit's
+  644 (14 families x 46), 1,114 more (24 families x 46 + 10 controls), the seat's 390 re-read from
+  its TSVs, and the round-2 typed, nested and forged rows (1,125) -- 0 REPORT->CLEAN; misses by
+  truth 34 + 34 + 4, all limit (a) and (c), read since #3153; the seat's full kit (36,144 rows): 0
+  REPORT->CLEAN; the pairing line changes no kit row's finding count; the reading costs 1.33x to
+  1.39x `main`'s time on the group-heavy rows (the three rounds' chains and the seat's), the suite's
+  time unchanged. Pins: `tests/test_workflow_printers.py` (`TestTheGroupsThisGuardFollowsNow`,
+  `TestTheGroupWalksParts`; the #3026 classes moved to the new reading),
+  `tests/test_workflow_guard.py` (#2430's compound pin, one finding under #3095),
+  `tests/test_workflow_written_files.py` (the nested group, #3110's named limit, read now). Sizes:
+  `scripts/workflow_groups.py` 382 (new: the walk and the pipe's plumbing, split out of the printers
+  module at its size and imported back under each name's own, as #3013 did),
+  `scripts/workflow_printers.py` 591 (-31), `scripts/workflow_forms.py` 454 (+1),
   `scripts/workflow_annotate.py` 699 (+0), `scripts/workflow_programs.py` 496 (+2).
 - **Workflow reader marks the direct `$?` inside `[[ ... ]]` with a mark of its own, from the step's
   text (#3116 item 1 and the reader part of item 2).** The lexer escapes every pattern character
