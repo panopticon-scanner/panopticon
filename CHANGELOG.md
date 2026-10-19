@@ -7,6 +7,19 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader keeps the reader's attributes on a word it weighs (#3164).** Since #3153 a
+  printer's word whose value fetches gets its `weighed` text on a fresh token in three places: a
+  forked child's printer, a test's, and rule 6's take-back (`_as_weighed`). That fresh token
+  dropped every attribute the reader had set on the word as written (`double`, `kept`,
+  `live_dollar`, `exact_dollar` on a `"$X"`), so a later reader branching on one would read the
+  weighed word as unquoted. `workflow_annotate._rebuilt` now makes annotate's tokens: a `weighed`
+  one keeps every attribute and reads as written. A `spelled` one stays the bare token it always
+  was: it is read as its value, and `main`'s answers rest on that bare token, so it stays as
+  `main` has it. Pins: `TestAWeighedWordReadsAsWritten` (each of the three places against the
+  word a fresh parse writes, the spelled word, and `_rebuilt`'s own two: a word the reader left a
+  plain string, a word's markers). Core sample `core-20261018` (10,000 rows) plus the 4 pins as
+  rows, head against `main`: byte-identical (nonce-normalized), 0 REPORT->CLEAN, no main-pass
+  movers; 68 core rows go through a weighed rebuild.
 - **Workflow trap and option-word matching avoid quadratic backtracking (#2981).** A long
   `rm -r ... !` trap action or `$aaaa...!` option word repeatedly split the same text between
   overlapping regex repetitions. Trap options now use the existing path-word repetition, and
