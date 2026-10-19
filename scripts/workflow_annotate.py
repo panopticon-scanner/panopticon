@@ -389,8 +389,15 @@ def _as_weighed(new, old):
     unspelled reading weighs beside its words; `old` itself where `new` spelled nothing."""
     if new is old or not hasattr(new, "spelled"):
         return old
-    token = shell_reader._Token(str(old), shell_reader._markers(old))
-    setattr(token, "weighed", getattr(new, "spelled"))
+    return _rebuilt(old, "weighed", getattr(new, "spelled"))
+
+
+def _rebuilt(word, attribute, text):
+    """A fresh token of `word` carrying annotate's mark `attribute`, `text`: a `weighed` word keeps every attribute
+    the reader set on it (`quoted`, `double`, `live_dollar`, `kept`, `whole`, `span`, ...), so each reader reads it
+    as written (#3164); a `spelled` one is bare, as ever -- that word is read as its value."""
+    token = shell_reader._Token(str(word), shell_reader._markers(word))
+    vars(token).update(getattr(word, "__dict__", {}) if attribute == "weighed" else {}, **{attribute: text})
     return token
 
 
@@ -417,8 +424,7 @@ def _spell(stage, argv, step, index):
         printed = " ".join([*map(str, argv[1:]), *(text for _at, _word, text in found)])
         if found and _FETCH_WORD.search(printed):
             for at, word, text in found:
-                stage.argv[at] = shell_reader._Token(str(word), shell_reader._markers(word))
-                setattr(stage.argv[at], attribute, text)
+                stage.argv[at] = _rebuilt(word, attribute, text)
             return
 
 
