@@ -29,6 +29,10 @@ _STALE: list[Callable[[], None]] = []
 # the body's positionals, and the body read nowhere else there (`workflow_called_fetches.called`) -- the union,
 # `main`'s reading never lost.
 _CALLED = {"on": False, "met": False}
+# A reserved word quoted or escaped where a command word stands (`'then' x`, `'{'`): bash runs a program of that name,
+# `main` reads the keyword; where a job holds one, `folds` reads the job once more with each such word a plain word
+# (`shell_reader._named`, #3154) -- the union, `main`'s reading never lost.
+_KEYWORD_SHAPED = {"on": False, "met": False}
 
 
 # The action of each `find` a fold reads where the guard asks how a stage uses a file
@@ -138,6 +142,8 @@ def folds(unsure):
     _LOCALE["met"] = False
     _flip(_CALLED, False)
     _CALLED["met"] = False
+    _flip(_KEYWORD_SHAPED, False)
+    _KEYWORD_SHAPED["met"] = False
     _SHADOWED["names"] = set()                  # (#2670) the wrappers' names this job's steps define
     try:
         yield from _folds(unsure)
@@ -153,12 +159,20 @@ def folds(unsure):
             _flip(_LOCALE, False)
             _flip(_CALLED, True)
             yield from _folds(unsure)
+        if _KEYWORD_SHAPED["met"]:              # each typed keyword a plain word (#3154)
+            _THROUGH["on"] = False
+            _flip(_LOCALE, False)
+            _flip(_CALLED, False)
+            _flip(_KEYWORD_SHAPED, True)
+            yield from _folds(unsure)
     finally:
         _THROUGH.update(on=False, met=False)
         _flip(_LOCALE, False)
         _LOCALE["met"] = False
         _flip(_CALLED, False)
         _CALLED["met"] = False
+        _flip(_KEYWORD_SHAPED, False)
+        _KEYWORD_SHAPED["met"] = False
         _SHADOWED["names"] = None
 
 

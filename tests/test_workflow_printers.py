@@ -2425,6 +2425,11 @@ class TestTheGroupsThisGuardFollowsNow(LinearGrowth, unittest.TestCase):
         return [str(why) for _name, why in wg.job_defects([wg.Step("step", text, shell)])]
 
     READ = (
+        # The named limits (d) and (f) of #3142, read since #3154: a reserved word a step types, quoted, is a program of
+        # that name to bash, and in the fold that reads it so (`shell_folds._KEYWORD_SHAPED`) it is a plain word --
+        # `then` alone in a compound body at its own closer (d), `{` alone in a group (f).
+        ("typed-then-in-body", "if true; then echo ok; 'then'; fi | sh\n"),
+        ("typed-brace-open", "{ echo \"%s\"; '{'; echo ok; } | sh\n" % C),
         ("nested-brace", "{ { echo \"%s\"; }; } | sh\n" % C),
         ("nested-brace-first", "{ { echo \"%s\"; }; echo ok; } | sh\n" % C),
         ("nested-sub-in-brace", "{ ( echo \"%s\" ); echo ok; } | sh\n" % C),
@@ -2497,12 +2502,9 @@ class TestTheGroupsThisGuardFollowsNow(LinearGrowth, unittest.TestCase):
         ("var-in-body", "X='%s'\nif true; then echo \"$X\"; fi | sh\n" % PIPE),
         ("var-in-sub-second", "X='%s'\n( echo ok; echo \"$X\" ) | sh\n" % PIPE),
         ("header-output", "if echo \"%s\"; then :; fi | sh\n" % C),
-        # (d), (e), (f): a word a step types in a keyword's shape where the reader hands back the keyword's text and
-        # `main` reads nothing -- `then`/`do`/`else` alone in a compound body at its own closer, `break`/`continue`
-        # alone in a loop body, and `{` alone in any group, which `main` and this reading take for the opener.
-        ("typed-then-in-body", "if true; then echo ok; 'then'; fi | sh\n"),
+        # (e): `break`/`continue` a step types alone in a loop body -- the builtin, quoted or not, so no reading to
+        # spoof: a control. (d) and (f) read since #3154 (`READ`).
         ("typed-break-in-loop", "for i in 1; do echo ok; 'break'; done | sh\n"),
-        ("typed-brace-open", "{ echo \"%s\"; '{'; echo ok; } | sh\n" % C),
     )
     # The bound's price: a group of more than `_GROUP_LINES` statements, and a function body whose closer lies more
     # than `_GROUP_LINES` statements behind its call, read LOUD (`_PAST_GROUP`) where `main` read nothing. Truth:
@@ -2536,9 +2538,9 @@ class TestTheGroupsThisGuardFollowsNow(LinearGrowth, unittest.TestCase):
                     "x=$({ echo ok; %s; } | sh)\n", "eval \"{ echo ok; %s; } | sh\"\n")
     TYPED_FULL = {"fi": "R", "done": "R", "esac": "R", "}": "R", "if": "R", "case": "R", "while": "R", "f()": "R",
                   "@@shell-x)": "R", "zz": "R", "break": "R",
-                  # the named limit (d): a sole `then`, `do` or `else` typed inside a compound body at its own closer
-                  # reads as the keyword line it spells; `main` reads nothing there either.
-                  "then": "C", "do": "C", "else": "C"}
+                  # the named limit (d), read since #3154: a sole `then`, `do` or `else` typed inside a compound body at
+                  # its own closer is a plain word in the fold that reads typed reserved words so, as `zz` is.
+                  "then": "R", "do": "R", "else": "R"}
     PLANTED = ("mkdir -p b\nprintf '#!/bin/sh\\n%s\\n' > 'b/@@shell-x)'\nchmod +x 'b/@@shell-x)'\nPATH=\"$PWD/b:$PATH\"\n" % PIPE
                + "{ echo ok; '@@shell-x)'; } | sh\n")
     # The bound's stand-in word, typed by a step as one word of a piped group (#3142 round 1): the stand-in is told

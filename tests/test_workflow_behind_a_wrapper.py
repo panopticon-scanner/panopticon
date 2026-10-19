@@ -530,6 +530,18 @@ class TestAWordThatMayNotBeTheProgramItNames(unittest.TestCase):
         self.assertEqual(set(), names("alias " * 20000))          # a long line of them is read once, not once each
 
 
+class TestAQuotedTimeIsTheProgram(unittest.TestCase):
+    """#3154: `"time"` and `\\time` are /usr/bin/time in every shell -- a reserved word a step types is a program of that
+    name -- and the fold that reads typed reserved words as plain words (`shell_folds._KEYWORD_SHAPED`) reads them so."""
+
+    def test_a_quoted_time_in_front_of_what_would_set_a_name(self):
+        # /usr/bin/time unsets nothing, and without `-e` every shell leaves `T` and runs `t` (measured): the payload runs.
+        # `main` read the keyword's and CLEAN; the typed fold reads the program's and REPORTs, as `main` reads `zz` there.
+        for front in (QUOTE + "time" + QUOTE, BACKSLASH + "time"):
+            with self.subTest(front=front, sets="T"):
+                self.assertEqual(BEFORE, marks("T=t\n%s%s unset T\nsh $T" % (FETCH, front)))
+
+
 class TestWhatStaysForOtherIssues(unittest.TestCase):
     """Rows this PR does not move, each pinned as it reads and named with what it waits for."""
 
@@ -543,15 +555,11 @@ class TestWhatStaysForOtherIssues(unittest.TestCase):
 
     def test_a_quoted_time_and_one_behind_a_bang_behind_a_pipe(self):
         # `"time"` and `\time` are /usr/bin/time in every shell, and so is `time` behind `| !`; the reader
-        # does not keep a plain word's quotes, nor read a `!` behind a pipe. Truth: nothing; reported, as on `main`.
+        # does not read a `!` behind a pipe. Truth: nothing; reported, as on `main`. (The quoted words in front of
+        # what would set a name read since #3154: `TestAQuotedTimeIsTheProgram`.)
         for front in (QUOTE + "time" + QUOTE, BACKSLASH + "time", "echo x | ! time"):
             with self.subTest(front=front):
                 self.assertEqual(BEFORE, marks("%s eval '%s'" % (front, P)))
-        # The same word in front of what would set a name: /usr/bin/time unsets nothing, and without `-e` every
-        # shell leaves `T` and runs `t` (measured). Read as the keyword's: CLEAN, as on `main`.
-        for front in (QUOTE + "time" + QUOTE, BACKSLASH + "time"):
-            with self.subTest(front=front, sets="T"):
-                self.assertEqual(CLEAN, marks("T=t\n%s%s unset T\nsh $T" % (FETCH, front)))
 
     def test_time_in_an_action_of_find(self):
         # `find` looks `time` up as a program, and /usr/bin/time execs: truth, nothing. The reader reads the

@@ -46,6 +46,7 @@ import os
 import re
 import shlex
 
+import shell_folds
 from shell_lex import lex
 from shell_patterns import (DOUBLE_DOLLAR, MARK, QUOTED, QUOTED_DOLLAR, is_pattern, leads,
                             patterned, shell_words as shell_words)
@@ -132,6 +133,9 @@ _REFERENCE = r"(?:\$\?|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})"
 _EXACT_DOLLAR_WORD = re.compile(
     r"(?:[A-Za-z_][A-Za-z0-9_]*=)?(?:%s|\"%s\")" % (_REFERENCE, _REFERENCE))
 _WORD = re.compile(r"""(?:[^ \t\r\n'"\\]|\\.|'[^']*'|"(?:[^"\\]|\\.)*")+""", re.S)
+# bash's reserved words: each is a keyword only unquoted, where a command word stands (#3154).
+_RESERVED = frozenset(KEYWORDS) | {"select", "coproc", "time", "[[", "]]"}
+_QUOTING = re.compile(r"['\"\\]")     # a word with none of these is spelled as bash reads it
 _SPELLED = re.compile(r"""["'\\]*[A-Za-z_](?:["'\\]*[A-Za-z0-9_])*["'\\]*(?:\[[^]]*\]["'\\]*)?(?:\+["'\\]*)?=""")
 # A `$` word written whole in double quotes (`_stage`'s `double`): what stands between them.
 _DOUBLE = re.compile(r'"(\$[^"\\\s]*)"')
@@ -147,8 +151,11 @@ _OWN_ROOT = re.compile(r"^(?:/proc/(?:thread-)?self/root)+(?=/)")
 # it never runs). The parse knows whether the step's text spells `$\?` anywhere (`conditional_status`, set in
 # `statements`); where it does, no conditional's `$?` is marked -- fail-closed, a price named (#3116, round 1).
 _STATUS = "\ue008"
-# ... and the status mark among them (#3131): `_MARKS` stands here, below the last constant it holds.
-_MARKS = (MARK, QUOTED, _ESCAPED, QUOTED_DOLLAR, _BLANK, _NAMED, DOUBLE_DOLLAR, _EXACT_DOLLAR, _STATUS)
+# A reserved word quoted or escaped where a command word stands (`'then' x`, `\{`, `th''en`): bash runs a program of
+# that name, no keyword. Where `folds` reads such words as plain words (#3154), `_named` marks each one with this.
+_TYPED = "\ue009"
+# ... and the status and typed marks among them (#3131, #3154): `_MARKS` stands here, below the last constant it holds.
+_MARKS = (MARK, QUOTED, _ESCAPED, QUOTED_DOLLAR, _BLANK, _NAMED, DOUBLE_DOLLAR, _EXACT_DOLLAR, _STATUS, _TYPED)
 _LITERAL_MARKS = str.maketrans({mark: chr(ord(mark) + 0x100) for mark in _MARKS})
 _CONDITIONAL_HEAD = re.compile(
     r"^(?:(?:if|elif|while|until|then|do|else|!)[ \t]+)*"                      # the keywords a conditional may follow
@@ -263,12 +270,23 @@ def _whole(raw, context, span):
     return word
 
 
+def _dequoted(raw):
+    """`raw` as shlex reads it, quotes and escapes off, where it is one word; else None (`_named`, #3154)."""
+    try:
+        words = shlex.split(raw)
+    except ValueError:
+        return None
+    return words[0] if len(words) == 1 else None
+
+
 def _named(text, context):
     """`text`, a stage's, with `_NAMED` in front of the word that stands where its command word may and spells
     an assignment but for a quote or a backslash in its name or its operator (`"X=1"`, `X\\=1`, `"A"+=x`,
     `X""=1`): bash reads an assignment off the word as written, so this one is a command of that name, which
     `shell_command._command_result` reads it as (#2480). A quote in the value or in a subscript leaves an
-    assignment one (`X="1"`, `a["k"]=1`). The command word may stand behind a `(`, a `case` arm's token or a
+    assignment one (`X="1"`, `a["k"]=1`). A reserved word quoted or escaped there (`'then'`, `"{"`, `\\fi`) is a
+    program of that name to bash: the step holds one (`shell_folds._KEYWORD_SHAPED`'s `met`), and in the fold that
+    reads such words as plain words it gets `_TYPED` in front instead (#3154); every other fold reads it as `main` does. The command word may stand behind a `(`, a `case` arm's token or a
     redirection as behind a keyword (`fronts`); behind a wrapper the word is the wrapper's, its quotes off."""
     front: bool | str = True
     target = False                      # the word a redirection's operator takes
@@ -280,6 +298,10 @@ def _named(text, context):
             continue
         if _SPELLED.match(raw) and not _ASSIGNMENT.match(raw):
             return text[:word.start()] + _NAMED + text[word.start():]
+        if _QUOTING.search(raw) and raw not in _RESERVED and _dequoted(raw) in _RESERVED:
+            shell_folds._KEYWORD_SHAPED["met"] = True
+            if shell_folds._KEYWORD_SHAPED["on"]:
+                return text[:word.start()] + _TYPED + text[word.start():]
         front = fronts(raw, front, text, word.end())
         if not front:
             break
@@ -354,6 +376,7 @@ def _stage(text, context):
         status, raw = raw.startswith(_STATUS), raw.removeprefix(_STATUS)    # the reader's own mark: a typed one is a literal (#3138)
         exact_dollar, raw = raw.startswith(_EXACT_DOLLAR), raw.removeprefix(_EXACT_DOLLAR)
         named, raw = raw.startswith(_NAMED), raw.replace(_NAMED, "")
+        typed, raw = raw.startswith(_TYPED), raw.removeprefix(_TYPED)
         plain = context.restore_arithmetic(raw.replace(MARK, "").replace(QUOTED, "")
                                            .replace(QUOTED_DOLLAR, "")
                                            .replace(DOUBLE_DOLLAR, ""))
@@ -386,6 +409,9 @@ def _stage(text, context):
             setattr(word, "conditional_status", True)
         if named:                           # `"X=1"`, `X\=1`: a command of that name (#2480)
             word = word if isinstance(word, _Token) else _Token(word, {})
+            setattr(word, "quoted", True)
+        if typed:                           # `'then'`: a program of that name, its quotes kept so no keyword test meets it
+            word = _Token("'%s'" % word, {})    # -- as a word whose quotes bash keeps reads (`"'then'"`, #3154)
             setattr(word, "quoted", True)
         entry = _markers(word).get(word)
         if entry and entry[0] == "group":
