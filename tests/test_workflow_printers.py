@@ -8,6 +8,7 @@ directly, as the last tests of `TestAPrinterThroughASubstitution` do its substit
 A row whose command word holds a `$(...)` (`SH=$(echo bash)`) keeps a value no table sees: since
 #2468 a literal one reads as its command.
 """
+import random
 import unittest
 from unittest import mock
 
@@ -15,10 +16,13 @@ import pytest
 
 import shell_reader
 import shell_wrappers
+import workflow_annotate as wa
 import workflow_forms as forms
 import workflow_guard as wg
 import workflow_options as wo
 import workflow_printers as wp
+import workflow_uses
+import workflow_values
 from workflow_written import _Front
 from tests.test_shell_reader import LinearGrowth
 
@@ -2488,15 +2492,10 @@ class TestTheGroupsThisGuardFollowsNow(LinearGrowth, unittest.TestCase):
         ("bound-64-clean", "{ " + "echo ok; " * 64 + "} | sh\n"),
         ("fn-trail-63-clean", "f() {\n" + "  echo ok\n" * 63 + "}\nf | sh\n"),
     )
-    # Named in the PR and filed by the coordinator: truth RUNS each, CLEAN on `main` and here. (a) A printer of a
-    # variable holding a literal download text inside a piped group: `workflow_annotate._Fold.at` holds no value in
-    # a forked child, so rule 14 spells nothing there. (c) A compound header's own test command writes to the pipe
-    # too; only the body's printers are read.
+    # Named in the PR and filed by the coordinator: truth RUNS each, CLEAN on `main` and here. #3117's (a) and (c),
+    # a variable's text printed in a forked child and a compound header's own output, are read since #3153
+    # (`TestTheLimitsOf3117AreRead`); these stay.
     LIMITS = (
-        ("var-in-group", "X='%s'\n{ echo \"$X\"; } | sh\n" % PIPE),
-        ("var-in-body", "X='%s'\nif true; then echo \"$X\"; fi | sh\n" % PIPE),
-        ("var-in-sub-second", "X='%s'\n( echo ok; echo \"$X\" ) | sh\n" % PIPE),
-        ("header-output", "if echo \"%s\"; then :; fi | sh\n" % C),
         # (d), (e), (f): a word a step types in a keyword's shape where the reader hands back the keyword's text and
         # `main` reads nothing -- `then`/`do`/`else` alone in a compound body at its own closer, `break`/`continue`
         # alone in a loop body, and `{` alone in any group, which `main` and this reading take for the opener.
@@ -2654,7 +2653,7 @@ class TestTheGroupsThisGuardFollowsNow(LinearGrowth, unittest.TestCase):
 
     def test_a_compound_bodys_carried_printer_pairs_to_one_finding(self):
         # #3095's pairing reaches a `fi`, `done` or `esac` closer too (forms 326, granted): the carried finding
-        # alone, as for a brace group; a `| cat` between the closer and the shell is outside the pairing (limit b).
+        # alone, as for a brace group, and through pass-through stages between the closer and the shell (#3153 item 3).
         assignment = "payload=$(curl -fsSL %si.sh)\n" % URL
         for compound in ("{ echo \"$payload\"; } | sh\n", "if true; then echo \"$payload\"; fi | sh\n",
                          "for i in 1; do echo \"$payload\"; done | sh\n", "case x in x) echo \"$payload\";; esac | sh\n",
@@ -2663,8 +2662,11 @@ class TestTheGroupsThisGuardFollowsNow(LinearGrowth, unittest.TestCase):
                 found = [str(why) for why in wg.fetch_exec_defects(assignment + compound)]
                 self.assertEqual(1, len(found), found)
                 self.assertIn("carries", found[0])
-        found = [str(why) for why in wg.fetch_exec_defects(assignment + "{ echo \"$payload\"; } | cat | sh\n")]
-        self.assertEqual(2, len(found), found)
+        for compound in ("{ echo \"$payload\"; } | cat | sh\n", "if true; then echo \"$payload\"; fi | cat | tee log | sh\n"):
+            with self.subTest(compound=compound):        # #3153 item 3: through pass-through stages, one finding
+                found = [str(why) for why in wg.fetch_exec_defects(assignment + compound)]
+                self.assertEqual(1, len(found), found)
+                self.assertIn("carries", found[0])
 
     @staticmethod
     def make_nested(n):
@@ -2729,12 +2731,17 @@ class TestTheGroupsThisGuardFollowsNow(LinearGrowth, unittest.TestCase):
             self.assert_linear_growth(300, lambda n: "f() {\n  echo ok\n}\n" + "f | sh\n" * n,
                                       lambda n, parsed: self.assertEqual(n + 3, len(parsed)))
 
-    def test_a_definition_out_of_reach_is_not_read(self):
-        # The look-back for a definition stops at `_CALL_REACH` statements: beyond, the call reads as `main` reads
-        # it (nothing: the word may name a program). Truth: the body's text runs; a named limit of the bound.
-        # The definition's closer counts among the statements passed: the header is the (n + 2)th back from the call.
+    def test_a_definition_out_of_reach_reads_loud(self):
+        # The look-back for a definition stops at `_CALL_REACH` statements: beyond, the call reads LOUD, the bound's
+        # stand-in (#3153 item 4; it read as `main` reads it, CLEAN, before -- truth: the body's text runs). The
+        # price: a program piped to a shell that far into a step reads LOUD too. The definition's closer counts
+        # among the statements passed: the header is the (n + 2)th back from the call.
         text = "f() { echo \"%s\"; }\n" % self.C + "echo ok\n" * (wp._CALL_REACH - 1) + "f | sh\n"
-        self.assertEqual(("CCCCC", "CCCCC"), self.marks(text))
+        self.assertEqual(("RRRRR", "RRRRR"), self.marks(text))
+        self.assertIn(wp._PAST_GROUP[0], " ".join(self.findings(text)))
+        text = "echo ok\n" * (wp._CALL_REACH + 1) + "zz | sh\n"
+        self.assertEqual(("RRRRR", "RRRRR"), self.marks(text))
+        self.assertEqual(("CCCCC", "CCCCC"), self.marks("echo ok\n" * wp._CALL_REACH + "zz | sh\n"))
         text = "f() { echo \"%s\"; }\n" % self.C + "echo ok\n" * (wp._CALL_REACH - 2) + "f | sh\n"
         self.assertEqual(("RRRRR", "RRRRR"), self.marks(text))
 
@@ -2925,3 +2932,277 @@ class TestTheGroupWalksParts(unittest.TestCase):
         self.assertEqual([wp._PAST_GROUP[0]], list(found[-1][-1].argv))
         self.assertFalse(wp._stopped(found))
         self.assertTrue(wp._stopped(found[:-1] + [wp._past(front)]))
+
+
+class TestTheLimitsOf3117AreRead(unittest.TestCase):
+    """#3153: what #3117 named and `main` reads CLEAN while the payload runs, read now BESIDE `main`'s reading,
+    never instead (k3153/rows-3153, truth under the eight parents). Item 1: a printer of a variable whose value
+    fetches, where a forked child inherits it, in a test, on a `then` line, or with a lifted `$(...)` in it -- the
+    value WEIGHED beside the printer's unspelled words (`workflow_annotate._spell`, `workflow_printers._inherited`),
+    never spelled, in the second walk only: the main pass stays `main`'s answer. Item 2: a compound header's own
+    test command, which writes to the pipe too (`_Header`, `_beside`). Item 3: #3095's pairing through pass-through
+    stages (`TestTheGroupsThisGuardFollowsNow`'s compound pin). Item 4: a piped call past `_CALL_REACH`, LOUD."""
+
+    SHELLS = (None, "bash", "sh", "bash {0}", "sh {0}")
+    C = "sh -c '%s'" % PIPE
+    LIFTED = "sh -$(echo c) '%s'" % PIPE
+
+    def marks(self, text):
+        job = mains = ""
+        for shell in self.SHELLS:
+            step = [wg.Step("step", text, shell)]
+            job += "R" if wg.job_defects(step) else "C"
+            with wo.mains_answer():
+                mains += "R" if wg._job_defects(step) else "C"
+        return job, mains
+
+    @staticmethod
+    def findings(text, shell=None):
+        return [str(why) for _name, why in wg.job_defects([wg.Step("step", text, shell)])]
+
+    SHAPES = (
+        ("brace", '{ echo "$X"; } | sh\n'),
+        ("brace-two", '{ echo ok; echo "$X"; } | sh\n'),
+        ("sub-second", '( echo ok; echo "$X" ) | sh\n'),
+        ("if-body", 'if true; then echo "$X"; fi | sh\n'),
+        ("case-body", 'case x in x) echo "$X";; esac | sh\n'),
+        ("nested", '{ { echo "$X"; }; } | sh\n'),
+        ("printf", "{ printf '%s\\n' \"$X\"; } | sh\n"),
+        ("cat-after", '{ echo "$X"; } | cat | sh\n'),
+        ("multi-line", '{\n  echo ok\n  echo "$X"\n} | sh\n'),
+        ("plain", 'echo "$X" | sh\n'),
+        ("test-pipe", 'if echo "$X" | sh; then :; fi\n'),
+        ("then-pipe", 'if true; then echo "$X" | sh; fi\n'),
+        # behind a stage that rewrites the text: weighed as `main` weighs a literal printer there, LOUD where the
+        # text fetches -- its twin `( echo ok; echo '<text>' | tr a-z A-Z | sh )` reads REPORT on `main`
+        ("sub-tr", '( echo ok; echo "$X" | tr a-z A-Z | sh )\n'),
+    )
+    HEADERS = (
+        ("if", 'if echo "%s"; then :; fi | sh\n'),
+        ("while", 'while echo "%s"; do break; done | sh\n'),
+        ("until-not", 'until ! echo "%s"; do break; done | sh\n'),
+        ("elif", 'if false; then :; elif echo "%s"; then :; fi | sh\n'),
+        ("with-body", 'if echo "%s"; then echo ok; fi | sh\n'),
+        ("nested", 'if true; then if echo "%s"; then :; fi; fi | sh\n'),
+        ("multi-line", 'if echo "%s"\nthen\n  :\nfi | sh\n'),
+    )
+
+    @classmethod
+    def values(cls):
+        return (("plain", "'%s'" % PIPE), ("sh-c", '"%s"' % cls.C), ("lifted", '"%s"' % cls.LIFTED))
+
+    def test_a_printers_value_is_weighed_where_main_holds_none(self):
+        # RED on `main`: CLEAN there under every posture (but the plain printer of a plain value, which rule 14
+        # spells and `main` reports). The main pass stays `main`'s answer: the weighing is the second walk's.
+        for shape, body in self.SHAPES:
+            for value, assigned in self.values():
+                if (shape, value) == ("plain", "plain"):
+                    continue
+                with self.subTest(shape=shape, value=value):
+                    self.assertEqual(("RRRRR", "CCCCC"), self.marks("X=%s\n%s" % (assigned, body)))
+
+    def test_a_headers_own_test_command_is_read(self):
+        for name, body in self.HEADERS:
+            with self.subTest(name=name):
+                self.assertEqual(("RRRRR", "RRRRR"), self.marks(body % self.C))
+
+    def test_a_call_past_the_reach_reads_loud(self):
+        text = 'f() { echo "%s"; }\n' % self.C + "echo ok\n" * wp._CALL_REACH + "f | sh\n"
+        self.assertEqual(("RRRRR", "RRRRR"), self.marks(text))
+        self.assertIn(wp._PAST_GROUP[0], " ".join(self.findings(text)))
+
+    # As `main` reads them: no fetch in the value, a child that assigns it or unsets it first, a value another
+    # child assigned, a printer writing elsewhere; a header that writes nothing, or writes elsewhere.
+    STAYS = (
+        ("clean-value", "X='echo ok'\n{ echo \"$X\"; } | sh\n"),
+        ("other-child", "{ X='%s'; } | cat\n{ echo \"$X\"; } | sh\n" % PIPE),
+        ("redirected", "X='%s'\n{ echo \"$X\" > f; } | sh\n" % PIPE),
+        ("clean-print", "if echo ok; then :; fi | sh\n"),
+        ("true", "if true; then echo ok; fi | sh\n"),
+        ("test", "if [ -f x ]; then echo ok; fi | sh\n"),
+        ("read-loop", "while read -r l; do echo \"$l\"; done < /dev/null | sh\n"),
+        ("header-redirected", "if echo ok > /dev/null; then :; fi | sh\n"),
+        ("program-near", "echo ok\n" * 256 + "zz | sh\n"),
+    )
+    # Named limits, CLEAN on `main` and here while the payload runs: a loop body (an earlier pass may have changed
+    # the value: the fold reads no loop body), a step that defines a function (rule 7), and a printer inside a
+    # command substitution's script (no table reaches it).
+    STILL = (
+        ("loop-body", 'for i in 1; do echo "$X"; done | sh\n'),
+        ("fn-body", 'f() { echo "$X"; }\nf | sh\n'),
+        ("subst-group", 'y=$({ echo "$X"; } | sh)\n'),
+    )
+    # Prices, CLEAN on `main` and REPORT here where nothing runs: a header test that writes nothing but is no known
+    # silent test, read LOUD as #3026 reads a group holding a statement no printer's; a call or a one-word program
+    # piped to a shell past `_CALL_REACH`.
+    PRICES = (
+        ("grep-q", "if grep -q x /dev/null; then echo ok; fi | sh\n"),
+        ("clean-far", "f() { echo ok; }\n" + "echo ok\n" * 256 + "f | sh\n"),
+        ("program-far", "echo ok\n" * 257 + "zz | sh\n"),
+    )
+    # As `main` reads them, LOUD: a group holding a no-op beside a printer (`_noop` passes one over only beside a
+    # header's test command, never in the body's own reading).
+    AS_MAIN = (
+        ("noop-in-brace", "{ echo ok; :; } | sh\n"),
+        ("noop-first-in-brace", "{ true; echo ok; } | sh\n"),
+    )
+
+    def test_what_main_reports_reads_the_same(self):
+        for name, text in self.AS_MAIN:
+            with self.subTest(name=name):
+                self.assertEqual(("RRRRR", "RRRRR"), self.marks(text))
+
+    def test_what_stays_as_main_reads_it(self):
+        for name, text in self.STAYS:
+            with self.subTest(name=name):
+                self.assertEqual(("CCCCC", "CCCCC"), self.marks(text))
+
+    def test_the_limits_that_stay(self):
+        for name, body in self.STILL:
+            with self.subTest(name=name):
+                self.assertEqual(("CCCCC", "CCCCC"), self.marks("X='%s'\n%s" % (PIPE, body)))
+
+    def test_the_prices(self):
+        for name, text in self.PRICES:
+            with self.subTest(name=name):
+                self.assertEqual("RRRRR", self.marks(text)[0])
+
+    def test_the_fold_in_a_forked_child_takes_no_value_the_exact_reading_does_not(self):
+        # `_Fold.at(index, True)`: in a forked child, the values from before the fork and the child's own
+        # assignments unsure -- every candidate `static_values` gives is among the fold's (where the fold's are
+        # past the cap, its stand-in reads as every value), and where the fold holds ONE text for a name,
+        # `static_values` holds that one. Fixed shapes, then 400 seeded random steps.
+        fragments = ("X=a", "X=b", "Y=c", "unset X", "X+=d", "export X=e", "read -r X < /dev/null", ":",
+                     'echo "$X"', "Y=$X")
+        wrappers = ("{ %s; } | cat", "( %s )", "if true; then %s; fi | cat", "case x in x) %s;; esac | cat",
+                    "%s &", "{ %s; } > /dev/null", "%s")
+        rng = random.Random(3153)
+        steps = ["X=a\n{ echo \"$X\"; } | cat\n", "X=a\n{ X=b; echo \"$X\"; } | cat\n",
+                 "{ X=b; } | cat\n{ echo \"$X\"; } | cat\n", "X=a\n( X=b )\n{ echo \"$X\"; } | cat\n",
+                 "X=a\n{ unset X; echo \"$X\"; } | cat\n", "X=a\nif true; then X+=d; echo \"$X\"; fi | cat\n"]
+        for _each in range(400):
+            parts = []
+            for _part in range(rng.randint(2, 6)):
+                parts.append(rng.choice(wrappers) % "; ".join(rng.choice(fragments) for _k in range(rng.randint(1, 3))))
+            steps.append("\n".join(parts) + "\n")
+        served = 0
+        for script in steps:
+            stmts = shell_reader.statements(script)
+            fold = wa._Fold(stmts)
+            for index in range(len(stmts)):
+                if fold.defines or not fold._folds(index, True):
+                    continue
+                served += index in fold.forked
+                table, exact = fold.at(index, True), workflow_uses.static_values(stmts, index)
+                for name in set(table.scalars) | set(exact.scalars):
+                    held, sure = [str(t) for t in table.scalars.get(name, [])], [str(t) for t in exact.scalars.get(name, [])]
+                    with self.subTest(script=script, index=index, name=name):
+                        if str(workflow_values.PAST) not in held:
+                            self.assertLessEqual(set(sure), set(held))
+                        if len(held) == 1 and held != [str(workflow_values.PAST)]:
+                            self.assertEqual(held, sure)
+        self.assertGreater(served, 100)
+
+    def test_a_lifted_value_is_weighed_never_spelled(self):
+        def lifted(script):
+            stmts = shell_reader.statements(script)
+            word = next(w for w in stmts[-1].stages[0].argv if str(w).startswith("$"))
+            return wa._lifted(word, wa._Fold(stmts).at(len(stmts) - 1))
+        self.assertEqual("a $(...) b", lifted('X="a $(echo c) b"\necho "$X"\n'))
+        self.assertEqual("a $(...)", lifted('X="a `echo c`"\necho "$X"\n'))
+        self.assertIsNone(lifted('X="a $HOME $(echo c)"\necho "$X"\n'))         # another expansion
+        self.assertIsNone(lifted("X='a b'\necho \"$X\"\n"))                     # no lifted text: `_literal`'s
+        self.assertIsNone(lifted('X="$(echo c)"\nif x; then X=d; fi\necho "$X"\n'))  # two candidates
+        self.assertIsNone(lifted('X="a $(echo c)"\necho "$XY"\n'))               # another name
+        word = shell_reader.statements('echo "$X"\n')[0].stages[0].argv[1]
+        for kind in ("subst", "heredoc"):                     # a lifted text that is no substitution: refused
+            marked = shell_reader._Token("a @@k@@", {"@@k@@": (kind, None)})
+            table = wa.Values({"X": [marked]}, {})
+            with self.subTest(kind=kind):
+                self.assertEqual("a $(...)" if kind == "subst" else None, wa._lifted(word, table))
+        stmts = wa.annotate(shell_reader.statements('X="%s"\n{ echo "$X"; } | sh\n' % self.LIFTED))
+        word = stmts[1].stages[0].argv[-1]
+        self.assertFalse(hasattr(word, "spelled"))
+        self.assertIn("$(...)", getattr(word, "weighed"))
+        self.assertIsNone(wp.printed(shell_reader.command(stmts[1].stages[0].argv), stmts[1].stages[0], "bash"))
+
+    def test_a_forked_or_tested_printer_is_weighed_and_main_still_reads_it_unspelled(self):
+        for script, at in (("X='%s'\n{ echo \"$X\"; } | sh\n" % PIPE, 1),
+                           ("X='%s'\nif echo \"$X\" | sh; then :; fi\n" % PIPE, 1),
+                           ("X='%s'\nif true; then echo \"$X\"; fi | sh\n" % PIPE, 2)):
+            with self.subTest(script=script):
+                stmts = wa.annotate(shell_reader.statements(script))
+                word = stmts[at].stages[0].argv[-1]
+                self.assertEqual(PIPE, getattr(word, "weighed"))
+                self.assertFalse(hasattr(word, "spelled"))
+        # The ungrouped printer `main` spells keeps its spelling; one rule 6 takes back keeps the value weighed.
+        stmts = wa.annotate(shell_reader.statements("X='%s'\necho \"$X\" | sh\n" % PIPE))
+        self.assertEqual(PIPE, getattr(stmts[1].stages[0].argv[-1], "spelled"))
+        stmts = wa.annotate(shell_reader.statements('X="%s"\necho "$X" | sh\n' % self.C))
+        word = stmts[1].stages[0].argv[-1]
+        self.assertEqual(self.C, getattr(word, "weighed"))
+        self.assertFalse(hasattr(word, "spelled"))
+        old = shell_reader.statements("echo x\n")[0].stages[0].argv[1]
+        self.assertIs(old, wa._as_weighed(old, old))
+
+    def test_a_weighed_word_vetoes_nothing_after_it(self):
+        # A weighed word is no mark: the statement is not read as written for it, and a later mark stands.
+        script = "X='%s'\n{ echo \"$X\"; } | sh\nCMD=true\n$CMD\n" % PIPE
+        stmts = wa.annotate(shell_reader.statements(script))
+        self.assertTrue(hasattr(stmts[1].stages[0].argv[-1], "weighed"))
+        self.assertTrue(any(type(w).__name__ == "Defaulted" for w in stmts[-1].stages[0].argv))
+        # In a step no mark stands in (a word naming `trap`, rules 7 to 11), the weighing still stands: it adds a
+        # LOUD reading only, where a value -- whatever a later trap does to it -- fetches.
+        self.assertEqual(("RRRRR", "CCCCC"), self.marks(": trap\nX='%s'\n{ echo \"$X\"; } | sh\n" % PIPE))
+        self.assertEqual(("CCCCC", "CCCCC"), self.marks(": trap\nX='echo ok'\n{ echo \"$X\"; } | sh\n"))
+
+    def test_what_a_weighed_word_adds_beside_mains_texts(self):
+        stage = wa.annotate(shell_reader.statements("X='%s'\n{ echo \"$X\"; } | sh\n" % PIPE))[1].stages[0]
+        argv = shell_reader.command(stage.argv)
+        self.assertEqual([PIPE], wp._inherited(argv)[:1])
+        self.assertEqual([], wp._inherited(shell_reader.command(shell_reader.statements('echo "$X"\n')[0].stages[0].argv)))
+        with wo.mains_answer():
+            self.assertEqual([], wp._inherited(argv))
+        words = wp.unspelled(*self._piped("X='%s'\n{ echo \"$X\"; } | sh\n" % PIPE))
+        self.assertIn(PIPE, words)
+
+    @staticmethod
+    def _piped(script):
+        stmts = wa.annotate(shell_reader.statements(script))
+        stage = stmts[-1].stages[-1]
+        return stage, stmts[-1].stages[:-1], "bash", stmts
+
+    def test_a_headers_test_command_is_one_pipeline_beside_the_body(self):
+        def stripped(text, headers=True):
+            found = wp._stripped(list(shell_reader.statements(text)[0].stages), False, headers)
+            return None if found is None else (type(found).__name__, [list(map(str, s.argv)) for s in found])
+        self.assertEqual(("_Header", [["echo", "ok"]]), stripped("if echo ok\n"))
+        self.assertEqual(("_Header", [["echo", "ok"]]), stripped("elif echo ok\n"))
+        self.assertEqual(("_Header", [["!", "echo", "ok"]]), stripped("until ! echo ok\n"))
+        self.assertEqual(("_Header", [["echo", "ok"], ["cat"]]), stripped("while echo ok | cat\n"))
+        for text in ("if true\n", "while read -r l\n", "if [ -f x ]\n", "until false\n", "if echo ok | true\n",
+                     "for i in a\n", "case x in\n"):
+            with self.subTest(text=text):
+                self.assertIsNone(stripped(text))
+        self.assertEqual(("_Header", [["./test"]]), stripped("if ./test\n"))       # a file of the step's, not `test`
+        self.assertIsNone(stripped("if echo ok\n", False))
+        self.assertEqual(("list", [["echo", "ok"]]), stripped("then echo ok\n"))
+
+    def test_beside_keeps_the_first_reading_whole_and_first(self):
+        loud = ([], list(wp._GROUPED))
+        self.assertIsNone(wp._beside(None, None))
+        self.assertEqual(loud, wp._beside(None, loud))
+        self.assertEqual((["a"], []), wp._beside((["a"], []), None))
+        self.assertEqual((["a"], list(wp._GROUPED)), wp._beside((["a"], []), loud))
+        self.assertEqual((["a", "b"], ["echo", "x", "y"]), wp._beside((["a"], ["echo", "x"]), (["b", "a"], ["echo", "y", "x"])))
+
+    def test_a_noop_writes_nothing(self):
+        def noop(text):
+            return wp._noop(list(shell_reader.statements(text)[0].stages))
+        for text in (":\n", "true\n", "false\n", "true x\n", ": > f\n"):
+            with self.subTest(text=text):
+                self.assertTrue(noop(text))
+        for text in ("echo ok\n", "true | cat\n", "cat\n", "./true\n", "/bin/true\n"):
+            with self.subTest(text=text):
+                self.assertFalse(noop(text))
+

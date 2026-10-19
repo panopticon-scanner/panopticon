@@ -515,3 +515,66 @@ def emptied(table, name, certain, unknown=False):
             candidates.pop(name, None)
         elif name in candidates:
             _update(table, name, [empty], False, array)
+
+
+# A whole reference's name and what makes a value nonliteral (`_literal`, rules 1 and 13 of
+# `workflow_annotate`, whose literal reading moved here at that module's size, #3153).
+_NAMED = re.compile(r"\$\{?([A-Za-z_]\w*)", re.A)
+_EXPANDS = re.compile(r"[$`]|[<>]\(")
+# The names bash sets itself, and the prefixes of its completion and `bind -x` ones: a step's
+# assignment to one is not what a later word reads (`$_` is the last command's last word).
+_BASH_SETS = frozenset((
+    "_", "BASH_ARGC", "BASH_ARGV", "BASH_ARGV0", "BASH_COMMAND", "BASH_EXECUTION_STRING",
+    "BASH_LINENO", "BASH_REMATCH", "BASH_SOURCE", "BASH_SUBSHELL", "BASH_VERSINFO", "BASHPID",
+    "COLUMNS", "COPROC", "DIRSTACK", "EPOCHREALTIME", "EPOCHSECONDS", "EUID", "FUNCNAME",
+    "GROUPS", "HISTCMD", "HOSTNAME", "LINENO", "LINES", "MAPFILE", "OLDPWD", "OPTARG", "OPTIND",
+    "PIPESTATUS", "PPID", "PWD", "RANDOM", "REPLY", "SECONDS", "SHLVL", "SRANDOM", "UID"))
+_BASH_PREFIXES = ("COMP_", "READLINE_")
+
+
+def _literal(word, table):
+    """The ONE literal text whole reference `word` stands for through `table`, or None (rules 1
+    and 13): its name holds one candidate, not empty, and is no name bash sets itself
+    (`_BASH_SETS`, `_BASH_PREFIXES`) nor, unbraced, one a shorter held name prefixes; and the
+    word resolves to one text with no lifted `$(...)` and nothing `_EXPANDS` finds."""
+    named = _NAMED.match(str(word))
+    name = named[1] if named else ""
+    if name in _BASH_SETS or name.startswith(_BASH_PREFIXES) or not str(word).startswith(
+            "${") and any(name[:cut] in table.scalars or name[:cut] in table.arrays
+                          for cut in range(1, len(name))):
+        return None
+    held = [*table.scalars.get(name, []), *table.arrays.get(name, [])]
+    if len(held) != 1 or not held[0]:
+        return None
+    texts = valued(word, table)
+    if len(texts) != 1:
+        return None
+    text = texts[0]
+    if not text or shell_reader.is_marker(text) or _EXPANDS.search(text):
+        return None
+    return str(text)
+
+
+def _lifted(word, table):
+    """The text whole reference `word` stands for through `table` where `_literal` refuses it only for the `$(...)`
+    the parser lifted out of its one candidate (#3153 item 1): that candidate with each lifted substitution written
+    `$(...)` (`shell_reader.readable`), a text whose substitutions any reader of it reads as text it cannot know --
+    for a printer's weighing (`workflow_annotate._spell`), never its spelling. None where `_literal`'s name rules
+    refuse the word, the name holds more than one candidate, or the candidate holds no lifted substitution, holds
+    any other lifted text, or expands otherwise (`_EXPANDS`, its substitutions taken out)."""
+    named = _NAMED.match(str(word))
+    name = named[1] if named else ""
+    if name in _BASH_SETS or name.startswith(_BASH_PREFIXES) or not str(word).startswith(
+            "${") and any(name[:cut] in table.scalars or name[:cut] in table.arrays
+                          for cut in range(1, len(name))):
+        return None
+    held = [*table.scalars.get(name, []), *table.arrays.get(name, [])]
+    texts = valued(word, table)
+    if len(held) != 1 or not held[0] or len(texts) != 1 or not texts[0]:
+        return None
+    markers, bare = shell_reader._markers(texts[0]), str(texts[0])
+    for key in markers:
+        bare = bare.replace(key, "")
+    if not markers or any(kind != "subst" for kind, _value in markers.values()) or _EXPANDS.search(bare):
+        return None
+    return shell_reader.readable(texts[0])

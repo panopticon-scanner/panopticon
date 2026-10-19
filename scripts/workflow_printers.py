@@ -55,11 +55,11 @@ import shell_lex
 import shell_reader
 import shell_text
 from workflow_options import _MAINS
-from workflow_groups import (_CALL_REACH as _CALL_REACH, _GROUP_LINES as _GROUP_LINES, _PAST_GROUP as _PAST_GROUP,
-                             _PastGroup as _PastGroup, _TEE_OPTIONS as _TEE_OPTIONS, _behind as _behind,
-                             _cat_reads_stdin as _cat_reads_stdin, _closing as _closing, _fed as _fed,
-                             _function_body as _function_body, _grouped as _grouped, _kin as _kin, _own as _own,
-                             _passes_through as _passes_through, _past as _past, _piped as _piped,
+from workflow_groups import (_CALL_REACH as _CALL_REACH, _GROUP_LINES as _GROUP_LINES, _Header as _Header,
+                             _PAST_GROUP as _PAST_GROUP, _PastGroup as _PastGroup, _TEE_OPTIONS as _TEE_OPTIONS,
+                             _behind as _behind, _cat_reads_stdin as _cat_reads_stdin, _closing as _closing,
+                             _fed as _fed, _function_body as _function_body, _grouped as _grouped, _kin as _kin,
+                             _own as _own, _passes_through as _passes_through, _past as _past, _piped as _piped,
                              _silent as _silent, _stopped as _stopped, _stripped as _stripped,
                              _structure as _structure, _walk as _walk, piped_group_member as piped_group_member)
 from workflow_printer_writes import (_CONVERSION as _CONVERSION, _COUNT as _COUNT,
@@ -269,7 +269,8 @@ def group_reading(stage, before, shell=None, statements=None):
     run under one shell, so a reading is taken for them all, never mixed, and two at most -- and `words`, where a
     reading spells none, what `unspelled` weighs for an unspelled printer: the first one's name, then each one's
     words as one text and apart. Where one is no printer (`{ echo ok; cat f; } | sh`), `words` is `_GROUPED`,
-    LOUD, fail-closed: its text is not read."""
+    LOUD, fail-closed: its text is not read. A compound header's own test command (`if echo P; then :; fi | sh`,
+    a `_Header`, #3153 item 2) is read BESIDE that answer, never instead: the group read with it (`_beside`)."""
     front = before[-1] if before else None
     if front is None or not _piped(stage, front):
         return None
@@ -277,10 +278,31 @@ def group_reading(stage, before, shell=None, statements=None):
     while at and _passes_through(shell_reader.command(before[at].argv), before[at]) and _piped(before[at], before[at - 1]):
         at -= 1
     front = before[at]
-    pipelines = _grouped(front, before[:at + 1], statements)
+    pipelines = _grouped(front, before[:at + 1], statements, True)
     if _stopped(pipelines):
         return [], list(_PAST_GROUP)        # bounded, fail-closed: never read, never CLEAN (#3117)
-    printers = [_printer_of(p) for p in pipelines or ()]
+    body = [p for p in pipelines or () if not isinstance(p, _Header)]
+    found = _group_texts(body, shell)
+    if len(body) == len(pipelines or ()):
+        return found
+    return _beside(found, _group_texts([p for p in pipelines if not _noop(p)], shell))
+
+
+_NOOPS = (":", "true", "false")         # what writes nothing, whatever its words
+
+
+def _noop(pipeline):
+    """Whether `pipeline` is one stage that writes nothing (`_NOOPS`): passed over where a header's test command
+    is read beside the body (#3153 item 2), so `if echo P; then :; fi | sh` reads as `{ echo P; } | sh` does."""
+    argv = shell_reader.command(pipeline[0].argv) if len(pipeline) == 1 else []
+    return bool(argv) and str(argv[0]) in _NOOPS          # a bare name: the builtin, never a file of that name
+
+
+def _group_texts(pipelines, shell):
+    """`group_reading`'s answer for these pipelines of a group: None where none ends in a printer, `_GROUPED`
+    where one does not, else their texts, one per reading, and the words `unspelled` weighs where one spells none
+    -- `main`'s words, then the values a weighed word holds as the printer writes them (`_inherited`, #3153)."""
+    printers = [_printer_of(p) for p in pipelines]
     if not any(printers):
         return None
     if not all(printers):
@@ -296,8 +318,20 @@ def group_reading(stage, before, shell=None, statements=None):
         elif "".join(parts) not in texts:
             texts.append("".join(parts))
     words = ([argvs[0][0]] + [" ".join(a[1:]) for a in argvs] + [t for a in argvs for t in _apart(a, shell)]
-             if unread else [])
+             + [t for a in argvs for t in _inherited(a, shell)] if unread else [])
     return texts, words
+
+
+def _beside(found, more):
+    """`group_reading`'s answer `found` and the one `more` the group gives with its headers' test commands read
+    (#3153 item 2), together: `found`'s texts and words first and as they stand, then `more`'s not among them --
+    BESIDE, never instead, so a reading `found` gives is never lost to `more`'s LOUD one; None where both are."""
+    if found is None or more is None:
+        return more if found is None else found
+    texts = found[0] + [t for t in more[0] if t not in found[0]]
+    name = found[1][:1] or more[1][:1]
+    rest = found[1][1:] + [w for w in more[1][1:] if w not in found[1][1:]]
+    return texts, (name + rest if name else [])
 
 
 def producer(stage, before):
@@ -385,7 +419,7 @@ def unspelled(stage, before, shell=None, statements=None):
     words = shell_reader.acted(source.argv)
     printer = bool(words) and os.path.basename(words[0]) in _PRINTERS
     if intact:
-        return ([words[0], " ".join(words[1:])] + _apart(words, shell)
+        return ([words[0], " ".join(words[1:])] + _apart(words, shell) + _inherited(words, shell)
                 if printer and None in spellings(words, source, shell) else [])
     front = shell_reader.command(before[-1].argv)
     if not front:
@@ -395,7 +429,7 @@ def unspelled(stage, before, shell=None, statements=None):
     if printer:
         read = spellings(words, source, shell)
         texts = [" ".join(words[1:]) if t is None else t for t in read]
-        texts += _apart(words, shell) if None in read else []       # what it writes, as above (#2955)
+        texts += _apart(words, shell) + _inherited(words, shell) if None in read else []    # as above (#2955)
     else:
         texts = [source.stdin_heredoc[0]]       # not a printer: a heredoc-fed `cat` (`producer`)
     return front[:1] + texts + [" ".join(front[1:])]
@@ -501,6 +535,28 @@ def _group_unsubstituted(value):
         return list(_GROUPED)
     argvs = [shell_reader.command(p.argv) for p in printers]
     return [argvs[0][0]] + [" ".join(a[1:]) for a in argvs] + [t for a in argvs for t in _apart(a)]
+
+
+def _inherited(words, shell=ANY):
+    """BESIDE `main`'s texts for an unspelled printer, never instead (#3153 item 1): where a word of it is
+    `weighed` (`workflow_annotate._spell`: the value a forked child inherits, or one holding a lifted `$(...)`
+    written as a text it cannot know), what it writes with each such value in place -- its words as one text,
+    then as `_apart` writes them -- so a value that fetches makes the weighed answer LOUD, as a literal word
+    that fetches does; [] where no word is weighed, and in `main`'s pass (`_MAINS`)."""
+    if _MAINS.get() or not any(hasattr(word, "weighed") for word in words[1:]):
+        return []
+    valued = [words[0]] + [_valued(word) for word in words[1:]]
+    joined = " ".join(str(getattr(word, "spelled", word)) for word in valued[1:])
+    return [joined] + [text for text in _apart(valued, shell) if text != joined]
+
+
+def _valued(word):
+    """`word` with its `weighed` value as the text `_apart` writes for it (`spelled`), or `word` itself."""
+    if not hasattr(word, "weighed"):
+        return word
+    token = shell_reader._Token(str(word), shell_reader._markers(word))
+    setattr(token, "spelled", getattr(word, "weighed"))
+    return token
 
 
 def _apart(words, shell=ANY):
