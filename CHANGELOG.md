@@ -7,6 +7,22 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A finding names a substitution run as a standard-input runner `$(...)`, never the reader's
+  marker (#3156).** `workflow_uses.use`'s standard-input branch named the runner by
+  `os.path.basename(argv[0])`; for a command substitution as the command word (`$(echo sh)`, its
+  backquoted form or `"$(command -v sh)"` handed the download as `3<> tool <&3` or `3< tool <&3`:
+  std.tsv `own:AV011`, `own:AV013`, `own:AV015`, `owntw:AV011`, `owntw:AV013`, `owntw:AV015`) that
+  word is the reader's marker, `@@shell-<hex>-N@@`, whose hex each parse mints afresh: no two runs
+  printed the reason alike, and the main pass and the guard's second walk gave the one finding two
+  texts, so the job held it twice. The branch renders the token with `shell_reader.readable` before
+  taking its basename, so the reason reads "running it under `$(...)` from standard input", and a
+  nonce duplicate collapses: each of the six rows reports one finding where it reported two, in
+  every setting and layout. No reading moves. On `main` 117b11d4 the std rows (31,046 rows, 714,930
+  cells) print 300 marker lines, the six rows by 25 cells by two; with this line on 117b11d4 the
+  whole mkkit assembly (88,902 rows, 2,139,850 cells) prints none. Pins:
+  `tests/test_workflow_reason_markers.py` (the six rows in five settings, two fresh interpreters
+  byte for byte, a runner the step names as the control).
+
 - **Workflow guard reads a command word it cannot resolve as a possible runner of the fetched file
   that is its first operand (#3143).** `curl -fsSLo t URL` then `$SHELL ./t` ran the download under
   every parent and read CLEAN: `workflow_uses.use` reported a run only where the command word named
