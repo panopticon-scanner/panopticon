@@ -82,10 +82,9 @@ evidence exposed.
   costs 241 s at 1 MiB and remains superlinear as on main. The round-two full kit was byte-identical
   over 86,765 rows after nonce normalization. A size-scaled structural pin forbids re-entering the
   printer parser, so the proof does not depend on a machine-speed budget. #3105's read pin uses
-  300 -> 1,200
-  program forms so its old quadratic tree fails with margin; and a committed corpus compares all
-  13 analysis-aware helper answers with and without a shared statement analysis over both parsed
-  and handed-program statement lists.
+  300 -> 1,200 program forms so its old quadratic tree fails with margin; and a committed corpus
+  compares all 13 analysis-aware helper answers with and without a shared statement analysis over
+  both parsed and handed-program statement lists.
 - **Function-body gates index their calls and closing runs once per statement list (#3128, item
   2).** `_gating_function_call` and `_piped_function_end` each scanned the suffix after a function
   body, once per body, to find a redefinition, a call, or a shell-posture change; `_stops_step`
@@ -95,10 +94,18 @@ evidence exposed.
   closing index records each closer run and memoizes its first detached or uncredited-pipeline
   boundary for the caller's pipefail posture. The all-on/all-off posture vectors are shared, a
   recursive wrapper call carries one backtracked name set, and the existing later-command index
-  answers whether a wrapper returns its call's status. A structural pin counts both formerly
+  answers whether a wrapper returns its call's status. The index also records the legacy net group
+  depth and the depth of the nearest piped frame, so an unmatched closer handed in by a child shell
+  stops the lookup at the same fail-closed boundary instead of reaching an outer pipeline. One
+  production caller deliberately retains the `analysis=None` scan: `swallowed` asks about a
+  zero-based `stmts[index:]` carrier slice that excludes enclosing context and cannot reuse the
+  full-list analysis. A structural pin counts both formerly
   repeated predicates as definitions double, independently of machine speed; the sampled helper
   corpus still compares every indexed answer, including the reported call chain, with the legacy
-  path. On the forge, serial process CPU at 160, 320 and 640 definitions was
+  path. A committed deterministic 153-program sample separately compares 4,465 indexed group
+  answers and 4,465 `_piped_function_end` answers with the legacy scans over source and handed
+  statements, including the review seat's exact 22 `div*` / `hp*` rows and three generated movers.
+  On the forge, serial process CPU at 160, 320 and 640 definitions was
   0.160/0.331/0.731 s for nested bodies, 0.161/0.335/0.737 s for one-line nested bodies,
   0.250/0.497/0.989 s with one function called, 0.239/0.478/0.951 s with none called, and
   0.281/0.560/1.117 s for three-line bodies. The sibling-call shape remains superlinear at

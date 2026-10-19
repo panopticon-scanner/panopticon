@@ -72,5 +72,21 @@ class TestAFunctionGateOnlyCreditsItsCalls(unittest.TestCase):
                     self.assertEqual(expected, reported(row, shell))
 
 
+class TestAStrayCloserBoundsAPipedFunctionCall(unittest.TestCase):
+    """#3128: the function index keeps the legacy fail-closed depth bound."""
+
+    def test_an_unmatched_closer_does_not_reach_the_outer_piped_group(self):
+        rows = {
+            "source closer": f"set -eo pipefail\nf() {{ {CHECK} || exit 1; }}\n)\n"
+                             "{ { f; }; } | cat\nsh t",
+            "handed closer": f"set -eo pipefail\nf() {{ {CHECK} || exit 1; }}\n"
+                             "echo ')' | sh || true\n{ { f; }; } | cat\nsh t",
+        }
+        for name, row in rows.items():
+            for shell in SHELLS:
+                with self.subTest(name=name, shell=shell):
+                    self.assertTrue(reported(row, shell))
+
+
 if __name__ == "__main__":
     unittest.main()

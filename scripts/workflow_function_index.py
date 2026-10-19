@@ -48,12 +48,14 @@ class ClosingIndex:
 class _PipelineFrame:
     """One structural group, resolved to an enclosing pipeline if it has one."""
 
-    __slots__ = ("parent", "piped", "resolved")
+    __slots__ = ("depth", "parent", "piped", "resolved", "resolved_depth")
 
     def __init__(self, parent):
         self.parent = parent
+        self.depth = parent.depth + 1 if parent is not None else 1
         self.piped = None
         self.resolved = None
+        self.resolved_depth = 0
 
 
 class FunctionIndex:
@@ -61,9 +63,9 @@ class FunctionIndex:
 
     def __init__(self, stmts, names, function_syntax, posture_barrier):
         definitions, calls = defaultdict(list), defaultdict(list)
-        barriers, frames, piped_at = [], [], []
+        barriers, frames, piped_at, structural_depths = [], [], [], []
         unmatched: list[tuple[int, tuple[int, int] | None]] = []
-        top = None
+        top, structural_depth = None, 0
         for index, statement in enumerate(stmts):
             defined = set()
             for position, stage in enumerate(statement.stages):
@@ -75,6 +77,7 @@ class FunctionIndex:
                     calls[argv[0]].append((index, position))
                 opens = stage.group_open + braces.count("{")
                 closes = stage.group_close + braces.count("}")
+                structural_depth += opens - closes
                 for _opening in range(opens):
                     top = _PipelineFrame(top)
                     frames.append(top)
@@ -88,12 +91,18 @@ class FunctionIndex:
                     closed, top = top, top.parent
                     closed.piped = piped
             piped_at.append(top)
+            structural_depths.append(structural_depth)
             for name in defined:
                 definitions[name].append(index)
             if posture_barrier(statement, names):
                 barriers.append(index)
         for frame in frames:
-            frame.resolved = frame.piped or (frame.parent.resolved if frame.parent else None)
+            if frame.piped is not None:
+                frame.resolved = frame.piped
+                frame.resolved_depth = frame.depth
+            elif frame.parent is not None:
+                frame.resolved = frame.parent.resolved
+                frame.resolved_depth = frame.parent.resolved_depth
         self.definitions = definitions
         self.calls = calls
         self.barriers = barriers
@@ -105,6 +114,7 @@ class FunctionIndex:
                 next_barrier = position
             self.next_barriers[position] = next_barrier
         self.piped_at = piped_at
+        self.structural_depths = structural_depths
         self.unmatched = unmatched
         self.unmatched_positions = [index for index, _piped in unmatched]
         self.off = (False,) * len(stmts)
@@ -163,7 +173,13 @@ class FunctionIndex:
         """Pipeline start for a structural group enclosing ``position``."""
         frame = self.piped_at[position] if position < len(self.piped_at) else None
         if frame is not None:
-            return frame.resolved
+            # The legacy scan counts unmatched closers in its net depth.  It
+            # still examines the first enclosing close, then stops as soon as
+            # that depth is exhausted.  Keep the indexed answer within that
+            # same number of live frames instead of climbing past the closer.
+            remaining = max(1, self.structural_depths[position])
+            shallowest = frame.depth - remaining + 1
+            return frame.resolved if frame.resolved_depth >= shallowest else None
         at = bisect_right(self.unmatched_positions, position)
         return self.unmatched[at][1] if at < len(self.unmatched) else None
 
