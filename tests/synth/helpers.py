@@ -95,7 +95,7 @@ def _cli_args(**kw):
     defaults, so the WS-0 S3 loaders see exactly the attribute set main() hands
     them. Override per test."""
     import argparse
-    ns = dict(target="unknown", groups=None, security=None, fail_on=None,
+    ns = dict(target="unknown", root=None, groups=None, security=None, fail_on=None,
               severity="all", changes=False, out=None, run_id=None, run_dir=None,
               html_out=None, compare=None, epss=False, tools_dir=None,
               tools_exclude=None, doc_paths=None, include_fixtures=False,

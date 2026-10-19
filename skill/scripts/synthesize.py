@@ -46,6 +46,8 @@ def build_parser():
     """
     ap = argparse.ArgumentParser(description="panopticon synthesizer")
     ap.add_argument("--target", default="unknown")
+    ap.add_argument("--root", metavar="PATH", default=None,
+                    help="Filesystem root for LOC grading (defaults to --target)")
     ap.add_argument("--groups", metavar="PATH")
     ap.add_argument("--security", choices=["standard", "redteam"], default=None,
                     help="Override security mode from groups.json")

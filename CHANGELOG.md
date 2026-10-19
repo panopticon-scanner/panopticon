@@ -28,6 +28,12 @@ evidence exposed.
   No readings move: a refreshed 1,340-row mixed-body value/use differential, including every
   statement's table, is byte-identical. Pins: `tests/test_workflow_positional_handoff.py`; sizes:
   `scripts/workflow_uses.py` 699, `scripts/workflow_use_scopes.py` 222.
+- **Driver reports measure LOC from the review root, keeping the target name for display
+  (#3163).** From 2026-09-24 (#2038) until this fix, synthesis treated the target's display name
+  as a filesystem root beneath the reviewed tree, producing zero LOC and a null grade or counting
+  a same-named subdirectory instead. The driver now passes the actual review root through
+  `--root` for grading; PR worktrees retain the original target name in JSON and HTML.
+  Standalone synthesis without `--root` keeps using its `--target` path.
 - **Workflow reader reads what #3117 named and `main` reads CLEAN while the payload runs (#3153).**
   Beside `main`'s reading, never instead. (1) A printer of a variable whose value fetches, where a
   forked child inherits the value (a piped brace group, a subshell, a compound body), in a test (`if

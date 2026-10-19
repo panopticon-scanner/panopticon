@@ -146,6 +146,9 @@ class RunConfig:
     config: dict = field(default_factory=dict)
     # The gate never inherits its mode from target-written groups.json (#1707).
     gate_security_mode: str = "standard"
+    # #3163: the driver supplies the reviewed tree separately from its display
+    # name. Standalone callers may still use target as the path when omitted.
+    root: str | None = None
 
     @classmethod
     def from_args(cls, args, groups_json, timestamp, host_capabilities=None,
@@ -168,7 +171,8 @@ class RunConfig:
             security_mode = groups_json.get("security_mode", "standard")
         if security_mode is None:
             security_mode = "standard"
-        return cls(target=args.target, fail_on=args.fail_on, timestamp=timestamp,
+        return cls(target=args.target, root=args.root,
+                   fail_on=args.fail_on, timestamp=timestamp,
                    review_type=review_type, security_mode=security_mode,
                    gate_unverified=args.gate_unverified, max_verify=args.max_verify,
                    gate_scope=args.gate_scope,
