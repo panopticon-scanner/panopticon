@@ -3206,3 +3206,43 @@ class TestTheLimitsOf3117AreRead(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertFalse(noop(text))
 
+
+class TestAWeighedWordReadsAsWritten(unittest.TestCase):
+    """#3164: a word annotate weighs is a fresh token (`workflow_annotate._rebuilt`) that keeps every attribute the
+    reader set on the word as written (`double`, `kept`, `live_dollar`, `exact_dollar` on these), at each of the three
+    places one is made: a forked child's printer, a test's, and rule 6's take-back (`_as_weighed`). A spelled word
+    stays the bare token it always was: it is read as its value."""
+
+    C = "sh -c '%s'" % PIPE
+    SITES = (("a forked child", "X='%s'\n{ echo \"$X\"; } | sh\n" % PIPE),
+             ("a test", "X='%s'\nif echo \"$X\" | sh; then :; fi\n" % PIPE),
+             ("rule 6's take-back", 'X="%s"\necho "$X" | sh\n' % C))
+    SPELLED = "X='%s'\necho \"$X\" | sh\n" % PIPE
+
+    @staticmethod
+    def words(script):
+        """The printer's last word as the reader writes it, and as `annotate` leaves it."""
+        return (shell_reader.statements(script)[1].stages[0].argv[-1],
+                wa.annotate(shell_reader.statements(script))[1].stages[0].argv[-1])
+
+    def test_each_place_a_weighed_word_is_made_keeps_the_readers_attributes(self):
+        for site, script in self.SITES:
+            with self.subTest(site=site):
+                written, word = self.words(script)
+                self.assertTrue(getattr(written, "double"))
+                self.assertIn("weighed", vars(word))
+                self.assertEqual({**vars(written), "weighed": getattr(word, "weighed")}, vars(word))
+
+    def test_a_spelled_word_stays_the_bare_token(self):
+        written, word = self.words(self.SPELLED)
+        self.assertTrue(getattr(written, "double"))
+        self.assertEqual({"markers", "spelled"}, set(vars(word)))
+
+    def test_a_word_the_reader_left_a_plain_string_is_rebuilt_bare(self):
+        self.assertEqual({"markers": {}, "weighed": "t"}, vars(wa._rebuilt("$X", "weighed", "t")))
+
+    def test_a_rebuilt_word_keeps_its_own_markers_spelled_or_weighed(self):
+        word = shell_reader._Token("$X", {"$X": ("subst", None)})
+        for attribute in ("spelled", "weighed"):
+            with self.subTest(attribute=attribute):
+                self.assertIs(word.markers, wa._rebuilt(word, attribute, "t").markers)
