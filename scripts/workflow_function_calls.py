@@ -13,6 +13,7 @@ import re
 
 import shell_reader
 from shell_reader import command, conditional, negated
+from workflow_function_index import ClosingIndex, FunctionIndex
 
 
 # --- whether a command's failure is allowed to matter -------------------------
@@ -150,6 +151,26 @@ def _posture_barrier(statement, functions):
     return False
 
 
+def _function_index(stmts, analysis):
+    """The call events shared by every function-body question in this list."""
+    found = getattr(analysis, "function_index", None)
+    if found is None:
+        found = FunctionIndex(
+            stmts, analysis.function_names, _function_syntax, _posture_barrier
+        )
+        analysis.function_index = found
+    return found
+
+
+def _closing_index(stmts, analysis):
+    """The closing runs shared by each status question in this list."""
+    found = getattr(analysis, "closing_index", None)
+    if found is None:
+        found = ClosingIndex(stmts, _closes)
+        analysis.closing_index = found
+    return found
+
+
 def _gating_function_call(stmts, name, after, errexit, returns_status, seen=(), calls=None,
                           analysis=None):
     """The first proved call whose failure stops the step, or None.
@@ -172,63 +193,81 @@ def _gating_function_call(stmts, name, after, errexit, returns_status, seen=(), 
 
     if name in seen:
         return None
-    on, fails = [errexit] * len(stmts), [False] * len(stmts)
     if analysis is not None and analysis.control_depths is None:
         analysis.control_depths = _control_depths(stmts)
     controls = analysis.control_depths if analysis is not None else _control_depths(stmts)
-    functions = analysis.function_names if analysis is not None else {
+    index = _function_index(stmts, analysis) if analysis is not None else None
+    off = index.off if index is not None else [False] * len(stmts)
+    on = index.on if index is not None and errexit else (
+        index.off if index is not None else [errexit] * len(stmts)
+    )
+    functions = None if analysis is not None else {
         function for statement in stmts for stage in statement.stages
         if (function := _function_syntax(stage.argv)[0]) is not None
     }
-    for position in range(after + 1, len(stmts)):
-        statement = stmts[position]
-        if any(_function_syntax(stage.argv)[0] == name for stage in statement.stages):
-            return done(None)                   # a later definition overwrites this body
-        if len(statement.stages) != 1:
-            continue
-        stage = statement.stages[0]
-        argv = command(stage.argv)
-        scope = _function_scope(stmts, position, analysis)
-        direct = (stage.argv[:1] == [name] or
-                  stage.argv[:1] == ["{"] and argv[:1] == [name] or
-                  scope is not None and argv[:1] == [name])
-        if (not direct or controls[position] or negated(stage.argv) or conditional(stage.argv)
-                or statement.separator in ("&", "&&")):
-            if _posture_barrier(statement, functions):
-                return done(None)
-            continue
-        if statement.separator == "||":
-            stops = returns_status and _stops_the_job(
-                stmts, position, errexit, analysis=analysis)
-        else:
-            stops = _stops_step(stmts, position, on, fails, analysis) is None
-            # A proof that also stops with `-e` off depends on the function's
-            # returned status; conditional call contexts suppress `-e` inside it.
-            if stops and _stops_step(
-                    stmts, position, [False] * len(stmts), fails, analysis) is None:
-                stops = returns_status
-        if not stops:
-            continue
-        if scope is None:
-            if calls is not None:
-                calls.append(position)
-            return done(position)
-        outer, close = scope
-        # A wrapper carries either an explicit exit or its final call's status.
-        exits = (returns_status and statement.separator == "||"
-                 and _stops_the_job(stmts, position, False, analysis=analysis))
-        outer_status = exits or returns_status and all(
-            _closes(item) for item in stmts[position + 1:close + 1]
-        )
-        outer_call = _gating_function_call(
-            stmts, outer, close, errexit, outer_status, seen + (name,), calls, analysis
-        )
-        if outer_call is not None:
-            if calls is not None:
-                calls.append(position)
-            return done(outer_call)
-        return done(None)
-    return done(None)
+    active = set(seen)
+
+    def find(function, start, returned):
+        if function in active:
+            return None
+        active.add(function)
+        try:
+            positions = (index.events(function, start) if index is not None
+                         else range(start + 1, len(stmts)))
+            for position in positions:
+                statement = stmts[position]
+                redefined = (index.defines(function, position) if index is not None else
+                             any(_function_syntax(stage.argv)[0] == function
+                                 for stage in statement.stages))
+                if redefined:
+                    return None                 # a later definition overwrites this body
+                if len(statement.stages) != 1:
+                    continue
+                stage = statement.stages[0]
+                argv = command(stage.argv)
+                scope = _function_scope(stmts, position, analysis)
+                direct = (stage.argv[:1] == [function] or
+                          stage.argv[:1] == ["{"] and argv[:1] == [function] or
+                          scope is not None and argv[:1] == [function])
+                if (not direct or controls[position] or negated(stage.argv)
+                        or conditional(stage.argv) or statement.separator in ("&", "&&")):
+                    barrier = (index.is_barrier(position) if index is not None
+                               else _posture_barrier(statement, functions))
+                    if barrier:
+                        return None
+                    continue
+                if statement.separator == "||":
+                    stops = returned and _stops_the_job(
+                        stmts, position, errexit, analysis=analysis)
+                else:
+                    stops = _stops_step(stmts, position, on, off, analysis) is None
+                    # A proof that also stops with `-e` off depends on the function's
+                    # returned status; conditional call contexts suppress `-e` inside it.
+                    if stops and _stops_step(
+                            stmts, position, off, off, analysis) is None:
+                        stops = returned
+                if not stops:
+                    continue
+                if scope is None:
+                    if calls is not None:
+                        calls.append(position)
+                    return position
+                outer, close = scope
+                # A wrapper carries either an explicit exit or its final call's status.
+                exits = (returned and statement.separator == "||"
+                         and _stops_the_job(stmts, position, False, analysis=analysis))
+                carries = (not analysis.has_later_command(position, close)
+                           if analysis is not None else
+                           all(_closes(item) for item in stmts[position + 1:close + 1]))
+                outer_call = find(outer, close, exits or returned and carries)
+                if outer_call is not None and calls is not None:
+                    calls.append(position)
+                return outer_call
+            return None
+        finally:
+            active.remove(function)
+
+    return done(find(name, after, returns_status))
 
 
 def _stops_the_job(stmts, index, errexit=True, pipefail=False, analysis=None):
@@ -591,13 +630,18 @@ def _stops_step(stmts, position, on, fails, analysis=None):
     without its open (`_lost_case`, review I-4) leaves the list's end unknown.
     The failure then stops only its own statement (`_LOST`, review I-1, N-7)."""
     last, close = len(stmts) - 1, position
-    while close < last and stmts[close].separator not in ("&", "&&", "||") and _closes(
-            stmts[close + 1]):
-        close += 1                              # the check ends a group: read the group
-        if stmts[close].separator == "&":
-            return _ENDS % _DETACHED
-        if len(stmts[close].stages) > 1 and not fails[close]:
-            return _ENDS % _NO_PIPEFAIL
+    if analysis is not None:
+        close, blocked = _closing_index(stmts, analysis).run(position, fails)
+        if blocked is not None:
+            return _ENDS % (_DETACHED if stmts[blocked].separator == "&" else _NO_PIPEFAIL)
+    else:
+        while close < last and stmts[close].separator not in ("&", "&&", "||") and _closes(
+                stmts[close + 1]):
+            close += 1                          # the check ends a group: read the group
+            if stmts[close].separator == "&":
+                return _ENDS % _DETACHED
+            if len(stmts[close].stages) > 1 and not fails[close]:
+                return _ENDS % _NO_PIPEFAIL
     separator = stmts[close].separator
     if separator not in ("&&", "||"):
         tail = _conditional_group_tail(stmts, position, on[position], analysis)

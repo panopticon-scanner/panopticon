@@ -53,8 +53,8 @@ from workflow_function_calls import (FunctionGate, PipelineGate, Reach as Reach,
                                      _DETACHED, _LOST as _LOST, _NO_E as _NO_E,
                                      _NO_PIPEFAIL as _NO_PIPEFAIL, _OPENS, _RESCUED,
                                      _READ_RESCUED, _SET_E as _SET_E, _UNPROVED_RESCUE,
-                                     _closes, _control_depths, _function_scope, _function_syntax,
-                                     _gating_function_call, _posture_barrier,
+                                     _control_depths, _function_scope, _function_syntax,
+                                     _function_index, _gating_function_call, _posture_barrier,
                                      _stops_the_job, _stops_step as _stops_step,
                                      clears as _clears)
 from workflow_posture import (_errexit as _errexit, _rejected as _rejected,
@@ -215,6 +215,36 @@ def _piped_function_end(stmts, index, analysis=None):
     if analysis is not None and analysis.control_depths is None:
         analysis.control_depths = _control_depths(stmts)
     controls = analysis.control_depths if analysis is not None else _control_depths(stmts)
+    if analysis is not None:
+        indexed = _function_index(stmts, analysis)
+        for call in indexed.call_statements(name, close):
+            statement = stmts[call]
+            if indexed.defines(name, call):
+                continue
+            uncertain = indexed.changed_before(name, close, call)
+            for position, stage in enumerate(statement.stages[:-1]):
+                if command(stage.argv)[:1] == [name]:
+                    if (uncertain or controls[call] or negated(stage.argv)
+                            or conditional(stage.argv)):
+                        return done(len(stmts) - 1)
+                    if (analysis.function_scope(call) is not None
+                            or statement.separator in ("&", "&&", "||")):
+                        return done(len(stmts) - 1)
+                    return done(_pipeline_end(stmts, call, position + 1))
+            tail = statement.stages[-1] if statement.stages else None
+            if tail is None or command(tail.argv)[:1] != [name]:
+                continue
+            start = indexed.piped_group(call)
+            if start is None:
+                continue
+            if start not in analysis.piped_group_ends:
+                analysis.piped_group_ends[start] = _pipeline_end(stmts, *start)
+            group_end = analysis.piped_group_ends[start]
+            if (uncertain or controls[call] or negated(tail.argv)
+                    or conditional(tail.argv) or analysis.function_scope(call) is not None):
+                return done(len(stmts) - 1)
+            return done(group_end)
+        return done(None)
     functions = analysis.function_names if analysis is not None else {
         function for statement in stmts for stage in statement.stages
         if (function := _function_syntax(stage.argv)[0]) is not None
@@ -469,9 +499,8 @@ def _function_status(stmts, index, answer, errexit, analysis=None):
                      and index + answer.span >= close)
     if answer is not None and not reaches_close:
         return answer
-    returned = reaches_close or (carrier != index and all(
-        _closes(item) for item in stmts[carrier + 1:close + 1]
-    )) or carrier == index
+    returned = (reaches_close or carrier != index
+                and not analysis.has_later_command(carrier, close) or carrier == index)
     calls: list[int] = []
     call = _gating_function_call(
         stmts, name, close, errexit, returned, calls=calls, analysis=analysis)
