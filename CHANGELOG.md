@@ -40,8 +40,10 @@ evidence exposed.
   wrapper's alternate, the locale rows and a body its call resolves. Pins:
   `tests/test_workflow_guard_reader_forms.py::TestAValueCommandWordMayRunTheFetchedFile` (thirteen
   rows report in all five settings, six that reported already still do, sixteen controls stay CLEAN,
-  the checked row reads CCCRR, `main`'s finding stands, the main pass is unchanged, and the
-  predicate). Sizes: `scripts/workflow_uses.py` 663 (+70).
+  the checked row reads CCCRR, `main`'s finding stands, the main pass is unchanged, the predicate,
+  and the second walk's lookup sharing `uses()`'s one lazy table, #3145's). Sizes:
+  `scripts/workflow_uses.py` 670 (699 on `main`: the command-word block moved whole to
+  `scripts/workflow_use_words.py`, 132).
 
 - **Workflow uses shares one value-table walk and one fork index across sibling calls (#3145).** A
   step with `n` function definitions followed by `n` calls rebuilt `static_values` at every call:
