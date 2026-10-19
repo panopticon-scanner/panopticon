@@ -730,7 +730,7 @@ reconciled = types.SimpleNamespace(
     panels_incomplete=[], tools_absent=[], tools_network_excluded=[], integrity_ok=True,
     cell_audit={"missing_floor": []}, tools_manifest_invalid=None,
     gated_suppressed=[], delta_scope_suppressed_git_drivers=None, coverage={})
-run = types.SimpleNamespace(target=sys.argv[1], fail_on=None, gate_unverified=False)
+run = types.SimpleNamespace(target=sys.argv[1], root=None, fail_on=None, gate_unverified=False)
 
 graded = grading_mod.grade_report(run, resolved, reconciled)
 print(json.dumps({"keys": list(graded.groups[0]["panel_grades"]),

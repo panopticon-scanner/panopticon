@@ -49,28 +49,11 @@ _COMPOUNDS = {"{": "}", "if": "fi", "case": "esac", "for": "done", "select": "do
               "while": "done", "until": "done"}
 
 
-def _forked(stmts, index):
-    """The statements the step's shell forks (#2425) in a child the statement at `index` is not in: a
-    `( ... )` subshell's past its opening statement, an `&&`/`||` list's sent to the background
-    whole (`T=x && : &`), and every statement of a `{ ...; }` group or an `if`, `case`, `for`,
-    `select`, `while` or `until` compound, from its head to its close, that is piped into, piped on,
-    run by `coproc`, or sent to the background by its own `&` or the one ending its list (`if T=x;
-    then :; fi &`) -- a list is not followed past a compound command, so `T=x && if c; then :; fi &`
-    reads `T=x` as sure (a limit) -- and, never sure outside it, a compound that is a function's
-    body (`g() for T in x; do :; done`, `{ f() { :; }; }`, `_openers`), which runs only where it is
-    called. Their assignments end with the child, as `working_directories` keeps a subshell's `cd`;
-    a use in the same child sees them as its own; a use in a later stage of the statement that
-    closes it is outside it (`{ T=x; } | sh "$T"`). A keyword is one only where the stage's command
-    would stand (`_openers`); an array literal's parentheses count as a group's, which marks a
-    multi-line literal's word lines unsure."""
-    forked: set[int] = set()
+def _forks(stmts, fork):
+    """Hand each child-shell range to `fork`, in the order `_forked` finds it."""
     opened: list[tuple[int, bool, str]] = []
     subshells: list[int] = []
     header = False                          # a function header's body is still to come
-
-    def fork(start, end, onward=False):     # `onward`: the close's statement pipes on past it
-        if not (start <= index < end or index == end and not onward):
-            forked.update(range(start, end + 1))
 
     for position, statement in enumerate(stmts):
         end = position                      # the end of its `&&`/`||` list
@@ -93,6 +76,91 @@ def _forked(stmts, index):
                         fork(start, position, number < last)
     for start in subshells:                 # a group the step leaves open
         fork(start, len(stmts) - 1)
+
+
+def _fork_ranges(stmts):
+    """The child-shell statement ranges `_forked` reads, indexed once."""
+    ranges: list[tuple[int, int, bool]] = []
+
+    def fork(start, end, onward=False):     # `onward`: the close's statement pipes on past it
+        if start <= end:
+            ranges.append((start, end, onward))
+
+    _forks(stmts, fork)
+    return ranges
+
+
+class _ForkedView:
+    """Set-like fork membership for one target statement."""
+
+    def __init__(self, covered, active):
+        self.covered, self.active = covered, active
+
+    def __contains__(self, position):
+        return (isinstance(position, int) and 0 <= position < len(self.covered)
+                and bool(self.covered[position] & ~self.active))
+
+
+class _ForkedIndex:
+    """Every child range and target context of one step, found in one `_openers` walk."""
+
+    def __init__(self, stmts, ranges=None):
+        ranges = _fork_ranges(stmts) if ranges is None else ranges
+        self.covered = self._contexts(len(stmts), ranges, False)
+        self.targets = self._contexts(len(stmts), ranges, True)
+
+    @staticmethod
+    def _contexts(size, ranges, targets):
+        """Range ids covering each statement, or containing it as a same-child target."""
+        added: dict[int, int] = {}
+        removed: dict[int, int] = {}
+        for number, (start, end, onward) in enumerate(ranges):
+            stop = end if targets and onward else end + 1
+            if stop <= start:
+                continue
+            bit = 1 << number
+            added[start] = added.get(start, 0) | bit
+            removed[stop] = removed.get(stop, 0) | bit
+        active = 0
+        contexts = []
+        for position in range(size):
+            active &= ~removed.get(position, 0)
+            active |= added.get(position, 0)
+            contexts.append(active)
+        return contexts
+
+    def at(self, index):
+        """Forked-statement membership as seen by target `index`."""
+        active = self.targets[index] if 0 <= index < len(self.targets) else 0
+        return _ForkedView(self.covered, active)
+
+
+def _forked_index(stmts, ranges=None):
+    """Index the child ranges of `stmts` once for all of its value-table targets."""
+    return _ForkedIndex(stmts, ranges)
+
+
+def _forked(stmts, index):
+    """The statements the step's shell forks (#2425) in a child the statement at `index` is not in: a
+    `( ... )` subshell's past its opening statement, an `&&`/`||` list's sent to the background
+    whole (`T=x && : &`), and every statement of a `{ ...; }` group or an `if`, `case`, `for`,
+    `select`, `while` or `until` compound, from its head to its close, that is piped into, piped on,
+    run by `coproc`, or sent to the background by its own `&` or the one ending its list (`if T=x;
+    then :; fi &`) -- a list is not followed past a compound command, so `T=x && if c; then :; fi &`
+    reads `T=x` as sure (a limit) -- and, never sure outside it, a compound that is a function's
+    body (`g() for T in x; do :; done`, `{ f() { :; }; }`, `_openers`), which runs only where it is
+    called. Their assignments end with the child, as `working_directories` keeps a subshell's `cd`;
+    a use in the same child sees them as its own; a use in a later stage of the statement that
+    closes it is outside it (`{ T=x; } | sh "$T"`). A keyword is one only where the stage's command
+    would stand (`_openers`); an array literal's parentheses count as a group's, which marks a
+    multi-line literal's word lines unsure."""
+    forked: set[int] = set()
+
+    def fork(start, end, onward=False):     # `onward`: the close's statement pipes on past it
+        if not (start <= index < end or index == end and not onward):
+            forked.update(range(start, end + 1))
+
+    _forks(stmts, fork)
     return forked
 
 
