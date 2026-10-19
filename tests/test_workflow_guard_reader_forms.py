@@ -19,6 +19,7 @@ import shell_lex
 import shell_reader
 import workflow_guard as wg
 import workflow_called
+import workflow_options
 import workflow_uses
 
 URL = "https://example.test/"
@@ -7637,3 +7638,112 @@ class TestWhatAnEvalOrDashCStringHandsOn(unittest.TestCase):
         for script in ('sh -c "cat <<$(echo E) >/dev/null\nE\n%s"\n' % PIPE, 'sh -c "cat <<E >/dev/null\nE\n%s"\n' % PIPE):
             with self.subTest(script=script):
                 self.assertTrue(any(self.STREAM in w for _, w in defects(script)), script)
+
+
+class TestAValueCommandWordMayRunTheFetchedFile(unittest.TestCase):
+    """#3143 (the #3140 seat's N1 root): a command word that is a value no table resolves -- `$SHELL`, `${SHELL}`,
+    `"$SHELL"`, `$RUN` unset or set by the runner, `"$@"` -- may name any program, a shell among them, so under the
+    union rule it is a possible runner of the fetched, unchecked file it is handed (`workflow_uses.use`,
+    `_value_command`), where it is the whole command -- not a word bash may drop in front of a name the reader
+    knows (`_optional`), nor a default, an alternate or a spliced array the reader resolves its own way; the same
+    word behind `cat t |` is a possible reader of the pipe. On `main` ba2a4a5a each read CLEAN while bash 3.2.57,
+    dash and zsh run the payload (`$RUN` unset runs nothing, the runner's value unknown). `RUN=sh` set in the
+    step, a shell's default `${X:-sh}`, `"$@"` in a body called with `sh`, `$SHELL -c` and `$SHELL < t` reported
+    already; a word handed no fetched file, and `cat`, stay CLEAN. The price, named: a value naming a non-runner or
+    nothing (`$EDITOR ./t`; `${X#y} ./t` with `X` unset; `${A:+echo} t`, the alternate read as a bare reference) is
+    an over-report. The rule fires only where the table gives the word no value at all: `cmd='$1'` then `"$cmd"`
+    (a literal) and `${S:-sudo} ${X:+sh} t` (resolved behind the dropped wrapper) keep `main`'s readings; a command
+    substitution does too, a named limit. Round 2 (the differential's 15 rows whose finding lost `main`'s text): the
+    guard's second walk reads so, never its main pass, `main`'s answer; a use only such a word makes follows every
+    one `main` names; a pipe's value needs no value from the table either; and the name the word runs must be able to
+    end as a shell's does (`${P}sh` may; `$S/x`, `a$`, `x"${SH:-bash}"` read as `xbash`, `$'bash\\ue004'` do not)."""
+
+    FETCH = "curl -fsSLo t %st" % URL
+    REPORT = ("$SHELL ./t", "$SHELL t", "${SHELL} ./t", '"$SHELL" ./t', "$RUN ./t", 'set -- sh\n"$@" ./t', "cat t | $SHELL",
+              "$SHELL -e ./t", "cat t | $SHELL -s",
+              "$EDITOR ./t", "${X#y} ./t", "${A:+echo} t",        # these three: the price, a non-runner or nothing named
+              "${P}sh ./t")                                         # `P` unset: `sh ./t` (round 2)
+    REPORTED_BEFORE = ("RUN=sh\n$RUN ./t", "${X:-sh} ./t", 'run() { "$@"; }\nrun sh ./t', "$SHELL -c ./t", "$SHELL < t",
+                       'CMD=(sh)\n"${CMD[@]}" ./t')
+    # A default the reader reads its own way (`${X:-cat}` as `cat`, `"${SH:- bash}"` as no shell), an array spliced
+    # whole (`"${CMD[@]}"`, resolved at its splice), and a value whose first operand is not the file -- in front of a
+    # name the reader knows (`$S head -n 99 t`: a shell there would run `head`), another value (`$A $B ./t`), or
+    # behind the pipe with a word after it (`cat t | $S head -n 99`) -- are no runners of it: `main`'s readings stand.
+    CLEAN = ("$SHELL --version", "$SHELL ./other", "cat ./t", "${X:-cat} ./t", 'cat t | "${SH:- bash}"', "${S:+echo} cat ./t",
+             "$S head -n 99 t", "$A $B ./t", "cat t | $S head -n 99", 'CMD=(cat)\n"${CMD[@]}" ./t',
+             "f() { local cmd='$1'; shift; \"$cmd\" \"$@\"; }\nf sh ./t",     # the table names `$cmd`: a literal `$1`
+             "$(which sh) ./t",                                              # a substitution: `main`'s reading, a named limit
+             "$'bash\\ue004' ./t", 'cat t | x"${SH:-bash}"', "a$ ./t", "$S/x ./t")   # no shell's name (round 2)
+    CHECK = "echo \"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  t\" | sha256sum -c -\n"
+
+    def test_a_value_command_word_handed_the_file_reports(self):
+        for row in self.REPORT + self.REPORTED_BEFORE:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertTrue(reported(self.FETCH + "\n" + row + "\necho done\n", shell))
+
+    def test_a_value_command_word_handed_no_fetched_file_stays_clean(self):
+        for row in self.CLEAN:
+            for shell in SHELLS:
+                with self.subTest(row=row, shell=shell):
+                    self.assertFalse(reported(self.FETCH + "\n" + row + "\necho done\n", shell))
+
+    def test_a_plain_word_with_a_live_expansion_is_a_value_command_and_a_quoted_one_is_not(self):
+        # The coordinator's note on the grant: `getattr(word, "live_dollar", True)` defaults to live, the fail-closed
+        # direction -- a plain `str` carrying a `$` (no `_Token` attributes) is a value command, as is a substitution;
+        # a single-quoted `'$X'` (`live_dollar` False) and a shell's default (`${X:-sh}`, read as `sh`) are not.
+        self.assertTrue(workflow_uses._value_command("$SHELL"))
+        self.assertFalse(workflow_uses._value_command("sh"))
+        for script, expected in (("'$SHELL' ./t\n", False), ("$SHELL ./t\n", True), ('"$SHELL" ./t\n', True),
+                                 ("${SHELL} ./t\n", True), ("${X:-sh} ./t\n", False), ('"$@" ./t\n', True),
+                                 ("$(which sh) ./t\n", False),       # a substitution, lifted to a marker: a named limit
+                                 ("$'bash\\ue004' ./t\n", False)):   # round 2: `$bash` then `\ue004`, no shell's name
+            with self.subTest(script=script):
+                word = shell_reader.command(shell_reader.statements(script)[0].stages[0].argv)[0]
+                self.assertEqual(expected, workflow_uses._value_command(word))
+        # Round 2: the name it runs ends in what follows its last expansion -- `$S/x` runs an `x`, `$S.sh` an `x.sh`.
+        for text, expected in (("$S/x", False), ("$S.sh", False), ("a$", False), ("${P}sh", True), ("$A$B", True)):
+            with self.subTest(text=text):
+                self.assertEqual(expected, workflow_uses._value_command(text))
+
+    def test_the_credited_check_before_it_stops_the_step_where_it_fails(self):
+        # The check first, then `$SHELL ./t`: CLEAN where the failed check stops the step (`-e`), REPORT in the `{0}`
+        # settings, which run on -- truth f R f R f R, as the direct `$?` gate rows read.
+        for shell, expected in zip(SHELLS, "CCCRR"):
+            with self.subTest(shell=shell):
+                self.assertEqual(expected == "R", reported(self.FETCH + "\n" + self.CHECK + "$SHELL ./t\necho done\n", shell))
+
+    def test_mains_finding_stands_where_it_names_the_use(self):
+        # Round 2: the walk's use follows every one `main` names. A body's `$RUN` its call resolves keeps `main`'s
+        # `sh` (the seat-hunt13 `SA*f` rows); a locale string keeps `main`'s `sh` first, bash's reading, and the walk
+        # adds dash's, whose kept `$` `main`'s fold reads as the reference `$sh` (#3048): the price, named.
+        found = [why for _name, why in defects(self.FETCH + "\nRUN=sh\nf() { $RUN ./t; }\nf\n")]
+        self.assertEqual(1, len(found))
+        self.assertIn("running it under `sh` with nothing verifying", found[0])
+        found = [why for _name, why in defects(self.FETCH + '\n$"sh" ./t\n')]
+        self.assertEqual(2, len(found))
+        self.assertIn("running it under `sh` with nothing verifying", found[0])
+        self.assertIn("running it under `$sh`, a command word this guard cannot resolve", found[1])
+
+    def test_the_second_walks_lookup_shares_the_values_table(self):
+        # At the fold of #3145: a `cat` piping into a value command word asks the step's values in the second walk, and
+        # asks through `uses()`'s one lazy lookup (`values`), so N such statements walk the values about N times, as
+        # #3145's sibling calls do -- a fresh `static_values` there walked them about N * N / 2 times.
+        from unittest import mock
+        counts = []
+        for size in (16, 32):
+            stmts = shell_reader.statements(self.FETCH + "\n" + "cat t | $V\n" * size)
+            certainty = workflow_uses._table_certainty
+            with mock.patch.object(workflow_uses, "_table_certainty", wraps=certainty) as walked:
+                workflow_uses.uses(stmts, "t", 0)
+            counts.append(walked.call_count)
+        small, large = counts
+        self.assertGreaterEqual(large * 10, small * 18)
+        self.assertLessEqual(large * 10, small * 22)
+
+    def test_the_main_pass_stays_mains_answer(self):
+        # Round 2: the second walk reads a value command word as a possible runner; the main pass does not.
+        steps = [wg.Step("step", self.FETCH + "\n$SHELL ./t\n", None)]
+        self.assertTrue(wg.job_defects(steps))
+        with workflow_options.mains_answer():
+            self.assertFalse(wg._job_defects(steps))
