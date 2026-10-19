@@ -490,7 +490,8 @@ def _function_status(stmts, index, answer, errexit, analysis=None):
 
 
 def swallowed(stmts, index, statement, stage, credit=_UNMEASURED, analysis=None,
-              shell=None, soft=False, top=False, owner=None, postures=None):
+              shell=None, soft=False, top=False, owner=None, postures=None,
+              startup_safe=True):
     """Why this check's failure would go nowhere, or None.
 
     Phrased to follow "the checksum that names <file>", because that is the
@@ -620,7 +621,8 @@ def swallowed(stmts, index, statement, stage, credit=_UNMEASURED, analysis=None,
     if measuring_uses and top and not isinstance(statement, Inlined) and no_errexit:
         outside = (Reach(step_end(stmts, index, owner, postures) - index, _SOFT_MANUAL)
                    if soft else None)
-        through = status_gate(stmts, index, shell, analysis, owner, postures)
+        through = status_gate(stmts, index, shell, analysis, owner, postures,
+                              startup_safe=startup_safe)
         if through is not None:
             return ContextGate(through, _STATUS_HANDOFF, outside)
         if stopping_err_trap(stmts, index, shell, analysis, owner, postures):

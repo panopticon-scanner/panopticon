@@ -129,13 +129,19 @@ evidence exposed.
 - **Workflow status credits the reader-marked direct `$?` operand in Bash `[[ ... ]]` gates
   (#3116 item 2).** The status proof accepts `conditional_status` only for the literal `$?`,
   only without a captured variable name, and only in the existing three-word `[[ ]]` comparison;
-  Bash must directly read the step file. A custom Bash command string or an earlier wrapper-script
-  operand can hand `{0}` to another interpreter, so those templates stay fail-closed. The user's own
-  `$\?`, quote-removal lookalikes, typed private-use marks, non-Bash steps and every reader limitation
-  above stay fail-closed. The direct and reversed comparisons and the `if [[ ... ]]` form now stop a
-  failed check, with and without `set +e`, while their controls still report. Pins:
+  Bash must directly read the step file. A custom Bash command string, an earlier wrapper-script
+  operand, an arbitrary path whose basename is `bash`, or interactive/login/startup-file options can
+  run something else before or instead of the step, so those templates stay fail-closed. Only the
+  runner's built-in Bash and direct `{0}` templates under the system command directories, with the
+  bounded quiet options, receive the new credit. A workflow, job or step `env:` that can affect Bash
+  startup, a job container, or any earlier action or run step withholds it too: Bash reads `BASH_ENV` even with
+  `--noprofile --norc`, and startup code can replace the proved `exit`. The
+  user's own `$\?`, quote-removal lookalikes, typed private-use marks, non-Bash steps and every reader
+  limitation above stay fail-closed. The direct and reversed comparisons and the `if [[ ... ]]` form
+  now stop a failed check, with and without `set +e`, while their controls still report. Pins:
   `tests/test_workflow_positional_handoff.py` (all six spellings across three handlers and both
-  error-mode postures, typed-mark controls, direct and delegated Bash templates).
+  error-mode postures, typed-mark controls, direct, delegated, step-writable-path, startup-reading
+  and startup-environment Bash templates).
 
 - **Workflow reader reads a private-use mark the step types itself as a plain literal -- every mark,
   in one place (#3138).** The reader puts eight private-use characters into a step's text while it

@@ -104,13 +104,16 @@ def checks(stmts, credit=None, working=None, outer=None, path=(), scope=None,
             if not _has_check_flag(argv):
                 continue
             text = _checked_text(statement, position, stage, argv, written, here) or ""
-            shell, soft, owner = ((postures or {}).get(index, (None, False, None))
-                                  if outer is None else (None, False, None))
+            posture = ((postures or {}).get(index, (None, False, None, True))
+                       if outer is None else (None, False, None, True))
+            shell, soft, owner = posture[:3]
+            startup_safe = posture[3] if len(posture) > 3 else True
             why = (_NO_DIGEST if not _DIGEST.search(text) else
                    swallowed(stmts, index, statement, stage,
                              (credit or {}).get(index), analysis,
                              shell=shell, soft=soft, top=outer is None,
-                             owner=owner, postures=postures))
+                             owner=owner, postures=postures,
+                             startup_safe=startup_safe))
             found.append((point, text, why))
         _record_writes(statement, written, here)
     return found

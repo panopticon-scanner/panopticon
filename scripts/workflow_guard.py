@@ -286,6 +286,16 @@ from workflow_uses import uses as _uses  # noqa: F401 -- a test reads it through
 Step = collections.namedtuple("Step", "name script shell condition soft",
                               defaults=(None, None, False))
 
+
+class _RunScript(str):
+    """Workflow text carrying the private startup fact without changing ``Step``'s API."""
+    startup_safe: bool
+
+    def __new__(cls, text, startup_safe):
+        script = str.__new__(cls, text)
+        script.startup_safe = startup_safe
+        return script
+
 # The shells this module has a grammar for. Anything else is reported unread.
 PARSED_SHELLS = ("bash", "sh")
 UNNAMED = "<unnamed step>"
@@ -519,10 +529,13 @@ def _job_defects(steps, strict=False):
     for sure in folds(lambda: any(isinstance(statement, Unsure) for statement in stmts)):
         stmts: list[shell_reader.Statement] = []
         owner, conditions, credit, working, postures = [], {}, {}, {}, {}
+        changed_startup = False
         entries, fetched, unread = [], [], []
         bound: list[Fetch] = []
         for number, item in enumerate(steps):
             step = item if isinstance(item, Step) else Step(*item)
+            startup_safe = getattr(step.script, "startup_safe", True) and not changed_startup
+            changed_startup = True
             why = unparseable(step.shell)
             if not why:
                 try:                # the one read of every text, substitutions too
@@ -557,7 +570,7 @@ def _job_defects(steps, strict=False):
                 credit[len(stmts)] = (tuple(why or soft for why in answer or (None, None))
                                       if step.soft else answer)
                 working[len(stmts)] = directories[local]
-                postures[len(stmts)] = (step.shell, step.soft, number)
+                postures[len(stmts)] = (step.shell, step.soft, number, startup_safe)
                 stmts.append(statement)
                 owner.append((step.name, (number, back[local])))
         scopes = {index: place[1][0] for index, place in enumerate(owner)}
@@ -592,6 +605,20 @@ def _default_shell(node):
     return run.get("shell") if isinstance(run, dict) else None
 
 
+_BASH_STARTUP_ENV = frozenset(("BASH_ENV", "BASHOPTS", "PATH", "PS4", "SHELLOPTS"))
+
+
+def _bash_startup_safe(*nodes):
+    """Whether literal workflow environment blocks leave Bash startup alone."""
+    for node in nodes:
+        environment = node.get("env") if isinstance(node, dict) else None
+        if isinstance(environment, dict) and any(
+                str(name) in _BASH_STARTUP_ENV or str(name).startswith("BASH_FUNC_")
+                for name in environment):
+            return False
+    return True
+
+
 def run_jobs(doc):
     """[(job id, [Step, ...])] -- each job's `run:` steps, in order.
 
@@ -602,16 +629,24 @@ def run_jobs(doc):
     for name, job in (doc.get("jobs") or {}).items():
         if not isinstance(job, dict):
             continue
-        steps = []
+        steps, changed_startup = [], False
         for step in job.get("steps") or []:
-            if not isinstance(step, dict) or not step.get("run"):
+            if not isinstance(step, dict):
+                continue
+            if not step.get("run"):
+                changed_startup = changed_startup or bool(step.get("uses"))
                 continue
             shell = step.get("shell") or _default_shell(job) or _default_shell(doc)
             # A job-level `if:` makes every one of its steps conditional, and
             # a job-level `continue-on-error` makes every one of them soft.
             condition = step.get("if") or job.get("if")
             soft = bool(step.get("continue-on-error") or job.get("continue-on-error"))
-            steps.append(Step(step.get("name") or UNNAMED, step["run"], shell, condition, soft))
+            container = job.get("container")
+            startup_safe = (not changed_startup and not container
+                            and _bash_startup_safe(doc, job, step))
+            script = _RunScript(step["run"], startup_safe)
+            steps.append(Step(step.get("name") or UNNAMED, script, shell, condition, soft))
+            changed_startup = True
         if steps:
             jobs.append((name, steps))
     return jobs

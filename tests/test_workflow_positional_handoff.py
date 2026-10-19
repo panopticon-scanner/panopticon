@@ -378,13 +378,50 @@ class TestTheConditionalStatusMarkCreditsTheBashGate(unittest.TestCase):
 
     def test_a_bash_launcher_must_read_the_step_itself(self):
         text = "set +e\n" + self.F + self.C + "[[ $? -ne 0 ]] && exit 1\nsh t\n"
-        for shell in ("bash -c '/bin/dash {0}'", "bash wrapper {0}"):
+        for shell in ("bash -c '/bin/dash {0}'", "bash wrapper {0}", "./bash {0}",
+                      "/tmp/bash {0}", "bash --rcfile wrapper -i {0}",
+                      "bash --init-file wrapper -i {0}", "bash -i {0}", "bash -l {0}",
+                      "bash --login {0}"):
             with self.subTest(shell=shell, delegated=True):
                 self.assertTrue(wg.job_defects([wg.Step("step", text, shell)]))
-        with self.subTest(shell="bash --noprofile --norc -eo pipefail {0}", delegated=False):
-            self.assertEqual([], wg.job_defects([
-                wg.Step("step", text, "bash --noprofile --norc -eo pipefail {0}")
-            ]))
+        for shell in ("bash", "bash {0}", "/bin/bash -e {0}", "/usr/bin/bash {0}",
+                      "bash --noprofile --norc -eo pipefail {0}"):
+            with self.subTest(shell=shell, delegated=False):
+                self.assertEqual([], wg.job_defects([wg.Step("step", text, shell)]))
+
+    def test_a_workflow_environment_must_leave_bash_startup_alone(self):
+        text = "set +e\n" + self.F + self.C + "[[ $? -ne 0 ]] && exit 1\nsh t\n"
+        for shell in (None, "bash", "bash {0}"):
+            for level in ("workflow", "job", "step"):
+                run = {"run": text}
+                if shell is not None:
+                    run["shell"] = shell
+                doc = {"jobs": {"j": {"steps": [run]}}}
+                target = {"workflow": doc, "job": doc["jobs"]["j"], "step": run}[level]
+                target["env"] = {"BASH_ENV": ".github/delegate"}
+                with self.subTest(shell=shell, level=level):
+                    self.assertTrue(wg.job_defects(wg.run_jobs(doc)[0][1]))
+        doc = {"env": {"SAFE": "1"},
+               "jobs": {"j": {"steps": [{"run": text, "shell": "bash {0}"}]}}}
+        self.assertEqual([], wg.job_defects(wg.run_jobs(doc)[0][1]))
+        for job in ({"container": "example/image:latest"},
+                    {"steps": [{"uses": "example/action@v1"}]}):
+            job.setdefault("steps", []).append({"run": text, "shell": "bash {0}"})
+            with self.subTest(job=job):
+                self.assertTrue(wg.job_defects(wg.run_jobs({"jobs": {"j": job}})[0][1]))
+
+    def test_an_earlier_step_must_leave_bash_startup_alone(self):
+        text = "set +e\n" + self.F + self.C + "[[ $? -ne 0 ]] && exit 1\nsh t\n"
+        prefixes = ('echo "BASH_ENV=$PWD/rc" >> "$GITHUB_ENV"\n',
+                    'echo "$PWD/bin" >> "$GITHUB_PATH"\n',
+                    "target=GITHUB_; target+=ENV\nprintf x >> \"${!target}\"\n",
+                    "echo ready\n")
+        for prefix in prefixes:
+            with self.subTest(prefix=prefix):
+                self.assertTrue(wg.job_defects([
+                    wg.Step("setup", prefix),
+                    wg.Step("gate", text, "bash {0}")
+                ]))
 
     def test_a_typed_status_mark_reads_as_on_main(self):
         # Round 2's seat: a step that types U+E008 (`shell_reader._STATUS`) before a word had it stripped, so

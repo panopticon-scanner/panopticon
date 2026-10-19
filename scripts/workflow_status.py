@@ -21,6 +21,9 @@ from workflow_function_calls import _FUNCTION_NAME, _function_syntax
 
 _CAPTURE = re.compile(r"([a-z][a-z0-9_]*)=\$\?$")
 _ALIAS_STATE = re.compile(r"(?<![A-Za-z0-9_])BASH_ALIASES(?![A-Za-z0-9_])")
+_SYSTEM_SHELL_DIRS = ("/bin", "/usr/bin", "/usr/local/bin", "/sbin", "/usr/sbin")
+_DIRECT_BASH_FLAGS = frozenset("euvx")
+_DIRECT_BASH_SET_OPTIONS = frozenset(("errexit", "nounset", "pipefail", "verbose", "xtrace"))
 
 
 def _plain(statement):
@@ -101,14 +104,19 @@ def _bash_reads_script(shell):
     """Whether Bash itself reads the step file named by this shell template.
 
     A command string or an earlier script operand can hand ``{0}`` to another
-    interpreter.  Its first word still spells ``bash``, but Bash-only syntax in
-    the workflow step then proves nothing.  Unknown option shapes fail closed.
+    interpreter.  A path outside the runner's system command directories may
+    name a file the workflow wrote, and interactive or login options may load
+    startup code before the step.  In each case Bash-only syntax in the step
+    proves nothing.  Unknown option shapes fail closed.
     """
+    if shell is None or shell == "bash":
+        return True
     try:
-        words = shlex.split(shell or "bash")
+        words = shlex.split(shell)
     except ValueError:
         return False
-    if not words or os.path.basename(words[0]) != "bash":
+    directory, name = os.path.split(words[0]) if words else (None, None)
+    if name != "bash" or directory not in ("", *_SYSTEM_SHELL_DIRS):
         return False
     at = 1
     while at < len(words):
@@ -116,17 +124,22 @@ def _bash_reads_script(shell):
         if word == "{0}":
             return True
         if word == "--":
-            return at + 1 == len(words) or words[at + 1] == "{0}"
-        if word == "-" or word[:1] not in ("-", "+") or word.startswith("++"):
-            return False
-        if word.startswith("--"):
-            at += 2 if word in ("--init-file", "--rcfile") else 1
+            return at + 1 < len(words) and words[at + 1] == "{0}"
+        if word in ("--noprofile", "--norc"):
+            at += 1
             continue
-        options = word[1:]
-        if "c" in options or "s" in options:
+        if word == "-" or word[:1] not in ("-", "+") or word.startswith(("--", "++")):
             return False
-        at += 2 if "o" in options or "O" in options else 1
-    return True
+        options = word[1:]
+        if (not options or any(option not in _DIRECT_BASH_FLAGS | {"o"} for option in options)
+                or options.count("o") > 1 or "o" in options and not options.endswith("o")):
+            return False
+        if "o" in options:
+            at += 1
+            if at >= len(words) or words[at] not in _DIRECT_BASH_SET_OPTIONS:
+                return False
+        at += 1
+    return False
 
 
 def _same_step(index, owner, postures):
@@ -227,7 +240,8 @@ def _status_prefix_safe(stmts, index, name, owner, postures, functions):
     return True
 
 
-def status_gate(stmts, index, shell, analysis, owner=None, postures=None):
+def status_gate(stmts, index, shell, analysis, owner=None, postures=None,
+                startup_safe=True):
     """Last handler statement when an immediate status path exits, else None."""
     if (analysis.enclosing[index] is not None or index + 1 >= len(stmts)
             or not _same_step(index + 1, owner, postures)):
@@ -245,6 +259,7 @@ def status_gate(stmts, index, shell, analysis, owner=None, postures=None):
     functions = _functions(stmts, owner, postures)
     if ("exit" in functions or test_command in functions
             or not _status_prefix_safe(stmts, index, name, owner, postures, functions)
+            or reader_marked and not startup_safe
             or bash_only and not (_bash_reads_script(shell) if reader_marked else _bash(shell))
             or not bash_only and (conditional or failure_true) and not quoted):
         return None
