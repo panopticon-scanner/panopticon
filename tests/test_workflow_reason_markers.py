@@ -8,10 +8,9 @@ and AV015, and their `3<` twins -- was named as written by `workflow_uses.use`'s
 mints its own nonce, so the job held the finding twice, and no two runs of the same row agreed: a kit dump compared
 byte for byte showed movers that did not move. The reason names the substitution as `shell_reader.readable` renders it.
 """
+import concurrent.futures
 import json
-import os
-import subprocess
-import sys
+import multiprocessing
 import unittest
 
 import workflow_guard as wg
@@ -50,13 +49,13 @@ class TestNoReasonNamesAReaderMarker(unittest.TestCase):
 
     def test_two_processes_read_the_rows_alike(self):
         # The issue's reproducibility: each row read in two fresh interpreters gives the same findings, byte for byte.
-        scripts = os.path.dirname(os.path.abspath(wg.__file__))
-        probe = ("import json, sys; sys.path.insert(0, sys.argv[1]); import workflow_guard as wg; "
-                 "print(json.dumps([[why for _name, why in wg.job_defects([wg.Step('step', text, shell)])] "
-                 "for text in json.loads(sys.argv[2]) for shell in (None, 'bash', 'sh', 'bash {0}', 'sh {0}')]))")
-        texts = json.dumps([script(row) for row in ROWS])
-        runs = [subprocess.run([sys.executable, "-I", "-c", probe, scripts, texts], check=True, capture_output=True,
-                               text=True, timeout=300).stdout for _ in range(2)]
+        # `spawn`, never `fork`: a forked child would keep this process's `shell_tokens._OURS`.
+        runs = []
+        for _ in range(2):
+            with concurrent.futures.ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn")) as pool:
+                read = [pool.submit(wg.job_defects, [wg.Step("step", script(row), shell)])
+                        for row in ROWS for shell in SHELLS]
+                runs.append(json.dumps([[why for _name, why in job.result(timeout=300)] for job in read]))
         self.assertEqual(runs[0], runs[1])
         self.assertNotIn("@@shell-", runs[0])
 
