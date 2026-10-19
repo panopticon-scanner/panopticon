@@ -13,9 +13,13 @@ evidence exposed.
   dropped every attribute the reader had set on the word as written (`double`, `kept`,
   `live_dollar`, `exact_dollar` on a `"$X"`), so a later reader branching on one would read the
   weighed word as unquoted. `workflow_annotate._rebuilt` now makes annotate's tokens: a `weighed`
-  one keeps every attribute and reads as written; a `spelled` one stays the bare token it always
-  was, read as its value. Pins: `TestAWeighedWordReadsAsWritten` (each of the three places against
-  the word a fresh parse writes, the spelled word, a word the reader left a plain string).
+  one keeps every attribute and reads as written. A `spelled` one stays the bare token it always
+  was: it is read as its value, and `main`'s answers rest on that bare token, so it stays as
+  `main` has it. Pins: `TestAWeighedWordReadsAsWritten` (each of the three places against the
+  word a fresh parse writes, the spelled word, and `_rebuilt`'s own two: a word the reader left a
+  plain string, a word's markers). Core sample `core-20261018` (10,000 rows) plus the 4 pins as
+  rows, head against `main`: byte-identical (nonce-normalized), 0 REPORT->CLEAN, no main-pass
+  movers; 68 core rows go through a weighed rebuild.
 - **Workflow guard reads a command word it cannot resolve as a possible runner of the fetched file
   that is its first operand (#3143).** `curl -fsSLo t URL` then `$SHELL ./t` ran the download under
   every parent and read CLEAN: `workflow_uses.use` reported a run only where the command word named
