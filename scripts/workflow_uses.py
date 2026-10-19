@@ -16,16 +16,15 @@ from dataclasses import dataclass
 import os
 import re
 
-import shell_lex
 import shell_reader
 from shell_reader import command
 from workflow_called import _carried, _writes, record_called, with_call_stdin
 from workflow_checks import inside
+from workflow_options import _MAINS
 from workflow_forms import (BIN_DIRS, CONTAINERS, at_directory,
                             chmod_conditional_executable, chmod_executable, chmod_targets,
                             covers, described, in_container, may_run, same_file, stdin_program)
-from workflow_programs import (_SHELL_STRING, VALUE_PROGRAM, reader_files,
-                               redirection_handoffs, scripts)
+from workflow_programs import VALUE_PROGRAM, reader_files, redirection_handoffs
 from workflow_printers import _cat_reads_stdin
 from workflow_use_scopes import (_COMPOUNDS as _COMPOUNDS, _forked as _forked, _forked_index,
                                  _function_changes, _function_ranges as _function_ranges,
@@ -35,24 +34,20 @@ from workflow_use_scopes import (_COMPOUNDS as _COMPOUNDS, _forked as _forked, _
 # names, and its callers keep reaching them here.
 from workflow_values import (Values as Values, assigned as assigned, record as record,
                              valued as valued, valued_argvs as valued_argvs)
-from workflow_values import PAST, _as_word, _for_parts, _literals, emptied
+from workflow_values import PAST, _as_word as _as_word, _for_parts, _literals, emptied
+# The command words a use is read through moved to `workflow_use_words` whole; its callers keep reaching them here.
+from workflow_use_words import (EXECUTORS as EXECUTORS, INTERPRETERS as INTERPRETERS, UNPACKERS as UNPACKERS,
+                                _WHOLE as _WHOLE, _copied, _first_operand, _resolved as _resolved,
+                                _on_stdin as _on_stdin, _unvalued, _value_command as _value_command,
+                                _value_stage)
 
 
-INTERPRETERS = ("sh", "bash", "dash", "zsh", "ksh", "ash", "csh", "tcsh", "fish", "mksh",
-                "python", "python3", "perl", "ruby", "node", "php", "pwsh", "eval", "source",
-                ".")
-# Unpacking a downloaded archive executes its bytes too: they choose what
-# lands on disk and under what name.
-UNPACKERS = ("tar", "unzip", "install", "gunzip", "bsdtar")
-EXECUTORS = INTERPRETERS + UNPACKERS
 _REFERENCE = re.compile(
     r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|([1-9][0-9]*)|([@*])|"
     r"\{([A-Za-z_][A-Za-z0-9_]*|[1-9][0-9]*|[@*])\})"
 )
 _ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\+?=")
 _DECLARATIONS = ("declare", "export", "local", "readonly", "typeset")
-# ONE whole reference (`$T`, `${T}`, `${T:-d}`, `${a[0]}`): bash splits its value unquoted.
-_WHOLE = re.compile(r"\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*(?:\[[0-9]+\]|:?[-=][^{}]*)?\})", re.A)
 
 
 @dataclass(frozen=True)
@@ -279,8 +274,9 @@ def copies(statement, names, directory):
     return new
 
 
-def use(statement, position, stage, argv, dest, directory, bound=frozenset(), handoff=None):
-    """How this stage uses `dest`, including whole bound value words and program hand-offs."""
+def use(statement, position, stage, argv, dest, directory, bound=frozenset(), handoff=None, unresolved=None):
+    """How this stage uses `dest`, including whole bound value words and program hand-offs. `unresolved`: the step's
+    values table, where the guard's second walk weighs a value command word it gives no value at all (`uses`, #3143)."""
     # A clone into `.` makes every relative child part of the fetched tree;
     # the producing `git clone` argv is not itself an execution of that tree.
     if getattr(dest, "tree", False) and argv[:2] == ["git", "clone"]:
@@ -329,6 +325,9 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset(), ha
         return None
     if name in INTERPRETERS:
         return "running it under `%s`" % name
+    if unresolved is not None and _value_command(argv[0]) and _first_operand(rest) in mentions and _unvalued(
+            argv, unresolved):                  # `$SHELL ./t`, `$RUN ./t` (#3143)
+        return "running it under `%s`, a command word this guard cannot resolve" % name
     if name == "install":
         return "installing it"
     if name in UNPACKERS:
@@ -338,54 +337,11 @@ def use(statement, position, stage, argv, dest, directory, bound=frozenset(), ha
         return "putting it on PATH with `%s`" % name
     if name == "cat" and position + 1 < len(statement.stages):
         following = shell_reader.acted(statement.stages[position + 1].argv)
-        if following and os.path.basename(following[0]) in INTERPRETERS:
+        if following and (os.path.basename(following[0]) in INTERPRETERS or unresolved is not None
+                          and _value_command(following[0]) and _first_operand(following[1:]) is None
+                          and _unvalued(following, unresolved)):
             return "piping it into `%s`" % os.path.basename(following[0])
     return None
-
-
-def _on_stdin(argv):
-    """Whether a shell argv the table MADE may run its standard input (#2425: a `-c` string's own
-    program), as `_resolved` asks: not where that string is ONE bare `cat` or `tee` (no operand but
-    `-`, no redirection) that only hands its input on (`CMD=sh; $CMD -c 'cat' < f`); any other may,
-    failing closed (`cat "$0"`, `tee x`, `csh`, `echo sh`). The rule is the table's: the use as
-    written keeps main's reading, a printer's stream unfollowed: `sh -c 'cat' < f` over-reports."""
-    strings = scripts(argv) if os.path.basename(argv[0]) in _SHELL_STRING else []
-    try:
-        parsed = list(shell_reader.statements(strings[0])) if len(strings) == 1 else []
-    except shell_lex.Unreadable:
-        parsed = []
-    if len(parsed) != 1 or len(parsed[0].stages) != 1:
-        return True
-    stage, inner = parsed[0].stages[0], command(parsed[0].stages[0].argv)
-    return bool(inner) and (os.path.basename(str(inner[0])) not in ("cat", "tee") or bool(
-        stage.reads or stage.writes) or not set(map(str, inner[1:])) <= {"-"})
-
-
-def _resolved(argv, table):
-    """The argvs `use()` weighs after `argv` as written (#2425, #2489): `valued_argvs`' argvs, on
-    the terms it leaves its caller -- a word that was ONE whole reference (`_WHOLE`) split on its
-    value's blanks, then `command()` re-reading the argv, one left empty or a shell whose `-c`
-    string is a bare printer (`_on_stdin`) dropped -- and none where nothing resolves. A first word
-    the table put there that is an assignment is the command bash runs, so no argv is made of it --
-    behind a written `env`/`sudo` it is theirs, and main's dynamic-operand report stands."""
-    mark = object()     # never resolves: it fences each word, so a made word's source is known
-    fenced = [part for word in argv for part in (mark, word)]
-    for words in valued_argvs(fenced, table):
-        if words is fenced:                 # `[argv]` itself: nothing resolved
-            return
-        sources, source, kept = iter(argv), "", []
-        for word in words:
-            if word is mark:
-                source = next(sources)
-            elif word is not source and _WHOLE.fullmatch(source) and re.search("[ \t\n]", word):
-                kept += [_as_word(shell_reader.derived(part, word), source)
-                         for part in re.split("[ \t\n]+", word) if part]
-            else:
-                kept.append(word)
-        if kept and kept[0] is not argv[0] and shell_reader._ASSIGNMENT.match(kept[0]):
-            continue                        # bash runs it as the command: never an assignment
-        if (kept := command(kept, argv)) and _on_stdin(kept):   # (#2670) which words the table made, by `argv`
-            yield kept
 
 
 def _function_use(stmts, definition, args, dest, directory, named, inherited, table, scopes,
@@ -631,12 +587,29 @@ def static_values(stmts, index, working=None, scopes=None, start=None):
 
 def uses(stmts, dest, after, working=None, scopes=None):
     """Names `dest` gains and its later uses, including bounded shell values and, where a
-    stage as written names none, the step's own values at the use (`_resolved`, #2425)."""
-    names, out = {dest}, []
+    stage as written names none, the step's own values at the use (`_resolved`, #2425). In the guard's second
+    walk -- never its main pass, `main`'s answer -- a statement that names none may still hand the file to a value
+    command word the table gives no value (`use`'s `unresolved`): that use follows every one `main` names (#3143)."""
+    names, out, later = {dest}, [], []
+    walked = not _MAINS.get()
     working, scopes = working or {}, scopes or {}
     starts, occupied = _carried(stmts).ranges()
     kinds = _control_kinds(stmts)
     indexed, first_value = None, None
+
+    def values():
+        """The step's values at `index`, read once a stage asks for them: the first lookup walks to its statement,
+        the second shares one table forward (`_StaticValues`, #3145) -- the one lookup every reader here goes through,
+        the second walk's value command word among them (#3143)."""
+        nonlocal indexed, first_value
+        if indexed is not None:
+            return indexed.at(index)
+        if first_value is None:
+            first_value = index
+            return static_values(stmts, index, working, scopes)
+        indexed = _StaticValues(stmts, scopes, kinds, first_value)
+        return indexed.at(index)
+
     functions = _functions_before(stmts, starts, kinds, scopes, after)
     named: dict[str, Binding] = {}
     positional: dict[str, Binding] = {}
@@ -656,7 +629,7 @@ def uses(stmts, dest, after, working=None, scopes=None):
                 functions[name] = (start, close)
         in_definition = index in occupied
         bound = set() if in_definition else _live(named, positional, directory)
-        how, table = None, None
+        how, table, late = None, None, None
         for point, inner, position, stage, where, here, handoff in inside(
                 statement, index, directory=directory, scope=index):
             argv = command(stage.argv)
@@ -665,14 +638,7 @@ def uses(stmts, dest, after, working=None, scopes=None):
                 how = use(inner, position, stage, argv, name, here, bound, handoff)
                 if not how and (call or any("$" in word for word in argv)):
                     if table is None:
-                        if indexed is not None:
-                            table = indexed.at(index)
-                        elif first_value is None:
-                            first_value = index
-                            table = static_values(stmts, index, working, scopes)
-                        else:
-                            indexed = _StaticValues(stmts, scopes, kinds, first_value)
-                            table = indexed.at(index)
+                        table = values()
                     how = next(filter(None, (use(inner, position, stage, made, name, here, bound,
                                                   handoff)
                                              for made in _resolved(argv, table))), None)
@@ -680,14 +646,19 @@ def uses(stmts, dest, after, working=None, scopes=None):
                     how = _function_use(stmts, functions[argv[0]], argv[1:], name, here, named,
                                         {**named, **positional}, table, scopes, indexed, call=stage,
                                         literal=functions[argv[0]][1] < after)
+                if not how and walked and late is None and _value_stage(inner, position, argv):
+                    if table is None:
+                        table = values()
+                    if held := use(inner, position, stage, argv, name, here, bound, handoff, table):
+                        late = (point, _copied(held, name, dest) + ("" if handoff else where))
                 if how:
-                    if not same_file(name, dest):
-                        shown = re.sub(r"^\$CWD[^/]*/", "", name).replace("$UP", "..")
-                        how += " (as `%s`, copied from it earlier)" % shown
+                    how = _copied(how, name, dest)
                     break
             if how:
                 out.append((point, how + ("" if handoff else where)))
                 break
+        if not how and late:            # a use only a value command word makes, after every one `main` names (#3143)
+            later.append(late)
         if not in_definition and len(statement.stages) == 1:
             stage = statement.stages[0]
             _cleared(stage, named, positional, certain, direct_loop)
@@ -696,4 +667,4 @@ def uses(stmts, dest, after, working=None, scopes=None):
             )
             _function_changes(stage, functions, writable)
         names |= copies(statement, names, directory)
-    return names, out
+    return names, out + later
