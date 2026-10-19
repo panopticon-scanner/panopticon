@@ -7,6 +7,11 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow trap and option-word matching avoid quadratic backtracking (#2981).** A long
+  `rm -r ... !` trap action or `$aaaa...!` option word repeatedly split the same text between
+  overlapping regex repetitions. Trap options now use the existing path-word repetition, and
+  variable names and parameter sequences are consumed possessively. Both keep the same accepted
+  language; serial regression tests check scaling when a failing input doubles.
 - **Workflow uses shares one value-table walk and one fork index across sibling calls (#3145).** A
   step with `n` function definitions followed by `n` calls rebuilt `static_values` at every call:
   each rebuild walked all earlier calls and `_forked` rescanned every statement through `_openers`.

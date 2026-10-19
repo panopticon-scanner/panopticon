@@ -86,7 +86,7 @@ def _literal(word):
 # `$(echo -c)`, `${X}c`, not `$X/x.sh` -- a `$'…'` beginning with an unknown or non-ASCII escape
 # that `shell_quote.ansi_c` cannot spell, such as `$'\q'` or `$'\u00e9'`, or a word xargs puts a
 # line of its input in (`{}`).
-_VALUE = re.compile(r"(?:\$(?:\{[^{}]*\}|\w+|\(\.\.\.\)|[^\w{(\\]))+[A-Za-z]*|\$\\.*", re.S)
+_VALUE = re.compile(r"(?:\$(?:\{[^{}]*\}|\w++|\(\.\.\.\)|[^\w{(\\]))++[A-Za-z]*|\$\\.*", re.S)
 
 
 # A tilde alone (#2889): bash and dash write `$HOME` for `~`, and bash `$PWD`, `$OLDPWD` and a
