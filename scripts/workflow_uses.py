@@ -596,6 +596,20 @@ def uses(stmts, dest, after, working=None, scopes=None):
     starts, occupied = _carried(stmts).ranges()
     kinds = _control_kinds(stmts)
     indexed, first_value = None, None
+
+    def values():
+        """The step's values at `index`, read once a stage asks for them: the first lookup walks to its statement,
+        the second shares one table forward (`_StaticValues`, #3145) -- the one lookup every reader here goes through,
+        the second walk's value command word among them (#3143)."""
+        nonlocal indexed, first_value
+        if indexed is not None:
+            return indexed.at(index)
+        if first_value is None:
+            first_value = index
+            return static_values(stmts, index, working, scopes)
+        indexed = _StaticValues(stmts, scopes, kinds, first_value)
+        return indexed.at(index)
+
     functions = _functions_before(stmts, starts, kinds, scopes, after)
     named: dict[str, Binding] = {}
     positional: dict[str, Binding] = {}
@@ -624,14 +638,7 @@ def uses(stmts, dest, after, working=None, scopes=None):
                 how = use(inner, position, stage, argv, name, here, bound, handoff)
                 if not how and (call or any("$" in word for word in argv)):
                     if table is None:
-                        if indexed is not None:
-                            table = indexed.at(index)
-                        elif first_value is None:
-                            first_value = index
-                            table = static_values(stmts, index, working, scopes)
-                        else:
-                            indexed = _StaticValues(stmts, scopes, kinds, first_value)
-                            table = indexed.at(index)
+                        table = values()
                     how = next(filter(None, (use(inner, position, stage, made, name, here, bound,
                                                   handoff)
                                              for made in _resolved(argv, table))), None)
@@ -640,7 +647,8 @@ def uses(stmts, dest, after, working=None, scopes=None):
                                         {**named, **positional}, table, scopes, indexed, call=stage,
                                         literal=functions[argv[0]][1] < after)
                 if not how and walked and late is None and _value_stage(inner, position, argv):
-                    table = table or static_values(stmts, index, working, scopes)
+                    if table is None:
+                        table = values()
                     if held := use(inner, position, stage, argv, name, here, bound, handoff, table):
                         late = (point, _copied(held, name, dest) + ("" if handoff else where))
                 if how:

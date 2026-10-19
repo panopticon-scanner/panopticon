@@ -7725,6 +7725,22 @@ class TestAValueCommandWordMayRunTheFetchedFile(unittest.TestCase):
         self.assertIn("running it under `sh` with nothing verifying", found[0])
         self.assertIn("running it under `$sh`, a command word this guard cannot resolve", found[1])
 
+    def test_the_second_walks_lookup_shares_the_values_table(self):
+        # At the fold of #3145: a `cat` piping into a value command word asks the step's values in the second walk, and
+        # asks through `uses()`'s one lazy lookup (`values`), so N such statements walk the values about N times, as
+        # #3145's sibling calls do -- a fresh `static_values` there walked them about N * N / 2 times.
+        from unittest import mock
+        counts = []
+        for size in (16, 32):
+            stmts = shell_reader.statements(self.FETCH + "\n" + "cat t | $V\n" * size)
+            certainty = workflow_uses._table_certainty
+            with mock.patch.object(workflow_uses, "_table_certainty", wraps=certainty) as walked:
+                workflow_uses.uses(stmts, "t", 0)
+            counts.append(walked.call_count)
+        small, large = counts
+        self.assertGreaterEqual(large * 10, small * 18)
+        self.assertLessEqual(large * 10, small * 22)
+
     def test_the_main_pass_stays_mains_answer(self):
         # Round 2: the second walk reads a value command word as a possible runner; the main pass does not.
         steps = [wg.Step("step", self.FETCH + "\n$SHELL ./t\n", None)]
