@@ -26,18 +26,24 @@ evidence exposed.
   x"${SH:-bash}"`, read as `xbash`), a spliced array, a value in front of a name the reader knows
   (`$S head -n 99 t`), a value after a value, a value the table names (`cmd='$1'` then `"$cmd"`), a
   value handed no fetched file, a name no shell's can be (`$S/x ./t`, `a$ ./t`, `$'bash\ue004'
-  ./t`), and a command substitution -- lifted before the walk, a named limit; with a credited check
-  before it the step reads as the gate rows do (CCCRR). The price, named: a value naming a
-  non-runner or nothing -- `$EDITOR ./t`; `${X#y} ./t` with `X` unset; `${A:+echo} t`, an alternate,
-  which reads as the bare reference in its place (#3003), and with it a quoted alternate whose value
-  holds a blank -- is an over-report, as #3141 would read it UNVERIFIED; and `$"sh"` gains a second
-  finding beside `main`'s, the walk reading dash's kept `$` as the reference `$sh` (#3048). The kit
-  differential (66fd7108 against `main` b29ab169, 27,633 rows): 54 rows move, none from REPORT to
-  CLEAN; the main pass is unchanged on every row, and no row loses a finding of `main`'s -- this
-  issue's rows; the value rows and seat-hunt13's whose shell is set in a step of its own, which the
-  use's step gives no value; a body in a step of its own, read in place as `main` reads one; the two
-  seat-hunt18 quoted alternates (the price); and second findings beside `main`'s for `$SHELL -c`, a
-  wrapper's alternate, the locale rows and a body its call resolves. Pins:
+  ./t`), and a command substitution as the command word (`` `echo sh` ./t ``, `$(which sh) ./t`),
+  which the reader lifts before the walk: #3157's limit, named. With a credited check before the use
+  the step reads as the gate rows do (CCCRR). The prices, named: a value naming a non-runner or
+  nothing -- `$EDITOR ./t`; `${X#y} ./t` with `X` unset; `${A:+echo} t`, an alternate, which reads
+  as the bare reference in its place (#3003), and with it a quoted alternate whose value holds a
+  blank -- is an over-report, as #3141 would read it UNVERIFIED; `$"sh"` gains a second finding
+  beside `main`'s, the walk reading dash's kept `$` as the reference `$sh` (#3048); and in a folded
+  job the first fold's held fallback text takes its place over a later fold's main-logic text: fuzz
+  `F09407`, whose words that may be nothing are read in halves folds, names its use `${C+true}` in
+  the job where `main` named it `bash`. The row reports in every cell as before and every step
+  `main` reports still reports; the text changes in all 25 cells (45 findings), and in the 20 of one
+  step a line the job also gains a finding for step `s4`. The core differential at this head
+  (a757ba32 against `main` 68f11045: the core sample, 10,000 rows, and this issue's 44): 108 rows
+  move, 62 with cells from CLEAN to REPORT (1,336 cells) and 48 with a second finding (765 cells;
+  #3127's two `p.alt` rows are both), none from REPORT to CLEAN, and the main pass is unchanged on
+  every row -- this issue's rows and the core's copies of them, #3140's `$RUN`/`$SHELL` rows,
+  seat-hunt13's whose shell is set in a step of its own, seat-hunt16's, seat-hunt18's two quoted
+  alternates (the price), #3127's `p.alt` rows and 15 fuzz rows; F09407 is the one text price. Pins:
   `tests/test_workflow_guard_reader_forms.py::TestAValueCommandWordMayRunTheFetchedFile` (thirteen
   rows report in all five settings, six that reported already still do, sixteen controls stay CLEAN,
   the checked row reads CCCRR, `main`'s finding stands, the main pass is unchanged, the predicate,
