@@ -616,7 +616,8 @@ def grade_report(run, resolved, reconciled, delta=None):
     # rollup -- see health_grade(). certify() needs it, and the same dict is
     # reused in the summary so the grade and the reported health can never
     # disagree.
-    health = health_stats(nonblank_loc(run.target, groups_meta), gate_eligible)
+    root = run.root if run.root is not None else run.target
+    health = health_stats(nonblank_loc(root, groups_meta), gate_eligible)
     overall = health_grade(health["score"])
     # #2178: computed HERE, from the same delta context `resolve_findings`
     # classified against, the same active list it partitioned, and this run's own

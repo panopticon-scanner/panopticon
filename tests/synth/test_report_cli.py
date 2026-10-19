@@ -22,6 +22,23 @@ from tests.synth.helpers import SPLIT_FILE_MAX_BYTES, DEFAULT_TIMESTAMP, _make_f
 
 
 class TestCliAndSummary(unittest.TestCase):
+    def test_standalone_target_path_still_supplies_the_loc_root(self):
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "app.py"), "w") as fh:
+                fh.write("first = 1\n\nsecond = 2\n")
+            groups = os.path.join(root, "groups.json")
+            with open(groups, "w") as fh:
+                json.dump({"groups": [{"name": "app", "files": ["app.py"]}]}, fh)
+            out = os.path.join(root, "report.json")
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = syn.main(["--target", root, "--groups", groups, "--out", out])
+            with open(out) as fh:
+                report = json.load(fh)
+        self.assertEqual(rc, 0)
+        self.assertEqual(report["meta"]["target"], root)
+        self.assertEqual(report["summary"]["health"]["total_loc"], 2)
+        self.assertEqual(report["summary"]["overall_grade"], "S")
+
     def test_render_summary_contains_grade_and_location(self):
         # gate_unverified=True: this test is about render_summary's formatting
         # (location string, FAIL label), not the default gating policy.

@@ -66,6 +66,12 @@ evidence exposed.
   No readings move: a refreshed 1,340-row mixed-body value/use differential, including every
   statement's table, is byte-identical. Pins: `tests/test_workflow_positional_handoff.py`; sizes:
   `scripts/workflow_uses.py` 699, `scripts/workflow_use_scopes.py` 222.
+- **Driver reports measure LOC from the review root, keeping the target name for display
+  (#3163).** From 2026-09-24 (#2038) until this fix, synthesis treated the target's display name
+  as a filesystem root beneath the reviewed tree, producing zero LOC and a null grade or counting
+  a same-named subdirectory instead. The driver now passes the actual review root through
+  `--root` for grading; PR worktrees retain the original target name in JSON and HTML.
+  Standalone synthesis without `--root` keeps using its `--target` path.
 - **Workflow reader reads what #3117 named and `main` reads CLEAN while the payload runs (#3153).**
   Beside `main`'s reading, never instead. (1) A printer of a variable whose value fetches, where a
   forked child inherits the value (a piped brace group, a subshell, a compound body), in a test (`if
@@ -115,13 +121,45 @@ evidence exposed.
   can consume it, and an exact sequence of written-file printers whose output contains no `$`
   carries its `SpelledOutput` to `substituted`, `unsubstituted` and `fed`. Dollar-bearing
   output keeps the old synthetic-`printf` parse, including its existing cost, because its dynamic
-  argument produces an observable fail-closed reading. The round-one seat measured the 1 MiB job at
-  57.0 s here against 377.7 s on base; a size-scaled structural pin forbids re-entering the printer
-  parser, so the proof does not depend on a machine-speed budget. The first-round 667-row forge
-  probe against `main` 5c88603d was byte-identical (0 movers). #3105's read pin uses 300 -> 1,200
-  program forms so its old quadratic tree fails with margin; and a committed corpus compares all
-  13 analysis-aware helper answers with and without a shared statement analysis over both parsed
-  and handed-program statement lists.
+  argument produces an observable fail-closed reading. The round-two seat measured the 1 MiB job at
+  51 s here against 362 s on main when the output contains no `$`; the retained dollar-bearing path
+  costs 241 s at 1 MiB and remains superlinear as on main. The round-two full kit was byte-identical
+  over 86,765 rows after nonce normalization. A size-scaled structural pin forbids re-entering the
+  printer parser, so the proof does not depend on a machine-speed budget. #3105's read pin uses
+  300 -> 1,200 program forms so its old quadratic tree fails with margin; and a committed corpus
+  compares all 13 analysis-aware helper answers with and without a shared statement analysis over
+  both parsed and handed-program statement lists.
+- **Function-body gates index their calls and closing runs once per statement list (#3128, item
+  2).** `_gating_function_call` and `_piped_function_end` each scanned the suffix after a function
+  body, once per body, to find a redefinition, a call, or a shell-posture change; `_stops_step`
+  likewise walked the remaining `}` / `)` run once per statement. The shared function index now
+  records definitions, direct calls, posture barriers, and the structural group around each call;
+  those two proofs visit only events for the function they are answering. A separate lightweight
+  closing index records each closer run and memoizes its first detached or uncredited-pipeline
+  boundary for the caller's pipefail posture. The all-on/all-off posture vectors are shared, a
+  recursive wrapper call carries one backtracked name set, and the existing later-command index
+  answers whether a wrapper returns its call's status. The index also records the legacy net group
+  depth and the depth of the nearest piped frame, so an unmatched closer handed in by a child shell
+  stops the lookup at the same fail-closed boundary instead of reaching an outer pipeline. One
+  production caller deliberately retains the `analysis=None` scan: `swallowed` asks about a
+  zero-based `stmts[index:]` carrier slice that excludes enclosing context and cannot reuse the
+  full-list analysis. A structural pin counts both formerly
+  repeated predicates as definitions double, independently of machine speed; the sampled helper
+  corpus still compares every indexed answer, including the reported call chain, with the legacy
+  path. A committed deterministic 153-program sample separately compares 4,465 indexed group
+  answers and 4,465 `_piped_function_end` answers with the legacy scans over source and handed
+  statements, including the review seat's exact 22 `div*` / `hp*` rows and three generated movers.
+  A direct recheck of the seat's 3,000 generated rows compares another 113,229 group answers and
+  113,229 function-end answers with zero mismatches.
+  On the forge, serial process CPU at 160, 320 and 640 definitions was
+  0.160/0.331/0.731 s for nested bodies, 0.161/0.335/0.737 s for one-line nested bodies,
+  0.250/0.497/0.989 s with one function called, 0.239/0.478/0.951 s with none called, and
+  0.281/0.560/1.117 s for three-line bodies. The sibling-call shape remains superlinear at
+  2.184/7.915/30.002 s in the separate `workflow_uses` pass (#3145): its profile spends 6.07 of
+  7.09 s there at 160 definitions, while indexed function gating takes 0.06 of 1.98 s for 640
+  nested bodies. The original 86,382-row corpus has no answer differences after normalizing six
+  rows that carry per-process parse nonces, and the separately deduplicated 2,520-row addition is
+  raw byte-identical.
 - **Workflow reader follows a group piped to a shell through what #3026 passed over (#3117).** #3026
   read `{ P; } | sh` and `( P; ) | sh` back from the closer to the opener, one level; the #3111
   seat's rows and the kit's twins ran the download under every parent and read CLEAN: a nested group
