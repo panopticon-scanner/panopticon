@@ -7,6 +7,15 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow reader keeps the reader's attributes on a word it weighs (#3164).** Since #3153 a
+  printer's word whose value fetches gets its `weighed` text on a fresh token in three places: a
+  forked child's printer, a test's, and rule 6's take-back (`_as_weighed`). That fresh token
+  dropped every attribute the reader had set on the word as written (`double`, `kept`,
+  `live_dollar`, `exact_dollar` on a `"$X"`), so a later reader branching on one would read the
+  weighed word as unquoted. `workflow_annotate._rebuilt` now makes annotate's tokens: a `weighed`
+  one keeps every attribute and reads as written; a `spelled` one stays the bare token it always
+  was, read as its value. Pins: `TestAWeighedWordReadsAsWritten` (each of the three places against
+  the word a fresh parse writes, the spelled word, a word the reader left a plain string).
 - **Workflow reader reads what #3117 named and `main` reads CLEAN while the payload runs (#3153).**
   Beside `main`'s reading, never instead. (1) A printer of a variable whose value fetches, where a
   forked child inherits the value (a piped brace group, a subshell, a compound body), in a test (`if
