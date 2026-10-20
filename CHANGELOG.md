@@ -13,6 +13,25 @@ evidence exposed.
   including when valid coverage files remain. Rejected scout domains are capped at 32 entries
   of 120 characters with an explicit truncation marker, keeping coverage records readable.
 
+- **Scanners no longer take their config from the scan root they review (#2055).** Three scanners
+  read files the reviewed repository commits, so it could narrow or silence them. Measured on the
+  pinned tools:
+  (1) npm audit ran with `--prefix <target>` and read its `.npmrc`, so `omit=dev` dropped the whole
+  dev tree (npm 10.9.9: a dev-only minimist gave two advisories, and none with that file). It now
+  audits a scratch project staged with `package.json` and the lockfiles only.
+  (2) osv-scanner's walk honoured the target's `.gitignore` in a git checkout (1.8.2: a committed,
+  gitignored `requirements.txt` beside a second manifest gave 4 advisories instead of 10). It now
+  runs with `--no-ignore`.
+  (3) dependency-check's bundle-audit and go-mod analyzers ran bundle-audit and go inside the
+  target, where those tools read its `.bundler-audit.yml` and `go.work`. Both analyzers are now off
+  (`--disableBundleAudit`, `--disableGolangMod`); the bundler_audit adapter and osv-scanner audit
+  those manifests.
+  Already closed on `main` and pinned:
+  - semgrep's `.semgrepignore` and `.gitignore` (#2462);
+  - osv-scanner's `osv-scanner.toml` (#1839);
+  - brakeman's `config/brakeman.yml` and `config/brakeman.ignore`: owned `--config-file` and
+    `--ignore-config`, and brakeman 8.0.6 reads only the first config file it finds;
+  - eslint's argued exception.
 - **A finding names a substitution run as a standard-input runner `$(...)`, never the reader's
   marker (#3156).** `workflow_uses.use`'s standard-input branch named the runner by
   `os.path.basename(argv[0])`; for a command substitution as the command word (`$(echo sh)`, its
