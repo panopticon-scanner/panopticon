@@ -618,6 +618,9 @@ def main(argv=None, env=None):
         payload = json.load(sys.stdin)
     except ValueError:
         return 0  # tolerant: a malformed hook payload never blocks legitimate work
+    except (RecursionError, MemoryError) as exc:     # #3186: a crash here would fail OPEN
+        _deny("kimi guard: payload too deep to adjudicate (%s)" % type(exc).__name__)
+        return 0
     if not isinstance(payload, dict):
         # Same call as `adjudicate`'s, and as Claude's hook makes: the PAYLOAD
         # is the CLI's, not the model's, so a shape this version does not

@@ -7,6 +7,22 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A guard hook denies a payload too deep to parse instead of crashing open (#3186).** The read,
+  write and kimi guard hooks parsed their stdin OUTSIDE their fail-closed envelope and caught
+  `ValueError` only. A deeply nested payload raised `RecursionError`: a traceback and exit 1, which
+  Claude Code and Kimi both treat as NON-blocking, so the tool call went ahead unguarded.
+  - Measured: N=1,000 on 3.11 and N=100,000 on 3.14.
+  - `RecursionError` and `MemoryError` at the parse now DENY on each hook's own channel, the deny
+    JSON with rc 0, as their crash envelopes already do. The reason is named: "<read|write|kimi>
+    guard: payload too deep to adjudicate (<error>)". Exit 2 was ruled out because it is fail-open
+    on Kimi.
+  - The tolerated malformed-JSON path is unchanged, and so is an ordinary payload. Where the
+    interpreter parses the payload (N=1,000 on 3.12+), it is adjudicated like any other.
+  - Whether a host passes a model-chosen nested value through to the hook was not measured.
+  Pins: one per hook (`tests/test_{read,write,kimi}_guard_hook.py`): a `json.load` raising
+  RecursionError or MemoryError gets the named deny; real payloads at N=1,000 and 100,000 never crash,
+  getting either the deny or an ordinary adjudication where the interpreter parses them (the
+  overflowing depth depends on the platform's C stack: 100,000 parses on x64 3.14).
 - **A value nested past the interpreter's stack no longer ends a run in a traceback (#2959).**
   A finding or a verdict can carry one through the schema: a finding is an open object, and a
   verdict's `citations` is open. At 1,000 levels and past, the run died with `RecursionError`, status
