@@ -733,9 +733,12 @@ class TestAConfirmedFindingIsNotAbsorbed(unittest.TestCase):
                         ("honest high", "HIGH", "advisor_confirmed")])
 
     def test_a_tool_decoy_collapsing_across_categories_does_not_absorb_it(self):
+        # A real tool finding (`source` is what evidence.is_tool_sourced reads):
+        # with one agent finding at its locus it forms dedupe's exactly-two
+        # tool+agent cluster, which collapses even across categories.
         tool = _agentic(fid="TL-C", sev="CRITICAL", title="tool decoy", category="other",
-                        provenance={"discovered_by": "tool:semgrep", "confirmation_status": "UNVERIFIED"},
-                        tool_evidence={"tool": "semgrep", "rule_id": "r.tool"})
+                        source="tool:semgrep", tool_evidence={"tool": "semgrep", "rule_id": "r.tool"})
+        self.assertTrue(evidence_mod.is_tool_sourced(tool))
         for by_id in (False, True):
             with self.subTest(by_id=by_id):
                 report = self._report([(_agentic(**self.HIGH), "CONFIRMED"), (tool, "REJECTED")], by_id)
@@ -773,6 +776,30 @@ class TestAConfirmedFindingIsNotAbsorbed(unittest.TestCase):
                         findings=fs))
                 self.assertEqual(report["summary"]["gate"], "PASS")
                 self.assertEqual(self._fates(report), [("decoy critical", "CRITICAL", "rejected")])
+
+    def test_the_carrier_is_transitive_across_stages(self):
+        # A survivor dropped by a later stage hands on what it had absorbed, as
+        # evidence.record_merged_id does for the aliases.
+        first = only(corroborate_mod.dedupe([_agentic(**self.HIGH), _agentic(fid="AG-M", sev="MEDIUM", title="m")]))
+        second = only(corroborate_mod.dedupe([first, _agentic(**self.CRIT)]))
+        self.assertEqual(sorted(m["id"] for m in second[corroborate_mod.ABSORBED_FIELD]), ["AG-H", "AG-M"])
+
+    def test_a_restored_member_takes_a_queue_id_no_entry_holds(self):
+        # finding_fingerprint excludes the line, so a restored member can share
+        # one with a queued finding elsewhere; queue ids stay unique (-n suffix,
+        # as build_verify_queue assigns them).
+        from scripts.synth import verdicts as verdicts_mod
+        high, crit = _agentic(**self.HIGH), _agentic(**self.CRIT)
+        crit[corroborate_mod.ABSORBED_FIELD] = [high]
+        fp = evidence_mod.finding_fingerprint(high)
+        queue = [{"queue_id": fp, "priority": 0, "finding": {"id": "AG-Z"}},
+                 {"queue_id": "q-crit", "priority": 0, "finding": crit}]
+        fs = findings_mod.FindingSet(findings=[], verdict_bundles={"AG-H": [
+            {"finding_id": "AG-H", "verdict": "CONFIRMED", "reasoning": "r", "stage": "primary"}]})
+        findings = [crit]
+        verdicts_mod.restore_confirmed(fs, findings, queue)
+        self.assertEqual([e["queue_id"] for e in queue], [fp, "q-crit", fp + "-1"])
+        self.assertIs(queue[-1]["finding"], high)
 
     def test_the_carrier_never_reaches_an_artifact(self):
         survivors = corroborate_mod.dedupe([_agentic(**self.HIGH), _agentic(**self.CRIT)])
