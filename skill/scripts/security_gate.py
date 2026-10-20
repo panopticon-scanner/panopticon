@@ -82,9 +82,8 @@ def load_manifest(path):
     if set(excluded_scope) & set(selected):
         raise ValueError("scanner manifest excluded_scope overlaps selected")
     receipt = tools_manifest.output_receipt(data)
-    data["outputs"] = list(receipt if receipt is not None else
-                           sorted(tools_manifest.canonical_output_name(name)
-                                  for name in produced))
+    data["outputs"] = list(receipt if receipt is not None else sorted(
+        tools_manifest.canonical_output_name(name) for name in produced))
     data["scanner_scope"] = tools_manifest.validate_scanner_scope(data)
     ignore_files = data.get("ignore_files", {})
     if (not isinstance(ignore_files, dict)
