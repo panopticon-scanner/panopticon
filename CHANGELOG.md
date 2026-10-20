@@ -7,6 +7,14 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **An unenforced claude launch is checked for its tool controls before it starts (#2061).**
+  `--tools=` and `--disallowedTools=` remove tools rather than deny calls, so neither ever shows
+  in `permission_denials`. A run whose argv lost or altered either token would ledger exactly like
+  one that kept it. Both are now `probes/common.CONTROLS` rows (`--flag=` prefix form, pinned
+  live in `tests/probes/test_discovery_surface.py`). `runners/claude.unenforced_argv_problem`
+  checks every unenforced argv against them, each token present once with exactly the derived
+  value. `run_entry` refuses a failing argv before launch. Pins:
+  `tests/runners/test_claude.py::TestAnUnenforcedArgvWithoutItsToolControlsNeverLaunches`.
 - **The unenforced claude launch holds the role templates' tool grant as an allow-list (#2060).**
   The `--model` and model-less launches carried only a deny-list, which cannot close a tool name it
   has never heard of that the operator allowed at user scope. MEASURED on claude 2.1.304 with the

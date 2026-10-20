@@ -484,6 +484,20 @@ CONTROLS = {
         "kimi", ("--skills-dir=",),
         "`--skills-dir=<run-owned empty dir>` replaces BOTH auto-discovered "
         "skill roots, the operator's and the target's"),
+    # #2061: the unenforced claude launch's two tool controls. Both REMOVE tools
+    # rather than deny calls, so `permission_denials` never shows them and no
+    # ledger field says they were armed: `runners/claude.Runner.run_entry`
+    # checks the composed argv against these rows before every unenforced
+    # launch and refuses it when either is missing or altered.
+    "claude:unenforced-tools-allow-list": Control(
+        "claude", ("--tools=",),
+        "`--tools=<the role templates' union>` (#2060) leaves the session only "
+        "the tools the templates grant, so no user-scope allow rule reaches "
+        "another"),
+    "claude:unenforced-tool-deny-list": Control(
+        "claude", ("--disallowedTools=",),
+        "`--disallowedTools=<UNENFORCED_DENIED_TOOLS>` (#1753), belt and braces "
+        "behind the allow-list"),
 }
 
 
