@@ -51,7 +51,9 @@ def _snapshot_review_out_files(review_root, manifest):
     entries = _driver_plan_entries(review_root, manifest)
     if not entries:
         return None
-    return run_manifest.claim_artifact(   # None: owed and gone -- never re-taken
+    written = run_manifest.claim_artifact(   # None: owed and gone -- never re-taken
         review_root, manifest, run_manifest.OUT_FILE_SNAPSHOT, path,
-        lambda: path if group_runner.snapshot_out_files(
-            entries, out_path=os.path.abspath(path)) else None, cells=len(entries))
+        lambda: group_runner.snapshot_out_files(entries, out_path=os.path.abspath(path)),
+        cells=len(entries),
+        stamp_fields=lambda result: {"sha256": result[1]})
+    return path if written and written[0] else None

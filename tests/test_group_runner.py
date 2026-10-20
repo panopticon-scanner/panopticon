@@ -291,12 +291,13 @@ class TestOutFileContentHashes(unittest.TestCase):
             with open(hashes_path, "rb") as fh:
                 self.assertEqual(snapshot_sha256,
                                  hashlib.sha256(fh.read()).hexdigest())
-            checked, mismatched, unreadable = gr.verify_out_file_hashes(
+            checked, mismatched, unreadable, observed = gr.verify_out_file_hashes(
                 [out], hashes_path=hashes_path)
             self.assertEqual((checked, mismatched, unreadable), (1, [], False))
+            self.assertEqual(observed, snapshot_sha256)
             with open(out, "w") as fh:                    # substitute content
                 _json.dump({"findings": [{"id": "EVIL-1"}]}, fh)
-            checked, mismatched, unreadable = gr.verify_out_file_hashes(
+            checked, mismatched, unreadable, _observed = gr.verify_out_file_hashes(
                 [out], hashes_path=hashes_path)
             self.assertEqual(checked, 1)
             self.assertEqual(mismatched, [out])
@@ -314,12 +315,15 @@ class TestOutFileContentHashes(unittest.TestCase):
             gr.snapshot_out_files([{"out_file": deleted}, {"out_file": unchanged}],
                                   out_path=hashes)
             os.unlink(deleted)
-            self.assertEqual(gr.verify_out_file_hashes(
-                [deleted, unrecorded, unchanged], hashes_path=hashes),
-                (2, [deleted], False))
-            self.assertEqual(gr.verify_out_file_hashes(
-                [unrecorded, unchanged], hashes_path=hashes),
-                (1, [], False))
+            checked, mismatched, unreadable, observed = gr.verify_out_file_hashes(
+                [deleted, unrecorded, unchanged], hashes_path=hashes)
+            self.assertEqual((checked, mismatched, unreadable),
+                             (2, [deleted], False))
+            self.assertIsNotNone(observed)
+            checked, mismatched, unreadable, observed = gr.verify_out_file_hashes(
+                [unrecorded, unchanged], hashes_path=hashes)
+            self.assertEqual((checked, mismatched, unreadable), (1, [], False))
+            self.assertIsNotNone(observed)
 
     def test_no_snapshot_reads_as_not_measured(self):
         # #1208 read this as a PINNED FAIL-OPEN: deleting the baseline looks
@@ -331,11 +335,12 @@ class TestOutFileContentHashes(unittest.TestCase):
         # content_snapshot_missing, which fails the gate closed (#1511).
         # See tests/synth/test_integrity.py::
         #   test_a_driver_run_owing_a_snapshot_that_is_gone_fails_closed
-        checked, mismatched, unreadable = gr.verify_out_file_hashes(
+        checked, mismatched, unreadable, observed = gr.verify_out_file_hashes(
             ["x.json"], hashes_path="/nonexistent/h.json")
         self.assertIsNone(checked)
         self.assertEqual(mismatched, [])
         self.assertFalse(unreadable)               # genuinely absent, not tamper
+        self.assertIsNone(observed)
 
     def test_corrupt_snapshot_is_a_detected_tamper_not_no_snapshot(self):
         # #run7 #1208: snapshot_out_files only writes when non-empty, so a
@@ -348,7 +353,7 @@ class TestOutFileContentHashes(unittest.TestCase):
                 hp = os.path.join(d, "out-file-hashes.json")
                 with open(hp, "w") as fh:
                     fh.write(payload)
-                checked, mismatched, unreadable = gr.verify_out_file_hashes(
+                checked, mismatched, unreadable, _observed = gr.verify_out_file_hashes(
                     ["x.json"], hashes_path=hp)
                 self.assertTrue(unreadable, payload)   # present+corrupt -> tamper
                 self.assertIsNone(checked)

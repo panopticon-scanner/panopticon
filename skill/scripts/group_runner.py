@@ -228,8 +228,10 @@ def snapshot_out_files(plan, out_path=None):
     legitimately-declared out_file (which set-based reconcile cannot see).
     The orchestrator calls this right after fan-out completes; synthesize
     verifies the ingested bytes still match. Returns the {realpath: sha256}
-    mapping; writes it to out_path (default .panopticon/out-file-hashes.json)
-    when given a plan with any existing out_file.
+    mapping and the sha256 of the exact serialized snapshot bytes it wrote
+    (#2115); writes them to out_path (default .panopticon/out-file-hashes.json)
+    when given a plan with any existing out_file. The snapshot digest is None
+    when there were no hashes and therefore no snapshot bytes.
     """
     hashes = {}
     for e in plan or []:
@@ -242,21 +244,30 @@ def snapshot_out_files(plan, out_path=None):
         hashes[os.path.realpath(path)] = digest
     if out_path is None:
         out_path = os.path.join(".panopticon", "out-file-hashes.json")
+    snapshot_sha256 = None
     if hashes:
         # #1735: the snapshot lands in the reviewed tree's `.panopticon` and is
         # the anchor content-substitution detection reads back, so confine the
         # path before the makedirs and open without following a planted link.
         safe_write.confine_artifact_path(out_path)
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        # Canonical and newline-free: `body.encode()` is byte-for-byte what the
+        # text descriptor writes on every platform, so the returned digest is
+        # the artifact's digest rather than a second, racy read (#2115).
+        body = json.dumps(hashes, sort_keys=True, separators=(",", ":"))
         with safe_write.open_w_nofollow(out_path) as fh:
-            json.dump(hashes, fh, indent=1, sort_keys=True)
-    return hashes
+            fh.write(body)
+        snapshot_sha256 = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    return hashes, snapshot_sha256
 
 
 def verify_out_file_hashes(ingested_paths, hashes_path=None):
     """Compare ingested findings files against the fan-out-time snapshot.
 
-    Returns ``(checked, mismatched, snapshot_unreadable)``:
+    Returns ``(checked, mismatched, snapshot_unreadable, snapshot_sha256)``;
+    the digest and parsed mapping come from the same byte read (#2115), so a
+    concurrent replacement cannot make verification read one snapshot and the
+    manifest-binding check read another. In that tuple:
       - ``mismatched`` lists the ORIGINAL path strings whose current bytes no
         longer hash to the recorded value.
       - ``snapshot_unreadable`` is True when the snapshot file EXISTS but cannot
@@ -266,20 +277,22 @@ def verify_out_file_hashes(ingested_paths, hashes_path=None):
         FAIL the gate, not silently read as ``(None, [])`` (an attacker who
         substitutes a findings file could otherwise also truncate the snapshot to
         erase the evidence, and integrity stayed green).
-      - ``(None, [], False)`` when the file is genuinely ABSENT -- an ordinary
-        non-fan-out run.
+      - ``(None, [], False, None)`` when the file is genuinely ABSENT -- an
+        ordinary non-fan-out run.
     """
     if hashes_path is None:
         hashes_path = os.path.join(".panopticon", "out-file-hashes.json")
     if not os.path.isfile(hashes_path):
-        return None, [], False               # genuinely absent -> no snapshot
+        return None, [], False, None          # genuinely absent -> no snapshot
     try:
-        with open(hashes_path, encoding="utf-8") as fh:
-            recorded = json.load(fh)
+        with open(hashes_path, "rb") as fh:
+            snapshot_bytes = fh.read()
+        recorded = json.loads(snapshot_bytes)
     except (OSError, ValueError):
-        return None, [], True                # present but unreadable -> tamper
+        return None, [], True, None           # present but unreadable -> tamper
+    snapshot_sha256 = hashlib.sha256(snapshot_bytes).hexdigest()
     if not isinstance(recorded, dict) or not recorded:
-        return None, [], True                # present but malformed/empty -> tamper
+        return None, [], True, snapshot_sha256  # present but malformed/empty -> tamper
     checked = 0
     mismatched = []
     for p in ingested_paths or []:
@@ -294,4 +307,4 @@ def verify_out_file_hashes(ingested_paths, hashes_path=None):
             continue
         if digest != recorded[rp]:
             mismatched.append(str(p))
-    return checked, sorted(mismatched), False
+    return checked, sorted(mismatched), False, snapshot_sha256

@@ -7,6 +7,24 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The driver binds `out-file-hashes.json` to the exact bytes it wrote (#2115).** A writer in
+  the run folder could replace the snapshot with hashes of substituted findings; because the
+  snapshot's manifest stamp recorded only its cell count, synthesis verified the forged findings
+  against the forged baseline and certified the run. A snapshot planted before the
+  review-to-verify boundary was cheaper still: the idempotent writer left it in place and never
+  stamped it. `group_runner.snapshot_out_files` now serializes canonical, newline-free JSON and
+  returns its sha256 with the per-cell hashes; `run_manifest.claim_artifact` stamps evidence
+  derived from that writer result only after the file lands. The synthesis child receives the
+  stamped digest and publishes sinking `content_snapshot_mismatched` when a plan-owed run's
+  present snapshot differs or has no driver-written digest, so both substitution forms make the
+  gate INCONCLUSIVE and coverage uncertified. The shared integrity registry carries that reason
+  through `integrity_ok`, terminal and HTML output, and the report schema. The artifact helpers
+  moved mechanically from the 700-line `phases/requests.py` into `phases/run_artifacts.py`, with
+  their old names re-exported. Pins: exact serialized-byte digest and post-write stamp; CLI/plan
+  threading; honest, deleted, unreadable, legacy/manual, forged-replacement, and pre-planted
+  snapshots; the live review-to-verify-to-synthesis rows; schema, key order, gate, and both human
+  renderers.
+
 - **A finding names a substitution run as a standard-input runner `$(...)`, never the reader's
   marker (#3156).** `workflow_uses.use`'s standard-input branch named the runner by
   `os.path.basename(argv[0])`; for a command substitution as the command word (`$(echo sh)`, its

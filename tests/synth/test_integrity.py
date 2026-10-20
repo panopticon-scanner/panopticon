@@ -640,8 +640,8 @@ class TestADeletedDispatchPlanIsDeletedEvidence(unittest.TestCase):
         with open(os.path.join(self.run_dir, plan_mod.DRIVER_DISPATCH_PLAN),
                   "w", encoding="utf-8") as fh:
             json.dump(plan, fh)
-        gr.snapshot_out_files(plan, out_path=os.path.join(self.run_dir,
-                                                          "out-file-hashes.json"))
+        _hashes, self.snapshot_sha256 = gr.snapshot_out_files(
+            plan, out_path=os.path.join(self.run_dir, "out-file-hashes.json"))
 
     def _section(self, plan_owed, plan_sha256=None):
         plans = plan_mod.load_dispatch_plans_detailed(self.run_dir)
@@ -649,7 +649,8 @@ class TestADeletedDispatchPlanIsDeletedEvidence(unittest.TestCase):
             sec = integrity_mod.integrity_section(plans[0], self.paths, self.run_dir,
                                                   plans[1], plans[2], None,
                                                   plan_owed=plan_owed,
-                                                  plan_sha256=plan_sha256)
+                                                  plan_sha256=plan_sha256,
+                                                  snapshot_sha256=self.snapshot_sha256)
         return sec, err.getvalue()
 
     def _plan_hash(self):

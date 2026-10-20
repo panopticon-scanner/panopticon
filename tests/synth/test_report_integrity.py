@@ -284,14 +284,15 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
     the fourteen sinking keys had no line of their own, nine of them no name on
     the summary at all: it said "incomplete" and the reasons went to stderr.
 
-    `SINKING` is transcribed from that chain BEFORE it was folded into
-    `integrity.INTEGRITY_KEYS`, which is what makes
+    `SINKING` began as that chain before it was folded into
+    `integrity.INTEGRITY_KEYS`; later integrity reasons such as #2115 are added
+    here with their contract. That baseline is what makes
     `test_the_chain_sinks_exactly_these_keys` an equivalence baseline: it
     passed against the hand-written chain and must still pass against the
     comprehension over the table.
     """
 
-    # The 14 terms of the pre-change chain, in its own order.
+    # The 14 terms of the pre-change chain, plus later integrity reasons.
     SINKING = frozenset({
         "unexpected_findings_files", "duplicate_out_files",
         "mislabeled_findings_files", "content_mismatched_files",
