@@ -149,15 +149,20 @@ def test_scope_refusal_cannot_advance_the_driver_using_an_old_report(tmp_path, m
     assert output.read_bytes() == previous
 
 
-def test_explicit_repo_cannot_widen_a_changed_inventory(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("mode, reason", [
+    ("changed", "discovered changes"),
+    ("weird", "unsupported mode 'weird'"),
+], ids=["changed", "unknown"])
+def test_explicit_repo_cannot_override_a_non_repo_inventory(
+        tmp_path, monkeypatch, capsys, mode, reason):
     monkeypatch.chdir(tmp_path)
     groups = tmp_path / "groups.json"
-    groups.write_text(json.dumps({"mode": "changed", "groups": []}))
+    groups.write_text(json.dumps({"mode": mode, "groups": []}))
     output = tmp_path / "report.json"
     result = synthesize.main([
         "--repo", "--groups", str(groups), "--out", str(output)])
     assert result == validate_schema.ARTIFACT_INVALID
     error = capsys.readouterr().err
     assert "declared repo" in error
-    assert "discovered changes" in error
+    assert reason in error
     assert not output.exists()

@@ -14,6 +14,7 @@ import scripts.host_disclosure as host_disclosure
 import scripts.inert as inert
 import scripts.hosts as hosts
 import scripts.ocrdb as ocrdb
+import scripts.redact as redact
 from . import findings as findings_mod
 from . import delta as delta_mod
 from . import grading as grading_mod
@@ -159,8 +160,8 @@ class RunConfig:
                   panel_tools_context=None, tools_disabled_mid_run=False,
                   config=None):
         """The CLI flags resolved against the run's groups.json (WS-0 S3):
-        explicit --changes wins over a discovered mode; --repo cannot widen
-        a known narrower scope. Without either, a missing or unsupported
+        explicit --changes wins over a discovered mode; --repo accepts only
+        a missing mode or one mapped to repo. Without either, a missing or unsupported
         groups.json mode refuses the report.
         --security wins over the file's security_mode and defaults to standard.
         `groups_json` is {} when there is no readable file.
@@ -173,10 +174,12 @@ class RunConfig:
             mode = groups_json.get("mode")
             discovered = (findings_mod.MODE_TO_REVIEW_TYPE.get(mode)
                           if isinstance(mode, str) else None)
-            if discovered is not None and discovered != "repo":
+            if mode is not None and discovered != "repo":
+                scope = ("%s scope" % discovered if discovered is not None else
+                         "unsupported mode %r" % redact.redact_diagnostic(str(mode), 80))
                 raise ReviewScopeError(
-                    "review scope refused: declared repo scope would widen "
-                    "discovered %s scope" % discovered)
+                    "review scope refused: declared repo scope conflicts with "
+                    "discovered %s" % scope)
             review_type = "repo"
         else:
             mode = groups_json.get("mode")
