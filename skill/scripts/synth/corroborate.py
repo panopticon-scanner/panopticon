@@ -37,6 +37,23 @@ def _conf_rank(f):
 def _is_tool_sourced(finding):
     return evidence_mod.is_tool_sourced(finding)
 
+# #2991: the members dedupe drops, kept on their survivor. Dedupe runs BEFORE any
+# verdict binds (both passes share it, #443), so it picks the survivor by
+# severity alone; a dropped member's own verdict can still matter. A CONFIRMED
+# one is restored as its own finding when the survivor's own verdict is not
+# (`verdicts.restore_confirmed`). Underscore-prefixed like `_merged_ids`: never
+# serialized (pass 1 drops `_` keys) and stripped before the report.
+ABSORBED_FIELD = "_absorbed"
+
+
+def _absorb(best, other):
+    """Keep `other` on the survivor that dropped it, transitively (a cluster
+    collapses in stages, as `evidence.record_merged_id` notes)."""
+    carried = best.setdefault(ABSORBED_FIELD, [])
+    carried.append(other)
+    carried.extend(other.pop(ABSORBED_FIELD, []))
+
+
 def _reinforce_merge(best, other):
     """Pull missing enrichment from other into best. The agent's cvss and
     exploit_scenario are preferred when either finding has them; other text
@@ -168,6 +185,7 @@ def dedupe(findings):
             _reinforce_merge(best, other)
             _carry_aggregation(best, other)
             evidence_mod.record_merged_id(best, other)
+            _absorb(best, other)
             result.append(best)
         else:
             by_cat: dict[str | None, list[dict[str, Any]]] = {}
@@ -227,6 +245,7 @@ def dedupe(findings):
                             if m is not best:
                                 evidence_mod.record_merged_id(best, m)
                                 _carry_aggregation(best, m)
+                                _absorb(best, m)
                         result.append(best)
     return result + passthrough
 

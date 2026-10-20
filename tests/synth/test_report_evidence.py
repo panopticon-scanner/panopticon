@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import json
 import unittest
 import scripts.synth.corroborate as corroborate_mod
 import scripts.synth.findings as findings_mod
@@ -9,6 +10,7 @@ import scripts.synth.grading as grading_mod
 import scripts.synth.report as report_mod
 import scripts.evidence as evidence_mod
 from scripts._version import __version__
+from tests._test_helpers import only
 from tests.synth.helpers import _agentic, _VERDICT_STATUS
 
 
@@ -671,3 +673,138 @@ class TestStrictGate(unittest.TestCase):
             findings=findings_mod.FindingSet(findings=[self._tool_high()]),
         ))
         self.assertEqual(r["summary"]["gate"], "FAIL")
+
+
+class TestAConfirmedFindingIsNotAbsorbed(unittest.TestCase):
+    """#2991: dedupe keeps the most severe member of a locus BEFORE any verdict
+    binds, so a REJECTED (or NEEDS_MORE_INFO, or unverified) CRITICAL at the same
+    file+line+category swallowed a CONFIRMED HIGH: the HIGH left the report and
+    the gate PASSED. A dropped member whose own verdict is CONFIRMED now stands
+    as itself unless the survivor's own verdict is CONFIRMED too. Both binding
+    paths: by fingerprint (the queue) and by id (the driver's per-cell bundles)."""
+
+    HIGH = dict(fid="AG-H", sev="HIGH", title="honest high")
+    CRIT = dict(fid="AG-C", sev="CRITICAL", title="decoy critical")
+
+    def _report(self, pairs, by_id):
+        findings = [f for f, _ in pairs]
+        if by_id:
+            bundles = {f["id"]: [{"finding_id": f["id"], "verdict": v, "reasoning": "r",
+                                  "run_id": "RID", "stage": "primary"}] for f, v in pairs if v}
+            fs = findings_mod.FindingSet(findings=findings, verdict_bundles=bundles,
+                                         verdict_run_id="RID", verdicts_supplied=True)
+        else:
+            fs = findings_mod.FindingSet(findings=findings, verdicts={
+                evidence_mod.finding_fingerprint(f): {"finding_id": f["id"], "verdict": v, "reasoning": "r"}
+                for f, v in pairs if v})
+        with contextlib.redirect_stderr(io.StringIO()):
+            return report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target="t", fail_on="high", timestamp="2026-10-20T00:00:00Z"),
+                findings=fs))
+
+    @staticmethod
+    def _fates(report):
+        return sorted((f["title"], f["severity"], f["evidence"]["status"])
+                      for f in report["findings"] + report["discarded_claims"])
+
+    def test_a_rejected_critical_decoy_no_longer_absorbs_a_confirmed_high(self):
+        for by_id in (False, True):
+            for order in ("honest first", "decoy first"):
+                with self.subTest(by_id=by_id, order=order):
+                    pairs = [(_agentic(**self.HIGH), "CONFIRMED"), (_agentic(**self.CRIT), "REJECTED")]
+                    report = self._report(pairs if order == "honest first" else pairs[::-1], by_id)
+                    self.assertEqual(report["summary"]["gate"], "FAIL")
+                    self.assertEqual(self._fates(report), [
+                        ("decoy critical", "CRITICAL", "rejected"),
+                        ("honest high", "HIGH", "advisor_confirmed")])
+                    self.assertEqual(report["summary"]["counts"], {"active": 1, "discarded": 1, "total": 2})
+
+    def test_no_non_confirmed_survivor_absorbs_a_confirmed_member(self):
+        for decoy, status in (("NEEDS_MORE_INFO", "needs_more_info"), (None, "unverified")):
+            for by_id in (False, True):
+                with self.subTest(decoy=decoy, by_id=by_id):
+                    report = self._report([(_agentic(**self.HIGH), "CONFIRMED"),
+                                           (_agentic(**self.CRIT), decoy)], by_id)
+                    self.assertEqual(report["summary"]["gate"], "FAIL")
+                    # The decoy keeps its OWN verdict: an unverified CRITICAL no
+                    # longer wears the HIGH's CONFIRMED through a #1476 alias.
+                    self.assertEqual(self._fates(report), [
+                        ("decoy critical", "CRITICAL", status),
+                        ("honest high", "HIGH", "advisor_confirmed")])
+
+    def test_a_tool_decoy_collapsing_across_categories_does_not_absorb_it(self):
+        # A real tool finding (`source` is what evidence.is_tool_sourced reads):
+        # with one agent finding at its locus it forms dedupe's exactly-two
+        # tool+agent cluster, which collapses even across categories.
+        tool = _agentic(fid="TL-C", sev="CRITICAL", title="tool decoy", category="other",
+                        source="tool:semgrep", tool_evidence={"tool": "semgrep", "rule_id": "r.tool"})
+        self.assertTrue(evidence_mod.is_tool_sourced(tool))
+        for by_id in (False, True):
+            with self.subTest(by_id=by_id):
+                report = self._report([(_agentic(**self.HIGH), "CONFIRMED"), (tool, "REJECTED")], by_id)
+                self.assertEqual(report["summary"]["gate"], "FAIL")
+                self.assertIn(("honest high", "HIGH", "advisor_confirmed"), self._fates(report))
+
+    def test_two_rejected_still_collapse_and_a_confirmed_survivor_still_absorbs(self):
+        for by_id in (False, True):
+            with self.subTest(by_id=by_id, pair="two REJECTED"):
+                report = self._report([(_agentic(**self.HIGH), "REJECTED"), (_agentic(**self.CRIT), "REJECTED")], by_id)
+                self.assertEqual(report["summary"]["gate"], "PASS")
+                self.assertEqual(self._fates(report), [("decoy critical", "CRITICAL", "rejected")])
+            with self.subTest(by_id=by_id, pair="CONFIRMED survivor"):
+                report = self._report([(_agentic(**self.HIGH), "CONFIRMED"), (_agentic(**self.CRIT), "CONFIRMED")], by_id)
+                self.assertEqual(self._fates(report), [("decoy critical", "CRITICAL", "advisor_confirmed")])
+
+    def test_a_stale_or_misrouted_confirmed_restores_nothing(self):
+        # The restore reads a member's OWN verdict under the same rules as any
+        # binding: the run_id filter and the finding_id echo.
+        high, crit = _agentic(**self.HIGH), _agentic(**self.CRIT)
+        for name, verdict in (("other run", {"finding_id": "AG-H", "run_id": "OLD"}),
+                              ("misrouted echo", {"finding_id": "AG-X", "run_id": "RID"})):
+            with self.subTest(case=name):
+                fs = findings_mod.FindingSet(
+                    findings=[dict(high), dict(crit)], verdict_run_id="RID", verdicts_supplied=True,
+                    verdicts={evidence_mod.finding_fingerprint(high): dict(verdict, verdict="CONFIRMED", reasoning="r"),
+                              evidence_mod.finding_fingerprint(crit): {
+                                  "finding_id": "AG-C", "verdict": "REJECTED", "reasoning": "r", "run_id": "RID"}},
+                    # Bundles are keyed by the id they echo, as load_verdict_bundles keys them.
+                    verdict_bundles={verdict["finding_id"]: [
+                        dict(verdict, verdict="CONFIRMED", reasoning="r", stage="primary")]})
+                with contextlib.redirect_stderr(io.StringIO()):
+                    report = report_mod.build_report(report_mod.ReportInputs(
+                        run=report_mod.RunConfig(target="t", fail_on="high", timestamp="2026-10-20T00:00:00Z"),
+                        findings=fs))
+                self.assertEqual(report["summary"]["gate"], "PASS")
+                self.assertEqual(self._fates(report), [("decoy critical", "CRITICAL", "rejected")])
+
+    def test_the_carrier_is_transitive_across_stages(self):
+        # A survivor dropped by a later stage hands on what it had absorbed, as
+        # evidence.record_merged_id does for the aliases.
+        first = only(corroborate_mod.dedupe([_agentic(**self.HIGH), _agentic(fid="AG-M", sev="MEDIUM", title="m")]))
+        second = only(corroborate_mod.dedupe([first, _agentic(**self.CRIT)]))
+        self.assertEqual(sorted(m["id"] for m in second[corroborate_mod.ABSORBED_FIELD]), ["AG-H", "AG-M"])
+
+    def test_a_restored_member_takes_a_queue_id_no_entry_holds(self):
+        # finding_fingerprint excludes the line, so a restored member can share
+        # one with a queued finding elsewhere; queue ids stay unique (-n suffix,
+        # as build_verify_queue assigns them).
+        from scripts.synth import verdicts as verdicts_mod
+        high, crit = _agentic(**self.HIGH), _agentic(**self.CRIT)
+        crit[corroborate_mod.ABSORBED_FIELD] = [high]
+        fp = evidence_mod.finding_fingerprint(high)
+        queue = [{"queue_id": fp, "priority": 0, "finding": {"id": "AG-Z"}},
+                 {"queue_id": "q-crit", "priority": 0, "finding": crit}]
+        fs = findings_mod.FindingSet(findings=[], verdict_bundles={"AG-H": [
+            {"finding_id": "AG-H", "verdict": "CONFIRMED", "reasoning": "r", "stage": "primary"}]})
+        findings = [crit]
+        verdicts_mod.restore_confirmed(fs, findings, queue)
+        self.assertEqual([e["queue_id"] for e in queue], [fp, "q-crit", fp + "-1"])
+        self.assertIs(queue[-1]["finding"], high)
+
+    def test_the_carrier_never_reaches_an_artifact(self):
+        survivors = corroborate_mod.dedupe([_agentic(**self.HIGH), _agentic(**self.CRIT)])
+        self.assertEqual([m["id"] for m in only(survivors)[corroborate_mod.ABSORBED_FIELD]], ["AG-H"])
+        report = self._report([(_agentic(**self.HIGH), "CONFIRMED"), (_agentic(**self.CRIT), "REJECTED")], True)
+        self.assertNotIn(corroborate_mod.ABSORBED_FIELD, json.dumps(report))
+        report = self._report([(_agentic(**self.HIGH), "REJECTED"), (_agentic(**self.CRIT), "REJECTED")], True)
+        self.assertNotIn(corroborate_mod.ABSORBED_FIELD, json.dumps(report))

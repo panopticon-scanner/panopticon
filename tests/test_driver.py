@@ -333,6 +333,71 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
                 self.assertTrue(report["meta"]["coverage"]["verify_matrix"]["unverified_engaged"])
                 self.assertFalse(report["summary"]["coverage_certified"])
 
+    def _land_pair_review(self, root):
+        """#2991: one cell lands an honest HIGH and a CRITICAL decoy at ONE locus
+        (file, line, code), the rest land empty."""
+        req = runio._load_json(runio._pano(root, "dispatch-request.json"))
+        if not (isinstance(req, dict) and req.get("checkpoint") == "review"):
+            return False
+        run_id = run_manifest.load_manifest(root)["run_id"]
+        for i, entry in enumerate(req["entries"]):
+            group, domain = os.path.basename(entry["out_file"])[len("findings-"):-len(".json")].rsplit("-", 1)
+            findings = [] if i else [
+                {"domain": domain, "code": "%s-A1A" % domain, "severity": severity, "title": title,
+                 "description": "d", "source_role": "domain_panel",
+                 "location": {"file": "src/app.py", "line_start": 1}}
+                for severity, title in (("HIGH", "honest high"), ("CRITICAL", "decoy critical"))]
+            runio._write_json(entry["out_file"], {"findings": findings, "_panopticon": {
+                "run_id": run_id, "role": "domain_panel", "domain": domain, "group": group}})
+        return True
+
+    def _land_pair_verdicts(self, root):
+        """Answer every verify entry (primary or backup) the way a real advisor
+        would: by the ids the driver itself assigned the cell's claims. The HIGH
+        is CONFIRMED, the decoy REJECTED. Returns {title: verdict} as landed."""
+        from scripts.phases import review
+        req = runio._load_json(runio._pano(root, "dispatch-request.json"))
+        if not (isinstance(req, dict) and req.get("checkpoint") == "verify"):
+            return {}
+        manifest = run_manifest.load_manifest(root)
+        landed = {}
+        for entry in req["entries"]:
+            stem = os.path.basename(entry["out_file"])[len("verdicts-"):-len(".json")]
+            stage = "backup" if stem.endswith("-backup") else "primary"
+            group, domain = stem[:-len("-backup")].rsplit("-", 1) if stage == "backup" else stem.rsplit("-", 1)
+            cell = review._load_cell_findings(root, manifest, group, domain) or []
+            verdicts = [{"finding_id": f["id"], "reasoning": "r",
+                         "verdict": "CONFIRMED" if f["title"] == "honest high" else "REJECTED"}
+                        for f in cell]
+            landed.update((f["title"], v["verdict"]) for f, v in zip(cell, verdicts))
+            runio._write_json(entry["out_file"], {"verdicts": verdicts, "_panopticon": {
+                "run_id": manifest["run_id"], "role": "domain_advisor", "domain": domain,
+                "group": group, "stage": stage}})
+        return landed
+
+    def test_a_confirmed_finding_is_not_absorbed_by_a_rejected_decoy_at_its_locus(self):
+        """#2991 (M5), through the REAL driver: per-cell verify answers both claims
+        by their own driver-assigned ids, then synthesize dedupes the pair at one
+        locus. On main the REJECTED CRITICAL survived dedupe, bound its own verdict,
+        and took the CONFIRMED HIGH out of the gate: PASS. The HIGH now stands."""
+        d = self._repo()
+        args = self._args(d, "--no-tools", "--fail-on", "high")
+        status, landed = driver.run(args), {}
+        for _ in range(25):
+            if status["status"] != "checkpoint":
+                break
+            self._inject_scouts(d)
+            if status["checkpoint"] == "review" and not self._land_pair_review(d):
+                self._inject_review(d)
+            landed.update(self._land_pair_verdicts(d))
+            status = driver.run(args)
+        self.assertEqual(status["status"], "complete", status.get("message"))
+        self.assertEqual(landed, {"honest high": "CONFIRMED", "decoy critical": "REJECTED"})
+        report = runio._load_json(runio._pano(d, "report.json"))
+        kept = [(f["title"], f["severity"], f["evidence"]["status"]) for f in report["findings"]]
+        self.assertIn(("honest high", "HIGH", "advisor_confirmed"), kept)
+        self.assertEqual(report["summary"]["gate"], "FAIL")
+
     def test_resume_reemits_same_checkpoint_before_dispatch(self):
         d = self._repo()
         args = self._args(d)
