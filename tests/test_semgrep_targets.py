@@ -173,6 +173,12 @@ class TestTheMatcherAgreesWithSemgrep(unittest.TestCase):
                 with self.subTest(pattern=pattern, path=path):
                     self.assertIs(st.pattern_drops(pattern, _rel(path), False), path in excluded)
 
+    def test_a_file_named_like_a_trailing_doublestar_prefix_stays_selected(self):
+        # Measured beside the table: under `tests/fixtures/**` Semgrep still
+        # selects a FILE named `tests/fixtures`; it excludes only what is inside.
+        self.assertIs(st.pattern_drops("tests/fixtures/**", ("tests", "fixtures"), False), False)
+        self.assertIs(st.pattern_drops("tests/fixtures/**", ("tests", "fixtures", "a.py"), False), True)
+
     def test_an_unmeasured_pattern_form_leaves_the_file_listed(self):
         for pattern in UNMEASURED:
             with self.subTest(pattern=pattern):
@@ -227,6 +233,15 @@ class TestTheWalk(unittest.TestCase):
             self._file(rel, 11)
         self.assertEqual(st.oversized(self.root, st.argv_excludes(cmd), 10)["files"], ["kept.py"])
 
+    def test_an_excluded_directory_is_not_walked(self):
+        # Pruned, not merely filtered: a vast excluded tree (node_modules) must
+        # not exhaust the walk's bound and make the listing incomplete.
+        for i in range(10):
+            self._file("node_modules/m%d.js" % i, 11)
+        self._file("kept.py", 11)
+        listing = st.oversized(self.root, ["node_modules/"], 10, max_entries=5)
+        self.assertEqual((listing["files"], listing["complete"]), (["kept.py"], True))
+
     def test_awkward_names_are_listed(self):
         names = ["with space.py", "nl\nname.py"]
         if sys.platform.startswith("linux"):
@@ -272,6 +287,19 @@ class TestTheStamp(unittest.TestCase):
         doc = json.loads(st.stamp(payload.encode(), listing))
         self.assertEqual(doc["runs"][0]["properties"],
                          {"panopticon_scanned_files": 3, st.STAMP_KEY: listing})
+
+    def test_a_completed_process_capture_is_stamped_too(self):
+        import subprocess
+        from scripts import tool_capture
+        sarif = json.dumps({"runs": [{"results": []}]}).encode()
+        with tempfile.TemporaryDirectory() as root:
+            out = os.path.join(root, "semgrep.sarif")
+            runner = lambda *a, **k: subprocess.CompletedProcess(a, 0, sarif, b"")  # noqa: E731
+            tool_capture._capture_run("tool", "semgrep", ["semgrep"], out, runner,
+                                      stamp=st.stamper("semgrep", root, TOOL_CMD["semgrep"]))
+            with open(out) as fh:
+                listing = json.load(fh)["runs"][0]["properties"][st.STAMP_KEY]
+        self.assertEqual(listing, {"limit": 1_000_000, "count": 0, "files": [], "complete": True})
 
     def test_output_that_is_not_sarif_is_untouched(self):
         for payload in (b"not json", b"[]", b'{"runs": []}', b'{"runs": ["x"]}'):
