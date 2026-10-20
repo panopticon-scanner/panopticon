@@ -623,7 +623,7 @@ class TestReinforcedSurvivorCarriesAggregation(unittest.TestCase):
         self.assertEqual(survivor["occurrences"], 2)
         self.assertEqual(survivor["additional_loci"],
                          [{"file": "src/app.py", "line_start": 12}])
-        self.assertIn("BN-1", evidence_mod.merged_ids(survivor))
+        self.assertIn("BN-1", [m["id"] for m in survivor[corroborate_mod.ABSORBED_FIELD]])
 
     def test_tool_survivor_keeps_its_own_unchanged(self):
         # The control: the agent finding is a LOW, so the tool MEDIUM wins the
@@ -643,7 +643,7 @@ class TestReinforcedSurvivorCarriesAggregation(unittest.TestCase):
         # representative survives its own rule bucket and reaches the report, so
         # nothing was dropped and there is nothing to carry. Carrying there would
         # print "2 loci of this rule" on two entries for one pair of hits, on an
-        # entry whose `_merged_ids` does not even name the source.
+        # entry that did not even absorb the source.
         out, _integration = corroborate_mod.prepare_for_queue(
             [self._tool_hit("BN-1", 10), self._tool_hit("BN-2", 12),
              self._agent("AG-1", "HIGH"), self._agent("AG-2", "MEDIUM")])
@@ -677,7 +677,7 @@ class TestReinforcedSurvivorCarriesAggregation(unittest.TestCase):
         self.assertEqual(survivor["occurrences"], 2)
         self.assertEqual(survivor["additional_loci"],
                          [{"file": "src/app.py", "line_start": 12}])
-        self.assertIn("TB-1", evidence_mod.merged_ids(survivor))
+        self.assertIn("TB-1", [m["id"] for m in survivor[corroborate_mod.ABSORBED_FIELD]])
 
     def test_the_drop_loop_carries_without_an_agent_member(self):
         # The same two-panel cluster with NO agent finding: the category is not
@@ -694,7 +694,7 @@ class TestReinforcedSurvivorCarriesAggregation(unittest.TestCase):
         self.assertEqual(survivor["occurrences"], 2)
         self.assertEqual(survivor["additional_loci"],
                          [{"file": "src/app.py", "line_start": 12}])
-        self.assertIn("TB-1", evidence_mod.merged_ids(survivor))
+        self.assertIn("TB-1", [m["id"] for m in survivor[corroborate_mod.ABSORBED_FIELD]])
 
     def test_no_carry_across_categories(self):
         # dedupe's exactly-two branch collapses a tool+agent pair at one locus
@@ -1170,14 +1170,18 @@ class TestEvidenceIntegrity(unittest.TestCase):
         return p
 
     def test_forged_alias_cannot_inherit_an_unrelated_verdict(self):
+        # #3202 retired the alias carrier, and a planted one (or a planted
+        # `_absorbed`, #2991's carrier, which feeds restore_confirmed) is still
+        # stripped at load: an agent cannot name another claim for its verdict.
         forged = _make_finding(_merged_ids=["SEC-victim"], _repo_root="/outside",
+                               _absorbed=[{"id": "SEC-victim"}],
                                _future_controller_key=True, fingerprint="forged")
         with tempfile.TemporaryDirectory() as d:
             loaded = findings_mod.load_findings([self._agent_file(d, [forged])])[0]
-        self.assertEqual([], evidence_mod.merged_ids(loaded))
         self.assertIsNone(evidence_mod.match_verdict_by_id(
             loaded, {"SEC-victim": [{"verdict": "CONFIRMED", "run_id": "run"}]}, "run"))
-        for key in ("_repo_root", "_future_controller_key", "fingerprint"):
+        for key in ("_merged_ids", corroborate_mod.ABSORBED_FIELD, "_repo_root",
+                    "_future_controller_key", "fingerprint"):
             self.assertNotIn(key, loaded)
 
     def test_forged_advisor_code_is_stripped_from_provenance(self):
@@ -1513,7 +1517,7 @@ class TestDocSeverityPolicy(unittest.TestCase):
             out = os.path.join(d, "r.json")
             err = io.StringIO()
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
-                rc = syn.main(["--target", "src", "--out", out, fp])
+                rc = syn.main(["--repo", "--target", "src", "--out", out, fp])
             self.assertEqual(rc, 0)
             self.assertIn("soft-downgraded", err.getvalue())
             with open(out) as fh:

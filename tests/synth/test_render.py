@@ -493,7 +493,8 @@ class TestWriteReportDiscardedSplit(unittest.TestCase):
             self.assertIn("report base is", err.getvalue())   # loud, not silent floor
 
     def test_failed_staging_cleans_partial_files_and_preserves_the_previous_report(self):
-        real_open = render_mod.safe_write.open_w_nofollow
+        # #2093 routes every temp leaf through the exclusive staging opener.
+        real_open = render_mod.safe_write.open_staging_nofollow
         for findings, discarded, limit, failed_at in ((1, 0, 8000, 1),
                                                       (1, 30, 2000, 2),
                                                       (12, 10, 2000, 2)):
@@ -521,7 +522,7 @@ class TestWriteReportDiscardedSplit(unittest.TestCase):
                                     yield stream
                                     raise OSError("staging close failed")
 
-                        with mock.patch.object(render_mod.safe_write, "open_w_nofollow",
+                        with mock.patch.object(render_mod.safe_write, "open_staging_nofollow",
                                                side_effect=failing_open):
                             with self.assertRaisesRegex(OSError, "staging .* failed"):
                                 render_mod.write_report(self._report(findings, discarded),

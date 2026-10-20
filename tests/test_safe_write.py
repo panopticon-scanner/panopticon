@@ -63,6 +63,8 @@ class TestOneImplementation(unittest.TestCase):
 
     def test_runio_aliases_are_this_modules_functions(self):
         self.assertIs(runio._open_w_nofollow, safe_write.open_w_nofollow)
+        self.assertIs(runio._open_staging_nofollow,
+                      safe_write.open_staging_nofollow)
         self.assertIs(runio._open_a_nofollow, safe_write.open_a_nofollow)
         self.assertIs(runio._confine_artifact_path,
                       safe_write.confine_artifact_path)
@@ -127,6 +129,22 @@ class TestNoFollowOpen(unittest.TestCase):
 
         self.assertEqual(raised.exception.errno, errno.EINVAL)
         self.assertTrue(stat.S_ISFIFO(os.lstat(artifact).st_mode))
+
+    def test_staging_open_has_the_exact_exclusive_bounded_flags(self):
+        staging = os.path.join(self.pano, "artifact.json.tmp")
+        seen = []
+        real_open = os.open
+
+        def recording(path, flags, mode):
+            seen.append((flags, mode))
+            return real_open(path, flags, mode)
+
+        with mock.patch.object(safe_write.os, "open", side_effect=recording):
+            with safe_write.open_staging_nofollow(staging) as stream:
+                stream.write("{}")
+        expected = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                    | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0))
+        self.assertEqual(seen, [(expected, 0o644)])
 
     def test_append_does_not_follow_a_planted_symlink(self):
         victim = self._victim()

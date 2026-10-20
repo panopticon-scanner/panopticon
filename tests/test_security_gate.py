@@ -8,6 +8,7 @@ import unittest
 import scripts.ingest_tools as ingest_tools
 import scripts.security_gate as gate
 import scripts.tools_manifest as tools_manifest
+from tests._test_helpers import semgrep_size_stamped
 
 
 class TestGitleaksIgnoreDisclosure(unittest.TestCase):
@@ -98,10 +99,10 @@ def _sarif(level=None):
                 "artifactLocation": {"uri": "/src/app.py"},
                 "region": {"startLine": 1}}}],
         })
-    return {"version": "2.1.0", "runs": [{
+    return {"version": "2.1.0", "runs": [semgrep_size_stamped({
         "tool": {"driver": {"name": "semgrep", "rules": []}},
         "results": results,
-    }]}
+    })]}
 
 
 class TestSecurityGate(unittest.TestCase):

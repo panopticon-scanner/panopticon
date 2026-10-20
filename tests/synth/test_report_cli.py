@@ -31,7 +31,7 @@ class TestCliAndSummary(unittest.TestCase):
                 json.dump({"groups": [{"name": "app", "files": ["app.py"]}]}, fh)
             out = os.path.join(root, "report.json")
             with contextlib.redirect_stdout(io.StringIO()):
-                rc = syn.main(["--target", root, "--groups", groups, "--out", out])
+                rc = syn.main(["--repo", "--target", root, "--groups", groups, "--out", out])
             with open(out) as fh:
                 report = json.load(fh)
         self.assertEqual(rc, 0)
@@ -123,7 +123,7 @@ class TestCliAndSummary(unittest.TestCase):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 rc = syn.main(
-                    [
+                    ["--repo",
                         "--target",
                         "src",
                         "--fail-on",
@@ -220,7 +220,7 @@ class TestCliAndSummary(unittest.TestCase):
 
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                rc = syn.main(["--target", "src", "--out", out, fpath])
+                rc = syn.main(["--repo", "--target", "src", "--out", out, fpath])
             self.assertEqual(rc, 0)
 
 
@@ -339,27 +339,27 @@ class RunConfigLoaderTest(unittest.TestCase):
     def test_discovered_mode_maps_to_review_type(self):
         run = report_mod.RunConfig.from_args(_cli_args(), {"mode": "files"}, DEFAULT_TIMESTAMP)
         self.assertEqual(run.review_type, "changes")
-        run = report_mod.RunConfig.from_args(_cli_args(), {"mode": "bogus"}, DEFAULT_TIMESTAMP)
-        self.assertEqual(run.review_type, "repo")
-        run = report_mod.RunConfig.from_args(_cli_args(), {}, DEFAULT_TIMESTAMP)
-        self.assertEqual(run.review_type, "repo")
+        for inventory in ({"mode": "bogus"}, {}):
+            with self.subTest(inventory=inventory), self.assertRaisesRegex(
+                    report_mod.ReviewScopeError, "review scope refused"):
+                report_mod.RunConfig.from_args(_cli_args(), inventory, DEFAULT_TIMESTAMP)
 
     def test_explicit_security_beats_the_file(self):
         run = report_mod.RunConfig.from_args(
-            _cli_args(security="redteam"), {"security_mode": "standard"}, DEFAULT_TIMESTAMP)
+            _cli_args(security="redteam"), {"mode": "repo", "security_mode": "standard"}, DEFAULT_TIMESTAMP)
         self.assertEqual(run.security_mode, "redteam")
 
     def test_security_defaults_to_standard_even_when_the_file_says_null(self):
         run = report_mod.RunConfig.from_args(
-            _cli_args(), {"security_mode": None}, DEFAULT_TIMESTAMP)
+            _cli_args(), {"mode": "repo", "security_mode": None}, DEFAULT_TIMESTAMP)
         self.assertEqual(run.security_mode, "standard")
-        run = report_mod.RunConfig.from_args(_cli_args(), {}, DEFAULT_TIMESTAMP)
+        run = report_mod.RunConfig.from_args(_cli_args(), {"mode": "repo"}, DEFAULT_TIMESTAMP)
         self.assertEqual(run.security_mode, "standard")
 
     def test_flags_are_carried_verbatim(self):
         run = report_mod.RunConfig.from_args(
             _cli_args(target="t", fail_on="high", gate_unverified=True, max_verify=7,
-                      gate_scope="all"), {}, DEFAULT_TIMESTAMP)
+                      gate_scope="all"), {"mode": "repo"}, DEFAULT_TIMESTAMP)
         self.assertEqual((run.target, run.fail_on, run.timestamp, run.gate_unverified,
                           run.max_verify, run.gate_scope),
                          ("t", "high", DEFAULT_TIMESTAMP, True, 7, "all"))
@@ -368,13 +368,13 @@ class RunConfigLoaderTest(unittest.TestCase):
         # A caller that predates 5.1 surface 2 (or a code path that just
         # never read the artifact) must not have to know this parameter
         # exists -- omitting it reads as "nobody looked", same as {}.
-        run = report_mod.RunConfig.from_args(_cli_args(), {}, DEFAULT_TIMESTAMP)
+        run = report_mod.RunConfig.from_args(_cli_args(), {"mode": "repo"}, DEFAULT_TIMESTAMP)
         self.assertEqual(run.host_capabilities, {})
 
     def test_host_capabilities_threads_through_verbatim(self):
         env = {"schema_version": 1, "host": "claude", "probed_at": "T",
               "capabilities": {hosts_mod.ARTIFACT_WRITE_GUARD:
                                {"state": hosts_mod.PROVEN, "by": "b", "detail": "d"}}}
-        run = report_mod.RunConfig.from_args(_cli_args(), {}, DEFAULT_TIMESTAMP,
+        run = report_mod.RunConfig.from_args(_cli_args(), {"mode": "repo"}, DEFAULT_TIMESTAMP,
                                              host_capabilities=env)
         self.assertEqual(run.host_capabilities, env)

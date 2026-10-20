@@ -1,12 +1,15 @@
 """Adapter that preserves the existing SARIF ingestion for semgrep/bandit/etc."""
 from __future__ import annotations
 import json
+import re
+import sys
 from pathlib import Path
 
+from scripts import semgrep_targets
 from scripts.inert import surrogate_free
 from scripts.tolerant_json import depth_checked
 from . import sarif_utils as su
-from .base import (REDTEAM, STANDARD, ingest_policy_cv, run_tool,
+from .base import (REDTEAM, STANDARD, inert_text, ingest_policy_cv, run_tool,
                    scratch_cwd)
 
 
@@ -35,6 +38,23 @@ SEMGREP_SCANNER_SCOPE_ARGS = [
     "--no-git-ignore",
 ] + ["--exclude=%s" % pattern for pattern in SEMGREP_SCANNER_EXCLUDES]
 
+# #2957: Semgrep's per-file limits, STATED rather than inherited. A rule that
+# runs past the timeout on one file loses its findings there, and a file on
+# which the threshold's worth of rules time out is abandoned for EVERY rule.
+# Raising them only moves the file size a target needs (a 900 KB file still ran
+# past 400 s with both off, beyond TOOL_TIMEOUT), so they stay at Semgrep's own
+# defaults and every hit is disclosed as partial file coverage instead
+# (`semgrep_file_coverage`). Not scope arguments: they do not change which
+# files are scanned, so the scanner-scope baseline does not move.
+# #3193: likewise the size limit. A file over it is skipped with no SARIF trace,
+# so the host lists those files (`semgrep_targets`) and stamps the capture.
+SEMGREP_RULE_TIMEOUT = 5
+SEMGREP_TIMEOUT_THRESHOLD = 3
+SEMGREP_MAX_TARGET_BYTES = 1_000_000
+SEMGREP_LIMIT_ARGS = ["--timeout=%d" % SEMGREP_RULE_TIMEOUT,
+                      "--timeout-threshold=%d" % SEMGREP_TIMEOUT_THRESHOLD,
+                      "--max-target-bytes=%d" % SEMGREP_MAX_TARGET_BYTES]
+
 
 def with_semgrep_excludes(tool, cmd, patterns):
     """Add disclosed Panopticon exclusions to Semgrep before its scan root."""
@@ -56,9 +76,13 @@ TOOL_CMD = {
     # `.semgrepignore`; the explicit list above restores the non-test defaults.
     # `--no-git-ignore` independently stops a target `.gitignore` hiding
     # untracked review input. Neither file can now narrow the scanner silently.
+    # NO --quiet (#3194): it removed the closing "Ran N rules on M files" line,
+    # the only scanned-file signal Semgrep emits (its SARIF has none), so
+    # #1335's noscan disposition could never fire. Without it stderr is a few
+    # KB of summary, well inside the capture's retained tail.
     "semgrep": (["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off",
                  "--disable-version-check"] + SEMGREP_SCANNER_SCOPE_ARGS
-                + ["--sarif", "--quiet", "/src"]),
+                + SEMGREP_LIMIT_ARGS + ["--sarif", "/src"]),
     # `--redact` is scanner-native redaction (#1639 P11): the one tool here
     # whose output is a list of other people's credentials masks them itself,
     # so the secret never leaves the container -- and it keeps every field
@@ -90,6 +114,116 @@ TOOL_CMD = {
 
 # Max seconds to let a single tool invocation run before it's killed.
 TOOL_TIMEOUT = 300
+
+# Semgrep 1.179.0 names the file of a rule timeout ONLY in this prose; the
+# notification carries no `locations`. `.` stops at a newline, so a path that
+# holds one does not match and is counted unlocated rather than misread.
+_SEMGREP_TIMEOUT_TEXT = re.compile(r"\ATimeout when running \S+ on (.+):\n ?\Z")
+
+
+def _sarif_path(path):
+    """A SARIF path in the findings' path space, at full identity (bounded only
+    when published, so a shared long prefix cannot merge two files)."""
+    return path.removeprefix("file://").removeprefix(su._TARGET_PREFIX).lstrip("/")
+
+
+def _timeouts(sarif):
+    """#2957: ({file: rule timeouts}, unlocated timeouts, result paths).
+
+    Only `toolExecutionNotifications` whose descriptor id is `Timeout` count;
+    the `Missing plugin` notes every run carries are not coverage gaps here. A
+    timeout whose file cannot be read off the message is counted unlocated, and
+    its text is never published."""
+    per_file: dict[str, int] = {}
+    unlocated = 0
+    located: set[str] = set()
+    runs = sarif.get("runs") if isinstance(sarif, dict) else None
+    for run in runs if isinstance(runs, list) else []:
+        run = run if isinstance(run, dict) else {}
+        results = run.get("results")
+        for result in results if isinstance(results, list) else []:
+            try:
+                located.add(_sarif_path(result["locations"][0]["physicalLocation"]
+                                        ["artifactLocation"]["uri"]))
+            except (KeyError, IndexError, TypeError, AttributeError):
+                pass
+        invocations = run.get("invocations")
+        for invocation in invocations if isinstance(invocations, list) else []:
+            notes = (invocation.get("toolExecutionNotifications")
+                     if isinstance(invocation, dict) else None)
+            for note in notes if isinstance(notes, list) else []:
+                descriptor = note.get("descriptor") if isinstance(note, dict) else None
+                if not isinstance(descriptor, dict) or descriptor.get("id") != "Timeout":
+                    continue
+                message = note.get("message")
+                text = message.get("text") if isinstance(message, dict) else None
+                match = _SEMGREP_TIMEOUT_TEXT.match(text) if isinstance(text, str) else None
+                path = _sarif_path(match.group(1)) if match else ""
+                if path:
+                    per_file[path] = per_file.get(path, 0) + 1
+                else:
+                    unlocated += 1
+    return per_file, unlocated, located
+
+
+def _size_listing(sarif):
+    """#3193: (files, count, limit, state) from the host's capture stamp.
+
+    `state` is "listed" only for a well-formed, complete listing. A capture with
+    NO stamp is "absent" and reads exactly like a malformed one (coordinator
+    ruling): no stamp never means nothing was skipped."""
+    try:
+        listing = sarif["runs"][0]["properties"][semgrep_targets.STAMP_KEY]
+    except (KeyError, IndexError, TypeError):
+        return [], 0, None, "absent"
+    if not (isinstance(listing, dict) and type(listing.get("limit")) is int
+            and type(listing.get("count")) is int and type(listing.get("complete")) is bool
+            and isinstance(listing.get("files"), list)
+            and all(isinstance(f, str) and f for f in listing["files"])
+            and len(listing["files"]) <= listing["count"]):
+        return [], 0, None, "malformed"
+    return (listing["files"], listing["count"], listing["limit"],
+            "listed" if listing["complete"] else "incomplete")
+
+
+def semgrep_file_coverage(sarif):
+    """Semgrep's file gaps as partial file coverage, or None when it has none.
+
+    #2957: a file with SEMGREP_TIMEOUT_THRESHOLD or more rule timeouts was
+    abandoned (no rule's findings from it survive); fewer means those rules'
+    findings are missing. #3193: a file over the size limit was never read.
+    A size listing that is absent, malformed or cut short is one unlocated gap."""
+    per_file, timeouts_unlocated, located = _timeouts(sarif)
+    sized, size_count, limit, state = _size_listing(sarif)
+    unlocated = timeouts_unlocated + (state != "listed")
+    if not per_file and not unlocated and not size_count:
+        return None
+    timeouts = sum(per_file.values()) + timeouts_unlocated
+    if timeouts:
+        print("semgrep: partial file coverage: %d rule timeout(s) on %d file(s), %d "
+              "without an identifiable file; usable findings retained"
+              % (timeouts, len(per_file), timeouts_unlocated), file=sys.stderr)
+    if size_count or state != "listed":
+        print("semgrep: partial file coverage: %d file(s) over the size limit not "
+              "scanned (listing %s)" % (size_count, state), file=sys.stderr)
+    rows = [(path, {"reason": ("timeout_abandoned"
+                               if per_file[path] >= SEMGREP_TIMEOUT_THRESHOLD
+                               else "rule_timeout"),
+                    "rule_timeouts": per_file[path]}) for path in per_file]
+    rows += [(path, {"reason": "size_skipped"}) for path in sized]
+    rows.sort(key=lambda row: row[0])
+    unparsed = len(per_file) + size_count
+    return {
+        "status": "partial",
+        "parsed_files": len(located - set(per_file)),
+        "unparsed_files": unparsed, "unavailable_files": 0,
+        "files": [dict(file=inert_text(path, limit=239, mode="path"), **facts)
+                  for path, facts in rows[:100]],
+        "files_omitted": max(0, unparsed - min(len(rows), 100)),
+        "capabilities_unavailable": [],
+        "rule_timeouts": timeouts, "size_skipped": size_count, "size_limit": limit,
+        "size_listing": state, "unlocated_records": unlocated,
+    }
 
 
 class LegacySarifAdapter:
@@ -156,6 +290,11 @@ class LegacySarifAdapter:
             return run_tool(cmd, timeout=TOOL_TIMEOUT, cwd=cwd)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
+        return self.parse_with_file_coverage(raw, group)[0]
+
+    def parse_with_file_coverage(self, raw: bytes, group: str) -> tuple[list[dict], dict | None]:
+        """The findings, plus Semgrep's file gaps (#2957 timeouts, #3193 size
+        skips); None for the other tools here and for a Semgrep run with none."""
         sarif = surrogate_free(json.loads(depth_checked(raw)))    # #2951, #2959: as `parse_json_bytes`
         # #1839: the INGEST decides whether an inline suppression comment in
         # the scanned tree's own source stands, because the pinned scanners
@@ -166,7 +305,8 @@ class LegacySarifAdapter:
         # sets around this call -- and is handed to the converter EXPLICITLY,
         # so that function stays directly testable in both modes.
         policy = ingest_policy_cv.get() or {}
-        return su.sarif_to_findings(
+        findings = su.sarif_to_findings(
             sarif, self.name, group, self.prefix,
             security_mode=policy.get("security_mode"),
             suppressed_in_source=policy.get("suppressed_in_source"))
+        return findings, (semgrep_file_coverage(sarif) if self.name == "semgrep" else None)

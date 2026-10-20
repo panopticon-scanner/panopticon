@@ -336,7 +336,8 @@ GOLDEN = {
     "semgrep-is-annotated-from-its-own-stderr": {
         "returned": ['semgrep.sarif'],
         "written": (b'{"runs": [{"results": [], "properties": {"panopt'
-                    b'icon_scanned_files": 3}}]}'),
+                    b'icon_scanned_files": 3, "panopticon_size_skipped": {"limit": 1000000, '
+                    b'"count": 0, "files": [], "complete": true}}}]}'),
         "stderr": '',
     },
     "watchdog-timeout-kills-the-container": {
@@ -506,6 +507,29 @@ class TestSemgrepScanCount(unittest.TestCase):
         self.assertEqual(tc._semgrep_scanned_files(b"ran 8 rules on 137 files: 2 findings."), 137)
         self.assertEqual(
             tc._semgrep_scanned_files(b"noise\nRan 1 rule on 5 files\nmore noise"), 5)
+
+    def test_the_argv_semgrep_runs_with_keeps_the_line_this_reads(self):
+        # #3194: the real argv carried --quiet, which removes the summary line,
+        # so in production this reader never matched and the tests above stayed
+        # green only on fixtures the real argv never produced. Measured with
+        # 1.179.0: no line under --quiet on any target; without it the line is
+        # stderr's last ("Ran 2150 rules on 0 files: 0 findings." on an empty
+        # tree), in about 3-5 KB. The live half is in the image lane:
+        # tests/tools/test_legacy_sarif_integration.py.
+        from scripts.tools.legacy_sarif import TOOL_CMD
+        self.assertNotIn("--quiet", TOOL_CMD["semgrep"])
+        self.assertNotIn("-q", TOOL_CMD["semgrep"])
+        self.assertIn("semgrep", tc._STDERR_ANNOTATORS)
+
+    def test_the_closing_summary_line_wins_over_text_before_it(self):
+        # #3194: without --quiet, stderr can carry target-authored text (a file
+        # name in an error message) ahead of the summary. Only a line that STARTS
+        # with the summary counts, and the last one is Semgrep's own.
+        stderr = (b"Error parsing x/Ran 9 rules on 9 files.py\n"
+                  b"Ran 9 rules on 9 files\n"            # a file name holding a newline
+                  b"Ran 2150 rules on 0 files: 0 findings.\n")
+        self.assertEqual(tc._semgrep_scanned_files(stderr), 0)
+        self.assertIsNone(tc._semgrep_scanned_files(b"see: Ran 9 rules on 9 files"))
 
     def test_absent_or_unrecognised_stderr_yields_no_claim(self):
         # Parsing English stderr is brittle across semgrep versions, so the

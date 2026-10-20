@@ -7,6 +7,126 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A finding no longer borrows another claim's verdict (#3202).** When dedupe kept a survivor with no
+  verdict of its own, #1476's id aliases let it take the verdict of a claim dedupe had dropped.
+  Measured by id on main: an unanswered CRITICAL beside a REJECTED HIGH at one locus was published
+  as rejected and the gate PASSED, where the CRITICAL alone is INCONCLUSIVE. The same happened for
+  #1476's own pinned pair (an agent HIGH and a tool MEDIUM), for two equal-severity twins, and with
+  NEEDS_MORE_INFO. The borrowed verdict was also counted as matched, which hid the survivor from
+  `unanswered`.
+  - **Contract change: #1476's alias binding is withdrawn; #2991's restore covers its
+    CONFIRMED-loss case.** `evidence.match_verdict_by_id` binds a finding's own id only. The
+    `_merged_ids` carrier (`record_merged_id`, `merged_ids`, the report strip) is retired. Nothing
+    outside binding read it: a grep of code, tests and fixtures found only binding, #2991's alias
+    cleanup and the tests pinning them. A collapsed member is still kept, as #2991's `_absorbed`.
+  - An unanswered survivor is now unverified (or `tool_reported` where a tool reinforced it), and
+    counted in `unanswered`. The gate is INCONCLUSIVE when the survivor is owed a verdict, and FAIL
+    under `--gate-unverified`. A survivor's own verdict binds as before.
+  - The verify queue's fingerprint path (`evidence.match_verdict`) never read aliases, so it is
+    unchanged.
+  Pins: `tests/synth/test_report_evidence.py::TestAClaimsVerdictIsItsOwn` covers the four cases,
+  `unanswered`, and a survivor's own verdict. `tests/test_verdict_binding.py` is rewritten to the
+  new contract and keeps #1476's concern: a collapsed CONFIRMED is still reported confirmed,
+  through the restore. `tests/test_driver.py` runs the real driver with an advisor that answers the
+  HIGH and leaves the CRITICAL unanswered: on main the report PASSES, now it is INCONCLUSIVE.
+- **A confirmed finding is no longer absorbed by a decoy at the same locus (#2991).** Dedupe keeps
+  the most severe finding at a file, line and category, and runs before any verdict is bound. A
+  REJECTED CRITICAL "decoy" beside an honest CONFIRMED HIGH therefore survived, bound its own
+  REJECTED, and took the HIGH out of the report: the gate PASSED where the HIGH alone FAILs.
+  - Measured on main through the report builder, by fingerprint and by the driver's per-cell id
+    bundles. A NEEDS_MORE_INFO or unverified CRITICAL absorbed the CONFIRMED HIGH the same way, and
+    so did a tool's REJECTED CRITICAL beside an agent's HIGH (that pair collapses across
+    categories). By id, an unverified CRITICAL survivor instead took the HIGH's CONFIRMED through
+    its #1476 alias and was published as a confirmed CRITICAL.
+  - Dedupe now keeps each dropped member on its survivor; what survives, and the pass-1 queue,
+    are unchanged. After the queue is built, a dropped member whose OWN verdict (its own id or
+    queue id, never an alias) is CONFIRMED is restored as its own finding and queued. That happens
+    unless the survivor's own verdict is CONFIRMED too. The restored member's ids leave the
+    survivor's aliases, so its CONFIRMED no longer stands in for a different claim.
+  - Unchanged: two REJECTEDs collapse as before, and a CONFIRMED survivor still absorbs. A stale
+    (other-run) or misrouted CONFIRMED restores nothing.
+  Pins: `tests/synth/test_report_evidence.py::TestAConfirmedFindingIsNotAbsorbed` covers both
+  binding paths and both orders, the NEEDS_MORE_INFO, unverified and tool-decoy variants, the
+  unchanged collapses, stale and misrouted verdicts, and the carrier never reaching the report.
+  `tests/test_driver.py` runs the real driver: per-cell verify lands both verdicts by the ids the
+  driver assigned. On main the report PASSES with no findings; now it FAILS on the HIGH.
+- **Semgrep's scanned-file count is read from what its real argv prints (#3194).** #1335 reads
+  Semgrep's closing "Ran N rules on M files" line from stderr, so that a run that scanned nothing
+  gets the `noscan` disposition instead of coverage credit. The adapter passed `--quiet`, which
+  removes that line, so the reader never matched in production and `noscan` could never fire. The
+  tests stayed green only because they fed the line in directly.
+  - Measured with the pinned Semgrep 1.179.0 and the adapter's argv: under `--quiet` the line is
+    missing on every target. Without it, the line is stderr's last (681 files on this repository;
+    0 on an empty, an all-excluded, or an over-limit-only tree), in about 3 to 5 KB of stderr.
+    That is well inside the capture's retained 1 MB tail.
+  - The argv drops `--quiet`. The reader now takes the LAST line that starts with the summary, so
+    target-authored text earlier on stderr, such as a file name in an error message, cannot stand
+    in for the count.
+  - Probed alongside, as asked: no other capture signal is parsed from stderr. Bundler-audit's
+    `Unknown switches` fallback check reads stderr, and nothing on its argv suppresses it.
+  Pins: `tests/test_tool_capture.py` holds that the argv carries no `--quiet` and that the closing
+  line wins. `tests/tools/test_legacy_sarif_integration.py` runs the real argv in the tools image,
+  where the count is the number of files scanned and a real zero-file run reaches `noscan`.
+- **A file over Semgrep's size limit is disclosed, not silently skipped (#3193).** Semgrep skips every
+  regular file over 1,000,000 bytes and leaves no trace in its SARIF, so a target could hide a payload
+  from every Semgrep rule simply by making its file large.
+  - Measured with the pinned Semgrep, the vendored rules and the adapter's argv: the size check
+    applies to any kind of file, binary included. It applies after the argv's `--exclude` patterns,
+    and a symlink is never selected.
+  - The host now lists those files when the capture lands (`scripts/semgrep_targets.py`) and stamps
+    the capture with them. The walk never follows a symlink. It drops a path only for one of the
+    argv's own exclude patterns, in a form whose result was compared row by row with Semgrep's own
+    target listing; any other form keeps the file listed.
+  - Each file lands in the semgrep `file_coverage` as `size_skipped`, so it reaches
+    `meta.coverage.tools_file_partial` and coverage is not certified. A capture with no listing,
+    a malformed listing, or a walk cut short counts as partial too.
+  - The argv now states `--max-target-bytes=1000000`, Semgrep's default.
+  - This repository excludes `.test_durations` (pytest-split timing data, 1.3 MB). It was the only
+    file Semgrep skipped in the self-scan.
+  Pins (`tests/test_semgrep_targets.py`): the matcher against the measured table, row for row; an
+  unmeasured pattern form leaves its file listed; the symlink, exact-limit, awkward-name and bound
+  cases; and a file over 1 MB with a canary goes through the stamp, ingest and report and is listed,
+  with certification withheld.
+- **Fixed-name staging writes refuse planted FIFOs and hard links (#2093).** The generic
+  `.panopticon` writer opened `<path>.tmp` with `O_TRUNC` but not `O_EXCL`, as did the manifest,
+  X0X and tree-baseline paths through that same primitive. A hard link at any of those names
+  was therefore truncated along with its victim; FIFO opens were only bounded by the later
+  nonblocking artifact fix. One shared staging opener now creates with
+  `O_CREAT|O_EXCL|O_NOFOLLOW|O_NONBLOCK`, reusing a leftover only when `lstat` proves it is a
+  singly-linked regular file. The four writers use that opener, and reject symlinks, special
+  files and multiply-linked files before writing. Pins in `tests/test_artifact_write_symlinks.py`
+  put a FIFO and hard link at every fixed staging name, enforce a deadline and preserve the
+  victim; `tests/test_safe_write.py` pins the exact flags and `tests/test_run_manifest.py` pins
+  safe stale-file reuse and the stronger internal-symlink refusal.
+- **A file Semgrep gives up on is disclosed, not silently dropped (#2957).** Semgrep stops running a
+  rule on a file after 5 seconds, and it abandons the file once 3 rules have timed out on it. Either
+  way that file's findings were missing, Semgrep still exited 0, and nothing in the report said so.
+  - Measured on an idle machine with the pinned Semgrep and the vendored rules, using the adapter's
+    command line: a target file holding one long string expression was abandoned on every run at
+    400 KB. Every finding in it was lost, including the rule meant to flag `eval`.
+  - Ingest now reads Semgrep's `Timeout` notifications from the SARIF, where the file is named only
+    in the message text. Each timed-out file is listed in the adapter's `file_coverage` as
+    `rule_timeout` or `timeout_abandoned`, with its count. That lands in the existing
+    `meta.coverage.tools_file_partial`, so coverage is not certified and the coverage note names
+    semgrep. Findings and the gate are unchanged.
+  - A timeout whose file cannot be read off the message is still partial, counted as unlocated,
+    and its text is never published. Semgrep's other notifications, such as `Missing plugin`, are
+    not coverage gaps.
+  - The limits are now stated on the argv at Semgrep's own values, `--timeout=5` and
+    `--timeout-threshold=3`, and the guide says what each one does. They are not raised: with both
+    off, a 900 KB file ran past 400 seconds, beyond the adapter's 300-second cap, which would lose
+    the whole Semgrep run.
+  - Not covered here: files over Semgrep's 1 MB limit are skipped with no SARIF trace (#3193).
+  Pins (`tests/tools/test_legacy_sarif.py`): the real notification texts go through ingest into a
+  report, which shows the gap, withholds certification, and keeps the same gate. A run with only
+  `Missing plugin` notes stays complete. Unreadable notes count as partial and unlocated. The
+  argv pins the two limits.
+- **Review scope labels are complete and explicit (#2088).** Inventory mode `changed` now
+  publishes `review_type: changes`, and mode `pr` publishes `pr`. Missing, unsupported or
+  repaired-away modes halt synthesis with a named reason before writing a report. Standalone
+  synthesis must declare its scope with `--repo` or `--changes`, or supply a groups inventory
+  with a known mode; the two explicit scope flags are mutually exclusive.
+
 - **A verify return that never answers is dispatched at most three times (#3185).** Verify charged
   an attempt only to a labeled bundle that answered nothing. A return that never loaded (nested past
   the depth bound, not JSON, or never written) re-dispatched its cell on every resume, so the run

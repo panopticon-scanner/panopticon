@@ -18,6 +18,11 @@ Two are ruled out by reading:
 The third is real and is what these tests pin: `dedupe` collapses a duplicate
 and the non-survivor's id simply disappears, so the verdict that echoed it has
 nothing left to bind to.
+
+#3202 withdrew #1476's answer (the survivor carried the dropped ids as aliases
+and bound their verdicts): one claim's verdict stood in for another's, a
+REJECTED HIGH dismissing an unanswered CRITICAL. #2991's restore covers the
+CONFIRMED-loss case instead, by reporting that claim as itself.
 """
 import unittest
 from pathlib import Path
@@ -25,6 +30,7 @@ from pathlib import Path
 import scripts.evidence as evidence_mod
 import scripts.synth.corroborate as corroborate_mod
 import scripts.synth.findings as findings_mod
+import scripts.synth.report as report_mod
 import scripts.synth.validate_schema as validate_schema_mod
 
 SCHEMA_PATH = Path(validate_schema_mod.REFERENCE_DIR) / validate_schema_mod.REPORT_SCHEMA
@@ -55,26 +61,46 @@ class CollapsedIdBindingTest(unittest.TestCase):
             f["id"] = evidence_mod.matrix_finding_id(f)
         return agent, tool
 
-    def test_dedupe_records_the_ids_it_collapses(self):
+    def test_dedupe_keeps_the_member_it_collapses(self):
+        # #3202: the survivor no longer carries id aliases; dedupe keeps the
+        # dropped member itself (#2991's carrier), for restore_confirmed.
         agent, tool = self._pair()
         self.assertNotEqual(agent["id"], tool["id"], "fixture needs two distinct ids")
         survivors = corroborate_mod.dedupe([agent, tool])
         self.assertEqual(len(survivors), 1, "fixture must actually collapse")
-        merged = evidence_mod.merged_ids(survivors[0])
-        self.assertEqual(set(merged) | {survivors[0]["id"]},
-                         {agent["id"], tool["id"]},
-                         "the collapsed id must survive somewhere")
+        absorbed = [m["id"] for m in survivors[0][corroborate_mod.ABSORBED_FIELD]]
+        self.assertEqual(set(absorbed) | {survivors[0]["id"]}, {agent["id"], tool["id"]},
+                         "the collapsed member must survive somewhere")
+        self.assertNotIn("_merged_ids", survivors[0])
 
-    def test_a_verdict_naming_a_collapsed_id_still_binds(self):
+    def test_a_verdict_naming_a_collapsed_id_no_longer_binds_to_the_survivor(self):
+        # #3202 withdraws #1476's alias binding: a verdict is about the claim it
+        # names. The tool MEDIUM's verdict cannot decide the agent HIGH's fate.
         agent, tool = self._pair()
-        survivors = corroborate_mod.dedupe([agent, tool])
-        survivor = survivors[0]
+        survivor = corroborate_mod.dedupe([agent, tool])[0]
         collapsed = next(i for i in (agent["id"], tool["id"]) if i != survivor["id"])
-        by_fid = {collapsed: [{"verdict": "CONFIRMED", "stage": "primary",
-                               "run_id": "RID", "finding_id": collapsed}]}
-        v = evidence_mod.match_verdict_by_id(survivor, by_fid, run_id="RID")
-        self.assertIsNotNone(v, "a verdict for the collapsed twin bound to nothing")
-        self.assertEqual(v["verdict"], "CONFIRMED")
+        for verdict in ("CONFIRMED", "REJECTED", "NEEDS_MORE_INFO"):
+            with self.subTest(verdict=verdict):
+                by_fid = {collapsed: [{"verdict": verdict, "stage": "primary",
+                                       "run_id": "RID", "finding_id": collapsed}]}
+                self.assertIsNone(evidence_mod.match_verdict_by_id(survivor, by_fid, run_id="RID"))
+
+    def test_a_collapsed_confirmed_is_still_reported_confirmed(self):
+        # #1476's original concern, kept as a pin: a CONFIRMED verdict on a
+        # collapsed twin must not leave a real finding unverified. #2991's
+        # restore now reports that claim as itself instead of lending it.
+        agent, tool = self._pair()
+        survivor_id = corroborate_mod.dedupe([dict(agent), dict(tool)])[0]["id"]
+        collapsed = tool if agent["id"] == survivor_id else agent
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp="2026-10-20T00:00:00Z"),
+            findings=findings_mod.FindingSet(
+                findings=[agent, tool], verdict_run_id="RID", verdicts_supplied=True,
+                verdict_bundles={collapsed["id"]: [{"verdict": "CONFIRMED", "stage": "primary", "run_id": "RID",
+                                                    "finding_id": collapsed["id"], "reasoning": "r"}]})))
+        statuses = {f["id"]: f["evidence"]["status"] for f in report["findings"]}
+        self.assertIn(collapsed["id"], statuses)
+        self.assertIn(statuses[collapsed["id"]], ("advisor_confirmed", "tool_confirmed"))
 
     def test_the_survivors_own_id_still_wins_over_an_alias(self):
         # An alias must never outrank the finding's real id: the survivor's own
@@ -103,10 +129,10 @@ class CollapsedIdBindingTest(unittest.TestCase):
         self.assertIsNone(
             evidence_mod.match_verdict_by_id(survivor, by_fid, run_id="RID"))
 
-    def test_a_finding_with_no_merges_has_no_aliases(self):
+    def test_a_finding_with_no_merges_absorbs_nothing(self):
         f = _finding()
         f["id"] = evidence_mod.matrix_finding_id(f)
-        self.assertEqual(evidence_mod.merged_ids(f), [])
+        self.assertNotIn(corroborate_mod.ABSORBED_FIELD, corroborate_mod.dedupe([f])[0])
 
 
 def _with_id(f):

@@ -209,7 +209,7 @@ class TestCostLedgerDriver(unittest.TestCase):
                     contextlib.redirect_stderr(io.StringIO()),
                 ):
                     syn.main(
-                        ["--target", "t", "--out", out, "--verdicts-dir", ".panopticon/verdicts"]
+                        ["--repo", "--target", "t", "--out", out, "--verdicts-dir", ".panopticon/verdicts"]
                         + fpaths
                     )
             with open(out, encoding="utf-8") as fh:

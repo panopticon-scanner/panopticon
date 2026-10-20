@@ -76,7 +76,7 @@ class _ToolVerifyBase(unittest.TestCase):
              "missing": [], "outputs": ["semgrep.sarif"]},
         )
         runio._write_json(
-            runio._pano(d, "groups.json"), {"groups": [{"name": "app", "files": ["src/app.py"]}]}
+            runio._pano(d, "groups.json"), {"mode": "repo", "groups": [{"name": "app", "files": ["src/app.py"]}]}
         )
         runio._write_json(
             runio._pano(d, "coverage-app.json"),
@@ -145,7 +145,7 @@ class TestToolQueueParity(_ToolVerifyBase):
                 manifest = self._manifest(max_verify=1)
                 driver_pairs = {(qid, f["id"]) for qid, f in verify_tools._tool_verify_queue(d, manifest)}
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                    rc = synthesize_cli.main([
+                    rc = synthesize_cli.main(["--repo",
                         "--emit-verify-queue", "--max-verify", "1", "--target", d,
                         "--run-dir", runio._pano(d), "--tools-dir", runio._pano(d, "tools"),
                         runio._pano(d, "findings-app-SEC.json")])

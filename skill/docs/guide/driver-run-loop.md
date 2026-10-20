@@ -855,6 +855,30 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   capture. The ordinary delta gate therefore matches standing test findings while a finding added by
   the PR is absent from the expanded base and still gates. The extra scan stops after main publishes
   a baseline carrying the marker.
+  **Semgrep's per-file limits are stated, and every hit is disclosed (#2957).** The argv passes
+  `--timeout=5` and `--timeout-threshold=3`, Semgrep's own defaults. A rule that runs longer than
+  5 seconds on one file loses its findings in that file. A file on which 3 rules time out is
+  abandoned, and no rule's findings from it survive. Semgrep still exits 0 in both cases. A target
+  can cause it: a 400 KB file holding one long expression was abandoned on every run on an idle
+  machine. The limits are not raised, because that only moves the file size a target needs. With
+  both off, a 900 KB file still ran past 400 seconds, which is beyond `TOOL_TIMEOUT` and would lose
+  the whole Semgrep run. Instead, ingest reads Semgrep's `Timeout` notifications from the SARIF. The
+  file is named only in the message text. Each timed-out file is listed in the adapter's
+  `file_coverage` as `rule_timeout` or `timeout_abandoned`, with its count, and so lands in
+  `meta.coverage.tools_file_partial`. `summary.coverage_certified` is then false. A timeout whose
+  file cannot be read off the message is counted as unlocated and is still partial. Semgrep's
+  other notifications, such as `Missing plugin`, are not coverage gaps here.
+  **Files over Semgrep's size limit are listed by the host (#3193).** The argv also passes
+  `--max-target-bytes=1000000`, Semgrep's own default. Semgrep skips every regular file larger than
+  that, of any kind, binary included, and its SARIF says nothing about it. So when the capture lands,
+  `semgrep_targets` walks the target on the host and stamps the capture with the files over the
+  limit. The walk never follows a symlink, which Semgrep never selects either. It drops a path only
+  when one of the argv's own `--exclude` patterns matches it, in a pattern form that was measured
+  against Semgrep's own target listing. A path under any other form stays listed. Each listed file
+  appears in `file_coverage` as `size_skipped` and so in `meta.coverage.tools_file_partial`. A
+  capture with no listing, a malformed one, or a walk cut short is partial too, never "nothing
+  skipped". A large asset or data file therefore withholds certification unless it is excluded
+  through `exclude_paths`, which is disclosed.
   **A directory whose name cannot be expressed as an exclusion (a path component outside
   `[A-Za-z0-9._-]`) is never passed to an exclusion knob** in either mode: `--exclude`/`--skip-dirs`
   take PATTERNS, so a directory named `*` was
