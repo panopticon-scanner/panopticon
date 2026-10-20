@@ -127,12 +127,50 @@ _VERIFY_ATTEMPTS_FILE = "verify-attempts.json"
 
 _VERIFY_ATTEMPTS_WHAT = "the verify retry budget"
 
+def _verify_key(group, domain, stage):
+    """A cell/stage's key in the budget. The key scheme is part of the on-disk
+    contract a resumed run reads back, so it is spelled here, once."""
+    return "%s/%s/%s" % (group, domain, stage)
+
 def _verify_budget(review_root, group, domain, stage):
-    """This budget's (path, key) for the one owner of the arithmetic. The key
-    scheme is part of the on-disk contract a resumed run reads back, so it stays
-    spelled here, once, for the reader and the writer below."""
+    """This budget's (path, key) for the one owner of the arithmetic."""
     return (runio._pano(review_root, _VERIFY_ATTEMPTS_FILE),
-            "%s/%s/%s" % (group, domain, stage))
+            _verify_key(group, domain, stage))
+
+def _dispatch_key(entry):
+    """The budget key one verify dispatch entry charges (#3185): its cell/stage,
+    or `tool/<queue id>` for a tool advisor; None for anything else. The parts
+    of a chunked cell share one key, so a checkpoint charges a cell once."""
+    if not isinstance(entry, dict):
+        return None
+    if entry.get("group") and entry.get("domain") and entry.get("stage"):
+        return _verify_key(entry["group"], entry["domain"], entry["stage"])
+    entry_id = str(entry.get("id") or "")
+    if entry_id.startswith(verify_tools.TOOL_ENTRY_PREFIX):
+        return "tool/" + entry_id[len(verify_tools.TOOL_ENTRY_PREFIX):]
+    return None
+
+def _dispatch_keys(entries):
+    return list(dict.fromkeys(k for k in map(_dispatch_key, entries or []) if k))
+
+def _charge_verify_dispatch(review_root, entries):
+    """#3185: one attempt per dispatched cell/stage or tool item, in ONE write,
+    AT DISPATCH -- review's rule (`review._record_attempts`). Charging only when a
+    labeled bundle came back short left every other return uncapped: nothing
+    written, a garbage bundle, one nested past the depth bound, a refused reply."""
+    budget.bump_many(runio._pano(review_root, _VERIFY_ATTEMPTS_FILE),
+                     _dispatch_keys(entries), _VERIFY_ATTEMPTS_WHAT)
+
+def _give_back_verify_dispatch(review_root, entries):
+    """Refund what `_charge_verify_dispatch` charged a checkpoint that never ran
+    (persist.rollback_markers: an interrupt, a host-wide outage)."""
+    return budget.give_back(runio._pano(review_root, _VERIFY_ATTEMPTS_FILE),
+                            _dispatch_keys(entries), _VERIFY_ATTEMPTS_WHAT)
+
+def _verify_exhausted(review_root, key):
+    """This cell/stage or tool item has spent every dispatch its budget allows."""
+    return (budget.count(runio._pano(review_root, _VERIFY_ATTEMPTS_FILE), key,
+                         _VERIFY_ATTEMPTS_WHAT) >= _MAX_VERIFY_ATTEMPTS)
 
 def _verify_attempts(review_root, group, domain, stage):
     """Attempts spent on this cell/stage: 0 before the first bump, and a refusal
@@ -143,19 +181,16 @@ def _verify_attempts(review_root, group, domain, stage):
     return budget.count(path, key, _VERIFY_ATTEMPTS_WHAT)
 
 def _bump_verify_attempts(review_root, group, domain, stage):
-    """Persisted per-(group, domain, stage) re-dispatch counter that BOUNDS the A2
-    verdict-reconciliation retry loop, so a systematically-re-coding advisor
-    surfaces as unanswered -> INCONCLUSIVE instead of wedging the run. Lives with
-    the verdicts, so --reset clears it."""
+    """One cell/stage's charge: the single-key form of `_charge_verify_dispatch`,
+    which charges every dispatch (#3185). Lives with the verdicts, so --reset
+    clears it."""
     path, key = _verify_budget(review_root, group, domain, stage)
     return budget.bump(path, key, _VERIFY_ATTEMPTS_WHAT)
 
 def _verify_bundle_labeled(review_root, manifest, group, domain, stage, part=0):
     """The verdict bundle exists, parses, and is labeled for THIS cell -- the
     advisor returned something coherent for it (vs no bundle, or an unloadable /
-    mislabeled one). Separates an A2 reconciliation shortfall, which the bounded
-    budget governs, from a first dispatch or an unloadable return, which keep the
-    existing uncapped re-dispatch."""
+    mislabeled one)."""
     data = runio._load_json(
         _verify_out_file(review_root, group, domain, stage, part))
     if not (isinstance(data, dict) and isinstance(data.get("verdicts"), list)):
@@ -187,14 +222,11 @@ def _verify_cell_done(review_root, manifest, group, domain, stage, cell=None):
         cell = review._load_cell_findings(review_root, manifest, group, domain)
     if _cell_parts_complete(review_root, manifest, group, domain, stage, cell):
         return True
-    # Nothing usable on disk for the first part: never dispatched, or an
-    # unloadable return. Keep the existing UNCAPPED re-dispatch for that.
-    if not _verify_bundle_labeled(review_root, manifest, group, domain, stage):
-        return False
-    # Labeled but incomplete: re-dispatch (a chance to fix a transient re-code),
-    # but BOUNDED -- once the budget is spent the gap is real and surfaces as
-    # unanswered -> INCONCLUSIVE at synthesis, honest, rather than wedging.
-    return _verify_attempts(review_root, group, domain, stage) >= _MAX_VERIFY_ATTEMPTS
+    # #3185: whatever is on disk -- nothing, an unloadable return, or a labeled
+    # bundle short of verdicts -- a cell/stage that has spent its dispatches is
+    # done: the gap surfaces as unanswered -> not certified at synthesis, honest,
+    # rather than wedging. Every dispatch is charged (`_charge_verify_dispatch`).
+    return _verify_exhausted(review_root, _verify_key(group, domain, stage))
 
 def _capped_description(description):
     """One claim's free text, bounded and VISIBLY marked when cut (#1521).
@@ -301,11 +333,6 @@ def verify_execute(review_root, manifest):
                 continue   # unreviewed, or below-gate: unverified + disclosed at synth
             if _verify_cell_done(review_root, manifest, group, domain, "primary"):
                 continue
-            # A2: a labeled-but-incomplete bundle already on disk means the advisor
-            # returned a short/re-coded verdict set -- charge one attempt against
-            # the bounded budget so an incomplete cell can't re-dispatch forever.
-            if _verify_bundle_labeled(review_root, manifest, group, domain, "primary"):
-                _bump_verify_attempts(review_root, group, domain, "primary")
             # #1521: an oversized cell is chunked; re-dispatch only the parts
             # that are still unanswered.
             pending.extend(
@@ -320,6 +347,7 @@ def verify_execute(review_root, manifest):
                               host, bundle, "primary", part)
                 for d, c, part in pending)
     if all_entries:
+        _charge_verify_dispatch(review_root, all_entries)
         req, sha = requests.write_dispatch_request_bound(
             review_root, manifest["run_id"], "verify", None, all_entries)
         return engine.PhaseResult(kind="checkpoint", checkpoint="verify", group=None,
@@ -501,6 +529,7 @@ def _verify_backup_execute(review_root, manifest, host, bundle):
                                   grant["granted"], c, host, bundle, "backup",
                                   part, grant=grant, ambiguous=ambiguous))
     if all_entries:
+        _charge_verify_dispatch(review_root, all_entries)
         req, sha = requests.write_dispatch_request_bound(
             review_root, manifest["run_id"], "verify", None, all_entries)
         return engine.PhaseResult(kind="checkpoint", checkpoint="verify", group=None,

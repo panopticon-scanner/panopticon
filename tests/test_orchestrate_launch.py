@@ -9,6 +9,7 @@ from unittest import mock
 
 import scripts.orchestrate as orchestrate
 import scripts.phases.runio as runio
+import scripts.phases.verify as verify
 import scripts.runners.base as base
 import scripts.runners.outage as outage
 import scripts.probes.shape as shape_probe
@@ -573,6 +574,9 @@ class TestTheOutputSchemaShapeProof(LoopCase):
         self.assertEqual(0, probe.call_count)
 
 
+# #3185: verify now caps its own dispatches at 3, which would end these runs before the loop's
+# per-entry cap they are about; lift the phase budget so the LOOP's mechanism is what stops them.
+@mock.patch.object(verify, "_MAX_VERIFY_ATTEMPTS", 1000)
 class TestTheLaunchBackoff(LoopCase):
     """#2506: the automatic loop waits before re-launching an entry whose last
     launch failed.

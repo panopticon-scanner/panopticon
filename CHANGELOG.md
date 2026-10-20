@@ -18,6 +18,26 @@ evidence exposed.
   put a FIFO and hard link at every fixed staging name, enforce a deadline and preserve the
   victim; `tests/test_safe_write.py` pins the exact flags and `tests/test_run_manifest.py` pins
   safe stale-file reuse and the stronger internal-symlink refusal.
+- **A verify return that never answers is dispatched at most three times (#3185).** Verify charged
+  an attempt only to a labeled bundle that answered nothing. A return that never loaded (nested past
+  the depth bound, not JSON, or never written) re-dispatched its cell on every resume, so the run
+  never ended: 44 dispatches over 25 resumes, still at the verify checkpoint.
+  - Every verify dispatch is now charged when it is sent, the first one included, for primary and
+    backup cells and for the tool round (key `tool/<queue_id>`). The cap is verify's own
+    `_MAX_VERIFY_ATTEMPTS`, 3. A cell at its cap counts as done, and the run completes.
+  - The labeled bundle that answers nothing is charged at dispatch too, so it now gets 3 dispatches
+    instead of 4.
+  - Nothing new is added to the report. The cell shows up in the existing keys:
+    `meta.coverage.verdicts.unanswered`, `verify_matrix.unverified_engaged` and, for the tool
+    round, `tool_axis.unanswered`. Coverage is not certified.
+  - A paused verify checkpoint gives its charge back, as review's does.
+  - Behaviour change: a verify entry that is refused or fails every time now ends the phase
+    `complete` and uncertified at this cap, before the orchestrate loop's per-entry error cap is
+    reached. The loop-cap tests lift the phase cap so they still test their own mechanism.
+  Pins: the driver end to end, per return shape (`tests/test_driver.py`): exactly 3 dispatches per
+  cell, then complete with the cell disclosed. The tool round, a backup cell, the pause refund, and
+  charging from the first dispatch (`tests/test_driver_tool_verify.py`, `tests/phases/test_verify.py`,
+  `tests/test_driver_verify.py`).
 - **A guard hook denies a payload too deep to parse instead of crashing open (#3186).** The read,
   write and kimi guard hooks parsed their stdin OUTSIDE their fail-closed envelope and caught
   `ValueError` only. A deeply nested payload raised `RecursionError`: a traceback and exit 1, which

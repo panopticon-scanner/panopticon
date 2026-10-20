@@ -9,6 +9,7 @@ from unittest import mock
 import scripts.ledger as ledger_mod
 import scripts.orchestrate as orchestrate
 import scripts.phases.runio as runio
+import scripts.phases.verify as verify
 import scripts.runners.base as base
 import scripts.runners.claude as claude_runner
 import scripts.runners.kimi as kimi_runner
@@ -37,6 +38,9 @@ def tearDownModule():
     _readiness_docker_patch.stop()
 
 
+# #3185: verify now caps its own dispatches at 3, which would end these runs before the loop's
+# per-entry cap they are about; lift the phase budget so the LOOP's mechanism is what stops them.
+@mock.patch.object(verify, "_MAX_VERIFY_ATTEMPTS", 1000)
 class TestAHostWideOutage(LoopCase):
     """#1623: a host-wide outage is not the entry's failure.
 

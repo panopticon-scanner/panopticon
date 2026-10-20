@@ -3,6 +3,7 @@ end-to-end loops. Per-phase tests live in tests/phases/test_<module>.py, mirrori
 skill/scripts/phases/ (WS-0 D5). This file carried a TECH DEBT note about being an
 unsplittable monolith from 5.0 until then.
 """
+import collections
 import contextlib
 import io
 import json
@@ -270,7 +271,7 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
 
     def test_a_self_written_verdict_bundle_nested_past_the_stack_is_an_ordinary_checkpoint(self):
         """#2959 (M3). The verify done check died on RecursionError. The bundle now reads as unloadable, which
-        re-dispatches it: a checkpoint, never a traceback (the uncapped re-dispatch itself is #3185)."""
+        re-dispatches it: a checkpoint, never a traceback (#3185 caps the re-dispatch, pinned below)."""
         for depth in (1_000, 100_000):
             with self.subTest(depth=depth):
                 d = self._repo()
@@ -286,6 +287,51 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
                     status = driver.run(args)
                 self.assertEqual(2, landed)
                 self.assertEqual(("checkpoint", "verify"), (status["status"], status["checkpoint"]))
+
+    def _land_verify_shape(self, root, shape):
+        """Every entry of a pending verify checkpoint lands in `shape` (#3185); returns the entries' out_files."""
+        req = runio._load_json(runio._pano(root, "dispatch-request.json"))
+        if not (isinstance(req, dict) and req.get("checkpoint") == "verify"):
+            return []
+        run_id = run_manifest.load_manifest(root)["run_id"]
+        for entry in req["entries"]:
+            group, domain = os.path.basename(entry["out_file"])[len("verdicts-"):-len(".json")].rsplit("-", 1)
+            stamp = {"run_id": run_id, "role": "domain_advisor", "domain": domain, "group": group,
+                     "stage": "primary"}
+            body = {"too deep": '{"verdicts": [], "deep": %s}' % ("[" * 100 + "]" * 100),
+                    "garbage": "not json at all", "never written": None,
+                    "labeled incomplete": json.dumps({"verdicts": [], "_panopticon": stamp})}[shape]
+            os.makedirs(os.path.dirname(entry["out_file"]), exist_ok=True)
+            if body is not None:
+                with open(entry["out_file"], "w", encoding="utf-8") as fh:
+                    fh.write(body)
+        return [entry["out_file"] for entry in req["entries"]]
+
+    def test_a_verify_return_that_never_answers_is_dispatched_three_times_then_disclosed(self):
+        """#3185 (M1, M3). An unloadable return (past the depth bound, garbage, never written) re-dispatched its
+        cell every resume, never ending the run; a labeled bundle that answers nothing stopped at 4 dispatches.
+        Every dispatch is now charged, so each cell gets exactly 3 (verify's _MAX_VERIFY_ATTEMPTS), then the
+        run completes uncertified with the cell disclosed as unverified."""
+        for shape in ("too deep", "garbage", "never written", "labeled incomplete"):
+            with self.subTest(shape=shape):
+                d = self._repo()
+                args = self._args(d, "--no-tools")
+                status, dispatched = driver.run(args), collections.Counter()
+                for _ in range(25):
+                    if status["status"] != "checkpoint":
+                        break
+                    self._inject_scouts(d)
+                    if status["checkpoint"] == "review":
+                        self._land_deep_return(d, 0, "review")      # a real finding, so verify engages
+                    dispatched.update(self._land_verify_shape(d, shape))
+                    status = driver.run(args)
+                self.assertEqual(status["status"], "complete", status.get("message"))
+                self.assertTrue(dispatched)
+                self.assertEqual({3}, set(dispatched.values()), dispatched)
+                report = runio._load_json(runio._pano(d, "report.json"))
+                self.assertGreaterEqual(report["meta"]["coverage"]["verdicts"]["unanswered"], 1)
+                self.assertTrue(report["meta"]["coverage"]["verify_matrix"]["unverified_engaged"])
+                self.assertFalse(report["summary"]["coverage_certified"])
 
     def test_resume_reemits_same_checkpoint_before_dispatch(self):
         d = self._repo()
