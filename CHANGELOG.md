@@ -7,6 +7,29 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Workflow guard: in this repo's own lint, a step a download reaches reads UNVERIFIED outside the
+  understood subset (#3141).** The guard runs only as this repo's CI lint over its ten workflows
+  (`tests/test_workflow_pins.py`), never on a target, so the owner scoped #3141's fail-closed rule
+  to a minimal self-lint. `scripts/workflow_subset.py` holds a small understood subset derived from
+  what those workflows run where a download reaches -- the step that fetches and every step after it
+  in its job, today five steps (`docker-build-pr.yml`'s hadolint steps, `nvd-cache.yml`'s sync and
+  image steps): sixteen commands and the one path the NVD sync runs from its checked archive,
+  wrappers such as `sudo` and `timeout` taken off; `if` and `case` with their arms and `{ }` groups;
+  assignments, pipes, lists, and command substitutions held to the same rule.
+  `fully_read(statements, script)` names the first construct outside it, with its line found in the
+  step's text: a private-use character anywhere in the step first, then another command (a command
+  word built from an expansion or a substitution among them), another keyword (a loop, `!`), a
+  function definition, a process substitution. `job_defects(steps, subset=True)`, which the fleet
+  lint alone calls, adds `step not fully read: <construct> at line N; review by hand` for each such
+  step no finding names: a step the guard reports keeps its REPORT alone, and every other caller
+  reads as before. `EXEMPT_UNVERIFIED` (workflow, step, reason) in `tests/test_workflow_pins.py`
+  excuses such a step and is held to `EXEMPT_FETCHES`'s checks (no stale entry, no privileged
+  workflow); it is empty, and the fleet passes. Pins: `tests/test_workflow_subset.py` (in-subset
+  CLEAN, each construct UNVERIFIED at its line, the private-use check first, a REPORT kept alone, a
+  download reaching forward only, the gate off elsewhere, one linear pass) and
+  `TestEveryStepADownloadReachesIsFullyRead` (the lint reads the fleet through the subset; the
+  exemption checks). Sizes: `scripts/workflow_guard.py` 674, `scripts/workflow_subset.py` 87.
+
 - **A finding names a substitution run as a standard-input runner `$(...)`, never the reader's
   marker (#3156).** `workflow_uses.use`'s standard-input branch named the runner by
   `os.path.basename(argv[0])`; for a command substitution as the command word (`$(echo sh)`, its
