@@ -1513,7 +1513,7 @@ class TestDocSeverityPolicy(unittest.TestCase):
             out = os.path.join(d, "r.json")
             err = io.StringIO()
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
-                rc = syn.main(["--target", "src", "--out", out, fp])
+                rc = syn.main(["--repo", "--target", "src", "--out", out, fp])
             self.assertEqual(rc, 0)
             self.assertIn("soft-downgraded", err.getvalue())
             with open(out) as fh:

@@ -74,7 +74,7 @@ class TestReconciliation(unittest.TestCase):
             # leftovers that would otherwise leak "requested_absent" tools
             # into this fixture's tiny finding set.
             with _chdir(d), contextlib.redirect_stdout(buf):
-                rc = syn.main(["--target", "t", "--fail-on", "high", "--out", out, p])
+                rc = syn.main(["--repo", "--target", "t", "--fail-on", "high", "--out", out, p])
             self.assertTrue(os.path.isfile(out))  # report written despite malformed citation
             # Both findings are agentic and carry no verdict -> unverified,
             # which does not gate by default under the two-axis model.

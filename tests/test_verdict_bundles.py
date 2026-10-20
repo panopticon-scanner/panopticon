@@ -361,7 +361,7 @@ class TestVerdictBundles(unittest.TestCase):
             cwd = os.getcwd()
             try:
                 os.chdir(tmp_path)
-                synthesize.main(["--verdicts-dir", str(vd), "--out", str(out), str(fp)])
+                synthesize.main(["--repo", "--verdicts-dir", str(vd), "--out", str(out), str(fp)])
             finally:
                 os.chdir(cwd)
             rep = json.loads(out.read_text())

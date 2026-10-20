@@ -357,7 +357,7 @@ class EndToEndCertificationTest(unittest.TestCase):
             out = os.path.join(d, "r.json")
             with contextlib.redirect_stdout(io.StringIO()), \
                     contextlib.redirect_stderr(io.StringIO()):
-                rc = syn.main(["--target", "t", "--run-dir", run_dir,
+                rc = syn.main(["--repo", "--target", "t", "--run-dir", run_dir,
                                "--fail-on", "high", "--out", out, cell])
             with open(out, encoding="utf-8") as fh:
                 return rc, json.load(fh)
