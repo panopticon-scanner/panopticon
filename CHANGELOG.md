@@ -7,6 +7,18 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **`driver setup` reads a setup proposal only as the return of its own scan dispatch (#2130).** An
+  untracked `.panopticon/setup-proposal.json`, and on a non-git target any proposal, was read as
+  this run's scan result. A target could ship one and have its own grouping ingested.
+  - A proposal now satisfies `scan_done` only when setup's sha-bound dispatch request
+    (`requests.load_bound_request`, #1727) carries this run's id and names that path as its
+    setup-scan `out_file`.
+  - `scan_execute` clears the path before it writes that request, so what is there afterwards came
+    after this run's dispatch.
+  - Otherwise the proposal is ignored with the `driver setup --reset` remedy, and the scan runs.
+  Pins: `tests/phases/test_setup.py::TestSetupDonePredicatesBindToThisRun` (git and non-git
+  targets). Five `TestDriverSetup` tests that played the host's return without a dispatch now use
+  the registered-machine fixture, so their first invocation really dispatches.
 - **An unenforced claude launch is checked for its tool controls before it starts (#2061).**
   `--tools=` and `--disallowedTools=` remove tools rather than deny calls, so neither ever shows
   in `permission_denials`. A run whose argv lost or altered either token would ledger exactly like
