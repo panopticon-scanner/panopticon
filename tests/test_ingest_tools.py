@@ -2,7 +2,7 @@ import contextlib, io, os, json, inspect, tempfile, unittest
 from unittest.mock import patch
 
 import scripts.ingest_tools as it
-from tests._test_helpers import first, only
+from tests._test_helpers import first, only, semgrep_size_stamped
 import json as _json
 import scripts.evidence as ev
 import scripts.scanner_config as scanner_config
@@ -545,12 +545,11 @@ class TestNonJsonPrefixTolerance(unittest.TestCase):
 
 
 def _sarif_fixture(path):
-    return {"runs": [{"tool": {"driver": {"name": "t", "rules": []}},
-                      "results": [{"ruleId": "R1", "level": "warning",
-                                   "message": {"text": "m"},
-                                   "locations": [{"physicalLocation": {
-                                       "artifactLocation": {"uri": path},
-                                       "region": {"startLine": 1}}}]}]}]}
+    return {"runs": [semgrep_size_stamped({
+        "tool": {"driver": {"name": "t", "rules": []}},
+        "results": [{"ruleId": "R1", "level": "warning", "message": {"text": "m"},
+                     "locations": [{"physicalLocation": {"artifactLocation": {"uri": path},
+                                                         "region": {"startLine": 1}}}]}]})]}
 
 
 class TestExcludeGlobs(unittest.TestCase):
@@ -953,8 +952,8 @@ class TestAdapterFindingCap(unittest.TestCase):
                 for i in range(n)]
 
     def _ingest(self, results, cap):
-        sarif = {"runs": [{"tool": {"driver": {"name": "semgrep", "rules": []}},
-                           "results": results}]}
+        sarif = {"runs": [semgrep_size_stamped(
+            {"tool": {"driver": {"name": "semgrep", "rules": []}}, "results": results})]}
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "semgrep.sarif"), "w") as fh:
                 json.dump(sarif, fh)

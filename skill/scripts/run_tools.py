@@ -17,7 +17,7 @@ from scripts.tools import egress
 from scripts.tools.base import SECURITY_FLAG
 from scripts import plan_contract
 from scripts import procgroup
-from scripts import scanner_config
+from scripts import scanner_config, semgrep_targets
 from scripts import tool_capture
 from scripts import tools_manifest
 from scripts import venv_scope
@@ -618,10 +618,9 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
                     security_mode)
                 scanner_config._record_scanner_config(tool, cmd)
                 with progress.tool(tool, index, total) as step:
-                    done = step.finish(
-                        tool_capture._capture_run("tool", tool, docker,
-                                                  out_path, runner,
-                                                  docker_context=docker_context))
+                    done = step.finish(tool_capture._capture_run(  # #3193: stamp the size skips
+                        "tool", tool, docker, out_path, runner, docker_context=docker_context,
+                        stamp=semgrep_targets.stamper(tool, target, cmd)))
             if done:
                 written.append(done)
             continue

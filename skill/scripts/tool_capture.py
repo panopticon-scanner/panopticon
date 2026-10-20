@@ -64,8 +64,11 @@ CONTAINER_CLEANUP_DETAIL_MAX = 500
 _CONTAINER_CLEANUP_FAILURES: dict[str, dict[str, str]] = {}
 
 
-def _capture_run(label, tool, docker, out_path, runner, docker_context=None):
+def _capture_run(label, tool, docker, out_path, runner, docker_context=None, stamp=None):
     """Run one docker tool/adapter invocation and land its stdout at out_path.
+
+    `stamp` (#3193), when given, rewrites a whole capture before redaction: the
+    host's facts about this run that the scanner's own output cannot carry.
 
     Streams stdout into a bounded sink so adversarial/large target output does
     not accumulate unbounded in orchestrator memory (#1111). On exceeding the
@@ -93,8 +96,8 @@ def _capture_run(label, tool, docker, out_path, runner, docker_context=None):
                       timeout=TOOL_TIMEOUT)
         # Backward compat: tests may inject a CompletedProcess-like runner.
         if hasattr(proc, "stdout") and isinstance(proc.stdout, (bytes, type(None))):
-            return _write_completed(label, tool, proc, out_path)
-        return _stream_and_write(label, tool, proc, out_path,
+            return _write_completed(label, tool, proc, out_path, stamp)
+        return _stream_and_write(label, tool, proc, out_path, stamp=stamp,
                                  docker_bin=docker_bin, cidfile=cidfile,
                                  docker_env=(docker_context.env
                                              if docker_context is not None else None))
@@ -109,7 +112,7 @@ def _capture_run(label, tool, docker, out_path, runner, docker_context=None):
     return None
 
 
-def _write_completed(label, tool, res, out_path):
+def _write_completed(label, tool, res, out_path, stamp=None):
     """Legacy path for runner callables that return a CompletedProcess."""
     if getattr(res, "returncode", 1) not in (0, 1):
         excerpt = (getattr(res, "stderr", b"") or b"")[-500:].decode(
@@ -127,7 +130,7 @@ def _write_completed(label, tool, res, out_path):
         print("%s %s produced no output on a selected target; recording as "
               "missing (fail-closed, #1051)" % (label, tool), file=sys.stderr)
         return None
-    return _atomic_write(out_path, _redact_capture(tool, out_bytes))
+    return _atomic_write(out_path, _redact_capture(tool, stamp(out_bytes) if stamp else out_bytes))
 
 
 # #1335: semgrep's SARIF carries NO scanned-files signal -- `invocations` is
@@ -194,7 +197,7 @@ def _drain(stream):
 
 
 def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
-                      docker_bin=None, cidfile=None, docker_env=None):
+                      docker_bin=None, cidfile=None, docker_env=None, stamp=None):
     """Stream stdout from a Popen-like object with an explicit byte cap AND a
     wall-clock deadline.
 
@@ -366,12 +369,12 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
                     + marker)
 
             spool.seek(0)
-            # Redaction is LAST: the semgrep annotator rewrites the payload on
-            # its way out, so a choke point ahead of it could be reopened by it.
+            # Redaction is LAST: the semgrep annotator and the #3193 stamp
+            # rewrite the payload on its way out, so a choke point ahead of
+            # them could be reopened by them.
+            payload = _annotate_from_stderr(tool, spool.read(), stderr)
             return _atomic_write(
-                out_path,
-                _redact_capture(tool,
-                                _annotate_from_stderr(tool, spool.read(), stderr)))
+                out_path, _redact_capture(tool, stamp(payload) if stamp else payload))
     finally:
         timer.cancel()
 

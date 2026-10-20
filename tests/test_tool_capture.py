@@ -336,7 +336,8 @@ GOLDEN = {
     "semgrep-is-annotated-from-its-own-stderr": {
         "returned": ['semgrep.sarif'],
         "written": (b'{"runs": [{"results": [], "properties": {"panopt'
-                    b'icon_scanned_files": 3}}]}'),
+                    b'icon_scanned_files": 3, "panopticon_size_skipped": {"limit": 1000000, '
+                    b'"count": 0, "files": [], "complete": true}}}]}'),
         "stderr": '',
     },
     "watchdog-timeout-kills-the-container": {
