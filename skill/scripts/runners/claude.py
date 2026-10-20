@@ -116,6 +116,31 @@ DENY_FLAG = "--disallowedTools=%s"
 # away only CronCreate and RemoteTrigger, and confines writes to the cwd.
 TOOLS_FLAG = "--tools=%s"
 TOOLS_FLAG_NAME = "--tools"
+# #2061: the two controls above leave no run-time trace, so every unenforced
+# argv is checked against them (probes/common.CONTROLS) before it launches.
+UNENFORCED_CONTROLS = ("claude:unenforced-tools-allow-list", "claude:unenforced-tool-deny-list")
+
+
+def unenforced_argv_problem(cmd):
+    """Why this argv may not launch, or None (#2061). An `--agent` launch is the
+    registered shell's to confine and answers None. Every other argv must carry
+    both tool controls (`probes.common.control_is_on`), each exactly once and
+    with exactly the value this module derives -- the templates' union for
+    `--tools=`, `UNENFORCED_DENIED_TOOLS` for `--disallowedTools=` -- since a
+    removed tool shows in no envelope and a lost or altered token would look
+    like a run that kept it."""
+    if "--agent" in cmd:
+        return None
+    expected = {"--tools=": TOOLS_FLAG % ",".join(sorted(dispatch.allowed_tool_union())),
+                "--disallowedTools=": DENY_FLAG % ",".join(UNENFORCED_DENIED_TOOLS)}
+    for control in UNENFORCED_CONTROLS:
+        if not probes_common.control_is_on(control, cmd):
+            return "the unenforced launch lost its `%s` control" % control
+    for prefix, token in expected.items():
+        carried = [a for a in cmd if a.startswith(prefix)]
+        if carried != [token]:
+            return "the unenforced launch's `%s` token is not the derived one" % prefix.rstrip("=")
+    return None
 
 
 def _measured_number(details, field):
@@ -385,6 +410,9 @@ class Runner(base.HostRunner):
             return base.refuse_unregistered_agent(entry, roles=self.roles)
         run_env = self.launch_env(env)
         cmd = self.command(entry, self.settings_path, self.max_turns)
+        problem = unenforced_argv_problem(cmd)
+        if problem:                     # #2061: never launch an unenforced reviewer unconfined
+            return base.RunResult.failed(entry.get("id"), "refused before launch: %s (#2061)" % problem)
         try:
             proc = self.runner(cmd, cwd=self.review_root, env=run_env, capture_output=True,
                                 text=True, timeout=self.entry_timeout)

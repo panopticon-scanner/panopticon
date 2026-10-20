@@ -128,7 +128,17 @@ class TestTheControlsAreLive(unittest.TestCase):
     _PINNED = {"claude:setting-sources-user", "claude:strict-mcp-config",
                "claude:disable-slash-commands", "codex:cwd-outside-target",
                "codex:ignore-user-config-and-rules", "kimi:workspace-trust-gate",
-               "kimi:skills-dir"}
+               "kimi:skills-dir", "claude:unenforced-tools-allow-list",
+               "claude:unenforced-tool-deny-list"}
+
+    def test_the_claude_tool_controls_are_on_every_unenforced_launch(self):
+        import scripts.runners.claude as claude_runner
+        for model in ("claude-sonnet-5", None):
+            entry = {"id": "setup-scan", "enforced": False, "model": model, "prompt": "review"}
+            argv = claude_runner.Runner("claude").command(entry, "/run/host-settings.json", max_turns=40)
+            for control in claude_runner.UNENFORCED_CONTROLS:
+                with self.subTest(model=model, control=control):
+                    self.assertTrue(probes_common.control_is_on(control, argv), argv)
 
     def test_every_controlled_entry_names_a_control_that_is_pinned(self):
         for name in hosts.known_hosts():

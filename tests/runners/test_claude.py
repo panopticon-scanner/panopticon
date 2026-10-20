@@ -96,6 +96,44 @@ class TestTheUnenforcedLaunchHoldsTheTemplateAllowList(unittest.TestCase):
             self._prepare("  --tools <tools...>\n", returncode=1)
 
 
+class TestAnUnenforcedArgvWithoutItsToolControlsNeverLaunches(unittest.TestCase):
+    """#2061: `--tools=` and `--disallowedTools=` remove tools, so neither shows
+    in `permission_denials`; a lost or altered token is refused before launch."""
+
+    def run_with(self, alter):
+        launched = []
+        runner = claude_runner.Runner("claude", runner=lambda *a, **k: launched.append(a) or mock.Mock(
+            returncode=0, stdout=json.dumps(ENVELOPE), stderr=""))
+        real = runner.command
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(runner, "command", side_effect=lambda *a, **k: alter(real(*a, **k))):
+            runner.prepare(d, review_root=d)
+            result = runner.run_entry(_entry(False), {})
+        return result, launched
+
+    def assert_refused(self, alter):
+        result, launched = self.run_with(alter)
+        self.assertEqual(launched, [])
+        self.assertIn("refused before launch", str(result.error))
+
+    def test_dropping_the_allow_list_is_refused(self):
+        self.assert_refused(lambda cmd: [a for a in cmd if not a.startswith("--tools=")])
+
+    def test_dropping_the_deny_list_is_refused(self):
+        self.assert_refused(lambda cmd: [a for a in cmd if not a.startswith("--disallowedTools=")])
+
+    def test_an_altered_union_is_refused(self):
+        self.assert_refused(lambda cmd: [a + ",Bash" if a.startswith("--tools=") else a for a in cmd])
+
+    def test_a_doubled_token_is_refused(self):
+        self.assert_refused(lambda cmd: cmd[:-1] + ["--tools=Bash"] + cmd[-1:])
+
+    def test_the_intact_argv_launches(self):
+        result, launched = self.run_with(lambda cmd: cmd)
+        self.assertEqual(len(launched), 1)
+        self.assertIsNone(claude_runner.unenforced_argv_problem(launched[0][0]))
+
+
 class TestCommand(unittest.TestCase):
     def setUp(self):
         self.r = claude_runner.Runner("claude")
