@@ -106,7 +106,7 @@ class PlanInputs:
             plan_lists, files, run_dir, plans_seen, invalid_plans, invalid_verify_queue,
             plan_owed=plan_owed, plan_sha256=plan_sha256,
             snapshot_sha256=snapshot_sha256, discovery=discovery,
-            coverage_files_skipped=coverage_files_skipped)
+            coverage_files_skipped=coverage_files_skipped, groups_meta=groups_meta)
         return cls(groups_meta=groups_meta, fan_out=fan_out,
                    scout_requested=sorted(scout_requested),
                    scout_profiles_seen=scout_profiles_seen, out_of_scope=out_of_scope,

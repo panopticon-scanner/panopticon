@@ -704,6 +704,13 @@
                 "type": "object"
               }
             },
+            "unreadable_name_files": {
+              "type": "array",
+              "description": "#2964: files assigned to a review cell whose prompt spelling is not their name (a control, bidi or surrogate character the prompt escapes), in that inert spelling. Whether a reviewer read them is unknown; sinks certification.",
+              "items": {
+                "type": "string"
+              }
+            },
             "coverage_files_skipped": {
               "type": "array",
               "description": "#2080: coverage artifact basenames skipped because they could not be read as objects with usable groups. Any skipped file prevents coverage certification even when the remaining floor audit is empty.",

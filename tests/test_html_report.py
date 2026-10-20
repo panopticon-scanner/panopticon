@@ -1222,6 +1222,7 @@ class TestIntegrityFailureDetails(unittest.TestCase):
         "unexpected_findings_files": ["unexpected.json"],
         "malformed_findings_files": [{"file": "malformed.json"}],
         "coverage_files_skipped": ["coverage-Bad.json"],
+        "unreadable_name_files": ["caf\\x09x.py"],
         "duplicate_out_files": ["duplicate.json"],
         "mislabeled_findings_files": ["mislabeled.json"],
         "content_mismatched_files": ["changed.json"],

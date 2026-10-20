@@ -7,6 +7,18 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A file named with a character the prompt escapes no longer goes unreviewed in silence
+  (#2964).** A reviewer is handed only its prompt, which spells a TAB, a bidi control or a lone
+  surrogate in a path inertly (`runio._prompt_safe`), and that spelling names no file on disk.
+  Nothing compared the files a reviewer opened with the files it was given.
+  - `meta.integrity.unreadable_name_files` now lists, in that inert spelling, every file in the
+    run's own `groups.json` cell lists whose prompt spelling is not its name. It is read in
+    `synth/integrity.py` through `scripts.inert.inert_spelling`, pinned equal to `_prompt_safe`.
+  - It is a sinking `IntegrityKey`, "NAMES THE PROMPT CANNOT CARRY", so the run is not certified
+    and the summary and HTML name the files.
+  - The prompt is unchanged.
+  Pins: `tests/synth/test_report_coverage.py`, covering a TAB, U+202E and a lone surrogate, plus
+  the well-named control.
 - **A finding's title is redacted before it is cut (#2971).** `normalize_finding` bounded the
   title (`inert_text`, 2,000 characters) and cut `short_title` (100) from the RAW title, and
   `redact_tree` ran later. A credential across either cut was left as a prefix no pattern
