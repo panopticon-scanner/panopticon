@@ -26,12 +26,8 @@ import scripts.findings_contract as findings_contract
 from . import artifacts as artifacts_mod
 from . import validate_schema as schema_mod
 
-# DAT-2808086775: a target-writable artifact gets a bounded read, the shape
-# `tools/pip_audit.py` already uses for pyproject.toml. A realistic record
-# measures a few hundred bytes -- but `scout_invalid` copies unbounded agent
-# strings (phases/coverage.py: the scout's rejected `domains` entries, verbatim
-# and uncapped), and a skip fails OPEN on the floor audit, so a dropped record
-# reads as "nothing missing" rather than "unknown" -- see #2080.
+# DAT-2808086775: bound target-writable coverage artifacts before parsing.
+# #2080: the writer caps scout_invalid, and skipped records sink certification.
 _MAX_COVERAGE_BYTES = 1 << 20
 
 
@@ -112,17 +108,18 @@ def normalized_cell(cell, path=None, warn=None):
     return out
 
 
-def load_coverage_files(panopticon_dir=".panopticon"):
+def load_coverage_files(panopticon_dir=".panopticon", *, skipped=None):
     """Load every .panopticon/coverage-<group>.json cell-coverage artifact
     (phases.coverage.coverage_execute's output) for audit_floor_cells. Tolerant:
-    unreadable/malformed/non-dict files are skipped, never raise -- these are
+    unreadable/malformed/non-dict/group-less files are skipped, never raise -- these are
     the same run artifacts groups.json/scout-*.json are read as elsewhere, and
     each record is normalized by `normalized_cell` at the read.
 
     The shared reader bounds bytes before decoding/parsing, refuses symlinks
     and special files without blocking, and normalizes parser resource errors.
-    Keep the existing 1 MiB cap and skip/disclosure policy; changing missing-floor
-    certification is #2080.
+    Append every skipped basename to `skipped` when supplied. PlanInputs.load
+    publishes that list as an integrity failure: an empty floor audit cannot
+    certify a run whose coverage evidence was dropped (#2080).
     """
     out = []
     for path in sorted(glob.glob(os.path.join(panopticon_dir, "coverage-*.json"))):
@@ -133,11 +130,19 @@ def load_coverage_files(panopticon_dir=".panopticon"):
             # `str(exc) or type(exc).__name__`, not `exc or ...`: str(MemoryError())
             # is "" while the instance itself is TRUTHY, so the short form renders
             # "could not be read ()" -- a line an operator cannot act on.
-            print("synthesize: coverage: %s: could not be read (%s); skipping it"
-                  % (name, str(exc) or type(exc).__name__), file=sys.stderr)
-            continue
-        if isinstance(data, dict):
-            out.append(normalized_cell(data, path=name))
+            reason = "could not be read (%s)" % (str(exc) or type(exc).__name__)
+        else:
+            if isinstance(data, dict):
+                cell = normalized_cell(data, path=name)
+                if isinstance(cell.get("group"), str) and cell["group"]:
+                    out.append(cell)
+                    continue
+                reason = "has no usable group"
+            else:
+                reason = "is not an object"
+        if skipped is not None:
+            skipped.append(name)
+        print("synthesize: coverage: %s: %s; skipping it" % (name, reason), file=sys.stderr)
     return out
 
 

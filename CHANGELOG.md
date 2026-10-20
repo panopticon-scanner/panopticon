@@ -7,6 +7,12 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Skipped coverage artifacts prevent certification (#2080).** Unreadable, malformed,
+  oversized, non-object and group-less coverage files are disclosed in
+  `meta.integrity.coverage_files_skipped` and make an otherwise passing gate INCONCLUSIVE,
+  including when valid coverage files remain. Rejected scout domains are capped at 32 entries
+  of 120 characters with an explicit truncation marker, keeping coverage records readable.
+
 - **A finding names a substitution run as a standard-input runner `$(...)`, never the reader's
   marker (#3156).** `workflow_uses.use`'s standard-input branch named the runner by
   `os.path.basename(argv[0])`; for a command substitution as the command word (`$(echo sh)`, its

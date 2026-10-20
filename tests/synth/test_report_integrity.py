@@ -115,7 +115,7 @@ class TestIntegrity(unittest.TestCase):
     # artifact, plus the key reconcile appends.
     PUBLISHED_KEYS = [
         "unexpected_findings_files", "missing_planned_files",
-        "malformed_findings_files", "duplicate_out_files",
+        "malformed_findings_files", "coverage_files_skipped", "duplicate_out_files",
         "mislabeled_findings_files", "cross_domain_findings",
         "unenforced_acknowledged", "ack_stale", "content_hashes_checked",
         "content_mismatched_files", "content_snapshot_unreadable",
@@ -295,7 +295,7 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         "unexpected_findings_files", "duplicate_out_files",
         "mislabeled_findings_files", "content_mismatched_files",
         "content_snapshot_unreadable", "content_snapshot_missing",
-        "malformed_findings_files", "empty_dispatch_plans",
+        "malformed_findings_files", "coverage_files_skipped", "empty_dispatch_plans",
         "dispatch_plan_missing", "dispatch_plan_mismatched",
         "invalid_dispatch_plans", "invalid_verify_queue",
         "tools_manifest_invalid", "delta_scope_suppressed_git_drivers"})
@@ -324,6 +324,7 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
     # One truthy value per key, in the shape the key really carries.
     TRUTHY: dict = {
         "unexpected_findings_files": ["u.json"],
+        "coverage_files_skipped": ["coverage-Bad.json"],
         "missing_planned_files": ["m.json"],
         "malformed_findings_files": [{"file": "b.json", "cell": None,
                                       "defects": [{"index": 0,

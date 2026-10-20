@@ -4,6 +4,8 @@ import os
 import json
 import tempfile
 import unittest
+import pytest
+import scripts.synth.coverage_io as coverage_io
 import scripts.synth.validate_schema as validate_schema_mod
 import scripts.synthesize as syn
 import scripts.dispatch as dispatch_mod
@@ -352,6 +354,60 @@ class TestFloorCellCoverageWiring(unittest.TestCase):
         ))
         self.assertEqual(r["meta"]["coverage"]["cells"], {"missing_floor": []})
         self.assertEqual(r["summary"]["gate"], "PASS")
+
+
+def _loaded_coverage_report(run_dir):
+    plan = plan_mod.PlanInputs.load(
+        str(run_dir), [], None, [{"name": "Good", "files": ["a.py"]}],
+        ([], 0, []), (None, None), {})
+    return report_mod.build_report(report_mod.ReportInputs(
+        run=report_mod.RunConfig(target=str(run_dir), fail_on="high",
+                                 timestamp=DEFAULT_TIMESTAMP),
+        findings=findings_mod.FindingSet(findings=[]), plan=plan))
+
+
+@pytest.mark.parametrize("payload", [
+    "{broken", '[]', 'null', 'true', '{"floor": ["SEC"]}',
+    '{"group": null}', '{"group": []}', '{"group": ""}',
+    json.dumps({"group": "Bad", "pad": "x" * (coverage_io._MAX_COVERAGE_BYTES + 1)}),
+], ids=["malformed", "array", "null", "scalar", "missing-group", "null-group",
+        "unusable-group", "empty-group", "over-limit"])
+def test_skipped_coverage_file_sinks_report_integrity(tmp_path, payload, capsys):
+    # A dropped record leaves missing_floor empty. The integrity signal must
+    # distinguish that loss of evidence from the clean, empty audit below.
+    good = {"group": "Good", "floor": [], "effective": []}
+    (tmp_path / "coverage-Good.json").write_text(json.dumps(good), encoding="utf-8")
+    assert _loaded_coverage_report(tmp_path)["summary"]["gate"] == "PASS"
+    (tmp_path / "coverage-Bad.json").write_text(payload, encoding="utf-8")
+    report = _loaded_coverage_report(tmp_path)
+    assert report["summary"]["gate"] == "INCONCLUSIVE"
+    assert report["summary"]["coverage_certified"] is False
+    assert report["meta"]["coverage"]["cells"]["missing_floor"] == []
+    assert report["meta"]["integrity"]["coverage_files_skipped"] == ["coverage-Bad.json"]
+    assert coverage_io.load_coverage_files(str(tmp_path)) == [good]
+    assert "coverage-Bad.json" in capsys.readouterr().err
+    summary = render_mod.render_summary(report)
+    assert "**Integrity:** COVERAGE FILES SKIPPED" in summary
+    assert "coverage-Bad.json" in summary
+
+
+def test_unreadable_coverage_file_sinks_report_integrity(tmp_path, monkeypatch):
+    # Inject a permission failure so the pin works even for a privileged test
+    # process. All other artifact reads still use the real bounded reader.
+    path = tmp_path / "coverage-Bad.json"
+    path.write_text('{"group": "Bad", "floor": ["SEC"]}', encoding="utf-8")
+    read_json = coverage_io.artifacts_mod.read_json
+
+    def unreadable(candidate, **kwargs):
+        if os.fspath(candidate) == str(path):
+            raise PermissionError("test coverage read denied")
+        return read_json(candidate, **kwargs)
+
+    monkeypatch.setattr(coverage_io.artifacts_mod, "read_json", unreadable)
+    report = _loaded_coverage_report(tmp_path)
+    assert report["summary"]["gate"] == "INCONCLUSIVE"
+    assert report["summary"]["coverage_certified"] is False
+    assert report["meta"]["integrity"]["coverage_files_skipped"] == [path.name]
 
 
 class TestResumeDisclosure(unittest.TestCase):

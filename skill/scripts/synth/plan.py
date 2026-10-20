@@ -64,9 +64,9 @@ class PlanInputs:
     def load(cls, run_dir, files, verdicts_dir, groups_meta, plans, queue, verdicts,
              git_drivers_suppressed=None, plan_owed=False, plan_sha256=None,
              discovery=None, sec_carve_out=None):
-        """main()'s plan stage (WS-0 S3), in its original order: lane
-        discipline (#441), fan-out accounting, resume stats, the integrity
-        section, scout requests, coverage files. `plans` is the
+        """main()'s plan stage (WS-0 S3): lane discipline (#441), fan-out
+        accounting, resume stats, scout requests, coverage files and their
+        integrity disclosures. `plans` is the
         load_dispatch_plans_detailed triple and `queue` the
         `integrity.load_verify_queue` pair -- both read once by main() because
         ToolAxis.load / FindingSet.load need a piece of each first (#146/C1:
@@ -95,14 +95,16 @@ class PlanInputs:
                   file=sys.stderr)
         fan_out = group_runner.fan_out_coverage(plan) if plan else None
         resume = group_runner.resume_stats(plan, queue_obj, verdicts_dir, _verdicts=verdicts)
-        integrity = integrity_mod.integrity_section(
-            plan_lists, files, run_dir, plans_seen, invalid_plans, invalid_verify_queue,
-            plan_owed=plan_owed, plan_sha256=plan_sha256, discovery=discovery)
         scout_requested, scout_profiles_seen = load_scout_requests(run_dir)
         # 5.0 (matrix Sec5.1): auto-discover <run_dir>/coverage-<group>.json the
         # same way groups.json/scout-*.json are -- fed to audit_floor_cells in
         # reconcile along with the ingested paths.
-        coverages = coverage_io.load_coverage_files(run_dir)
+        coverage_files_skipped: list[str] = []
+        coverages = coverage_io.load_coverage_files(run_dir, skipped=coverage_files_skipped)
+        integrity = integrity_mod.integrity_section(
+            plan_lists, files, run_dir, plans_seen, invalid_plans, invalid_verify_queue,
+            plan_owed=plan_owed, plan_sha256=plan_sha256, discovery=discovery,
+            coverage_files_skipped=coverage_files_skipped)
         return cls(groups_meta=groups_meta, fan_out=fan_out,
                    scout_requested=sorted(scout_requested),
                    scout_profiles_seen=scout_profiles_seen, out_of_scope=out_of_scope,

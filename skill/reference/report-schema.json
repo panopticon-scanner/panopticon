@@ -704,6 +704,13 @@
                 "type": "object"
               }
             },
+            "coverage_files_skipped": {
+              "type": "array",
+              "description": "#2080: coverage artifact basenames skipped because they could not be read as objects with usable groups. Any skipped file prevents coverage certification even when the remaining floor audit is empty.",
+              "items": {
+                "type": "string"
+              }
+            },
             "duplicate_out_files": {
               "type": "array"
             },
