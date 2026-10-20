@@ -7,6 +7,14 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **An unenforced claude launch is checked for its tool controls before it starts (#2061).**
+  `--tools=` and `--disallowedTools=` remove tools rather than deny calls, so neither ever shows
+  in `permission_denials`. A run whose argv lost or altered either token would ledger exactly like
+  one that kept it. Both are now `probes/common.CONTROLS` rows (`--flag=` prefix form, pinned
+  live in `tests/probes/test_discovery_surface.py`). `runners/claude.unenforced_argv_problem`
+  checks every unenforced argv against them, each token present once with exactly the derived
+  value. `run_entry` refuses a failing argv before launch. Pins:
+  `tests/runners/test_claude.py::TestAnUnenforcedArgvWithoutItsToolControlsNeverLaunches`.
 - **The driver binds `out-file-hashes.json` to the exact bytes it wrote (#2115).** A writer in
   the run folder could replace the snapshot with hashes of substituted findings; because the
   snapshot's manifest stamp recorded only its cell count, synthesis verified the forged findings
