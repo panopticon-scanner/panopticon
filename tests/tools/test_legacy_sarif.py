@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from tests._test_helpers import FakePopen, first, only
+from tests._test_helpers import FakePopen, first, only, semgrep_size_stamped
 import scripts.tools.base as base
 import scripts.tools.legacy_sarif as legacy
 import scripts.tools.sarif_utils as su
@@ -104,8 +104,8 @@ class TestLegacySarifAdapter(unittest.TestCase):
         expected = ["semgrep", "scan", "--config", "/opt/semgrep-rules",
                     "--metrics=off", "--disable-version-check"]
         expected += legacy.SEMGREP_SCANNER_SCOPE_ARGS
-        # #2957: the per-file limits, stated at Semgrep's own defaults.
-        expected += ["--timeout=5", "--timeout-threshold=3"]
+        # #2957, #3193: the per-file limits, stated at Semgrep's own defaults.
+        expected += ["--timeout=5", "--timeout-threshold=3", "--max-target-bytes=1000000"]
         expected += ["--sarif", "--quiet", "/src"]
         self.assertEqual(legacy.TOOL_CMD["semgrep"], expected)
 
@@ -567,7 +567,7 @@ def _semgrep_capture(notes, paths=("small.py",)):
     """One eval() result per path in `paths` (a file that lost ONE rule to a
     timeout still carries the others' results, as the real run's did)."""
     rule = _RULES + "lang.security.audit.eval-detected"
-    return {"runs": [{
+    return {"runs": [semgrep_size_stamped({
         "tool": {"driver": {"name": "Semgrep OSS", "rules": [
             {"id": rule, "defaultConfiguration": {"level": "error"}}]}},
         "results": [{"ruleId": rule, "message": {"text": "Detected the use of eval()."},
@@ -575,7 +575,7 @@ def _semgrep_capture(notes, paths=("small.py",)):
                          "artifactLocation": {"uri": "/src/" + path, "uriBaseId": "%SRCROOT%"},
                          "region": {"startLine": 2}}}]} for path in paths],
         "invocations": [{"executionSuccessful": True, "toolExecutionNotifications": notes}],
-    }]}
+    })]}
 
 
 class TestSemgrepTimeoutsAreDisclosed(unittest.TestCase):
@@ -611,6 +611,7 @@ class TestSemgrepTimeoutsAreDisclosed(unittest.TestCase):
                       {"file": "tests/test_workflow_guard.py", "reason": "rule_timeout",
                        "rule_timeouts": 1}],
             "files_omitted": 0, "capabilities_unavailable": [], "rule_timeouts": 4,
+            "size_skipped": 0, "size_limit": 1000000, "size_listing": "listed",
             "unlocated_records": 0})
         self.assertEqual((disposition["status"], disposition["findings"]), ("ok", 2))
         self.assertIn("semgrep: partial file coverage: 4 rule timeout(s) on 2 file(s)", diagnostic)

@@ -159,7 +159,7 @@ GOLDEN = {
         ', "--exclude=_build/", "--exclude=_cargo/", "--exclude=.panopticon/"'
         ', "--exclude=.worktrees/", "--exclude=.superpowers/", "--exclude=__pycache__/"'
         ', "--exclude=.ruff_cache/", "--exclude=.pytest_cache/", "--exclude=.mypy_cache/"'
-        ', "--exclude=*.egg-info/", "--exclude=.DS_Store", "--timeout=5", "--timeout-threshold=3", "--sarif", "--quiet", "/src"]',
+        ', "--exclude=*.egg-info/", "--exclude=.DS_Store", "--timeout=5", "--timeout-threshold=3", "--max-target-bytes=1000000", "--sarif", "--quiet", "/src"]',
     "argv/semgrep/none/target":
         '["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off"'
         ', "--disable-version-check", "--jobs=3", "--x-ignore-semgrepignore-files"'
@@ -170,7 +170,7 @@ GOLDEN = {
         ', "--exclude=_build/", "--exclude=_cargo/", "--exclude=.panopticon/"'
         ', "--exclude=.worktrees/", "--exclude=.superpowers/", "--exclude=__pycache__/"'
         ', "--exclude=.ruff_cache/", "--exclude=.pytest_cache/", "--exclude=.mypy_cache/"'
-        ', "--exclude=*.egg-info/", "--exclude=.DS_Store", "--timeout=5", "--timeout-threshold=3", "--sarif", "--quiet", "/src"]',
+        ', "--exclude=*.egg-info/", "--exclude=.DS_Store", "--timeout=5", "--timeout-threshold=3", "--max-target-bytes=1000000", "--sarif", "--quiet", "/src"]',
     "argv/semgrep/one/no-target":
         '["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off"'
         ', "--disable-version-check", "--jobs=3", "--x-ignore-semgrepignore-files"'
@@ -181,7 +181,7 @@ GOLDEN = {
         ', "--exclude=_build/", "--exclude=_cargo/", "--exclude=.panopticon/"'
         ', "--exclude=.worktrees/", "--exclude=.superpowers/", "--exclude=__pycache__/"'
         ', "--exclude=.ruff_cache/", "--exclude=.pytest_cache/", "--exclude=.mypy_cache/"'
-        ', "--exclude=*.egg-info/", "--exclude=.DS_Store", "--timeout=5", "--timeout-threshold=3", "--sarif", "--quiet"'
+        ', "--exclude=*.egg-info/", "--exclude=.DS_Store", "--timeout=5", "--timeout-threshold=3", "--max-target-bytes=1000000", "--sarif", "--quiet"'
         ', "--exclude=.venv", "/src"]',
     "argv/semgrep/one/target":
         '["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off"'
@@ -193,7 +193,7 @@ GOLDEN = {
         ', "--exclude=_build/", "--exclude=_cargo/", "--exclude=.panopticon/"'
         ', "--exclude=.worktrees/", "--exclude=.superpowers/", "--exclude=__pycache__/"'
         ', "--exclude=.ruff_cache/", "--exclude=.pytest_cache/", "--exclude=.mypy_cache/"'
-        ', "--exclude=*.egg-info/", "--exclude=.DS_Store", "--timeout=5", "--timeout-threshold=3", "--sarif", "--quiet"'
+        ', "--exclude=*.egg-info/", "--exclude=.DS_Store", "--timeout=5", "--timeout-threshold=3", "--max-target-bytes=1000000", "--sarif", "--quiet"'
         ', "--exclude=.venv", "/src"]',
     "argv/semgrep/two/no-target":
         '["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off"'
@@ -205,7 +205,7 @@ GOLDEN = {
         ', "--exclude=_build/", "--exclude=_cargo/", "--exclude=.panopticon/"'
         ', "--exclude=.worktrees/", "--exclude=.superpowers/", "--exclude=__pycache__/"'
         ', "--exclude=.ruff_cache/", "--exclude=.pytest_cache/", "--exclude=.mypy_cache/"'
-        ', "--exclude=*.egg-info/", "--exclude=.DS_Store", "--timeout=5", "--timeout-threshold=3", "--sarif", "--quiet"'
+        ', "--exclude=*.egg-info/", "--exclude=.DS_Store", "--timeout=5", "--timeout-threshold=3", "--max-target-bytes=1000000", "--sarif", "--quiet"'
         ', "--exclude=.venv", "--exclude=a/b/.venv", "/src"]',
     "argv/semgrep/two/target":
         '["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off"'
@@ -217,7 +217,7 @@ GOLDEN = {
         ', "--exclude=_build/", "--exclude=_cargo/", "--exclude=.panopticon/"'
         ', "--exclude=.worktrees/", "--exclude=.superpowers/", "--exclude=__pycache__/"'
         ', "--exclude=.ruff_cache/", "--exclude=.pytest_cache/", "--exclude=.mypy_cache/"'
-        ', "--exclude=*.egg-info/", "--exclude=.DS_Store", "--timeout=5", "--timeout-threshold=3", "--sarif", "--quiet"'
+        ', "--exclude=*.egg-info/", "--exclude=.DS_Store", "--timeout=5", "--timeout-threshold=3", "--max-target-bytes=1000000", "--sarif", "--quiet"'
         ', "--exclude=.venv", "--exclude=a/b/.venv", "/src"]',
     "argv/trivy/none/no-target":
         '["trivy", "fs", "--skip-db-update", "--offline-scan", "--format", "sarif", "/src"]',

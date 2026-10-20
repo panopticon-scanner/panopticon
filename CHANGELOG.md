@@ -7,6 +7,26 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A file over Semgrep's size limit is disclosed, not silently skipped (#3193).** Semgrep skips every
+  regular file over 1,000,000 bytes and leaves no trace in its SARIF, so a target could hide a payload
+  from every Semgrep rule simply by making its file large.
+  - Measured with the pinned Semgrep, the vendored rules and the adapter's argv: the size check
+    applies to any kind of file, binary included. It applies after the argv's `--exclude` patterns,
+    and a symlink is never selected.
+  - The host now lists those files when the capture lands (`scripts/semgrep_targets.py`) and stamps
+    the capture with them. The walk never follows a symlink. It drops a path only for one of the
+    argv's own exclude patterns, in a form whose result was compared row by row with Semgrep's own
+    target listing; any other form keeps the file listed.
+  - Each file lands in the semgrep `file_coverage` as `size_skipped`, so it reaches
+    `meta.coverage.tools_file_partial` and coverage is not certified. A capture with no listing,
+    a malformed listing, or a walk cut short counts as partial too.
+  - The argv now states `--max-target-bytes=1000000`, Semgrep's default.
+  - This repository excludes `.test_durations` (pytest-split timing data, 1.3 MB). It was the only
+    file Semgrep skipped in the self-scan.
+  Pins (`tests/test_semgrep_targets.py`): the matcher against the measured table, row for row; an
+  unmeasured pattern form leaves its file listed; the symlink, exact-limit, awkward-name and bound
+  cases; and a file over 1 MB with a canary goes through the stamp, ingest and report and is listed,
+  with certification withheld.
 - **Fixed-name staging writes refuse planted FIFOs and hard links (#2093).** The generic
   `.panopticon` writer opened `<path>.tmp` with `O_TRUNC` but not `O_EXCL`, as did the manifest,
   X0X and tree-baseline paths through that same primitive. A hard link at any of those names

@@ -96,6 +96,15 @@ def prepared_kimi(directory, runner=None, *, include_coding_alias=True):
     return prepared
 
 
+def semgrep_size_stamped(run):
+    """#3193: a Semgrep SARIF run as this version's capture lands it, stamped with
+    the host's size listing (here: nothing over the limit, the walk complete). A
+    run WITHOUT the stamp reads as partial coverage, by ruling."""
+    run.setdefault("properties", {})["panopticon_size_skipped"] = {
+        "limit": 1000000, "count": 0, "files": [], "complete": True}
+    return run
+
+
 def all_proven_artifact(host="claude"):
     """A fresh host-capabilities.json body with every capability proven."""
     from scripts import hosts
