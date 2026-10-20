@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import tempfile
 import unittest
 from unittest import mock
 
@@ -38,6 +39,16 @@ def setUpModule():
 def tearDownModule():
     _patch.stop()
     _readiness_docker_patch.stop()
+
+
+def _mask_temp_root(surfaces, root):
+    """Every surface with the test's own temp root (an absolute path) replaced,
+    and nothing else. The ledger row carries `rejected_file` under that root, and
+    `mkdtemp`'s random suffix can itself spell `ghp_` ("/tmp/tmpghp_zg7m/...",
+    forge 3.11, 2026-10-20): the token assertions then matched a directory name,
+    not a secret. Every other byte is still scanned."""
+    return {name: (text.replace(root, "<TMP>") if isinstance(text, str) else text)
+            for name, text in surfaces.items()}
 
 
 class TestRefusedRepliesAreRetained(LoopCase):
@@ -166,13 +177,13 @@ class TestRefusedRepliesAreRetained(LoopCase):
             record = json.load(fh)
         retry, _prior = persist.retry_block(run_dir, entry)
         self.assertFalse(os.path.exists(entry["out_file"]))
-        return {
+        return _mask_temp_root({
             "refusal": refusal,
             "record": json.dumps(record),
             "ledger": json.dumps(row),
             "stderr": err.getvalue(),
             "retry": retry,
-        }
+        }, d)
 
     def test_schema_error_redaction_covers_the_complete_product(self):
         # Round 6 B1: role, advertised flag, error count and token position are
@@ -217,6 +228,21 @@ class TestRefusedRepliesAreRetained(LoopCase):
                                 kind, persist.REASON_CAP - 13,
                                 (token_position,), advertised,
                                 schema_errors=errors)
+
+    def test_a_temp_root_spelled_like_a_token_is_not_read_as_one(self):
+        # The flake, made deterministic: a temp root whose NAME holds "ghp_" (as
+        # a random mkdtemp suffix once did). Only that path is masked; the
+        # token itself must still be redacted on every surface.
+        with tempfile.TemporaryDirectory(prefix="ghp_") as base, \
+                mock.patch.object(tempfile, "tempdir", base):
+            self._assert_schema_secret_is_confined(
+                "tool-advisor", persist.REASON_CAP - 13, (1,), True,
+                schema_errors=["x" * (persist.REASON_CAP - 13) + self.SCHEMA_SECRET])
+            surfaces = self._reason_refusal_surfaces("stamp", "ghp_" + "Z" * 36)
+        self.assertIn("<TMP>", surfaces["ledger"])     # the path was there, and masked
+        for name, text in surfaces.items():
+            with self.subTest(surface=name):
+                self.assertNotIn("ghp_", text.casefold())
 
     def test_schema_secrets_never_reach_any_refusal_surface(self):
         # Round 2 B3: schema errors quote the rejected instance. Capping that
@@ -324,13 +350,13 @@ class TestRefusedRepliesAreRetained(LoopCase):
         with open(row["rejected_file"], encoding="utf-8") as fh:
             record = json.load(fh)
         retry, _prior = persist.retry_block(run_dir, entry)
-        surfaces = {
+        surfaces = _mask_temp_root({
             "refusal": refusal,
             "record": json.dumps(record),
             "ledger": json.dumps(row),
             "stderr": err.getvalue(),
             "retry": retry,
-        }
+        }, d)
         quoted_positions = [position for position in token_positions
                             if position <= 3]
         for name, text in surfaces.items():
