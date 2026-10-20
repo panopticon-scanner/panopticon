@@ -73,6 +73,35 @@ class TestClaimTextIsBounded(unittest.TestCase):
         self.assertEqual(rendered["location"]["line_start"], 8)
 
 
+class TestClaimTitleIsBounded(unittest.TestCase):
+    """#2074: the title reached the advisor prompt unbounded and raw."""
+
+    HOSTILE = "\x1b[2K" + "t" * 20000
+
+    def assert_bounded_and_inert(self, title):
+        self.assertLess(len(title), 1000)       # the cap (200) and its marker, never the 20 kB
+        self.assertIn("truncated", title)
+        self.assertNotIn("\x1b", title)
+
+    def test_a_huge_hostile_title_renders_bounded_and_inert(self):
+        cell = [dict(_finding(0), title=self.HOSTILE)]
+        self.assert_bounded_and_inert(json.loads(verify._render_findings("/repo", cell))[0]["title"])
+
+    def test_a_tool_advisor_claim_title_renders_bounded_and_inert(self):
+        import scripts.phases.verify_tools as verify_tools
+        with tempfile.TemporaryDirectory() as review_root:
+            prompt = verify_tools._tool_verify_entry(
+                review_root, {}, "q1", {"id": "T-1", "severity": "HIGH", "title": self.HOSTILE},
+                "claude")["prompt"]
+        claim = json.loads(prompt[prompt.index("{\n  \"id\": \"T-1\""):prompt.index("\n}", prompt.index("\"T-1\"")) + 2])
+        self.assert_bounded_and_inert(claim["title"])
+        self.assertNotIn("t" * 1000, prompt)
+
+    def test_an_ordinary_title_is_untouched(self):
+        rendered = json.loads(verify._render_findings("/repo", [_finding(3)]))
+        self.assertEqual(rendered[0]["title"], "finding 3")
+
+
 class TestPartPaths(unittest.TestCase):
     def test_part_zero_keeps_the_established_filename(self):
         # Existing runs, tests and the backup reader all key on this name.

@@ -189,6 +189,10 @@ def _tool_verify_entry(review_root, manifest, queue_id, finding, host):
     if isinstance(finding, dict) and isinstance(finding.get("location"), dict):
         safe_finding = dict(finding)
         safe_finding["location"] = _confine_claim_location(review_root, finding["location"])
+    # #2074: the title is tool text about the target -- bounded and inert, as
+    # verify's own claims render theirs (runio.capped_title).
+    if isinstance(safe_finding, dict) and "title" in safe_finding:
+        safe_finding = dict(safe_finding, title=runio.capped_title(safe_finding["title"]))
     claim = json.dumps(safe_finding, indent=2, ensure_ascii=False)
     prompt = dispatch.render_prompt("advisor.md", {"claim_json": claim}, host)
     prompt = claim_scope.root_pin_paragraph(review_root) + prompt

@@ -7,6 +7,13 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **The verify advisors are handed each claim's title bounded and inert (#2074).** A title is
+  reviewer- or tool-authored text about the target, yet it reached both advisor prompts whole and
+  raw while the description was capped. `runio.capped_title` now renders control characters inert
+  (`_prompt_safe`) and cuts the title at 200 characters with a marked cut. It is used by
+  `verify._render_findings` and by the tool-advisor claim (`verify_tools._tool_verify_entry`).
+  Pins: `tests/phases/test_verify_backpressure.py::TestClaimTitleIsBounded` (a 20 kB title holding
+  `\x1b[2K`, through both renderers).
 - **Scanners no longer take their config from the scan root they review (#2055).** Three scanners
   read files the reviewed repository commits, so it could narrow or silence them. Measured on the
   pinned tools:
