@@ -188,7 +188,7 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
         # summary names it a second time, as an `**Integrity:**` line off
         # `integrity.INTEGRITY_KEYS`; this note is what the HTML report and
         # `summary.coverage_note` consumers still read.
-        note = ("tools manifest unreadable — tool coverage could not be "
+        note = ("tools manifest unreadable or invalid — tool coverage could not be "
                 "computed: %s" % tools_manifest_invalid)
     elif any_incomplete and not gate_relevant_gap:
         tail = sorted(p for p in panels_incomplete if p not in findings_mod.HIGH_VALUE_PANELS)

@@ -320,8 +320,15 @@ class TestTheTwoCallSitesDisagreeOnPurpose(unittest.TestCase):
             with self.subTest(stderr=stderr, produced=produced), tempfile.TemporaryDirectory() as root:
                 if produced:
                     os.makedirs(runio._pano(root, "tools"))
-                    with open(runio._pano(root, "tools", "scan.sarif"), "w") as fh:
+                    with open(runio._pano(root, "tools", "semgrep.sarif"), "w") as fh:
                         fh.write('{"runs": []}')
+                    # #2070: a successful-output control needs this run's
+                    # exact writer receipt, not merely a file in the directory.
+                    runio._write_json(
+                        runio._pano(root, "tools-manifest.json"),
+                        {"schema_version": 1, "run_id": "r1",
+                         "selected": ["semgrep"], "produced": ["semgrep"],
+                         "missing": [], "outputs": ["semgrep.sarif"]})
                 with mock.patch.object(child, "_run_child", return_value=_FakeResult(
                         0 if produced else 2, "unrelated stdout", stderr)), \
                         contextlib.redirect_stderr(io.StringIO()):

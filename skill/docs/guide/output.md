@@ -106,10 +106,13 @@ silently drops every scanner the runner selected and the scout never asked for â
 `meta.integrity.tools_manifest_invalid` with the reason, which fails `integrity_ok` like every other
 SINKING entry in that section (`synth/integrity.INTEGRITY_KEYS` says which do), so the gate goes
 INCONCLUSIVE, and sets `summary.coverage_certified: false`
-with a `coverage_note` saying *tools manifest unreadable*. It is deliberately NOT softer than that:
+with a `coverage_note` saying *tools manifest unreadable or invalid*. A run-bound tool ingest also
+requires the manifest's exact output receipt (#2070); a missing, malformed, or foreign receipt takes
+this same fail-closed path. It is deliberately NOT softer than that:
 exempting it from the gate would have made corrupting one byte of a target-writable file the
-cheapest way to turn an INCONCLUSIVE run into a PASS on identical findings. An ABSENT manifest (a
-pre-#1031 run, `--no-tools`) is a different fact and keeps the scout-derived gate, and a manifest
+cheapest way to turn an INCONCLUSIVE run into a PASS on identical findings. An ABSENT manifest when
+no run-bound tool ingest was requested (a pre-#1031 run, `--no-tools`) is a different fact and keeps
+the scout-derived gate, and a manifest
 that parses with malformed FIELDS is a third, repaired at the read (`meta.tools.sanitized` /
 `network`) where a bad row costs a warning and the row, never the run. The three are independent: a
 run can complete, write a valid artifact and still be `INCONCLUSIVE`; it can pass its gate and still

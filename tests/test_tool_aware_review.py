@@ -171,6 +171,16 @@ class TestIngestedToolFindings(unittest.TestCase):
     def test_missing_tools_dir_is_empty(self):
         self.assertEqual(review._ingested_tool_findings("/no/such/root", False), ())
 
+    def test_a_run_bound_review_never_ingests_a_stale_unproduced_capture(self):
+        with open(runio._pano(self.root, "tools", "semgrep.sarif"), "w") as fh:
+            json.dump(_SARIF, fh)
+        runio._write_json(runio._pano(self.root, "tools-manifest.json"),
+                          {"schema_version": 1, "run_id": "R",
+                           "selected": ["semgrep"], "produced": [],
+                           "missing": ["semgrep"], "outputs": []})
+        self.assertEqual(
+            review._ingested_tool_findings(self.root, False, "standard", "R"), ())
+
 
 class TestCellEntryInjection(unittest.TestCase):
     """End-to-end: a real SARIF in the tools dir flows into the SEC cell prompt
@@ -186,6 +196,10 @@ class TestCellEntryInjection(unittest.TestCase):
         self.addCleanup(review._ingested_tool_findings.cache_clear)
         with open(runio._pano(self.root, "tools", "semgrep.sarif"), "w") as fh:
             json.dump(_SARIF, fh)
+        runio._write_json(runio._pano(self.root, "tools-manifest.json"),
+                          {"schema_version": 1, "run_id": "R",
+                           "selected": ["semgrep"], "produced": ["semgrep"],
+                           "missing": [], "outputs": ["semgrep.sarif"]})
 
     def test_sec_cell_prompt_carries_tool_hits(self):
         entry = review._cell_entry(self.root, self.manifest, "Auth", "SEC",
@@ -234,6 +248,11 @@ class TestTheDontReDeriveMapHonoursTheRunsMode(unittest.TestCase):
         self.addCleanup(review._ingested_tool_findings.cache_clear)
         with open(runio._pano(self.root, "tools", "semgrep.sarif"), "w") as fh:
             json.dump(_SUPPRESSED_SARIF, fh)
+        # #2070: run-bound prompt injection accepts only this scan's capture.
+        runio._write_json(runio._pano(self.root, "tools-manifest.json"),
+                          {"schema_version": 1, "run_id": "R",
+                           "selected": ["semgrep"], "produced": ["semgrep"],
+                           "missing": [], "outputs": ["semgrep.sarif"]})
 
     def _rules(self, security_mode):
         review._ingested_tool_findings.cache_clear()
