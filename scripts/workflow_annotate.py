@@ -206,7 +206,7 @@ _ASSIGNS = re.compile(r"[A-Za-z_]\w*(?:\[[^]]*\])?\+?=", re.A)
 _NAMING = ("read", "unset", "wait", "getopts", "select", "mapfile", "readarray", "printf",
            "local", "readonly", "declare", "typeset", "export")
 _EXPANDED, _HISTORY = re.compile(r"[{}*?[]"), re.compile(r"hist|[$`{}*?[]|[<>]\(|@@shell-")
-_TRAP_SAFE = re.compile(r"(?:rm(?: -[rf]+)*(?: [\w./-]+)+)?|-", re.A)
+_TRAP_SAFE = re.compile(r"(?:rm(?: [\w./-]+)+)?|-", re.A)
 _TRAPPED = frozenset(("DEBUG", "RETURN", "ERR"))
 _LATER = re.compile(r"(?<![\w./-])(?:trap|mapfile|readarray)(?![\w./-])", re.A)
 # A name's spellings (`_spelled`): a run of name characters; what may follow `${NAME` in a
