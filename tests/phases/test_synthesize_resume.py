@@ -1,5 +1,6 @@
 """#2930: a failed synthesis attempt cannot become complete on plain resume."""
 from copy import deepcopy
+from functools import partial
 import json
 import os
 from pathlib import Path
@@ -66,6 +67,23 @@ def _resume(root):
     return driver.run(args, phases=phases)
 
 
+def _fail_artifact(root, valid_report, artifact, invalid, cmd, **kwargs):
+    report = deepcopy(valid_report)
+    if artifact == "report":
+        report["findings"] = "not-an-array"
+    else:
+        _write(invalid, {"invalid": True})
+    _write(_report(root), report)
+    return subprocess.CompletedProcess(cmd, 4, "", "artifact invalid: schema defect")
+
+
+def _succeed_retry(root, valid_report, returncode, cmd, **kwargs):
+    assert _pending(root).is_file(), "pending attempt must precede the child"
+    assert not Path(str(_pending(root)) + ".tmp").exists()
+    _write(_report(root), valid_report)
+    return subprocess.CompletedProcess(cmd, returncode, "", "")
+
+
 @pytest.mark.parametrize("artifact", ["report", "x0x"])
 def test_failed_artifact_is_retried_on_real_driver_resume(review, artifact):
     root, manifest, valid_report = review
@@ -73,15 +91,7 @@ def test_failed_artifact_is_retried_on_real_driver_resume(review, artifact):
     if artifact == "x0x":
         invalid = invalid.with_name(invalid.stem + "-x0x.json")
 
-    def fail(cmd, **kwargs):
-        report = deepcopy(valid_report)
-        if artifact == "report":
-            report["findings"] = "not-an-array"
-        else:
-            _write(invalid, {"invalid": True})
-        _write(_report(root), report)
-        return subprocess.CompletedProcess(cmd, 4, "", "artifact invalid: schema defect")
-
+    fail = partial(_fail_artifact, root, valid_report, artifact, invalid)
     with mock.patch.object(child, "_run_child", side_effect=fail) as launched:
         first = _resume(root)
         resumed = _resume(root)
@@ -122,12 +132,7 @@ def test_accepted_retry_clears_pending_once_and_preserves_gate_outcomes(review, 
     root, manifest, valid_report = review
     _write(_pending(root), {"run_id": manifest["run_id"]})
 
-    def succeed(cmd, **kwargs):
-        assert _pending(root).is_file(), "pending attempt must precede the child"
-        assert not Path(str(_pending(root)) + ".tmp").exists()
-        _write(_report(root), valid_report)
-        return subprocess.CompletedProcess(cmd, returncode, "", "")
-
+    succeed = partial(_succeed_retry, root, valid_report, returncode)
     with mock.patch.object(child, "_run_child", side_effect=succeed) as launched:
         status = _resume(root)
         assert status["status"] == "complete", status
