@@ -7,6 +7,28 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A finding no longer borrows another claim's verdict (#3202).** When dedupe kept a survivor with no
+  verdict of its own, #1476's id aliases let it take the verdict of a claim dedupe had dropped.
+  Measured by id on main: an unanswered CRITICAL beside a REJECTED HIGH at one locus was published
+  as rejected and the gate PASSED, where the CRITICAL alone is INCONCLUSIVE. The same happened for
+  #1476's own pinned pair (an agent HIGH and a tool MEDIUM), for two equal-severity twins, and with
+  NEEDS_MORE_INFO. The borrowed verdict was also counted as matched, which hid the survivor from
+  `unanswered`.
+  - **Contract change: #1476's alias binding is withdrawn; #2991's restore covers its
+    CONFIRMED-loss case.** `evidence.match_verdict_by_id` binds a finding's own id only. The
+    `_merged_ids` carrier (`record_merged_id`, `merged_ids`, the report strip) is retired. Nothing
+    outside binding read it: a grep of code, tests and fixtures found only binding, #2991's alias
+    cleanup and the tests pinning them. A collapsed member is still kept, as #2991's `_absorbed`.
+  - An unanswered survivor is now unverified (or `tool_reported` where a tool reinforced it), and
+    counted in `unanswered`. The gate is INCONCLUSIVE when the survivor is owed a verdict, and FAIL
+    under `--gate-unverified`. A survivor's own verdict binds as before.
+  - The verify queue's fingerprint path (`evidence.match_verdict`) never read aliases, so it is
+    unchanged.
+  Pins: `tests/synth/test_report_evidence.py::TestAClaimsVerdictIsItsOwn` covers the four cases,
+  `unanswered`, and a survivor's own verdict. `tests/test_verdict_binding.py` is rewritten to the
+  new contract and keeps #1476's concern: a collapsed CONFIRMED is still reported confirmed,
+  through the restore. `tests/test_driver.py` runs the real driver with an advisor that answers the
+  HIGH and leaves the CRITICAL unanswered: on main the report PASSES, now it is INCONCLUSIVE.
 - **A confirmed finding is no longer absorbed by a decoy at the same locus (#2991).** Dedupe keeps
   the most severe finding at a file, line and category, and runs before any verdict is bound. A
   REJECTED CRITICAL "decoy" beside an honest CONFIRMED HIGH therefore survived, bound its own

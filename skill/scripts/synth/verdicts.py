@@ -129,10 +129,10 @@ def restore_confirmed(fs, findings, queue):
     REJECTED (or NEEDS_MORE_INFO, or unverified) CRITICAL at one locus swallowed
     a CONFIRMED HIGH there: the HIGH left the report and a FAIL became a PASS.
     A dropped member whose own verdict is CONFIRMED is restored as its own
-    finding and queued, unless the survivor's OWN verdict is CONFIRMED too. Its
-    ids leave the survivor's aliases, so its verdict can no longer stand in for
-    the survivor's (#1476 aliased verdicts; a claim's verdict is its own).
-    Anything else collapses exactly as before. Strips the carrier either way."""
+    finding and queued, unless the survivor's OWN verdict is CONFIRMED too
+    (a claim's verdict is its own; #3202 withdrew the aliases that let one lend
+    it). Anything else collapses exactly as before. Strips the carrier either
+    way."""
     queue_ids = {id(e["finding"]): e["queue_id"] for e in queue}
     taken = {e["queue_id"] for e in queue}
     for survivor in list(findings):
@@ -143,11 +143,6 @@ def restore_confirmed(fs, findings, queue):
             fp = evidence_mod.finding_fingerprint(member)
             if not _confirmed(_own_verdict(fs, member, fp)):
                 continue
-            gone = {member.get("id")} | set(evidence_mod.merged_ids(member))
-            aliases = [i for i in evidence_mod.merged_ids(survivor) if i not in gone]
-            survivor.pop(evidence_mod.MERGED_IDS_FIELD, None)
-            if aliases:
-                survivor[evidence_mod.MERGED_IDS_FIELD] = aliases
             qid, n = fp, 0
             while qid in taken:
                 n += 1

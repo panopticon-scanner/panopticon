@@ -75,7 +75,7 @@ VERDICT_VALUES = {"CONFIRMED", "REJECTED", "NEEDS_MORE_INFO"}
 # still one response, not the aggregate run metadata that receives 16 MiB.
 MAX_VERDICT_BYTES = 8 * 1024 * 1024
 
-# Internal carrier, underscore-prefixed like `_merged_ids`: the paths a
+# Internal carrier, underscore-prefixed like `_group`: the paths a
 # scope-limited backup named, hung on the PRIMARY verdict that survived it so
 # `derive_evidence` and the report can say what the backup could not see.
 # CONTROLLER-OWNED: `match_verdict_by_id` is its only writer, which `_agent_verdict`
@@ -110,7 +110,7 @@ def _agent_verdict(raw):
     Two jobs:
 
     (a) strip every private (`_`-prefixed) key. They are the pipeline's own
-        carriers -- `_backup_missing_evidence` here, `_merged_ids`/`_group` on
+        carriers -- `_backup_missing_evidence` here, `_group`/`_absorbed` on
         findings -- so an advisor that plants one is asserting a controller
         decision (round 1 F1: a backup REJECTION laundered into a retained
         primary CONFIRMED, out of the gate -> in it; round 2 N1: a cell's whole
@@ -700,42 +700,13 @@ def load_verdict_bundles(verdicts_dir):
     return by_fid, unloadable
 
 
-MERGED_IDS_FIELD = "_merged_ids"
-
-
-def merged_ids(finding):
-    """Ids of findings collapsed INTO this one by dedupe, if any.
-
-    #1476: dedupe drops the non-survivor outright, so its assigned id vanishes
-    from the report and every verdict that echoed it binds to nothing. Run-6 lost
-    148 of 2,043 supplied verdicts that way -- roughly 7% of the most expensive
-    phase of a run, and a CONFIRMED verdict among them means a real finding is
-    reported as unverified.
-
-    The id is content-derived and must stay so (the driver and synthesize compute
-    it independently and have to agree), so the survivor keeps the collapsed ids
-    as ALIASES instead. Underscore-prefixed like `_group`: an internal carrier
-    stripped before the report is written, never a trust field an agent asserts.
-    """
-    ids = finding.get(MERGED_IDS_FIELD)
-    return [i for i in ids if isinstance(i, str)] if isinstance(ids, list) else []
-
-
-def record_merged_id(best, other):
-    """Carry `other`'s identity onto the survivor dedupe kept, transitively.
-
-    Transitive because a cluster larger than two collapses in stages: an alias a
-    first merge recorded must survive a second, or the earliest twin's verdict
-    unbinds anyway. Lives here beside `merged_ids` so the alias vocabulary has
-    exactly one home.
-    """
-    aliases = list(merged_ids(best))
-    for candidate in [other.get("id")] + merged_ids(other):
-        if (isinstance(candidate, str) and candidate
-                and candidate != best.get("id") and candidate not in aliases):
-            aliases.append(candidate)
-    if aliases:
-        best[MERGED_IDS_FIELD] = aliases
+# #3202: #1476's dedupe aliases (`_merged_ids`, record_merged_id, merged_ids)
+# are withdrawn. They let a survivor with no verdict of its own borrow a DROPPED
+# claim's verdict: a REJECTED HIGH dismissed an unanswered CRITICAL, turning an
+# INCONCLUSIVE gate into a PASS, and counted it "matched" besides. #1476's own
+# concern -- a CONFIRMED twin's verdict binding to nothing -- is covered by
+# synth.verdicts.restore_confirmed (#2991), which restores that claim as itself.
+# A claim's verdict is its own.
 
 
 # Least favourable to the FINDING, first. A BACKUP advisor that says two things
@@ -849,22 +820,11 @@ def match_verdict_by_id(finding, by_fid, run_id=None):
     fid = finding.get("id")
     if not fid:
         return None
-    # #1476: the finding's OWN id first, then the ids dedupe collapsed into it.
-    # Order is the whole discipline -- an alias must never outrank the real id,
-    # because the survivor's own verdict adjudicated the finding that survived.
-    # Aliasing widens WHICH id may bind, never which RUN: the run_id filter below
-    # is applied to alias candidates identically, so a stale cross-run verdict
-    # gains no new way in.
-    candidates = None
-    for key in [str(fid)] + merged_ids(finding):
-        pool = by_fid.get(key)
-        if not pool:
-            continue
-        if run_id is not None:
-            pool = [c for c in pool if c.get("run_id") == run_id]
-        if pool:
-            candidates = pool
-            break
+    # #3202: the finding's OWN id only. #1476 also tried the ids dedupe
+    # collapsed into it, which let one claim's verdict stand in for another's.
+    candidates = by_fid.get(str(fid)) or []
+    if run_id is not None:
+        candidates = [c for c in candidates if c.get("run_id") == run_id]
     if not candidates:
         return None
     backups = [c for c in candidates if c.get("stage") == "backup"]
