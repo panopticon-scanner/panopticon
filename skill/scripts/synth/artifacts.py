@@ -24,7 +24,7 @@ def _read_json(path, limit, tolerant):
     return evidence_mod.load_json_tolerant(text) if tolerant else json.loads(text)
 
 
-def read_json(path, *, limit=None, tolerant=False, announce=False) -> Any:
+def read_json(path, *, limit=None, tolerant=False, announce=False, spell=True) -> Any:
     """Read JSON or raise OSError/ValueError, including parser resource errors.
 
     Strict JSON remains the default. Only existing agent-envelope readers opt
@@ -36,11 +36,15 @@ def read_json(path, *, limit=None, tolerant=False, announce=False) -> Any:
     `inert.surrogate_free`): this is the one reader of the run directory's JSON,
     and spelling HERE puts every cap a caller applies after the spelling, which
     is six characters for one. A document holding none comes back itself.
+    `spell=False` returns the document as decoded, surrogates and all, through
+    this same capped regular-file read: for a caller that must see the name a
+    surrogate stands for (#2962, `plan.load_groups_json`'s `raw_groups`).
     """
     if limit is None:
         limit = MAX_JSON_BYTES
     try:
-        return inert.surrogate_free(_read_json(path, limit, tolerant))
+        document = _read_json(path, limit, tolerant)
+        return inert.surrogate_free(document) if spell else document
     except (OSError, ValueError, RecursionError, MemoryError) as exc:
         error = exc
         if isinstance(exc, (RecursionError, MemoryError)):
