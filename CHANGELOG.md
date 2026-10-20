@@ -27,6 +27,17 @@ evidence exposed.
   unmeasured pattern form leaves its file listed; the symlink, exact-limit, awkward-name and bound
   cases; and a file over 1 MB with a canary goes through the stamp, ingest and report and is listed,
   with certification withheld.
+- **Fixed-name staging writes refuse planted FIFOs and hard links (#2093).** The generic
+  `.panopticon` writer opened `<path>.tmp` with `O_TRUNC` but not `O_EXCL`, as did the manifest,
+  X0X and tree-baseline paths through that same primitive. A hard link at any of those names
+  was therefore truncated along with its victim; FIFO opens were only bounded by the later
+  nonblocking artifact fix. One shared staging opener now creates with
+  `O_CREAT|O_EXCL|O_NOFOLLOW|O_NONBLOCK`, reusing a leftover only when `lstat` proves it is a
+  singly-linked regular file. The four writers use that opener, and reject symlinks, special
+  files and multiply-linked files before writing. Pins in `tests/test_artifact_write_symlinks.py`
+  put a FIFO and hard link at every fixed staging name, enforce a deadline and preserve the
+  victim; `tests/test_safe_write.py` pins the exact flags and `tests/test_run_manifest.py` pins
+  safe stale-file reuse and the stronger internal-symlink refusal.
 - **A file Semgrep gives up on is disclosed, not silently dropped (#2957).** Semgrep stops running a
   rule on a file after 5 seconds, and it abandons the file once 3 rules have timed out on it. Either
   way that file's findings were missing, Semgrep still exited 0, and nothing in the report said so.

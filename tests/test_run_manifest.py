@@ -511,19 +511,26 @@ class TestRewriteDoesNotFollowAPlantedTmpSymlink(unittest.TestCase):
             self.assertEqual(fh.read(), "PRECIOUS")
         self.assertNotIn(rm.POSTURE_DISCLOSED, rm.load_manifest(self.root))
 
-    def test_a_link_inside_panopticon_is_replaced_not_written_through(self):
+    def test_a_link_inside_panopticon_is_refused_not_written_through(self):
         # The confinement above answers a link pointing OUT; O_NOFOLLOW answers
         # the one that stays in, which is the half a whole-path check cannot see.
+        # #2093 requires every occupied fixed staging name to halt the rewrite.
         victim = self._victim(os.path.dirname(self.tmp))
         os.symlink(victim, self.tmp)
-        rm.record_posture_disclosure(self.root, rm.load_manifest(self.root), "d2")
+        with self.assertRaises(ValueError):
+            rm.record_posture_disclosure(self.root, rm.load_manifest(self.root), "d2")
         with open(victim, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "PRECIOUS")
-        path = rm.manifest_path(self.root)
-        self.assertFalse(os.path.islink(path))      # the link never became the manifest
+        self.assertNotIn(rm.POSTURE_DISCLOSED, rm.load_manifest(self.root))
+        self.assertTrue(os.path.islink(self.tmp))
+
+    def test_a_singly_linked_regular_staging_leftover_is_reused(self):
+        with open(self.tmp, "w", encoding="utf-8") as fh:
+            fh.write("stale")
+        rm.record_posture_disclosure(self.root, rm.load_manifest(self.root), "d2")
         self.assertEqual(rm.load_manifest(self.root)[rm.POSTURE_DISCLOSED]["digest"],
                          "d2")
-        self.assertFalse(os.path.exists(self.tmp))  # staging file renamed away
+        self.assertFalse(os.path.exists(self.tmp))
 
     def test_the_other_two_rewriters_stage_the_same_way(self):
         # One `_rewrite`, three callers (#1637 P08 F2, #1596, #1727): the fix
