@@ -177,13 +177,15 @@ def _unbound_setup_artifact(review_root, name, manifest):
       another id -- or none at all -- was not written by this run. The proposal
       carries no such field, which is why tracked-ness is all it has.
 
-    So an UNTRACKED `setup-proposal.json` is accepted as the host's own return
-    of the setup-scan dispatch -- which is the residual, disclosed rather than
-    closed (review finding 2, fix round 2): on a NON-GIT target nothing is
-    tracked (`runio._manifest_committed` answers False there), so the proposal
-    has no binding at all and only `setup-complete.json` is bound, by run id. A
-    real binding for it is setup's own dispatch request, which carries this run's
-    id and the request sha since #1727 -- a follow-up, not this fix.
+    * for the proposal, setup's own dispatch request (#2130). Tracked-ness
+      alone left a residual: an UNTRACKED proposal -- and on a NON-GIT target,
+      where `runio._manifest_committed` answers False, every proposal -- read
+      as the host's own return. Closed now: a proposal is this run's scan
+      result only when the setup namespace's request, read through
+      `requests.load_bound_request` (sha-bound to this setup manifest since
+      #1727), carries this run's id and names that path as its setup-scan
+      `out_file`; and `scan_execute` clears the path before it writes that
+      request, so what is there afterwards came after this run's dispatch.
 
     An absent or unparseable file is nobody's evidence and gets no reason: it
     satisfies no predicate anyway, and a refusal named over it would be noise --
@@ -199,7 +201,7 @@ def _unbound_setup_artifact(review_root, name, manifest):
                      "artifact is never committed -- remove it from the repository "
                      "(while it is there this phase ignores it and runs again)")
     if name != "setup-complete.json":
-        return doc, None
+        return doc, _unrequested_proposal(review_root, path, manifest)
     want = (manifest or {}).get("run_id")
     got = doc.get("run_id") if isinstance(doc, dict) else None
     if want and got == want:
@@ -208,6 +210,35 @@ def _unbound_setup_artifact(review_root, name, manifest):
     # a run that does not say which run it is.
     return doc, ("it carries run_id %r, not this setup run's %r -- "
                  "`driver setup --reset` starts over" % (got, want))
+
+def _unrequested_proposal(review_root, path, manifest):
+    """Why `path`, the proposal, is not the return of THIS run's setup-scan
+    dispatch, or None when it is (#2130). Fails closed on everything: no bound
+    request, a request for another run or another checkpoint, or one whose
+    setup-scan entry names another `out_file`."""
+    request, refusal = requests.load_bound_request(review_root, namespace=loop_batch.SETUP_NAMESPACE)
+    want = (manifest or {}).get("run_id")
+    entries = request.get("entries") if isinstance(request, dict) else None
+    if (refusal is None and want and isinstance(request, dict) and request.get("run_id") == want
+            and request.get("checkpoint") == "scan"
+            and any(isinstance(e, dict) and e.get("id") == "setup-scan"
+                    and e.get("out_file") == os.path.abspath(path) for e in entries or ())):
+        return None
+    return ("no setup-scan dispatch request of this run names it (%s), so it is not this run's "
+            "scan result -- `driver setup --reset` starts over"
+            % (refusal or "no request of this run's"))
+
+def _clear_proposal(review_root):
+    """Remove whatever sits at the proposal's path before the scan request is
+    written (#2130), so a file found there afterwards is the host's return to
+    THIS dispatch and never one the target shipped. `os.unlink` removes a
+    planted symlink itself, never what it names; a directory is refused."""
+    path = runio._pano(review_root, "setup-proposal.json")
+    if os.path.isdir(path) and not os.path.islink(path):
+        raise runio.DriverError("%s is a directory; the setup scan writes a file there -- "
+                                "remove it, or `driver setup --reset`" % path)
+    if os.path.lexists(path) and not runio._manifest_committed(review_root, path):
+        os.unlink(path)
 
 def _bound_setup_artifact(review_root, name, manifest):
     """True when `.panopticon/<name>` parses AND this run wrote it. ONE read for
@@ -259,6 +290,7 @@ def scan_execute(review_root, manifest):
     # setup-scan needs the operator's acknowledgement, and a refusal must
     # leave no dispatch request behind for a resume to pick up (#1737).
     setup_ack.require_unenforced_scan_ack(review_root, manifest, [entry])
+    _clear_proposal(review_root)        # #2130: what lands there after this is the host's return
     # #1507: setup's own namespace -- never the per-run resolver, which routed
     # this into whatever runs/latest pointed at and clobbered that run's request.
     req, sha = requests.write_dispatch_request_bound(

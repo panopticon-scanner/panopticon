@@ -29,6 +29,18 @@ evidence exposed.
   download reaching forward only, the gate off elsewhere, one linear pass) and
   `TestEveryStepADownloadReachesIsFullyRead` (the lint reads the fleet through the subset; the
   exemption checks). Sizes: `scripts/workflow_guard.py` 674, `scripts/workflow_subset.py` 87.
+- **`driver setup` reads a setup proposal only as the return of its own scan dispatch (#2130).** An
+  untracked `.panopticon/setup-proposal.json`, and on a non-git target any proposal, was read as
+  this run's scan result. A target could ship one and have its own grouping ingested.
+  - A proposal now satisfies `scan_done` only when setup's sha-bound dispatch request
+    (`requests.load_bound_request`, #1727) carries this run's id and names that path as its
+    setup-scan `out_file`.
+  - `scan_execute` clears the path before it writes that request, so what is there afterwards came
+    after this run's dispatch.
+  - Otherwise the proposal is ignored with the `driver setup --reset` remedy, and the scan runs.
+  Pins: `tests/phases/test_setup.py::TestSetupDonePredicatesBindToThisRun` (git and non-git
+  targets). Five `TestDriverSetup` tests that played the host's return without a dispatch now use
+  the registered-machine fixture, so their first invocation really dispatches.
 - **Skipped coverage artifacts prevent certification (#2080).** Unreadable, malformed,
   oversized, non-object and group-less coverage files are disclosed in
   `meta.integrity.coverage_files_skipped` and make an otherwise passing gate INCONCLUSIVE,

@@ -416,7 +416,7 @@ class TestDriverSetup(unittest.TestCase):
         self.assertIn("settings:", err.getvalue())
 
     def test_ingest_writes_draft_then_completes(self):
-        d = self._repo()
+        d = self._registered_repo()
         args = driver.build_parser().parse_args(["setup", d])
         setup.run_setup_flow(args)                       # scan checkpoint
         proposal = {"groups": [{"capability": "Checkout",
@@ -468,7 +468,7 @@ class TestDriverSetup(unittest.TestCase):
     def test_completion_message_branches_on_draft_vs_fallback(self):
         # vocab-absent fallback: a flat root config, no draft -> the message
         # must not send the owner looking for a draft that was never written.
-        d1 = self._repo()
+        d1 = self._registered_repo()
         args1 = driver.build_parser().parse_args(["setup", d1])
         with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
                         return_value=({"names": []}, False)):
@@ -479,7 +479,7 @@ class TestDriverSetup(unittest.TestCase):
 
         # vocab-present path: ingest writes a real draft -> message should
         # point the owner at it.
-        d2 = self._repo()
+        d2 = self._registered_repo()
         args2 = driver.build_parser().parse_args(["setup", d2])
         setup.run_setup_flow(args2)                       # scan checkpoint
         proposal = {"groups": [{"capability": "Checkout",
@@ -508,7 +508,7 @@ class TestDriverSetup(unittest.TestCase):
         self.assertIn("docker", status["message"])
 
     def test_ingest_malformed_proposal_errors(self):
-        d = self._repo()
+        d = self._registered_repo()
         args = driver.build_parser().parse_args(["setup", d])
         setup.run_setup_flow(args)
         with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
@@ -779,7 +779,7 @@ class TestDriverSetup(unittest.TestCase):
         # scan and ingest cannot move the cap or the ceiling under the brief.
         # max_per_group: 7 is below the 8-48 band (#1681 Plan 2), so the
         # manifest pins the clamped 8 -- the number a run would actually use.
-        d = self._repo()
+        d = self._registered_repo()
         self._write_settings(d, 7, 9)
         setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
         manifest = setup.load_setup_manifest(d)
@@ -793,7 +793,7 @@ class TestDriverSetup(unittest.TestCase):
         report = runio._load_json(runio._pano(d, "setup-report.json"))["report"]
         self.assertEqual((report["cap"], report["ceiling"]), (8, 9))
         # the CLI still wins over config
-        d2 = self._repo()
+        d2 = self._registered_repo()
         self._write_settings(d2, 7, None)
         setup.run_setup_flow(driver.build_parser().parse_args(
             ["setup", d2, "--max-per-group", "3"]))
@@ -841,7 +841,7 @@ class TestDriverSetup(unittest.TestCase):
             self.assertIn(surface, brief)
 
     def test_reset_clears_the_report_artifacts(self):
-        d = self._repo()
+        d = self._registered_repo()
         args = driver.build_parser().parse_args(["setup", d])
         setup.run_setup_flow(args)
         with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
@@ -2148,12 +2148,69 @@ class TestSetupDonePredicatesBindToThisRun(unittest.TestCase):
                 self.assertFalse(setup.scan_done(d, m))
                 self.assertFalse(setup.ingest_done(d, m))
 
+    def _dispatch(self, repo, manifest):
+        """THIS run's setup-scan dispatch, for real: the setup manifest on disk
+        (as `run_setup_flow` pins it), then `scan_execute`, which writes the
+        sha-bound request naming the proposal's path."""
+        os.makedirs(os.path.join(repo, ".panopticon"), exist_ok=True)
+        runio._write_json(setup._setup_manifest_path(repo), manifest)
+        self.assertEqual("checkpoint", setup.scan_execute(repo, manifest).kind)
+
+    def _plain_dir(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        os.makedirs(os.path.join(d, "src", "checkout"))
+        with open(os.path.join(d, "src", "checkout", "pay.py"), "w", encoding="utf-8") as fh:
+            fh.write("x = 1\n")
+        write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
+        return d
+
+    def test_an_untracked_planted_proposal_with_no_request_is_not_done(self):
+        # #2130: on a git target and on a plain directory alike, an untracked
+        # proposal no dispatch of this run asked for is nobody's scan result.
+        for kind, make in (("git", self._repo), ("non-git", self._plain_dir)):
+            with self.subTest(target=kind):
+                d = make()
+                m = self._manifest(d)
+                self._plant(d, "setup-proposal.json", self._PROPOSAL)
+                self.assertFalse(setup.scan_done(d, m))
+                _doc, reason = setup._unbound_setup_artifact(d, "setup-proposal.json", m)
+                self.assertIn("--reset", reason)
+
+    def test_the_hosts_return_after_this_runs_dispatch_is_done(self):
+        for kind, make in (("git", self._repo), ("non-git", self._plain_dir)):
+            with self.subTest(target=kind):
+                d = make()
+                m = self._manifest(d)
+                self._dispatch(d, m)
+                self.assertFalse(setup.scan_done(d, m))       # nothing returned yet
+                self._plant(d, "setup-proposal.json", self._PROPOSAL)
+                self.assertTrue(setup.scan_done(d, m))
+
+    def test_a_proposal_planted_before_the_dispatch_does_not_survive_it(self):
+        for kind, make in (("git", self._repo), ("non-git", self._plain_dir)):
+            with self.subTest(target=kind):
+                d = make()
+                m = self._manifest(d)
+                planted = self._plant(d, "setup-proposal.json", self._PROPOSAL)
+                self._dispatch(d, m)
+                self.assertFalse(os.path.lexists(planted))
+                self.assertFalse(setup.scan_done(d, m))
+
+    def test_another_runs_request_binds_no_proposal(self):
+        d = self._repo()
+        self._dispatch(d, self._manifest(d, run_id="AN-EARLIER-SETUP-RUN"))
+        self._plant(d, "setup-proposal.json", self._PROPOSAL)
+        self.assertFalse(setup.scan_done(d, self._manifest(d)))
+
     def test_this_runs_own_untracked_artifacts_still_read_done(self):
         # The resume case, both halves: the marker the driver wrote for THIS
         # run (`_scan_fallback` stamps the id) and the proposal the host wrote
-        # back are untracked, and both still satisfy their predicate.
+        # back after this run's dispatch (#2130) are untracked, and both still
+        # satisfy their predicate.
         d = self._repo()
         m = self._manifest(d)
+        self._dispatch(d, m)
         self._plant(d, "setup-proposal.json", self._PROPOSAL)
         self.assertTrue(setup.scan_done(d, m))
         self.assertFalse(setup.ingest_done(d, m))
