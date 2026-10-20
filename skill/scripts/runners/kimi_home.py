@@ -114,18 +114,11 @@ READ_MATCHER = "Read|ReadMediaFile|Grep|Glob"
 WRITE_MATCHER = "Write|Edit"
 
 
-def allowed_tool_union():
-    """Every tool name the driver's role templates grant, across all roles.
-
-    Derived from the shipped templates (dispatch.load_template's `tool_policy`),
-    which are also what `--emit-host-agents kimi` renders into each shell's
-    `tools:` block -- so the deny-list below cannot drift from the grants.
-    """
-    allowed = set()
-    for role_file in dispatch.ROLE_FILES.values():
-        meta, _body = dispatch.load_template(role_file)
-        allowed |= set(meta["tool_policy"]["allowed"] or [])
-    return allowed
+# Every tool name the driver's role templates grant, across all roles -- the
+# templates `--emit-host-agents kimi` renders into each shell's `tools:` block,
+# so the deny-list below cannot drift from the grants. Derived in `dispatch`
+# (#2060), which Claude's unenforced `--tools` allow-list reads too.
+allowed_tool_union = dispatch.allowed_tool_union
 
 
 def disabled_tools(vocabulary=None):

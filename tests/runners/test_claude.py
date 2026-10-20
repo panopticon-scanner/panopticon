@@ -34,6 +34,68 @@ def _entry(enforced, model="claude-sonnet-5"):
             "out_file": "/r/.panopticon/runs/t/findings-app-SEC.json"}
 
 
+class TestTheUnenforcedLaunchHoldsTheTemplateAllowList(unittest.TestCase):
+    """#2060: a deny-list cannot close a tool name it has not heard of that the
+    operator allowed at user scope. MEASURED on 2.1.304: the unenforced argv
+    exposed eleven such names; `--tools=<the templates' union>` left exactly the
+    granted four, and the `--settings` guard still fired."""
+
+    REAL_TOOLS_PREFLIGHT = True
+
+    def tools_tokens(self, entry):
+        cmd = claude_runner.Runner("claude").command(entry, "/s.json", max_turns=40)
+        return cmd, [a for a in cmd if a.startswith("--tools")]
+
+    def test_the_unenforced_argv_carries_the_derived_union_as_one_token(self):
+        for entry in (_entry(False), _entry(False, model=None)):
+            with self.subTest(model=entry.get("model")):
+                cmd, tokens = self.tools_tokens(entry)
+                self.assertEqual(tokens, ["--tools=Glob,Grep,Read,Write"])
+                self.assertEqual(tokens, ["--tools=" + ",".join(sorted(
+                    claude_runner.dispatch.allowed_tool_union()))])
+                self.assertLess(cmd.index(tokens[0]), len(cmd) - 1)
+
+    def test_a_template_grant_moves_the_token(self):
+        real = claude_runner.dispatch.load_template
+
+        def granting(role_file):
+            meta, body = real(role_file)
+            meta = dict(meta, tool_policy=dict(meta["tool_policy"],
+                                               allowed=list(meta["tool_policy"]["allowed"] or []) + ["Edit"]))
+            return meta, body
+
+        with mock.patch.object(claude_runner.dispatch, "load_template", side_effect=granting):
+            _cmd, tokens = self.tools_tokens(_entry(False))
+        self.assertEqual(tokens, ["--tools=Edit,Glob,Grep,Read,Write"])
+
+    def test_the_enforced_argv_carries_no_allow_list(self):
+        self.assertEqual(self.tools_tokens(_entry(True))[1], [])
+
+    def _prepare(self, help_text, returncode=0):
+        seen = []
+
+        def fake(argv, **kwargs):
+            seen.append(list(argv))
+            return mock.Mock(returncode=returncode, stdout=help_text, stderr="")
+
+        with tempfile.TemporaryDirectory() as d:
+            claude_runner.Runner("claude", runner=fake).prepare(d, review_root=d)
+        return seen
+
+    def test_prepare_refuses_a_cli_without_tools(self):
+        with self.assertRaises(ValueError) as raised:
+            self._prepare("  --disallowedTools <tools...>\n  --restricted\n")
+        self.assertIn("refusing the run rather than launch it unconfined", str(raised.exception))
+
+    def test_prepare_accepts_a_cli_with_tools_and_asks_help_once(self):
+        seen = self._prepare("  --tools <tools...>   Specify the list of available tools\n")
+        self.assertEqual(seen, [["claude", "--help"]])
+
+    def test_an_unreadable_help_is_a_refusal_too(self):
+        with self.assertRaises(ValueError):
+            self._prepare("  --tools <tools...>\n", returncode=1)
+
+
 class TestCommand(unittest.TestCase):
     def setUp(self):
         self.r = claude_runner.Runner("claude")

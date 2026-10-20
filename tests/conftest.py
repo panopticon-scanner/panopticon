@@ -320,3 +320,18 @@ def _fresh_run_ledgers():
     yield
     for ledger in RUN_LEDGERS:
         ledger.clear()
+
+
+# #2060: `runners.claude.Runner.prepare` reads `claude --help` through the
+# runner's own launcher and refuses a CLI that does not offer `--tools`. Tests
+# that call `prepare` exist to test something else, through fakes (or the
+# launch refusal above), so the preflight is stood down for them -- except in
+# a class that sets REAL_TOOLS_PREFLIGHT, which tests the preflight itself.
+@pytest.fixture(autouse=True)
+def _stand_down_the_claude_tools_preflight(request, monkeypatch):
+    if getattr(request.cls, "REAL_TOOLS_PREFLIGHT", False):
+        return
+    import scripts.runners.claude as claude_runner
+    monkeypatch.setattr(claude_runner.Runner, "require_tools_flag", lambda self, cwd=None: None,
+                        raising=False)
+

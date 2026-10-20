@@ -25,6 +25,26 @@ evidence exposed.
   snapshots; the live review-to-verify-to-synthesis rows; schema, key order, gate, and both human
   renderers.
 
+- **The unenforced claude launch holds the role templates' tool grant as an allow-list (#2060).**
+  The `--model` and model-less launches carried only a deny-list, which cannot close a tool name it
+  has never heard of that the operator allowed at user scope. MEASURED on claude 2.1.304 with the
+  run's own argv: eleven such names were live (CronCreate, CronDelete, CronList, RemoteTrigger,
+  ScheduleWakeup, PushNotification, DesignSync, ListAgents, ReportFindings, ToolSearch, Edit).
+  Changes:
+  - The unenforced argv now carries `--tools=Glob,Grep,Read,Write` as one token. It is derived from
+    the templates (`dispatch.allowed_tool_union`, which Kimi's deny-list now reads too) and leaves
+    exactly those four tools; the `--settings` guard still fires.
+  - The deny-list stays as belt and braces.
+  - `prepare` refuses a run whose CLI does not offer `--tools`, rather than launch unconfined.
+  - `--restricted` was measured for the record. It removes only CronCreate and RemoteTrigger, so it
+    is not adopted.
+- **The verify advisors are handed each claim's title bounded and inert (#2074).** A title is
+  reviewer- or tool-authored text about the target, yet it reached both advisor prompts whole and
+  raw while the description was capped. `runio.capped_title` now renders control characters inert
+  (`_prompt_safe`) and cuts the title at 200 characters with a marked cut. It is used by
+  `verify._render_findings` and by the tool-advisor claim (`verify_tools._tool_verify_entry`).
+  Pins: `tests/phases/test_verify_backpressure.py::TestClaimTitleIsBounded` (a 20 kB title holding
+  `\x1b[2K`, through both renderers).
 - **Scanners no longer take their config from the scan root they review (#2055).** Three scanners
   read files the reviewed repository commits, so it could narrow or silence them. Measured on the
   pinned tools:

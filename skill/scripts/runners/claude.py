@@ -5,6 +5,8 @@ import math
 import os
 import subprocess
 
+import scripts.dispatch as dispatch
+import scripts.probes.common as probes_common
 import scripts.runners.base as base
 import scripts.runners.outage as outage
 import scripts.runners.schema as schema_argv_rules
@@ -99,6 +101,22 @@ UNENFORCED_DENIED_TOOLS = (
 # and no parse-time tool vocabulary for a name in the tuple to fail against.
 DENY_FLAG = "--disallowedTools=%s"
 
+# #2060: the unenforced launch's ALLOW-list, the templates' grants
+# (`dispatch.allowed_tool_union`) as ONE `--tools=` token -- variadic like
+# `--disallowedTools`, so the same `=` form. MEASURED on 2.1.304 (stream-json
+# init `tools`): today's unenforced argv exposed 15 tools, eleven of them names
+# the deny-list above has never heard of (CronCreate, CronDelete, CronList,
+# RemoteTrigger, ScheduleWakeup, PushNotification, DesignSync, ListAgents,
+# ReportFindings, ToolSearch, Edit); with this token exactly Glob, Grep, Read,
+# Write remain, and the `--settings` PreToolUse guard still fired. An allow
+# rule grants PERMISSION for a tool, and cannot add one the session lacks, so
+# this closes the operator's user-scope allow rules by construction. The
+# deny-list stays as belt and braces: deny beats allow, and it holds if a CLI
+# ever ignores `--tools`. `--restricted` measured too (record only): it took
+# away only CronCreate and RemoteTrigger, and confines writes to the cwd.
+TOOLS_FLAG = "--tools=%s"
+TOOLS_FLAG_NAME = "--tools"
+
 
 def _measured_number(details, field):
     """A usable host measurement, never a malformed value or inferred zero."""
@@ -171,6 +189,20 @@ class Runner(base.HostRunner):
         self.allowlist_path = os.path.join(run_dir, base.ALLOWLIST_FILE)
         self.scope_path = os.path.join(run_dir, base.SCOPE_FILE)
         os.makedirs(run_dir, exist_ok=True)
+        self.require_tools_flag(run_dir)
+
+    def require_tools_flag(self, cwd=None):
+        """Refuse the run when this CLI does not offer `--tools` (#2060): every
+        unenforced launch carries the template allow-list as that flag, and a
+        CLI that cannot take it would launch the reviewer UNCONFINED -- halt
+        loudly instead. One `--help` read per run, through the runner's own
+        launcher (`probes.common._cli_help`, the seam the suite guards)."""
+        text, _verdict, why = probes_common._cli_help(self.runner, self.CLI, cwd=cwd)
+        if text is None or not probes_common._flag_advertised(TOOLS_FLAG_NAME, text):
+            raise ValueError(
+                "claude: this CLI does not offer `%s` (%s), so an unenforced reviewer could not be held "
+                "to the role templates' tool grant; refusing the run rather than launch it unconfined "
+                "(#2060). Upgrade the claude CLI." % (TOOLS_FLAG_NAME, why or "not in `claude --help`"))
 
     def command(self, entry, settings_path, max_turns):
         """The argv for one entry. No per-entry budget arm (M5, final review):
@@ -246,6 +278,7 @@ class Runner(base.HostRunner):
             # deciding the tool surface.
             if not entry.get("enforced") and entry.get("model"):
                 cmd += ["--model", entry["model"]]
+            cmd.append(TOOLS_FLAG % ",".join(sorted(dispatch.allowed_tool_union())))
             cmd.append(DENY_FLAG % ",".join(UNENFORCED_DENIED_TOOLS))
         # `--json-schema <schema>` takes the JSON text, not a file (see
         # `runners/schema.py` for the measurement and the run it cost).
