@@ -132,7 +132,7 @@ class TestHostCapabilitiesResolvesUnderTheRunDir(unittest.TestCase):
             json.dump({"findings": []}, fh)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            syn.main(argv + ["findings-g1-COD.json"])
+            syn.main(["--repo", *argv, "findings-g1-COD.json"])
         with open("report.json") as fh:
             return json.load(fh)
 

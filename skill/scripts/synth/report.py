@@ -114,6 +114,10 @@ def _unplaceable_by_tool(findings):
     return counts
 
 
+class ReviewScopeError(ValueError):
+    """Neither the operator nor the inventory names this review's scope."""
+
+
 @dataclass(frozen=True)
 class RunConfig:
     """What the operator asked for (WS-0 S2): the target, the gate policy and
@@ -155,17 +159,26 @@ class RunConfig:
                   panel_tools_context=None, tools_disabled_mid_run=False,
                   config=None):
         """The CLI flags resolved against the run's groups.json (WS-0 S3):
-        an explicit --changes wins over a discovered mode (a groups.json mode
-        must not flip an explicitly-requested changes review back to repo);
-        --security wins over the file's security_mode; both default to
-        repo / standard. `groups_json` is {} when there is no readable file.
+        explicit --changes / --repo wins over a discovered mode; without
+        either, a missing or unsupported groups.json mode refuses the report.
+        --security wins over the file's security_mode and defaults to standard.
+        `groups_json` is {} when there is no readable file.
         `host_capabilities` is the parsed host-capabilities.json artifact (or
         {} when absent/corrupt); the caller reads it, this classmethod only
         threads it through."""
-        review_type = "changes" if args.changes else "repo"
-        if not args.changes:
-            review_type = findings_mod.MODE_TO_REVIEW_TYPE.get(groups_json.get("mode"),
-                                                               review_type)
+        if args.changes:
+            review_type = "changes"
+        elif getattr(args, "repo", False):
+            review_type = "repo"
+        else:
+            mode = groups_json.get("mode")
+            if not isinstance(mode, str) or mode not in findings_mod.MODE_TO_REVIEW_TYPE:
+                reason = "missing" if mode is None else "unsupported"
+                raise ReviewScopeError(
+                    "review scope refused: %s groups.json mode; pass --repo to "
+                    "declare a repository-wide review, or --changes for a changes review"
+                    % reason)
+            review_type = findings_mod.MODE_TO_REVIEW_TYPE[mode]
         security_mode = args.security
         if security_mode is None:
             security_mode = groups_json.get("security_mode", "standard")

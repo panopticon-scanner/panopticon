@@ -156,7 +156,7 @@ class TestMatrixFindingId(unittest.TestCase):
             # because --run-dir alone does not disable groups auto-discovery.
             with contextlib.chdir(caller_root):
                 with contextlib.chdir(isolated_root):
-                    result = synthesize.main(["--run-dir", str(run_dir), "--out", out, str(p)])
+                    result = synthesize.main(["--repo", "--run-dir", str(run_dir), "--out", out, str(p)])
             with open(out, encoding="utf-8") as fh:
                 rep = json.load(fh)
             self.assertEqual(result, 0)

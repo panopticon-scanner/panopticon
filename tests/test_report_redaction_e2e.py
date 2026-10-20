@@ -137,7 +137,7 @@ def _run(tmpdir, max_bytes=None):
         json.dump(_findings_doc(), fh)
     groups = os.path.join(src_dir, "groups.json")
     with open(groups, "w", encoding="utf-8") as fh:
-        json.dump({"groups": [{"name": "app",
+        json.dump({"mode": "repo", "groups": [{"name": "app",
                                "files": ["app/x.py", "app/y.py"]}]}, fh)
     with contextlib.redirect_stderr(io.StringIO()):
         loaded = findings_mod.load_findings([fp])
@@ -332,7 +332,7 @@ class TestWholeTreeBackstopIsANoOpOnCleanReports(unittest.TestCase):
                        "by_phase": {"review": 10290000, "verify": 6300000,
                                     "coverage": 4463000}}, fh)
         with open(os.path.join(run, "groups.json"), "w", encoding="utf-8") as fh:
-            json.dump({"groups": [{"name": "app", "files": ["app/x.py"]}]}, fh)
+            json.dump({"mode": "repo", "groups": [{"name": "app", "files": ["app/x.py"]}]}, fh)
         # A run artifact whose contents are structured, not prose: the posture
         # is copied into meta.host_capabilities VERBATIM, so it is the sharpest
         # test of "the walk changes nothing that is not a secret".
@@ -469,7 +469,7 @@ class TestTwoPassFingerprintStability(unittest.TestCase):
                 # Pass 1: the orchestrator's --emit-verify-queue run.
                 with contextlib.redirect_stdout(io.StringIO()), \
                         contextlib.redirect_stderr(io.StringIO()):
-                    syn.main(["--target", "app", "--run-dir", run,
+                    syn.main(["--repo", "--target", "app", "--run-dir", run,
                               "--emit-verify-queue", fp])
                 with open(os.path.join(run, "verify-queue.json"),
                           encoding="utf-8") as fh:
@@ -487,7 +487,7 @@ class TestTwoPassFingerprintStability(unittest.TestCase):
                 # Pass 2: the report run, same inputs.
                 with contextlib.redirect_stdout(io.StringIO()), \
                         contextlib.redirect_stderr(io.StringIO()):
-                    syn.main(["--target", "app", "--run-dir", run,
+                    syn.main(["--repo", "--target", "app", "--run-dir", run,
                               "--out", os.path.join(out_dir, "report.json"),
                               "--verdicts-dir", v_dir, fp])
             with open(os.path.join(out_dir, "report.json"), encoding="utf-8") as fh:

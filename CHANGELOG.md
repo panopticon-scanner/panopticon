@@ -7,6 +7,12 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Review scope labels are complete and explicit (#2088).** Inventory mode `changed` now
+  publishes `review_type: changes`, and mode `pr` publishes `pr`. Missing, unsupported or
+  repaired-away modes halt synthesis with a named reason before writing a report. Standalone
+  synthesis must declare its scope with `--repo` or `--changes`, or supply a groups inventory
+  with a known mode; the two explicit scope flags are mutually exclusive.
+
 - **A guard hook denies a payload too deep to parse instead of crashing open (#3186).** The read,
   write and kimi guard hooks parsed their stdin OUTSIDE their fail-closed envelope and caught
   `ValueError` only. A deeply nested payload raised `RecursionError`: a traceback and exit 1, which

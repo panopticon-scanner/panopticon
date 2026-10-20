@@ -56,8 +56,11 @@ def build_parser():
     ap.add_argument("--severity", metavar="LEVEL", type=str.lower,
                     choices=["all", "medium", "high", "critical"], default="all",
                     help="Minimum severity to include in the report (all, medium, high, critical)")
-    ap.add_argument("--changes", "-c", action="store_true",
-                    help="Alias for a changes/diff review type")
+    scope = ap.add_mutually_exclusive_group()
+    scope.add_argument("--repo", action="store_true",
+                       help="Explicitly declare a repository-wide review type")
+    scope.add_argument("--changes", "-c", action="store_true",
+                       help="Explicitly declare a changes/diff review type")
     ap.add_argument("--out", default=None)
     ap.add_argument("--run-id", default=None,
                     help="driver run-manifest run_id -> X0X generated_by.run_id")
@@ -300,11 +303,15 @@ def main(argv=None):
     # artifact, and fail-closed to two zeroes when it is absent -- a direct
     # `synthesize.py` invocation over hand-collected findings files never had
     # a driver to write it.
-    run = report_mod.RunConfig.from_args(
-        args, gj, ts, host_capabilities=host_capabilities,
-        panel_tools_context=plan_mod.load_panel_tools_context(run_dir),
-        tools_disabled_mid_run=getattr(args, "tools_disabled_mid_run", False),
-        config=config_schema.load_resolution(run_dir))
+    try:
+        run = report_mod.RunConfig.from_args(
+            args, gj, ts, host_capabilities=host_capabilities,
+            panel_tools_context=plan_mod.load_panel_tools_context(run_dir),
+            tools_disabled_mid_run=getattr(args, "tools_disabled_mid_run", False),
+            config=config_schema.load_resolution(run_dir))
+    except report_mod.ReviewScopeError as exc:
+        print("synthesize: %s" % exc, file=sys.stderr)
+        return validate_schema_mod.ARTIFACT_INVALID  # fatal even beside an old report
     plans = plan_mod.load_dispatch_plans_detailed(panopticon_dir=run_dir)
     # #1701: `gated_suppressed` is the name-based drops the gate must still
     # count under --security redteam; empty otherwise. It rides to certification

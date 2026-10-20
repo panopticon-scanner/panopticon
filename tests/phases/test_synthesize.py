@@ -300,7 +300,7 @@ class TestSynthesizePhase(unittest.TestCase):
         manifest = dict(self.manifest,
                         target=os.path.join(self.root, name),
                         review_root=os.path.join(self.root, "pr-worktree"))
-        runio._write_json(runio._pano(self.root, "groups.json"), {"groups": []})
+        runio._write_json(runio._pano(self.root, "groups.json"), {"mode": "repo", "groups": []})
 
         synthesize.synthesize_execute(self.root, manifest)
 
@@ -323,7 +323,7 @@ class TestSynthesizePhase(unittest.TestCase):
             fh.write("original = 1\n" * 9)
         with open(os.path.join(self.root, "app.py"), "w") as fh:
             fh.write("first = 1\n\nsecond = 2\n")
-        runio._write_json(runio._pano(self.root, "groups.json"), {
+        runio._write_json(runio._pano(self.root, "groups.json"), {"mode": "repo",
             "groups": [{"name": "app", "files": ["app.py"]}]})
 
         for target in (self.root, original):
@@ -343,7 +343,7 @@ class TestSynthesizePhase(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = os.path.realpath(directory)
             os.makedirs(runio._pano(root))
-            runio._write_json(runio._pano(root, "groups.json"), {"groups": []})
+            runio._write_json(runio._pano(root, "groups.json"), {"mode": "repo", "groups": []})
             report = runio._report_out(root)
             paths = {
                 "report": report,
@@ -446,7 +446,7 @@ class TestSynthesizePhase(unittest.TestCase):
             pano = runio._pano(root)
             os.makedirs(pano)
             groups = runio._pano(root, "groups.json")
-            runio._write_json(groups, {"groups": []})
+            runio._write_json(groups, {"mode": "repo", "groups": []})
             report = runio._report_out(root)
             cmd = [
                 sys.executable, runio._script("synthesize.py"),
@@ -521,7 +521,7 @@ class TestSynthesizePhase(unittest.TestCase):
         with open(os.path.join(self.root, "src", "app.py"), "w") as fh:
             fh.write("a = 1\nb = 2\nc = 3\n")
         runio._write_json(runio._pano(self.root, "groups.json"),
-                         {"groups": [{"name": "app", "files": ["src/app.py"]}]})
+                         {"mode": "repo", "groups": [{"name": "app", "files": ["src/app.py"]}]})
         runio._write_json(runio._pano(self.root, "coverage-app.json"),
                          {"group": "app", "floor": [], "effective": [],
                           "run_id": "R"})
@@ -590,7 +590,7 @@ class TestSynthesizePhase(unittest.TestCase):
         } for index, point in enumerate(points)]
         runio._write_json(
             runio._pano(self.root, "groups.json"),
-            {"groups": [{"name": "app", "files": []}]},
+            {"mode": "repo", "groups": [{"name": "app", "files": []}]},
         )
         runio._write_json(
             runio._pano(self.root, "findings-app-SEC.json"),
@@ -642,7 +642,7 @@ class TestSynthesizePhase(unittest.TestCase):
         )
         runio._write_json(
             runio._pano(self.root, "groups.json"),
-            {"groups": [{"name": "app", "files": []}]},
+            {"mode": "repo", "groups": [{"name": "app", "files": []}]},
         )
         runio._write_json(
             runio._pano(self.root, "findings-app-SEC.json"),
@@ -1076,7 +1076,7 @@ class TestTheDispatchPlanObligationReachesTheChild(unittest.TestCase):
         # writes NO dispatch-plan-driver.json. That is the on-disk state a
         # deletion leaves, reached without tampering with the tree. The
         # cells-declared shape is exercised by the class below.
-        runio._write_json(runio._pano(self.root, "groups.json"), {"groups": []})
+        runio._write_json(runio._pano(self.root, "groups.json"), {"mode": "repo", "groups": []})
 
     def _manifest(self, **kw):
         # `fail_on` so the gate is ARMED: with no findings its base verdict is
@@ -1227,7 +1227,7 @@ class TestTheOwedPlanOnTheLiveDriverPath(unittest.TestCase):
         run_manifest.write_manifest(self.root, self.manifest)
         write_host_evidence(self.root, {c: hosts.PROVEN for c in hosts.CAPABILITIES})
         runio._write_json(runio._pano(self.root, "groups.json"),
-                          {"groups": [{"name": "app", "files": ["src/app.py"]}]})
+                          {"mode": "repo", "groups": [{"name": "app", "files": ["src/app.py"]}]})
         with open(os.path.join(self.root, "panopticon.yml"), "w") as fh:
             fh.write("version: 1\ngroups:\n  app:\n    match: ['src/**']\n")
         runio._write_json(runio._pano(self.root, "coverage-app.json"),
