@@ -20,7 +20,7 @@ import unittest
 from scripts import semgrep_targets as st
 import scripts.ingest_tools as ingest
 from scripts.synth import findings as findings_mod, plan, report, tool_axis
-from scripts.tools.legacy_sarif import SEMGREP_MAX_TARGET_BYTES, SEMGREP_SCANNER_EXCLUDES, TOOL_CMD
+from scripts.tools.legacy_sarif import SEMGREP_SCANNER_EXCLUDES, TOOL_CMD
 
 PATHS = (
     '.git/config', 'a/.git/x', '.gitx/y', '.DS_Store', 'a/.DS_Store', 'x.DS_Store', '_darcs/d',
@@ -259,7 +259,7 @@ class TestTheWalk(unittest.TestCase):
 
 class TestTheStamp(unittest.TestCase):
     def test_the_limit_is_read_off_the_launched_argv(self):
-        self.assertEqual(st.argv_limit(TOOL_CMD["semgrep"]), SEMGREP_MAX_TARGET_BYTES)
+        self.assertEqual(st.argv_limit(TOOL_CMD["semgrep"]), 1_000_000)
         self.assertEqual(st.argv_limit(["semgrep", "--max-target-bytes=5"]), 5)
         self.assertEqual(st.argv_limit(["semgrep"]), st.SEMGREP_DEFAULT_MAX_TARGET_BYTES)
 
