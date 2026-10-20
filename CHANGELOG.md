@@ -18,6 +18,12 @@ evidence exposed.
   put a FIFO and hard link at every fixed staging name, enforce a deadline and preserve the
   victim; `tests/test_safe_write.py` pins the exact flags and `tests/test_run_manifest.py` pins
   safe stale-file reuse and the stronger internal-symlink refusal.
+- **Review scope labels are complete and explicit (#2088).** Inventory mode `changed` now
+  publishes `review_type: changes`, and mode `pr` publishes `pr`. Missing, unsupported or
+  repaired-away modes halt synthesis with a named reason before writing a report. Standalone
+  synthesis must declare its scope with `--repo` or `--changes`, or supply a groups inventory
+  with a known mode; the two explicit scope flags are mutually exclusive.
+
 - **A verify return that never answers is dispatched at most three times (#3185).** Verify charged
   an attempt only to a labeled bundle that answered nothing. A return that never loaded (nested past
   the depth bound, not JSON, or never written) re-dispatched its cell on every resume, so the run

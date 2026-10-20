@@ -328,7 +328,7 @@ class TestDriverPlanReconcile(unittest.TestCase):
     def _run(self, d, files):
         with _chdir(d):
             out_path = os.path.join(".panopticon", "report.json")
-            rc = syn.main(["--target", "t", "--fail-on", "high",
+            rc = syn.main(["--repo", "--target", "t", "--fail-on", "high",
                            "--out", out_path] + files)
             with open(out_path, encoding="utf-8") as fh:
                 return rc, json.load(fh)
@@ -1259,7 +1259,7 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
         The assertion is the DIVERGENCE, not the value: the report's metadata
         says what the file says, while the gate says what the flag says.
         """
-        _body, report = self._run(None, groups_json={"security_mode": "redteam",
+        _body, report = self._run(None, groups_json={"mode": "repo", "security_mode": "redteam",
                                                      "groups": []})
         # The file really does say redteam -- and the report's metadata, which
         # is allowed to read it, agrees. Without this the test would pass
@@ -1276,7 +1276,7 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
         # The same boundary from the other side: a target cannot turn the
         # redteam gate OFF by writing `standard` into its own groups.json.
         _body, report = self._run("redteam",
-                                  groups_json={"security_mode": "standard",
+                                  groups_json={"mode": "repo", "security_mode": "standard",
                                                "groups": []})
         self.assertEqual(report["summary"]["gate"], "FAIL")
         self.assertEqual(report["meta"]["coverage"]["tools_suppressed_gated"],

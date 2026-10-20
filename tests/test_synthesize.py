@@ -70,7 +70,7 @@ class TestPipelineCitations(unittest.TestCase):
 
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                syn.main(["--target", "src", "--out", out, fp])
+                syn.main(["--repo", "--target", "src", "--out", out, fp])
             with open(out) as _fh:
                 report = json.load(_fh)
             cites = report["findings"][0]["citations"]
@@ -143,7 +143,7 @@ class TestToolsDirIntegration(unittest.TestCase):
 
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                syn.main(["--target", "src", "--tools-dir", td, "--out", out, agent])
+                syn.main(["--repo", "--target", "src", "--tools-dir", td, "--out", out, agent])
             with open(out) as _fh:
                 report = json.load(_fh)
             secs = [f for f in report["findings"] if f["panel"] == "security"]
@@ -178,7 +178,7 @@ class TestHtmlOut(unittest.TestCase):
                     },
                     fh,
                 )
-            rc = syn.main(["--target", "test", "--out", out_json, "--html-out", out_html, finding])
+            rc = syn.main(["--repo", "--target", "test", "--out", out_json, "--html-out", out_html, finding])
             self.assertEqual(rc, 0)
             self.assertTrue(os.path.exists(out_html))
             with open(out_html, encoding="utf-8") as fh:
@@ -209,7 +209,7 @@ class TestHtmlOut(unittest.TestCase):
                     },
                     fh,
                 )
-            rc = syn.main(["--target", "test", "--out", out_json, "--html-out", out_html, finding])
+            rc = syn.main(["--repo", "--target", "test", "--out", out_json, "--html-out", out_html, finding])
             self.assertEqual(rc, 0)
             with open(out_html, encoding="utf-8") as fh:
                 content = fh.read()
@@ -291,7 +291,7 @@ class TestHtmlOut(unittest.TestCase):
             report = os.path.join(d, "report.json")
             with open(findings, "w", encoding="utf-8") as fh:
                 json.dump({"findings": []}, fh)
-            self.assertEqual(syn.main(["--out", report, findings]), 0)
+            self.assertEqual(syn.main(["--repo", "--out", report, findings]), 0)
             html_out = os.path.join(d, "compare.html")
             os.mkdir(html_out)
 
@@ -314,9 +314,9 @@ class TestHtmlOut(unittest.TestCase):
                 json.dump({"findings": []}, fh)
             paths = (report, report.replace(".json", "-x0x.json"), report + ".html")
 
-            first_status = syn.main(["--out", report, findings])
+            first_status = syn.main(["--repo", "--out", report, findings])
             first = {path: Path(path).read_bytes() for path in paths}
-            second_status = syn.main(["--out", report, findings])
+            second_status = syn.main(["--repo", "--out", report, findings])
             second = {path: Path(path).read_bytes() for path in paths}
 
             self.assertEqual((first_status, second_status), (0, 0))
@@ -414,7 +414,7 @@ class TestTwoPassCli(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, _chdir(d):
             fp = self._write_findings(d, [_agentic()])
             out = os.path.join(d, "report.json")
-            rc = syn.main(["--emit-verify-queue", "--out", out, fp])
+            rc = syn.main(["--repo", "--emit-verify-queue", "--out", out, fp])
             self.assertEqual(rc, 0)
             self.assertFalse(os.path.exists(out))
             with open(os.path.join(d, ".panopticon", "verify-queue.json")) as fh:
@@ -432,7 +432,7 @@ class TestTwoPassCli(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, _chdir(d):
             fp = self._write_findings(d, [])
             out = os.path.join(d, "report.json")
-            rc = syn.main(["--emit-verify-queue", "--out", out, fp])
+            rc = syn.main(["--repo", "--emit-verify-queue", "--out", out, fp])
             self.assertEqual(rc, 0)
             self.assertTrue(os.path.exists(out))
 
@@ -456,7 +456,7 @@ class TestTwoPassCli(unittest.TestCase):
                      "reasoning": "verified"}, fh
                 )
             out = os.path.join(d, "report.json")
-            rc = syn.main(["--verdicts-dir", vd, "--fail-on", "high", "--out", out, fp])
+            rc = syn.main(["--repo", "--verdicts-dir", vd, "--fail-on", "high", "--out", out, fp])
             self.assertEqual(rc, 1)  # gate FAIL -> exit 1
             with open(out) as fh:
                 report = json.load(fh)
@@ -477,7 +477,7 @@ class TestTwoPassCli(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, _chdir(d):
             fp = self._write_findings(d, [_agentic(sev="CRITICAL")])
             out = os.path.join(d, "report.json")
-            rc = syn.main(["--gate-unverified", "--fail-on", "critical", "--out", out, fp])
+            rc = syn.main(["--repo", "--gate-unverified", "--fail-on", "critical", "--out", out, fp])
             self.assertEqual(rc, 1)
 
     def test_pass1_empty_queue_removes_stale_queue_file(self):
@@ -500,7 +500,7 @@ class TestTwoPassCli(unittest.TestCase):
                     fh,
                 )
             out = os.path.join(d, "report.json")
-            rc = syn.main(["--emit-verify-queue", "--out", out, fp])
+            rc = syn.main(["--repo", "--emit-verify-queue", "--out", out, fp])
             self.assertEqual(rc, 0)
             self.assertTrue(os.path.exists(out))
             self.assertFalse(os.path.exists(qpath))
@@ -517,7 +517,7 @@ class TestTwoPassCli(unittest.TestCase):
             out = os.path.join(d, "report.json")
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
-                rc = syn.main(["--verdicts-dir", vd, "--out", out, fp])
+                rc = syn.main(["--repo", "--verdicts-dir", vd, "--out", out, fp])
             self.assertEqual(rc, 0)
             self.assertIn("no verdict", err.getvalue())
 
@@ -536,7 +536,7 @@ class TestTwoPassCli(unittest.TestCase):
             out = os.path.join(d, "report.json")
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
-                rc = syn.main(["--verdicts-dir", vd, "--out", out, fp])
+                rc = syn.main(["--repo", "--verdicts-dir", vd, "--out", out, fp])
             self.assertEqual(rc, 0)
             with open(out) as fh:
                 report = json.load(fh)
@@ -554,7 +554,7 @@ class TestTwoPassCli(unittest.TestCase):
             with open(os.path.join(vd, "bad2.json"), "w") as fh:
                 fh.write("also not } json")
             out = os.path.join(d, "report.json")
-            syn.main(["--verdicts-dir", vd, "--out", out, fp])
+            syn.main(["--repo", "--verdicts-dir", vd, "--out", out, fp])
             with open(out, encoding="utf-8") as fh:
                 report = json.load(fh)
             self.assertEqual(report["meta"]["coverage"]["verdicts"]["unloadable"], 2)
@@ -637,7 +637,7 @@ class TestTwoPassCli(unittest.TestCase):
                 )
 
             queue_out = os.path.join(d, "unused-report.json")
-            rc1 = syn.main(["--emit-verify-queue", "--tools-dir", td, "--out", queue_out, agent])
+            rc1 = syn.main(["--repo", "--emit-verify-queue", "--tools-dir", td, "--out", queue_out, agent])
             self.assertEqual(rc1, 0)
             with open(os.path.join(d, ".panopticon", "verify-queue.json")) as fh:
                 queue = json.load(fh)
@@ -678,7 +678,7 @@ class TestTwoPassCli(unittest.TestCase):
                 )
 
             report_out = os.path.join(d, "report.json")
-            rc2 = syn.main(["--tools-dir", td, "--verdicts-dir", vd, "--out", report_out, agent])
+            rc2 = syn.main(["--repo", "--tools-dir", td, "--verdicts-dir", vd, "--out", report_out, agent])
             self.assertEqual(rc2, 0)
             with open(report_out) as fh:
                 report = json.load(fh)
@@ -711,7 +711,7 @@ class TestToolsDirSilentSkipGuard(unittest.TestCase):
                 json.dump({"findings": []}, fh)
             err = io.StringIO()
             with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
-                syn.main(["--target", ".", "--out", os.path.join(d, "r.json"), fp])
+                syn.main(["--repo", "--target", ".", "--out", os.path.join(d, "r.json"), fp])
         self.assertIn("--tools-dir", err.getvalue())
 
     def test_no_warning_when_tools_dir_supplied(self):
@@ -726,7 +726,7 @@ class TestToolsDirSilentSkipGuard(unittest.TestCase):
             err = io.StringIO()
             with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
                 syn.main(
-                    ["--target", ".", "--tools-dir", tools, "--out", os.path.join(d, "r.json"), fp]
+                    ["--repo", "--target", ".", "--tools-dir", tools, "--out", os.path.join(d, "r.json"), fp]
                 )
         self.assertNotIn("appears un-ingested", err.getvalue())
 
@@ -747,7 +747,7 @@ class TestMainExitAndScout(unittest.TestCase):
                 _json.dump({"findings": []}, fh)
             with _chdir(d):
                 rc = syn.main(
-                    [
+                    ["--repo",
                         "--target",
                         "t",
                         "--fail-on",
@@ -784,7 +784,7 @@ class TestMainExitAndScout(unittest.TestCase):
                 json.dump({"findings": []}, fh)
             out_path = os.path.join(pan, "report.json")
             with _chdir(d):
-                rc = syn.main(["--target", "t", "--out", out_path, findings])
+                rc = syn.main(["--repo", "--target", "t", "--out", out_path, findings])
             # (a) run completed: no exception, an artifact was written.
             self.assertIsInstance(rc, int)
             self.assertTrue(os.path.isfile(out_path))
@@ -814,7 +814,7 @@ class TestScoutToolDisclosure(unittest.TestCase):
             out = os.path.join(d, "r.json")
             err = io.StringIO()
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
-                rc = syn.main(["--target", "src", "--out", out, fp])
+                rc = syn.main(["--repo", "--target", "src", "--out", out, fp])
             self.assertEqual(rc, 0)
             self.assertIn("requested NO tools", err.getvalue())
             with open(out) as fh:
@@ -832,7 +832,7 @@ class TestScoutToolDisclosure(unittest.TestCase):
             out = os.path.join(d, "r.json")
             err = io.StringIO()
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
-                rc = syn.main(["--target", "src", "--out", out, fp])
+                rc = syn.main(["--repo", "--target", "src", "--out", out, fp])
             self.assertEqual(rc, 0)
             self.assertNotIn("requested NO tools", err.getvalue())
             with open(out) as fh:
@@ -863,7 +863,7 @@ class TestUnusableScannerCertification(unittest.TestCase):
         out = os.path.join(d, "r.json")
         with contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(io.StringIO()):
-            rc = syn.main(["--target", "src", "--run-dir", d, "--tools-dir", td,
+            rc = syn.main(["--repo", "--target", "src", "--run-dir", d, "--tools-dir", td,
                            "--fail-on", "high", "--out", out, fp])
         with open(out, encoding="utf-8") as fh:
             return rc, json.load(fh)
@@ -1012,7 +1012,7 @@ class TestRunDirArtifactResolution(unittest.TestCase):
         return os.path.join(run_dir, "groups.json"), fp
 
     def _run(self, groups, fp, out):
-        return syn.main(["--target", "src", "--groups", groups,
+        return syn.main(["--repo", "--target", "src", "--groups", groups,
                          "--run-id", "rid-1", "--out", out, fp])
 
     def test_scouts_resolved_from_run_dir_not_flat(self):
@@ -1065,7 +1065,7 @@ class TestRunDirArtifactResolution(unittest.TestCase):
                 json.dump([{"group": "STALE", "domain": "X", "out_file": "x"}], fh)
             out = os.path.join(d, "r.json")
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                rc = syn.main(["--target", "src",
+                rc = syn.main(["--repo", "--target", "src",
                                "--groups", os.path.join(run_dir, "groups.json"),
                                "--run-id", "rid-1", "--out", out, fcod, fsec])
             self.assertEqual(rc, 0)
@@ -1106,7 +1106,7 @@ class TestRunDirArtifactResolution(unittest.TestCase):
             out = os.path.join(d, "r.json")
             err = io.StringIO()
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
-                rc = syn.main(["--target", "src", "--run-id", "rid-1", "--out", out, fp])
+                rc = syn.main(["--repo", "--target", "src", "--run-id", "rid-1", "--out", out, fp])
             self.assertEqual(rc, 0)
             self.assertIn("no run directory resolved", err.getvalue())
 
@@ -1150,7 +1150,7 @@ class MainLoaderOrderTest(unittest.TestCase):
             with mock.patch.object(verdicts_mod, "emit_verify_queue", side_effect=spy_emit), \
                     mock.patch.object(integrity_mod, "load_verify_queue",
                                       side_effect=spy_load_queue):
-                rc = syn.main(["--emit-verify-queue", "--out", out, fp])
+                rc = syn.main(["--repo", "--emit-verify-queue", "--out", out, fp])
             self.assertEqual(rc, 0)
             self.assertTrue(os.path.exists(out))
             # The old main()'s order: emit_verify_queue's stale-queue deletion
@@ -1184,7 +1184,7 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
     def _run(self, args):
         buf, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
-            rc = syn.main(args)
+            rc = syn.main(["--repo", *args])
         return rc, buf.getvalue(), err.getvalue()
 
     def test_a_valid_run_is_unaffected(self):
@@ -1428,7 +1428,7 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
             child_env["PYTHONPATH"] = str(Path(syn.__file__).resolve().parents[1])
             completed = subprocess.run(
                 ["/usr/bin/env", sys.executable, "-m", "scripts.synthesize",
-                 "--target", "src", "--out", out, fp],
+                 "--repo", "--target", "src", "--out", out, fp],
                 cwd=d, env=child_env, capture_output=True, text=True, check=False,
             )
             # #2989: env execs its absolute command operand as the completion
@@ -1633,7 +1633,7 @@ def test_a_sloppy_agent_finding_never_ends_the_run(label, patch, announces, tmp_
     buf, err = io.StringIO(), io.StringIO()
     with _chdir(str(tmp_path)), contextlib.redirect_stdout(buf), \
             contextlib.redirect_stderr(err):
-        rc = syn.main(["--target", "src", "--out", str(out), str(fp)])
+        rc = syn.main(["--repo", "--target", "src", "--out", str(out), str(fp)])
     assert rc == 0, "%s ended the run (rc=%s): %s" % (label, rc, err.getvalue())
     assert "artifact invalid" not in err.getvalue(), label
     if announces:
@@ -1660,7 +1660,7 @@ def test_a_target_pre_committed_coverage_file_cannot_end_the_run(tmp_path):
     buf, err = io.StringIO(), io.StringIO()
     with _chdir(str(tmp_path)), contextlib.redirect_stdout(buf), \
             contextlib.redirect_stderr(err):
-        rc = syn.main(["--target", "src", "--run-dir", str(run_dir),
+        rc = syn.main(["--repo", "--target", "src", "--run-dir", str(run_dir),
                        "--out", str(out), str(fp)])
     assert rc in (0, 2), err.getvalue()      # 2 = INCONCLUSIVE, a GATE verdict
     assert "artifact invalid" not in err.getvalue()
@@ -1701,7 +1701,7 @@ def test_no_coverage_cell_a_target_can_write_ends_the_run(tmp_path, label, cell)
     buf, err = io.StringIO(), io.StringIO()
     with _chdir(str(tmp_path)), contextlib.redirect_stdout(buf), \
             contextlib.redirect_stderr(err):
-        rc = syn.main(["--target", "src", "--run-dir", str(run_dir),
+        rc = syn.main(["--repo", "--target", "src", "--run-dir", str(run_dir),
                        "--out", str(out), str(fp)])
     assert rc in (0, 2), err.getvalue()      # 2 = INCONCLUSIVE, a GATE verdict
     assert "artifact invalid" not in err.getvalue()
@@ -1752,7 +1752,7 @@ def test_a_cross_domain_finding_with_a_mistyped_code_cannot_end_the_run(tmp_path
     buf, err = io.StringIO(), io.StringIO()
     with _chdir(str(tmp_path)), contextlib.redirect_stdout(buf), \
             contextlib.redirect_stderr(err):
-        rc = syn.main(["--target", "src", "--out", str(out), str(fp)])
+        rc = syn.main(["--repo", "--target", "src", "--out", str(out), str(fp)])
     assert rc == 0, err.getvalue()
     assert "artifact invalid" not in err.getvalue()
     for row in json.loads(out.read_text(encoding="utf-8"))["meta"]["integrity"]["cross_domain_findings"]:
@@ -1779,7 +1779,7 @@ def test_a_code_with_no_ocrdb_domain_files_under_the_ZZZ_sentinel(tmp_path):
     buf, err = io.StringIO(), io.StringIO()
     with _chdir(str(tmp_path)), contextlib.redirect_stdout(buf), \
             contextlib.redirect_stderr(err):
-        rc = syn.main(["--target", "src", "--out", str(out), str(fp)])
+        rc = syn.main(["--repo", "--target", "src", "--out", str(out), str(fp)])
     assert rc == 0, err.getvalue()
     assert "artifact invalid" not in err.getvalue()
     assert "names no OCRDb domain" in err.getvalue(), err.getvalue()
@@ -1805,7 +1805,7 @@ def test_an_advisor_verdict_with_mistyped_prose_cannot_end_the_run(tmp_path):
     buf, err = io.StringIO(), io.StringIO()
     with _chdir(str(tmp_path)), contextlib.redirect_stdout(buf), \
             contextlib.redirect_stderr(err):
-        syn.main(["--target", "src", "--run-dir", str(run_dir),
+        syn.main(["--repo", "--target", "src", "--run-dir", str(run_dir),
                   "--emit-verify-queue", str(fp)])
         queue = json.loads((run_dir / "verify-queue.json").read_text(encoding="utf-8"))
         fid = queue["entries"][0]["finding"]["id"]
@@ -1815,7 +1815,7 @@ def test_an_advisor_verdict_with_mistyped_prose_cannot_end_the_run(tmp_path):
              "_panopticon": {"run_id": queue["run_id"], "role": "domain_advisor",
                              "domain": "SEC", "group": "g1", "stage": "primary"}}),
             encoding="utf-8")
-        rc = syn.main(["--target", "src", "--run-dir", str(run_dir),
+        rc = syn.main(["--repo", "--target", "src", "--run-dir", str(run_dir),
                        "--verdicts-dir", str(vdir), "--out", str(out), str(fp)])
     assert rc == 0, err.getvalue()
     assert "artifact invalid" not in err.getvalue()
@@ -1845,7 +1845,7 @@ def test_a_mistyped_groups_json_cannot_end_the_run(tmp_path):
     buf, err = io.StringIO(), io.StringIO()
     with _chdir(str(tmp_path)), contextlib.redirect_stdout(buf), \
             contextlib.redirect_stderr(err):
-        rc = syn.main(["--target", "src", "--groups", str(groups),
+        rc = syn.main(["--repo", "--target", "src", "--groups", str(groups),
                        "--out", str(out), str(fp)])
     assert rc == 0, err.getvalue()
     assert "artifact invalid" not in err.getvalue()
@@ -1882,7 +1882,7 @@ def test_no_groups_json_a_target_can_write_ends_the_run(tmp_path, label, groups_
     buf, err = io.StringIO(), io.StringIO()
     with _chdir(str(tmp_path)), contextlib.redirect_stdout(buf), \
             contextlib.redirect_stderr(err):
-        rc = syn.main(["--target", "src", "--groups", str(groups),
+        rc = syn.main(["--repo", "--target", "src", "--groups", str(groups),
                        "--out", str(out), str(fp)])
     assert rc == 0, err.getvalue()
     assert "artifact invalid" not in err.getvalue()
@@ -1930,7 +1930,7 @@ def test_no_run_artifact_a_target_can_write_ends_the_run(tmp_path, name, body):
     buf, err = io.StringIO(), io.StringIO()
     with _chdir(str(tmp_path)), contextlib.redirect_stdout(buf), \
             contextlib.redirect_stderr(err):
-        rc = syn.main(["--target", "src", "--run-dir", str(run_dir),
+        rc = syn.main(["--repo", "--target", "src", "--run-dir", str(run_dir),
                        "--out", str(out), str(fp)])
     assert rc != 4, err.getvalue()
     assert "artifact invalid" not in err.getvalue()
@@ -1973,7 +1973,7 @@ class TestACorruptToolsManifestCannotCertify(unittest.TestCase):
         out = os.path.join(d, "r.json")
         with contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(io.StringIO()) as err:
-            rc = syn.main(["--target", "src", "--run-dir", run_dir,
+            rc = syn.main(["--repo", "--target", "src", "--run-dir", run_dir,
                            "--tools-dir", tools_dir, "--fail-on", "critical",
                            "--out", out, fp])
         with open(out, encoding="utf-8") as fh:
@@ -2074,7 +2074,7 @@ class TestDiscoveryDisclosuresReachTheReport(unittest.TestCase):
         out = os.path.join(d, "r.json")
         with contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(io.StringIO()):
-            rc = syn.main(["--target", "src",
+            rc = syn.main(["--repo", "--target", "src",
                            "--groups", os.path.join(run_dir, "groups.json"),
                            "--run-id", "rid-1", "--fail-on", "critical",
                            "--out", out, fp])
@@ -2158,7 +2158,7 @@ class TestSecCarveOutDisclosureReachesTheReport(unittest.TestCase):
         out = os.path.join(d, "r.json")
         with contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(io.StringIO()):
-            rc = syn.main(["--target", "src",
+            rc = syn.main(["--repo", "--target", "src",
                            "--groups", os.path.join(run_dir, "groups.json"),
                            "--run-id", "rid-1", "--fail-on", "critical",
                            "--out", out, fp])

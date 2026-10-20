@@ -33,6 +33,7 @@ VERDICT_TO_CONFIDENCE = {"CONFIRMED": "CERTAIN", "PLAUSIBLE": "LIKELY"}
 MODE_TO_REVIEW_TYPE = {
     "repo": "repo", "file": "file", "directory": "directory",
     "group": "group", "files": "changes", "changes": "changes",
+    "changed": "changes", "pr": "pr",
 }
 
 PANEL_ORDER = evidence_mod.PANELS

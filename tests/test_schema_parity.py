@@ -314,7 +314,7 @@ def _build_report(tmpdir):
                    "files_changed": 1, "hunks": {"src/app.py": [[10, 14]]}}, fh)
 
     out = os.path.join(out_dir, "report.json")
-    common = ["--target", ".", "--groups", groups, "--run-dir", run_dir,
+    common = ["--changes", "--target", ".", "--groups", groups, "--run-dir", run_dir,
               "--tools-dir", tools, "--security", "redteam",
               "--diff-hunks", hunks, "--gate-scope", "all",
               "--fail-on", "critical"]

@@ -808,7 +808,7 @@ class TestTheHandRunPairIsBoundToo(unittest.TestCase):
         inherited. One gate-eligible HIGH in `a.py`, which the hunk map does not
         name at all -- so an accepted map scopes it off-diff (the vacuous PASS)
         and a rejected one leaves the wider gate to fail on it."""
-        groups = {"groups": [{"name": "g1", "files": ["a.py"]}]}
+        groups = {"mode": "changed", "groups": [{"name": "g1", "files": ["a.py"]}]}
         if groups_stamp is not None:
             groups["run_id"] = groups_stamp
         hunks = dict(self.HUNKS)

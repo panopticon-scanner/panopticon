@@ -185,7 +185,7 @@ class TestFindingsFileIntegrity(unittest.TestCase):
             out = os.path.join(d, "report.json")
             with _chdir(d):
                 with contextlib.redirect_stdout(io.StringIO()):
-                    syn.main(["--target", "t", "--fail-on", "high", "--out", out, p])
+                    syn.main(["--repo", "--target", "t", "--fail-on", "high", "--out", out, p])
             with open(out, encoding="utf-8") as fh:
                 report = json.load(fh)
             self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")

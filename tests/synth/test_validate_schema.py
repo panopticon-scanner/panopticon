@@ -171,7 +171,7 @@ def _synthesize_one(patch):
         with contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(err):
             try:
-                rc = synthesize.main(["--target", "src", "--out", out, path])
+                rc = synthesize.main(["--repo", "--target", "src", "--out", out, path])
             except Exception as exc:      # a crash is a failure with a reason
                 return -1, {"findings": [{}]}, "%r\n%s" % (exc, err.getvalue())
         with open(out, encoding="utf-8") as fh:
