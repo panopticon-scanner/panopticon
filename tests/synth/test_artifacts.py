@@ -48,14 +48,14 @@ def test_deep_json_retains_invalid_artifact_fact(tmp_path, kind):
     if kind == "manifest":
         result = _load_manifest(tmp_path)
         assert result.manifest is None
-        assert "RecursionError" in result.manifest_invalid
+        assert "nested deeper than 64 levels" in result.manifest_invalid
     elif kind == "plan":
         valid, seen, invalid = plan.load_dispatch_plans_detailed(str(tmp_path))
         assert valid == [] and seen == 1
-        assert len(invalid) == 1 and "RecursionError" in invalid[0]["reason"]
+        assert len(invalid) == 1 and "nested deeper than 64 levels" in invalid[0]["reason"]
     elif kind == "queue":
         queue, reason = integrity.load_verify_queue(str(tmp_path))
-        assert queue is None and "RecursionError" in reason
+        assert queue is None and "nested deeper than 64 levels" in reason
     else:
         data, report = delta.load_diff_hunks_report(str(tmp_path / names[kind]))
         assert data == {} and report.payload_malformed == delta.MALFORMED_UNREADABLE

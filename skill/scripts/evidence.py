@@ -567,7 +567,7 @@ def load_verdicts_detailed(verdicts_dir):
     unloadable = []
     for name, path in _iter_verdict_files(verdicts_dir):
         try:
-            data = json.loads(_read_verdict_text(path))
+            data = json.loads(tolerant_json.depth_checked(_read_verdict_text(path)))   # #2959
         except (OSError, ValueError, RecursionError, MemoryError) as e:
             print("evidence: skipping malformed verdict %s: %s" % (name, e),
                   file=sys.stderr)

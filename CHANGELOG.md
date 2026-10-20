@@ -23,6 +23,35 @@ evidence exposed.
   RecursionError or MemoryError gets the named deny; real payloads at N=1,000 and 100,000 never crash,
   getting either the deny or an ordinary adjudication where the interpreter parses them (the
   overflowing depth depends on the platform's C stack: 100,000 parses on x64 3.14).
+- **A value nested past the interpreter's stack no longer ends a run in a traceback (#2959).**
+  A finding or a verdict can carry one through the schema: a finding is an open object, and a
+  verdict's `citations` is open. At 1,000 levels and past, the run died with `RecursionError`, status
+  1 and no report.
+  - Where it died: the driver's review and verify done checks (`runio._load_json`), synthesize's
+    `redact_tree` and `group_runner.entry_is_done`. `persist.write_reply` RAISED out of both of its
+    callers instead of refusing.
+  - Onset by interpreter: 900 levels on 3.11, 1,000 on 3.12+, the codec alone at 20,000 on
+    3.12/3.13 and at 100,000 on 3.14.
+  - The fix is one primitive, `tolerant_json.depth_checked`, with `MAX_JSON_DEPTH = 64`; the deepest
+    document this tree carries nests 13. It is an iterative scan run BEFORE every decode of an agent's
+    or a scanner's document. Past the bound it raises the `JSONDecodeError` each reader already treats
+    as malformed, so no new key is added. The scan is linear: a LONE quote, a string that never closes,
+    ends it, so a truncated reply full of escaped quotes no longer rescans to the end at each one
+    (review round 1: 64 KB took 5.8 s, quadratic).
+  - What that does to each case:
+    - a self-written cell is re-dispatched to its cap, then listed in
+      `meta.integrity.malformed_findings_files`, and the run is not certified;
+    - a reply is refused and retained, its reason naming the bound;
+    - a scanner capture is `failed: unparseable: nested deeper than 64 levels`, and the other tools
+      keep their findings;
+    - the tolerant reader no longer digs a shallow inner object out of a too-deep reply, while #2531's
+      prose braces before a real bundle still give it up.
+  Pins (RED on main):
+  - `tests/test_json_depth.py`: the bound, strings and escapes, one row per decoder at 65 and 100,000
+    levels, and linear growth on an unterminated string of escaped quotes (str and bytes);
+  - `tests/phases/test_persist.py`, `tests/test_ingest_tools.py` and `tests/test_tools_manifest.py`;
+  - `tests/test_driver.py`: a self-written findings file reaches a report, and a verdict bundle is an
+    ordinary checkpoint; its uncapped re-dispatch is #3185.
 - **A target holding a file or directory whose name is not UTF-8 gets a report that says so
   (#2962).** On Linux such a name is legal, and the first run died on `UnicodeDecodeError` with
   no report: `safe_git` launched git in text mode, which decodes strict UTF-8, and its preflight

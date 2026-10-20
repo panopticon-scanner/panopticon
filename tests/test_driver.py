@@ -222,6 +222,71 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
                          sorted(inert.inert_spelling(n) for n in undecodable))
         self.assertFalse(report["summary"]["coverage_certified"])
 
+    def _land_deep_return(self, root, depth, kind):
+        """The first entry of the pending `kind` checkpoint lands as its agent self-wrote it, one value nested
+        `depth` deep (#2959); the rest land as the end-to-end test lands them."""
+        req = runio._load_json(runio._pano(root, "dispatch-request.json"))
+        if not (isinstance(req, dict) and req.get("checkpoint") == kind):
+            return False
+        run_id = run_manifest.load_manifest(root)["run_id"]
+        deep = "[" * depth + "1" + "]" * depth
+        entry = req["entries"][0]
+        stem = os.path.basename(entry["out_file"]).split("-", 1)[1][:-len(".json")]
+        stage = "backup" if stem.endswith("-backup") else "primary"
+        group, domain = stem[:-len("-backup")].rsplit("-", 1) if stage == "backup" else stem.rsplit("-", 1)
+        if kind == "review":
+            body = ('{"findings": [{"domain": "%s", "code": "%s-A1A", "severity": "MEDIUM", "title": "t", '
+                    '"description": "d", "source_role": "domain_panel", "location": {"file": "src/app.py", '
+                    '"line_start": 1}, "extra": %s}], "_panopticon": {"run_id": "%s", "role": "domain_panel", '
+                    '"domain": "%s", "group": "%s"}}' % (domain, domain, deep, run_id, domain, group))
+        else:
+            body = ('{"verdicts": [], "_panopticon": {"run_id": "%s", "role": "domain_advisor", "domain": "%s", '
+                    '"group": "%s", "stage": "%s"}, "deep": %s}' % (run_id, domain, group, stage, deep))
+        os.makedirs(os.path.dirname(entry["out_file"]), exist_ok=True)
+        with open(entry["out_file"], "w", encoding="utf-8") as fh:
+            fh.write(body)
+        return True
+
+    def test_a_self_written_findings_file_nested_past_the_stack_reaches_a_report(self):
+        """#2959 (M1). The driver died on RecursionError in the review done check (runio._load_json) and,
+        shallower, synthesize died in redact_tree: rc 1, no report. Past the depth bound the file now reads as
+        malformed: the cell is re-dispatched to its cap, then synthesize lists it and withholds certification."""
+        for depth in (1_000, 100_000):
+            with self.subTest(depth=depth):
+                d = self._repo()
+                args = self._args(d, "--no-tools")
+                status = driver.run(args)
+                for _ in range(40):
+                    if status["status"] != "checkpoint":
+                        break
+                    self._inject_scouts(d)
+                    if not self._land_deep_return(d, depth, "review"):
+                        self._inject_review(d)
+                    status = driver.run(args)
+                self.assertEqual(status["status"], "complete", status.get("message"))
+                report = runio._load_json(runio._pano(d, "report.json"))
+                self.assertEqual(1, len(report["meta"]["integrity"]["malformed_findings_files"]))
+                self.assertFalse(report["summary"]["coverage_certified"])
+
+    def test_a_self_written_verdict_bundle_nested_past_the_stack_is_an_ordinary_checkpoint(self):
+        """#2959 (M3). The verify done check died on RecursionError. The bundle now reads as unloadable, which
+        re-dispatches it: a checkpoint, never a traceback (the uncapped re-dispatch itself is #3185)."""
+        for depth in (1_000, 100_000):
+            with self.subTest(depth=depth):
+                d = self._repo()
+                args = self._args(d, "--no-tools")
+                status, landed = driver.run(args), 0
+                for _ in range(40):
+                    if status["status"] != "checkpoint" or landed == 2:
+                        break
+                    self._inject_scouts(d)
+                    if status["checkpoint"] == "review":
+                        self._land_deep_return(d, 0, "review")      # a real finding, so verify engages
+                    landed += self._land_deep_return(d, depth, "verify")
+                    status = driver.run(args)
+                self.assertEqual(2, landed)
+                self.assertEqual(("checkpoint", "verify"), (status["status"], status["checkpoint"]))
+
     def test_resume_reemits_same_checkpoint_before_dispatch(self):
         d = self._repo()
         args = self._args(d)

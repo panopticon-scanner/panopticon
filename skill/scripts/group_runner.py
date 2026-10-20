@@ -12,6 +12,7 @@ import os
 import scripts.evidence as evidence
 import scripts.findings_contract as findings_contract
 import scripts.safe_write as safe_write
+import scripts.tolerant_json as tolerant_json
 
 __all__ = ["entry_is_done", "pending_entries", "fan_out_coverage",
            "verdict_is_done", "pending_verdicts", "resume_stats"]
@@ -29,7 +30,7 @@ def entry_is_done(out_file, entry=None):
         return False
     try:
         with open(out_file, encoding="utf-8") as fh:
-            data = json.load(fh)
+            data = json.loads(tolerant_json.depth_checked(fh.read()))      # #2959: as malformed
     except (OSError, ValueError):
         return False
     # #1513: the same contract the driver and direct synthesis apply. A file

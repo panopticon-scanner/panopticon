@@ -31,6 +31,7 @@ from scripts import host_probes  # noqa: E402  (#1344 F3b: readiness probes live
 import scripts.probes.common as probes_common  # noqa: E402  (#1627: the shared probe helpers)
 from scripts import host_disclosure  # noqa: E402  (#1344 F3b: one voice for the posture)
 from scripts import safe_git  # noqa: E402  (#2006: the target-facing git probe)
+from scripts import tolerant_json  # noqa: E402  (#2959: the JSON depth bound)
 # #1577 (SEC-D1C): the five artifact writes below go through the driver's own
 # confined O_NOFOLLOW writers rather than a plain open(). A target repo can
 # commit any of these paths as a symlink (`.gitignore` needs no `git add -f` at
@@ -1280,21 +1281,20 @@ def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups
     proposal_path = proposal_path or os.path.join(
         plan_contract.artifact_root(repo), "setup-proposal.json")
     try:
-        # #run10 COD-F1B: the cap used to be os.path.getsize() and then a separate
-        # unbounded open()+json.load() -- a stat-then-open pair. The bytes actually
-        # read were never bounded: a proposal that grows (or a path swapped) between
-        # the two calls, or any file whose size cannot be trusted from a stat (a
-        # FIFO/proc-like path reports 0), was slurped whole. The target repo supplies
-        # this file, so bound the READ itself: take cap+1 bytes and refuse if the
-        # extra byte materialized -- the cap is then a property of what we consumed,
-        # not of a prior observation.
+        # #run10 COD-F1B: the cap used to be os.path.getsize() and then a separate unbounded
+        # open()+json.load() -- a stat-then-open pair. The bytes actually read were never
+        # bounded: a proposal that grows (or a path swapped) between the two calls, or any
+        # file whose size cannot be trusted from a stat (a FIFO/proc-like path reports 0),
+        # was slurped whole. The target repo supplies this file, so bound the READ itself:
+        # take cap+1 bytes and refuse if the extra byte materialized -- the cap is then a
+        # property of what we consumed, not of a prior observation.
         with open(proposal_path, "rb") as fh:
             raw = fh.read(_MAX_PROPOSAL_BYTES + 1)
         if len(raw) > _MAX_PROPOSAL_BYTES:
             return {"ok": False, "errors": [
                 "proposal %s exceeds the %d-byte cap -- refusing to ingest"
                 % (proposal_path, _MAX_PROPOSAL_BYTES)]}
-        proposal = json.loads(raw.decode("utf-8"))
+        proposal = json.loads(tolerant_json.depth_checked(raw.decode("utf-8")))   # #2959
     except (OSError, ValueError) as e:
         return {"ok": False, "errors": [
             "cannot read proposal %s: %s" % (proposal_path, e)]}

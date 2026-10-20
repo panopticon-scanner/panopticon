@@ -46,6 +46,7 @@ import threading
 
 from scripts import redact
 from scripts import safe_write
+from scripts.tolerant_json import depth_checked
 from scripts.tools.base import drain_stderr_async
 
 # Max seconds to let a single docker-run tool invocation run before it's killed;
@@ -160,7 +161,7 @@ def _annotate_scanned_files(payload, count):
     it must not become a write failure here.
     """
     try:
-        doc = json.loads(payload)
+        doc = json.loads(depth_checked(payload))         # #2959: as malformed
         run = doc["runs"][0]
         if not isinstance(run, dict):
             return payload
@@ -491,7 +492,7 @@ def _redact_capture(tool, data):
     _REDACTED_CAPTURES.add(tool)
     text = data.decode("utf-8", errors="replace")
     try:
-        parsed = json.loads(text)
+        parsed = json.loads(depth_checked(text))         # #2959: as malformed
     except ValueError:
         if tool == "eslint-security":
             # Broken scanner JSON can contain arbitrary source fragments too.

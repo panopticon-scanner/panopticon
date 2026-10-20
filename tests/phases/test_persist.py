@@ -270,6 +270,22 @@ class TestWriteReply(unittest.TestCase):
         ok, reason = persist.write_reply(e, json.dumps(body))
         self.assertTrue(ok, reason)
 
+    def test_a_reply_nested_past_the_bound_is_refused_by_name_not_raised(self):
+        """#2959 (M2): at 1,000 levels and past, write_reply RAISED RecursionError -- in the parse on
+        3.11, in `_write_json`'s encoder on 3.12+ after the parse and the schema had passed -- out of
+        both unguarded callers. It refuses now, naming the bound, and writes nothing."""
+        e = _entry(self._out("findings-app-SEC.json"), run_id="RID", group="app", domain="SEC")
+        for depth in (1_000, 100_000):
+            reply = ('{"findings": [{"domain": "SEC", "code": "SEC-A1A", "severity": "MEDIUM", "title": "t", '
+                     '"description": "d", "source_role": "domain_panel", "extra": %s}]}'
+                     % ("[" * depth + "]" * depth))
+            for wrapped in (reply, "Here it is:\n```json\n" + reply + "\n```"):
+                with self.subTest(depth=depth, wrapped=wrapped[:4]):
+                    ok, reason = persist.write_reply(e, wrapped)
+                    self.assertFalse(ok)
+                    self.assertIn("does not parse as JSON (nested deeper than 64 levels)", reason)
+                    self.assertFalse(os.path.exists(e["out_file"]))
+
     def test_a_verify_cell_reply_needs_a_verdict_list_and_its_stamp(self):
         e = _entry(self._out("verdicts", "verdicts-app-SEC.json"),
                    run_id="RID", group="app", domain="SEC", stage="primary")

@@ -22,6 +22,7 @@ import scripts.group_runner as group_runner
 import scripts.probes.common as probes_common
 import scripts.redact as redact
 import scripts.run_manifest as run_manifest
+import scripts.tolerant_json as tolerant_json
 from . import budget
 from . import coverage
 from . import requests
@@ -649,7 +650,8 @@ def write_reply(entry, text):
         return False, "entry %r is already done at %s" % (entry.get("id"), entry.get("out_file"))
     data = _parse_reply(text)
     if data is None:
-        return False, "reply for %r does not parse as JSON (fence- and prose-wrapped both tried)" % entry.get("id")
+        return False, "reply for %r does not parse as JSON (%s)" % (
+            entry.get("id"), tolerant_json.unparsed_reason(text or ""))
     # D10 ruling 4, BEFORE the acceptance: the stamp is the controller's to
     # fill on the return-persist path only. `accepts` itself is untouched, so
     # the self-write done predicates still require the agent's own stamp on a

@@ -47,6 +47,7 @@ import os
 import sys
 
 from scripts import safe_write
+from scripts.tolerant_json import depth_checked
 # BY NAME, never `from scripts import scanner_config`: `write_manifest`'s
 # published `scanner_config=` keyword would shadow a module binding inside the
 # function body, so reaching a new constant that way needs a module ALIAS
@@ -171,7 +172,7 @@ def prepare_semgrep_scope_baseline(baseline_dir, baseline_manifest_path,
         if len(raw) > MAX_TOOL_OUTPUT_BYTES:
             raise ValueError("expanded Semgrep capture exceeds the output cap")
         text = raw.decode("utf-8")
-        sarif = json.loads(text)
+        sarif = json.loads(depth_checked(text))                # #2959
     except (OSError, UnicodeError, ValueError, TypeError) as exc:
         raise ValueError("cannot read expanded Semgrep capture: %s" % exc) from exc
     if not isinstance(sarif, dict) or not isinstance(sarif.get("runs"), list):
@@ -358,7 +359,7 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                 with open(capture_path, "rb") as capture:
                     data = capture.read(MAX_TOOL_OUTPUT_BYTES + 1)
                 if len(data) <= MAX_TOOL_OUTPUT_BYTES:
-                    file_coverage["eslint-security"] = eslint_coverage(json.loads(data))
+                    file_coverage["eslint-security"] = eslint_coverage(json.loads(depth_checked(data)))
             except (OSError, ValueError):
                 pass  # ingestion retains the whole-capture failure path
     payload = {"schema_version": 1, "run_id": run_id,
