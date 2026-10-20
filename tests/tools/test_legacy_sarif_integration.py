@@ -165,7 +165,7 @@ class TestSemgrepScannedFilesFromTheRealArgv(_LiveTool):
 
     def test_the_real_argv_reports_the_files_it_scanned(self):
         doc = json.loads(self._annotated({"a.py": "x = 1\n", "b/c.js": "var y = 2;\n"}))
-        self.assertEqual(doc["runs"][0]["properties"]["panopticon_scanned_files"], 2)
+        self.assertEqual(only(doc["runs"], "run")["properties"]["panopticon_scanned_files"], 2)
 
     def test_a_real_zero_file_run_is_noscan(self):
         from scripts import ingest_tools
