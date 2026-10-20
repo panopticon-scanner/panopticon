@@ -203,6 +203,21 @@ class DependencyCheckAdapter:
                 # code. Offline dependency data comes from the baked NVD set
                 # under --data, so nothing is lost by declining to ask Central.
                 "--disableCentral",
+                # #2055: two analyzers launch a tool INSIDE the target tree,
+                # which then reads the target's own config. bundle-audit runs
+                # `bundle-audit check --verbose` from each Gemfile.lock's
+                # directory (10.0.3 RubyBundleAuditAnalyzer.java:187-188 and
+                # :280-283, on by default), and bundler-audit 0.9.3 loads that
+                # directory's `.bundler-audit.yml` ignore list
+                # (scanner.rb:89-92). go-mod runs `go list -json -m all` from
+                # each go.mod's directory (GolangModAnalyzer.java:192-199)
+                # with no GOWORK, so a committed `go.work` there or above it
+                # steers the module list it audits (go1.25.14 modload/init.go
+                # FindGoWork, :401-410 and :1667-1690). The bundler_audit
+                # adapter (its own owned `--config`) and osv-scanner (which
+                # reads go.mod itself) already audit both manifests.
+                "--disableBundleAudit",
+                "--disableGolangMod",
             ]
             try:
                 # #1576 (OPS-3272189615): watch the report directory WHILE
