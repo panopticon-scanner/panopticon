@@ -7,6 +7,16 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A finding's title is redacted before it is cut (#2971).** `normalize_finding` bounded the
+  title (`inert_text`, 2,000 characters) and cut `short_title` (100) from the RAW title, and
+  `redact_tree` ran later. A credential across either cut was left as a prefix no pattern
+  recognises, and was published in `report.json` (`findings[].short_title`, `title`) and in the
+  X0X (`candidates[].summary` and `proposed_name`). The title now goes through
+  `redact.redact_diagnostic` first, the tree's redact-then-bound helper, so every bounded form is
+  cut from redacted text; an unterminated private-key header discards its tail. Pins
+  (`tests/synth/test_findings.py::TestATitleIsRedactedBeforeItIsCut`, fake tokens built at run
+  time) cover a key across each cut, a PEM block whose END is past the cut, an unterminated header
+  and the X0X candidate.
 - **Workflow guard: in this repo's own lint, a step a download reaches reads UNVERIFIED outside the
   understood subset (#3141).** The guard runs only as this repo's CI lint over its ten workflows
   (`tests/test_workflow_pins.py`), never on a target, so the owner scoped #3141's fail-closed rule

@@ -1636,3 +1636,68 @@ class FindingSetLoaderTest(unittest.TestCase):
             self.assertTrue(fs.verdicts_supplied)
             # both loaders trip over the same file; it is reported once (#938)
             self.assertEqual([u["file"] for u in fs.verdict_unloadable], ["broken.json"])
+
+
+class TestATitleIsRedactedBeforeItIsCut(unittest.TestCase):
+    """#2971: `short_title` (100) and the bounded `title` (inert_text, 2000) were
+    cut from the RAW title; a credential across either cut left a prefix no
+    pattern recognises, published in report.json and the X0X. Fake tokens are
+    built here at run time, never written in the repo."""
+
+    @staticmethod
+    def secret(n=16, seed=2971):
+        import random
+        import string
+        return "".join(random.Random(seed).choices(string.ascii_uppercase + string.digits, k=n))
+
+    def key(self):
+        return "AKIA" + self.secret()           # redact masks the whole shape
+
+    def pem(self):
+        body = self.secret(48, seed=7)
+        return ("-----BEGIN " + "RSA PRIVATE" + " KEY-----\n" + body + "\n-----END " + "RSA PRIVATE" + " KEY-----",
+                body)
+
+    def assert_no_window(self, secret, *texts):
+        for text in texts:
+            for i in range(len(secret) - 7):
+                self.assertNotIn(secret[i:i + 8], text)
+
+    def normalized(self, title):
+        return findings_mod.normalize_finding({"id": "F-1", "code": "SEC-X0X", "severity": "HIGH",
+                                               "title": title, "description": "d",
+                                               "location": {"file": "a.py", "line_start": 1}})
+
+    def test_a_key_across_the_short_title_cut_leaves_no_prefix(self):
+        for before in (8, 12, 16):
+            with self.subTest(secret_chars_before_the_cut=before):
+                lead = "x" * (findings_mod.SHORT_TITLE_MAX - 1 - 4 - before)
+                f = self.normalized(lead + self.key() + " tail")
+                self.assert_no_window(self.secret(), f["short_title"], f["title"])
+
+    def test_a_key_across_the_title_bound_leaves_no_prefix(self):
+        import scripts.tools.base as tool_base
+        lead = "x" * (tool_base.INERT_TEXT_MAX - 4 - 10)
+        f = self.normalized(lead + self.key() + " tail")
+        self.assert_no_window(self.secret(), f["title"], f["short_title"])
+
+    def test_a_pem_block_ending_past_the_cut_keeps_no_body(self):
+        block, body = self.pem()
+        f = self.normalized("key: " + block)
+        self.assert_no_window(body, f["short_title"], f["title"])
+
+    def test_an_unterminated_pem_header_keeps_no_tail(self):
+        block, body = self.pem()
+        f = self.normalized("key: " + block.split("\n-----END")[0])
+        self.assert_no_window(body, f["short_title"], f["title"])
+
+    def test_the_x0x_summary_and_name_read_the_redacted_short_title(self):
+        import scripts.x0x_report as x0x
+        lead = "x" * (findings_mod.SHORT_TITLE_MAX - 1 - 4 - 12)
+        f = dict(self.normalized(lead + self.key() + " tail"), domain="SEC")
+        cand = x0x.build_candidates([f])[0]
+        self.assert_no_window(self.secret(), cand["summary"], cand.get("proposed_name", ""))
+
+    def test_an_ordinary_title_is_unchanged(self):
+        self.assertEqual("plain title", self.normalized("plain title")["short_title"])
+
