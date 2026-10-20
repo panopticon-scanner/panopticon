@@ -2,6 +2,7 @@
 from __future__ import annotations
 import contextvars
 import os
+import shutil
 
 from .base import (as_list, cve_ids, has_any_file, make_finding, normalize_severity,
                    omit_none, parse_json_bytes, run_tool, scratch_cwd,
@@ -25,6 +26,11 @@ LOCKFILES = ("npm-shrinkwrap.json", "package-lock.json")
 # one (capture_goldens) through `invoke` -- so this is a guess of last resort
 # and not an answer to rely on.
 DEFAULT_MANIFEST = "package-lock.json"
+# The scratch project `invoke` hands npm as `--prefix` (#2055), and the only
+# files it holds: the manifest and the lockfiles npm reads, copied from the
+# target. Never the target's `.npmrc`, nor anything else of its.
+STAGED_PROJECT = "project"
+STAGED_FILES = ("package.json",) + LOCKFILES
 
 
 class NpmAuditAdapter:
@@ -50,12 +56,21 @@ class NpmAuditAdapter:
         # Recorded where the choice is MADE, so parse cannot name a different
         # file from the one audited (#1649).
         _manifest_path_cv.set(self._manifest(target))
-        cmd = ["npm", "audit", "--json", "--prefix", target]
         # #1877: npm reads an `.npmrc` from the WORKING DIRECTORY as well as
         # from `--prefix`, and that file can set `registry`, `script-shell`
-        # and `ignore-scripts` -- so the cwd is never the target. `--prefix`
-        # already names the project by path, so argv is byte-unchanged.
+        # and `ignore-scripts` -- so the cwd is never the target.
+        # #2055: nor is `--prefix`. npm reads the PROJECT `.npmrc` there, and a
+        # committed one can set `omit=dev` (the whole dev tree silently dropped
+        # from the audit), `include`, `audit-level` or `registry`; npm has no
+        # flag that skips the project file. So npm audits a scratch project,
+        # staged with the manifest and the lockfiles it reads and nothing else.
         with scratch_cwd("npm-audit-cwd-") as cwd:
+            project = os.path.join(cwd, STAGED_PROJECT)
+            os.mkdir(project)
+            for name in STAGED_FILES:
+                if os.path.isfile(os.path.join(target, name)):
+                    shutil.copyfile(os.path.join(target, name), os.path.join(project, name))
+            cmd = ["npm", "audit", "--json", "--prefix", project]
             return run_tool(cmd, timeout=300, cwd=cwd)
 
     def _located_at(self) -> str:

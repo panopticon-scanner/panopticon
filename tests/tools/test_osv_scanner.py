@@ -250,6 +250,20 @@ class TestOsvScannerAdapter(unittest.TestCase):
         assert_scratch_cwd(self, launch, "/tmp/fake",
                            permitted=[osv.OWNED_CONFIG_NAME])
 
+    def test_invoke_scans_what_the_targets_gitignore_hides(self):
+        # #2055: the recursive walk honours the scanned tree's own `.gitignore`
+        # unless `--no-ignore` is given, so one committed line kept a lockfile
+        # out of the scan. The flag stands once, before the scan root.
+        adapter = osv.OsvScannerAdapter()
+        calls = []
+        with mock.patch("scripts.tools.base.subprocess.Popen",
+                        side_effect=scratch_cwd_recorder(calls)):
+            adapter.invoke("/tmp/fake")
+        argv = only(calls, "osv-scanner launch")["argv"]
+        self.assertEqual(argv.count("--no-ignore"), 1)
+        self.assertLess(argv.index("--no-ignore"), len(argv) - 1)
+        self.assertEqual(argv[-1], "/tmp/fake")
+
     def test_invoke_pins_a_config_the_target_cannot_write(self):
         # #1839 (run-14 SEC-1202454595): `osv-scanner.toml` is resolved from the
         # SCANNED tree, one per directory, so #1877's scratch cwd never reached

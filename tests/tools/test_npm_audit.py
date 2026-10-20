@@ -125,11 +125,41 @@ class TestNpmAuditAdapter(unittest.TestCase):
         self.assertEqual(stdout, b"{}")
         self.assertEqual(rc, 0)
         launch = only(calls, "npm audit launch")
+        # #2055: `--prefix` names the scratch project staged inside the cwd,
+        # never the target, whose project `.npmrc` npm would read there.
         self.assertEqual(launch["argv"],
-                         ["npm", "audit", "--json", "--prefix", "/tmp/fake"])
+                         ["npm", "audit", "--json", "--prefix",
+                          os.path.join(launch["cwd"], na.STAGED_PROJECT)])
         # #1877: npm reads an `.npmrc` from the working directory too, so the
-        # cwd is a scratch and `--prefix` stays the only path into the target.
-        assert_scratch_cwd(self, launch, "/tmp/fake")
+        # cwd is a scratch, and it holds nothing but that staged project.
+        assert_scratch_cwd(self, launch, "/tmp/fake", permitted=[na.STAGED_PROJECT])
+
+    def test_invoke_audits_a_staged_project_never_the_targets_npmrc(self):
+        # #2055: npm reads the PROJECT `.npmrc` under `--prefix`, and a
+        # committed `omit=dev` drops the whole dev tree from the audit. The
+        # prefix is a scratch project outside the target, holding the manifest
+        # and the lockfiles copied byte for byte, and nothing else of its.
+        files = {"package.json": b'{"name": "t"}\n',
+                 "package-lock.json": b'{"lockfileVersion": 3}\n',
+                 "npm-shrinkwrap.json": b'{"lockfileVersion": 3, "s": 1}\n',
+                 ".npmrc": b"omit=dev\n", "index.js": b"1;\n"}
+        seen = []
+        with tempfile.TemporaryDirectory() as target:
+            for name, data in files.items():
+                Path(target, name).write_bytes(data)
+
+            def launch(cmd, **kwargs):
+                prefix = os.path.realpath(cmd[cmd.index("--prefix") + 1])
+                seen.append((prefix != os.path.realpath(target) and not prefix.startswith(
+                    os.path.realpath(target) + os.sep), {name: Path(prefix, name).read_bytes()
+                                                         for name in os.listdir(prefix)}))
+                return FakePopen(stdout=b"{}")
+
+            with mock.patch("scripts.tools.base.subprocess.Popen", side_effect=launch):
+                na.NpmAuditAdapter().invoke(target)
+        outside, staged = only(seen, "npm audit launch")
+        self.assertTrue(outside, "npm audit's --prefix is the target or inside it")
+        self.assertEqual({name: files[name] for name in na.STAGED_FILES}, staged)
 
     def test_invoke_reports_nonzero_exit(self):
         import contextlib, io

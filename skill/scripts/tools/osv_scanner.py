@@ -70,14 +70,22 @@ class OsvScannerAdapter:
         # call; re-check both spellings when OSV_SCANNER_VERSION bumps (the
         # Dockerfile's offline-DB warm-up is the other reader of them).
         # #1877: never the target as cwd. The scan root is named on argv, so
-        # apart from `scan` and the `--config` pair the argv is unchanged.
+        # apart from `scan`, the `--config` pair and `--no-ignore` the argv is
+        # unchanged.
         with scratch_cwd("osv-scanner-cwd-") as cwd:
             config_path = os.path.join(cwd, OWNED_CONFIG_NAME)
             with open(config_path, "w", encoding="utf-8") as fh:
                 fh.write(OWNED_CONFIG_TEXT)
             cmd = ["osv-scanner", "scan", "--format", "json",
                    "--experimental-offline", "--recursive",
-                   "--config", config_path, target]
+                   "--config", config_path,
+                   # #2055: the recursive walk also honours the target's own
+                   # `.gitignore`, so one committed line kept a lockfile out
+                   # of the scan. v1.8.2's `--no-ignore` ("also scan files
+                   # that would be ignored by .gitignore") makes the scanned
+                   # set the scanner's; gitignored vendored lockfiles come
+                   # into scope with it, which a scan of hostile input wants.
+                   "--no-ignore", target]
             return run_tool(cmd, timeout=300, cwd=cwd)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
