@@ -128,8 +128,11 @@ class TestTheClaudeFamily(_FamilyCase):
             runner = claude_runner.Runner("claude")
             runner.prepare(self.root, review_root=self.root)
             runner.entry_timeout = 1
+            # #2061: the stand-in argv carries no tool controls; this test is
+            # about the process group, so the pre-launch argv check stands down.
             with mock.patch.object(claude_runner.Runner, "command",
-                                   return_value=self.tree_argv()):
+                                   return_value=self.tree_argv()), \
+                    mock.patch.object(claude_runner, "unenforced_argv_problem", return_value=None, create=True):
                 result = runner.run_entry({"id": "review-app-SEC", "prompt": "p"}, {})
         self.assert_timed_out(result)
         self.assert_died(self.grandchild())
@@ -141,8 +144,11 @@ class TestTheClaudeFamily(_FamilyCase):
             runner = claude_runner.Runner("claude")
             runner.prepare(self.root, review_root=self.root)
             runner.entry_timeout = 1
+            # #2061: the stand-in argv carries no tool controls; this test is
+            # about the process group, so the pre-launch argv check stands down.
             with mock.patch.object(claude_runner.Runner, "command",
-                                   return_value=self.tree_argv()):
+                                   return_value=self.tree_argv()), \
+                    mock.patch.object(claude_runner, "unenforced_argv_problem", return_value=None, create=True):
                 result = runner.run_entry({"id": "review-app-SEC", "prompt": "p"}, {})
         self.addCleanup(self._kill_pid, self.grandchild())
         self.assertIn("started", result.text)

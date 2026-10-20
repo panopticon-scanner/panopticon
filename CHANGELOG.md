@@ -29,6 +29,37 @@ evidence exposed.
   download reaching forward only, the gate off elsewhere, one linear pass) and
   `TestEveryStepADownloadReachesIsFullyRead` (the lint reads the fleet through the subset; the
   exemption checks). Sizes: `scripts/workflow_guard.py` 674, `scripts/workflow_subset.py` 87.
+- **Skipped coverage artifacts prevent certification (#2080).** Unreadable, malformed,
+  oversized, non-object and group-less coverage files are disclosed in
+  `meta.integrity.coverage_files_skipped` and make an otherwise passing gate INCONCLUSIVE,
+  including when valid coverage files remain. Rejected scout domains are capped at 32 entries
+  of 120 characters with an explicit truncation marker, keeping coverage records readable.
+
+- **An unenforced claude launch is checked for its tool controls before it starts (#2061).**
+  `--tools=` and `--disallowedTools=` remove tools rather than deny calls, so neither ever shows
+  in `permission_denials`. A run whose argv lost or altered either token would ledger exactly like
+  one that kept it. Both are now `probes/common.CONTROLS` rows (`--flag=` prefix form, pinned
+  live in `tests/probes/test_discovery_surface.py`). `runners/claude.unenforced_argv_problem`
+  checks every unenforced argv against them, each token present once with exactly the derived
+  value. `run_entry` refuses a failing argv before launch. Pins:
+  `tests/runners/test_claude.py::TestAnUnenforcedArgvWithoutItsToolControlsNeverLaunches`.
+- **The driver binds `out-file-hashes.json` to the exact bytes it wrote (#2115).** A writer in
+  the run folder could replace the snapshot with hashes of substituted findings; because the
+  snapshot's manifest stamp recorded only its cell count, synthesis verified the forged findings
+  against the forged baseline and certified the run. A snapshot planted before the
+  review-to-verify boundary was cheaper still: the idempotent writer left it in place and never
+  stamped it. `group_runner.snapshot_out_files` now serializes canonical, newline-free JSON and
+  returns its sha256 with the per-cell hashes; `run_manifest.claim_artifact` stamps evidence
+  derived from that writer result only after the file lands. The synthesis child receives the
+  stamped digest and publishes sinking `content_snapshot_mismatched` when a plan-owed run's
+  present snapshot differs or has no driver-written digest, so both substitution forms make the
+  gate INCONCLUSIVE and coverage uncertified. The shared integrity registry carries that reason
+  through `integrity_ok`, terminal and HTML output, and the report schema. The artifact helpers
+  moved mechanically from the 700-line `phases/requests.py` into `phases/run_artifacts.py`, with
+  their old names re-exported. Pins: exact serialized-byte digest and post-write stamp; CLI/plan
+  threading; honest, deleted, unreadable, legacy/manual, forged-replacement, and pre-planted
+  snapshots; the live review-to-verify-to-synthesis rows; schema, key order, gate, and both human
+  renderers.
 
 - **The unenforced claude launch holds the role templates' tool grant as an allow-list (#2060).**
   The `--model` and model-less launches carried only a deny-list, which cannot close a tool name it

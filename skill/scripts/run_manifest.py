@@ -400,7 +400,8 @@ DISPATCH_REQUEST = "dispatch_request"
 
 # SEC-377944137 (#1832): {"sha256": <canonical plan hash>, "at": <iso>} -- the
 # durable record that this run WROTE `dispatch-plan-driver.json`, and
-# {"cells": <n>, "at": <iso>} for `out-file-hashes.json`. Each artifact carries
+# {"cells": <n>, "sha256": <snapshot hash>, "at": <iso>} for the snapshot
+# (#2115). Each artifact carries
 # its OWN stamp: one shared stamp would make the snapshot's legitimate first
 # take at synthesize (the #5.0-16 fallback for a vacuously-done verify phase)
 # read as a deletion.
@@ -579,9 +580,8 @@ def record_artifact_stamp(review_root, manifest, key, at=None, **fields):
     conjuring a manifest mid-run would move every `_pano` path under a run
     folder the artifacts already written are not in.
 
-    `fields` is the stamp's evidence -- `sha256=` for the plan (the canonical
-    `synth.integrity._plan_hash` of the entries, so a REPLACED plan is caught
-    as well as a deleted one) and `cells=` for the snapshot.
+    `fields` is the stamp evidence: `sha256=` for the plan; `cells=` and the
+    exact serialized `sha256=` returned by the snapshot writer (#2115).
     """
     if key not in ARTIFACT_STAMPS:
         raise ValueError("unknown run artifact: %r" % key)
@@ -608,7 +608,7 @@ def artifact_stamp(manifest, key):
     return stamp if isinstance(stamp, dict) and stamp else None
 
 
-def claim_artifact(review_root, manifest, key, path, write, **fields):
+def claim_artifact(review_root, manifest, key, path, write, stamp_fields=None, **fields):
     """Write the owed-once artifact `path` under its claim (SEC-377944137, #1832).
 
     Returns whatever `write` returned once the artifact is on disk, and None
@@ -635,11 +635,11 @@ def claim_artifact(review_root, manifest, key, path, write, **fields):
     the artifact present and un-owed, which is a re-creatable fail-OPEN rather
     than a wedge, and is unreachable by a dispatched agent: both writes happen
     inside a driver pass, with no reviewer live.
-
     The refusal is announced on the DRIVER's stderr, which an operator actually
     sees (the synthesize child's streams are captured by `child._run_child`),
     and names `--reset`: a run folder cleared on purpose is a NEW run, not a
-    repair of this one.
+    repair of this one. `stamp_fields` derives evidence from the writer's return
+    after the file lands, binding its exact bytes without a second read (#2115).
     """
     # Loaded when the caller has none: `artifact_stamp(None, ...)` is falsy, so
     # skipping this would make the guard fail OPEN for a caller that passes None.
@@ -654,6 +654,7 @@ def claim_artifact(review_root, manifest, key, path, write, **fields):
         return None
     written = write()
     if os.path.isfile(path):
+        fields.update(stamp_fields(written) if stamp_fields is not None else {})
         record_artifact_stamp(review_root, manifest, key, **fields)
     return written
 

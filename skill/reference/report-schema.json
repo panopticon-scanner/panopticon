@@ -683,7 +683,7 @@
         },
         "integrity": {
           "type": "object",
-          "description": "Run-integrity reconciliation driving certification: unexpected, duplicate, mislabeled, malformed, content-mismatched, empty, or invalid dispatch artifacts force gate INCONCLUSIVE — as does a fan-out snapshot that is corrupt (content_snapshot_unreadable) or owed-but-absent (content_snapshot_missing).",
+          "description": "Run-integrity reconciliation driving certification: unexpected, duplicate, mislabeled, malformed, content-mismatched, empty, or invalid dispatch artifacts force gate INCONCLUSIVE — as does a fan-out snapshot that is corrupt (content_snapshot_unreadable), owed-but-absent (content_snapshot_missing), or not bound to the bytes this run's driver wrote (content_snapshot_mismatched).",
           "properties": {
             "unexpected_findings_files": {
               "type": "array",
@@ -702,6 +702,13 @@
               "description": "#1513: findings files that violate the findings contract, as [{file, cell: [group, domain]|null, defects: [{index, reason}]}]. A stamped cell whose findings list holds a non-object is not a completed clean review; these fail the gate closed and their cells are netted out of the floor audit. Dropped source evidence used to exist only on stderr.",
               "items": {
                 "type": "object"
+              }
+            },
+            "coverage_files_skipped": {
+              "type": "array",
+              "description": "#2080: coverage artifact basenames skipped because they could not be read as objects with usable groups. Any skipped file prevents coverage certification even when the remaining floor audit is empty.",
+              "items": {
+                "type": "string"
               }
             },
             "duplicate_out_files": {
@@ -758,6 +765,10 @@
             "content_snapshot_missing": {
               "type": "boolean",
               "description": "#1511/#1208: the run's dispatch plan declares review cells, so a snapshot was OWED, and none is present — a deleted baseline. Fails the gate closed. False on a run that owes nothing (no driver plan), which keeps the benign 'not measured' reading."
+            },
+            "content_snapshot_mismatched": {
+              "type": "boolean",
+              "description": "#2115: a plan-owed run's present out-file-hashes.json differs from the exact bytes its driver stamped, or has no driver-written digest (including a pre-planted snapshot). Fails the gate closed."
             },
             "empty_dispatch_plans": {
               "type": "integer"

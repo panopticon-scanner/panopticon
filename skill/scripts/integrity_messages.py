@@ -88,6 +88,9 @@ INTEGRITY_KEYS: dict[str, IntegrityKey] = {
     "malformed_findings_files": IntegrityKey(
         True, "MALFORMED FILES — %s (violate the findings contract, so source "
               "evidence was dropped from this report; run not certified)"),
+    "coverage_files_skipped": IntegrityKey(
+        True, "COVERAGE FILES SKIPPED — %s (coverage evidence could not be used "
+              "for the floor audit; run not certified)"),
     "duplicate_out_files": IntegrityKey(
         True, "DUPLICATE out_file — %s (two reviewers share a write target; one "
               "overwrote the other; run not certified)"),
@@ -109,6 +112,11 @@ INTEGRITY_KEYS: dict[str, IntegrityKey] = {
         True, "CONTENT SNAPSHOT MISSING — this run's dispatch plan declares "
               "review cells, so a fan-out out-file-hashes.json was owed and "
               "none is present (a deleted baseline; run not certified)"),
+    "content_snapshot_mismatched": IntegrityKey(
+        True, "CONTENT SNAPSHOT CHANGED — the fan-out out-file-hashes.json "
+              "bytes do not match the snapshot this run's driver stamped, or "
+              "a plan-owed run has a present snapshot with no driver-written "
+              "digest (substituted or pre-planted evidence; run not certified)"),
     "empty_dispatch_plans": IntegrityKey(
         True, "EMPTY DISPATCH PLAN — %s plan file(s) declare no reviewer entry, "
               "so there is nothing to reconcile the ingested files against; run "
