@@ -7,6 +7,17 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Fixed-name staging writes refuse planted FIFOs and hard links (#2093).** The generic
+  `.panopticon` writer opened `<path>.tmp` with `O_TRUNC` but not `O_EXCL`, as did the manifest,
+  X0X and tree-baseline paths through that same primitive. A hard link at any of those names
+  was therefore truncated along with its victim; FIFO opens were only bounded by the later
+  nonblocking artifact fix. One shared staging opener now creates with
+  `O_CREAT|O_EXCL|O_NOFOLLOW|O_NONBLOCK`, reusing a leftover only when `lstat` proves it is a
+  singly-linked regular file. The four writers use that opener, and reject symlinks, special
+  files and multiply-linked files before writing. Pins in `tests/test_artifact_write_symlinks.py`
+  put a FIFO and hard link at every fixed staging name, enforce a deadline and preserve the
+  victim; `tests/test_safe_write.py` pins the exact flags and `tests/test_run_manifest.py` pins
+  safe stale-file reuse and the stronger internal-symlink refusal.
 - **A guard hook denies a payload too deep to parse instead of crashing open (#3186).** The read,
   write and kimi guard hooks parsed their stdin OUTSIDE their fail-closed envelope and caught
   `ValueError` only. A deeply nested payload raised `RecursionError`: a traceback and exit 1, which

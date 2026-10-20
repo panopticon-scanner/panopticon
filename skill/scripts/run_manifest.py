@@ -442,15 +442,15 @@ def _rewrite(review_root, manifest, *, namespace=None):
     file's contents with the manifest JSON, and then `os.replace` renamed the LINK
     over `run-manifest.json` (rename does not dereference), so every later
     `load_manifest` read through it. `write_manifest` escaped only because mode "x"
-    is O_EXCL. The staging write now goes through the same no-follow open every
-    other `.panopticon` writer uses, and refuses LOUDLY rather than writing
-    somewhere else -- the two fixes this class already had (#1577, and the guard
-    hooks' own `_atomic_write_json`) fail the same way.
+    is O_EXCL. The staging write now goes through the shared exclusive staging
+    open and refuses any symlink, special file, or multiply-linked regular file
+    rather than writing somewhere else -- the two fixes this class already had
+    (#1577 and the guard hooks' `_atomic_write_json`) fail the same way.
     """
     body = {k: v for k, v in manifest.items() if k not in _EPHEMERAL_KEYS}
     path = manifest_path(review_root, namespace)
     tmp = path + ".tmp"
-    with safe_write.open_w_nofollow(tmp) as fh:
+    with safe_write.open_staging_nofollow(tmp) as fh:
         json.dump(body, fh, indent=2, sort_keys=True)
     os.replace(tmp, path)
     return manifest
