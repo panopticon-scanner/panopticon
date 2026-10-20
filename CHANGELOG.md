@@ -28,7 +28,7 @@ evidence exposed.
   CLEAN, each construct UNVERIFIED at its line, the private-use check first, a REPORT kept alone, a
   download reaching forward only, the gate off elsewhere, one linear pass) and
   `TestEveryStepADownloadReachesIsFullyRead` (the lint reads the fleet through the subset; the
-  exemption checks). Sizes: `scripts/workflow_guard.py` 674, `scripts/workflow_subset.py` 87.
+  exemption checks). Sizes: `scripts/workflow_guard.py` 677, `scripts/workflow_subset.py` 87.
 - **`driver setup` reads a setup proposal only as the return of its own scan dispatch (#2130).** An
   untracked `.panopticon/setup-proposal.json`, and on a non-git target any proposal, was read as
   this run's scan result. A target could ship one and have its own grouping ingested.
