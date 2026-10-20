@@ -299,7 +299,7 @@ class TestX0xArtifact(_Planted):
         out = os.path.join(self.pano, "report.json")
         staging = self.hard_link("report-x0x.json.tmp")
         with contextlib.redirect_stderr(io.StringIO()) as err:
-            rc = synthesize.main(["--out", out, findings])
+            rc = synthesize.main(["--repo", "--out", out, findings])
         self.assertEqual(rc, validate_schema_mod.ARTIFACT_INVALID)
         self.assertIn("artifact path refused", err.getvalue())
         self.assert_victim_intact()
@@ -314,7 +314,7 @@ class TestX0xArtifact(_Planted):
         staging = self.fifo("report-x0x.json.tmp")
         with contextlib.redirect_stderr(io.StringIO()) as err:
             with _deadline():
-                rc = synthesize.main(["--out", out, findings])
+                rc = synthesize.main(["--repo", "--out", out, findings])
         self.assertEqual(rc, validate_schema_mod.ARTIFACT_INVALID)
         self.assertIn("artifact path refused", err.getvalue())
         self.assertFalse(os.path.lexists(staging))
