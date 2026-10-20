@@ -27,6 +27,7 @@ import yaml
 
 from scripts import scanner_config
 from tests._test_helpers import REPO_ROOT
+import workflow_subset
 from workflow_guard import UNNAMED, Step, fetches, job_defects, run_jobs
 # #1641's comment-stripper, now `scripts/shell_reader.py`'s: half this repo's
 # workflow and Dockerfile prose QUOTES the commands it explains -- including
@@ -137,12 +138,31 @@ def _workflow_files():
 # one that stops firing is stale and fails, and a workflow that has become
 # privileged may not hold one.
 EXEMPT_FETCHES = ()
+# (workflow, step name, why it may run outside the understood subset) -- #3141: a step a download reaches (the
+# one that fetches and every one after it in its job) that reads outside `scripts/workflow_subset.py`'s subset is
+# UNVERIFIED, "step not fully read: ...". EMPTY, and held to the same checks as EXEMPT_FETCHES: each entry is a
+# named step with a written reason, one that stops firing is stale, and a privileged workflow may hold none. A step
+# the subset should cover widens it there instead.
+EXEMPT_UNVERIFIED = ()
+UNVERIFIED = "step not fully read: "
 
 
 def fetch_exemption(workflow, step_name, entries=EXEMPT_FETCHES):
     """The entry excusing this step from the fetch rule, or None."""
     return next((e for e in entries if e[0] == workflow and e[1] == step_name),
                 None)
+
+
+def unverified_exemption(workflow, step_name, entries=EXEMPT_UNVERIFIED):
+    """The entry excusing this step from the understood subset, or None."""
+    return fetch_exemption(workflow, step_name, entries)
+
+
+def exemption(workflow, step_name, why):
+    """The entry excusing this defect: an UNVERIFIED step's from EXEMPT_UNVERIFIED, any other's from EXEMPT_FETCHES."""
+    if why.startswith(UNVERIFIED):
+        return unverified_exemption(workflow, step_name)
+    return fetch_exemption(workflow, step_name)
 
 
 def _run_jobs_in_repo():
@@ -161,11 +181,12 @@ def _fetch_defects_in_repo():
 
     Per job because that is the rule's scope (steps share the workspace, so a
     fetch in one step and its execution in another is one act); the defect is
-    still reported against the step that fetched.
+    still reported against the step that fetched. With the understood subset
+    (#3141): a step a download reaches that reads outside it is UNVERIFIED.
     """
     defects = []
     for workflow, _job, steps in _run_jobs_in_repo():
-        for name, why in job_defects(steps):
+        for name, why in job_defects(steps, subset=True):
             defects.append((workflow, name, why))
     return defects
 
@@ -174,7 +195,7 @@ class TestNoWorkflowFetchesAndExecutesUnverified(unittest.TestCase):
     def test_every_run_step_verifies_what_it_executes(self):
         defects = ["%s / %s -- %s" % (workflow, name, why)
                    for workflow, name, why in _fetch_defects_in_repo()
-                   if not fetch_exemption(workflow, name)]
+                   if not exemption(workflow, name, why)]
         self.assertEqual([], defects, "unverified fetch-and-exec:\n" +
                          "\n".join(defects))
 
@@ -211,8 +232,8 @@ class TestNoWorkflowFetchesAndExecutesUnverified(unittest.TestCase):
 
     def test_no_fetch_exemption_outlives_the_step_it_was_written_for(self):
         fired = set()
-        for workflow, name, _why in _fetch_defects_in_repo():
-            if fetch_exemption(workflow, name):
+        for workflow, name, why in _fetch_defects_in_repo():
+            if not why.startswith(UNVERIFIED) and fetch_exemption(workflow, name):
                 fired.add((workflow, name))
         stale = [e[:2] for e in EXEMPT_FETCHES if e[:2] not in fired]
         self.assertEqual([], stale, "fetch exemptions that no longer excuse "
@@ -241,6 +262,49 @@ class TestNoWorkflowFetchesAndExecutesUnverified(unittest.TestCase):
         self.assertIsNotNone(fetch_exemption("ci.yml", "fetch the thing", entries))
         self.assertIsNone(fetch_exemption("ci.yml", "another step", entries))
         self.assertIsNone(fetch_exemption("other.yml", "fetch the thing", entries))
+
+
+class TestEveryStepADownloadReachesIsFullyRead(unittest.TestCase):
+    """#3141: the understood subset's half of the fleet lint, and EXEMPT_UNVERIFIED's checks."""
+
+    def test_the_lint_reads_the_fleet_through_the_subset(self):
+        # Guards the gate: with `hadolint` taken out of the subset, the two docker-build-pr.yml steps that run it
+        # after the download read UNVERIFIED -- the fleet lint reads every step a download reaches through it.
+        with mock.patch.object(workflow_subset, "COMMANDS", workflow_subset.COMMANDS - {"hadolint"}):
+            found = [(w, n, why) for w, n, why in _fetch_defects_in_repo() if why.startswith(UNVERIFIED)]
+        self.assertEqual([("docker-build-pr.yml", "Lint Dockerfile"), ("docker-build-pr.yml", "Lint Dockerfile.fixtures")],
+                         [found_at[:2] for found_at in found])
+        for _w, _n, why in found:
+            self.assertRegex(why, r"^step not fully read: the command `hadolint` at line [0-9]+; review by hand$")
+
+    def test_no_unverified_exemption_outlives_the_step_it_was_written_for(self):
+        fired = {(workflow, name) for workflow, name, why in _fetch_defects_in_repo()
+                 if why.startswith(UNVERIFIED) and unverified_exemption(workflow, name)}
+        stale = [e[:2] for e in EXEMPT_UNVERIFIED if e[:2] not in fired]
+        self.assertEqual([], stale, "unverified exemptions that no longer excuse "
+                                    "anything; delete them:\n%s" % stale)
+
+    def test_no_workflow_with_an_unverified_exemption_has_become_privileged(self):
+        defects = []
+        for name in sorted({e[0] for e in EXEMPT_UNVERIFIED}):
+            with open(os.path.join(WORKFLOW_DIR, name), encoding="utf-8") as fh:
+                doc = yaml.safe_load(fh.read()) or {}
+            why = privilege_defect(doc)
+            if why:
+                defects.append("%s -- %s" % (name, why))
+        self.assertEqual([], defects, "a workflow carrying an unverified exemption "
+                         "has become privileged:\n" + "\n".join(defects))
+
+    def test_the_unverified_exemption_matcher_answers_on_both_sides(self):
+        # EXEMPT_UNVERIFIED is empty, so the checks above pass vacuously today; the matcher is proved here on scratch
+        # entries, and each defect is excused by its own list alone: an UNVERIFIED one by this list, a REPORT never.
+        entries = (("ci.yml", "read the thing", "a reason"),)
+        self.assertIsNotNone(unverified_exemption("ci.yml", "read the thing", entries))
+        self.assertIsNone(unverified_exemption("ci.yml", "another step", entries))
+        self.assertIsNone(unverified_exemption("other.yml", "read the thing", entries))
+        with mock.patch(__name__ + ".unverified_exemption", lambda workflow, name: entries[0]):
+            self.assertIsNotNone(exemption("ci.yml", "read the thing", UNVERIFIED + "the command `x` at line 1"))
+            self.assertIsNone(exemption("ci.yml", "read the thing", "fetches x -> y and running it under `sh`"))
 
 
 class TestPinDefectRule(unittest.TestCase):
