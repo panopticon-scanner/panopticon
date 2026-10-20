@@ -10,6 +10,7 @@ import scripts.config_schema as config_schema
 import scripts.run_manifest as run_manifest
 import scripts.synth.validate_schema as validate_schema_mod
 import scripts.redact as redact
+import scripts.safe_write as safe_write
 import scripts.x0x_report as x0x_report
 from . import child
 from . import engine
@@ -18,7 +19,10 @@ from . import requests
 from . import verify_tools
 
 
-def synthesize_done(review_root, manifest):
+_PENDING = "synthesize-pending.json"
+
+
+def _usable_report(review_root):
     # §5.1: gate on the durable tag-named report, not the convenience symlink, so
     # resume never depends on symlink creation having succeeded.
     #
@@ -30,6 +34,14 @@ def synthesize_done(review_root, manifest):
     # and build_report writes it on every report it has ever produced.
     report = runio._load_json(runio._report_out(review_root))
     return isinstance(report, dict) and isinstance(report.get("summary"), dict)
+
+
+def synthesize_done(review_root, manifest):
+    # #2930: failed/interrupted attempts can leave a usable-looking old report
+    # or an invalid sibling. Presence alone refuses completion, even if the
+    # marker is malformed, unreadable, or a dangling link.
+    return (not os.path.lexists(runio._pano(review_root, _PENDING))
+            and _usable_report(review_root))
 
 
 def x0x_failure_disclosure(report_path):
@@ -363,16 +375,17 @@ def synthesize_execute(review_root, manifest):
     if flags.get("max_verify") is not None:
         cmd += ["--max-verify", str(flags["max_verify"])]
     cmd += findings
+    pending = runio._pano(review_root, _PENDING)
+    try:
+        runio._write_json(pending, {"run_id": manifest.get("run_id")})
+    except OSError as exc:
+        raise runio.DriverError("synthesize could not write pending marker: %s" %
+                               redact.redact_diagnostic(str(exc), 400)) from exc
     proc = child._run_child(cmd, review_root=review_root, phase="synthesize")
-    # A failing gate exits non-zero but still writes the report — that is a valid
-    # outcome, not a driver error. Only an ABSENT report is a failure.
-    #
-    # #1643 ruling 3: the SAME test the done-predicate applies, so the two can
-    # never disagree. A predicate stricter than this guard would leave the
-    # engine re-selecting the most expensive phase in the run -- one full
-    # synthesize child per step, up to the step guard -- instead of failing here
-    # with the reason.
-    if not synthesize_done(review_root, manifest):
+    # Gate failures still publish usable reports. Keep the report-shape check
+    # shared with done(), but independent of the pending marker: a successful
+    # retry must validate its output before clearing that marker (#2930).
+    if not _usable_report(review_root):
         raise runio.DriverError("synthesize produced no usable report.json (rc=%s): %s"
                           % (proc.returncode, redact.redact_diagnostic(proc.stderr or proc.stdout, 400)))
     # §5.1: point the flat compat paths at the latest tag-named report, so every
@@ -417,4 +430,9 @@ def synthesize_execute(review_root, manifest):
     if disclosure:
         print("driver: %s" % disclosure["message"], file=sys.stderr, flush=True)
         message += "; " + disclosure["message"]
+    try:
+        safe_write.remove_artifact(pending)  # confines the parent before unlink
+    except OSError as exc:
+        raise runio.DriverError("synthesize could not clear pending marker: %s" %
+                               redact.redact_diagnostic(str(exc), 400)) from exc
     return engine.PhaseResult(kind="advanced", message=message)

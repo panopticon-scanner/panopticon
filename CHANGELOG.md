@@ -7,6 +7,14 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A failed synthesis stays pending on resume (#2930).** The driver records a pending attempt
+  before launching synthesis and clears it only after an accepted result and a usable report.
+  Invalid artifacts, scope refusals beside an old report, and interrupted children therefore
+  retry on resume instead of silently skipping to complete. Reports remain available for diagnosis;
+  a successful retry clears the marker, and a fresh run uses its own run folder.
+  Compatibility: a run started before this version is not covered; an unmarked old report on
+  first entry is also outside this guarantee.
+
 - **A finding no longer borrows another claim's verdict (#3202).** When dedupe kept a survivor with no
   verdict of its own, #1476's id aliases let it take the verdict of a claim dedupe had dropped.
   Measured by id on main: an unanswered CRITICAL beside a REJECTED HIGH at one locus was published
