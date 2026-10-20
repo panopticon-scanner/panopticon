@@ -12,6 +12,8 @@ import shutil
 import tempfile
 import unittest
 
+import pytest
+
 import scripts.evidence as evidence
 import scripts.group_runner as group_runner
 import scripts.phases.runio as runio
@@ -21,6 +23,7 @@ import scripts.tool_capture as tool_capture
 import scripts.tolerant_json as tolerant_json
 import scripts.tools.base as tools_base
 from scripts.tools.legacy_sarif import LegacySarifAdapter
+from tests.test_shell_reader import LinearGrowth
 
 TOO_DEEP = "nested deeper than 64 levels"
 CRASHED_MAIN = 100_000       # past every supported interpreter's codec
@@ -74,6 +77,32 @@ class TestTheBound(unittest.TestCase):
         bundle = {"verdicts": []}
         self.assertEqual(bundle, tolerant_json.loads("{" * 256 + "x" + "}" * 256 + json.dumps(bundle)))
         self.assertEqual("fence- and prose-wrapped both tried", tolerant_json.unparsed_reason("sorry"))
+
+
+class TestTheScanIsLinear(LinearGrowth, unittest.TestCase):
+    """#2959 review: an unterminated string full of escaped quotes -- a TRUNCATED reply, a scanner killed at its
+    timeout -- made the scan quadratic: `finditer` stepped one character past the unclosed quote and each later
+    `\\"` opened a "string" that rescanned to the end (64 KB took 5.8 s; at the 16 MiB cap, hours). A lone quote
+    now ends the scan: what follows is inside that string, and the parse refuses it as malformed anyway."""
+
+    @staticmethod
+    def truncated(n):
+        return '{"findings": [{"snippet": "' + 'x=\\"a\\";' * n
+
+    @pytest.mark.serial
+    def test_an_unterminated_string_of_escaped_quotes_scans_in_linear_time(self):
+        for kind in (str, bytes):
+            with self.subTest(kind=kind.__name__):
+                make = self.truncated if kind is str else (lambda n: self.truncated(n).encode())
+                self.assert_linear_growth(2_000, make, lambda _n, scanned: None,
+                                          parser=tolerant_json.depth_checked)
+                with self.assertRaises(json.JSONDecodeError):
+                    json.loads(tolerant_json.depth_checked(make(10)))
+
+    def test_its_refusal_is_a_named_decode_error(self):
+        with self.assertRaises(tolerant_json.TooDeep) as caught:
+            tolerant_json.depth_checked(nest(65))
+        self.assertIsInstance(caught.exception, json.JSONDecodeError)
 
 
 class TestEveryDecoderAppliesIt(unittest.TestCase):

@@ -15,10 +15,17 @@ _SCAN_BUDGET_FLOOR = 64 * 1024
 # in a traceback; the deepest document this tree carries nests 13.
 MAX_JSON_DEPTH = 64
 _TOO_DEEP = "nested deeper than %d levels" % MAX_JSON_DEPTH
-# A whole string (to its first unescaped quote) or one bracket; a string is
-# matched only so the brackets inside it are skipped. One pattern per type.
-_DEPTH_TOKENS = re.compile(r'"[^"\\]*(?:\\.[^"\\]*)*"|[][{}]', re.DOTALL)
-_DEPTH_TOKENS_BYTES = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"|[][{}]', re.DOTALL)
+# A whole string (to its first unescaped quote), one bracket, or a LONE quote: a
+# string that never closes. Without that last arm `finditer` stepped one
+# character past an unterminated quote and every later `\"` opened a "string"
+# that rescanned to the end -- quadratic on a truncated reply (#2959 review).
+_DEPTH_TOKENS = re.compile(r'"[^"\\]*(?:\\.[^"\\]*)*"|[][{}"]', re.DOTALL)
+_DEPTH_TOKENS_BYTES = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"|[][{}"]', re.DOTALL)
+
+
+class TooDeep(json.JSONDecodeError):
+    """The depth bound's refusal: a JSONDecodeError, which every reader already
+    treats as a malformed document."""
 
 
 def depth_checked(text):
@@ -30,10 +37,12 @@ def depth_checked(text):
     tokens = (_DEPTH_TOKENS_BYTES if isinstance(text, bytes) else _DEPTH_TOKENS).finditer(text)
     for token in tokens:
         char = text[token.start():token.start() + 1]
+        if char in ('"', b'"') and token.end() - token.start() == 1:
+            break                  # unterminated: the rest is inside that string
         if char in ("[", "{", b"[", b"{"):
             depth += 1
             if depth > MAX_JSON_DEPTH:
-                raise json.JSONDecodeError(_TOO_DEEP, _as_text(text), token.start())
+                raise TooDeep(_TOO_DEEP, _as_text(text), token.start())
         elif char in ("]", "}", b"]", b"}"):
             depth = max(0, depth - 1)
     return text
@@ -49,7 +58,7 @@ def unparsed_reason(text):
     name when it is the cause (#2959), else the two tolerant tries."""
     try:
         depth_checked(text)
-    except json.JSONDecodeError as exc:
+    except TooDeep as exc:
         return exc.msg
     return "fence- and prose-wrapped both tried"
 
@@ -95,10 +104,9 @@ def first_balanced_object(body):
         budget -= size
         try:
             return json.loads(depth_checked(body[start:end]))
-        except json.JSONDecodeError as exc:
-            if exc.msg == _TOO_DEEP:
-                deep_until = end
-        except (RecursionError, MemoryError):
+        except TooDeep:
+            deep_until = end
+        except (json.JSONDecodeError, RecursionError, MemoryError):
             pass
     # The replay also pays once for locating candidate starts. Keep that linear
     # pass and fixed candidate bookkeeping outside the 64 KiB scan floor.
@@ -132,11 +140,10 @@ def first_balanced_object(body):
                 if depth == 0:
                     try:
                         return json.loads(depth_checked(body[start:end + 1]))
-                    except json.JSONDecodeError as exc:
-                        if exc.msg == _TOO_DEEP:
-                            cursor = end        # #2959: resume past it, never inside
+                    except TooDeep:
+                        cursor = end            # #2959: resume past it, never inside
                         break
-                    except (RecursionError, MemoryError):
+                    except (json.JSONDecodeError, RecursionError, MemoryError):
                         break
         cursor = max(cursor, start) + 1
     return None

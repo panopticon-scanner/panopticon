@@ -513,6 +513,21 @@ def test_malformed_and_oversized_protocol_input(tree, monkeypatch):
     assert json.loads(sink.getvalue())["error"]["code"] == -32700
 
 
+def test_a_request_nested_past_the_stack_is_refused_and_the_server_answers_on(tree):
+    """#2959 review: a JSON-RPC line nested ~32k deep (inside MAX_REQUEST_BYTES). The serve loop's
+    `except (ValueError, TypeError, RecursionError)` already answers it with an error and keeps serving
+    -- measured on 3.11-3.14 at 1,000 and 32,000 levels. This pin holds that; the broker is stdlib-only
+    (`-I`), so it cannot import the shared depth bound and does not need to."""
+    deep = '{"jsonrpc": "2.0", "id": 2, "method": "ping", "params": {"x": %s}}' % ("[" * 32_000 + "]" * 32_000)
+    sink = io.StringIO()
+    read_tools.serve(reader_for(tree), io.StringIO(deep + "\n" + json.dumps(
+        {"jsonrpc": "2.0", "id": 3, "method": "ping"}) + "\n"), sink)
+    replies = [json.loads(line) for line in sink.getvalue().splitlines()]
+    assert len(replies) == 2
+    assert "error" in replies[0] or replies[0]["result"] == {}      # refused, or parsed (3.14) and answered
+    assert replies[1] == {"jsonrpc": "2.0", "id": 3, "result": {}}
+
+
 # --- C-1: enumeration must survive a real repository ------------------------
 
 

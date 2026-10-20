@@ -19,7 +19,9 @@ evidence exposed.
   - The fix is one primitive, `tolerant_json.depth_checked`, with `MAX_JSON_DEPTH = 64`; the deepest
     document this tree carries nests 13. It is an iterative scan run BEFORE every decode of an agent's
     or a scanner's document. Past the bound it raises the `JSONDecodeError` each reader already treats
-    as malformed, so no new key is added.
+    as malformed, so no new key is added. The scan is linear: a LONE quote, a string that never closes,
+    ends it, so a truncated reply full of escaped quotes no longer rescans to the end at each one
+    (review round 1: 64 KB took 5.8 s, quadratic).
   - What that does to each case:
     - a self-written cell is re-dispatched to its cap, then listed in
       `meta.integrity.malformed_findings_files`, and the run is not certified;
@@ -29,8 +31,8 @@ evidence exposed.
     - the tolerant reader no longer digs a shallow inner object out of a too-deep reply, while #2531's
       prose braces before a real bundle still give it up.
   Pins (RED on main):
-  - `tests/test_json_depth.py`: the bound, strings and escapes, and one row per decoder at 65 and
-    100,000 levels;
+  - `tests/test_json_depth.py`: the bound, strings and escapes, one row per decoder at 65 and 100,000
+    levels, and linear growth on an unterminated string of escaped quotes (str and bytes);
   - `tests/phases/test_persist.py`, `tests/test_ingest_tools.py` and `tests/test_tools_manifest.py`;
   - `tests/test_driver.py`: a self-written findings file reaches a report, and a verdict bundle is an
     ordinary checkpoint; its uncapped re-dispatch is #3185.
