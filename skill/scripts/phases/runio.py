@@ -183,6 +183,21 @@ def _prompt_safe(text):
             out.append(ch)
     return "".join(out)
 
+# A claim's title as the verify advisors are handed it (#2074): reviewer- or
+# tool-authored text about the target, so bounded like its description.
+CLAIM_TITLE_CAP = 200
+
+def capped_title(title):
+    """A claim title for an advisor prompt: inert (`_prompt_safe`, so no control
+    character reaches the advisor raw), then cut at CLAIM_TITLE_CAP characters
+    with the cut VISIBLY marked (#2074), as `verify._capped_description` marks
+    a description's."""
+    text = _prompt_safe(str(title or ""))
+    if len(text) <= CLAIM_TITLE_CAP:
+        return text
+    return "%s [truncated: %d of %d characters shown]" % (
+        text[:CLAIM_TITLE_CAP], CLAIM_TITLE_CAP, len(text))
+
 def _abs_files(review_root, files):
     """A cell's files absolutized against review_root (#975) — RAW, un-sanitised.
 
