@@ -88,6 +88,9 @@ INTEGRITY_KEYS: dict[str, IntegrityKey] = {
     "malformed_findings_files": IntegrityKey(
         True, "MALFORMED FILES — %s (violate the findings contract, so source "
               "evidence was dropped from this report; run not certified)"),
+    "coverage_files_skipped": IntegrityKey(
+        True, "COVERAGE FILES SKIPPED — %s (coverage evidence could not be used "
+              "for the floor audit; run not certified)"),
     "duplicate_out_files": IntegrityKey(
         True, "DUPLICATE out_file — %s (two reviewers share a write target; one "
               "overwrote the other; run not certified)"),

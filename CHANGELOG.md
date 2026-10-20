@@ -7,6 +7,12 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Skipped coverage artifacts prevent certification (#2080).** Unreadable, malformed,
+  oversized, non-object and group-less coverage files are disclosed in
+  `meta.integrity.coverage_files_skipped` and make an otherwise passing gate INCONCLUSIVE,
+  including when valid coverage files remain. Rejected scout domains are capped at 32 entries
+  of 120 characters with an explicit truncation marker, keeping coverage records readable.
+
 - **An unenforced claude launch is checked for its tool controls before it starts (#2061).**
   `--tools=` and `--disallowedTools=` remove tools rather than deny calls, so neither ever shows
   in `permission_denials`. A run whose argv lost or altered either token would ledger exactly like

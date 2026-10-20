@@ -1221,6 +1221,7 @@ class TestIntegrityFailureDetails(unittest.TestCase):
     SINKING_VALUES = {
         "unexpected_findings_files": ["unexpected.json"],
         "malformed_findings_files": [{"file": "malformed.json"}],
+        "coverage_files_skipped": ["coverage-Bad.json"],
         "duplicate_out_files": ["duplicate.json"],
         "mislabeled_findings_files": ["mislabeled.json"],
         "content_mismatched_files": ["changed.json"],
