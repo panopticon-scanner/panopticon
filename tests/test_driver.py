@@ -351,10 +351,13 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
                 "run_id": run_id, "role": "domain_panel", "domain": domain, "group": group}})
         return True
 
-    def _land_pair_verdicts(self, root):
+    def _land_pair_verdicts(self, root, answers=None):
         """Answer every verify entry (primary or backup) the way a real advisor
-        would: by the ids the driver itself assigned the cell's claims. The HIGH
-        is CONFIRMED, the decoy REJECTED. Returns {title: verdict} as landed."""
+        would: by the ids the driver itself assigned the cell's claims. `answers`
+        maps a claim's title to its verdict (default: the HIGH CONFIRMED, the
+        decoy REJECTED); a title mapped to None goes unanswered. Returns
+        {title: verdict} as landed."""
+        answers = answers or {"honest high": "CONFIRMED", "decoy critical": "REJECTED"}
         from scripts.phases import review
         req = runio._load_json(runio._pano(root, "dispatch-request.json"))
         if not (isinstance(req, dict) and req.get("checkpoint") == "verify"):
@@ -366,10 +369,10 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
             stage = "backup" if stem.endswith("-backup") else "primary"
             group, domain = stem[:-len("-backup")].rsplit("-", 1) if stage == "backup" else stem.rsplit("-", 1)
             cell = review._load_cell_findings(root, manifest, group, domain) or []
-            verdicts = [{"finding_id": f["id"], "reasoning": "r",
-                         "verdict": "CONFIRMED" if f["title"] == "honest high" else "REJECTED"}
-                        for f in cell]
-            landed.update((f["title"], v["verdict"]) for f, v in zip(cell, verdicts))
+            answered = [f for f in cell if answers.get(f["title"])]
+            verdicts = [{"finding_id": f["id"], "reasoning": "r", "verdict": answers[f["title"]]}
+                        for f in answered]
+            landed.update((f["title"], v["verdict"]) for f, v in zip(answered, verdicts))
             runio._write_json(entry["out_file"], {"verdicts": verdicts, "_panopticon": {
                 "run_id": manifest["run_id"], "role": "domain_advisor", "domain": domain,
                 "group": group, "stage": stage}})
@@ -397,6 +400,29 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         kept = [(f["title"], f["severity"], f["evidence"]["status"]) for f in report["findings"]]
         self.assertIn(("honest high", "HIGH", "advisor_confirmed"), kept)
         self.assertEqual(report["summary"]["gate"], "FAIL")
+
+    def test_an_unanswered_critical_does_not_borrow_its_twins_rejection(self):
+        """#3202 (M5), through the REAL driver: the advisor answers the HIGH
+        REJECTED and leaves the CRITICAL at the same locus unanswered. Dedupe
+        keeps the CRITICAL; on main it borrowed the HIGH's REJECTED through a
+        #1476 alias and the gate PASSED. Unanswered, it is INCONCLUSIVE."""
+        d = self._repo()
+        args = self._args(d, "--no-tools", "--fail-on", "high")
+        status, landed = driver.run(args), {}
+        for _ in range(25):
+            if status["status"] != "checkpoint":
+                break
+            self._inject_scouts(d)
+            if status["checkpoint"] == "review" and not self._land_pair_review(d):
+                self._inject_review(d)
+            landed.update(self._land_pair_verdicts(d, {"honest high": "REJECTED", "decoy critical": None}))
+            status = driver.run(args)
+        self.assertEqual(status["status"], "complete", status.get("message"))
+        self.assertEqual(landed, {"honest high": "REJECTED"})
+        report = runio._load_json(runio._pano(d, "report.json"))
+        self.assertEqual([(f["title"], f["evidence"]["status"]) for f in report["findings"]],
+                         [("decoy critical", "unverified")])
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
 
     def test_resume_reemits_same_checkpoint_before_dispatch(self):
         d = self._repo()

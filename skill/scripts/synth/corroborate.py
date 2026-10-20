@@ -42,13 +42,14 @@ def _is_tool_sourced(finding):
 # severity alone; a dropped member's own verdict can still matter. A CONFIRMED
 # one is restored as its own finding when the survivor's own verdict is not
 # (`verdicts.restore_confirmed`). Underscore-prefixed like `_merged_ids`: never
-# serialized (pass 1 drops `_` keys) and stripped before the report.
+# serialized (pass 1 drops `_` keys) and stripped before the report. The ONLY
+# record of a dropped member since #3202 withdrew #1476's id aliases.
 ABSORBED_FIELD = "_absorbed"
 
 
 def _absorb(best, other):
     """Keep `other` on the survivor that dropped it, transitively (a cluster
-    collapses in stages, as `evidence.record_merged_id` notes)."""
+    can collapse in stages: what an earlier survivor absorbed travels on)."""
     carried = best.setdefault(ABSORBED_FIELD, [])
     carried.append(other)
     carried.extend(other.pop(ABSORBED_FIELD, []))
@@ -184,7 +185,6 @@ def dedupe(findings):
             best["reinforced"] = True
             _reinforce_merge(best, other)
             _carry_aggregation(best, other)
-            evidence_mod.record_merged_id(best, other)
             _absorb(best, other)
             result.append(best)
         else:
@@ -237,13 +237,12 @@ def dedupe(findings):
                             for m in sub:
                                 if m is not best:
                                     _reinforce_merge(best, m)
-                        # #1476: alias EVERY collapsed member -- the
+                        # Absorb EVERY collapsed member (#2991) -- the
                         # corroboration branch above is conditional, the drop is not.
                         # #2361: the carry belongs to the DROP, not to corroboration,
                         # so a tool-only sub-bucket keeps its aggregation too.
                         for m in sub:
                             if m is not best:
-                                evidence_mod.record_merged_id(best, m)
                                 _carry_aggregation(best, m)
                                 _absorb(best, m)
                         result.append(best)

@@ -808,3 +808,61 @@ class TestAConfirmedFindingIsNotAbsorbed(unittest.TestCase):
         self.assertNotIn(corroborate_mod.ABSORBED_FIELD, json.dumps(report))
         report = self._report([(_agentic(**self.HIGH), "REJECTED"), (_agentic(**self.CRIT), "REJECTED")], True)
         self.assertNotIn(corroborate_mod.ABSORBED_FIELD, json.dumps(report))
+
+
+class TestAClaimsVerdictIsItsOwn(unittest.TestCase):
+    """#3202: a survivor with no verdict of its own borrowed a dropped claim's
+    verdict through #1476's id aliases. A REJECTED HIGH dismissed an unanswered
+    CRITICAL (INCONCLUSIVE -> PASS) and counted it "matched", hiding it from
+    `unanswered` too. Aliases are withdrawn; the survivor binds only its own."""
+
+    def _report(self, pairs, gate_unverified=False):
+        bundles = {f["id"]: [{"finding_id": f["id"], "verdict": v, "reasoning": "r",
+                              "run_id": "RID", "stage": "primary"}] for f, v in pairs if v}
+        with contextlib.redirect_stderr(io.StringIO()):
+            return report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target="t", fail_on="high", timestamp="2026-10-20T00:00:00Z",
+                                         gate_unverified=gate_unverified),
+                findings=findings_mod.FindingSet(findings=[f for f, _ in pairs], verdict_bundles=bundles,
+                                                 verdict_run_id="RID", verdicts_supplied=True)))
+
+    CASES = {
+        "#3202: CRITICAL unanswered + absorbed HIGH REJECTED": lambda: [
+            (_agentic(fid="AG-C", sev="CRITICAL", title="c"), None),
+            (_agentic(fid="AG-H", sev="HIGH", title="h"), "REJECTED")],
+        "#1476's shape: agent HIGH unanswered + tool MEDIUM REJECTED": lambda: [
+            (_agentic(fid="AG-H", sev="HIGH", title="h"), None),
+            (_agentic(fid="TL-M", sev="MEDIUM", title="tool m", category="sqli", source="tool:semgrep",
+                      tool_evidence={"tool": "semgrep", "rule_id": "r"}), "REJECTED")],
+        "equal-severity twins: HIGH unanswered + HIGH REJECTED": lambda: [
+            (_agentic(fid="AG-1", sev="HIGH", title="a"), None),
+            (_agentic(fid="AG-2", sev="HIGH", title="b"), "REJECTED")],
+        "absorbed NEEDS_MORE_INFO": lambda: [
+            (_agentic(fid="AG-C", sev="CRITICAL", title="c"), None),
+            (_agentic(fid="AG-H", sev="HIGH", title="h"), "NEEDS_MORE_INFO")],
+    }
+
+    def test_an_unanswered_survivor_borrows_no_verdict(self):
+        for name, build in self.CASES.items():
+            with self.subTest(case=name):
+                report = self._report(build())
+                survivor = only(report["findings"], "survivor")
+                # Its own evidence, unadjudicated: unverified, or tool_reported
+                # where a tool reinforced it -- never a borrowed verdict's.
+                self.assertIn(survivor["evidence"]["status"], ("unverified", "tool_reported"))
+                self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+                self.assertEqual(report["discarded_claims"], [])
+            with self.subTest(case=name, gate_unverified=True):
+                self.assertEqual(self._report(build(), gate_unverified=True)["summary"]["gate"], "FAIL")
+
+    def test_the_unanswered_survivor_is_counted_unanswered(self):
+        report = self._report(self.CASES["#3202: CRITICAL unanswered + absorbed HIGH REJECTED"]())
+        verdicts = report["meta"]["coverage"]["verdicts"]
+        self.assertEqual((verdicts["matched"], verdicts["unanswered"]), (0, 1))
+
+    def test_a_survivors_own_verdict_still_binds(self):
+        report = self._report([(_agentic(fid="AG-C", sev="CRITICAL", title="c"), "REJECTED"),
+                               (_agentic(fid="AG-H", sev="HIGH", title="h"), "REJECTED")])
+        self.assertEqual(report["summary"]["gate"], "PASS")
+        self.assertEqual([(f["id"], f["evidence"]["status"]) for f in report["discarded_claims"]],
+                         [("AG-C", "rejected")])
