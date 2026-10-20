@@ -104,7 +104,8 @@ class TestToolsDirIntegration(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()), \
                     contextlib.redirect_stderr(io.StringIO()):
                 rc = syn.main([
-                    "--target", "src", "--run-dir", d, "--run-id", "RID",
+                    "--repo", "--target", "src", "--run-dir", d,
+                    "--run-id", "RID",
                     "--tools-dir", tools_dir, "--fail-on", "high",
                     "--out", out, agent,
                 ])
