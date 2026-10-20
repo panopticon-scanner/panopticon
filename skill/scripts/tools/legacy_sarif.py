@@ -1,12 +1,14 @@
 """Adapter that preserves the existing SARIF ingestion for semgrep/bandit/etc."""
 from __future__ import annotations
 import json
+import re
+import sys
 from pathlib import Path
 
 from scripts.inert import surrogate_free
 from scripts.tolerant_json import depth_checked
 from . import sarif_utils as su
-from .base import (REDTEAM, STANDARD, ingest_policy_cv, run_tool,
+from .base import (REDTEAM, STANDARD, inert_text, ingest_policy_cv, run_tool,
                    scratch_cwd)
 
 
@@ -35,6 +37,19 @@ SEMGREP_SCANNER_SCOPE_ARGS = [
     "--no-git-ignore",
 ] + ["--exclude=%s" % pattern for pattern in SEMGREP_SCANNER_EXCLUDES]
 
+# #2957: Semgrep's per-file limits, STATED rather than inherited. A rule that
+# runs past the timeout on one file loses its findings there, and a file on
+# which the threshold's worth of rules time out is abandoned for EVERY rule.
+# Raising them only moves the file size a target needs (a 900 KB file still ran
+# past 400 s with both off, beyond TOOL_TIMEOUT), so they stay at Semgrep's own
+# defaults and every hit is disclosed as partial file coverage instead
+# (`semgrep_timeout_coverage`). Not scope arguments: they do not change which
+# files are scanned, so the scanner-scope baseline does not move.
+SEMGREP_RULE_TIMEOUT = 5
+SEMGREP_TIMEOUT_THRESHOLD = 3
+SEMGREP_LIMIT_ARGS = ["--timeout=%d" % SEMGREP_RULE_TIMEOUT,
+                      "--timeout-threshold=%d" % SEMGREP_TIMEOUT_THRESHOLD]
+
 
 def with_semgrep_excludes(tool, cmd, patterns):
     """Add disclosed Panopticon exclusions to Semgrep before its scan root."""
@@ -58,7 +73,7 @@ TOOL_CMD = {
     # untracked review input. Neither file can now narrow the scanner silently.
     "semgrep": (["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off",
                  "--disable-version-check"] + SEMGREP_SCANNER_SCOPE_ARGS
-                + ["--sarif", "--quiet", "/src"]),
+                + SEMGREP_LIMIT_ARGS + ["--sarif", "--quiet", "/src"]),
     # `--redact` is scanner-native redaction (#1639 P11): the one tool here
     # whose output is a list of other people's credentials masks them itself,
     # so the secret never leaves the container -- and it keeps every field
@@ -90,6 +105,76 @@ TOOL_CMD = {
 
 # Max seconds to let a single tool invocation run before it's killed.
 TOOL_TIMEOUT = 300
+
+# Semgrep 1.179.0 names the file of a rule timeout ONLY in this prose; the
+# notification carries no `locations`. `.` stops at a newline, so a path that
+# holds one does not match and is counted unlocated rather than misread.
+_SEMGREP_TIMEOUT_TEXT = re.compile(r"\ATimeout when running \S+ on (.+):\n ?\Z")
+
+
+def _sarif_path(path):
+    """A SARIF path in the findings' path space, at full identity (bounded only
+    when published, so a shared long prefix cannot merge two files)."""
+    return path.removeprefix("file://").removeprefix(su._TARGET_PREFIX).lstrip("/")
+
+
+def semgrep_timeout_coverage(sarif):
+    """#2957: Semgrep's rule timeouts as partial file coverage, or None.
+
+    Only `toolExecutionNotifications` whose descriptor id is `Timeout` count;
+    the `Missing plugin` notes every run carries are not coverage gaps here. A
+    file with SEMGREP_TIMEOUT_THRESHOLD or more timeouts was abandoned (no rule's
+    findings from it survive); fewer means those rules' findings are missing.
+    A timeout whose file cannot be read off the message is still partial,
+    counted as unlocated, and its text is never published."""
+    per_file: dict[str, int] = {}
+    unlocated = 0
+    located: set[str] = set()
+    runs = sarif.get("runs") if isinstance(sarif, dict) else None
+    for run in runs if isinstance(runs, list) else []:
+        run = run if isinstance(run, dict) else {}
+        results = run.get("results")
+        for result in results if isinstance(results, list) else []:
+            try:
+                located.add(_sarif_path(result["locations"][0]["physicalLocation"]
+                                        ["artifactLocation"]["uri"]))
+            except (KeyError, IndexError, TypeError, AttributeError):
+                pass
+        invocations = run.get("invocations")
+        for invocation in invocations if isinstance(invocations, list) else []:
+            notes = (invocation.get("toolExecutionNotifications")
+                     if isinstance(invocation, dict) else None)
+            for note in notes if isinstance(notes, list) else []:
+                descriptor = note.get("descriptor") if isinstance(note, dict) else None
+                if not isinstance(descriptor, dict) or descriptor.get("id") != "Timeout":
+                    continue
+                message = note.get("message")
+                text = message.get("text") if isinstance(message, dict) else None
+                match = _SEMGREP_TIMEOUT_TEXT.match(text) if isinstance(text, str) else None
+                path = _sarif_path(match.group(1)) if match else ""
+                if path:
+                    per_file[path] = per_file.get(path, 0) + 1
+                else:
+                    unlocated += 1
+    if not per_file and not unlocated:
+        return None
+    total = sum(per_file.values()) + unlocated
+    print("semgrep: partial file coverage: %d rule timeout(s) on %d file(s), %d "
+          "without an identifiable file; usable findings retained"
+          % (total, len(per_file), unlocated), file=sys.stderr)
+    files = sorted(per_file)
+    return {
+        "status": "partial",
+        "parsed_files": len(located - set(files)),
+        "unparsed_files": len(files), "unavailable_files": 0,
+        "files": [{"file": inert_text(path, limit=239, mode="path"),
+                   "reason": ("timeout_abandoned"
+                              if per_file[path] >= SEMGREP_TIMEOUT_THRESHOLD
+                              else "rule_timeout"),
+                   "rule_timeouts": per_file[path]} for path in files[:100]],
+        "files_omitted": max(0, len(files) - 100), "capabilities_unavailable": [],
+        "rule_timeouts": total, "unlocated_records": unlocated,
+    }
 
 
 class LegacySarifAdapter:
@@ -156,6 +241,11 @@ class LegacySarifAdapter:
             return run_tool(cmd, timeout=TOOL_TIMEOUT, cwd=cwd)
 
     def parse(self, raw: bytes, group: str) -> list[dict]:
+        return self.parse_with_file_coverage(raw, group)[0]
+
+    def parse_with_file_coverage(self, raw: bytes, group: str) -> tuple[list[dict], dict | None]:
+        """The findings, plus Semgrep's timeout gaps (#2957); None for the
+        other tools here and for a Semgrep run with no timeout."""
         sarif = surrogate_free(json.loads(depth_checked(raw)))    # #2951, #2959: as `parse_json_bytes`
         # #1839: the INGEST decides whether an inline suppression comment in
         # the scanned tree's own source stands, because the pinned scanners
@@ -166,7 +256,8 @@ class LegacySarifAdapter:
         # sets around this call -- and is handed to the converter EXPLICITLY,
         # so that function stays directly testable in both modes.
         policy = ingest_policy_cv.get() or {}
-        return su.sarif_to_findings(
+        findings = su.sarif_to_findings(
             sarif, self.name, group, self.prefix,
             security_mode=policy.get("security_mode"),
             suppressed_in_source=policy.get("suppressed_in_source"))
+        return findings, (semgrep_timeout_coverage(sarif) if self.name == "semgrep" else None)

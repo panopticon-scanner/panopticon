@@ -1,5 +1,9 @@
+import contextlib
+import io
 import json
 import os
+from pathlib import Path
+import tempfile
 import unittest
 from unittest import mock
 
@@ -9,6 +13,9 @@ import scripts.tools.legacy_sarif as legacy
 import scripts.tools.sarif_utils as su
 from scripts.tools import ADAPTERS
 from tests.tools.helpers import assert_scratch_cwd, scratch_cwd_recorder
+import scripts.ingest_tools as ingest
+import scripts.security_gate as gate
+from scripts.synth import findings as findings_mod, plan, report, tool_axis
 
 
 SARIF = {
@@ -97,6 +104,8 @@ class TestLegacySarifAdapter(unittest.TestCase):
         expected = ["semgrep", "scan", "--config", "/opt/semgrep-rules",
                     "--metrics=off", "--disable-version-check"]
         expected += legacy.SEMGREP_SCANNER_SCOPE_ARGS
+        # #2957: the per-file limits, stated at Semgrep's own defaults.
+        expected += ["--timeout=5", "--timeout-threshold=3"]
         expected += ["--sarif", "--quiet", "/src"]
         self.assertEqual(legacy.TOOL_CMD["semgrep"], expected)
 
@@ -526,3 +535,134 @@ class TestTheAdapterReadsTheIngestPolicy(unittest.TestCase):
         findings = legacy.LegacySarifAdapter("semgrep").parse(raw, "g1")
         self.assertEqual(["sql-injection", "weak-hash"],
                          [f["category"] for f in findings])
+
+
+# #2957: the notification texts Semgrep 1.179.0 wrote on the forge (the pinned
+# scanner, the vendored rules, the adapter's argv). Only the rules root and the
+# target directory are respelled to the container's: `opt.semgrep-rules.` and
+# `/src/`. Three timeouts on one file abandon it; one does not.
+_RULES = "opt.semgrep-rules.python."
+_TIMED_OUT = (
+    ("boto3.security.hardcoded-token", "big_concat.py"),
+    ("lang.security.audit.eval-detected", "big_concat.py"),
+    ("lang.security.audit.insecure-file-permissions", "big_concat.py"),
+    ("lang.security.audit.dangerous-system-call-tainted-env-args", "tests/test_workflow_guard.py"),
+)
+_MISSING_PLUGIN = {"descriptor": {"id": "Missing plugin"}, "level": "note", "message": {"text": (
+    "Missing plugin for rule opt.semgrep-rules.elixir.lang.best-practice.deprecated_bnot_operator:\n"
+    " Missing Semgrep extension needed for parsing Elixir target. Try adding `--pro-languages` to "
+    "your command.")}}
+
+
+def _timeout_note(text):
+    return {"descriptor": {"id": "Timeout"}, "level": "warning", "message": {"text": text}}
+
+
+def _real_timeouts():
+    return [_timeout_note("Timeout when running %s%s on /src/%s:\n " % (_RULES, rule, path))
+            for rule, path in _TIMED_OUT]
+
+
+def _semgrep_capture(notes, paths=("small.py",)):
+    """One eval() result per path in `paths` (a file that lost ONE rule to a
+    timeout still carries the others' results, as the real run's did)."""
+    rule = _RULES + "lang.security.audit.eval-detected"
+    return {"runs": [{
+        "tool": {"driver": {"name": "Semgrep OSS", "rules": [
+            {"id": rule, "defaultConfiguration": {"level": "error"}}]}},
+        "results": [{"ruleId": rule, "message": {"text": "Detected the use of eval()."},
+                     "locations": [{"physicalLocation": {
+                         "artifactLocation": {"uri": "/src/" + path, "uriBaseId": "%SRCROOT%"},
+                         "region": {"startLine": 2}}}]} for path in paths],
+        "invocations": [{"executionSuccessful": True, "toolExecutionNotifications": notes}],
+    }]}
+
+
+class TestSemgrepTimeoutsAreDisclosed(unittest.TestCase):
+    """#2957: a rule timeout cost that file's findings and the report never said
+    so. Each one is now partial file coverage in `tools_file_partial`."""
+
+    def _ingest(self, payload, tool="semgrep"):
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / (tool + ".sarif")).write_text(json.dumps(payload))
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                findings, dispositions = ingest.ingest_dir_detailed(directory, "g1")
+        return findings, dispositions[tool], stderr.getvalue()
+
+    def _report(self, findings, disposition, tool="semgrep"):
+        dispositions = {tool: disposition}
+        return report.build_report(report.ReportInputs(
+            run=report.RunConfig(target="t", fail_on="high", timestamp="2026-10-20T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=findings),
+            plan=plan.PlanInputs(scout_requested=[tool]),
+            tools=tool_axis.ToolAxis(
+                tools_ran=tool_axis.tools_ran_from_dispositions(dispositions),
+                dispositions=dispositions)))
+
+    def test_real_timeout_notes_reach_the_report_and_withhold_certification(self):
+        paths = ("small.py", "tests/test_workflow_guard.py")
+        findings, disposition, diagnostic = self._ingest(
+            _semgrep_capture(_real_timeouts() + [_MISSING_PLUGIN], paths))
+        facts = disposition["file_coverage"]
+        self.assertEqual(facts, {
+            "status": "partial", "parsed_files": 1, "unparsed_files": 2, "unavailable_files": 0,
+            "files": [{"file": "big_concat.py", "reason": "timeout_abandoned", "rule_timeouts": 3},
+                      {"file": "tests/test_workflow_guard.py", "reason": "rule_timeout",
+                       "rule_timeouts": 1}],
+            "files_omitted": 0, "capabilities_unavailable": [], "rule_timeouts": 4,
+            "unlocated_records": 0})
+        self.assertEqual((disposition["status"], disposition["findings"]), ("ok", 2))
+        self.assertIn("semgrep: partial file coverage: 4 rule timeout(s) on 2 file(s)", diagnostic)
+        # The gaps qualify coverage only: the same findings gate the same way.
+        clean_findings, clean, _ = self._ingest(_semgrep_capture([_MISSING_PLUGIN], paths))
+        self.assertEqual(findings, clean_findings)
+        published = self._report(findings, disposition)
+        self.assertEqual(published["meta"]["coverage"]["tools_file_partial"], {"semgrep": facts})
+        self.assertFalse(published["summary"]["coverage_certified"])
+        self.assertIn("partial scanner file coverage: semgrep", published["summary"]["coverage_note"])
+        self.assertEqual(published["summary"]["gate"], self._report(clean_findings, clean)["summary"]["gate"])
+
+    def test_two_timeouts_on_a_file_do_not_abandon_it(self):
+        notes = _real_timeouts()[:2]
+        _, disposition, _ = self._ingest(_semgrep_capture(notes))
+        self.assertEqual(disposition["file_coverage"]["files"],
+                         [{"file": "big_concat.py", "reason": "rule_timeout", "rule_timeouts": 2}])
+
+    def test_missing_plugin_notes_alone_stay_complete(self):
+        findings, disposition, diagnostic = self._ingest(_semgrep_capture([_MISSING_PLUGIN]))
+        self.assertNotIn("file_coverage", disposition)
+        self.assertEqual(diagnostic, "")
+        self.assertEqual(self._report(findings, disposition)["meta"]["coverage"]["tools_file_partial"], {})
+
+    def test_a_timeout_whose_file_cannot_be_read_is_partial_and_unlocated(self):
+        private = "PRIVATE-SCANNER-TEXT"
+        notes = [_timeout_note("Timeout when running r on /src/a\nb.py:\n "),   # a newline in the path
+                 _timeout_note(private), _timeout_note("Timeout when running r on /src/:\n "),
+                 {"descriptor": {"id": "Timeout"}, "message": None},
+                 {"descriptor": {"id": "Timeout"}, "message": {"text": 7}},
+                 {"descriptor": "Timeout"}, None, "x"]
+        findings, disposition, diagnostic = self._ingest(_semgrep_capture(notes))
+        facts = disposition["file_coverage"]
+        self.assertEqual((facts["status"], facts["unparsed_files"], facts["files"]), ("partial", 0, []))
+        self.assertEqual((facts["unlocated_records"], facts["rule_timeouts"]), (5, 5))
+        self.assertEqual(len(findings), 1)
+        self.assertNotIn(private, diagnostic + json.dumps(disposition))
+        self.assertFalse(self._report(findings, disposition)["summary"]["coverage_certified"])
+
+    def test_a_long_timed_out_path_is_published_bounded(self):
+        note = _timeout_note("Timeout when running r on /src/%s.py:\n " % ("d/" * 2000))
+        _, disposition, _ = self._ingest(_semgrep_capture([note]))
+        self.assertLessEqual(len(only(disposition["file_coverage"]["files"])["file"]), 240)
+
+    def test_only_semgrep_reads_the_notes(self):
+        _, disposition, _ = self._ingest(_semgrep_capture(_real_timeouts()), tool="bandit")
+        self.assertNotIn("file_coverage", disposition)
+
+    def test_the_gate_line_names_the_timeouts(self):
+        _, disposition, _ = self._ingest(_semgrep_capture(_real_timeouts()))
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            gate.disclose_file_coverage({"semgrep": disposition}, "current")
+        self.assertIn("security-gate: current semgrep partial file coverage: 2 unparsed, "
+                      "0 unavailable, 4 rule timeout(s)", stderr.getvalue())

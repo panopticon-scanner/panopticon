@@ -189,7 +189,7 @@
             },
             "tools_file_partial": {
               "type": "object",
-              "description": "Adapters with usable captures but incomplete file coverage, mapped to the same bounded file_coverage facts in adapters. Reasons: parse_error or typescript_parser_unavailable. Findings still gate; file gaps alone do not invalidate a baseline or change the finding-based gate. summary.coverage_certified is false."
+              "description": "Adapters with usable captures but incomplete file coverage, mapped to the same bounded file_coverage facts in adapters. Reasons: parse_error or typescript_parser_unavailable; for semgrep (#2957) rule_timeout (a rule ran past the stated per-file timeout, so its findings there are missing) or timeout_abandoned (the stated threshold of rules timed out, so no rule's findings from that file survive), each with rule_timeouts, plus a run total rule_timeouts and unlocated_records for timeouts whose file could not be identified. Findings still gate; file gaps alone do not invalidate a baseline or change the finding-based gate. summary.coverage_certified is false."
             },
             "tools_ran": {
               "type": "array",

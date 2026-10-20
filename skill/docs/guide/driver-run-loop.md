@@ -855,6 +855,20 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   capture. The ordinary delta gate therefore matches standing test findings while a finding added by
   the PR is absent from the expanded base and still gates. The extra scan stops after main publishes
   a baseline carrying the marker.
+  **Semgrep's per-file limits are stated, and every hit is disclosed (#2957).** The argv passes
+  `--timeout=5` and `--timeout-threshold=3`, Semgrep's own defaults. A rule that runs longer than
+  5 seconds on one file loses its findings in that file. A file on which 3 rules time out is
+  abandoned, and no rule's findings from it survive. Semgrep still exits 0 in both cases. A target
+  can cause it: a 400 KB file holding one long expression was abandoned on every run on an idle
+  machine. The limits are not raised, because that only moves the file size a target needs. With
+  both off, a 900 KB file still ran past 400 seconds, which is beyond `TOOL_TIMEOUT` and would lose
+  the whole Semgrep run. Instead, ingest reads Semgrep's `Timeout` notifications from the SARIF. The
+  file is named only in the message text. Each timed-out file is listed in the adapter's
+  `file_coverage` as `rule_timeout` or `timeout_abandoned`, with its count, and so lands in
+  `meta.coverage.tools_file_partial`. `summary.coverage_certified` is then false. A timeout whose
+  file cannot be read off the message is counted as unlocated and is still partial. Semgrep's
+  other notifications, such as `Missing plugin`, are not coverage gaps here. Files over Semgrep's
+  1 MB target-size limit are skipped without any SARIF trace; that is #3193.
   **A directory whose name cannot be expressed as an exclusion (a path component outside
   `[A-Za-z0-9._-]`) is never passed to an exclusion knob** in either mode: `--exclude`/`--skip-dirs`
   take PATTERNS, so a directory named `*` was
