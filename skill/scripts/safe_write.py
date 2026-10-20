@@ -5,8 +5,8 @@
 path is a name an untrusted target can pre-commit as a symlink to any file the
 invoking user can write. A plain `open(path, "w")` follows that link and
 clobbers the victim; `os.makedirs` traverses a symlinked intermediate
-directory the same way. The three guards below own this defence on the driver
-side; `publish_texts` uses them for staged report publication.
+directory the same way. The guards below own this defence on the driver
+side; `publish_texts` uses the exclusive staging guard for report publication.
 
 They started in `phases/runio` (#1095, #run9 SEC-X0X) and moved down here
 whole in #1735, because the module that needed them next could not reach them:
@@ -65,6 +65,14 @@ class ArtifactPathError(OSError):
         detail = (str(cause).splitlines() or [type(cause).__name__])[0]
         super().__init__("cannot %s artifact %r: %s" %
                          (action, self.path, detail or type(cause).__name__))
+
+
+class UnsafeStagingPathError(ValueError):
+    """A fixed staging name was occupied by a leaf we cannot safely replace."""
+
+    def __init__(self, path, detail):
+        self.path = os.fspath(path)
+        super().__init__("refusing occupied staging path %r: %s" % (self.path, detail))
 
 
 def read_failure_reason(error):
@@ -149,10 +157,8 @@ def open_w_nofollow(path):
     resolved path to the real `.panopticon` first -- an intermediate symlinked dir
     (`.panopticon/runs -> /elsewhere`) would otherwise carry this write outside.
 
-    Safe for a STAGING path too, and #1735 is why it has to be used for one: a
-    `<artifact>.tmp` sitting in the reviewed tree is as plantable as the
-    artifact, and more quietly so -- the `os.replace` that follows renames the
-    LINK over the artifact, so a run that never noticed also loses the anchor."""
+    Fixed staging paths use `open_staging_nofollow` instead: their names must be
+    created exclusively, while a final artifact legitimately already exists."""
     confine_artifact_path(path)
     # O_NONBLOCK keeps an existing FIFO from waiting forever for a reader. The
     # descriptor check rejects every non-regular leaf that can still be opened
@@ -174,6 +180,55 @@ def open_w_nofollow(path):
         os.close(fd)
         raise
     return os.fdopen(fd, "w", encoding="utf-8")
+
+
+def open_staging_nofollow(path):
+    """Create a fixed staging leaf exclusively, reusing only a safe leftover.
+
+    #2093: O_NOFOLLOW alone still opens and truncates a hard link, while opening
+    a FIFO can block. O_EXCL refuses every occupied name before either can happen;
+    O_NONBLOCK is retained as a second bounded-open guard. A singly-linked regular
+    file is an orphan from our own interrupted stage and may be unlinked first.
+    Symlinks, special files, and multiply-linked regular files are refused.
+    """
+    confine_artifact_path(path)
+    flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+             | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0))
+
+    def create():
+        return os.open(path, flags, 0o644)
+
+    collisions = (errno.EEXIST, errno.ELOOP)
+    try:
+        fd = create()
+    except OSError as exc:
+        if exc.errno not in collisions:
+            raise
+        try:
+            found = os.lstat(path)
+        except FileNotFoundError:
+            found = None
+        if found is not None:
+            if not stat.S_ISREG(found.st_mode) or found.st_nlink != 1:
+                raise UnsafeStagingPathError(
+                    path, "leaf is not a singly-linked regular file") from None
+            os.unlink(path)
+        try:
+            fd = create()
+        except OSError as retry:
+            if retry.errno in collisions:
+                raise UnsafeStagingPathError(
+                    path, "leaf changed while the stale stage was replaced") from None
+            raise
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+            raise UnsafeStagingPathError(
+                path, "created leaf is not a singly-linked regular file")
+        return os.fdopen(fd, "w", encoding="utf-8")
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def open_a_nofollow(path):
@@ -248,7 +303,7 @@ def publish_texts(targets):
                 confine_artifact_path(parent)
                 os.makedirs(parent, exist_ok=True)
                 staged.append((temp, final))
-                with open_w_nofollow(temp) as stream:
+                with open_staging_nofollow(temp) as stream:
                     stream.write(text)
             except OSError as exc:
                 raise ArtifactPathError("stage", final, exc) from None

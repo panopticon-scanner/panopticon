@@ -362,7 +362,7 @@ class TornBaselineTest(unittest.TestCase):
         path = validate_phase.capture_tree_baseline(repo)
         with open(path, "rb") as fh:
             before = fh.read()
-        with mock.patch.object(runio, "_open_w_nofollow", _torn_open), \
+        with mock.patch.object(runio, "_open_staging_nofollow", _torn_open), \
                 self.assertRaises(OSError):
             validate_phase._write_probe_failed_baseline(path)
         with open(path, "rb") as fh:
@@ -493,7 +493,7 @@ class TornBaselineTest(unittest.TestCase):
         def _refuse(_p):
             raise OSError("open refused")
 
-        with mock.patch.object(runio, "_open_w_nofollow", _refuse), \
+        with mock.patch.object(runio, "_open_staging_nofollow", _refuse), \
                 self.assertRaises(OSError):
             validate_phase.capture_tree_baseline(repo)
         self.assertTrue(os.path.exists(path + ".tmp"), "a refused open deleted a file")

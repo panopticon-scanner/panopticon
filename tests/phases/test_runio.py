@@ -459,7 +459,7 @@ class TestAtomicArtifactWrite(unittest.TestCase):
             self.assertFalse(os.path.lexists(p + ".tmp"))
 
     def test_atomic_failure_cleans_the_stage_without_replacing_the_artifact(self):
-        real_open = runio._open_w_nofollow
+        real_open = runio._open_staging_nofollow
 
         @contextlib.contextmanager
         def close_failure(path):
@@ -472,7 +472,7 @@ class TestAtomicArtifactWrite(unittest.TestCase):
             raise ValueError("serialization failed")
 
         failures = ((runio.json, "dump", partial_dump),
-                    (runio, "_open_w_nofollow", close_failure),
+                    (runio, "_open_staging_nofollow", close_failure),
                     (runio.os, "replace", OSError("replace failed")))
         for owner, name, failure in failures:
             with self.subTest(stage=name), tempfile.TemporaryDirectory() as root:
@@ -490,7 +490,8 @@ class TestAtomicArtifactWrite(unittest.TestCase):
             path = os.path.join(root, "artifact.json")
             with open(path + ".tmp", "w", encoding="utf-8") as stream:
                 stream.write("KEEP")
-            with mock.patch.object(runio, "_open_w_nofollow", side_effect=OSError("denied")), \
+            with mock.patch.object(runio, "_open_staging_nofollow",
+                                   side_effect=OSError("denied")), \
                  self.assertRaises(OSError):
                 runio._write_json(path, {})
             with open(path + ".tmp", encoding="utf-8") as stream:

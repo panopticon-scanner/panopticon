@@ -265,7 +265,7 @@ def _load_state_json(path, what):
                           "re-run with --reset" % (what, path))
     return data
 
-# The no-follow artifact open lives in `scripts.safe_write` (#1735), not here:
+# The no-follow artifact and staging opens live in `scripts.safe_write`, not here:
 # `run_manifest` needs it for the manifest's own `<name>.tmp` staging write and
 # may not import this package (layout rule 3 -- `phases/*` imports
 # `run_manifest`, not the other way), and `synth/*` may not either. An alias of
@@ -277,6 +277,7 @@ def _load_state_json(path, what):
 # cannot appear behind the alias.
 _confine_artifact_path = safe_write.confine_artifact_path
 _open_w_nofollow = safe_write.open_w_nofollow
+_open_staging_nofollow = safe_write.open_staging_nofollow
 _open_a_nofollow = safe_write.open_a_nofollow
 
 def _write_json(path, data, atomic=True):
@@ -286,8 +287,8 @@ def _write_json(path, data, atomic=True):
     replies published by `persist.write_reply`, for a file a reader can
     catch mid-write. Atomic replacement is the default, so a failed write
     leaves the last complete artifact readable. The symlink defence is
-    identical either way (the tmp goes through the same
-    `_open_w_nofollow`, and `os.replace` onto a symlinked destination replaces
+    identical either way (the tmp goes through the exclusive staging opener,
+    and `os.replace` onto a symlinked destination replaces
     the LINK, never the file it points at). `usage.json` is the caller that
     asks for it: the loop rewrites it once per ENTRY now, while host children
     are live in the reviewed tree and the guide invites an operator to read it
@@ -298,7 +299,8 @@ def _write_json(path, data, atomic=True):
     target = path + ".tmp" if atomic else path
     staged = False
     try:
-        with _open_w_nofollow(target) as fh:
+        opener = _open_staging_nofollow if atomic else _open_w_nofollow
+        with opener(target) as fh:
             staged = atomic
             json.dump(data, fh, indent=2, sort_keys=True)
         if atomic:

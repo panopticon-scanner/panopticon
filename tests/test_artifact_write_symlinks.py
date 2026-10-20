@@ -14,6 +14,11 @@ assert a raise; `open_w_nofollow`'s O_NOFOLLOW answers a link that stays inside
 the tree, and tests/test_safe_write.py covers that once for the primitive
 rather than once per caller.
 
+#2093 extends that boundary at the four fixed staging names: an occupied FIFO
+must fail before a deadline and a hard link must never truncate its other name.
+Those two leaves cannot be committed by git, but can arrive in an unpacked tree
+or from another process already operating in it.
+
 The sites with a uuid-named staging file (`synth/render`, `discovery`) have no
 plantable leaf -- the name is unguessable and `os.replace` never dereferences
 -- so what routing them through the helper buys is the INTERMEDIATE-component
@@ -32,6 +37,8 @@ import contextlib
 import io
 import json
 import os
+import signal
+import stat
 import tempfile
 import types
 import unittest
@@ -43,12 +50,35 @@ import scripts.discovery as discovery
 import scripts.evidence as evidence
 import scripts.group_runner as group_runner
 import scripts.html_report as html_report
+import scripts.run_manifest as run_manifest
+import scripts.phases.runio as runio
 import scripts.phases.validate as validate_phase
 import scripts.tool_capture as tool_capture
 import scripts.tools_manifest as tools_manifest
 import scripts.synthesize as synthesize
 import scripts.synth.render as render_mod
 import scripts.synth.validate_schema as validate_schema_mod
+
+
+_FIFO_DEADLINE = (hasattr(os, "mkfifo") and hasattr(signal, "SIGALRM")
+                  and hasattr(signal, "setitimer") and hasattr(signal, "ITIMER_REAL"))
+
+
+@contextlib.contextmanager
+def _deadline(seconds=2):
+    """Interrupt a blocking staging open instead of hanging the test process."""
+    def expired(_signum, _frame):
+        raise AssertionError("staging writer exceeded the %ss deadline" % seconds)
+
+    previous_handler = signal.signal(signal.SIGALRM, expired)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0]:
+            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
 
 
 class _Planted(unittest.TestCase):
@@ -74,6 +104,18 @@ class _Planted(unittest.TestCase):
     def assert_victim_intact(self):
         with open(self.victim, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "PRECIOUS")
+
+    def hard_link(self, *parts):
+        path = os.path.join(self.pano, *parts)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.link(self.victim, path)
+        return path
+
+    def fifo(self, *parts):
+        path = os.path.join(self.pano, *parts)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.mkfifo(path)
+        return path
 
 
 class TestHtmlReport(_Planted):
@@ -164,6 +206,53 @@ class TestUsageJson(_Planted):
         self.assert_victim_intact()
 
 
+class TestFixedNameJsonStaging(_Planted):
+    """#2093: `runio._write_json` owns the generic `<path>.tmp` writer."""
+
+    def _write(self):
+        return runio._write_json(os.path.join(self.pano, "state.json"), {"ok": True})
+
+    def test_a_hard_link_at_the_staging_name_is_refused(self):
+        staging = self.hard_link("state.json.tmp")
+        with self.assertRaises(ValueError):
+            self._write()
+        self.assert_victim_intact()
+        self.assertTrue(os.path.samefile(staging, self.victim))
+
+    @unittest.skipUnless(_FIFO_DEADLINE, "requires POSIX FIFO deadlines")
+    def test_a_fifo_at_the_staging_name_is_refused_before_the_deadline(self):
+        staging = self.fifo("state.json.tmp")
+        with _deadline(), self.assertRaises(ValueError):
+            self._write()
+        self.assertTrue(stat.S_ISFIFO(os.lstat(staging).st_mode))
+
+
+class TestRunManifestStaging(_Planted):
+    """#2093: the manifest rewrite has its own fixed staging name."""
+
+    def setUp(self):
+        super().setUp()
+        run_manifest.write_manifest(self.root, {"run_id": "r1", "host": "claude"})
+
+    def _rewrite(self):
+        manifest = run_manifest.load_manifest(self.root)
+        return run_manifest.record_posture_disclosure(self.root, manifest, "digest")
+
+    def test_a_hard_link_at_the_staging_name_is_refused(self):
+        staging = self.hard_link("run-manifest.json.tmp")
+        with self.assertRaises(ValueError):
+            self._rewrite()
+        self.assert_victim_intact()
+        self.assertTrue(os.path.samefile(staging, self.victim))
+
+    @unittest.skipUnless(_FIFO_DEADLINE, "requires POSIX FIFO deadlines")
+    def test_a_fifo_at_the_staging_name_is_refused_before_the_deadline(self):
+        staging = self.fifo("run-manifest.json.tmp")
+        with _deadline(), self.assertRaises(ValueError):
+            self._rewrite()
+        self.assertTrue(stat.S_ISFIFO(os.lstat(staging).st_mode))
+
+
 class TestOutFileHashes(_Planted):
     def test_snapshot_out_files_refuses_a_planted_link(self):
         cell = os.path.join(self.pano, "findings-g1-SEC.json")
@@ -201,6 +290,33 @@ class TestX0xArtifact(_Planted):
         self.assert_victim_intact()
         # Round 1 ruling: a refusal must not leave the planted link sitting in
         # the run folder for the next invocation to trip over.
+        self.assertFalse(os.path.lexists(staging))
+
+    def test_the_x0x_staging_write_refuses_a_hard_link(self):
+        findings = os.path.join(self.root, "findings-g1-SEC.json")
+        with open(findings, "w", encoding="utf-8") as fh:
+            json.dump({"findings": []}, fh)
+        out = os.path.join(self.pano, "report.json")
+        staging = self.hard_link("report-x0x.json.tmp")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = synthesize.main(["--repo", "--out", out, findings])
+        self.assertEqual(rc, validate_schema_mod.ARTIFACT_INVALID)
+        self.assertIn("artifact path refused", err.getvalue())
+        self.assert_victim_intact()
+        self.assertFalse(os.path.lexists(staging))
+
+    @unittest.skipUnless(_FIFO_DEADLINE, "requires POSIX FIFO deadlines")
+    def test_the_x0x_staging_write_refuses_a_fifo_before_the_deadline(self):
+        findings = os.path.join(self.root, "findings-g1-SEC.json")
+        with open(findings, "w", encoding="utf-8") as fh:
+            json.dump({"findings": []}, fh)
+        out = os.path.join(self.pano, "report.json")
+        staging = self.fifo("report-x0x.json.tmp")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            with _deadline():
+                rc = synthesize.main(["--repo", "--out", out, findings])
+        self.assertEqual(rc, validate_schema_mod.ARTIFACT_INVALID)
+        self.assertIn("artifact path refused", err.getvalue())
         self.assertFalse(os.path.lexists(staging))
 
     def test_the_x0x_failure_log_staging_write_refuses_a_planted_link(self):
@@ -260,6 +376,20 @@ class TestTreeBaseline(_Planted):
         # Round 1 ruling (x0x): a refusal must not leave the planted link sitting
         # in the run folder for the next invocation to trip over.
         self.assertFalse(os.path.lexists(staging))
+
+    def test_the_staging_write_refuses_a_hard_link(self):
+        staging = self.hard_link("tree-baseline.txt.tmp")
+        with self.assertRaises(ValueError):
+            self._capture()
+        self.assert_victim_intact()
+        self.assertTrue(os.path.samefile(staging, self.victim))
+
+    @unittest.skipUnless(_FIFO_DEADLINE, "requires POSIX FIFO deadlines")
+    def test_the_staging_write_refuses_a_fifo_before_the_deadline(self):
+        staging = self.fifo("tree-baseline.txt.tmp")
+        with _deadline(), self.assertRaises(ValueError):
+            self._capture()
+        self.assertTrue(stat.S_ISFIFO(os.lstat(staging).st_mode))
 
     def test_the_final_name_refuses_a_planted_dangling_link(self):
         # A plant pointing OUTSIDE the tree at a path that does not exist: the

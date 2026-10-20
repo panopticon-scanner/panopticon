@@ -54,7 +54,7 @@ def _write_baseline(baseline, emit):
     the partial document, the run failed closed at validate forever, and the
     only exit was `--reset`, which discards a paid run. tmp+replace is the shape
     `runio._write_json` already uses, down to the staging path going through the
-    same `_open_w_nofollow` (a `.tmp` in the reviewed tree is as plantable as
+    same exclusive staging opener (a `.tmp` in the reviewed tree is as plantable as
     the artifact, and `os.replace` onto a symlinked destination replaces the
     LINK). `_write_json` itself is not reusable here: it writes `indent=2` JSON,
     and the probe-failure sentinel below is not JSON at all.
@@ -72,7 +72,7 @@ def _write_baseline(baseline, emit):
     os.makedirs(os.path.dirname(baseline), exist_ok=True)
     opened = False
     try:
-        with runio._open_w_nofollow(tmp) as fh:
+        with runio._open_staging_nofollow(tmp) as fh:
             opened = True                    # set first thing: an exception between
                                              # the open and here would orphan `tmp`
             emit(fh)
