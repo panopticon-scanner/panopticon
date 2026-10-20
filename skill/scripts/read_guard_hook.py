@@ -752,28 +752,28 @@ def _resolve_scope_path(argv_path=None):
 
 
 def main(argv=None):
-    """`argv` is the argument list AFTER the program name; [] exercises a bare
-    invocation with no baked-in scope path."""
+    """`argv`: the argument list AFTER the program name; [] = a bare invocation, no baked-in scope."""
     args = sys.argv[1:] if argv is None else argv
     try:
         payload = json.load(sys.stdin)
     except ValueError:
         return 0  # tolerant: a malformed hook payload never blocks legitimate work
+    except (RecursionError, MemoryError) as exc:     # #3186: a crash here would fail OPEN
+        print(_deny_response("read guard: payload too deep to adjudicate (%s)" % type(exc).__name__))
+        return 0
     if not isinstance(payload, dict):
         return 0
     try:
-        # #2006: the interpreter check, INSIDE the envelope -- it used to run at
-        # import, where its RuntimeError crashed the hook, and a crashed hook is
-        # a permitted read; here it becomes the deny below. #2394: the roster
-        # test sits inside too, so a non-hashable tool_name denies, never crashes.
+        # #2006: the interpreter check, INSIDE the envelope -- it used to run at import, where its
+        # RuntimeError crashed the hook, and a crashed hook is a permitted read; here it becomes the
+        # deny below. #2394: the roster test sits inside too, so a bad tool_name denies, never crashes.
         if payload.get("tool_name", "") not in _READ_TOOLS:
             return 0
         _trusted_hook_argv()
         allow, reason = adjudicate(payload, _resolve_scope_path(args[0] if args else None))
     except Exception as exc:  # noqa: BLE001 -- fail CLOSED, never crash the hook
-        # A non-2 exit is NON-blocking in Claude Code (the tool proceeds), so
-        # an uncaught exception here would fail OPEN despite every tolerant
-        # early return above being deliberately permissive.
+        # A non-2 exit is NON-blocking in Claude Code (the tool proceeds), so an uncaught
+        # exception here would fail OPEN despite every tolerant early return above.
         print(_deny_response("read guard crashed: %s" % exc))
         return 0
     if allow:

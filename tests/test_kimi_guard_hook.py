@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 import os
+import sys
 import tempfile
 import unicodedata
 import unittest
@@ -532,6 +533,33 @@ class TestMain(unittest.TestCase):
         self.assertEqual(body["permissionDecision"], "deny")
         self.assertIn("crashed", body["permissionDecisionReason"])
         self.assertIn("unhashable", body["permissionDecisionReason"])
+
+    def test_a_payload_too_deep_to_parse_denies_instead_of_crashing_open(self):
+        """#3186: a non-zero exit is NON-blocking on Kimi, so the RecursionError that escaped the parse
+        failed OPEN. It travels as the printed deny now, rc 0, as every kimi refusal does."""
+        def deep(n):
+            return '{"tool_name": "ReadFile", "tool_input": {"path": "/tmp/x", "x": %s}}' % ("[" * n + "]" * n)
+
+        def run(raw):
+            out = io.StringIO()
+            with mock.patch("sys.stdin", io.StringIO(raw)), contextlib.redirect_stdout(out):
+                rc = guard.main(["read", self.scope_path], env={})
+            return rc, out.getvalue()
+
+        def denied(rc, out, why):
+            body = json.loads(out)["hookSpecificOutput"]
+            return (rc, body["permissionDecision"], body["permissionDecisionReason"]) == (
+                0, "deny", "kimi guard: payload too deep to adjudicate (%s)" % why)
+
+        self.assertTrue(denied(*run(deep(100_000)), "RecursionError"))
+        rc, out = run(deep(1_000))
+        self.assertEqual(0, rc)
+        if sys.version_info < (3, 12):
+            self.assertTrue(denied(rc, out, "RecursionError"))
+        else:
+            self.assertNotIn("too deep", out)
+        with mock.patch.object(guard.json, "load", side_effect=MemoryError):
+            self.assertTrue(denied(*run(deep(1)), "MemoryError"))
 
     def test_a_malformed_payload_is_tolerantly_allowed(self):
         # The payload is the CLI's, not the model's -- Claude's hook makes the

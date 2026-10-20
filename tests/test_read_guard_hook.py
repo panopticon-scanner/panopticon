@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shlex
+import sys
 import tempfile
 import unicodedata
 import unittest
@@ -886,6 +887,29 @@ class TestMain(unittest.TestCase):
         for raw in ("{not json", "[1, 2]"):
             with self.subTest(raw=raw):
                 self.assertEqual((0, ""), self._run(raw, ["/nonexistent/scope.json"]))
+
+    def test_a_payload_too_deep_to_parse_denies_instead_of_crashing_open(self):
+        """#3186: the parse sat OUTSIDE the fail-closed envelope and caught ValueError only, so a deep
+        payload escaped as RecursionError -- exit 1, which Claude Code treats as NON-blocking: the read
+        went ahead unguarded. It denies now, on the hook's own channel (deny JSON, rc 0). Where the
+        interpreter parses the payload (N=1000 on 3.12+) it is adjudicated like any other."""
+        def deep(n):
+            return '{"tool_name": "Read", "tool_input": {"file_path": "/tmp/x", "x": %s}}' % ("[" * n + "]" * n)
+
+        def denied(rc, out, why):
+            body = json.loads(out)["hookSpecificOutput"]
+            return (rc, body["permissionDecision"], body["permissionDecisionReason"]) == (
+                0, "deny", "read guard: payload too deep to adjudicate (%s)" % why)
+
+        self.assertTrue(denied(*self._run(deep(100_000), ["/nonexistent/scope.json"]), "RecursionError"))
+        rc, out = self._run(deep(1_000), ["/nonexistent/scope.json"])
+        self.assertEqual(0, rc)
+        if sys.version_info < (3, 12):
+            self.assertTrue(denied(rc, out, "RecursionError"))
+        else:
+            self.assertNotIn("too deep", out)
+        with mock.patch.object(rg.json, "load", side_effect=MemoryError):
+            self.assertTrue(denied(*self._run(deep(1), ["/nonexistent/scope.json"]), "MemoryError"))
 
     def test_env_override_wins_then_baked_path_then_cwd_walk(self):
         with tempfile.TemporaryDirectory() as d:

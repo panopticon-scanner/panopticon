@@ -982,6 +982,27 @@ class TestMain(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(out, "")
 
+    def test_a_payload_too_deep_to_parse_denies_instead_of_crashing_open(self):
+        """#3186: as the read guard's -- a deep payload escaped the parse as RecursionError, exit 1,
+        NON-blocking in Claude Code, so the Write proceeded. It denies on the deny JSON, rc 0."""
+        def deep(n):
+            return '{"tool_name": "Write", "tool_input": {"file_path": "a.py", "x": %s}}' % ("[" * n + "]" * n)
+
+        def denied(rc, out, why):
+            body = json.loads(out)["hookSpecificOutput"]
+            return (rc, body["permissionDecision"], body["permissionDecisionReason"]) == (
+                0, "deny", "write guard: payload too deep to adjudicate (%s)" % why)
+
+        self.assertTrue(denied(*self._run_main(deep(100_000), allowlist_paths=["a.py"]), "RecursionError"))
+        rc, out = self._run_main(deep(1_000), allowlist_paths=["a.py"])
+        self.assertEqual(0, rc)
+        if sys.version_info < (3, 12):
+            self.assertTrue(denied(rc, out, "RecursionError"))
+        else:
+            self.assertNotIn("too deep", out)
+        with mock.patch.object(wg.json, "load", side_effect=MemoryError):
+            self.assertTrue(denied(*self._run_main(deep(1), allowlist_paths=["a.py"]), "MemoryError"))
+
     def test_missing_allowlist_file_denies_write(self):
         payload = json.dumps({"tool_name": "Write", "tool_input": {"file_path": "anything.py"}})
         rc, out = self._run_main(payload, allowlist_paths=None)
