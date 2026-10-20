@@ -415,7 +415,7 @@ class TestEnforcedIsDerivedInOnePlace(unittest.TestCase):
     # its one entry used to hardcode False, which is the same second copy of
     # the expression by another name.
     SITES = ("coverage.py", "review.py", "verify.py", "verify_tools.py",
-             "requests.py", "setup.py")
+             "run_artifacts.py", "setup.py")
 
     def _tree(self, name):
         path = os.path.join(self.PHASES, name)

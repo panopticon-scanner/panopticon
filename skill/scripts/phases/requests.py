@@ -6,7 +6,6 @@ import re
 import sys
 
 import scripts.dispatch as dispatch
-import scripts.group_runner as group_runner
 # #1720: the loop re-derives `enforced` to CHECK the dispatch request against
 # this run's evidence; this module derives it to WRITE that request. One
 # function, so the two can never disagree about what the run's posture is.
@@ -17,17 +16,27 @@ import scripts.synth.plan as plan_mod
 from scripts import hosts
 from scripts import model_resolver
 from scripts import read_guard_hook
-from . import coverage
 from . import hard_links
 # D10 ruling 2: the retry prompt carries the last refusal, and `persist` owns
 # both the records and the run-folder resolver. A mutual pair like
 # coverage<->requests: read by module attribute, at call time only.
 from . import persist
 from . import runio
+from . import run_artifacts
 
 
 _PROMPT_FILE_SAFE = re.compile(r"[^A-Za-z0-9._-]")
 _SAFE_ENTRY_ID = re.compile(r"[A-Za-z0-9._-]{1,160}\Z")
+
+
+# Stable private seams for the phase callers that predate the line-ceiling split.
+# Module-attribute forwarding also keeps the coverage<->requests import cycle lazy.
+def _driver_plan_entries(review_root, manifest):
+    return run_artifacts._driver_plan_entries(review_root, manifest)
+
+
+def _snapshot_review_out_files(review_root, manifest):
+    return run_artifacts._snapshot_review_out_files(review_root, manifest)
 
 
 def entry_file_component(entry_id):
@@ -443,28 +452,6 @@ def load_bound_request(review_root, namespace=None, expected_sha256=None):
         return None, REQUEST_UNREADABLE % os.path.abspath(path)
     return request, None
 
-def _driver_plan_entries(review_root, manifest):
-    """The declared review cells as a matrix domain-cell dispatch plan
-    (#5.0-16). Computed DETERMINISTICALLY from groups.json (each discovered
-    group) x its effective domains -- the SAME two sources review_execute
-    dispatches from (_discovered_groups x _effective_domains) -- with the EXACT
-    out_file spelling _cell_entry uses, so synth.integrity.reconcile_findings_files
-    sees no missing/unexpected on a clean run. `enforced` mirrors _cell_entry so
-    plan_mod.derive_tool_policy_mode reports the run's real posture rather than
-    defaulting to "advisory". No `files`/`role`/`model` -- this is a
-    declaration of which out_files must exist, not a scope grant or a cost row;
-    the dispatch entries carry scope (F4 `files`, plan 5 `scope`) and this
-    deliberately does not (R-P5-6)."""
-    enforced = loop_batch.expected_enforced(review_root, manifest.get("host", "claude"))
-    entries = []
-    for group, _files in coverage._discovered_groups(review_root):
-        for domain in coverage._effective_domains(review_root, group):
-            entries.append({
-                "group": group, "domain": domain, "enforced": enforced,
-                "out_file": os.path.abspath(
-                    runio._pano(review_root, "findings-%s-%s.json" % (group, domain)))})
-    return entries
-
 def _write_driver_plan(review_root, manifest):
     """Write .panopticon/dispatch-plan-driver.json declaring every review cell
     (#5.0-16 H2), so synthesize's reconcile_findings_files (undeclared-file
@@ -677,24 +664,3 @@ def _merge_ack(path, body, refresh=_ACK_DISCLOSURE):
             return path                # idempotent across resumes
         body = merged
     return runio._write_json(path, body)
-
-
-def _snapshot_review_out_files(review_root, manifest):
-    """Snapshot a sha256 per declared review cell at the review->verify boundary
-    (#5.0-16 H3), so synthesize's verify_out_file_hashes (content-substitution
-    detection) is live on the driver path. Runs after review_done (every cell
-    written) and before any verify-phase agent can touch a findings file, so a
-    later substitution -- e.g. by a rogue advisor on the unenforced generic host
-    -- is caught. Idempotent AND one-way: if the snapshot already exists it is
-    NOT rewritten, nor re-taken once DELETED -- either masks a substitution
-    (SEC-377944137; `run_manifest.claim_artifact`)."""
-    path = runio._pano(review_root, "out-file-hashes.json")
-    if os.path.isfile(path):
-        return path
-    entries = _driver_plan_entries(review_root, manifest)
-    if not entries:
-        return None
-    return run_manifest.claim_artifact(   # None: owed and gone -- never re-taken
-        review_root, manifest, run_manifest.OUT_FILE_SNAPSHOT, path,
-        lambda: path if group_runner.snapshot_out_files(
-            entries, out_path=os.path.abspath(path)) else None, cells=len(entries))

@@ -311,7 +311,7 @@ def _discovery_disclosures(discovery):
 
 def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
                       invalid_verify_queue, plan_owed=False, plan_sha256=None,
-                      discovery=None):
+                      snapshot_sha256=None, discovery=None):
     """`meta.integrity` as main() assembled it (WS-0 S3): planned-vs-ingested
     findings files, out_file collisions, mislabeled / cross-domain files, the
     unenforced ack (+ its #493 staleness check), the #493 R4 content-hash
@@ -325,9 +325,10 @@ def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
     `plan_owed` / `plan_sha256` are the driver's statement that this run WROTE a
     dispatch plan, and the content hash its manifest stamped for it
     (SEC-377944137, #1832) -- see `dispatch_plan_missing` /
-    `dispatch_plan_mismatched` below. Both are threaded from
+    `dispatch_plan_mismatched` below. `snapshot_sha256` is the hash the snapshot
+    writer returned for its exact serialized bytes (#2115). All are threaded from
     `phases/synthesize.py` rather than read here so this package stays free of
-    `scripts.run_manifest`, and both default to "nothing claimed" because a
+    `scripts.run_manifest`, and all default to "nothing claimed" because a
     direct `synthesize.py` call over hand-collected findings has no driver to
     ask.
 
@@ -365,15 +366,16 @@ def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
     # also means a stale top-level snapshot can neither substitute for the
     # active run's nor manufacture a mismatch in it.
     snapshot_path = os.path.join(run_dir, "out-file-hashes.json")
-    content_checked, content_mismatched, content_snapshot_unreadable = \
+    (content_checked, content_mismatched, content_snapshot_unreadable,
+     observed_snapshot_sha256) = \
         group_runner.verify_out_file_hashes(files, hashes_path=snapshot_path)
+    snapshot_present = os.path.isfile(snapshot_path)
     # #1208: absence used to read as a benign "not measured", which made deleting
     # the baseline the cheapest way to erase evidence of a substitution. A run
     # whose driver plan DECLARES cells owed a snapshot, so absence there is a
     # deleted baseline, not an ordinary non-fan-out run. A run that owes nothing
     # (no driver plan, or one declaring nothing) keeps the benign reading.
-    content_snapshot_missing = (not os.path.isfile(snapshot_path)
-                                and _owes_a_snapshot(run_dir))
+    content_snapshot_missing = not snapshot_present and _owes_a_snapshot(run_dir)
     if content_snapshot_missing:
         print("synthesize: this run's dispatch plan declares review cells, so a "
               "fan-out out-file-hashes.json snapshot is OWED -- none is present at "
@@ -390,6 +392,19 @@ def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
         print("synthesize: the fan-out out-file-hashes.json snapshot EXISTS but is "
               "unreadable/corrupt -- treating as tamper (fail-closed), not a missing "
               "snapshot; integrity is NOT certified.", file=sys.stderr)
+    # #2115: a valid snapshot can still be forged to agree with substituted
+    # findings. Bind the file itself to the writer's manifest stamp. A plan-owed
+    # run with a present snapshot but no digest is the pre-plant variant: the
+    # review->verify writer returned early because the attacker's file existed.
+    content_snapshot_mismatched = bool(
+        plan_owed and snapshot_present and not content_snapshot_unreadable
+        and (not snapshot_sha256
+             or observed_snapshot_sha256 != snapshot_sha256))
+    if content_snapshot_mismatched:
+        print("synthesize: the fan-out out-file-hashes.json snapshot is NOT the "
+              "one this run's driver wrote (or it has no driver-written digest) "
+              "-- treating as substituted evidence (fail-closed); integrity is "
+              "NOT certified.", file=sys.stderr)
     # SEC-377944137 (#1832): #1208's reasoning applied to the file one level up.
     # Every check keyed on the driver plan reads its ABSENCE as owing nothing --
     # `_owes_a_snapshot` above returns False, `reconcile_findings_files` returns
@@ -455,6 +470,7 @@ def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
                  "content_mismatched_files": content_mismatched,
                  "content_snapshot_unreadable": content_snapshot_unreadable,
                  "content_snapshot_missing": content_snapshot_missing,
+                 "content_snapshot_mismatched": content_snapshot_mismatched,
                  "empty_dispatch_plans": sum(1 for pl in plan_lists if not pl),
                  "invalid_dispatch_plans": invalid_plans,
                  "invalid_verify_queue": invalid_verify_queue,

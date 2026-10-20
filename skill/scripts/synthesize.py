@@ -101,6 +101,11 @@ def build_parser():
                          "that plan (SEC-377944137); a plan file present with "
                          "different content is tamper, not an absence. "
                          "Disclosed as meta.integrity.dispatch_plan_mismatched")
+    ap.add_argument("--snapshot-sha256", metavar="HEX", default=None,
+                    help="sha256 of the exact out-file-hashes.json bytes this "
+                         "run's driver wrote (#2115); a plan-owed run with a "
+                         "present snapshot that differs or has no such stamp "
+                         "sets meta.integrity.content_snapshot_mismatched")
     ap.add_argument("--git-drivers-suppressed", metavar="JSON", default=None,
                     help="JSON list of {repo, key} pairs: the target's own Git "
                          "driver commands this scan ran with emptied (#2013); "
@@ -352,6 +357,8 @@ def main(argv=None):
                                         args, "git_drivers_suppressed", None),
                                     plan_owed=getattr(args, "plan_owed", False),
                                     plan_sha256=getattr(args, "plan_sha256", None),
+                                    snapshot_sha256=getattr(
+                                        args, "snapshot_sha256", None),
                                     # #2271: discovery's own disclosures. It
                                     # recorded them here and printed them on a
                                     # stderr the driver buffers and discards on

@@ -282,6 +282,11 @@ def synthesize_execute(review_root, manifest):
         stamped = run_manifest.artifact_stamp(manifest, run_manifest.DRIVER_PLAN)
         if isinstance(stamped.get("sha256"), str) and stamped["sha256"]:
             cmd += ["--plan-sha256", stamped["sha256"]]
+    # #2115: the snapshot cannot attest to its own bytes. Its writer returned
+    # this digest to the manifest stamp; the child compares the on-disk file.
+    snapshot = run_manifest.artifact_stamp(manifest, run_manifest.OUT_FILE_SNAPSHOT) or {}
+    if isinstance(snapshot.get("sha256"), str) and snapshot["sha256"]:
+        cmd += ["--snapshot-sha256", snapshot["sha256"]]
     # #2013: which of the TARGET's own Git driver commands the probe emptied for
     # this scan, threaded rather than re-read for the reason above --
     # run-manifest.json is a _TOP_LEVEL artifact, outside the `--run-dir` the
