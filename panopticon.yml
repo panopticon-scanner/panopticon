@@ -687,6 +687,7 @@ groups:
       - scripts/workflow_uses.py
       - scripts/workflow_use_words.py
       - scripts/workflow_use_scopes.py
+      - scripts/workflow_subset.py
       - scripts/workflow_values.py
       - scripts/workflow_value_expansion.py
       - scripts/workflow_called.py
@@ -704,6 +705,7 @@ groups:
       - tests/test_workflow_value_expansion.py
       - tests/test_workflow_annotate.py
       - tests/test_workflow_reason_markers.py
+      - tests/test_workflow_subset.py
       panels:
       - SEC
     WorkflowForms:
