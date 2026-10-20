@@ -311,12 +311,13 @@ def _discovery_disclosures(discovery):
 
 def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
                       invalid_verify_queue, plan_owed=False, plan_sha256=None,
-                      snapshot_sha256=None, discovery=None):
+                      snapshot_sha256=None, discovery=None, coverage_files_skipped=None):
     """`meta.integrity` as main() assembled it (WS-0 S3): planned-vs-ingested
     findings files, out_file collisions, mislabeled / cross-domain files, the
     unenforced ack (+ its #493 staleness check), the #493 R4 content-hash
     check, the plan-loader's own counts, and discovery's two degradation
-    disclosures. `plan_lists` is the per-file list
+    disclosures. `coverage_files_skipped` names artifacts the coverage loader
+    could not audit (#2080). `plan_lists` is the per-file list
     load_dispatch_plans_detailed returned; `plans_seen` / `invalid_plans`
     / `invalid_verify_queue` are that loader's and load_verify_queue's
     disclosures, carried through so "no plan found" and "reconciled, nothing
@@ -461,6 +462,7 @@ def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
     integrity = {"unexpected_findings_files": unexpected,
                  "missing_planned_files": missing,
                  "malformed_findings_files": malformed,
+                 "coverage_files_skipped": coverage_files_skipped or [],
                  "duplicate_out_files": duplicate_out_files(plan),
                  "mislabeled_findings_files": mislabeled_findings_files(files),
                  "cross_domain_findings": cross_domain_findings(files),

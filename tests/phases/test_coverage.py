@@ -16,6 +16,7 @@ import scripts.phases.coverage as coverage
 import scripts.groups_schema as groups_schema
 import scripts.phases.review as review
 import scripts.model_resolver as model_resolver
+import scripts.synth.coverage_io as coverage_io
 
 
 class TestCoveragePhase(unittest.TestCase):
@@ -760,6 +761,39 @@ class TestCoverageBridge(unittest.TestCase):
         cov = runio._load_json(runio._pano(self.root, "coverage-Auth.json"))
         self.assertEqual(cov["scout_added"], ["DAT"])
         self.assertEqual(cov["scout_invalid"], ["BOGUS"])
+        self.assertNotIn("scout_invalid_truncated", cov)
+
+    def test_ten_thousand_prose_domains_still_write_readable_coverage(self):
+        invalid = ["%05d: %s" % (i, "review this domain in detail " * 10)
+                   for i in range(10000)]
+        self._setup("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n",
+                    [*reversed(invalid), "OPS", "SEC", invalid[0]])
+        coverage.coverage_execute(self.root, self.manifest)
+        path = runio._pano(self.root, "coverage-Auth.json")
+        self.assertLess(os.path.getsize(path), coverage_io._MAX_COVERAGE_BYTES)
+        cov = coverage_io.load_coverage_files(runio._pano(self.root))[0]
+        self.assertEqual(cov["scout_invalid"], [d[:120] for d in invalid[:32]])
+        self.assertIs(cov["scout_invalid_truncated"], True)
+        self.assertEqual(cov["scout_added"], ["OPS"])
+        self.assertEqual(cov["effective"], ["COD", "OPS", "SEC"])
+
+    def test_scout_invalid_entry_length_and_count_caps_are_independent(self):
+        for invalid, expected, truncated in (
+            (["x" * 121], ["x" * 120], True),
+            (["%02d" % i for i in range(33)], ["%02d" % i for i in range(32)], True),
+            (["%02d" % i + "x" * 118 for i in range(32)],
+             ["%02d" % i + "x" * 118 for i in range(32)], False),
+        ):
+            with self.subTest(count=len(invalid), length=len(invalid[0])):
+                self._setup("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n",
+                            invalid)
+                path = runio._pano(self.root, "coverage-Auth.json")
+                if os.path.exists(path):
+                    os.unlink(path)
+                coverage.coverage_execute(self.root, self.manifest)
+                cov = coverage_io.load_coverage_files(runio._pano(self.root))[0]
+                self.assertEqual(cov["scout_invalid"], expected)
+                self.assertEqual(cov.get("scout_invalid_truncated", False), truncated)
 
     def test_scout_cannot_override_exclude(self):
         self._setup("groups:\n  Auth:\n    match: ['a.py']\n    panels: [SEC]\n"

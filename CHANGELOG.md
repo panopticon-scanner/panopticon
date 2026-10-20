@@ -19,6 +19,12 @@ evidence exposed.
   Pins: `tests/phases/test_setup.py::TestSetupDonePredicatesBindToThisRun` (git and non-git
   targets). Five `TestDriverSetup` tests that played the host's return without a dispatch now use
   the registered-machine fixture, so their first invocation really dispatches.
+- **Skipped coverage artifacts prevent certification (#2080).** Unreadable, malformed,
+  oversized, non-object and group-less coverage files are disclosed in
+  `meta.integrity.coverage_files_skipped` and make an otherwise passing gate INCONCLUSIVE,
+  including when valid coverage files remain. Rejected scout domains are capped at 32 entries
+  of 120 characters with an explicit truncation marker, keeping coverage records readable.
+
 - **An unenforced claude launch is checked for its tool controls before it starts (#2061).**
   `--tools=` and `--disallowedTools=` remove tools rather than deny calls, so neither ever shows
   in `permission_denials`. A run whose argv lost or altered either token would ledger exactly like

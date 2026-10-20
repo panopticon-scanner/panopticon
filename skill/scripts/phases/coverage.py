@@ -18,6 +18,11 @@ from . import runio
 from . import requests
 
 
+# Rejected agent prose is diagnostic evidence, not an unbounded coverage field.
+_MAX_SCOUT_INVALID = 32
+_MAX_SCOUT_INVALID_CHARS = 120
+
+
 def _discovered_groups(review_root):
     """(name, files) per group from discovery's groups.json."""
     data = runio._load_json(runio._pano(review_root, "groups.json")) or {}
@@ -389,7 +394,8 @@ def coverage_execute(review_root, manifest):
             "floor": disclosure["floor"],
             "excluded": disclosure["excluded"],
             "scout_added": disclosure["scout_added"],   # new domains, exclude-netted
-            "scout_invalid": scout_invalid,             # dropped, disclosed
+            "scout_invalid": [d[:_MAX_SCOUT_INVALID_CHARS]
+                              for d in scout_invalid[:_MAX_SCOUT_INVALID]],
             "global_floor_suppressed": sorted(          # #5.0-19: surface absent
                 coverage_model.GLOBAL_FLOOR - gated_floor),   # -- or, when
             # `sec_carve_out` is true, suppressed BY POLICY (#1757): all four
@@ -401,6 +407,9 @@ def coverage_execute(review_root, manifest):
             "scout_file": os.path.abspath(scout_path),
             "run_id": manifest["run_id"],
         }
+        if (len(scout_invalid) > _MAX_SCOUT_INVALID
+                or any(len(d) > _MAX_SCOUT_INVALID_CHARS for d in scout_invalid)):
+            cov["scout_invalid_truncated"] = True
         # #8c/#7: a committed `exclude` naming a NON_EXCLUDABLE domain (SEC,
         # #1084) is OVERRIDDEN -- effective_panels discloses it as
         # `exclude_rejected`, but the coverage-write used to DROP that key. So an
