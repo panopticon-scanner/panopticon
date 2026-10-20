@@ -194,7 +194,7 @@ class TestX0xArtifact(_Planted):
         # #2952 moves the refusal to the CLI's named artifact status; the
         # confinement, victim, and planted-link cleanup assertions stay put.
         with contextlib.redirect_stderr(io.StringIO()) as err:
-            rc = synthesize.main(["--out", out, findings])
+            rc = synthesize.main(["--repo", "--out", out, findings])
         self.assertEqual(rc, validate_schema_mod.ARTIFACT_INVALID)
         self.assertIn("artifact path refused", err.getvalue())
         self.assertNotIn("Traceback", err.getvalue())
@@ -219,7 +219,7 @@ class TestX0xArtifact(_Planted):
         # #2952: same status boundary as the candidate artifact, with the
         # original no-follow and cleanup proof preserved below.
         with contextlib.redirect_stderr(io.StringIO()) as err:
-            rc = synthesize.main(["--out", out, findings])
+            rc = synthesize.main(["--repo", "--out", out, findings])
         self.assertEqual(rc, validate_schema_mod.ARTIFACT_INVALID)
         self.assertIn("artifact path refused", err.getvalue())
         self.assertNotIn("Traceback", err.getvalue())
@@ -235,7 +235,7 @@ class TestX0xArtifact(_Planted):
         out = os.path.join(self.pano, "report.json")
         stale = self.plant("report-x0x-failures.json")
 
-        self.assertEqual(synthesize.main(["--out", out, findings]), 0)
+        self.assertEqual(synthesize.main(["--repo", "--out", out, findings]), 0)
 
         self.assertFalse(os.path.lexists(stale))
         self.assert_victim_intact()

@@ -63,7 +63,7 @@ class TestOcrdbCoverageHardening(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()),
                     contextlib.redirect_stderr(io.StringIO()),
                 ):
-                    rc = syn.main(["--target", "t", "--out", out, fp])
+                    rc = syn.main(["--repo", "--target", "t", "--out", out, fp])
             finally:
                 os.chdir(prev)
         self.assertEqual(rc, 3)

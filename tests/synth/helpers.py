@@ -96,7 +96,7 @@ def _cli_args(**kw):
     them. Override per test."""
     import argparse
     ns = dict(target="unknown", root=None, groups=None, security=None, fail_on=None,
-              severity="all", changes=False, out=None, run_id=None, run_dir=None,
+              severity="all", changes=False, repo=False, out=None, run_id=None, run_dir=None,
               html_out=None, compare=None, epss=False, tools_dir=None,
               tools_exclude=None, doc_paths=None, include_fixtures=False,
               tools_disabled_mid_run=False,

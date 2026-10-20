@@ -30,6 +30,12 @@ evidence exposed.
   report, which shows the gap, withholds certification, and keeps the same gate. A run with only
   `Missing plugin` notes stays complete. Unreadable notes count as partial and unlocated. The
   argv pins the two limits.
+- **Review scope labels are complete and explicit (#2088).** Inventory mode `changed` now
+  publishes `review_type: changes`, and mode `pr` publishes `pr`. Missing, unsupported or
+  repaired-away modes halt synthesis with a named reason before writing a report. Standalone
+  synthesis must declare its scope with `--repo` or `--changes`, or supply a groups inventory
+  with a known mode; the two explicit scope flags are mutually exclusive.
+
 - **A verify return that never answers is dispatched at most three times (#3185).** Verify charged
   an attempt only to a labeled bundle that answered nothing. A return that never loaded (nested past
   the depth bound, not JSON, or never written) re-dispatched its cell on every resume, so the run

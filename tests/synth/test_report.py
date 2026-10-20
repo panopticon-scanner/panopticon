@@ -252,7 +252,7 @@ class TestReport(unittest.TestCase):
             buf = io.StringIO()
             with _chdir(d), contextlib.redirect_stdout(buf):
                 syn.main(
-                    [
+                    ["--repo",
                         "--target",
                         "src",
                         "--groups",
@@ -328,7 +328,7 @@ class TestReport(unittest.TestCase):
 
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                rc = syn.main(["--target", "src", "--severity", "high", "--out", out, p])
+                rc = syn.main(["--repo", "--target", "src", "--severity", "high", "--out", out, p])
             self.assertEqual(rc, 0)  # gate default OFF
             with open(out) as _fh:
                 report = json.load(_fh)
@@ -415,7 +415,7 @@ class TestReport(unittest.TestCase):
                 out = os.path.join(d, "r.json")
                 with contextlib.redirect_stdout(io.StringIO()):
                     rc = syn.main(
-                        [
+                        ["--repo",
                             "--target",
                             "src",
                             "--gate-unverified",
@@ -501,7 +501,7 @@ class TestReport(unittest.TestCase):
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(errbuf),
         ):
-            rc = syn.main(["--target", "src", "--diff-hunks", hunks, "--out", out, *extra, p])
+            rc = syn.main(["--changes", "--target", "src", "--diff-hunks", hunks, "--out", out, *extra, p])
         self.assertEqual(rc, 0)
         return errbuf.getvalue()
 

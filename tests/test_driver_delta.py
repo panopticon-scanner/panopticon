@@ -361,7 +361,7 @@ class TestDriverIntegrityWiring(unittest.TestCase):
         # lands beside the run folder instead of inside it, same as #1511.
         write_host_evidence(d, _ALL_PROVEN)
         runio._write_json(runio._pano(d, "groups.json"),
-                           {"groups": [{"name": "app", "files": ["src/app.py"]}]})
+                           {"mode": "repo", "groups": [{"name": "app", "files": ["src/app.py"]}]})
         with open(os.path.join(d, "panopticon.yml"), "w") as fh:
             fh.write("version: 1\n")
             fh.write("groups:\n  app:\n    match: ['src/**']\n")   # #1092 healthy resume
