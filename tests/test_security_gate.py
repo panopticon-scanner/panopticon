@@ -231,6 +231,21 @@ class TestSecurityGate(unittest.TestCase):
             _, _, failures, _, _ = gate.evaluate(tools, manifest)
         self.assertEqual(failures, ["semgrep: no output"])
 
+    def test_a_stale_unproduced_capture_fails_as_unbound_and_missing(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._write(
+                root, {"selected": ["semgrep"], "produced": [],
+                       "missing": ["semgrep"], "outputs": []}, _sarif())
+            findings, dispositions, failures, high, _ = gate.evaluate(
+                tools, manifest)
+        self.assertEqual(findings, [])
+        self.assertEqual(dispositions, {})
+        self.assertEqual(high, [])
+        self.assertEqual(failures, [
+            "semgrep: no output",
+            "unbound scanner output: semgrep.sarif",
+        ])
+
     def test_high_finding_fails_gate(self):
         with tempfile.TemporaryDirectory() as root:
             tools, manifest = self._write(

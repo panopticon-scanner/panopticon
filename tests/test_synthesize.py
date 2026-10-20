@@ -78,6 +78,64 @@ class TestPipelineCitations(unittest.TestCase):
             self.assertIn("A03:2021-Injection", cites["owasp"])
 
 class TestToolsDirIntegration(unittest.TestCase):
+    def _run_with_stale_output(self, manifest):
+        with tempfile.TemporaryDirectory() as d:
+            agent = os.path.join(d, "findings-g1-SEC.json")
+            with open(agent, "w", encoding="utf-8") as fh:
+                json.dump({"findings": []}, fh)
+            tools_dir = os.path.join(d, "tools")
+            os.makedirs(tools_dir)
+            with open(os.path.join(tools_dir, "semgrep.sarif"), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"version": "2.1.0", "runs": [{
+                    "tool": {"driver": {"name": "semgrep", "rules": []}},
+                    "results": [{
+                        "ruleId": "stale", "level": "error",
+                        "message": {"text": "stale finding"},
+                        "locations": [{"physicalLocation": {
+                            "artifactLocation": {"uri": "app.py"},
+                            "region": {"startLine": 1}}}],
+                    }],
+                }]}, fh)
+            with open(os.path.join(d, "tools-manifest.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump(manifest, fh)
+            out = os.path.join(d, "report.json")
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rc = syn.main([
+                    "--target", "src", "--run-dir", d, "--run-id", "RID",
+                    "--tools-dir", tools_dir, "--fail-on", "high",
+                    "--out", out, agent,
+                ])
+            with open(out, encoding="utf-8") as fh:
+                return rc, json.load(fh)
+
+    def test_a_selected_but_unproduced_stale_capture_is_not_ingested(self):
+        rc, report = self._run_with_stale_output({
+            "schema_version": 1, "run_id": "RID", "selected": ["semgrep"],
+            "produced": [], "missing": ["semgrep"], "outputs": [],
+        })
+        self.assertEqual(rc, 2)
+        self.assertEqual(report["findings"], [])
+        self.assertEqual(report["meta"]["integrity"]["unbound_tool_outputs"],
+                         ["semgrep.sarif"])
+        self.assertEqual(
+            report["meta"]["coverage"]["divergence"]["tools"],
+            {"semgrep": "requested_absent"})
+
+    def test_a_driver_manifest_without_an_output_receipt_fails_closed(self):
+        rc, report = self._run_with_stale_output({
+            "schema_version": 1, "run_id": "RID", "selected": ["semgrep"],
+            "produced": [], "missing": ["semgrep"],
+        })
+        self.assertEqual(rc, 2)
+        self.assertEqual(report["findings"], [])
+        self.assertIn("output receipt",
+                      report["meta"]["integrity"]["tools_manifest_invalid"])
+        self.assertEqual(report["meta"]["integrity"]["unbound_tool_outputs"],
+                         ["semgrep.sarif"])
+
     def test_tool_findings_merged_and_reinforced(self):
         with tempfile.TemporaryDirectory() as d:
             agent = os.path.join(d, "findings-g1-SEC.json")

@@ -27,6 +27,10 @@ class TestToolsPhase(unittest.TestCase):
             out = cmd[cmd.index("--out") + 1]
             os.makedirs(out, exist_ok=True)
             open(os.path.join(out, "trivy.json"), "w").close()
+            runio._write_json(cmd[cmd.index("--manifest") + 1],
+                              {"schema_version": 1, "run_id": "R",
+                               "selected": ["trivy"], "produced": ["trivy"],
+                               "missing": [], "outputs": ["trivy.json"]})
             return mock.Mock(returncode=0, stdout="", stderr="")
         with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
             result = tools_phase.tools_execute(self.root, self.manifest)
@@ -34,6 +38,42 @@ class TestToolsPhase(unittest.TestCase):
         marker = runio._load_json(runio._pano(self.root, "tools-ran.json"))
         self.assertTrue(marker["ran"])
         self.assertTrue(tools_phase.tools_done(self.root, self.manifest))
+
+    def test_a_selected_but_unproduced_stale_capture_does_not_mark_ran(self):
+        os.makedirs(runio._pano(self.root, "tools"), exist_ok=True)
+        open(runio._pano(self.root, "tools", "semgrep.sarif"), "w").close()
+
+        def fake_run(cmd, **kw):
+            runio._write_json(cmd[cmd.index("--manifest") + 1],
+                              {"schema_version": 1, "run_id": "R",
+                               "selected": ["semgrep"], "produced": [],
+                               "missing": ["semgrep"], "outputs": []})
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
+            tools_phase.tools_execute(self.root, self.manifest)
+        marker = runio._load_json(runio._pano(self.root, "tools-ran.json"))
+        self.assertFalse(marker["ran"])
+        self.assertEqual(marker["unbound_tool_outputs"], ["semgrep.sarif"])
+
+    def test_an_unselected_stale_capture_is_not_part_of_a_real_run(self):
+        def fake_run(cmd, **kw):
+            out = cmd[cmd.index("--out") + 1]
+            os.makedirs(out, exist_ok=True)
+            open(os.path.join(out, "bandit.sarif"), "w").close()
+            open(os.path.join(out, "semgrep.sarif"), "w").close()
+            runio._write_json(cmd[cmd.index("--manifest") + 1],
+                              {"schema_version": 1, "run_id": "R",
+                               "selected": ["bandit"], "produced": ["bandit"],
+                               "missing": [], "outputs": ["bandit.sarif"]})
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
+            tools_phase.tools_execute(self.root, self.manifest)
+        marker = runio._load_json(runio._pano(self.root, "tools-ran.json"))
+        self.assertTrue(marker["ran"])
+        self.assertEqual(marker["outputs"], ["bandit.sarif"])
+        self.assertEqual(marker["unbound_tool_outputs"], ["semgrep.sarif"])
 
     def test_online_flag_pinned_to_the_online_manifest_flag(self):
         # #1899: `--online` must be PINNED to `flags.online`, not appended
@@ -77,6 +117,7 @@ class TestToolsPhase(unittest.TestCase):
                 runio._write_json(cmd[cmd.index("--manifest") + 1],
                                   {"schema_version": 1, "selected": ["trivy"],
                                    "produced": ["trivy"], "redacted": redacted,
+                                   "outputs": ["trivy.json"],
                                    # THIS run's id: the phase refuses a claim
                                    # carried by another run's manifest (N2).
                                    "run_id": self.manifest["run_id"]})
@@ -116,7 +157,8 @@ class TestToolsPhase(unittest.TestCase):
             tools_phase.tools_execute(self.root, self.manifest)
         marker = runio._load_json(runio._pano(self.root, "tools-ran.json"))
         self.assertEqual(marker["run_id"], "R")
-        self.assertTrue(marker["ran"])          # the scan really did produce
+        self.assertFalse(marker["ran"])         # no current-run receipt: fail closed
+        self.assertEqual(marker["unbound_tool_outputs"], ["trivy.json"])
         self.assertIs(marker["redacted"], False)
 
     def test_marker_claims_nothing_when_the_runner_left_no_manifest(self):

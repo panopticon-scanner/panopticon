@@ -70,6 +70,12 @@ class _ToolVerifyBase(unittest.TestCase):
             json.dump(_semgrep_sarif(results), fh)
         runio._write_json(runio._pano(d, "tools-ran.json"), {"ran": True, "run_id": RUN_ID})
         runio._write_json(
+            runio._pano(d, "tools-manifest.json"),
+            {"schema_version": 1, "run_id": RUN_ID,
+             "selected": ["semgrep"], "produced": ["semgrep"],
+             "missing": [], "outputs": ["semgrep.sarif"]},
+        )
+        runio._write_json(
             runio._pano(d, "groups.json"), {"groups": [{"name": "app", "files": ["src/app.py"]}]}
         )
         runio._write_json(
@@ -222,6 +228,16 @@ class TestToolQueueParity(_ToolVerifyBase):
     def test_empty_queue_when_tools_did_not_run(self):
         d = self._repo([_result("r1", "src/app.py", 1)])
         runio._write_json(runio._pano(d, "tools-ran.json"), {"ran": False, "run_id": RUN_ID})
+        self.assertEqual(verify_tools._tool_verify_queue(d, self._manifest()), [])
+
+    def test_a_selected_but_unproduced_stale_capture_never_reaches_the_queue(self):
+        d = self._repo([_result("r1", "src/app.py", 1)])
+        runio._write_json(
+            runio._pano(d, "tools-manifest.json"),
+            {"schema_version": 1, "run_id": RUN_ID,
+             "selected": ["semgrep"], "produced": [],
+             "missing": ["semgrep"], "outputs": []},
+        )
         self.assertEqual(verify_tools._tool_verify_queue(d, self._manifest()), [])
 
 
