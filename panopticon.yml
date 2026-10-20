@@ -703,6 +703,7 @@ groups:
       - tests/test_workflow_values.py
       - tests/test_workflow_value_expansion.py
       - tests/test_workflow_annotate.py
+      - tests/test_workflow_reason_markers.py
       panels:
       - SEC
     WorkflowForms:
