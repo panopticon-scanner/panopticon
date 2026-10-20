@@ -135,6 +135,9 @@ _GENERATED_IN_CWD = {
     # `osv-scanner.toml` lookup inside the scanned tree is never the one in
     # effect (#1839).
     "osv-scanner": ["osv-scanner.toml"],
+    # The scratch project npm audits in place of the target (#2055): the
+    # manifest and the lockfiles copied in, never the target's `.npmrc`.
+    "npm-audit": ["project"],
 }
 
 

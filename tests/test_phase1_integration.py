@@ -161,8 +161,10 @@ if {name!r} == 'pip-audit':
     assert '--format=json' in args and '--desc=on' in args
     assert {needle!r} in pathlib.Path(args[args.index('--requirement') + 1]).read_text()
 elif {name!r} == 'npm-audit':
-    assert args == ['audit', '--json', '--prefix', str(target)]
-    assert {needle!r} in (target / {manifest!r}).read_text()
+    assert args[:3] == ['audit', '--json', '--prefix'] and len(args) == 4
+    staged = pathlib.Path(args[3])
+    assert str(target) not in args and not (staged / '.npmrc').exists()
+    assert {needle!r} in (staged / {manifest!r}).read_text()
 else:
     assert '--no-config-lookup' in args and '--format' in args
     assert args[-1] == str(target.resolve())
