@@ -32,6 +32,12 @@ import scripts.driver as driver
 _UL_PROVEN = {hosts.USAGE_LEDGER: hosts.PROVEN}
 
 
+def _write_passing_synthesize_report(cmd, **_kwargs):
+    with open(cmd[cmd.index("--out") + 1], "w", encoding="utf-8") as fh:
+        json.dump({"findings": [], "summary": {"gate": "PASS"}}, fh)
+    return mock.Mock(returncode=0, stdout="", stderr="")
+
+
 class TestHostUsageCollection(unittest.TestCase):
     """#calibration-1: meta.cost.tokens is host-supplied, and only lands if the
     collector runs BETWEEN the last dispatch and synthesize. Leaving that
@@ -759,12 +765,9 @@ class TestSynthesizePhase(unittest.TestCase):
                           {"ran": False, "run_id": "R", "outputs": [],
                            "unbound_tool_outputs": []})
 
-        def fake_run(cmd, **kw):
-            with open(cmd[cmd.index("--out") + 1], "w") as fh:
-                json.dump({"findings": [], "summary": {"gate": "PASS"}}, fh)
-            return mock.Mock(returncode=0, stdout="", stderr="")
-
-        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run) as run:
+        with mock.patch(
+                "scripts.phases.child._run_child",
+                side_effect=_write_passing_synthesize_report) as run:
             synthesize.synthesize_execute(self.root, self.manifest)
         self.assertIn("--tools-dir", run.call_args[0][0])
 
