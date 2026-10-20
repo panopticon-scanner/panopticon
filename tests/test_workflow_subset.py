@@ -62,6 +62,16 @@ class TestTheUnderstoodSubset(unittest.TestCase):
         self.assertEqual([], findings("grep x t\n", FETCH + CHECK))
         self.assertEqual([], findings("grep x t\n"))
 
+    def test_a_step_the_lexer_refuses_is_outside_the_subset(self):
+        # The guard names such a step itself ("cannot read this step"), and that finding stands alone; the gate's
+        # own reading of it, without that finding, is UNVERIFIED rather than skipped.
+        refused = "cat <<$(a b)\nit's\n$(a b)\n"
+        found = findings(FETCH + CHECK, refused)
+        self.assertEqual(1, len(found))
+        self.assertTrue(found[0].startswith("cannot read this step: "))
+        self.assertEqual([("s1", "step not fully read: a step the reader cannot read; review by hand")],
+                         wg._unverified([wg.Step("s0", FETCH + CHECK), wg.Step("s1", refused)], []))
+
     def test_the_gate_is_the_fleet_lints_alone(self):
         # Every other caller of `job_defects` reads as `main` does.
         self.assertEqual([], findings(FETCH + CHECK + "grep x t\n", subset=False))
