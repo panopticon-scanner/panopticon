@@ -475,3 +475,9 @@ class TestOversizedCellIsChunked(unittest.TestCase):
     def test_the_first_chunk_keeps_the_established_out_file(self):
         entries = self._dispatch(verify._CELL_CLAIMS_CAP * 2 + 1)
         self.assertTrue(entries[0]["out_file"].endswith("verdicts-app-SEC.json"))
+
+    def test_a_chunked_cell_is_charged_once_per_dispatch(self):
+        # #3185: the parts share the cell's budget key; charging each part
+        # would spend a three-part cell's whole budget on its first dispatch.
+        self.assertEqual(len(self._dispatch(verify._CELL_CLAIMS_CAP * 2 + 1)), 3)
+        self.assertEqual(verify._verify_attempts(self.root, "app", "SEC", "primary"), 1)
