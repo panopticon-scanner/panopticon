@@ -1,8 +1,9 @@
 """Phase 3 -- tools: run the SAST/SCA adapters and ingest their findings."""
-import os
 import sys
 
+import scripts.ingest_tools as ingest_tools
 import scripts.redact as redact
+import scripts.tools_manifest as tools_manifest
 from . import child
 from . import engine
 from . import runio
@@ -13,6 +14,16 @@ from . import runio
 # and a scanner's stderr that happened to quote the flag must not spell "the
 # operator chose this".
 NO_TOOLS_NOTE = "tools disabled (--no-tools)"
+
+
+def tool_output_receipt(review_root, run_id):
+    """The current run's validated capture names, or an empty fail-closed set."""
+    manifest = runio._load_json(runio._pano(review_root, "tools-manifest.json"))
+    try:
+        return tools_manifest.output_receipt(
+            manifest, expected_run_id=run_id, required=True)
+    except ValueError:
+        return ()
 
 
 def tools_done(review_root, manifest):
@@ -158,10 +169,16 @@ def tools_execute(review_root, manifest):
     # which is the overstatement F5 exists to kill. Same `run_id` rule #17
     # already applies to the manifest's coverage numbers.
     tool_manifest = runio._load_json(manifest_path)
-    if (not isinstance(tool_manifest, dict)
-            or tool_manifest.get("run_id") != manifest.get("run_id")):
+    try:
+        receipt = tools_manifest.output_receipt(
+            tool_manifest, expected_run_id=manifest.get("run_id"), required=True)
+    except ValueError:
         tool_manifest = {}
-    produced = os.path.isdir(out_dir) and bool(os.listdir(out_dir))
+        receipt = ()
+    unbound: list[str] = []
+    paths, _seen = ingest_tools._capped_output_files(
+        out_dir, allowed_outputs=receipt, unbound_out=unbound)
+    produced = bool(paths)
     # #1033: a real scanner/runner CRASH (non-zero exit + no output) is NOT a
     # benign Docker-absent skip (exit 0 + no output). Distinguish them: record a
     # `crashed` marker + a loud stderr line, but still advance -- tools are
@@ -188,6 +205,8 @@ def tools_execute(review_root, manifest):
                  # above writes no capture and so says nothing about files it did
                  # not produce.
                  "redacted": bool(tool_manifest.get("redacted")),
+                 "outputs": list(receipt),
+                 "unbound_tool_outputs": unbound,
                  # F1: which INVOCATION attempted this scan. `tools_done` reads
                  # it back to decide whether an environmental skip has already
                  # been retried on this pass.

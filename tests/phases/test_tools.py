@@ -26,11 +26,11 @@ class TestToolsPhase(unittest.TestCase):
             self.assertIn("--online", cmd)
             out = cmd[cmd.index("--out") + 1]
             os.makedirs(out, exist_ok=True)
-            open(os.path.join(out, "trivy.json"), "w").close()
+            open(os.path.join(out, "trivy.sarif"), "w").close()
             runio._write_json(cmd[cmd.index("--manifest") + 1],
                               {"schema_version": 1, "run_id": "R",
                                "selected": ["trivy"], "produced": ["trivy"],
-                               "missing": [], "outputs": ["trivy.json"]})
+                               "missing": [], "outputs": ["trivy.sarif"]})
             return mock.Mock(returncode=0, stdout="", stderr="")
         with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
             result = tools_phase.tools_execute(self.root, self.manifest)
@@ -112,12 +112,12 @@ class TestToolsPhase(unittest.TestCase):
         def fake_run(cmd, **kw):
             out = cmd[cmd.index("--out") + 1]
             os.makedirs(out, exist_ok=True)
-            open(os.path.join(out, "trivy.json"), "w").close()
+            open(os.path.join(out, "trivy.sarif"), "w").close()
             if redacted is not None:
                 runio._write_json(cmd[cmd.index("--manifest") + 1],
                                   {"schema_version": 1, "selected": ["trivy"],
                                    "produced": ["trivy"], "redacted": redacted,
-                                   "outputs": ["trivy.json"],
+                                   "outputs": ["trivy.sarif"],
                                    # THIS run's id: the phase refuses a claim
                                    # carried by another run's manifest (N2).
                                    "run_id": self.manifest["run_id"]})

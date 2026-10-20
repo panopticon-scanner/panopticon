@@ -540,6 +540,11 @@ class TestSynthesizePhase(unittest.TestCase):
                                                 result("low", 2, "note")]}]})
         runio._write_json(runio._pano(self.root, "tools-ran.json"),
                          {"ran": True, "run_id": "R"})
+        # #2070: the driver queue and child synth bind to this run's receipt.
+        runio._write_json(runio._pano(self.root, "tools-manifest.json"),
+                         {"schema_version": 1, "run_id": "R",
+                          "selected": ["semgrep"], "produced": ["semgrep"],
+                          "missing": [], "outputs": ["semgrep.sarif"]})
         manifest = {"run_id": "R", "host": "generic", "security_mode": "standard",
                     "flags": {"max_verify": 2, "fail_on": "high"}}
         dispatched = verify_tools._tool_verify_queue(self.root, manifest)
@@ -736,7 +741,7 @@ class TestSynthesizePhase(unittest.TestCase):
             synthesize.synthesize_execute(self.root, self.manifest)
         self.assertNotIn("--tools-exclude", captured["cmd"])
 
-    def test_tools_dir_added_only_when_tools_ran(self):
+    def test_tools_dir_added_when_tools_ran(self):
         runio._write_json(runio._pano(self.root, "tools-ran.json"),
                            {"ran": True, "run_id": "R"})
         def fake_run(cmd, **kw):
@@ -746,6 +751,22 @@ class TestSynthesizePhase(unittest.TestCase):
         with mock.patch("scripts.phases.child._run_child", side_effect=fake_run) as rm_:
             synthesize.synthesize_execute(self.root, self.manifest)
         self.assertIn("--tools-dir", rm_.call_args[0][0])
+
+    def test_tools_dir_added_for_an_attempt_with_an_empty_receipt(self):
+        # #2070: synthesis must validate the receipt even when no bound output
+        # exists; otherwise a missing receipt with no stale file escapes notice.
+        runio._write_json(runio._pano(self.root, "tools-ran.json"),
+                          {"ran": False, "run_id": "R", "outputs": [],
+                           "unbound_tool_outputs": []})
+
+        def fake_run(cmd, **kw):
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"findings": [], "summary": {"gate": "PASS"}}, fh)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run) as run:
+            synthesize.synthesize_execute(self.root, self.manifest)
+        self.assertIn("--tools-dir", run.call_args[0][0])
 
     def test_gate_fail_nonzero_still_advances_when_report_present(self):
         def fake_run(cmd, **kw):

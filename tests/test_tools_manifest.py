@@ -198,6 +198,13 @@ GOLDEN: dict[str, str] = {
     "semgrep",
     "trivy"
   ],
+  "outputs": [
+    "bandit.sarif",
+    "gitleaks.sarif",
+    "gosec.sarif",
+    "semgrep.sarif",
+    "trivy.sarif"
+  ],
   "missing": [],
   "redacted": true,
   "excluded_scope": [
@@ -285,6 +292,13 @@ GOLDEN: dict[str, str] = {
     "semgrep",
     "trivy"
   ],
+  "outputs": [
+    "bandit.sarif",
+    "gitleaks.sarif",
+    "gosec.sarif",
+    "semgrep.sarif",
+    "trivy.sarif"
+  ],
   "missing": [],
   "redacted": true,
   "excluded_scope": [
@@ -371,6 +385,13 @@ GOLDEN: dict[str, str] = {
     "gosec",
     "semgrep",
     "trivy"
+  ],
+  "outputs": [
+    "bandit.sarif",
+    "gitleaks.sarif",
+    "gosec.sarif",
+    "semgrep.sarif",
+    "trivy.sarif"
   ],
   "missing": [],
   "redacted": true,
@@ -483,6 +504,14 @@ GOLDEN: dict[str, str] = {
     "semgrep",
     "trivy"
   ],
+  "outputs": [
+    "bandit.sarif",
+    "eslint-security.json",
+    "gitleaks.sarif",
+    "gosec.sarif",
+    "semgrep.sarif",
+    "trivy.sarif"
+  ],
   "missing": [],
   "redacted": false,
   "excluded_scope": [
@@ -570,6 +599,13 @@ GOLDEN: dict[str, str] = {
     "semgrep",
     "trivy"
   ],
+  "outputs": [
+    "bandit.sarif",
+    "gitleaks.sarif",
+    "gosec.sarif",
+    "semgrep.sarif",
+    "trivy.sarif"
+  ],
   "missing": [],
   "redacted": true,
   "excluded_scope": [
@@ -651,6 +687,7 @@ GOLDEN: dict[str, str] = {
     "gosec"
   ],
   "produced": [],
+  "outputs": [],
   "missing": [
     "bandit",
     "gitleaks",
@@ -724,6 +761,13 @@ GOLDEN: dict[str, str] = {
     "gosec",
     "semgrep",
     "trivy"
+  ],
+  "outputs": [
+    "bandit.sarif",
+    "gitleaks.sarif",
+    "gosec.sarif",
+    "semgrep.sarif",
+    "trivy.sarif"
   ],
   "missing": [],
   "redacted": true,

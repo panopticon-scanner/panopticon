@@ -22,6 +22,7 @@ from . import runio
 from . import coverage
 from . import inventory as inventory_mod
 from . import requests
+from . import tools as tools_phase
 from . import verify_tools
 
 
@@ -260,7 +261,7 @@ def _hit_text(value, cap):
 
 @functools.lru_cache(maxsize=None)
 def _ingested_tool_findings(review_root, include_fixtures,
-                            security_mode="standard"):
+                            security_mode="standard", run_id=None):
     """All normalized tool findings for this run, memoized per (review_root,
     include_fixtures, security_mode). Mirrors the driver's tool-verify ingest
     (same include_fixtures, same mode) so the review-time map reflects the SAME
@@ -275,7 +276,9 @@ def _ingested_tool_findings(review_root, include_fixtures,
     try:
         findings, _disp = ingest_tools.ingest_dir_detailed(
             tools_dir, None, include_fixtures=include_fixtures,
-            target_root=review_root, security_mode=security_mode)
+            target_root=review_root, security_mode=security_mode,
+            allowed_outputs=(tools_phase.tool_output_receipt(review_root, run_id)
+                             if run_id else None))
     except Exception:  # noqa: BLE001 - advisory input; never break review on it
         return ()
     return tuple(findings)
@@ -323,7 +326,7 @@ def _tool_hits_for_cell(review_root, manifest, domain, files):
         return ""
     findings = _ingested_tool_findings(
         review_root, verify_tools._tools_include_fixtures(manifest),
-        manifest.get("security_mode", "standard"))
+        manifest.get("security_mode", "standard"), manifest.get("run_id"))
     hits = [f for f in findings
             if ((f.get("location") or {}).get("file")) in wanted]
     hits.sort(key=lambda h: (str((h.get("location") or {}).get("file") or ""),

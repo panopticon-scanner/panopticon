@@ -300,9 +300,10 @@ class TestSecurityGate(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "selected no tools"):
                 gate.evaluate(tools, manifest)
 
-    def test_excluded_scope_scanner_does_not_fail_coverage(self):
+    def test_excluded_scope_does_not_require_output_but_stale_output_is_unbound(self):
         # An adapter demoted to excluded_scope is NOT in selected/missing, so a
-        # clean scan passes even though the adapter produced no output.
+        # clean scan passes without it. #2070 retires treating a lingering
+        # capture for that adapter as current-run evidence.
         with tempfile.TemporaryDirectory() as root:
             tools, manifest = self._write(
                 root, {"selected": ["semgrep"], "produced": ["semgrep"],
@@ -312,12 +313,17 @@ class TestSecurityGate(unittest.TestCase):
                 json.dump([], fh)
             _, dispositions, failures, high, _ = gate.evaluate(
                 tools, manifest, ["tests/fixtures/*"])
-            self.assertIn("eslint-security", dispositions)
-            self.assertEqual(failures, [])
+            self.assertNotIn("eslint-security", dispositions)
+            self.assertEqual(
+                failures,
+                ["unbound scanner output: eslint-security.json"])
             with open(os.path.join(tools, "bandit.json"), "w", encoding="utf-8") as fh:
                 json.dump({"results": []}, fh)
             _, _, control_failures, _, _ = gate.evaluate(tools, manifest)
-        self.assertEqual(control_failures, ["unexpected scanner output: bandit"])
+        self.assertEqual(control_failures, [
+            "unbound scanner output: bandit.json",
+            "unbound scanner output: eslint-security.json",
+        ])
         self.assertEqual(high, [])
 
     def test_excluded_scope_backward_compatible_absent(self):
@@ -351,12 +357,12 @@ class TestSecurityGate(unittest.TestCase):
             tools, manifest = self._write(
                 root, {"selected": ["semgrep"], "produced": ["semgrep"], "missing": []},
                 _sarif())
-            # Add an extra tool output file not declared in the manifest
+            # #2070: an extra file is unbound before an adapter may parse it.
             bandit_file = os.path.join(tools, "bandit.json")
             with open(bandit_file, "w", encoding="utf-8") as fh:
                 json.dump({"results": []}, fh)
             _, _, failures, _, _ = gate.evaluate(tools, manifest)
-        self.assertTrue(any("unexpected scanner output: bandit" in f for f in failures))
+        self.assertEqual(failures, ["unbound scanner output: bandit.json"])
 
     def test_large_sarif_file_loading(self):
         # Generate a large SARIF file with many findings to verify performance and scaling
@@ -1308,8 +1314,8 @@ class TestTheDeltaAwareGate(unittest.TestCase):
         tools = os.path.join(base, "panopticon-tools-output")
         os.makedirs(tools)
         for tool, doc in payloads.items():
-            suffix = "json" if tool == "osv-scanner" else "sarif"
-            with open(os.path.join(tools, "%s.%s" % (tool, suffix)), "w",
+            # #2070: a same-stem alternate suffix is not this scan's capture.
+            with open(os.path.join(tools, tools_manifest.canonical_output_name(tool)), "w",
                       encoding="utf-8") as fh:
                 json.dump(doc, fh)
         manifest = os.path.join(base, "panopticon-tools-manifest.json")
@@ -1383,7 +1389,8 @@ class TestTheDeltaAwareGate(unittest.TestCase):
                 with self.subTest(side=side, broken=broken), tempfile.TemporaryDirectory() as root:
                     head = self._capture(root, "head", {"eslint-security": rows})
                     base = self._capture(root, "base", {"eslint-security": rows})
-                    path = os.path.join((head if side == "head" else base)[0], "eslint-security.sarif")
+                    path = os.path.join((head if side == "head" else base)[0],
+                                        "eslint-security.json")
                     if broken is None:
                         os.unlink(path)
                     else:
@@ -1402,6 +1409,21 @@ class TestTheDeltaAwareGate(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn("0 HIGH/CRITICAL new", out)
         self.assertIn("1 HIGH/CRITICAL pre-existing", out)
+
+    def test_an_unbound_baseline_capture_makes_the_baseline_unusable(self):
+        # #2070: stale evidence may neither excuse a current finding nor spend
+        # the baseline's ingest cap; strict gating is the safe fallback.
+        with tempfile.TemporaryDirectory() as root:
+            same = _delta_sarif(_delta_result())
+            head = self._capture(root, "head", {"semgrep": same})
+            base = self._capture(root, "base", {"semgrep": same})
+            with open(os.path.join(base[0], "bandit.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"results": []}, fh)
+            rc, out, err = self._run(head, base)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("baseline unusable", err)
+        self.assertIn("unbound scanner output: bandit.json", err)
 
     def test_it_is_listed_under_a_heading_that_says_what_governs_it(self):
         with tempfile.TemporaryDirectory() as root:

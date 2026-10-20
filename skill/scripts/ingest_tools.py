@@ -91,26 +91,14 @@ def _trim_to_cap(kept, cap):
     return sorted(kept)[:cap]
 
 
-def _capped_output_files(tools_dir, cap=None):
-    """The sorted `*.sarif` / `*.json` paths in `tools_dir`, at most `cap`.
-
-    Returns `(paths, seen)`, where `seen` counts every matching name in the
-    directory whether or not it was kept.
-
-    Enforced AS THE LIST GROWS, which is the whole point: the two glob calls
-    this replaces built complete pathname lists for the entire directory and
-    concatenated and sorted them before anything looked at the first entry, so
-    the per-file byte and finding caps bounded nothing about the enumeration.
-    The buffer is trimmed back to the lexicographically smallest `cap` entries
-    whenever it reaches twice that, so peak memory is bounded at 2*cap names
-    and the kept set is still deterministic.
-
-    Matches `glob.glob`'s selection exactly, leading-dot names included (glob
-    never returned them, and a `.hidden.json` must not start being ingested
-    because the walk changed).
-    """
+def _capped_output_files(tools_dir, cap=None, allowed_outputs=None,
+                         unbound_out=None):
+    """Return capped output paths/count; receipt rejects reach ``unbound_out``
+    before spending the cap. No receipt preserves legacy selection."""
     cap = TOOL_OUTPUT_FILES_MAX if cap is None else cap
+    allowed = None if allowed_outputs is None else frozenset(allowed_outputs)
     kept: list[str] = []
+    unbound: list[str] = []
     seen = 0
     try:
         scan = os.scandir(tools_dir)
@@ -121,18 +109,23 @@ def _capped_output_files(tools_dir, cap=None):
             name = entry.name
             if name.startswith(".") or not name.endswith(_OUTPUT_SUFFIXES):
                 continue
+            if allowed is not None and name not in allowed:
+                unbound.append(name)
+                if len(unbound) >= cap * 2:
+                    unbound = _trim_to_cap(unbound, cap)
+                continue
             seen += 1
             kept.append(entry.path)
             if len(kept) >= cap * 2:
                 kept = _trim_to_cap(kept, cap)
     kept.sort()
+    if unbound_out is not None:
+        unbound_out.extend(_trim_to_cap(unbound, cap))
     if seen > cap:
         print("ingest: %s holds %d tool-output file(s); reading the first %d "
               "(TOOL_OUTPUT_FILES_MAX). %d file(s) were NOT ingested"
               % (tools_dir, seen, cap, seen - cap), file=sys.stderr)
     return kept[:cap], seen
-
-
 # Top-level dirs that are never project source: a nested checkout, the git dir,
 # and panopticon's OWN artifact tree.
 _RUN_ARTIFACT_DIRS = {".worktrees", ".git", ".panopticon"}
@@ -739,7 +732,8 @@ def _cap_findings(parsed, tool):
 
 def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=False,
                         target_root=None, suppressed_out=None, excluded_out=None,
-                        security_mode="standard"):
+                        security_mode="standard", allowed_outputs=None,
+                        unbound_out=None):
     """Ingest raw tool-output files and report each adapter's disposition.
 
     Returns (findings, dispositions). dispositions maps each output file's
@@ -823,7 +817,9 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
     gl_excluded = 0   # dropped by an explicit exclude_glob (operator policy)
     ra_excluded = 0   # dropped as not-project-source (run-9 E3 / run-10 D1)
     suppressed: dict[str, int] = {}   # {segment: count} dropped on a directory NAME (#1578, #1740)
-    for path in _capped_output_files(tools_dir)[0]:
+    for path in _capped_output_files(
+            tools_dir, allowed_outputs=allowed_outputs,
+            unbound_out=unbound_out)[0]:
         tool = os.path.splitext(os.path.basename(path))[0]
         adapter = ADAPTERS.get(tool)
         if adapter is None:
@@ -1087,7 +1083,8 @@ def suppressed_counts(suppressed, scan_skipped=()):
 
 
 def ingest_dir(tools_dir, group, exclude_globs=None, include_fixtures=False,
-               target_root=None, suppressed_out=None, security_mode="standard"):
+               target_root=None, suppressed_out=None, security_mode="standard",
+               allowed_outputs=None, unbound_out=None):
     """Ingest raw tool-output files from a directory and route them to the
     registered adapter for parsing. Files without a registered adapter or that
     fail to parse are skipped with a stderr diagnostic.
@@ -1096,5 +1093,6 @@ def ingest_dir(tools_dir, group, exclude_globs=None, include_fixtures=False,
     """
     findings, _dispositions = ingest_dir_detailed(
         tools_dir, group, exclude_globs, include_fixtures, target_root,
-        suppressed_out, security_mode=security_mode)
+        suppressed_out, security_mode=security_mode,
+        allowed_outputs=allowed_outputs, unbound_out=unbound_out)
     return findings

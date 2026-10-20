@@ -81,6 +81,10 @@ def load_manifest(path):
         raise ValueError("scanner manifest missing set is inconsistent")
     if set(excluded_scope) & set(selected):
         raise ValueError("scanner manifest excluded_scope overlaps selected")
+    receipt = tools_manifest.output_receipt(data)
+    data["outputs"] = list(receipt if receipt is not None else
+                           sorted(tools_manifest.canonical_output_name(name)
+                                  for name in produced))
     data["scanner_scope"] = tools_manifest.validate_scanner_scope(data)
     ignore_files = data.get("ignore_files", {})
     if (not isinstance(ignore_files, dict)
@@ -145,18 +149,21 @@ def evaluate(tools_dir, manifest_path, exclude_globs=None, security_mode="standa
     """
     manifest = load_manifest(manifest_path)
     suppressed: list[dict[str, Any]] = []
+    unbound: list[str] = []
     findings, dispositions = ingest_tools.ingest_dir_detailed(
         tools_dir, "ci", exclude_globs=exclude_globs or [],
         suppressed_out=suppressed, excluded_out=excluded_out,
-        security_mode=security_mode)
+        security_mode=security_mode, allowed_outputs=manifest["outputs"],
+        unbound_out=unbound)
     # #1512: one definition of lost required coverage, shared with the report's
     # tool axis. Extracted, not duplicated -- the two views disagreeing is what
     # let a scanner that wrote unparseable bytes certify in the report while
     # this gate correctly failed it.
     failures = ["%s: %s" % (name, info["reason"]) for name, info
                 in ingest_tools.lost_required_coverage(manifest, dispositions).items()]
-    # excluded_scope adapters are disclosed, never required, and their output
-    # (if any lingered) is known — not "unexpected".
+    failures.extend("unbound scanner output: %s" % name for name in unbound)
+    # A malformed legacy manifest can still put a produced adapter outside the
+    # selected/excluded set; its receipt-bound capture remains unexpected.
     known = set(manifest["selected"]) | set(manifest.get("excluded_scope", []))
     unknown = set(dispositions) - known
     if unknown:
@@ -383,12 +390,17 @@ def load_baseline(baseline_dir, manifest_path, exclude_globs=None,
     except ValueError as exc:
         return [], str(exc)
     suppressed: list[dict[str, Any]] = []
+    unbound: list[str] = []
     try:
         findings, dispositions = ingest_tools.ingest_dir_detailed(
             baseline_dir, "ci", exclude_globs=exclude_globs or [],
-            suppressed_out=suppressed, security_mode=security_mode)
+            suppressed_out=suppressed, security_mode=security_mode,
+            allowed_outputs=manifest["outputs"], unbound_out=unbound)
     except Exception as exc:  # noqa: BLE001 - a broken baseline is not a verdict
         return [], "cannot ingest %s: %r" % (baseline_dir, exc)
+    if unbound:
+        return [], "%s has unbound scanner output: %s" % (
+            baseline_dir, ", ".join(unbound))
     disclose_file_coverage(dispositions, "baseline")
     lost = ingest_tools.lost_required_coverage(manifest, dispositions)
     if lost:

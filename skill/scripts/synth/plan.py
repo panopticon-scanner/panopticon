@@ -450,7 +450,7 @@ def gate_counts_suppressed(args):
     return gate_security_mode(args) == REDTEAM
 
 
-def ingest_tool_findings(args):
+def ingest_tool_findings(args, allowed_outputs=None, unbound_out=None):
     """The --tools-dir ingest (WS-0 S3): (raw tool findings, per-adapter
     dispositions, tools_ran, the #1578 `{segment: count}` of name-based drops
     -- the findings themselves stay suppressed -- the #1701 subset of those
@@ -499,7 +499,8 @@ def ingest_tool_findings(args):
         # pinned scanners report a suppressed result either way). The same
         # answer `security_gate` uses, from the same function this module's own
         # gate decisions read.
-        security_mode=gate_security_mode(args))
+        security_mode=gate_security_mode(args), allowed_outputs=allowed_outputs,
+        unbound_out=unbound_out)
     gated = []
     if gate_counts_suppressed(args):
         gated = [findings_mod.normalize_finding(f) for f in dropped]

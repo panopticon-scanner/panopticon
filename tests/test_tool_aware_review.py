@@ -248,6 +248,11 @@ class TestTheDontReDeriveMapHonoursTheRunsMode(unittest.TestCase):
         self.addCleanup(review._ingested_tool_findings.cache_clear)
         with open(runio._pano(self.root, "tools", "semgrep.sarif"), "w") as fh:
             json.dump(_SUPPRESSED_SARIF, fh)
+        # #2070: run-bound prompt injection accepts only this scan's capture.
+        runio._write_json(runio._pano(self.root, "tools-manifest.json"),
+                          {"schema_version": 1, "run_id": "R",
+                           "selected": ["semgrep"], "produced": ["semgrep"],
+                           "missing": [], "outputs": ["semgrep.sarif"]})
 
     def _rules(self, security_mode):
         review._ingested_tool_findings.cache_clear()
