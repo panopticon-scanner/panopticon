@@ -96,3 +96,12 @@ def surrogate_free(document):
                 value = nested
             made[escape_surrogates(key) if isinstance(key, str) else key] = value
     return copy[0]
+
+
+def inert_spelling(text: str) -> str:
+    """`text` with every INERT_ESCAPE_CODE_POINTS member spelled -- the exact
+    rendering `phases.runio._prompt_safe` gives a path in a reviewer's prompt
+    (pinned equal by tests), for a reader outside `phases` that must know
+    whether a name survived that rendering (#2964)."""
+    return "".join(spelled(ord(ch)) if ord(ch) in INERT_ESCAPE_CODE_POINTS else ch for ch in text)
+

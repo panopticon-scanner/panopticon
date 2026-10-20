@@ -1,6 +1,7 @@
 """Findings-file integrity: planned vs ingested files, labels, the unenforced
 ack, and `INTEGRITY_KEYS` -- the one table naming which of those facts sinks
 certification and what the summary says when one does."""
+import scripts.inert as inert
 import hashlib
 import json
 import os
@@ -189,6 +190,22 @@ def cross_domain_findings(paths):
                         "finding_domain": fd, "code": code})
     return sorted(out, key=lambda r: (r["file"], str(r["finding_domain"]), str(r["code"])))
 
+def unreadable_name_files(groups_meta):
+    """Every file assigned to a review cell whose prompt spelling is not its
+    name (#2964), in that inert spelling, sorted. The reviewer is handed only
+    the prompt, and an escaped spelling (a TAB as `\\x09`, a bidi control or a
+    lone surrogate spelled out) names no file on disk -- whether it was opened
+    is unknown, and nothing downstream compares opened with given. The source
+    is the run's own `groups.json` cell file lists, the lists the review
+    dispatches from."""
+    names = set()
+    for group in groups_meta or ():
+        for name in (group.get("files") or ()) if isinstance(group, dict) else ():
+            if isinstance(name, str) and inert.inert_spelling(name) != name:
+                names.add(inert.inert_spelling(name))
+    return sorted(names)
+
+
 def reconcile_findings_files(plan, ingested_paths):
     """(#146) Reconcile the findings files synthesize ingested against the
     dispatch plan's declared reviewer out_files. Returns (unexpected, missing)
@@ -311,7 +328,8 @@ def _discovery_disclosures(discovery):
 
 def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
                       invalid_verify_queue, plan_owed=False, plan_sha256=None,
-                      snapshot_sha256=None, discovery=None, coverage_files_skipped=None):
+                      snapshot_sha256=None, discovery=None, coverage_files_skipped=None,
+                      groups_meta=None):
     """`meta.integrity` as main() assembled it (WS-0 S3): planned-vs-ingested
     findings files, out_file collisions, mislabeled / cross-domain files, the
     unenforced ack (+ its #493 staleness check), the #493 R4 content-hash
@@ -463,6 +481,7 @@ def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
                  "missing_planned_files": missing,
                  "malformed_findings_files": malformed,
                  "coverage_files_skipped": coverage_files_skipped or [],
+                 "unreadable_name_files": unreadable_name_files(groups_meta),
                  "duplicate_out_files": duplicate_out_files(plan),
                  "mislabeled_findings_files": mislabeled_findings_files(files),
                  "cross_domain_findings": cross_domain_findings(files),

@@ -410,6 +410,51 @@ def test_unreadable_coverage_file_sinks_report_integrity(tmp_path, monkeypatch):
     assert report["meta"]["integrity"]["coverage_files_skipped"] == [path.name]
 
 
+# #2964: a cell file whose NAME the reviewer's prompt must escape is handed over
+# under a spelling the disk does not have, and nothing checks what a reviewer
+# opened -- so the run says so and is not certified. The names are built here.
+_ESCAPED_NAMES = {"tab": "caf" + chr(9) + "x.py", "bidi": "caf" + chr(0x202E) + "x.py",
+                  "lone-surrogate": "caf" + chr(0xDCFF) + "x.py"}
+
+
+def _named_cell_report(tmp_path, name):
+    (tmp_path / "coverage-Good.json").write_text(
+        json.dumps({"group": "Good", "floor": [], "effective": []}), encoding="utf-8")
+    plan = plan_mod.PlanInputs.load(
+        str(tmp_path), [], None, [{"name": "Good", "files": ["a.py", name]}],
+        ([], 0, []), (None, None), {})
+    return report_mod.build_report(report_mod.ReportInputs(
+        run=report_mod.RunConfig(target=str(tmp_path), fail_on="high",
+                                 timestamp=DEFAULT_TIMESTAMP),
+        findings=findings_mod.FindingSet(findings=[]), plan=plan))
+
+
+@pytest.mark.parametrize("kind", sorted(_ESCAPED_NAMES))
+def test_a_name_the_prompt_escapes_sinks_report_integrity(tmp_path, kind):
+    import scripts.phases.runio as runio
+    name = _ESCAPED_NAMES[kind]
+    report = _named_cell_report(tmp_path, name)
+    assert report["summary"]["gate"] == "INCONCLUSIVE"
+    assert report["summary"]["coverage_certified"] is False
+    assert report["meta"]["integrity"]["unreadable_name_files"] == [runio._prompt_safe(name)]
+    summary = render_mod.render_summary(report)
+    assert "**Integrity:** NAMES THE PROMPT CANNOT CARRY" in summary
+    assert name not in summary and runio._prompt_safe(name) in summary
+
+
+def test_well_named_cell_files_certify_as_before(tmp_path):
+    report = _named_cell_report(tmp_path, "cafe.py")
+    assert report["summary"]["gate"] == "PASS"
+    assert report["meta"]["integrity"]["unreadable_name_files"] == []
+
+
+def test_the_integrity_spelling_is_the_prompts_own():
+    import scripts.inert as inert
+    import scripts.phases.runio as runio
+    for name in list(_ESCAPED_NAMES.values()) + ["cafe.py", "a" + chr(0x1F) + "b" + chr(0x2066) + "c.py"]:
+        assert inert.inert_spelling(name) == runio._prompt_safe(name)
+
+
 class TestResumeDisclosure(unittest.TestCase):
     G = [{"name": "g1", "files": ["a.py"]}]
     TS = "2026-01-01T00:00:00Z"
