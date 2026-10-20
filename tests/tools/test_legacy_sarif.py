@@ -563,15 +563,17 @@ def _real_timeouts():
             for rule, path in _TIMED_OUT]
 
 
-def _semgrep_capture(notes):
+def _semgrep_capture(notes, paths=("small.py",)):
+    """One eval() result per path in `paths` (a file that lost ONE rule to a
+    timeout still carries the others' results, as the real run's did)."""
     rule = _RULES + "lang.security.audit.eval-detected"
     return {"runs": [{
         "tool": {"driver": {"name": "Semgrep OSS", "rules": [
             {"id": rule, "defaultConfiguration": {"level": "error"}}]}},
         "results": [{"ruleId": rule, "message": {"text": "Detected the use of eval()."},
                      "locations": [{"physicalLocation": {
-                         "artifactLocation": {"uri": "/src/small.py", "uriBaseId": "%SRCROOT%"},
-                         "region": {"startLine": 2}}}]}],
+                         "artifactLocation": {"uri": "/src/" + path, "uriBaseId": "%SRCROOT%"},
+                         "region": {"startLine": 2}}}]} for path in paths],
         "invocations": [{"executionSuccessful": True, "toolExecutionNotifications": notes}],
     }]}
 
@@ -599,8 +601,9 @@ class TestSemgrepTimeoutsAreDisclosed(unittest.TestCase):
                 dispositions=dispositions)))
 
     def test_real_timeout_notes_reach_the_report_and_withhold_certification(self):
+        paths = ("small.py", "tests/test_workflow_guard.py")
         findings, disposition, diagnostic = self._ingest(
-            _semgrep_capture(_real_timeouts() + [_MISSING_PLUGIN]))
+            _semgrep_capture(_real_timeouts() + [_MISSING_PLUGIN], paths))
         facts = disposition["file_coverage"]
         self.assertEqual(facts, {
             "status": "partial", "parsed_files": 1, "unparsed_files": 2, "unavailable_files": 0,
@@ -609,10 +612,10 @@ class TestSemgrepTimeoutsAreDisclosed(unittest.TestCase):
                        "rule_timeouts": 1}],
             "files_omitted": 0, "capabilities_unavailable": [], "rule_timeouts": 4,
             "unlocated_records": 0})
-        self.assertEqual((disposition["status"], disposition["findings"]), ("ok", 1))
+        self.assertEqual((disposition["status"], disposition["findings"]), ("ok", 2))
         self.assertIn("semgrep: partial file coverage: 4 rule timeout(s) on 2 file(s)", diagnostic)
         # The gaps qualify coverage only: the same findings gate the same way.
-        clean_findings, clean, _ = self._ingest(_semgrep_capture([_MISSING_PLUGIN]))
+        clean_findings, clean, _ = self._ingest(_semgrep_capture([_MISSING_PLUGIN], paths))
         self.assertEqual(findings, clean_findings)
         published = self._report(findings, disposition)
         self.assertEqual(published["meta"]["coverage"]["tools_file_partial"], {"semgrep": facts})
