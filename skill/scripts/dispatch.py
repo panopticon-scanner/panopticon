@@ -129,6 +129,19 @@ ROLE_FILES = {"scout": "scout.md", "advisor": "advisor.md",
               # no Bash. Its MODEL stays unbound (R-F4-2) -- see
               # model_resolver's `setup_scan` rows.
               "setup_scan": "setup-scan.md"}
+
+
+def allowed_tool_union():
+    """Every tool name the driver's role templates grant, across all roles: the
+    union of each shipped template's `tool_policy.allowed`. ONE derivation for
+    every family that has to hand a child the grant itself -- Kimi's deny-list
+    (`runners/kimi_home.disabled_tools`) and Claude's unenforced `--tools`
+    allow-list (#2060) -- so neither is a hand-kept list that can drift."""
+    allowed = set()
+    for role_file in ROLE_FILES.values():
+        meta, _body = load_template(role_file)
+        allowed |= set(meta["tool_policy"]["allowed"] or [])
+    return allowed
 # #1344 F2: the four registration-directory constants were re-exported from
 # hosts.py "so setup_flow and existing tests keep importing them". setup_flow
 # imported none of them, KIMI_AGENTS_DIR / CODEX_HOME / CODEX_AGENTS_DIR had no
