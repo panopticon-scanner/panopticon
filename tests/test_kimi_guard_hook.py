@@ -2,7 +2,6 @@ import contextlib
 import io
 import json
 import os
-import sys
 import tempfile
 import unicodedata
 import unittest
@@ -551,15 +550,18 @@ class TestMain(unittest.TestCase):
             return (rc, body["permissionDecision"], body["permissionDecisionReason"]) == (
                 0, "deny", "kimi guard: payload too deep to adjudicate (%s)" % why)
 
-        self.assertTrue(denied(*run(deep(100_000)), "RecursionError"))
-        rc, out = run(deep(1_000))
-        self.assertEqual(0, rc)
-        if sys.version_info < (3, 12):
-            self.assertTrue(denied(rc, out, "RecursionError"))
-        else:
-            self.assertNotIn("too deep", out)
-        with mock.patch.object(guard.json, "load", side_effect=MemoryError):
-            self.assertTrue(denied(*run(deep(1)), "MemoryError"))
+        # A real deep payload never crashes the hook: where this interpreter parses it (the depth that
+        # overflows depends on the platform's C stack -- 100,000 parses on CI's x64 3.14), it is adjudicated
+        # like any payload; where it cannot, it is the named deny.
+        for n in (1_000, 100_000):
+            with self.subTest(n=n):
+                rc, out = run(deep(n))
+                self.assertEqual(0, rc)
+                self.assertTrue("too deep" not in out or denied(rc, out, "RecursionError"))
+        # The parse failing, whatever the depth that makes it fail here: a deny naming the error.
+        for error in (RecursionError, MemoryError):
+            with self.subTest(error=error.__name__), mock.patch.object(guard.json, "load", side_effect=error):
+                self.assertTrue(denied(*run(deep(1)), error.__name__))
 
     def test_a_malformed_payload_is_tolerantly_allowed(self):
         # The payload is the CLI's, not the model's -- Claude's hook makes the

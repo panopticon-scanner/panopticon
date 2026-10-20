@@ -19,8 +19,10 @@ evidence exposed.
   - The tolerated malformed-JSON path is unchanged, and so is an ordinary payload. Where the
     interpreter parses the payload (N=1,000 on 3.12+), it is adjudicated like any other.
   - Whether a host passes a model-chosen nested value through to the hook was not measured.
-  Pins: one per hook (`tests/test_{read,write,kimi}_guard_hook.py`), at N=100,000, at N=1,000 (a
-  deny on 3.11), and with a `json.load` that raises MemoryError.
+  Pins: one per hook (`tests/test_{read,write,kimi}_guard_hook.py`): a `json.load` raising
+  RecursionError or MemoryError gets the named deny; real payloads at N=1,000 and 100,000 never crash,
+  getting either the deny or an ordinary adjudication where the interpreter parses them (the
+  overflowing depth depends on the platform's C stack: 100,000 parses on x64 3.14).
 - **A target holding a file or directory whose name is not UTF-8 gets a report that says so
   (#2962).** On Linux such a name is legal, and the first run died on `UnicodeDecodeError` with
   no report: `safe_git` launched git in text mode, which decodes strict UTF-8, and its preflight
