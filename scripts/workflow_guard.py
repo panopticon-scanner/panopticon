@@ -275,6 +275,7 @@ from workflow_option_words import passes
 from workflow_options import mains_answer
 from workflow_network import descriptor_network_fetch, network_fetch, opens_socket
 from workflow_stdin import bound_stdin as bind_stdin, mark_reason
+from workflow_subset import Unread, fully_read
 from workflow_uses import (EXECUTORS as EXECUTORS, INTERPRETERS as INTERPRETERS,
                            UNPACKERS as UNPACKERS, _resolved, static_values)
 from workflow_uses import uses as _uses  # noqa: F401 -- a test reads it through this module
@@ -494,8 +495,10 @@ def fetch_exec_defect(script):
     return "; ".join(fetch_exec_defects(script)) or None
 
 
-def job_defects(steps, strict=False):
-    """Defects for a job: `main`'s findings (`mains_answer`), then the second walk's not among them (`passes`)."""
+def job_defects(steps, strict=False, subset=False):
+    """Defects for a job: `main`'s findings (`mains_answer`), then the second walk's not among them (`passes`); with
+    `subset`, this repo's own lint over its workflows (#3141), then each step outside the understood subset
+    (`_unverified`)."""
     steps, seen, found = list(steps), collections.defaultdict[object, list](list), []
     read, more = passes(lambda: _job_defects(steps, strict), mains_answer, shell_lex.Unreadable if strict else ())
     for at, (name, why) in enumerate(sum(read if read is more else read + more, [])):
@@ -508,7 +511,32 @@ def job_defects(steps, strict=False):
         if new:
             seen[key].append(name)
             found.append((name, why))
-    return found
+    return found + _unverified(steps, found) if subset else found
+
+
+def _unverified(steps, found):
+    """UNVERIFIED (#3141): each step a download reaches -- the one that fetches and every one after it in the job --
+    that `workflow_subset.fully_read` finds outside the understood subset and no finding names. A step the lexer
+    refuses is outside it too (the guard names it as well, "cannot read this step", and then that finding stands
+    alone); a shell the guard does not parse is named already. A finding carries its step's name, so a step a finding
+    names keeps that finding alone; two steps of one name share it (`UNNAMED`), where the other's finding fails the
+    lint already."""
+    out, reached = [], False
+    for item in steps:
+        step = item if isinstance(item, Step) else Step(*item)
+        if unparseable(step.shell):
+            continue
+        try:
+            stmts = read(step.script, step.shell)
+            reached = reached or bool(_fetch_records(stmts))
+        except shell_lex.Unreadable:
+            miss = reached and Unread("a step the reader cannot read", None)
+        else:
+            miss = reached and fully_read(stmts, step.script)
+        if miss and not any(name is step.name for name, _why in found):
+            out.append((step.name, "step not fully read: %s%s; review by hand"
+                        % (miss.construct, " at line %d" % miss.line if miss.line else "")))
+    return out
 
 
 def _job_defects(steps, strict=False):
