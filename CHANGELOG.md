@@ -36,6 +36,11 @@ evidence exposed.
   plain string, a word's markers). Core sample `core-20261018` (10,000 rows) plus the 4 pins as
   rows, head against `main`: byte-identical (nonce-normalized), 0 REPORT->CLEAN, no main-pass
   movers; 68 core rows go through a weighed rebuild.
+- **Workflow trap and option-word matching avoid quadratic backtracking (#2981).** A long
+  `rm -r ... !` trap action or `$aaaa...!` option word repeatedly split the same text between
+  overlapping regex repetitions. Trap options now use the existing path-word repetition, and
+  variable names and parameter sequences are consumed possessively. Both keep the same accepted
+  language; serial regression tests check scaling when a failing input doubles.
 - **Workflow guard reads a command word it cannot resolve as a possible runner of the fetched file
   that is its first operand (#3143).** `curl -fsSLo t URL` then `$SHELL ./t` ran the download under
   every parent and read CLEAN: `workflow_uses.use` reported a run only where the command word named

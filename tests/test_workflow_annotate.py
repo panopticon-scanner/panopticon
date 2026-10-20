@@ -9,8 +9,12 @@ then the guard's rows. A guard row's comment carries its truth, b5 b3 dash gh (b
 F- fetched only, -- neither, `+sha` the checksum ran, and failed), and the answer of the base
 the module lands on.
 """
+import time
+import timeit
 import unittest
 from unittest import mock
+
+import pytest
 
 import shell_reader
 import workflow_annotate as wa
@@ -286,6 +290,38 @@ class TestACommandWord(unittest.TestCase):
                     "trap '' INT", "trap", "mapfile -t L < f"):
             with self.subTest(pre=pre):
                 self.assertEqual(1, len(marks(pre + "\nCMD=sh\n" + body("$CMD", CHECK))))
+
+    def test_trap_cleanup_keeps_the_same_literal_words(self):
+        # #2981: an option-looking word already belongs to the path-word language, including
+        # when it is the only word. Spaces separate words; quoting, expansion and junk do not.
+        for allowed, actions in ((True, ("", "-", "rm -r", "rm -rf -- ./x ../y", "rm x_9 -f")),
+                                 (False, ("rm", "rm ", "rm é", "rm x!", "rm $X", "rm x; sh tool"))):
+            for action in actions:
+                with self.subTest(action=action):
+                    script = "trap '%s' EXIT\nCMD=sh\n" % action + body("$CMD", CHECK)
+                    self.assertEqual(allowed, bool(marks(script)))
+
+    @pytest.mark.serial
+    def test_trap_option_miss_scales_linearly(self):
+        # #2981 / alert 2541: the two old repetitions could split every -r word between them.
+        stage = shell_reader.statements("trap 'rm x' EXIT")[0].stages[0]
+
+        def elapsed(size):
+            words = ["rm" + " -r" * size + " !", "EXIT"]
+            self.assertTrue(wa._rebinds(stage, "trap", words))
+            count = 1
+            while True:
+                best = min(timeit.repeat(lambda: wa._rebinds(stage, "trap", words),
+                                         number=count, repeat=3, timer=time.process_time))
+                if best >= 0.01 or count >= 1024:
+                    return best / count
+                count *= 8
+
+        previous = elapsed(4000)
+        for size in (8000, 16000):
+            current = elapsed(size)
+            self.assertLess(current, previous * 2.7, (size, previous, current))
+            previous = current
 
     def test_no_mark_stands_where_a_builtin_a_value_names_or_a_kept_prefix_may_assign(self):
         # The table reads a literal command word only, so a builtin a value names may assign

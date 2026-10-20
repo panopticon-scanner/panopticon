@@ -16,7 +16,11 @@ unseen.
 what is written in a word, and one answer that moved -- a tilde alone is a value (`ANSWERS`)."""
 import ast
 import os
+import time
+import timeit
 import unittest
+
+import pytest
 
 import shell_reader
 import workflow_option_slots
@@ -189,6 +193,36 @@ class TestWorkflowOptionsBindsEveryMovedName(unittest.TestCase):
         for name in PATTERNS:
             with self.subTest(pattern=name):
                 self.assertIs(getattr(workflow_options, name), getattr(workflow_option_slots, name))
+
+    def test_variable_names_and_letter_suffixes_keep_their_value_reading(self):
+        # #2981: a variable name consumes its ASCII-letter suffix already; a braced or special
+        # parameter may still have one. Unicode names, adjacent parameters and ANSI escapes stay.
+        for expected, words in (
+                (True, ("$NAMEabc", "$éabc", "${X}abc", "$!abc", "$A$B", "$12abc", "$\\q")),
+                (False, ("$NAME!", "$NAME/path", "${X}1", "$A${", "$", "$()", "$A\\"))):
+            for word in words:
+                with self.subTest(word=word):
+                    self.assertEqual(expected, workflow_option_slots._value(word))
+
+    @pytest.mark.serial
+    def test_variable_name_miss_scales_linearly(self):
+        # #2981 / alert 2568: a final ! forced every split between a name and a letter suffix.
+        def elapsed(size):
+            word = "$" + "a" * size + "!"
+            self.assertFalse(workflow_option_slots._value(word))
+            count = 1
+            while True:
+                best = min(timeit.repeat(lambda: workflow_option_slots._value(word),
+                                         number=count, repeat=3, timer=time.process_time))
+                if best >= 0.01 or count >= 1024:
+                    return best / count
+                count *= 8
+
+        previous = elapsed(4000)
+        for size in (8000, 16000):
+            current = elapsed(size)
+            self.assertLess(current, previous * 2.7, (size, previous, current))
+            previous = current
 
     def test_the_readers_answer_as_they_did(self):
         # `main`'s answers (13cdb9f7), through every module that binds a reader: an option word, a name,
