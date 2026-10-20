@@ -76,9 +76,13 @@ TOOL_CMD = {
     # `.semgrepignore`; the explicit list above restores the non-test defaults.
     # `--no-git-ignore` independently stops a target `.gitignore` hiding
     # untracked review input. Neither file can now narrow the scanner silently.
+    # NO --quiet (#3194): it removed the closing "Ran N rules on M files" line,
+    # the only scanned-file signal Semgrep emits (its SARIF has none), so
+    # #1335's noscan disposition could never fire. Without it stderr is a few
+    # KB of summary, well inside the capture's retained tail.
     "semgrep": (["semgrep", "scan", "--config", "/opt/semgrep-rules", "--metrics=off",
                  "--disable-version-check"] + SEMGREP_SCANNER_SCOPE_ARGS
-                + SEMGREP_LIMIT_ARGS + ["--sarif", "--quiet", "/src"]),
+                + SEMGREP_LIMIT_ARGS + ["--sarif", "/src"]),
     # `--redact` is scanner-native redaction (#1639 P11): the one tool here
     # whose output is a list of other people's credentials masks them itself,
     # so the secret never leaves the container -- and it keeps every field

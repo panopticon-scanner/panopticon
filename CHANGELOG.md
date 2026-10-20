@@ -7,6 +7,23 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Semgrep's scanned-file count is read from what its real argv prints (#3194).** #1335 reads
+  Semgrep's closing "Ran N rules on M files" line from stderr, so that a run that scanned nothing
+  gets the `noscan` disposition instead of coverage credit. The adapter passed `--quiet`, which
+  removes that line, so the reader never matched in production and `noscan` could never fire. The
+  tests stayed green only because they fed the line in directly.
+  - Measured with the pinned Semgrep 1.179.0 and the adapter's argv: under `--quiet` the line is
+    missing on every target. Without it, the line is stderr's last (681 files on this repository;
+    0 on an empty, an all-excluded, or an over-limit-only tree), in about 3 to 5 KB of stderr.
+    That is well inside the capture's retained 1 MB tail.
+  - The argv drops `--quiet`. The reader now takes the LAST line that starts with the summary, so
+    target-authored text earlier on stderr, such as a file name in an error message, cannot stand
+    in for the count.
+  - Probed alongside, as asked: no other capture signal is parsed from stderr. Bundler-audit's
+    `Unknown switches` fallback check reads stderr, and nothing on its argv suppresses it.
+  Pins: `tests/test_tool_capture.py` holds that the argv carries no `--quiet` and that the closing
+  line wins. `tests/tools/test_legacy_sarif_integration.py` runs the real argv in the tools image,
+  where the count is the number of files scanned and a real zero-file run reaches `noscan`.
 - **A file over Semgrep's size limit is disclosed, not silently skipped (#3193).** Semgrep skips every
   regular file over 1,000,000 bytes and leaves no trace in its SARIF, so a target could hide a payload
   from every Semgrep rule simply by making its file large.

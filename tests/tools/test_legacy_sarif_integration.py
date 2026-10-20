@@ -146,6 +146,38 @@ class TestSemgrepIntegration(_LiveTool):
                 self.assertEqual(seen, expected, (git_root, sorted(locations)))
 
 
+class TestSemgrepScannedFilesFromTheRealArgv(_LiveTool):
+    """#3194: the scanned-file count #1335 reads must come from what the REAL
+    argv makes Semgrep print -- --quiet had removed it, and fixtures kept the
+    reader green. The real argv, the real stderr, the capture's own annotator."""
+    binary = "semgrep"
+
+    def _annotated(self, files):
+        from scripts.tools.base import run_tool
+        from scripts.tools.legacy_sarif import TOOL_CMD, TOOL_TIMEOUT
+        from scripts import tool_capture
+        with tempfile.TemporaryDirectory() as root:
+            _materialise(root, files)
+            cmd = [root if arg == "/src" else arg for arg in TOOL_CMD["semgrep"]]
+            raw, stderr, rc = run_tool(cmd, timeout=TOOL_TIMEOUT, capture_stderr=True)
+        self.assertIn(rc, OK_SCAN_EXIT_CODES)
+        return tool_capture._annotate_from_stderr("semgrep", raw, stderr)
+
+    def test_the_real_argv_reports_the_files_it_scanned(self):
+        doc = json.loads(self._annotated({"a.py": "x = 1\n", "b/c.js": "var y = 2;\n"}))
+        self.assertEqual(doc["runs"][0]["properties"]["panopticon_scanned_files"], 2)
+
+    def test_a_real_zero_file_run_is_noscan(self):
+        from scripts import ingest_tools
+        payload = self._annotated({})
+        with tempfile.TemporaryDirectory() as tools:
+            with open(os.path.join(tools, "semgrep.sarif"), "wb") as fh:
+                fh.write(payload)
+            findings, dispositions = ingest_tools.ingest_dir_detailed(tools, "g1")
+        self.assertEqual(findings, [])
+        self.assertEqual(dispositions["semgrep"]["status"], "noscan")
+
+
 class TestBanditIntegration(_LiveTool):
     binary = "bandit"
 

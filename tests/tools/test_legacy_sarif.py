@@ -106,7 +106,7 @@ class TestLegacySarifAdapter(unittest.TestCase):
         expected += legacy.SEMGREP_SCANNER_SCOPE_ARGS
         # #2957, #3193: the per-file limits, stated at Semgrep's own defaults.
         expected += ["--timeout=5", "--timeout-threshold=3", "--max-target-bytes=1000000"]
-        expected += ["--sarif", "--quiet", "/src"]
+        expected += ["--sarif", "/src"]   # #3194: no --quiet
         self.assertEqual(legacy.TOOL_CMD["semgrep"], expected)
 
     def test_semgrep_argv_suppresses_both_call_home_paths(self):

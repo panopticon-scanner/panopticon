@@ -139,8 +139,11 @@ def _write_completed(label, tool, res, out_path, stamp=None):
 # of the target's languages scans 0 files and emits an artifact byte-identical
 # in shape to a genuinely clean run. The one witness is semgrep's own stderr,
 # which exists only at run time -- capture it into the artifact while we have it.
-_SEMGREP_SCANNED = re.compile(rb"\bran\s+\d+\s+rules?\s+on\s+(\d+)\s+files?\b",
-                              re.IGNORECASE)
+# #3194: a LINE that starts with it, and the LAST such line. Semgrep prints the
+# summary as its closing line; anything target-authored on stderr (a file name
+# in an error message) comes before it, so it cannot stand in for the count.
+_SEMGREP_SCANNED = re.compile(rb"^ran\s+\d+\s+rules?\s+on\s+(\d+)\s+files?\b",
+                              re.IGNORECASE | re.MULTILINE)
 
 
 def _semgrep_scanned_files(stderr):
@@ -151,8 +154,8 @@ def _semgrep_scanned_files(stderr):
     unannotated and the disposition exactly as it is today. Fabricating a 0
     would strip coverage credit from a scanner that really did run.
     """
-    m = _SEMGREP_SCANNED.search(stderr or b"")
-    return int(m.group(1)) if m else None
+    counts = _SEMGREP_SCANNED.findall(stderr or b"")
+    return int(counts[-1]) if counts else None
 
 
 def _annotate_scanned_files(payload, count):
