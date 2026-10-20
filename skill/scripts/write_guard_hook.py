@@ -561,9 +561,8 @@ def _resolve_allowlist_path(argv_path=None):
     if env_path and os.path.isfile(env_path):
         return env_path
     if argv_path:
-        # Returned even when absent: the guard is fail-closed, and an install
-        # that named a file which then vanished must DENY, never silently fall
-        # back to some other tree's allowlist and allow the wrong writes.
+        # Returned even when absent: the guard is fail-closed, and an install that named a file which
+        # then vanished must DENY, never fall back to some other tree's allowlist and its writes.
         return argv_path
     cur = os.path.abspath(os.getcwd())
     while True:
@@ -584,12 +583,14 @@ def main(argv=None):
         payload = json.load(sys.stdin)
     except ValueError:
         return 0  # tolerant: a malformed hook payload never blocks legitimate work
+    except (RecursionError, MemoryError) as exc:     # #3186: a crash here would fail OPEN
+        print(_deny_response("write guard: payload too deep to adjudicate (%s)" % type(exc).__name__))
+        return 0
     if not isinstance(payload, dict):
         return 0  # tolerant: a well-formed-but-unexpected-shape payload never blocks
     try:
-        # #2391/#2394: the roster test, the interpreter check and the adjudication, INSIDE the
-        # envelope. A non-2 exit is NON-blocking in Claude Code (the Write proceeds), so an
-        # uncaught raise here would fail OPEN -- while the tolerant returns above are permissive.
+        # #2391/#2394: roster test, interpreter check and adjudication INSIDE the envelope: a non-2
+        # exit is NON-blocking in Claude Code (the Write proceeds), so a raise here fails OPEN.
         if payload.get("tool_name", "") not in _WRITE_TOOLS:
             return 0
         argv_path = args[0] if args else None
@@ -1138,10 +1139,9 @@ def is_armed(settings_path=None, allowlist_path=None, *, session_root=None):
     except (OSError, ValueError):
         return False, 0
     hooks = (settings.get("hooks") or {}).get("PreToolUse") or []
-    # #1633: the same predicate uninstall removes by. A literal `_HOOK_CMD`
-    # comparison read an entry written by ANY other version -- including every
-    # pre-quoting one -- as disarmed, so a guard that was in fact armed
-    # reported clear.
+    # #1633: the same predicate uninstall removes by. A literal `_HOOK_CMD` comparison read an entry
+    # written by ANY other version -- including every pre-quoting one -- as disarmed, so a guard
+    # that was in fact armed reported clear.
     armed = any(_is_our_entry(entry) for entry in hooks)
     if not armed:
         return False, 0

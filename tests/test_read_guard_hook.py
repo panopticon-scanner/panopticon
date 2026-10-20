@@ -887,6 +887,32 @@ class TestMain(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.assertEqual((0, ""), self._run(raw, ["/nonexistent/scope.json"]))
 
+    def test_a_payload_too_deep_to_parse_denies_instead_of_crashing_open(self):
+        """#3186: the parse sat OUTSIDE the fail-closed envelope and caught ValueError only, so a deep
+        payload escaped as RecursionError -- exit 1, which Claude Code treats as NON-blocking: the read
+        went ahead unguarded. It denies now, on the hook's own channel (deny JSON, rc 0). Where the
+        interpreter parses the payload it is adjudicated like any other."""
+        def deep(n):
+            return '{"tool_name": "Read", "tool_input": {"file_path": "/tmp/x", "x": %s}}' % ("[" * n + "]" * n)
+
+        def denied(rc, out, why):
+            body = json.loads(out)["hookSpecificOutput"]
+            return (rc, body["permissionDecision"], body["permissionDecisionReason"]) == (
+                0, "deny", "read guard: payload too deep to adjudicate (%s)" % why)
+
+        # A real deep payload never crashes the hook: where this interpreter parses it (the depth that
+        # overflows depends on the platform's C stack -- 100,000 parses on CI's x64 3.14), it is adjudicated
+        # like any payload; where it cannot, it is the named deny.
+        for n in (1_000, 100_000):
+            with self.subTest(n=n):
+                rc, out = self._run(deep(n), ["/nonexistent/scope.json"])
+                self.assertEqual(0, rc)
+                self.assertTrue("too deep" not in out or denied(rc, out, "RecursionError"))
+        # The parse failing, whatever the depth that makes it fail here: a deny naming the error.
+        for error in (RecursionError, MemoryError):
+            with self.subTest(error=error.__name__), mock.patch.object(rg.json, "load", side_effect=error):
+                self.assertTrue(denied(*self._run(deep(1), ["/nonexistent/scope.json"]), error.__name__))
+
     def test_env_override_wins_then_baked_path_then_cwd_walk(self):
         with tempfile.TemporaryDirectory() as d:
             env_file = os.path.join(d, "env.json"); open(env_file, "w").write("{}")
