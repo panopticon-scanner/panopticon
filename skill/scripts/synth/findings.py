@@ -15,6 +15,7 @@ import scripts.evidence as evidence_mod
 import scripts.findings_contract as findings_contract
 import scripts.inert as inert
 import scripts.ocrdb as ocrdb
+import scripts.redact as redact
 import scripts.tools.base as tool_base
 from . import validate_schema as validate_schema_mod
 
@@ -188,6 +189,13 @@ def normalize_finding(f):
     if not title:
         desc = str(f.get("description", "")).strip()
         title = desc.splitlines()[0].strip() if desc else "(untitled)"
+    # #2971: REDACT FIRST, then bound. `inert_text` cuts at INERT_TEXT_MAX and the
+    # short form below at SHORT_TITLE_MAX, and a cut through a credential leaves a
+    # prefix no pattern recognises -- which `redact_tree`, running later, could
+    # only pass. `redact_diagnostic` is the tree's redact-then-bound helper: the
+    # whole title is redacted (an unterminated private-key header discards its
+    # tail), so every bounded form below is cut from text that holds no secret.
+    title = redact.redact_diagnostic(title, len(str(title)))
     # The collapse this replaced was `" ".join(title.split())`, which splits on
     # whitespace ONLY: an ESC/NUL/BEL in a tool message or an agent's quotation
     # of target code reached `render_summary`'s Top-findings line alive, and a
