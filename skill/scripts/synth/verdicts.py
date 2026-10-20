@@ -107,6 +107,57 @@ class _Matches:
     misrouted: list
 
 
+def _own_verdict(fs, finding, queue_id):
+    """`finding`'s verdict on its OWN identity -- its queue id, then its own id --
+    never through a dedupe alias, and with no side effects (#2991)."""
+    v = (fs.verdicts or {}).get(queue_id) if queue_id else None
+    if (isinstance(v, dict) and str(v.get("finding_id")) == str(finding.get("id"))
+            and (fs.verdict_run_id is None or v.get("run_id") == fs.verdict_run_id)):
+        return v
+    if fs.verdict_bundles:
+        return evidence_mod.match_verdict_by_id({"id": finding.get("id")}, fs.verdict_bundles,
+                                                run_id=fs.verdict_run_id)
+    return None
+
+
+def _confirmed(verdict):
+    return isinstance(verdict, dict) and verdict.get("verdict") == "CONFIRMED"
+
+
+def restore_confirmed(fs, findings, queue):
+    """#2991: dedupe picks a survivor by severity before any verdict binds, so a
+    REJECTED (or NEEDS_MORE_INFO, or unverified) CRITICAL at one locus swallowed
+    a CONFIRMED HIGH there: the HIGH left the report and a FAIL became a PASS.
+    A dropped member whose own verdict is CONFIRMED is restored as its own
+    finding and queued, unless the survivor's OWN verdict is CONFIRMED too. Its
+    ids leave the survivor's aliases, so its verdict can no longer stand in for
+    the survivor's (#1476 aliased verdicts; a claim's verdict is its own).
+    Anything else collapses exactly as before. Strips the carrier either way."""
+    queue_ids = {id(e["finding"]): e["queue_id"] for e in queue}
+    taken = {e["queue_id"] for e in queue}
+    for survivor in list(findings):
+        absorbed = survivor.pop(corroborate_mod.ABSORBED_FIELD, [])
+        if not absorbed or _confirmed(_own_verdict(fs, survivor, queue_ids.get(id(survivor)))):
+            continue
+        for member in absorbed:
+            fp = evidence_mod.finding_fingerprint(member)
+            if not _confirmed(_own_verdict(fs, member, fp)):
+                continue
+            gone = {member.get("id")} | set(evidence_mod.merged_ids(member))
+            aliases = [i for i in evidence_mod.merged_ids(survivor) if i not in gone]
+            survivor.pop(evidence_mod.MERGED_IDS_FIELD, None)
+            if aliases:
+                survivor[evidence_mod.MERGED_IDS_FIELD] = aliases
+            qid, n = fp, 0
+            while qid in taken:
+                n += 1
+                qid = "%s-%d" % (fp, n)
+            taken.add(qid)
+            findings.append(member)
+            queue.append({"queue_id": qid, "priority": evidence_mod.triage_priority(member),
+                          "finding": member})
+
+
 def _bind_verdicts(fs, findings, queue):
     """Bind and apply answers, measuring engagement before any verdict mutates it."""
     verdicts = fs.verdicts or {}
@@ -398,6 +449,7 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
     ocrdb_bundle = ocrdb.load_bundle()
     ocrdb_coverage = codes_mod.validate_finding_codes(findings, ocrdb_bundle)
     queue, cut = evidence_mod.build_verify_queue(findings, run.max_verify)
+    restore_confirmed(fs, findings, queue)   # #2991, before any identity is read
     # Identity must be read BEFORE any verdict is applied. For a SARIF-sourced
     # tool finding the adapters park the rule id in
     # provenance.confirmation_reasoning (tools/sarif_utils.tool_provenance sets

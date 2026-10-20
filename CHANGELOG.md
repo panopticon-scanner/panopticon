@@ -7,6 +7,27 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A confirmed finding is no longer absorbed by a decoy at the same locus (#2991).** Dedupe keeps
+  the most severe finding at a file, line and category, and runs before any verdict is bound. A
+  REJECTED CRITICAL "decoy" beside an honest CONFIRMED HIGH therefore survived, bound its own
+  REJECTED, and took the HIGH out of the report: the gate PASSED where the HIGH alone FAILs.
+  - Measured on main through the report builder, by fingerprint and by the driver's per-cell id
+    bundles. A NEEDS_MORE_INFO or unverified CRITICAL absorbed the CONFIRMED HIGH the same way, and
+    so did a tool's REJECTED CRITICAL beside an agent's HIGH (that pair collapses across
+    categories). By id, an unverified CRITICAL survivor instead took the HIGH's CONFIRMED through
+    its #1476 alias and was published as a confirmed CRITICAL.
+  - Dedupe now keeps each dropped member on its survivor; what survives, and the pass-1 queue,
+    are unchanged. After the queue is built, a dropped member whose OWN verdict (its own id or
+    queue id, never an alias) is CONFIRMED is restored as its own finding and queued. That happens
+    unless the survivor's own verdict is CONFIRMED too. The restored member's ids leave the
+    survivor's aliases, so its CONFIRMED no longer stands in for a different claim.
+  - Unchanged: two REJECTEDs collapse as before, and a CONFIRMED survivor still absorbs. A stale
+    (other-run) or misrouted CONFIRMED restores nothing.
+  Pins: `tests/synth/test_report_evidence.py::TestAConfirmedFindingIsNotAbsorbed` covers both
+  binding paths and both orders, the NEEDS_MORE_INFO, unverified and tool-decoy variants, the
+  unchanged collapses, stale and misrouted verdicts, and the carrier never reaching the report.
+  `tests/test_driver.py` runs the real driver: per-cell verify lands both verdicts by the ids the
+  driver assigned. On main the report PASSES with no findings; now it FAILS on the HIGH.
 - **Semgrep's scanned-file count is read from what its real argv prints (#3194).** #1335 reads
   Semgrep's closing "Ran N rules on M files" line from stderr, so that a run that scanned nothing
   gets the `noscan` disposition instead of coverage credit. The adapter passed `--quiet`, which
