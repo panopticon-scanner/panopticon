@@ -147,3 +147,17 @@ def test_scope_refusal_cannot_advance_the_driver_using_an_old_report(tmp_path, m
     with pytest.raises(runio.DriverError, match="review scope refused"):
         phase.synthesize_execute(str(tmp_path), {"host": "codex", "flags": {}})
     assert output.read_bytes() == previous
+
+
+def test_explicit_repo_cannot_widen_a_changed_inventory(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    groups = tmp_path / "groups.json"
+    groups.write_text(json.dumps({"mode": "changed", "groups": []}))
+    output = tmp_path / "report.json"
+    result = synthesize.main([
+        "--repo", "--groups", str(groups), "--out", str(output)])
+    assert result == validate_schema.ARTIFACT_INVALID
+    error = capsys.readouterr().err
+    assert "declared repo" in error
+    assert "discovered changes" in error
+    assert not output.exists()

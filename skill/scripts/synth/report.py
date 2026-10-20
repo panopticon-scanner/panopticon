@@ -159,8 +159,9 @@ class RunConfig:
                   panel_tools_context=None, tools_disabled_mid_run=False,
                   config=None):
         """The CLI flags resolved against the run's groups.json (WS-0 S3):
-        explicit --changes / --repo wins over a discovered mode; without
-        either, a missing or unsupported groups.json mode refuses the report.
+        explicit --changes wins over a discovered mode; --repo cannot widen
+        a known narrower scope. Without either, a missing or unsupported
+        groups.json mode refuses the report.
         --security wins over the file's security_mode and defaults to standard.
         `groups_json` is {} when there is no readable file.
         `host_capabilities` is the parsed host-capabilities.json artifact (or
@@ -169,6 +170,13 @@ class RunConfig:
         if args.changes:
             review_type = "changes"
         elif getattr(args, "repo", False):
+            mode = groups_json.get("mode")
+            discovered = (findings_mod.MODE_TO_REVIEW_TYPE.get(mode)
+                          if isinstance(mode, str) else None)
+            if discovered is not None and discovered != "repo":
+                raise ReviewScopeError(
+                    "review scope refused: declared repo scope would widen "
+                    "discovered %s scope" % discovered)
             review_type = "repo"
         else:
             mode = groups_json.get("mode")
