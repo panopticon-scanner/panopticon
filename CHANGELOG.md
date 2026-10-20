@@ -18,6 +18,29 @@ evidence exposed.
   put a FIFO and hard link at every fixed staging name, enforce a deadline and preserve the
   victim; `tests/test_safe_write.py` pins the exact flags and `tests/test_run_manifest.py` pins
   safe stale-file reuse and the stronger internal-symlink refusal.
+- **A file Semgrep gives up on is disclosed, not silently dropped (#2957).** Semgrep stops running a
+  rule on a file after 5 seconds, and it abandons the file once 3 rules have timed out on it. Either
+  way that file's findings were missing, Semgrep still exited 0, and nothing in the report said so.
+  - Measured on an idle machine with the pinned Semgrep and the vendored rules, using the adapter's
+    command line: a target file holding one long string expression was abandoned on every run at
+    400 KB. Every finding in it was lost, including the rule meant to flag `eval`.
+  - Ingest now reads Semgrep's `Timeout` notifications from the SARIF, where the file is named only
+    in the message text. Each timed-out file is listed in the adapter's `file_coverage` as
+    `rule_timeout` or `timeout_abandoned`, with its count. That lands in the existing
+    `meta.coverage.tools_file_partial`, so coverage is not certified and the coverage note names
+    semgrep. Findings and the gate are unchanged.
+  - A timeout whose file cannot be read off the message is still partial, counted as unlocated,
+    and its text is never published. Semgrep's other notifications, such as `Missing plugin`, are
+    not coverage gaps.
+  - The limits are now stated on the argv at Semgrep's own values, `--timeout=5` and
+    `--timeout-threshold=3`, and the guide says what each one does. They are not raised: with both
+    off, a 900 KB file ran past 400 seconds, beyond the adapter's 300-second cap, which would lose
+    the whole Semgrep run.
+  - Not covered here: files over Semgrep's 1 MB limit are skipped with no SARIF trace (#3193).
+  Pins (`tests/tools/test_legacy_sarif.py`): the real notification texts go through ingest into a
+  report, which shows the gap, withholds certification, and keeps the same gate. A run with only
+  `Missing plugin` notes stays complete. Unreadable notes count as partial and unlocated. The
+  argv pins the two limits.
 - **Review scope labels are complete and explicit (#2088).** Inventory mode `changed` now
   publishes `review_type: changes`, and mode `pr` publishes `pr`. Missing, unsupported or
   repaired-away modes halt synthesis with a named reason before writing a report. Standalone

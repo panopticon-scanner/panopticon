@@ -149,7 +149,7 @@ class TestEveryDecoderAppliesIt(unittest.TestCase):
             "tools.base.parse_json_bytes raises the bound": lambda depth: raises_too_deep(
                 lambda: tools_base.parse_json_bytes(nest(depth).encode())),
             "legacy SARIF parse raises the bound": lambda depth: raises_too_deep(
-                lambda: LegacySarifAdapter.parse(None, sarif(depth).encode(), "g")),
+                lambda: LegacySarifAdapter("semgrep").parse(sarif(depth).encode(), "g")),
             "group_runner.entry_is_done is not done": lambda depth: group_runner.entry_is_done(
                 self._file("findings-g-COD-%d.json" % depth, findings_file(depth))) is False,
             "tool_capture leaves the capture untouched": lambda depth: tool_capture._annotate_scanned_files(
