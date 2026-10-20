@@ -328,9 +328,12 @@ def disclose_file_coverage(dispositions, label):
     for tool, disposition in dispositions.items():
         facts = disposition.get("file_coverage") or {}
         if facts.get("status") == "partial":
+            # #2957: Semgrep's facts add the rule timeouts behind those files.
+            timeouts = (", %d rule timeout(s)" % facts["rule_timeouts"]
+                        if facts.get("rule_timeouts") else "")
             print("security-gate: %s %s partial file coverage: %d unparsed, "
-                  "%d unavailable; capabilities unavailable: %s"
-                  % (label, tool, facts["unparsed_files"], facts["unavailable_files"],
+                  "%d unavailable%s; capabilities unavailable: %s"
+                  % (label, tool, facts["unparsed_files"], facts["unavailable_files"], timeouts,
                      ", ".join(facts["capabilities_unavailable"]) or "none"), file=sys.stderr)
 
 
