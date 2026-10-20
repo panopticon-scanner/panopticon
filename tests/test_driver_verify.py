@@ -5,6 +5,7 @@ from scripts import hosts
 import scripts.phases.runio as runio
 import scripts.phases.review as review
 import scripts.phases.verify as verify
+import scripts.phases.persist as persist
 import scripts.phases.requests as requests
 import scripts.model_resolver as model_resolver
 
@@ -276,9 +277,29 @@ class TestVerifyPrimary(unittest.TestCase):
         self.assertTrue(verify._verify_cell_done(                      # budget spent
             self.root, self.manifest, "app", "SEC", "primary"))
 
-    def test_execute_charges_an_attempt_only_on_redispatch(self):
-        # The bump counts a RE-dispatch (a labeled-but-incomplete bundle already on
-        # disk), never the first dispatch (no bundle yet).
+    def test_a_paused_verify_checkpoint_gives_its_charge_back(self):
+        """#3185 (M4): verify charges at dispatch now, so a checkpoint that never
+        ran -- an interrupt, a host-wide outage -- is refunded as review's is
+        (persist.rollback_markers). Three paused rounds exhaust nothing."""
+        self._two_finding_cell()
+        with (
+            mock.patch("scripts.dispatch.render_prompt", return_value="B"),
+            mock.patch("scripts.dispatch.registered_agent_name",
+                       return_value="panopticon-domain-advisor"),
+            mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}),
+        ):
+            for _ in range(3):
+                verify.verify_execute(self.root, self.manifest)
+                entries = requests.load_dispatch_request(self.root)["entries"]
+                self.assertEqual(["app/SEC/primary"],
+                                 persist.rollback_markers(self.root, "verify", entries))
+            self.assertEqual(verify._verify_attempts(self.root, "app", "SEC", "primary"), 0)
+            self.assertFalse(verify.verify_done(self.root, self.manifest))
+
+    def test_execute_charges_every_dispatch_the_first_included(self):
+        # #3185: review's rule -- one attempt per dispatch, AT dispatch, whatever
+        # came back before. Charging only a labeled-but-short bundle left every
+        # other return (nothing, garbage, too deep) re-dispatching forever.
         cell = self._two_finding_cell()
         with (
             mock.patch("scripts.dispatch.render_prompt", return_value="B"),
@@ -287,10 +308,10 @@ class TestVerifyPrimary(unittest.TestCase):
             mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}),
         ):
             verify.verify_execute(self.root, self.manifest)            # first dispatch
-            self.assertEqual(verify._verify_attempts(self.root, "app", "SEC", "primary"), 0)
+            self.assertEqual(verify._verify_attempts(self.root, "app", "SEC", "primary"), 1)
             self._write_primary_bundle([cell[0]["id"]])               # incomplete return
             verify.verify_execute(self.root, self.manifest)           # re-dispatch
-            self.assertEqual(verify._verify_attempts(self.root, "app", "SEC", "primary"), 1)
+            self.assertEqual(verify._verify_attempts(self.root, "app", "SEC", "primary"), 2)
 
 
 class TestVerifyBackup(unittest.TestCase):

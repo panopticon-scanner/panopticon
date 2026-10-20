@@ -563,6 +563,26 @@ class TestDuplicatePrimariesResolveTheSameWayEverywhere(TestBackupCellFixture):
             self.assertEqual(driver["verdict"], "CONFIRMED")
 
 
+class TestAnUnloadableBackupReturnIsCapped(TestBackupCellFixture):
+    """#3185 (M5): the backup round charged nothing, so an unloadable backup
+    bundle re-dispatched forever. Every dispatch is charged now, and the round
+    is done at the cap -- its claims stay unadjudicated at synthesis."""
+
+    def test_an_unloadable_backup_return_is_dispatched_at_most_three_times(self):
+        self._cell()
+        dispatches = 0
+        for _ in range(8):
+            res = verify._verify_backup_execute(self.root, self.manifest, "claude",
+                                                ocrdb.load_bundle())
+            if res is None:
+                break
+            dispatches += 1
+            with open(verify._verify_out_file(self.root, "G", "SEC", "backup"), "w") as fh:
+                fh.write("not json")
+        self.assertEqual(3, dispatches)
+        self.assertTrue(verify._verify_backup_done(self.root, self.manifest))
+
+
 class TestNoBackupEntryIsEverDispatchedWithAnEmptyGrant(TestBackupCellFixture):
     """Fix round 3, D2, at the layer the invariant is about: the dispatch
     REQUEST. An empty `files` list is a deny-all read fence (the guard refuses
@@ -571,6 +591,10 @@ class TestNoBackupEntryIsEverDispatchedWithAnEmptyGrant(TestBackupCellFixture):
 
     def _entries(self, loc_file):
         self._cell(loc_file=loc_file)
+        # #3185: each location is its own FIRST dispatch -- the backup round now
+        # charges every dispatch, and this fixture reuses one root across them.
+        if os.path.exists(runio._pano(self.root, verify._VERIFY_ATTEMPTS_FILE)):
+            os.remove(runio._pano(self.root, verify._VERIFY_ATTEMPTS_FILE))
         res = verify._verify_backup_execute(self.root, self.manifest, "claude",
                                             ocrdb.load_bundle())
         self.assertIsNotNone(res)

@@ -402,6 +402,31 @@ class TestToolVerifyResume(_ToolVerifyBase):
         with self._bundle():
             self.assertEqual(verify.verify_execute(d, m).kind, "advanced")
 
+    def test_a_tool_return_that_never_lands_is_dispatched_at_most_three_times(self):
+        """#3185 (M2): the tool round had no budget -- a verdict never written, or
+        garbled, re-dispatched forever. It is charged at dispatch now; at the cap
+        the item is done and its finding stays unanswered (tool_axis.unanswered)."""
+        for shape in ("never written", "garbled"):
+            with self.subTest(shape=shape):
+                d = self._repo([_result("r1", "src/app.py", 1, level="note")])
+                m = self._manifest()
+                qid, _f = verify_tools._tool_verify_queue(d, m)[0]
+                dispatches = 0
+                with self._bundle():
+                    for _ in range(10):
+                        result = verify.verify_execute(d, m)
+                        if result.kind != "checkpoint":
+                            break
+                        dispatches += 1
+                        if shape == "garbled":
+                            os.makedirs(runio._pano(d, "verdicts"), exist_ok=True)
+                            with open(verify_tools._tool_verdict_out_file(d, qid), "w") as fh:
+                                fh.write("{ not valid json")
+                self.assertEqual(3, dispatches)
+                self.assertEqual("advanced", result.kind)
+                self.assertTrue(verify.verify_done(d, m))
+                self.assertFalse(verify_tools._tool_verdict_done(d, qid))
+
     def test_garbled_verdict_is_not_done(self):
         d = self._repo([_result("r1", "src/app.py", 1, level="note")])
         m = self._manifest()

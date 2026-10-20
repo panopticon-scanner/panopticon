@@ -172,6 +172,17 @@ def _tool_verdict_done(review_root, queue_id):
     return (isinstance(data, dict)
             and str(data.get("verdict", "")).upper() in evidence.VERDICT_VALUES)
 
+# The tool advisor's entry id prefix, one spelling for the entry built here and
+# for `verify._dispatch_key`, which reads its budget key back off a dispatched id.
+TOOL_ENTRY_PREFIX = "verify-tool-"
+
+
+def _tool_exhausted(review_root, queue_id):
+    """#3185: this tool item has spent verify's dispatch budget (`verify` owns
+    it; imported here at call time because `verify` imports this module)."""
+    from . import verify
+    return verify._verify_exhausted(review_root, "tool/%s" % queue_id)
+
 def _tool_verify_entry(review_root, manifest, queue_id, finding, host):
     """One per-finding advisor (advisor.md) dispatch entry for a tool finding.
 
@@ -214,7 +225,7 @@ def _tool_verify_entry(review_root, manifest, queue_id, finding, host):
     if located == _REDACTED_CLAIM_PATH:
         located = None
     abs_files = coverage.group_files_containing(review_root, located)
-    entry_id = "verify-tool-%s" % queue_id
+    entry_id = "%s%s" % (TOOL_ENTRY_PREFIX, queue_id)
     entry = {"id": entry_id,
             "agent": dispatch.registered_agent_name("advisor.md") if enforced else None,
             "enforced": enforced, "model": requests.bound_model(host, "advisor"),
@@ -231,11 +242,14 @@ def _verify_tools_execute(review_root, manifest, host):
     a verdict; None when every tool finding is verified (or none exist). Runs as
     a round of the verify phase after primary/backup cells."""
     pending = [(qid, f) for qid, f in _tool_verify_queue(review_root, manifest)
-               if not _tool_verdict_done(review_root, qid)]
+               if not _tool_verdict_done(review_root, qid)
+               and not _tool_exhausted(review_root, qid)]
     if not pending:
         return None
     entries = [_tool_verify_entry(review_root, manifest, qid, f, host)
                for qid, f in pending]
+    from . import verify
+    verify._charge_verify_dispatch(review_root, entries)          # #3185, at dispatch
     req, sha = requests.write_dispatch_request_bound(
         review_root, manifest["run_id"], "verify", "tools", entries)
     return engine.PhaseResult(kind="checkpoint", checkpoint="verify", group="tools",
@@ -243,5 +257,6 @@ def _verify_tools_execute(review_root, manifest, host):
                        message="verify: %d tool advisor(s)" % len(entries))
 
 def _verify_tools_done(review_root, manifest):
-    return all(_tool_verdict_done(review_root, qid)
+    # #3185: an item that spent its budget is done; its finding stays unanswered.
+    return all(_tool_verdict_done(review_root, qid) or _tool_exhausted(review_root, qid)
                for qid, _f in _tool_verify_queue(review_root, manifest))
