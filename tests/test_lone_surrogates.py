@@ -708,14 +708,22 @@ class TestTheRealChild(unittest.TestCase):
     def test_a_name_from_the_targets_tree(self):
         # Not an agent's text and never hashed: a group and its file, as discovery names them from the tree. Only
         # the backstop stands between this name and the page's writer.
-        def groups(text):
-            extra = {"name": "extra" + text, "files": ["src/b%s.py" % text], "panels": ["code"],
-                     "parent": "extra" + text, "chunk_of": "."}
+        def groups(name, file=""):
+            extra = {"name": "extra" + name, "files": ["src/b%s.py" % file], "panels": ["code"],
+                     "parent": "extra" + name, "chunk_of": "."}
             return dict(self.groups, groups=self.groups["groups"] + [extra])
 
         run = self.child(findings=[a_finding(1)], groups=groups(LONE))
         self.assertIn("extra" + SPELLED, "".join(strings(self.whole(run))))
         self.same(run, self.child(findings=[a_finding(1)], groups=groups(SPELLED)))
+        # #2962: a FILE's name has no spelled twin. Its reviewer was handed the spelling, which names no file on
+        # disk, so #2964's key lists it and the run is not certified -- read through synthesize's own `groups.json`
+        # reader, which spells the document for every other consumer (#3183's pin bypassed that reader).
+        lone, spelled = (self.whole(self.child(findings=[a_finding(1)], groups=groups("", text)))
+                         for text in (LONE, SPELLED))
+        self.assertEqual([inert.inert_spelling("src/b%s.py" % LONE)], lone["meta"]["integrity"]["unreadable_name_files"])
+        self.assertEqual([], spelled["meta"]["integrity"]["unreadable_name_files"])
+        self.assertEqual((False, True), (lone["summary"]["coverage_certified"], spelled["summary"]["coverage_certified"]))
 
     def test_a_name_with_an_undecodable_byte_is_not_read_into_the_doc_tree(self):
         # Round 2, B1: a root-level `docs<byte>x.py`. On main the run ended in a traceback. Spelled with a backslash

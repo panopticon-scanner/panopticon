@@ -35,8 +35,8 @@ def test_allowlisted_environment_and_injected_runner(tmp_path, monkeypatch):
                        "-c", "core.fsmonitor=false",
                        "-c", "core.hooksPath=" + safe_git._no_hooks_path(),
                        "rev-parse", "--show-toplevel"]
-    assert options == {"capture_output": True, "text": True, "timeout": 15,
-                       "env": {"PATH": "/trusted/bin", "LC_ALL": "C",
+    assert options == {"capture_output": True, "text": True, "errors": "surrogateescape",
+                       "timeout": 15, "env": {"PATH": "/trusted/bin", "LC_ALL": "C",
                                "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_SYSTEM": os.devnull,
                                "GIT_CONFIG_GLOBAL": os.devnull}}
 
@@ -813,3 +813,36 @@ def test_repository_settings_fails_closed_on_a_listing_that_is_not_scope_labelle
     every_label = _scoped(*[(label, "x.%s" % label, "v") for label in
                             ("system", "global", "local", "worktree", "command", "unknown")])
     assert safe_git.repository_settings(every_label) == {"x.local": "v", "x.worktree": "v"}
+
+
+# --- #2962: a path holding a byte UTF-8 cannot carry --------------------------
+
+_UNDECODABLE = b"src/caf\xff.py"
+
+
+def _index_naming_an_undecodable_path(tmp_path):
+    """A repository whose INDEX names `_UNDECODABLE`. macOS refuses such a name
+    on disk, but git prints an index path raw, so this runs on every platform."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=30)
+    blob = subprocess.run(["git", "-C", str(repo), "hash-object", "-w", "--stdin"], input=b"x\n",
+                          capture_output=True, check=True, timeout=30).stdout.strip()
+    subprocess.run([b"git", b"-C", os.fsencode(repo), b"update-index", b"--add", b"--cacheinfo",
+                    b"100644," + blob + b"," + _UNDECODABLE], check=True, timeout=30)
+    return str(repo)
+
+
+@pytest.mark.parametrize("args, guarded", [
+    (["ls-files", "-z"], False),                 # the no-preflight launch
+    (["status", "--porcelain", "-z"], True),     # the preflight's own `ls-files --stage` raised
+])
+def test_an_undecodable_path_comes_back_as_its_exact_bytes(tmp_path, args, guarded):
+    """#2962: the text launches decoded strict UTF-8, so the first run of a
+    target holding such a name died on UnicodeDecodeError before any report.
+    Decoded as `os.fsdecode` decodes a name, `os.fsencode` gives the bytes back."""
+    repo = _index_naming_an_undecodable_path(tmp_path)
+    assert safe_git._needs_preflight(args) is guarded
+    result = safe_git.probe(repo, args)
+    assert result.returncode == 0
+    assert _UNDECODABLE in os.fsencode(result.stdout)

@@ -237,7 +237,8 @@ def main(argv=None):
     # and five of its fields are type-pinned by the time they reach the
     # artifact. `load_groups_json` normalizes them at the read, so its "never
     # abort a run" contract survives the validator for every caller.
-    gj = plan_mod.load_groups_json(groups_path)
+    raw_groups: list = []               # #2962: the cell lists unspelled, for one reader
+    gj = plan_mod.load_groups_json(groups_path, raw_groups=raw_groups)
     groups_meta = gj.get("groups", [])
 
     # #17/#16: run-scoped artifacts (tools-manifest, scout-*, coverage-*, dispatch
@@ -369,7 +370,10 @@ def main(argv=None):
                                     # apply -- the coverage section is where the
                                     # owner ruling says it has to be disclosed.
                                     sec_carve_out=gj.get(
-                                        "exclude_paths_sec_carve_out"))
+                                        "exclude_paths_sec_carve_out"),
+                                    # #2962: #2964's check reads the names
+                                    # unspelled; every other reader keeps `gj`.
+                                    raw_groups=raw_groups)
     # #1335: SPEND, not coverage -- a no-op scanner still cost a dispatch.
     cost = cost_mod.CostInputs.load(
         run_dir, args.verdicts_dir,

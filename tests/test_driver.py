@@ -7,6 +7,7 @@ import contextlib
 import io
 import json
 import os
+import sys
 import unittest
 from unittest import mock
 
@@ -16,6 +17,7 @@ import scripts.phases.coverage as coverage
 from tests._test_helpers import all_proven_artifact as _all_proven_artifact
 from tests._test_helpers import docker_probe_runner
 import scripts.driver as driver
+import scripts.inert as inert
 import scripts.host_disclosure as host_disclosure
 import scripts.run_manifest as run_manifest
 from scripts import hosts
@@ -183,6 +185,42 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         self.assertEqual(
             driver.run(self._args(d, "--no-tools", "--reset"))["status"],
             "checkpoint")
+
+    @unittest.skipIf(sys.platform == "darwin",
+                     "#2962: macOS refuses a file name that is not UTF-8 (EILSEQ), so this "
+                     "fixture cannot exist there; CI runs it on ubuntu")
+    def test_names_utf8_cannot_carry_reach_a_report_that_withholds_certification(self):
+        """#2962 (M1, M3, M4). A FILE and a DIRECTORY named with byte 0xff: the
+        first run died on UnicodeDecodeError in `safe_git` with no report. Now
+        the run completes, and the names -- which every prompt spells, so no
+        reviewer could open them -- sink certification through #2964's key,
+        read end to end through synthesize's real `groups.json` reader (#3183's
+        pin handed `groups_meta` in directly and never met its spelling). A
+        file literally named as such a spelling is carryable and stays out; it
+        spells a name NOT in the tree, or the list could not tell the two apart."""
+        undecodable = [os.fsdecode(b"src/caf\xff.py"), os.fsdecode(b"d\xff/y.py")]
+        spelled_alike = inert.escape_surrogates(os.fsdecode(b"src/ok\xff.py"))
+        d = make_git_repo(
+            test_case=self,
+            files={"src/app.py": "def f():\n    return 1\n", undecodable[0]: "x = 1\n",
+                   undecodable[1]: "y = 2\n", spelled_alike: "z = 3\n"},
+            groups_yml="groups:\n  Core:\n    match: ['src/**', 'd*/**']\n    panels: [COD]\n",
+        )
+        args = self._args(d, "--no-tools")
+        status = driver.run(args)
+        for _ in range(30):
+            if status["status"] != "checkpoint":
+                break
+            self._inject_scouts(d)
+            self._inject_review(d)
+            status = driver.run(args)
+        self.assertEqual(status["status"], "complete", status.get("message"))
+        report = runio._load_json(runio._pano(d, "report.json"))
+        self.assertTrue(os.path.isfile(runio._pano(d, "report.json.html")))
+        self.assertIn(spelled_alike, [f for g in report["groups"] for f in g["files"]])
+        self.assertEqual(report["meta"]["integrity"]["unreadable_name_files"],
+                         sorted(inert.inert_spelling(n) for n in undecodable))
+        self.assertFalse(report["summary"]["coverage_certified"])
 
     def test_resume_reemits_same_checkpoint_before_dispatch(self):
         d = self._repo()

@@ -13,6 +13,7 @@ import sys
 import scripts.evidence as evidence_mod
 import scripts.findings_contract as findings_contract
 import scripts.group_runner as group_runner
+import scripts.inert as inert
 import scripts.ingest_tools as ingest_tools
 import scripts.plan_contract as plan_contract
 import scripts.score_gate as score_gate
@@ -63,7 +64,7 @@ class PlanInputs:
     @classmethod
     def load(cls, run_dir, files, verdicts_dir, groups_meta, plans, queue, verdicts,
              git_drivers_suppressed=None, plan_owed=False, plan_sha256=None,
-             snapshot_sha256=None, discovery=None, sec_carve_out=None):
+             snapshot_sha256=None, discovery=None, sec_carve_out=None, raw_groups=None):
         """main()'s plan stage (WS-0 S3): lane discipline (#441), fan-out
         accounting, resume stats, scout requests, coverage files and their
         integrity disclosures. `plans` is the
@@ -84,7 +85,9 @@ class PlanInputs:
         ask, so it publishes "not measured". `sec_carve_out` is that same
         file's `exclude_paths_sec_carve_out` block (#1757), on the same seam and
         for the same reason -- a disclosure discovery recorded, not anything this
-        loader measures."""
+        loader measures. `raw_groups` is `load_groups_json`'s unspelled cell
+        lists (#2962), read for `unreadable_name_files` in place of
+        `groups_meta` when given."""
         plan_lists, plans_seen, invalid_plans = plans
         queue_obj, invalid_verify_queue = queue
         plan = [e for pl in plan_lists for e in pl]
@@ -106,7 +109,8 @@ class PlanInputs:
             plan_lists, files, run_dir, plans_seen, invalid_plans, invalid_verify_queue,
             plan_owed=plan_owed, plan_sha256=plan_sha256,
             snapshot_sha256=snapshot_sha256, discovery=discovery,
-            coverage_files_skipped=coverage_files_skipped, groups_meta=groups_meta)
+            coverage_files_skipped=coverage_files_skipped,
+            groups_meta=groups_meta if raw_groups is None else raw_groups)
         return cls(groups_meta=groups_meta, fan_out=fan_out,
                    scout_requested=sorted(scout_requested),
                    scout_profiles_seen=scout_profiles_seen, out_of_scope=out_of_scope,
@@ -297,7 +301,7 @@ def derive_tool_policy_mode(panopticon_dir=".panopticon", plans=None):
     return "advisory"
 
 
-def load_groups_json(path):
+def load_groups_json(path, raw_groups=None):
     """The run's groups.json as a dict, or {} when there is no file at `path`,
     it cannot be read, or it is not a JSON object -- tolerant by design (never
     abort a run); the two failure modes are announced on stderr.
@@ -307,14 +311,22 @@ def load_groups_json(path):
     the caller (#1639 P15 fix round 3, R2-6): repairing at the read is what
     makes a second caller safe by construction. It lived at the caller for one
     round only because this module was two lines under its ceiling.
+
+    `raw_groups`, when a list, is extended with the file's `groups` as read, a
+    lone surrogate still in each name (#2962): the one reading `#2964`'s
+    `unreadable_name_files` makes. Spelled first, `caf<0xff>.py` reads as the
+    carryable `cafU+DCFF.py`, a name no file on disk has. One read serves both.
     """
     if not (path and os.path.lexists(path)):
         return {}
     try:
-        gj = artifacts_mod.read_json(path)
+        raw = artifacts_mod.read_json(path, spell=False)
     except (OSError, ValueError) as e:
         print("synthesize: could not read %s (%s); ignoring" % (path, e), file=sys.stderr)
         return {}
+    gj = inert.surrogate_free(raw)
+    if raw_groups is not None and isinstance(raw, dict) and isinstance(raw.get("groups"), list):
+        raw_groups.extend(raw["groups"])
     if not isinstance(gj, dict):
         print("synthesize: %s is not a JSON object; ignoring" % path, file=sys.stderr)
         return {}

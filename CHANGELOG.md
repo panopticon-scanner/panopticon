@@ -7,6 +7,27 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **A target holding a file or directory whose name is not UTF-8 gets a report that says so
+  (#2962).** On Linux such a name is legal, and the first run died on `UnicodeDecodeError` with
+  no report: `safe_git` launched git in text mode, which decodes strict UTF-8, and its preflight
+  `ls-files --stage` (under `status`, from `run_manifest`, discovery and `diff_map`) printed the
+  name.
+  - Both text launches now decode with `errors="surrogateescape"`, as `os.fsdecode` decodes a
+    name, so `os.fsencode` returns the exact bytes and `_encoded` already round-trips them.
+  - Behind the crash, #2964's key never saw such a name. `synth/artifacts.read_json` spells every
+    lone surrogate (#2951) before `unreadable_name_files` read `groups.json`, so `caf<0xff>.py`
+    arrived as the carryable `cafU+DCFF.py`, and the run was certified though no prompt could
+    name the file.
+  - `plan.load_groups_json` now reads once through the same capped regular-file read with
+    `spell=False`, and hands the unspelled cell lists to that one check. Every other reader
+    keeps the spelled document.
+  - This closes #3183's surrogate path end to end.
+  Pins: `tests/test_safe_git.py` (an index path with byte 0xff, on the unguarded and the guarded
+  launch, on every platform); `tests/test_lone_surrogates.py` (the real synthesize child lists a
+  lone-surrogate file and withholds certification, while its spelled twin is listed nowhere; a
+  group NAME stays byte-for-byte its twin); `tests/test_driver.py` (a full run to `complete` that
+  lists both names and is not certified, while a file literally named `okU+DCFF.py` stays out;
+  Linux only, since macOS refuses the name).
 - **A file named with a character the prompt escapes no longer goes unreviewed in silence
   (#2964).** A reviewer is handed only its prompt, which spells a TAB, a bidi control or a lone
   surrogate in a path inertly (`runio._prompt_safe`), and that spelling names no file on disk.

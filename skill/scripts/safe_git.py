@@ -660,22 +660,21 @@ def _guarded(root, args, runner, timeout, text, suppressed, mutating):
     env = {"PATH": resolved.path_env, "LC_ALL": "C",
            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_SYSTEM": os.devnull,
            "GIT_CONFIG_GLOBAL": os.devnull}
+    # #2962: output decodes as os.fsdecode decodes a name, so a byte UTF-8 cannot carry round-trips.
     name = _subcommand(args)
     prepared = list(args)
     if name in _DIFF_PRODUCING:
         prepared = _with_options(prepared, _NO_DRIVERS)
-    # A MUTATING call never asks: writing to the repository is the one case
-    # where skipping the config read would be trading the whole guarantee for
-    # two saved launches, and `worktree add` reaches a smudge command that no
-    # read-only subcommand does.
+    # A MUTATING call never asks: writing to the repository is the one case where skipping
+    # the config read would be trading the whole guarantee for two saved launches, and
+    # `worktree add` reaches a smudge command that no read-only subcommand does.
     if not mutating and not _needs_preflight(args):
-        return runner(_launch_argv(resolved, root, prepared),
-                      capture_output=True, text=text, timeout=timeout, env=env)
+        return runner(_launch_argv(resolved, root, prepared), capture_output=True, text=text,
+                      errors="surrogateescape" if text else None, timeout=timeout, env=env)
 
     deadline = time.monotonic() + timeout
-    # The `-c <key>=` tokens composed so far, and the (repository, key) pairs
-    # behind them. Grown as each repository's config is read, so every launch
-    # AFTER a collection carries every override collected up to that point.
+    # The `-c <key>=` tokens composed so far, and the (repository, key) pairs behind them. Grown as
+    # each repository's config is read, so every launch AFTER a collection carries every one so far.
     drivers: list = []
     overridden: set = set()
     neutralized: list = []
@@ -687,7 +686,8 @@ def _guarded(root, args, runner, timeout, text, suppressed, mutating):
             raise subprocess.TimeoutExpired("trusted git probe", timeout)
         return runner(_launch_argv(resolved, directory, command,
                                    drivers if overrides is None else overrides),
-                      capture_output=True, text=as_text, timeout=remaining, env=env)
+                      capture_output=True, text=as_text,
+                      errors="surrogateescape" if as_text else None, timeout=remaining, env=env)
 
     def read_config(directory, overrides=None):
         """One `config --null --list --includes` read of `directory`.
