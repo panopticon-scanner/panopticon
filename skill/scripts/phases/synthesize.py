@@ -40,8 +40,13 @@ def synthesize_done(review_root, manifest):
     # #2930: failed/interrupted attempts can leave a usable-looking old report
     # or an invalid sibling. Presence alone refuses completion, even if the
     # marker is malformed, unreadable, or a dangling link.
-    return (not os.path.lexists(runio._pano(review_root, _PENDING))
-            and _usable_report(review_root))
+    try:
+        os.lstat(runio._pano(review_root, _PENDING))
+    except FileNotFoundError:
+        return _usable_report(review_root)
+    except OSError:
+        return False  # An unsearchable directory does not establish absence.
+    return False
 
 
 def x0x_failure_disclosure(report_path):

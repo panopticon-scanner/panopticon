@@ -194,6 +194,22 @@ def test_reset_removes_pending_but_preserves_durable_report(review):
     assert not synthesize.synthesize_done(root, fresh)
 
 
+def test_a_marker_stat_failure_is_not_evidence_of_absence(review):
+    root, manifest, valid_report = review
+    _write(_report(root), valid_report)
+    pending = str(_pending(root))
+    _write(pending, {"run_id": manifest["run_id"]})
+    lstat = os.lstat
+
+    def denied(path, *args, **kwargs):
+        if os.fspath(path) == pending:
+            raise PermissionError("run directory is not searchable")
+        return lstat(path, *args, **kwargs)
+
+    with mock.patch.object(os, "lstat", side_effect=denied):
+        assert not synthesize.synthesize_done(root, manifest)
+
+
 def test_a_different_run_does_not_inherit_pending(review):
     root, manifest, valid_report = review
     _write(_pending(root), {"run_id": manifest["run_id"]})
