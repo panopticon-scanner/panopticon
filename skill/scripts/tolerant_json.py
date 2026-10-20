@@ -9,6 +9,49 @@ _SCAN_CANDIDATES = 256
 # its verdict. This constant floor covers those wrappers; large inputs retain
 # the linear multipliers below.
 _SCAN_BUDGET_FLOOR = 64 * 1024
+# #2959: the deepest an agent's or a scanner's JSON may nest. Every recursive
+# walker downstream (redact_tree, the codec itself, schema repair) ran out of
+# stack somewhere between 900 levels (3.11) and 100,000 (3.14), ending the run
+# in a traceback; the deepest document this tree carries nests 13.
+MAX_JSON_DEPTH = 64
+_TOO_DEEP = "nested deeper than %d levels" % MAX_JSON_DEPTH
+# A whole string (to its first unescaped quote) or one bracket; a string is
+# matched only so the brackets inside it are skipped. One pattern per type.
+_DEPTH_TOKENS = re.compile(r'"[^"\\]*(?:\\.[^"\\]*)*"|[][{}]', re.DOTALL)
+_DEPTH_TOKENS_BYTES = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"|[][{}]', re.DOTALL)
+
+
+def depth_checked(text):
+    """`text` (str or bytes) itself, or `json.JSONDecodeError` when a bracket
+    opens deeper than MAX_JSON_DEPTH -- counted outside strings, a string ending
+    only at an unescaped quote. Iterative and linear, so it runs BEFORE any
+    parse; the error is the one every caller already treats as malformed."""
+    depth = 0
+    tokens = (_DEPTH_TOKENS_BYTES if isinstance(text, bytes) else _DEPTH_TOKENS).finditer(text)
+    for token in tokens:
+        char = text[token.start():token.start() + 1]
+        if char in ("[", "{", b"[", b"{"):
+            depth += 1
+            if depth > MAX_JSON_DEPTH:
+                raise json.JSONDecodeError(_TOO_DEEP, _as_text(text), token.start())
+        elif char in ("]", "}", b"]", b"}"):
+            depth = max(0, depth - 1)
+    return text
+
+
+def _as_text(text):
+    """JSONDecodeError's document is a str, whatever the caller handed in."""
+    return text.decode("utf-8", "replace") if isinstance(text, bytes) else text
+
+
+def unparsed_reason(text):
+    """Why `loads` could not read `text`, for a refusal line: the depth bound by
+    name when it is the cause (#2959), else the two tolerant tries."""
+    try:
+        depth_checked(text)
+    except json.JSONDecodeError as exc:
+        return exc.msg
+    return "fence- and prose-wrapped both tried"
 
 
 def first_balanced_object(body):
@@ -44,14 +87,18 @@ def first_balanced_object(body):
             if len(spans) < _SCAN_CANDIDATES:
                 spans.append((start, pos + 1))
     budget = max(_SCAN_BUDGET_FLOOR, 2 * len(body))
+    deep_until = 0      # #2959: no shallow object is dug out of a too-deep one
     for start, end in sorted(spans):
         size = end - start
-        if size > budget:
+        if size > budget or start < deep_until:
             continue
         budget -= size
         try:
-            return json.loads(body[start:end])
-        except (json.JSONDecodeError, RecursionError, MemoryError):
+            return json.loads(depth_checked(body[start:end]))
+        except json.JSONDecodeError as exc:
+            if exc.msg == _TOO_DEEP:
+                deep_until = end
+        except (RecursionError, MemoryError):
             pass
     # The replay also pays once for locating candidate starts. Keep that linear
     # pass and fixed candidate bookkeeping outside the 64 KiB scan floor.
@@ -84,10 +131,14 @@ def first_balanced_object(body):
                 depth -= 1
                 if depth == 0:
                     try:
-                        return json.loads(body[start:end + 1])
-                    except (json.JSONDecodeError, RecursionError, MemoryError):
+                        return json.loads(depth_checked(body[start:end + 1]))
+                    except json.JSONDecodeError as exc:
+                        if exc.msg == _TOO_DEEP:
+                            cursor = end        # #2959: resume past it, never inside
                         break
-        cursor = start + 1
+                    except (RecursionError, MemoryError):
+                        break
+        cursor = max(cursor, start) + 1
     return None
 
 
@@ -98,7 +149,7 @@ def loads(body):
         body = re.sub(r"^```[a-zA-Z]*\s*", "", body)
         body = re.sub(r"\s*```\s*$", "", body).strip()
     try:
-        return json.loads(body)
+        return json.loads(depth_checked(body))
     except json.JSONDecodeError as first_err:
         # #1058: narrative wrapping lost 8/79 advisor verdicts in run-5; three
         # repeated on retry, so it was prompt-induced rather than noise. The
@@ -111,7 +162,7 @@ def loads(body):
         match = re.search(r"(\{.*\})", body, re.DOTALL)
         if match:
             try:
-                return json.loads(match.group(1))
+                return json.loads(depth_checked(match.group(1)))
             except (json.JSONDecodeError, RecursionError, MemoryError):
                 pass
         raise first_err

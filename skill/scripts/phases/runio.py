@@ -20,6 +20,7 @@ import scripts.repo_config as repo_config
 import scripts.run_manifest as run_manifest
 import scripts.safe_git as safe_git
 import scripts.safe_write as safe_write
+import scripts.tolerant_json as tolerant_json
 
 
 CHECKPOINT_KINDS = ("scout", "review", "verify", "scan")
@@ -232,7 +233,7 @@ def _abs_file_list(review_root, files):
 def _load_json(path):
     try:
         with open(path, encoding="utf-8") as fh:
-            return json.load(fh)
+            return json.loads(tolerant_json.depth_checked(fh.read()))     # #2959: as corrupt
     except (OSError, ValueError):
         return None
 

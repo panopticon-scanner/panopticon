@@ -1212,6 +1212,44 @@ class TestSemgrepScopeBaselineTransition(unittest.TestCase):
             self.assertEqual(open(base_manifest, "rb").read(), before_manifest)
             self.assertEqual(open(capture, "rb").read(), before_capture)
 
+    def test_a_too_deep_expanded_capture_refuses_by_name_without_mutating_baseline(self):
+        """#2959: 100,000 levels escaped this reader's ValueError guard as a RecursionError."""
+        with tempfile.TemporaryDirectory() as root:
+            base_dir = os.path.join(root, "base")
+            expanded_dir = os.path.join(root, "expanded")
+            os.mkdir(base_dir)
+            os.mkdir(expanded_dir)
+            base_manifest = os.path.join(root, "base.json")
+            expanded_manifest = os.path.join(root, "expanded.json")
+            self._manifest(base_manifest, ["semgrep"], ["semgrep"])
+            self._manifest(expanded_manifest, ["semgrep"], ["semgrep"],
+                           scope={"semgrep": tm.SEMGREP_SCOPE_POLICY})
+            capture = os.path.join(base_dir, "semgrep.sarif")
+            with open(capture, "w") as stream:
+                stream.write('{"runs":[]}')
+            with open(expanded_dir + "/semgrep.sarif", "w") as stream:
+                stream.write('{"runs":[{"properties":{"deep":%s}}]}' % ("[" * 100_000 + "]" * 100_000))
+            before_manifest = open(base_manifest, "rb").read()
+
+            with self.assertRaisesRegex(ValueError, "nested deeper than 64 levels"):
+                tm.prepare_semgrep_scope_baseline(
+                    base_dir, base_manifest, expanded_dir, expanded_manifest)
+
+            self.assertEqual(open(base_manifest, "rb").read(), before_manifest)
+            self.assertEqual(open(capture, "rb").read(), b'{"runs":[]}')
+
+    def test_a_too_deep_eslint_capture_measures_no_file_coverage(self):
+        """#2959: the coverage read kept a RecursionError out of nothing; past the bound it is the
+        unreadable capture it already tolerated (ingestion owns the failure)."""
+        with tempfile.TemporaryDirectory() as root:
+            capture = os.path.join(root, "eslint-security.json")
+            with open(capture, "w") as stream:
+                stream.write("[" * 100_000 + "]" * 100_000)
+            path = os.path.join(root, "tools-manifest.json")
+            tm.write_manifest(path, ["eslint-security"], [capture])
+            with open(path, encoding="utf-8") as stream:
+                self.assertNotIn("eslint-security", json.load(stream)["file_coverage"])
+
 
 if __name__ == "__main__":
     unittest.main()

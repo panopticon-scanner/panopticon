@@ -615,6 +615,7 @@ groups:
       - tests/test_schema.py
       - tests/test_matrix_finding_id.py
       - tests/test_verdict_bundles.py
+      - tests/test_json_depth.py
       - tests/test_verdict_quality.py
       - tests/test_verdict_ingest.py
       - tests/test_verify_inconclusive.py

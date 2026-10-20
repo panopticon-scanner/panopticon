@@ -858,6 +858,25 @@ class TestIngestDispositions(unittest.TestCase):
         self.assertEqual(disp["trivy"]["status"], "failed")
         self.assertIn("unparseable", disp["trivy"]["reason"])
 
+    def test_a_scanner_output_nested_past_the_bound_fails_by_name_and_spares_the_rest(self):
+        """#2959 (M4): 100,000 levels used to surface as `unparseable: maximum recursion depth
+        exceeded`, a RecursionError text that varied by interpreter. It now fails on the depth bound
+        by name, and the tool beside it keeps its finding."""
+        with tempfile.TemporaryDirectory() as d:
+            sarif = _sarif_fixture("a.py")
+            sarif["runs"][0]["tool"]["driver"]["name"] = "bandit"
+            sarif["runs"][0]["tool"]["driver"]["rules"] = [{"id": "B105"}]
+            sarif["runs"][0]["results"][0].update(
+                {"ruleId": "B105", "level": "error", "message": {"text": "x"}})
+            self._write(d, "bandit.sarif", _json.dumps(sarif))
+            deep = _json.dumps(_sarif_fixture("a.py"))[:-1] + ', "deep": %s}' % ("[" * 100_000 + "]" * 100_000)
+            self._write(d, "trivy.sarif", deep)
+            _findings, disp = it.ingest_dir_detailed(d, "g1")
+        self.assertEqual(disp["bandit"]["status"], "ok")
+        self.assertGreaterEqual(disp["bandit"]["findings"], 1)
+        self.assertEqual(disp["trivy"]["status"], "failed")
+        self.assertIn("unparseable: nested deeper than 64 levels", disp["trivy"]["reason"])
+
     def test_no_registered_adapter_is_failed(self):
         with tempfile.TemporaryDirectory() as d:
             self._write(d, "notatool.json", b"{}")

@@ -15,13 +15,15 @@ from typing import Any
 import scripts.evidence as evidence_mod
 import scripts.inert as inert
 import scripts.safe_write as safe_write
+import scripts.tolerant_json as tolerant_json
 
 MAX_JSON_BYTES = 16 * 1024 * 1024
 
 
 def _read_json(path, limit, tolerant):
     text = safe_write.read_regular_bytes(path, limit).decode("utf-8")
-    return evidence_mod.load_json_tolerant(text) if tolerant else json.loads(text)
+    return (evidence_mod.load_json_tolerant(text) if tolerant
+            else json.loads(tolerant_json.depth_checked(text)))      # #2959
 
 
 def read_json(path, *, limit=None, tolerant=False, announce=False, spell=True) -> Any:
