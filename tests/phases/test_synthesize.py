@@ -15,6 +15,7 @@ from scripts import hosts
 from tests._test_helpers import only, write_host_evidence
 import scripts.config_schema as config_schema
 import scripts.evidence as evidence
+import scripts.group_runner as group_runner
 import scripts.phases.runio as runio
 import scripts.phases.discovery as discovery_phase
 import scripts.phases.requests as requests
@@ -1161,6 +1162,19 @@ class TestTheDispatchPlanObligationReachesTheChild(unittest.TestCase):
         # gate, the hash only strengthens it (the #493 R2 ack reads the same way).
         self.assertNotIn("--plan-sha256", self._cmd(self._stamped(sha256=None)))
 
+    def test_the_snapshot_stamp_hash_is_threaded_to_synthesis(self):
+        manifest = self._stamped(**{
+            run_manifest.OUT_FILE_SNAPSHOT: {"sha256": "c" * 64, "at": "t"}})
+        cmd = self._cmd(manifest)
+        self.assertEqual(cmd[cmd.index("--snapshot-sha256") + 1], "c" * 64)
+        parsed = syn.build_parser().parse_args(
+            cmd[cmd.index("--snapshot-sha256"):cmd.index("--snapshot-sha256") + 2])
+        self.assertEqual(parsed.snapshot_sha256, "c" * 64)
+
+        legacy = self._stamped(**{
+            run_manifest.OUT_FILE_SNAPSHOT: {"cells": 1, "at": "t"}})
+        self.assertNotIn("--snapshot-sha256", self._cmd(legacy))
+
     def test_the_driver_argv_tokens_are_flags_synthesize_accepts(self):
         # The #1602 parity rule: `tests/synth/helpers._cli_args` builds a
         # Namespace directly, so argparse never runs and a renamed option would
@@ -1292,6 +1306,41 @@ class TestTheOwedPlanOnTheLiveDriverPath(unittest.TestCase):
         self.assertIs(integrity["dispatch_plan_missing"], True)
         self.assertEqual(summary["gate"], "INCONCLUSIVE")
         self.assertIs(summary["coverage_certified"], False)
+
+    def test_row_5_replacing_the_snapshot_with_forged_hashes_is_caught(self):
+        """#2115: the manifest binds the exact snapshot bytes the driver wrote."""
+        self._drive_to_the_snapshot()
+        self._substitute()
+        group_runner.snapshot_out_files(
+            [{"out_file": self.cell}], out_path=self.snapshot)
+        integrity, summary = self._synthesize()
+        self.assertEqual(integrity["content_mismatched_files"], [])
+        self.assertIs(integrity["content_snapshot_mismatched"], True)
+        self.assertEqual(summary["gate"], "INCONCLUSIVE")
+
+    def test_row_6_a_preplanted_snapshot_has_no_driver_binding(self):
+        """#2115 amendment: a present snapshot is not proof the driver wrote it."""
+        result = review_phase.review_execute(self.root, self.manifest)
+        self.assertEqual(result.checkpoint, "review")
+        self._substitute()
+        group_runner.snapshot_out_files(
+            [{"out_file": self.cell}], out_path=self.snapshot)
+        for entry in requests.load_dispatch_request(self.root)["entries"]:
+            runio._write_json(entry["out_file"], {
+                "findings": [{"title": "nit", "severity": "LOW", "domain": "QAL",
+                              "code": "QAL-A1A", "category": "style",
+                              "location": {"file": "src/app.py", "line_start": 1}}],
+                "_panopticon": {"run_id": self.RUN_ID, "role": "domain_panel",
+                                "domain": "QAL", "group": "app"}})
+        self.assertTrue(review_phase.review_done(self.root, self.manifest))
+        verify_phase.verify_execute(self.root, self.manifest)
+        self.assertIsNone(run_manifest.artifact_stamp(
+            self.manifest, run_manifest.OUT_FILE_SNAPSHOT))
+        self._substitute()
+        integrity, summary = self._synthesize()
+        self.assertEqual(integrity["content_mismatched_files"], [])
+        self.assertIs(integrity["content_snapshot_mismatched"], True)
+        self.assertEqual(summary["gate"], "INCONCLUSIVE")
 
     def test_replacing_the_plan_is_caught_as_well_as_deleting_it(self):
         # The stamp carries the plan's canonical content hash, so a plan that is

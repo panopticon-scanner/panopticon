@@ -3,6 +3,7 @@ unenforced ack and meta.integrity.
 """
 import contextlib
 import glob
+import hashlib
 import io
 import os
 import json
@@ -370,6 +371,7 @@ class IntegritySectionTest(unittest.TestCase):
             "mislabeled_findings_files", "cross_domain_findings", "unenforced_acknowledged",
             "ack_stale", "content_hashes_checked", "content_mismatched_files",
             "content_snapshot_unreadable", "content_snapshot_missing",
+            "content_snapshot_mismatched",
             "empty_dispatch_plans", "invalid_dispatch_plans",
             "invalid_verify_queue", "plans_seen",
             # SEC-377944137 (#1832): the guard on `plans_seen`, published
@@ -458,6 +460,39 @@ class IntegritySectionTest(unittest.TestCase):
                 sec = integrity_mod.integrity_section([], [cell], run_dir, 0, 0, None)
         self.assertEqual(sec["content_mismatched_files"], [])
         self.assertEqual(sec["content_hashes_checked"], 1)
+
+    def test_the_snapshot_file_is_bound_to_the_bytes_the_driver_wrote(self):
+        """#2115: forged and pre-planted valid snapshots both fail closed."""
+        with tempfile.TemporaryDirectory() as run_dir:
+            cell = self._cell(run_dir)
+            plan = [{"group": "app", "domain": "QAL", "out_file": cell}]
+            snapshot = os.path.join(run_dir, "out-file-hashes.json")
+            gr.snapshot_out_files(plan, out_path=snapshot)
+            with open(snapshot, "rb") as fh:
+                stamped = hashlib.sha256(fh.read()).hexdigest()
+
+            honest = integrity_mod.integrity_section(
+                [plan], [cell], run_dir, 1, 0, None,
+                plan_owed=True, snapshot_sha256=stamped)
+            self.assertIs(honest["content_snapshot_mismatched"], False)
+
+            with open(cell, "wb") as fh:
+                fh.write(b'{"findings": ["INJECTED"]}')
+            gr.snapshot_out_files(plan, out_path=snapshot)  # forge the baseline too
+            forged = integrity_mod.integrity_section(
+                [plan], [cell], run_dir, 1, 0, None,
+                plan_owed=True, snapshot_sha256=stamped)
+            self.assertEqual(forged["content_mismatched_files"], [])
+            self.assertIs(forged["content_snapshot_mismatched"], True)
+
+            preplanted = integrity_mod.integrity_section(
+                [plan], [cell], run_dir, 1, 0, None,
+                plan_owed=True, snapshot_sha256=None)
+            self.assertIs(preplanted["content_snapshot_mismatched"], True)
+            manual = integrity_mod.integrity_section(
+                [plan], [cell], run_dir, 1, 0, None,
+                plan_owed=False, snapshot_sha256=None)
+            self.assertIs(manual["content_snapshot_mismatched"], False)
 
     def test_a_driver_run_owing_a_snapshot_that_is_gone_fails_closed(self):
         # #1208: deleting the baseline read as a benign "not measured". On a run
@@ -605,8 +640,8 @@ class TestADeletedDispatchPlanIsDeletedEvidence(unittest.TestCase):
         with open(os.path.join(self.run_dir, plan_mod.DRIVER_DISPATCH_PLAN),
                   "w", encoding="utf-8") as fh:
             json.dump(plan, fh)
-        gr.snapshot_out_files(plan, out_path=os.path.join(self.run_dir,
-                                                          "out-file-hashes.json"))
+        _hashes, self.snapshot_sha256 = gr.snapshot_out_files(
+            plan, out_path=os.path.join(self.run_dir, "out-file-hashes.json"))
 
     def _section(self, plan_owed, plan_sha256=None):
         plans = plan_mod.load_dispatch_plans_detailed(self.run_dir)
@@ -614,7 +649,8 @@ class TestADeletedDispatchPlanIsDeletedEvidence(unittest.TestCase):
             sec = integrity_mod.integrity_section(plans[0], self.paths, self.run_dir,
                                                   plans[1], plans[2], None,
                                                   plan_owed=plan_owed,
-                                                  plan_sha256=plan_sha256)
+                                                  plan_sha256=plan_sha256,
+                                                  snapshot_sha256=self.snapshot_sha256)
         return sec, err.getvalue()
 
     def _plan_hash(self):

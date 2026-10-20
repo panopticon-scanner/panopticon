@@ -683,7 +683,7 @@
         },
         "integrity": {
           "type": "object",
-          "description": "Run-integrity reconciliation driving certification: unexpected, duplicate, mislabeled, malformed, content-mismatched, empty, or invalid dispatch artifacts force gate INCONCLUSIVE — as does a fan-out snapshot that is corrupt (content_snapshot_unreadable) or owed-but-absent (content_snapshot_missing).",
+          "description": "Run-integrity reconciliation driving certification: unexpected, duplicate, mislabeled, malformed, content-mismatched, empty, or invalid dispatch artifacts force gate INCONCLUSIVE — as does a fan-out snapshot that is corrupt (content_snapshot_unreadable), owed-but-absent (content_snapshot_missing), or not bound to the bytes this run's driver wrote (content_snapshot_mismatched).",
           "properties": {
             "unexpected_findings_files": {
               "type": "array",
@@ -765,6 +765,10 @@
             "content_snapshot_missing": {
               "type": "boolean",
               "description": "#1511/#1208: the run's dispatch plan declares review cells, so a snapshot was OWED, and none is present — a deleted baseline. Fails the gate closed. False on a run that owes nothing (no driver plan), which keeps the benign 'not measured' reading."
+            },
+            "content_snapshot_mismatched": {
+              "type": "boolean",
+              "description": "#2115: a plan-owed run's present out-file-hashes.json differs from the exact bytes its driver stamped, or has no driver-written digest (including a pre-planted snapshot). Fails the gate closed."
             },
             "empty_dispatch_plans": {
               "type": "integer"
