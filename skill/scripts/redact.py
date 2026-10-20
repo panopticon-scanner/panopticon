@@ -52,7 +52,12 @@ _PATTERNS: list[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]]] = 
      "[REDACTED_KEY]"),                                              # Stripe
     # Structure-anchored, not prefix-anchored: three base64url segments, the
     # first two starting eyJ (base64 of '{"'). Distinctive enough to be safe.
-    (re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
+    # A token cannot start inside another base64url segment. Requiring that
+    # left boundary also keeps a run of repeated `eyJ` from restarting this
+    # unbounded rule at every triplet and rescanning the remaining suffix
+    # quadratically (#2986).
+    (re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}\."
+                r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
      "[REDACTED_JWT]"),
     # Structure-anchored like the JWT above, and #1572's whole contribution: a
     # URL that carries a password in its userinfo (`scheme://user:pass@host`).

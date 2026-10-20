@@ -218,6 +218,37 @@ class TestRedactAdditionalVendorFormats(unittest.TestCase):
         out = redact.redact_tree({"d": "header %s trailer" % jwt})
         self.assertNotIn(jwt, out["d"])
 
+    def test_repeated_jwt_opening_prefix_is_roughly_linear(self):
+        """#2986: each embedded ``eyJ`` used to restart the JWT rule and
+        rescan the remaining suffix, making a 256 KiB refused reply quadratic.
+
+        The assertion compares equal-size inputs rather than pinning an
+        absolute duration. The subprocess timeout only keeps a regression from
+        stalling the whole suite before it can reach that ratio assertion.
+        """
+        code = """
+import time
+from scripts.redact import redact
+
+size = 256 * 1024
+plain = "q" * size
+prefix_run = ("eyJ" * ((size + 2) // 3))[:size]
+
+def elapsed(text):
+    started = time.perf_counter()
+    result = redact(text)
+    return time.perf_counter() - started, result
+
+plain_elapsed = max(elapsed(plain)[0] for _ in range(3))
+prefix_elapsed, result = elapsed(prefix_run)
+assert result == prefix_run
+assert prefix_elapsed <= plain_elapsed * 20, (plain_elapsed, prefix_elapsed)
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code], cwd=os.path.join(REPO_ROOT, "skill"),
+            capture_output=True, text=True, timeout=8, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
 
 class TestRedactUrlCredentials(unittest.TestCase):
     """#1572 (AGT-D1B): the finding's own example -- a connection string with a

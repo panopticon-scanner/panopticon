@@ -7,6 +7,13 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **JWT redaction stays linear on repeated opening prefixes (#2986).** The JWT rule
+  restarted at every embedded `eyJ` in a delimiter-free run and rescanned the remaining
+  suffix, making a crafted 4 MiB refused reply take quadratic time before persistence.
+  The rule now requires the same base64url left boundary a real token already has, so
+  overlapping starts inside a segment are skipped while all covered token shapes remain
+  masked. A 256 KiB equal-size timing ratio pins the behavior, and the 4 MiB redaction
+  allowance is unchanged.
 - **A finding no longer borrows another claim's verdict (#3202).** When dedupe kept a survivor with no
   verdict of its own, #1476's id aliases let it take the verdict of a claim dedupe had dropped.
   Measured by id on main: an unanswered CRITICAL beside a REJECTED HIGH at one locus was published
