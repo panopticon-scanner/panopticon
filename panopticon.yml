@@ -794,3 +794,6 @@ groups:
       - SEC
 exclude_paths:
 - tests/fixtures/**
+# #3193: pytest-split timing data (1.3 MB of JSON), no code. Semgrep skips any
+# file over 1 MB, which now withholds certification; excluding it is disclosed.
+- .test_durations
