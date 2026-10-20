@@ -370,7 +370,10 @@ class TestTheOwedOnceArtifactsAreNeverReCreated(unittest.TestCase):
         runio._write_json(cell, {"findings": []})
         requests._snapshot_review_out_files(self.root, self.manifest)
         self.assertTrue(os.path.isfile(self.snap_path))
-        self.assertEqual(self._stamp(run_manifest.OUT_FILE_SNAPSHOT)["cells"], 1)
+        stamp = self._stamp(run_manifest.OUT_FILE_SNAPSHOT)
+        self.assertEqual(stamp["cells"], 1)
+        with open(self.snap_path, "rb") as fh:
+            self.assertEqual(stamp["sha256"], hashlib.sha256(fh.read()).hexdigest())
         original = runio._load_json(self.snap_path)
         os.remove(self.snap_path)
         runio._write_json(cell, {"findings": ["INJECTED"]})   # the substitution

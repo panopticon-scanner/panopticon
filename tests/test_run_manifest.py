@@ -726,6 +726,24 @@ class TestArtifactStamps(unittest.TestCase):
                                                  sha256="a" * 64))
         self.assertEqual(self._stamp(rm.DRIVER_PLAN)["sha256"], "a" * 64)
 
+    def test_a_claim_stamps_evidence_computed_from_the_bytes_the_writer_wrote(self):
+        """#2115: the artifact's writer supplies its exact post-write digest."""
+        path = os.path.join(self.root, "out-file-hashes.json")
+
+        def write():
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("{}")
+            return path, "b" * 64
+
+        written = rm.claim_artifact(
+            self.root, None, rm.OUT_FILE_SNAPSHOT, path, write, cells=1,
+            stamp_fields=lambda result: {"sha256": result[1]})
+        self.assertEqual(written, (path, "b" * 64))
+        self.assertEqual(self._stamp(rm.OUT_FILE_SNAPSHOT), {
+            "cells": 1, "sha256": "b" * 64,
+            "at": self._stamp(rm.OUT_FILE_SNAPSHOT)["at"],
+        })
+
     def test_a_stamped_artifact_replaced_by_a_directory_reads_as_gone(self):
         # "Present" means a FILE: a directory wearing the artifact's name is not
         # the artifact this run wrote, and must read as gone (refused, reported)

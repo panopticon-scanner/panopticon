@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import tempfile
@@ -284,8 +285,12 @@ class TestOutFileContentHashes(unittest.TestCase):
                 _json.dump({"findings": []}, fh)
             hashes_path = os.path.join(d, "out-file-hashes.json")
             plan = [{"out_file": out}]
-            recorded = gr.snapshot_out_files(plan, out_path=hashes_path)
+            recorded, snapshot_sha256 = gr.snapshot_out_files(
+                plan, out_path=hashes_path)
             self.assertEqual(len(recorded), 1)
+            with open(hashes_path, "rb") as fh:
+                self.assertEqual(snapshot_sha256,
+                                 hashlib.sha256(fh.read()).hexdigest())
             checked, mismatched, unreadable = gr.verify_out_file_hashes(
                 [out], hashes_path=hashes_path)
             self.assertEqual((checked, mismatched, unreadable), (1, [], False))
