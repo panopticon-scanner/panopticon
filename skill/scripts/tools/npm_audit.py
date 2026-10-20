@@ -2,6 +2,8 @@
 from __future__ import annotations
 import contextvars
 import os
+import stat
+import sys
 
 from .base import (as_list, cve_ids, has_any_file, make_finding, normalize_severity,
                    omit_none, parse_json_bytes, run_tool, scratch_cwd,
@@ -25,6 +27,45 @@ LOCKFILES = ("npm-shrinkwrap.json", "package-lock.json")
 # one (capture_goldens) through `invoke` -- so this is a guess of last resort
 # and not an answer to rely on.
 DEFAULT_MANIFEST = "package-lock.json"
+# The scratch project `invoke` hands npm as `--prefix` (#2055), and the only
+# files it holds: the manifest and the lockfiles npm reads, copied from the
+# target. Never the target's `.npmrc`, nor anything else of its.
+STAGED_PROJECT = "project"
+STAGED_FILES = ("package.json",) + LOCKFILES
+# The bound on one staged file (#2055 round 1): npm parses a lockfile whole, so
+# one past this is refused, never cut.
+MAX_STAGED_BYTES = 64 * 1024 * 1024
+# What a refused stage exits with -- `_run_adapter`'s FAIL_RC, and a status
+# capture records as the tool's error: halt, never audit without the file.
+_REFUSED_RC = 2
+
+
+def _staged_bytes(path: str) -> bytes | None:
+    """The bytes to stage from *path*, or None where it is absent (#2055 round 1).
+
+    Read through no link and opened without blocking, so a target cannot make
+    the stage copy a file from outside the boundary (`package-lock.json ->
+    ~/.npmrc`) or wait on a FIFO. A present file that is not a regular file of
+    the target's own -- a symlink, FIFO, device or directory -- or one past
+    MAX_STAGED_BYTES raises ValueError, naming the file and never its content.
+    """
+    name = os.path.basename(path)
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except FileNotFoundError:
+        return None
+    except OSError as exc:              # ELOOP: a symlink, read through by nothing
+        raise ValueError("%s cannot be opened as a regular file (%s)" % (name, exc.strerror)) from None
+    try:                                # the raw fd first: a directory is no stream at all
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("%s is not a regular file" % name)
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            data = stream.read(MAX_STAGED_BYTES + 1)
+    finally:
+        os.close(fd)
+    if len(data) > MAX_STAGED_BYTES:
+        raise ValueError("%s is over %d bytes" % (name, MAX_STAGED_BYTES))
+    return data
 
 
 class NpmAuditAdapter:
@@ -50,12 +91,29 @@ class NpmAuditAdapter:
         # Recorded where the choice is MADE, so parse cannot name a different
         # file from the one audited (#1649).
         _manifest_path_cv.set(self._manifest(target))
-        cmd = ["npm", "audit", "--json", "--prefix", target]
         # #1877: npm reads an `.npmrc` from the WORKING DIRECTORY as well as
         # from `--prefix`, and that file can set `registry`, `script-shell`
-        # and `ignore-scripts` -- so the cwd is never the target. `--prefix`
-        # already names the project by path, so argv is byte-unchanged.
+        # and `ignore-scripts` -- so the cwd is never the target.
+        # #2055: nor is `--prefix`. npm reads the PROJECT `.npmrc` there, and a
+        # committed one can set `omit=dev` (the whole dev tree silently dropped
+        # from the audit), `include`, `audit-level` or `registry`; npm has no
+        # flag that skips the project file. So npm audits a scratch project,
+        # staged with the manifest and the lockfiles it reads and nothing else
+        # -- each read through no link (`_staged_bytes`); one that is present
+        # but refused fails the tool loudly rather than audit without it.
         with scratch_cwd("npm-audit-cwd-") as cwd:
+            project = os.path.join(cwd, STAGED_PROJECT)
+            os.mkdir(project)
+            try:
+                staged = {name: _staged_bytes(os.path.join(target, name)) for name in STAGED_FILES}
+            except ValueError as exc:
+                print("npm-audit: refusing to stage %s; recording as failed" % exc, file=sys.stderr)
+                return b"", _REFUSED_RC
+            for name, data in staged.items():
+                if data is not None:
+                    with open(os.path.join(project, name), "wb") as fh:
+                        fh.write(data)
+            cmd = ["npm", "audit", "--json", "--prefix", project]
             return run_tool(cmd, timeout=300, cwd=cwd)
 
     def _located_at(self) -> str:

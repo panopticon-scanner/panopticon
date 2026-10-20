@@ -271,6 +271,15 @@ class TestOfflineAnalyzers(unittest.TestCase):
             self.assertIn(flag, argv,
                           "%s reaches the network; scans run --network none" % flag)
 
+    def test_no_analyzer_runs_a_tool_inside_the_target(self):
+        # #2055: bundle-audit and go-mod launch a tool from a directory in the
+        # target, which then reads the target's own config -- bundler-audit its
+        # `.bundler-audit.yml` ignore list, go a committed `go.work`. The
+        # bundler_audit adapter and osv-scanner audit both manifests instead.
+        argv = self._argv()
+        for flag in ("--disableBundleAudit", "--disableGolangMod"):
+            self.assertIn(flag, argv)
+
     def test_offline_data_source_is_still_used(self):
         # Disabling the network analyzers must not disable the SCAN: offline
         # vulnerability data comes from the baked NVD set, so --data and
