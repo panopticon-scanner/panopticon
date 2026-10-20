@@ -221,7 +221,7 @@ def _render_findings(review_root, cell):
     tree in BOTH verify rounds -- the prior _confined_to_root guard covered only
     the derived backup file list, never this channel."""
     slim = [{"id": f["id"], "code": f.get("code"), "severity": f["severity"],
-             "title": f["title"], "category": f.get("category"),
+             "title": runio.capped_title(f["title"]), "category": f.get("category"),
              "location": claim_scope.confine_claim_location(review_root,
                                                             f.get("location")),
              "description": _capped_description(f.get("description", ""))}
