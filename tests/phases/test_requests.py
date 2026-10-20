@@ -370,7 +370,10 @@ class TestTheOwedOnceArtifactsAreNeverReCreated(unittest.TestCase):
         runio._write_json(cell, {"findings": []})
         requests._snapshot_review_out_files(self.root, self.manifest)
         self.assertTrue(os.path.isfile(self.snap_path))
-        self.assertEqual(self._stamp(run_manifest.OUT_FILE_SNAPSHOT)["cells"], 1)
+        stamp = self._stamp(run_manifest.OUT_FILE_SNAPSHOT)
+        self.assertEqual(stamp["cells"], 1)
+        with open(self.snap_path, "rb") as fh:
+            self.assertEqual(stamp["sha256"], hashlib.sha256(fh.read()).hexdigest())
         original = runio._load_json(self.snap_path)
         os.remove(self.snap_path)
         runio._write_json(cell, {"findings": ["INJECTED"]})   # the substitution
@@ -433,7 +436,8 @@ class TestTheOwedOnceArtifactsAreNeverReCreated(unittest.TestCase):
         # land (`return path if os.path.isfile(path) else None`), so "it returned"
         # is not "it exists". The stamp follows the FILE, not the call.
         requests._write_driver_plan(self.root, self.manifest)
-        with mock.patch("scripts.group_runner.snapshot_out_files", return_value={}):
+        with mock.patch("scripts.group_runner.snapshot_out_files",
+                        return_value=({}, None)):
             self.assertIsNone(
                 requests._snapshot_review_out_files(self.root, self.manifest))
         self.assertIsNone(self._stamp(run_manifest.OUT_FILE_SNAPSHOT))

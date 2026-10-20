@@ -119,7 +119,8 @@ class TestIntegrity(unittest.TestCase):
         "mislabeled_findings_files", "cross_domain_findings",
         "unenforced_acknowledged", "ack_stale", "content_hashes_checked",
         "content_mismatched_files", "content_snapshot_unreadable",
-        "content_snapshot_missing", "empty_dispatch_plans",
+        "content_snapshot_missing", "content_snapshot_mismatched",
+        "empty_dispatch_plans",
         "invalid_dispatch_plans", "invalid_verify_queue", "plans_seen",
         # SEC-377944137 (#1832): published beside `plans_seen`, the key it
         # guards, and stated on every report for the same reason as the two
@@ -283,18 +284,20 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
     the fourteen sinking keys had no line of their own, nine of them no name on
     the summary at all: it said "incomplete" and the reasons went to stderr.
 
-    `SINKING` is transcribed from that chain BEFORE it was folded into
-    `integrity.INTEGRITY_KEYS`, which is what makes
+    `SINKING` began as that chain before it was folded into
+    `integrity.INTEGRITY_KEYS`; later integrity reasons such as #2115 are added
+    here with their contract. That baseline is what makes
     `test_the_chain_sinks_exactly_these_keys` an equivalence baseline: it
     passed against the hand-written chain and must still pass against the
     comprehension over the table.
     """
 
-    # The 14 terms of the pre-change chain, in its own order.
+    # The 14 terms of the pre-change chain, plus later integrity reasons.
     SINKING = frozenset({
         "unexpected_findings_files", "duplicate_out_files",
         "mislabeled_findings_files", "content_mismatched_files",
         "content_snapshot_unreadable", "content_snapshot_missing",
+        "content_snapshot_mismatched",
         "malformed_findings_files", "empty_dispatch_plans",
         "dispatch_plan_missing", "dispatch_plan_mismatched",
         "invalid_dispatch_plans", "invalid_verify_queue",
@@ -338,6 +341,7 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         "content_mismatched_files": ["c.json"],
         "content_snapshot_unreadable": True,
         "content_snapshot_missing": True,
+        "content_snapshot_mismatched": True,
         "empty_dispatch_plans": 1,
         # The loader's THIRD reason, the one a filename alone cannot be told
         # apart from a plan that does not parse (review finding 8), and -- only
