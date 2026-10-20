@@ -590,14 +590,12 @@ def rollback_markers(review_root, checkpoint, entries):
     decrement of one; a key already at zero is left alone, and earlier real
     failures keep their own charges.
 
-    The other two counters are deliberately NOT rolled back, because neither
-    is a charge against THIS dispatch: `coverage._bump_scout_attempts` fires
-    when a scout reply already on disk fails shape validation, and
-    `verify._bump_verify_attempts` when a verdict bundle already on disk came
-    back short. Both are facts about a PREVIOUS reply that this checkpoint
-    merely noticed, and erasing them would return a budget something really
-    did spend.
+    #3185: verify charges at dispatch too (`verify._charge_verify_dispatch`), so
+    its charge is refunded on the same reasoning. Scouts are NOT: the scout
+    charge is a fact about a PREVIOUS reply that failed shape validation.
     """
+    if checkpoint == "verify":
+        return verify._give_back_verify_dispatch(review_root, entries)
     if checkpoint != "review":
         return []
     keys = [review._cell_key(e.get("group"), e.get("domain"))

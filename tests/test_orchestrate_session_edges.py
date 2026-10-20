@@ -15,6 +15,7 @@ import scripts.orchestrate as orchestrate
 import scripts.probes.common as probes_common
 import scripts.phases.review as review
 import scripts.phases.runio as runio
+import scripts.phases.verify as verify
 import scripts.runners.base as base
 from tests._test_helpers import docker_probe_runner
 from scripts import hosts
@@ -336,6 +337,9 @@ class TestVerifyBundleCompletenessGatesResume(LoopCase):
         self.assertNotIn([], pending_seen[:-1])
 
 
+# #3185: verify now caps its own dispatches at 3, which would end these runs before the loop's
+# per-entry cap they are about; lift the phase budget so the LOOP's mechanism is what stops them.
+@mock.patch.object(verify, "_MAX_VERIFY_ATTEMPTS", 1000)
 class TestPerEntryFailureCap(LoopCase):
     """Fix round 2: the loop caps CONSECUTIVE failed launches per ENTRY.
 
@@ -402,13 +406,11 @@ class TestPerEntryFailureCap(LoopCase):
 
         class FlakyVerifyRunner(FakeRunner):
             """Fails twice, self-writes a SHORT bundle (a clean launch that does
-            not finish the cell), fails twice more, then writes the real one.
-            Five launches -- the sixth is never dispatched, because the A2
-            attempt budget the short bundle started bumping runs out first and
-            the cell is declared done (exhausted) on the iteration that would
-            have launched it. Never three consecutive failures either way, so
-            the run must reach `complete`; without the reset the third failure
-            lands on launch 4 and the cap trips at four."""
+            not finish the cell), fails twice more, then writes the real one:
+            six launches, verify's own budget being lifted for this class
+            (#3185). Never three consecutive failures, so the run must reach
+            `complete`; without the reset the third failure lands on launch 4
+            and the cap trips at four."""
 
             def run_entry(self, entry, env):
                 if not entry["id"].startswith("verify-"):
@@ -434,7 +436,7 @@ class TestPerEntryFailureCap(LoopCase):
         runner = FlakyVerifyRunner()
         status = self._run_loop(d, floor, runner)
         self.assertEqual(status["status"], "complete", status)
-        self.assertEqual(runner.launched.count("verify-app-SEC-primary"), 5)
+        self.assertEqual(runner.launched.count("verify-app-SEC-primary"), 6)
 
     def test_repeated_runner_failures_stop_at_the_same_cap(self):
         d, floor = self._repo()
