@@ -11,8 +11,9 @@ evidence exposed.
   A Codex launch rejected before JSONL could copy bare stderr into `host_error`, making the
   output-schema probe report `proven` without evidence that Codex accepted the argv. The result
   now records that provenance: a fast stderr-only failure refutes the shape and a slower one is
-  unmeasured, while ok launches, reply envelopes, and structured JSONL error events remain proven.
-  Outage classification and other host families are unchanged, and disclosure names the actual
+  unmeasured. A slow failure with neither stderr nor any JSONL event is likewise unmeasured, while
+  ok launches, reply envelopes, and structured JSONL error events remain proven. Outage
+  classification and other host families are unchanged, and disclosure names the actual
   stderr-only observation.
 
 - **An absent severity fails closed too (#3210).** A reviewer finding with no `severity` (the

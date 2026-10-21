@@ -177,6 +177,13 @@ class ShapeProofTest(unittest.TestCase):
         self.assertEqual(hosts.SHAPE_UNMEASURED, verdict[hosts.SHAPE])
         self.assertIn("stderr only", verdict[hosts.SHAPE_DETAIL])
 
+    def test_a_slow_codex_empty_failure_is_unmeasured(self):
+        verdict = self._codex_prove(
+            elapsed_ms=shape_probe.SHAPE_PROOF_REFUTE_MS)
+        self.assertEqual(hosts.SHAPE_UNMEASURED, verdict[hosts.SHAPE])
+        self.assertIn("no reply or structured error event",
+                      verdict[hosts.SHAPE_DETAIL])
+
     def test_an_ok_codex_launch_is_proven(self):
         stdout = "\n".join(json.dumps(event) for event in (
             {"type": "thread.started", "thread_id": "shape-session"},
