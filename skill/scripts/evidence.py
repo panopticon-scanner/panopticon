@@ -221,14 +221,15 @@ def tool_rule_id(finding):
 def norm_path(p):
     """Canonicalize a finding path for identity/clustering comparisons.
 
-    Backslashes become slashes; ONLY a `./` prefix is stripped — `lstrip("./")` would eat the
+    Finding paths use `/` separators; backslashes are literal filename bytes (#2988).
+    ONLY a `./` prefix is stripped — `lstrip("./")` would eat the
     leading dot of every dotfile path, collapsing `.github/x` onto `github/x`. Deliberately NO
     os.path.normpath: collapsing `a/../a` would change finding_fingerprint identity for paths no
     real emitter produces (#977). Sole owner of this normalization — used by finding_fingerprint,
     reconcile_key and synthesize's clustering keys (dedupe / cross-panel corroboration / tool
     aggregation), which must all agree on when two spellings are the same file.
     """
-    fpath = str(p or "").replace("\\", "/")
+    fpath = str(p or "")
     while fpath.startswith("./"):
         fpath = fpath[2:]
     return fpath

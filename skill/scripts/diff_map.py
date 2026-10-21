@@ -523,18 +523,18 @@ def _distance_to_range(ls, le, s, e):
 
 def norm_key(path, repo_root=None):
     """Normalize a location.file / hunk key to the repo-relative spelling the
-    hunk map is keyed by: backslash->/, strip leading './', and (when repo_root
+    hunk map is keyed by: preserve literal backslashes, strip leading './', and (when repo_root
     is given) relativize an absolute path that lives under it. Without this a
     finding whose location.file is absolute (e.g. the worktree-absolute paths
     panels are handed on a --pr run, #1007) or './'-prefixed never matches the
     git-relative hunk keys, silently dropping off the on-diff gate -> vacuous
     PASS (#5.0-06)."""
-    p = str(path or "").replace("\\", "/")
+    p = str(path or "")
     while p.startswith("./"):
         p = p[2:]
     if repo_root and os.path.isabs(p):
         try:
-            rel = os.path.relpath(p, repo_root).replace("\\", "/")
+            rel = os.path.relpath(p, repo_root)
         except ValueError:
             rel = p
         if not rel.startswith("../"):   # only relativize paths inside the repo
@@ -546,7 +546,8 @@ def classify(finding, hmap, tolerance=5, repo_root=None):
     """{on_diff, hunk, distance} for a finding vs the hunk map (see module docstring).
 
     Both the finding's location.file and the hunk keys are normalized via
-    norm_key so absolute/'./'/backslash spellings still match (#5.0-06)."""
+    norm_key so absolute/'./' spellings still match (#5.0-06), while literal
+    backslashes remain distinct from separators (#2988)."""
     loc = finding.get("location") or {}
     path = norm_key(loc.get("file"), repo_root)
     nmap = {norm_key(k, repo_root): v for k, v in hmap.items()}

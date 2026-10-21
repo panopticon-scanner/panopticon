@@ -257,7 +257,7 @@ class TestReconcileKey(unittest.TestCase):
 
     def test_file_normalized_like_fingerprint(self):
         self.assertEqual(evidence.reconcile_key(self._f(location={"file": "./a\\b.py"}))[0],
-                         "a/b.py")
+                         "a\\b.py")
 
     def test_missing_fields_become_empty_strings(self):
         self.assertEqual(evidence.reconcile_key({}), ("", "", ""))
@@ -283,10 +283,10 @@ class TestNormPath(unittest.TestCase):
     """#977: the file normalization finding_fingerprint/reconcile_key shared
     inline is owned by norm_path, and clustering keys use the same function."""
 
-    def test_strips_dot_slash_prefix_and_backslashes(self):
+    def test_strips_dot_slash_prefix_and_preserves_backslashes(self):
         self.assertEqual(ev.norm_path("./src/x.py"), "src/x.py")
         self.assertEqual(ev.norm_path("././src/x.py"), "src/x.py")
-        self.assertEqual(ev.norm_path("src\\x.py"), "src/x.py")
+        self.assertEqual(ev.norm_path("src\\x.py"), "src\\x.py")
 
     def test_dotfile_prefix_preserved(self):
         # lstrip-style stripping would collapse `.github/x` onto `github/x`.
