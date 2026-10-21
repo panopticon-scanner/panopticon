@@ -615,6 +615,15 @@ class TestTheRealChild(unittest.TestCase):
             argv += ["--verdicts-dir", os.path.join(pano, "verdicts")]
         for name, output in (scans or {}).items():
             write(os.path.join(pano, "tools", name), output)
+        if scans:
+            # #2070: the real driver child ingests only this run's receipt.
+            outputs = sorted(scans)
+            produced = sorted(os.path.splitext(name)[0] for name in outputs)
+            write(os.path.join(repo, "tools-manifest.json"), {
+                "schema_version": 1, "run_id": RUN_ID,
+                "selected": produced, "produced": produced,
+                "missing": [], "outputs": outputs,
+            })
         for name, document in (beside or {}).items():
             write(os.path.join(repo, name), document)
         if scans:

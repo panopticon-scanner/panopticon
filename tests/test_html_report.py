@@ -1237,6 +1237,7 @@ class TestIntegrityFailureDetails(unittest.TestCase):
         "dispatch_plan_missing": True,
         "dispatch_plan_mismatched": True,
         "tools_manifest_invalid": "tools-manifest.json is not an object",
+        "unbound_tool_outputs": ["semgrep.sarif"],
         "delta_scope_suppressed_git_drivers": ["diff.external"],
     }
 

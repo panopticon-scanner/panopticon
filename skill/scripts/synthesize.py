@@ -313,18 +313,22 @@ def main(argv=None):
         print("synthesize: %s" % exc, file=sys.stderr)
         return validate_schema_mod.ARTIFACT_INVALID  # fatal even beside an old report
     plans = plan_mod.load_dispatch_plans_detailed(panopticon_dir=run_dir)
+    try:
+        manifest_state = tool_axis_mod.ToolAxis.manifest_state(args, run_dir)
+    except tool_axis_mod.ToolManifestError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3              # invalid input, distinct from gate FAIL (1)
     # #1701: `gated_suppressed` is the name-based drops the gate must still
     # count under --security redteam; empty otherwise. It rides to certification
     # on the ToolAxis and never joins `tool_findings`, so the report body is the
     # same in both modes.
+    unbound_outputs: list[str] = []
     (tool_findings, dispositions, tools_ran, suppressed,
-     gated_suppressed, tools_excluded) = plan_mod.ingest_tool_findings(args)
-    try:
-        tools = tool_axis_mod.ToolAxis.load(args, run_dir, plans[0], dispositions, tools_ran,
-                                           suppressed, gated_suppressed, tools_excluded)
-    except tool_axis_mod.ToolManifestError as exc:
-        print(str(exc), file=sys.stderr)
-        return 3              # invalid input, distinct from gate FAIL (1)
+     gated_suppressed, tools_excluded) = plan_mod.ingest_tool_findings(
+         args, allowed_outputs=manifest_state[2], unbound_out=unbound_outputs)
+    tools = tool_axis_mod.ToolAxis.load(
+        args, run_dir, plans[0], dispositions, tools_ran, suppressed,
+        gated_suppressed, tools_excluded, manifest_state, unbound_outputs)
     prepared = findings_mod.FindingSet.prepare(args, tool_findings, run.security_mode)
     # #1634: redact the INPUT, not only the output -- and do it HERE, upstream
     # of the --emit-verify-queue branch, so both passes of a run see identical

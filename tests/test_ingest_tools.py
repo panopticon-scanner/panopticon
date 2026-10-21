@@ -1807,6 +1807,46 @@ class TestToolOutputDirectoryIsBounded(unittest.TestCase):
         # A real tools dir holds one file per registered adapter.
         self.assertGreaterEqual(it.TOOL_OUTPUT_FILES_MAX, 10 * len(tools_mod.ADAPTERS))
 
+    def test_a_receipt_quarantines_unrecorded_and_alternate_suffix_outputs(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "semgrep.sarif"), "w",
+                      encoding="utf-8") as fh:
+                json.dump(SARIF, fh)
+            for name in ("bandit.sarif", "semgrep.json"):
+                with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                    json.dump(SARIF, fh)
+            unbound = []
+            findings, dispositions = it.ingest_dir_detailed(
+                d, "g1", allowed_outputs=("semgrep.sarif",),
+                unbound_out=unbound)
+        self.assertTrue(findings)
+        self.assertEqual(set(dispositions), {"semgrep"})
+        self.assertEqual(unbound, ["bandit.sarif", "semgrep.json"])
+
+    def test_unbound_junk_cannot_spend_the_allowed_file_cap(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._dir(d, 12)
+            with open(os.path.join(d, "semgrep.sarif"), "w",
+                      encoding="utf-8") as fh:
+                json.dump(SARIF, fh)
+            unbound = []
+            paths, seen = it._capped_output_files(
+                d, cap=1, allowed_outputs=("semgrep.sarif",),
+                unbound_out=unbound)
+        self.assertEqual(seen, 1)
+        self.assertEqual([os.path.basename(path) for path in paths],
+                         ["semgrep.sarif"])
+        self.assertIn("t000.sarif", unbound)
+
+    def test_no_receipt_keeps_direct_ingestion_compatible(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "semgrep.sarif"), "w",
+                      encoding="utf-8") as fh:
+                json.dump(SARIF, fh)
+            findings, dispositions = it.ingest_dir_detailed(d, "g1")
+        self.assertTrue(findings)
+        self.assertEqual(set(dispositions), {"semgrep"})
+
 
 def _tool_finding(tool="semgrep", severity="HIGH", rule="test.rule", cwe=None):
     """One tool-shaped finding, in the shape the adapters actually emit.

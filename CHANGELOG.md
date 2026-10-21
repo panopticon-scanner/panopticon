@@ -154,6 +154,14 @@ evidence exposed.
   cell, then complete with the cell disclosed. The tool round, a backup cell, the pause refund, and
   charging from the first dispatch (`tests/test_driver_tool_verify.py`, `tests/phases/test_verify.py`,
   `tests/test_driver_verify.py`).
+- **Tool output is bound to the scan invocation that wrote it (#2070).**
+  `tools-manifest.json` now records the exact canonical capture basenames beside its run id. The
+  tools marker, review prompt map, verification queue, synthesis, and security gate all filter
+  through that receipt before the directory cap is counted; direct ingestion without a receipt
+  remains compatible. Stale, unselected, alternate-suffix, or otherwise unreceipted captures are
+  never parsed. Reports disclose them as certification-sinking
+  `meta.integrity.unbound_tool_outputs`; a missing or foreign driver receipt also fails closed, and
+  an unbound baseline makes the security gate fall back to strict gating.
 - **A guard hook denies a payload too deep to parse instead of crashing open (#3186).** The read,
   write and kimi guard hooks parsed their stdin OUTSIDE their fail-closed envelope and caught
   `ValueError` only. A deeply nested payload raised `RecursionError`: a traceback and exit 1, which

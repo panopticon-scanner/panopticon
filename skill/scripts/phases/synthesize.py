@@ -254,7 +254,9 @@ def synthesize_execute(review_root, manifest):
     # tools phase passes the same globs to `run_tools --exclude`.
     for glob in runio.committed_exclude_paths(review_root):
         cmd += ["--tools-exclude", glob]
-    if (runio._load_json(runio._pano(review_root, "tools-ran.json")) or {}).get("ran"):
+    tool_marker = (runio._load_json(
+        runio._pano(review_root, "tools-ran.json")) or {})
+    if tool_marker.get("ran") or "outputs" in tool_marker:
         cmd += ["--tools-dir", runio._pano(review_root, "tools")]
         # Pin synthesize's fixture posture to the tool-verify queue's
         # (#5.0-03): both must ingest the SAME tool findings or synthesize

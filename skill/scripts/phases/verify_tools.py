@@ -130,7 +130,9 @@ def _tool_verify_queue(review_root, manifest):
         # inline suppression comment is honoured at the PARSE under `standard`,
         # so a queue built in the other mode would adjudicate findings the
         # report does not carry (or miss the ones it does).
-        security_mode=manifest.get("security_mode", "standard"))
+        security_mode=manifest.get("security_mode", "standard"),
+        allowed_outputs=tools.tool_output_receipt(
+            review_root, manifest.get("run_id")))
     for tf in tool_findings:
         findings.append(findings_mod.normalize_finding(tf))
     prepared, _integration = corroborate_mod.prepare_for_queue(findings)

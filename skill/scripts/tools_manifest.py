@@ -56,6 +56,7 @@ from scripts.scanner_config import _SCANNER_CONFIG_POSTURE, _SUPPRESSION_POSTURE
 from scripts.tool_capture import (
     MAX_TOOL_OUTPUT_BYTES, _CONTAINER_CLEANUP_FAILURES, _REDACTED_CAPTURES)
 from scripts.tools import egress
+from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS
 
 # How deep the virtualenv walk that found `excluded_dirs` looked, published as
 # `depth_bound` so a reader knows the list is bounded rather than exhaustive. It
@@ -88,6 +89,43 @@ _IGNORE_FILE_POSTURE: dict[str, str] = {}
 # workflow can expand an older baseline by scanning its exact commit once.
 SEMGREP_SCOPE_POLICY = "test-paths-v1"
 _SCANNER_SCOPE_POSTURE: dict[str, str] = {}
+
+
+def canonical_output_name(tool):
+    """The one capture basename the runner writes for an adapter."""
+    suffix = ".sarif" if tool in LEGACY_SARIF_TOOLS else ".json"
+    return "%s%s" % (tool, suffix)
+
+
+def output_receipt(manifest, expected_run_id=None, required=False):
+    """Validate and return a manifest's exact run-owned output basenames.
+
+    ``None`` preserves legacy/direct callers whose manifest predates the
+    receipt. A driver-bound caller passes ``required=True`` and fails closed.
+    """
+    if not isinstance(manifest, dict):
+        raise ValueError("tools manifest is not an object")
+    if (expected_run_id is not None
+            and manifest.get("run_id") != expected_run_id):
+        raise ValueError("tools manifest run_id does not match this run")
+    outputs = manifest.get("outputs")
+    if outputs is None:
+        if required:
+            raise ValueError("tools manifest has no output receipt")
+        return None
+    produced = manifest.get("produced")
+    if (not isinstance(produced, list)
+            or any(not isinstance(tool, str) or not tool for tool in produced)):
+        raise ValueError("tools manifest produced list is malformed")
+    if (not isinstance(outputs, list)
+            or any(not isinstance(name, str) or not name
+                   or os.path.basename(name) != name for name in outputs)
+            or len(set(outputs)) != len(outputs)):
+        raise ValueError("tools manifest output receipt is malformed")
+    expected = sorted(canonical_output_name(tool) for tool in produced)
+    if sorted(outputs) != expected:
+        raise ValueError("tools manifest output receipt is not the canonical output set")
+    return tuple(sorted(outputs))
 
 
 def _record_semgrep_scope(tool, cmd, policy_args):
@@ -346,7 +384,8 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
             and isinstance(row.get("kind"), str) and row["kind"]
             and isinstance(row.get("detail"), str) and row["detail"])
     }
-    produced = sorted({os.path.splitext(os.path.basename(p))[0] for p in written})
+    outputs = sorted({os.path.basename(p) for p in written})
+    produced = sorted({os.path.splitext(name)[0] for name in outputs})
     observed_ignore_files = (_IGNORE_FILE_POSTURE if ignore_files is None
                              else ignore_files)
     observed_scope = (_SCANNER_SCOPE_POSTURE if scanner_scope is None
@@ -365,6 +404,7 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     payload = {"schema_version": 1, "run_id": run_id,
                "file_coverage": file_coverage,
                "selected": selected, "produced": produced,
+               "outputs": outputs,
                "missing": sorted(set(selected) - set(produced)),
                # #1639 P11 F5: what the runner OBSERVED, not what it intends --
                # every capture written this run passed
@@ -397,6 +437,7 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                "exclude_globs": [str(g) for g in exclude_globs or ()],
                "excluded_dirs": [_excluded_dir_row(d) for d in excluded_dirs or ()],
                "depth_bound": depth_bound}
+    output_receipt(payload, expected_run_id=run_id, required=True)
     if cleanup:
         payload["cleanup_failures"] = cleanup
     # #1735: the driver points --manifest at `<run folder>/tools-manifest.json`,

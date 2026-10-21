@@ -160,9 +160,14 @@ INTEGRITY_KEYS: dict[str, IntegrityKey] = {
     # `coverage_note`, not here. It keeps both: the note says what could not be
     # measured, this says the run cannot be certified.
     "tools_manifest_invalid": IntegrityKey(
-        True, "TOOLS MANIFEST UNREADABLE — %s (the runner's selected scanner "
-              "set is unknown, so tool coverage could not be computed; run not "
-              "certified)"),
+        True, "TOOLS MANIFEST UNREADABLE/INVALID — %s (the runner's selected "
+              "scanner set or exact output receipt cannot be trusted, so tool "
+              "coverage could not be computed; run not certified)"),
+    # #2070: files outside this run's exact writer receipt are stale or planted
+    # evidence. They are named but never parsed, and certification fails closed.
+    "unbound_tool_outputs": IntegrityKey(
+        True, "UNBOUND TOOL OUTPUT — %s (not named by this run's exact output "
+              "receipt, so it was not ingested; run not certified)"),
     # #2013 fix round 1: a delta whose scope was chosen by a suppressed
     # comparison -- raw worktree bytes against a filtered index blob.
     "delta_scope_suppressed_git_drivers": IntegrityKey(

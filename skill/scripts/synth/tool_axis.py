@@ -22,6 +22,7 @@ import sys
 
 import scripts.groups_schema as groups_schema
 import scripts.ingest_tools as ingest_tools
+import scripts.tools_manifest as tools_manifest
 from scripts.tools import EXECUTES_TARGET_BUILD
 from . import artifacts as artifacts_mod
 from . import coverage_io as coverage_io
@@ -58,6 +59,7 @@ class ToolAxis:
     # #1644: why an EXISTING manifest could not be read, or None. Absent and
     # corrupt are different facts and only one of them is an integrity failure.
     manifest_invalid: str | None = None
+    unbound_outputs: list | None = None
     suppressed: dict | None = None   # #1578: {segment: count} dropped as vendored
     # #1701: the vendored drops this run's GATE must still count -- non-empty
     # only under `--security redteam`. Carried beside `suppressed` rather than
@@ -73,26 +75,10 @@ class ToolAxis:
     excluded: dict | None = None
 
     @classmethod
-    def load(cls, args, run_dir, plan_lists, dispositions, tools_ran, suppressed=None,
-             gated_suppressed=None, excluded=None):
-        """The tool axis from the run folder (WS-0 S3): the runner's
-        tools-manifest with its two FATAL (#17) checks, the policy mode the
-        dispatch plans declare, and the ingest results `ingest_tool_findings`
-        produced. #1031: a present manifest makes reconcile gate on its
-        `missing`, not the scout's advisory list; an ABSENT one falls back to
-        the 4.x scout-derived gate.
-
-        #1644: a manifest that EXISTS and cannot be read is neither. Corruption
-        used to be folded into absence -- `manifest = None`, silently -- and
-        absence selects the permissive path, so a scanner the runner selected
-        and never produced dropped out of `tools_absent` entirely. The reason is
-        recorded here and reconcile refuses to invent the required set from it.
-        This is the read failing, not a field being malformed: a manifest that
-        parses to an object with rubbish IN it is repaired at the boundary by
-        `synth/repair.py` (#1645/#1646), where a bad row costs a warning and the
-        row, never the run.
-        """
+    def manifest_state(cls, args, run_dir):
+        """Load the manifest before ingest and return it, its error, and receipt."""
         manifest, manifest_invalid = None, None
+        allowed_outputs = None
         tm_path = os.path.join(run_dir, "tools-manifest.json")
         # `lexists`, not `isfile` (fix round 2 L1): `isfile` asks "is a REGULAR
         # file", so a directory, a dangling symlink or a link to /dev/null at
@@ -146,14 +132,41 @@ class ToolAxis:
                 manifest_invalid = ("tools-manifest.json declares no `selected` "
                                     "list (%s)" % type(manifest.get("selected")).__name__)
                 manifest = None
+        receipt_required = bool(getattr(args, "run_id", None)
+                                and getattr(args, "tools_dir", None))
+        if manifest is not None:
+            try:
+                allowed_outputs = tools_manifest.output_receipt(
+                    manifest,
+                    expected_run_id=(getattr(args, "run_id", None)
+                                     if receipt_required else None),
+                    required=receipt_required)
+            except ValueError as exc:
+                manifest_invalid = "tools-manifest.json output receipt invalid: %s" % exc
+                allowed_outputs = ()
+        elif receipt_required and manifest_invalid is None:
+            manifest_invalid = "tools-manifest.json has no output receipt"
+            allowed_outputs = ()
+        elif manifest_invalid:
+            allowed_outputs = ()
         if manifest_invalid:
-            print("synthesize: %s -- the runner's selected/missing set is "
-                  "unknown, so tool coverage is NOT certified (the scout's "
-                  "advisory list is not a substitute for it)."
+            print("synthesize: %s -- tool output and coverage cannot be bound "
+                  "to this run, so tool coverage is NOT certified."
                   % manifest_invalid, file=sys.stderr)
+        return manifest, manifest_invalid, allowed_outputs
+
+    @classmethod
+    def load(cls, args, run_dir, plan_lists, dispositions, tools_ran, suppressed=None,
+             gated_suppressed=None, excluded=None, manifest_state=None,
+             unbound_outputs=None):
+        """Build the tool axis from one manifest state and one bounded ingest."""
+        if manifest_state is None:
+            manifest_state = cls.manifest_state(args, run_dir)
+        manifest, manifest_invalid, _allowed_outputs = manifest_state
         return cls(policy_mode=plan_mod.derive_tool_policy_mode(plans=plan_lists),
                    tools_ran=tools_ran, dispositions=dispositions, manifest=manifest,
                    ingested_paths=args.files, manifest_invalid=manifest_invalid,
+                   unbound_outputs=list(unbound_outputs or []),
                    suppressed=suppressed,                     # #1578
                    gated_suppressed=list(gated_suppressed or []),   # #1701
                    excluded=excluded)                          # #1740 round 2
@@ -417,6 +430,7 @@ def reconcile(plan, tools, resolved, run=None):
     # with no manifest at all), exactly like `invalid_verify_queue`.
     integrity = dict(integrity)
     integrity["tools_manifest_invalid"] = tools.manifest_invalid
+    integrity["unbound_tool_outputs"] = list(tools.unbound_outputs or [])
     # #2013 fix round 1 (review I1): suppressing the target's clean filter makes
     # git compare RAW worktree bytes against a FILTERED index blob, so paths
     # nobody touched read as modified. On a full-repo scan that costs

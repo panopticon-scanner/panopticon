@@ -141,6 +141,40 @@ def _case_bytes(case, d):
         return fh.read(), payload
 
 
+class TestTheOutputReceipt(unittest.TestCase):
+    """#2070: only exact captures written by this invocation may be ingested."""
+
+    def test_the_writer_records_exact_basenames_bound_to_the_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            captures = [os.path.join(d, "semgrep.sarif"),
+                        os.path.join(d, "pip-audit.json")]
+            for path in captures:
+                open(path, "w").close()
+            payload = tm.write_manifest(
+                os.path.join(d, "manifest.json"), ["semgrep", "pip-audit"],
+                captures, run_id="RID")
+        self.assertEqual(payload["outputs"], ["pip-audit.json", "semgrep.sarif"])
+        self.assertEqual(
+            tm.output_receipt(payload, expected_run_id="RID", required=True),
+            ("pip-audit.json", "semgrep.sarif"))
+
+    def test_a_same_stem_alternate_suffix_is_not_the_written_capture(self):
+        manifest = {"run_id": "RID", "selected": ["semgrep"],
+                    "produced": ["semgrep"], "missing": [],
+                    "outputs": ["semgrep.json"]}
+        with self.assertRaisesRegex(ValueError, "canonical output"):
+            tm.output_receipt(manifest, expected_run_id="RID", required=True)
+
+    def test_a_driver_run_requires_the_receipt_and_its_run_id(self):
+        base = {"run_id": "RID", "selected": ["semgrep"],
+                "produced": ["semgrep"], "missing": []}
+        with self.assertRaisesRegex(ValueError, "output receipt"):
+            tm.output_receipt(base, expected_run_id="RID", required=True)
+        with self.assertRaisesRegex(ValueError, "run_id"):
+            tm.output_receipt({**base, "outputs": ["semgrep.sarif"]},
+                              expected_run_id="OTHER", required=True)
+
+
 # Captured from the tree at the commit this split branched from, BEFORE any code
 # moved (the command is in the PR's implementation notes). A difference here is
 # the extraction being wrong: fix the extraction, never this table.
@@ -163,6 +197,13 @@ GOLDEN: dict[str, str] = {
     "gosec",
     "semgrep",
     "trivy"
+  ],
+  "outputs": [
+    "bandit.sarif",
+    "gitleaks.sarif",
+    "gosec.sarif",
+    "semgrep.sarif",
+    "trivy.sarif"
   ],
   "missing": [],
   "redacted": true,
@@ -251,6 +292,13 @@ GOLDEN: dict[str, str] = {
     "semgrep",
     "trivy"
   ],
+  "outputs": [
+    "bandit.sarif",
+    "gitleaks.sarif",
+    "gosec.sarif",
+    "semgrep.sarif",
+    "trivy.sarif"
+  ],
   "missing": [],
   "redacted": true,
   "excluded_scope": [
@@ -337,6 +385,13 @@ GOLDEN: dict[str, str] = {
     "gosec",
     "semgrep",
     "trivy"
+  ],
+  "outputs": [
+    "bandit.sarif",
+    "gitleaks.sarif",
+    "gosec.sarif",
+    "semgrep.sarif",
+    "trivy.sarif"
   ],
   "missing": [],
   "redacted": true,
@@ -449,6 +504,14 @@ GOLDEN: dict[str, str] = {
     "semgrep",
     "trivy"
   ],
+  "outputs": [
+    "bandit.sarif",
+    "eslint-security.json",
+    "gitleaks.sarif",
+    "gosec.sarif",
+    "semgrep.sarif",
+    "trivy.sarif"
+  ],
   "missing": [],
   "redacted": false,
   "excluded_scope": [
@@ -536,6 +599,13 @@ GOLDEN: dict[str, str] = {
     "semgrep",
     "trivy"
   ],
+  "outputs": [
+    "bandit.sarif",
+    "gitleaks.sarif",
+    "gosec.sarif",
+    "semgrep.sarif",
+    "trivy.sarif"
+  ],
   "missing": [],
   "redacted": true,
   "excluded_scope": [
@@ -617,6 +687,7 @@ GOLDEN: dict[str, str] = {
     "gosec"
   ],
   "produced": [],
+  "outputs": [],
   "missing": [
     "bandit",
     "gitleaks",
@@ -690,6 +761,13 @@ GOLDEN: dict[str, str] = {
     "gosec",
     "semgrep",
     "trivy"
+  ],
+  "outputs": [
+    "bandit.sarif",
+    "gitleaks.sarif",
+    "gosec.sarif",
+    "semgrep.sarif",
+    "trivy.sarif"
   ],
   "missing": [],
   "redacted": true,
