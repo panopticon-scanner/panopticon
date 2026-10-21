@@ -742,7 +742,7 @@ class TestClassify(unittest.TestCase):
         self.assertFalse(diff_map.classify(self._f("/repo/a.py", 11), self.HM)["on_diff"])
 
     def test_norm_key(self):
-        self.assertEqual(diff_map.norm_key("a\\b.py"), "a/b.py")
+        self.assertEqual(diff_map.norm_key("a\\b.py"), "a\\b.py")
         self.assertEqual(diff_map.norm_key("./a.py"), "a.py")
         self.assertEqual(diff_map.norm_key("/repo/sub/a.py", "/repo"), "sub/a.py")
         self.assertEqual(diff_map.norm_key("/outside/a.py", "/repo"), "/outside/a.py")

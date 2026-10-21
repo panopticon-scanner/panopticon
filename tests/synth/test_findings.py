@@ -1529,8 +1529,8 @@ class TestDocSeverityPolicy(unittest.TestCase):
 
 class TestPathVariantClustering(unittest.TestCase):
     """#977: dedupe/corroboration/aggregation key on evidence.norm_path, so
-    cosmetic path dressing (a `./` prefix, backslashes) from one emitter never
-    splits a cluster and silently costs a finding its reinforcement."""
+    a cosmetic `./` prefix never splits a cluster and silently costs a finding
+    its reinforcement. Literal backslashes name distinct files (#2988)."""
 
     def _agent(self, fid, file, line, panel="security", category="sql-injection"):
         return {
@@ -1564,12 +1564,12 @@ class TestPathVariantClustering(unittest.TestCase):
         self.assertEqual(len(out), 1)
         self.assertTrue(out[0].get("reinforced"))
 
-    def test_dedupe_merges_backslash_variant(self):
+    def test_dedupe_keeps_literal_backslash_path_distinct(self):
         out = corroborate_mod.dedupe(
             [self._agent("SE-001", "src/auth.py", 10), self._tool("SG-001", "src\\auth.py", 10)]
         )
-        self.assertEqual(len(out), 1)
-        self.assertTrue(out[0].get("reinforced"))
+        self.assertEqual(len(out), 2)
+        self.assertFalse(any(f.get("reinforced") for f in out))
 
     def test_corroboration_across_path_variants(self):
         a = self._agent("SE-001", "./app/resolver.py", 42)

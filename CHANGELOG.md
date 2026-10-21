@@ -7,6 +7,15 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Literal backslashes no longer select another tree's policy (#2988).** Finding paths and
+  diff-map keys now treat only `/` as a separator. A HIGH finding on a root-level POSIX file
+  named `docs\x.py` keeps its severity and fails a HIGH gate, instead of borrowing `docs/*`'s
+  INFO downgrade. Literal backslashes also stay distinct in finding identities and clustering.
+  Contract change: the old raw-backslash/slash alias is retired. Current Linux-image producers
+  emit slash-separated repository paths; any producer with a different separator convention
+  must convert at its own boundary before publishing a finding. Existing `./` prefix and
+  in-repository absolute-path handling remain supported.
+
 - **JWT redaction stays linear on repeated opening prefixes (#2986).** The JWT rule
   restarted at every embedded `eyJ` in a delimiter-free run and rescanned the remaining
   suffix, making a crafted 4 MiB refused reply take quadratic time before persistence.
