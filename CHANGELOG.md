@@ -7,6 +7,14 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **An absent severity fails closed too (#3210).** A reviewer finding with no `severity` (the
+  key missing or null) used to read as INFO, so verify never engaged it and the gate PASSED,
+  measured through the real driver at `--fail-on high` and `critical`. It is now read as CRITICAL,
+  as #2990 reads an unknown spelling, and listed in `meta.integrity.unknown_severity_findings`.
+  Its `severity_as_written` is null (the schema now allows it), so "none written" stays distinct
+  from a spelling, and a new stderr line counts the two kinds apart. Tool findings are unchanged:
+  both tool builders always set a severity.
+
 - **An unknown severity fails closed, and a bad verdict entry is counted (#2990).** A finding
   whose severity is not one of CRITICAL, HIGH, MEDIUM, LOW or INFO (in any case) used to read as
   INFO. INFO is not owed a verdict, so on main a reviewer's `SEVERE` finding was never verified and
@@ -14,8 +22,8 @@ evidence exposed.
   the one reading that fails closed at every `--fail-on`: verify engages it and the advisor's
   answer decides. The value as written stays on the finding as `severity_as_written` (inert,
   bounded), and the new non-gating `meta.integrity.unknown_severity_findings` lists those findings'
-  ids, on the terminal summary and in the HTML report. A finding with no severity at all still
-  reads as INFO.
+  ids, on the terminal summary and in the HTML report. A finding with no severity at all is
+  covered by #3210 (next entry).
   Contract change: `meta.coverage.verdicts.unloadable` now counts verdict files or ENTRIES. A
   bundle entry that is not an object, names no known verdict, or echoes no `finding_id` used to be
   skipped and named nowhere; it is now counted per entry with a fixed reason (its values are never

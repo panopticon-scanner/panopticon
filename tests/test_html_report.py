@@ -1335,9 +1335,10 @@ class TestUnknownSeverityNoteInHtml(unittest.TestCase):
     def test_the_note_names_the_findings(self):
         out = hr.render(self._report(["COD-123", "SEC-456"]))
         self.assertEqual(self._notes(out), [
-            "2 finding(s) — COD-123, SEC-456 carried an unknown severity and "
-            "were read as CRITICAL (the value as written is kept on each "
-            "finding). Does NOT affect certification."])
+            "2 finding(s) — COD-123, SEC-456 carried an unknown or no severity "
+            "and were read as CRITICAL (the value as written is kept on each "
+            "finding, null where none was written). Does NOT affect "
+            "certification."])
         self.assertNotIn("NOT CERTIFIED", out)
 
     def test_no_note_without_the_key(self):

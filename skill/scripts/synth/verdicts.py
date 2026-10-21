@@ -442,7 +442,7 @@ def _delta_meta(delta, partitions):
 
 def _unknown_severity_ids(findings):
     """Sorted distinct ids of the findings normalize_finding read as CRITICAL
-    because their severity was not one it knows (#2990)."""
+    because their severity was not one it knows (#2990) or was absent (#3210)."""
     return sorted({str(f.get("id")) for f in findings
                    if isinstance(f, dict) and findings_mod.SEVERITY_AS_WRITTEN in f})
 
@@ -459,6 +459,16 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
     verdict" note still fires for an existing-but-empty dir.
     """
     unknown_severity = _unknown_severity_ids(fs.findings)
+    if unknown_severity:
+        # #3210: stderr names both kinds apart; the finding's own
+        # `severity_as_written` is None when none was written.
+        absent = sum(1 for f in fs.findings if isinstance(f, dict)
+                     and findings_mod.SEVERITY_AS_WRITTEN in f
+                     and f[findings_mod.SEVERITY_AS_WRITTEN] is None)
+        print("synthesize: %d finding(s) read as CRITICAL -- %d with an unknown "
+              "severity, %d with none: %s"
+              % (len(unknown_severity), len(unknown_severity) - absent, absent,
+                 ", ".join(unknown_severity)), file=sys.stderr)
     findings, integration_findings = corroborate_mod.prepare_for_queue(fs.findings)
     catalog = fs.catalog if fs.catalog is not None else load_cwe_catalog()
     ocrdb_bundle = ocrdb.load_bundle()

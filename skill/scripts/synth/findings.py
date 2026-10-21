@@ -134,7 +134,8 @@ def normalize_finding(f):
     """Normalize and validate finding fields with sensible defaults."""
     # #1639 P15: pinned types first, at the boundary -- see validate_schema.repair_finding.
     validate_schema_mod.repair_finding(f)
-    sev = str(f.get("severity", "INFO")).upper()
+    written = f.get("severity")
+    sev = "" if written is None else str(written).upper()
     # #2990 r1: the field below is ours. A finding that ARRIVES carrying one
     # (a reviewer's, or a repo steering one) would be listed as read-as-CRITICAL
     # with raw text, so it is dropped first. Every caller normalizes a fresh
@@ -145,9 +146,13 @@ def normalize_finding(f):
         # that fails closed at every `--fail-on` (it used to read as INFO,
         # which no gate owes a verdict). The value as written stays on the
         # finding, inert and bounded, and the report lists the finding under
-        # `meta.integrity.unknown_severity_findings`.
-        f[SEVERITY_AS_WRITTEN] = tool_base.inert_text(
-            f.get("severity"), limit=SEVERITY_AS_WRITTEN_MAX)
+        # `meta.integrity.unknown_severity_findings`. #3210: a finding with NO
+        # severity (key absent or null) is read the same way -- it used to
+        # default to INFO -- and keeps None, so "none written" stays distinct
+        # from a spelling. Only a reviewer can omit it: both tool builders
+        # (`tools.base.make_finding`, `sarif_utils`) always set one.
+        f[SEVERITY_AS_WRITTEN] = None if written is None else tool_base.inert_text(
+            written, limit=SEVERITY_AS_WRITTEN_MAX)
         sev = "CRITICAL"
     f["severity"] = sev
     conf = str(f.get("confidence", "")).upper()
