@@ -10,6 +10,7 @@ import scripts.evidence as evidence
 import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
 import scripts.html_report as hr
+from tests._test_helpers import only
 
 
 class _FragmentParser(HTMLParser):
@@ -1310,6 +1311,52 @@ class TestIntegrityFailureDetails(unittest.TestCase):
         self.assertIn(integrity_messages.HTML_DETAIL_CUT, detail)
         self.assertTrue(detail.endswith(
             "(not declared by the dispatch plan; run not certified)"))
+
+
+class TestUnknownSeverityNoteInHtml(unittest.TestCase):
+    """#2990: the CRITICAL a reviewer did not write is explained on the page,
+    on a certified report too, since the key does not sink certification."""
+
+    @staticmethod
+    def _report(value):
+        return {
+            "meta": {"target": "t", "coverage": {},
+                     "integrity": {"unknown_severity_findings": value}},
+            "summary": {"overall_grade": "B", "risk_level": "MEDIUM",
+                        "gate": "FAIL", "coverage_certified": True},
+            "findings": [], "groups": [],
+        }
+
+    @staticmethod
+    def _notes(out):
+        return [_text(node) for node in _nodes(_parse(out), "div")
+                if node["attrs"].get("class") == "integrity-note"]
+
+    def test_the_note_names_the_findings(self):
+        out = hr.render(self._report(["COD-123", "SEC-456"]))
+        self.assertEqual(self._notes(out), [
+            "2 finding(s) — COD-123, SEC-456 carried an unknown severity and "
+            "were read as CRITICAL (the value as written is kept on each "
+            "finding). Does NOT affect certification."])
+        self.assertNotIn("NOT CERTIFIED", out)
+
+    def test_no_note_without_the_key(self):
+        for value in ([], None):
+            with self.subTest(value=value):
+                self.assertEqual(self._notes(hr.render(self._report(value))), [])
+
+    def test_a_long_list_is_cut_and_a_foreign_value_is_escaped(self):
+        import scripts.integrity_messages as integrity_messages
+
+        ids = ["COD-%03d" % n for n in range(40)]
+        note = only(self._notes(hr.render(self._report(ids))))
+        self.assertTrue(note.startswith("40 finding(s) — COD-000, "))
+        self.assertIn("COD-009, …", note)
+        self.assertNotIn("COD-010", note)
+        out = hr.render(self._report(["<b>x</b>" * 1000]))
+        self.assertNotIn("<b>x</b>", out)
+        self.assertLessEqual(len(only(self._notes(out))),
+                             integrity_messages.HTML_DETAIL_MAX)
 
 
 _NO_KEY = object()

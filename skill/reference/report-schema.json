@@ -273,7 +273,7 @@
             },
             "unloadable": {
                   "type": "integer",
-                  "description": "Verdict files present on disk but un-loadable (corrupt/invalid JSON); their findings are left unverified. A non-zero count means verification evidence was lost, distinct from a verdict that was never generated (#938)."
+                  "description": "Verdict files or entries present on disk but un-loadable: a file that is corrupt or invalid JSON, or (#2990) an entry of a loadable verdict bundle that is not an object, names no known verdict, or echoes no finding_id. Their findings are left unverified. A non-zero count means verification evidence was lost, distinct from a verdict that was never generated (#938)."
                 }
               }
             },
@@ -723,6 +723,13 @@
             },
             "mislabeled_findings_files": {
               "type": "array"
+            },
+            "unknown_severity_findings": {
+              "type": "array",
+              "description": "#2990: ids of the findings whose severity was not one of CRITICAL, HIGH, MEDIUM, LOW, INFO (in any case) and was therefore read as CRITICAL, the one reading that fails closed at every --fail-on threshold -- REPORTED, never gating, because the CRITICAL reading already gates. Each such finding keeps its value as written in `severity_as_written`.",
+              "items": {
+                "type": "string"
+              }
             },
             "cross_domain_findings": {
               "type": "array",
@@ -1243,6 +1250,10 @@
           },
           "code": {
             "type": "string"
+          },
+          "severity_as_written": {
+            "type": "string",
+            "description": "#2990: the finding's severity as written when it was not one of the five known values (in any case); `severity` then reads CRITICAL. Inert text, at most 100 characters before a marked cut."
           },
           "severity_override": {
             "type": "object",

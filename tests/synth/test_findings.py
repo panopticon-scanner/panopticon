@@ -50,9 +50,11 @@ class TestNormalize(unittest.TestCase):
         f = findings_mod.normalize_finding({"severity": "MEDIUM"})
         self.assertEqual(f["confidence"], "POSSIBLE")
 
-    def test_invalid_severity_becomes_info(self):
+    def test_invalid_severity_becomes_critical(self):
+        # #2990: it read as INFO, which no gate owes a verdict.
         f = findings_mod.normalize_finding({"severity": "sorta-bad"})
-        self.assertEqual(f["severity"], "INFO")
+        self.assertEqual(f["severity"], "CRITICAL")
+        self.assertEqual(f[findings_mod.SEVERITY_AS_WRITTEN], "sorta-bad")
 
     def test_normalize_accepts_new_panels(self):
         for panel in ["architecture", "database", "redteam"]:
@@ -86,6 +88,68 @@ class TestNormalize(unittest.TestCase):
     def test_location_coerced(self):
         f = findings_mod.normalize_finding({"location": {"file": "a.py", "line_start": 10}})
         self.assertEqual(f["location"]["line_end"], 10)
+
+class TestUnknownSeverityFailsClosed(unittest.TestCase):
+    """#2990: a severity normalize_finding does not know is read as CRITICAL,
+    the one reading that fails closed at every --fail-on, and the value as
+    written stays on the finding, inert and bounded."""
+
+    def _norm(self, value):
+        return findings_mod.normalize_finding({"severity": value, "title": "t"})
+
+    def test_unknown_spellings_read_as_critical(self):
+        for value in ("SEVERE", "", "  ", " HIGH ", "HIGH\n", "crit", 3, None,
+                      {"level": "HIGH"}, ["HIGH"]):
+            with self.subTest(value=repr(value)):
+                f = self._norm(value)
+                self.assertEqual(f["severity"], "CRITICAL")
+                self.assertIn(findings_mod.SEVERITY_AS_WRITTEN, f)
+
+    def test_the_five_known_values_in_any_case_are_unchanged(self):
+        for sev in findings_mod.SEV_ORDER:
+            for value in (sev, sev.lower(), sev.title()):
+                with self.subTest(value=value):
+                    f = self._norm(value)
+                    self.assertEqual(f["severity"], sev)
+                    self.assertNotIn(findings_mod.SEVERITY_AS_WRITTEN, f)
+
+    def test_an_absent_severity_still_reads_as_info(self):
+        # Not "unrecognised": no value was written. Unchanged by #2990.
+        f = findings_mod.normalize_finding({"title": "t"})
+        self.assertEqual(f["severity"], "INFO")
+        self.assertNotIn(findings_mod.SEVERITY_AS_WRITTEN, f)
+
+    def test_the_value_as_written_is_inert_and_bounded(self):
+        esc = chr(27)
+        f = self._norm(esc + "[31mSEVERE" + "x" * 500)
+        kept = f[findings_mod.SEVERITY_AS_WRITTEN]
+        self.assertNotIn(esc, kept)
+        self.assertTrue(kept.endswith(tool_base.INERT_CUT))
+        self.assertLessEqual(len(kept), findings_mod.SEVERITY_AS_WRITTEN_MAX
+                             + len(tool_base.INERT_CUT))
+        self.assertEqual(kept, tool_base.inert_text(
+            esc + "[31mSEVERE" + "x" * 500, limit=findings_mod.SEVERITY_AS_WRITTEN_MAX))
+
+    def test_a_forged_field_on_a_known_severity_is_dropped(self):
+        # #2990 r1: the field is controller-owned; an incoming one would list a
+        # HIGH as "read as CRITICAL" with raw control bytes.
+        esc = chr(27)
+        for sev in ("HIGH", "critical", "INFO"):
+            with self.subTest(sev=sev):
+                f = findings_mod.normalize_finding(
+                    {"severity": sev, "title": "t",
+                     findings_mod.SEVERITY_AS_WRITTEN: esc + "[2Jforged"})
+                self.assertEqual(f["severity"], sev.upper())
+                self.assertNotIn(findings_mod.SEVERITY_AS_WRITTEN, f)
+
+    def test_a_forged_field_on_an_unknown_severity_is_replaced(self):
+        esc = chr(27)
+        f = findings_mod.normalize_finding(
+            {"severity": "SEVERE", "title": "t",
+             findings_mod.SEVERITY_AS_WRITTEN: esc + "[2J" + "y" * 500})
+        self.assertEqual((f["severity"], f[findings_mod.SEVERITY_AS_WRITTEN]),
+                         ("CRITICAL", "SEVERE"))
+
 
 class TestNormalizeNeutralizesUntrustedText(unittest.TestCase):
     r"""#1829 SEC-4277410777 / SEC-798292895: `normalize_finding` is the

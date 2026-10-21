@@ -15,7 +15,9 @@ Findings carry two independent axes: **severity** (impact if true — never rewr
   verdict is terminal, and it lands as a single-verdict file under `verdicts/<queue_id>.json`. A
   verdict that lands unloadable (a parse/schema failure surfaced at
   `meta.coverage.verdicts.unloadable`, never silently dropped) and forces `INCONCLUSIVE` — lost
-  verify coverage never certifies a clean gate (#979).
+  verify coverage never certifies a clean gate (#979). That count includes a bad entry inside a
+  loadable bundle (not an object, no known verdict, or no `finding_id` echo; #2990), counted per
+  entry.
 - `corroborated` — multi-panel agreement (correlated witnesses: prioritized for verification, not
   gate-eligible by default).
 - `unverified` — no verification attempted.

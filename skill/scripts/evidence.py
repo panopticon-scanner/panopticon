@@ -653,6 +653,17 @@ def match_verdict(entry, verdicts, run_id=None, misrouted=None):
     return v
 
 
+def _bundle_entry_defect(raw):
+    """Why a bundle's verdict entry cannot be used, as fixed text, or None."""
+    if not isinstance(raw, dict):
+        return "verdict entry is not an object"
+    if str(raw.get("verdict", "")).upper() not in VERDICT_VALUES:
+        return "verdict not one of %s" % ", ".join(sorted(VERDICT_VALUES))
+    if not raw.get("finding_id"):
+        return "missing/empty finding_id echo"
+    return None
+
+
 def load_verdict_bundles(verdicts_dir):
     """Load per-cell verdict BUNDLES ({"verdicts": [...], "_panopticon": {...}})
     into a finding_id -> list of candidate verdicts map.
@@ -661,7 +672,9 @@ def load_verdict_bundles(verdicts_dir):
     a bundle and is ignored here (handled by load_verdicts_detailed). Tolerant:
     unreadable/unparseable files land in `unloadable`, never raise. Each flattened
     verdict inherits the bundle's `_panopticon.run_id` and `stage` when its own are
-    absent, so match_verdict_by_id can enforce the run_id.
+    absent, so match_verdict_by_id can enforce the run_id. An ENTRY that is not
+    an object, names no known verdict or echoes no finding_id lands in
+    `unloadable` too, with its index as `entry` (#2990).
 
     Deliberately does NOT collapse multiple candidates for the same finding_id
     at load time -- backup-preference and run_id filtering both belong in
@@ -684,10 +697,16 @@ def load_verdict_bundles(verdicts_dir):
             pano = {}
         run_id = pano.get("run_id")
         stage_default = pano.get("stage") or "primary"
-        for raw in data["verdicts"]:
-            if not (isinstance(raw, dict)
-                    and str(raw.get("verdict", "")).upper() in VERDICT_VALUES
-                    and raw.get("finding_id")):
+        for index, raw in enumerate(data["verdicts"]):
+            reason = _bundle_entry_defect(raw)
+            if reason:
+                # #2990: a verdict lost inside a loadable bundle is lost
+                # verification evidence like a corrupt file, so it is counted
+                # in `unloadable` (and its finding stays unverified). The
+                # reason is fixed text: the entry's own values are never echoed.
+                print("evidence: skipping verdict entry %d in %s: %s"
+                      % (index, name, reason), file=sys.stderr)
+                unloadable.append({"file": name, "entry": index, "reason": reason})
                 continue
             v = _agent_verdict(raw)
             # Assigned, not setdefault'ed (fix round 2, N2): the CONTROLLER

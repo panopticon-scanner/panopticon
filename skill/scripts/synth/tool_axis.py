@@ -452,6 +452,9 @@ def reconcile(plan, tools, resolved, run=None):
     delta_scope_suppressed = (sorted({row["key"] for row in suppressed_drivers})
                               if delta_scoped and suppressed_drivers else None)
     integrity["delta_scope_suppressed_git_drivers"] = delta_scope_suppressed
+    # #2990: reported, never gating -- the CRITICAL reading already gates.
+    integrity["unknown_severity_findings"] = list(
+        getattr(resolved, "unknown_severity_ids", None) or [])
     scope_ok = not ((plan.out_of_scope or {}).get("count")
                     if isinstance(plan.out_of_scope, dict) else False)
     # ARC-3284703909 (#1761): membership is `integrity.INTEGRITY_KEYS`, which

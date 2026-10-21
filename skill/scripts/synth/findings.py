@@ -26,6 +26,10 @@ SEV_ORDER = evidence_mod.SEV_ORDER
 
 SEVERITIES = set(SEV_ORDER)
 
+# #2990: where normalize_finding keeps a severity it did not recognise.
+SEVERITY_AS_WRITTEN = "severity_as_written"
+SEVERITY_AS_WRITTEN_MAX = 100
+
 CONFIDENCES = {"CERTAIN", "LIKELY", "POSSIBLE", "NOTE"}
 
 VERDICT_TO_CONFIDENCE = {"CONFIRMED": "CERTAIN", "PLAUSIBLE": "LIKELY"}
@@ -111,11 +115,13 @@ class FindingSet:
         # Both loaders scan the same verdicts_dir and independently attempt to
         # parse every *.json in it, so a single unparseable file is reported by
         # both -- dedupe on filename or a genuinely-corrupt file double-counts
-        # in meta.coverage.verdicts.unloadable (#938 follow-on).
+        # in meta.coverage.verdicts.unloadable (#938 follow-on). Keyed on the
+        # entry index too: a bad ENTRY of a bundle (#2990) is its own row.
         verdict_unloadable = verdict_unloadable or []
-        already = {u.get("file") for u in verdict_unloadable}
+        already = {(u.get("file"), u.get("entry")) for u in verdict_unloadable}
         verdict_unloadable = verdict_unloadable + [
-            u for u in bundle_unloadable if u.get("file") not in already]
+            u for u in bundle_unloadable
+            if (u.get("file"), u.get("entry")) not in already]
         return cls(findings=findings, verdicts=verdicts,
                    verdicts_supplied=args.verdicts_dir is not None,
                    verdict_unloadable=verdict_unloadable, verdict_run_id=verdict_run_id,
@@ -129,7 +135,21 @@ def normalize_finding(f):
     # #1639 P15: pinned types first, at the boundary -- see validate_schema.repair_finding.
     validate_schema_mod.repair_finding(f)
     sev = str(f.get("severity", "INFO")).upper()
-    f["severity"] = sev if sev in SEVERITIES else "INFO"
+    # #2990 r1: the field below is ours. A finding that ARRIVES carrying one
+    # (a reviewer's, or a repo steering one) would be listed as read-as-CRITICAL
+    # with raw text, so it is dropped first. Every caller normalizes a fresh
+    # finding once; none re-normalizes, so nothing written here is lost.
+    f.pop(SEVERITY_AS_WRITTEN, None)
+    if sev not in SEVERITIES:
+        # #2990: an unrecognised severity is read as CRITICAL, the one reading
+        # that fails closed at every `--fail-on` (it used to read as INFO,
+        # which no gate owes a verdict). The value as written stays on the
+        # finding, inert and bounded, and the report lists the finding under
+        # `meta.integrity.unknown_severity_findings`.
+        f[SEVERITY_AS_WRITTEN] = tool_base.inert_text(
+            f.get("severity"), limit=SEVERITY_AS_WRITTEN_MAX)
+        sev = "CRITICAL"
+    f["severity"] = sev
     conf = str(f.get("confidence", "")).upper()
     if conf in CONFIDENCES:
         f["confidence"] = conf
