@@ -680,3 +680,101 @@ for text in ('x' * 220001, '-----BEGIN ' * 20000 + '1'):
         self.assertEqual(redact.redact(text), text)
         self.assertEqual(redact.redact_tree({"text": text}), {"text": text})
         self.assertNotIn("AAAA", redact.redact_diagnostic(text, 400))
+
+
+def _assert_repeated_jwt_prefix_is_linear():
+    import time
+
+    size = 256 * 1024
+    plain = "q" * size
+    prefix_run = ("eyJ" * ((size + 2) // 3))[:size]
+
+    def elapsed(text):
+        started = time.perf_counter()
+        result = redact.redact(text)
+        return time.perf_counter() - started, result
+
+    plain_elapsed = max(elapsed(plain)[0] for _ in range(3))
+    for candidate in (prefix_run, "x" + prefix_run[:-1]):
+        prefix_elapsed, result = elapsed(candidate)
+        assert result == candidate
+        assert prefix_elapsed <= plain_elapsed * 20, (
+            plain_elapsed, prefix_elapsed)
+
+
+class TestJwtRedactionCost(unittest.TestCase):
+    def test_masks_jwt_after_base64url_and_delimiter_prefixes(self):
+        jwt = fake_jwt()
+        for prefix in ("Bearer ", "token=", "token_", "jwt-", "x", "id9"):
+            with self.subTest(prefix=prefix):
+                out = redact.redact(prefix + jwt)
+                self.assertIn("[REDACTED", out)
+                self.assertNotIn(jwt, out)
+
+    def test_linear_jwt_rule_matches_the_legacy_match_set(self):
+        import re
+
+        legacy = re.compile(
+            r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\."
+            r"[A-Za-z0-9_-]{10,}")
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+        valid_first = "eyJ" + "A" * 10
+        valid_second = "eyJ" + "B" * 10
+        first_segments = (
+            valid_first,
+            "eyJeyJ" + "A" * 10,
+            "A" * 5 + valid_first,
+            "eyJ" + "A" * 9,
+            "A" * 20,
+        )
+        second_segments = (valid_second, "eyJ" + "B" * 9, "B" * 20)
+        third_segments = ("C" * 10, "C" * 9)
+        tails = (
+            "",
+            "." + "D" * 12,
+            "." + "D" * 12 + "." + valid_first + "."
+            + valid_second + "." + "E" * 10,
+        )
+
+        cases = []
+        for prefix in ("", *alphabet):
+            for first in first_segments:
+                for second in second_segments:
+                    for third in third_segments:
+                        for tail in tails:
+                            cases.append(
+                                "!" + prefix + first + "." + second + "."
+                                + third + tail + "?")
+        cases.extend((
+            valid_first + "." + valid_second + "." + "C" * 10
+            + "." + valid_first + "." + valid_second + "." + "D" * 10,
+            "A" * 20 + "." + valid_first + "." + valid_second + "." + "C" * 10,
+            "short.." + valid_first + "." + valid_second + "." + "C" * 10,
+        ))
+
+        mismatches = []
+        for text in cases:
+            expected = legacy.sub("[REDACTED_JWT]", text)
+            actual = redact._JWT_CHAINS.sub(redact._mask_jwt_chain, text)
+            if actual != expected and len(mismatches) < 10:
+                mismatches.append((text, expected, actual))
+        self.assertGreaterEqual(len(cases), 5000)
+        self.assertEqual(mismatches, [])
+
+    def test_repeated_jwt_opening_prefix_is_roughly_linear(self):
+        """#2986: compare equal-size inputs; the child deadline only keeps a
+        reintroduced quadratic rule from stalling the entire test suite."""
+        import multiprocessing
+
+        context = multiprocessing.get_context("spawn")
+        process = context.Process(target=_assert_repeated_jwt_prefix_is_linear)
+        process.start()
+        process.join(8)
+        if process.is_alive():
+            process.terminate()
+            process.join()
+            process.close()
+            self.fail("256 KiB JWT prefix timing exceeded 8 seconds")
+        exitcode = process.exitcode
+        process.close()
+        self.assertEqual(exitcode, 0)
