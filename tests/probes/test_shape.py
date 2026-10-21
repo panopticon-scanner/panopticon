@@ -13,15 +13,19 @@ driven from `loop_batch.prove_output_schema_shape` inside the loop, after the
 batch's guards are armed. This module is the MEASUREMENT: what the entry looks
 like, and what a result means.
 """
+import json
 import os
 import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
+from scripts import host_disclosure
 import scripts.hosts as hosts
 import scripts.probes.shape as shape_probe
 import scripts.runners.base as base
+import scripts.runners.codex as codex_runner
 import scripts.runners.outage as outage
 
 
@@ -85,7 +89,7 @@ CELL = {"id": "review-app-SEC", "delivery": "return_json",
 
 class ShapeProofTest(unittest.TestCase):
 
-    def _prove(self, runner, elapsed_ms=120, entry=None, env=None):
+    def _prove(self, runner, elapsed_ms=120, entry=None, env=None, host="fake"):
         """`prove` with the clock pinned, so a verdict that turns on a
         duration is a fact about the rule rather than about the test host."""
         ticks = iter([0.0, elapsed_ms / 1000.0])
@@ -94,9 +98,32 @@ class ShapeProofTest(unittest.TestCase):
                 entry = shape_probe.probe_entry(CELL, run_dir)
         with mock.patch.object(shape_probe.time, "monotonic",
                                side_effect=lambda: next(ticks)):
-            return shape_probe.prove("fake", runner, entry,
+            return shape_probe.prove(host, runner, entry,
                                      env if env is not None else
                                      {base.ENV_ENTRY_ID: shape_probe.PROBE_ENTRY_ID})
+
+    def _codex_prove(self, *, stdout="", stderr="", returncode=1, elapsed_ms=120):
+        launched = []
+
+        def launch(command, **_kwargs):
+            launched.append(command)
+            return SimpleNamespace(stdout=stdout, stderr=stderr, returncode=returncode)
+
+        with tempfile.TemporaryDirectory() as run_dir:
+            runner = codex_runner.Runner(runner=launch)
+            runner.run_dir = runner.review_root = run_dir
+            entry = shape_probe.probe_entry(CELL, run_dir)
+            command = ["codex", "exec", "--json", "-"]
+            with mock.patch.object(codex_runner.codex_host, "command",
+                                   return_value=command), \
+                    mock.patch.object(codex_runner.codex_host, "validate_command"), \
+                    mock.patch.object(codex_runner.codex_host, "launch_cwd",
+                                      return_value=run_dir), \
+                    mock.patch.object(codex_runner.codex_host, "cleanup_command"):
+                verdict = self._prove(
+                    runner, elapsed_ms=elapsed_ms, entry=entry, host="codex")
+        self.assertEqual(1, len(launched), "the Codex CLI seam was not launched exactly once")
+        return verdict
 
     # ---- the three verdicts ------------------------------------------------
 
@@ -116,6 +143,63 @@ class ShapeProofTest(unittest.TestCase):
         self.assertIn("120", detail)                       # the duration
         self.assertIn("exit 1", detail)                    # the exit, as the family spells it
         self.assertIn("Unrecognized token", detail)        # the stderr
+
+    def test_a_fast_codex_stderr_only_refusal_is_refuted_and_disclosed(self):
+        # #2940: Codex copies pre-JSONL stderr into host_error for outage
+        # classification. That is still stderr, not the host's structured
+        # error event, and must not pass as an envelope here.
+        verdict = self._codex_prove(
+            stderr="error: unexpected argument '--output-schema'", elapsed_ms=2)
+        self.assertEqual(hosts.SHAPE_REFUTED, verdict[hosts.SHAPE])
+
+        # The operator reads this through host_disclosure.notes(), whose
+        # `_output_schema_line` renderer must describe the observation rather
+        # than repeat the old false "proven" claim.
+        lines = host_disclosure.notes({
+            "schema_version": 1,
+            "host": "codex",
+            "capabilities": {},
+            hosts.CLI_FLAGS: {hosts.OUTPUT_SCHEMA: {
+                "flag": "--output-schema", "advertised": True,
+                "detail": "advertised", **verdict,
+            }},
+        })
+        self.assertEqual(1, len(lines))
+        self.assertIn("shape REFUTED by one launch", lines[0])
+        self.assertIn("stderr only", lines[0])
+        self.assertIn("unexpected argument", lines[0])
+        self.assertNotIn("shape proven", lines[0])
+
+    def test_a_slow_codex_stderr_only_failure_is_unmeasured(self):
+        verdict = self._codex_prove(
+            stderr="codex exited before emitting JSONL",
+            elapsed_ms=shape_probe.SHAPE_PROOF_REFUTE_MS)
+        self.assertEqual(hosts.SHAPE_UNMEASURED, verdict[hosts.SHAPE])
+        self.assertIn("stderr only", verdict[hosts.SHAPE_DETAIL])
+
+    def test_an_ok_codex_launch_is_proven(self):
+        stdout = "\n".join(json.dumps(event) for event in (
+            {"type": "thread.started", "thread_id": "shape-session"},
+            {"type": "item.completed", "item": {
+                "type": "agent_message", "text": '{"ok": true}'}},
+            {"type": "turn.completed", "usage": {
+                "input_tokens": 1, "cached_input_tokens": 0, "output_tokens": 1}},
+        ))
+        verdict = self._codex_prove(stdout=stdout, returncode=0)
+        self.assertEqual(hosts.SHAPE_PROVEN, verdict[hosts.SHAPE])
+
+    def test_a_codex_reply_envelope_on_failure_is_proven(self):
+        stdout = json.dumps({
+            "type": "item.completed",
+            "item": {"type": "agent_message", "text": '{"partial": true}'},
+        })
+        verdict = self._codex_prove(stdout=stdout)
+        self.assertEqual(hosts.SHAPE_PROVEN, verdict[hosts.SHAPE])
+
+    def test_a_codex_structured_error_event_is_proven(self):
+        stdout = json.dumps({"type": "error", "message": "tool execution failed"})
+        verdict = self._codex_prove(stdout=stdout)
+        self.assertEqual(hosts.SHAPE_PROVEN, verdict[hosts.SHAPE])
 
     def test_the_refutation_detail_is_redacted(self):
         runner = _Runner(result=_failed("exit 1", stderr="key sk-ant-api03-AAAABBBBCCCCDDDD"))
