@@ -923,9 +923,7 @@ class TestTheSummaryPrintsNoLiveControlBytes(unittest.TestCase):
         report["cross_panel"] = {"integration_findings": integration}
         out = render_mod.render_summary(report)
         self.assertEqual([], self._live_bytes(out))
-        # `evidence.norm_path` -- the clustering key every consumer agrees on --
-        # rewrites a backslash as a slash, so the escape an inert path carries
-        # reads as a directory here. Cosmetic, hostile-paths-only, and applied to
-        # both sides of every comparison; pinned so a change to it is visible.
-        self.assertIn("c/x1b[2Kd.py:2", out)
+        # With #2988 the shared path key prints the inert escape as literal bytes.
+        # The live-byte assertion above still protects the output boundary.
+        self.assertIn(r"c\x1b[2Kd.py:2", out)
         self.assertIn(r"x\x07y", out)
