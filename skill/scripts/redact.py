@@ -25,7 +25,63 @@ zero -- with the measurement run through plain grep, never `git grep -E`, whose
 POSIX ERE silently ignores \b. See tests/test_redact.py::TestRedactRejectsGenericDetection.
 """
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+
+
+# Possessive repeats are language-neutral because the segment class excludes
+# the dot delimiter. They keep a chain with millions of tiny segments from
+# building a backtracking stack proportional to its segment count.
+_JWT_CHAINS = re.compile(
+    r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]++"
+    r"(?:\.[A-Za-z0-9_-]++){2,}+")
+_JWT_MARKER = "[REDACTED_JWT]"
+
+
+def _jwt_segment_spans(chain: str) -> Iterator[tuple[int, int]]:
+    start = 0
+    while True:
+        end = chain.find(".", start)
+        if end < 0:
+            yield start, len(chain)
+            return
+        yield start, end
+        start = end + 1
+
+
+def _mask_jwt_chain(match: re.Match[str]) -> str:
+    """Mask JWT triples with the legacy rule's exact leftmost semantics.
+
+    The regex finds each maximal dot-separated base64url chain once. A rolling
+    three-segment window avoids restarting at every embedded ``eyJ`` and avoids
+    materializing every segment, while preserving text glued before the token.
+    """
+    chain = match.group(0)
+    spans = iter(_jwt_segment_spans(chain))
+    window: list[tuple[int, int]] = []
+    masked: list[str] = []
+    copied_through = 0
+    while True:
+        while len(window) < 3:
+            try:
+                window.append(next(spans))
+            except StopIteration:
+                if not masked:
+                    return chain
+                masked.append(chain[copied_through:])
+                return "".join(masked)
+
+        (first_start, first_end), (second_start, second_end), third = window
+        opening = chain.find("eyJ", first_start, first_end)
+        if (opening >= 0 and first_end - opening >= 13
+                and chain.startswith("eyJ", second_start, second_end)
+                and second_end - second_start >= 13
+                and third[1] - third[0] >= 10):
+            masked.extend((chain[copied_through:opening], _JWT_MARKER))
+            copied_through = third[1]
+            window.clear()
+        else:
+            window.pop(0)
+
 
 # (compiled pattern, replacement). Replacements use \1 back-refs where the match
 # keeps a benign prefix (Bearer). Ordered generic->specific; each is independent.
@@ -52,8 +108,10 @@ _PATTERNS: list[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]]] = 
      "[REDACTED_KEY]"),                                              # Stripe
     # Structure-anchored, not prefix-anchored: three base64url segments, the
     # first two starting eyJ (base64 of '{"'). Distinctive enough to be safe.
-    (re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
-     "[REDACTED_JWT]"),
+    # Match a whole base64url chain once, then let _mask_jwt_chain preserve any
+    # text before the legacy rule's leftmost JWT. This keeps glued credentials
+    # masked without restarting at every embedded `eyJ` (#2986).
+    (_JWT_CHAINS, _mask_jwt_chain),
     # Structure-anchored like the JWT above, and #1572's whole contribution: a
     # URL that carries a password in its userinfo (`scheme://user:pass@host`).
     # The finding's own example, and the one credential shape a reviewer is most

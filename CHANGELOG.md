@@ -7,6 +7,13 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **JWT redaction stays linear on repeated opening prefixes (#2986).** The JWT rule
+  restarted at every embedded `eyJ` in a delimiter-free run and rescanned the remaining
+  suffix, making a crafted 4 MiB refused reply take quadratic time before persistence.
+  The rule now visits each maximal dot-separated base64url chain once and masks its
+  legacy leftmost token in a linear segment walk. Text glued before the token is kept,
+  while every token shape the old rule masked stays masked. A 256 KiB equal-size timing
+  ratio pins both standalone and glued prefix runs, and the 4 MiB allowance is unchanged.
 - **A failed synthesis stays pending on resume (#2930).** The driver records a pending attempt
   before launching synthesis and clears it only after an accepted result and a usable report.
   Invalid artifacts, scope refusals beside an old report, and interrupted children therefore
