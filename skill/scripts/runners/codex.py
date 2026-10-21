@@ -108,14 +108,17 @@ class _EnvelopeState:
             self.error = self.error or "codex returned no final message"
 
     def result(self, entry_id, stderr):
+        host_error_from_stderr = False
         if self.host_error is None and self.error is not None and (stderr or "").strip():
             # A refusal before exec emits JSONL can leave only host stderr.
             self.host_error = stderr.strip()
+            host_error_from_stderr = True
         return base.RunResult(
             entry_id=entry_id, ok=self.error is None, text=self.text,
             usage=self.usage, cost_usd=None, model=None,
             session_id=self.session_id, denials=self.denials, error=self.error,
             host_error=self.host_error,
+            host_error_from_stderr=host_error_from_stderr,
             stderr=base.stderr_head(stderr) if self.error is not None else None)
 
 

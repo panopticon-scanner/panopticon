@@ -139,11 +139,17 @@ def prove(host, runner, entry, env):
     THE RULE, in one place (ruling 3). "The CLI accepted the argv" is any of:
 
       * the launch came back ok; or
-      * it failed but took at least `SHAPE_PROOF_REFUTE_MS` -- it got far
-        enough to do work, so whatever went wrong is not the argv; or
-      * it failed carrying an envelope (`text`, or the host's own error
-        surface) -- it parsed its argv, started, and then failed for a reason
-        of its own.
+      * it failed carrying an envelope (`text`, or the host's own structured
+        error event) -- it parsed its argv, started, and then failed for a
+        reason of its own; or
+      * outside Codex, it failed but took at least `SHAPE_PROOF_REFUTE_MS` --
+        the existing family rule reads that as getting far enough to work.
+
+    Codex can copy bare CLI stderr into `host_error` so outage classification
+    still sees a pre-JSONL provider failure. That copy is not an envelope: a
+    fast stderr-only failure refutes the argv, while a slower one is
+    unmeasured. Only a reply or Codex's parsed JSONL error event proves a
+    failed Codex launch.
 
     Anything else that is an ENTRY-class failure refutes the shape. Everything
     the probe could not ask -- no flag, no published schema, a host-class
@@ -226,8 +232,33 @@ def prove(host, runner, entry, env):
         return _verdict(hosts.SHAPE_UNMEASURED,
                         "the CLI was never started -- host %r refused the probe entry "
                         "before building an argv: %s" % (host, error))
-    if duration_ms >= SHAPE_PROOF_REFUTE_MS or getattr(result, "text", None) \
-            or getattr(result, "host_error", None):
+    stderr_only = bool(getattr(result, "host_error_from_stderr", False)
+                       and not getattr(result, "text", None))
+    if host == "codex" and stderr_only:
+        diagnosis = (redact.redact(getattr(result, "stderr", None) or "")
+                     [:runners_base.STDERR_HEAD] or "(nothing)")
+        if duration_ms >= SHAPE_PROOF_REFUTE_MS:
+            return _verdict(
+                hosts.SHAPE_UNMEASURED,
+                "one `%s` launch failed after %d ms with stderr only and no reply or "
+                "structured error event, so argv acceptance was not measured: %s; "
+                "stderr: %s" % (PROBE_ENTRY_ID, duration_ms, error, diagnosis))
+        return _verdict(
+            hosts.SHAPE_REFUTED,
+            "one `%s` launch failed in %d ms with stderr only and no reply or "
+            "structured error event: %s; stderr: %s"
+            % (PROBE_ENTRY_ID, duration_ms, error, diagnosis))
+    reply_or_error_event = (getattr(result, "text", None)
+                            or getattr(result, "host_error", None))
+    if host == "codex" and not reply_or_error_event \
+            and duration_ms >= SHAPE_PROOF_REFUTE_MS:
+        return _verdict(
+            hosts.SHAPE_UNMEASURED,
+            "one `%s` launch failed after %d ms with no reply or structured error "
+            "event, so argv acceptance was not measured: %s"
+            % (PROBE_ENTRY_ID, duration_ms, error))
+    if reply_or_error_event or (host != "codex"
+                                and duration_ms >= SHAPE_PROOF_REFUTE_MS):
         return _verdict(hosts.SHAPE_PROVEN,
                         "one `%s` launch was accepted by the CLI, which then failed on "
                         "its own account after %d ms: %s%s"
