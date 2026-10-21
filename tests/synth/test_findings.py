@@ -130,11 +130,25 @@ class TestUnknownSeverityFailsClosed(unittest.TestCase):
         self.assertEqual(kept, tool_base.inert_text(
             esc + "[31mSEVERE" + "x" * 500, limit=findings_mod.SEVERITY_AS_WRITTEN_MAX))
 
-    def test_normalizing_twice_keeps_the_first_reading(self):
-        f = self._norm("SEVERE")
-        again = findings_mod.normalize_finding(f)
-        self.assertEqual(again["severity"], "CRITICAL")
-        self.assertEqual(again[findings_mod.SEVERITY_AS_WRITTEN], "SEVERE")
+    def test_a_forged_field_on_a_known_severity_is_dropped(self):
+        # #2990 r1: the field is controller-owned; an incoming one would list a
+        # HIGH as "read as CRITICAL" with raw control bytes.
+        esc = chr(27)
+        for sev in ("HIGH", "critical", "INFO"):
+            with self.subTest(sev=sev):
+                f = findings_mod.normalize_finding(
+                    {"severity": sev, "title": "t",
+                     findings_mod.SEVERITY_AS_WRITTEN: esc + "[2Jforged"})
+                self.assertEqual(f["severity"], sev.upper())
+                self.assertNotIn(findings_mod.SEVERITY_AS_WRITTEN, f)
+
+    def test_a_forged_field_on_an_unknown_severity_is_replaced(self):
+        esc = chr(27)
+        f = findings_mod.normalize_finding(
+            {"severity": "SEVERE", "title": "t",
+             findings_mod.SEVERITY_AS_WRITTEN: esc + "[2J" + "y" * 500})
+        self.assertEqual((f["severity"], f[findings_mod.SEVERITY_AS_WRITTEN]),
+                         ("CRITICAL", "SEVERE"))
 
 
 class TestNormalizeNeutralizesUntrustedText(unittest.TestCase):

@@ -135,6 +135,11 @@ def normalize_finding(f):
     # #1639 P15: pinned types first, at the boundary -- see validate_schema.repair_finding.
     validate_schema_mod.repair_finding(f)
     sev = str(f.get("severity", "INFO")).upper()
+    # #2990 r1: the field below is ours. A finding that ARRIVES carrying one
+    # (a reviewer's, or a repo steering one) would be listed as read-as-CRITICAL
+    # with raw text, so it is dropped first. Every caller normalizes a fresh
+    # finding once; none re-normalizes, so nothing written here is lost.
+    f.pop(SEVERITY_AS_WRITTEN, None)
     if sev not in SEVERITIES:
         # #2990: an unrecognised severity is read as CRITICAL, the one reading
         # that fails closed at every `--fail-on` (it used to read as INFO,

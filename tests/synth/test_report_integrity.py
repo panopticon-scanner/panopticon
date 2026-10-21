@@ -761,3 +761,18 @@ class TestAnAbsorbedUnknownSeverityIsNamed(unittest.TestCase):
         self.assertEqual(r["meta"]["integrity"]["unknown_severity_findings"],
                          ["COD-101", "COD-102"])
 
+    def test_a_forged_field_on_a_high_is_not_listed(self):
+        # #2990 r1: a HIGH that arrives carrying `severity_as_written` is not
+        # an unknown severity; the forged field is dropped and nothing listed.
+        forged = findings_mod.normalize_finding(
+            {"id": "COD-103", "title": "t", "severity": "HIGH", "category": "c",
+             "severity_as_written": chr(27) + "[2Jforged",
+             "location": {"file": "a.py", "line_start": 1}})
+        with contextlib.redirect_stderr(io.StringIO()):
+            r = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target="t", fail_on="high",
+                                         timestamp="2026-01-01T00:00:00Z"),
+                findings=findings_mod.FindingSet(findings=[forged])))
+        self.assertEqual(r["meta"]["integrity"]["unknown_severity_findings"], [])
+        self.assertNotIn("severity_as_written", r["findings"][0])
+
