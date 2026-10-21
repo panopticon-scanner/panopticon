@@ -871,3 +871,97 @@ class TestTheRetainedPrimaryIsTheSharedRulesPrimary(unittest.TestCase):
             self.assertEqual(
                 evidence.derive_evidence({"id": "SEC-100"}, v)["status"],
                 "needs_more_info")
+
+
+class TestABadBundleEntryIsCounted(unittest.TestCase):
+    """#2990 (M4): an entry of a loadable bundle that is not an object, names
+    no known verdict or echoes no finding_id was a bare skip, named nowhere.
+    It is lost verification evidence, so it lands in `unloadable` with its
+    index and a fixed reason; the entry's own values are never echoed."""
+
+    GOOD = {"finding_id": "SEC-001", "verdict": "CONFIRMED", "reasoning": "r"}
+    BAD = (
+        ("MARK-not-an-object", "verdict entry is not an object"),
+        ({"finding_id": "SEC-002", "verdict": "MARK-maybe"},
+         "verdict not one of CONFIRMED, NEEDS_MORE_INFO, REJECTED"),
+        ({"finding_id": "SEC-002"},
+         "verdict not one of CONFIRMED, NEEDS_MORE_INFO, REJECTED"),
+        ({"finding_id": "", "verdict": "REJECTED", "reasoning": "MARK"},
+         "missing/empty finding_id echo"),
+        ({"verdict": "rejected", "reasoning": "MARK"}, "missing/empty finding_id echo"),
+    )
+
+    def _load(self, verdicts):
+        with tempfile.TemporaryDirectory() as d:
+            vdir = _bundle(Path(d), "verdicts-app-SEC.json", verdicts)
+            with mock.patch("sys.stderr") as err:
+                by_fid, bad = evidence.load_verdict_bundles(vdir)
+        printed = "".join(str(c.args[0]) for c in err.write.call_args_list if c.args)
+        return by_fid, bad, printed
+
+    def test_each_bad_shape_is_counted_with_its_index(self):
+        for raw, reason in self.BAD:
+            with self.subTest(reason=reason, raw=type(raw).__name__):
+                by_fid, bad, printed = self._load([self.GOOD, raw])
+                self.assertEqual(list(by_fid), ["SEC-001"])
+                self.assertEqual(bad, [{"file": "verdicts-app-SEC.json", "entry": 1,
+                                        "reason": reason}])
+                self.assertIn("entry 1", printed)
+                self.assertNotIn("MARK", printed + json.dumps(bad))
+
+    def test_a_good_bundle_has_nothing_unloadable(self):
+        by_fid, bad, _ = self._load([self.GOOD, dict(self.GOOD, finding_id="SEC-002",
+                                                     verdict="needs_more_info")])
+        self.assertEqual(sorted(by_fid), ["SEC-001", "SEC-002"])
+        self.assertEqual(bad, [])
+
+    def test_every_bad_entry_is_its_own_row_in_the_report_count(self):
+        # FindingSet.load dedupes the two loaders' rows on (file, entry): two
+        # bad entries of one bundle are two lost verdicts, not one file.
+        with tempfile.TemporaryDirectory() as d:
+            vdir = _bundle(Path(d), "verdicts-app-SEC.json",
+                           [self.BAD[0][0], self.BAD[1][0], self.GOOD])
+            args = mock.Mock(verdicts_dir=vdir)
+            with mock.patch("sys.stderr"):
+                fs = findings_mod.FindingSet.load(args, [], "standard", None,
+                                                  prepared=([], None, {}))
+        self.assertEqual([(u["file"], u.get("entry")) for u in fs.verdict_unloadable],
+                         [("verdicts-app-SEC.json", 0), ("verdicts-app-SEC.json", 1)])
+
+    def test_an_entry_row_survives_the_strict_loader_s_row_for_its_file(self):
+        # A fenced bundle: the strict loader reports the FILE unparseable, the
+        # tolerant one reads the bundle and finds a bad entry. Deduping on the
+        # file alone would drop the entry's row under the file's.
+        with tempfile.TemporaryDirectory() as d:
+            vdir = Path(d) / "verdicts"
+            vdir.mkdir()
+            (vdir / "verdicts-app-SEC.json").write_text("```json\n" + json.dumps({
+                "verdicts": [self.GOOD, self.BAD[1][0]],
+                "_panopticon": {"run_id": "R", "stage": "primary"}}) + "\n```\n")
+            args = mock.Mock(verdicts_dir=str(vdir))
+            with mock.patch("sys.stderr"):
+                fs = findings_mod.FindingSet.load(args, [], "standard", None,
+                                                  prepared=([], None, {}))
+        self.assertEqual([(u["file"], u.get("entry")) for u in fs.verdict_unloadable],
+                         [("verdicts-app-SEC.json", None), ("verdicts-app-SEC.json", 1)])
+
+    def test_the_stderr_line_names_files_and_entries_apart(self):
+        import contextlib
+        import io
+        rows = [{"file": "corrupt.json", "reason": "unparseable: x"},
+                {"file": "verdicts-app-SEC.json", "entry": 3,
+                 "reason": "verdict entry is not an object"}]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            r = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target="t", fail_on="high",
+                                         timestamp="2026-01-01T00:00:00Z"),
+                findings=findings_mod.FindingSet(findings=[], verdicts_supplied=True,
+                                                 verdict_unloadable=rows)))
+        self.assertIn("synthesize: 1 verdict file(s) and 1 verdict entry(ies) were "
+                      "un-loadable (corrupt or invalid) and their findings left "
+                      "unverified: corrupt.json, verdicts-app-SEC.json entry 3",
+                      err.getvalue())
+        self.assertEqual(r["meta"]["coverage"]["verdicts"]["unloadable"], 2)
+        self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
+

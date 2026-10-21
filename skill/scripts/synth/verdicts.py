@@ -14,6 +14,7 @@ import scripts.ocrdb as ocrdb
 from . import codes as codes_mod
 from . import corroborate as corroborate_mod
 from . import delta as delta_mod
+from . import findings as findings_mod
 from . import plan as plan_mod
 
 
@@ -96,6 +97,10 @@ class Resolved:
     # number: a narrowed gate that discloses nothing is the silence #1578 is
     # about, with a smaller blast radius.
     suppressed_not_gated: list = field(default_factory=list)
+    # #2990: the ids of the findings whose severity normalize_finding did not
+    # recognise and read as CRITICAL, taken BEFORE dedupe so an absorbed one is
+    # named too; published as `meta.integrity.unknown_severity_findings`.
+    unknown_severity_ids: list = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -227,10 +232,17 @@ def _verdict_stats(fs, findings, queue, cut, matches):
     # never generated -- otherwise a malformed advisor return vanishes silently.
     verdict_unloadable = fs.verdict_unloadable or []
     if verdict_unloadable:
-        print("synthesize: %d verdict file(s) were un-loadable (corrupt) and "
-              "their findings left unverified: %s"
-              % (len(verdict_unloadable),
-                 ", ".join(u.get("file", "?") for u in verdict_unloadable)),
+        # #2990: a bad entry inside a loadable bundle counts here too, so the
+        # line names files and entries apart.
+        entries = [u for u in verdict_unloadable if u.get("entry") is not None]
+        files = [u for u in verdict_unloadable if u.get("entry") is None]
+        print("synthesize: %d verdict file(s) and %d verdict entry(ies) were "
+              "un-loadable (corrupt or invalid) and their findings left "
+              "unverified: %s"
+              % (len(files), len(entries), ", ".join(
+                  "%s entry %s" % (u.get("file", "?"), u["entry"])
+                  if u.get("entry") is not None else str(u.get("file", "?"))
+                  for u in verdict_unloadable)),
               file=sys.stderr)
     # A run whose verdicts all failed to match now produces gate PASS / grade A
     # / risk LOW -- the safest-looking output there is -- because only verified
@@ -428,6 +440,13 @@ def _delta_meta(delta, partitions):
                   if delta_mode else None)
 
 
+def _unknown_severity_ids(findings):
+    """Sorted distinct ids of the findings normalize_finding read as CRITICAL
+    because their severity was not one it knows (#2990)."""
+    return sorted({str(f.get("id")) for f in findings
+                   if isinstance(f, dict) and findings_mod.SEVERITY_AS_WRITTEN in f})
+
+
 def resolve_findings(fs, delta, run, gated_suppressed=()):
     """The verdict-matching cluster (WS-0 S2): dedupe, queue, bind advisor
     verdicts, derive every finding's evidence object and fingerprint, then
@@ -439,6 +458,7 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
     (distinct from whether it yielded any verdicts) so the aggregate "no
     verdict" note still fires for an existing-but-empty dir.
     """
+    unknown_severity = _unknown_severity_ids(fs.findings)
     findings, integration_findings = corroborate_mod.prepare_for_queue(fs.findings)
     catalog = fs.catalog if fs.catalog is not None else load_cwe_catalog()
     ocrdb_bundle = ocrdb.load_bundle()
@@ -483,4 +503,5 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
                     doc_policy=fs.doc_policy, verdict_unloadable=fs.verdict_unloadable or [],
                     # Measured only when --verdicts-dir was passed at all.
                     unanswered_gate=matches.unanswered if fs.verdicts_supplied else 0,
-                    gated_suppressed=gated, suppressed_not_gated=suppressed_not_gated)
+                    gated_suppressed=gated, suppressed_not_gated=suppressed_not_gated,
+                    unknown_severity_ids=unknown_severity)

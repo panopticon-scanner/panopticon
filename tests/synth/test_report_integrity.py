@@ -1,6 +1,8 @@
 """Integrity certification and summary contracts."""
 
 import ast
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -87,7 +89,8 @@ class TestIntegrity(unittest.TestCase):
         self.assertEqual(r["meta"]["integrity"],
                          dict(integ, tools_manifest_invalid=None,
                               unbound_tool_outputs=[],
-                              delta_scope_suppressed_git_drivers=None))
+                              delta_scope_suppressed_git_drivers=None,
+                              unknown_severity_findings=[]))
         self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
 
     def test_a_missing_owed_snapshot_cannot_certify(self):
@@ -137,6 +140,8 @@ class TestIntegrity(unittest.TestCase):
         # #2013 fix round 1: appended by reconcile beside the key above, and
         # stated on every report for the same reason.
         "delta_scope_suppressed_git_drivers",
+        # #2990: appended by reconcile from the resolved findings.
+        "unknown_severity_findings",
     ]
 
     def test_the_published_integrity_key_order_is_the_contract(self):
@@ -175,6 +180,8 @@ class TestIntegrity(unittest.TestCase):
                 # #2013 fix round 1: None means this run was not delta-scoped,
                 # or nothing was suppressed -- never "not measured".
                 "delta_scope_suppressed_git_drivers": None,
+                # #2990: no finding carried an unknown severity.
+                "unknown_severity_findings": [],
             },
         )
         self.assertEqual(r["summary"]["gate"], "PASS")
@@ -207,6 +214,8 @@ class TestIntegrity(unittest.TestCase):
                 # #2013 fix round 1: None means this run was not delta-scoped,
                 # or nothing was suppressed -- never "not measured".
                 "delta_scope_suppressed_git_drivers": None,
+                # #2990: no finding carried an unknown severity.
+                "unknown_severity_findings": [],
             },
         )
         self.assertEqual(r["summary"]["gate"], "PASS")
@@ -319,17 +328,20 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         # or a PREFIX (the cap cut it) of the intended one. The artifacts on
         # disk are still what they claim, which is what this section gates on,
         # and the truncation disclosure did not gate before this change either.
-        "discovery_git_failure", "discovery_files_truncated"})
+        "discovery_git_failure", "discovery_files_truncated",
+        # #2990: the CRITICAL reading already gates; this explains it.
+        "unknown_severity_findings"})
     # The REPORTED keys that DO print a line: a non-gating `**Note:**`, never
     # an `**Integrity:**`. Pinned against the table below so a key that gains
     # or loses a sentence cannot quietly change which test covers it.
     NOTED = frozenset({"cross_domain_findings", "discovery_git_failure",
-                       "discovery_files_truncated"})
+                       "discovery_files_truncated", "unknown_severity_findings"})
     # `reconcile` appends these two to whatever section it was handed, so
     # `integrity_section` never publishes them and the table's membership test
     # below has to name them explicitly.
     RECONCILE_ADDS = frozenset({"tools_manifest_invalid", "unbound_tool_outputs",
-                                "delta_scope_suppressed_git_drivers"})
+                                "delta_scope_suppressed_git_drivers",
+                                "unknown_severity_findings"})
     # One truthy value per key, in the shape the key really carries.
     TRUTHY: dict = {
         "unexpected_findings_files": ["u.json"],
@@ -370,6 +382,8 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         # #2271: git's own stderr, which is target-influenced free text.
         "discovery_git_failure": "exit 128: fatal: <ROOT>/.git: not a directory",
         "discovery_files_truncated": 7,
+        # #2990: the id of the one finding `_inputs` gives an unknown severity.
+        "unknown_severity_findings": ["COD-123"],
     }
     SUPPRESSED_DRIVERS = [{"repo": ".", "key": "diff.external"}]
 
@@ -393,9 +407,15 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
             if name:
                 section[name] = self.TRUTHY[name]
         delta_key = key == "delta_scope_suppressed_git_drivers"
+        # #2990: reconcile reads this key off the findings, so it is driven by
+        # one finding whose severity normalize_finding does not know.
+        unknown = ([findings_mod.normalize_finding(
+            {"id": "COD-123", "title": "t", "severity": "SEVERE",
+             "location": {"file": "a.py", "line_start": 1}})]
+                   if "unknown_severity_findings" in (key, *also) else [])
         return report_mod.ReportInputs(
             run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
-            findings=findings_mod.FindingSet(findings=[]),
+            findings=findings_mod.FindingSet(findings=unknown),
             delta=delta_mod.DeltaContext(
                 diff_hunks={"base": "main", "hunks": {}} if delta_key else None),
             plan=plan_mod.PlanInputs(
@@ -550,6 +570,17 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
                       "dispatched review cells and no dispatch-plan file is present, "
                       "so every plan-keyed check went quiet (deleted evidence; run "
                       "not certified)", md)
+
+    def test_an_unknown_severity_is_a_note_naming_the_finding(self):
+        # #2990: the line that explains a CRITICAL nobody wrote.
+        report = report_mod.build_report(self._inputs("unknown_severity_findings"))
+        self.assertEqual(report["meta"]["integrity"]["unknown_severity_findings"],
+                         ["COD-123"])
+        md = render_mod.render_summary(report)
+        self.assertIn("**Note:** 1 finding(s) — COD-123 carried an unknown "
+                      "severity and were read as CRITICAL (the value as written "
+                      "is kept on each finding). Does NOT affect certification.", md)
+        self.assertNotIn("**Integrity:**", md)
 
     def test_the_non_gating_note_is_unchanged_and_is_not_an_integrity_line(self):
         md = self._summary("cross_domain_findings")
@@ -708,3 +739,25 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         # ...and the count is a plain integer, not a quoted or escaped one.
         self.assertEqual(
             integrity_mod.evidence_text("discovery_files_truncated", 7), "7")
+
+
+class TestAnAbsorbedUnknownSeverityIsNamed(unittest.TestCase):
+    """#2990: the ids are taken BEFORE dedupe. Two unknown-severity claims at
+    one locus and category both read as CRITICAL and dedupe keeps one; the
+    disclosure still names both, since each was written that way."""
+
+    def test_both_claims_are_named(self):
+        def claim(fid, title):
+            return findings_mod.normalize_finding(
+                {"id": fid, "title": title, "severity": "SEVERE", "category": "c",
+                 "source": "agent", "location": {"file": "a.py", "line_start": 1}})
+        with contextlib.redirect_stderr(io.StringIO()):
+            r = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target="t", fail_on="high",
+                                         timestamp="2026-01-01T00:00:00Z"),
+                findings=findings_mod.FindingSet(
+                    findings=[claim("COD-101", "one"), claim("COD-102", "two")])))
+        self.assertEqual(len(r["findings"]), 1)
+        self.assertEqual(r["meta"]["integrity"]["unknown_severity_findings"],
+                         ["COD-101", "COD-102"])
+

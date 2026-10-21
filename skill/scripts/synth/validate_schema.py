@@ -214,7 +214,7 @@ _DROP_NEVER_COERCE = ("location.file", "groups[].files[]")
 # controller's own expected value.
 _OWNED_DOWNSTREAM = {
     "id": "rewritten by evidence.matrix_finding_id after normalization (#1109)",
-    "severity": "normalize_finding coerces case-insensitively and falls back to INFO",
+    "severity": "normalize_finding coerces case-insensitively and reads an unknown value as CRITICAL (#2990)",
     "confidence": "normalize_finding coerces, else derives it from `verdict`",
     "title": "normalize_finding rebuilds it from title/description, always a string",
     "short_title": "normalize_finding derives it from the repaired title",

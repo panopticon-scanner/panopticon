@@ -16,11 +16,12 @@ import scripts.phases.runio as runio
 import scripts.phases.coverage as coverage
 
 from tests._test_helpers import all_proven_artifact as _all_proven_artifact
-from tests._test_helpers import docker_probe_runner
+from tests._test_helpers import docker_probe_runner, only
 import scripts.driver as driver
 import scripts.inert as inert
 import scripts.host_disclosure as host_disclosure
 import scripts.run_manifest as run_manifest
+import scripts.synth.report as report_mod
 from scripts import hosts
 
 from tests.tools.git_repo import make_git_repo
@@ -422,6 +423,79 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         report = runio._load_json(runio._pano(d, "report.json"))
         self.assertEqual([(f["title"], f["evidence"]["status"]) for f in report["findings"]],
                          [("decoy critical", "unverified")])
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+
+    def _land_one_review(self, root, severity):
+        """#2990: one cell lands one finding with `severity` as written, the
+        rest land empty."""
+        req = runio._load_json(runio._pano(root, "dispatch-request.json"))
+        if not (isinstance(req, dict) and req.get("checkpoint") == "review"):
+            return False
+        run_id = run_manifest.load_manifest(root)["run_id"]
+        for i, entry in enumerate(req["entries"]):
+            group, domain = os.path.basename(entry["out_file"])[len("findings-"):-len(".json")].rsplit("-", 1)
+            findings = [] if i else [
+                {"domain": domain, "code": "%s-A1A" % domain, "severity": severity,
+                 "title": "the finding", "description": "d", "source_role": "domain_panel",
+                 "location": {"file": "src/app.py", "line_start": 1}}]
+            runio._write_json(entry["out_file"], {"findings": findings, "_panopticon": {
+                "run_id": run_id, "role": "domain_panel", "domain": domain, "group": group}})
+        return True
+
+    def _drive_one(self, severity, verdict, fail_on):
+        """Run the driver to completion over `_land_one_review`, the advisor
+        answering the finding `verdict`. Returns (report, {title: verdict})."""
+        d = self._repo()
+        args = self._args(d, "--no-tools", "--fail-on", fail_on)
+        status, landed = driver.run(args), {}
+        for _ in range(25):
+            if status["status"] != "checkpoint":
+                break
+            self._inject_scouts(d)
+            if status["checkpoint"] == "review" and not self._land_one_review(d, severity):
+                self._inject_review(d)
+            landed.update(self._land_pair_verdicts(d, {"the finding": verdict}))
+            status = driver.run(args)
+        self.assertEqual(status["status"], "complete", status.get("message"))
+        return runio._load_json(runio._pano(d, "report.json")), landed
+
+    def test_an_unknown_severity_fails_closed_at_every_threshold(self):
+        """#2990 (M2), through the REAL driver: a reviewer writes severity
+        SEVERE and the advisor CONFIRMs it. On main it read as INFO, verify
+        never engaged it, and the gate PASSED at either threshold. Read as
+        CRITICAL it is verified, and FAILs at --fail-on high and critical."""
+        for fail_on in ("high", "critical"):
+            with self.subTest(fail_on=fail_on):
+                report, landed = self._drive_one("SEVERE", "CONFIRMED", fail_on)
+                self.assertEqual(landed, {"the finding": "CONFIRMED"})
+                finding = only(report["findings"])
+                self.assertEqual((finding["severity"], finding["severity_as_written"],
+                                  finding["evidence"]["status"]),
+                                 ("CRITICAL", "SEVERE", "advisor_confirmed"))
+                self.assertEqual(report["meta"]["integrity"]["unknown_severity_findings"],
+                                 [finding["id"]])
+                self.assertEqual(report["summary"]["gate"], "FAIL")
+                self.assertEqual(report_mod.validate_report(report)[0], [])
+
+    def test_a_known_severity_is_not_disclosed(self):
+        """#2990 control: a lower-case known severity binds as itself."""
+        report, _ = self._drive_one("high", "CONFIRMED", "high")
+        finding = only(report["findings"])
+        self.assertEqual(finding["severity"], "HIGH")
+        self.assertNotIn("severity_as_written", finding)
+        self.assertEqual(report["meta"]["integrity"]["unknown_severity_findings"], [])
+        self.assertEqual(report["summary"]["gate"], "FAIL")
+
+    def test_a_verdict_entry_naming_no_known_verdict_is_counted_unloadable(self):
+        """#2990 (M4), through the REAL driver: the advisor answers the HIGH
+        "MAYBE". On main the entry was skipped and named nowhere (unloadable 0);
+        the finding stays unanswered and the gate INCONCLUSIVE either way."""
+        report, landed = self._drive_one("HIGH", "MAYBE", "high")
+        self.assertEqual(landed, {"the finding": "MAYBE"})
+        verdicts = report["meta"]["coverage"]["verdicts"]
+        self.assertGreaterEqual(verdicts["unloadable"], 1)
+        self.assertEqual(verdicts["matched"], 0)
+        self.assertEqual(only(report["findings"])["evidence"]["status"], "unverified")
         self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
 
     def test_resume_reemits_same_checkpoint_before_dispatch(self):

@@ -7,6 +7,21 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **An unknown severity fails closed, and a bad verdict entry is counted (#2990).** A finding
+  whose severity is not one of CRITICAL, HIGH, MEDIUM, LOW or INFO (in any case) used to read as
+  INFO. INFO is not owed a verdict, so on main a reviewer's `SEVERE` finding was never verified and
+  the gate PASSED, measured through the real driver at `--fail-on high`. It now reads as CRITICAL,
+  the one reading that fails closed at every `--fail-on`: verify engages it and the advisor's
+  answer decides. The value as written stays on the finding as `severity_as_written` (inert,
+  bounded), and the new non-gating `meta.integrity.unknown_severity_findings` lists those findings'
+  ids, on the terminal summary and in the HTML report. A finding with no severity at all still
+  reads as INFO.
+  Contract change: `meta.coverage.verdicts.unloadable` now counts verdict files or ENTRIES. A
+  bundle entry that is not an object, names no known verdict, or echoes no `finding_id` used to be
+  skipped and named nowhere; it is now counted per entry with a fixed reason (its values are never
+  echoed), and the stderr line names files and entries apart. A non-zero count already makes a PASS
+  INCONCLUSIVE, so such a bundle no longer certifies. Its finding stays unverified, as before.
+
 - **Literal backslashes no longer select another tree's policy (#2988).** Finding paths and
   diff-map keys now treat only `/` as a separator. A HIGH finding on a root-level POSIX file
   named `docs\x.py` keeps its severity and fails a HIGH gate, instead of borrowing `docs/*`'s

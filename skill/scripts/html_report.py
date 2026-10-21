@@ -571,6 +571,10 @@ def _render_header(report):
             for sentence in integrity_messages.sinking_sentences(meta.get("integrity")))
         parts.append("<div class='not-certified'>NOT CERTIFIED &mdash; %s%s</div>"
                      % (_escape(note), details))
+    # #2990: the CRITICAL a reviewer did not write is explained, though it does not sink.
+    unknown_severity = integrity_messages.note_sentence(meta.get("integrity"), "unknown_severity_findings")
+    if unknown_severity:
+        parts.append("<div class='integrity-note'>%s</div>" % _escape(unknown_severity))
     parts.append(_render_host_capabilities(meta))
     ev = summary.get("evidence_stats") or {}
     verified = sum(int(ev.get(s, 0)) for s in evidence_sections.VERIFIED_STATUSES)
