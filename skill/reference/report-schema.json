@@ -726,7 +726,7 @@
             },
             "unknown_severity_findings": {
               "type": "array",
-              "description": "#2990: ids of the findings whose severity was not one of CRITICAL, HIGH, MEDIUM, LOW, INFO (in any case) and was therefore read as CRITICAL, the one reading that fails closed at every --fail-on threshold -- REPORTED, never gating, because the CRITICAL reading already gates. Each such finding keeps its value as written in `severity_as_written`.",
+              "description": "#2990: ids of the findings whose severity was not one of CRITICAL, HIGH, MEDIUM, LOW, INFO (in any case), or (#3210) was absent or null, and was therefore read as CRITICAL, the one reading that fails closed at every --fail-on threshold -- REPORTED, never gating, because the CRITICAL reading already gates. Each such finding keeps its value as written in `severity_as_written`.",
               "items": {
                 "type": "string"
               }
@@ -1252,8 +1252,8 @@
             "type": "string"
           },
           "severity_as_written": {
-            "type": "string",
-            "description": "#2990: the finding's severity as written when it was not one of the five known values (in any case); `severity` then reads CRITICAL. Inert text, at most 100 characters before a marked cut."
+            "type": ["string", "null"],
+            "description": "#2990: the finding's severity as written when it was not one of the five known values (in any case); `severity` then reads CRITICAL. Inert text, at most 100 characters before a marked cut. null (#3210): the finding carried no severity (the key absent or null), also read as CRITICAL."
           },
           "severity_override": {
             "type": "object",

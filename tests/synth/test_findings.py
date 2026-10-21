@@ -98,7 +98,7 @@ class TestUnknownSeverityFailsClosed(unittest.TestCase):
         return findings_mod.normalize_finding({"severity": value, "title": "t"})
 
     def test_unknown_spellings_read_as_critical(self):
-        for value in ("SEVERE", "", "  ", " HIGH ", "HIGH\n", "crit", 3, None,
+        for value in ("SEVERE", "", "  ", " HIGH ", "HIGH\n", "crit", 3,
                       {"level": "HIGH"}, ["HIGH"]):
             with self.subTest(value=repr(value)):
                 f = self._norm(value)
@@ -113,11 +113,28 @@ class TestUnknownSeverityFailsClosed(unittest.TestCase):
                     self.assertEqual(f["severity"], sev)
                     self.assertNotIn(findings_mod.SEVERITY_AS_WRITTEN, f)
 
-    def test_an_absent_severity_still_reads_as_info(self):
-        # Not "unrecognised": no value was written. Unchanged by #2990.
-        f = findings_mod.normalize_finding({"title": "t"})
-        self.assertEqual(f["severity"], "INFO")
-        self.assertNotIn(findings_mod.SEVERITY_AS_WRITTEN, f)
+    def test_an_absent_severity_reads_as_critical(self):
+        # #3210: it read as INFO, which no gate owes a verdict. None marks
+        # "none written", distinct from any spelling.
+        for raw in ({"title": "t"}, {"title": "t", "severity": None}):
+            with self.subTest(raw=raw):
+                f = findings_mod.normalize_finding(raw)
+                self.assertEqual(f["severity"], "CRITICAL")
+                self.assertIn(findings_mod.SEVERITY_AS_WRITTEN, f)
+                self.assertIsNone(f[findings_mod.SEVERITY_AS_WRITTEN])
+
+    def test_a_spelled_none_is_a_spelling(self):
+        f = self._norm("None")
+        self.assertEqual((f["severity"], f[findings_mod.SEVERITY_AS_WRITTEN]),
+                         ("CRITICAL", "None"))
+
+    def test_the_tool_builder_still_requires_a_severity(self):
+        # #3210 MUST 3: only a reviewer can omit it. make_finding takes it as a
+        # required keyword, so no adapter reaches the absent reading.
+        import inspect
+        param = inspect.signature(tool_base.make_finding).parameters["severity"]
+        self.assertIs(param.default, inspect.Parameter.empty)
+        self.assertEqual(param.kind, inspect.Parameter.KEYWORD_ONLY)
 
     def test_the_value_as_written_is_inert_and_bounded(self):
         esc = chr(27)
@@ -1768,4 +1785,3 @@ class TestATitleIsRedactedBeforeItIsCut(unittest.TestCase):
 
     def test_an_ordinary_title_is_unchanged(self):
         self.assertEqual("plain title", self.normalized("plain title")["short_title"])
-

@@ -577,9 +577,10 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         self.assertEqual(report["meta"]["integrity"]["unknown_severity_findings"],
                          ["COD-123"])
         md = render_mod.render_summary(report)
-        self.assertIn("**Note:** 1 finding(s) — COD-123 carried an unknown "
+        self.assertIn("**Note:** 1 finding(s) — COD-123 carried an unknown or no "
                       "severity and were read as CRITICAL (the value as written "
-                      "is kept on each finding). Does NOT affect certification.", md)
+                      "is kept on each finding, null where none was written). "
+                      "Does NOT affect certification.", md)
         self.assertNotIn("**Integrity:**", md)
 
     def test_the_non_gating_note_is_unchanged_and_is_not_an_integrity_line(self):
@@ -791,3 +792,26 @@ class TestAnAbsorbedUnknownSeverityIsNamed(unittest.TestCase):
         self.assertEqual(r["meta"]["integrity"]["unknown_severity_findings"], [])
         self.assertNotIn("severity_as_written", r["findings"][0])
 
+    def test_stderr_names_unknown_and_absent_apart(self):
+        # #3210 MUST 2: both kinds share the key; stderr counts them apart and
+        # the finding's own field is null where no severity was written.
+        def claim(fid, line, **sev):
+            return findings_mod.normalize_finding(
+                dict({"id": fid, "title": fid, "category": "c",
+                      "location": {"file": "a.py", "line_start": line}}, **sev))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            r = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target="t", fail_on="high",
+                                         timestamp="2026-01-01T00:00:00Z"),
+                findings=findings_mod.FindingSet(findings=[
+                    claim("COD-301", 1, severity="SEVERE"), claim("COD-302", 2),
+                    claim("COD-303", 3, severity="HIGH")])))
+        self.assertIn("synthesize: 2 finding(s) read as CRITICAL -- 1 with an unknown "
+                      "severity, 1 with none: COD-301, COD-302", err.getvalue())
+        self.assertEqual(r["meta"]["integrity"]["unknown_severity_findings"],
+                         ["COD-301", "COD-302"])
+        written = {f["id"]: f.get("severity_as_written", "<none>") for f in r["findings"]}
+        self.assertEqual(written, {"COD-301": "SEVERE", "COD-302": None,
+                                   "COD-303": "<none>"})
+        self.assertEqual(report_mod.validate_report(r)[0], [])

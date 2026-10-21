@@ -51,16 +51,16 @@ INTEGRITY_KEYS: dict[str, IntegrityKey] = {
     "cross_domain_findings": IntegrityKey(
         False, "%s. Reviewers filed outside their cell's domain; often a "
                "catalog gap (X0X). Does NOT affect certification."),
-    # #2990: a severity normalize_finding did not recognise is read as
-    # CRITICAL, so this is the line that explains a CRITICAL nobody wrote.
+    # #2990: a severity normalize_finding did not recognise (or, #3210, one
+    # that is absent) is read as CRITICAL, so this is the line that explains a CRITICAL nobody wrote.
     # Non-gating because the CRITICAL reading already gates: sinking
     # certification as well would count one fact twice. The evidence slot
     # carries the count and the finding ids; each finding keeps its value as
     # written in `severity_as_written`.
     "unknown_severity_findings": IntegrityKey(
-        False, "%s carried an unknown severity and were read as CRITICAL (the "
-               "value as written is kept on each finding). Does NOT affect "
-               "certification."),
+        False, "%s carried an unknown or no severity and were read as CRITICAL "
+               "(the value as written is kept on each finding, null where none "
+               "was written). Does NOT affect certification."),
     # #2271: discovery's two DEGRADATION disclosures, which the driver path
     # dropped -- `discovery.py` printed them on its own stderr and wrote them
     # into `groups.json`, and nothing downstream read either. NON-GATING, on

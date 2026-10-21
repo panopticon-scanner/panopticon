@@ -26,6 +26,9 @@ from scripts import hosts
 
 from tests.tools.git_repo import make_git_repo
 
+# #3210: `_land_one_review`'s severity that omits the key.
+ABSENT = object()
+
 
 _ALL_PROVEN = {c: hosts.PROVEN for c in hosts.CAPABILITIES}
 
@@ -434,10 +437,12 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         run_id = run_manifest.load_manifest(root)["run_id"]
         for i, entry in enumerate(req["entries"]):
             group, domain = os.path.basename(entry["out_file"])[len("findings-"):-len(".json")].rsplit("-", 1)
-            findings = [] if i else [
-                {"domain": domain, "code": "%s-A1A" % domain, "severity": severity,
-                 "title": "the finding", "description": "d", "source_role": "domain_panel",
-                 "location": {"file": "src/app.py", "line_start": 1}}]
+            finding = {"domain": domain, "code": "%s-A1A" % domain, "severity": severity,
+                       "title": "the finding", "description": "d", "source_role": "domain_panel",
+                       "location": {"file": "src/app.py", "line_start": 1}}
+            if severity is ABSENT:
+                del finding["severity"]
+            findings = [] if i else [finding]
             runio._write_json(entry["out_file"], {"findings": findings, "_panopticon": {
                 "run_id": run_id, "role": "domain_panel", "domain": domain, "group": group}})
         return True
@@ -472,6 +477,23 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
                 self.assertEqual((finding["severity"], finding["severity_as_written"],
                                   finding["evidence"]["status"]),
                                  ("CRITICAL", "SEVERE", "advisor_confirmed"))
+                self.assertEqual(report["meta"]["integrity"]["unknown_severity_findings"],
+                                 [finding["id"]])
+                self.assertEqual(report["summary"]["gate"], "FAIL")
+                self.assertEqual(report_mod.validate_report(report)[0], [])
+
+    def test_an_absent_severity_fails_closed_at_every_threshold(self):
+        """#3210, through the REAL driver: a reviewer omits severity and the
+        advisor CONFIRMs. On main it read as INFO, verify never engaged it, and
+        the gate PASSED at either threshold. Read as CRITICAL it FAILs."""
+        for fail_on in ("high", "critical"):
+            with self.subTest(fail_on=fail_on):
+                report, landed = self._drive_one(ABSENT, "CONFIRMED", fail_on)
+                self.assertEqual(landed, {"the finding": "CONFIRMED"})
+                finding = only(report["findings"])
+                self.assertEqual((finding["severity"], finding["severity_as_written"],
+                                  finding["evidence"]["status"]),
+                                 ("CRITICAL", None, "advisor_confirmed"))
                 self.assertEqual(report["meta"]["integrity"]["unknown_severity_findings"],
                                  [finding["id"]])
                 self.assertEqual(report["summary"]["gate"], "FAIL")
