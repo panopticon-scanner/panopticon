@@ -1,6 +1,7 @@
 """#run7 SEC-B2C: the single-source secret redaction shared by the driver
 (tool output) and synthesize (shareable report bodies)."""
 import os
+import re
 import subprocess
 import sys
 import unittest
@@ -218,6 +219,62 @@ class TestRedactAdditionalVendorFormats(unittest.TestCase):
         out = redact.redact_tree({"d": "header %s trailer" % jwt})
         self.assertNotIn(jwt, out["d"])
 
+    def test_masks_jwt_after_base64url_and_delimiter_prefixes(self):
+        jwt = fake_jwt()
+        for prefix in ("Bearer ", "token=", "token_", "jwt-", "x", "id9"):
+            with self.subTest(prefix=prefix):
+                out = redact.redact(prefix + jwt)
+                self.assertIn("[REDACTED", out)
+                self.assertNotIn(jwt, out)
+
+    def test_linear_jwt_rule_matches_the_legacy_match_set(self):
+        legacy = re.compile(
+            r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\."
+            r"[A-Za-z0-9_-]{10,}")
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+        valid_first = "eyJ" + "A" * 10
+        valid_second = "eyJ" + "B" * 10
+        first_segments = (
+            valid_first,
+            "eyJeyJ" + "A" * 10,
+            "A" * 5 + valid_first,
+            "eyJ" + "A" * 9,
+            "A" * 20,
+        )
+        second_segments = (valid_second, "eyJ" + "B" * 9, "B" * 20)
+        third_segments = ("C" * 10, "C" * 9)
+        tails = (
+            "",
+            "." + "D" * 12,
+            "." + "D" * 12 + "." + valid_first + "."
+            + valid_second + "." + "E" * 10,
+        )
+
+        cases = []
+        for prefix in ("", *alphabet):
+            for first in first_segments:
+                for second in second_segments:
+                    for third in third_segments:
+                        for tail in tails:
+                            cases.append(
+                                "!" + prefix + first + "." + second + "."
+                                + third + tail + "?")
+        cases.extend((
+            valid_first + "." + valid_second + "." + "C" * 10
+            + "." + valid_first + "." + valid_second + "." + "D" * 10,
+            "A" * 20 + "." + valid_first + "." + valid_second + "." + "C" * 10,
+            "short.." + valid_first + "." + valid_second + "." + "C" * 10,
+        ))
+
+        mismatches = []
+        for text in cases:
+            expected = legacy.sub("[REDACTED_JWT]", text)
+            actual = redact._JWT_CHAINS.sub(redact._mask_jwt_chain, text)
+            if actual != expected and len(mismatches) < 10:
+                mismatches.append((text, expected, actual))
+        self.assertGreaterEqual(len(cases), 5000)
+        self.assertEqual(mismatches, [])
+
     def test_repeated_jwt_opening_prefix_is_roughly_linear(self):
         """#2986: each embedded ``eyJ`` used to restart the JWT rule and
         rescan the remaining suffix, making a 256 KiB refused reply quadratic.
@@ -240,9 +297,10 @@ def elapsed(text):
     return time.perf_counter() - started, result
 
 plain_elapsed = max(elapsed(plain)[0] for _ in range(3))
-prefix_elapsed, result = elapsed(prefix_run)
-assert result == prefix_run
-assert prefix_elapsed <= plain_elapsed * 20, (plain_elapsed, prefix_elapsed)
+for candidate in (prefix_run, "x" + prefix_run[:-1]):
+    prefix_elapsed, result = elapsed(candidate)
+    assert result == candidate
+    assert prefix_elapsed <= plain_elapsed * 20, (plain_elapsed, prefix_elapsed)
 """
         result = subprocess.run(
             [sys.executable, "-c", code], cwd=os.path.join(REPO_ROOT, "skill"),
