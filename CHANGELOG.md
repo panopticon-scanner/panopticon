@@ -7,6 +7,15 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Codex shape proof distinguishes stderr from a structured error event (#2940).**
+  A Codex launch rejected before JSONL could copy bare stderr into `host_error`, making the
+  output-schema probe report `proven` without evidence that Codex accepted the argv. The result
+  now records that provenance: a fast stderr-only failure refutes the shape and a slower one is
+  unmeasured. A slow failure with neither stderr nor any JSONL event is likewise unmeasured, while
+  ok launches, reply envelopes, and structured JSONL error events remain proven. Outage
+  classification and other host families are unchanged, and disclosure names the actual
+  stderr-only observation.
+
 - **An absent severity fails closed too (#3210).** A reviewer finding with no `severity` (the
   key missing or null) used to read as INFO, so verify never engaged it and the gate PASSED,
   measured through the real driver at `--fail-on high` and `critical`. It is now read as CRITICAL,

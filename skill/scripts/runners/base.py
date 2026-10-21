@@ -126,6 +126,9 @@ class RunResult:
                                    # `host_error` is what decides whose failure it was, and
                                    # widening that input would read an entry's own stderr noise
                                    # as an outage.
+    host_error_from_stderr: bool = False  # True only when a family copied stderr into
+                                          # host_error for outage classification; it did
+                                          # not observe the host's structured error event.
     models: dict = dataclasses.field(default_factory=dict)  # host-reported per-model usage
 
     def __post_init__(self):
