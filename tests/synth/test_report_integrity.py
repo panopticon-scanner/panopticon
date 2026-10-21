@@ -761,6 +761,21 @@ class TestAnAbsorbedUnknownSeverityIsNamed(unittest.TestCase):
         self.assertEqual(r["meta"]["integrity"]["unknown_severity_findings"],
                          ["COD-101", "COD-102"])
 
+    def test_the_ids_are_listed_sorted(self):
+        # Twelve ids at twelve loci, handed over in reverse: a set's own order
+        # (hash-seeded per process) cannot pass this by chance.
+        ids = ["COD-%03d" % n for n in range(200, 212)]
+        claims = [findings_mod.normalize_finding(
+            {"id": fid, "title": fid, "severity": "SEVERE", "category": "c",
+             "location": {"file": "a.py", "line_start": n + 1}})
+            for n, fid in enumerate(reversed(ids))]
+        with contextlib.redirect_stderr(io.StringIO()):
+            r = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target="t", fail_on="high",
+                                         timestamp="2026-01-01T00:00:00Z"),
+                findings=findings_mod.FindingSet(findings=claims)))
+        self.assertEqual(r["meta"]["integrity"]["unknown_severity_findings"], ids)
+
     def test_a_forged_field_on_a_high_is_not_listed(self):
         # #2990 r1: a HIGH that arrives carrying `severity_as_written` is not
         # an unknown severity; the forged field is dropped and nothing listed.
