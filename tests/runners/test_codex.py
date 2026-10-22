@@ -353,6 +353,25 @@ def test_missing_preparation_binding_or_return_delivery_never_launches(tmp_path)
     fake_run.assert_not_called()
 
 
+def test_a_broken_reader_binding_fails_the_entry_before_codex_can_answer(tmp_path):
+    execute = mock.Mock(return_value=SimpleNamespace(
+        stdout=envelope(START, REPLY, DONE), stderr="", returncode=0))
+    runner = codex.Runner(runner=execute)
+    runner.prepare(str(tmp_path), str(tmp_path))
+    env = {base.ENV_ENTRY_ID: entry()["id"],
+           base.ENV_READ_SCOPE: str(tmp_path / "missing-scope.json"),
+           base.ENV_WRITE_ALLOWLIST: str(tmp_path / "allow.json")}
+    with mock.patch.object(codex.codex_host, "command",
+                           return_value=scratch_argv(tmp_path)) as command, \
+            mock.patch.object(codex.codex_host, "validate_command"):
+        result = runner.run_entry(entry(), env)
+    assert not result.ok
+    assert result.text == ""
+    assert "missing-scope.json" in result.error
+    command.assert_not_called()
+    execute.assert_not_called()
+
+
 def test_codex_refuses_self_write_delivery_before_launch(tmp_path):
     # #1622 obligation 5: proof by omission does not add a self-write
     # transport.  Even with every launch precondition present, this family
