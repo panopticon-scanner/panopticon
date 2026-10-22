@@ -26,6 +26,12 @@ evidence exposed.
   classification and other host families are unchanged, and disclosure names the actual
   stderr-only observation.
 
+- **The NVD cache sync verifies the DependencyCheck zip fail-closed (#3224).** The keyed sync
+  step in `nvd-cache.yml` ran without `set -e`, so a failed download or a `sha256sum -c`
+  mismatch did not stop it, and the unverified zip ran with `NVD_API_KEY` in its environment. The
+  step now runs under `set -euo pipefail`; the sync's own exit status is still captured as before.
+  A test runs the step's real script against stub tools.
+
 - **An empty review round stops and says so (#3220).** A run whose every review cell was
   exhausted ended `complete` with exit 0, and its report read health 100, risk LOW, grade S over
   zero review findings. A batch whose every self-writing entry was denied its own `out_file` was

@@ -93,7 +93,11 @@ jobs:
           DC_VERSION: ${{ steps.dc.outputs.version }}
           DC_SHA256: ${{ steps.dc.outputs.sha256 }}
         run: |
-          set -uo pipefail
+          # #3224: `-e` too. Without it a failed download or a digest mismatch
+          # did not stop the step, and the unverified zip ran with the API key
+          # in its environment. The sync's own status is still captured below:
+          # `|| rc=$?` is a list `-e` does not abort.
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends default-jre-headless unzip
           curl -sfL --connect-timeout 5 --max-time 180 \
