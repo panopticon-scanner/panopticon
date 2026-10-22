@@ -33,10 +33,11 @@ updates:
         update-types:
           - "version-update:semver-major"
           - "version-update:semver-minor"
-      # Semgrep 1.179.0 pins these dependency families to the current major
-      # or minor line through its transitive requirements. pyjwt is held to
-      # its major line alone since 1.179.0 (`pyjwt[crypto]<3,>=2.15.0`), so its
-      # minor updates are offered again (#2876).
+      # Semgrep 1.180.0 (its requirements are 1.179.0's, unchanged) pins these
+      # dependency families to the current major or minor line through its
+      # transitive requirements. pyjwt is held to its major line alone since
+      # 1.179.0 (`pyjwt[crypto]<3,>=2.15.0`), so its minor updates are offered
+      # again (#2876).
       - dependency-name: "boltons"
         update-types:
           - "version-update:semver-major"
