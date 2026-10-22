@@ -335,3 +335,16 @@ def _stand_down_the_claude_tools_preflight(request, monkeypatch):
     monkeypatch.setattr(claude_runner.Runner, "require_tools_flag", lambda self, cwd=None: None,
                         raising=False)
 
+
+# #3218: the headless write-guard probe launches ONE real `claude -p` canary.
+# Tests that reach the probe exist to test something else, so the canary is
+# stood down (proving, as a working CLI would) except in a class that sets
+# REAL_WRITE_CANARY, which tests the canary itself through a fake launcher.
+@pytest.fixture(autouse=True)
+def _stand_down_the_claude_write_canary(request, monkeypatch):
+    if getattr(request.cls, "REAL_WRITE_CANARY", False):
+        return
+    import scripts.probes.claude_write_canary as canary
+    monkeypatch.setattr(canary, "round_trip",
+                        lambda: (True, "write canary stood down in tests"), raising=False)
+

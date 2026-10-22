@@ -26,7 +26,11 @@ enforcement shell whose `tools:` grant matches its template, *and* the reviewed 
 that shadows those shells. `artifact_write_guard` — reviewer-controlled artifact writes are
 impossible or confined to the declared `out_file`. A family can prove an absent reviewer-selectable
 write surface or a mediated self-write path; transport is a separate static registry fact. Current
-Claude/Kimi proof covers the write-tool surface. Bash-path writes belong to `tool_policy_enforced`.
+Claude/Kimi proof covers the write-tool surface. On a headless Claude run the proof includes one real
+`claude -p` canary launch (#3218, about $0.0005 on haiku): the runner's enforced argv, the write guard
+armed in a sandbox, a Write to its own `out_file` and one to a peer's. It proves only when the own
+file was written and the peer's was not, so a CLI whose permission layer denies every granted Write
+cannot prove the capability. Bash-path writes belong to `tool_policy_enforced`.
 When that posture is REFUTED and the operator passes `--allow-unenforced`,
 `unenforced-ack.json` records the named gap rather than broadening the claim. For that
 PROVEN-boundary case, with no flag or with tool policy UNKNOWN, no acknowledgement is written; the

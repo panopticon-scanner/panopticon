@@ -1468,3 +1468,102 @@ class TestTheUsageProbeDoesNotAnswerForTheFlags(TestUsageSourceProbe):
         self.assertEqual(hosts.PROVEN, state)
         self.assertEqual(1, len(self.help_calls))          # its own read, once
         self.assertNotIn("--json-schema", detail)
+
+
+class TestTheWriteCanaryGoesThroughTheRealCli(unittest.TestCase):
+    """#3218: the headless write-guard probe's round-trip drove the hook
+    in-process, so a CLI whose permission layer denied every granted Write
+    still proved `artifact_write_guard`. The canary launches the runner's own
+    enforced argv once; only "own written, peer not" proves it. The launcher
+    is faked here, playing the four CLIs a box can have."""
+
+    REAL_WRITE_CANARY = True
+
+    def fake(self, behaviour):
+        seen = {}
+
+        def launch(cmd, cwd=None, env=None, **_kw):
+            import scripts.probes.claude_write_canary as canary
+            seen.update(cmd=cmd, cwd=cwd, env=env)
+            grant = [a for a in cmd if a.startswith("--allowedTools=Edit(/")]
+            own = grant[0][len("--allowedTools=Edit(/"):-1] if grant else None
+            peer = own and os.path.join(os.path.dirname(own), "findings-canary-SEC.json")
+            denials = []
+            for path, allowed in ((own, behaviour in ("granted", "wide-open")),
+                                  (peer, behaviour == "wide-open")):
+                if path and allowed:
+                    with open(path, "w", encoding="utf-8") as fh:
+                        fh.write("{}")
+                elif path:
+                    denials.append({"tool_name": "Write", "tool_input": {"file_path": path}})
+            stdout = "" if behaviour == "no-envelope" else json.dumps(
+                {"type": "result", "permission_denials": denials})
+            self.assertEqual(env.get(write_guard_hook.ENV_ENTRY_ID), canary.OWN_ID)
+            return mock.Mock(returncode=0, stdout=stdout, stderr="")
+        return launch, seen
+
+    def canary(self, behaviour):
+        import scripts.probes.claude_write_canary as canary
+        launch, seen = self.fake(behaviour)
+        with mock.patch.object(canary, "_launch", side_effect=launch):
+            return canary.round_trip(), seen
+
+    def test_a_granting_cli_proves_it(self):
+        (ok, detail), _seen = self.canary("granted")
+        self.assertTrue(ok, detail)
+
+    def test_an_always_deny_cli_cannot_prove_it(self):
+        (ok, detail), _seen = self.canary("always-deny")
+        self.assertFalse(ok)
+        self.assertIn("DENIED through the real CLI", detail)
+
+    def test_a_cli_that_lets_a_peer_through_cannot_prove_it(self):
+        (ok, detail), _seen = self.canary("wide-open")
+        self.assertFalse(ok)
+        self.assertIn("PEER", detail)
+
+    def test_no_envelope_proves_nothing(self):
+        (ok, detail), _seen = self.canary("no-envelope")
+        self.assertFalse(ok)
+        self.assertIn("no JSON envelope", detail)
+
+    def test_a_launch_that_raises_resolves_to_not_proven(self):
+        import scripts.probes.claude_write_canary as canary
+        with mock.patch.object(canary, "_launch", side_effect=OSError("no claude")):
+            ok, detail = canary.round_trip()
+        self.assertFalse(ok)
+        self.assertIn("could not run", detail)
+
+    def test_the_canary_launches_the_runner_s_enforced_argv(self):
+        import scripts.probes.claude_write_canary as canary
+        import scripts.runners.claude as claude_runner
+        (_ok, _d), seen = self.canary("granted")
+        cmd = seen["cmd"]
+        self.assertEqual(cmd[:2], ["claude", "-p"])
+        for flag in ("--settings", "--strict-mcp-config", "--disable-slash-commands",
+                     "--no-session-persistence"):
+            self.assertIn(flag, cmd)
+        self.assertEqual(cmd[cmd.index("--setting-sources") + 1], "user")
+        self.assertEqual(cmd[cmd.index("--agent") + 1], canary.CANARY_AGENT)
+        grants = [a for a in cmd if a.startswith(claude_runner.GRANT_PREFIX)]
+        self.assertEqual(len(grants), 1)
+        self.assertTrue(grants[0].endswith("findings-canary-COD.json)"))
+        self.assertNotIn("--permission-mode", cmd)
+
+    def _probe(self, behaviour):
+        import scripts.probes.claude_write_canary as canary
+        launch, _seen = self.fake(behaviour)
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(canary, "_launch", side_effect=launch):
+            return claude_probes.probe_write_guard_armed(
+                "claude", settings_path=os.path.join(d, "host-settings.json"))
+
+    def test_the_headless_probe_is_refuted_by_an_always_deny_cli(self):
+        state, _by, detail = self._probe("always-deny")
+        self.assertEqual(state, hosts.REFUTED)
+        self.assertIn("DENIED through the real CLI", detail)
+
+    def test_the_headless_probe_is_proven_by_a_granting_cli(self):
+        state, _by, detail = self._probe("granted")
+        self.assertEqual(state, hosts.PROVEN, detail)
+        self.assertIn("through the real CLI", detail)
