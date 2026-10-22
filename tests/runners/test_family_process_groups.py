@@ -13,6 +13,7 @@ argv for `sys.executable`, so the binary under test is the interpreter that is
 already running this suite: an absolute path, so the case behaves identically
 under the PATH shim and under an empty PATH.
 """
+import json
 import os
 import signal
 import sys
@@ -54,7 +55,10 @@ class _FamilyCase(unittest.TestCase):
     def setUp(self):
         if not _POSIX:               # pragma: no cover - the suite runs on POSIX
             self.skipTest("process groups are a POSIX facility")
-        self.root = tempfile.mkdtemp(prefix="family-procgroup-")
+        # macOS spells the temporary root through /tmp -> /private/tmp. The
+        # reader binding deliberately rejects symlink traversal, so fixtures
+        # must hand it the canonical path a real review root uses.
+        self.root = os.path.realpath(tempfile.mkdtemp(prefix="family-procgroup-"))
         self.addCleanup(self._rmtree)
         self.pidfile = os.path.join(self.root, "grandchild.pid")
 
@@ -196,8 +200,11 @@ class TestTheCodexFamily(_FamilyCase):
         entry = {"id": "review-app-SEC", "agent": "panopticon-domain-panel",
                  "enforced": True, "model": "fixture-model",
                  "delivery": "return_json", "prompt": "review"}
+        scope_path = os.path.join(self.root, "scope.json")
+        with open(scope_path, "w", encoding="utf-8") as stream:
+            json.dump({entry["id"]: {"files": [], "dirs": [], "reads": []}}, stream)
         overlay = {base.ENV_ENTRY_ID: entry["id"],
-                   base.ENV_READ_SCOPE: os.path.join(self.root, "scope.json"),
+                   base.ENV_READ_SCOPE: scope_path,
                    base.ENV_WRITE_ALLOWLIST: os.path.join(self.root, "allow.json")}
         with self.family_default(codex_runner):
             runner = codex_runner.Runner()

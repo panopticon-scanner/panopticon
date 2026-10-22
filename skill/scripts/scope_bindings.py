@@ -9,6 +9,7 @@ import os
 
 import scripts.phases.requests as requests
 import scripts.read_guard_hook as read_guard_hook
+import scripts.safe_write as safe_write
 
 
 class EntryScopes:
@@ -28,6 +29,7 @@ class EntryScopes:
         """Write normalized ``{entry id: scope}`` rows one file at a time."""
         for entry_id, scope in scopes.items():
             path = self.path(entry_id)
+            safe_write.confine_artifact_path(path)
             read_guard_hook._atomic_write_json(path, {entry_id: scope})
             self.paths[entry_id] = path
 
@@ -52,11 +54,12 @@ class EntryScopes:
             if path is None:
                 continue
             try:
-                os.remove(path)
-            except OSError:
+                safe_write.remove_artifact(path)
+            except (OSError, ValueError):
                 pass
         self.transient.difference_update(entry_ids)
         try:
+            safe_write.confine_artifact_path(self.directory)
             os.rmdir(self.directory)
-        except OSError:
+        except (OSError, ValueError):
             pass

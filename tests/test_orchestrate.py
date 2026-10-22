@@ -4,11 +4,14 @@ import io
 import json
 import os
 import tempfile
+import tomllib
 from unittest import mock
 
 
+import scripts.codex_host as codex_host
 import scripts.driver as driver
 import scripts.codex_read_tools as codex_read_tools
+import scripts.dispatch as dispatch
 import scripts.orchestrate as orchestrate
 import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
@@ -184,12 +187,21 @@ class TestHeadlessLoop(_HeadlessLoopCase):
                 queue_id = "%016x" % number
                 entries.append({
                     "id": "verify-tool-" + queue_id,
+                    "agent": "panopticon-advisor",
+                    "model": "fixture-model",
                     "out_file": os.path.join(run_dir, "verdicts", queue_id + ".json"),
                     "scope": {"files": [os.path.join(
                         long_dir, "%03d-%02d.py" % (number, item)) for item in range(10)],
                         "dirs": [], "reads": []},
                 })
             guards = orchestrate.Guards("headless", run_dir=run_dir)
+            registration_dir = os.path.join(root, "codex-agents")
+            dispatch.emit_host_agents("codex", registration_dir)
+            runtime_dir = os.path.join(root, "codex-runtime")
+
+            def catalog():
+                return [{"slug": "fixture-model"}]
+
             try:
                 guards.arm(entries)
                 self.assertGreater(os.path.getsize(guards.scope_path),
@@ -197,10 +209,24 @@ class TestHeadlessLoop(_HeadlessLoopCase):
                 bindings = []
                 for entry in entries:
                     env = guards.env_for(entry)
-                    bindings.append(env[base.ENV_READ_SCOPE])
+                    binding = env[base.ENV_READ_SCOPE]
+                    bindings.append(binding)
+                    self.assertLess(os.path.getsize(binding),
+                                    codex_read_tools.MAX_FILE_BYTES)
                     reader = codex_read_tools.load_reader(env, cwd=root)
                     self.assertIn(os.path.realpath(entry["scope"]["files"][0]),
                                   reader.scope["files"])
+                    argv = codex_host.command(
+                        entry, env, root, runtime_dir,
+                        registration_dir=registration_dir, catalog=catalog)
+                    try:
+                        config = tomllib.loads("\n".join(
+                            argv[index + 1] for index, arg in enumerate(argv)
+                            if arg == "-c"))
+                        broker_env = config["mcp_servers"]["panopticon_scope"]["env"]
+                        self.assertEqual(binding, broker_env[base.ENV_READ_SCOPE])
+                    finally:
+                        codex_host.cleanup_command(argv)
                 self.assertEqual(600, len(set(bindings)))
             finally:
                 guards.disarm(entries)
