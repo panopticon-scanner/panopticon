@@ -65,9 +65,21 @@ def _denied_paths(envelope):
     return paths
 
 
-def round_trip():
-    """(ok, detail): one canary launch. Never raises; a launch that cannot run
-    or does not answer proves nothing, so it is not ok."""
+# The three answers, kept apart (#3218 review round 1): REFUTED rests on
+# evidence only -- the own Write DENIED by a row naming that path, or a peer
+# written. Everything else (no envelope, a timeout, a quota or network error,
+# a model that never attempted the Write) measured nothing, and the probe says
+# UNKNOWN rather than claiming a denial nobody saw.
+PROVEN, REFUTED, NOT_MEASURED = "proven", "refuted", "not-measured"
+ATTEMPTS = 2   # one retry: a single flaky launch must not decide a run
+
+
+def _same(a, b):
+    return os.path.realpath(a) == os.path.realpath(b)
+
+
+def _attempt():
+    """(verdict, detail) for one canary launch. Never raises."""
     try:
         with tempfile.TemporaryDirectory() as sandbox:
             target = os.path.join(sandbox, "target")
@@ -90,24 +102,39 @@ def round_trip():
             entry, cmd = _argv(settings, agents, own, peer)
             problem = claude_runner.enforced_argv_problem(entry, cmd)
             if problem:
-                return False, "the canary's enforced argv is refused: %s" % problem
+                return REFUTED, "the canary's enforced argv is refused: %s" % problem
             env = claude_runner.Runner().launch_env({write_guard_hook.ENV_ENTRY_ID: OWN_ID})
             proc = _launch(cmd, cwd=target, env=env, capture_output=True, text=True,
                            timeout=CANARY_TIMEOUT)
             try:
                 envelope = json.loads(proc.stdout or "")
             except ValueError:
-                return False, ("the write canary's `claude -p` printed no JSON envelope "
-                               "(exit %s), so no granted Write was measured" % proc.returncode)
+                return NOT_MEASURED, ("the write canary's `claude -p` printed no JSON "
+                                      "envelope (exit %s)" % proc.returncode)
             denied = _denied_paths(envelope)
-            own_ok, peer_kept = os.path.isfile(own), not os.path.exists(peer)
+            own_ok, peer_written = os.path.isfile(own), os.path.exists(peer)
+            own_denied = any(_same(path, own) for path in denied)
     except Exception as exc:   # noqa: BLE001 - a probe resolves to a state, never a traceback
-        return False, "the write canary could not run: %s: %s" % (type(exc).__name__, exc)
-    if not own_ok:
-        return False, ("a granted Write to the entry's own out_file was DENIED through the real "
-                       "CLI (permission_denials: %d), so no enforced reviewer could write its "
-                       "findings" % len(denied))
-    if not peer_kept:
-        return False, "the write canary wrote a PEER entry's out_file through the real CLI"
-    return True, ("a granted Write reached its own out_file through the real CLI and a peer's "
-                  "was denied (%d denial(s))" % len(denied))
+        return NOT_MEASURED, "the write canary could not run: %s: %s" % (type(exc).__name__, exc)
+    if peer_written:
+        return REFUTED, "the write canary wrote a PEER entry's out_file through the real CLI"
+    if own_ok:
+        return PROVEN, ("a granted Write reached its own out_file through the real CLI and a "
+                        "peer's was denied (%d denial(s))" % len(denied))
+    if own_denied:
+        return REFUTED, ("a granted Write to the entry's own out_file was DENIED through the "
+                         "real CLI (a permission_denials row names it), so no enforced reviewer "
+                         "could write its findings")
+    return NOT_MEASURED, ("the canary's own out_file was not written and no permission_denials "
+                          "row names it (%d denial(s)): the model did not attempt the Write"
+                          % len(denied))
+
+
+def round_trip():
+    """(verdict, detail): PROVEN, REFUTED or NOT_MEASURED, the canary launched
+    at most ATTEMPTS times -- again only while nothing was measured."""
+    for attempt in range(1, ATTEMPTS + 1):
+        verdict, detail = _attempt()
+        if verdict != NOT_MEASURED:
+            return verdict, detail
+    return NOT_MEASURED, "not measured after %d attempt(s): %s" % (attempt, detail)

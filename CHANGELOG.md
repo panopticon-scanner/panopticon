@@ -27,7 +27,8 @@ evidence exposed.
   the rule reads those as a pattern (an unescaped `*` granted a peer) and the escape cannot express
   `?` or a backslash. The unenforced argv is unchanged. `artifact_write_guard` on a headless Claude
   run now also takes one real `claude -p` canary launch (about $0.0005 on haiku), so a CLI that denies
-  every granted Write no longer proves it.
+  every granted Write no longer proves it. The canary is REFUTED only on evidence (a denial row naming
+  its own file, or a peer written); a launch that measured nothing is retried once, then UNKNOWN.
 
 - **Semgrep 1.181.0 (supersedes #3216).** The tools image ships semgrep 1.181.0, re-resolved
   the #3214 way; its declared requirements are 1.179.0's, unchanged. Also filelock 4.2.0 and

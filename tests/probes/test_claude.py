@@ -1474,23 +1474,33 @@ class TestTheWriteCanaryGoesThroughTheRealCli(unittest.TestCase):
     """#3218: the headless write-guard probe's round-trip drove the hook
     in-process, so a CLI whose permission layer denied every granted Write
     still proved `artifact_write_guard`. The canary launches the runner's own
-    enforced argv once; only "own written, peer not" proves it. The launcher
-    is faked here, playing the four CLIs a box can have."""
+    enforced argv; "own written, peer not" proves it. Review round 1: REFUTED
+    rests on evidence only (a denial row naming the own path, or a peer
+    written); anything else is NOT measured, retried once, then UNKNOWN. The
+    launcher is faked here, playing the CLIs a box can have."""
 
     REAL_WRITE_CANARY = True
 
-    def fake(self, behaviour):
-        seen = {}
+    def fake(self, *behaviours):
+        seen = {"calls": 0}
+        plan = list(behaviours)
 
         def launch(cmd, cwd=None, env=None, **_kw):
             import scripts.probes.claude_write_canary as canary
+            behaviour = plan[min(seen["calls"], len(plan) - 1)]
+            seen["calls"] += 1
             seen.update(cmd=cmd, cwd=cwd, env=env)
+            self.assertEqual(env.get(write_guard_hook.ENV_ENTRY_ID), canary.OWN_ID)
+            if behaviour == "raises":
+                raise OSError("network blip")
             grant = [a for a in cmd if a.startswith("--allowedTools=Edit(/")]
             own = grant[0][len("--allowedTools=Edit(/"):-1] if grant else None
             peer = own and os.path.join(os.path.dirname(own), "findings-canary-SEC.json")
             denials = []
             for path, allowed in ((own, behaviour in ("granted", "wide-open")),
                                   (peer, behaviour == "wide-open")):
+                if behaviour == "no-attempt":
+                    continue
                 if path and allowed:
                     with open(path, "w", encoding="utf-8") as fh:
                         fh.write("{}")
@@ -1498,46 +1508,69 @@ class TestTheWriteCanaryGoesThroughTheRealCli(unittest.TestCase):
                     denials.append({"tool_name": "Write", "tool_input": {"file_path": path}})
             stdout = "" if behaviour == "no-envelope" else json.dumps(
                 {"type": "result", "permission_denials": denials})
-            self.assertEqual(env.get(write_guard_hook.ENV_ENTRY_ID), canary.OWN_ID)
             return mock.Mock(returncode=0, stdout=stdout, stderr="")
         return launch, seen
 
-    def canary(self, behaviour):
+    def canary(self, *behaviours):
         import scripts.probes.claude_write_canary as canary
-        launch, seen = self.fake(behaviour)
+        launch, seen = self.fake(*behaviours)
         with mock.patch.object(canary, "_launch", side_effect=launch):
             return canary.round_trip(), seen
 
     def test_a_granting_cli_proves_it(self):
-        (ok, detail), _seen = self.canary("granted")
-        self.assertTrue(ok, detail)
+        import scripts.probes.claude_write_canary as canary
+        (verdict, detail), seen = self.canary("granted")
+        self.assertEqual(verdict, canary.PROVEN, detail)
+        self.assertEqual(seen["calls"], 1)
 
-    def test_an_always_deny_cli_cannot_prove_it(self):
-        (ok, detail), _seen = self.canary("always-deny")
-        self.assertFalse(ok)
+    def test_an_always_deny_cli_is_refuted_on_its_denial_row(self):
+        import scripts.probes.claude_write_canary as canary
+        (verdict, detail), seen = self.canary("always-deny")
+        self.assertEqual(verdict, canary.REFUTED)
         self.assertIn("DENIED through the real CLI", detail)
+        self.assertEqual(seen["calls"], 1)                 # evidence is not retried
 
-    def test_a_cli_that_lets_a_peer_through_cannot_prove_it(self):
-        (ok, detail), _seen = self.canary("wide-open")
-        self.assertFalse(ok)
+    def test_a_cli_that_lets_a_peer_through_is_refuted(self):
+        import scripts.probes.claude_write_canary as canary
+        (verdict, detail), _seen = self.canary("wide-open")
+        self.assertEqual(verdict, canary.REFUTED)
         self.assertIn("PEER", detail)
 
-    def test_no_envelope_proves_nothing(self):
-        (ok, detail), _seen = self.canary("no-envelope")
-        self.assertFalse(ok)
-        self.assertIn("no JSON envelope", detail)
-
-    def test_a_launch_that_raises_resolves_to_not_proven(self):
+    def test_no_attempt_is_not_measured_and_never_called_a_denial(self):
         import scripts.probes.claude_write_canary as canary
-        with mock.patch.object(canary, "_launch", side_effect=OSError("no claude")):
-            ok, detail = canary.round_trip()
-        self.assertFalse(ok)
+        (verdict, detail), seen = self.canary("no-attempt")
+        self.assertEqual(verdict, canary.NOT_MEASURED)
+        self.assertIn("not measured", detail)
+        self.assertNotIn("DENIED", detail)
+        self.assertEqual(seen["calls"], canary.ATTEMPTS)
+
+    def test_no_envelope_twice_is_not_measured(self):
+        import scripts.probes.claude_write_canary as canary
+        (verdict, detail), seen = self.canary("no-envelope")
+        self.assertEqual(verdict, canary.NOT_MEASURED)
+        self.assertIn("no JSON envelope", detail)
+        self.assertNotIn("DENIED", detail)
+        self.assertEqual(seen["calls"], 2)
+
+    def test_a_launch_that_raises_twice_is_not_measured(self):
+        import scripts.probes.claude_write_canary as canary
+        (verdict, detail), seen = self.canary("raises")
+        self.assertEqual(verdict, canary.NOT_MEASURED)
         self.assertIn("could not run", detail)
+        self.assertEqual(seen["calls"], 2)
+
+    def test_one_flaky_launch_is_retried_once(self):
+        import scripts.probes.claude_write_canary as canary
+        for first in ("raises", "no-envelope", "no-attempt"):
+            with self.subTest(first=first):
+                (verdict, detail), seen = self.canary(first, "granted")
+                self.assertEqual(verdict, canary.PROVEN, detail)
+                self.assertEqual(seen["calls"], 2)
 
     def test_the_canary_launches_the_runner_s_enforced_argv(self):
         import scripts.probes.claude_write_canary as canary
         import scripts.runners.claude as claude_runner
-        (_ok, _d), seen = self.canary("granted")
+        (_verdict, _d), seen = self.canary("granted")
         cmd = seen["cmd"]
         self.assertEqual(cmd[:2], ["claude", "-p"])
         for flag in ("--settings", "--strict-mcp-config", "--disable-slash-commands",
@@ -1550,9 +1583,9 @@ class TestTheWriteCanaryGoesThroughTheRealCli(unittest.TestCase):
         self.assertTrue(grants[0].endswith("findings-canary-COD.json)"))
         self.assertNotIn("--permission-mode", cmd)
 
-    def _probe(self, behaviour):
+    def _probe(self, *behaviours):
         import scripts.probes.claude_write_canary as canary
-        launch, _seen = self.fake(behaviour)
+        launch, _seen = self.fake(*behaviours)
         with tempfile.TemporaryDirectory() as d, \
                 mock.patch.object(canary, "_launch", side_effect=launch):
             return claude_probes.probe_write_guard_armed(
@@ -1562,6 +1595,14 @@ class TestTheWriteCanaryGoesThroughTheRealCli(unittest.TestCase):
         state, _by, detail = self._probe("always-deny")
         self.assertEqual(state, hosts.REFUTED)
         self.assertIn("DENIED through the real CLI", detail)
+
+    def test_the_headless_probe_is_unknown_when_nothing_was_measured(self):
+        for behaviour in ("no-attempt", "no-envelope", "raises"):
+            with self.subTest(behaviour=behaviour):
+                state, _by, detail = self._probe(behaviour)
+                self.assertEqual(state, hosts.UNKNOWN)
+                self.assertIn("not measured", detail)
+                self.assertNotIn("DENIED", detail)
 
     def test_the_headless_probe_is_proven_by_a_granting_cli(self):
         state, _by, detail = self._probe("granted")

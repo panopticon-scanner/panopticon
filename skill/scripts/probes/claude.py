@@ -317,9 +317,11 @@ def probe_write_guard_armed(host, session_root=None, settings_path=None):
         # #3218: the round-trip above never meets the CLI's permission layer,
         # which denied every granted Write on a box whose user settings approve
         # none. One real launch is what can tell those apart.
-        ok, canary = claude_write_canary.round_trip()
-        if not ok:
+        verdict, canary = claude_write_canary.round_trip()
+        if verdict == claude_write_canary.REFUTED:
             return (hosts.REFUTED, WRITE_GUARD_ARMED, canary)
+        if verdict != claude_write_canary.PROVEN:   # r1: not measured is not a denial
+            return (hosts.UNKNOWN, WRITE_GUARD_ARMED, canary)
         return (hosts.PROVEN, WRITE_GUARD_ARMED,
                 "%s; %s; the runner will arm at %s"
                 % (detail, canary, os.path.abspath(settings_path)))

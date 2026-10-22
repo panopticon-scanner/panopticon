@@ -30,7 +30,9 @@ Claude/Kimi proof covers the write-tool surface. On a headless Claude run the pr
 `claude -p` canary launch (#3218, about $0.0005 on haiku): the runner's enforced argv, the write guard
 armed in a sandbox, a Write to its own `out_file` and one to a peer's. It proves only when the own
 file was written and the peer's was not, so a CLI whose permission layer denies every granted Write
-cannot prove the capability. Bash-path writes belong to `tool_policy_enforced`.
+cannot prove the capability. It is REFUTED only on evidence (a denial row naming the own file, or the
+peer written); a launch that measured nothing (no envelope, an error, no Write attempted) is retried
+once and then reads UNKNOWN, which still refuses the run. Bash-path writes belong to `tool_policy_enforced`.
 When that posture is REFUTED and the operator passes `--allow-unenforced`,
 `unenforced-ack.json` records the named gap rather than broadening the claim. For that
 PROVEN-boundary case, with no flag or with tool policy UNKNOWN, no acknowledgement is written; the

@@ -346,5 +346,5 @@ def _stand_down_the_claude_write_canary(request, monkeypatch):
         return
     import scripts.probes.claude_write_canary as canary
     monkeypatch.setattr(canary, "round_trip",
-                        lambda: (True, "write canary stood down in tests"), raising=False)
+                        lambda: (canary.PROVEN, "write canary stood down in tests"), raising=False)
 
