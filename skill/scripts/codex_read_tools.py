@@ -549,11 +549,14 @@ def serve(reader, source, sink, binding_error=None):
 
 def main():
     try:
-        reader, error = load_reader(), None
+        reader = load_reader()
     except (OSError, ValueError, TypeError, RecursionError) as exc:
-        reader, error = None, str(exc)
-    serve(reader, sys.stdin, sys.stdout, error)
+        print("panopticon read broker: read scope binding unavailable: %s" % exc,
+              file=sys.stderr, flush=True)
+        return 1
+    serve(reader, sys.stdin, sys.stdout)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

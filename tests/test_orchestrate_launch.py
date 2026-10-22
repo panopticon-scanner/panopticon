@@ -475,6 +475,7 @@ class TestTheOutputSchemaShapeProof(LoopCase):
         self.assertEqual(cell["agent"], probe["agent"])
         self.assertEqual(cell["enforced"], probe["enforced"])
         self.assertEqual(cell["model"], probe["model"])
+        self.assertEqual(cell["scope"], probe["scope"])
         self.assertEqual(shape_probe.PROBE_ENTRY_ID, probe["id"])
         # one turn for the probe, and the batch's own bound put back after it
         self.assertEqual((shape_probe.PROBE_MAX_TURNS, shape_probe.PROBE_ENTRY_TIMEOUT),

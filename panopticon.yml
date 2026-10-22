@@ -346,6 +346,7 @@ groups:
     Loop:
       match:
       - skill/scripts/orchestrate.py
+      - skill/scripts/scope_bindings.py
       tests:
       - tests/test_orchestrate.py
       - tests/test_orchestrate_batch.py

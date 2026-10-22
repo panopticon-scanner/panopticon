@@ -7,6 +7,16 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Codex readers bind one bounded scope document per entry (#3219, 5.2 blocker).**
+  Whole-repository tool verification put every entry's grants into one shared file; at 584 entries
+  it crossed the broker's 1 MiB input limit, so every advisor was blind and most returned noisy
+  NEEDS_MORE_INFO verdicts. Headless launches now bind `read-scope/<entry-id>.json`, containing
+  only that entry's normalized grants, while the shared hook registry remains available for
+  session enforcement. The Codex runner validates the binding before launch, and the required MCP
+  broker exits on a startup binding error, so a missing, malformed, or oversized binding is a
+  retried and ledgered entry failure rather than a verdict. A 600-entry regression keeps the
+  deliberately oversized shared registry while successfully loading all 600 isolated readers.
+
 - **Codex shape proof distinguishes stderr from a structured error event (#2940).**
   A Codex launch rejected before JSONL could copy bare stderr into `host_error`, making the
   output-schema probe report `proven` without evidence that Codex accepted the argv. The result

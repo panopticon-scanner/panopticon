@@ -489,6 +489,20 @@ def test_missing_binding_does_not_offer_an_unrestricted_fallback():
     assert "binding unavailable" in body(replies[0]["result"])
 
 
+def test_the_broker_process_exits_instead_of_serving_with_a_broken_binding(monkeypatch):
+    request = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+        "name": "read_file", "arguments": {"path": "/secret"}}}
+    monkeypatch.setattr(read_tools.sys, "stdin", io.StringIO(json.dumps(request) + "\n"))
+    monkeypatch.delenv("PANOPTICON_ENTRY_ID", raising=False)
+    monkeypatch.delenv("PANOPTICON_READ_SCOPE", raising=False)
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = read_tools.main()
+    assert rc == 1
+    assert out.getvalue() == ""
+    assert "read scope binding unavailable" in err.getvalue()
+
+
 def test_resources_cannot_bypass_read_tools(tree):
     replies = exchange(reader_for(tree), [
         {"jsonrpc": "2.0", "id": 1, "method": "resources/list"},
