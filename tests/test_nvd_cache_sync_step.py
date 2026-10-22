@@ -44,7 +44,10 @@ def _run(curl_rc=0, sha_rc=0, sync_rc=0):
         marker = os.path.join(tmp, "launched")
         stubs = ("sudo() { return 0; }\n"
                  "curl() { : > dc.zip; return %d; }\n"
-                 "sha256sum() { return %d; }\n"
+                 # Drain stdin as the real one does: a stub that returns
+                 # unread can SIGPIPE the `echo` feeding it, which `pipefail`
+                 # and `-e` turn into a silent exit before the launch.
+                 "sha256sum() { cat > /dev/null; return %d; }\n"
                  "unzip() { return 0; }\n"
                  "timeout() { : > '%s'; return %d; }\n"
                  % (curl_rc, sha_rc, marker, sync_rc))
