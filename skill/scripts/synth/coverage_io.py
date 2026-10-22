@@ -207,3 +207,21 @@ def audit_floor_cells(coverages, present):
             if dom not in have and group is not None:
                 missing.append([group, dom])
     return {"missing_floor": sorted(missing)}
+
+
+# #3220: led into `summary.coverage_note` by `grading.grade_report`.
+REVIEW_MATRIX_MISSING_NOTE = ("no review cell answered: health and grade are unknown, and "
+                              "risk_level is only the tool axis's worst finding (null when "
+                              "it has none)")
+
+
+def review_matrix_missing(cell_audit):
+    """#3220: the run planned review cells and not one of them answered.
+
+    Read off `cell_audit`'s `planned_pairs` and `reviewed`; `tool_axis`
+    publishes `planned_pairs` only beside a measured `reviewed`, so a caller
+    that predates them gets False -- today's numbers, never a guess."""
+    audit = cell_audit if isinstance(cell_audit, dict) else {}
+    planned, reviewed = ({tuple(pair) for pair in audit.get(key) or [] if isinstance(pair, list)}
+                         for key in ("planned_pairs", "reviewed"))
+    return bool(planned) and not planned & reviewed

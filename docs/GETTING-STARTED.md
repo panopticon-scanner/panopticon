@@ -80,7 +80,7 @@ The loop prints progress per phase and per cell, and ends with the terminal summ
 - `.panopticon/<run-tag>-report.json.html`: the same report as one file for humans (it fetches only its web font when opened, and renders without it). Attach it, mail it, drop it in a shared folder.
 - `.panopticon/runs/<run-tag>/`: the working set (findings, verdicts, coverage, tool output, dispatch ledger, the measured host posture). The reports above survive if you delete it; you lose the resume state and the recorded host posture with it.
 
-`driver loop` exits 0 when it reaches a checkpoint or completes, and non-zero when it ends in `error` or `paused`. The gate verdict is `summary.gate` in the report; a failing gate is a valid outcome, not a driver error. The synthesizer's own exit codes (`0` clean, `1` gate failed, `2` inconclusive, `3` unreadable catalog bundle, `4` an artifact failed its own schema) are what a CI step keys on when it calls `skill/scripts/synthesize.py` directly.
+`driver loop` exits 0 when it reaches a checkpoint or completes, and non-zero when it ends in `error` or `paused`, or completes with `review_axis_empty` (no review cell answered, #3220). The gate verdict is `summary.gate` in the report; a failing gate is a valid outcome, not a driver error. The synthesizer's own exit codes (`0` clean, `1` gate failed, `2` inconclusive, `3` unreadable catalog bundle, `4` an artifact failed its own schema) are what a CI step keys on when it calls `skill/scripts/synthesize.py` directly.
 
 ## What to trust in the report
 

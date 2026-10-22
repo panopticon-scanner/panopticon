@@ -10,6 +10,7 @@ import scripts.dispatch as dispatch
 # this run's evidence; this module derives it to WRITE that request. One
 # function, so the two can never disagree about what the run's posture is.
 import scripts.loop_batch as loop_batch
+import scripts.probes.claude_write_canary as write_canary
 import scripts.run_manifest as run_manifest
 import scripts.synth.integrity as integrity_mod
 import scripts.synth.plan as plan_mod
@@ -580,17 +581,23 @@ def require_unenforced_ack(review_root, manifest, entries):
         alternative = (", or use one of: " + ", ".join("--host " + n for n in guarded)
                        if guarded else "")
         row = evidence.get(hosts.ARTIFACT_WRITE_GUARD) or {}
+        # #3220: an UNKNOWN the write canary left unmeasured is worth a second
+        # probe before it is worth accepting -- the next run launches it again.
+        unmeasured = (posture[hosts.ARTIFACT_WRITE_GUARD] == hosts.UNKNOWN and str(
+            row.get("detail") or "").startswith(write_canary.NOT_MEASURED_LEAD))
         raise runio.DriverError(
             "%s is %s on host %r -- probe %s: %s. %s use templates that request Write, and "
             "this run has not proven that reviewer-controlled artifact writes "
-            "are impossible or confined to the declared out_file. Re-run with "
+            "are impossible or confined to the declared out_file. %s with "
             "--allow-unenforced to accept that unproven boundary "
             "explicitly (it is recorded in %s)%s."
             % (hosts.ARTIFACT_WRITE_GUARD, posture[hosts.ARTIFACT_WRITE_GUARD],
                manifest.get("host"), row.get("by") or "none ran",
                row.get("detail") or "no evidence",
-               ", ".join(sorted(write_capable_roles())), UNENFORCED_ACK,
-               alternative))
+               ", ".join(sorted(write_capable_roles())),
+               ("The write canary measured nothing, so re-run first: the next run "
+                "probes again. Only if it stays unknown, re-run" if unmeasured else "Re-run"),
+               UNENFORCED_ACK, alternative))
     return _record_unenforced_ack(review_root, manifest, entries, evidence,
                                   posture)
 

@@ -32,7 +32,9 @@ armed in a sandbox, a Write to its own `out_file` and one to a peer's. It proves
 file was written and the peer's was not, so a CLI whose permission layer denies every granted Write
 cannot prove the capability. It is REFUTED only on evidence (a denial row naming the own file, or the
 peer written); a launch that measured nothing (no envelope, an error, no Write attempted) is retried
-once and then reads UNKNOWN, which still refuses the run. Bash-path writes belong to `tool_policy_enforced`.
+once and then reads UNKNOWN, which still refuses the run. That refusal asks for a re-run first
+(the next run probes again) and names `--allow-unenforced` only after it (#3220).
+Bash-path writes belong to `tool_policy_enforced`.
 When that posture is REFUTED and the operator passes `--allow-unenforced`,
 `unenforced-ack.json` records the named gap rather than broadening the claim. For that
 PROVEN-boundary case, with no flag or with tool policy UNKNOWN, no acknowledgement is written; the

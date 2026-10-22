@@ -14,6 +14,7 @@ except ImportError:
     resource = None
 
 import scripts.hosts as hosts_mod
+import scripts.synth.coverage_io as coverage_io
 import scripts.synth.delta as delta_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.grading as grading_mod
@@ -826,3 +827,75 @@ class TestDisclosureDoesNotGate(unittest.TestCase):
         refuted = self._report(hosts_mod.REFUTED)
         self.assertNotEqual(proven["meta"]["host_capabilities"],
                             refuted["meta"]["host_capabilities"])
+
+
+class TestNoReviewCellAnsweredReadsUnknown(unittest.TestCase):
+    """#3220 M3 (coordinator ruling): when the run planned review cells and
+    none answered, health and grade are null whatever was found, and
+    risk_level is the worst gate-eligible finding -- a true lower bound --
+    or null when there is none to bound it (INFO is not a risk level)."""
+
+    def _graded(self, severities, reviewed=()):
+        import types
+        found = [{"severity": sev, "panel": "code", "title": "t%d" % i, "_group": "App",
+                  "location": {"file": "app.py"}} for i, sev in enumerate(severities)]
+        resolved = types.SimpleNamespace(
+            gate_eligible=found, active=found, rejected=[], findings=found,
+            verdict_unloadable=[], unanswered_gate=0, on_diff_active=[],
+            pre_existing_active=[], delta_mode=False)
+        audit = {"missing_floor": [] if reviewed else [["App", "SEC"]],
+                 "planned_pairs": [["App", "SEC"]], "reviewed": [list(p) for p in reviewed]}
+        reconciled = types.SimpleNamespace(
+            groups_meta=[{"name": "App", "files": ["app.py"], "parent": "App"}],
+            panels_incomplete=[] if reviewed else ["security"], tools_absent=[],
+            tools_network_excluded=[], integrity_ok=True, cell_audit=audit,
+            tools_manifest_invalid=None, gated_suppressed=[],
+            delta_scope_suppressed_git_drivers=None, coverage={})
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "app.py"), "w", encoding="utf-8") as fh:
+                fh.write("x = 1\n")
+            run = types.SimpleNamespace(target=d, root=None, fail_on=None, gate_unverified=False)
+            return grading_mod.grade_report(run, resolved, reconciled).summary
+
+    def test_a_tool_finding_bounds_the_risk_from_below(self):
+        for severities, risk in ((["HIGH", "LOW"], "HIGH"), (["CRITICAL"], "CRITICAL"),
+                                 (["MEDIUM", "INFO"], "MEDIUM"), (["LOW"], "LOW")):
+            with self.subTest(severities=severities):
+                summary = self._graded(severities)
+                self.assertEqual(risk, summary["risk_level"])
+                self.assertEqual((None, None, None),
+                                 (summary["health"]["score"], summary["overall_grade"],
+                                  summary["provisional_grade"]))
+
+    def test_nothing_to_bound_it_reads_null(self):
+        for severities in ([], ["INFO"]):
+            with self.subTest(severities=severities):
+                summary = self._graded(severities)
+                self.assertIsNone(summary["risk_level"])
+                self.assertIsNone(summary["health"]["score"])
+                self.assertTrue(summary["coverage_note"].startswith(
+                    coverage_io.REVIEW_MATRIX_MISSING_NOTE), summary["coverage_note"])
+
+    def test_one_answered_cell_keeps_todays_numbers(self):
+        summary = self._graded([], reviewed=[("App", "SEC")])
+        self.assertEqual((100.0, "LOW", "S"), (summary["health"]["score"],
+                                               summary["risk_level"], summary["overall_grade"]))
+        self.assertNotIn(coverage_io.REVIEW_MATRIX_MISSING_NOTE, summary["coverage_note"] or "")
+
+
+class TestReviewMatrixMissing(unittest.TestCase):
+    """#3220: the predicate M3 rests on, read off `cell_audit` only."""
+
+    def test_rows(self):
+        rows = (({"missing_floor": []}, False),                                  # legacy
+                ({"planned_pairs": [], "reviewed": []}, False),                  # nothing planned
+                ({"planned_pairs": [["A", "SEC"]], "reviewed": []}, True),
+                ({"planned_pairs": [["A", "SEC"]], "reviewed": [["B", "SEC"]]}, True),  # unplanned
+                ({"planned_pairs": [["A", "SEC"], ["A", "COD"]],
+                  "reviewed": [["A", "COD"]]}, False),
+                ({"planned_pairs": [["A", "SEC"]], "reviewed": [5, "A"]}, True),  # not pairs
+                (None, False))
+        for audit, missing in rows:
+            with self.subTest(audit=audit):
+                self.assertIs(missing, coverage_io.review_matrix_missing(audit))
+

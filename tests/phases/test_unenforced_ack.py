@@ -478,6 +478,49 @@ class TestResumeIsGatedToo(unittest.TestCase):
             self.assertEqual(runio._load_json(plan), entries)
 
 
+class TestAnUnmeasuredCanaryAsksForARerunFirst(unittest.TestCase):
+    """#3220 (folded, the #3218 r1 follow-up): a write guard left UNKNOWN
+    because the write canary measured nothing is worth a second probe before
+    it is worth accepting, so that refusal says re-run first and names
+    --allow-unenforced second. Every other refusal keeps today's sentence."""
+
+    REAL_WRITE_CANARY = True      # the detail below is round_trip's own
+
+    def _message(self, state, detail):
+        with tempfile.TemporaryDirectory() as review_root:
+            runio._write_json(runio._pano(review_root, runio.HOST_CAPABILITIES), {
+                "schema_version": 1, "host": "claude", "probed_at": "2026-09-10T00:00:00Z",
+                "capabilities": {name: {
+                    "state": state if name == hosts.ARTIFACT_WRITE_GUARD else hosts.PROVEN,
+                    "by": "write-guard-armed", "detail": detail}
+                    for name in hosts.CAPABILITIES}})
+            with self.assertRaises(runio.DriverError) as caught:
+                requests.require_unenforced_ack(
+                    review_root, {"host": "claude", "flags": {}}, [{"id": "cell-1"}])
+        return str(caught.exception)
+
+    def _unmeasured(self):
+        import scripts.probes.claude_write_canary as canary
+        with mock.patch.object(canary, "_attempt",
+                               return_value=(canary.NOT_MEASURED, "no JSON envelope")):
+            verdict, detail = canary.round_trip()
+        self.assertEqual(canary.NOT_MEASURED, verdict)
+        return detail
+
+    def test_an_unknown_the_canary_left_unmeasured_says_re_run_first(self):
+        message = self._message(hosts.UNKNOWN, self._unmeasured())
+        self.assertIn("so re-run first", message)
+        self.assertLess(message.index("so re-run first"), message.index("--allow-unenforced"))
+
+    def test_every_other_refusal_keeps_its_sentence(self):
+        for state, detail in ((hosts.UNKNOWN, "no PreToolUse hook covering Write"),
+                              (hosts.REFUTED, self._unmeasured())):
+            with self.subTest(state=state):
+                message = self._message(state, detail)
+                self.assertNotIn("re-run first", message)
+                self.assertIn("declared out_file. Re-run with --allow-unenforced", message)
+
+
 class TestTheRefusalNamesTheGap(unittest.TestCase):
     """#1344 F3a: the message names the capability THIS gate reads, with that
     capability's own probe and detail -- not the host, and not a different

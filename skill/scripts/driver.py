@@ -1111,31 +1111,28 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
         # still named.
         return runio._error_status(str(exc))
     if result.get("status") == "complete":
-        # #1809: both calls below READ the run's own artifacts -- the worktree
-        # state, and `exhausted_cells` -> `cell-attempts.json` -- and this block
-        # sat outside every `try` above, so a refusal here escaped `main()` as a
-        # traceback and a host parsing stdout got no status JSON at all: the
-        # exact failure `engine.EngineStalled`'s conversion exists to prevent.
+        # #1809: both calls below READ the run's own artifacts -- the worktree state, and
+        # `exhausted_cells` -> `cell-attempts.json` -- and this block sat outside every `try` above,
+        # so a refusal here escaped `main()` as a traceback and a host parsing stdout got no status
+        # JSON at all: the exact failure `engine.EngineStalled`'s conversion exists to prevent.
         try:
             validate._finalize_worktree(review_root, manifest)
-            # #1616 item 2: `review_done` counts an exhausted cell as done --
-            # which is what stops one unrecoverable cell wedging the run -- so a
-            # run that lost cells to their retry budget completes with the same
-            # status and the same message as one where every cell answered. Name
-            # them, here rather than in `orchestrate._finish`, because `driver
-            # run` reaches `complete` on its own too and the loop's terminal
-            # `complete` IS this status: one place, both entrypoints. Added ONLY
-            # when there are any, so a clean run's status stays byte-for-byte
-            # what every host parses today.
+            # #1616 item 2: `review_done` counts an exhausted cell as done -- which is what stops
+            # one unrecoverable cell wedging the run -- so a run that lost cells to their retry
+            # budget completes with the same status and the same message as one where every cell
+            # answered. Name them, here rather than in `orchestrate._finish`, because `driver run`
+            # reaches `complete` on its own too and the loop's terminal `complete` IS this status:
+            # one place, both entrypoints. Added ONLY when there are any, so a clean run's status
+            # stays byte-for-byte what every host parses today.
             exhausted = review.exhausted_cells(review_root, manifest)
+            empty = len(exhausted) == review.cell_count(review_root)  # #3220: none answered
         except (runio.DriverError, ValueError) as exc:
             return runio._error_status(str(exc))
         if exhausted:
-            # The COUNT is exact; the NAMED list is bounded (fix round 1, N2).
-            # A run that loses 100 cells would otherwise put 100 `group/domain`
-            # pairs into one status line that hosts and CI parse, and the
-            # per-cell detail is on disk either way (`cell-attempts.json`, and
-            # the report's missing floor cells).
+            # The COUNT is exact; the NAMED list is bounded (fix round 1, N2). A run that loses 100
+            # cells would otherwise put 100 `group/domain` pairs into one status line that hosts and
+            # CI parse, and the per-cell detail is on disk either way (`cell-attempts.json`, and the
+            # report's missing floor cells).
             named, more = exhausted[:_EXHAUSTED_NAMED], len(exhausted) - _EXHAUSTED_NAMED
             result = dict(result, cells_exhausted=len(exhausted), message=(
                 "%s; cells_exhausted: %d (%s%s) -- these review cells spent their "
@@ -1143,6 +1140,9 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
                 "the run completed with them missing from the review axis"
                 % (result.get("message"), len(exhausted), ", ".join(named),
                    " and %d more" % more if more > 0 else "")))
+            if empty:
+                result = dict(result, review_axis_empty=True,
+                              message=result["message"] + review.AXIS_EMPTY_CLAUSE)
     return synthesize.attach_x0x_failure_status(result, runio._report_out(review_root))
 
 

@@ -2,12 +2,21 @@
 import contextlib
 import copy
 import io
+import json
 import os
+import shutil
+import tempfile
 import time
 from unittest import mock
 
 
 import scripts.orchestrate as orchestrate
+import scripts.driver as driver
+import scripts.html_report as html_report
+import scripts.phases.engine as engine
+import scripts.phases.review as review
+import scripts.synth.coverage_io as coverage_io
+import scripts.synth.render as render_mod
 import scripts.phases.runio as runio
 import scripts.phases.verify as verify
 import scripts.runners.base as base
@@ -636,3 +645,202 @@ class TestTheLaunchBackoff(LoopCase):
         self.assertEqual([2.0, 4.0], slept)
         self.assertEqual(orchestrate.MAX_ENTRY_FAILURES,
                          runner.launched.count(self.ENTRY))
+
+
+class TestAReviewRoundWithNothingToShow(LoopCase):
+    """#3220: three ways one review round already says the next is wasted.
+
+    Every self-writing cell DENIED its own out_file (M1): the loop stops after
+    the first attempt instead of paying for `MAX_CELL_ATTEMPTS` identical
+    rounds. Every cell exhausted (M2): the run is still `complete`, but carries
+    `review_axis_empty` and exits 1. And the report of such a run (M3) reads
+    health, grade and risk as unknown rather than 100 / S / LOW.
+    """
+
+    FLOOR = ("SEC", "COD", "ARC", "TST", "QAL", "AGT", "DAT", "OPS", "ACC", "LNG")
+    WIDTH = 2
+
+    class Denied(FakeRunner):
+        """Each review launch returns ok with one Write denial row; `path_of`
+        picks the path the row names, `lands` the cells that write first."""
+
+        def __init__(self, path_of=None, lands=()):
+            super().__init__()
+            self.path_of, self.lands = path_of or self._own_file, lands
+
+        @staticmethod
+        def _own_file(entry):
+            return entry["out_file"]
+
+        def run_entry(self, entry, env):
+            eid = entry["id"]
+            if not eid.startswith("review-"):
+                return super().run_entry(entry, env)
+            if eid in self.lands:
+                super().run_entry(entry, env)            # writes the cell, then is denied too
+            else:
+                self.launched.append(eid)
+            return base.RunResult(
+                entry_id=eid, ok=True, text="DONE", usage={}, cost_usd=0.0,
+                model="claude-sonnet-5", session_id="s-" + eid, error=None,
+                denials=[{"tool_name": "Write", "tool_use_id": "t1",
+                          "tool_input": {"file_path": self.path_of(entry), "content": "{}"}}])
+
+    class Lands(FakeRunner):
+        """Every review cell fails on its own account except the ones in `lands`."""
+
+        def __init__(self, lands=()):
+            super().__init__()
+            self.lands = lands
+
+        def run_entry(self, entry, env):
+            eid = entry["id"]
+            if not eid.startswith("review-") or eid in self.lands:
+                return super().run_entry(entry, env)
+            self.launched.append(eid)
+            return base.RunResult.failed(eid, "the panel wrote nothing: " + eid)
+
+    def _run(self, d, floor, runner, gate=True):
+        argv = ["loop", d, "--no-tools", "--concurrency", str(self.WIDTH)]
+        args = driver.build_parser().parse_args(argv + (["--fail-on", "high"] if gate else []))
+        with contextlib.ExitStack() as es:
+            es.enter_context(mock.patch.object(
+                orchestrate, "_after_first_run",
+                side_effect=lambda rr: self._seed_coverage(rr, floor)))
+            es.enter_context(mock.patch("scripts.runners.base.runner_for", return_value=runner))
+            es.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            es.enter_context(contextlib.redirect_stderr(io.StringIO()))
+            status = orchestrate.loop(args)
+        return status, engine.emit_status(status, stream=io.StringIO())
+
+    def _reviews(self, runner):
+        return [x for x in runner.launched if x.startswith("review-")]
+
+    def _summary(self, d):
+        with open(runio._report_out(d), encoding="utf-8") as fh:
+            return json.load(fh)["summary"]
+
+    # M1 ------------------------------------------------------------------
+
+    def test_a_batch_denied_every_own_write_stops_after_one_attempt(self):
+        d, floor = self._repo(floor=self.FLOOR)
+        runner = self.Denied()
+        status, rc = self._run(d, floor, runner)
+        self.assertEqual(("error", 1), (status["status"], rc), status)
+        reviews = self._reviews(runner)
+        self.assertEqual(sorted("review-app-%s" % x for x in self.FLOOR), sorted(reviews))
+        self.assertIn("every self-writing entry of this batch (%d) was DENIED" % len(self.FLOOR),
+                      status["message"])
+        first = [e for e in reviews if e in status["message"]]
+        self.assertEqual(1, len(first), status["message"])
+        self.assertIn("at %s" % os.path.join(d, ".panopticon"), status["message"])
+        self.assertIn("findings-app-%s.json;" % first[0][len("review-app-"):], status["message"])
+        attempts = runio._load_json(runio._pano(d, "cell-attempts.json")) or {}
+        self.assertEqual({"app/%s" % x: 1 for x in self.FLOOR}, attempts)
+
+    def test_one_cell_that_landed_is_not_a_fully_denied_batch(self):
+        # Round one is not fully denied (SEC wrote its file before its own
+        # denial row), so the loop re-dispatches; round two holds only the nine
+        # that were denied, and THAT batch stops.
+        d, floor = self._repo(floor=self.FLOOR)
+        runner = self.Denied(lands=("review-app-SEC",))
+        status, _rc = self._run(d, floor, runner)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("entry of this batch (%d) was DENIED" % (len(self.FLOOR) - 1),
+                      status["message"])
+        self.assertEqual(2 * len(self.FLOOR) - 1, len(self._reviews(runner)))
+        self.assertEqual(1, self._reviews(runner).count("review-app-SEC"))
+
+    def test_a_denial_naming_only_a_peer_is_not_the_cells_own(self):
+        d, floor = self._repo(floor=self.FLOOR)
+        runner = self.Denied(path_of=lambda e: e["out_file"].replace(".json", "-peer.json"))
+        status, _rc = self._run(d, floor, runner)
+        self.assertNotIn("DENIED", status.get("message", ""), status)
+        self.assertEqual(3 * len(self.FLOOR), len(self._reviews(runner)))
+
+    def test_a_relative_denial_path_is_not_read_against_our_cwd(self):
+        d, floor = self._repo(floor=self.FLOOR)
+        runner = self.Denied(path_of=lambda e: os.path.relpath(e["out_file"]))
+        status, _rc = self._run(d, floor, runner)
+        self.assertNotIn("DENIED", status.get("message", ""), status)
+        self.assertEqual(3 * len(self.FLOOR), len(self._reviews(runner)))
+
+    def test_return_persist_entries_are_not_self_writing(self):
+        import scripts.phases.denials as denials       # here: the module is #3220's
+        entry = {"id": "x", "out_file": "/tmp/x.json", "delivery": "return_json"}
+        result = base.RunResult(entry_id="x", ok=True, text="", usage={}, cost_usd=0.0,
+                                model=None, session_id=None, error=None,
+                                denials=[{"tool_input": {"file_path": "/tmp/x.json"}}])
+        self.assertFalse(denials.own_write_denied(entry, result))
+        self.assertIsNone(denials.every_own_write_denied([(entry, result)]))
+        self.assertIsNone(denials.every_own_write_denied([]))
+        no_file = {"id": "y"}                    # nothing to write: not self-writing
+        self.assertIsNone(denials.every_own_write_denied([(no_file, result)]))
+
+    def test_a_denial_reaches_the_cells_own_file_through_a_link(self):
+        import scripts.phases.denials as denials
+        real = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(real, ignore_errors=True))
+        link = real + "-link"
+        os.symlink(real, link)
+        self.addCleanup(os.unlink, link)
+        for out_dir, row_dir in ((link, real), (real, link)):
+            with self.subTest(out_file_under=out_dir, row_under=row_dir):
+                entry = {"id": "review-app-SEC", "out_file": os.path.join(out_dir, "f.json")}
+                result = base.RunResult(
+                    entry_id="review-app-SEC", ok=True, text="", usage={}, cost_usd=0.0,
+                    model=None, session_id=None, error=None,
+                    denials=[{"tool_input": {"file_path": os.path.join(row_dir, "f.json")}}])
+                self.assertTrue(denials.own_write_denied(entry, result))
+
+    # M2 ------------------------------------------------------------------
+
+    def test_every_cell_exhausted_is_complete_but_exits_non_zero(self):
+        d, floor = self._repo(floor=self.FLOOR)
+        status, rc = self._run(d, floor, self.Lands())
+        self.assertEqual(("complete", 1), (status["status"], rc), status)
+        self.assertIs(True, status["review_axis_empty"])
+        self.assertEqual(len(self.FLOOR), status["cells_exhausted"])
+        self.assertTrue(status["message"].endswith(review.AXIS_EMPTY_CLAUSE), status["message"])
+
+    def test_one_answered_cell_keeps_the_partial_exit_unchanged(self):
+        d, floor = self._repo(floor=self.FLOOR)
+        status, rc = self._run(d, floor, self.Lands(lands=("review-app-SEC",)))
+        self.assertEqual(("complete", 0), (status["status"], rc), status)
+        self.assertNotIn("review_axis_empty", status)
+        self.assertEqual(len(self.FLOOR) - 1, status["cells_exhausted"])
+        summary = self._summary(d)
+        self.assertIsNotNone(summary["health"]["score"])
+        self.assertEqual("HIGH", summary["risk_level"])        # FakeRunner's one finding
+        self.assertIsNotNone(summary["provisional_grade"])
+
+    def test_emit_status_reads_the_flag_and_nothing_else(self):
+        self.assertEqual(0, engine.emit_status({"status": "complete"}, stream=io.StringIO()))
+        self.assertEqual(1, engine.emit_status({"status": "complete", "review_axis_empty": True},
+                                               stream=io.StringIO()))
+
+    # M3 ------------------------------------------------------------------
+
+    def _assert_unknown(self, d, gate):
+        summary = self._summary(d)
+        self.assertEqual((None, None, None, None),
+                         (summary["health"]["score"], summary["overall_grade"],
+                          summary["provisional_grade"], summary["risk_level"]), summary)
+        self.assertTrue(summary["coverage_note"].startswith(coverage_io.REVIEW_MATRIX_MISSING_NOTE),
+                        summary["coverage_note"])
+        self.assertEqual(gate, summary["gate"])
+        report = json.load(open(runio._report_out(d), encoding="utf-8"))
+        self.assertIn("Risk: unknown", html_report._render_header(report))
+        self.assertIn("Risk: unknown", html_report._render_compare_summary("A", report))
+        self.assertIn("**Risk:** unknown", render_mod.render_summary(report))
+
+    def test_a_report_with_no_review_cell_answered_reads_unknown_under_the_gate(self):
+        d, floor = self._repo(floor=self.FLOOR)
+        self._run(d, floor, self.Lands())
+        self._assert_unknown(d, "INCONCLUSIVE")       # the gated path, pinned not changed
+
+    def test_a_report_with_no_review_cell_answered_reads_unknown_with_the_gate_off(self):
+        d, floor = self._repo(floor=self.FLOOR)
+        self._run(d, floor, self.Lands(), gate=False)
+        self._assert_unknown(d, "OFF")
+

@@ -113,6 +113,11 @@ def emit_status(status, stream=None):
     the review unfinished, and the one reading that CANNOT be allowed is a CI
     job going green over an empty review axis -- which is the failure the
     paused status exists to prevent, not one to re-introduce at the exit code.
+
+    #3220: and so does a `complete` that carries `review_axis_empty` -- every
+    review cell spent its retry budget and none answered. It is still
+    `complete` (the report is written), but it is that same empty axis.
     """
     (stream or sys.stdout).write(json.dumps(status) + "\n")
-    return 1 if status.get("status") in ("error", "paused") else 0
+    return (1 if status.get("status") in ("error", "paused")
+            or status.get("review_axis_empty") is True else 0)

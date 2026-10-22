@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import os
 import stat
 
+from . import coverage_io
 from . import delta as delta_mod
 from . import findings as findings_mod
 
@@ -618,6 +619,14 @@ def grade_report(run, resolved, reconciled, delta=None):
     # disagree.
     root = run.root if run.root is not None else run.target
     health = health_stats(nonblank_loc(root, groups_meta), gate_eligible)
+    # #3220: no review cell answered, so the score's zero-defect side measured
+    # nothing. Health and grade are unknown; risk keeps only what a finding proves.
+    no_review = coverage_io.review_matrix_missing(reconciled.cell_audit)
+    if no_review:
+        health["score"] = None
+    risk = risk_level(gate_eligible)
+    if no_review and risk == "LOW" and not findings_mod._present(gate_eligible, "LOW"):
+        risk = None
     overall = health_grade(health["score"])
     # #2178: computed HERE, from the same delta context `resolve_findings`
     # classified against, the same active list it partitioned, and this run's own
@@ -651,8 +660,9 @@ def grade_report(run, resolved, reconciled, delta=None):
         "overall_grade": cert["overall_grade"],
         "provisional_grade": cert["provisional_grade"],
         "coverage_certified": cert["coverage_certified"],
-        "coverage_note": cert["coverage_note"],
-        "risk_level": risk_level(gate_eligible),
+        "coverage_note": (cert["coverage_note"] if not no_review else "; ".join(
+            filter(None, (coverage_io.REVIEW_MATRIX_MISSING_NOTE, cert["coverage_note"])))),
+        "risk_level": risk,
         "top_issues": [f.get("title", "") for f in
                        sorted(resolved.active, key=findings_mod._issue_sort)[:3]],
         "gate": cert["gate"],
