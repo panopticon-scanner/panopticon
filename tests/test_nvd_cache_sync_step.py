@@ -33,29 +33,25 @@ def _sync_script():
     raise AssertionError("no %r step in nvd-cache.yml" % STEP)
 
 
-def _stub(directory, name, body):
-    path = os.path.join(directory, name)
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write("#!/bin/sh\n" + body + "\n")
-    os.chmod(path, 0o700)
-
-
 def _run(curl_rc=0, sha_rc=0, sync_rc=0):
     """(returncode, output, launched): the step run with stubbed tools.
-    `launched` is True when the step reached the dependency-check launch."""
+    `launched` is True when the step reached the dependency-check launch.
+
+    The stubs are shell FUNCTIONS, which bash resolves before PATH, not
+    executables written to disk: a stub written and exec'd at once can fail
+    with ETXTBSY on Linux when a sibling process forks in between."""
     with tempfile.TemporaryDirectory() as tmp:
-        bin_dir, work = os.path.join(tmp, "bin"), os.path.join(tmp, "work")
-        os.mkdir(bin_dir)
-        os.mkdir(work)
         marker = os.path.join(tmp, "launched")
-        _stub(bin_dir, "sudo", "exit 0")
-        _stub(bin_dir, "curl", ": > dc.zip; exit %d" % curl_rc)
-        _stub(bin_dir, "sha256sum", "exit %d" % sha_rc)
-        _stub(bin_dir, "unzip", "exit 0")
-        _stub(bin_dir, "timeout", ": > '%s'; exit %d" % (marker, sync_rc))
-        env = {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", ""),
-               "HOME": tmp, "DC_VERSION": "12.1.0", "DC_SHA256": "0" * 64}
-        proc = subprocess.run(["bash", "-c", _sync_script()], cwd=work, env=env,
+        stubs = ("sudo() { return 0; }\n"
+                 "curl() { : > dc.zip; return %d; }\n"
+                 "sha256sum() { return %d; }\n"
+                 "unzip() { return 0; }\n"
+                 "timeout() { : > '%s'; return %d; }\n"
+                 % (curl_rc, sha_rc, marker, sync_rc))
+        env = {"PATH": os.environ.get("PATH", ""), "HOME": tmp,
+               "DC_VERSION": "12.1.0", "DC_SHA256": "0" * 64}
+        # The script goes in on stdin: a fixed argv, and the same bash parse.
+        proc = subprocess.run(["bash"], input=stubs + _sync_script(), cwd=tmp, env=env,
                               capture_output=True, text=True, timeout=60)
         return proc.returncode, proc.stdout + proc.stderr, os.path.exists(marker)
 
@@ -76,14 +72,14 @@ class TestTheKeyedSyncVerifiesFailClosed(unittest.TestCase):
         # error (rc 1) is tolerated and the DB is verified -- and here there
         # is none, so the step fails THERE, by name.
         rc, out, launched = _run(sync_rc=1)
-        self.assertTrue(launched)
+        self.assertTrue(launched, out)
         self.assertNotEqual(rc, 0)
         self.assertIn("per-record errors are tolerated", out)
         self.assertIn("odc.mv.db) was not produced", out)
 
     def test_a_killed_sync_still_fails_by_its_own_message(self):
         rc, out, launched = _run(sync_rc=124)
-        self.assertTrue(launched)
+        self.assertTrue(launched, out)
         self.assertNotEqual(rc, 0)
         self.assertIn("killed by the 3000 s deadline", out)
 
