@@ -3,10 +3,15 @@ import contextlib
 import io
 import json
 import os
+import tempfile
+import tomllib
 from unittest import mock
 
 
+import scripts.codex_host as codex_host
 import scripts.driver as driver
+import scripts.codex_read_tools as codex_read_tools
+import scripts.dispatch as dispatch
 import scripts.orchestrate as orchestrate
 import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
@@ -165,7 +170,67 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         env = runner.seen_env["review-app-SEC"]
         self.assertEqual(env[base.ENV_ENTRY_ID], "review-app-SEC")
         self.assertEqual(env[base.ENV_WRITE_ALLOWLIST], os.path.join(runner.run_dir, "write-allowlist.json"))
-        self.assertEqual(env[base.ENV_READ_SCOPE], os.path.join(runner.run_dir, "read-scope.json"))
+        self.assertEqual(env[base.ENV_READ_SCOPE],
+                         os.path.join(runner.run_dir, "read-scope", "review-app-SEC.json"))
+
+    def test_six_hundred_tool_advisors_each_get_a_bounded_reader_binding(self):
+        # #3219: the shared scope is deliberately over the broker's 1 MiB
+        # binding cap, at the same 600-entry scale as the whole-repo failure.
+        # Every launch must instead name its own small one-entry document.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = os.path.realpath(temporary)
+            run_dir = os.path.join(root, ".panopticon", "runs", "scale")
+            os.makedirs(os.path.join(run_dir, "verdicts"))
+            long_dir = os.path.join(root, "source", "x" * 150)
+            entries = []
+            for number in range(600):
+                queue_id = "%016x" % number
+                entries.append({
+                    "id": "verify-tool-" + queue_id,
+                    "agent": "panopticon-advisor",
+                    "model": "fixture-model",
+                    "out_file": os.path.join(run_dir, "verdicts", queue_id + ".json"),
+                    "scope": {"files": [os.path.join(
+                        long_dir, "%03d-%02d.py" % (number, item)) for item in range(10)],
+                        "dirs": [], "reads": []},
+                })
+            guards = orchestrate.Guards("headless", run_dir=run_dir)
+            registration_dir = os.path.join(root, "codex-agents")
+            dispatch.emit_host_agents("codex", registration_dir)
+            runtime_dir = os.path.join(root, "codex-runtime")
+
+            def catalog():
+                return [{"slug": "fixture-model"}]
+
+            try:
+                guards.arm(entries)
+                self.assertGreater(os.path.getsize(guards.scope_path),
+                                   codex_read_tools.MAX_FILE_BYTES)
+                bindings = []
+                for entry in entries:
+                    env = guards.env_for(entry)
+                    binding = env[base.ENV_READ_SCOPE]
+                    bindings.append(binding)
+                    self.assertLess(os.path.getsize(binding),
+                                    codex_read_tools.MAX_FILE_BYTES)
+                    reader = codex_read_tools.load_reader(env, cwd=root)
+                    self.assertIn(os.path.realpath(entry["scope"]["files"][0]),
+                                  reader.scope["files"])
+                    argv = codex_host.command(
+                        entry, env, root, runtime_dir,
+                        registration_dir=registration_dir, catalog=catalog)
+                    try:
+                        config = tomllib.loads("\n".join(
+                            argv[index + 1] for index, arg in enumerate(argv)
+                            if arg == "-c"))
+                        broker_env = config["mcp_servers"]["panopticon_scope"]["env"]
+                        self.assertEqual(binding, broker_env[base.ENV_READ_SCOPE])
+                    finally:
+                        codex_host.cleanup_command(argv)
+                self.assertEqual(600, len(set(bindings)))
+            finally:
+                guards.disarm(entries)
+            self.assertFalse(os.path.exists(guards.entry_scopes.directory))
 
     def test_return_persist_entries_are_persisted_through_persist(self):
         d, floor = self._repo()
