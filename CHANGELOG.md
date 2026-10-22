@@ -16,6 +16,18 @@ evidence exposed.
   classification and other host families are unchanged, and disclosure names the actual
   stderr-only observation.
 
+- **Semgrep 1.180.0 and a coherent Python closure (supersedes #3063, #3172, #3189, #3213).** The tools
+  image ships semgrep 1.180.0 (was 1.179.0); its declared requirements are 1.179.0's, unchanged. The
+  closure was re-resolved as a whole (`uv pip compile`, Python 3.12, both linux targets, the
+  7-day cooldown): bracex 3.1, filelock 4.1.1, jsonpickle 4.1.3, pbr 7.1.3, platformdirs 4.13.0,
+  pycparser 3.11, pydantic 2.14.1 with its exact partner pydantic-core 2.50.1, rpds-py 2026.9.1
+  (also in the gate's closure), starlette 1.8.0 and zipp 4.1.1, plus certifi 2026.10.19 (a
+  Dependabot security update, exempt from the cooldown); the fixtures image takes
+  iniconfig 2.3.1, and the ruff floor is 0.17.0. Not taken, because semgrep 1.180.0 still
+  requires the old line: mcp 1.30.0 (`mcp==1.29.0`) and tomli 2.5.0 (`tomli~=2.4.0`). Measured
+  with 1.180.0 on the pinned rules corpus: the corpus validates, and the timeout (#2957) and
+  size-skip (#3193) disclosures and #3194's scanned-file count read as they did under 1.179.0.
+
 - **An absent severity fails closed too (#3210).** A reviewer finding with no `severity` (the
   key missing or null) used to read as INFO, so verify never engaged it and the gate PASSED,
   measured through the real driver at `--fail-on high` and `critical`. It is now read as CRITICAL,
