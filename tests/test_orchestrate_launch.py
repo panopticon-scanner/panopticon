@@ -666,7 +666,11 @@ class TestAReviewRoundWithNothingToShow(LoopCase):
 
         def __init__(self, path_of=None, lands=()):
             super().__init__()
-            self.path_of, self.lands = path_of or (lambda entry: entry["out_file"]), lands
+            self.path_of, self.lands = path_of or self._own_file, lands
+
+        @staticmethod
+        def _own_file(entry):
+            return entry["out_file"]
 
         def run_entry(self, entry, env):
             eid = entry["id"]
