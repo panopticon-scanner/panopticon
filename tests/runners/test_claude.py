@@ -134,6 +134,86 @@ class TestAnUnenforcedArgvWithoutItsToolControlsNeverLaunches(unittest.TestCase)
         self.assertIsNone(claude_runner.unenforced_argv_problem(launched[0][0]))
 
 
+class TestAnEnforcedLaunchIsGrantedExactlyItsOwnOutFile(unittest.TestCase):
+    """#3218: `claude -p` auto-denies a Write nothing approved, so the enforced
+    argv carries ONE grant -- `Edit(//<abs out_file>)`, measured as the rule a
+    create needs -- naming that entry's out_file and nothing else. A path the
+    CLI would read as a pattern is refused before launch, never launched
+    ungranted and never escaped."""
+
+    def run_with(self, entry, alter=lambda cmd: cmd):
+        launched = []
+        runner = claude_runner.Runner("claude", runner=lambda *a, **k: launched.append(a) or mock.Mock(
+            returncode=0, stdout=json.dumps(ENVELOPE), stderr=""))
+        real = runner.command
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(runner, "command", side_effect=lambda *a, **k: alter(real(*a, **k))):
+            runner.prepare(d, review_root=d)
+            result = runner.run_entry(entry, {})
+        return result, launched
+
+    def grants(self, cmd):
+        return [a for a in cmd if a.startswith("--allowedTools")]
+
+    def test_the_grant_names_exactly_the_entry_s_own_out_file(self):
+        entry = _entry(True)
+        cmd = claude_runner.Runner("claude").command(entry, "/s.json", max_turns=4)
+        self.assertEqual(self.grants(cmd),
+                         ["--allowedTools=Edit(/%s)" % entry["out_file"]])
+        rule = self.grants(cmd)[0][len("--allowedTools=Edit(/"):-1]
+        self.assertEqual(rule, entry["out_file"])          # no directory, no peer
+        self.assertFalse(set(rule) & set("*?[]{}"))         # no glob
+
+    def test_a_relative_out_file_is_granted_as_its_absolute_path(self):
+        entry = dict(_entry(True), out_file="rel/findings-app-SEC.json")
+        cmd = claude_runner.Runner("claude").command(entry, "/s.json", max_turns=4)
+        self.assertEqual(self.grants(cmd), ["--allowedTools=Edit(/%s)"
+                                            % os.path.abspath("rel/findings-app-SEC.json")])
+
+    def test_a_peer_entry_gets_its_own_grant_and_not_this_one(self):
+        runner = claude_runner.Runner("claude")
+        peer = dict(_entry(True), id="review-app-COD",
+                    out_file="/r/.panopticon/runs/t/findings-app-COD.json")
+        self.assertNotEqual(self.grants(runner.command(_entry(True), "/s.json", max_turns=4)),
+                            self.grants(runner.command(peer, "/s.json", max_turns=4)))
+
+    def test_the_unenforced_argv_carries_no_grant(self):
+        cmd = claude_runner.Runner("claude").command(_entry(False), "/s.json", max_turns=4)
+        self.assertEqual(self.grants(cmd), [])
+
+    def test_a_pattern_character_in_the_path_is_refused_before_launch(self):
+        for char in "*?[]{}\\":
+            with self.subTest(char=char):
+                entry = dict(_entry(True), out_file="/r/a%sb/findings-app-SEC.json" % char)
+                result, launched = self.run_with(entry)
+                self.assertEqual(launched, [])
+                self.assertIn("refused before launch", str(result.error))
+                self.assertIn(char, str(result.error))
+                self.assertIn("a%sb" % char, str(result.error).replace("\\\\", "\\"))
+
+    def test_an_enforced_entry_with_no_out_file_is_refused(self):
+        entry = {k: v for k, v in _entry(True).items() if k != "out_file"}
+        result, launched = self.run_with(entry)
+        self.assertEqual(launched, [])
+        self.assertIn("no out_file", str(result.error))
+
+    def test_a_dropped_or_altered_grant_is_refused(self):
+        for name, alter in (
+                ("dropped", lambda cmd: [a for a in cmd if not a.startswith("--allowedTools")]),
+                ("widened", lambda cmd: [a.replace("findings-app-SEC.json)", "*)")
+                                         if a.startswith("--allowedTools") else a for a in cmd]),
+                ("doubled", lambda cmd: cmd[:-1] + ["--allowedTools=Edit(//r/x)"] + cmd[-1:])):
+            with self.subTest(alter=name):
+                result, launched = self.run_with(_entry(True), alter)
+                self.assertEqual(launched, [])
+                self.assertIn("(#3218)", str(result.error))
+
+    def test_the_intact_enforced_argv_launches(self):
+        result, launched = self.run_with(_entry(True))
+        self.assertEqual(len(launched), 1)
+        self.assertIsNone(claude_runner.enforced_argv_problem(_entry(True), launched[0][0]))
+
+
 class TestCommand(unittest.TestCase):
     def setUp(self):
         self.r = claude_runner.Runner("claude")
@@ -255,11 +335,12 @@ class TestCommand(unittest.TestCase):
         self.assertNotIn("--agent", cmd)
         self.assertTrue([a for a in cmd if a.startswith("--disallowedTools")])
 
-    def test_an_enforced_launch_argv_is_unchanged_and_carries_no_deny_list(self):
+    def test_an_enforced_launch_argv_gains_only_its_own_write_grant(self):
         # The enforced argv is MEASURED behaviour (the 2026-09-18 note in
         # `command`'s docstring) and its shell's `tools:` frontmatter is the
-        # control: adding flags here would move an argv that is already proven,
-        # for no gain. Pinned whole, not just by absence.
+        # control, so no deny-list. #3218 adds exactly one token: the Write
+        # PERMISSION for the entry's own out_file, without which `claude -p`
+        # denied it on a box whose user settings approve none. Pinned whole.
         cmd = self.r.command(_entry(True), "/run/host-settings.json", max_turns=40)
         self.assertEqual([a for a in cmd if a.startswith("--disallowedTools")], [])
         self.assertEqual(cmd, ["claude", "-p", "--settings", "/run/host-settings.json",
@@ -267,6 +348,7 @@ class TestCommand(unittest.TestCase):
                                "--disable-slash-commands", "--output-format", "json",
                                "--no-session-persistence", "--max-turns", "40",
                                "--agent", "panopticon-domain-panel",
+                               "--allowedTools=Edit(//r/.panopticon/runs/t/findings-app-SEC.json)",
                                _entry(True)["prompt"]])
 
     def test_the_deny_list_never_takes_the_reviewers_own_tools(self):

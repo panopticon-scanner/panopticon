@@ -121,6 +121,57 @@ TOOLS_FLAG_NAME = "--tools"
 UNENFORCED_CONTROLS = ("claude:unenforced-tools-allow-list", "claude:unenforced-tool-deny-list")
 
 
+# #3218: the ENFORCED launch's write PERMISSION, one `=`-form token naming that
+# entry's own out_file. `claude -p` auto-denies a Write nothing approved, and
+# `--setting-sources user` leaves only the operator's user scope to approve it,
+# so on a box whose user settings grant no Write every enforced cell was denied
+# its own out_file (a 5.2 redteam run: 498/498 review rows). MEASURED on
+# 2.1.305, an enforced-style launch with no `permissions` key in user scope:
+# `Edit(//<abs>)` allows the create and still denies a peer path; `Write(//<abs>)`
+# and `Write(/<abs>)` grant nothing (Edit is the rule name for a create), and
+# `Edit(/<abs>)` is relative. It holds for a path with a space, a comma or a
+# parenthesis and for an unresolved symlink. Never `--permission-mode
+# acceptEdits`: that approves every edit in the reviewed tree. The write guard
+# still denies first; this is the CLI's own per-entry path check after it.
+GRANT_PREFIX = "--allowedTools="
+GRANT_FLAG = GRANT_PREFIX + "Edit(/%s)"
+# The rule is a gitignore-style PATTERN, so these are not literal in a path.
+# MEASURED: an unescaped `*` granted a PEER (`a*b/` let `aXb/` through), `[x]`
+# granted the peer and not the file, and the backslash escape is partial --
+# `\*`, `\[` and `\{` work, `\?` and `\\` grant nothing. Such a path is
+# refused, never escaped and never launched without the grant.
+GRANT_UNSAFE = frozenset("*?[]{}\\")
+
+
+def own_out_file_grant(entry):
+    """(the enforced entry's grant token, None), or (None, why it has none)."""
+    out_file = entry.get("out_file") if isinstance(entry, dict) else None
+    if not isinstance(out_file, str) or not out_file:
+        return None, "the enforced entry names no out_file to grant its Write"
+    path = os.path.abspath(out_file)
+    unsafe = sorted(set(path) & GRANT_UNSAFE)
+    if unsafe:
+        return None, ("its out_file %r holds %s, which the CLI reads as a pattern, "
+                      "so no grant can name only that file; move the target to a "
+                      "path without them" % (path, " ".join(unsafe)))
+    return GRANT_FLAG % path, None
+
+
+def enforced_argv_problem(entry, cmd):
+    """Why this enforced argv may not launch, or None (#3218): an `--agent`
+    launch must carry exactly one grant token, the one `own_out_file_grant`
+    derives. Without it every Write to the entry's own out_file is denied on a
+    box whose user settings approve none; with any other it is a wider grant."""
+    if "--agent" not in cmd:
+        return None
+    token, why = own_out_file_grant(entry)
+    if why:
+        return why
+    if [a for a in cmd if a.startswith(GRANT_PREFIX)] != [token]:
+        return "the enforced launch's `--allowedTools` token is not its own out_file's grant"
+    return None
+
+
 def unenforced_argv_problem(cmd):
     """Why this argv may not launch, or None (#2061). An `--agent` launch is the
     registered shell's to confine and answers None. Every other argv must carry
@@ -268,8 +319,9 @@ class Runner(base.HostRunner):
         `UNENFORCED_DENIED_TOOLS` (above) as one `--disallowedTools=` token
         instead, because `--setting-sources user` keeps the OPERATOR's
         user-scope allow rules and those must not reach a reviewer that reads
-        hostile content. The enforced argv is left byte-identical: it is
-        measured behaviour and its shell is already the control.
+        hostile content. The enforced argv's tool surface is its shell's; it
+        gains only the #3218 grant (`GRANT_FLAG`), a PERMISSION for the one
+        file the entry owns.
 
         NEVER `--bare` or `--safe-mode`: both disable hooks, so either one
         would silently un-arm both guards while reading like hardening.
@@ -292,6 +344,9 @@ class Runner(base.HostRunner):
         agent = base.registered_agent(entry, roles=self.roles)
         if entry.get("enforced") and agent:
             cmd += ["--agent", agent]
+            grant, _why = own_out_file_grant(entry)
+            if grant:                   # #3218; `run_entry` refuses the entry without one
+                cmd.append(grant)
         else:
             # Everything that is NOT an `--agent` launch is unenforced, and the
             # deny-list covers all of it -- including the fall-through that
@@ -413,6 +468,9 @@ class Runner(base.HostRunner):
         problem = unenforced_argv_problem(cmd)
         if problem:                     # #2061: never launch an unenforced reviewer unconfined
             return base.RunResult.failed(entry.get("id"), "refused before launch: %s (#2061)" % problem)
+        problem = enforced_argv_problem(entry, cmd)
+        if problem:                     # #3218: never launch an enforced reviewer that cannot write
+            return base.RunResult.failed(entry.get("id"), "refused before launch: %s (#3218)" % problem)
         try:
             proc = self.runner(cmd, cwd=self.review_root, env=run_env, capture_output=True,
                                 text=True, timeout=self.entry_timeout)

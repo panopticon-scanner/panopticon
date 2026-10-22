@@ -18,7 +18,7 @@ import tempfile
 from scripts import (collect_usage, dispatch, executable, hosts, model_resolver,
                     read_guard_hook, write_guard_hook)
 
-from . import common, claude_read_guard
+from . import common, claude_read_guard, claude_write_canary
 
 
 ENTRY_MODEL_BOUND = "entry-model-bound"
@@ -314,8 +314,17 @@ def probe_write_guard_armed(host, session_root=None, settings_path=None):
         ok, detail = _round_trip_denies_an_outside_write()
         if not ok:
             return (hosts.REFUTED, WRITE_GUARD_ARMED, detail)
+        # #3218: the round-trip above never meets the CLI's permission layer,
+        # which denied every granted Write on a box whose user settings approve
+        # none. One real launch is what can tell those apart.
+        verdict, canary = claude_write_canary.round_trip()
+        if verdict == claude_write_canary.REFUTED:
+            return (hosts.REFUTED, WRITE_GUARD_ARMED, canary)
+        if verdict != claude_write_canary.PROVEN:   # r1: not measured is not a denial
+            return (hosts.UNKNOWN, WRITE_GUARD_ARMED, canary)
         return (hosts.PROVEN, WRITE_GUARD_ARMED,
-                "%s; the runner will arm at %s" % (detail, os.path.abspath(settings_path)))
+                "%s; %s; the runner will arm at %s"
+                % (detail, canary, os.path.abspath(settings_path)))
     settings_path, _allowlist_path, _defaults = write_guard_hook._resolve(
         None, None, session_root)
     settings_dir = os.path.dirname(os.path.abspath(settings_path)) or "."

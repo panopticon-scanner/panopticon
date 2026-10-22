@@ -16,6 +16,20 @@ evidence exposed.
   classification and other host families are unchanged, and disclosure names the actual
   stderr-only observation.
 
+- **Enforced Claude reviewers can write their own findings file (#3218, 5.2 blocker).** `claude -p`
+  auto-denies a Write nothing approved, and the enforced launch kept only the operator's user scope
+  (`--setting-sources user`), so on a box whose user settings grant no Write every enforced review
+  cell was denied its own `out_file` (a 5.2 redteam run: 498/498 rows, no review at all). The
+  enforced argv now carries one `--allowedTools=Edit(//<absolute out_file>)` token naming exactly
+  that file. Measured on Claude Code 2.1.305 with no permissions in user scope: the create is
+  allowed and a peer path stays denied; `Write(...)` grants nothing. The write guard still denies
+  first. An `out_file` path holding `* ? [ ] { }` or a backslash is refused before launch, because
+  the rule reads those as a pattern (an unescaped `*` granted a peer) and the escape cannot express
+  `?` or a backslash. The unenforced argv is unchanged. `artifact_write_guard` on a headless Claude
+  run now also takes one real `claude -p` canary launch (about $0.0005 on haiku), so a CLI that denies
+  every granted Write no longer proves it. The canary is REFUTED only on evidence (a denial row naming
+  its own file, or a peer written); a launch that measured nothing is retried once, then UNKNOWN.
+
 - **Semgrep 1.181.0 (supersedes #3216).** The tools image ships semgrep 1.181.0, re-resolved
   the #3214 way; its declared requirements are 1.179.0's, unchanged. Also filelock 4.2.0 and
   pydantic-settings 2.16.0. tomli stays on 2.4.x (`tomli~=2.4.0`), and Dependabot no longer offers

@@ -408,7 +408,11 @@ on Claude hooks, and always uses the return-persist path.
   on `complete`. Both guards are **fail-closed while registered**: an absent, unreadable, or
   malformed allowlist/scope file denies guarded access with a loud reason instead of silently
   allowing it. - **The loop dispatches one agent per entry** through the runner: `enforced` →
-  `--agent entry["agent"]` (a registered `panopticon-*` shell, tools+model host-enforced); else
+  `--agent entry["agent"]` (a registered `panopticon-*` shell, tools+model host-enforced) plus one
+  `--allowedTools=Edit(//<absolute out_file>)` token, the Write permission for that entry's own file
+  (#3218: `claude -p` auto-denies an unapproved Write, and `Edit` is the rule a create needs; an
+  `out_file` path holding `* ? [ ] { }` or a backslash is refused before launch, since the rule reads
+  those as a pattern); else
   `--model entry["model"]` and no agent, plus the `--disallowedTools=` deny-list that closes the
   operator's own user-scope allow rules (#1753). Prompts go inline (there is no controller context
   to protect across a process boundary); `prompt_file` remains on every entry for session mode, and
