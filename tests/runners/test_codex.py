@@ -174,6 +174,14 @@ def entry():
             "scope": {"files": [], "dirs": [], "reads": []}}
 
 
+def bound_env(tmp_path, cell=None):
+    cell = entry() if cell is None else cell
+    scope_path = tmp_path / "scope.json"
+    scope_path.write_text(json.dumps({cell["id"]: cell["scope"]}), encoding="utf-8")
+    return {base.ENV_ENTRY_ID: cell["id"], base.ENV_READ_SCOPE: str(scope_path),
+            base.ENV_WRITE_ALLOWLIST: str(tmp_path / "allow.json")}
+
+
 def scratch_argv(tmp_path, name="codex-cwd"):
     """An argv shaped like `codex_host.command`'s, whose `--cd` scratch is
     registered exactly as a real launch registers it.
@@ -213,8 +221,7 @@ def test_the_launch_runs_in_the_scratch_directory_cd_names(tmp_path):
         return SimpleNamespace(stdout=envelope(START, REPLY, DONE), stderr="", returncode=0)
 
     argv = scratch_argv(tmp_path)
-    overlay = {base.ENV_ENTRY_ID: entry()["id"], base.ENV_READ_SCOPE: str(tmp_path / "scope.json"),
-               base.ENV_WRITE_ALLOWLIST: str(tmp_path / "allow.json")}
+    overlay = bound_env(tmp_path)
     review_root = tmp_path / "review"
     review_root.mkdir()
     with mock.patch.object(codex.codex_host, "command", return_value=argv), \
@@ -237,7 +244,7 @@ def test_an_unregistered_scratch_is_never_launched_in(tmp_path):
             mock.patch.object(codex.codex_host, "validate_command"):
         runner = codex.Runner(runner=fake_run)
         runner.prepare(str(tmp_path), str(tmp_path))
-        result = runner.run_entry(entry(), {base.ENV_ENTRY_ID: entry()["id"]})
+        result = runner.run_entry(entry(), bound_env(tmp_path))
     assert not result.ok
     assert "not allocated" in result.error
     fake_run.assert_not_called()
@@ -250,8 +257,7 @@ def test_run_entry_inherits_environment_and_passes_prompt_on_stdin(tmp_path):
         seen.update(command=command, **kwargs)
         return SimpleNamespace(stdout=envelope(START, REPLY, DONE), stderr="", returncode=0)
 
-    overlay = {base.ENV_ENTRY_ID: entry()["id"], base.ENV_READ_SCOPE: str(tmp_path / "scope.json"),
-               base.ENV_WRITE_ALLOWLIST: str(tmp_path / "allow.json")}
+    overlay = bound_env(tmp_path)
     with mock.patch.dict(os.environ, {"PATH": "/fixture/bin", "HOME": str(tmp_path)}, clear=True), \
             mock.patch.object(codex.codex_host, "command", return_value=scratch_argv(tmp_path)) as command, \
             mock.patch.object(codex.codex_host, "validate_command") as validate:
@@ -291,7 +297,7 @@ def test_run_entry_prepares_its_environment_through_launch_env(tmp_path):
     with mock.patch.object(codex.codex_host, "command", return_value=scratch_argv(tmp_path)), \
             mock.patch.object(codex.codex_host, "validate_command"), \
             mock.patch.object(runner, "launch_env", wraps=runner.launch_env) as prepared:
-        assert runner.run_entry(entry(), {base.ENV_ENTRY_ID: entry()["id"]}).ok
+        assert runner.run_entry(entry(), bound_env(tmp_path)).ok
     assert prepared.call_count == 1
 
 
@@ -304,7 +310,7 @@ def test_launch_exceptions_never_escape(tmp_path, error):
     runner.prepare(str(tmp_path), str(tmp_path))
     with mock.patch.object(codex.codex_host, "command", return_value=scratch_argv(tmp_path)), \
             mock.patch.object(codex.codex_host, "validate_command"):
-        result = runner.run_entry(entry(), {base.ENV_ENTRY_ID: entry()["id"]})
+        result = runner.run_entry(entry(), bound_env(tmp_path))
     assert not result.ok
     assert ("timed out" if isinstance(error, subprocess.TimeoutExpired) else str(error)) in result.error
 
@@ -315,7 +321,7 @@ def test_command_construction_failure_never_executes(tmp_path):
     runner.prepare(str(tmp_path), str(tmp_path))
     with mock.patch.object(codex.codex_host, "command",
                            side_effect=ValueError("construction failed")):
-        result = runner.run_entry(entry(), {base.ENV_ENTRY_ID: entry()["id"]})
+        result = runner.run_entry(entry(), bound_env(tmp_path))
     assert not result.ok
     assert "construction failed" in result.error
     execute.assert_not_called()
@@ -332,7 +338,7 @@ def test_validation_failure_cleans_registered_command_before_teardown(tmp_path):
     with mock.patch.object(codex.codex_host, "command", return_value=argv), \
          mock.patch.object(codex.codex_host, "validate_command",
                            side_effect=ValueError("validation failed")):
-        result = runner.run_entry(entry(), {base.ENV_ENTRY_ID: entry()["id"]})
+        result = runner.run_entry(entry(), bound_env(tmp_path))
     assert not result.ok
     assert "validation failed" in result.error
     execute.assert_not_called()
@@ -550,8 +556,7 @@ def test_a_review_cell_launch_hands_the_published_schema_to_the_argv_builder(tmp
     def fake_run(command, **kwargs):
         return SimpleNamespace(stdout=envelope(START, REPLY, DONE), stderr="", returncode=0)
 
-    overlay = {base.ENV_ENTRY_ID: cell["id"], base.ENV_READ_SCOPE: str(tmp_path / "scope.json"),
-               base.ENV_WRITE_ALLOWLIST: str(tmp_path / "allow.json")}
+    overlay = bound_env(tmp_path, cell)
     with mock.patch.object(codex.codex_host, "command", return_value=scratch_argv(tmp_path)) as command, \
             mock.patch.object(codex.codex_host, "validate_command"):
         runner = codex.Runner(runner=fake_run)
@@ -570,8 +575,7 @@ def test_a_timed_out_launch_keeps_its_partial_jsonl_and_the_usage_in_it(tmp_path
     def slow(command, **kwargs):
         raise subprocess.TimeoutExpired(command, kwargs.get("timeout"), output=partial.encode())
 
-    overlay = {base.ENV_ENTRY_ID: entry()["id"], base.ENV_READ_SCOPE: str(tmp_path / "scope.json"),
-               base.ENV_WRITE_ALLOWLIST: str(tmp_path / "allow.json")}
+    overlay = bound_env(tmp_path)
     with mock.patch.object(codex.codex_host, "command", return_value=scratch_argv(tmp_path)), \
             mock.patch.object(codex.codex_host, "validate_command"):
         runner = codex.Runner(runner=slow)
@@ -595,8 +599,7 @@ def test_a_timed_out_launch_carries_the_killed_childs_stderr(tmp_path):
         raise subprocess.TimeoutExpired(command, kwargs.get("timeout"),
                                         stderr=noisy.encode())
 
-    overlay = {base.ENV_ENTRY_ID: entry()["id"], base.ENV_READ_SCOPE: str(tmp_path / "scope.json"),
-               base.ENV_WRITE_ALLOWLIST: str(tmp_path / "allow.json")}
+    overlay = bound_env(tmp_path)
     with mock.patch.object(codex.codex_host, "command", return_value=scratch_argv(tmp_path)), \
             mock.patch.object(codex.codex_host, "validate_command"):
         runner = codex.Runner(runner=slow)

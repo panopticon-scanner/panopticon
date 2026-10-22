@@ -84,6 +84,7 @@ CELL = {"id": "review-app-SEC", "delivery": "return_json",
         "output_schema": "/published/findings-envelope-schema.json",
         "agent": "panopticon-domain-panel", "enforced": True,
         "model": "claude-sonnet-5",
+        "scope": {"files": [], "dirs": [], "reads": []},
         "out_file": "/r/.panopticon/runs/t/findings-app-SEC.json"}
 
 
@@ -109,10 +110,16 @@ class ShapeProofTest(unittest.TestCase):
             launched.append(command)
             return SimpleNamespace(stdout=stdout, stderr=stderr, returncode=returncode)
 
-        with tempfile.TemporaryDirectory() as run_dir:
+        with tempfile.TemporaryDirectory() as temporary:
+            run_dir = os.path.realpath(temporary)
             runner = codex_runner.Runner(runner=launch)
             runner.run_dir = runner.review_root = run_dir
             entry = shape_probe.probe_entry(CELL, run_dir)
+            scope_path = os.path.join(run_dir, "probe-scope.json")
+            with open(scope_path, "w", encoding="utf-8") as stream:
+                json.dump({entry["id"]: entry["scope"]}, stream)
+            env = {base.ENV_ENTRY_ID: entry["id"],
+                   base.ENV_READ_SCOPE: scope_path}
             command = ["codex", "exec", "--json", "-"]
             with mock.patch.object(codex_runner.codex_host, "command",
                                    return_value=command), \
@@ -121,7 +128,7 @@ class ShapeProofTest(unittest.TestCase):
                                       return_value=run_dir), \
                     mock.patch.object(codex_runner.codex_host, "cleanup_command"):
                 verdict = self._prove(
-                    runner, elapsed_ms=elapsed_ms, entry=entry, host="codex")
+                    runner, elapsed_ms=elapsed_ms, entry=entry, env=env, host="codex")
         self.assertEqual(1, len(launched), "the Codex CLI seam was not launched exactly once")
         return verdict
 

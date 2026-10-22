@@ -5,7 +5,7 @@ import subprocess
 from dataclasses import dataclass, field
 from typing import Any
 
-from scripts import codex_host
+from scripts import codex_host, codex_read_tools
 import scripts.runners.base as base
 import scripts.runners.schema as schema_argv_rules
 
@@ -217,6 +217,7 @@ class Runner(base.HostRunner):
             if entry.get("enforced") and base.registered_agent(
                     entry, roles=self.roles) is None:
                 return base.refuse_unregistered_agent(entry, roles=self.roles)
+            codex_read_tools.load_reader(child_env, cwd=self.review_root)
             command = codex_host.command(entry, child_env, self.review_root, self.run_dir,
                                          runner=self.runner,
                                          schema_argv=schema_argv_rules.schema_argv(

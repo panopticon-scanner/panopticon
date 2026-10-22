@@ -27,6 +27,7 @@ import scripts.repo_config as repo_config
 import scripts.runners.base as runners_base
 import scripts.runners.batch as batch_mod
 import scripts.runners.outage as outage
+import scripts.scope_bindings as scope_bindings
 import scripts.write_guard_hook as write_guard_hook
 
 DEFAULT_MAX_ITERATIONS = 50
@@ -60,12 +61,7 @@ class Guards:
 
     def __init__(self, mode, run_dir=None, session_root=None):
         self.mode = mode
-        # I4: the union of entries THIS process armed, in arm() order. Session mode is the only
-        # mode whose grants outlive an invocation (a `dispatch` exit returns without disarming, by
-        # design), so an invocation that errors must drop exactly what it armed -- nothing, when
-        # it never got that far -- and leave the previous fan-out's grants standing. `complete`
-        # still disarms totally (spec 5.1).
-        self.armed_entries = []
+        self.armed_entries = []  # I4: session errors preserve older fan-outs.
         if mode == "headless":
             self.settings_path = os.path.join(run_dir, runners_base.SETTINGS_FILE)
             self.allowlist_path = os.path.join(run_dir, runners_base.ALLOWLIST_FILE)
@@ -74,6 +70,7 @@ class Guards:
             self.session_root = session_root
             self.settings_path, self.allowlist_path, _ = write_guard_hook._resolve(None, None, session_root)
             _s, self.scope_path, _ = read_guard_hook._resolve(None, None, session_root)
+        self.entry_scopes = scope_bindings.EntryScopes(self.scope_path)
 
     def arm(self, entries):
         if not entries:
@@ -84,8 +81,9 @@ class Guards:
         if self.mode == "headless":
             write_guard_hook.install(entries, settings_path=self.settings_path,
                                      allowlist_path=self.allowlist_path)
-            read_guard_hook.install(entries, settings_path=self.settings_path,
-                                    scope_path=self.scope_path)
+            added = read_guard_hook.install(entries, settings_path=self.settings_path,
+                                            scope_path=self.scope_path)
+            self.entry_scopes.write(added)
         else:
             write_guard_hook.install(entries, session_root=self.session_root)
             read_guard_hook.install(entries, session_root=self.session_root)
@@ -97,14 +95,16 @@ class Guards:
                                        allowlist_path=self.allowlist_path)
             read_guard_hook.uninstall(plan=entries, settings_path=self.settings_path,
                                       scope_path=self.scope_path)
+            self.entry_scopes.clear(entries)
         else:
             write_guard_hook.uninstall(plan=entries, session_root=self.session_root)
             read_guard_hook.uninstall(plan=entries, session_root=self.session_root)
 
     def env_for(self, entry):
+        scope_path = self.entry_scopes.ensure(entry) if self.mode == "headless" else self.scope_path
         return {runners_base.ENV_ENTRY_ID: entry["id"],
                 runners_base.ENV_WRITE_ALLOWLIST: os.path.abspath(self.allowlist_path),
-                runners_base.ENV_READ_SCOPE: os.path.abspath(self.scope_path)}
+                runners_base.ENV_READ_SCOPE: os.path.abspath(scope_path)}
 
 
 def _status(kind, message, **extra):

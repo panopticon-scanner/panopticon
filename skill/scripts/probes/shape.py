@@ -130,6 +130,7 @@ def probe_entry(template, run_dir):
             "agent": template.get("agent"),
             "enforced": bool(template.get("enforced")),
             "model": template.get("model"),
+            "scope": template.get("scope"),
             "out_file": os.path.join(run_dir, PROBE_ENTRY_ID + ".json")}
 
 

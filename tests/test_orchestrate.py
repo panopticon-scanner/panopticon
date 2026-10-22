@@ -167,7 +167,8 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         env = runner.seen_env["review-app-SEC"]
         self.assertEqual(env[base.ENV_ENTRY_ID], "review-app-SEC")
         self.assertEqual(env[base.ENV_WRITE_ALLOWLIST], os.path.join(runner.run_dir, "write-allowlist.json"))
-        self.assertEqual(env[base.ENV_READ_SCOPE], os.path.join(runner.run_dir, "read-scope.json"))
+        self.assertEqual(env[base.ENV_READ_SCOPE],
+                         os.path.join(runner.run_dir, "read-scope", "review-app-SEC.json"))
 
     def test_six_hundred_tool_advisors_each_get_a_bounded_reader_binding(self):
         # #3219: the shared scope is deliberately over the broker's 1 MiB
@@ -203,6 +204,7 @@ class TestHeadlessLoop(_HeadlessLoopCase):
                 self.assertEqual(600, len(set(bindings)))
             finally:
                 guards.disarm(entries)
+            self.assertFalse(os.path.exists(guards.entry_scopes.directory))
 
     def test_return_persist_entries_are_persisted_through_persist(self):
         d, floor = self._repo()
