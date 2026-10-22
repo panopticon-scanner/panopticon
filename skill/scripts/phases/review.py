@@ -469,6 +469,20 @@ def exhausted_cells(review_root, manifest):
                   and not _cell_done(review_root, manifest, group, domain))
 
 
+# #3220: what `driver.run` adds to a `complete` whose EVERY review cell is
+# exhausted. The status stays `complete` -- the report is written, and shows
+# the gap -- but `emit_status` exits 1 on `review_axis_empty`, because a run
+# with no review cell answered must not read as a green CI job.
+AXIS_EMPTY_CLAUSE = ("; review_axis_empty: no review cell answered, so this run exits "
+                     "non-zero (#3220)")
+
+
+def cell_count(review_root):
+    """Every review cell the run plans: one per effective domain of each group."""
+    return sum(len(coverage._effective_domains(review_root, group))
+               for group, _ in coverage._discovered_groups(review_root))
+
+
 def review_execute(review_root, manifest):
     # #5.0-16 H2: declare every review cell before dispatching any, so an
     # injected/undeclared findings file is caught by reconcile at synthesis.

@@ -598,7 +598,14 @@ on Claude hooks, and always uses the return-persist path.
   on a cell that cannot be recovered, so the run reaches `complete` having lost it. That is not a
   clean run and the terminal status says so — `cells_exhausted: <n>`, with the same count and each
   cell's `group/domain` in the message. The key is ABSENT, not zero, when nothing was lost, so a
-  clean run's status is unchanged for everything that already parses it. A budget file that is
+  clean run's status is unchanged for everything that already parses it. When EVERY review cell is
+  exhausted the status also carries `review_axis_empty: true` and the run exits 1 (#3220): it is
+  still `complete`, and the report is written, but no review cell answered, so its health, grade and
+  risk read unknown (risk keeps only the worst tool finding, a lower bound). Before that point, a
+  batch whose every self-writing entry came back with a permission denial naming its own `out_file`
+  stops the loop with an `error` after that attempt, rather than spending the other two rounds on
+  the same denial. Only Claude reports a Write denial by path, so on Codex and Kimi that rule
+  cannot fire. A budget file that is
   PRESENT but unreadable — a torn write — refuses instead, naming the file and `--reset`: read as
   empty it would refund every attempt the run really spent (#1809). One module owns every budget's
   arithmetic, so a VALUE that is not a count refuses the same way, naming the offending key as well

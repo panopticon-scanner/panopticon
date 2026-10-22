@@ -16,6 +16,19 @@ evidence exposed.
   classification and other host families are unchanged, and disclosure names the actual
   stderr-only observation.
 
+- **An empty review round stops and says so (#3220).** A run whose every review cell was
+  exhausted ended `complete` with exit 0, and its report read health 100, risk LOW, grade S over
+  zero review findings. A batch whose every self-writing entry was denied its own `out_file` was
+  dispatched three times over (the 5.2 redteam amd64 run: about $14 on two identical rounds), because
+  nothing read `denials`. Now such a batch stops after that attempt with an `error`. On Claude only:
+  Codex's denial rows are read-broker failures and Kimi reports none, so the rule cannot fire there.
+  A `complete` with every review cell exhausted carries `review_axis_empty: true` and exits 1.
+  Partial exhaustion is unchanged. When no review cell answered, the report's `health.score`,
+  `overall_grade` and `provisional_grade` are null; `risk_level` is the worst gate-eligible finding
+  (a lower bound), or null when there is none; `coverage_note` leads with "no review cell answered".
+  The gate is untouched: with `--fail-on` the missing floor cells still read INCONCLUSIVE. A write
+  guard the #3218 canary left UNKNOWN because it measured nothing now asks for a re-run before
+  `--allow-unenforced`.
 - **Enforced Claude reviewers can write their own findings file (#3218, 5.2 blocker).** `claude -p`
   auto-denies a Write nothing approved, and the enforced launch kept only the operator's user scope
   (`--setting-sources user`), so on a box whose user settings grant no Write every enforced review

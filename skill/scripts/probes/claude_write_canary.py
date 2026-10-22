@@ -72,6 +72,9 @@ def _denied_paths(envelope):
 # UNKNOWN rather than claiming a denial nobody saw.
 PROVEN, REFUTED, NOT_MEASURED = "proven", "refuted", "not-measured"
 ATTEMPTS = 2   # one retry: a single flaky launch must not decide a run
+# How round_trip's NOT_MEASURED detail begins: the write-guard refusal reads it
+# to say "re-run first" rather than "accept the gap" (#3220).
+NOT_MEASURED_LEAD = "not measured after "
 
 
 def _same(a, b):
@@ -137,4 +140,4 @@ def round_trip():
         verdict, detail = _attempt()
         if verdict != NOT_MEASURED:
             return verdict, detail
-    return NOT_MEASURED, "not measured after %d attempt(s): %s" % (attempt, detail)
+    return NOT_MEASURED, NOT_MEASURED_LEAD + "%d attempt(s): %s" % (attempt, detail)

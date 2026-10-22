@@ -16,6 +16,7 @@ import scripts.hosts as hosts
 import scripts.ledger as ledger_mod
 import scripts.loop_batch as loop_batch
 import scripts.money as money
+import scripts.phases.denials as denials
 import scripts.phases.engine as engine
 import scripts.phases.persist as persist
 import scripts.phases.requests as requests
@@ -439,7 +440,7 @@ def loop(args):
                 runner.run_batch(pending, getattr(args, "concurrency", None), guards.env_for)
                 return _dispatch_exit(review_root, req, pending, namespace, runner.request_sha256)
             done, total = 0, len(pending)
-            handled = []
+            handled, landed = [], []
             tally.pause_before_launch(mode, pending)   # #2506, before any launch
             # #1732: the run's ONE shape proof, here rather than at posture
             # time -- the guards are armed NOW, so it is confined like a cell.
@@ -470,13 +471,12 @@ def loop(args):
             # how much that was. `closing` because an exception here abandons the generator: it
             # drains the pool now, before `_finish` tears the guards and the runner's scratch area
             # down, rather than at GC's convenience.
-            # #1732 then #1760: THREE stop rules. `outage` asks whether the HOST
-            # went down; `uniform` asks whether the LAUNCH is being refused (run
-            # 14: 103 launches, ~120 ms each, one identical message, one wrong
-            # argv token); `over_budget` asks whether the operator's cap has been
-            # reached. Neither of the first two can be true of the same results,
-            # and the third is built per batch so its flag cannot outlive the
-            # batch that set it.
+            # #1732 then #1760: THREE stop rules. `outage` asks whether the HOST went down;
+            # `uniform` asks whether the LAUNCH is being refused (run 14: 103 launches, ~120 ms
+            # each, one identical message, one wrong argv token); `over_budget` asks whether the
+            # operator's cap has been reached. Neither of the first two can be true of the same
+            # results, and the third is built per batch so its flag cannot outlive the batch that
+            # set it.
             over_budget = _BudgetStop(ledger, budget)
             with contextlib.closing(runner.iter_batch(
                     pending, getattr(args, "concurrency", None), guards.env_for,
@@ -488,6 +488,7 @@ def loop(args):
                         entry, result, timing, run_dir, batch, ledger, req,
                         mode, runner)
                     handled.append(eid)
+                    landed.append((entry, result))
                     tally.record(eid, result, refusal, seq=order.get(eid),
                                  duration_ms=timing.get("duration_ms"))
                     done += 1
@@ -505,24 +506,22 @@ def loop(args):
                     print("driver loop: %s done (%s ms, %d/%d)"
                           % (eid, timing.get("duration_ms"), done, total),
                           file=sys.stderr, flush=True)
-            # #1721: what the short-circuit stopped. Never-launched entries wrote
-            # nothing and are charged nothing, so `batch.close()` and `disarm`
-            # below are unchanged -- there is nothing of theirs to take back.
+            # #1721: what the short-circuit stopped. Never-launched entries wrote nothing and are
+            # charged nothing, so `batch.close()` and `disarm` below are unchanged -- there is
+            # nothing of theirs to take back.
             unlaunched = [e for e in pending if e.get("id") not in handled]
             if unlaunched:
-                # What the STOP saw, not what is left over: a success drained
-                # afterwards may have closed the run, and the settle verdict
-                # below is the only thing entitled to call this an outage.
+                # What the STOP saw, not what is left over: a success drained afterwards may have
+                # closed the run, and the settle verdict below is the only thing entitled to call
+                # this an outage.
                 #
-                # #1732, then #1760: which RULE fired, too. One wording for
-                # each, because a batch stopped for an argv defect -- or for a
-                # cap the operator set themselves -- reported as "N host-class
-                # failure(s)" sends them to wait for a host that is perfectly
-                # healthy, and a budget stop would render that N as zero.
-                # Exclusive by construction, not by precedence: the `stop`
-                # above is `outage or uniform or over_budget`, so its
-                # short-circuit means the rule that answered True is the only
-                # one that recorded anything before the break.
+                # #1732, then #1760: which RULE fired, too. One wording for each, because a batch
+                # stopped for an argv defect -- or for a cap the operator set themselves -- reported
+                # as "N host-class failure(s)" sends them to wait for a host that is perfectly
+                # healthy, and a budget stop would render that N as zero. Exclusive by construction,
+                # not by precedence: the `stop` above is `outage or uniform or over_budget`, so its
+                # short-circuit means the rule that answered True is the only one that recorded
+                # anything before the break.
                 if tally.stopped_uniform:
                     rule = "%d identical instant failure(s)" % tally.stopped_uniform
                 elif over_budget.stopped:
@@ -546,20 +545,21 @@ def loop(args):
             # given back exactly as the interrupt gives it back, or three paused runs
             # exhaust the same budget the automatic iterations used to.
             paused = tally.settle(len(unlaunched), width)
-            # NOT every pending entry (#1721): an entry-class failure during an
-            # outage is still the entry's own and keeps its charge, and a cell
-            # that landed is done. What is given back is what the host took
-            # down, plus what the short-circuit never launched -- and it is
-            # given back whether or not the batch PAUSED, because the two are
-            # different predicates: a success from a later launch closes the
-            # trailing run, so a batch that stopped launching can still settle
-            # to None, and those cancelled cells would otherwise keep an
+            # NOT every pending entry (#1721): an entry-class failure during an outage is still the
+            # entry's own and keeps its charge, and a cell that landed is done. What is given back
+            # is what the host took down, plus what the short-circuit never launched -- and it is
+            # given back whether or not the batch PAUSED, because the two are different predicates:
+            # a success from a later launch closes the trailing run, so a batch that stopped
+            # launching can still settle to None, and those cancelled cells would otherwise keep an
             # attempt charged at dispatch for a launch that never happened.
             give_back = unlaunched + [e for e in pending if e.get("id") in tally.uncharged]
             if give_back:
                 persist.rollback_markers(review_root, req.get("checkpoint"), give_back)
             if paused:
                 return _finish(_status("paused", paused), review_root, guards, ledger,
+                               namespace, mode, runner)
+            if (denied := denials.every_own_write_denied(landed)):      # #3220
+                return _finish(_status("error", denied), review_root, guards, ledger,
                                namespace, mode, runner)
             status = _run(args, namespace, resolved)
     except KeyboardInterrupt:

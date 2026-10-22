@@ -527,7 +527,7 @@ def _render_header(report):
         # #490: a report with no grade must not render the literal "None",
         # and an uncertified grade is PROVISIONAL, not settled.
         f"<span class='badge grade'>Grade: {_escape(summary.get('overall_grade') or '-')}{' (provisional)' if summary.get('coverage_certified') is False else ''}</span>",
-        f"<span class='badge {_severity_class(summary.get('risk_level', 'INFO'))}'>Risk: {_escape(summary.get('risk_level', '-'))}</span>",
+        f"<span class='badge {_severity_class(summary.get('risk_level', 'INFO') or 'unknown')}'>Risk: {_escape(summary.get('risk_level', '-') or 'unknown')}</span>",
         f"<span class='badge {_gate_class(summary.get('gate', 'OFF'))}'>Gate: {_escape(summary.get('gate', 'OFF'))}{_gate_mode_label(meta)}</span>",
     ]
     # Health never affects the gate (#1057). Across six calibration targets, every
@@ -976,7 +976,7 @@ def _render_compare_summary(label, report):
 <h3>{_escape(label)}</h3>
 <div class="badges">
 <span class="badge grade">{_escape(summary.get('overall_grade') or '-')}</span>
-<span class="badge {_severity_class(summary.get('risk_level', 'INFO'))}">Risk: {_escape(summary.get('risk_level', '-'))}</span>
+<span class="badge {_severity_class(summary.get('risk_level', 'INFO') or 'unknown')}">Risk: {_escape(summary.get('risk_level', '-') or 'unknown')}</span>
 <span class="badge {_gate_class(summary.get('gate', 'OFF'))}">Gate: {_escape(summary.get('gate', 'OFF'))}{_gate_mode_label(meta)}</span>
 </div>
 <div class="stat-minis">{stat_cards}</div>

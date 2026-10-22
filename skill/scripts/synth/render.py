@@ -307,7 +307,7 @@ def render_summary(report):
         "",
         "**Grade:** %s  **Risk:** %s  **Gate:** %s%s%s" % (
             _grade_text(s),
-            s["risk_level"], s["gate"],
+            s["risk_level"] or "unknown", s["gate"],
             " (%s)" % gate_mode if gate_mode else "",
             ("  " + _health_headline(s.get("health"))) if _health_headline(s.get("health")) else ""),
         "",
