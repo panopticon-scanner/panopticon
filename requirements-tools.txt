@@ -36,11 +36,11 @@ bandit==1.9.4 \
     --hash=sha256:f89ffa663767f5a0585ea075f01020207e966a9c0f2b9ef56a57c7963a3f6f8e
 pip-audit==2.10.1 \
     --hash=sha256:99ef3f600a317c1945f1e89e227ef26e1c2d618429b8bd3fa6f4f7c440c4611a
-semgrep==1.180.0 \
-    --hash=sha256:16db2e2706ab814a975eeec25debfad49abba846b7c513d88e041447152f8447 \
-    --hash=sha256:1bab359e562f0af00217f9f827531c2e1375499b8559c90bed9690007e82565d \
-    --hash=sha256:cba06f64b10e5ec86a0b3a9757cfdfdf3ce6c2bbdb5e98762aa2a4b0a296f8ca \
-    --hash=sha256:d19b447b5d49c435dda099fd5f9d96ec7822e98a8ea6df16630f4f0596ed27ed
+semgrep==1.181.0 \
+    --hash=sha256:3defc5f3e0a76c5735c0edc1a1ccb903471b0558d8687bcb22ad75bb20923afe \
+    --hash=sha256:6dedd7d72dd7f7bd314439f469e143d57d84508c57c29246793378cccc2b90dc \
+    --hash=sha256:9ef478d031105158e97a4491ecd349ecea011193e6b4be618d515a0a71bb6884 \
+    --hash=sha256:c142ec04a2ed144970cb0a92f6877651dd3c088505eec737bb7f4db7ae5f0ffa
 
 # Everything those three pull in, resolved once and written down. Bandit's
 # native SARIF formatter requires jschema-to-python and sarif-om, so both remain
@@ -189,8 +189,8 @@ exceptiongroup==1.2.2 \
     --hash=sha256:3111b9d131c238bec2f8f516e123e14ba243563fb135d3fe885990585aa7795b
 face==26.0.1 \
     --hash=sha256:ab0a83c37c9789dce658a67a9a80eafaa113c9ec37c5a9d950ff5480542a062d
-filelock==4.1.1 \
-    --hash=sha256:3f4a557945a7b0f95efeb1f432267affe5d45ac8ddde2aed1b97ebb62382c089
+filelock==4.2.0 \
+    --hash=sha256:2ff5690882e8cdb00ef31fb3d01a3094c29f30985426c59495afb1733f3b7238
 glom==25.12.0 \
     --hash=sha256:b9f21e77f71a6576a43864e85066b8cc3f0f778d0d50961563f8981377a6dcb1
 googleapis-common-protos==1.75.5 \
@@ -342,8 +342,8 @@ pydantic-core==2.50.1 \
     --hash=sha256:ed1e728b39a383c81035b2459cfcb35d99dfb01f7d6ebe3a913bc1cc5b81e459 \
     --hash=sha256:f2c634642694e6a0dad2ab1d375589fa671fd442edd5caf7d9737b8f6ca22906 \
     --hash=sha256:f77ac30b19221cd9bd3fcfa3d4614eff93140d0572ab730cded17b64adca05f3
-pydantic-settings==2.15.0 \
-    --hash=sha256:0ba092c291c94baceb5eff768aa0d56400a457585bc0175925a5a5510303da42
+pydantic-settings==2.16.0 \
+    --hash=sha256:7e73acf7f61936a15e5a3b6eedaea29f133357faf7272f2607ba479b049dd7f2
 pygments==2.21.0 \
     --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9
 pyjwt==2.15.1 \

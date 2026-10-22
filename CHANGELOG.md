@@ -16,6 +16,13 @@ evidence exposed.
   classification and other host families are unchanged, and disclosure names the actual
   stderr-only observation.
 
+- **Semgrep 1.181.0 (supersedes #3216).** The tools image ships semgrep 1.181.0, re-resolved
+  the #3214 way; its declared requirements are 1.179.0's, unchanged. Also filelock 4.2.0 and
+  pydantic-settings 2.16.0. tomli stays on 2.4.x (`tomli~=2.4.0`), and Dependabot no longer offers
+  its minor or major updates. Measured with 1.181.0 on the pinned rules corpus: the corpus
+  validates, and the timeout (#2957), size-skip (#3193) and scanned-file (#3194) readings are
+  unchanged.
+
 - **Semgrep 1.180.0 and a coherent Python closure (supersedes #3063, #3172, #3189, #3213).** The tools
   image ships semgrep 1.180.0 (was 1.179.0); its declared requirements are 1.179.0's, unchanged. The
   closure was re-resolved as a whole (`uv pip compile`, Python 3.12, both linux targets, the
