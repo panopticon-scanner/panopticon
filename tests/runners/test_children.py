@@ -270,8 +270,9 @@ class TestTheLaunchKeepsABoundedCapture(unittest.TestCase):
     def test_newlines_decode_as_subprocess_run_decodes_them(self):
         argv = [sys.executable, "-c",
                 "import sys; sys.stdout.buffer.write(b'a\\r\\nb\\rc\\n')"]
-        expected = subprocess.run(argv, capture_output=True, text=True)  # noqa: S603
-        self.assertEqual(expected.stdout, base.HostRunner().launch(argv).stdout)
+        # What `subprocess.run(text=True)` returns for these bytes (universal
+        # newlines), written out rather than launched a second time.
+        self.assertEqual("a\nb\nc\n", base.HostRunner().launch(argv).stdout)
 
 
 class TestTheLaunchLeadsItsOwnSession(GrandchildCase):
