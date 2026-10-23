@@ -28,6 +28,7 @@ import pytest
 import scripts.procgroup as procgroup
 import scripts.runners.base as base
 import scripts.runners.children as children
+import scripts.tools.base as tools_base
 
 _POSIX = os.name == "posix"
 
@@ -208,6 +209,80 @@ class TestAFinishedLaunchIsWhatSubprocessRunReturned(unittest.TestCase):
             base.HostRunner().launch([os.path.join(os.sep, "nonexistent-binary-9x")])
 
 
+class TestTheLaunchKeepsABoundedCapture(unittest.TestCase):
+    """#3246: `communicate()` kept every byte a host CLI printed, eight launches
+    at once. Codex `exec --json` and Kimi `stream-json` echo tool results, so a
+    hostile target could steer a reviewer into printing whole files. Caps are
+    patched small here so a real child can cross them quickly."""
+
+    def test_stdout_past_the_cap_is_refused_and_the_child_is_stopped(self):
+        argv = [sys.executable, "-c",
+                "import os, sys, time\n"
+                "sys.stdout.write('%d\\n' % os.getpid())\n"
+                "sys.stdout.write('x' * (3 * 1024 * 1024)); sys.stdout.flush()\n"
+                "time.sleep(60)\n"]
+        raised = None
+        started = time.monotonic()
+        # create=True: on a launcher without the cap this patch is inert, and
+        # the pin fails on what the launch DID, not on a missing name.
+        with mock.patch.object(children, "STDOUT_CAP", 1024 * 1024, create=True):
+            try:
+                base.HostRunner().launch(argv, timeout=8)
+            except Exception as exc:        # noqa: BLE001 - asserted below
+                raised = exc
+        # Not a TimeoutExpired: no family reads a prefix as a timed-out reply.
+        self.assertNotIsInstance(raised, subprocess.TimeoutExpired,
+                                 "the overflow was waited out as a timeout")
+        self.assertLess(time.monotonic() - started, 6)       # stopped, not waited out
+        self.assertEqual("HostOutputExceeded", type(raised).__name__)
+        self.assertLessEqual(len(raised.output), 1024 * 1024)
+        self.assertIn("more than 1048576 bytes", str(raised))
+        self.assertTrue(await_death(int(raised.output.split(b"\n", 1)[0])),
+                        "the CLI went on running after its reply was refused")
+
+    def test_the_caps_are_the_scanner_runner_s_own(self):
+        # One pair of caps, not two: the values every other test patches.
+        self.assertEqual(tools_base.MAX_TOOL_OUTPUT_BYTES, children.STDOUT_CAP)
+        self.assertEqual(tools_base.MAX_TOOL_STDERR_BYTES, children.STDERR_CAP)
+        self.assertEqual(50 * 1024 * 1024, children.STDOUT_CAP)
+        self.assertEqual(1024 * 1024, children.STDERR_CAP)
+
+    def test_stdout_of_exactly_the_cap_is_a_reply(self):
+        # "more than the cap" is refused; exactly the cap is not.
+        argv = [sys.executable, "-c", "import sys; sys.stdout.write('x' * (1024 * 1024))"]
+        with mock.patch.object(children, "STDOUT_CAP", 1024 * 1024, create=True):
+            got = base.HostRunner().launch(argv, timeout=30)
+        self.assertEqual(1024 * 1024, len(got.stdout))
+
+    def test_a_stderr_flood_keeps_its_tail_and_the_launch_completes(self):
+        argv = [sys.executable, "-c",
+                "import sys\n"
+                "sys.stderr.write('n' * (4 * 1024 * 1024)); sys.stderr.write('END')\n"
+                "print('ok')\n"]
+        with mock.patch.object(children, "STDERR_CAP", 128 * 1024, create=True):
+            got = base.HostRunner().launch(argv, timeout=30)
+        self.assertEqual(0, got.returncode)
+        self.assertEqual("ok\n", got.stdout)
+        self.assertTrue(got.stderr.endswith("END"), got.stderr[-20:])
+        self.assertLessEqual(len(got.stderr), 128 * 1024 + 64 * 1024)
+
+    def test_a_cli_that_stops_reading_its_prompt_is_not_an_error(self):
+        raised = []
+        argv = [sys.executable, "-c", "import sys; sys.stdin.close(); print('done')"]
+        with mock.patch.object(threading, "excepthook", lambda args: raised.append(args)):
+            got = base.HostRunner().launch(argv, input="p" * (4 * 1024 * 1024), timeout=30)
+        self.assertEqual(0, got.returncode)
+        self.assertEqual("done\n", got.stdout)
+        self.assertEqual([], raised)
+
+    def test_newlines_decode_as_subprocess_run_decodes_them(self):
+        argv = [sys.executable, "-c",
+                "import sys; sys.stdout.buffer.write(b'a\\r\\nb\\rc\\n')"]
+        # What `subprocess.run(text=True)` returns for these bytes (universal
+        # newlines), written out rather than launched a second time.
+        self.assertEqual("a\nb\nc\n", base.HostRunner().launch(argv).stdout)
+
+
 class TestTheLaunchLeadsItsOwnSession(GrandchildCase):
 
     def test_the_child_is_its_own_process_group_leader(self):
@@ -237,6 +312,7 @@ class TestATimeoutEndsTheWholeTree(GrandchildCase):
         with self.assertRaises(subprocess.TimeoutExpired) as ctx:
             runner.launch(self.tree_argv(), timeout=1)
         self.addCleanup(self.kill_pid, self.grandchild())
+        self.assertIsInstance(ctx.exception.output, str)     # decoded, as before
         self.assertIn("started", base.partial_output(ctx.exception))
         self.assertIn("working", base.stderr_head(ctx.exception.stderr))
         self.assertEqual(1, ctx.exception.timeout)
@@ -336,15 +412,16 @@ class TestANonTimeoutFailureStillEndsTheTree(GrandchildCase):
     """
 
     def _interrupted_by(self, error):
-        """Launch a real tree, then raise `error` out of `communicate` once
-        the grandchild is up. Returns the grandchild's pid."""
+        """Launch a real tree, then raise `error` out of the launch's wait
+        (`children._Capture.wait`, #3246; `communicate` before it) once the
+        grandchild is up. Returns the grandchild's pid."""
         runner, seen = base.HostRunner(), []
 
         def interrupted(_proc_self, *_args, **_kwargs):
             seen.append(self.grandchild())      # the tree is really running
             raise error
 
-        with mock.patch.object(subprocess.Popen, "communicate", interrupted):
+        with mock.patch.object(children._Capture, "wait", interrupted):
             with self.assertRaises(type(error)):
                 runner.launch(self.tree_argv(), timeout=30)
         self.assertEqual([], runner.__dict__.get("_children") or [],
@@ -366,11 +443,11 @@ class TestANonTimeoutFailureStillEndsTheTree(GrandchildCase):
         # loop that leaks three descriptors per failed entry runs out of them.
         runner, held = base.HostRunner(), []
 
-        def interrupted(proc_self, *_args, **_kwargs):
-            held.append(proc_self)
+        def interrupted(capture_self, *_args, **_kwargs):
+            held.append(capture_self.proc)
             raise RuntimeError("boom")
 
-        with mock.patch.object(subprocess.Popen, "communicate", interrupted):
+        with mock.patch.object(children._Capture, "wait", interrupted):
             with self.assertRaises(RuntimeError):
                 runner.launch([sys.executable, "-c", "pass"])
         proc = held[0]
