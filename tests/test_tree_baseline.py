@@ -523,3 +523,87 @@ class TornBaselineTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AGoneOrGuttedBaselineIsNotCleanTest(unittest.TestCase):
+    """#3255: a missing baseline, or a v2 baseline with no `entries` dict, used
+    to read as a clean tree. Both need the primary write boundary to have failed
+    already; this is the secondary control, and it failed OPEN behind it."""
+
+    def _dirty_repo(self):
+        repo = make_git_repo(test_case=self, files={"app.py": "value = 1\n"})
+        with open(os.path.join(repo, "app.py"), "w", encoding="utf-8") as fh:
+            fh.write("value = 2\n")                    # dirty at run start
+        return repo
+
+    def _reviewer_writes(self, repo):
+        with open(os.path.join(repo, "app.py"), "w", encoding="utf-8") as fh:
+            fh.write("value = 999\n")
+
+    def _baseline(self, repo):
+        return runio._pano(repo, "tree-baseline.txt")
+
+    def test_a_deleted_baseline_on_a_git_target_is_not_measured(self):
+        repo = self._dirty_repo()
+        validate_phase.capture_tree_baseline(repo)
+        self._reviewer_writes(repo)
+        os.remove(self._baseline(repo))
+        delta = validate_phase._tree_delta(repo, subprocess.run)
+        self.assertEqual(1, len(delta), delta)
+        self.assertIn("MISSING; tree integrity was NOT MEASURED", delta[0])
+        self.assertIn("`--reset` is the remedy", delta[0])
+        manifest = {"run_id": "RID"}
+        with self.assertRaises(runio.DriverError):
+            validate_phase.validate_execute(repo, manifest)
+        record = runio._load_json(runio._pano(repo, "validate.json"))
+        self.assertIs(False, record["tree_clean"])
+
+    def test_an_unanswerable_git_probe_is_not_measured_either(self):
+        # No baseline AND git cannot say whether this is a repo: N/A is the one
+        # answer that would need that probe, so fail closed.
+        repo = self._dirty_repo()
+        validate_phase.capture_tree_baseline(repo)
+        os.remove(self._baseline(repo))
+
+        def broken(*a, **k):
+            raise OSError("git vanished")
+        delta = validate_phase._tree_delta(repo, broken)
+        self.assertEqual(1, len(delta), delta)
+        self.assertIn("NOT MEASURED", delta[0])
+
+    def test_no_recapture_once_the_run_has_dispatched(self):
+        repo = self._dirty_repo()
+        validate_phase.capture_tree_baseline(repo, manifest={"run_id": "RID"})
+        self._reviewer_writes(repo)
+        os.remove(self._baseline(repo))
+        dispatched = {"run_id": "RID", run_manifest.DISPATCH_REQUEST: {"sha256": "0" * 64}}
+        with mock.patch("sys.stderr"):
+            self.assertIsNone(validate_phase.capture_tree_baseline(repo, manifest=dispatched))
+        self.assertFalse(os.path.exists(self._baseline(repo)))
+        self.assertEqual([validate_phase._BASELINE_MISSING],
+                         validate_phase._tree_delta(repo, subprocess.run))
+
+    def test_a_v2_baseline_without_an_entries_dict_is_corrupt(self):
+        for entries in (None, [], "x", {"absent": True}):
+            with self.subTest(entries=entries):
+                repo = self._dirty_repo()
+                validate_phase.capture_tree_baseline(repo)
+                self._reviewer_writes(repo)
+                with open(self._baseline(repo), encoding="utf-8") as fh:
+                    snapshot = json.load(fh)
+                if entries == {"absent": True}:
+                    snapshot.pop("entries")
+                else:
+                    snapshot["entries"] = entries
+                with open(self._baseline(repo), "w", encoding="utf-8") as fh:
+                    json.dump(snapshot, fh)
+                self.assertEqual([validate_phase._BASELINE_CORRUPT],
+                                 validate_phase._tree_delta(repo, subprocess.run))
+
+    def test_a_non_git_target_with_no_baseline_is_still_not_applicable(self):
+        import tempfile
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        os.makedirs(runio._pano(d))
+        self.assertIsNone(validate_phase.capture_tree_baseline(d))
+        self.assertEqual([], validate_phase._tree_delta(d, subprocess.run))

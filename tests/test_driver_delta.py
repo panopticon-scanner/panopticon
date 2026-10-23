@@ -510,6 +510,53 @@ class TestDriverHardening(unittest.TestCase):
             runio.load_committed_groups(d)      # same file -> cache hit
         self.assertEqual(len(calls), 1)
 
+    def test_a_baseline_deleted_after_a_dispatch_is_not_recaptured(self):   # #3255
+        # driver.run captures the baseline at the start of EVERY invocation, so a
+        # baseline deleted mid-run was re-captured by the next one -- with the
+        # reviewer's write in it, as clean. Once the manifest records a dispatch
+        # the driver must leave it missing, and validate must not read clean.
+        from tests.tools.git_repo import make_git_repo
+        d = make_git_repo(test_case=self, files={"app.py": "value = 1\n"})
+        with open(os.path.join(d, "app.py"), "w", encoding="utf-8") as fh:
+            fh.write("value = 2\n")                    # dirty at run start
+        # a run paused at a checkpoint, so the next invocation is a resume
+        waiting = engine.Phase(name="review", kind="checkpoint", done=lambda r, m: False,
+                               execute=lambda r, m: engine.PhaseResult(
+                                   kind="checkpoint", checkpoint="review"))
+        args = driver.build_parser().parse_args(["run", d])
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual("checkpoint", driver.run(args, phases=(waiting,))["status"])
+        baseline = runio._pano(d, "tree-baseline.txt")
+        self.assertTrue(os.path.isfile(baseline))
+        requests.record_request_hash(d, "review", "0" * 64)     # the first dispatch
+        with open(os.path.join(d, "app.py"), "w", encoding="utf-8") as fh:
+            fh.write("value = 999\n")                  # the reviewer's write
+        os.remove(baseline)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual("checkpoint", driver.run(args, phases=(waiting,))["status"])
+        self.assertFalse(os.path.exists(baseline))
+        self.assertIn("MISSING after this run dispatched", err.getvalue())
+        delta = validate_phase._tree_delta(d, subprocess.run)
+        self.assertEqual(1, len(delta), delta)
+        self.assertIn("NOT MEASURED", delta[0])
+
+    def test_before_any_dispatch_a_missing_baseline_still_self_heals(self):   # #3255 guard
+        # I2: an interrupt between the manifest write and the first capture. No
+        # dispatch is recorded yet, so the next invocation re-captures, as before.
+        from tests.tools.git_repo import make_git_repo
+        d = make_git_repo(test_case=self, files={"app.py": "value = 1\n"})
+        waiting = engine.Phase(name="review", kind="checkpoint", done=lambda r, m: False,
+                               execute=lambda r, m: engine.PhaseResult(
+                                   kind="checkpoint", checkpoint="review"))
+        args = driver.build_parser().parse_args(["run", d])
+        with contextlib.redirect_stderr(io.StringIO()):
+            driver.run(args, phases=(waiting,))
+            baseline = runio._pano(d, "tree-baseline.txt")    # tag-resolved: after the manifest
+            os.remove(baseline)
+            self.assertEqual("checkpoint", driver.run(args, phases=(waiting,))["status"])
+        self.assertTrue(os.path.isfile(baseline))
+
     def test_phase_driver_error_is_status_error(self):   # #9 (run level)
         d = self._pano_dir()
 

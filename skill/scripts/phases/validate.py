@@ -33,6 +33,11 @@ _BASELINE_CORRUPT = ("clean-tree baseline is PRESENT but CORRUPT (torn or corrup
 # 0 bytes is the pre-fix truncate-in-place writer's most likely torn shape
 # (`O_TRUNC` succeeded, the process died before the first flush) -- and also what
 # a v1 baseline of a CLEAN tree looked like. Genuinely ambiguous, so say both.
+# #3255: a git target whose baseline is gone after this run dispatched. Not
+# "clean" and not N/A -- the check was not performed, and like every other
+# unmeasured state below it fails validate closed.
+_BASELINE_MISSING = ("clean-tree baseline is MISSING; tree integrity was NOT MEASURED -- "
+                     + _BASELINE_REMEDY)
 _BASELINE_EMPTY = ("clean-tree baseline is present but EMPTY: a torn write, or a "
                    "clean-tree v1 baseline; tree integrity cannot be certified -- "
                    + _BASELINE_REMEDY)
@@ -184,15 +189,29 @@ def _content_entries(review_root, status_output):
     return entries
 
 
-def capture_tree_baseline(review_root, runner=subprocess.run):
+def capture_tree_baseline(review_root, runner=subprocess.run, manifest=None):
     """Snapshot the clean-tree baseline once (run start). Returns None (no
     baseline) for a legitimately non-git target -- the guard is N/A. A git-status
     PROBE FAILURE (timeout/error/unexpected non-zero) is NOT the same as non-git:
     it records a sentinel (loudly) so validate fails CLOSED rather than silently
-    certifying a tree it never established a reference for (#run9 OPS-E1A)."""
+    certifying a tree it never established a reference for (#run9 OPS-E1A).
+
+    #3255: `driver.run` calls this at the start of EVERY invocation, so a
+    baseline deleted mid-run used to be re-captured by the next one -- with the
+    reviewer's writes in it, as clean. A missing baseline is captured only while
+    `manifest` records no dispatch yet: before the first dispatch nothing agentic
+    has run, which keeps I2's self-heal of an interrupted first capture."""
     baseline = runio._pano(review_root, "tree-baseline.txt")
     if os.path.exists(baseline):
         return baseline
+    # DEPENDENCY: run_manifest.DISPATCH_REQUEST is #1727's bound-request record,
+    # written at the first checkpoint. A slim that drops it must give this check
+    # another "has this run dispatched" signal, or the re-baseline returns.
+    if isinstance(manifest, dict) and manifest.get(run_manifest.DISPATCH_REQUEST):
+        print("driver: clean-tree baseline is MISSING after this run dispatched; not "
+              "re-capturing it (the reviewer's writes would read as clean), so validate "
+              "will fail closed -- " + _BASELINE_REMEDY, file=sys.stderr, flush=True)
+        return None
     try:
         proc = safe_git.probe(review_root, ["status", "--porcelain", "-z"], runner=runner)
     except (subprocess.SubprocessError, OSError) as exc:
@@ -258,7 +277,15 @@ def _tree_delta(review_root, runner):
         with open(runio._pano(review_root, "tree-baseline.txt"), encoding="utf-8") as fh:
             raw = fh.read()
     except OSError:
-        return []                                    # no baseline (non-git) -> nothing to compare
+        # #3255: absent is N/A only for a non-git target. On a git target the
+        # baseline was captured (or should have been) and is gone.
+        try:
+            proc = safe_git.probe(review_root, ["status", "--porcelain", "-z"], runner=runner)
+        except (subprocess.SubprocessError, OSError):
+            return [_BASELINE_MISSING]
+        if proc.returncode != 0 and "not a git repository" in (proc.stderr or "").lower():
+            return []                                # non-git target -> nothing to compare
+        return [_BASELINE_MISSING]
     if raw == _TREE_BASELINE_PROBE_FAILED:
         # #run9 OPS-E1A: the run-start baseline probe failed, so no clean-tree
         # reference exists -- the tree CANNOT be certified clean. Fail closed.
@@ -296,6 +323,10 @@ def _tree_delta(review_root, runner):
         return [("clean-tree baseline was truncated at %d files; content equality "
                  + "not established, so tree integrity cannot be certified")
                 % _MAX_BASELINE_FILES]
+    if not isinstance(snapshot.get("entries"), dict):
+        # #3255: every v2 capture writes a dict. Without one the content pass was
+        # silently skipped -- a plain overwrite read as clean.
+        return [_BASELINE_CORRUPT]
     baseline = _porcelain_z_records(snapshot.get("status") or "")
     try:
         proc = safe_git.probe(review_root, ["status", "--porcelain", "-z"], runner=runner)
@@ -314,24 +345,23 @@ def _tree_delta(review_root, runner):
     # a rewrite of a file that was already dirty (record unchanged) or a revert
     # of one (record disappears, and subtraction only looks at NEW records). Both
     # are reviewer side effects on user content, so compare the digests too.
-    recorded = snapshot.get("entries")
-    if isinstance(recorded, dict):
-        budget = [_MAX_BASELINE_FILES]
-        for rel, was in sorted(recorded.items()):
-            try:
-                now = _entry_for(review_root, rel, budget)
-            except OSError as exc:
-                delta.append("%s content unreadable at validate (%s); tree "
-                             "integrity cannot be certified" % (rel, exc))
-                continue
-            if now.get("type") == "truncated":
-                delta.append("%s content equality not established (baseline "
-                             "budget exhausted)" % rel)
-            elif now != was:
-                delta.append("CONTENT %s (%s -> %s)"
-                             % (rel, was.get("type"), now.get("type"))
-                             if now.get("type") != was.get("type")
-                             else "CONTENT %s" % rel)
+    recorded = snapshot["entries"]
+    budget = [_MAX_BASELINE_FILES]
+    for rel, was in sorted(recorded.items()):
+        try:
+            now = _entry_for(review_root, rel, budget)
+        except OSError as exc:
+            delta.append("%s content unreadable at validate (%s); tree "
+                         "integrity cannot be certified" % (rel, exc))
+            continue
+        if now.get("type") == "truncated":
+            delta.append("%s content equality not established (baseline "
+                         "budget exhausted)" % rel)
+        elif now != was:
+            delta.append("CONTENT %s (%s -> %s)"
+                         % (rel, was.get("type"), now.get("type"))
+                         if now.get("type") != was.get("type")
+                         else "CONTENT %s" % rel)
     return delta
 
 def validate_done(review_root, manifest):

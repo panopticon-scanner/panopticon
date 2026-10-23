@@ -1203,6 +1203,10 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   left is the raw-porcelain v1 case. All three fail
   closed, and the first two name `--reset` as the remedy -- deleting `tree-baseline.txt` mid-run is
   not one, since the next capture would re-baseline the reviewer's own writes as clean (#1809).
+  Every invocation re-captures a MISSING baseline only until the run's first dispatch is recorded
+  in the manifest (#3255); after that it stays missing, and on a git target validate reports the
+  check NOT MEASURED and fails closed (a non-git target is still not applicable). A v2 baseline whose
+  `entries` is not an object reads as CORRUPT.
 
 At the `scout` checkpoint (one batched checkpoint, one entry per still-pending group, the run's
 first checkpoint — #1056 emits them together so they dispatch concurrently instead of one round-trip

@@ -1087,8 +1087,8 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
         # engine runs. Idempotent (returns the existing baseline if present) ->
         # no-op on a normal resume, but self-heals a baseline that a
         # mid-first-run interrupt left missing (which had silently disabled the
-        # clean-tree guard).
-        validate.capture_tree_baseline(review_root, runner=runner)
+        # clean-tree guard) -- only before the first dispatch, #3255.
+        validate.capture_tree_baseline(review_root, runner=runner, manifest=manifest)
     except (runio.DriverError, ValueError) as exc:
         return runio._error_status(str(exc))
     # 5.2: establish this host's capability posture BEFORE any phase can build
