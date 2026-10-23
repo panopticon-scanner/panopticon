@@ -250,12 +250,12 @@ class TestCoveragePhase(unittest.TestCase):
         scope = {"files": ["/abs/a.py"], "dirs": [], "reads": []}
         entries = requests._materialize_prompts(
             self.root, [{"id": "scout-Auth", "prompt": "BODY", "scope": scope},
-                        {"id": "no-scope", "prompt": "BODY"}])
+                        {"id": "no-scope", "prompt": "BODY"}], run_id="RID")
         self.assertEqual([entries[0]["prompt_file"]], entries[0]["scope"]["reads"])
         self.assertEqual(["/abs/a.py"], entries[0]["scope"]["files"])
         self.assertEqual([], scope["reads"])
         self.assertNotIn("scope", entries[1])
-        again = requests._materialize_prompts(self.root, entries)
+        again = requests._materialize_prompts(self.root, entries, run_id="RID")
         self.assertEqual([entries[0]["prompt_file"]], again[0]["scope"]["reads"])
 
     def test_prompt_file_name_cannot_escape_the_prompts_dir(self):
@@ -277,7 +277,7 @@ class TestCoveragePhase(unittest.TestCase):
                         side_effect=OSError("read-only fs")), \
              contextlib.redirect_stderr(io.StringIO()) as err:
             entries = requests._materialize_prompts(
-                self.root, [{"id": "scout-Auth", "prompt": "BODY"}])
+                self.root, [{"id": "scout-Auth", "prompt": "BODY"}], run_id="RID")
         self.assertNotIn("prompt_file", entries[0])
         self.assertEqual(entries[0]["prompt"], "BODY")
         self.assertIn("inline prompt still stands", err.getvalue())

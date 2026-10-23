@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **A refusal note the target planted no longer reaches the setup retry (#3253, 5.3).** A refused
+  reply is kept under `rejected/`, and the entry's next prompt quoted that record's reason as the
+  controller's own words. Under `--setup` the run folder is the flat `.panopticon/` and the entry id
+  is the fixed `setup-scan`, so a target that committed `.panopticon/rejected/setup-scan-1.json`
+  spoke in the controller's voice on the first setup dispatch. The record now carries the run's
+  `run_id`, both writers stamp it (the loop and `driver persist`), and the retry quotes a record
+  only when that id is this request's: a planted record, one from an earlier run, or one written
+  before this change gets no note. The reason itself is quoted as a JSON string, one line, because
+  it can still echo a hostile reply.
+
 - **Codex advisor instructions match the advisor verdict envelope (#3221, 5.3).** The shared
   Codex charter told every role to include `_panopticon`, but `panopticon-advisor` serves both
   single-finding and tool-finding checks whose seven-field schema forbids that extra property. In
