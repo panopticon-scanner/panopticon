@@ -14,6 +14,7 @@ import scripts.loop_batch as loop_batch
 import scripts.orchestrate as orchestrate
 import scripts.phases.persist as persist
 import scripts.phases.runio as runio
+import scripts.run_manifest as run_manifest
 import scripts.runners.base as base
 from scripts.synth import validate_schema
 from tests._test_helpers import (all_proven_artifact as _all_proven_artifact, write_guard_not_proven as _write_guard_not_proven)
@@ -170,12 +171,13 @@ class TestRefusedRepliesAreRetained(LoopCase):
                 entry, result,
                 {"duration_ms": 1, "started_at": "2026-01-01T00:00:00Z",
                  "finished_at": "2026-01-01T00:00:01Z"},
-                run_dir, mock.Mock(), ledger, {"checkpoint": "review"},
+                run_dir, mock.Mock(), ledger, {"checkpoint": "review", "run_id": "RID"},
                 "headless", mock.Mock(host="codex"))
         row = ledger.lines()[0]
         with open(row["rejected_file"], encoding="utf-8") as fh:
             record = json.load(fh)
-        retry, _prior = persist.retry_block(run_dir, entry)
+        self.assertEqual("RID", record["run_id"])   # #3253: the loop stamps its request's id
+        retry, _prior = persist.retry_block(run_dir, entry, "RID")
         self.assertFalse(os.path.exists(entry["out_file"]))
         return _mask_temp_root({
             "refusal": refusal,
@@ -344,12 +346,13 @@ class TestRefusedRepliesAreRetained(LoopCase):
                 entry, result,
                 {"duration_ms": 1, "started_at": "2026-01-01T00:00:00Z",
                  "finished_at": "2026-01-01T00:00:01Z"},
-                run_dir, mock.Mock(), ledger, {"checkpoint": "review"},
+                run_dir, mock.Mock(), ledger, {"checkpoint": "review", "run_id": "RID"},
                 "headless", mock.Mock(host="codex"))
         row = ledger.lines()[0]
         with open(row["rejected_file"], encoding="utf-8") as fh:
             record = json.load(fh)
-        retry, _prior = persist.retry_block(run_dir, entry)
+        self.assertEqual("RID", record["run_id"])   # #3253: the loop stamps its request's id
+        retry, _prior = persist.retry_block(run_dir, entry, "RID")
         surfaces = _mask_temp_root({
             "refusal": refusal,
             "record": json.dumps(record),
@@ -466,6 +469,8 @@ class TestATimedOutEntryKeepsItsEvidence(LoopCase):
         with open(kept, encoding="utf-8") as fh:
             record = json.load(fh)
         self.assertIn("timed out after", record["reason"])
+        # #3253: a launch failure is stamped with its run too (never quoted, but kept bound)
+        self.assertEqual(run_manifest.load_manifest(d)["run_id"], record["run_id"])
         self.assertIn("[REDACTED_TOKEN]", record["reply"])
         self.assertTrue(record["reply"].startswith('{"findings"'), record["reply"])
         row = next(r for r in ledger_mod.Ledger(runner.run_dir).lines()

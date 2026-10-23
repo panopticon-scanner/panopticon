@@ -145,7 +145,7 @@ def _prompt_file_path(review_root, entry_id, namespace=None):
     safe = entry_file_component(entry_id)
     return runio._pano(review_root, _prompts_dir(namespace), "%s.txt" % safe)
 
-def _materialize_prompts(review_root, entries, namespace=None):
+def _materialize_prompts(review_root, entries, namespace=None, *, run_id):
     """Write each entry's prompt to its own file and stamp `prompt_file` on the
     entry (#run10 B2).
 
@@ -215,7 +215,7 @@ def _materialize_prompts(review_root, entries, namespace=None):
         if isinstance(prompt, str) and prompt and eid:
             # BEFORE the file is written, so `prompt` and `prompt_file` agree:
             # a host that dispatches from either one hears about the refusal.
-            block, prior = persist.retry_block(run_folder, entry)
+            block, prior = persist.retry_block(run_folder, entry, run_id)
             if block:
                 prompt = entry["prompt"] = prompt + block
                 entry["prior_rejection"] = prior
@@ -305,7 +305,7 @@ def write_dispatch_request_bound(review_root, run_id, checkpoint, group, entries
     runs in one process would share."""
     if checkpoint not in runio.CHECKPOINT_KINDS:
         raise ValueError("unknown checkpoint kind: %r" % checkpoint)
-    entries = _materialize_prompts(review_root, entries, namespace)
+    entries = _materialize_prompts(review_root, entries, namespace, run_id=run_id)
     request = {"schema_version": 1, "run_id": run_id, "checkpoint": checkpoint,
                "group": group, "entries": list(entries)}
     body = json.dumps(request, indent=2)

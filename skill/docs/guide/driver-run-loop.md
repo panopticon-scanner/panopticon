@@ -448,7 +448,9 @@ on Claude hooks, and always uses the return-persist path.
   reached disk. The refused reply itself is kept, redacted, at
   `runs/<tag>/rejected/<entry-id>-<attempt>.json`, the launch's ledger row names it as
   `rejected_file`, and the entry's NEXT prompt carries the reason and a `prior_rejection` stamp so
-  the retry is told what to fix. - **The loop ledgers** every launch in
+  the retry is told what to fix. The record carries the run's `run_id` and only a record with THIS
+  run's id is quoted, as a JSON string (#3253): `rejected/` is in the reviewed tree, so a record
+  the target committed, or one an earlier run left, earns no note. - **The loop ledgers** every launch in
   `runs/<tag>/dispatch-ledger.jsonl` (entry id, checkpoint, mode, model, usage, cost, `denials`,
   `error`, and on a FAILED row `stderr`: the
   first 200 characters of what the CLI printed on stderr, redacted before they are cut and redacted
