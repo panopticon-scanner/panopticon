@@ -163,6 +163,8 @@ def normalize_finding(f):
         f["confidence"] = VERDICT_TO_CONFIDENCE.get(verdict, "POSSIBLE")
     # panel: keep a valid legacy panel; else derive from the finding's domain
     # (matrix cells are domain-scoped); else the historical "code" default.
+    # #3254: an AGENT finding's panel is then replaced by its cell's
+    # (`cell_panel`, in both agent loaders); a valid one stands for tool findings.
     panel = f.get("panel")
     if not isinstance(panel, str) or panel not in VALID_PANELS:
         domain = f.get("domain") or ocrdb.domain_of(f.get("code"))
@@ -290,6 +292,19 @@ AGENT_FORBIDDEN_FIELDS = ("source", "reinforced", "corroborated", "corroborated_
                           "code_corrected_by", "backup_confirmed")
 
 
+def cell_panel(domain):
+    """The panel an AGENT finding is filed under: its cell's (#3254).
+
+    A reviewer's own `panel` is not read. Two adjacent findings one reviewer
+    labelled with different panels used to come out corroborated, and the
+    finding's `domain` is no better a source -- it is content, and filing
+    across domains is allowed. The cell is the controller's out_file name, so
+    every finding of one cell shares one panel and none corroborates another.
+    A file whose name names no cell gets "code": one file, one source.
+    """
+    return ocrdb.DOMAIN_TO_PANEL.get(domain, "code") if domain else "code"
+
+
 def agent_finding(raw, path="<agent payload>"):
     """Remove controller-owned fields before an agent finding is consumed.
 
@@ -383,6 +398,7 @@ def load_findings_detailed(paths):
             if not isinstance(f, dict):
                 continue
             nf = normalize_finding(agent_finding(f, path))
+            nf["panel"] = cell_panel(cell[1] if cell else None)
             # #1109: never trust an agent-supplied `id`. A well-formed but crafted
             # or colliding id would otherwise be kept verbatim and could inherit an
             # unrelated CONFIRMED verdict via match_verdict_by_id (a fake finding

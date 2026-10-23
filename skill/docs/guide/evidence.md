@@ -19,7 +19,8 @@ Findings carry two independent axes: **severity** (impact if true — never rewr
   loadable bundle (not an object, no known verdict, or no `finding_id` echo; #2990), counted per
   entry.
 - `corroborated` — multi-panel agreement (correlated witnesses: prioritized for verification, not
-  gate-eligible by default).
+  gate-eligible by default). An agent finding's panel is its review cell's (#3254), never the
+  reviewer's own `panel` field, so one cell's findings cannot corroborate each other.
 - `unverified` — no verification attempted.
 - `backup_scope_limited` — the primary advisor confirmed the claim and the adversarial backup could
   not check it, because the files it needed lay outside the bounded evidence closure it was granted
