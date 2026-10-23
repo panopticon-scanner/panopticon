@@ -178,6 +178,20 @@ class TestHardLinkFixture(unittest.TestCase):
                     self.assertFalse(link.exists())
 
 
+class TestReadCapped(unittest.TestCase):
+    """#3246: the bound shared by run_tool and the host CLI launch."""
+
+    def test_one_byte_past_the_cap_in_one_read_is_capped(self):
+        chunks = []
+        self.assertTrue(base.read_capped(io.BytesIO(b"x" * 11), 10, chunks))
+        self.assertEqual(b"x" * 10, b"".join(chunks))
+
+    def test_exactly_the_cap_is_not_capped(self):
+        chunks = []
+        self.assertFalse(base.read_capped(io.BytesIO(b"x" * 10), 10, chunks))
+        self.assertEqual(b"x" * 10, b"".join(chunks))
+
+
 class TestBase(unittest.TestCase):
     def test_run_tool_passes_literal_arguments_without_a_shell(self):
         argv = ["tool", ";", "$(printf inert)", "`printf inert`", "a b", "*.py", "$HOME"]

@@ -28,6 +28,7 @@ import pytest
 import scripts.procgroup as procgroup
 import scripts.runners.base as base
 import scripts.runners.children as children
+import scripts.tools.base as tools_base
 
 _POSIX = os.name == "posix"
 
@@ -238,6 +239,13 @@ class TestTheLaunchKeepsABoundedCapture(unittest.TestCase):
         self.assertIn("more than 1048576 bytes", str(raised))
         self.assertTrue(await_death(int(raised.output.split(b"\n", 1)[0])),
                         "the CLI went on running after its reply was refused")
+
+    def test_the_caps_are_the_scanner_runner_s_own(self):
+        # One pair of caps, not two: the values every other test patches.
+        self.assertEqual(tools_base.MAX_TOOL_OUTPUT_BYTES, children.STDOUT_CAP)
+        self.assertEqual(tools_base.MAX_TOOL_STDERR_BYTES, children.STDERR_CAP)
+        self.assertEqual(50 * 1024 * 1024, children.STDOUT_CAP)
+        self.assertEqual(1024 * 1024, children.STDERR_CAP)
 
     def test_stdout_of_exactly_the_cap_is_a_reply(self):
         # "more than the cap" is refused; exactly the cap is not.
