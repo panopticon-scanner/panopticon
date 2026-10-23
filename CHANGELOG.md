@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **A deleted or gutted tree baseline no longer reads as a clean tree (#3255, 5.3).** Three ways to
+  get "clean" from a baseline that measured nothing are closed. (1) `driver run` captures the
+  baseline at the start of every invocation, so one deleted mid-run was re-captured by the next
+  invocation with the reviewer's writes in it, as clean; it is now re-captured only until the run's
+  first dispatch is recorded. (2) A missing baseline at validate read as a non-git target; on a git
+  target it now reports the clean-tree check NOT MEASURED. (3) A v2 baseline without an `entries`
+  object skipped the content-digest pass; it now reads as CORRUPT. All three fail validate closed,
+  the way every other unmeasured baseline state already does, and name `--reset` as the remedy. No
+  new manifest field: the dispatch signal is the existing #1727 request record.
+
 - **One reviewer can no longer corroborate itself (#3254, 5.3).** A finding kept the `panel` its
   reviewer wrote, so one cell could label two adjacent findings with different panels and both came
   out `corroborated`: that evidence status with no advisor, at triage priority 0, spending the
