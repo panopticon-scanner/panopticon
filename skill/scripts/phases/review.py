@@ -428,6 +428,7 @@ def _load_cell_findings(review_root, manifest, group, domain):
             continue
         raw = findings_mod.agent_finding(f)
         nf = findings_mod.normalize_finding(raw)
+        nf["panel"] = findings_mod.cell_panel(domain)   # #3254: as load_findings does
         # #1109: never trust an agent-supplied id -- always content-derive it, so
         # a crafted/colliding well-formed id can't bind a downstream verdict to
         # the wrong finding. Kept in lockstep with findings_mod.load_findings so the

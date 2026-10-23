@@ -138,18 +138,19 @@ class TestGroupParentRollup(unittest.TestCase):
             out = findings_mod.load_findings([p])
             self.assertEqual(out[0]["_group"], "mygroup")
 
-    def test_load_findings_tags_group_and_keeps_the_payload_panel(self):
-        # The panel a reviewer declared survives ingest for every panel in the
-        # scale. This used to read the panel out of the 4.x
-        # `findings-<group>-<panel>.json` name as well; #1765 retired that
-        # spelling, so the cell name carries the DOMAIN and the panel comes from
-        # the payload alone.
+    def test_load_findings_tags_group_and_files_under_the_cells_panel(self):
+        # #3254: the panel comes from the CELL the name declares, never from the
+        # payload. A reviewer-declared panel used to survive ingest, which let
+        # one reviewer label two adjacent findings apart and have them read as
+        # independently corroborated. Every declared panel below differs from
+        # its cell's.
         with tempfile.TemporaryDirectory() as d:
-            for panel, domain in (("architecture", "ARC"), ("database", "DAT"),
-                                  ("redteam", "SEC")):
+            for declared, domain, panel in (("security", "ARC", "architecture"),
+                                            ("code", "DAT", "database"),
+                                            ("redteam", "SEC", "security")):
                 p = os.path.join(d, "findings-mygroup-%s.json" % domain)
                 with open(p, "w") as fh:
-                    json.dump({"findings": [{"severity": "LOW", "panel": panel}]}, fh)
+                    json.dump({"findings": [{"severity": "LOW", "panel": declared}]}, fh)
                 out = findings_mod.load_findings([p])
                 self.assertEqual(out[0]["_group"], "mygroup")
                 self.assertEqual(out[0]["panel"], panel)

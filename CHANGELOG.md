@@ -9,6 +9,40 @@
   `Project/Jar`. With no populated candidate, automatic selection says `none scanned` and an
   explicit invocation exits non-zero instead of silently scanning nothing.
 
+- **A deleted or gutted tree baseline no longer reads as a clean tree (#3255, 5.3).** Three ways to
+  get "clean" from a baseline that measured nothing are closed. (1) `driver run` captures the
+  baseline at the start of every invocation, so one deleted mid-run was re-captured by the next
+  invocation with the reviewer's writes in it, as clean; it is now re-captured only until the run's
+  first dispatch is recorded. (2) A missing baseline at validate read as a non-git target; on a git
+  target it now reports the clean-tree check NOT MEASURED. (3) A v2 baseline without an `entries`
+  object skipped the content-digest pass; it now reads as CORRUPT. All three fail validate closed,
+  the way every other unmeasured baseline state already does, and name `--reset` as the remedy. No
+  new manifest field: the dispatch signal is the existing #1727 request record.
+
+- **One reviewer can no longer corroborate itself (#3254, 5.3).** A finding kept the `panel` its
+  reviewer wrote, so one cell could label two adjacent findings with different panels and both came
+  out `corroborated`: that evidence status with no advisor, at triage priority 0, spending the
+  `--max-verify` budget on them. An agent finding's panel now comes from its review cell, the
+  `findings-<group>-<domain>.json` name the controller chose; the reviewer's own `panel` value is
+  not read, and the finding's `domain` is not used either, because filing across domains is
+  allowed. A file whose name names no cell is one source, panel `code`. Findings from two
+  different cells, or a tool and a reviewer, at one spot corroborate as before. Consequences: a
+  cross-domain finding is shown under its writer's panel; the cvss/exploit rule for agent security
+  HIGHs follows the cell; agent findings no longer carry the `redteam` panel. A finding whose
+  reviewer-chosen panel differed from its cell's changes identity once across this upgrade: its
+  `fingerprint`, which reconciliation groups runs by, includes the panel, and so does the coarse
+  cross-run key of a finding with no OCRDb code.
+
+- **A refusal note the target planted no longer reaches the setup retry (#3253, 5.3).** A refused
+  reply is kept under `rejected/`, and the entry's next prompt quoted that record's reason as the
+  controller's own words. Under `--setup` the run folder is the flat `.panopticon/` and the entry id
+  is the fixed `setup-scan`, so a target that committed `.panopticon/rejected/setup-scan-1.json`
+  spoke in the controller's voice on the first setup dispatch. The record now carries the run's
+  `run_id`, both writers stamp it (the loop and `driver persist`), and the retry quotes a record
+  only when that id is this request's: a planted record, one from an earlier run, or one written
+  before this change gets no note. The reason itself is quoted as a JSON string, one line, because
+  it can still echo a hostile reply.
+
 - **Codex advisor instructions match the advisor verdict envelope (#3221, 5.3).** The shared
   Codex charter told every role to include `_panopticon`, but `panopticon-advisor` serves both
   single-finding and tool-finding checks whose seven-field schema forbids that extra property. In

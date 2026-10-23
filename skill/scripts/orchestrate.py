@@ -703,8 +703,8 @@ def persist_cli(args):
     """
     review_root, _wt, _pr = runio.resolve_review_root(
         args.target, base=getattr(args, "base", None), pr=getattr(args, "pr", None))
-    entry, refusal = persist.find_entry(review_root, args.entry_id,
-                                        namespace="setup" if args.setup else None)
+    entry, refusal, run_id = persist.find_entry(review_root, args.entry_id,
+                                                namespace="setup" if args.setup else None)
     if refusal:
         # #1727: not the request this run wrote -- and it names the out_file.
         print("driver persist: %s" % refusal, file=sys.stderr)
@@ -724,7 +724,7 @@ def persist_cli(args):
         # so the mode a human drives keeps it exactly as the loop does -- same folder, shape
         # and attempt numbering -- and (F10) says where, since the refusal line is all they see.
         kept = persist.retain_rejected(persist.run_dir(review_root, "setup" if args.setup else None),
-                                       entry, text, reason, kind=persist.REFUSAL)
+                                       entry, text, reason, kind=persist.REFUSAL, run_id=run_id)
         print("driver persist: %s%s" % (reason, " (reply kept at %s)" % kept if kept else ""), file=sys.stderr)
         return 1
     print(os.path.abspath(entry["out_file"]))

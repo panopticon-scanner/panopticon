@@ -184,6 +184,17 @@ class TestVerifyPrimary(unittest.TestCase):
         with mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}):
             self.assertFalse(verify.verify_done(self.root, self.manifest))
 
+    def test_the_driver_files_a_cells_findings_under_the_cells_panel(self):
+        # #3254: in lockstep with findings.load_findings -- whatever panel the
+        # reviewer wrote, a SEC cell's findings are the security panel's.
+        _cell(self.root, "app", "SEC", [
+            {"domain": "SEC", "code": "SEC-A1A", "severity": "HIGH", "title": "one",
+             "category": "authz", "panel": "code", "location": {"file": "a.py", "line_start": 1}},
+            {"domain": "TST", "code": "TST-X0X", "severity": "LOW", "title": "two",
+             "category": "gap", "panel": "test", "location": {"file": "a.py", "line_start": 2}}])
+        cell = review._load_cell_findings(self.root, self.manifest, "app", "SEC")
+        self.assertEqual(["security", "security"], [f["panel"] for f in cell])
+
     def test_verify_done_true_when_engaged_cell_has_primary_bundle(self):
         _cell(self.root, "app", "SEC", [{"domain": "SEC", "code": "SEC-A1A",
               "severity": "HIGH", "title": "t", "category": "authz",
