@@ -7,7 +7,7 @@ spec/plan docs. It records architecture, the design decisions that are settled, 
 history. The live backlog is the issue tracker: every self-scan finding is filed with `severity:*`,
 `evidence:*` and `panel:*` labels (`.github/labels.yml`), and nothing in this file is a to-do list.
 
-**Current version: 5.1.0** (semver — see Versioning below).
+**Current version: 5.2.0** (semver — see Versioning below).
 
 ## What it is
 A **discovery → scout → fan-out → synthesis** pipeline. It profiles a target with a
@@ -752,7 +752,19 @@ changes to the report schema, CLI, or grade contract. Bump `SKILL.md` `metadata.
 `version` together.
 
 History:
-- **5.1.0** (current) — measurement. 231 commits, 37 issues: the release where the
+- **5.2.0** (current) — host expansion and hardening. 653 pull requests, 1,223 issues:
+  the release where Panopticon runs on more than one host and each host's safety claims
+  are proven by probe rather than declared. Claude, Codex and Kimi are first-class hosts
+  behind a verified capability registry (#1344); Gemini stays registered but not
+  selectable (#1621) and `--host generic` remains the acknowledged, unenforced fallback.
+  `driver loop` puts the orchestrator on rails (#1615). Each headless entry reads only
+  its own bounded scope (#3219), a review cell writes only its own out_file under a
+  real-CLI write canary (#3218), and an all-exhausted run no longer reports success
+  (#3220). Grouping becomes a designed engine (#1505) under a root `panopticon.yml`.
+  Self-scan remediation ran through run 14, then a six-run red-team corpus plus two
+  confirmation reruns: every HIGH was fixed before the cut or verified below HIGH. The
+  review-quality theme moved to 5.3.
+- **5.1.0** — measurement. 231 commits, 37 issues: the release where the
   scanner's own numbers became worth reading. The grade moves from a max-severity
   rollup that SATURATED (ten Ds and one F across eleven runs — it could not tell
   any two codebases apart) to a bounded health index that discriminates (#1473,

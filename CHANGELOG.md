@@ -1,6 +1,32 @@
 # Changelog
 
-## Unreleased — 5.2 Claude first-class host (#1344, family PR)
+## 5.2.0 — Host expansion and hardening
+
+The release where Panopticon runs on more than one host, and each host's
+safety claims are proven by probe rather than declared. 653 pull requests,
+1,223 issues.
+
+- **Three first-class hosts:** Claude, Codex and Kimi each ship a family runner, and
+  their capabilities come from a verified registry: a probe either PROVES a claim or the
+  run says it does not hold (#1344). Gemini stays registered but not selectable (#1621);
+  `--host generic` remains the unenforced, acknowledgement-gated fallback.
+- **The orchestrator is on rails:** `driver loop` runs every step in order, headless or
+  in session, so no step depends on the operator remembering it (#1615).
+- **Read and write guards:** each headless entry reads only its own bounded scope (#3219),
+  a review cell can write only its own out_file, proven by a real-CLI write canary (#3218),
+  and a guard hook denies a payload too deep to parse instead of crashing open (#3186).
+- **Grouping becomes a designed engine** (#1505), configured by a root `panopticon.yml`
+  with a settings ratchet, and requests carry integrity checks end to end.
+- **An all-exhausted run no longer reports success** (#3220): it exits non-zero with null
+  grade and health instead of health 100, risk LOW, grade S.
+- **Self-scan remediation through run 14**, then a red-team corpus of six runs on three
+  platforms and two hosts plus two confirmation reruns. Every HIGH was fixed before the
+  cut or verified below HIGH on the tagged commit.
+
+The review-quality theme (tool-aware review, roster R2, economics, health-grade tuning,
+multi-seat) moved to 5.3.
+
+### 5.2 Claude first-class host (#1344, family PR)
 
 The Claude family's first-class-host PR under `docs/FAMILY-PR-GUARDRAILS.md`:
 Claude already shipped its runner, probes, emit branch, registry row and both
@@ -6053,7 +6079,7 @@ evidence exposed.
   file is present (`hosts.guide_documents()`), and its remedy names the
   missing ones.
 
-## Unreleased — 5.2 grouping engine, plan 1
+### 5.2 grouping engine, plan 1
 
 Setup now front-loads the grouping work so every later run reuses it
 (spec: panopticon-docs `superpowers/specs/2026-09-06-panopticon-5.2-grouping-engine-design.md`).
