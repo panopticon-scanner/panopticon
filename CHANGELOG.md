@@ -33,6 +33,15 @@ Claude already shipped its runner, probes, emit branch, registry row and both
 guards, so this PR is the evidence a real `driver loop` gives, plus what that
 evidence exposed.
 
+- **Codex advisor instructions match the advisor verdict envelope (#3221, 5.3).** The shared
+  Codex charter told every role to include `_panopticon`, but `panopticon-advisor` serves both
+  single-finding and tool-finding checks whose seven-field schema forbids that extra property. In
+  the owner's arm64 Ubuntu confirmation run, 211 of 588 first replies paid for this contradiction.
+  The advisor shell no longer requests the stamp; domain-panel and domain-advisor shells still do,
+  and the host profiles were re-emitted. All three production receipt schemas remain outside
+  Codex's strict generation subset; the exact blockers and compatible provider-schema directions
+  are recorded in the host-capabilities guide and follow-up #3241.
+
 - **Codex readers bind one bounded scope document per entry (#3219, 5.2 blocker).**
   Whole-repository tool verification put every entry's grants into one shared file; at 584 entries
   it crossed the broker's 1 MiB input limit, so every advisor was blind and most returned noisy
