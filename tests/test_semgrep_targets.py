@@ -16,6 +16,7 @@ import os
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 from scripts import semgrep_targets as st
 import scripts.ingest_tools as ingest
@@ -262,6 +263,34 @@ class TestTheWalk(unittest.TestCase):
         for i in range(5):
             self._file("d/f%d.py" % i, 11)
         self.assertFalse(st.oversized(self.root, [], 10, max_entries=3)["complete"])
+
+    def test_the_walk_reads_no_further_than_the_entry_cap(self):
+        # #3246: the directory is iterated lazily, so a huge one is never read
+        # whole before the cap is counted against it.
+        for i in range(50):
+            self._file("f%02d.py" % i, 1)
+        pulled = [0]
+        real = os.scandir
+
+        class Counting:
+            def __init__(self, path):
+                self.inner = real(path)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.inner.close()
+
+            def __iter__(self):
+                for entry in self.inner:
+                    pulled[0] += 1
+                    yield entry
+
+        with unittest.mock.patch.object(st.os, "scandir", Counting):
+            listing = st.oversized(self.root, [], 10, max_entries=3)
+        self.assertFalse(listing["complete"])
+        self.assertLessEqual(pulled[0], 4)
 
     @unittest.skipIf(sys.platform == "win32" or os.geteuid() == 0, "needs POSIX modes, not root")
     def test_an_unreadable_directory_is_incomplete(self):

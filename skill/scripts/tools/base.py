@@ -22,15 +22,13 @@ from scripts.provenance import tool_provenance
 from scripts.tolerant_json import depth_checked
 
 
-# The scanned repo root, set by the INGEST side around the parse it performs
-# (#1649). `invoke` and `parse` never run in the same process on a real scan:
-# run_tools dispatches each adapter as
-# `docker run ... _run_adapter.py <tool>`, which calls only `invoke` and writes
-# the raw bytes out, and `ingest_tools` later calls only `parse` on the host.
-# So an adapter whose finding LOCATION depends on which manifest it audited
-# cannot carry that answer across -- it has to resolve it a second time, from
-# the tree, on the side that parses. `ingest_tools` is the one place that both
-# parses and holds the root, so it is the one place that sets this.
+# The scanned repo root, set by the INGEST side around the parse it performs (#1649). `invoke` and
+# `parse` never run in the same process on a real scan: run_tools dispatches each adapter as `docker
+# run ... _run_adapter.py <tool>`, which calls only `invoke` and writes the raw bytes out, and
+# `ingest_tools` later calls only `parse` on the host. So an adapter whose finding LOCATION depends
+# on which manifest it audited cannot carry that answer across -- it has to resolve it a second
+# time, from the tree, on the side that parses. `ingest_tools` is the one place that both parses and
+# holds the root, so it is the one place that sets this.
 target_root_cv: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "panopticon_target_root", default=None)
 
@@ -405,15 +403,13 @@ MAX_TOOL_OUTPUT_BYTES = 50 * 1024 * 1024
 # the effective ceiling is `watch_cap` plus whatever the scanner can write in
 # one interval -- state it rather than imply a precision this cannot have.
 #
-# A poll rather than RLIMIT_FSIZE in a preexec_fn: RLIMIT_FSIZE caps the
-# largest single FILE, not a multi-file report tree, and CPython documents
-# preexec_fn as unsafe in the presence of threads -- run_tool already runs a
-# watchdog timer and a stderr drain thread.
+# A poll rather than RLIMIT_FSIZE in a preexec_fn: RLIMIT_FSIZE caps the largest single FILE, not a
+# multi-file report tree, and CPython documents preexec_fn as unsafe in the presence of threads --
+# run_tool already runs a watchdog timer and a stderr drain thread.
 OUTPUT_WATCH_INTERVAL = 0.5
-# #run8 COD-A2A: stderr is only ever excerpted for diagnostics, so its drain
-# buffer is capped far below stdout. A tool flooding stderr while writing stdout
-# can't grow memory unbounded — the drain keeps reading past the cap (no pipe
-# deadlock), it just stops accumulating.
+# #run8 COD-A2A: stderr is only ever excerpted for diagnostics, so its drain buffer is capped far
+# below stdout. A tool flooding stderr while writing stdout can't grow memory unbounded — the drain
+# keeps reading past the cap (no pipe deadlock), it just stops accumulating.
 MAX_TOOL_STDERR_BYTES = 1 * 1024 * 1024
 
 
@@ -469,6 +465,26 @@ def _drain(stream):
     on a full pipe."""
     while stream.read(64 * 1024):
         pass
+
+
+def read_capped(stream, cap, chunks):
+    """Append `stream`'s bytes to `chunks` until EOF or `cap`; True when capped.
+
+    Stops AT the cap without draining (#3246): `run_tool` drains so the scanner
+    finishes, while a host CLI launch kills its group instead. At most `cap`
+    bytes are kept -- the chunk that crosses it is cut -- and `chunks` holds
+    what was read so far even while this runs, for a caller reading it on a
+    thread."""
+    collected = 0
+    while True:
+        chunk = stream.read(64 * 1024)
+        if not chunk:
+            return False
+        room = cap - collected
+        chunks.append(chunk[:room])
+        collected += min(len(chunk), room)
+        if len(chunk) > room:
+            return True
 
 
 class OutputCapExceeded(RuntimeError):
@@ -680,25 +696,9 @@ def run_tool(cmd, timeout, ok_codes=(0, 1), capture_stderr=False,
             # None instead of this sentence (#1533 review).
             raise RuntimeError("tool stdout must be captured with PIPE")
         chunks: list[bytes] = []
-        collected = 0
-        truncated = False
-        while True:
-            chunk = proc.stdout.read(64 * 1024)
-            if not chunk:
-                break
-            room = MAX_TOOL_OUTPUT_BYTES - collected
-            if room <= 0:
-                truncated = True
-                _drain(proc.stdout)
-                break
-            if len(chunk) > room:
-                chunks.append(chunk[:room])
-                collected += room
-                truncated = True
-                _drain(proc.stdout)
-                break
-            chunks.append(chunk)
-            collected += len(chunk)
+        truncated = read_capped(proc.stdout, MAX_TOOL_OUTPUT_BYTES, chunks)
+        if truncated:
+            _drain(proc.stdout)
 
         if truncated:
             _kill_process_tree(proc)      # the group, for the reason above

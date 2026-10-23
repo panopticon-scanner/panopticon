@@ -12,6 +12,18 @@
   measurement; dot directories and dependency/cache trees remain noise. The disclosure changes
   neither automatically selected tools nor certification.
 
+- **A host CLI's output is bounded (#3246, 5.3).** Every family launches through
+  `HostRunner.launch`, which used `communicate()`: both streams kept in full, with no byte cap, up
+  to eight launches at once. Codex `exec --json` and Kimi `stream-json` echo tool results, so a
+  hostile target could steer a reviewer into printing whole files. The launch now reads both pipes
+  through the scanner runner's own bounded pumps (`tools/base.read_capped`, lifted out of
+  `run_tool`, and `drain_stderr_async`): stdout up to 50 MiB, stderr's last 1 MiB. A CLI that
+  prints past the stdout cap is stopped (its whole process group) and its reply refused as a
+  launch failure, never parsed from a prefix. Timeouts behave as before. Known cost: the ledger's
+  stderr excerpt is the HEAD of what is kept, so for a CLI that prints over 1 MiB to stderr it now
+  starts mid-stream. Also: `semgrep_targets.oversized` iterates each directory lazily under its
+  entry cap.
+
 - **A code group with no security review cell is now named (#3245, 5.3).** SEC reaches a group from
   its committed `panels:`, the filename-keyed SEC floor, or the scout, so a config that never lists
   SEC plus a scout steered off it left a group of ordinary-named web handlers with no SEC cell, and

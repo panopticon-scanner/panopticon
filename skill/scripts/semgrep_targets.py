@@ -98,26 +98,27 @@ def oversized(root, patterns, limit, max_entries=MAX_ENTRIES):
     while stack:
         directory, rel = stack.pop()
         try:
-            entries = list(os.scandir(directory))
-        except OSError:
+            # #3246: iterated LAZILY under the entry cap -- `list(...)` first read
+            # a whole directory into memory however far past the cap it ran.
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    seen += 1
+                    if seen > max_entries:
+                        complete, stack = False, []
+                        break
+                    path = rel + (entry.name,)
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            if not excluded(path, True, patterns):
+                                stack.append((entry.path, path))
+                        elif (entry.is_file(follow_symlinks=False)
+                              and entry.stat(follow_symlinks=False).st_size > limit
+                              and not excluded(path, False, patterns)):
+                            found.append("/".join(path))
+                    except OSError:
+                        complete = False
+        except OSError:                      # the open, or a read mid-directory
             complete = False
-            continue
-        for entry in entries:
-            seen += 1
-            if seen > max_entries:
-                complete, stack = False, []
-                break
-            path = rel + (entry.name,)
-            try:
-                if entry.is_dir(follow_symlinks=False):
-                    if not excluded(path, True, patterns):
-                        stack.append((entry.path, path))
-                elif (entry.is_file(follow_symlinks=False)
-                      and entry.stat(follow_symlinks=False).st_size > limit
-                      and not excluded(path, False, patterns)):
-                    found.append("/".join(path))
-            except OSError:
-                complete = False
     found.sort()
     return {"limit": limit, "count": len(found), "files": found[:MAX_LISTED],
             "complete": complete}

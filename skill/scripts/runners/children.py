@@ -25,24 +25,112 @@ directly. That is a blocking call which hands back no handle at all, so:
   own workers, so the workers went on running -- and charging -- after the
   entry had been ledgered as timed out.
 """
+import locale
 import os
 import signal
 import subprocess
+import threading
 import time
 
 import scripts.executable as executable
 import scripts.procgroup as procgroup
+import scripts.tools.base as tools_base
 
 # How long a timed-out launch's group is given to drain its pipes once it has
 # been killed, before the launcher gives up and reports what it has.
 #
-# The second `communicate()` after the kill is what recovers the partial
-# output `subprocess.run` recovers internally -- but a descendant that escaped
-# the group (one that called `setsid` itself) still holds the write end of the
-# pipes, so EOF never arrives and that second call would block for ever. Short,
+# The readers are given this long after the kill to collect the partial output
+# `subprocess.run` recovers internally -- but a descendant that escaped the
+# group (one that called `setsid` itself) still holds the write end of the
+# pipes, so EOF never arrives and an unbounded wait would block for ever. Short,
 # because the entry deadline has already passed and the head of the stream is
 # the whole of the diagnostic.
 PARTIAL_OUTPUT_GRACE = 2.0
+
+# #3246: what a launch keeps of a host CLI's streams -- the scanner runner's own
+# two caps, not a second pair. Codex `exec --json` and Kimi `stream-json` echo
+# tool results, so a hostile target can steer a reviewer into printing whole
+# files; 8 launches run at once, and `communicate()` kept every byte of each.
+STDOUT_CAP = tools_base.MAX_TOOL_OUTPUT_BYTES
+STDERR_CAP = tools_base.MAX_TOOL_STDERR_BYTES
+
+
+class HostOutputExceeded(RuntimeError):
+    """A host CLI printed more than `STDOUT_CAP` bytes on stdout (#3246).
+
+    Raised AFTER its group is ended. Every family's `except Exception` turns it
+    into a failed entry, so the retained prefix is never parsed as a reply; it
+    rides on `output` (and the stderr tail on `stderr`) for a caller that wants
+    the evidence."""
+
+    def __init__(self, argv, cap, output=None, stderr=None):
+        super().__init__("%s printed more than %d bytes on stdout; the launch was "
+                         "stopped and its reply refused" % (os.path.basename(str(argv[0])), cap))
+        self.output, self.stderr = output, stderr
+
+
+def _feed(stream, data):
+    """Write the prompt and close stdin. A CLI that exits or closes stdin early
+    is not an error here (EPIPE): its exit code and stdout decide (#3246)."""
+    try:
+        view = memoryview(data or b"")
+        while view:                          # a raw pipe may take part of a write
+            view = view[stream.write(view) or 0:]
+    except (OSError, ValueError):
+        pass
+    finally:
+        try:
+            stream.close()
+        except (OSError, ValueError):
+            pass
+
+
+class _Capture:
+    """`communicate`, bounded (#3246): stdin fed on a thread, stderr drained to
+    a tail on a thread (`tools_base.drain_stderr_async`), stdout read up to the
+    cap on a thread (`tools_base.read_capped`) -- and the WAIT stays on the
+    caller's thread with a deadline, as `communicate`'s did, so no timer exists
+    that could fire late at a recycled group."""
+
+    def __init__(self, proc, data):
+        self.proc, self.chunks, self.capped = proc, [], False
+        self.feeder = None
+        if proc.stdin is not None:
+            self.feeder = threading.Thread(target=_feed, args=(proc.stdin, data), daemon=True)
+            self.feeder.start()
+        self.join_stderr = tools_base.drain_stderr_async(proc, cap=STDERR_CAP)
+        self.reader = threading.Thread(target=self._read, daemon=True)
+        self.reader.start()
+
+    def _read(self):
+        try:
+            self.capped = tools_base.read_capped(self.proc.stdout, STDOUT_CAP, self.chunks)
+        except (OSError, ValueError):       # the pipe was closed under us
+            pass
+
+    def wait(self, timeout):
+        """"done", "capped" or "timeout"; on "done" the child has exited."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        self.reader.join(timeout)
+        if self.reader.is_alive():
+            return "timeout"
+        if self.capped:
+            return "capped"
+        try:
+            self.proc.wait(None if deadline is None else max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            return "timeout"
+        return "done"
+
+    def streams(self, grace):
+        """(stdout bytes, stderr tail bytes), waiting at most `grace` for each."""
+        self.reader.join(grace)
+        return b"".join(list(self.chunks)), self.join_stderr(grace)
+
+
+def _text(data, encoding, errors="strict"):
+    """Decode as `Popen(text=True)` does: the locale encoding, universal newlines."""
+    return data.decode(encoding, errors).replace("\r\n", "\n").replace("\r", "\n")
 
 
 class ChildProcesses:
@@ -93,7 +181,7 @@ class ChildProcesses:
         * `procgroup.kill_group` on the timeout, which is the whole point:
           `subprocess.run` kills the direct pid and leaves the workers.
 
-        Any OTHER exception out of `communicate` ends the group too, and then
+        Any OTHER exception out of the wait ends the group too, and then
         propagates untouched -- `subprocess.run`'s own bare
         `except BaseException: process.kill(); raise`, with the group kill in
         place of the pid kill. The three pipes are closed in the `finally`
@@ -103,11 +191,13 @@ class ChildProcesses:
         The `TimeoutExpired` it raises is the one every family's existing
         `except subprocess.TimeoutExpired` clause already reads -- same type,
         carrying the same partial `output`/`stderr` (D10 ruling 5) -- so no
-        family's failure path changes. It is RE-RAISED rather than passed
-        through because the partial streams are recovered after the kill: on
-        POSIX `communicate` populates the first exception with whatever it had
-        read as UNDECODED bytes, and a second `communicate()` once the group
-        is dead returns the complete, decoded streams instead.
+        family's failure path changes. The partial streams are collected after
+        the kill, decoded with `errors="replace"` (a cut can split a character).
+
+        #3246: the wait is `_Capture`, `communicate` bounded. stdout past
+        `STDOUT_CAP` ends the group and raises `HostOutputExceeded`, which every
+        family's `except Exception` turns into a failed entry; stderr keeps its
+        last `STDERR_CAP` bytes.
 
         `capture_output` exists for signature parity and must be true: both
         streams are always piped, because the parsers downstream read both and
@@ -126,20 +216,34 @@ class ChildProcesses:
                                       child_env.get("PATH", ""))
         child_env["PATH"] = resolved.path_env
         launch_argv = [resolved.path] + requested_argv[1:]
+        encoding = locale.getpreferredencoding(False)
+        data = input.encode(encoding) if text and isinstance(input, str) else input
         proc = subprocess.Popen(                       # noqa: S603 - argv, never a shell
             launch_argv, cwd=cwd, env=child_env,
             stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=text, start_new_session=True)
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+            # Unbuffered: closing a RAW pipe in the `finally` takes no lock, so a
+            # reader still blocked on it (a descendant outside the group holds
+            # the write end) cannot hang the launch; its next read sees it closed.
+            bufsize=0)
         self.register_child(proc)
         try:
             try:
-                out, err = proc.communicate(input, timeout=timeout)
-            except subprocess.TimeoutExpired as exc:
-                procgroup.kill_group(proc)
-                out, err = self._drain(proc, exc)
-                raise subprocess.TimeoutExpired(
-                    requested_argv, timeout, output=out, stderr=err) from exc
+                capture = _Capture(proc, data)
+                outcome = capture.wait(timeout)
+                if outcome != "done":
+                    procgroup.kill_group(proc)
+                    out, err = capture.streams(PARTIAL_OUTPUT_GRACE)
+                    if outcome == "capped":
+                        raise HostOutputExceeded(requested_argv, STDOUT_CAP, out, err)
+                    if text:
+                        out, err = _text(out, encoding, "replace"), _text(err, encoding, "replace")
+                    raise subprocess.TimeoutExpired(requested_argv, timeout, output=out, stderr=err)
+                out, err = capture.streams(PARTIAL_OUTPUT_GRACE)
+                if text:
+                    out, err = _text(out, encoding), _text(err, encoding)
+            except (subprocess.TimeoutExpired, HostOutputExceeded):
+                raise
             except BaseException:
                 # The timeout is not the only way out. A Ctrl-C on one of
                 # the MAIN-THREAD launches (`prove_output_schema_shape`,
@@ -163,33 +267,16 @@ class ChildProcesses:
             # (uninterruptible I/O; EPERM from a child that changed
             # privilege) -- so the context manager turned a bounded entry
             # timeout into a driver that never returns. Measured at 8 s and
-            # still going. Zombies are not the price: `communicate` reaps on
+            # still going. Zombies are not the price: `_Capture.wait` reaps on
             # the way out of the success path, and `kill_group`'s bounded
             # `reaped()` does it on every failure path.
             for pipe in (proc.stdin, proc.stdout, proc.stderr):
                 if pipe is not None:
                     try:
                         pipe.close()
-                    except OSError:         # already closed by communicate
+                    except OSError:         # already closed by a reader
                         pass
         return subprocess.CompletedProcess(requested_argv, proc.returncode, out, err)
-
-    @staticmethod
-    def _drain(proc, timed_out):
-        """What the killed child had printed, as completely as it can be had.
-
-        `communicate()` accumulates across calls, so the second one returns
-        the first one's partial read plus whatever arrived before the kill --
-        decoded, which the exception's own `stdout`/`stderr` are not. If even
-        that cannot finish (a descendant outside the group is holding the
-        pipes), the undecoded partials the first exception carries are the
-        answer: `base.partial_output` and `base.stderr_head` both accept
-        bytes, and a truncated diagnostic beats none.
-        """
-        try:
-            return proc.communicate(timeout=PARTIAL_OUTPUT_GRACE)
-        except Exception:            # noqa: BLE001 - a second timeout, or closed pipes
-            return timed_out.stdout, timed_out.stderr
 
     def register_child(self, proc):
         """Record a live child, so a Ctrl-C can end it (#1662).
