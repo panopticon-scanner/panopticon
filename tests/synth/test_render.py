@@ -609,6 +609,35 @@ class TestToolCleanupFailuresAreRendered(unittest.TestCase):
         self.assertNotIn("\n## forged", out)
 
 
+class TestLanguageDetectionSkipsAreRendered(unittest.TestCase):
+    def _report(self, value=_OMIT):
+        coverage = {}
+        if value is not _OMIT:
+            coverage["language_detection_skips"] = value
+        return {"meta": {"target": "src", "coverage": coverage},
+                "summary": {"overall_grade": "B", "risk_level": "MEDIUM",
+                            "gate": "PASS", "stats": {}, "evidence_stats": {},
+                            "coverage_certified": True},
+                "groups": [], "findings": []}
+
+    def test_one_coverage_line_names_the_language_tool_and_fixed_reason(self):
+        out = render_mod.render_summary(self._report([{
+            "language": "python", "tool": "bandit",
+            "reason": "present only under pruned directories",
+        }]))
+        lines = [line for line in out.splitlines()
+                 if "Language-keyed scanners not selected" in line]
+        self.assertEqual(lines, [
+            "**Language-keyed scanners not selected:** python → bandit "
+            "(present only under pruned directories)"])
+
+    def test_absent_empty_and_malformed_values_render_no_line(self):
+        for value in (_OMIT, [], None, "bad", [{"language": "python"}]):
+            with self.subTest(value=value):
+                self.assertNotIn("Language-keyed scanners not selected",
+                                 render_mod.render_summary(self._report(value)))
+
+
 class TestExcludedToolFindingsAreRendered(unittest.TestCase):
     def _report(self, excluded=_OMIT):
         coverage = {"tools_suppressed": {"vendor": 2}}

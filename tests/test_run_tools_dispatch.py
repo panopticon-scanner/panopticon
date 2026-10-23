@@ -169,6 +169,60 @@ class TestDefaultSelectionBranch(unittest.TestCase):
             bare_selection = self._selection_for(target)["selected"]
         self.assertNotEqual(python_selection, bare_selection)
 
+    def test_docs_only_python_is_disclosed_when_bandit_is_not_selected(self):
+        # #3247 done-condition: docs/ is reviewable by the agentic scan, but the
+        # language-keyed tool selector deliberately keeps #1138's prune. The
+        # resulting single-axis hole must therefore be explicit in the manifest.
+        with tempfile.TemporaryDirectory() as target:
+            os.makedirs(os.path.join(target, "docs", "app"))
+            open(os.path.join(target, "docs", "app", "main.py"), "w").close()
+            payload = self._selection_for(target)
+        self.assertNotIn("bandit", payload["selected"])
+        self.assertEqual(payload["language_detection_skips"], [{
+            "language": "python",
+            "tool": "bandit",
+            "reason": "present only under pruned directories",
+        }])
+
+    def test_vendor_only_go_keeps_1138_and_discloses_gosec(self):
+        with tempfile.TemporaryDirectory() as target:
+            os.makedirs(os.path.join(target, "vendor", "dep"))
+            open(os.path.join(target, "vendor", "dep", "main.go"), "w").close()
+            payload = self._selection_for(target)
+        self.assertNotIn("gosec", payload["selected"])
+        self.assertEqual(payload["language_detection_skips"], [{
+            "language": "go",
+            "tool": "gosec",
+            "reason": "present only under pruned directories",
+        }])
+
+    def test_ordinary_python_selects_bandit_and_records_measured_clean(self):
+        with tempfile.TemporaryDirectory() as target:
+            open(os.path.join(target, "app.py"), "w").close()
+            payload = self._selection_for(target)
+        self.assertIn("bandit", payload["selected"])
+        self.assertEqual(payload["language_detection_skips"], [])
+
+    def test_dot_and_dependency_noise_make_no_language_claim(self):
+        with tempfile.TemporaryDirectory() as target:
+            for directory, name in ((".panopticon", "hidden.py"),
+                                    (".worktrees", "hidden.py"),
+                                    ("node_modules", "hidden.go")):
+                os.makedirs(os.path.join(target, directory))
+                open(os.path.join(target, directory, name), "w").close()
+            payload = self._selection_for(target)
+        self.assertNotIn("bandit", payload["selected"])
+        self.assertNotIn("gosec", payload["selected"])
+        self.assertEqual(payload["language_detection_skips"], [])
+
+    def test_explicit_languages_stay_authoritative_and_omit_measurement(self):
+        with tempfile.TemporaryDirectory() as target:
+            os.makedirs(os.path.join(target, "docs", "app"))
+            open(os.path.join(target, "docs", "app", "main.py"), "w").close()
+            payload = self._selection_for(target, extra=["--languages", "python"])
+        self.assertIn("bandit", payload["selected"])
+        self.assertNotIn("language_detection_skips", payload)
+
 
 class TestAdapterSelection(unittest.TestCase):
     def test_gitleaks_uses_owned_config_adapter_in_production(self):
