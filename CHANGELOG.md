@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **SpotBugs skips empty bytecode roots and discloses no-scan outcomes (#3252, 5.3).**
+  The first existing `target/classes` or `build/classes` directory used to win even when empty,
+  letting an empty Maven directory hide populated Gradle output. SpotBugs now receives every
+  candidate containing a `.class` file at any depth, which its XML records under
+  `Project/Jar`. With no populated candidate, automatic selection says `none scanned` and an
+  explicit invocation exits non-zero instead of silently scanning nothing.
+
 - **Codex advisor instructions match the advisor verdict envelope (#3221, 5.3).** The shared
   Codex charter told every role to include `_panopticon`, but `panopticon-advisor` serves both
   single-finding and tool-finding checks whose seven-field schema forbids that extra property. In
