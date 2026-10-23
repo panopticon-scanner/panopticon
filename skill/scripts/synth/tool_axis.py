@@ -455,6 +455,8 @@ def reconcile(plan, tools, resolved, run=None):
     # #2990: reported, never gating -- the CRITICAL reading already gates.
     integrity["unknown_severity_findings"] = list(
         getattr(resolved, "unknown_severity_ids", None) or [])
+    # #3245: reported, never gating -- SEC was never these groups' floor.
+    integrity["sec_less_groups"] = coverage_io.sec_less_groups(plan.coverages, plan.groups_meta)
     scope_ok = not ((plan.out_of_scope or {}).get("count")
                     if isinstance(plan.out_of_scope, dict) else False)
     # ARC-3284703909 (#1761): membership is `integrity.INTEGRITY_KEYS`, which

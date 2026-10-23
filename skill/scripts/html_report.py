@@ -530,10 +530,10 @@ def _render_header(report):
         f"<span class='badge {_severity_class(summary.get('risk_level', 'INFO') or 'unknown')}'>Risk: {_escape(summary.get('risk_level', '-') or 'unknown')}</span>",
         f"<span class='badge {_gate_class(summary.get('gate', 'OFF'))}'>Gate: {_escape(summary.get('gate', 'OFF'))}{_gate_mode_label(meta)}</span>",
     ]
-    # Health never affects the gate (#1057). Across six calibration targets, every
-    # grade was D/F while health ranged from 35.68 to 70.45. That sample is too
-    # small for healthy/fair/poor bands, so the number and inputs show how much of
-    # the measured codebase is clean without assigning a qualitative label.
+    # Health never affects the gate (#1057). Across six calibration targets, every grade was D/F
+    # while health ranged from 35.68 to 70.45. That sample is too small for healthy/fair/poor bands,
+    # so the number and inputs show how much of the measured codebase is clean without assigning a
+    # qualitative label.
     health = summary.get("health")
     if isinstance(health, dict) and health.get("score") is not None:
         parts.append(
@@ -571,10 +571,11 @@ def _render_header(report):
             for sentence in integrity_messages.sinking_sentences(meta.get("integrity")))
         parts.append("<div class='not-certified'>NOT CERTIFIED &mdash; %s%s</div>"
                      % (_escape(note), details))
-    # #2990: the CRITICAL a reviewer did not write is explained, though it does not sink.
-    unknown_severity = integrity_messages.note_sentence(meta.get("integrity"), "unknown_severity_findings")
-    if unknown_severity:
-        parts.append("<div class='integrity-note'>%s</div>" % _escape(unknown_severity))
+    # #2990 / #3245: a CRITICAL nobody wrote, and a code group no SEC cell read, are explained; neither sinks.
+    for key in ("unknown_severity_findings", "sec_less_groups"):
+        sentence = integrity_messages.note_sentence(meta.get("integrity"), key)
+        if sentence:
+            parts.append("<div class='integrity-note'>%s</div>" % _escape(sentence))
     parts.append(_render_host_capabilities(meta))
     ev = summary.get("evidence_stats") or {}
     verified = sum(int(ev.get(s, 0)) for s in evidence_sections.VERIFIED_STATUSES)
@@ -788,10 +789,9 @@ def _render_suppressed_git_drivers(meta):
 
 
 # #1839: mirrored from `ingest_tools.MARKER_VENV_SEGMENT` / `MARKER_VENV_PREFIX` /
-# `NAME_VENV_SEGMENT` (this module keeps its imports guarded so it can render
-# standalone), and pinned to them by tests/test_ingest_tools.py. The clause exists
-# because the sentence below is about findings dropped on a directory NAME, and
-# these rows are not.
+# `NAME_VENV_SEGMENT` (this module keeps its imports guarded so it can render standalone), and
+# pinned to them by tests/test_ingest_tools.py. The clause exists because the sentence below is
+# about findings dropped on a directory NAME, and these rows are not.
 MARKER_VENV_SEGMENT = "virtualenv-by-marker"
 MARKER_VENV_PREFIX = "pyvenv.cfg:"
 NAME_VENV_SEGMENT = "virtualenv-by-name"

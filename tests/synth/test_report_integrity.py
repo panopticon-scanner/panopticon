@@ -90,7 +90,7 @@ class TestIntegrity(unittest.TestCase):
                          dict(integ, tools_manifest_invalid=None,
                               unbound_tool_outputs=[],
                               delta_scope_suppressed_git_drivers=None,
-                              unknown_severity_findings=[]))
+                              unknown_severity_findings=[], sec_less_groups=[]))
         self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
 
     def test_a_missing_owed_snapshot_cannot_certify(self):
@@ -142,6 +142,8 @@ class TestIntegrity(unittest.TestCase):
         "delta_scope_suppressed_git_drivers",
         # #2990: appended by reconcile from the resolved findings.
         "unknown_severity_findings",
+        # #3245: appended by reconcile from the coverage records.
+        "sec_less_groups",
     ]
 
     def test_the_published_integrity_key_order_is_the_contract(self):
@@ -182,6 +184,8 @@ class TestIntegrity(unittest.TestCase):
                 "delta_scope_suppressed_git_drivers": None,
                 # #2990: no finding carried an unknown severity.
                 "unknown_severity_findings": [],
+                # #3245: no coverage records, so no group is named.
+                "sec_less_groups": [],
             },
         )
         self.assertEqual(r["summary"]["gate"], "PASS")
@@ -216,6 +220,8 @@ class TestIntegrity(unittest.TestCase):
                 "delta_scope_suppressed_git_drivers": None,
                 # #2990: no finding carried an unknown severity.
                 "unknown_severity_findings": [],
+                # #3245: no coverage records, so no group is named.
+                "sec_less_groups": [],
             },
         )
         self.assertEqual(r["summary"]["gate"], "PASS")
@@ -330,18 +336,21 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         # and the truncation disclosure did not gate before this change either.
         "discovery_git_failure", "discovery_files_truncated",
         # #2990: the CRITICAL reading already gates; this explains it.
-        "unknown_severity_findings"})
+        "unknown_severity_findings",
+        # #3245: SEC was never these groups' floor; the gap is disclosed.
+        "sec_less_groups"})
     # The REPORTED keys that DO print a line: a non-gating `**Note:**`, never
     # an `**Integrity:**`. Pinned against the table below so a key that gains
     # or loses a sentence cannot quietly change which test covers it.
     NOTED = frozenset({"cross_domain_findings", "discovery_git_failure",
-                       "discovery_files_truncated", "unknown_severity_findings"})
+                       "discovery_files_truncated", "unknown_severity_findings",
+                       "sec_less_groups"})
     # `reconcile` appends these two to whatever section it was handed, so
     # `integrity_section` never publishes them and the table's membership test
     # below has to name them explicitly.
     RECONCILE_ADDS = frozenset({"tools_manifest_invalid", "unbound_tool_outputs",
                                 "delta_scope_suppressed_git_drivers",
-                                "unknown_severity_findings"})
+                                "unknown_severity_findings", "sec_less_groups"})
     # One truthy value per key, in the shape the key really carries.
     TRUTHY: dict = {
         "unexpected_findings_files": ["u.json"],
@@ -384,6 +393,8 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         "discovery_files_truncated": 7,
         # #2990: the id of the one finding `_inputs` gives an unknown severity.
         "unknown_severity_findings": ["COD-123"],
+        # #3245: the one group `_inputs` plans without SEC (`G`'s g1 has code).
+        "sec_less_groups": ["g1"],
     }
     SUPPRESSED_DRIVERS = [{"repo": ".", "key": "diff.external"}]
 
@@ -420,6 +431,9 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
                 diff_hunks={"base": "main", "hunks": {}} if delta_key else None),
             plan=plan_mod.PlanInputs(
                 groups_meta=self.G, integrity=section,
+                # #3245: reconcile reads this key off the coverage records.
+                coverages=([{"group": "g1", "effective": ["COD"]}]
+                           if "sec_less_groups" in (key, *also) else None),
                 git_drivers_suppressed=self.SUPPRESSED_DRIVERS if delta_key else None),
             tools=tool_axis_mod.ToolAxis(
                 manifest_invalid=(self.TRUTHY[key]
@@ -815,3 +829,59 @@ class TestAnAbsorbedUnknownSeverityIsNamed(unittest.TestCase):
         self.assertEqual(written, {"COD-301": "SEVERE", "COD-302": None,
                                    "COD-303": "<none>"})
         self.assertEqual(report_mod.validate_report(r)[0], [])
+
+
+class TestASecLessCodeGroupIsNamed(unittest.TestCase):
+    """#3245: the SEC floor keys on file NAMES, so a config that never lists
+    SEC plus a scout steered off it left a code group with no security cell,
+    and only `coverage-<group>.json` knew. It is a non-sinking integrity key
+    now, printed on a CERTIFIED run, which is the case that matters."""
+
+    TS = "2026-01-01T00:00:00Z"
+
+    def _report(self, coverages, groups_meta):
+        return report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(groups_meta=groups_meta, coverages=coverages)))
+
+    def test_the_issue_s_repro_group_is_named(self):
+        # panopticon.yml: group Api, match [src/server/handler.py], no SEC in
+        # panels; the scout returned [COD]; the filename floor did not fire.
+        report = self._report([{"group": "Api", "effective": ["COD"]}],
+                              [{"name": "Api", "files": ["src/server/handler.py"]}])
+        self.assertEqual(["Api"], report["meta"]["integrity"]["sec_less_groups"])
+        self.assertTrue(report["summary"]["coverage_certified"])     # disclosed, never sunk
+
+    def test_only_a_code_group_without_sec_is_named(self):
+        report = self._report(
+            [{"group": "Api", "effective": ["COD"]},
+             {"group": "Auth", "effective": ["COD", "SEC"]},
+             {"group": "Art", "effective": []},
+             {"group": "Lost", "effective": ["COD"]},
+             {"group": "", "effective": ["COD"]}],       # names no group, as in planned_pairs
+            [{"name": "Api", "files": ["src/server/handler.py"]},
+             {"name": "Auth", "files": ["src/auth.py"]},
+             {"name": "Art", "files": ["img/logo.png", "img/font.woff2"]}])
+        # Auth has SEC; Art has no code; Lost has no file list, which is not "no code".
+        self.assertEqual(["Api", "Lost"], report["meta"]["integrity"]["sec_less_groups"])
+
+    def test_both_renderers_print_it_on_a_certified_run(self):
+        import scripts.html_report as html_report
+        report = self._report([{"group": "Api", "effective": ["COD"]}],
+                              [{"name": "Api", "files": ["src/server/handler.py"]}])
+        self.assertTrue(report["summary"]["coverage_certified"])
+        text = render_mod.render_summary(report)
+        line = next(ln for ln in text.splitlines() if "no SEC review cell" in ln)
+        self.assertTrue(line.startswith("**Note:**"), line)
+        self.assertIn("1 group(s) — Api", line)
+        page = html_report.render(report)
+        self.assertIn("<div class='integrity-note'>1 group(s) — Api with code have no SEC "
+                      "review cell", page)
+
+    def test_a_run_with_every_code_group_reviewed_prints_nothing(self):
+        report = self._report([{"group": "Auth", "effective": ["COD", "SEC"]}],
+                              [{"name": "Auth", "files": ["src/auth.py"]}])
+        self.assertEqual([], report["meta"]["integrity"]["sec_less_groups"])
+        self.assertNotIn("no SEC review cell", render_mod.render_summary(report))
+

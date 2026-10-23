@@ -731,6 +731,13 @@
                 "type": "string"
               }
             },
+            "sec_less_groups": {
+              "type": "array",
+              "description": "#3245: groups with code (coverage_model.has_code_surface over their groups.json files, or no file list at all) whose review plan has no SEC cell -- REPORTED, never gating, because SEC was never these groups' floor. The SEC floor keys on file names, so a config that omits SEC and a scout steered off it could leave a code group with no security reviewer.",
+              "items": {
+                "type": "string"
+              }
+            },
             "cross_domain_findings": {
               "type": "array",
               "description": "#calibration-4: findings filed under a domain other than their cell's -- REPORTED, never gating. A reviewer that files a TST finding from an ARC cell has stepped outside its lane, which is a real signal about panel discipline and about catalog gaps (most are `<DOM>-X0X`), but it is evidence about the REVIEW, not about whether the artifacts on disk can be trusted. Treating it as an integrity failure once sank certification on a run whose file integrity was perfect.",
