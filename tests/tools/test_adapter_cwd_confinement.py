@@ -166,7 +166,10 @@ def _seed_fixture(name, root):
         open(os.path.join(root, "config", "routes.rb"), "w").close()
     elif name == "spotbugs":
         open(os.path.join(root, "pom.xml"), "w").close()
-        os.makedirs(os.path.join(root, "target", "classes"), exist_ok=True)
+        classes = os.path.join(root, "target", "classes")
+        os.makedirs(classes, exist_ok=True)
+        # #3252: an empty directory is deliberately not a scan input.
+        open(os.path.join(classes, "App.class"), "wb").close()
     elif name == "dependency-check":
         open(os.path.join(root, "pom.xml"), "w").close()
         with open(os.path.join(root, "app.jar"), "w") as fh:
