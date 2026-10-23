@@ -242,6 +242,10 @@ _SOURCE_ROOTS = ("src/main/java", "src/test/java",
 # The one disclosure value: this finding's `location.file` is NOT a repo path.
 _UNRESOLVED = "unresolved"
 
+_CLASSES_CANDIDATES = (("target", "classes"), ("build", "classes"))
+_NONE_SCANNED = ("spotbugs: none scanned (no populated target/classes or "
+                 "build/classes directory)")
+
 
 def _repo_relative(candidate: str) -> str | None:
     """`candidate` as a normalized relative path, or None if it is not one.
@@ -382,37 +386,50 @@ class SpotBugsAdapter:
     DROP_IF_NO_LOCATION = False
 
     @staticmethod
-    def _classes_dir(target: str):
-        for rel in (("target", "classes"), ("build", "classes")):
+    def _classes_dirs(target: str) -> list[str]:
+        """Conventional output roots containing a `.class` file at any depth."""
+        populated = []
+        for rel in _CLASSES_CANDIDATES:
             d = os.path.join(target, *rel)
-            if os.path.isdir(d):
-                return d
-        return None
+            if not os.path.isdir(d):
+                continue
+            if any(name.endswith(".class")
+                   for _root, _dirs, files in os.walk(d)
+                   for name in files):
+                populated.append(d)
+        return populated
 
     def is_applicable(self, target: str) -> bool:
         # #run7 COD-C2A: SpotBugs/FindSecBugs analyzes JVM BYTECODE (.class), not
         # source. A build-manifest repo with no compiled output (the common
         # read-only static-analysis case) was marked applicable, then invoke ran
         # against a dir with zero .class files -> empty XML / "selected but
-        # unproduced". Require a manifest AND a compiled classes dir. (Without a
-        # build step Java coverage is impossible; gating applicability is the
-        # honest fix rather than pretending to cover un-built repos.)
+        # unproduced". Require a manifest AND populated compiled output. Without
+        # a build step Java coverage is impossible; gating applicability while
+        # saying "none scanned" is honest rather than pretending to cover an
+        # un-built repo (#3252).
         markers = ["pom.xml", "build.gradle", "build.gradle.kts"]
         has_manifest = any(os.path.exists(os.path.join(target, m)) for m in markers)
-        return has_manifest and self._classes_dir(target) is not None
+        classes = self._classes_dirs(target)
+        if has_manifest and not classes:
+            print(_NONE_SCANNED, file=sys.stderr)
+        return has_manifest and bool(classes)
 
     def invoke(self, target: str) -> tuple[bytes, int]:
-        classes = self._classes_dir(target) or target
+        classes = self._classes_dirs(target)
+        if not classes:
+            print(_NONE_SCANNED, file=sys.stderr)
+            return b"", 2
         spotbugs_home = os.environ.get("SPOTBUGS_HOME", "/opt/spotbugs")
         plugin_jar = os.path.join(spotbugs_home, "plugin", "findsecbugs-plugin.jar")
         cmd = [
             os.path.join(spotbugs_home, "bin", "spotbugs"),
             "-textui", "-xml", "-pluginList", plugin_jar,
-            classes,
-        ]
+        ] + classes
         # #1877: spotbugs reads cwd-relative configuration (exclude/include
-        # filter files), so it runs from an empty scratch; the classes dir is
-        # named on argv, so argv is byte-unchanged.
+        # filter files), so it runs from an empty scratch; every populated
+        # classes dir is named on argv and recorded in SpotBugs' Project/Jar
+        # coverage block (#3252).
         with scratch_cwd("spotbugs-cwd-") as cwd:
             return run_tool(cmd, timeout=600, cwd=cwd)
 

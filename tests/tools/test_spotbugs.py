@@ -32,6 +32,7 @@ class TestSpotBugsAdapter(unittest.TestCase):
                 target = Path(root)
                 classes = target / "target" / "classes"
                 classes.mkdir(parents=True)
+                (classes / "App.class").write_bytes(b"bytecode")
                 home = target / "installed spotbugs"
                 scratch = target / "isolated cwd"
                 scratch.mkdir()
@@ -53,6 +54,79 @@ class TestSpotBugsAdapter(unittest.TestCase):
                 ])
                 self.assertEqual(captured["kwargs"], {"timeout": 600, "cwd": str(scratch)})
 
+    def test_empty_first_candidate_cannot_hide_populated_later_candidate(self):
+        with TemporaryDirectory() as root:
+            target = Path(root)
+            (target / "pom.xml").touch()
+            (target / "target" / "classes").mkdir(parents=True)
+            populated = target / "build" / "classes"
+            nested = populated / "org" / "example"
+            nested.mkdir(parents=True)
+            (nested / "App.class").write_bytes(b"bytecode")
+            captured = {}
+
+            def fake_run(argv, **kwargs):
+                captured.update(argv=argv, kwargs=kwargs)
+                return b"<BugCollection/>", 0
+
+            with mock.patch.object(sb, "run_tool", side_effect=fake_run):
+                adapter = sb.SpotBugsAdapter()
+                self.assertTrue(adapter.is_applicable(str(target)))
+                adapter.invoke(str(target))
+
+            self.assertEqual(captured["argv"][-1:], [str(populated)])
+            self.assertNotIn(str(target / "target" / "classes"), captured["argv"])
+
+    def test_invoke_passes_every_populated_classes_candidate(self):
+        with TemporaryDirectory() as root:
+            target = Path(root)
+            candidates = [target / "target" / "classes",
+                          target / "build" / "classes"]
+            for index, candidate in enumerate(candidates):
+                nested = candidate / "nested"
+                nested.mkdir(parents=True)
+                (nested / ("App%d.class" % index)).write_bytes(b"bytecode")
+            captured = {}
+
+            def fake_run(argv, **kwargs):
+                captured.update(argv=argv, kwargs=kwargs)
+                return b"<BugCollection/>", 0
+
+            with mock.patch.object(sb, "run_tool", side_effect=fake_run):
+                sb.SpotBugsAdapter().invoke(str(target))
+
+            self.assertEqual(captured["argv"][-2:], [str(path) for path in candidates])
+
+    def test_explicit_invoke_with_no_populated_candidate_reports_none_scanned(self):
+        with TemporaryDirectory() as root:
+            target = Path(root)
+            (target / "target" / "classes").mkdir(parents=True)
+            (target / "build" / "classes").mkdir(parents=True)
+            invoked = mock.Mock(return_value=(b"<BugCollection/>", 0))
+            diagnostic = io.StringIO()
+
+            with mock.patch.object(sb, "run_tool", invoked), \
+                    contextlib.redirect_stderr(diagnostic):
+                result = sb.SpotBugsAdapter().invoke(str(target))
+
+            self.assertEqual(result, (b"", 2))
+            invoked.assert_not_called()
+            self.assertIn("none scanned", diagnostic.getvalue())
+
+    def test_manifest_with_only_empty_candidates_is_not_applicable_and_disclosed(self):
+        with TemporaryDirectory() as root:
+            target = Path(root)
+            (target / "pom.xml").touch()
+            (target / "target" / "classes").mkdir(parents=True)
+            (target / "build" / "classes").mkdir(parents=True)
+            diagnostic = io.StringIO()
+
+            with contextlib.redirect_stderr(diagnostic):
+                applicable = sb.SpotBugsAdapter().is_applicable(str(target))
+
+            self.assertFalse(applicable)
+            self.assertIn("none scanned", diagnostic.getvalue())
+
     def test_parse_produces_finding(self):
         findings = sb.SpotBugsAdapter().parse(SPOTBUGS_SAMPLE, "g1")
         self.assertEqual(len(findings), 1)
@@ -69,7 +143,9 @@ class TestSpotBugsAdapter(unittest.TestCase):
         # requires a manifest AND a target/classes (or build/classes) dir.
         with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("pom.xml")), \
              mock.patch("os.path.isdir",
-                        side_effect=lambda p: p.endswith(os.path.join("target", "classes"))):
+                        side_effect=lambda p: p.endswith(os.path.join("target", "classes"))), \
+             mock.patch("os.walk", return_value=[("/tmp/fake/target/classes", [],
+                                                   ["App.class"])]):
             self.assertTrue(sb.SpotBugsAdapter().is_applicable("/tmp/fake"))
 
     def test_not_applicable_with_manifest_but_no_compiled_classes(self):

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **SpotBugs skips empty bytecode roots and discloses no-scan outcomes (#3252, 5.3).**
+  The first existing `target/classes` or `build/classes` directory used to win even when empty,
+  letting an empty Maven directory hide populated Gradle output. SpotBugs now receives every
+  candidate containing a `.class` file at any depth, which its XML records under
+  `Project/Jar`. With no populated candidate, automatic selection says `none scanned` and an
+  explicit invocation exits non-zero instead of silently scanning nothing.
+
 - **A deleted or gutted tree baseline no longer reads as a clean tree (#3255, 5.3).** Three ways to
   get "clean" from a baseline that measured nothing are closed. (1) `driver run` captures the
   baseline at the start of every invocation, so one deleted mid-run was re-captured by the next
