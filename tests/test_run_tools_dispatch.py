@@ -203,6 +203,15 @@ class TestDefaultSelectionBranch(unittest.TestCase):
         self.assertIn("bandit", payload["selected"])
         self.assertEqual(payload["language_detection_skips"], [])
 
+    def test_a_selected_language_is_not_also_disclosed_as_skipped(self):
+        with tempfile.TemporaryDirectory() as target:
+            os.makedirs(os.path.join(target, "docs"))
+            open(os.path.join(target, "docs", "example.py"), "w").close()
+            open(os.path.join(target, "app.py"), "w").close()
+            payload = self._selection_for(target)
+        self.assertIn("bandit", payload["selected"])
+        self.assertEqual(payload["language_detection_skips"], [])
+
     def test_successful_dispatch_carries_the_disclosure_to_the_manifest(self):
         with tempfile.TemporaryDirectory() as target, \
                 tempfile.TemporaryDirectory() as out:
