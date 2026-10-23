@@ -203,6 +203,26 @@ class TestDefaultSelectionBranch(unittest.TestCase):
         self.assertIn("bandit", payload["selected"])
         self.assertEqual(payload["language_detection_skips"], [])
 
+    def test_successful_dispatch_carries_the_disclosure_to_the_manifest(self):
+        with tempfile.TemporaryDirectory() as target, \
+                tempfile.TemporaryDirectory() as out:
+            os.makedirs(os.path.join(target, "build"))
+            open(os.path.join(target, "build", "main.py"), "w").close()
+            manifest = os.path.join(out, "manifest.json")
+            with mock.patch("scripts.run_tools.docker_available", return_value=True), \
+                    mock.patch("scripts.run_tools.run_tools", return_value=[]), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rc = rt.main(["--target", target, "--out", out,
+                              "--manifest", manifest])
+            with open(manifest, encoding="utf-8") as stream:
+                payload = json.load(stream)
+        self.assertEqual(rc, 0)
+        self.assertEqual(payload["language_detection_skips"], [{
+            "language": "python",
+            "tool": "bandit",
+            "reason": "present only under pruned directories",
+        }])
+
     def test_dot_and_dependency_noise_make_no_language_claim(self):
         with tempfile.TemporaryDirectory() as target:
             for directory, name in ((".panopticon", "hidden.py"),
@@ -221,6 +241,12 @@ class TestDefaultSelectionBranch(unittest.TestCase):
             open(os.path.join(target, "docs", "app", "main.py"), "w").close()
             payload = self._selection_for(target, extra=["--languages", "python"])
         self.assertIn("bandit", payload["selected"])
+        self.assertNotIn("language_detection_skips", payload)
+
+        with tempfile.TemporaryDirectory() as target:
+            open(os.path.join(target, "app.py"), "w").close()
+            payload = self._selection_for(target, extra=["--languages"])
+        self.assertNotIn("bandit", payload["selected"])
         self.assertNotIn("language_detection_skips", payload)
 
 

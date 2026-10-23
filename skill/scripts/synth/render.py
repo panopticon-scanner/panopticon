@@ -362,7 +362,8 @@ def render_summary(report):
     if sup_gated:
         lines.insert(3, sup_gated)
     cleanup = tool_cleanup.markdown_line(
-        _cov.get("tools_cleanup_failures"), _code_span)
+        _cov.get("tools_cleanup_failures"), _code_span,
+        _cov.get("language_detection_skips"))
     if cleanup:
         lines.insert(3, cleanup)
     rz = (report["meta"].get("coverage") or {}).get("resume") or {}

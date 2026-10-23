@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Language-keyed scanners no longer disappear silently behind the selection prune (#3247,
+  5.3).** Automatic language detection still keeps #1138's vendored/generated/sample-directory
+  prune, so a stray foreign-language file does not select a scanner that can produce no useful
+  output. It now observes that reviewable surface in the same walk and records bounded
+  `meta.coverage.language_detection_skips` rows when a language exists only there, naming the
+  scanner not selected and the fixed reason. The terminal and HTML reports render the disclosure
+  on one coverage line. Explicit `--languages` remains authoritative and omits this automatic
+  measurement; dot directories and dependency/cache trees remain noise. The disclosure changes
+  neither automatically selected tools nor certification.
+
 - **A code group with no security review cell is now named (#3245, 5.3).** SEC reaches a group from
   its committed `panels:`, the filename-keyed SEC floor, or the scout, so a config that never lists
   SEC plus a scout steered off it left a group of ordinary-named web handlers with no SEC cell, and
