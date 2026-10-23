@@ -7,8 +7,10 @@ from dataclasses import dataclass
 # path does not exist; keep the HTML boundary local and pin equality in tests.
 HTML_DETAIL_MAX = 2000
 HTML_DETAIL_CUT = "…"
-# #2990: how many finding ids `unknown_severity_findings`' sentence names.
+# #2990: how many finding ids `unknown_severity_findings`' sentence names
+# (and, #3245, how many group names `sec_less_groups`' does).
 UNKNOWN_SEVERITY_IDS_SHOWN = 10
+_NAMED_LISTS = {"unknown_severity_findings": "finding(s)", "sec_less_groups": "group(s)"}
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,14 @@ INTEGRITY_KEYS: dict[str, IntegrityKey] = {
         False, "%s carried an unknown or no severity and were read as CRITICAL "
                "(the value as written is kept on each finding, null where none "
                "was written). Does NOT affect certification."),
+    # #3245: a group with code that no SEC cell reviews. The SEC floor keys on
+    # file NAMES, so a config without SEC and a steered scout could leave one
+    # with no security reviewer, and only `coverage-<group>.json` knew. Non-
+    # gating: SEC was never that group's floor. Evidence: the count and names.
+    "sec_less_groups": IntegrityKey(
+        False, "%s with code have no SEC review cell, so no security reviewer read "
+               "them (the SEC floor keys on file names; neither the config nor the "
+               "scout added SEC). Does NOT affect certification."),
     # #2271: discovery's two DEGRADATION disclosures, which the driver path
     # dropped -- `discovery.py` printed them on its own stderr and wrote them
     # into `groups.json`, and nothing downstream read either. NON-GATING, on
@@ -225,10 +235,10 @@ def raw_evidence_text(key, value):
         text = "%d cross-domain finding(s) — %s" % (len(value), ", ".join(
             "%s→%s ×%d" % (a, b, n) for (a, b), n in sorted(
                 by.items(), key=lambda item: (item[0][0] or "", item[0][1] or ""))))
-    elif key == "unknown_severity_findings" and isinstance(value, list):
+    elif key in _NAMED_LISTS and isinstance(value, list):
         shown = value[:UNKNOWN_SEVERITY_IDS_SHOWN]
-        text = "%d finding(s) — %s%s" % (
-            len(value), ", ".join(str(row) for row in shown),
+        text = "%d %s — %s%s" % (
+            len(value), _NAMED_LISTS[key], ", ".join(str(row) for row in shown),
             ", …" if len(value) > len(shown) else "")
     elif isinstance(value, list):
         text = ", ".join(_row_evidence(key, row) for row in value)

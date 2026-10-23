@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **A code group with no security review cell is now named (#3245, 5.3).** SEC reaches a group from
+  its committed `panels:`, the filename-keyed SEC floor, or the scout, so a config that never lists
+  SEC plus a scout steered off it left a group of ordinary-named web handlers with no SEC cell, and
+  only `coverage-<group>.json` said so. `meta.integrity.sec_less_groups` now names every group whose
+  plan has no SEC cell and whose files have code (or whose file list is unknown), and both the
+  terminal summary (`**Note:**`) and the HTML report print it, on certified runs too. It is a
+  disclosure, not a gate: SEC was never those groups' floor, so certification is unchanged. The
+  floor itself is unchanged: a content signal (framework imports, route decorators) was declined as
+  a heuristic catalogue a hostile target dodges by renaming an import, and SEC on every code group
+  (+13 cells on this repository's 27-group plan) is left as a cost ruling.
+
 - **A deleted or gutted tree baseline no longer reads as a clean tree (#3255, 5.3).** Three ways to
   get "clean" from a baseline that measured nothing are closed. (1) `driver run` captures the
   baseline at the start of every invocation, so one deleted mid-run was re-captured by the next

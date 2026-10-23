@@ -22,6 +22,7 @@ import glob
 import os
 import sys
 
+import scripts.coverage_model as coverage_model
 import scripts.findings_contract as findings_contract
 from . import artifacts as artifacts_mod
 from . import validate_schema as schema_mod
@@ -207,6 +208,31 @@ def audit_floor_cells(coverages, present):
             if dom not in have and group is not None:
                 missing.append([group, dom])
     return {"missing_floor": sorted(missing)}
+
+
+def sec_less_groups(coverages, groups_meta):
+    """#3245: groups with code whose review plan has no SEC cell, sorted.
+
+    SEC reaches `effective` only from the committed floor, the filename signal
+    floor or the scout, so a config that omits it and a scout steered off it
+    leave a code group with no security reviewer -- and nothing said so. "Code"
+    is `coverage_model.has_code_surface` over the group's `groups.json` files;
+    a group with no file list there is named too, since unknown is not "no
+    code". Reported in `meta.integrity`, never gating: SEC was never its floor.
+    """
+    files = {g["name"]: g.get("files") for g in groups_meta or []
+             if isinstance(g, dict) and isinstance(g.get("name"), str)}
+    named = set()
+    for cov in coverages or []:
+        if not isinstance(cov, dict) or not isinstance(cov.get("group"), str) or not cov["group"]:
+            continue
+        effective = cov.get("effective")
+        if not isinstance(effective, list) or "SEC" in effective:
+            continue
+        group_files = files.get(cov["group"])
+        if not isinstance(group_files, list) or coverage_model.has_code_surface(group_files):
+            named.add(cov["group"])
+    return sorted(named)
 
 
 # #3220: led into `summary.coverage_note` by `grading.grade_report`.
