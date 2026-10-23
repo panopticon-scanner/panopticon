@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **One reviewer can no longer corroborate itself (#3254, 5.3).** A finding kept the `panel` its
+  reviewer wrote, so one cell could label two adjacent findings with different panels and both came
+  out `corroborated`: that evidence status with no advisor, at triage priority 0, spending the
+  `--max-verify` budget on them. An agent finding's panel now comes from its review cell, the
+  `findings-<group>-<domain>.json` name the controller chose; the reviewer's own `panel` value is
+  not read, and the finding's `domain` is not used either, because filing across domains is
+  allowed. A file whose name names no cell is one source, panel `code`. Findings from two
+  different cells, or a tool and a reviewer, at one spot corroborate as before. Consequences: a
+  cross-domain finding is shown under its writer's panel; the cvss/exploit rule for agent security
+  HIGHs follows the cell; agent findings no longer carry the `redteam` panel. A finding whose
+  reviewer-chosen panel differed from its cell's changes identity once across this upgrade: its
+  `fingerprint`, which reconciliation groups runs by, includes the panel, and so does the coarse
+  cross-run key of a finding with no OCRDb code.
+
 - **A refusal note the target planted no longer reaches the setup retry (#3253, 5.3).** A refused
   reply is kept under `rejected/`, and the entry's next prompt quoted that record's reason as the
   controller's own words. Under `--setup` the run folder is the flat `.panopticon/` and the entry id

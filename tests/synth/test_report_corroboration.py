@@ -2,6 +2,7 @@
 
 import os
 import json
+import tempfile
 import unittest
 import scripts.synth.validate_schema as validate_schema_mod
 import scripts.synth.corroborate as corroborate_mod
@@ -264,3 +265,62 @@ class TestCrossPanelCorroboration(unittest.TestCase):
         fprops = schema["properties"]["findings"]["items"]["properties"]
         self.assertIn("corroborated", fprops)
         self.assertIn("corroborated_by", fprops)
+
+
+class TestOneCellCannotCorroborateItself(unittest.TestCase):
+    """#3254: corroboration means two SOURCES flagged one spot. A reviewer's own
+    `panel` used to be kept, so one cell could label two adjacent findings apart
+    and have both marked `corroborated` -- evidence status with no advisor, and
+    triage priority 0. The panel now comes from the cell the file name declares.
+    Through the real loader and `prepare_for_queue`, the path both the synth
+    queue and the driver's verify_tools queue take."""
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.addCleanup(self._t.cleanup)
+
+    @staticmethod
+    def _finding(panel, line, title, domain="COD"):
+        return {"panel": panel, "domain": domain, "category": "logic", "severity": "MEDIUM",
+                "confidence": "LIKELY", "title": title, "description": "d", "impact": "i",
+                "location": {"file": "src/app.py", "line_start": line}}
+
+    def _prepare(self, files):
+        paths = []
+        for name, rows in files.items():
+            path = os.path.join(self._t.name, name)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"findings": rows}, fh)
+            paths.append(path)
+        return corroborate_mod.prepare_for_queue(findings_mod.load_findings(sorted(paths)))
+
+    def test_forged_panels_in_one_cell_do_not_corroborate(self):
+        for pair in (("security", "architecture"), ("code", "test")):
+            with self.subTest(panels=pair):
+                prepared, integration = self._prepare({"findings-app-COD.json": [
+                    self._finding(pair[0], 10, "a"), self._finding(pair[1], 12, "b")]})
+                self.assertEqual([], integration)
+                self.assertEqual([False, False], [bool(f.get("corroborated")) for f in prepared])
+                self.assertEqual(["code", "code"], [f["panel"] for f in prepared])
+
+    def test_a_cross_domain_filing_stays_in_its_writers_panel(self):
+        prepared, integration = self._prepare({"findings-app-ARC.json": [
+            self._finding("architecture", 10, "a", domain="ARC"),
+            self._finding("test", 12, "b", domain="TST")]})
+        self.assertEqual([], integration)
+        self.assertEqual(["architecture", "architecture"], [f["panel"] for f in prepared])
+
+    def test_two_cells_at_one_spot_still_corroborate(self):
+        # The guard: green before and after. Two DIFFERENT cells are two sources.
+        prepared, integration = self._prepare({
+            "findings-app-SEC.json": [self._finding("security", 10, "a", domain="SEC")],
+            "findings-app-ARC.json": [self._finding("architecture", 12, "b", domain="ARC")]})
+        self.assertEqual(1, len(integration))
+        self.assertEqual(["architecture", "security"], integration[0]["panels"])
+        self.assertTrue(all(f.get("corroborated") for f in prepared))
+
+    def test_a_file_that_names_no_cell_is_one_source(self):
+        prepared, integration = self._prepare({"reviewer-notes.json": [
+            self._finding("security", 10, "a"), self._finding("architecture", 12, "b")]})
+        self.assertEqual([], integration)
+        self.assertEqual(["code", "code"], [f["panel"] for f in prepared])
