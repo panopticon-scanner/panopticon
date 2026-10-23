@@ -226,8 +226,11 @@ class ChildProcesses:
             # reader still blocked on it (a descendant outside the group holds
             # the write end) cannot hang the launch; its next read sees it closed.
             bufsize=0)
-        self.register_child(proc)
         try:
+            # Inside the try (#3250): a registration refused because the runner
+            # is shutting down has already ended the child, and its pipes still
+            # go back in the `finally` below.
+            self.register_child(proc)
             try:
                 capture = _Capture(proc, data)
                 outcome = capture.wait(timeout)
@@ -286,11 +289,37 @@ class ChildProcesses:
         without a `pid` still gets the terminate/kill path (`procgroup`).
 
         Stored on the INSTANCE dict lazily rather than in `__init__` for the
-        reason in this module's docstring. `setdefault` and `append` are each
-        atomic under the GIL, which is all the synchronising a list appended
-        to from the pool's workers and read from the main thread needs.
+        reason in this module's docstring.
+
+        #3250: under the registry lock, and REFUSED once `terminate_children`
+        has run. Without the lock an append could land on the list
+        `terminate_children` had just copied and was about to replace, and a
+        worker whose `Popen` returned after the terminate registered into the
+        fresh list nobody would read: either way a child outlived the guards.
+        A refused child is ended here (`procgroup.kill_group`) and the launch
+        fails the normal way, with a RuntimeError.
+
+        APPEND, then check: kimi's SIGTERM stripper calls `terminate_children`
+        from a signal handler on the main thread, which also launches -- so the
+        lock is re-entrant, and a terminate that runs in the middle of this
+        either finds the child in the list it takes or leaves `closed` set for
+        the check. Removal is if-present: that terminate has swapped the list.
         """
-        self.__dict__.setdefault("_children", []).append(proc)
+        with self._registry_lock():
+            self.__dict__.setdefault("_children", []).append(proc)
+            closed = self.__dict__.get("_children_closed", False)
+            if closed:
+                self.__dict__["_children"] = [c for c in self.__dict__["_children"]
+                                              if c is not proc]
+        if closed:
+            procgroup.kill_group(proc)
+            raise RuntimeError("runner is shutting down; launch refused")
+
+    def _registry_lock(self):
+        """The one lock over `_children` and `_children_closed`, created lazily
+        on the instance dict; `dict.setdefault` is atomic, so two first callers
+        cannot make two locks. Re-entrant, for the signal path above."""
+        return self.__dict__.setdefault("_children_lock", threading.RLock())
 
     def unregister_child(self, proc):
         """Forget a child that has finished, for the same reason
@@ -301,13 +330,14 @@ class ChildProcesses:
         taken the whole registry, and the launch that is returning must not
         turn that race into an exception on its way out.
         """
-        children = self.__dict__.get("_children")
-        if not children:
-            return
-        try:
-            children.remove(proc)
-        except ValueError:           # already emptied by terminate_children
-            pass
+        with self._registry_lock():
+            children = self.__dict__.get("_children")
+            if not children:
+                return
+            try:
+                children.remove(proc)
+            except ValueError:       # already emptied by terminate_children
+                pass
 
     def terminate_children(self, grace=None):
         """End every child this runner still has in flight -- SIGTERM to each
@@ -328,10 +358,16 @@ class ChildProcesses:
         is waited on -- so `grace` stays ONE shared window for the batch, which
         is what `INTERRUPT_GRACE` promises; `procgroup.kill_group` would spend
         it once per child.
+
+        #3250: it also CLOSES the registry, for good. A run drives one batch
+        and launches nothing after its terminate, so every later
+        `register_child` is a launch racing the shutdown and is refused.
         """
         grace = self.INTERRUPT_GRACE if grace is None else grace
-        children = list(self.__dict__.get("_children") or ())
-        self.__dict__["_children"] = []
+        with self._registry_lock():           # #3250: closed, then taken, as one step
+            self.__dict__["_children_closed"] = True
+            children = list(self.__dict__.get("_children") or ())
+            self.__dict__["_children"] = []
         groups = [(proc, procgroup.group_id(proc)) for proc in children]
         for proc, pgid in groups:
             procgroup.end_group_retained(proc, signal.SIGTERM, pgid)

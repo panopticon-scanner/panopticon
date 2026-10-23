@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **A host CLI that launches while a batch is being interrupted is ended (#3250, 5.3).**
+  `terminate_children` copied the child registry and then replaced it with no lock, so a
+  registration landing between the two went onto a list nobody read again; and a worker whose
+  `Popen` returned after the terminate registered into the fresh list. Either way that child
+  outlived the guard files. The registry now has one re-entrant lock (kimi's SIGTERM stripper
+  terminates from a signal handler on the main thread, which also launches) and a closed flag:
+  `terminate_children` closes it, and a later registration ends the child through
+  `procgroup.kill_group` and fails the launch the normal way.
+
 - **A host CLI's output is bounded (#3246, 5.3).** Every family launches through
   `HostRunner.launch`, which used `communicate()`: both streams kept in full, with no byte cap, up
   to eight launches at once. Codex `exec --json` and Kimi `stream-json` echo tool results, so a
