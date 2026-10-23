@@ -267,6 +267,7 @@ groups:
     Core:
       match:
       - skill/scripts/run_tools.py
+      - skill/scripts/language_detection.py
       - skill/scripts/scanner_config.py
       - skill/scripts/tool_capture.py
       - skill/scripts/tool_cleanup.py
