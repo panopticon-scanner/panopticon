@@ -177,9 +177,19 @@ _CODEX_CHARTER = (
     "For a file-scoped review, search must name one granted file and listing "
     "is unavailable; never execute target code or access the network. "
     "Return the exact requested JSON as your final message, even when a role "
-    "template says Write: the controller persists it. Include the task's "
+    "template says Write: the controller persists it. %s"
+    "Do not write artifacts.\n")
+
+_CODEX_STAMP_INSTRUCTION = (
+    "Include the task's "
     "`_panopticon` block verbatim in that JSON -- a reply without it is "
-    "DISCARDED and the cell is treated as not done. Do not write artifacts.\n")
+    "DISCARDED and the cell is treated as not done. ")
+
+# advisor.md is the shell for both agent-finding and tool-finding single-verdict
+# entries. Its exact JSON shape has no stamp and additionalProperties is false,
+# so demanding one makes an otherwise valid reply fail receipt validation
+# (#3221). Every other role keeps its standing instruction unchanged.
+_CODEX_STAMPLESS_ROLES = frozenset(("advisor",))
 
 
 def _codex_charter(role):
@@ -192,7 +202,9 @@ def _codex_charter(role):
     standing instruction enumerating yesterday's surface -- P14 again, at a
     second site. One join off the same list closes it.
     """
-    return _CODEX_CHARTER % (role, ", ".join(t["name"] for t in codex_read_tools.TOOLS))
+    stamp = "" if role in _CODEX_STAMPLESS_ROLES else _CODEX_STAMP_INSTRUCTION
+    return _CODEX_CHARTER % (
+        role, ", ".join(t["name"] for t in codex_read_tools.TOOLS), stamp)
 
 
 def registered_agent_name(role_file):

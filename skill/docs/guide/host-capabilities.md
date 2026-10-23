@@ -122,6 +122,30 @@ controller-selected runtime and `CODEX_HOME` paths is outside it; exposing an ar
 reviewer-selectable host path would refute it. `model_binding` and `usage_ledger` remain unclaimed
 and `unknown`, so a healthy headless Codex posture is three of five proven.
 
+### Codex production output-schema compatibility
+
+As of #3221, all three schemas in `phases.persist.ROLE_SCHEMAS` fail Codex's
+`strict_output_schema` provider screen, so the controller omits `--output-schema` for production
+entries and validates their replies only on receipt. The incompatibilities and viable paths are:
+
+- `review-cell` / `findings-envelope-schema.json` uses unsupported `oneOf` and draft-07
+  `definitions`, leaves root and nested properties optional, and contains open nested objects. It
+  can be constrained with a separate provider-facing v5 domain-finding projection using strict
+  `anyOf`/`$defs` variants and closed, fully required objects; the broad receipt schema must remain
+  for legacy and optional-field compatibility.
+- `verify-cell` / `verdict-bundle-schema.json` has optional or open properties in the root,
+  verdict, stamp, citations, and evidence-scope objects, and carries the unsupported
+  `stage.default` keyword. Separate strict primary and backup generation projections can expose
+  exactly the fields each prompt requests while omitting controller-only `stamped_by`.
+- `tool-advisor` / `advisor-verdict-schema.json` combines its required seven-field reply with
+  optional fields, open citations/evidence-scope objects, and `stage.default`. A strict generation
+  schema containing exactly the seven fields from `advisor.md`, including closed required citation
+  arrays, is compatible.
+
+These should be provider-facing schemas, not stricter replacements for the receipt contracts: a
+constrained reply must still pass the existing role schema after controller stamping. Follow-up
+#3241 tracks that work.
+
 Kimi claims all five. They are measured by the family's own probes (#1344): `kimi-shell-surface`
 (the registered shells; every tool name they allow or forbid verified against the installed CLI's
 vocabulary — a name that matches nothing restricts nothing; every tool in that vocabulary either

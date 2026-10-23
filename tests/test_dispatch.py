@@ -770,18 +770,23 @@ class TestEmitHostAgents(unittest.TestCase):
                     self.assertIn('sandbox_mode = "read-only"', text)
                     self.assertIn("never execute target code", text)
 
-    def test_the_codex_charter_names_the_panopticon_stamp(self):
-        # M-10: one of eleven launches in the PR's own paid run was refused
-        # with "reply carries no _panopticon stamp". The charter's closing
-        # "return the exact requested JSON ... even when a role template says
-        # Write" competes for the model's attention with the return-persist
-        # preamble's stamp instruction, and never named the stamp itself.
-        self.assertIn("_panopticon", dispatch._CODEX_CHARTER)
+    def test_codex_requires_the_panopticon_stamp_only_for_roles_that_emit_it(self):
+        # #3221: advisor.md is both the single-finding advisor and the
+        # tool-advisor shell. Its response schema forbids `_panopticon`, so a
+        # standing instruction that demands the stamp made roughly a third of
+        # real tool replies fail their first receipt check. Panel roles really
+        # do emit stamped envelopes and must keep the requirement.
         with tempfile.TemporaryDirectory() as d:
             dispatch.emit_host_agents("codex", d)
-            for name in ("panopticon-domain-panel", "panopticon-scout"):
+
+            def instructions(name):
                 with open(os.path.join(d, name + ".toml"), encoding="utf-8") as fh:
-                    self.assertIn("_panopticon", fh.read(), name)
+                    return tomllib.loads(fh.read())["developer_instructions"]
+
+            self.assertNotIn("_panopticon", instructions("panopticon-advisor"))
+            for name in ("panopticon-domain-panel", "panopticon-domain-advisor"):
+                with self.subTest(name=name):
+                    self.assertIn("_panopticon", instructions(name))
 
     def test_a_shell_format_with_no_emit_branch_refuses_by_name(self):
         # M-1: the pre-existing `else` became `elif host == "codex"`, so a host
