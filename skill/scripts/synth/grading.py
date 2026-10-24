@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import os
 import stat
 
+import scripts.coverage_model as coverage_model
 from . import coverage_io
 from . import delta as delta_mod
 from . import findings as findings_mod
@@ -159,6 +160,7 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     argument would have two channels doing one job.
     """
     base_gate = gate_verdict(gate_eligible, fail_on)          # PASS / FAIL / OFF
+    tools_file_partial, asset_skips = coverage_model.certifying_file_gaps(tools_file_partial)
     high_value_incomplete = set(panels_incomplete) & findings_mod.HIGH_VALUE_PANELS
     gate_relevant_gap = (bool(high_value_incomplete) or bool(tools_absent)
                          or not integrity_ok or bool(verdicts_unloadable)
@@ -219,6 +221,7 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
         # File gaps qualify coverage, independently of the finding-based gate.
         gap = "partial scanner file coverage: %s" % ", ".join(sorted(tools_file_partial))
         note = "%s; %s" % (note, gap) if note else gap
+    note = coverage_model.with_asset_skip_note(note, asset_skips)     # #3283: disclosed, not counted
 
     return {"gate": gate, "overall_grade": cert_grade,
             "provisional_grade": provisional,

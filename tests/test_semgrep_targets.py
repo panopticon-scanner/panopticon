@@ -388,6 +388,34 @@ class TestASkippedFileReachesTheReport(unittest.TestCase):
         self.assertFalse(published["summary"]["coverage_certified"])
         self.assertIn("partial scanner file coverage: semgrep", published["summary"]["coverage_note"])
 
+    def _sized(self, names):
+        with tempfile.TemporaryDirectory() as root:
+            for name in names:
+                os.makedirs(os.path.dirname(os.path.join(root, name)) or root, exist_ok=True)
+                with open(os.path.join(root, name), "wb") as fh:
+                    fh.write(b"\x89PNG" + b"\0" * 1_100_000)
+            payload = st.stamper("semgrep", root, TOOL_CMD["semgrep"])(json.dumps(_canary_capture()).encode())
+        findings, disposition, _ = self._ingest(payload)
+        return disposition["file_coverage"], self._report(findings, disposition)
+
+    def test_a_size_skipped_image_alone_certifies_and_is_disclosed(self):
+        # #3283: httpie's animation.gif, strix's two screenshots.
+        facts, published = self._sized(["docs/a.gif", ".github/s.png", "docs/images/s.png"])
+        self.assertEqual(published["meta"]["coverage"]["tools_file_partial"], {"semgrep": facts})
+        self.assertTrue(published["summary"]["coverage_certified"])
+        self.assertEqual("3 asset file(s) over the semgrep size limit were not scanned "
+                         "(not counted against certification)", published["summary"]["coverage_note"])
+
+    def test_a_size_skipped_code_or_json_file_still_decertifies(self):
+        # zincsearch's generated .go; listmonk's and tantivy's .json (D1: a target
+        # can pad a security-relevant JSON past the limit, not a PNG).
+        for names in (["pkg/dict.go"], ["frontend/config.json"], ["app.py"], ["docs/a.png", "pkg/dict.go"]):
+            with self.subTest(names=names):
+                _, published = self._sized(names)
+                self.assertFalse(published["summary"]["coverage_certified"])
+                self.assertIn("partial scanner file coverage: semgrep", published["summary"]["coverage_note"])
+                self.assertNotIn("asset file(s)", published["summary"]["coverage_note"])
+
     def test_nothing_over_the_limit_stays_complete(self):
         with tempfile.TemporaryDirectory() as root:
             payload = st.stamper("semgrep", root, TOOL_CMD["semgrep"])(json.dumps(_canary_capture()).encode())

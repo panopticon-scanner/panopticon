@@ -155,6 +155,12 @@ _ASSET_EXTENSIONS = frozenset((
 ))
 
 
+def _is_asset(path):
+    """The one membership test for `_ASSET_EXTENSIONS`: COD's floor and
+    certification's size-skip rule read it, so the two cannot drift (#3283)."""
+    return os.path.splitext(str(path))[1].lower() in _ASSET_EXTENSIONS
+
+
 def has_code_surface(files):
     """True when at least one file could carry a COD defect (#1489).
 
@@ -162,9 +168,55 @@ def has_code_surface(files):
     so anything unfamiliar still counts as reviewable source.
     """
     for f in files or ():
-        if os.path.splitext(str(f))[1].lower() not in _ASSET_EXTENSIONS:
+        if not _is_asset(f):
             return True
     return False
+
+
+ASSET_SKIP_NOTE = ("%d asset file(s) over the semgrep size limit were not scanned "
+                   "(not counted against certification)")
+
+
+def _asset_size_skips(facts):
+    """How many files a tool's `file_coverage` size-skipped when that is its
+    WHOLE gap and every such file is a known asset; 0 otherwise -- the gap then
+    counts, as before. Fails closed on everything it cannot account for: a
+    listing that is absent, cut short or malformed, a rule timeout, a row it
+    did not publish (`files_omitted`), a count the rows do not match, any
+    unlocated record, and any file whose name lost its extension to the cut."""
+    rows = facts.get("files") if isinstance(facts, dict) else None
+    if not (isinstance(rows, list) and facts.get("size_listing") == "listed"
+            and facts.get("unlocated_records") == 0 and facts.get("files_omitted") == 0
+            and not facts.get("rule_timeouts") and not facts.get("unavailable_files")
+            and not facts.get("capabilities_unavailable")
+            and type(facts.get("size_skipped")) is int and facts["size_skipped"] == len(rows)
+            and facts.get("unparsed_files") == len(rows)):
+        return 0
+    if all(isinstance(row, dict) and row.get("reason") == "size_skipped"
+           and isinstance(row.get("file"), str) and _is_asset(row["file"]) for row in rows):
+        return len(rows)
+    return 0
+
+
+def certifying_file_gaps(tools_file_partial):
+    """#3283: (the scanner file gaps that still sink certification, the count of
+    asset files whose only gap was semgrep's size limit). An image semgrep would
+    never lint is no review gap; a size-skipped `.json` or `.go` still is -- a
+    target can pad a security-relevant JSON past the limit, not a PNG."""
+    if not isinstance(tools_file_partial, dict):
+        return tools_file_partial, 0
+    counted, assets = {}, 0
+    for tool, facts in tools_file_partial.items():
+        skipped = _asset_size_skips(facts)
+        assets += skipped
+        if not skipped:
+            counted[tool] = facts
+    return counted, assets
+
+
+def with_asset_skip_note(note, assets):
+    """`note` with the asset size-skip disclosure composed onto it, if any."""
+    return "; ".join(filter(None, (note, ASSET_SKIP_NOTE % assets if assets else None))) or None
 
 
 def _any_hint(files, hints):
