@@ -1779,8 +1779,8 @@ class TestPipAuditAgainstALocalIndex(unittest.TestCase):
         dists.append(sdist)
         for dist in dists:
             fn = os.path.basename(dist)
-            project = (self.NAME if fn.startswith(self.NAME)
-                       else fn.split("-")[0].lower())
+            stem, _sep, _rest = fn.partition("-")
+            project = self.NAME if fn.startswith(self.NAME) else stem.lower()
             os.makedirs(os.path.join(simple, project), exist_ok=True)
             shutil.copy(dist, os.path.join(simple, project, fn))
         for project in os.listdir(simple):
