@@ -246,7 +246,7 @@ class TestPipAuditAdapter(unittest.TestCase):
             return os.path.join(target, manifests[target])
 
         with mock.patch.object(adapter, "_find_requirement", side_effect=fake_find_requirement):
-            with mock.patch.object(pa, "run_tool", return_value=(PIP_AUDIT_SAMPLE, 0)):
+            with mock.patch.object(pa, "run_tool", return_value=(PIP_AUDIT_SAMPLE, b"", 0)):
                 ctx1 = contextvars.copy_context()
                 ctx2 = contextvars.copy_context()
                 raw1, _ = ctx1.run(adapter.invoke, "/tmp/fake1")
@@ -272,7 +272,7 @@ class TestPipAuditAdapter(unittest.TestCase):
                 target = self._target(manifest)
                 context = contextvars.copy_context()
                 with mock.patch.object(pa, "run_tool",
-                                       return_value=(PIP_AUDIT_SAMPLE, 0)):
+                                       return_value=(PIP_AUDIT_SAMPLE, b"", 0)):
                     raw, _rc = context.run(adapter.invoke, target)
                 self.assertEqual(manifest, context.run(pa._manifest_path_cv.get))
                 located = only(context.run(adapter.parse, raw, "g1"))["location"]["file"]
@@ -288,7 +288,7 @@ class TestPipAuditAdapter(unittest.TestCase):
                      'dependencies = ["requests==2.25.1"]\n')
         adapter = pa.PipAuditAdapter()
         context = contextvars.copy_context()
-        with mock.patch.object(pa, "run_tool", return_value=(PIP_AUDIT_SAMPLE, 0)):
+        with mock.patch.object(pa, "run_tool", return_value=(PIP_AUDIT_SAMPLE, b"", 0)):
             raw, _rc = context.run(adapter.invoke, target)
         self.assertEqual("pyproject.toml", context.run(pa._manifest_path_cv.get))
         self.assertEqual("pyproject.toml",
@@ -475,7 +475,7 @@ class TestStaticPyproject(unittest.TestCase):
                             "--requirement is the last argument with no value")
             with open(cmd[req_idx + 1]) as fh:
                 captured["reqs"] = fh.read()
-            return b"{}", 0
+            return b"{}", b"", 0
         with mock.patch.object(pa, "run_tool", fake_run_tool):
             pa.PipAuditAdapter().invoke(target)
         self.assertNotIn(target, captured["cmd"])
@@ -560,7 +560,7 @@ class TestPyprojectReadBoundary(unittest.TestCase):
         def fake_run(cmd, **_kwargs):
             with open(cmd[cmd.index("--requirement") + 1], encoding="utf-8") as fh:
                 seen["lines"] = fh.read().splitlines()
-            return b"{}", 0
+            return b"{}", b"", 0
 
         with mock.patch.object(pa, "run_tool", side_effect=fake_run):
             self.assertEqual(pa.PipAuditAdapter().invoke(target), (b"{}", 0))
@@ -822,7 +822,7 @@ class TestInvokeNeverPassesTheRepoFile(unittest.TestCase):
             seen["req"] = cmd[idx + 1]
             with open(cmd[idx + 1], encoding="utf-8") as fh:
                 seen["content"] = fh.read()
-            return b"{}", 0
+            return b"{}", b"", 0
 
         with mock.patch.object(pa, "run_tool", fake_run_tool):
             pa.PipAuditAdapter().invoke(target)
@@ -848,7 +848,7 @@ class TestInvokeNeverPassesTheRepoFile(unittest.TestCase):
     def test_location_still_points_at_the_repo_manifest(self):
         target = self._target()
         with mock.patch.object(pa, "run_tool",
-                               return_value=(PIP_AUDIT_SAMPLE, 0)):
+                               return_value=(PIP_AUDIT_SAMPLE, b"", 0)):
             ctx = contextvars.copy_context()
             raw, _rc = ctx.run(pa.PipAuditAdapter().invoke, target)
             findings = ctx.run(pa.PipAuditAdapter().parse, raw, "g1")
@@ -985,7 +985,7 @@ class TestArchiveSuffixedNames(unittest.TestCase):
         def fake_run_tool(cmd, timeout=0, **kw):
             with open(cmd[cmd.index("--requirement") + 1], encoding="utf-8") as fh:
                 seen["content"] = fh.read()
-            return b"{}", 0
+            return b"{}", b"", 0
         with mock.patch.object(pa, "run_tool", fake_run_tool):
             pa.PipAuditAdapter().invoke(d)
         self.assertEqual(seen["content"].splitlines(), ["ok==1"])
@@ -1004,7 +1004,7 @@ class TestPipAuditRunsInAnEmptyWorkingDirectory(unittest.TestCase):
             seen["cwd"] = kw.get("cwd")
             seen["cwd_entries"] = (sorted(os.listdir(kw["cwd"]))
                                    if kw.get("cwd") else None)
-            return b"{}", 0
+            return b"{}", b"", 0
         with mock.patch.object(pa, "run_tool", fake_run_tool):
             pa.PipAuditAdapter().invoke(target)
         return seen
@@ -1208,7 +1208,7 @@ class TestTheRootFileIsConfinedToo(unittest.TestCase):
         def fake_run_tool(cmd, timeout=0, **kw):
             with open(cmd[cmd.index("--requirement") + 1], encoding="utf-8") as fh:
                 seen["content"] = fh.read()
-            return b"{}", 0
+            return b"{}", b"", 0
         with mock.patch.object(pa, "run_tool", fake_run_tool), \
                 contextlib.redirect_stderr(io.StringIO()):
             pa.PipAuditAdapter().invoke(d)
@@ -1581,7 +1581,7 @@ class TestBothBranchesShareOneBound(unittest.TestCase):
         def fake_run_tool(cmd, timeout=0, **kw):
             with open(cmd[cmd.index("--requirement") + 1], encoding="utf-8") as fh:
                 seen["lines"] = fh.read().splitlines()
-            return b"{}", 0
+            return b"{}", b"", 0
         with mock.patch.object(pa, "run_tool", fake_run_tool):
             pa.PipAuditAdapter().invoke(self._target())
         self.assertEqual(len(seen["lines"]), pa._MAX_READ_LINES)
@@ -1600,7 +1600,7 @@ class TestBothBranchesShareOneBound(unittest.TestCase):
         def fake_run_tool(cmd, timeout=0, **kw):
             with open(cmd[cmd.index("--requirement") + 1], encoding="utf-8") as fh:
                 seen["lines"] = fh.read().splitlines()
-            return b"{}", 0
+            return b"{}", b"", 0
         with mock.patch.object(pa, "run_tool", fake_run_tool):
             pa.PipAuditAdapter().invoke(target)
         self.assertEqual(len(seen["lines"]),
@@ -1659,12 +1659,160 @@ class TestTheScratchCwdIsRemovedEvenIfSomethingWroteThere(unittest.TestCase):
             scratch["path"] = kw["cwd"]
             with open(os.path.join(kw["cwd"], "pip-build-junk"), "w") as fh:
                 fh.write("x")
-            return b'{"dependencies": []}', 0
+            return b'{"dependencies": []}', b"", 0
         with mock.patch.object(pa, "run_tool", fake_run_tool):
             raw, rc = pa.PipAuditAdapter().invoke(d)
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(raw), {"dependencies": []})
         self.assertFalse(os.path.exists(scratch["path"]))
+
+
+
+def _one_requirement_tree(test_case, line="ok==1"):
+    d = tempfile.mkdtemp()
+    test_case.addCleanup(shutil.rmtree, d, ignore_errors=True)
+    with open(os.path.join(d, "requirements.txt"), "w", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+    return d
+
+
+class TestPipAuditNeverBuildsASourceDistribution(unittest.TestCase):
+    """#3223: pip-audit resolves with pip in a temporary venv, and for a name
+    with no wheel pip ran that sdist's setup.py inside the online container."""
+
+    def test_the_launch_refuses_every_build(self):
+        seen = {}
+
+        def fake_run_tool(cmd, timeout=0, **kw):
+            seen.update(kw)
+            return (b"{}", b"", 0) if kw.get("capture_stderr") else (b"{}", 0)
+
+        with mock.patch.dict(os.environ, {"PIP_NO_BINARY": ":all:"}), \
+                mock.patch.object(pa, "run_tool", fake_run_tool):
+            pa.PipAuditAdapter().invoke(_one_requirement_tree(self))
+        env = seen.get("env") or {}
+        self.assertEqual(":all:", env.get("PIP_ONLY_BINARY"))
+        self.assertNotIn("PIP_NO_BINARY", env)   # an inherited value cannot un-say it
+
+    def test_a_requirements_file_cannot_ask_for_a_build_back(self):
+        for line in ("--no-binary :all:", "--no-binary=:all:", "ok==1 --no-binary ok",
+                     "--only-binary :none:"):
+            kept, _dropped = sanitize(line)
+            self.assertEqual([], kept, line)
+
+    def _unresolved(self, stdout, stderr, rc=1):
+        def fake_run_tool(cmd, timeout=0, **kw):
+            return (stdout, stderr, rc) if kw.get("capture_stderr") else (stdout, rc)
+
+        with mock.patch.object(pa, "run_tool", fake_run_tool):
+            raw, code = pa.PipAuditAdapter().invoke(_one_requirement_tree(self))
+        try:
+            findings, reason = pa.PipAuditAdapter().parse_with_coverage(raw, "g1")
+        except ValueError as exc:
+            findings, reason = [], "unparseable: %s" % exc
+        return raw, code, findings, reason
+
+    def test_a_name_with_no_wheel_is_disclosed_with_one_fixed_reason(self):
+        stderr = (b"ERROR: Could not find a version that satisfies the requirement "
+                  b"attackername==1.0 (from versions: none)\n"
+                  b"ERROR: No matching distribution found for attackername==1.0\n")
+        raw, code, findings, reason = self._unresolved(b"", stderr)
+        self.assertEqual([], findings)
+        self.assertEqual("pip-audit audited nothing: a requirement has no wheel, and "
+                         "panopticon does not build source distributions (#3223); "
+                         "osv-scanner still covers these requirements", reason)
+        self.assertNotIn(b"attackername", raw)    # no target text reaches the report
+        self.assertEqual(1, code)
+
+    def test_any_other_failure_is_left_as_it_was(self):
+        raw, _code, _f, _r = self._unresolved(b"", b"ERROR: network is unreachable\n")
+        self.assertEqual(b"", raw)                # still recorded as missing, fail-closed
+        raw, _code, _f, _r = self._unresolved(
+            b"", b"No matching distribution found for x\n", rc=0)
+        self.assertEqual(b"", raw)                # only a FAILED resolution is relabelled
+        report = b'{"dependencies": [], "fixes": []}'
+        raw, _code, _f, reason = self._unresolved(
+            report, b"No matching distribution found for x\n")
+        self.assertEqual(report, raw)             # a real report is never replaced
+        self.assertIsNone(reason)
+
+
+class TestPipAuditAgainstALocalIndex(unittest.TestCase):
+    """#3223 end to end, with the REAL pip-audit (the fixtures image; any host
+    with pip-audit on PATH): a local index serves a name published only as an
+    sdist whose setup.py writes a sentinel. Nothing is fetched by that name
+    from any public index, so no squatter can stand in for it."""
+
+    NAME = "panopticon-3223-sdist-probe"
+
+    def setUp(self):
+        if shutil.which("pip-audit") is None or shutil.which("pip") is None:
+            helpers.skip_or_fail(self, "pip-audit or pip is not on PATH")
+        import http.server
+        import socketserver
+        import tarfile
+        import threading
+        self.work = tempfile.mkdtemp(prefix="pa-3223-")
+        self.addCleanup(shutil.rmtree, self.work, ignore_errors=True)
+        self.sentinel = os.path.join(self.work, "SENTINEL")
+        simple = os.path.join(self.work, "simple")
+        # pip-audit's venv bootstrap upgrades these four; fetched BY NAME from
+        # the default index, then served locally like everything else.
+        boot = os.path.join(self.work, "boot")
+        _out, rc = pa.run_tool([shutil.which("pip"), "download", "--no-deps",
+                                "--only-binary=:all:", "-d", boot, "pip", "setuptools",
+                                "wheel", "packaging"], timeout=300)
+        if rc != 0:
+            helpers.skip_or_fail(self, "could not fetch pip-audit's bootstrap wheels")
+        src = os.path.join(self.work, "%s-1.0" % self.NAME)
+        os.makedirs(src)
+        with open(os.path.join(src, "setup.py"), "w", encoding="utf-8") as fh:
+            fh.write("open(%r, 'w').write('built')\n"
+                     "from setuptools import setup\n"
+                     "setup(name=%r, version='1.0')\n" % (self.sentinel, self.NAME))
+        with open(os.path.join(src, "PKG-INFO"), "w", encoding="utf-8") as fh:
+            fh.write("Metadata-Version: 2.1\nName: %s\nVersion: 1.0\n" % self.NAME)
+        dists = [os.path.join(boot, f) for f in os.listdir(boot)]
+        sdist = os.path.join(self.work, "%s-1.0.tar.gz" % self.NAME)
+        with tarfile.open(sdist, "w:gz") as tar:
+            tar.add(src, arcname=os.path.basename(src))
+        dists.append(sdist)
+        for dist in dists:
+            fn = os.path.basename(dist)
+            stem, _sep, _rest = fn.partition("-")
+            project = self.NAME if fn.startswith(self.NAME) else stem.lower()
+            os.makedirs(os.path.join(simple, project), exist_ok=True)
+            shutil.copy(dist, os.path.join(simple, project, fn))
+        for project in os.listdir(simple):
+            files = sorted(os.listdir(os.path.join(simple, project)))
+            with open(os.path.join(simple, project, "index.html"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("<html><body>%s</body></html>" % "".join(
+                    '<a href="%s">%s</a>' % (f, f) for f in files))
+        work = self.work
+
+        class Quiet(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *a, **k):
+                super().__init__(*a, directory=work, **k)
+
+            def log_message(self, *_a):
+                pass
+
+        httpd = socketserver.TCPServer(("127.0.0.1", 0), Quiet)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        self.index = "http://127.0.0.1:%d/simple/" % httpd.server_address[1]
+
+    def test_the_sdist_is_never_built_and_the_audit_is_disclosed(self):
+        target = _one_requirement_tree(self, "%s==1.0" % self.NAME)
+        with mock.patch.dict(os.environ, {"PIP_INDEX_URL": self.index,
+                                          "PIP_DISABLE_PIP_VERSION_CHECK": "1"}):
+            raw, _rc = pa.PipAuditAdapter().invoke(target)
+        self.assertFalse(os.path.exists(self.sentinel),
+                         "pip-audit ran a target-named sdist's setup.py")
+        _findings, reason = pa.PipAuditAdapter().parse_with_coverage(raw, "g1")
+        self.assertEqual(pa.UNBUILT_REASON, reason)
 
 
 if __name__ == "__main__":
