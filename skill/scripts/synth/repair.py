@@ -578,13 +578,13 @@ def repair_git_drivers_suppressed(value, warn=None):
 
 
 def repair_tools_suppressed(value, warn=None):
-    """The directory-NAME suppression tally, normalized to what the schema pins
+    """The source-scope suppression tally, normalized to what the schema pins
     for `meta.coverage.tools_suppressed` (#1578, widened by #1740).
 
-    `{segment: count}` -- how many tool findings a name-based exclusion
-    dropped, and under which conventional directory name. The keys come from a
-    closed vocabulary the controller owns (`ingest_tools._VENDORED_DIRS`,
-    `_VENV_NAME_SEGMENTS` and `FIXTURE_SEGMENT`) and
+    `{reason: count}` -- how many tool findings a controlled rule dropped, and
+    why. The keys come from a vocabulary the controller owns (including the
+    vendored/virtualenv segments and reserved run-artifact, bytecode and fixture
+    tokens), and
     the counts are the controller's own tally, so this boundary is a thinner
     one than its two `tools-manifest.json` siblings above -- but the tally is
     DERIVED from `location.file` values a scanner read out of the reviewed

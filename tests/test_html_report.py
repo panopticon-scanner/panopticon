@@ -1961,13 +1961,28 @@ class TestSuppressedToolFindingsInHtml(unittest.TestCase):
         self.assertIn("592", out)
         self.assertIn("suppressed", out)
 
+    def test_run_artifact_reasons_have_truthful_rendered_wording(self):
+        out = hr.render(self._report(
+            {"run-artifact": 8, "generated-bytecode": 2}))
+        self.assertIn(
+            "Tool findings suppressed: generated-bytecode: 2 &middot; "
+            "run-artifact: 8 &mdash; withheld from the report body by controlled "
+            "source-scope rules; <code>run-artifact</code> and "
+            "<code>generated-bytecode</code> are disclosed in both modes and "
+            "gated in neither",
+            out,
+        )
+        block = out.split("Tool findings suppressed:", 1)[1].split("</div>", 1)[0]
+        self.assertNotIn("directory name", block)
+        self.assertNotIn("gates the CRITICAL and secret-class ones", block)
+
     def test_a_run_that_suppressed_nothing_renders_no_line(self):
-        self.assertNotIn("suppressed by directory name", hr.render(self._report({})))
+        self.assertNotIn("Tool findings suppressed", hr.render(self._report({})))
 
     def test_a_malformed_block_renders_no_line_rather_than_a_traceback(self):
         for bad in ("nope", 7, ["vendor"], {"vendor": "lots"}):
             with self.subTest(value=repr(bad)):
-                self.assertNotIn("suppressed by directory name",
+                self.assertNotIn("Tool findings suppressed",
                                  hr.render(self._report(bad)))
 
     def test_a_segment_name_cannot_inject_markup(self):
@@ -1996,7 +2011,7 @@ class TestSuppressedToolFindingsInHtml(unittest.TestCase):
         rows = {"pyvenv.cfg:v%02d" % i: 1 for i in range(15)}
         rows["pyvenv.cfg:hostile\x1b[2J\n<script>alert(1)</script>"] = 3
         out = hr.render(self._report(rows))
-        block = out.split("Tool findings suppressed by directory name:", 1)[1]
+        block = out.split("Tool findings suppressed:", 1)[1]
         block = block.split("</div>", 1)[0]
         self.assertNotIn("\x1b", block)
         self.assertNotIn("\n", block)
@@ -2014,7 +2029,7 @@ class TestGatedSuppressedToolFindingsInHtml(unittest.TestCase):
 
     def test_nonzero_gated_count_explains_empty_findings_and_escapes_segment(self):
         out = hr.render(self._report({"<script>alert(1)</script>": 3}))
-        marker = "Tool findings suppressed by directory name but GATED: "
+        marker = "Tool findings suppressed but GATED: "
         self.assertIn(marker, out)
         block = out.split(marker, 1)[1].split("</div>", 1)[0]
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;: 3", block)
@@ -2043,7 +2058,7 @@ class TestExcludedToolFindingsInHtml(unittest.TestCase):
         self.assertIn("Tool findings excluded by policy: 3", out)
         self.assertIn("vendor/**", out)
         self.assertIn("tests/fixtures/**", out)
-        self.assertIn("Tool findings suppressed by directory name: vendor: 2", out)
+        self.assertIn("Tool findings suppressed: vendor: 2", out)
 
     def test_measured_zero_is_visible_with_and_without_globs(self):
         for globs in (["vendor/**"], []):
@@ -2058,7 +2073,7 @@ class TestExcludedToolFindingsInHtml(unittest.TestCase):
             with self.subTest(excluded=excluded):
                 out = hr.render(self._report(excluded))
                 self.assertNotIn("Tool findings excluded by policy", out)
-                self.assertIn("Tool findings suppressed by directory name", out)
+                self.assertIn("Tool findings suppressed", out)
 
     def test_hostile_glob_is_escaped_and_stays_on_one_html_line(self):
         glob = '<script>" & `x`\n## Forged section'

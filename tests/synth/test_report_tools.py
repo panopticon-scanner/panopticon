@@ -611,6 +611,23 @@ class TestSuppressedToolFindingsCoverage(unittest.TestCase):
                          self._coverage({"vendor": 592,
                                          "node_modules": 3})["tools_suppressed"])
 
+    def test_run_artifact_reason_tokens_reach_the_report(self):
+        expected = {"run-artifact": 8, "generated-bytecode": 2}
+        self.assertEqual(expected,
+                         self._coverage(expected)["tools_suppressed"])
+
+    def test_the_schema_documents_run_artifact_disclosure(self):
+        with open(os.path.join(validate_schema_mod.REFERENCE_DIR,
+                               validate_schema_mod.REPORT_SCHEMA),
+                  encoding="utf-8") as fh:
+            schema = json.load(fh)
+        description = schema["properties"]["meta"]["properties"]["coverage"][
+            "properties"]["tools_suppressed"]["description"]
+        self.assertIn("`run-artifact`", description)
+        self.assertIn("`generated-bytecode`", description)
+        self.assertIn("gated in neither", description)
+        self.assertNotIn("What stays silent", description)
+
     def test_a_run_that_suppressed_nothing_reports_an_empty_map(self):
         # Stated on every report, `{}` included -- the same rule the sibling
         # disclosures follow: an absent key makes "nothing was dropped" and

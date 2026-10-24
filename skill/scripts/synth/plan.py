@@ -422,9 +422,9 @@ def load_scout_requests(run_dir):
     return requested, profiles_seen
 
 
-# #1701: the security mode under which the name-based drops are the GATE's
-# business and not only the report's -- the same constant `security_gate.py`
-# keys its own `--security redteam` branch on.
+# #1701: the mode where eligible controlled source-scope drops are the GATE's
+# business too. #3269's run-artifact/bytecode exceptions remain disclosure-only.
+# The same constant keys `security_gate.py`'s `--security redteam` branch.
 REDTEAM = "redteam"
 
 
@@ -434,11 +434,11 @@ def gate_security_mode(args):
 
 
 def gate_counts_suppressed(args):
-    """Does this run's gate count what a directory-NAME exclusion dropped?
+    """Does this run's gate count eligible source-scope-suppressed findings?
 
-    #1740: three rules feed that set -- vendored, virtualenv-by-name and the
-    fixture corpus -- and the answer is the same for all of them, because the
-    evidence is the same: a conventional directory name and nothing else.
+    #1740/#1839/#3269 G4: every rule feeds the same disclosed channel and
+    shared predicate. Policy C gates eligible reasons; that predicate explicitly
+    declines the run-artifact and generated-bytecode reasons.
 
     #1701, item-14 principle: the answer is read from `args.security`, which
     `phases/synthesize.py` threads verbatim off the run MANIFEST -- the
@@ -452,7 +452,7 @@ def gate_counts_suppressed(args):
 
 def ingest_tool_findings(args, allowed_outputs=None, unbound_out=None):
     """The --tools-dir ingest (WS-0 S3): (raw tool findings, per-adapter
-    dispositions, tools_ran, the #1578 `{segment: count}` of name-based drops
+    dispositions, tools_ran, the `{reason: count}` of source-scope drops
     -- the findings themselves stay suppressed -- the #1701 subset of those
     findings this run's GATE must still count, and the #1740 `{globs, count}`
     of what the OPERATOR's own `--tools-exclude` policy took off the axis). tools_ran is None when
@@ -462,10 +462,9 @@ def ingest_tool_findings(args, allowed_outputs=None, unbound_out=None):
     unparseable / no-adapter) is excluded from tools_ran, so
     build_executing_tools can no longer name an adapter that ran empty.
 
-    #1701: under `--security redteam` a finding may not be dropped on the
-    strength of a conventional DIRECTORY NAME, so the drops come back as
-    gate-only CANDIDATES (`security_gate.evaluate`'s `findings + suppressed`,
-    for the driver's own gate). They are normalized exactly as the kept tool
+    #1701/#3269 G4: under redteam controlled source-scope drops come back as
+    gate-only CANDIDATES; the shared predicate later declines #3269's two
+    reasons. Candidates are normalized exactly as the kept tool
     findings are -- `normalize_finding`, so severity, panel and location answer
     the gate identically -- and they are never added to `tool_findings`, which
     is what keeps them out of the report body.
@@ -473,8 +472,8 @@ def ingest_tool_findings(args, allowed_outputs=None, unbound_out=None):
     Candidates, not the gated set: fix round 1 F1. The `--severity` floor is
     applied HERE, the same place and with the same arithmetic
     `FindingSet.prepare` applies it to the kept findings, because a run told to
-    look only at CRITICAL must not have a HIGH gate it from behind a directory
-    name. The delta / `gate_scope` filter is applied where the real population
+    look only at CRITICAL must not have a HIGH gate it from behind a suppression
+    rule. The delta / `gate_scope` filter is applied where the real population
     gets it, in `verdicts.resolve_findings`. The `{segment: count}` returned
     here stays the FULL ingest tally either way; `reconcile` splits it into what
     the gate counted and what stayed suppressed from it, so the two published
@@ -488,7 +487,7 @@ def ingest_tool_findings(args, allowed_outputs=None, unbound_out=None):
                   % (default_tools, default_tools), file=sys.stderr)
     if not (args.tools_dir and os.path.isdir(args.tools_dir)):
         return [], {}, None, None, [], excluded_block(args, 0)
-    dropped: list[dict[str, Any]] = []     # #1578/#1740: filled with the name-based drops, for the count
+    dropped: list[dict[str, Any]] = []     # source-scope drops, for count/gate
     excluded: list[dict[str, Any]] = []    # #1740 fix round 2: the operator's own glob drops
     tool_findings, dispositions = ingest_tools.ingest_dir_detailed(
         args.tools_dir, None, exclude_globs=args.tools_exclude,

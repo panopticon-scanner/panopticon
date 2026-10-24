@@ -585,7 +585,7 @@ def test_the_tool_exclusion_agrees_with_discovery_on_every_path():
         # the scan side (adapter demotion)
         assert rt._is_excluded(path, _PARITY_GLOBS) is want, path
         # the ingest side (what the report and the gate see)
-        kept, gl, _ra, _sup = it._filter_parsed_findings(
+        kept, gl, _sup = it._filter_parsed_findings(
             [{"location": {"file": path}}], True, _PARITY_GLOBS)
         assert (gl == 1) is want, path
         assert (kept == []) is want, path
