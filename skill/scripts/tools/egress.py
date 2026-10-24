@@ -36,7 +36,9 @@ adapter reaches its advisory endpoints only through the proxy but can still
 open a socket to a service the operator bound on the docker host at that
 gateway address -- no CONNECT, no filter, no allowlist consulted, because such
 a request is not proxied at all; fencing it is host firewalling and out of
-scope here. And rootless Docker and podman implement `--internal` differently
+scope here. Using that route needs attacker code running inside the online
+container, and pip-audit building a target-named sdist was the way in: this
+now relies on pip-audit refusing every build (`PIP_ONLY_BINARY`, #3223). And rootless Docker and podman implement `--internal` differently
 (podman's historically blocked the gateway rather than routing, and a rootless
 daemon's bridge is namespaced), so this module's guarantee is stated for a
 standard rootful Docker daemon; on any other runtime the disclosure still

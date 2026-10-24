@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **`--online` pip-audit no longer builds a target-named source distribution (#3223, 5.3).**
+  pip-audit resolves the generated requirements with pip in a temporary venv, and for a name
+  published only as an sdist pip ran that package's `setup.py` / PEP 517 hook inside the online
+  container. The launch now sets `PIP_ONLY_BINARY=:all:` (measured: pip-audit's inner pip reads
+  it) and drops any inherited `PIP_NO_BINARY`. Cost: one name with no wheel fails pip's whole
+  resolution, so pip-audit audits nothing for that target. That is still fail-closed, and the
+  tool is now recorded `failed` with one fixed reason (no package name from the target);
+  osv-scanner still covers the requirements. The `egress.py` disclosure of the Docker-gateway
+  route now says it relies on this.
+
 - **A host CLI that launches while a batch is being interrupted is ended (#3250, 5.3).**
   `terminate_children` copied the child registry and then replaced it with no lock, so a
   registration landing between the two went onto a list nobody read again; and a worker whose

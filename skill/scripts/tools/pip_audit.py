@@ -96,15 +96,13 @@ def _deps_from_pyproject(target: str) -> list[str] | None:
 # ---------------------------------------------------------------------------
 # #1646 (SEC-E3A) / owner ruling D5: sanitize and disclose.
 #
-# pip-audit RESOLVES what a requirements file names. The syntax admits `-e .`,
-# `./local/path`, `git+https://...`, `https://.../x.tar.gz`, `--index-url`,
-# `--find-links`, `-r other.txt` and `-c constraints.txt`; resolving any of the
-# first four invokes the reviewed repository's PEP 517 metadata/build hooks, so
-# handing pip-audit the repo's OWN file ran target code under the scanner
-# account -- online, because pip-audit is ONLINE_ONLY. The control is not a
-# pip-audit flag (`--no-deps` was the rejected alternative): it is that pip-audit
-# is only ever given a file THIS module generated, holding lines that name a
-# package and a version and can name nothing else.
+# pip-audit RESOLVES what a requirements file names. The syntax admits `-e .`, `./local/path`,
+# `git+https://...`, `https://.../x.tar.gz`, `--index-url`, `--find-links`, `-r other.txt` and `-c
+# constraints.txt`; resolving any of the first four invokes the reviewed repository's PEP 517
+# metadata/build hooks, so handing pip-audit the repo's OWN file ran target code under the scanner
+# account -- online, because pip-audit is ONLINE_ONLY. The control is not a pip-audit flag
+# (`--no-deps` was the rejected alternative): it is that pip-audit is only ever given a file THIS
+# module generated, holding lines that name a package and a version and can name nothing else.
 #
 # Parsed with stdlib `re` per PEP 508 -- deliberately not with `packaging`
 # (undeclared, see pyproject.toml) and never by importing `pip`, which would put
@@ -130,16 +128,14 @@ _BARE_REQ = re.compile(r"^(%s)(?:\s*%s)?\s*(?:%s(?:\s*,\s*%s)*)?\s*$"
 # almost every printable character INSIDE a quoted string -- a marker using one
 # of those is dropped `unparseable`, which is coverage loss, not a hole.
 _MARKER_CHARS = r"[\sA-Za-z0-9_.()'\"<>=!~,*+-]"
-# Charset and non-emptiness are SEPARATE tests (fix round 2, F1). M6 forced
-# non-emptiness with `^%s*\S%s*$`, which reads "the marker charset, then
-# exactly one character that may be ANYTHING, then the marker charset" -- `\S`
-# is any non-whitespace character, not any character from the class above. That
-# let `@`, `:`, `#` and NUL back in, one apiece, and every such line raises
-# InvalidRequirement in packaging while pip-audit parses every line of the
-# generated file: one of them in a target's requirements.txt aborts the entire
-# dependency audit. That is verbatim the class M6 exists to close, reopened by
-# M6's own fix. The charset invariant below is load-bearing, so it is asserted
-# as an invariant, not merely exercised by examples.
+# Charset and non-emptiness are SEPARATE tests (fix round 2, F1). M6 forced non-emptiness with
+# `^%s*\S%s*$`, which reads "the marker charset, then exactly one character that may be ANYTHING,
+# then the marker charset" -- `\S` is any non-whitespace character, not any character from the class
+# above. That let `@`, `:`, `#` and NUL back in, one apiece, and every such line raises
+# InvalidRequirement in packaging while pip-audit parses every line of the generated file: one of
+# them in a target's requirements.txt aborts the entire dependency audit. That is verbatim the class
+# M6 exists to close, reopened by M6's own fix. The charset invariant below is load-bearing, so it
+# is asserted as an invariant, not merely exercised by examples.
 _MARKER_OK = re.compile(r"^%s*$" % _MARKER_CHARS)
 _COMMENT = re.compile(r"(^|\s+)#.*$")
 _HASH = re.compile(r"\s*--hash[=\s]+\S+")
@@ -153,15 +149,13 @@ _SCHEME = re.compile(r"(?:^|@\s*)[A-Za-z][A-Za-z0-9+.-]*://")
 _USERINFO = re.compile(r"(://)[^/\s@]*:[^/\s@]*@")
 _MAX_INCLUDE_DEPTH = 1
 
-# Bounds. `dropped` is TARGET-AUTHORED text on its way into two published
-# artifacts (`tools-manifest.json`, then `report.json`), and every sibling path
-# in this module is already bounded -- `tool_capture.MAX_TOOL_OUTPUT_BYTES` on tool
-# stdout, `redact`'s 16 KiB PEM bound. A 50 MB junk requirements file would
-# otherwise be read whole (twice: once in the container, once on the host) and
-# copied wholesale into both. The read is capped FIRST, so the cost is bounded
-# before anything is parsed; the row count and each row's length are capped at
-# publication. Every cap is disclosed -- a silent truncation would be a second
-# "the audit was partial" nobody is told about.
+# Bounds. `dropped` is TARGET-AUTHORED text on its way into two published artifacts
+# (`tools-manifest.json`, then `report.json`), and every sibling path in this module is already
+# bounded -- `tool_capture.MAX_TOOL_OUTPUT_BYTES` on tool stdout, `redact`'s 16 KiB PEM bound. A 50
+# MB junk requirements file would otherwise be read whole (twice: once in the container, once on the
+# host) and copied wholesale into both. The read is capped FIRST, so the cost is bounded before
+# anything is parsed; the row count and each row's length are capped at publication. Every cap is
+# disclosed -- a silent truncation would be a second "the audit was partial" nobody is told about.
 _MAX_READ_BYTES = 1024 * 1024
 _MAX_READ_LINES = 20000
 _MAX_DROPPED_ROWS = 200
@@ -207,11 +201,10 @@ def _joined(text):
         if line.endswith("\\") and not comment:
             buf.append(line.strip("\\"))
             continue
-        # M4: pip PREPENDS a space to a comment line before joining, precisely
-        # so the comment is still recognisable afterwards. Appending it raw
-        # produced `pkg==1.0# comment`, which `_COMMENT` -- which needs `^` or
-        # whitespace before the `#` -- cannot strip, so a correctly pinned
-        # dependency was lost as `unparseable`.
+        # M4: pip PREPENDS a space to a comment line before joining, precisely so the comment is
+        # still recognisable afterwards. Appending it raw produced `pkg==1.0# comment`, which
+        # `_COMMENT` -- which needs `^` or whitespace before the `#` -- cannot strip, so a correctly
+        # pinned dependency was lost as `unparseable`.
         buf.append(" " + line if buf and comment else line)
         out.append("".join(buf))
         buf = []
@@ -258,12 +251,11 @@ def _bounded(data):
     raw = data if isinstance(data, bytes) else str(data or "").encode("utf-8", "replace")
     truncated = len(raw) > _MAX_READ_BYTES
     if truncated:
-        # Keep only COMPLETE lines (F9). `rpartition` is the whole rule: it
-        # yields "" when the last newline is at byte 0 and when there is no
-        # newline at all, which the previous `cut > 0` guard did not -- it kept
-        # the entire 1 MiB partial tail in both cases, and that tail was then
-        # classified and published as a truncated `unparseable` row, exactly
-        # the noise the rollback exists to prevent.
+        # Keep only COMPLETE lines (F9). `rpartition` is the whole rule: it yields "" when the last
+        # newline is at byte 0 and when there is no newline at all, which the previous `cut > 0`
+        # guard did not -- it kept the entire 1 MiB partial tail in both cases, and that tail was
+        # then classified and published as a truncated `unparseable` row, exactly the noise the
+        # rollback exists to prevent.
         raw, _sep, _tail = raw[:_MAX_READ_BYTES].rpartition(b"\n")
     text = raw.decode("utf-8", "replace")
     lines = text.splitlines()
@@ -394,11 +386,10 @@ def _requirement_candidate(target):
     target = os.path.abspath(target)
     exact = os.path.join(target, "requirements.txt")
     candidates = [exact] + sorted(glob.glob(os.path.join(target, "requirements*.txt")))
-    # `lexists`, not `isfile`: a DANGLING symlink is a path entry that exists
-    # and has to be judged, and `isfile` is false for one (F8). Filtering on
-    # `isfile` here ran the F5 check ahead of confinement, so
-    # `requirements.txt -> /nonexistent/outside/creds` reported as "no
-    # manifest" -- the exact reading C2(a) exists to make impossible.
+    # `lexists`, not `isfile`: a DANGLING symlink is a path entry that exists and has to be judged,
+    # and `isfile` is false for one (F8). Filtering on `isfile` here ran the F5 check ahead of
+    # confinement, so `requirements.txt -> /nonexistent/outside/creds` reported as "no manifest" --
+    # the exact reading C2(a) exists to make impossible.
     candidates = [c for c in dict.fromkeys(candidates) if os.path.lexists(c)]
     rejected = []
     for candidate in candidates:
@@ -483,6 +474,16 @@ def sanitize_requirements_file(path, root):
             "truncated": truncated, "dropped_truncated": more}
 
 
+# #3223: pip-audit resolves with pip in a temporary venv, and for a name with no wheel pip runs that
+# sdist's build hook -- attacker code in the online container. PIP_ONLY_BINARY (read by that inner
+# pip from the environment; measured) refuses the build. One such name fails the WHOLE resolution,
+# so pip-audit audits nothing: disclosed with ONE fixed reason, never target text.
+UNBUILT = b'{"panopticon_unbuilt": true}'
+UNBUILT_REASON = ("pip-audit audited nothing: a requirement has no wheel, and panopticon does "
+                  "not build source distributions (#3223); osv-scanner still covers these "
+                  "requirements")
+
+
 class PipAuditAdapter:
     name = "pip-audit"
     prefix = "PA"
@@ -507,14 +508,12 @@ class PipAuditAdapter:
         cmd = ["pip-audit", "--format=json", "--desc=on", "--progress-spinner=off"]
         req = self._find_requirement(target)
         if req:
-            # #1646: NEVER `--requirement <the repo's own file>`. pip-audit
-            # resolves what that file names, and a requirement form it has to
-            # resolve runs the target's build backend. The sanitizer's output
-            # is what pip-audit sees; the repo path survives only as the
-            # LOCATION findings are reported against, which reads no file.
-            # `req` itself stays ABSOLUTE -- sanitize_requirements_file opens
-            # it -- and only what the report publishes is relativized. THIS is
-            # where the repo-relative invariant lives, at both `set` sites:
+            # #1646: NEVER `--requirement <the repo's own file>`. pip-audit resolves what that file
+            # names, and a requirement form it has to resolve runs the target's build backend. The
+            # sanitizer's output is what pip-audit sees; the repo path survives only as the LOCATION
+            # findings are reported against, which reads no file. `req` itself stays ABSOLUTE --
+            # sanitize_requirements_file opens it -- and only what the report publishes is
+            # relativized. THIS is where the repo-relative invariant lives, at both `set` sites:
             # `_located_at` returns what it is given (pinned by a test).
             _manifest_path_cv.set(os.path.relpath(req, target))
             kept = sanitize_requirements_file(req, target)["kept"]
@@ -532,30 +531,33 @@ class PipAuditAdapter:
                       file=sys.stderr)
                 return b'{"dependencies": [], "fixes": []}', 0
             _manifest_path_cv.set("pyproject.toml")   # at the root by definition
-            # The PEP 621 read is static, but `[project.dependencies]` may
-            # itself hold `name @ git+https://...` -- the same build-backend
-            # door through a second file. Both branches write a GENERATED file
-            # and the same grammar is what makes it safe -- and the same bound,
-            # so what is written here is what `sanitization_report` counts (F2).
+            # The PEP 621 read is static, but `[project.dependencies]` may itself hold `name @
+            # git+https://...` -- the same build-backend door through a second file. Both branches
+            # write a GENERATED file and the same grammar is what makes it safe -- and the same
+            # bound, so what is written here is what `sanitization_report` counts (F2).
             text, _truncated = _bounded("\n".join(deps))
             kept, _dropped = sanitize_requirements(text)
         tmp = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
-        # #1646 C1(b): an EMPTY working directory, never the target mount. The
-        # image ends `WORKDIR /src` and `/src` IS the reviewed repository, so a
-        # cwd-relative name pip decides to resolve as a file finds one. The
-        # generated file makes that unreachable through the grammar; this makes
-        # it unreachable through the filesystem, so a future grammar gap costs a
-        # missed audit rather than a build-backend execution. `--requirement` is
-        # an absolute path, so nothing else here depends on the working dir.
-        # (#1877 moved the scratch itself into `base.scratch_cwd`, F3's
-        # rmtree-not-rmdir reasoning with it -- it is the helper's reason now,
-        # for all eleven adapters rather than this one.)
+        # #1646 C1(b): an EMPTY working directory, never the target mount. The image ends `WORKDIR
+        # /src` and `/src` IS the reviewed repository, so a cwd-relative name pip decides to resolve
+        # as a file finds one. The generated file makes that unreachable through the grammar; this
+        # makes it unreachable through the filesystem, so a future grammar gap costs a missed audit
+        # rather than a build-backend execution. `--requirement` is an absolute path, so nothing
+        # else here depends on the working dir. (#1877 moved the scratch itself into
+        # `base.scratch_cwd`, F3's rmtree-not-rmdir reasoning with it -- it is the helper's reason
+        # now, for all eleven adapters rather than this one.)
         try:
             with scratch_cwd("pip-audit-cwd-") as scratch:
                 tmp.write("".join(line + "\n" for line in kept))
                 tmp.close()
                 cmd.extend(["--requirement", tmp.name])
-                return run_tool(cmd, timeout=300, cwd=scratch)
+                env = dict(os.environ, PIP_ONLY_BINARY=":all:")
+                env.pop("PIP_NO_BINARY", None)          # #3223: nothing un-says it
+                out, err, rc = run_tool(cmd, timeout=300, cwd=scratch, env=env,
+                                        capture_stderr=True)
+                if rc and not out.strip() and b"No matching distribution found" in err:
+                    return UNBUILT, rc
+                return out, rc
         finally:
             os.unlink(tmp.name)
 
@@ -646,6 +648,8 @@ class PipAuditAdapter:
         data = parse_json_bytes(raw)
         if not isinstance(data, dict):
             raise ValueError("pip-audit report is not an object")
+        if data.get("panopticon_unbuilt") is True:
+            return [], UNBUILT_REASON
         dependencies = data.get("dependencies", [])
         if not isinstance(dependencies, list):
             raise ValueError("pip-audit dependencies are malformed")
