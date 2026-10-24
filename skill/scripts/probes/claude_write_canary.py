@@ -19,11 +19,11 @@ reviewer's model. Measured cost: one haiku turn pair, about $0.0005 and 5-8 s.
 """
 import json
 import os
-import subprocess
 import tempfile
 
 from scripts import write_guard_hook
 from scripts.runners import base as runner_base
+from scripts.runners import children
 from scripts.runners import claude as claude_runner
 
 CANARY_AGENT = "panopticon-write-canary"
@@ -33,8 +33,9 @@ CANARY_MAX_TURNS = 6
 CANARY_TIMEOUT = 180
 OWN_ID, PEER_ID = "canary-cell", "canary-peer"
 
-# The one launcher, so tests replace it and nothing else.
-_launch = subprocess.run
+# The one launcher, so tests replace it and nothing else: the hardened one
+# (#3270), which resolves `claude` off a trusted PATH.
+_launch = children.launch
 
 
 def _prompt(own, peer):

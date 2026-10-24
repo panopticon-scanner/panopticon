@@ -24,7 +24,7 @@ from unittest import mock
 import yaml
 
 from tests._test_helpers import REPO_ROOT
-from tests.run_tools_test_helpers import _FakeResult
+from tests.run_tools_test_helpers import FOUND_IMAGE, _FakeResult
 import scripts.run_tools as run_tools
 from scripts.progress import PREFIX, NullProgress, StderrProgress, make_progress
 
@@ -217,7 +217,7 @@ class TestTheFlagIsWiredToTheRunner(unittest.TestCase):
             captured["progress"] = kwargs.get("progress")
             return []
 
-        with mock.patch.object(run_tools, "docker_available", return_value=True), \
+        with mock.patch.object(run_tools, "docker_available", return_value=FOUND_IMAGE), \
                 mock.patch.object(run_tools, "run_tools", fake_run_tools), \
                 mock.patch.object(run_tools, "select_adapters", return_value={}), \
                 mock.patch.object(run_tools, "detect_languages", return_value=[]):

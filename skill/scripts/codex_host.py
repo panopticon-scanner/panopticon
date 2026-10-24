@@ -14,7 +14,6 @@ from pathlib import Path
 import re
 import shutil
 import stat
-import subprocess
 import sys
 import tempfile
 import threading
@@ -23,6 +22,7 @@ import tomllib
 import scripts.codex_read_tools as codex_read_tools
 import scripts.hosts as hosts
 import scripts.runners.base as runners_base
+import scripts.runners.children as children
 import scripts.runners.schema as runners_schema
 import scripts.toml_values as toml_values
 
@@ -33,8 +33,9 @@ ENV_KEYS = ("PANOPTICON_ENTRY_ID", "PANOPTICON_WRITE_ALLOWLIST", "PANOPTICON_REA
 # test binds the two, exactly as ENVELOPE_FLAGS is bound to `exec --json`.
 SCHEMA_FLAG = "--output-schema"
 # Same reason as runners/codex.DEFAULT_RUNNER: a module attribute the suite can
-# swap for a refusal, where a default argument could not be reached.
-DEFAULT_RUNNER = subprocess.run
+# swap for a refusal, where a default argument could not be reached. #3270:
+# the hardened launcher, never a bare `subprocess.run` of `codex`.
+DEFAULT_RUNNER = children.launch
 # The one remedy for every "no registered shell" refusal, spelled the way an
 # operator can paste it. Codex is ENFORCED-ONLY: unlike Claude there is no
 # unenforced fallback, so an unregistered machine has to be told what to run.

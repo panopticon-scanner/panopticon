@@ -143,7 +143,9 @@ class TestValidatePhase(unittest.TestCase):
 
     def test_missing_trusted_git_fails_closed(self):
         d = self._git_repo()
-        with mock.patch.dict(os.environ, {"PATH": d}):
+        empty = tempfile.mkdtemp()      # a PATH with no git on it (#3270: not the target)
+        self.addCleanup(lambda: shutil.rmtree(empty, ignore_errors=True))
+        with mock.patch.dict(os.environ, {"PATH": empty}):
             validate_phase.capture_tree_baseline(d)
         self.assertTrue(validate_phase._tree_delta(d, subprocess.run))
 

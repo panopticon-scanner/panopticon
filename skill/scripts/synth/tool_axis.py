@@ -20,8 +20,10 @@ from dataclasses import dataclass, field
 import os
 import sys
 
+import scripts.app_trace as app_trace
 import scripts.groups_schema as groups_schema
 import scripts.ingest_tools as ingest_tools
+import scripts.tools_image as tools_image
 import scripts.tools_manifest as tools_manifest
 from scripts.tools import EXECUTES_TARGET_BUILD
 from . import artifacts as artifacts_mod
@@ -195,6 +197,10 @@ class Reconciled:
     # says what one of them could reach while doing it.
     tools_network: dict = field(default_factory=dict)
     tools_network_excluded: dict = field(default_factory=dict)
+    # #3270: the tools image's identity and docker's app record, repaired at
+    # the read (the manifest is target-writable). None / [] with no manifest.
+    tools_image: dict | None = None
+    tools_apps: list = field(default_factory=list)
     # #1644: why this run's tools-manifest could not be read, or None. Carried
     # beside `integrity` (which also publishes it) the way `integrity_ok` is:
     # certification takes it as an input, and must not have to read a section.
@@ -623,6 +629,7 @@ def reconcile(plan, tools, resolved, run=None):
     # off by default is the intended posture, not a coverage loss.
     withheld = (tools.manifest.get("withheld") if isinstance(tools.manifest, dict)
                 else None)
+    manifest_dict = tools.manifest if isinstance(tools.manifest, dict) else {}
     if isinstance(withheld, list):
         named = sorted({t for t in withheld if t in EXECUTES_TARGET_BUILD})
         if named:
@@ -633,5 +640,7 @@ def reconcile(plan, tools, resolved, run=None):
                       cell_audit=cell_audit, groups_meta=plan.groups_meta,
                       tools_sanitized=sanitized, tools_network=network,
                       tools_network_excluded=network_excluded,
+                      tools_image=tools_image.repair(manifest_dict.get("image")),
+                      tools_apps=app_trace.repair(manifest_dict.get("apps")),
                       tools_manifest_invalid=tools.manifest_invalid,
                       gated_suppressed=gated)

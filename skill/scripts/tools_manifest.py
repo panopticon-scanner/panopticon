@@ -258,7 +258,7 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                    network=None, exclude_globs=(), suppression_comments=None,
                    scanner_config=None, ignore_files=None, scanner_scope=None,
                    cleanup_failures=None, language_detection_skips=None,
-                   withheld=()):
+                   withheld=(), image=None, apps=None):
     """Write the exact selected/produced scanner set for coverage gating.
 
     `withheld` (#3265) names applicable adapters the operator did not enable:
@@ -463,6 +463,13 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     held = sorted({str(t) for t in withheld} - set(selected))
     if held:                   # #3265: absent when nothing was withheld, like cleanup
         payload["withheld"] = held
+    # #3270: the tools image's identity and docker's app record, from
+    # run_tools.main; absent on a direct caller, so every other manifest is
+    # byte-identical. `tools_image.repair`/`app_trace.repair` re-read them.
+    if image is not None:
+        payload["image"] = dict(image)
+    if apps:
+        payload["apps"] = [dict(app) for app in apps]
     # #1735: the driver points --manifest at `<run folder>/tools-manifest.json`,
     # inside the reviewed tree. Confine before the makedirs (a symlinked
     # intermediate would be traversed by it) and never open through a link.

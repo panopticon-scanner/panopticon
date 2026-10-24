@@ -107,6 +107,10 @@
 #   - 2026-10-24 (#3265/#3248): `build_disclosure.py` is `tool_cleanup.py`'s sibling for the
 #     build-executing adapter (not run without --allow-target-build; projects its one build did
 #     not reach). Claimed on `ToolAdapters:Core` beside it, for the same reason.
+#   - 2026-10-24 (#3270): `tools_image.py` (the tools image's id and the mounted adapter
+#     code's hash) is claimed on `ToolAdapters:Core` beside `tools_manifest.py`, which records
+#     it; `app_trace.py` (each external app's path, version and sha256) on `Hosts` beside
+#     `host_probes.py`, which records the host CLI's.
 #   - 2026-09-28 (#2306): a FOURTH part of that split, ruled after #2289, claims
 #     `venv_scope.py` (finding the virtualenvs under the target, deciding which
 #     of them a scanner's exclusion knob may be handed, and rendering that onto
@@ -275,6 +279,7 @@ groups:
       - skill/scripts/tool_capture.py
       - skill/scripts/tool_cleanup.py
       - skill/scripts/build_disclosure.py
+      - skill/scripts/tools_image.py
       - skill/scripts/tools_manifest.py
       - skill/scripts/venv_scope.py
       - skill/scripts/semgrep_targets.py
@@ -434,6 +439,7 @@ groups:
       match:
       - skill/scripts/hosts.py
       - skill/scripts/host_probes.py
+      - skill/scripts/app_trace.py
       - skill/scripts/host_disclosure.py
       - skill/scripts/codex_host.py
       - skill/scripts/codex_read_tools.py

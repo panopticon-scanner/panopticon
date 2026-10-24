@@ -16,8 +16,15 @@ import scripts.executable as executable
 import scripts.phases.runio as runio
 import scripts.run_tools as run_tools
 import scripts.tool_capture as tool_capture
+import scripts.tools_image as tools_image
 import scripts.runners.base as runner_base
 from scripts.run_tools import docker_available as REAL_DOCKER_AVAILABLE
+
+
+# #3270 (D2): the halt is asserted by BEHAVIOUR -- a ValueError carrying the
+# fixed sentence -- so on a build without it the test fails on what happened.
+HALTS = (r"inside the target; remove it \(deactivate the target's virtualenv or direnv\) "
+         r"and re-run$")
 
 
 def _program(path, body):
@@ -119,24 +126,31 @@ class TestTrustedResolver(unittest.TestCase):
                     executable.sanitize_startup_environment(supplied)
                 self.assertEqual(supplied, original)
 
-    def test_symlinked_directory_and_candidate_into_target_are_rejected(self):
+    def test_symlinked_directory_and_candidate_into_target_halt(self):
+        # #3270 (D2): both used to be skipped silently; both now halt, naming the
+        # entry -- the candidate's halt names the program too.
         with tempfile.TemporaryDirectory() as parent:
             target = os.path.join(parent, "target")
             external = os.path.join(parent, "external")
             poison = os.path.join(parent, "poison")
+            link = os.path.join(parent, "target-link")
             os.makedirs(target)
             marker = _program(os.path.join(target, "git"), "exit 99\n")
             os.makedirs(external)
             os.makedirs(poison)
-            os.symlink(target, os.path.join(parent, "target-link"))
+            os.symlink(target, link)
             os.symlink(marker, os.path.join(poison, "git"))
             trusted = _program(os.path.join(external, "git"), "exit 0\n")
-            path = os.pathsep.join([os.path.join(parent, "target-link"), poison,
-                                    external])
-            got = executable.resolve("git", target, path)
+            with self.assertRaisesRegex(ValueError, HALTS) as caught:
+                executable.resolve("git", target, os.pathsep.join([link, external]))
+            self.assertEqual(caught.exception.entry, link)
+            with self.assertRaisesRegex(ValueError, HALTS) as caught:
+                executable.resolve("git", target, os.pathsep.join([poison, external]))
+            self.assertEqual(caught.exception.entry, os.path.realpath(poison))
+            self.assertIn("holds %s, which resolves inside the target"
+                          % os.path.join(os.path.realpath(poison), "git"), str(caught.exception))
+            got = executable.resolve("git", target, external)
             self.assertEqual(got.path, os.path.realpath(trusted))
-            self.assertNotIn(os.path.realpath(target), got.path_env.split(os.pathsep))
-            self.assertNotIn(os.path.realpath(poison), got.path_env.split(os.pathsep))
 
     def test_case_alias_of_target_is_rejected_when_filesystem_aliases_case(self):
         with tempfile.TemporaryDirectory() as parent:
@@ -149,12 +163,58 @@ class TestTrustedResolver(unittest.TestCase):
             if not os.path.exists(alias) or not os.path.samefile(alias, target):
                 self.skipTest("filesystem distinguishes path case")
 
-            got = executable.resolve(
-                "probe-cli", target, os.pathsep.join([alias, trusted]))
+            with self.assertRaisesRegex(ValueError, HALTS):      # #3270 (D2)
+                executable.resolve("probe-cli", target, os.pathsep.join([alias, trusted]))
+            got = executable.resolve("probe-cli", target, trusted)
             self.assertEqual(got.path, os.path.realpath(trusted_cli))
             with self.assertRaises(executable.ExecutableResolutionError):
                 executable.resolve(os.path.join(alias, "probe-cli"), target, trusted)
             self.assertTrue(os.path.isfile(target_cli))
+
+
+class TestATargetPathEntryHalts(unittest.TestCase):
+    """#3270 G3 (owner ruling D2): a PATH entry inside the target is hostility or
+    a badly broken machine -- most often the operator activated the target's
+    own virtualenv, or the target's direnv `.envrc` ran. It halts at the run's
+    first contact, in ONE line naming the entry and the fix."""
+
+    def test_the_halt_names_the_entry_and_the_fix_in_one_line(self):
+        with tempfile.TemporaryDirectory() as target:
+            venv = os.path.join(target, ".venv", "bin")
+            os.makedirs(venv)
+            with self.assertRaisesRegex(ValueError, HALTS) as caught:
+                executable.resolve("git", target, venv)
+        self.assertEqual(
+            "PATH entry %s is inside the target; remove it (deactivate the target's "
+            "virtualenv or direnv) and re-run" % venv, str(caught.exception))
+        self.assertNotIsInstance(caught.exception, FileNotFoundError)  # never read as "absent"
+        self.assertIsInstance(caught.exception, executable.TargetPathEntry)
+
+    def test_the_first_contact_check_reads_every_absolute_entry(self):
+        with tempfile.TemporaryDirectory() as target, tempfile.TemporaryDirectory() as outside:
+            inner = os.path.join(target, "bin")
+            os.makedirs(inner)
+            executable.refuse_target_path(target, os.pathsep.join(["", ".", "bin", outside]))
+            with self.assertRaisesRegex(ValueError, HALTS) as caught:
+                executable.refuse_target_path(target, os.pathsep.join([outside, inner]))
+            self.assertEqual(inner, caught.exception.entry)
+
+    def test_driver_run_halts_before_any_phase(self):
+        import scripts.driver as driver
+        ran = []
+        with tempfile.TemporaryDirectory() as parent:
+            target = os.path.realpath(os.path.join(parent, "target"))
+            venv = os.path.join(target, ".venv", "bin")
+            os.makedirs(venv)
+            phase = mock.Mock(side_effect=AssertionError("a phase ran"))
+            with mock.patch.dict(os.environ, {"PATH": os.pathsep.join([venv, os.environ["PATH"]])}):
+                status = driver.run(driver.build_parser().parse_args(["run", target]),
+                                    phases=(phase,), runner=lambda *a, **k: ran.append(a))
+        self.assertEqual("error", status["status"])
+        self.assertIn("PATH entry %s is inside the target; remove it (deactivate the target's "
+                      "virtualenv or direnv) and re-run" % venv, status["message"])
+        self.assertNotIn("\n", status["message"])
+        phase.assert_not_called()
 
 
 class TestHostCliBoundary(unittest.TestCase):
@@ -170,6 +230,10 @@ class TestHostCliBoundary(unittest.TestCase):
             runner.review_root = target
             env = {"PATH": os.pathsep.join(["", ".", os.path.join(target, "bin"),
                                              trusted])}
+            with self.assertRaisesRegex(ValueError, HALTS):      # #3270 (D2)
+                runner.launch(["hostcli"], cwd=scratch, env=env)
+            self.assertFalse(os.path.exists(marker))
+            env = {"PATH": os.pathsep.join(["", ".", trusted])}
             got = runner.launch(["hostcli"], cwd=scratch, env=env)
             self.assertEqual(got.returncode, 0)
             self.assertFalse(os.path.exists(marker))
@@ -215,12 +279,16 @@ class TestHostCliBoundary(unittest.TestCase):
                     "    print(name.decode() + '=' + os.environb[name].hex())\n"
                     % os.path.realpath(sys.executable))
             os.chmod(cli, 0o700)
-            path = os.pathsep.join([target, trusted])
-            env = {b"PATH": os.fsencode(path), b"HOST_TOKEN": b"auth-\xff",
-                   "HOST_CONFIG": b"config-\xfe"}
-            supplied_before = dict(env)
             runner = runner_base.HostRunner()
             runner.review_root = target
+            # #3270 (D2): canonicalized BEFORE the check, so a byte-spelled
+            # target entry halts like a text one.
+            with self.assertRaisesRegex(ValueError, HALTS):
+                runner.launch(["hostcli"], cwd=scratch,
+                              env={b"PATH": os.fsencode(os.pathsep.join([target, trusted]))})
+            env = {b"PATH": os.fsencode(trusted), b"HOST_TOKEN": b"auth-\xff",
+                   "HOST_CONFIG": b"config-\xfe"}
+            supplied_before = dict(env)
             with mock.patch.dict(os.environ, {"CALLER_STATE": "kept"}, clear=False):
                 caller_before = dict(os.environ)
                 got = runner.launch(["hostcli"], cwd=scratch, env=env)
@@ -377,6 +445,10 @@ class TestManifestGitBoundary(unittest.TestCase):
             try:
                 os.chdir(target)
                 with mock.patch.dict(os.environ, {"PATH": hostile}, clear=False):
+                    with self.assertRaisesRegex(ValueError, HALTS):    # #3270 (D2)
+                        runio._manifest_committed(target, manifest)
+                with mock.patch.dict(os.environ, {"PATH": os.pathsep.join(
+                        ["", ".", os.path.dirname(git)])}, clear=False):
                     self.assertTrue(runio._manifest_committed(target, manifest))
             finally:
                 os.chdir(old_cwd)
@@ -391,6 +463,9 @@ class TestManifestGitBoundary(unittest.TestCase):
             _program(os.path.join(target, "git"),
                      "printf forged > %s\nexit 1\n" % marker)
             with mock.patch.dict(os.environ, {"PATH": target}, clear=False):
+                with self.assertRaisesRegex(ValueError, HALTS):        # #3270 (D2)
+                    runio._manifest_committed(target, manifest)
+            with mock.patch.dict(os.environ, {"PATH": "."}, clear=False):
                 with self.assertRaisesRegex(runio.DriverError, "trusted git"):
                     runio._manifest_committed(target, manifest)
             self.assertFalse(os.path.exists(marker))
@@ -421,6 +496,10 @@ class TestDiffGitBoundary(unittest.TestCase):
                      "printf forged > %s\nexit 0\n" % marker)
             path = os.pathsep.join([target, os.path.dirname(git)])
             with mock.patch.dict(os.environ, {"PATH": path}, clear=False):
+                with self.assertRaisesRegex(diff_map.DiffMapError,      # #3270 (D2)
+                                            "is inside the target; remove it"):
+                    diff_map.hunk_map(target, "base")
+            with mock.patch.dict(os.environ, {"PATH": os.path.dirname(git)}, clear=False):
                 mapped = diff_map.hunk_map(target, "base")
             self.assertIn("a.py", mapped)
             self.assertFalse(os.path.exists(marker))
@@ -431,13 +510,16 @@ class TestDiffGitBoundary(unittest.TestCase):
             _program(os.path.join(target, "git"),
                      "printf forged > %s\nexit 0\n" % marker)
             with mock.patch.dict(os.environ, {"PATH": target}, clear=False):
+                with self.assertRaisesRegex(diff_map.DiffMapError, "is inside the target"):
+                    diff_map.hunk_map(target, "main")              # #3270 (D2)
+            with mock.patch.dict(os.environ, {"PATH": "."}, clear=False):
                 with self.assertRaisesRegex(diff_map.DiffMapError, "trusted PATH"):
                     diff_map.hunk_map(target, "main")
             self.assertFalse(os.path.exists(marker))
 
 
 class TestDockerBoundary(unittest.TestCase):
-    def test_target_docker_is_skipped_and_child_path_is_sanitized(self):
+    def test_target_docker_halts_and_child_path_is_sanitized(self):
         calls = []
 
         class Result:
@@ -456,8 +538,12 @@ class TestDockerBoundary(unittest.TestCase):
             good = _program(os.path.join(trusted, "docker"), "exit 99\n")
             out = os.path.join(parent, "out")
             hostile = os.pathsep.join(["", ".", target, trusted])
+            with mock.patch.dict(os.environ, {"PATH": hostile}, clear=False):
+                with self.assertRaisesRegex(ValueError, HALTS):    # #3270 (D2)
+                    run_tools.run_tools(target, ["semgrep"], out, runner=runner, venv_dirs=[])
+            self.assertEqual(calls, [])
             with mock.patch.dict(os.environ, {
-                    "PATH": hostile, "PYTHONPATH": target,
+                    "PATH": os.pathsep.join(["", ".", trusted]), "PYTHONPATH": target,
                     "NODE_OPTIONS": "--require ./startup.cjs"}, clear=False):
                 written = run_tools.run_tools(target, ["semgrep"], out, runner=runner,
                                               venv_dirs=[])
@@ -543,24 +629,38 @@ class TestDockerBoundary(unittest.TestCase):
         self.assertNotIn("--cidfile", calls[0])
 
     def test_main_probe_cannot_execute_target_docker(self):
+        # #3270 (D2): the CLI halts -- one fixed stderr line and HALT_EXIT, which
+        # the tools phase reads back as a halt of the run -- before the
+        # target's docker can run. It used to skip it and report no docker.
         with tempfile.TemporaryDirectory() as target:
             marker = os.path.join(target, "docker-ran")
             _program(os.path.join(target, "docker"),
                      "printf forged > %s\nexit 0\n" % marker)
+            err = io.StringIO()
             with mock.patch.dict(os.environ, {"PATH": os.pathsep.join(["", ".", target])},
                                  clear=False), \
                     mock.patch.object(run_tools, "docker_available",
                                       new=REAL_DOCKER_AVAILABLE), \
-                    contextlib.redirect_stderr(io.StringIO()):
-                self.assertEqual(run_tools.main(["--target", target, "--tools", "semgrep",
-                                                 "--out", os.path.join(target, "out")]), 0)
+                    contextlib.redirect_stderr(err):
+                cli = tools_image.halting(run_tools.main)
+                self.assertEqual(cli(["--target", target, "--tools", "semgrep",
+                                      "--out", os.path.join(target, "out")]),
+                                 tools_image.HALT_EXIT)
             self.assertFalse(os.path.exists(marker))
+            self.assertIn(tools_image.HALT_PREFIX + "PATH entry %s is inside the target" % target,
+                          err.getvalue())
 
     def test_missing_external_docker_fails_before_the_injected_runner(self):
         called = []
         with tempfile.TemporaryDirectory() as target:
             _program(os.path.join(target, "docker"), "exit 0\n")
             with mock.patch.dict(os.environ, {"PATH": target}, clear=False):
+                with self.assertRaisesRegex(ValueError, HALTS):         # #3270 (D2)
+                    run_tools.run_tools(
+                        target, ["semgrep"], os.path.join(target, "out"),
+                        runner=lambda *args, **kwargs: called.append((args, kwargs)),
+                        venv_dirs=[])
+            with mock.patch.dict(os.environ, {"PATH": "."}, clear=False):
                 with self.assertRaisesRegex(executable.ExecutableResolutionError,
                                             "trusted PATH"):
                     run_tools.run_tools(
@@ -592,7 +692,7 @@ class TestDockerBoundary(unittest.TestCase):
             os.makedirs(target)
             good = _program(os.path.join(trusted, "docker"), "exit 99\n")
             with mock.patch.dict(os.environ, {
-                    "PATH": os.pathsep.join([".", target, trusted])}, clear=False):
+                    "PATH": os.pathsep.join([".", trusted])}, clear=False):
                 run_tools.run_tools(target, ["pip-audit"], os.path.join(parent, "out"),
                                     runner=runner, online=True, venv_dirs=[], run_id="r")
         self.assertGreater(len(calls), 4)
