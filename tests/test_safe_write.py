@@ -93,6 +93,14 @@ class TestNoFollowOpen(unittest.TestCase):
             fh.write("PRECIOUS")
         return victim
 
+    def _internal_link(self, name):
+        referent = os.path.join(self.pano, "referent-%s" % name)
+        with open(referent, "w", encoding="utf-8") as fh:
+            fh.write("PRECIOUS")
+        artifact = os.path.join(self.pano, name)
+        os.symlink(os.path.basename(referent), artifact)
+        return artifact, referent
+
     def test_a_planted_symlink_out_of_the_tree_is_refused(self):
         # The plantable attack: the link points at a file the invoking user can
         # write. The whole-path confinement answers it FIRST -- loudly, and
@@ -116,6 +124,18 @@ class TestNoFollowOpen(unittest.TestCase):
             self.assertEqual(fh.read(), "PRECIOUS")
         self.assertFalse(os.path.islink(artifact))
         self.assertTrue(os.path.isfile(artifact))
+
+    def test_an_internal_artifact_symlink_is_refused_not_replaced(self):
+        # #3269 G9: confinement admits this link because its referent stays
+        # inside `.panopticon`. The final-leaf guard must still make one loud
+        # refusal; unlink-and-retry silently destroys the planted evidence.
+        artifact, referent = self._internal_link("artifact.json")
+        with self.assertRaisesRegex(safe_write.ArtifactSymlinkError,
+                                    "refusing.*artifact.*symlink"):
+            safe_write.open_w_nofollow(artifact)
+        self.assertTrue(os.path.islink(artifact))
+        with open(referent, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "PRECIOUS")
 
     @unittest.skipUnless(hasattr(os, "mkfifo"), "requires POSIX FIFOs")
     def test_write_refuses_a_fifo_even_when_a_reader_allows_the_open(self):
@@ -155,6 +175,15 @@ class TestNoFollowOpen(unittest.TestCase):
         with open(victim, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "PRECIOUS")
         self.assertFalse(os.path.islink(artifact))
+
+    def test_append_refuses_an_internal_artifact_symlink_without_deleting_it(self):
+        artifact, referent = self._internal_link("ledger.jsonl")
+        with self.assertRaisesRegex(safe_write.ArtifactSymlinkError,
+                                    "refusing.*artifact.*symlink"):
+            safe_write.open_a_nofollow(artifact)
+        self.assertTrue(os.path.islink(artifact))
+        with open(referent, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "PRECIOUS")
 
     def test_remove_artifact_unlinks_a_leaf_symlink_without_touching_its_target(self):
         victim = self._victim()

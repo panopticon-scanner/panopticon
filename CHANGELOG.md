@@ -29,6 +29,13 @@
   reports. Both reasons are disclosed in both modes and gated in neither; under redteam,
   they are also counted in `tools_suppressed_not_gated`. Other suppression reasons retain
   policy C, and explicit operator exclusion globs retain precedence.
+- **Artifact writers loudly refuse final symlinks instead of deleting them (#3269 G9, 5.3).**
+  The overwrite and append guards no longer unlink and replace a symlink at a `.panopticon`
+  artifact path. They leave the link and its referent untouched and return one typed refusal,
+  which the driver reports as `status:error`. First contact remains the run-level halt for a
+  planted link. Explicit output paths outside `.panopticon` retain their safe replace-without-
+  following behavior; intentional artifact removal and the run's owned compatibility links are
+  unchanged.
 
 - **Operator-visible: first contact halts on a `.panopticon/` this machine did not start (#3271).**
   `driver run` and `driver setup` now assess the target once, before any phase writes, and halt
