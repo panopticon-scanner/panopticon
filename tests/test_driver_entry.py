@@ -19,6 +19,7 @@ import scripts.phases.validate as validate_phase
 import scripts.driver as driver
 import scripts.plan_contract as plan_contract
 import scripts.run_manifest as run_manifest
+import scripts.safe_write as safe_write
 
 from tests._test_helpers import adopt_panopticon
 from tests.tools.git_repo import make_git_repo
@@ -347,6 +348,16 @@ class TestRunConvertsAConfinementRefusal(unittest.TestCase):
         self.assertEqual(status["status"], "error", status)
         self.assertIn("escapes .panopticon", status["message"])
 
+    def test_an_artifact_symlink_refusal_from_a_phase_is_an_error_status(self):
+        d = self._repo()
+        path = os.path.join(d, ".panopticon", "groups.json")
+        args = driver.build_parser().parse_args(["run", d])
+        with mock.patch("scripts.phases.engine.run_engine",
+                        side_effect=safe_write.ArtifactSymlinkError(path)):
+            status = driver.run(args)
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("refusing artifact-path symlink", status["message"])
+
     # #1735 fix round 1: the same rule, for the three writes that happen BEFORE
     # `run_engine` and were therefore outside that `except`. Every one of them
     # can now refuse (the manifest rewrite could not, before this issue), and on
@@ -367,7 +378,7 @@ class TestRunConvertsAConfinementRefusal(unittest.TestCase):
 
     # #3271: first contact now meets every one of these plants before the write
     # that used to refuse it (H3); the per-write refusals keep their own unit
-    # tests (tests/test_safe_write.py) and stay for a swap made mid-run.
+    # tests (tests/test_safe_write.py) as the low-level artifact-write invariant.
     def _assert_refusal(self, status, victim,
                         fragment="is a symlink, and the artifact directory holds none"):
         self.assertEqual(status["status"], "error", status)

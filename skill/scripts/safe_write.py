@@ -84,6 +84,14 @@ class UnsafeStagingPathError(ValueError):
         super().__init__("refusing occupied staging path %r: %s" % (self.path, detail))
 
 
+class ArtifactSymlinkError(ValueError):
+    """A final artifact leaf is a symlink and must remain untouched (#3269)."""
+
+    def __init__(self, path):
+        self.path = os.fspath(path)
+        super().__init__("refusing artifact-path symlink %r" % self.path)
+
+
 def read_failure_reason(error):
     """Classify the stage that rejected a bounded artifact read.
 
@@ -163,14 +171,29 @@ def confine_artifact_path(path):
             "artifact path escapes .panopticon via a symlinked component: %r" % path)
 
 
+def _replace_nonartifact_symlink(path):
+    """Unlink a final symlink only for a caller-chosen non-artifact output.
+
+    Artifact symlinks are a hostile-tree signal and get one loud refusal. The
+    historical replacement behavior remains for explicit output paths outside
+    `.panopticon`, where replacing the leaf without following it is the API.
+    """
+    if not os.path.islink(path):
+        return False
+    if claim_scope.review_root_of_artifact_path(os.path.abspath(path)) is not None:
+        raise ArtifactSymlinkError(path)
+    os.unlink(path)
+    return True
+
+
 def open_w_nofollow(path):
     """Open `path` for writing, refusing to follow a symlink at the final path
     component. A target repo (untrusted under redteam) can pre-commit a
     `.panopticon` artifact path as a symlink to a file the invoking user can
     write (a dotfile, authorized_keys, ...); plain open() would follow it and
-    clobber that target. O_NOFOLLOW makes the open fail on a symlink; we then
-    replace the link with a fresh regular file instead of writing through it
-    (#1095 -- mirrors run_manifest's exclusive-create precedent).
+    clobber that target. O_NOFOLLOW makes the open fail on a symlink. At an
+    artifact path that is one loud refusal (#3269 G9); a caller-chosen output
+    outside `.panopticon` retains #1095's safe replace-without-following API.
 
     #run9 SEC-X0X: O_NOFOLLOW guards only the FINAL component, so confine the whole
     resolved path to the real `.panopticon` first -- an intermediate symlinked dir
@@ -187,8 +210,7 @@ def open_w_nofollow(path):
     try:
         fd = os.open(path, flags, 0o644)
     except OSError:
-        if os.path.islink(path):
-            os.unlink(path)                       # neutralize the link, never follow it
+        if _replace_nonartifact_symlink(path):
             fd = os.open(path, flags, 0o644)
         else:
             raise
@@ -265,8 +287,7 @@ def open_a_nofollow(path):
     try:
         fd = os.open(path, flags, 0o644)
     except OSError:
-        if os.path.islink(path):
-            os.unlink(path)                       # neutralize the link, never follow it
+        if _replace_nonartifact_symlink(path):
             fd = os.open(path, flags, 0o644)
         else:
             raise
