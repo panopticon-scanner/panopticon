@@ -801,8 +801,10 @@ class TestVendoredSuppressionIsDisclosed(unittest.TestCase):
                                  suppressed_out=suppressed)
         self.assertEqual(out, [])
         self.assertEqual([f["suppressed"] for f in suppressed], ["run-artifact"])
-        self.assertEqual(it.suppression_class(suppressed[0]["suppressed"]),
-                         "run-artifact")
+        self.assertEqual(
+            [it.suppression_class(f["suppressed"]) for f in suppressed],
+            ["run-artifact"],
+        )
 
     def test_project_source_is_untouched(self):
         suppressed = []
