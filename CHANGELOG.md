@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Headless guard settings are built fresh, not merged from disk.** A headless run's
+  `host-settings.json` (setup's in `.panopticon/`, a review's in `runs/<tag>/`) is the run
+  folder's own, so arming the read and write guards now rebuilds it from their two entries alone
+  rather than keeping whatever else the file held. A session's `.claude/settings.local.json` is the
+  operator's and is still merged. `driver setup --reset` now clears setup's copy too.
 - **Operator-visible: a PATH entry inside the target now halts the run (#3270, owner ruling D2).**
   An entry inside the reviewed tree -- or one whose program is a symlink into it -- used to be
   skipped silently. It is hostility or a badly broken machine, and most often the operator
