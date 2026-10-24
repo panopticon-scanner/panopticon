@@ -554,6 +554,21 @@ class TestSuppressedToolFindingsAreRendered(unittest.TestCase):
         self.assertIn("vendor: 592", out)
         self.assertIn("node_modules: 3", out)
 
+    def test_run_artifact_reasons_have_truthful_rendered_wording(self):
+        out = render_mod.render_summary(self._report(
+            {"run-artifact": 8, "generated-bytecode": 2}))
+        self.assertIn(
+            "**Tool findings suppressed:** generated-bytecode: 2, "
+            "run-artifact: 8 — withheld from the report body by controlled "
+            "source-scope rules; `run-artifact` and `generated-bytecode` are "
+            "disclosed in both modes and gated in neither",
+            out,
+        )
+        line = next(line for line in out.splitlines()
+                    if line.startswith("**Tool findings suppressed:**"))
+        self.assertNotIn("DIRECTORY NAME", line)
+        self.assertNotIn("redteam` gates the CRITICAL and secret-class ones", line)
+
     def test_a_run_that_suppressed_nothing_says_nothing(self):
         self.assertNotIn("suppressed", render_mod.render_summary(self._report({})))
 

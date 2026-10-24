@@ -1107,6 +1107,30 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
         self.assertEqual(report["meta"]["coverage"]["tools_suppressed"],
                          {"vendor": 1})
 
+    def test_run_artifact_reasons_are_disclosed_but_never_gate(self):
+        for rel, reason in (
+                (".panopticon/runs/old/report.json", "run-artifact"),
+                ("skill/scripts/__pycache__/driver.cpython-314.pyc",
+                 "generated-bytecode")):
+            for mode in ("standard", "redteam"):
+                with self.subTest(rel=rel, mode=mode):
+                    body, report = self._run(mode, rel=rel)
+                    self.assertEqual(body, [])
+                    self.assertEqual(report["findings"], [])
+                    self.assertEqual(report["summary"]["gate"], "PASS")
+                    coverage = report["meta"]["coverage"]
+                    self.assertEqual(coverage["tools_suppressed"], {reason: 1})
+                    self.assertEqual(coverage["tools_suppressed_gated"], {})
+                    self.assertEqual(
+                        coverage["tools_suppressed_not_gated"],
+                        {reason: 1} if mode == "redteam" else {},
+                    )
+                    rendered = render_mod.render_summary(report)
+                    self.assertIn("**Tool findings suppressed:** %s: 1" % reason,
+                                  rendered)
+                    self.assertIn("disclosed in both modes and gated in neither",
+                                  rendered)
+
     # -- fix round 1, F1: the gate-counted set takes the gate's own filters ---
     #
     # Each of these runs the SAME bandit HIGH twice, moving only the directory
@@ -1171,7 +1195,7 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
             html_report.write_html(report, out)
             with open(out, encoding="utf-8") as fh:
                 html = fh.read()
-        self.assertIn("suppressed by directory name but", html)
+        self.assertIn("suppressed but GATED", html)
         self.assertIn("this run", html)
 
     # -- #1740 fix round 1: the committed exclude_paths policy scopes the gate -

@@ -62,8 +62,8 @@ class ToolAxis:
     # corrupt are different facts and only one of them is an integrity failure.
     manifest_invalid: str | None = None
     unbound_outputs: list | None = None
-    suppressed: dict | None = None   # #1578: {segment: count} dropped as vendored
-    # #1701: the vendored drops this run's GATE must still count -- non-empty
+    suppressed: dict | None = None   # {reason: count} source-scope drops
+    # #1701/#3269 G4: source-scope drops this run's GATE must still count -- non-empty
     # only under `--security redteam`. Carried beside `suppressed` rather than
     # inside it because they answer different questions: that one is what the
     # report DISCLOSES, this is what certification COUNTS. Never merged into
@@ -205,7 +205,7 @@ class Reconciled:
     # beside `integrity` (which also publishes it) the way `integrity_ok` is:
     # certification takes it as an input, and must not have to read a section.
     tools_manifest_invalid: str | None = None
-    # #1701: the name-based drops this run's gate counts anyway (redteam
+    # #1701/#3269 G4: source-scope drops this run's gate counts anyway (redteam
     # only; `[]` in every other mode). Beside `coverage` like the two blocks
     # above and for the same reason: `meta.coverage` is what the report SAYS,
     # and this is a population certification consumes but never publishes.
@@ -523,7 +523,7 @@ def reconcile(plan, tools, resolved, run=None):
             name: d["file_coverage"] for name, d in (tools.dispositions or {}).items()
             if isinstance(d, dict) and isinstance(d.get("file_coverage"), dict)
             and d["file_coverage"].get("status") == "partial"},
-        # #1578 (SEC-G2B), widened by #1740: the name-based drops, per
+        # #1578/#1740/#3269 G4: the controlled source-scope drops, per
         # segment (vendored / virtualenv-by-name / fixture-corpus); schema has the
         # why. #1701 fix round 1 (F2): ONE tally, split in two. `gated` is what
         # this run's gate counted anyway; this key is the remainder -- what the
