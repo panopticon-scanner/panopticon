@@ -196,6 +196,19 @@ class TestDefaultSelectionBranch(unittest.TestCase):
             "reason": "present only under pruned directories",
         }])
 
+    def test_nested_vendor_only_go_keeps_1138_and_discloses_gosec(self):
+        with tempfile.TemporaryDirectory() as target:
+            os.makedirs(os.path.join(target, "pkg", "vendor", "dep"))
+            open(os.path.join(target, "pkg", "vendor", "dep", "main.go"),
+                 "w").close()
+            payload = self._selection_for(target)
+        self.assertNotIn("gosec", payload["selected"])
+        self.assertEqual(payload["language_detection_skips"], [{
+            "language": "go",
+            "tool": "gosec",
+            "reason": "present only under pruned directories",
+        }])
+
     def test_ordinary_python_selects_bandit_and_records_measured_clean(self):
         with tempfile.TemporaryDirectory() as target:
             open(os.path.join(target, "app.py"), "w").close()
@@ -242,6 +255,14 @@ class TestDefaultSelectionBranch(unittest.TestCase):
             payload = self._selection_for(target)
         self.assertNotIn("bandit", payload["selected"])
         self.assertNotIn("gosec", payload["selected"])
+        self.assertEqual(payload["language_detection_skips"], [])
+
+    def test_an_unlisted_dot_directory_stays_unobserved(self):
+        with tempfile.TemporaryDirectory() as target:
+            os.makedirs(os.path.join(target, ".github", "scripts"))
+            open(os.path.join(target, ".github", "scripts", "x.py"), "w").close()
+            payload = self._selection_for(target)
+        self.assertNotIn("bandit", payload["selected"])
         self.assertEqual(payload["language_detection_skips"], [])
 
     def test_explicit_languages_stay_authoritative_and_omit_measurement(self):
