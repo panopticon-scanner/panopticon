@@ -41,6 +41,11 @@ def partial_audit_line(name, count):
     return "%s: %d requirement lines not audited (editable/local/VCS)" % (name, count)
 
 
+# #3271 (ruling D2): a stamped run by ANOTHER host is ours, so it is said, not
+# halted on. `first_contact` prints the same sentence on stderr.
+PRIOR_RUN = "this run started over an earlier %s run (%s) in .panopticon/"
+
+
 def _text(value):
     return value if isinstance(value, str) and value else None
 
@@ -78,5 +83,8 @@ def provenance_lines(meta):
     tools, apps = meta.get("tools"), meta.get("apps")
     tools = tools if isinstance(tools, dict) else {}
     apps = apps if isinstance(apps, list) else []
+    prior = meta.get("prior_run")
     lines = [image_line(tools.get("image"))] + [app_line(app) for app in apps]
+    if isinstance(prior, dict) and _text(prior.get("host")) and _text(prior.get("run_id")):
+        lines.append("Prior run: " + PRIOR_RUN % (prior.get("host"), prior.get("run_id")))
     return [line for line in lines if line]

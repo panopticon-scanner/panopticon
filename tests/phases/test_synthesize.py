@@ -972,6 +972,18 @@ class TestAMidRunToolsDowngradeReachesSynthesize(unittest.TestCase):
                          "flags": {"tools": False}})
         self.assertNotIn("--tools-disabled-mid-run", cmd)
 
+    def test_a_prior_run_of_another_host_reaches_the_report(self):
+        # #3271 ruling D2: first contact recorded it on the manifest; the same
+        # argv route carries it to synthesize, and parses back to meta.prior_run.
+        import scripts.synthesize as synthesize_cli
+        cmd = self._cmd({"run_id": "R", "security_mode": "standard", "flags": {},
+                         "first_contact": {"prior_run": {"host": "claude", "run_id": "0a1b2c3d"}}})
+        self.assertEqual("claude:0a1b2c3d", cmd[cmd.index("--prior-run") + 1])
+        parsed = synthesize_cli.build_parser().parse_args(cmd[2:])
+        self.assertEqual("claude:0a1b2c3d", parsed.prior_run)
+        self.assertNotIn("--prior-run", self._cmd({"run_id": "R", "security_mode": "standard",
+                                                   "flags": {}, "first_contact": {"files": 3}}))
+
 
 class TestTheMidRunFlagParitiesWithSynthesizesParser(unittest.TestCase):
     """The driver-side pin above proves the flag is EMITTED; nothing proved

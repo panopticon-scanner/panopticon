@@ -20,7 +20,7 @@ import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
 import scripts.runners.base as base
 import scripts.write_guard_hook as write_guard_hook
-from tests._test_helpers import (dead_pid,
+from tests._test_helpers import (adopt_panopticon, dead_pid,
                            write_guard_not_proven as _write_guard_not_proven)
 from tests._test_helpers import write_host_evidence
 from scripts import hosts
@@ -144,6 +144,7 @@ class LoopCase(unittest.TestCase):
         with open(os.path.join(d, "src", "app.py"), "w") as fh:
             fh.write("def f():\n    return 1\n")
         os.makedirs(os.path.join(d, ".panopticon"))
+        adopt_panopticon(d)              # #3271: seeded as an earlier run of ours
         write_host_evidence(d, _ALL_PROVEN)
         runio._write_json(runio._pano(d, "groups.json"),
                           {"groups": [{"name": "app", "files": ["src/app.py"]}]})

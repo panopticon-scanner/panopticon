@@ -35,7 +35,8 @@ import scripts.runners.batch as batch_mod
 from tests._test_helpers import (all_proven_artifact as _all_proven_artifact,
                            hard_link_or_skip,
                            refuted_tool_policy_artifact as _refuted_artifact)
-from tests._test_helpers import REPO_ROOT, SKILL_ROOT, write_host_evidence
+from tests._test_helpers import REPO_ROOT, SKILL_ROOT, adopt_panopticon, write_host_evidence
+import scripts.first_contact as first_contact
 from tests.tools.git_repo import make_git_repo
 
 
@@ -406,7 +407,7 @@ class TestDriverSetup(unittest.TestCase):
         # where they will see it. (`provision` returns the line; this is the
         # only place that prints it.)
         d = self._repo()
-        os.makedirs(runio._pano(d), exist_ok=True)
+        adopt_panopticon(d)          # #3271: the retired config of OUR earlier setup
         with open(os.path.join(d, ".panopticon", "config.json"), "w") as fh:
             json.dump({"max_per_group": 5}, fh)
         err = io.StringIO()
@@ -553,16 +554,18 @@ class TestDriverSetup(unittest.TestCase):
                             "review_root": "/somewhere/else",
                             "vocabulary_path": "/etc/hostile-vocab.yml",
                             "host": "claude"})
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        # #3271: a `.panopticon/` this machine did not start now HALTS at first
+        # contact (H2), before the manifest is read at all, where it used to be
+        # discarded and rebuilt; --reset moves it aside and rebuilds.
+        status = setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        self.assertEqual(("error", first_contact.H2), (status["status"], status["message"]))
+        self.assertEqual("FOREIGN", setup.load_setup_manifest(d)["run_id"])    # never read
+        with contextlib.redirect_stderr(io.StringIO()):
+            setup.run_setup_flow(driver.build_parser().parse_args(["setup", d, "--reset"]))
         m = setup.load_setup_manifest(d)
         self.assertNotEqual(m["review_root"], "/somewhere/else")   # re-stamped to THIS tree
         self.assertNotEqual(m["run_id"], "FOREIGN")                # rebuilt, not reused
         self.assertIsNone(m["vocabulary_path"])                    # hostile path dropped
-        self.assertIn("ignoring foreign setup-manifest", err.getvalue())
-        self.assertIn("stamped review_root '/somewhere/else' !=", err.getvalue())
-        self.assertNotIn("git-tracked", err.getvalue())
 
     def test_tracked_setup_manifest_message_does_not_claim_the_stamp_differs(self):
         root = self._repo()
@@ -1237,10 +1240,10 @@ class TestStandaloneSetupProbesItsOwnPosture(unittest.TestCase):
         subprocess.run(["git", "add", "-f", ".panopticon/" + runio.HOST_CAPABILITIES],
                        cwd=d, check=True, capture_output=True)
         code, status = self._setup(d, probes=_refuted_artifact)
+        # #3271: the committed artifact is a first-contact halt (H1) now, so the
+        # planted `proven` reaches no gate at all.
         self.assertEqual(1, code, status)
-        self.assertIn("--allow-unenforced", status["message"])
-        self.assertEqual(hosts.REFUTED,
-                         self._evidence(d)["capabilities"][hosts.TOOL_POLICY_ENFORCED]["state"])
+        self.assertEqual(first_contact.H1, status["message"])
 
 
 class TestSetupOwnsItsDispatchNamespace(unittest.TestCase):
@@ -2030,7 +2033,7 @@ class TestSetupConvertsAConfinementRefusal(unittest.TestCase):
         victim = os.path.join(victim_dir, "loot")
         with open(victim, "w", encoding="utf-8") as fh:
             fh.write("KEEP")
-        os.makedirs(runio._pano(root), exist_ok=True)
+        adopt_panopticon(root)       # #3271: planted into a dir of OURS -- H3 names it
         os.symlink(victim, runio._pano(root, "setup-spine.json"))
         return victim
 
@@ -2241,13 +2244,15 @@ class TestSetupDonePredicatesBindToThisRun(unittest.TestCase):
         # The engine re-evaluates both predicates until the flow stops, so the
         # report lives in `run_setup_flow` and the predicates stay silent --
         # the same split `_foreign_manifest_reason` uses one file over.
+        # #3271: a committed `.panopticon/` artifact is a first-contact halt
+        # (H1), said once, in the status, before any predicate is evaluated.
         d = self._repo()
         self._plant(d, "setup-proposal.json", self._PROPOSAL, commit=True)
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
-        self.assertEqual(1, err.getvalue().count("setup-proposal.json:"),
-                         err.getvalue())
+            status = setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        self.assertEqual(("error", first_contact.H1), (status["status"], status["message"]))
+        self.assertNotIn("setup-proposal.json:", err.getvalue())
 
     def test_the_committed_refusal_names_a_remedy_that_can_work(self):
         # `--reset` deletes the file, and git puts a TRACKED one straight back
@@ -2256,10 +2261,7 @@ class TestSetupDonePredicatesBindToThisRun(unittest.TestCase):
         # the answer is the defect, not the wording.
         d = self._repo()
         self._plant(d, "setup-proposal.json", self._PROPOSAL, commit=True)
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
-        line = [ln for ln in err.getvalue().splitlines()
-                if "setup-proposal.json:" in ln][0]
-        self.assertIn("git-tracked", line)
-        self.assertNotIn("--reset", line)
+        with contextlib.redirect_stderr(io.StringIO()):
+            status = setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        self.assertIn("git rm -r --cached .panopticon", status["message"])     # #3271: H1
+        self.assertNotIn("--reset", status["message"])

@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 
-from scripts import dispatch
+from scripts import dispatch, first_contact
 from scripts import hosts
 import scripts.loop_batch as loop_batch
 from scripts import read_guard_hook
@@ -536,6 +536,13 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
     refusal -- a posture that moved, a planted shadow shell -- is this verb's
     `error` status, the same one every other refusal here speaks."""
     review_root, _wt, _pr = runio.resolve_review_root(args.target, runner=runner)
+    try:
+        # #3271: first contact, before anything below removes or writes under
+        # .panopticon/ -- the same halt `driver run` makes.
+        first = first_contact.assess(review_root, SETUP_MANIFEST,
+                                     reset=getattr(args, "reset", False), host=args.host)
+    except ValueError as exc:
+        return runio._error_status(str(exc))
     if getattr(args, "reset", False):
         _clear_setup_artifacts(review_root)               # Task 3
     _drop_stale_fallback_marker(review_root)
@@ -566,7 +573,8 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
                     "vocabulary_path": None,
                     "max_per_group": (getattr(args, "max_per_group", None)
                                       or overrides["max_per_group"]),
-                    "max_groups": getattr(args, "max_groups", None) or overrides["max_groups"]}
+                    "max_groups": getattr(args, "max_groups", None) or overrides["max_groups"],
+                    "first_contact": first or {}}
         runio._write_json(_setup_manifest_path(review_root), manifest)
     # #1737: read off THIS invocation's argv, every time, and never off the
     # stored manifest. `setup-manifest.json` sits at a `.panopticon` path a

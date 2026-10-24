@@ -290,6 +290,10 @@ def synthesize_execute(review_root, manifest):
     # direct `synthesize.py` invocation legitimately has no driver to ask.
     if run_manifest.tools_downgraded_mid_run(manifest):
         cmd += ["--tools-disabled-mid-run"]
+    # #3271 (ruling D2): first contact found a stamped run by ANOTHER host here.
+    prior = (manifest.get("first_contact") or {}).get("prior_run")
+    if isinstance(prior, dict):
+        cmd += ["--prior-run", "%s:%s" % (prior.get("host"), prior.get("run_id"))]
     # SEC-377944137 (#1832): threaded rather than re-read by the child for the
     # reason above, and for one more -- `synth/` must not import
     # `scripts.run_manifest`, so the stamp's two facts cross the seam, not the

@@ -20,6 +20,23 @@ FIXTURE_ROOT = os.environ.get("FIXTURE_ROOT", os.path.join(_TESTS, "fixtures"))
 # reports UNKNOWN and every one of those sites goes the other way. This is the
 # one place that writes it, so every phase test states the same fixture the
 # same way rather than five near-identical inline JSON blobs.
+def adopt_panopticon(review_root):
+    """#3271: make a fixture's `.panopticon/` OURS -- the stamped `owner.json`
+    first contact writes into every directory a run of ours starts -- so the
+    artifacts a test seeds read as an earlier panopticon run's rather than
+    halting on H2. Signed with the suite's own key (tests/conftest.py)."""
+    import json
+    import uuid
+    import scripts.run_stamp as run_stamp
+    pano = os.path.join(review_root, ".panopticon")
+    os.makedirs(pano, exist_ok=True)
+    marker = {"run_id": uuid.uuid4().hex, "review_root": os.path.abspath(review_root)}
+    marker["stamp"] = run_stamp.sign(marker)
+    with open(os.path.join(pano, "owner.json"), "w", encoding="utf-8") as fh:
+        json.dump(marker, fh)
+    return marker
+
+
 def write_host_evidence(review_root, states, host="claude", cli_flags=None):
     """A host-capabilities.json proving exactly `states` (a
     {capability: state} mapping); every other capability is UNKNOWN. Lands
@@ -37,6 +54,9 @@ def write_host_evidence(review_root, states, host="claude", cli_flags=None):
     capabilities = {name: {"state": states.get(name, hosts.UNKNOWN),
                            "by": "fixture", "detail": "fixture"}
                     for name in hosts.CAPABILITIES}
+    # #3271: evidence a probe of OURS left, in a `.panopticon/` of ours.
+    if not os.path.exists(os.path.join(review_root, ".panopticon", "owner.json")):
+        adopt_panopticon(review_root)
     return runio._write_json(
         runio._pano(review_root, runio.HOST_CAPABILITIES),
         {"schema_version": 1, "host": host, "probed_at": "2026-09-10T00:00:00Z",

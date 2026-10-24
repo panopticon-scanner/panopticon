@@ -113,6 +113,19 @@ def host_apps(host, review_root):
     return [trace_command(binary, review_root)] if binary else []
 
 
+def home_relative(apps):
+    """The rows with a path under the operator's home spelled `~/...` (#3271
+    S2): the report is published, the manifests keep the full path."""
+    home = os.path.expanduser("~").rstrip("/")
+    out = []
+    for app in apps:
+        path = app.get("path")
+        if home and isinstance(path, str) and path.startswith(home + "/"):
+            app = dict(app, path="~" + path[len(home):])
+        out.append(app)
+    return out
+
+
 def repair(value):
     """The `apps` list as a report may carry it: every row's five keys in
     shape or None, at most `_MAX_APPS` rows, anything else dropped. The

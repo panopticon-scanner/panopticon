@@ -20,6 +20,7 @@ import scripts.driver as driver
 import scripts.plan_contract as plan_contract
 import scripts.run_manifest as run_manifest
 
+from tests._test_helpers import adopt_panopticon
 from tests.tools.git_repo import make_git_repo
 
 
@@ -121,7 +122,7 @@ class TestX0XFailureStatus(unittest.TestCase):
         args = driver.build_parser().parse_args(["run", root, "--no-tools"])
         report_path = os.path.join(root, ".panopticon", "report.json")
         failure_path = os.path.join(root, ".panopticon", "report-x0x-failures.json")
-        os.makedirs(os.path.dirname(failure_path), exist_ok=True)
+        adopt_panopticon(root)       # #3271: a disclosure OUR synthesize left
         with open(failure_path, "w", encoding="utf-8") as fh:
             json.dump({"discarded_findings": [
                 {"finding_id": "SE-077", "reason": "no file locus",
@@ -356,13 +357,19 @@ class TestRunConvertsAConfinementRefusal(unittest.TestCase):
         """A `.panopticon/<name>` symlink at a victim outside the artifact root."""
         pano = os.path.join(d, ".panopticon")
         os.makedirs(pano, exist_ok=True)
+        if not os.path.exists(os.path.join(pano, "owner.json")):
+            adopt_panopticon(d)          # #3271: the plant is in a dir of OURS
         victim = os.path.join(d, "victim.txt")
         with open(victim, "w", encoding="utf-8") as fh:
             fh.write("PRECIOUS")
         os.symlink(victim, os.path.join(pano, name))
         return victim
 
-    def _assert_refusal(self, status, victim, fragment="escapes .panopticon"):
+    # #3271: first contact now meets every one of these plants before the write
+    # that used to refuse it (H3); the per-write refusals keep their own unit
+    # tests (tests/test_safe_write.py) and stay for a swap made mid-run.
+    def _assert_refusal(self, status, victim,
+                        fragment="is a symlink, and the artifact directory holds none"):
         self.assertEqual(status["status"], "error", status)
         self.assertIn(fragment, status["message"])
         with open(victim, encoding="utf-8") as fh:
@@ -400,7 +407,10 @@ class TestRunConvertsAConfinementRefusal(unittest.TestCase):
         with mock.patch.object(run_manifest, "record_tools_downgrade",
                                wraps=run_manifest.record_tools_downgrade) as rec:
             status = driver.run(args)
-        self.assertTrue(rec.called, "the downgrade branch was never taken")
+        # #3271: a plant made between invocations is met by the next first
+        # contact (H3), before the downgrade's own staging refusal can be;
+        # that refusal is pinned at its seam in test_artifact_write_symlinks.
+        self.assertFalse(rec.called, "first contact did not run first")
         self._assert_refusal(status, victim)
 
     def test_a_planted_runs_directory_link_is_an_error_status(self):
@@ -411,7 +421,7 @@ class TestRunConvertsAConfinementRefusal(unittest.TestCase):
         victim = self._plant(d, "runs")
         args = driver.build_parser().parse_args(["run", d])
         status = driver.run(args)
-        self._assert_refusal(status, victim, "symlinked path")
+        self._assert_refusal(status, victim)
 
     def test_a_refused_baseline_capture_is_an_error_status(self):
         # `capture_tree_baseline` writes a `.panopticon` artifact on the same
