@@ -41,10 +41,19 @@ import os
 import stat
 from typing import TYPE_CHECKING
 
+import json
+
 if TYPE_CHECKING or __package__:
-    from scripts import claim_scope
+    from scripts import claim_scope, tolerant_json
 else:  # flat consumers put skill/scripts itself on sys.path
     import claim_scope
+    import tolerant_json
+
+# #3271 F0: the most a run or setup manifest (or `owner.json`) may weigh. ONE
+# number for the checker and every consumer: first contact once read 1 MiB
+# while `load_manifest` read the whole file, so a manifest padded past the cap
+# went unverified there and was then parsed and resumed here.
+MANIFEST_MAX_BYTES = 1 << 20
 
 
 class ReadLimitExceeded(ValueError):
@@ -118,6 +127,16 @@ def read_regular_bytes(path, limit):
     if len(raw) > limit:
         raise ReadLimitExceeded("over the %d-byte read limit; skipped unparsed" % limit)
     return raw
+
+
+def read_manifest_json(path):
+    """The one reader of a document first contact vouches for (#3271 F0): a
+    regular non-symlink leaf of at most MANIFEST_MAX_BYTES, depth-checked and
+    parsed whole. `FileNotFoundError` means nothing is at `path`; any other
+    `OSError` or `ValueError` means something IS there that no reader may
+    trust -- a FIFO is refused before a byte is read, never blocked on."""
+    raw = read_regular_bytes(path, MANIFEST_MAX_BYTES)
+    return json.loads(tolerant_json.depth_checked(raw.decode("utf-8")))
 
 
 def confine_artifact_path(path):

@@ -147,12 +147,16 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
 
     def test_corrupt_manifest_is_reset_not_wedged(self):
         # #5.0-13: a present-but-unparseable run-manifest.json must not raise an
-        # uncaught FileExistsError from write_manifest (write-once); it's reset.
+        # uncaught FileExistsError from write_manifest (write-once). #3271 F0: it
+        # halts at first contact on ONE status line -- a manifest no reader can
+        # trust is never taken for "no manifest" -- and --reset rebuilds it.
         d = self._repo()
         adopt_panopticon(d)          # #3271: OUR run's manifest, corrupted
         with open(run_manifest.manifest_path(d), "w", encoding="utf-8") as fh:
             fh.write("{ not valid json")
         status = driver.run(self._args(d))   # must not raise FileExistsError
+        self.assertEqual(("error", first_contact.H2), (status["status"], status.get("message")))
+        status = driver.run(self._args(d, "--reset"))
         self.assertNotEqual(status["status"], "error", status.get("message"))
         self.assertIsNotNone(run_manifest.load_manifest(d))   # fresh manifest written
 

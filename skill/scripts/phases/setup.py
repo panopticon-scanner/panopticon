@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 
-from scripts import dispatch, first_contact
+from scripts import dispatch, first_contact, safe_write
 from scripts import hosts
 import scripts.loop_batch as loop_batch
 from scripts import read_guard_hook
@@ -30,7 +30,11 @@ def _setup_manifest_path(review_root):
     return run_manifest.manifest_path(review_root, "setup")
 
 def load_setup_manifest(review_root):
-    return runio._load_json(_setup_manifest_path(review_root))
+    try:                                # #3271 F0: first contact's own reader and cap
+        manifest = safe_write.read_manifest_json(_setup_manifest_path(review_root))
+    except (OSError, ValueError):
+        return None
+    return manifest if isinstance(manifest, dict) else None
 
 def record_dispatch_request(review_root, checkpoint, sha256, at=None):
     """`--setup`'s half of #1727: anchor the setup dispatch request's sha256 in

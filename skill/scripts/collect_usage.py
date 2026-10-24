@@ -520,12 +520,11 @@ def run_started_at(run_dir):
         d = os.path.dirname(d)
         if not d or d == os.path.dirname(d):
             break
-        try:
-            with open(os.path.join(d, "run-manifest.json"), encoding="utf-8") as fh:
-                manifest = json.load(fh)
+        try:                            # #3271 F0: first contact's own reader and cap
+            manifest = safe_write.read_manifest_json(os.path.join(d, "run-manifest.json"))
         except (OSError, ValueError):
             continue
-        if manifest.get("created") and _manifest_matches_run(manifest, run_dir):
+        if isinstance(manifest, dict) and manifest.get("created") and _manifest_matches_run(manifest, run_dir):
             return manifest["created"]
     return None
 

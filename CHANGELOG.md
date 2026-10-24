@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Operator-visible: a manifest first contact cannot read whole halts the run (#3271 F0).**
+  A `run-manifest.json` or `setup-manifest.json` that is present but oversize (over 1 MiB),
+  not a regular file (a FIFO no longer hangs the run), unreadable, not valid JSON, nested past
+  the JSON depth bound, or not a JSON object now halts with H2 (`--reset` discards it). Before
+  this, such a file could pass first contact as "no manifest". Only an absent manifest means
+  "no manifest". Every reader of the two manifests (first contact, the driver's own loaders,
+  and `collect_usage`) now shares one bounded reader and one cap, so the manifest first
+  contact verifies is the one a resume acts on.
 - **Operator-visible: hard links are a first-contact halt, not a per-read rule (#3271 B1).**
   The read guards (Claude, Kimi) and the Codex read broker no longer refuse a multiply-linked file
   inside a directory grant, and `driver setup` no longer walks the tree for them or prints the

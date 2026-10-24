@@ -303,9 +303,8 @@ def load_manifest(review_root):
     that threads it at once; it discards and never raises, for the reason
     `run_tag` records above. Absent or null is left alone, like a host.
     """
-    try:
-        with open(manifest_path(review_root), encoding="utf-8") as fh:
-            data = json.load(fh)
+    try:                                # #3271 F0: first contact's own reader and cap
+        data = safe_write.read_manifest_json(manifest_path(review_root))
     except (OSError, ValueError):
         return None
     if not isinstance(data, dict):
