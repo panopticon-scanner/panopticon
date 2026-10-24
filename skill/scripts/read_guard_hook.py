@@ -149,12 +149,20 @@ def _in_dir_grant(target, directory):
     if not _under(target, directory):
         return False
     rest = target[len(directory.rstrip(os.sep)):].lstrip(os.sep)
-    return rest.split(os.sep, 1)[0] != ".git"
+    first = rest.split(os.sep, 1)[0]
+    if first.casefold() == ".git":      # `.GIT/config` opens `.git/config` on APFS/NTFS
+        return False
+    try:                                # and any other alias of the store the volume makes
+        return not (first and os.path.samefile(os.path.join(directory, first),
+                                               os.path.join(directory, ".git")))
+    except (OSError, ValueError):
+        return True
 
 
 def _names_git_store(pattern):
     """True when a Glob pattern names a `.git` component (#3271 G-a)."""
-    return isinstance(pattern, str) and ".git" in pattern.replace("\\", "/").split("/")
+    return isinstance(pattern, str) and ".git" in [
+        part.casefold() for part in pattern.replace("\\", "/").split("/")]
 
 
 def _readable(target, scope):

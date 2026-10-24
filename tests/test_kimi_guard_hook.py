@@ -117,6 +117,26 @@ class TestDirectoryGrants(GuardCase):
                 self.assertIn("no directory grant covers the .git store", reason)
         self.assertEqual((True, ""), self.scan("Glob", pattern=".github/**", path=self.cell))
 
+    def test_the_git_store_exclusion_is_not_fooled_by_case_or_an_alias(self):
+        # #3284 r1, the Kimi copy: casefolded on every volume, and by identity.
+        os.makedirs(os.path.join(self.cell, ".git"), exist_ok=True)
+        for alias in (".GIT/config", ".Git/objects/x"):
+            with self.subTest(path=alias):
+                path = os.path.join(self.cell, alias)
+                self.assertFalse(self.scan("Read", path=path)[0])
+                self.assertFalse(self.scan("Grep", pattern="x", path=path)[0])
+        allow, reason = self.scan("Glob", pattern=".GIT/**", path=self.cell)
+        self.assertFalse(allow, reason)
+        other = os.path.join(self.cell, "alias", "config")
+        os.makedirs(os.path.dirname(other), exist_ok=True)
+        with open(other, "w", encoding="utf-8") as fh:
+            fh.write("x")
+        self.assertEqual((True, ""), self.scan("Read", path=other))
+        real = os.path.samefile
+        with mock.patch("os.path.samefile",
+                        side_effect=lambda a, b: os.path.basename(a) == "alias" or real(a, b)):
+            self.assertFalse(self.scan("Read", path=other)[0])
+
     def test_a_directory_read_keeps_its_previous_answer(self):
         # I3 (fix round 2): the new rule is about a tool that TRAVERSES, and
         # the Kimi hook shares one `isdir` branch across Read/ReadMediaFile/

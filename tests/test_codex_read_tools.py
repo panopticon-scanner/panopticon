@@ -170,6 +170,25 @@ def test_a_directory_grant_never_covers_its_own_git_store(tree):
     assert ".git/" not in body(reader.call("search", {"pattern": "alpha"}))
 
 
+def test_the_git_store_exclusion_is_not_fooled_by_case_or_an_alias(tree, monkeypatch):
+    # #3284 r1, the broker's copy: casefolded on every volume, and by identity.
+    root, source, _, _, _ = tree
+    (source / ".git").mkdir()
+    (source / ".git" / "config").write_text("alpha\n", encoding="utf-8")
+    reader = reader_for(tree, directories=True)
+    for alias in (".GIT/config", ".Git/objects/x"):
+        result = reader.call("read_file", {"path": str(source / alias)})
+        assert result["isError"] is True and "outside this entry's read scope" in body(result)
+    other = source / "alias" / "config"
+    other.parent.mkdir()
+    other.write_text("alpha\n", encoding="utf-8")
+    assert reader.call("read_file", {"path": str(other)})["isError"] is False
+    real = os.path.samefile
+    monkeypatch.setattr(os.path, "samefile",
+                        lambda a, b: os.path.basename(a) == "alias" or real(a, b))
+    assert reader.call("read_file", {"path": str(other)})["isError"] is True
+
+
 def test_an_in_tree_hard_linked_pair_reads_like_any_file(tree):
     # #3271 (G-e, intended): an out-of-tree link halts at first contact (H4),
     # so a pair whose every name is in the tree -- `cp -al`, a pnpm store --

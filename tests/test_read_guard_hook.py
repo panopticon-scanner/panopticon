@@ -137,6 +137,42 @@ class TestDecide(unittest.TestCase):
         self.assertEqual((True, ""), rg.decide("Glob", {"pattern": ".github/**", "path": self.root},
                                                self.scan))
 
+    def test_the_git_store_exclusion_is_not_fooled_by_case_or_an_alias(self):
+        # #3284 r1: APFS and NTFS resolve `.GIT/config` to `.git/config`, and
+        # realpath keeps the spelling it was given -- so the component test
+        # casefolds, on every volume (a real `.GIT/` on a case-sensitive one is
+        # refused too, which is only over-strict).
+        os.makedirs(os.path.join(self.root, ".git"), exist_ok=True)
+        config = os.path.join(self.root, ".git", "config")
+        open(config, "w").close()
+        for alias in (".GIT/config", ".Git/objects/x", ".gIt"):
+            with self.subTest(path=alias):
+                path = os.path.join(self.root, alias)
+                self.assertFalse(rg.decide("Read", {"file_path": path}, self.scan)[0])
+                self.assertFalse(rg.decide("Grep", {"pattern": "x", "path": path}, self.scan)[0])
+        for pattern in (".GIT/**", "a/.Git/*"):
+            with self.subTest(pattern=pattern):
+                self.assertEqual(rg.GIT_STORE_DENIAL % pattern,
+                                 rg.decide("Glob", {"pattern": pattern, "path": self.root}, self.scan)[1])
+        if not os.path.exists(os.path.join(self.root, ".GIT", "config")):
+            self.skipTest("case-sensitive volume: .GIT is not .git here")
+        self.assertTrue(os.path.samefile(config, os.path.join(self.root, ".GIT", "config")))
+
+    def test_any_other_alias_of_the_store_is_refused_by_identity(self):
+        # The samefile half: a name the volume resolves to `<root>/.git` that
+        # casefolding does not catch. No portable way to make one exists, so
+        # the identity answer is supplied; the rule under test is "same file
+        # as the store means not granted".
+        alias = os.path.join(self.root, "alias", "config")
+        os.makedirs(os.path.dirname(alias), exist_ok=True)
+        open(alias, "w").close()
+        os.makedirs(os.path.join(self.root, ".git"), exist_ok=True)
+        self.assertEqual((True, ""), rg.decide("Read", {"file_path": alias}, self.scan))
+        real = os.path.samefile
+        with mock.patch("os.path.samefile",
+                        side_effect=lambda a, b: os.path.basename(a) == "alias" or real(a, b)):
+            self.assertFalse(rg.decide("Read", {"file_path": alias}, self.scan)[0])
+
     def test_read_outside_scope_is_denied_and_names_the_prompt(self):
         ok, reason = rg.decide("Read", {"file_path": self.sibling}, self.cell)
         self.assertFalse(ok)
