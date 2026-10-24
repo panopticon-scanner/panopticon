@@ -1377,9 +1377,9 @@ class TestEveryNameBasedDropIsDisclosed(unittest.TestCase):
     #1839 moved marker-confirmed virtualenvs into the same disclosed channel.
     #3269 G4 completes it for the scanner's own run artifacts and generated
     bytecode: both remain absent from the report body but now carry stable
-    reasons and reach redteam policy C. Operator policy (`exclude_globs`) is
-    separate: it is excluded and counted, never handed back, and outranks every
-    controlled suppression rule.
+    reasons and partition as not gated under redteam. Operator policy
+    (`exclude_globs`) is separate: it is excluded and counted, never handed
+    back, and outranks every controlled suppression rule.
     """
 
     def _venv(self, root, rel, shape=True):
@@ -1896,7 +1896,8 @@ class TestGatesWhenSuppressed(unittest.TestCase):
     noise the exclusion exists to keep out (calibration-5/solidus: 592 of
     eslint-security's 623 messages were jQuery under `vendor/`). C narrows it:
     a CRITICAL, or a secret-class finding, still gates; a HIGH lint opinion
-    does not.
+    does not. #3269's run-artifact and bytecode reasons are always disclosed
+    rather than gated because they duplicate source or non-source state.
     """
 
     def test_a_critical_gates_whatever_produced_it(self):

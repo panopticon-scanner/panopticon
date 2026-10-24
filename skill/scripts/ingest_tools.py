@@ -348,8 +348,8 @@ def _run_artifact_segment(fpath):
 
     #3269 G4 keeps both drops, but removes their silence: the returned reason is
     sent through the same `suppressed_out` channel as every other controlled
-    source-scope rule. The report can therefore name the cost, and redteam can
-    apply policy C without putting either class back in the findings body.
+    source-scope rule. The report names the cost in both modes; unlike the
+    other reasons, neither of these duplicate/non-source classes ever gates.
     """
     norm = str(fpath).replace(os.sep, "/").lstrip("/")
     parts = norm.split("/")
@@ -521,6 +521,11 @@ def gates_when_suppressed(finding):
     credential CWE (`SECRET_CWES`) -- and nothing else. Option A (send the
     suppressed set through tool-verify) was rejected on dispatch cost.
 
+    #3269 G4's two disclosure-only reasons are the exception: `.panopticon` is
+    prior output (#3271 halts on planted/tracked output); `.git` and `.worktrees`
+    duplicate non-source state; and bytecode duplicates source. They remain
+    disclosed in redteam but never gate, regardless of severity or provenance.
+
     Severity is compared EXACTLY, not case-folded (fix round 1, review M5).
     `security_gate` tests `severity in GATE_SEVERITIES` case-sensitively, and a
     predicate looser than the gate it feeds is answering a different question
@@ -537,6 +542,9 @@ def gates_when_suppressed(finding):
     still discloses it in `meta.coverage.tools_suppressed`.
     """
     if not isinstance(finding, dict):
+        return False
+    if finding.get("suppressed") in (RUN_ARTIFACT_SEGMENT,
+                                      GENERATED_BYTECODE_SEGMENT):
         return False
     if finding.get("severity") == "CRITICAL":
         return True
@@ -781,10 +789,10 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
     `GENERATED_BYTECODE_SEGMENT`. The returned `findings` never contain them --
     the report-side suppression is what makes tool output usable, and 95% of
     run-12's tool noise was `vendor/`. A caller that must not lose a finding to
-    a controlled source-scope rule (`security_gate.evaluate` under
-    `--security redteam`) asks for them here instead of turning the exclusion
-    off for everyone. Only drops the OPERATOR asked for (`exclude_globs`) stay
-    outside this list: that policy is not ours to overturn.
+    a controlled source-scope rule asks for them here, then
+    `gates_when_suppressed` applies the shared redteam policy (including #3269
+    G4's two disclosure-only exceptions). Only drops the OPERATOR asked for
+    (`exclude_globs`) stay outside this list: that policy is not ours to overturn.
 
     target_root (#1638 P09): the scanned repo, against which a finding's
     ancestor directories are checked for a `pyvenv.cfg` virtualenv marker. It

@@ -84,16 +84,16 @@ class Resolved:
     doc_policy: dict | None
     verdict_unloadable: list
     unanswered_gate: int
-    # #1701/#3269 G4: the source-scope drops this run's GATE counts,
+    # #1701: the source-scope drops this run's GATE counts,
     # after the same delta / `gate_scope` filter `gate_eligible` above takes.
     # They are NOT in `findings`/`active`/`rejected` -- the report body never
     # holds them -- so they are carried separately rather than partitioned out
-    # of one of those lists. `[]` outside `--security redteam`.
+    # of one of those lists. `[]` outside redteam; #3269's two reasons never enter.
     gated_suppressed: list = field(default_factory=list)
     # #1578 (owner ruling 2026-09-22, policy C): the other half of the same
     # partition -- the drops that cleared this run's `--severity` floor and its
-    # delta / `gate_scope` filter and were still NOT counted, because they are
-    # neither CRITICAL nor secret-class. Carried so the report can publish the
+    # delta / `gate_scope` filter and were still NOT counted: policy C declined
+    # them, or #3269 marks them disclosure-only. Carried so the report publishes the
     # number: a narrowed gate that discloses nothing is the silence #1578 is
     # about, with a smaller blast radius.
     suppressed_not_gated: list = field(default_factory=list)
@@ -368,8 +368,8 @@ def _scope_suppressed(gated_suppressed, delta, run):
     # either way. OWNER RULING, #1578, 2026-09-22: the asymmetry STANDS (option
     # A -- sending the suppressed set through tool-verify -- was rejected on
     # dispatch cost) but it is NARROWED to the findings worth blocking a merge
-    # for. `ingest_tools.gates_when_suppressed` is that rule and the one
-    # definition of it: a CRITICAL, or a secret-class finding. Bundled-library
+    # for. `ingest_tools.gates_when_suppressed` is the one definition:
+    # CRITICAL/secret, except #3269's disclosure-only reasons. Bundled-library
     # lint noise must not drive a gate -- calibration-5/solidus: 592 of
     # eslint-security's 623 messages were one rule firing on jQuery under
     # `vendor/`, and gating all of them (option B) hard-FAILed such a tree on

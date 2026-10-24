@@ -422,9 +422,9 @@ def load_scout_requests(run_dir):
     return requested, profiles_seen
 
 
-# #1701/#3269 G4: the mode where controlled source-scope drops are the GATE's
-# business and not only the report's -- the same constant `security_gate.py`
-# keys its own `--security redteam` branch on.
+# #1701: the mode where eligible controlled source-scope drops are the GATE's
+# business too. #3269's run-artifact/bytecode exceptions remain disclosure-only.
+# The same constant keys `security_gate.py`'s `--security redteam` branch.
 REDTEAM = "redteam"
 
 
@@ -436,9 +436,9 @@ def gate_security_mode(args):
 def gate_counts_suppressed(args):
     """Does this run's gate count eligible source-scope-suppressed findings?
 
-    #1740/#1839/#3269 G4: vendored, virtualenv, fixture, run-artifact and
-    generated-bytecode rules all feed the same disclosed channel and policy-C
-    predicate while keeping their distinct reason tokens.
+    #1740/#1839/#3269 G4: every rule feeds the same disclosed channel and
+    shared predicate. Policy C gates eligible reasons; that predicate explicitly
+    declines the run-artifact and generated-bytecode reasons.
 
     #1701, item-14 principle: the answer is read from `args.security`, which
     `phases/synthesize.py` threads verbatim off the run MANIFEST -- the
@@ -462,10 +462,9 @@ def ingest_tool_findings(args, allowed_outputs=None, unbound_out=None):
     unparseable / no-adapter) is excluded from tools_ran, so
     build_executing_tools can no longer name an adapter that ran empty.
 
-    #1701/#3269 G4: under `--security redteam` a controlled source-scope drop
-    comes back as
-    gate-only CANDIDATES (`security_gate.evaluate`'s `findings + suppressed`,
-    for the driver's own gate). They are normalized exactly as the kept tool
+    #1701/#3269 G4: under redteam controlled source-scope drops come back as
+    gate-only CANDIDATES; the shared predicate later declines #3269's two
+    reasons. Candidates are normalized exactly as the kept tool
     findings are -- `normalize_finding`, so severity, panel and location answer
     the gate identically -- and they are never added to `tool_findings`, which
     is what keeps them out of the report body.

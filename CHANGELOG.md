@@ -7,8 +7,9 @@
   or under `__pycache__/` / ending in `.pyc` or `.pyo`, remain out of the report body but
   now enter the disclosed suppression channel as `run-artifact` or `generated-bytecode`.
   Their counts and reasons appear in `meta.coverage.tools_suppressed` and both rendered
-  reports; under `--security redteam`, CRITICAL and secret-class findings still reach the
-  gate through policy C. Explicit operator exclusion globs retain precedence.
+  reports. Both reasons are disclosed in both modes and gated in neither; under redteam,
+  they are also counted in `tools_suppressed_not_gated`. Other suppression reasons retain
+  policy C, and explicit operator exclusion globs retain precedence.
 
 - **roslyn-secguard is opt-in, off by default (#3265, owner ruling 2026-10-23).** It is the only
   adapter that executes the target's own code (its MSBuild/analyzer build), so a hostile repository
