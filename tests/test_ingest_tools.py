@@ -1916,6 +1916,15 @@ class TestGatesWhenSuppressed(unittest.TestCase):
             _tool_finding(tool="semgrep", severity="HIGH",
                           cwe=["CWE-798"])))
 
+    def test_run_artifacts_and_bytecode_never_gate_even_when_secret_or_critical(self):
+        for reason in (it.RUN_ARTIFACT_SEGMENT,
+                       it.GENERATED_BYTECODE_SEGMENT):
+            for finding in (_tool_finding(tool="gitleaks", severity="HIGH"),
+                            _tool_finding(severity="CRITICAL")):
+                finding["suppressed"] = reason
+                with self.subTest(reason=reason, finding=finding):
+                    self.assertFalse(it.gates_when_suppressed(finding))
+
     def test_a_non_secret_cwe_does_not(self):
         self.assertFalse(it.gates_when_suppressed(
             _tool_finding(tool="semgrep", severity="HIGH",

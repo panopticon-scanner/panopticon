@@ -625,6 +625,7 @@ class TestSuppressedToolFindingsCoverage(unittest.TestCase):
             "properties"]["tools_suppressed"]["description"]
         self.assertIn("`run-artifact`", description)
         self.assertIn("`generated-bytecode`", description)
+        self.assertIn("gated in neither", description)
         self.assertNotIn("What stays silent", description)
 
     def test_a_run_that_suppressed_nothing_reports_an_empty_map(self):

@@ -945,7 +945,8 @@ class TestEveryNameBasedDropReachesTheRedteamGate(unittest.TestCase):
     visible and policy-C-eligible findings reach redteam.
     """
 
-    def _repo(self, root, uri, marker_dir=None, nested=False, shape=True):
+    def _repo(self, root, uri, marker_dir=None, nested=False, shape=True,
+              tool="semgrep", payload=None):
         """A tools dir holding one HIGH under *uri*, plus its manifest.
 
         `nested` puts the tools dir at `<root>/.panopticon/tools`, which is how
@@ -966,11 +967,12 @@ class TestEveryNameBasedDropReachesTheRedteamGate(unittest.TestCase):
                 os.makedirs(os.path.join(root, marker_dir, "bin"), exist_ok=True)
                 with open(os.path.join(root, marker_dir, "bin", "python"), "w") as fh:
                     fh.write("")
-        with open(os.path.join(tools, "semgrep.sarif"), "w", encoding="utf-8") as fh:
-            json.dump(_vendored_sarif(uri=uri), fh)
+        with open(os.path.join(tools, "%s.sarif" % tool), "w",
+                  encoding="utf-8") as fh:
+            json.dump(payload if payload is not None else _vendored_sarif(uri=uri), fh)
         manifest_path = os.path.join(root, "manifest.json")
         with open(manifest_path, "w", encoding="utf-8") as fh:
-            json.dump({"selected": ["semgrep"], "produced": ["semgrep"],
+            json.dump({"selected": [tool], "produced": [tool],
                        "missing": []}, fh)
         return tools, manifest_path
 
@@ -1063,13 +1065,13 @@ class TestEveryNameBasedDropReachesTheRedteamGate(unittest.TestCase):
             self.assertEqual([f["suppressed"] for f in suppressed],
                              ["fixture-corpus"], mode)
 
-    def test_run_artifact_and_bytecode_drops_reach_the_redteam_gate(self):
-        """#3269 G4: body drops stay dropped but no longer bypass policy C."""
+    def test_run_artifact_and_bytecode_drops_are_disclosed_but_never_gated(self):
+        """#3269 G4: both modes disclose these duplicate/non-source drops."""
         for uri, reason in (
                 (".panopticon/runs/t/report-discarded.json", "run-artifact"),
                 ("skill/scripts/__pycache__/driver.cpython-314.pyc",
                  "generated-bytecode")):
-            for mode, gated in (("standard", 0), ("redteam", 1)):
+            for mode in ("standard", "redteam"):
                 with self.subTest(uri=uri, mode=mode), \
                         tempfile.TemporaryDirectory() as root:
                     tools, manifest = self._repo(root, uri)
@@ -1077,8 +1079,32 @@ class TestEveryNameBasedDropReachesTheRedteamGate(unittest.TestCase):
                         tools, manifest, security_mode=mode)
                 self.assertEqual(findings, [])
                 self.assertEqual(failures, [])
-                self.assertEqual(len(high), gated)
+                self.assertEqual(high, [])
                 self.assertEqual([f["suppressed"] for f in suppressed], [reason])
+
+    def test_prior_run_secret_is_disclosed_without_failing_the_redteam_gate(self):
+        """FastAPI run d: our prior discarded report is not a new secret."""
+        uri = ".panopticon/runs/prior/report-discarded.json"
+        buf = io.StringIO()
+        with tempfile.TemporaryDirectory() as root:
+            tools, manifest = self._repo(
+                root, uri, tool="gitleaks",
+                payload=_secret_sarif(tool="gitleaks", uri=uri),
+            )
+            findings, _d, failures, high, suppressed = gate.evaluate(
+                tools, manifest, security_mode="redteam")
+            with contextlib.redirect_stdout(buf), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rc = gate.main(["--tools-dir", tools, "--manifest", manifest,
+                                "--security", "redteam"])
+        self.assertEqual(findings, [])
+        self.assertEqual(failures, [])
+        self.assertEqual(high, [])
+        self.assertEqual([f["suppressed"] for f in suppressed], ["run-artifact"])
+        self.assertEqual(rc, 0)
+        self.assertIn("0 GATED", buf.getvalue())
+        self.assertIn("1 disclosed only", buf.getvalue())
+        self.assertIn("run-artifact (run-artifact: 1)", buf.getvalue())
 
     def test_verdict_line_names_the_run_artifact_reason(self):
         buf = io.StringIO()
@@ -1091,6 +1117,7 @@ class TestEveryNameBasedDropReachesTheRedteamGate(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("1 suppressed by source-scope rule", buf.getvalue())
         self.assertIn("run-artifact (run-artifact: 1)", buf.getvalue())
+        self.assertIn("gated in neither", buf.getvalue())
 
     def test_an_operator_exclude_glob_is_never_re_admitted(self):
         # `--exclude` is policy the operator set on this gate, not a guess from

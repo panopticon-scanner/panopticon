@@ -1967,11 +1967,14 @@ class TestSuppressedToolFindingsInHtml(unittest.TestCase):
         self.assertIn(
             "Tool findings suppressed: generated-bytecode: 2 &middot; "
             "run-artifact: 8 &mdash; withheld from the report body by controlled "
-            "source-scope rules",
+            "source-scope rules; <code>run-artifact</code> and "
+            "<code>generated-bytecode</code> are disclosed in both modes and "
+            "gated in neither",
             out,
         )
         block = out.split("Tool findings suppressed:", 1)[1].split("</div>", 1)[0]
         self.assertNotIn("directory name", block)
+        self.assertNotIn("gates the CRITICAL and secret-class ones", block)
 
     def test_a_run_that_suppressed_nothing_renders_no_line(self):
         self.assertNotIn("Tool findings suppressed", hr.render(self._report({})))
