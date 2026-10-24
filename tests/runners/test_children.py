@@ -457,6 +457,130 @@ class TestANonTimeoutFailureStillEndsTheTree(GrandchildCase):
                             "%s was left open by a failed launch" % name)
 
 
+class _Finished:
+    """A handle with no pid that has already exited: terminate_children's
+    no-pid path signals it and reaps it at once."""
+
+    def terminate(self):
+        pass
+
+    kill = terminate
+
+    def wait(self, timeout=None):
+        return 0
+
+    def poll(self):
+        return 0
+
+
+class TestARegistrationRacingTheTerminateNeverLeavesALiveChild(GrandchildCase):
+    """#3250: the registry had no lock. `terminate_children` copied the list and
+    then replaced it, so an append landing between the two went onto a list
+    nobody read again; and a worker whose `Popen` returned after the terminate
+    registered into the fresh list. Either way the child outlived the guards."""
+
+    def _register_on_a_thread(self, runner, proc):
+        outcome, done = {}, threading.Event()
+
+        def register():
+            try:
+                runner.register_child(proc)
+            except Exception as exc:          # noqa: BLE001 - asserted by the caller
+                outcome["raised"] = exc
+            finally:
+                done.set()
+
+        thread = threading.Thread(target=register, daemon=True)
+        return thread, done, outcome
+
+    def test_a_registration_at_the_copy_replace_seam_is_ended(self):
+        runner = base.HostRunner()
+        proc = self.spawn_tree(self.tree_argv())
+        grandchild = self.grandchild()
+        thread, done, outcome = self._register_on_a_thread(runner, proc)
+
+        class Seam(list):
+            """Fires the registration INSIDE terminate's copy of the list."""
+
+            def __iter__(self):
+                snapshot = [*list.__iter__(self)]
+                if not thread.is_alive() and not done.is_set():   # the copy, once
+                    thread.start()
+                    done.wait(1.0)    # main: it lands now; with the lock it waits
+                return iter(snapshot)
+
+        runner.__dict__["_children"] = Seam([_Finished()])
+        runner.terminate_children(grace=1.0)
+        thread.join(10)
+        self.assertTrue(await_death(grandchild),
+                        "a child registered at the copy/replace seam outlived the terminate")
+        self.assertIn("launch refused", str(outcome.get("raised")))
+
+    def test_a_registration_after_the_terminate_is_ended_and_refused(self):
+        runner = base.HostRunner()
+        runner.terminate_children()
+        proc = self.spawn_tree(self.tree_argv())
+        grandchild = self.grandchild()
+        raised = None
+        try:
+            runner.register_child(proc)
+        except Exception as exc:              # noqa: BLE001 - asserted below
+            raised = exc
+        self.assertTrue(await_death(grandchild),
+                        "a child whose Popen returned after the terminate kept running")
+        self.assertIn("launch refused", str(raised))
+        self.assertEqual([], runner.__dict__.get("_children") or [])
+
+    def test_a_launch_after_the_terminate_fails_the_normal_way(self):
+        runner = base.HostRunner()
+        runner.terminate_children()
+        raised, held, real = None, [], runner.register_child
+
+        def recording(proc):
+            held.append(proc)
+            return real(proc)
+
+        started = time.monotonic()
+        try:
+            with mock.patch.object(runner, "register_child", recording):
+                runner.launch(self.tree_argv(), timeout=3)
+        except Exception as exc:              # noqa: BLE001 - asserted below
+            raised = exc
+        if os.path.exists(self.pidfile):      # the child got as far as forking
+            self.assertTrue(await_death(self.grandchild()))
+        self.assertNotIsInstance(raised, subprocess.TimeoutExpired,
+                                 "the launch ran to its timeout after the terminate")
+        self.assertIn("launch refused", str(raised))
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertEqual([], runner.__dict__.get("_children") or [])
+        for name in ("stdout", "stderr"):     # the refused launch's fds went back
+            self.assertTrue(getattr(held[0], name).closed, name)
+
+    def test_a_terminate_re_entering_a_registration_still_refuses_it(self):
+        """kimi's SIGTERM stripper calls terminate_children from a signal
+        handler on the main thread, which also launches. Fired between the
+        append and the closed check, it has already swapped the list: the
+        registration must still end the child and raise the clean error."""
+        runner = base.HostRunner()
+        proc = self.spawn_tree(self.tree_argv())
+        grandchild = self.grandchild()
+
+        class Reentered(list):
+            def append(self, item):
+                list.append(self, item)
+                runner.terminate_children(grace=1.0)   # same thread, mid-register
+
+        runner.__dict__["_children"] = Reentered()
+        # On a daemon thread, so a lock that is not re-entrant is a failed
+        # assertion here rather than a hung suite.
+        thread, done, outcome = self._register_on_a_thread(runner, proc)
+        thread.start()
+        self.assertTrue(done.wait(10), "a re-entrant terminate deadlocked the registration")
+        self.assertIn("launch refused", str(outcome.get("raised")))
+        self.assertTrue(await_death(grandchild))
+        self.assertEqual([], runner.__dict__.get("_children") or [])
+
+
 class TestTerminateChildrenEndsTheWholeGroup(GrandchildCase):
     """The interrupt half of the same kill path: Ctrl-C must reach a
     registered child's workers, not only the pid the runner is holding."""
