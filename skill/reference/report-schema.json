@@ -373,6 +373,25 @@
               "description": "#1578 (SEC-G2B), owner ruling 2026-09-22 -- policy C. `{segment: count}` of TOOL findings that a directory-NAME exclusion withheld from `findings[]`, that cleared this run's `--severity` floor and its delta / `gate_scope` filter, and that the redteam gate still did NOT count -- because they are neither CRITICAL nor secret-class. Non-empty only under `--security redteam`: in `standard` mode the suppression stands for the gate outright, policy C never runs, and the whole tally sits in `tools_suppressed`. A SUBSET of `tools_suppressed`, never a third number beside it: that key counts everything the gate did not take, and this one says how much of it this rule is responsible for rather than the floor or the diff. Published because the ruling trades a gate FAIL for silence unless the number is there: the objection policy C answers is that a vendor-heavy tree hard-FAILed a merge on unverified scanner noise (calibration-5/solidus: 592 of eslint-security's 623 messages were one rule firing on bundled jQuery under `vendor/`), and the cost of answering it is real findings the gate now lets past -- so an operator reading a PASS has to be able to see how many, and under which segment. `{}` means the rule declined nothing this run.",
               "$comment": "Repaired to these types at the read by synth.repair.repair_tools_suppressed, like its two siblings."
             },
+            "language_detection_skips": {
+              "type": "array",
+              "maxItems": 2,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "language": {"enum": ["python", "go"]},
+                  "tool": {"enum": ["bandit", "gosec"]},
+                  "reason": {"enum": ["present only under pruned directories"]}
+                },
+                "oneOf": [
+                  {"properties": {"language": {"const": "python"}, "tool": {"const": "bandit"}}},
+                  {"properties": {"language": {"const": "go"}, "tool": {"const": "gosec"}}}
+                ],
+                "required": ["language", "tool", "reason"]
+              },
+              "description": "#3247: language-keyed scanners auto-detection did not select because their language appeared only below #1138's reviewable-but-selection-pruned directory names. Each row is a controlled language/tool pair and one fixed reason; synthesis repairs the target-writable tools manifest to this enum and cap without re-deriving selection. `[]` means automatic detection measured no such gap. The key is absent when explicit `--languages` or `--tools` bypassed automatic detection. Disclosure only: it changes neither tool selection nor certification."
+            },
             "tools_excluded": {
               "type": "object",
               "properties": {

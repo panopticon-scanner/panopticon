@@ -34,6 +34,7 @@ import tempfile
 import unittest
 
 import scripts.hosts as hosts
+import scripts.language_detection as language_detection
 import scripts.ocrdb as ocrdb
 import scripts.tools_manifest as tools_manifest
 import scripts.synth.delta as delta_mod
@@ -280,6 +281,10 @@ def _build_report(tmpdir):
                                       "kind": "kill_failed",
                                       "detail": "docker kill exited 125",
                                   }},
+                                  language_detection_skips=[{
+                                      "language": "python", "tool": "bandit",
+                                      "reason": language_detection.SKIP_REASON,
+                                  }],
                                   sanitized={"pip-audit": {
                                       "source": "requirements.txt", "kept": 2,
                                       "dropped": [{"line": "-e .", "reason": "editable"}],
@@ -479,6 +484,12 @@ class TestSchemaParity(unittest.TestCase):
             "kill_failed",
             "no cleanup failure: that structured row is unwalked",
         )
+        self.assertEqual(
+            meta["coverage"]["language_detection_skips"][0],
+            {"language": "python", "tool": "bandit",
+             "reason": language_detection.SKIP_REASON},
+            "no language-detection skip: that structured row is unwalked",
+        )
 
     def test_the_delta_blocks_are_property_pinned_so_the_walk_descends(self):
         """#2169: `meta.coverage.delta` was `{"type": ["object","null"]}` with no
@@ -585,6 +596,26 @@ class TestDomainRosterParity(unittest.TestCase):
             with self.subTest(cells=name):
                 enum = cells["properties"][name]["items"]["items"][1]["enum"]
                 self.assertEqual(sorted(enum), expected)
+
+
+class TestLanguageDetectionDisclosureParity(unittest.TestCase):
+    """#3247's bounded contract must track the runtime-owned vocabulary."""
+
+    def test_schema_tracks_the_runtime_pairs_reason_and_cap(self):
+        coverage = _load_schema()["properties"]["meta"]["properties"]["coverage"]
+        node = coverage["properties"]["language_detection_skips"]
+        fields = node["items"]["properties"]
+        self.assertEqual(node["maxItems"], language_detection.SKIPS_MAX)
+        self.assertEqual(sorted(fields["language"]["enum"]),
+                         sorted(language_detection.LANGUAGE_TOOLS))
+        self.assertEqual(sorted(fields["tool"]["enum"]),
+                         sorted(language_detection.LANGUAGE_TOOLS.values()))
+        self.assertEqual(sorted(fields["reason"]["enum"]),
+                         sorted(language_detection.SKIP_REASONS))
+        pairs = {(branch["properties"]["language"]["const"],
+                  branch["properties"]["tool"]["const"])
+                 for branch in node["items"]["oneOf"]}
+        self.assertEqual(pairs, set(language_detection.LANGUAGE_TOOLS.items()))
 
 
 if __name__ == "__main__":

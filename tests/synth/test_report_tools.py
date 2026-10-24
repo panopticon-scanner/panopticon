@@ -14,6 +14,7 @@ import scripts.synth.repair as repair_mod
 import scripts.synth.tool_axis as tool_axis_mod
 import scripts.synth.report as report_mod
 import scripts.evidence as evidence_mod
+import scripts.tools_manifest as tools_manifest_mod
 from tests.synth.helpers import DEFAULT_TIMESTAMP, _make_finding, _agentic
 
 
@@ -285,6 +286,54 @@ class TestToolCoverageCertification(unittest.TestCase):
         ))
         self.assertEqual(self._div_tools(r), {"eslint": "requested_absent"})
         self.assertFalse(r["summary"]["coverage_certified"])
+
+
+class TestLanguageDetectionSkipCoverage(unittest.TestCase):
+    REASON = "present only under pruned directories"
+    PYTHON = {"language": "python", "tool": "bandit", "reason": REASON}
+
+    def _report(self, value=...):
+        manifest = {"selected": ["semgrep"], "produced": ["semgrep"],
+                    "missing": [], "excluded_scope": []}
+        if value is not ...:
+            manifest["language_detection_skips"] = value
+        return report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            tools=tool_axis_mod.ToolAxis(manifest=manifest),
+        ))
+
+    TS = "2026-10-23T00:00:00Z"
+
+    def test_valid_rows_reach_meta_coverage_without_changing_certification(self):
+        report = self._report([self.PYTHON])
+        self.assertEqual(report["meta"]["coverage"]["language_detection_skips"],
+                         [self.PYTHON])
+        self.assertTrue(report["summary"]["coverage_certified"])
+        self.assertEqual(report["summary"]["gate"], "PASS")
+
+    def test_measured_clean_is_empty_and_legacy_absence_stays_absent(self):
+        self.assertEqual(
+            self._report([])["meta"]["coverage"]["language_detection_skips"], [])
+        self.assertNotIn("language_detection_skips",
+                         self._report()["meta"]["coverage"])
+
+    def test_boundary_drops_bad_rows_with_one_count_and_caps_the_list(self):
+        warnings = []
+        bad = [self.PYTHON, {"language": "go", "tool": "gosec",
+                             "reason": "target text"}, 7, {"language": "python"}]
+        self.assertEqual(
+            repair_mod.repair_language_detection_skips(bad, warn=warnings.append),
+            [self.PYTHON])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("dropped 3 malformed row(s)", warnings[0])
+
+        warnings.clear()
+        rows = [self.PYTHON] * (tools_manifest_mod.LANGUAGE_DETECTION_SKIPS_MAX + 1)
+        repaired = repair_mod.repair_language_detection_skips(rows, warn=warnings.append)
+        self.assertEqual(len(repaired),
+                         tools_manifest_mod.LANGUAGE_DETECTION_SKIPS_MAX)
+        self.assertTrue(any("kept the first" in line for line in warnings))
 
 
 class TestToolCleanupCoverage(unittest.TestCase):
