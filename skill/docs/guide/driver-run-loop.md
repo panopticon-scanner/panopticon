@@ -233,7 +233,7 @@ never reaches a grant: it is a first-contact halt (H4, #3271). `driver run` and 
 the tree before any phase writes, and a regular file whose link count exceeds its in-tree name count
 stops the run with one line naming it. `driver setup`, whose scan holds the one directory grant over
 the whole tree, walks on every invocation; `driver run` walks once per run. `driver loop` and
-`driver loop --setup` make the `.panopticon/` half (H1–H3, on the operator's checkout too under
+`driver loop --setup` make the `.panopticon/` half (H1-H3, on the operator's checkout too under
 `--pr`) before they read a manifest or a crash record or delete anything one names. Standalone tool
 entries do not run first contact; driver run/setup/loop do — `discovery.py`, `run_tools.py` and
 `synthesize.py` run directly (as CI runs `run_tools.py`) keep only a read-only check that

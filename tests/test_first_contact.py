@@ -543,7 +543,8 @@ class TestAnOutOfTreeHardLinkHalts(_Trees):
 
     def _linked_git_dir(self, root, where):
         outside = self._dir()
-        os.makedirs(os.path.join(root, where, "objects", "ab"))
+        # exist_ok: a real repo's own objects land in `ab/` one time in ~256 per object.
+        os.makedirs(os.path.join(root, where, "objects", "ab"), exist_ok=True)
         blob = os.path.join(outside, "blob")
         with open(blob, "w", encoding="utf-8") as fh:
             fh.write("z")
