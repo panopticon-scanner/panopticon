@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts import groups_schema
-from scripts import executable
+from scripts import app_trace, executable, tools_image
 from scripts import language_detection
 from scripts.tools import ADAPTERS, ONLINE_ONLY, withhold_target_builds
 from scripts.tools import egress
@@ -67,20 +67,17 @@ from scripts.scanner_config import (
     _SUPPRESSION_POSTURE,         # cleared by `run_tools()`; only this one popped
 )
 
-# #1762 (ARC-2609514778, ARC-3243338950) part 2 of 4: the capture path -- one
-# container run supervised, bounded, classified, redacted and written -- moved
-# to `tool_capture` whole. Three names stay bound HERE, all three READ bindings
-# under the same patch rule as the block above: `run_tools()` multiplies
-# `TOOL_TIMEOUT` into the egress session's ceiling and
-# `tests/test_run_tools_containment.py` reads it through this module;
-# `ingest_tools` imports `MAX_TOOL_OUTPUT_BYTES` from here as the shared cap and
-# `tests/test_run_tools_core.py` and `tests/test_run_tools_languages.py` read it
-# through this module (part 3 took its one reader here, the manifest's eslint
-# capture read, with the writer); and `_REDACTED_CAPTURES` is the ledger
-# `run_tools()` clears and the dispatch loop discards a withdrawn capture from --
-# the SAME set object either way, so `.clear()` here and `.add()` there address
-# one ledger. `_capture_run` is the one moved FUNCTION this module still calls,
-# and it is called `tool_capture._capture_run(...)`.
+# #1762 (ARC-2609514778, ARC-3243338950) part 2 of 4: the capture path -- one container run
+# supervised, bounded, classified, redacted and written -- moved to `tool_capture` whole. Three
+# names stay bound HERE, all three READ bindings under the same patch rule as the block above:
+# `run_tools()` multiplies `TOOL_TIMEOUT` into the egress session's ceiling and
+# `tests/test_run_tools_containment.py` reads it through this module; `ingest_tools` imports
+# `MAX_TOOL_OUTPUT_BYTES` from here as the shared cap and `tests/test_run_tools_core.py` and
+# `tests/test_run_tools_languages.py` read it through this module (part 3 took its one reader here,
+# the manifest's eslint capture read, with the writer); and `_REDACTED_CAPTURES` is the ledger
+# `run_tools()` clears and the dispatch loop discards a withdrawn capture from -- the SAME set
+# object either way, so `.clear()` here and `.add()` there address one ledger. `_capture_run` is the
+# one moved FUNCTION this module still calls, and it is called `tool_capture._capture_run(...)`.
 from scripts.tool_capture import (
     MAX_TOOL_OUTPUT_BYTES,        # noqa: F401
     TOOL_TIMEOUT,
@@ -101,19 +98,16 @@ from scripts.tools_manifest import (
     _NETWORK_POSTURE,
 )
 
-# #1762 (ARC-2609514778) part 4 of 4: the virtualenv scope -- finding the
-# virtualenvs under the target, deciding which of them a scanner's exclusion knob
-# may be handed, and rendering that onto each tool's argv -- moved to
-# `venv_scope` whole, with the manifest rows it produces still published by
-# `tools_manifest.write_manifest`. ONE name stays bound HERE, a READ binding
-# under the same patch rule as the blocks above: `VENV_MARKER` is read through
-# this module by `tests/test_run_tools_core.py` and
-# `tests/test_run_tools_dispatch.py`, which plant the marker the walk keys on
-# (`ingest_tools` imports it, and `has_venv_shape`, from `venv_scope` directly --
-# one predicate and one token for the scan side and the ingest side). The three
-# moved FUNCTIONS this module still calls are spelled `venv_scope.<name>`:
-# `find_virtualenvs` and `partition_venv_dirs` in `run_tools()`'s own default and
-# in `main`, and `_with_venv_excludes` in the dispatch loop.
+# #1762 (ARC-2609514778) part 4 of 4: the virtualenv scope -- finding the virtualenvs under the
+# target, deciding which of them a scanner's exclusion knob may be handed, and rendering that onto
+# each tool's argv -- moved to `venv_scope` whole, with the manifest rows it produces still
+# published by `tools_manifest.write_manifest`. ONE name stays bound HERE, a READ binding under the
+# same patch rule as the blocks above: `VENV_MARKER` is read through this module by
+# `tests/test_run_tools_core.py` and `tests/test_run_tools_dispatch.py`, which plant the marker the
+# walk keys on (`ingest_tools` imports it, and `has_venv_shape`, from `venv_scope` directly -- one
+# predicate and one token for the scan side and the ingest side). The three moved FUNCTIONS this
+# module still calls are spelled `venv_scope.<name>`: `find_virtualenvs` and `partition_venv_dirs`
+# in `run_tools()`'s own default and in `main`, and `_with_venv_excludes` in the dispatch loop.
 #
 # `REDTEAM`/`SECURITY_MODES` did NOT move: the mode vocabulary is
 # `scripts.tools.base`'s, this module's pair is the local mirror its argparse
@@ -219,17 +213,24 @@ def validate_output_dir(target, out_dir):
 
 
 def docker_available(image="panopticon-tools", runner=None, target=None):
-    """Check if the specified Docker image is available."""
+    """The image's identity (`tools_image.identity`, plus docker's own `apps`
+    record) when it is available, else False. #3270: an unreadable id halts."""
     runner = runner or subprocess.run
     try:
         root = target or os.getcwd()
         resolved = executable.resolve("docker", root, os.environ.get("PATH", ""))
         docker_env = executable.sanitize_startup_environment(os.environ)
         docker_env["PATH"] = resolved.path_env
-        res = runner([resolved.path, "image", "inspect", image],
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        res = runner([resolved.path, "image", "inspect", "--format", tools_image.INSPECT_FORMAT,
+                      image], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                      timeout=DOCKER_PROBE_TIMEOUT, env=docker_env)
-        return getattr(res, "returncode", 1) == 0
+        if getattr(res, "returncode", 1) != 0:
+            return False
+        found = tools_image.identity(image, getattr(res, "stdout", b""))
+        found["apps"] = [app_trace.trace("docker", resolved.path, runner, env=docker_env)]
+        return found
+    except (executable.TargetPathEntry, tools_image.ImageIdentityError):
+        raise           # #3270: a halt, never "no docker here"
     except (FileNotFoundError, executable.ExecutableResolutionError):
         # docker binary genuinely absent -- the one benign case; stay quiet.
         return False
@@ -360,35 +361,27 @@ def filter_online(chosen, online):
     return kept
 
 
-# #1646 C1(b) / #1877: the container working directory for EVERY scanner
-# dispatch. The image ends `WORKDIR /src` and `/src` is the target mount, so a
-# container that starts there hands its scanner the reviewed repository as the
-# directory its OWN config resolution walks from -- pip deciding a requirement
-# is a local archive on a bare SUFFIX match and running a committed
-# `evil.tar.gz`'s build backend or npm reading `.npmrc`. Semgrep's independent
-# scan-root ignores are neutralised on its argv. Gitleaks' source-root read is
-# handled by `scanner_config`'s conditional overlay. The cwd rule is uniform: every
-# scanner container starts OUTSIDE the
-# mount. Docker CREATES a `-w` directory that does not exist, so this one is
-# empty by construction and needs nothing in the image, and no argv changes --
-# every tool already names its scan root by absolute path.
+# #1646 C1(b) / #1877: the container working directory for EVERY scanner dispatch. The image ends
+# `WORKDIR /src` and `/src` is the target mount, so a container that starts there hands its scanner
+# the reviewed repository as the directory its OWN config resolution walks from -- pip deciding a
+# requirement is a local archive on a bare SUFFIX match and running a committed `evil.tar.gz`'s
+# build backend or npm reading `.npmrc`. Semgrep's independent scan-root ignores are neutralised on
+# its argv. Gitleaks' source-root read is handled by `scanner_config`'s conditional overlay. The cwd
+# rule is uniform: every scanner container starts OUTSIDE the mount. Docker CREATES a `-w` directory
+# that does not exist, so this one is empty by construction and needs nothing in the image, and no
+# argv changes -- every tool already names its scan root by absolute path.
 #
-# TWO scanners are the exception, and both say so EXPLICITLY (`-w /src`)
-# rather than leaning on the image's WORKDIR. For each, the cwd is a SCAN
-# INPUT rather than a config-lookup surface, so moving it does not harden the
-# scan, it deletes it:
-#   gosec -- its argv is the CWD-RELATIVE go package pattern `./...`, which
-#     go/packages resolves through `go list` from the module root, so a
-#     container started anywhere else scans an empty directory.
-#   eslint-security -- under flat config the `files`/`ignores` base path is
-#     the process cwd whenever the config is named with `--config`, and
-#     anything outside that base is classified "external". Measured on the
-#     pinned eslint 10.9.0: from a scratch cwd the adapter produced NO output
-#     and exit 2, "located outside of the base path". A config-object
-#     `basePath` was tried first and does not widen the root base.
-# Each adapter makes the same call at the Popen level, for the same reason and
-# with the argument recorded against it there and in
-# tests/tools/test_adapter_cwd_confinement.py's allowlist.
+# TWO scanners are the exception, and both say so EXPLICITLY (`-w /src`) rather than leaning on the
+# image's WORKDIR. For each, the cwd is a SCAN INPUT rather than a config-lookup surface, so moving
+# it does not harden the scan, it deletes it: gosec -- its argv is the CWD-RELATIVE go package
+# pattern `./...`, which go/packages resolves through `go list` from the module root, so a container
+# started anywhere else scans an empty directory. eslint-security -- under flat config the
+# `files`/`ignores` base path is the process cwd whenever the config is named with `--config`, and
+# anything outside that base is classified "external". Measured on the pinned eslint 10.9.0: from a
+# scratch cwd the adapter produced NO output and exit 2, "located outside of the base path". A
+# config-object `basePath` was tried first and does not widen the root base. Each adapter makes the
+# same call at the Popen level, for the same reason and with the argument recorded against it there
+# and in tests/tools/test_adapter_cwd_confinement.py's allowlist.
 #
 # Belt and braces: the adapters ALSO pass their own scratch cwd to `run_tool`
 # (`tools.base.scratch_cwd`), so an `invoke()` that runs outside this
@@ -754,7 +747,8 @@ def main(argv=None):
     # the detected directories the scanners are actually told to skip.
     skip_dirs, venv_rows = venv_scope.partition_venv_dirs(
         venv_scope.find_virtualenvs(a.target), a.security_mode)
-    if not docker_available(target=a.target):
+    found = docker_available(target=a.target)
+    if not found:
         print("panopticon-tools image not available; skipping tool scan", file=sys.stderr)
         # Still disclose the skip through the coverage manifest. Without this,
         # a caller who passed --manifest as its coverage-gating signal cannot
@@ -770,9 +764,12 @@ def main(argv=None):
                 a.manifest, effective, [], excluded_scope=excluded_scope,
                 run_id=a.run_id, excluded_dirs=venv_rows, withheld=withheld,
                 sanitized=sanitized, exclude_globs=a.exclude, cleanup_failures={},
-                language_detection_skips=language_detection_skips)
+                language_detection_skips=language_detection_skips,
+                image={"ref": "panopticon-tools", "id": None})
         return 0
-    paths = run_tools(a.target, effective, a.out, online=a.online,
+    image = dict(found, adapter_code=tools_image.adapter_code(os.path.dirname(os.path.abspath(__file__))))
+    apps = image.pop("apps", [])
+    paths = run_tools(a.target, effective, a.out, online=a.online, image=image["id"],
                       progress=make_progress(a.progress), venv_dirs=skip_dirs,
                       run_id=a.run_id, security_mode=a.security_mode, allow_target_build=a.allow_target_build,
                       exclude_globs=a.exclude)
@@ -781,10 +778,10 @@ def main(argv=None):
             a.manifest, effective, paths, excluded_scope=excluded_scope,
             run_id=a.run_id, excluded_dirs=venv_rows, withheld=withheld,
             sanitized=sanitized, exclude_globs=a.exclude,
-            language_detection_skips=language_detection_skips)
+            language_detection_skips=language_detection_skips, image=image, apps=apps)
     print("\n".join(paths))
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(procgroup.sigterm_as_interrupt(main))  # #2507: as driver.py does; never at import
+    sys.exit(procgroup.sigterm_as_interrupt(tools_image.halting(main)))  # #2507: as driver.py does; never at import

@@ -525,3 +525,28 @@ class TestTheTargetBuildFlagComesOffTheRunManifest(unittest.TestCase):
     def test_the_flag_is_absent_otherwise(self):
         self.assertNotIn("--allow-target-build", self._argv({}))
         self.assertNotIn("--allow-target-build", self._argv({"allow_target_build": None}))
+
+
+class TestARunnerHaltStopsTheRun(unittest.TestCase):
+    """#3270: run_tools is a best-effort child -- a crash advances the run with a
+    marker -- so its halt (an unnameable tools image, a PATH entry inside the
+    target) comes back as HALT_EXIT and the phase raises it as the run's halt."""
+
+    def _execute(self, returncode, stderr):
+        root = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, root, ignore_errors=True)
+        os.makedirs(runio._pano(root))
+        proc = mock.Mock(returncode=returncode, stdout="", stderr=stderr)
+        with mock.patch("scripts.phases.child._run_child", return_value=proc), \
+                contextlib.redirect_stderr(io.StringIO()):
+            return tools_phase.tools_execute(root, {"run_id": "R", "flags": {}})
+
+    def test_the_halt_exit_raises_the_runner_s_fixed_reason(self):
+        import scripts.tools_image as tools_image
+        reason = tools_image.UNNAMEABLE % "panopticon-tools"
+        with self.assertRaises(runio.DriverError) as caught:
+            self._execute(tools_image.HALT_EXIT, "noise\n%s%s\n" % (tools_image.HALT_PREFIX, reason))
+        self.assertEqual(reason, str(caught.exception))
+
+    def test_any_other_failure_still_advances_as_a_crash(self):
+        self.assertEqual("advanced", self._execute(1, "Traceback\n").kind)

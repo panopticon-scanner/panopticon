@@ -51,16 +51,28 @@ _SCRIPTS = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "skill", "scripts")
 
 
+# #3270: the hardened launcher is the other way to spawn. The probes now launch
+# through `scripts.runners.children.launch` and import no `subprocess`, and a
+# gate that read only `subprocess` would stop finding them.
+_SPAWNING_MODULES = ("subprocess", "scripts.runners.children")
+
+
 def _imports_subprocess(tree):
     """Naming a host is not launching one. Spawning is, and in this tree it
-    always goes through `subprocess` -- so a module that does not import it
-    cannot start a binary no matter what strings it holds."""
+    always goes through `subprocess` or the hardened launcher built on it --
+    so a module that imports neither cannot start a binary no matter what
+    strings it holds."""
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            if any(alias.name.split(".")[0] == "subprocess" for alias in node.names):
+            if any(alias.name.split(".")[0] == "subprocess"
+                   or alias.name in _SPAWNING_MODULES for alias in node.names):
                 return True
         elif isinstance(node, ast.ImportFrom):
-            if (node.module or "").split(".")[0] == "subprocess":
+            module = node.module or ""
+            if module.split(".")[0] == "subprocess" or module in _SPAWNING_MODULES:
+                return True
+            if module == "scripts.runners" and any(
+                    alias.name == "children" for alias in node.names):
                 return True
     return False
 
@@ -470,3 +482,53 @@ class TestTheWalkRecognisesSeamsAndOnlySeams(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestNoProbeLaunchesOutsideTheHardenedLauncher(unittest.TestCase):
+    """#3270 G3: every probe launch goes through `executable.resolve` -- via
+    `scripts.runners.children.launch` or a runner's own `launch` -- and none
+    calls `subprocess` itself, on a bare name or otherwise. Any reference to a
+    spawning `subprocess` callable in these modules fails, so a new probe that
+    reaches for one turns this red instead of bypassing the PATH halt."""
+
+    SPAWNING = {"run", "Popen", "call", "check_call", "check_output", "getoutput",
+                "getstatusoutput"}
+
+    def _modules(self):
+        probes = os.path.join(_SCRIPTS, "probes")
+        names = [os.path.join("probes", n) for n in sorted(os.listdir(probes)) if n.endswith(".py")]
+        return names + ["host_probes.py", "codex_host.py", "app_trace.py"]
+
+    def test_no_probe_module_reaches_a_spawning_subprocess_callable(self):
+        offenders = []
+        for rel in self._modules():
+            with open(os.path.join(_SCRIPTS, rel), encoding="utf-8") as fh:
+                tree = ast.parse(fh.read(), rel)
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Attribute) and node.attr in self.SPAWNING
+                        and isinstance(node.value, ast.Name) and node.value.id == "subprocess"):
+                    offenders.append("%s:%d subprocess.%s" % (rel, node.lineno, node.attr))
+                elif isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+                    offenders.extend("%s:%d from subprocess import %s" % (rel, node.lineno, a.name)
+                                     for a in node.names if a.name in self.SPAWNING)
+                elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                        and isinstance(node.func.value, ast.Name) and node.func.value.id == "os" \
+                        and (node.func.attr == "system" or node.func.attr.startswith(("exec", "spawn", "popen"))):
+                    offenders.append("%s:%d os.%s" % (rel, node.lineno, node.func.attr))
+        self.assertEqual([], offenders)
+
+    def test_the_probe_launchers_are_the_hardened_one(self):
+        import scripts.app_trace as app_trace
+        import scripts.probes.claude_write_canary as canary
+        import scripts.probes.kimi as kimi_probes
+        from scripts.runners import children
+        # The conftest guard swaps DEFAULT_RUNNER for its refusal; the shipped
+        # values are read off the source, where the guard cannot reach.
+        for module, name in ((codex_host, "DEFAULT_RUNNER"), (kimi_probes, "DEFAULT_RUNNER"),
+                             (app_trace, "DEFAULT_RUNNER"), (canary, "_launch")):
+            with open(module.__file__, encoding="utf-8") as fh:
+                tree = ast.parse(fh.read())
+            bound = [ast.unparse(node.value) for node in tree.body if isinstance(node, ast.Assign)
+                     and any(isinstance(t, ast.Name) and t.id == name for t in node.targets)]
+            self.assertEqual(["children.launch"], bound, module.__name__)
+        self.assertIs(canary._launch, children.launch)

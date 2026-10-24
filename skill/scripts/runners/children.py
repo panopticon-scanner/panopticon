@@ -133,6 +133,14 @@ def _text(data, encoding, errors="strict"):
     return data.decode(encoding, errors).replace("\r\n", "\n").replace("\r", "\n")
 
 
+def launch(argv, **kwargs):
+    """One `subprocess.run`-shaped launch through the hardened path, for a
+    caller that holds no runner: the host probes (#3270). Same resolution,
+    environment, own session, group kill and bounded capture as
+    `ChildProcesses.launch`, so no probe spawns a bare name."""
+    return ChildProcesses().launch(argv, **kwargs)
+
+
 class ChildProcesses:
     """Launching, registering and ending one host CLI's children."""
 

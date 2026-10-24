@@ -43,6 +43,8 @@ from scripts.run_tools import docker_available as REAL_DOCKER_AVAILABLE
 class _Res:
     def __init__(self, returncode):
         self.returncode = returncode
+        # #3270: a found image answers with its id (and docker's --version).
+        self.stdout = b"sha256:" + b"a" * 64 + b" []\n"
 
 
 def test_the_docker_marker_is_registered(pytestconfig):

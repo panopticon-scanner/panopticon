@@ -641,7 +641,7 @@ def _render_scanner_context(meta):
             parts.append("%s: %d finding%s could not be placed under the target root"
                          % (_escape(name), count, "" if count == 1 else "s"))
     parts.extend(_partial_audit_notes(tools.get("sanitized")))
-    parts.extend(_escape(line) for line in build_disclosure.not_run_lines(meta.get("coverage")))
+    parts.extend(_escape(line) for line in build_disclosure.not_run_lines(meta.get("coverage")) + build_disclosure.provenance_lines(meta))  # #3270
     parts.extend(_egress_notes(tools.get("network")))
     if not parts:
         return ""

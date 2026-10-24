@@ -26,6 +26,12 @@ import scripts.run_manifest as run_manifest
 import scripts.safe_git as safe_git
 
 
+# #3270 (D2): the halt is asserted by BEHAVIOUR -- a ValueError carrying the
+# fixed sentence -- so on a build without it the test fails on what happened.
+HALTS = (r"inside the target; remove it \(deactivate the target's virtualenv or direnv\) "
+         r"and re-run$")
+
+
 class TestForeignManifest(unittest.TestCase):
     """#1093: a run-manifest whose stamped review_root isn't this tree (a target
     that committed its own .panopticon/run-manifest.json to preset flags) must be
@@ -122,10 +128,14 @@ class TestResolveReviewRoot(unittest.TestCase):
             fh.write("#!/bin/sh\nprintf hit > %s\nprintf '%%s\\n' %s\n"
                      % (shlex.quote(marker), shlex.quote(source)))
         os.chmod(candidate, 0o700)
+        # #3270 (D2): the enclosing checkout's `bin` is inside the tree this run
+        # reviews, so it HALTS -- before that checkout's git can run -- where
+        # it used to be skipped. Without it on PATH the root is the checkout.
         with mock.patch.dict(os.environ, {"PATH": malicious_bin + os.pathsep + os.environ["PATH"]}):
-            result = runio.resolve_review_root(target)
+            with self.assertRaisesRegex(ValueError, HALTS):
+                runio.resolve_review_root(target)
         self.assertFalse(os.path.exists(marker), "repository Git executed before root was established")
-        self.assertEqual(result, (checkout, None, None))
+        self.assertEqual(runio.resolve_review_root(target), (checkout, None, None))
 
     def test_subdirectory_target_rejects_enclosing_checkout_git(self):
         self._assert_enclosing_checkout_git_is_not_executed("directory")
@@ -159,7 +169,9 @@ class TestResolveReviewRoot(unittest.TestCase):
 
     def test_missing_trusted_git_falls_back_to_requested_directory(self):
         d = self._git_repo()
-        with mock.patch.dict(os.environ, {"PATH": d}):
+        empty = os.path.realpath(tempfile.mkdtemp())       # a PATH with no git on it
+        self.addCleanup(lambda: shutil.rmtree(empty, ignore_errors=True))
+        with mock.patch.dict(os.environ, {"PATH": empty}):
             self.assertEqual(runio.resolve_review_root(d), (d, None, None))
 
     def test_resolves_repo_root_from_subdir(self):
@@ -221,14 +233,30 @@ class TestResolveReviewRoot(unittest.TestCase):
         self.assertEqual(real, root)
 
     def test_pr_uses_diff_map_worktree(self):
+        # A worktree that EXISTS, as an acquire always returns: #3270's
+        # first-contact PATH check reads it, and an unverifiable root fails closed.
+        worktree = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(worktree, ignore_errors=True))
         with mock.patch("scripts.diff_map.acquire_pr",
-                        return_value={"worktree": "/tmp/pr-wt", "base": "main",
+                        return_value={"worktree": worktree, "base": "main",
                                       "head_sha": "abc"}) as acq:
             root, wt, pr_base = runio.resolve_review_root(".", pr=7)
-        self.assertEqual(root, "/tmp/pr-wt")
-        self.assertEqual(wt, "/tmp/pr-wt")
+        self.assertEqual(root, worktree)
+        self.assertEqual(wt, worktree)
         self.assertEqual(pr_base, "main")
         acq.assert_called_once()
+
+    def test_a_pr_worktree_gets_the_first_contact_check_too(self):
+        # #3270: no git is resolved on this branch (the acquire is the seam), so
+        # only the first-contact check can see the worktree's own `bin`.
+        worktree = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(worktree, ignore_errors=True))
+        os.makedirs(os.path.join(worktree, "bin"))
+        with mock.patch("scripts.diff_map.acquire_pr",
+                        return_value={"worktree": worktree, "base": "main", "head_sha": "abc"}), \
+                mock.patch.dict(os.environ, {"PATH": os.path.join(worktree, "bin")}):
+            with self.assertRaisesRegex(ValueError, HALTS):
+                runio.resolve_review_root(".", pr=7)
 
     def test_git_probe_timeout_falls_back_not_raises(self):
         # #run7 OPS-A1A: a hung git rev-parse (wedged index.lock, credential

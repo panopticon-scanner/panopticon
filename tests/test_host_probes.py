@@ -1,12 +1,20 @@
+import functools
 import os
 import tempfile
 import unittest
 from unittest import mock
 
 from scripts import host_probes, hosts
+from scripts.app_trace import host_apps as REAL_HOST_APPS
 import scripts.probes.claude as claude_probes
 import scripts.probes.common as probes_common
 from tests.probes.helpers import _shell
+
+
+# #3270 (D2): the halt is asserted by BEHAVIOUR -- a ValueError carrying the
+# fixed sentence -- so on a build without it the test fails on what happened.
+HALTS = (r"inside the target; remove it \(deactivate the target's virtualenv or direnv\) "
+         r"and re-run$")
 
 
 class TestRunProbesBuildsTheArtifact(unittest.TestCase):
@@ -472,6 +480,18 @@ class TestTheCliFlagsProbeRunsOffTheRegistryRow(unittest.TestCase):
                     settings_path=(os.path.join(target, "settings.json")
                                    if headless else None))
 
+    def test_the_artifact_names_the_cli_it_probed_through(self):
+        # #3270: the host CLI's app record rides the posture it measured.
+        import scripts.app_trace as app_trace
+        record = {"name": "codex", "path": "/opt/codex", "version": "codex-cli 0.161.0",
+                  "sha256": "0" * 64, "size": 1}
+        seen = []
+        with mock.patch.object(app_trace, "host_apps",
+                               side_effect=lambda host, root: seen.append(host) or [record]):
+            art = self._codex_artifact("Usage: codex exec [OPTIONS]\n  --json\n")
+        self.assertEqual([record], art["apps"])
+        self.assertEqual(["codex"], seen)
+
     def test_a_headless_codex_run_records_the_fact(self):
         art = self._codex_artifact(
             "Usage: codex exec [OPTIONS]\n  --json\n  --output-schema <FILE>\n")
@@ -504,14 +524,18 @@ class TestTheCliFlagsProbeRunsOffTheRegistryRow(unittest.TestCase):
             previous = os.getcwd()
             try:
                 os.chdir(controller)
-                with mock.patch.dict(os.environ, {
-                        "PATH": os.pathsep.join([target, trusted])}, clear=False), \
-                        mock.patch.object(codex_runner, "DEFAULT_RUNNER", None), \
+                with mock.patch.object(codex_runner, "DEFAULT_RUNNER", None), \
                         mock.patch.object(codex_probes, "_codex_surfaces",
                                           return_value=[]):
-                    art = host_probes.run_probes(
-                        "codex", target, registration_dir=controller,
+                    probe = functools.partial(
+                        host_probes.run_probes, "codex", target, registration_dir=controller,
                         settings_path=os.path.join(controller, "settings.json"))
+                    # #3270 (D2): a PATH entry in the target halts before anything runs.
+                    with mock.patch.dict(os.environ, {
+                            "PATH": os.pathsep.join([target, trusted])}, clear=False):
+                        self.assertRaisesRegex(ValueError, HALTS, probe)
+                    with mock.patch.dict(os.environ, {"PATH": trusted}, clear=False):
+                        art = probe()
             finally:
                 os.chdir(previous)
             target_ran = os.path.exists(marker)
@@ -541,13 +565,17 @@ class TestTheCliFlagsProbeRunsOffTheRegistryRow(unittest.TestCase):
             previous = os.getcwd()
             try:
                 os.chdir(controller)
-                with mock.patch.dict(os.environ, {
-                        "PATH": os.pathsep.join([target, trusted])}, clear=False), \
-                        mock.patch.object(claude_runner, "DEFAULT_RUNNER", None):
-                    art = host_probes.run_probes(
-                        "claude", target, session_root=controller,
+                with mock.patch.object(claude_runner, "DEFAULT_RUNNER", None):
+                    probe = functools.partial(
+                        host_probes.run_probes, "claude", target, session_root=controller,
                         registration_dir=controller,
                         settings_path=os.path.join(controller, "settings.json"))
+                    # #3270 (D2): a PATH entry in the target halts before anything runs.
+                    with mock.patch.dict(os.environ, {
+                            "PATH": os.pathsep.join([target, trusted])}, clear=False):
+                        self.assertRaisesRegex(ValueError, HALTS, probe)
+                    with mock.patch.dict(os.environ, {"PATH": trusted}, clear=False):
+                        art = probe()
             finally:
                 os.chdir(previous)
             target_ran = os.path.exists(marker)
@@ -591,3 +619,63 @@ class TestTheCliFlagsProbeRunsOffTheRegistryRow(unittest.TestCase):
                 "kimi", target, registration_dir=target,
                 settings_path=os.path.join(target, "settings.json"))
         self.assertEqual({}, art[hosts.CLI_FLAGS])
+
+
+class TestEachExternalAppIsNamed(unittest.TestCase):
+    """#3270 G3: every external app a run launches is traced and named -- path,
+    version and sha256 -- in the artifact that records the posture measured
+    through it. This is the record #3272 keys its probe cache on."""
+
+    def _cli(self, root, name, version):
+        path = os.path.join(root, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\n[ \"$1\" = --version ] && printf '%s\\n' && exit 0\nexit 9\n"
+                     % version)
+        os.chmod(path, 0o700)
+        with open(path, "rb") as fh:
+            body = fh.read()
+        return path, body
+
+    def test_each_host_cli_is_recorded_by_path_version_and_sha(self):
+        # The REAL `host_apps` (tests/conftest.py stands it in for every other
+        # test), reading `--version` through the real hardened launcher.
+        import hashlib
+        import scripts.app_trace as app_trace
+        from scripts.runners import children
+        for host, version in (("claude", "2.1.40 (Claude Code)"), ("codex", "codex-cli 0.161.0"),
+                              ("kimi", "kimi, version 1.4.0")):
+            with self.subTest(host=host), tempfile.TemporaryDirectory() as trusted, \
+                    tempfile.TemporaryDirectory() as target:
+                path, body = self._cli(trusted, host, version)
+                with mock.patch.dict(os.environ, {"PATH": trusted}), \
+                        mock.patch.object(app_trace, "DEFAULT_RUNNER", children.launch):
+                    got = REAL_HOST_APPS(host, target)
+                self.assertEqual([{"name": host, "path": os.path.realpath(path), "version": version,
+                                   "sha256": hashlib.sha256(body).hexdigest(), "size": len(body)}],
+                                 got)
+
+    def test_an_app_that_cannot_answer_is_recorded_as_such_never_guessed(self):
+        import scripts.app_trace as app_trace
+        with tempfile.TemporaryDirectory() as trusted, tempfile.TemporaryDirectory() as target:
+            path, _ = self._cli(trusted, "claude", "")
+            with mock.patch.dict(os.environ, {"PATH": trusted}):
+                silent = app_trace.trace_command("claude", target,
+                                                 runner=lambda *a, **k: mock.Mock(returncode=0, stdout=""))
+            with mock.patch.dict(os.environ, {"PATH": target}):
+                with self.assertRaisesRegex(ValueError, HALTS):
+                    app_trace.trace_command("claude", target)
+            with mock.patch.dict(os.environ, {"PATH": "."}):
+                absent = app_trace.trace_command("claude", target)
+        with tempfile.TemporaryDirectory() as trusted, tempfile.TemporaryDirectory() as target:
+            self._cli(trusted, "claude", "")
+            with mock.patch.dict(os.environ, {"PATH": trusted}):
+                failed = app_trace.trace_command("claude", target, runner=lambda *a, **k: mock.Mock(
+                    returncode=2, stdout="error: unexpected argument '--version'"))
+                garbled = app_trace.trace_command("claude", target, runner=lambda *a, **k: mock.Mock(
+                    returncode=0, stdout="2.1.40\x1b[31m"))
+        self.assertIsNone(failed["version"])        # a non-zero exit is not a version
+        self.assertIsNone(garbled["version"])       # nor is a line with a control byte in it
+        self.assertIsNone(silent["version"])
+        self.assertEqual("`--version` printed no version", silent["reason"])
+        self.assertEqual({"name": "claude", "path": None, "version": None, "sha256": None,
+                          "size": None, "reason": "not on a trusted PATH"}, absent)

@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **Operator-visible: a PATH entry inside the target now halts the run (#3270, owner ruling D2).**
+  An entry inside the reviewed tree -- or one whose program is a symlink into it -- used to be
+  skipped silently. It is hostility or a badly broken machine, and most often the operator
+  activated the target's own virtualenv or the target's direnv `.envrc` ran. The run now stops at
+  first contact with one line naming the entry and the fix: "PATH entry <entry> is inside the
+  target; remove it (deactivate the target's virtualenv or direnv) and re-run". Empty and relative
+  entries are still ignored.
+- **The tools image is named by its id, and the scan runs by that id (#3270).** `run_tools` resolves
+  the `panopticon-tools` tag to the image ID (`docker image inspect`'s `.Id`, which every local
+  image has, offline included) and dispatches every container by it, so a tag moved mid-run cannot
+  swap the image. `tools-manifest.json` and the report's `meta.tools.image` record the id, any
+  registry digests (informational; a local build has none) and `adapter_code`, one sha256 over the
+  checkout's `skill/scripts` that every dispatch mounts over the image's baked copy. An image whose
+  id cannot be read halts the run; no docker or no image is still the disclosed skip.
+- **Every external app a run launches is named (#3270).** The host CLI (claude, codex or kimi) and
+  docker are recorded with their path, version (`--version`) and sha256 -- in
+  `host-capabilities.json`, `tools-manifest.json` and the report's `meta.apps` -- and each gets one
+  line on both views. The host probes now launch through the hardened launcher (trusted PATH,
+  own session, group kill, bounded capture) instead of a bare `subprocess.run`.
 - **roslyn-secguard is opt-in, off by default (#3265, owner ruling 2026-10-23).** It is the only
   adapter that executes the target's own code (its MSBuild/analyzer build), so a hostile repository
   got code execution inside the tools container. It now runs only with the operator flag

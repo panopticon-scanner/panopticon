@@ -31,7 +31,7 @@ does it inside a `tempfile.TemporaryDirectory()`.
 from typing import Any
 import os
 
-from scripts import hosts, run_manifest
+from scripts import app_trace, hosts, run_manifest
 import scripts.probes.claude as claude_probes
 import scripts.probes.codex as codex_probes
 import scripts.probes.common as probes_common
@@ -298,9 +298,11 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
         if disclosed is not None and disclosed in results and disclosed not in agreeing:
             details.append(disclosed[2])
         capabilities[capability] = _row(state, agreeing[0][1], "; ".join(details))
+    # #3270: the host CLI this posture was measured through, named by path,
+    # version and sha256 -- the record #3272 keys its probe cache on.
     return {"schema_version": SCHEMA_VERSION, "host": host,
             "probed_at": run_manifest._now_iso(), "capabilities": capabilities,
-            hosts.CLI_FLAGS: cli_flags}
+            hosts.CLI_FLAGS: cli_flags, "apps": app_trace.host_apps(host, review_root)}
 
 
 def capabilities_of(artifact):

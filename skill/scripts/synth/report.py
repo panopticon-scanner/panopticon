@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 # that used to sit here was dead code wearing a mode's clothes;
 # tests/test_module_identity.py now pins that no package module grows another.
 from scripts._version import __version__
+import scripts.app_trace as app_trace
 import scripts.evidence as evidence_mod
 import scripts.host_disclosure as host_disclosure
 import scripts.inert as inert
@@ -323,6 +324,11 @@ def assemble(run, resolved, reconciled, graded, cost):
     for f in resolved.findings:
         f.pop("_group", None)
         f.pop("_repo_root", None)
+    # #3270: every external app this run launched -- the host CLI off
+    # host-capabilities.json, docker off the tools manifest -- repaired at both
+    # reads (both are target-writable). `meta.apps` is present only when one was.
+    apps = (app_trace.repair(_host_capabilities_field(run.host_capabilities, "apps"))
+            + reconciled.tools_apps)
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
         "meta": {
@@ -367,7 +373,10 @@ def assemble(run, resolved, reconciled, graded, cost):
                 # internal network behind an allowlisting proxy, or do not run
                 # at all. This is where the run says which. `{}` means no
                 # manifest: nothing measured, not nothing granted.
-                "network": reconciled.tools_network},
+                "network": reconciled.tools_network,
+                # #3270: present only when the runner recorded the image.
+                **({"image": reconciled.tools_image} if reconciled.tools_image else {})},
+            **({"apps": apps} if apps else {}),
             "integrity": reconciled.integrity,
             "cost": cost,
             # 5.1 surface 2: the verified host posture, verbatim off the

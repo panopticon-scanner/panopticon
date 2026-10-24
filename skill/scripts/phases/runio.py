@@ -516,6 +516,14 @@ def _load_ocrdb_bundle():
         raise DriverError("OCRDb bundle unreadable: %s" % exc)
 
 def resolve_review_root(target, base=None, pr=None, runner=subprocess.run):
+    """`_resolve_review_root`, then the first-contact PATH check (#3270): a
+    PATH entry inside the reviewed tree halts the run before any phase."""
+    resolved = _resolve_review_root(target, base, pr, runner)
+    executable.refuse_target_path(resolved[0])
+    return resolved
+
+
+def _resolve_review_root(target, base, pr, runner):
     """Resolve the single review root, pinned once in the manifest (spec §5).
 
     - pr given: acquire the deterministic PR worktree (diff_map); its path is
@@ -545,26 +553,21 @@ def resolve_review_root(target, base=None, pr=None, runner=subprocess.run):
             return os.path.realpath(proc.stdout.strip()), None, None
     except (OSError, subprocess.SubprocessError):
         pass
-    # #1640: RESOLVED, like the git branch above (and like the --pr branch,
-    # whose worktree sits under that resolved repo). This fallback used to hand
-    # the root back as given, so a non-git directory reviewed through a symlink
-    # (`~/work/proj -> /Volumes/x/proj`) produced findings paths whose
-    # review-root component was itself a link -- which the write guard now
-    # refuses by name, for what is the operator's own path rather than an
-    # attack. Resolving here is what makes the guard's rule and the driver's
-    # own path derivation agree, on every branch of this function.
+    # #1640: RESOLVED, like the git branch above (and like the --pr branch, whose worktree sits
+    # under that resolved repo). This fallback used to hand the root back as given, so a non-git
+    # directory reviewed through a symlink (`~/work/proj -> /Volumes/x/proj`) produced findings
+    # paths whose review-root component was itself a link -- which the write guard now refuses by
+    # name, for what is the operator's own path rather than an attack. Resolving here is what makes
+    # the guard's rule and the driver's own path derivation agree, on every branch of this function.
     return os.path.realpath(start if os.path.isdir(start) else target), None, None
 
-# The claim-path confinement lives in `scripts.claim_scope` (#1767): the CLI
-# advisor renderer in `dispatch` needs the same predicate, and `dispatch` is
-# imported by `runners/*`, which layout rule 3 forbids from reaching this
-# package -- so the rule moved down to a leaf rather than being copied, exactly
-# as the no-follow artifact open did in #1735. An alias of a definition from
-# outside the package is what rule 4 leaves legal and asks to justify: the two
-# call sites in `phases/evidence_scope.py`, and the suite, spell the predicate
-# with this name, so keeping it keeps ONE name -- and one patch target -- for
-# them.
-# tests/test_claim_scope.py pins the identity.
+# The claim-path confinement lives in `scripts.claim_scope` (#1767): the CLI advisor renderer in
+# `dispatch` needs the same predicate, and `dispatch` is imported by `runners/*`, which layout rule
+# 3 forbids from reaching this package -- so the rule moved down to a leaf rather than being copied,
+# exactly as the no-follow artifact open did in #1735. An alias of a definition from outside the
+# package is what rule 4 leaves legal and asks to justify: the two call sites in
+# `phases/evidence_scope.py`, and the suite, spell the predicate with this name, so keeping it keeps
+# ONE name -- and one patch target -- for them. tests/test_claim_scope.py pins the identity.
 _confined_to_root = claim_scope.confined_to_root
 
 _DEFAULTS = {"host": "claude", "security": "standard"}
