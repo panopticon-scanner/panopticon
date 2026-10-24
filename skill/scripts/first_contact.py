@@ -44,6 +44,7 @@ import time
 import scripts.build_disclosure as build_disclosure
 import scripts.run_stamp as run_stamp
 import scripts.safe_git as safe_git
+import scripts.safe_write as safe_write
 
 PANO = ".panopticon"
 H1 = (".panopticon/ is tracked in the target's git index; panopticon never commits its "
@@ -87,23 +88,22 @@ def _tracked(review_root, runner):
     raise FirstContactHalt(H5 % ("git ls-files", "exit %s" % proc.returncode))
 
 
+# #3271 F0: present, but not a document any reader may trust.
+UNREADABLE = object()
+
+
 def _load(path):
+    """The parsed object at `path`, None when nothing is there, or UNREADABLE:
+    oversize, not a regular file, unreadable, not JSON, too deep, or not an
+    object. Read through `load_manifest`'s own reader, so the document
+    verified here is the one a resume then acts on."""
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
-    except OSError:
+        doc = safe_write.read_manifest_json(path)
+    except FileNotFoundError:
         return None
-    try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            return None
-        with os.fdopen(fd, "rb", closefd=False) as fh:
-            data = fh.read(1 << 20)
-    finally:
-        os.close(fd)
-    try:
-        doc = json.loads(data)
-    except ValueError:
-        return None
-    return doc if isinstance(doc, dict) else None
+    except (OSError, ValueError):
+        return UNREADABLE
+    return doc if isinstance(doc, dict) else UNREADABLE
 
 
 def _walk_errors(exc):
@@ -213,8 +213,9 @@ def assess_artifacts(review_root, *, reset=False, runner=None):
     manifests = {n: _load(os.path.join(pano, n)) for n in _MANIFESTS}
     # Review C1: the mark proves the DIRECTORY; a manifest a resume trusts must
     # prove itself too, so one planted into a directory of ours does not pass.
-    # An unparseable one is trusted by nothing (`load_manifest` discards it).
-    unverified = unverified or any(isinstance(m, dict) and not _bound(m, owner, review_root)
+    # F0: one that is there but cannot be read whole (UNREADABLE, which no
+    # stamp verifies) proves nothing either; only an ABSENT one is no manifest.
+    unverified = unverified or any(m is not None and not _bound(m, owner, review_root)
                                    for m in manifests.values())
     stray = _stray_links(pano)
     if unverified or stray:
@@ -236,7 +237,8 @@ def _bound(manifest, owner, review_root):
 def bind(review_root, manifest):
     """Stamp a new run or setup `manifest` to this tree's `owner.json`, so a
     later first contact can tell it from one planted beside the mark."""
-    owner = _load(os.path.join(review_root, PANO, OWNER)) or {}
+    owner = _load(os.path.join(review_root, PANO, OWNER))
+    owner = owner if isinstance(owner, dict) else {}
     manifest["owner"] = owner.get("run_id")
     manifest["stamp"] = run_stamp.sign(manifest)
     return manifest

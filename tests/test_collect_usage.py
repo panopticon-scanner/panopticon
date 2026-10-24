@@ -309,6 +309,19 @@ class TestCollect(unittest.TestCase):
                            "created": "2026-09-04T05:59:59Z"}, fh)
             self.assertEqual(cu.run_started_at(run), "2026-09-04T05:59:59Z")
 
+    def test_an_ancestor_manifest_past_first_contact_s_cap_is_not_used(self):
+        # #3271 F0: the manifest is read by first contact's own reader, so a
+        # document first contact would refuse floors nothing here either.
+        with tempfile.TemporaryDirectory() as d:
+            pano = os.path.join(d, ".panopticon")
+            run = os.path.join(pano, "runs", "claude-redteam-repo-20260904-a6388b3f")
+            os.makedirs(run)
+            body = json.dumps({"run_id": "a6388b3fb01943b9ab393d138ab84a85",
+                               "created": "2026-09-04T05:59:59Z"})
+            with open(os.path.join(pano, "run-manifest.json"), "w", encoding="utf-8") as fh:
+                fh.write(body[:-1] + " " * (1 << 20) + "}")
+            self.assertIsNone(cu.run_started_at(run))
+
     def test_an_ancestor_manifest_for_a_DIFFERENT_run_is_not_used(self):
         # The top-level manifest describes whatever run is CURRENT for a target,
         # which is not necessarily the one being collected. A wrong floor is

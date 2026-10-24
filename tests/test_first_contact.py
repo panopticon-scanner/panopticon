@@ -20,6 +20,7 @@ import scripts.first_contact as first_contact
 import scripts.phases.setup as setup
 import scripts.run_manifest as run_manifest
 import scripts.run_stamp as run_stamp
+import scripts.safe_write as safe_write
 from tests._test_helpers import adopt_panopticon, hard_link_or_skip
 from tests.tools.git_repo import make_git_repo
 
@@ -219,6 +220,143 @@ class TestAPrePlantedPanopticonHalts(_Trees):
             self.assertNotEqual("error", self._run(root)["status"])
         self.assertTrue(run_stamp.verifies(first_contact._load(
             os.path.join(root, ".panopticon", "owner.json"))))
+
+
+# The ruled cap, as a literal: the pins below must fail on behaviour, not on a
+# missing name, wherever the cap is not enforced.
+_CAP = 1 << 20
+
+
+class TestAManifestNoReaderCanTrustHalts(_Trees):
+    """#3271 F0: a manifest that is THERE but cannot be read whole is trusted by
+    no reader, so it halts H2 rather than passing as "no manifest" -- and every
+    reader shares one cap, so the document verified is the one resumed."""
+
+    def _owned(self):
+        root = self._tree(False)
+        self.assertNotEqual("error", self._run(root)["status"])
+        pano = os.path.join(root, ".panopticon")
+        with open(os.path.join(pano, "run-manifest.json"), encoding="utf-8") as fh:
+            return root, pano, json.load(fh)
+
+    def _plant(self, pano, name, data):
+        path = os.path.join(pano, name)
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(path)
+        with open(path, "wb") as fh:
+            fh.write(data)
+        return path
+
+    def _assess_halts_h2(self, root):
+        with self.assertRaisesRegex(first_contact.FirstContactHalt, "^%s$" % re.escape(H2)):
+            first_contact.assess_artifacts(root)
+
+    def _padded(self, manifest, size):
+        body = json.dumps(manifest).encode("utf-8")
+        return body[:-1] + b" " * (size - len(body)) + b"}"
+
+    def test_an_unbound_manifest_padded_past_the_cap_halts(self):
+        root, pano, manifest = self._owned()
+        planted = dict(manifest, run_id="planted", stamp="0" * 64)
+        for name in ("run-manifest.json", "setup-manifest.json"):
+            with self.subTest(name=name):
+                self._plant(pano, name, self._padded(planted, _CAP + 1))
+                self._assess_halts_h2(root)
+                os.remove(os.path.join(pano, name))
+        self._plant(pano, "run-manifest.json",
+                    self._padded(planted, _CAP + 1))
+        self._halts(root, H2)
+
+    def test_our_own_manifest_past_the_cap_is_refused_by_every_reader(self):
+        # The cap is the CONSUMER's too: `load_manifest` refuses what first
+        # contact cannot verify, rather than parsing past it.
+        root, pano, manifest = self._owned()
+        self._plant(pano, "run-manifest.json",
+                    self._padded(manifest, _CAP + 1))
+        self.assertIsNone(run_manifest.load_manifest(root))
+        self._assess_halts_h2(root)
+
+    def test_exactly_the_cap_is_read_and_resumes(self):
+        root, pano, manifest = self._owned()
+        self._plant(pano, "run-manifest.json", self._padded(manifest, _CAP))
+        self.assertEqual(manifest, run_manifest.load_manifest(root))
+        self.assertEqual(manifest, first_contact.assess_artifacts(root)["run-manifest.json"])
+
+    def test_a_fifo_manifest_halts_without_blocking_any_reader(self):
+        if not hasattr(os, "mkfifo"):
+            self.skipTest("no FIFOs on this platform")
+        root, pano, _ = self._owned()
+        for name in ("run-manifest.json", "setup-manifest.json"):
+            with self.subTest(name=name):
+                path = os.path.join(pano, name)
+                with contextlib.suppress(FileNotFoundError):
+                    os.remove(path)
+                os.mkfifo(path)
+                outcome = []
+
+                def readers():
+                    outcome.append((run_manifest.load_manifest(root), setup.load_setup_manifest(root)))
+                    try:
+                        first_contact.assess_artifacts(root)
+                    except first_contact.FirstContactHalt as exc:
+                        outcome.append(str(exc))
+
+                worker = threading.Thread(target=readers, daemon=True)
+                worker.start()
+                worker.join(10)
+                if worker.is_alive():
+                    with contextlib.suppress(OSError):   # unblock the reader we leaked
+                        os.close(os.open(path, os.O_WRONLY | os.O_NONBLOCK))
+                self.assertEqual([(None, None), H2], outcome)
+                os.remove(path)
+
+    def test_a_document_too_deep_to_trust_halts_and_never_overflows(self):
+        root, pano, _ = self._owned()
+        for depth in (65, 200_000):
+            with self.subTest(depth=depth):
+                self._plant(pano, "run-manifest.json", b"[" * depth + b"]" * depth)
+                self._assess_halts_h2(root)
+                self.assertIsNone(run_manifest.load_manifest(root))
+
+    def test_a_present_manifest_that_is_not_an_object_halts(self):
+        root, pano, _ = self._owned()
+        for name in ("run-manifest.json", "setup-manifest.json"):
+            for data in (b"[]", b"null", b"7", b"\xff\xfe{}", b"{", b""):
+                with self.subTest(name=name, data=data):
+                    self._plant(pano, name, data)
+                    self._assess_halts_h2(root)
+                    self.assertEqual((None, None), (run_manifest.load_manifest(root),
+                                                    setup.load_setup_manifest(root)))
+                    os.remove(os.path.join(pano, name))
+
+    def test_only_an_absent_manifest_is_no_manifest(self):
+        root, pano, _ = self._owned()
+        os.remove(os.path.join(pano, "run-manifest.json"))
+        self.assertIsNone(first_contact.assess_artifacts(root)["run-manifest.json"])
+
+    def test_bind_over_an_unreadable_mark_binds_to_no_owner(self):
+        # bind() runs after first contact verified the mark; a mark that went
+        # bad in between binds the manifest to nothing, which no later first
+        # contact verifies -- never a crash on the sentinel.
+        root, pano, manifest = self._owned()
+        self._plant(pano, "owner.json", b"[]")
+        self.assertIsNone(first_contact.bind(root, dict(manifest))["owner"])
+
+    def test_the_cap_is_the_ruled_one(self):
+        self.assertEqual(_CAP, safe_write.MANIFEST_MAX_BYTES)
+
+    def test_every_manifest_reader_takes_the_one_cap(self):
+        # One number, read at call time: lower it, and the checker and every
+        # consumer refuse the same document together.
+        root, pano, manifest = self._owned()
+        self._plant(pano, "setup-manifest.json", json.dumps(first_contact.bind(root, dict(manifest))).encode())
+        self.assertIsNotNone(setup.load_setup_manifest(root))
+        with mock.patch.object(safe_write, "MANIFEST_MAX_BYTES", 16):
+            self.assertIsNone(run_manifest.load_manifest(root))
+            self.assertIsNone(setup.load_setup_manifest(root))
+            self.assertIs(first_contact.UNREADABLE,
+                          first_contact._load(os.path.join(pano, "run-manifest.json")))
+            self._assess_halts_h2(root)
 
 
 class TestASymlinkUnderPanopticonHalts(_Trees):
