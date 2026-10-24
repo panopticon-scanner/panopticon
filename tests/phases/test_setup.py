@@ -2,6 +2,7 @@
 """
 import contextlib
 import dataclasses
+import hashlib
 import io
 import json
 import os
@@ -1804,7 +1805,50 @@ class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
                     ["setup", self.repo]))
                 self.assertEqual("complete", again["status"], again)
                 self.assertIn(repo_config.DRAFT_NAME, again["message"])
-                self.assertNotIn("readiness", again["message"])
+                # #3280 S3: a replaced report is not this run's; it is named so.
+                self.assertTrue(again["message"].endswith(setup_readiness.NOT_VERIFIED_TAIL))
+                self.assertNotIn("readiness OK", again["message"])
+
+    # --- #3280 S3: the tail is read only off the bytes this run recorded -----
+
+    def _resume(self):
+        return setup.run_setup_flow(driver.build_parser().parse_args(["setup", self.repo]))
+
+    def test_an_honest_resume_prints_the_recorded_tail(self):
+        status, _ready, _doc, _md = self._setup(self.OK)
+        again = self._resume()
+        self.assertIn("readiness OK", status["message"])
+        self.assertEqual(status["message"], again["message"])
+
+    def test_a_forged_clean_verdict_over_a_gapped_one_is_never_printed(self):
+        status, _ready, doc, _md = self._setup(self.GAP)
+        self.assertNotIn("readiness OK", status["message"])
+        path = runio._pano(self.repo, "setup-report.json")
+        forged = dict(doc, gaps=[], probed_at="2026-10-24T00:00:00Z",
+                      readiness=[[name, True, "ok"] for name, _ok, _detail in doc["readiness"]])
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(forged, fh)
+        again = self._resume()
+        self.assertTrue(again["message"].endswith(setup_readiness.NOT_VERIFIED_TAIL), again["message"])
+        self.assertNotIn("readiness OK", again["message"])
+
+    def test_a_deleted_or_unrecorded_report_says_unverified(self):
+        for spoil in ("delete", "unrecord"):
+            with self.subTest(spoil=spoil):
+                self._setup(self.OK)
+                if spoil == "delete":
+                    os.remove(runio._pano(self.repo, "setup-report.json"))
+                else:
+                    manifest = setup.load_setup_manifest(self.repo)
+                    manifest.pop(setup_readiness.REPORT_SHA256)
+                    setup._rewrite_setup_manifest(self.repo, manifest)
+                self.assertTrue(self._resume()["message"].endswith(setup_readiness.NOT_VERIFIED_TAIL))
+
+    def test_the_recorded_hash_is_of_the_report_as_ingest_left_it(self):
+        self._setup(self.OK)
+        with open(runio._pano(self.repo, "setup-report.json"), "rb") as fh:
+            digest = hashlib.sha256(fh.read()).hexdigest()
+        self.assertEqual(digest, setup.load_setup_manifest(self.repo)[setup_readiness.REPORT_SHA256])
 
     def test_a_string_gaps_is_not_rendered_one_character_at_a_time(self):
         status, _ready, _doc, _md = self._setup(self.OK)

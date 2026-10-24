@@ -669,7 +669,14 @@ class TestOutputSchemaIsStampedOnTheEntry(unittest.TestCase):
         refuted = {hosts.OUTPUT_SCHEMA: dict(self.ADVERTISED[hosts.OUTPUT_SCHEMA],
                                              **{hosts.SHAPE: hosts.SHAPE_REFUTED,
                                                 hosts.SHAPE_DETAIL: "failed in 120 ms"})}
+        run_manifest.write_manifest(self.root, {"run_id": "RID", "host": "claude"})
         write_host_evidence(self.root, {}, cli_flags=refuted)
+        # #3280 S4: the file is a display copy -- a refuted shape there alone
+        # takes nothing off; the run's stamp is what decides.
+        self.assertIn("output_schema", self._written(cell))
+        run_manifest.record_artifact_stamp(self.root, None, run_manifest.OUTPUT_SCHEMA_SHAPE,
+                                           **{hosts.SHAPE: hosts.SHAPE_REFUTED,
+                                              hosts.SHAPE_DETAIL: "failed in 120 ms"})
         self.assertNotIn("output_schema", self._written(cell))
 
     def test_every_other_shape_stamps_exactly_as_before(self):

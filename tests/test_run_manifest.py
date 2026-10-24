@@ -652,6 +652,29 @@ class TestArtifactStamps(unittest.TestCase):
         self.assertEqual(manifest[rm.OUT_FILE_SNAPSHOT]["cells"], 2)
         self.assertIsNone(rm.artifact_stamp(manifest, rm.DRIVER_PLAN))
 
+    def test_the_shape_verdict_is_monotone_and_setup_keeps_its_own(self):
+        # #3280 S4: once a run's verdict is stamped no second write moves it,
+        # and `--setup` stamps its OWN manifest, never the run's.
+        rm.record_artifact_stamp(self.root, None, rm.OUTPUT_SCHEMA_SHAPE, shape="proven", shape_detail="a")
+        rm.record_artifact_stamp(self.root, None, rm.OUTPUT_SCHEMA_SHAPE, shape="refuted", shape_detail="b")
+        self.assertEqual("proven", self._stamp(rm.OUTPUT_SCHEMA_SHAPE)["shape"])
+        setup_path = rm.manifest_path(self.root, "setup")
+        # No setup manifest on disk: nothing is recorded, though the RUN's exists.
+        self.assertIsNone(rm.record_artifact_stamp(self.root, {"run_id": "s1"}, rm.OUTPUT_SCHEMA_SHAPE,
+                                                   namespace="setup", shape="refuted"))
+        self.assertFalse(os.path.exists(setup_path))
+        with open(setup_path, "w", encoding="utf-8") as fh:
+            json.dump({"run_id": "s1"}, fh)
+        self.assertIsNone(rm.record_artifact_stamp(self.root, None, rm.OUTPUT_SCHEMA_SHAPE,
+                                                   namespace="setup", shape="refuted"))
+        with open(setup_path, encoding="utf-8") as fh:
+            self.assertEqual({"run_id": "s1"}, json.load(fh))       # no manifest given: nothing
+        rm.record_artifact_stamp(self.root, {"run_id": "s1"}, rm.OUTPUT_SCHEMA_SHAPE,
+                                 namespace="setup", shape="refuted", shape_detail="c")
+        with open(setup_path, encoding="utf-8") as fh:
+            self.assertEqual("refuted", json.load(fh)[rm.OUTPUT_SCHEMA_SHAPE]["shape"])
+        self.assertEqual("proven", self._stamp(rm.OUTPUT_SCHEMA_SHAPE)["shape"])
+
     def test_an_unknown_key_is_a_programming_error(self):
         with self.assertRaises(ValueError):
             rm.record_artifact_stamp(self.root, None, "made_up_artifact")

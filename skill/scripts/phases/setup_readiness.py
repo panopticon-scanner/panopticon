@@ -11,11 +11,19 @@ now has more than one caller. Two copies of it are two things that drift while
 each path's own test keeps passing -- the failure the four-surface rule exists
 to prevent, reproduced inside the fix for it.
 
-Formatting and shaping only: nothing here reads or writes a file. What is
-measured belongs to `setup_flow`; where the rows are written belongs to
-`phases/setup.py`.
+Formatting and shaping, plus ONE read: `bound_readiness_tail` reads the report
+back only when its bytes are the ones this setup run recorded (#3280 S3). What
+is measured belongs to `setup_flow`; where the rows are written, and their
+hash, belongs to `phases/setup.py`.
 """
+import hashlib
+import json
+
 import scripts.grouping_engine as grouping_engine
+import scripts.run_manifest as run_manifest
+import scripts.safe_write as safe_write
+import scripts.tolerant_json as tolerant_json
+from . import runio
 
 
 # #1601. Every limitation carried a full remedy and they were all joined into
@@ -38,6 +46,11 @@ import scripts.grouping_engine as grouping_engine
 # hold the text it promises.
 _FALLBACK_ARTIFACT = "setup-complete.json"
 REPORT_ARTIFACT = "setup-report.json"
+# #3280 S3: the sha256 of the setup report's bytes as this setup run wrote them,
+# in the stamped setup manifest; the completion line reads the report only then.
+REPORT_SHA256 = "report_sha256"
+_REPORT_MAX_BYTES = 1 << 24
+NOT_VERIFIED_TAIL = " \u2014 readiness: not verified for this run; see setup-report.md"
 
 _LIMITATION_LINE = 119          # strictly under the 120-column bar
 _LIMITATION_MAX = 12            # remedies shown before the "and N more" tail
@@ -216,6 +229,23 @@ def _stored_record(document):
             "limitations": _stored_limitations(document),
             PROBED_AT: document.get(PROBED_AT)
             if isinstance(document.get(PROBED_AT), str) else None}
+
+
+def bound_readiness_tail(review_root):
+    """The completion line's readiness tail (#1603), off `setup-report.json`
+    ONLY when its bytes are the ones this setup run recorded (#3280 S3): one
+    read, hashed and parsed from the same bytes. A replaced, deleted or
+    unrecorded report says so -- never silence, which reads as "no readiness
+    rows", and never the stored verdict, which nobody can vouch for."""
+    try:
+        data = safe_write.read_regular_bytes(runio._pano(review_root, REPORT_ARTIFACT), _REPORT_MAX_BYTES)
+        manifest = safe_write.read_manifest_json(run_manifest.manifest_path(review_root, "setup"))
+        if (not isinstance(manifest, dict)
+                or manifest.get(REPORT_SHA256) != hashlib.sha256(data).hexdigest()):
+            return NOT_VERIFIED_TAIL
+        return _readiness_tail(json.loads(tolerant_json.depth_checked(data.decode("utf-8"))))
+    except (OSError, ValueError):
+        return NOT_VERIFIED_TAIL
 
 
 def _readiness_tail(document, artifact=REPORT_ARTIFACT):

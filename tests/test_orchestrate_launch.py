@@ -11,6 +11,7 @@ from unittest import mock
 
 
 import scripts.orchestrate as orchestrate
+import scripts.run_manifest as run_manifest
 import scripts.driver as driver
 import scripts.html_report as html_report
 import scripts.phases.engine as engine
@@ -543,6 +544,51 @@ class TestTheOutputSchemaShapeProof(LoopCase):
         self._run(d, floor, runner)
         self.assertNotIn(hosts.SHAPE, self._fact(d))
 
+    def test_the_proof_decides_from_the_stamp_never_the_file(self):
+        # #3280 S4, at the prover itself: a run of ours mid-flight whose file
+        # says `proven` (a replaced artifact) and whose manifest holds no stamp
+        # still owes, spends and STAMPS its one launch; once stamped, a file
+        # that says nothing does not re-open it.
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        run_manifest.write_manifest(d, {"run_id": "r" * 8, "host": "claude", "created": "2026-10-24"})
+        run_dir = os.path.join(d, ".panopticon", "runs", "t")
+        os.makedirs(run_dir)
+        planted = copy.deepcopy(self.ADVERTISED)
+        planted[hosts.OUTPUT_SCHEMA].update({hosts.SHAPE: hosts.SHAPE_PROVEN, hosts.SHAPE_DETAIL: "planted"})
+        runio._write_json(os.path.join(run_dir, runio.HOST_CAPABILITIES), {hosts.CLI_FLAGS: planted})
+        cell = {"id": "review-app-SEC", "delivery": "return_json", "agent": "panopticon-reviewer",
+                "output_schema": os.path.join(run_dir, "x.schema.json"), "prompt": "p"}
+        runner = self.Schemed()
+        verdict = orchestrate.loop_batch.prove_output_schema_shape(
+            run_dir, "claude", runner, [dict(cell)], lambda entry: {}, d)
+        self.assertEqual(1, len(runner.probe_launches()))
+        self.assertEqual(hosts.SHAPE_PROVEN, verdict[hosts.SHAPE])
+        stamp = run_manifest.artifact_stamp(run_manifest.load_manifest(d), run_manifest.OUTPUT_SCHEMA_SHAPE)
+        self.assertEqual(verdict[hosts.SHAPE], stamp[hosts.SHAPE])
+        runio._write_json(os.path.join(run_dir, runio.HOST_CAPABILITIES),
+                          {hosts.CLI_FLAGS: copy.deepcopy(self.ADVERTISED)})
+        again = self.Schemed()
+        self.assertIsNone(orchestrate.loop_batch.prove_output_schema_shape(
+            run_dir, "claude", again, [dict(cell)], lambda entry: {}, d))
+        self.assertEqual([], again.probe_launches())
+
+    def test_a_fresh_run_proves_once_and_stamps_whatever_the_flat_file_said(self):
+        # #3280 S4: the run's verdict is the manifest stamp; the file only shows it.
+        for planted in (hosts.SHAPE_PROVEN, hosts.SHAPE_REFUTED):
+            with self.subTest(planted=planted):
+                d, floor = self._repo()
+                flags = copy.deepcopy(self.ADVERTISED)
+                flags[hosts.OUTPUT_SCHEMA].update({hosts.SHAPE: planted, hosts.SHAPE_DETAIL: "planted"})
+                write_host_evidence(d, self.POSTURE, cli_flags=flags)
+                runner = self.Schemed()
+                self._run(d, floor, runner)
+                self.assertEqual(1, len(runner.probe_launches()))
+                self.assertTrue([c for c in runner.cells() if c.get("output_schema")])
+                stamp = run_manifest.artifact_stamp(run_manifest.load_manifest(d),
+                                                    run_manifest.OUTPUT_SCHEMA_SHAPE)
+                self.assertEqual(hosts.SHAPE_PROVEN, stamp[hosts.SHAPE])
+
     def test_a_batch_with_no_schema_carrying_entry_is_never_probed(self):
         # A checkpoint of self-writing cells has no binding to clone and no
         # flag to measure; it waits for one that does.
@@ -551,11 +597,11 @@ class TestTheOutputSchemaShapeProof(LoopCase):
         real = orchestrate.loop_batch.prove_output_schema_shape
         seen = []
 
-        def spy(run_dir, host, runner_, pending, env_for):
+        def spy(run_dir, host, runner_, pending, env_for, *rest):
             for entry in pending:
                 entry.pop("output_schema", None)     # self-writing batch
             seen.append(len(pending))
-            return real(run_dir, host, runner_, pending, env_for)
+            return real(run_dir, host, runner_, pending, env_for, *rest)
 
         with mock.patch.object(orchestrate.loop_batch, "prove_output_schema_shape", spy):
             self._run(d, floor, runner)

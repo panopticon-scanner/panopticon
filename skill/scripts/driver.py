@@ -676,7 +676,7 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     # `_carry_output_schema_shape`.
     path = os.path.join(persist.run_dir(review_root, namespace), runio.HOST_CAPABILITIES)
     stored = runio._load_json(path)
-    _carry_output_schema_shape(fresh, stored)
+    _carry_output_schema_shape(fresh, manifest)
     disclosure_refusal = _disclose_posture(review_root, manifest, fresh, namespace)
     if disclosure_refusal:                         # #1735: a planted staging path
         return disclosure_refusal
@@ -747,7 +747,7 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     return None
 
 
-def _carry_output_schema_shape(fresh, stored):
+def _carry_output_schema_shape(fresh, manifest):
     """Keep this run's recorded output-schema SHAPE across a re-probe (#1732).
 
     The shape is measured once per run by `loop_batch.prove_output_schema_shape`,
@@ -763,11 +763,11 @@ def _carry_output_schema_shape(fresh, stored):
     the turn after that would spend another launch re-measuring it. The
     `--help` half (`flag`, `advertised`, `detail`) is this invocation's own
     and is left exactly as the probe found it; only the launch's verdict is
-    carried.
+    carried -- off the run's stamp (#3280 S4), never the stored file, whose
+    shape a replaced artifact could set.
     """
     fact = (fresh.get(hosts.CLI_FLAGS) or {}).get(hosts.OUTPUT_SCHEMA)
-    prior = ((stored.get(hosts.CLI_FLAGS) if isinstance(stored, dict) else None)
-             or {}).get(hosts.OUTPUT_SCHEMA)
+    prior = run_manifest.artifact_stamp(manifest, run_manifest.OUTPUT_SCHEMA_SHAPE)
     if not isinstance(fact, dict) or not isinstance(prior, dict):
         return
     if prior.get(hosts.SHAPE):

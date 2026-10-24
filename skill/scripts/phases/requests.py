@@ -154,6 +154,14 @@ def _prompt_file_path(review_root, entry_id, namespace=None):
     safe = entry_file_component(entry_id)
     return runio._pano(review_root, _prompts_dir(namespace), "%s.txt" % safe)
 
+def _manifest_of(review_root, namespace):
+    """The namespace's own manifest: setup keeps one of its own (#1507)."""
+    if namespace == loop_batch.SETUP_NAMESPACE:
+        import scripts.phases.setup as setup_mod
+        return setup_mod.load_setup_manifest(review_root)
+    return run_manifest.load_manifest(review_root)
+
+
 def _materialize_prompts(review_root, entries, namespace=None, *, run_id):
     """Write each entry's prompt to its own file and stamp `prompt_file` on the
     entry (#run10 B2).
@@ -200,8 +208,9 @@ def _materialize_prompts(review_root, entries, namespace=None, *, run_id):
     # exactly as before, because a fact nobody could measure may not remove a
     # capability.
     fact = runio.host_cli_flags(review_root).get(hosts.OUTPUT_SCHEMA, {})
-    advertised = (fact.get("advertised") is True
-                  and fact.get(hosts.SHAPE) != hosts.SHAPE_REFUTED)
+    shape = run_manifest.artifact_stamp(_manifest_of(review_root, namespace),     # #3280 S4
+                                        run_manifest.OUTPUT_SCHEMA_SHAPE) or {}
+    advertised = fact.get("advertised") is True and shape.get(hosts.SHAPE) != hosts.SHAPE_REFUTED
     for entry in entries:
         entry = dict(entry)
         # D10 ruling 3: the published schema this entry's reply is accepted

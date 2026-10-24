@@ -15,6 +15,7 @@ from unittest import mock
 import scripts.driver as driver
 import scripts.host_disclosure as host_disclosure
 import scripts.orchestrate as orchestrate
+import scripts.phases.setup_readiness as setup_readiness
 import scripts.probes.common as probes_common
 import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
@@ -629,6 +630,22 @@ class TestSetupOnRails(LoopCase):
         self.assertIn("readiness gaps: docker (fix before running a review)",
                       status["message"])
         self.assertIn("nvd-api-key", status["message"])
+        # #3280 S3: the same line on a no-op resume over a REPLACED report --
+        # a forged clean verdict -- says it is unverified, never "readiness OK".
+        path = runio._pano(d, "setup-report.json")
+        with open(path, encoding="utf-8") as fh:
+            forged = json.load(fh)
+        forged.update(gaps=[], probed_at="2026-10-24T00:00:00Z",
+                      readiness=[[name, True, "ok"] for name, _ok, _detail in forged["readiness"]])
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(forged, fh)
+        with mock.patch("scripts.runners.base.runner_for", return_value=SetupRunner()), \
+             mock.patch("scripts.setup_flow.readiness", return_value=checks), \
+             contextlib.redirect_stdout(io.StringIO()):
+            again = orchestrate.loop(args)
+        self.assertEqual(again["status"], "complete", again)
+        self.assertTrue(again["message"].endswith(setup_readiness.NOT_VERIFIED_TAIL), again["message"])
+        self.assertNotIn("readiness OK", again["message"])
 
     def test_setup_vocab_absent_fallback_keeps_its_own_complete_message(self):
         # Fix round 1, item 1: the vocab-absent fallback (phases/setup.py's

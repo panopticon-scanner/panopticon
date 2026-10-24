@@ -71,6 +71,15 @@ def _sha256_of(path):
     except OSError:
         return None
 
+def _record_report_sha(review_root):
+    """#3280 S3: anchor the setup report's bytes, as `ingest_execute` just left
+    them, in the setup manifest -- `bound_readiness_tail` prints off no others."""
+    manifest = load_setup_manifest(review_root)
+    digest = _sha256_of(runio._pano(review_root, setup_readiness.REPORT_ARTIFACT))
+    if isinstance(manifest, dict) and digest:
+        manifest[setup_readiness.REPORT_SHA256] = digest
+        _rewrite_setup_manifest(review_root, manifest)
+
 def record_proposal(out_file):
     """(ok, reason): anchor the sha256 of the setup proposal `driver persist`
     just wrote at `out_file` in the setup manifest beside it (#3277 review S2),
@@ -330,6 +339,7 @@ def ingest_execute(review_root, manifest):
         # is the guard working, and `run_setup_flow` makes it an `error`.)
         print("driver setup: readiness not recorded in the setup report: %s"
               % exc, file=sys.stderr, flush=True)
+    _record_report_sha(review_root)
     # The suffix rides here for symmetry with `_scan_fallback`'s and, like
     # that one, is DISCARDED: `run_engine` collects phase names, never their
     # messages. The operator's copy is composed in `run_setup_flow`.
@@ -617,8 +627,7 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
             # re-invocation that finds the work already done runs no phase at
             # all -- and an artifact with no readiness rows gets no clause,
             # never a clean verdict nobody measured.
-            result["message"] += setup_readiness._readiness_tail(
-                runio._load_json(runio._pano(review_root, "setup-report.json")))
+            result["message"] += setup_readiness.bound_readiness_tail(review_root)   # #3280 S3
         else:
             msg = ("setup complete -- vocab-absent fallback seeded a flat %s; "
                    "review, edit, and commit it" % repo_config.CONFIG_NAMES[0])

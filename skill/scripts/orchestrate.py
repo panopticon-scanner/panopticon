@@ -446,9 +446,9 @@ def loop(args):
             done, total = 0, len(pending)
             handled, landed = [], []
             tally.pause_before_launch(mode, pending)   # #2506, before any launch
-            # #1732: the run's ONE shape proof, here rather than at posture
-            # time -- the guards are armed NOW, so it is confined like a cell.
-            loop_batch.prove_output_schema_shape(run_dir, host, runner, pending, guards.env_for)
+            # #1732: the ONE shape proof, here not at posture time: the guards are armed NOW, so it is confined.
+            loop_batch.prove_output_schema_shape(run_dir, host, runner, pending, guards.env_for,
+                                                 review_root, namespace)
             # #1721: the pool is FIFO, so an entry's index in `pending` is its
             # LAUNCH order -- which is what tells the tally a success that
             # proves the host is back from one that was merely in flight when
@@ -684,8 +684,7 @@ def _finish(status, review_root, guards, ledger, namespace, mode="headless", run
                 # helper, same clause, same artifact as `driver setup`'s own
                 # completion line; an artifact with no readiness rows adds
                 # nothing.
-                + setup_readiness._readiness_tail(runio._load_json(
-                    runio._pano(review_root, "setup-report.json"))))
+                + setup_readiness.bound_readiness_tail(review_root))       # #3280 S3
     return status
 
 

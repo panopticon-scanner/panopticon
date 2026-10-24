@@ -1557,8 +1557,11 @@ class TestTheOutputSchemaShapeSurvivesEveryReProbe(unittest.TestCase):
         return d
 
     def _manifest(self):
-        return {"host": "claude", "run_id": "r1" * 4, "created": "2026-09-20",
-                "security_mode": "standard"}
+        # One per test: #3280 S4 keeps the verdict in the run's manifest.
+        if not hasattr(self, "_m"):
+            self._m = {"host": "claude", "run_id": "r1" * 4, "created": "2026-09-20",
+                       "security_mode": "standard"}
+        return self._m
 
     def _artifact(self, advertised=True, detail="`claude --help` advertises it"):
         body = _all_proven_artifact("claude")
@@ -1587,6 +1590,9 @@ class TestTheOutputSchemaShapeSurvivesEveryReProbe(unittest.TestCase):
             runio._pano(d, runio.HOST_CAPABILITIES))[hosts.CLI_FLAGS][hosts.OUTPUT_SCHEMA]
 
     def _record(self, d, shape, detail="one launch, 900 ms"):
+        """The loop's record: the run's stamp, and the file's display copy."""
+        self._manifest()[run_manifest.OUTPUT_SCHEMA_SHAPE] = {
+            hosts.SHAPE: shape, hosts.SHAPE_DETAIL: detail, "at": "2026-10-24T00:00:00Z"}
         path = runio._pano(d, runio.HOST_CAPABILITIES)
         body = runio._load_json(path)
         body[hosts.CLI_FLAGS][hosts.OUTPUT_SCHEMA].update(
@@ -1646,6 +1652,21 @@ class TestTheOutputSchemaShapeSurvivesEveryReProbe(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()):
             driver._establish_host_posture(d, self._manifest(), self._headless(d))
         self.assertEqual(hosts.SHAPE_REFUTED, seen.get(hosts.SHAPE))
+
+    def test_a_verdict_in_the_file_alone_is_not_carried(self):
+        # #3280 S4: a replaced artifact that says `proven` (skip the proof) or
+        # `refuted` (strip the flag) is erased by the next rewrite, not carried.
+        for shape in (hosts.SHAPE_PROVEN, hosts.SHAPE_REFUTED):
+            with self.subTest(shape=shape):
+                d = self._repo()
+                self._establish(d)
+                path = runio._pano(d, runio.HOST_CAPABILITIES)
+                body = runio._load_json(path)
+                body[hosts.CLI_FLAGS][hosts.OUTPUT_SCHEMA].update(
+                    {hosts.SHAPE: shape, hosts.SHAPE_DETAIL: "planted"})
+                runio._write_json(path, body)
+                self._establish(d)
+                self.assertNotIn(hosts.SHAPE, self._flags(d))
 
     def test_nothing_is_carried_when_the_flag_was_never_interrogated(self):
         d = self._repo()

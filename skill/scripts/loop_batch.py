@@ -180,17 +180,15 @@ def recover_stale(review_root, request, host, mode, namespace=None, discard=None
     ROLLED_BACK row per entry and a second decrement of one attempt counter,
     which is exactly what the flag is for.
 
-    `discard` is the `--discard-batch <n>` acceptance (#1912): the operator has
-    confirmed that record `n`'s owner is gone, so a `foreign` or `unstamped`
-    verdict on THAT record alone stops being a refusal and becomes the ordinary
-    dead-owner rollback. Only those two verdicts -- a `live` owner is
-    demonstrably a loop running here and still refuses, and a `dead` one needs
-    no acceptance because it already recovers. Every other check stands
-    untouched: what is accepted is the LIVENESS question, never the record's
-    own account of what it wrote, so the artifacts are still re-derived from
-    the bound request before a single file is deleted. Nothing is written or
-    deleted for it in this validation pass; the acceptance is recorded in the
-    act loop below, next to the rollback it authorises.
+    `discard` is the `--discard-batch <n>` acceptance (#1912): the operator has confirmed that
+    record `n`'s owner is gone, so a `foreign` or `unstamped` verdict on THAT record alone stops
+    being a refusal and becomes the ordinary dead-owner rollback. Only those two verdicts -- a
+    `live` owner is demonstrably a loop running here and still refuses, and a `dead` one needs no
+    acceptance because it already recovers. Every other check stands untouched: what is accepted is
+    the LIVENESS question, never the record's own account of what it wrote, so the artifacts are
+    still re-derived from the bound request before a single file is deleted. Nothing is written or
+    deleted for it in this validation pass; the acceptance is recorded in the act loop below, next
+    to the rollback it authorises.
     """
     manifest = (setup.load_setup_manifest(review_root) if namespace == "setup"
                 else run_manifest.load_manifest(review_root))
@@ -746,34 +744,31 @@ SHAPE_REFUTED_NOTICE = (
     "validates against the same schema on receipt")
 
 
-def prove_output_schema_shape(run_dir, host, runner, pending, env_for):
+def prove_output_schema_shape(run_dir, host, runner, pending, env_for, review_root, namespace=None):
     """Spend this run's ONE shape-proof launch, if it is owed (#1732).
 
-    Called from `orchestrate.loop` after `Guards.arm(pending)` and before the
-    batch's first `iter_batch`. That position is the whole point: the launch
-    goes out under the read scope and write allowlist this batch just armed,
-    and under the settings file `arm` just wrote -- confined exactly as a cell
-    is. Proving it at posture time instead (where this started) meant one
-    unconfined turn in the reviewed tree per run, before anything was armed,
-    naming a settings file that did not exist yet.
+    Called from `orchestrate.loop` after `Guards.arm(pending)` and before the batch's first
+    `iter_batch`. That position is the whole point: the launch goes out under the read scope and
+    write allowlist this batch just armed, and under the settings file `arm` just wrote -- confined
+    exactly as a cell is. Proving it at posture time instead (where this started) meant one
+    unconfined turn in the reviewed tree per run, before anything was armed, naming a settings file
+    that did not exist yet.
 
-    ONCE PER RUN, and the record is the run's own evidence artifact rather
-    than anything in memory: a `paused` run resumed tomorrow reads the verdict
-    back and launches nothing. `--reset` starts a new run folder and therefore
-    measures again, which is exactly when a CLI upgrade should be re-measured.
+    ONCE PER RUN, recorded as a monotone stamp in the run's own manifest (#3280 S4;
+    host-capabilities.json only displays it): a `paused` run resumed tomorrow reads the stamp and
+    launches nothing, and `--reset` -- a new run -- measures again, which is when a CLI upgrade
+    should be re-measured.
 
-    Owed only when there is something to measure AND something to measure it
-    with: the flag is advertised (the `--help` read), the family declares one,
-    no verdict is recorded yet, and this batch carries at least one
-    schema-stamped `return_json` entry to clone a binding from. A checkpoint
-    of self-writing entries, or a host that stamps nothing, simply waits for
-    one that does.
+    Owed only when there is something to measure AND something to measure it with: the flag is
+    advertised (the `--help` read), the family declares one, no verdict is recorded yet, and this
+    batch carries at least one schema-stamped `return_json` entry to clone a binding from. A
+    checkpoint of self-writing entries, or a host that stamps nothing, simply waits for one that
+    does.
 
-    On `refuted` the flag comes off THIS batch's entries in memory, before
-    they launch. The request FILE is left exactly as written -- its sha256 is
-    what `load_bound_request` binds, and rewriting it mid-iteration would
-    break that binding to save a stamp that the next `_run` will not re-apply
-    anyway (`requests._materialize_prompts` consults the recorded shape).
+    On `refuted` the flag comes off THIS batch's entries in memory, before they launch. The request
+    FILE is left exactly as written -- its sha256 is what `load_bound_request` binds, and rewriting
+    it mid-iteration would break that binding to save a stamp that the next `_run` will not
+    re-apply anyway (`requests._materialize_prompts` consults the recorded shape).
 
     Returns the verdict, or None when no launch was owed. Never raises: this
     is one measurement, and a run must not end on it.
@@ -782,7 +777,9 @@ def prove_output_schema_shape(run_dir, host, runner, pending, env_for):
     body = runio._load_json(path)
     fact = ((body.get(hosts.CLI_FLAGS) if isinstance(body, dict) else None)
             or {}).get(hosts.OUTPUT_SCHEMA)
-    if not isinstance(fact, dict) or fact.get(hosts.SHAPE):
+    load = setup.load_setup_manifest if namespace == SETUP_NAMESPACE else run_manifest.load_manifest
+    manifest = load(review_root)
+    if not isinstance(fact, dict) or run_manifest.artifact_stamp(manifest, run_manifest.OUTPUT_SCHEMA_SHAPE):
         return None                       # never asked, or already answered
     if fact.get("advertised") is not True:
         return None
@@ -799,6 +796,8 @@ def prove_output_schema_shape(run_dir, host, runner, pending, env_for):
     verdict = shape_probe.prove(host, runner, entry, env_for(entry))
     fact.update(verdict)
     try:
+        run_manifest.record_artifact_stamp(review_root, manifest, run_manifest.OUTPUT_SCHEMA_SHAPE,
+                                           namespace=namespace, **verdict)
         runio._write_json(path, body)
     except (OSError, ValueError) as exc:   # noqa: BLE001 -- a lost record costs
         # one repeated launch next invocation; raising costs the run.

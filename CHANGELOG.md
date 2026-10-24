@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Operator-visible: a resumed run no longer trusts two stored files it did not bind (#3280, GHSA-wjpr-jxg9-rmwh's family).**
+  - **The readiness tail on `driver setup` / `driver loop --setup` completion.** It is read off
+    `setup-report.json` only when those bytes are the ones this setup run recorded (their sha256, in
+    the stamped setup manifest). A replaced, deleted or unrecorded report now ends the line with
+    "— readiness: not verified for this run; see setup-report.md", never a stored "readiness OK".
+  - **The output-schema shape verdict (#1732)** is now a once-per-run stamp in the run's manifest,
+    or in setup's own manifest. Every reader decides from the stamp. `host-capabilities.json` only
+    displays the verdict, so a replaced one can neither skip the run's one shape proof nor strip
+    `--output-schema` from its entries.
 - **Operator-visible: first contact replaces the older provenance and symlink checks (#3271 B2).**
   `driver loop` and `driver loop --setup` now make first contact (H1-H3, and on the operator's
   checkout too under `--pr`) before they read the run's host off the manifest, read the outgoing
