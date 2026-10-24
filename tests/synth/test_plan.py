@@ -1107,6 +1107,24 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
         self.assertEqual(report["meta"]["coverage"]["tools_suppressed"],
                          {"vendor": 1})
 
+    def test_run_artifact_reasons_reach_the_report_from_ingest(self):
+        for rel, reason in (
+                (".panopticon/runs/old/report.json", "run-artifact"),
+                ("skill/scripts/__pycache__/driver.cpython-314.pyc",
+                 "generated-bytecode")):
+            with self.subTest(rel=rel):
+                body, report = self._run("standard", rel=rel)
+                self.assertEqual(body, [])
+                self.assertEqual(report["findings"], [])
+                self.assertEqual(
+                    report["meta"]["coverage"]["tools_suppressed"],
+                    {reason: 1},
+                )
+                rendered = render_mod.render_summary(report)
+                self.assertIn("**Tool findings suppressed:** %s: 1" % reason,
+                              rendered)
+                self.assertIn("controlled source-scope rules", rendered)
+
     # -- fix round 1, F1: the gate-counted set takes the gate's own filters ---
     #
     # Each of these runs the SAME bandit HIGH twice, moving only the directory
@@ -1171,7 +1189,7 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
             html_report.write_html(report, out)
             with open(out, encoding="utf-8") as fh:
                 html = fh.read()
-        self.assertIn("suppressed by directory name but", html)
+        self.assertIn("suppressed but GATED", html)
         self.assertIn("this run", html)
 
     # -- #1740 fix round 1: the committed exclude_paths policy scopes the gate -

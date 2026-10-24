@@ -318,8 +318,8 @@ def main(argv=None):
     except tool_axis_mod.ToolManifestError as exc:
         print(str(exc), file=sys.stderr)
         return 3              # invalid input, distinct from gate FAIL (1)
-    # #1701: `gated_suppressed` is the name-based drops the gate must still
-    # count under --security redteam; empty otherwise. It rides to certification
+    # #1701/#3269 G4: `gated_suppressed` is the source-scope drops the gate still
+    # counts under --security redteam; empty otherwise. It rides to certification
     # on the ToolAxis and never joins `tool_findings`, so the report body is the
     # same in both modes.
     unbound_outputs: list[str] = []

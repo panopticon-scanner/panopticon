@@ -84,7 +84,7 @@ class Resolved:
     doc_policy: dict | None
     verdict_unloadable: list
     unanswered_gate: int
-    # #1701 (fix round 1, F1): the name-based drops this run's GATE counts,
+    # #1701/#3269 G4: the source-scope drops this run's GATE counts,
     # after the same delta / `gate_scope` filter `gate_eligible` above takes.
     # They are NOT in `findings`/`active`/`rejected` -- the report body never
     # holds them -- so they are carried separately rather than partitioned out
