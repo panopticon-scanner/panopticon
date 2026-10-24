@@ -2,13 +2,18 @@
 
 ## Unreleased
 
+- **Headless guard settings are built fresh, not merged from disk.** A headless run's
+  `host-settings.json` (setup's in `.panopticon/`, a review's in `runs/<tag>/`) is the run
+  folder's own, so arming the read and write guards now rebuilds it from their two entries alone
+  rather than keeping whatever else the file held. A session's `.claude/settings.local.json` is the
+  operator's and is still merged. `driver setup --reset` now clears setup's copy too.
 - **Operator-visible: first contact halts on a `.panopticon/` this machine did not start (#3271).**
   `driver run` and `driver setup` now assess the target once, before any phase writes, and halt
   with one fixed line on: a `.panopticon/` tracked in git; a `.panopticon/` holding anything but
   no `owner.json` carrying this machine's run stamp (planted, copied from another checkout, or
   left by a run from before this change); a symlink under it other than the run's own
   `runs/latest` and `report.json` links; or a file hard-linked to something outside the target
-  (`.git/` is not counted). The stamp is an HMAC keyed by 32 random bytes under
+  (a git work tree's own `.git/` is not counted). The stamp is an HMAC keyed by 32 random bytes under
   `$PANOPTICON_STATE_DIR` (default `~/.local/state/panopticon`, 0700/0600), so a target cannot mint
   one. **Upgrading:** a checkout with a `.panopticon/` from an earlier version halts once; move it
   aside (`mv .panopticon .panopticon.old`) or pass `--reset`, which moves it aside for you and
