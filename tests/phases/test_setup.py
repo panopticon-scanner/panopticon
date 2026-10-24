@@ -35,9 +35,20 @@ import scripts.runners.batch as batch_mod
 from tests._test_helpers import (all_proven_artifact as _all_proven_artifact,
                            hard_link_or_skip,
                            refuted_tool_policy_artifact as _refuted_artifact)
-from tests._test_helpers import REPO_ROOT, SKILL_ROOT, write_host_evidence
+from tests._test_helpers import REPO_ROOT, SKILL_ROOT, adopt_panopticon, write_host_evidence
+import scripts.first_contact as first_contact
 from tests.tools.git_repo import make_git_repo
 
+
+
+@contextlib.contextmanager
+def _returned_proposal(review_root):
+    """Write `.panopticon/setup-proposal.json` as the host's reply and bind it
+    the way `driver persist` does (#3277 S2): its sha256 in the setup manifest."""
+    path = runio._pano(review_root, "setup-proposal.json")
+    with open(path, "w") as fh:
+        yield fh
+    setup.record_proposal(path)
 
 class TestDriverSetup(unittest.TestCase):
     def _repo(self, enforcement=None):
@@ -406,7 +417,7 @@ class TestDriverSetup(unittest.TestCase):
         # where they will see it. (`provision` returns the line; this is the
         # only place that prints it.)
         d = self._repo()
-        os.makedirs(runio._pano(d), exist_ok=True)
+        adopt_panopticon(d)          # #3271: the retired config of OUR earlier setup
         with open(os.path.join(d, ".panopticon", "config.json"), "w") as fh:
             json.dump({"max_per_group": 5}, fh)
         err = io.StringIO()
@@ -421,7 +432,7 @@ class TestDriverSetup(unittest.TestCase):
         setup.run_setup_flow(args)                       # scan checkpoint
         proposal = {"groups": [{"capability": "Checkout",
                                 "match": ["src/checkout/**"], "tests": []}]}
-        with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
+        with _returned_proposal(d) as fh:
             json.dump(proposal, fh)
         status = setup.run_setup_flow(args)              # re-invoke -> ingest
         self.assertEqual(status["status"], "complete")
@@ -484,7 +495,7 @@ class TestDriverSetup(unittest.TestCase):
         setup.run_setup_flow(args2)                       # scan checkpoint
         proposal = {"groups": [{"capability": "Checkout",
                                 "match": ["src/checkout/**"], "tests": []}]}
-        with open(runio._pano(d2, "setup-proposal.json"), "w") as fh:
+        with _returned_proposal(d2) as fh:
             json.dump(proposal, fh)
         status2 = setup.run_setup_flow(args2)              # re-invoke -> ingest
         self.assertEqual(status2["status"], "complete")
@@ -511,7 +522,7 @@ class TestDriverSetup(unittest.TestCase):
         d = self._registered_repo()
         args = driver.build_parser().parse_args(["setup", d])
         setup.run_setup_flow(args)
-        with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
+        with _returned_proposal(d) as fh:
             json.dump({"groups": [{"capability": "", "match": []}]}, fh)
         status = setup.run_setup_flow(args)
         self.assertEqual(status["status"], "error")
@@ -527,7 +538,7 @@ class TestDriverSetup(unittest.TestCase):
         # --reset to clear, not one that never existed.
         proposal = {"groups": [{"capability": "Checkout",
                                 "match": ["src/checkout/**"], "tests": []}]}
-        with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
+        with _returned_proposal(d) as fh:
             json.dump(proposal, fh)
         run_id_before = setup.load_setup_manifest(d)["run_id"]
 
@@ -553,16 +564,18 @@ class TestDriverSetup(unittest.TestCase):
                             "review_root": "/somewhere/else",
                             "vocabulary_path": "/etc/hostile-vocab.yml",
                             "host": "claude"})
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        # #3271: a `.panopticon/` this machine did not start now HALTS at first
+        # contact (H2), before the manifest is read at all, where it used to be
+        # discarded and rebuilt; --reset moves it aside and rebuilds.
+        status = setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        self.assertEqual(("error", first_contact.H2), (status["status"], status["message"]))
+        self.assertEqual("FOREIGN", setup.load_setup_manifest(d)["run_id"])    # never read
+        with contextlib.redirect_stderr(io.StringIO()):
+            setup.run_setup_flow(driver.build_parser().parse_args(["setup", d, "--reset"]))
         m = setup.load_setup_manifest(d)
         self.assertNotEqual(m["review_root"], "/somewhere/else")   # re-stamped to THIS tree
         self.assertNotEqual(m["run_id"], "FOREIGN")                # rebuilt, not reused
         self.assertIsNone(m["vocabulary_path"])                    # hostile path dropped
-        self.assertIn("ignoring foreign setup-manifest", err.getvalue())
-        self.assertIn("stamped review_root '/somewhere/else' !=", err.getvalue())
-        self.assertNotIn("git-tracked", err.getvalue())
 
     def test_tracked_setup_manifest_message_does_not_claim_the_stamp_differs(self):
         root = self._repo()
@@ -740,10 +753,10 @@ class TestDriverSetup(unittest.TestCase):
         self.assertEqual(s1["checkpoint"], "scan")
         entry = runio._load_json(
             requests.request_path(d, namespace="setup"))["entries"][0]
-        # host return-persist: write the returned proposal to entry["out_file"]
-        with open(entry["out_file"], "w") as fh:
-            json.dump({"groups": [{"capability": "Checkout",
-                                   "match": ["src/checkout/**"], "tests": []}]}, fh)
+        # host return-persist, through the seam that writes it (#3277 S2)
+        import scripts.phases.persist as persist
+        self.assertEqual((True, ""), persist.write_reply(entry, json.dumps(
+            {"groups": [{"capability": "Checkout", "match": ["src/checkout/**"], "tests": []}]})))
         s2 = setup.run_setup_flow(args)
         self.assertEqual(s2["status"], "complete")
         self.assertIn(repo_config.DRAFT_NAME, os.listdir(d))
@@ -759,7 +772,7 @@ class TestDriverSetup(unittest.TestCase):
         setup.run_setup_flow(args)                       # scan checkpoint
         manifest = setup.load_setup_manifest(d)
         self.assertEqual((manifest["max_per_group"], manifest["max_groups"]), (3, 5))
-        with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
+        with _returned_proposal(d) as fh:
             json.dump({"groups": [{"capability": "Checkout",
                                    "match": ["src/checkout/**"], "tests": []}]}, fh)
         status = setup.run_setup_flow(args)              # re-invoke -> ingest
@@ -795,7 +808,7 @@ class TestDriverSetup(unittest.TestCase):
         manifest = setup.load_setup_manifest(d)
         self.assertEqual((manifest["max_per_group"], manifest["max_groups"]), (8, 9))
         self._write_settings(d, 2, 4)
-        with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
+        with _returned_proposal(d) as fh:
             json.dump({"groups": [{"capability": "Checkout",
                                    "match": ["src/checkout/**"], "tests": []}]}, fh)
         status = setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
@@ -854,7 +867,7 @@ class TestDriverSetup(unittest.TestCase):
         d = self._registered_repo()
         args = driver.build_parser().parse_args(["setup", d])
         setup.run_setup_flow(args)
-        with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
+        with _returned_proposal(d) as fh:
             json.dump({"groups": [{"capability": "Checkout",
                                    "match": ["src/checkout/**"], "tests": []}]}, fh)
         setup.run_setup_flow(args)
@@ -1180,7 +1193,7 @@ class TestStandaloneSetupProbesItsOwnPosture(unittest.TestCase):
 
         _code, status = self._setup(d, probes=_probes)
         self.assertEqual("checkpoint", status["status"], status)
-        with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
+        with _returned_proposal(d) as fh:
             json.dump({"groups": [{"capability": "Checkout", "match": ["src/**"],
                                    "tests": []}]}, fh)
         del calls[:]
@@ -1247,10 +1260,10 @@ class TestStandaloneSetupProbesItsOwnPosture(unittest.TestCase):
         subprocess.run(["git", "add", "-f", ".panopticon/" + runio.HOST_CAPABILITIES],
                        cwd=d, check=True, capture_output=True)
         code, status = self._setup(d, probes=_refuted_artifact)
+        # #3271: the committed artifact is a first-contact halt (H1) now, so the
+        # planted `proven` reaches no gate at all.
         self.assertEqual(1, code, status)
-        self.assertIn("--allow-unenforced", status["message"])
-        self.assertEqual(hosts.REFUTED,
-                         self._evidence(d)["capabilities"][hosts.TOOL_POLICY_ENFORCED]["state"])
+        self.assertEqual(first_contact.H1, status["message"])
 
 
 class TestSetupOwnsItsDispatchNamespace(unittest.TestCase):
@@ -1575,7 +1588,7 @@ class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
             first = setup.run_setup_flow(args)
             self.assertEqual("checkpoint", first["status"], first)
             # the host's return-persist half of the checkpoint
-            with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
+            with _returned_proposal(d) as fh:
                 json.dump(self.PROPOSAL, fh)
             answer = ({"side_effect": side_effect} if side_effect is not None
                       else {"return_value": checks})
@@ -1811,7 +1824,7 @@ class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
 
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual("checkpoint", setup.run_setup_flow(args)["status"])
-            with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
+            with _returned_proposal(d) as fh:
                 json.dump(self.PROPOSAL, fh)
             with mock.patch("scripts.setup_flow.ingest_proposal", _plant):
                 status = setup.run_setup_flow(args)
@@ -2040,7 +2053,7 @@ class TestSetupConvertsAConfinementRefusal(unittest.TestCase):
         victim = os.path.join(victim_dir, "loot")
         with open(victim, "w", encoding="utf-8") as fh:
             fh.write("KEEP")
-        os.makedirs(runio._pano(root), exist_ok=True)
+        adopt_panopticon(root)       # #3271: planted into a dir of OURS -- H3 names it
         os.symlink(victim, runio._pano(root, "setup-spine.json"))
         return victim
 
@@ -2194,8 +2207,41 @@ class TestSetupDonePredicatesBindToThisRun(unittest.TestCase):
                 m = self._manifest(d)
                 self._dispatch(d, m)
                 self.assertFalse(setup.scan_done(d, m))       # nothing returned yet
-                self._plant(d, "setup-proposal.json", self._PROPOSAL)
+                self.assertEqual((True, ""), self._persist(d, self._PROPOSAL))
                 self.assertTrue(setup.scan_done(d, m))
+
+    def _persist(self, d, proposal):
+        """The host's return through the one seam that writes it."""
+        import scripts.phases.persist as persist
+        entry = runio._load_json(requests.request_path(d, namespace="setup"))["entries"][0]
+        return persist.write_reply(entry, json.dumps(proposal))
+
+    def test_a_proposal_whose_sha_cannot_be_recorded_is_refused(self):
+        d = self._repo()
+        m = self._manifest(d)
+        self._dispatch(d, m)
+        os.remove(runio._pano(d, setup.SETUP_MANIFEST))
+        ok, reason = self._persist(d, self._PROPOSAL)
+        self.assertEqual((False, True), (ok, reason.startswith(
+            "could not record the setup proposal's sha256 beside ")), reason)
+
+    def test_a_proposal_replaced_after_the_scan_is_not_its_result(self):
+        # #3277 review S2: the request binds the PATH, the manifest now binds
+        # the BYTES that persist wrote there; other bytes at that path, before
+        # ingest reads them, are not this scan's result.
+        for kind, make in (("git", self._repo), ("non-git", self._plain_dir)):
+            with self.subTest(target=kind):
+                d = make()
+                m = self._manifest(d)
+                self._dispatch(d, m)
+                self.assertEqual((True, ""), self._persist(d, self._PROPOSAL))
+                self.assertTrue(setup.scan_done(d, m))
+                with open(runio._pano(d, "setup-proposal.json"), "w") as fh:
+                    json.dump({"groups": [{"capability": "Other", "match": ["**"],
+                                           "tests": []}]}, fh)
+                self.assertFalse(setup.scan_done(d, m))
+                _doc, reason = setup._unbound_setup_artifact(d, "setup-proposal.json", m)
+                self.assertIn("not the reply this run's setup scan persisted", reason)
 
     def test_a_proposal_planted_before_the_dispatch_does_not_survive_it(self):
         for kind, make in (("git", self._repo), ("non-git", self._plain_dir)):
@@ -2222,6 +2268,8 @@ class TestSetupDonePredicatesBindToThisRun(unittest.TestCase):
         m = self._manifest(d)
         self._dispatch(d, m)
         self._plant(d, "setup-proposal.json", self._PROPOSAL)
+        self.assertFalse(setup.scan_done(d, m))         # #3277 S2: not persisted yet
+        self.assertEqual((True, ""), setup.record_proposal(runio._pano(d, "setup-proposal.json")))
         self.assertTrue(setup.scan_done(d, m))
         self.assertFalse(setup.ingest_done(d, m))
         self._plant(d, "setup-complete.json",
@@ -2251,13 +2299,15 @@ class TestSetupDonePredicatesBindToThisRun(unittest.TestCase):
         # The engine re-evaluates both predicates until the flow stops, so the
         # report lives in `run_setup_flow` and the predicates stay silent --
         # the same split `_foreign_manifest_reason` uses one file over.
+        # #3271: a committed `.panopticon/` artifact is a first-contact halt
+        # (H1), said once, in the status, before any predicate is evaluated.
         d = self._repo()
         self._plant(d, "setup-proposal.json", self._PROPOSAL, commit=True)
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
-        self.assertEqual(1, err.getvalue().count("setup-proposal.json:"),
-                         err.getvalue())
+            status = setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        self.assertEqual(("error", first_contact.H1), (status["status"], status["message"]))
+        self.assertNotIn("setup-proposal.json:", err.getvalue())
 
     def test_the_committed_refusal_names_a_remedy_that_can_work(self):
         # `--reset` deletes the file, and git puts a TRACKED one straight back
@@ -2266,10 +2316,7 @@ class TestSetupDonePredicatesBindToThisRun(unittest.TestCase):
         # the answer is the defect, not the wording.
         d = self._repo()
         self._plant(d, "setup-proposal.json", self._PROPOSAL, commit=True)
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
-        line = [ln for ln in err.getvalue().splitlines()
-                if "setup-proposal.json:" in ln][0]
-        self.assertIn("git-tracked", line)
-        self.assertNotIn("--reset", line)
+        with contextlib.redirect_stderr(io.StringIO()):
+            status = setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        self.assertIn("git rm -r --cached .panopticon", status["message"])     # #3271: H1
+        self.assertNotIn("--reset", status["message"])

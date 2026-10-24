@@ -16,7 +16,7 @@ from unittest import mock
 
 import pytest
 
-from tests._test_helpers import fake_pem
+from tests._test_helpers import adopt_panopticon, fake_pem, our_manifest
 import scripts.phases.runio as runio
 import scripts.phases.coverage as coverage
 import scripts.phases.review as review
@@ -649,7 +649,8 @@ class TestArtifactConfinement(unittest.TestCase):
         os.symlink(outside, os.path.join(repo, ".panopticon"))
         status = driver.run(self._args(repo))
         self.assertEqual(status["status"], "error")
-        self.assertIn("artifact root", status["message"].lower())
+        # #3271: first contact refuses it (H3), before the artifact-root check.
+        self.assertIn(".panopticon/ is a symlink", status["message"])
         self.assertEqual(os.listdir(outside), [])   # no write followed the symlink
 
 class TestPerRunFolders(unittest.TestCase):
@@ -963,10 +964,11 @@ def _root(tmp_path):
     root = tmp_path / "review"
     pano = root / ".panopticon"
     pano.mkdir(parents=True)
+    adopt_panopticon(str(root))      # #3271: an earlier run of OURS
     body = {"host": "claude", "security_mode": "standard",
             "scope": {"mode": "repo"}, "created": "2026-09-23T00:00:00Z",
             "run_id": "abc123", "review_root": str(root)}
-    run_manifest.write_manifest(str(root), body)
+    run_manifest.write_manifest(str(root), our_manifest(str(root), body))
     return root, pano, run_manifest.run_tag(body)
 
 
@@ -1022,10 +1024,20 @@ def test_public_run_refuses_linked_artifact_root(tmp_path, reset):
     (outside / "sentinel").write_text("keep")
     (root / ".panopticon").symlink_to(outside, target_is_directory=True)
     argv = ["run", str(root)] + (["--reset"] if reset else [])
-    status = driver.run(driver.build_parser().parse_args(argv), phases=())
-    assert status["status"] == "error"
-    assert "unsafe artifact root" in status["message"]
+    with contextlib.redirect_stderr(io.StringIO()):
+        status = driver.run(driver.build_parser().parse_args(argv), phases=())
+    # #3271: first contact halts on it (H3); --reset moves the link aside, never
+    # following it, and the run starts over a fresh `.panopticon/`.
+    if reset:
+        assert status["status"] != "error", status
+        assert (root / ".panopticon").is_dir() and not (root / ".panopticon").is_symlink()
+        assert [p.name.startswith(".panopticon.unverified-") and p.is_symlink()
+                for p in root.iterdir() if p.name != ".panopticon"] == [True]
+    else:
+        assert status["status"] == "error"
+        assert status["message"].startswith(".panopticon/ is a symlink")
     assert (outside / "sentinel").read_text() == "keep"
+    assert sorted(p.name for p in outside.iterdir()) == ["sentinel"]
 
 
 def test_public_reset_refuses_linked_runs_parent(tmp_path):
@@ -1035,11 +1047,16 @@ def test_public_reset_refuses_linked_runs_parent(tmp_path):
     (outside / "latest").write_text("keep")
     (pano / "runs").symlink_to(outside, target_is_directory=True)
     args = driver.build_parser().parse_args(["run", str(root), "--reset"])
-    status = driver.run(args, phases=())
-    assert status["status"] == "error"
-    assert "unsafe reset cleanup" in status["message"]
+    with contextlib.redirect_stderr(io.StringIO()):
+        status = driver.run(args, phases=())
+    # #3271: the planted link is a first-contact H3, and --reset moves the whole
+    # `.panopticon/` aside rather than cleaning through it.
+    assert status["status"] != "error", status
     assert (outside / "latest").read_text() == "keep"
-    assert (pano / "run-manifest.json").exists()
+    (aside,) = [p for p in root.iterdir() if p.name.startswith(".panopticon.unverified-")]
+    assert (aside / "run-manifest.json").exists() and (aside / "runs").is_symlink()
+    without = driver.run(driver.build_parser().parse_args(["run", str(root)]), phases=())
+    assert without["status"] != "error", without
 
 
 def test_public_reset_reports_latest_directory_cleanup_failure(tmp_path):
@@ -1069,6 +1086,7 @@ def test_public_fresh_manifest_reports_legacy_directory_cleanup_failure(tmp_path
     root = tmp_path / "review"
     pano = root / ".panopticon"
     pano.mkdir(parents=True)
+    adopt_panopticon(str(root))      # #3271: legacy artifacts of OUR earlier run
     stale = pano / "groups.json"
     stale.mkdir()
     (stale / "sentinel").write_text("keep malformed artifact")
@@ -1090,6 +1108,7 @@ def test_fresh_manifest_path_cleans_legacy_artifacts(tmp_path, monkeypatch):
     root = tmp_path / "review"
     pano = root / ".panopticon"
     pano.mkdir(parents=True)
+    adopt_panopticon(str(root))      # #3271: legacy artifacts of OUR earlier run
     (pano / "groups.json").write_text("stale")
     (root / "panopticon.yaml").write_text("keep")
     real_clear = driver._clear_run_artifacts

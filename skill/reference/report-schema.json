@@ -191,6 +191,16 @@
             }
           }
         },
+        "prior_run": {
+          "type": "object",
+          "description": "This run started over an earlier run by ANOTHER host in the same `.panopticon/` (#3271, ruling D2). The earlier run carries this machine's run stamp, so it is ours and is disclosed rather than halted on. Absent otherwise.",
+          "required": ["host", "run_id"],
+          "additionalProperties": false,
+          "properties": {
+            "host": {"type": "string"},
+            "run_id": {"type": "string", "description": "The first 8 hex characters of the earlier run's run_id."}
+          }
+        },
         "apps": {
           "type": "array",
           "description": "Every external app this run launched, named rather than trusted (#3270): the host CLI the posture was probed through (off host-capabilities.json) and docker (off tools-manifest.json). One shape per app; a field the machine could not answer is null and `reason` says which step failed. #3272 keys its probe cache on `sha256` and `version` together. Absent when none was recorded. Repaired at both reads (`scripts.app_trace.repair`).",
@@ -200,7 +210,7 @@
             "additionalProperties": false,
             "properties": {
               "name": {"type": "string"},
-              "path": {"type": ["string", "null"], "description": "The resolved executable's realpath."},
+              "path": {"type": ["string", "null"], "description": "The resolved executable's realpath, with the operator's home spelled `~` in the report (#3271); the manifests keep the full path."},
               "version": {"type": ["string", "null"], "description": "The first line `<app> --version` printed, at most 200 printable characters."},
               "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
               "size": {"type": ["integer", "null"], "minimum": 0},

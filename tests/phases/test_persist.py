@@ -10,6 +10,7 @@ from tests._test_helpers import fake_pem, pem_begin
 import scripts.phases.persist as persist
 import scripts.phases.review as review
 import scripts.phases.runio as runio
+import scripts.redact as redact
 import scripts.phases.verify as verify
 import scripts.ocrdb as ocrdb
 
@@ -163,7 +164,7 @@ class TestReplyReasonRedaction(unittest.TestCase):
         for label, value, secret in cases:
             with self.subTest(label=label):
                 self._assert_secret_is_masked(
-                    persist._reason_repr(value), secret)
+                    redact._reason_repr(value), secret)
 
     def test_strings_are_redacted_before_the_diagnostic_scan_horizon(self):
         # Round 2 B3: the first giant token collapses to one marker. Before
@@ -173,7 +174,7 @@ class TestReplyReasonRedaction(unittest.TestCase):
         prefix_len = 13
         first = "ghp_" + "A" * (scan_limit - prefix_len - 6)
         value = first + " " + self.SECRET
-        reason = persist._reason_repr(value)
+        reason = redact._reason_repr(value)
         self.assertIn("[REDACTED_TOKEN]", reason)
         self.assertNotIn(
             self.SECRET[:prefix_len].casefold(), reason.casefold())

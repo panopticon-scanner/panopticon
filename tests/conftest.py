@@ -92,6 +92,13 @@ if shutil.which("docker") is None:
     os.chmod(_TEST_DOCKER, 0o700)
     os.environ["PATH"] = os.pathsep.join([_TEST_BIN, os.environ.get("PATH", "")])
 
+# #3271: the run-stamp key lives operator-side. The suite gets its own, so no
+# test reads or creates the operator's real `~/.local/state/panopticon` key;
+# child processes inherit it with the rest of the environment.
+_STATE_DIR = tempfile.mkdtemp(prefix="panopticon-test-state-")
+atexit.register(shutil.rmtree, _STATE_DIR, ignore_errors=True)
+os.environ["PANOPTICON_STATE_DIR"] = _STATE_DIR
+
 # --- #1515: no live scanner containers from the unit suite -------------------
 # driver.run() advances into tools_execute unless --no-tools; run_tools then
 # asks docker_available() whether to launch `docker run --memory 6g --cpus 4`

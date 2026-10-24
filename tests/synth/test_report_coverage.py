@@ -663,6 +663,42 @@ class TestTheImageAndTheAppsAreNamed(unittest.TestCase):
         self.assertNotIn("image", r["meta"]["tools"])
         self.assertNotIn("apps", r["meta"])
 
+    def test_the_published_report_spells_the_operator_s_home_as_a_tilde(self):
+        # #3271 S2: the report is published; the manifests keep the full path.
+        home = os.path.expanduser("~")
+        r = self._report(None, host_apps=[dict(self.CLAUDE, path=home + "/.local/bin/claude"),
+                                          dict(self.CLAUDE, name="codex", path=home + "x/codex")])
+        self.assertEqual(["~/.local/bin/claude", home + "x/codex"],
+                         [app["path"] for app in r["meta"]["apps"]])
+        self.assertIn("at ~/.local/bin/claude (", render_mod.render_summary(r))
+        self.assertNotIn(home + "/.local", json.dumps(r))
+
+
+class TestAPriorRunOfAnotherHostIsDisclosed(unittest.TestCase):
+    """#3271 ruling D2: a stamped run by ANOTHER host in the same `.panopticon/`
+    is ours, so the report says this run started over it."""
+
+    def _report(self, prior_run):
+        return report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp=DEFAULT_TIMESTAMP,
+                                     prior_run=prior_run),
+            findings=findings_mod.FindingSet(findings=[])))
+
+    def test_the_json_and_both_views_carry_it(self):
+        import html
+        import scripts.html_report as html_report
+        r = self._report("claude:0a1b2c3d")
+        self.assertEqual({"host": "claude", "run_id": "0a1b2c3d"}, r["meta"]["prior_run"])
+        self.assertEqual([], validate_schema_mod.schema_errors(r))
+        line = "this run started over an earlier claude run (0a1b2c3d) in .panopticon/"
+        self.assertIn(line, render_mod.render_summary(r))
+        self.assertIn(line, html.unescape(html_report.render(r)))
+
+    def test_a_value_out_of_shape_publishes_nothing(self):
+        for value in (None, "", "claude", "Claude:0a1b", "claude:XYZ", "claude:0a1b2c3d9"):
+            with self.subTest(value=value):
+                self.assertNotIn("prior_run", self._report(value)["meta"])
+
 
 class TestRenderSummaryResume(unittest.TestCase):
     G = [{"name": "g1", "files": ["a.py"]}]

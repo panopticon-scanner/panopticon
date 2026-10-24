@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Operator-visible: first contact halts on a `.panopticon/` this machine did not start (#3271).**
+  `driver run` and `driver setup` now assess the target once, before any phase writes, and halt
+  with one fixed line on: a `.panopticon/` tracked in git; a `.panopticon/` holding anything but
+  no `owner.json` carrying this machine's run stamp (planted, copied from another checkout, or
+  left by a run from before this change); a symlink under it other than the run's own
+  `runs/latest` and `report.json` links; or a file hard-linked to something outside the target
+  (a git work tree's own `.git/` is not counted). The stamp is an HMAC keyed by 32 random bytes under
+  `$PANOPTICON_STATE_DIR` (default `~/.local/state/panopticon`, 0700/0600), so a target cannot mint
+  one. **Upgrading:** a checkout with a `.panopticon/` from an earlier version halts once; move it
+  aside (`mv .panopticon .panopticon.old`) or pass `--reset`, which moves it aside for you and
+  starts fresh. A tracked `.panopticon/` is never moved; remove it from the index. Starting over an
+  earlier run by another host on the same machine is disclosed (`meta.prior_run`), not halted on.
+  The published report now spells the operator's home as `~` in `meta.apps[].path`.
 - **Operator-visible: a PATH entry inside the target now halts the run (#3270, owner ruling D2).**
   An entry inside the reviewed tree -- or one whose program is a symlink into it -- used to be
   skipped silently. It is hostility or a badly broken machine, and most often the operator

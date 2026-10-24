@@ -16,8 +16,9 @@ import scripts.phases.runio as runio
 import scripts.phases.coverage as coverage
 
 from tests._test_helpers import all_proven_artifact as _all_proven_artifact
-from tests._test_helpers import docker_probe_runner, only
+from tests._test_helpers import adopt_panopticon, docker_probe_runner, only, our_manifest
 import scripts.driver as driver
+import scripts.first_contact as first_contact
 import scripts.inert as inert
 import scripts.host_disclosure as host_disclosure
 import scripts.run_manifest as run_manifest
@@ -104,7 +105,13 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
                 error = io.StringIO()
                 with mock.patch.object(runio, "_manifest_committed", return_value=tracked), \
                         contextlib.redirect_stderr(error):
-                    driver.run(args)
+                    status = driver.run(args)
+                if not tracked:
+                    # #3271 review C1: a manifest stamped for another tree no
+                    # longer verifies, so first contact halts (H2) before this
+                    # message's branch is reached.
+                    self.assertEqual(first_contact.H2, status["message"])
+                    continue
                 line = next(line for line in error.getvalue().splitlines()
                             if "ignoring foreign run-manifest.json" in line)
                 self.assertIn("git-tracked" if tracked else "stamped review_root", line)
@@ -142,6 +149,7 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         # #5.0-13: a present-but-unparseable run-manifest.json must not raise an
         # uncaught FileExistsError from write_manifest (write-once); it's reset.
         d = self._repo()
+        adopt_panopticon(d)          # #3271: OUR run's manifest, corrupted
         with open(run_manifest.manifest_path(d), "w", encoding="utf-8") as fh:
             fh.write("{ not valid json")
         status = driver.run(self._args(d))   # must not raise FileExistsError
@@ -816,6 +824,7 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         # I1: a stale report.json with no manifest must be cleared on the first
         # run, not resumed as "synthesize done".
         d = self._repo()
+        adopt_panopticon(d)          # #3271: a stale artifact of OUR earlier run
         stale = runio._pano(d, "report.json")
         runio._write_json(stale, {"stale": True})
         status = driver.run(self._args(d))     # first run -> manifest built
@@ -826,9 +835,10 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         # I2: a manifest written without a baseline (interrupt window) must get
         # the baseline captured on the next invocation.
         d = self._repo()
+        adopt_panopticon(d)          # #3271: OUR run, interrupted
         m = run_manifest.build_manifest(
             target=d, review_root=d, host="claude", security_mode="standard")
-        run_manifest.write_manifest(d, m)        # manifest, but NO baseline
+        run_manifest.write_manifest(d, our_manifest(d, m))   # manifest, NO baseline
         self.assertFalse(os.path.exists(runio._pano(d, "tree-baseline.txt")))
         driver.run(self._args(d))                # resume -> should self-heal
         self.assertTrue(os.path.exists(runio._pano(d, "tree-baseline.txt")))

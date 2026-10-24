@@ -15,6 +15,7 @@ import scripts.safe_write as safe_write
 import scripts.synthesize as synthesize_cli
 from scripts.phases import child, engine, runio, synthesize, validate
 from scripts.synth import validate_schema
+from tests._test_helpers import adopt_panopticon, our_manifest
 from tests.tools.git_repo import make_git_repo
 
 
@@ -33,10 +34,11 @@ def _report(root):
 
 
 def _manifest(root):
+    adopt_panopticon(root)           # #3271: a run of OURS, resuming
     manifest = run_manifest.build_manifest(
         target=root, review_root=root, host="codex", security_mode="standard",
         flags={"tools": False}, scope={"mode": "repo", "target": None})
-    run_manifest.write_manifest(root, manifest)
+    run_manifest.write_manifest(root, our_manifest(root, manifest))
     _write(runio._pano(root, "groups.json"), {"mode": "repo", "groups": []})
     return manifest
 

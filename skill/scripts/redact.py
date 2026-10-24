@@ -306,3 +306,61 @@ def _repr_value(obj):
 def redact_repr(obj, limit):
     """Represent a nested value only after redacting its original strings."""
     return redact_diagnostic(repr(_repr_value(obj)), limit)
+
+
+# --- the stored-reply sanitizers (moved from phases/persist.py, #3277) ---
+# 256 KiB of reply, after which the record says `truncated`. A refused reply is evidence, not an
+# artifact: enough to see what shape came back and to quote the reason at the retry, bounded so one
+# runaway agent cannot fill the run folder with the same megabyte three times.
+REJECTED_CAP = 256 * 1024
+# How much of an oversized reply the REDACTOR is allowed to scan before the cap applies (D10 F2).
+# Redaction has to come first -- two of redact's rules (PEM and JWT) are delimiter-terminated, so a
+# cut inside such a block removes the terminator, the pattern stops matching, and the surviving
+# prefix stays in plaintext; measured, a PEM straddling the 256 KiB cut left 1531 characters of key
+# material in the record. This bound is what keeps "redact first" from meaning "run a DOTALL `.*?`
+# over an unbounded reply".
+REDACT_CAP = 4 * 1024 * 1024
+# The one rule whose opening delimiter can survive the final cut with its
+# closing one beyond the REDACT_CAP horizon, i.e. unmasked. Nothing after a
+# dangling header is kept.
+_DANGLING_PEM = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----")
+# How much of a refusal reason the retry prompt may quote (D10 F3).
+REASON_CAP = 200
+
+
+def _cut(text, limit):
+    """`text` clipped to `limit` BYTES of UTF-8, never splitting a character."""
+    return text.encode("utf-8")[:limit].decode("utf-8", "ignore")
+
+
+def _safe_reply(text):
+    """(kept, truncated): the reply as it may be stored (D10 F2).
+
+    Redacted BEFORE the cap, so the cap only ever cuts text that has already
+    been through every pattern; pre-cut at REDACT_CAP first, so the redactor's
+    DOTALL rules are never handed an unbounded body. Whatever survives the
+    final cut is then swept for a private-key HEADER left without its `END`:
+    the only way an unmasked secret can reach the record is a block whose
+    terminator lay beyond the horizon, and a header with nothing to close it is
+    the signature of exactly that.
+
+    `truncated` compares what was KEPT against what there was to keep, at each
+    of the three steps (D10 N4). Deriving it from `len(kept) == REJECTED_CAP`
+    was wrong in both directions: a cut through a multibyte character leaves
+    `kept` a byte or two short of the cap -- `_cut` drops the partial
+    character -- so a truncated record claimed to be whole, and a reply that
+    exactly filled the cap claimed a truncation that never happened.
+    """
+    scanned = _cut(text, REDACT_CAP)
+    redacted = redact_tree(scanned)
+    kept = _cut(redacted, REJECTED_CAP)
+    dangling = [m for m in _DANGLING_PEM.finditer(kept)
+                if "-----END" not in kept[m.end():]]
+    if dangling:
+        kept = kept[:dangling[0].start()]
+    return kept, scanned != text or kept != redacted
+
+
+def _reason_repr(value):
+    """A reply-derived value redacted before representation and capping."""
+    return redact_repr(value, REASON_CAP)
