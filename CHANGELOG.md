@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **roslyn-secguard is opt-in, off by default (#3265, owner ruling 2026-10-23).** It is the only
+  adapter that executes the target's own code (its MSBuild/analyzer build), so a hostile repository
+  got code execution inside the tools container. It now runs only with the operator flag
+  `--allow-target-build` on `driver run`/`loop` (carried to `run_tools` off the run manifest, and
+  into a resume). A target's `panopticon.yml` cannot set it: the key is operator-only and refused.
+  Without the flag a C# target is still covered by Semgrep, and the report says once, in
+  `meta.coverage.target_build_not_run` and on both views: "roslyn-secguard not run: it executes the
+  target's build; pass --allow-target-build to enable." Off by default never counts as a coverage
+  loss. The containment armor stays for the opt-in path.
+- **roslyn-secguard names the projects its one build does not reach (#3248).** It analyses one
+  solution or project. The `.csproj` files that solution does not reference -- found by the same
+  pruned walk, never read off the solution's text -- are now listed in the coverage manifest's
+  `sanitized` block and on the coverage line ("N projects not analysed"), not only on stderr.
+
 - **`--online` pip-audit no longer builds a target-named source distribution (#3223, 5.3).**
   pip-audit resolves the generated requirements with pip in a temporary venv, and for a name
   published only as an sdist pip ran that package's `setup.py` / PEP 517 hook inside the online

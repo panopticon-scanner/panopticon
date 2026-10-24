@@ -205,6 +205,13 @@
               },
               "description": "Names of adapters from EXECUTES_TARGET_BUILD that ran this run (produced an output file), whether or not they emitted findings."
             },
+            "target_build_not_run": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "#3265 (owner ruling 2026-10-23): adapters from EXECUTES_TARGET_BUILD that applied to the target but were NOT run, because the operator did not pass --allow-target-build. Running one executes the target's own build code inside the tools container, so it is opt-in and off by default. Present only when something was withheld. Read off the tools manifest's `withheld` list and repaired to EXECUTES_TARGET_BUILD names (the manifest is target-writable). Non-sinking: an off-by-default adapter is never `missing` and never affects coverage_certified."
+            },
             "tool_policy_mode": {
               "type": "string",
               "enum": [

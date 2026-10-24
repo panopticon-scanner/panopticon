@@ -104,6 +104,9 @@
 #   - 2026-10-01 (#2556): `tool_cleanup.py` keeps the Markdown and HTML renderings of
 #     container-cleanup coverage identical. Claim it on `ToolAdapters:Core` beside the capture
 #     and manifest modules that produce the disclosure.
+#   - 2026-10-24 (#3265/#3248): `build_disclosure.py` is `tool_cleanup.py`'s sibling for the
+#     build-executing adapter (not run without --allow-target-build; projects its one build did
+#     not reach). Claimed on `ToolAdapters:Core` beside it, for the same reason.
 #   - 2026-09-28 (#2306): a FOURTH part of that split, ruled after #2289, claims
 #     `venv_scope.py` (finding the virtualenvs under the target, deciding which
 #     of them a scanner's exclusion knob may be handed, and rendering that onto
@@ -270,6 +273,7 @@ groups:
       - skill/scripts/scanner_config.py
       - skill/scripts/tool_capture.py
       - skill/scripts/tool_cleanup.py
+      - skill/scripts/build_disclosure.py
       - skill/scripts/tools_manifest.py
       - skill/scripts/venv_scope.py
       - skill/scripts/semgrep_targets.py

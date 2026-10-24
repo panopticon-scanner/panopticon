@@ -608,6 +608,17 @@ def reconcile(plan, tools, resolved, run=None):
     if plan.sec_carve_out is not None:
         coverage["exclude_paths_sec_carve_out"] = repair_mod.repair_sec_carve_out(
             plan.sec_carve_out)
+    # #3265: what the operator did not enable, published only when something was
+    # withheld. The manifest is target-writable, so only a name this build knows
+    # executes the target's build survives the read; the line printed for it is
+    # a constant (tools.TARGET_BUILD_NOT_RUN), never manifest text. Non-sinking:
+    # off by default is the intended posture, not a coverage loss.
+    withheld = (tools.manifest.get("withheld") if isinstance(tools.manifest, dict)
+                else None)
+    if isinstance(withheld, list):
+        named = sorted({t for t in withheld if t in EXECUTES_TARGET_BUILD})
+        if named:
+            coverage["target_build_not_run"] = named
     return Reconciled(coverage=coverage, integrity=integrity, integrity_ok=integrity_ok,
                       delta_scope_suppressed_git_drivers=delta_scope_suppressed,
                       panels_incomplete=panels_incomplete, tools_absent=tools_absent,

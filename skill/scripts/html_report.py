@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     import scripts.hosts as hosts
     import scripts.integrity_messages as integrity_messages
     import scripts.ocrdb as ocrdb
-    from scripts import safe_write, tool_cleanup
+    from scripts import build_disclosure, safe_write, tool_cleanup
 else:
     try:
         import scripts.evidence as evidence
@@ -22,7 +22,7 @@ else:
         import scripts.hosts as hosts
         import scripts.integrity_messages as integrity_messages
         import scripts.ocrdb as ocrdb
-        from scripts import safe_write, tool_cleanup
+        from scripts import build_disclosure, safe_write, tool_cleanup
     except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
         import evidence
         import evidence_sections
@@ -30,6 +30,7 @@ else:
         import hosts
         import integrity_messages
         import ocrdb
+        import build_disclosure
         import safe_write
         import tool_cleanup
 
@@ -640,6 +641,7 @@ def _render_scanner_context(meta):
             parts.append("%s: %d finding%s could not be placed under the target root"
                          % (_escape(name), count, "" if count == 1 else "s"))
     parts.extend(_partial_audit_notes(tools.get("sanitized")))
+    parts.extend(_escape(line) for line in build_disclosure.not_run_lines(meta.get("coverage")))
     parts.extend(_egress_notes(tools.get("network")))
     if not parts:
         return ""
@@ -668,9 +670,7 @@ def _partial_audit_notes(sanitized):
         row = sanitized[name]
         dropped = row.get("dropped") if isinstance(row, dict) else None
         if isinstance(dropped, list) and dropped:
-            notes.append("%s: %d requirement lines not audited "
-                         "(editable/local/VCS)"
-                         % (_escape(name), len(dropped) + _more(row)))
+            notes.append(build_disclosure.partial_audit_line(_escape(name), len(dropped) + _more(row)))
     return notes
 
 

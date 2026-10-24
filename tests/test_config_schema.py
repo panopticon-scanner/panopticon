@@ -475,3 +475,36 @@ class TestTheRunArtifact(unittest.TestCase):
         # Belt-and-braces: the rendered summary line stays a sane length even
         # when every value it quotes is near the artifact-layer's own bound.
         self.assertLess(len(render_mod._config_line(loaded)), 500)
+
+
+
+class TestATargetCannotAllowItsOwnBuild(unittest.TestCase):
+    """#3265 done-when (c): the target is the threat, so --allow-target-build is
+    the operator's alone. A `settings:` key asking for it is refused as
+    operator-only, and the driver records the flag only from its own CLI."""
+
+    def test_the_key_is_operator_only_and_refused(self):
+        self.assertEqual("operator", cs.CLASS_OF.get("allow_target_build"))
+        p = cs.parse_settings({"settings": {"allow_target_build": True, "tools": True}})
+        self.assertNotIn("allow_target_build", p.typed)
+        refused = {r["key"]: r["reason"] for r in p.refused}
+        self.assertIn("operator-only", refused.get("allow_target_build", ""))
+
+    def test_a_committed_setting_never_reaches_the_run_flags(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups: {}\nsettings:\n"
+                         "  allow_target_build: true\n  tools: true\n")
+            silent = argparse.Namespace(allow_target_build=None)
+            self.assertIsNone(driver._cli_flags(silent, review_root=d).get("allow_target_build"))
+            asked = argparse.Namespace(allow_target_build=True)
+            self.assertIs(True, driver._cli_flags(asked, review_root=d).get("allow_target_build"))
+
+    def test_run_and_loop_take_the_flag_and_a_resume_carries_it(self):
+        parser = driver.build_parser()
+        for verb in ("run", "loop"):
+            args = parser.parse_args([verb, "--allow-target-build"])
+            self.assertIs(True, args.allow_target_build, verb)
+        import scripts.runners.resume as resume
+        self.assertIn(("allow_target_build", "--allow-target-build", "flag"),
+                      resume._RESUME_FLAGS)

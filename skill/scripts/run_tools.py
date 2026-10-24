@@ -12,7 +12,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts import groups_schema
 from scripts import executable
-from scripts.tools import ADAPTERS, ONLINE_ONLY
+from scripts.tools import ADAPTERS, ONLINE_ONLY, withhold_target_builds
 from scripts.tools import egress
 from scripts.tools.base import SECURITY_FLAG
 from scripts import plan_contract
@@ -475,7 +475,7 @@ class _DockerContext:
 
 def run_tools(target, tools, out_dir, image="panopticon-tools",
               runner=None, online=False, progress=None, venv_dirs=None,
-              run_id=None, security_mode="standard", exclude_globs=()):
+              run_id=None, security_mode="standard", exclude_globs=(), allow_target_build=False):
     """Run selected security tools and adapters in Docker against target.
 
     Legacy SARIF tools use their hard-coded ``TOOL_CMD`` invocation. New Phase 1
@@ -523,7 +523,7 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
             venv_scope.find_virtualenvs(target))[0]
     validate_output_dir(target, out_dir)
     os.makedirs(out_dir, exist_ok=True)
-    tools = filter_online(tools, online)
+    tools = withhold_target_builds(filter_online(tools, online), allow_target_build)[0]  # #3265
     resolved = executable.resolve("docker", target, os.environ.get("PATH", ""))
     docker_bin = resolved.path
     docker_env = executable.sanitize_startup_environment(os.environ)
@@ -724,6 +724,7 @@ def main(argv=None):
     ap.add_argument("--languages", nargs="*", default=[])
     ap.add_argument("--deps", action="store_true")
     ap.add_argument("--online", action="store_true", help="allow pip-audit/npm-audit to reach their advisory APIs")
+    ap.add_argument("--allow-target-build", action="store_true", help="run roslyn-secguard (builds the target)")
     ap.add_argument("--manifest", default=None,
                     help="Write selected/produced scanner coverage JSON")
     ap.add_argument("--run-id", default=None,
@@ -769,7 +770,7 @@ def main(argv=None):
         phase2 = [name for name in required_names if name in PHASE2_ADAPTERS]
         languages = a.languages or detect_languages(a.target)
         chosen = select_tools(languages, a.deps) + phase1 + phase2
-    effective = filter_online(chosen, a.online)
+    effective, withheld = withhold_target_builds(filter_online(chosen, a.online), a.allow_target_build)
     # #1646: what the adapters refused to hand their scanners. Computed from the
     # EFFECTIVE set (an adapter filtered out offline audited nothing, so it has
     # nothing to disclose) and before the docker check, because the answer is a
@@ -794,17 +795,17 @@ def main(argv=None):
         if a.manifest:
             tools_manifest.write_manifest(
                 a.manifest, effective, [], excluded_scope=excluded_scope,
-                run_id=a.run_id, excluded_dirs=venv_rows,
+                run_id=a.run_id, excluded_dirs=venv_rows, withheld=withheld,
                 sanitized=sanitized, exclude_globs=a.exclude, cleanup_failures={})
         return 0
     paths = run_tools(a.target, effective, a.out, online=a.online,
                       progress=make_progress(a.progress), venv_dirs=skip_dirs,
-                      run_id=a.run_id, security_mode=a.security_mode,
+                      run_id=a.run_id, security_mode=a.security_mode, allow_target_build=a.allow_target_build,
                       exclude_globs=a.exclude)
     if a.manifest:
         tools_manifest.write_manifest(
             a.manifest, effective, paths, excluded_scope=excluded_scope,
-            run_id=a.run_id, excluded_dirs=venv_rows,
+            run_id=a.run_id, excluded_dirs=venv_rows, withheld=withheld,
             sanitized=sanitized, exclude_globs=a.exclude)
     print("\n".join(paths))
     return 0

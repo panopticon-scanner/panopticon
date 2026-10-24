@@ -154,6 +154,7 @@ def _cli_flags(args, review_root=None, resolution=None):
               "tools": tools_flag if tools_flag is not None
                        else (True if cfg.get("tools") else None),
               "online": True if getattr(args, "online", False) else None,
+              "allow_target_build": True if getattr(args, "allow_target_build", False) else None,
               "include_fixtures": True if (getattr(args, "include_fixtures", False)
                                            or cfg.get("include_fixtures")) else None,
               "max_per_group": getattr(args, "max_per_group", None)
@@ -306,6 +307,8 @@ def build_parser():
         tools_group.add_argument("--no-tools", action="store_true")
         p.add_argument("--online", action="store_true", default=None,
                        help="allow dependency auditors through the restricted egress proxy")
+        p.add_argument("--allow-target-build", action="store_true", default=None,
+                       help="run roslyn-secguard, which executes the target's build (#3265)")
         p.add_argument("--include-fixtures", action="store_true")
         # #1519/#1622: refuse an unproven reviewer artifact-write boundary
         # unless the operator accepts it here. Keyed on measured capability,
@@ -664,18 +667,15 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
                                    shadow=shadow, surface=surface,
                                    settings_path=settings_path,
                                    run_home=getattr(args, "run_home", None))
-    # 5.1 surface 1. Emitted here -- after `fresh` is computed, before the
-    # artifact is written or compared, and before the shadow refusal below --
-    # rather than at the dispatch sites, because 5.2 already puts this step
-    # before `coverage` dispatches the scout (so it runs before anything
-    # dispatches, satisfying the "at the first dispatch" half of spec 5.1),
-    # and because emitting once per INVOCATION here (not once per dispatched
-    # cell) is what "once per run" rules out. A resumed invocation
-    # re-announces deliberately: the operator resuming needs the posture they
-    # are resuming under -- as a HEADLINE once it has already had the whole
-    # thing for this posture (#1596). Emitted even when the shadow refusal
-    # below is about to stop the run, so the operator sees the posture the
-    # refusal is about.
+    # 5.1 surface 1. Emitted here -- after `fresh` is computed, before the artifact is written or
+    # compared, and before the shadow refusal below -- rather than at the dispatch sites, because
+    # 5.2 already puts this step before `coverage` dispatches the scout (so it runs before anything
+    # dispatches, satisfying the "at the first dispatch" half of spec 5.1), and because emitting
+    # once per INVOCATION here (not once per dispatched cell) is what "once per run" rules out. A
+    # resumed invocation re-announces deliberately: the operator resuming needs the posture they are
+    # resuming under -- as a HEADLINE once it has already had the whole thing for this posture
+    # (#1596). Emitted even when the shadow refusal below is about to stop the run, so the operator
+    # sees the posture the refusal is about.
     # #1732: the artifact is READ before the disclosure now, because the
     # disclosure block says this run's output-schema shape and the shape is
     # recorded by the LOOP (under the armed guards), not here. Carrying it

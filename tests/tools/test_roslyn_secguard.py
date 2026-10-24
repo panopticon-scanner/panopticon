@@ -811,5 +811,121 @@ class TestVendorVersionMatchesTheDockerfilePin(unittest.TestCase):
         self.assertIn(rs._TABLE_DOTNETARIUM_SCS_VERSION, comments)
 
 
+_SLN_ENTRY = ('Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "%s", "%s", '
+              '"{11111111-1111-1111-1111-111111111111}"\r\nEndProject\r\n')
+
+
+class TestUnreachedProjectsAreDisclosed(unittest.TestCase):
+    """#3248: roslyn-secguard builds ONE solution or project. A root App.sln
+    that lists only Benign/Benign.csproj hid Vuln/Vuln.csproj, and the note said
+    so on stderr alone. The projects the build does not reach are now named in
+    the coverage manifest; every published path comes from the filesystem walk,
+    never from the solution's own text."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="roslyn-3248-")
+        self.addCleanup(__import__("shutil").rmtree, self.root, ignore_errors=True)
+
+    def _write(self, rel, text="<Project Sdk=\"Microsoft.NET.Sdk\" />\n"):
+        path = os.path.join(self.root, rel)
+        os.makedirs(os.path.dirname(path) or self.root, exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+
+    def _repro(self, sln_entries=(("Benign", "Benign\\Benign.csproj"),)):
+        self._write("App.sln", "Microsoft Visual Studio Solution File\r\n" + "".join(
+            _SLN_ENTRY % entry for entry in sln_entries))
+        self._write("Benign/Benign.csproj")
+        self._write("Vuln/Vuln.csproj")
+
+    def _report(self):
+        """The adapter's coverage-manifest answer, asserted present FIRST: an
+        adapter with no answer is the #3248 defect, not a missing name."""
+        hook = getattr(rs.RoslynSecGuardAdapter(), "sanitization_report", None)
+        report = hook(self.root) if hook else None
+        self.assertIsNotNone(report, "the projects the build does not reach are not disclosed")
+        return report
+
+    def _lines(self, report):
+        return [row["line"] for row in report["dropped"]]
+
+    def test_the_issue_repro_names_the_hidden_project(self):
+        self._repro()
+        report = self._report()
+        self.assertEqual("App.sln", report["source"])
+        self.assertEqual(["Vuln/Vuln.csproj"], self._lines(report))
+        self.assertEqual(1, report["kept"])
+        reasons = {row["reason"] for row in report["dropped"]}
+        self.assertEqual({"not referenced by the analysed solution App.sln"}, reasons)
+
+    def test_a_path_only_the_solution_names_is_never_published(self):
+        self._repro((("Benign", "Benign\\Benign.csproj"),
+                     ("Evil", "..\\..\\outside\\Evil.csproj"),
+                     ("Ghost", "Ghost\\Ghost.csproj")))
+        report = self._report()
+        self.assertEqual(["Vuln/Vuln.csproj"], self._lines(report))
+
+    def test_vendored_and_sample_trees_are_pruned_like_the_build_choice(self):
+        self._repro()
+        self._write("samples/Demo/Demo.csproj")
+        self._write("node_modules/x/X.csproj")
+        report = self._report()
+        self.assertEqual(["Vuln/Vuln.csproj"], self._lines(report))
+
+    def test_an_unreadable_solution_overstates_the_gap_rather_than_hiding_it(self):
+        self._repro()
+        # One byte under the solution's size: the whole file is still READ (the
+        # read takes cap + 1), so a parse of it would find Benign -- only the
+        # size refusal makes the listing fail loud rather than partial.
+        cap = os.path.getsize(os.path.join(self.root, "App.sln")) - 1
+        with mock.patch.object(rs, "_MAX_SLN_BYTES", cap, create=True):
+            report = self._report()
+        self.assertEqual(["Benign/Benign.csproj", "Vuln/Vuln.csproj"], self._lines(report))
+
+    def test_a_symlinked_solution_is_not_followed(self):
+        self._repro()
+        real = os.path.join(self.root, "real.sln.txt")
+        os.replace(os.path.join(self.root, "App.sln"), real)
+        os.symlink(real, os.path.join(self.root, "App.sln"))
+        report = self._report()
+        self.assertEqual(["Benign/Benign.csproj", "Vuln/Vuln.csproj"], self._lines(report))
+
+    def test_a_tree_with_no_solution_names_every_project_but_the_one_built(self):
+        self._write("App.csproj")
+        self._write("Tools/Tools.csproj")
+        report = self._report()
+        self.assertEqual("App.csproj", report["source"])
+        self.assertEqual(["Tools/Tools.csproj"], self._lines(report))
+
+    def test_the_rows_are_capped_and_the_rest_counted(self):
+        self._repro()
+        self._write("More/More.csproj")
+        with mock.patch.object(rs, "_MAX_UNREACHED", 1, create=True):
+            report = self._report()
+        self.assertEqual(["More/More.csproj"], self._lines(report))
+        self.assertEqual(1, report["dropped_truncated"])
+
+    def test_a_tree_with_nothing_to_build_reports_nothing(self):
+        hook = getattr(rs.RoslynSecGuardAdapter(), "sanitization_report", lambda _t: None)
+        self.assertIsNone(hook(self.root))
+
+    def test_the_runner_carries_it_into_the_manifest_and_the_report_line(self):
+        # The runner's own collector, the one that fills the manifest's
+        # `sanitized` for every EFFECTIVE adapter (so only on the opt-in path).
+        import scripts.html_report as html_report
+        import scripts.run_tools as rt
+        from scripts.tools import ADAPTERS
+        self._repro()
+        sanitized = rt.collect_sanitization(
+            {"roslyn-secguard": ADAPTERS["roslyn-secguard"]}, self.root)
+        self.assertIn("roslyn-secguard", sanitized, "nothing reached the manifest")
+        self.assertEqual(["Vuln/Vuln.csproj"], self._lines(sanitized["roslyn-secguard"]))
+        self.assertEqual(
+            ["roslyn-secguard: 1 project not analysed (outside the one solution or "
+             "project it builds)"],
+            html_report._partial_audit_notes({"roslyn-secguard": sanitized["roslyn-secguard"]}))
+
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -14,7 +14,7 @@ from tests.run_tools_test_helpers import _DockerStub, _FakeResult, _Interrupted
 
 
 class TestContainment(unittest.TestCase):
-    def _calls(self, tools, online=False, env=None):
+    def _calls(self, tools, online=False, env=None, allow_target_build=False):
         calls = []
         fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
         def runner(cmd, **kw):
@@ -28,8 +28,8 @@ class TestContainment(unittest.TestCase):
             child_env["PATH"] = trusted
             with mock.patch.dict(os.environ, child_env, clear=True), \
                     tempfile.TemporaryDirectory() as d:
-                rt.run_tools(d, tools, os.path.join(d, "out"),
-                             runner=runner, online=online)
+                rt.run_tools(d, tools, os.path.join(d, "out"), runner=runner,
+                             online=online, allow_target_build=allow_target_build)
         return calls
 
     def test_every_dispatch_has_network_none(self):
@@ -119,12 +119,18 @@ class TestContainment(unittest.TestCase):
                          [])
 
     def test_roslyn_never_gets_network_even_online(self):
-        calls = self._calls(["roslyn-secguard"], online=True)
+        # #3265: the opt-in path -- without the flag roslyn is never dispatched.
+        calls = self._calls(["roslyn-secguard"], online=True, allow_target_build=True)
         self.assertEqual(len(calls), 1)               # #run7 COD-A2C: clear fail if roslyn was skipped
         self.assertIn("--network", calls[0])          # clear failure, not ValueError (#781)
         i = calls[0].index("--network")
         self.assertLess(i + 1, len(calls[0]), "--network has no value argument")
         self.assertEqual(calls[0][i + 1], "none")
+
+    def test_roslyn_is_never_dispatched_without_the_opt_in(self):
+        # #3265: run_tools() itself withholds it, not only the CLI in front of it.
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual([], self._calls(["roslyn-secguard"], online=True))
 
     def test_filter_online_helper(self):
         chosen = ["semgrep", "pip-audit", "npm-audit", "gosec"]
