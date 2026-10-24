@@ -1649,6 +1649,41 @@ class TestEveryNameBasedDropIsDisclosed(unittest.TestCase):
         self.assertEqual(suppressed, [])
         self.assertIn("excluded 1 finding", err)
 
+    def test_run_artifact_and_bytecode_drops_enter_the_disclosed_channel(self):
+        """#3269 G4: every unconditional body drop names its stable reason."""
+        cases = (
+            (".panopticon/runs/t/report-discarded.json", "run-artifact"),
+            (".worktrees/a2/app/auth.py", "run-artifact"),
+            (".git/config", "run-artifact"),
+            ("skill/scripts/__pycache__/driver.cpython-314.pyc",
+             "generated-bytecode"),
+            ("a/b/c.pyc", "generated-bytecode"),
+            ("a/b/c.pyo", "generated-bytecode"),
+        )
+        for path, reason in cases:
+            for kw in ({}, {"include_fixtures": True}):
+                with self.subTest(path=path, kw=kw):
+                    suppressed = []
+                    out, err = self._ingest(path, suppressed_out=suppressed, **kw)
+                    self.assertEqual(out, [])
+                    self.assertEqual([f["suppressed"] for f in suppressed],
+                                     [reason])
+                    self.assertIn("%s: 1" % reason, err)
+
+    def test_operator_glob_outranks_run_artifact_suppression(self):
+        """A disclosed drop must not undo the operator's explicit gate scope."""
+        suppressed, excluded = [], []
+        out, err = self._ingest(
+            ".panopticon/old-report.json",
+            exclude_globs=[".panopticon/**"],
+            suppressed_out=suppressed,
+            excluded_out=excluded,
+        )
+        self.assertEqual(out, [])
+        self.assertEqual(suppressed, [])
+        self.assertEqual([f["excluded"] for f in excluded], [".panopticon/**"])
+        self.assertIn(".panopticon/**", err)
+
     def test_the_evidence_backed_classes_stay_silent(self):
         for path in (".panopticon/runs/t/report-discarded.json",
                      ".worktrees/a2/app/auth.py",

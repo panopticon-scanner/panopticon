@@ -1961,6 +1961,18 @@ class TestSuppressedToolFindingsInHtml(unittest.TestCase):
         self.assertIn("592", out)
         self.assertIn("suppressed", out)
 
+    def test_run_artifact_reasons_have_truthful_rendered_wording(self):
+        out = hr.render(self._report(
+            {"run-artifact": 8, "generated-bytecode": 2}))
+        self.assertIn(
+            "Tool findings suppressed: generated-bytecode: 2 &middot; "
+            "run-artifact: 8 &mdash; withheld from the report body by controlled "
+            "source-scope rules",
+            out,
+        )
+        block = out.split("Tool findings suppressed:", 1)[1].split("</div>", 1)[0]
+        self.assertNotIn("directory name", block)
+
     def test_a_run_that_suppressed_nothing_renders_no_line(self):
         self.assertNotIn("suppressed by directory name", hr.render(self._report({})))
 

@@ -1079,6 +1079,23 @@ class TestEveryNameBasedDropReachesTheRedteamGate(unittest.TestCase):
                 self.assertEqual(high, [], (uri, mode))
                 self.assertEqual(suppressed, [], (uri, mode))
 
+    def test_run_artifact_and_bytecode_drops_reach_the_redteam_gate(self):
+        """#3269 G4: body drops stay dropped but no longer bypass policy C."""
+        for uri, reason in (
+                (".panopticon/runs/t/report-discarded.json", "run-artifact"),
+                ("skill/scripts/__pycache__/driver.cpython-314.pyc",
+                 "generated-bytecode")):
+            for mode, gated in (("standard", 0), ("redteam", 1)):
+                with self.subTest(uri=uri, mode=mode), \
+                        tempfile.TemporaryDirectory() as root:
+                    tools, manifest = self._repo(root, uri)
+                    findings, _d, failures, high, suppressed = gate.evaluate(
+                        tools, manifest, security_mode=mode)
+                self.assertEqual(findings, [])
+                self.assertEqual(failures, [])
+                self.assertEqual(len(high), gated)
+                self.assertEqual([f["suppressed"] for f in suppressed], [reason])
+
     def test_an_operator_exclude_glob_is_never_re_admitted(self):
         # `--exclude` is policy the operator set on this gate, not a guess from
         # a directory name: redteam must not overturn it.
