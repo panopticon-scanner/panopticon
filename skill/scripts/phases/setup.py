@@ -396,7 +396,7 @@ SETUP_PHASES = (
 
 _SETUP_ARTIFACTS = ("setup-scan-brief.md", "setup-spine.json", "setup-proposal.json",
                     "setup-report.md", "setup-report.json",
-                    "setup-complete.json", SETUP_MANIFEST, runio.HOST_CAPABILITIES)
+                    "setup-complete.json", SETUP_MANIFEST, runio.HOST_CAPABILITIES, "host-settings.json")
 
 def _stale_batch_records(run_dir):
     """The `batch-<n>.json` records in `run_dir` that `--reset` may delete.

@@ -613,6 +613,16 @@ class TestDriverSetup(unittest.TestCase):
         setup._clear_setup_artifacts(d)
         self.assertFalse(os.path.isfile(flat))
 
+    def test_reset_clears_the_guard_settings_setup_arms(self):
+        # The headless guard settings file in the flat setup folder is setup's
+        # own, like the evidence above; --reset starts it over too.
+        d = self._repo()
+        flat = os.path.join(d, ".panopticon", "host-settings.json")
+        os.makedirs(os.path.dirname(flat), exist_ok=True)
+        runio._write_json(flat, {"hooks": {}})
+        setup._clear_setup_artifacts(d)
+        self.assertFalse(os.path.isfile(flat))
+
     def test_reset_does_not_reach_a_review_runs_evidence(self):
         # The trap in the line above: `host-capabilities.json` is NOT in
         # `runio._TOP_LEVEL`, so `runio._pano` resolves it into `runs/<tag>/`
