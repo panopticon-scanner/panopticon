@@ -17,7 +17,7 @@ import scripts.venv_scope as vs
 from scripts.tools.eslint_security import EslintSecurityAdapter  # #run7 TST-G2A
 
 from tests._test_helpers import REPO_ROOT
-from tests.run_tools_test_helpers import _FakeResult
+from tests.run_tools_test_helpers import FOUND_IMAGE, _FakeResult
 
 
 class TestRunTools(unittest.TestCase):
@@ -728,7 +728,7 @@ class TestVirtualenvExclusion(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             self._venv(d, ".venv")
             self._venv(d, "venv", marker=False)
-            with mock.patch.object(rt, "docker_available", return_value=True), \
+            with mock.patch.object(rt, "docker_available", return_value=FOUND_IMAGE), \
                     mock.patch.object(rt, "run_tools", side_effect=fake_run_tools), \
                     contextlib.redirect_stdout(io.StringIO()), \
                     contextlib.redirect_stderr(io.StringIO()):
@@ -747,7 +747,7 @@ class TestVirtualenvExclusion(unittest.TestCase):
             return []
         with tempfile.TemporaryDirectory() as d:
             self._venv(d, "venv", marker=False)
-            with mock.patch.object(rt, "docker_available", return_value=True), \
+            with mock.patch.object(rt, "docker_available", return_value=FOUND_IMAGE), \
                     mock.patch.object(rt, "run_tools", side_effect=fake_run_tools), \
                     contextlib.redirect_stdout(io.StringIO()), \
                     contextlib.redirect_stderr(io.StringIO()):
@@ -1166,7 +1166,9 @@ class TestTheCliRunsUnderTheSigtermWrapper(unittest.TestCase):
         self.assertEqual(1, len(calls), "the CLI installs it once, at its entry")
         self.assertIn(calls[0], list(ast.walk(guards[0])),
                       "installed outside the __main__ guard, i.e. at import time")
-        self.assertEqual(["main"], [ast.unparse(arg) for arg in calls[0].args])
+        # #3270: under the halt wrapper, so an image or PATH halt is one fixed
+        # stderr line and HALT_EXIT, never a traceback the phase reads as a crash.
+        self.assertEqual(["tools_image.halting(main)"], [ast.unparse(arg) for arg in calls[0].args])
 
 
 
@@ -1219,7 +1221,7 @@ class TestRoslynIsOptIn(unittest.TestCase):
     def test_the_cli_hands_the_operator_s_answer_to_the_runner(self):
         for argv, expected in (([], False), (["--allow-target-build"], True)):
             with tempfile.TemporaryDirectory() as d:
-                with mock.patch.object(rt, "docker_available", return_value=True), \
+                with mock.patch.object(rt, "docker_available", return_value=FOUND_IMAGE), \
                         mock.patch.object(rt, "run_tools", return_value=[]) as run, \
                         contextlib.redirect_stdout(io.StringIO()), \
                         contextlib.redirect_stderr(io.StringIO()):

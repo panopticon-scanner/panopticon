@@ -79,8 +79,8 @@ class Guards:
         self.armed_entries += [e for e in entries
                                if isinstance(e, dict) and e.get("id") not in armed]
         if self.mode == "headless":
-            write_guard_hook.install(entries, settings_path=self.settings_path,
-                                     allowlist_path=self.allowlist_path)
+            write_guard_hook.install(entries, settings_path=runners_base.own_settings(
+                self.settings_path), allowlist_path=self.allowlist_path)
             added = read_guard_hook.install(entries, settings_path=self.settings_path,
                                             scope_path=self.scope_path)
             self.entry_scopes.write(added)

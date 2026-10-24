@@ -11,6 +11,38 @@
   they are also counted in `tools_suppressed_not_gated`. Other suppression reasons retain
   policy C, and explicit operator exclusion globs retain precedence.
 
+- **Operator-visible: first contact halts on a `.panopticon/` this machine did not start (#3271).**
+  `driver run` and `driver setup` now assess the target once, before any phase writes, and halt
+  with one fixed line on: a `.panopticon/` tracked in git; a `.panopticon/` holding anything but
+  no `owner.json` carrying this machine's run stamp (planted, copied from another checkout, or
+  left by a run from before this change); a symlink under it other than the run's own
+  `runs/latest` and `report.json` links; or a file hard-linked to something outside the target
+  (a git work tree's own `.git/` is not counted). The stamp is an HMAC keyed by 32 random bytes under
+  `$PANOPTICON_STATE_DIR` (default `~/.local/state/panopticon`, 0700/0600), so a target cannot mint
+  one. **Upgrading:** a checkout with a `.panopticon/` from an earlier version halts once; move it
+  aside (`mv .panopticon .panopticon.old`) or pass `--reset`, which moves it aside for you and
+  starts fresh. A tracked `.panopticon/` is never moved; remove it from the index. Starting over an
+  earlier run by another host on the same machine is disclosed (`meta.prior_run`), not halted on.
+  The published report now spells the operator's home as `~` in `meta.apps[].path`.
+- **Operator-visible: a PATH entry inside the target now halts the run (#3270, owner ruling D2).**
+  An entry inside the reviewed tree -- or one whose program is a symlink into it -- used to be
+  skipped silently. It is hostility or a badly broken machine, and most often the operator
+  activated the target's own virtualenv or the target's direnv `.envrc` ran. The run now stops at
+  first contact with one line naming the entry and the fix: "PATH entry <entry> is inside the
+  target; remove it (deactivate the target's virtualenv or direnv) and re-run". Empty and relative
+  entries are still ignored.
+- **The tools image is named by its id, and the scan runs by that id (#3270).** `run_tools` resolves
+  the `panopticon-tools` tag to the image ID (`docker image inspect`'s `.Id`, which every local
+  image has, offline included) and dispatches every container by it, so a tag moved mid-run cannot
+  swap the image. `tools-manifest.json` and the report's `meta.tools.image` record the id, any
+  registry digests (informational; a local build has none) and `adapter_code`, one sha256 over the
+  checkout's `skill/scripts` that every dispatch mounts over the image's baked copy. An image whose
+  id cannot be read halts the run; no docker or no image is still the disclosed skip.
+- **Every external app a run launches is named (#3270).** The host CLI (claude, codex or kimi) and
+  docker are recorded with their path, version (`--version`) and sha256 -- in
+  `host-capabilities.json`, `tools-manifest.json` and the report's `meta.apps` -- and each gets one
+  line on both views. The host probes now launch through the hardened launcher (trusted PATH,
+  own session, group kill, bounded capture) instead of a bare `subprocess.run`.
 - **roslyn-secguard is opt-in, off by default (#3265, owner ruling 2026-10-23).** It is the only
   adapter that executes the target's own code (its MSBuild/analyzer build), so a hostile repository
   got code execution inside the tools container. It now runs only with the operator flag
@@ -127,6 +159,19 @@
   replies and zero returned stamps. All three production receipt schemas remain outside Codex's
   strict generation subset; the exact blockers and compatible provider-schema directions are
   recorded in the host-capabilities guide and follow-up #3241.
+
+## 5.2.1 — Security patch
+
+Fixes [GHSA-wjpr-jxg9-rmwh](https://github.com/panopticon-scanner/panopticon/security/advisories/GHSA-wjpr-jxg9-rmwh)
+(high). Affects 5.1.0 through 5.2.0. Upgrade before running headless setup or review
+on a tree you do not trust.
+
+- **Headless guard settings are built fresh, not merged from disk.** A headless run's
+  `host-settings.json` (setup's in `.panopticon/`, a review's in `runs/<tag>/`) now
+  holds only the read and write guards' own entries, exactly as their installers write
+  them, so nothing else a file on disk held reaches the host CLI's `--settings`. A
+  session's `.claude/settings.local.json` is the operator's and is still merged.
+- **`driver setup --reset` clears setup's `host-settings.json`.**
 
 ## 5.2.0 — Host expansion and hardening
 

@@ -2,6 +2,14 @@
 import json
 
 
+# #3270: what `docker_available` returns for an image it found -- the id the
+# scan is dispatched by, and docker's own app record. A test that patches the
+# probe "found" hands main() this, not a bare True.
+FOUND_IMAGE_ID = "sha256:" + "a" * 64
+FOUND_IMAGE = {"ref": "panopticon-tools", "id": FOUND_IMAGE_ID, "repo_digests": [], "apps": []}
+INSPECT_OK = ("%s []\n" % FOUND_IMAGE_ID).encode()
+
+
 class _FakeResult:
     def __init__(self, returncode=0, stdout=b"", stderr=b""):
         self.returncode = returncode

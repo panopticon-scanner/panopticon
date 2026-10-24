@@ -15,7 +15,7 @@ import scripts.scanner_config as sc
 import scripts.tools_manifest as tm
 import scripts.venv_scope as vs
 
-from tests.run_tools_test_helpers import _DockerStub, _FakeResult
+from tests.run_tools_test_helpers import FOUND_IMAGE, _DockerStub, _FakeResult
 
 
 class TestAdapterDispatch(unittest.TestCase):
@@ -28,7 +28,7 @@ class TestAdapterDispatch(unittest.TestCase):
             def applicable_files(self, target):
                 return []
         with mock.patch.dict(rt.ADAPTERS, {"faketool": FakeAdapter()}, clear=False), \
-             mock.patch("scripts.run_tools.docker_available", return_value=True), \
+             mock.patch("scripts.run_tools.docker_available", return_value=FOUND_IMAGE), \
              mock.patch("scripts.run_tools.run_tools", return_value={}), \
              contextlib.redirect_stderr(io.StringIO()):
             rc = rt.main(["--tools", "faketool", "--exclude", "tests/fixtures/*",
@@ -231,7 +231,7 @@ class TestDefaultSelectionBranch(unittest.TestCase):
             os.makedirs(os.path.join(target, "build"))
             open(os.path.join(target, "build", "main.py"), "w").close()
             manifest = os.path.join(out, "manifest.json")
-            with mock.patch("scripts.run_tools.docker_available", return_value=True), \
+            with mock.patch("scripts.run_tools.docker_available", return_value=FOUND_IMAGE), \
                     mock.patch("scripts.run_tools.run_tools", return_value=[]), \
                     contextlib.redirect_stderr(io.StringIO()):
                 rc = rt.main(["--target", target, "--out", out,

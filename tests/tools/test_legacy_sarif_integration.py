@@ -334,6 +334,30 @@ class TestGitleaksRunToolsDocker(unittest.TestCase):
                          "the source tree changed during the scan")
         return written, manifest
 
+    def test_the_cli_names_the_real_image_by_its_id_and_records_docker(self):
+        # #3270, the real-image round: the production probe and CLI against the
+        # real daemon. The lane tags the image `panopticon-tools:latest`, which is
+        # the CLI's default `panopticon-tools`, so its id is the one setUp read.
+        found = run_tools.docker_available(image=os.environ["PANOPTICON_GITLEAKS_TEST_IMAGE"])
+        self.assertEqual(self.__class__._image_id, found["id"])
+        (docker,) = found["apps"]
+        self.assertEqual("docker", docker["name"])
+        self.assertRegex(docker["sha256"] or "", r"^[0-9a-f]{64}$")
+        self.assertRegex(docker["version"] or "", r"^Docker version ")
+        with tempfile.TemporaryDirectory() as scratch:
+            target = Path(scratch) / "target"
+            target.mkdir()
+            (target / "config.yml").write_text("service:\n  timeout: 20\n", encoding="utf-8")
+            manifest = Path(scratch) / "tools-manifest.json"
+            self.assertEqual(0, run_tools.main([
+                "--target", str(target), "--tools", "gitleaks", "--out",
+                str(Path(scratch) / "captures"), "--manifest", str(manifest)]))
+            written = json.loads(manifest.read_text(encoding="utf-8"))
+        self.assertEqual(self.__class__._image_id, written["image"]["id"])
+        self.assertRegex(written["image"]["adapter_code"], r"^sha256:[0-9a-f]{64}$")
+        self.assertEqual(["docker"], [app["name"] for app in written["apps"]])
+        self.assertEqual(["gitleaks"], written["produced"])
+
     def test_ignore_file_matrix_through_real_run_tools(self):
         for credential, ignore in ((True, True), (True, False),
                                    (False, True), (False, False)):

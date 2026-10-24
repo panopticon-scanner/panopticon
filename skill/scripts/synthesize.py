@@ -88,6 +88,9 @@ def build_parser():
                          "(testdata/, __fixtures__/, tests/fixtures/). Default "
                          "prunes them for parity with the standard-mode agentic "
                          "review prune (#434); pass this for redteam self-scans.")
+    ap.add_argument("--prior-run", default=None, metavar="HOST:RUN_ID",
+                    help="this run started over an earlier run of another host "
+                         "in .panopticon/ (#3271); disclosed as meta.prior_run")
     ap.add_argument("--tools-disabled-mid-run", action="store_true",
                     help="this run started with the tool scan enabled and had "
                          "it switched off with --no-tools while in flight "
@@ -308,6 +311,7 @@ def main(argv=None):
             args, gj, ts, host_capabilities=host_capabilities,
             panel_tools_context=plan_mod.load_panel_tools_context(run_dir),
             tools_disabled_mid_run=getattr(args, "tools_disabled_mid_run", False),
+            prior_run=getattr(args, "prior_run", None),
             config=config_schema.load_resolution(run_dir))
     except report_mod.ReviewScopeError as exc:
         print("synthesize: %s" % exc, file=sys.stderr)

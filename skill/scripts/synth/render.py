@@ -366,6 +366,8 @@ def render_summary(report):
         lines.insert(3, cleanup)
     for line in reversed(build_disclosure.not_run_lines(_cov)):   # #3265
         lines.insert(3, "**Tool not run:** %s" % line)
+    lines[3:3] = ["**Provenance:** %s" % _code_span(line)        # #3270
+                  for line in build_disclosure.provenance_lines(report["meta"])]
     rz = (report["meta"].get("coverage") or {}).get("resume") or {}
     _fo = rz.get("fan_out") or {}
     _vf = rz.get("verify") or {}

@@ -107,6 +107,13 @@
 #   - 2026-10-24 (#3265/#3248): `build_disclosure.py` is `tool_cleanup.py`'s sibling for the
 #     build-executing adapter (not run without --allow-target-build; projects its one build did
 #     not reach). Claimed on `ToolAdapters:Core` beside it, for the same reason.
+#   - 2026-10-24 (#3270): `tools_image.py` (the tools image's id and the mounted adapter
+#     code's hash) is claimed on `ToolAdapters:Core` beside `tools_manifest.py`, which records
+#     it; `app_trace.py` (each external app's path, version and sha256) on `Hosts` beside
+#     `host_probes.py`, which records the host CLI's.
+#   - 2026-10-24 (#3271): `first_contact.py` (the run-start readiness halt) and `run_stamp.py`
+#     (the operator-side key that marks a `.panopticon/` as ours) are claimed beside
+#     `run_manifest.py` and `safe_write.py`, the artifact-root modules they guard.
 #   - 2026-09-28 (#2306): a FOURTH part of that split, ruled after #2289, claims
 #     `venv_scope.py` (finding the virtualenvs under the target, deciding which
 #     of them a scanner's exclusion knob may be handed, and rendering that onto
@@ -275,6 +282,7 @@ groups:
       - skill/scripts/tool_capture.py
       - skill/scripts/tool_cleanup.py
       - skill/scripts/build_disclosure.py
+      - skill/scripts/tools_image.py
       - skill/scripts/tools_manifest.py
       - skill/scripts/venv_scope.py
       - skill/scripts/semgrep_targets.py
@@ -383,6 +391,8 @@ groups:
       - skill/scripts/group_runner.py
       - skill/scripts/model_resolver.py
       - skill/scripts/run_manifest.py
+      - skill/scripts/first_contact.py
+      - skill/scripts/run_stamp.py
       - skill/scripts/safe_write.py
       - skill/scripts/write_guard_hook.py
       - skill/scripts/collect_usage.py
@@ -401,6 +411,7 @@ groups:
       - tests/test_procgroup.py
       - tests/test_model_resolver.py
       - tests/test_run_manifest.py
+      - tests/test_first_contact.py
       - tests/test_safe_write.py
       - tests/test_artifact_write_symlinks.py
       - tests/test_agent_templates.py
@@ -434,6 +445,7 @@ groups:
       match:
       - skill/scripts/hosts.py
       - skill/scripts/host_probes.py
+      - skill/scripts/app_trace.py
       - skill/scripts/host_disclosure.py
       - skill/scripts/codex_host.py
       - skill/scripts/codex_read_tools.py

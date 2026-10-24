@@ -46,6 +46,12 @@ from tests.tools.git_repo import (add_plumbing_submodule, hostile_marker,
                             plant_hook)
 
 
+# #3270 (D2): the halt is asserted by BEHAVIOUR -- a ValueError carrying the
+# fixed sentence -- so on a build without it the test fails on what happened.
+HALTS = (r"inside the target; remove it \(deactivate the target's virtualenv or direnv\) "
+         r"and re-run$")
+
+
 def _plain_status(repo):
     """The unhardened call these modules used to make, as the control."""
     return subprocess.run(["git", "-C", repo, "status", "--porcelain"],
@@ -127,11 +133,15 @@ class DiscoveryIsConfined(unittest.TestCase):
         repo = self._repo()
         marker = hostile_marker(repo, "shim-marker")
         path_shim_git(os.path.join(repo, "bin"), marker)
+        # #3270 (D2): the shim's directory is inside the target, so every call
+        # HALTS before it can run (it used to be skipped for a trusted git).
         with mock.patch.dict(os.environ,
                              {"PATH": os.path.join(repo, "bin") + os.pathsep + os.environ["PATH"]}):
-            self.assertIs(discovery._worktree_dirty(repo, exclude=("bin",)), True)
-            self.assertEqual(discovery.resolve_base(repo), ("main", "fallback"))
-            self.assertIn("a.py", discovery._git_listed_files(repo))
+            for call in (lambda: discovery._worktree_dirty(repo, exclude=("bin",)),
+                         lambda: discovery.resolve_base(repo),
+                         lambda: discovery._git_listed_files(repo)):
+                with self.assertRaisesRegex(ValueError, HALTS):
+                    call()
         self.assertFalse(os.path.exists(marker))
 
 
@@ -187,10 +197,12 @@ class TargetProvenanceIsConfined(unittest.TestCase):
         path_shim_git(os.path.join(repo, "bin"), marker)
         with mock.patch.dict(os.environ,
                              {"PATH": os.path.join(repo, "bin") + os.pathsep + os.environ["PATH"]}):
-            commit, dirty = run_manifest._target_provenance(repo)
+            with self.assertRaisesRegex(ValueError, HALTS):      # #3270 (D2): halts
+                run_manifest._target_provenance(repo)
+        self.assertFalse(os.path.exists(marker))
+        commit, dirty = run_manifest._target_provenance(repo)
         self.assertEqual(commit, self._head(repo))
         self.assertIs(dirty, True)      # the shim directory is untracked dirt
-        self.assertFalse(os.path.exists(marker))
 
     def test_an_inherited_git_environment_cannot_redirect_the_provenance(self):
         # #1985's own regression test treats this shape as a defect elsewhere.
@@ -377,10 +389,14 @@ class DeltaMapIsConfined(unittest.TestCase):
         repo = self._repo()
         marker = hostile_marker(repo, "shim-marker")
         path_shim_git(os.path.join(repo, "bin"), marker)
+        # #3270 (D2): halts with the fixed reason, carried by diff_map's own
+        # loud error, before the shim can run.
         with mock.patch.dict(os.environ,
                              {"PATH": os.path.join(repo, "bin") + os.pathsep + os.environ["PATH"]}):
-            self.assertIn("a.py", diff_map.hunk_map(repo, "main"))
+            with self.assertRaisesRegex(diff_map.DiffMapError, "is inside the target; remove it"):
+                diff_map.hunk_map(repo, "main")
         self.assertFalse(os.path.exists(marker))
+        self.assertIn("a.py", diff_map.hunk_map(repo, "main"))
 
 
 class ASuppressionIsDisclosedNotARefusal(unittest.TestCase):

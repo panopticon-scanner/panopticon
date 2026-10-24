@@ -18,12 +18,11 @@ import json
 import os
 import re
 import shlex
-import subprocess
 import tempfile
 import tomllib
 
 from scripts import dispatch, hosts, kimi_toml, model_resolver, write_guard_hook
-from scripts.runners import kimi_home
+from scripts.runners import children, kimi_home
 
 from . import common
 from . import kimi_snapshot
@@ -45,8 +44,8 @@ from . import kimi_snapshot
 #
 # The guard-hook round-trip below is NOT routed through it: that subprocess is
 # `sys.executable`, the hook's own protocol, and refusing it would delete the
-# proof rather than protect it.
-DEFAULT_RUNNER = subprocess.run
+# proof rather than protect it. Both go through the hardened launcher (#3270).
+DEFAULT_RUNNER = children.launch
 
 KIMI_SHELL_SURFACE = "kimi-shell-surface"
 KIMI_READ_GUARD = "kimi-read-guard-armed"
@@ -188,13 +187,13 @@ def _guard_round_trip(mode, data_path, rows, guard_path=None, runner=None):
     own (M1: a literal "(8 rows)" beside this function's own answer drifts the
     moment a row is added). Everything happens inside the caller's tempdir."""
     import scripts.kimi_guard_hook as kimi_guard_hook
-    # Plain `subprocess.run`, NOT DEFAULT_RUNNER: what this spawns is the hook
+    # `children.launch`, NOT DEFAULT_RUNNER: what this spawns is the hook
     # protocol itself. The argv is not a copy of the armed command, it IS the
     # armed command -- `kimi_home._hook_entry` builds it and this splits that one
     # shell string back into tokens (#2163), so no drift can leave the evidence
     # describing an argv the per-run config never registered. `guard_path`
     # replaces the script element for this module's own fixture-guard tests.
-    runner = subprocess.run if runner is None else runner
+    runner = children.launch if runner is None else runner
     matcher = kimi_home.READ_MATCHER if mode == "read" else kimi_home.WRITE_MATCHER
     armed = shlex.split(kimi_home._hook_entry(matcher, mode, data_path)["command"])
     guard_path = guard_path or os.path.abspath(kimi_guard_hook.__file__)

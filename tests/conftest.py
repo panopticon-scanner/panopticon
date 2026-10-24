@@ -92,6 +92,13 @@ if shutil.which("docker") is None:
     os.chmod(_TEST_DOCKER, 0o700)
     os.environ["PATH"] = os.pathsep.join([_TEST_BIN, os.environ.get("PATH", "")])
 
+# #3271: the run-stamp key lives operator-side. The suite gets its own, so no
+# test reads or creates the operator's real `~/.local/state/panopticon` key;
+# child processes inherit it with the rest of the environment.
+_STATE_DIR = tempfile.mkdtemp(prefix="panopticon-test-state-")
+atexit.register(shutil.rmtree, _STATE_DIR, ignore_errors=True)
+os.environ["PANOPTICON_STATE_DIR"] = _STATE_DIR
+
 # --- #1515: no live scanner containers from the unit suite -------------------
 # driver.run() advances into tools_execute unless --no-tools; run_tools then
 # asks docker_available() whether to launch `docker run --memory 6g --cpus 4`
@@ -102,6 +109,7 @@ if shutil.which("docker") is None:
 import subprocess  # noqa: E402
 
 
+import scripts.app_trace as _app_trace  # noqa: E402
 import scripts.codex_host as _codex_host  # noqa: E402
 import scripts.run_tools as _run_tools  # noqa: E402
 import scripts.probes.kimi as _kimi_probes  # noqa: E402
@@ -216,7 +224,14 @@ def _no_live_scanner_containers(request, monkeypatch):
 # disagree about is not a guarantee. `codex_host.LaunchRefused` still names
 # it, so every call site that already caught it is unchanged.
 LAUNCH_SEAMS = (_codex_host, _codex_runner, _claude_runner, _setup_flow,
-                _kimi_probes, _kimi_runner)
+                _kimi_probes, _kimi_runner, _app_trace)
+
+# #3270: `run_probes` names the host CLI it probed through -- path, version and
+# a sha256 of the binary. The version read is a launch (refused above, through
+# `app_trace.DEFAULT_RUNNER`); the hash would read the operator's real CLI, a
+# few hundred MB on a workstation and nothing on CI. So the record is stood in
+# for, and tests/test_host_probes.py drives the real one against fake CLIs.
+REAL_HOST_APPS = _app_trace.host_apps
 
 
 def _refused_binary(args):
@@ -241,6 +256,7 @@ def _refuse_host_launch(*args, **_kwargs):
 def _no_live_host_launches(monkeypatch):
     for seam in LAUNCH_SEAMS:
         monkeypatch.setattr(seam, "DEFAULT_RUNNER", _refuse_host_launch)
+    monkeypatch.setattr(_app_trace, "host_apps", lambda host, review_root: [])
 
 
 # --- #1616 item 8: reaching the claude family's run_entry is LOUD ------------

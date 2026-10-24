@@ -14,6 +14,7 @@ import traceback
 
 import scripts.dispatch as dispatch
 import scripts.read_guard_hook as read_guard_hook
+import scripts.write_guard_hook as write_guard_hook
 import scripts.runners.children as children
 import scripts.redact as redact
 import scripts.runners.outage as outage
@@ -27,6 +28,35 @@ ENV_ENTRY_ID = read_guard_hook.ENV_ENTRY_ID
 ENV_WRITE_ALLOWLIST = "PANOPTICON_WRITE_ALLOWLIST"
 ENV_READ_SCOPE = "PANOPTICON_READ_SCOPE"
 SETTINGS_FILE = "host-settings.json"
+
+
+def own_settings(path):
+    """A headless run's settings file, rebuilt to hold the two guards' own
+    PreToolUse entries and nothing else, before either guard arms into it.
+
+    The file is the run folder's, never the operator's: unlike a session's
+    `.claude/settings.local.json` there is nothing of anyone else's in it to
+    keep, so it is built fresh rather than merged from disk. Only the exact
+    entries the two installers write for this run folder are carried, so a
+    re-arm while another fan-out is in flight never passes through a state
+    with either guard missing. Returns `path`."""
+    run_dir = os.path.dirname(path)
+    try:
+        exact = [write_guard_hook._hook_entry(os.path.join(run_dir, ALLOWLIST_FILE)),
+                 read_guard_hook._hook_entry(os.path.join(run_dir, SCOPE_FILE))]
+    except RuntimeError:                # no hook can be built: carry nothing
+        exact = []
+    try:
+        doc = write_guard_hook._load(path)
+    except RuntimeError:                # unreadable: nothing in it is kept
+        doc = None
+    hooks = doc.get("hooks") if isinstance(doc, dict) else None
+    pre = hooks.get("PreToolUse") if isinstance(hooks, dict) else None
+    ours = [h for h in pre if h in exact] if isinstance(pre, list) else []
+    fresh = {"hooks": {"PreToolUse": ours}} if ours else {}
+    if doc != fresh:
+        write_guard_hook.atomic_write_json(path, fresh, indent=2)
+    return path
 # M5: the two guard files the loop writes into the run folder and the
 # runner bakes into host-settings.json's hook commands. Both sides have to
 # name the SAME file -- the guards are fail-closed while registered, so a

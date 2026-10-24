@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 
 import scripts.config_schema as config_schema  # noqa: E402
 import scripts.diff_map as diff_map  # noqa: E402
+import scripts.first_contact as first_contact  # noqa: E402
 import scripts.plan_contract as plan_contract  # noqa: E402
 import scripts.run_manifest as run_manifest  # noqa: E402
 from scripts import hosts, procgroup  # noqa: E402
@@ -593,17 +594,14 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     Returns an error message when the run must stop, else None.
     """
     host = manifest.get("host", "claude")
-    # #1624: refuse a run whose manifest names a host the registry still knows
-    # but the driver may no longer pick -- BEFORE the fallback notice and
-    # before any probe, because nothing about this run may proceed. On a
-    # resume the manifest is authoritative (`--host` is omitted; a
-    # contradicting one is refused as flag drift), so the parser's
-    # `choices`/`type=` -- this file's only other read of the selectable set
-    # -- never sees the name, and a run started under a row that has since
-    # lost `driver_selectable` (gemini, #1621) probed to all-unknown and went
-    # on emitting dispatch entries for a host `--host` refuses to name.
-    # `driver loop` has refused it since #1621; this is the same refusal, in
-    # the same words, on the primitive the loop is built out of.
+    # #1624: refuse a run whose manifest names a host the registry still knows but the driver may no
+    # longer pick -- BEFORE the fallback notice and before any probe, because nothing about this run
+    # may proceed. On a resume the manifest is authoritative (`--host` is omitted; a contradicting
+    # one is refused as flag drift), so the parser's `choices`/`type=` -- this file's only other
+    # read of the selectable set -- never sees the name, and a run started under a row that has
+    # since lost `driver_selectable` (gemini, #1621) probed to all-unknown and went on emitting
+    # dispatch entries for a host `--host` refuses to name. `driver loop` has refused it since
+    # #1621; this is the same refusal, in the same words, on the primitive the loop is built out of.
     #
     # Read off the registry, never a host-name literal, so a family PR that
     # flips its own row needs no edit here (`tests/test_host_posture_wiring.py`
@@ -724,18 +722,15 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     # record; do NOT refuse, because the operator can do nothing about a reason
     # that changed underneath an unchanged verdict.
     #
-    # Gated on the CAPABILITIES map, not the whole artifact: `fresh["probed_at"]`
-    # is stamped fresh on every call (run_manifest._now_iso(), second
-    # resolution), so comparing whole dicts degenerates to "always write" on
-    # essentially every real invocation -- rewriting, on every turn of a
-    # resumable loop, the very artifact the mid-run refusal above reads, which
-    # widens rather than shrinks the window in which a killed process could
-    # leave it truncated. `was`/`now` above are STATE-only and already equal
-    # by construction here, so gating on those instead would mean `detail`
-    # never refreshes -- defeating this whole fix. `capabilities` carries the
-    # per-capability state/by/detail triples and excludes probed_at/
-    # schema_version/host, which is exactly the "did anything an operator
-    # cares about change" question.
+    # Gated on the CAPABILITIES map, not the whole artifact: `fresh["probed_at"]` is stamped fresh
+    # on every call (run_manifest._now_iso(), second resolution), so comparing whole dicts
+    # degenerates to "always write" on essentially every real invocation -- rewriting, on every turn
+    # of a resumable loop, the very artifact the mid-run refusal above reads, which widens rather
+    # than shrinks the window in which a killed process could leave it truncated. `was`/`now` above
+    # are STATE-only and already equal by construction here, so gating on those instead would mean
+    # `detail` never refreshes -- defeating this whole fix. `capabilities` carries the
+    # per-capability state/by/detail triples and excludes probed_at/ schema_version/host, which is
+    # exactly the "did anything an operator cares about change" question.
     #
     # `cli_flags` is on the REWRITE trigger and deliberately NOT on the drift
     # comparison above (D10 S1). The two ask different questions: drift asks
@@ -947,11 +942,15 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
     # baseline writes outside the repo, because discovery's artifact_root guard
     # runs only later, inside the discovery subprocess.
     try:
+        # #3271: first contact -- tracked/unstamped .panopticon/, stray links, hard links.
+        first = first_contact.assess(review_root, "run-manifest.json", reset=args.reset,
+                                     host=args.host, other_roots=(args.target,) if args.pr else ())
         plan_contract.artifact_root(review_root)
     except ValueError as exc:
         if worktree:
             diff_map.release_worktree(worktree, repo=args.target)
-        return runio._error_status("unsafe artifact root: %s" % exc)
+        return runio._error_status(str(exc) if isinstance(exc, first_contact.FirstContactHalt)
+                                   else "unsafe artifact root: %s" % exc)
     if args.reset:
         try:
             _clear_run_artifacts(review_root)  # resolve the tag before the manifest goes
@@ -995,7 +994,8 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
             config=resolution,
             worktree=worktree,
             scope=scope, pr=args.pr, pr_base=pr_base)
-        run_manifest.write_manifest(review_root, manifest)
+        manifest["first_contact"] = first or {}
+        run_manifest.write_manifest(review_root, first_contact.bind(review_root, manifest))
     else:
         cli_flags = _cli_flags(args, review_root=review_root, resolution=resolution)
         conflicts = run_manifest.conflicting_flags(
@@ -1025,17 +1025,14 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
         # never ingested. A run whose last phase has its artifact is complete,
         # whatever an earlier phase would like to retry.
         #
-        # Fix round 2 N1: this now stands AHEAD of the downgrade below, and
-        # inside the branch that has a manifest at all. It used to follow it,
-        # so a `--no-tools` aimed at a FINISHED run flipped `flags.tools` and
-        # appended a `flag_changes` entry before refusing -- a durable record
-        # of a rescue that never happened, on a run with nothing left to
-        # rescue. Lose the terminal artifacts and resume, and the regenerated
-        # report says `disabled_mid_run: true` beside panels that all saw
-        # scanner evidence: the run record and the report contradicting each
-        # other on the very surface this work added. A --reset run never
-        # reaches here -- it has no manifest to load -- so the old
-        # `not args.reset` clause is now structural.
+        # Fix round 2 N1: this now stands AHEAD of the downgrade below, and inside the branch that
+        # has a manifest at all. It used to follow it, so a `--no-tools` aimed at a FINISHED run
+        # flipped `flags.tools` and appended a `flag_changes` entry before refusing -- a durable
+        # record of a rescue that never happened, on a run with nothing left to rescue. Lose the
+        # terminal artifacts and resume, and the regenerated report says `disabled_mid_run: true`
+        # beside panels that all saw scanner evidence: the run record and the report contradicting
+        # each other on the very surface this work added. A --reset run never reaches here -- it has
+        # no manifest to load -- so the old `not args.reset` clause is now structural.
         if phases and phases[-1].done(review_root, manifest):
             report = runio._pano(review_root, "report.json")
             loc = report if os.path.exists(report) else review_root

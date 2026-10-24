@@ -592,6 +592,114 @@ class TestAWithheldTargetBuildIsDisclosedNotGated(unittest.TestCase):
         self.assertNotIn("target_build_not_run", self._report([])["meta"]["coverage"])
 
 
+class TestTheImageAndTheAppsAreNamed(unittest.TestCase):
+    """#3270: the report names the tools image the scan was dispatched by (its
+    id, the registry digest when there is one, the mounted adapter code's
+    hash) and every external app the run launched, on the JSON and both views.
+    Both manifests are target-writable: a value out of shape is dropped."""
+
+    ID = "sha256:" + "1" * 64
+    CODE = "sha256:" + "2" * 64
+    CLAUDE = {"name": "claude", "path": "/opt/bin/claude", "version": "2.1.40 (Claude Code)",
+              "sha256": "3" * 64, "size": 7}
+    DOCKER = {"name": "docker", "path": "/usr/bin/docker", "version": "Docker version 27.1.1",
+              "sha256": "4" * 64, "size": 9}
+
+    def _report(self, image, tool_apps=(), host_apps=None):
+        manifest = {"schema_version": 1, "run_id": None, "selected": ["semgrep"],
+                    "produced": ["semgrep"], "missing": [], "outputs": ["semgrep.sarif"],
+                    "excluded_scope": [], "image": image, "apps": list(tool_apps)}
+        host = {"host": "claude", "capabilities": {},
+                "apps": [self.CLAUDE] if host_apps is None else host_apps}
+        return report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp=DEFAULT_TIMESTAMP,
+                                     host_capabilities=host),
+            findings=findings_mod.FindingSet(findings=[]),
+            tools=tool_axis_mod.ToolAxis(policy_mode="enforced", tools_ran={"semgrep"},
+                                         dispositions={"semgrep": {"status": "empty",
+                                                                   "findings": 0}},
+                                         manifest=manifest)))
+
+    def test_the_json_carries_the_id_and_every_app(self):
+        r = self._report({"ref": "panopticon-tools", "id": self.ID, "repo_digests": [],
+                          "adapter_code": self.CODE}, [self.DOCKER])
+        self.assertEqual({"ref": "panopticon-tools", "id": self.ID, "repo_digests": [],
+                          "adapter_code": self.CODE}, r["meta"]["tools"]["image"])
+        self.assertEqual([self.CLAUDE, self.DOCKER], r["meta"]["apps"])
+        self.assertEqual([], validate_schema_mod.schema_errors(r))
+
+    def test_both_views_name_them_in_one_line_each(self):
+        import html
+        import scripts.html_report as html_report
+        r = self._report({"ref": "panopticon-tools", "id": self.ID,
+                          "repo_digests": ["ghcr.io/o/t@" + self.CODE], "adapter_code": self.CODE},
+                         [self.DOCKER])
+        image = ("Tools image: panopticon-tools @ %s (registry digest %s); adapter code %s"
+                 % (self.ID, self.CODE, self.CODE))
+        app = "Host app: claude 2.1.40 (Claude Code) at /opt/bin/claude (sha256:%s)" % ("3" * 64)
+        page = html.unescape(html_report.render(r))
+        text = render_mod.render_summary(r)
+        for line in (image, app, "Host app: docker Docker version 27.1.1 at /usr/bin/docker"):
+            self.assertIn(line, text)
+            self.assertIn(line, page)
+        self.assertIn("(local build, no registry digest)", render_mod.render_summary(
+            self._report({"ref": "panopticon-tools", "id": self.ID, "repo_digests": [],
+                          "adapter_code": self.CODE})))
+
+    def test_forged_values_are_dropped_at_the_read(self):
+        r = self._report({"ref": "panopticon-tools", "id": "sha256:nothex", "repo_digests": "x",
+                          "adapter_code": "<b>"},
+                         [dict(self.DOCKER, sha256="<b>", size=True), {"name": "<b>"}],
+                         host_apps=[dict(self.CLAUDE, version="v\n2", path="relative")])
+        self.assertEqual({"ref": "panopticon-tools", "id": None, "repo_digests": [],
+                          "adapter_code": None}, r["meta"]["tools"]["image"])
+        self.assertEqual([dict(self.CLAUDE, version=None, path=None),
+                          dict(self.DOCKER, sha256=None, size=None)], r["meta"]["apps"])
+        self.assertEqual([], validate_schema_mod.schema_errors(r))
+        self.assertIn("Tools image: panopticon-tools not available", render_mod.render_summary(r))
+
+    def test_nothing_recorded_publishes_no_key(self):
+        r = self._report(None, host_apps=[])
+        self.assertNotIn("image", r["meta"]["tools"])
+        self.assertNotIn("apps", r["meta"])
+
+    def test_the_published_report_spells_the_operator_s_home_as_a_tilde(self):
+        # #3271 S2: the report is published; the manifests keep the full path.
+        home = os.path.expanduser("~")
+        r = self._report(None, host_apps=[dict(self.CLAUDE, path=home + "/.local/bin/claude"),
+                                          dict(self.CLAUDE, name="codex", path=home + "x/codex")])
+        self.assertEqual(["~/.local/bin/claude", home + "x/codex"],
+                         [app["path"] for app in r["meta"]["apps"]])
+        self.assertIn("at ~/.local/bin/claude (", render_mod.render_summary(r))
+        self.assertNotIn(home + "/.local", json.dumps(r))
+
+
+class TestAPriorRunOfAnotherHostIsDisclosed(unittest.TestCase):
+    """#3271 ruling D2: a stamped run by ANOTHER host in the same `.panopticon/`
+    is ours, so the report says this run started over it."""
+
+    def _report(self, prior_run):
+        return report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp=DEFAULT_TIMESTAMP,
+                                     prior_run=prior_run),
+            findings=findings_mod.FindingSet(findings=[])))
+
+    def test_the_json_and_both_views_carry_it(self):
+        import html
+        import scripts.html_report as html_report
+        r = self._report("claude:0a1b2c3d")
+        self.assertEqual({"host": "claude", "run_id": "0a1b2c3d"}, r["meta"]["prior_run"])
+        self.assertEqual([], validate_schema_mod.schema_errors(r))
+        line = "this run started over an earlier claude run (0a1b2c3d) in .panopticon/"
+        self.assertIn(line, render_mod.render_summary(r))
+        self.assertIn(line, html.unescape(html_report.render(r)))
+
+    def test_a_value_out_of_shape_publishes_nothing(self):
+        for value in (None, "", "claude", "Claude:0a1b", "claude:XYZ", "claude:0a1b2c3d9"):
+            with self.subTest(value=value):
+                self.assertNotIn("prior_run", self._report(value)["meta"])
+
+
 class TestRenderSummaryResume(unittest.TestCase):
     G = [{"name": "g1", "files": ["a.py"]}]
     TS = "2026-01-01T00:00:00Z"

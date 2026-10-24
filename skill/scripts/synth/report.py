@@ -1,4 +1,5 @@
 """build_report: assemble and validate the CodeReviewReport."""
+import re
 import sys
 from dataclasses import dataclass, field
 
@@ -9,6 +10,7 @@ from dataclasses import dataclass, field
 # that used to sit here was dead code wearing a mode's clothes;
 # tests/test_module_identity.py now pins that no package module grows another.
 from scripts._version import __version__
+import scripts.app_trace as app_trace
 import scripts.evidence as evidence_mod
 import scripts.host_disclosure as host_disclosure
 import scripts.inert as inert
@@ -145,6 +147,7 @@ class RunConfig:
     # had it switched off mid-flight. Distinct from `flags.tools is False`,
     # which is equally true of a run that never had tools -- a weaker claim.
     tools_disabled_mid_run: bool = False
+    prior_run: str | None = None      # #3271: "host:run_id8", off the driver's argv
     # #1681 Plan 2: what the TARGET's committed `settings:` asked for and what
     # the trust classes let through, off `<run_dir>/config-resolution.json`.
     # {} when there is no driver-written artifact: nothing asked for.
@@ -157,7 +160,7 @@ class RunConfig:
 
     @classmethod
     def from_args(cls, args, groups_json, timestamp, host_capabilities=None,
-                  panel_tools_context=None, tools_disabled_mid_run=False,
+                  panel_tools_context=None, tools_disabled_mid_run=False, prior_run=None,
                   config=None):
         """The CLI flags resolved against the run's groups.json (WS-0 S3):
         explicit --changes wins over a discovered mode; --repo accepts only
@@ -203,6 +206,7 @@ class RunConfig:
                    host_capabilities=host_capabilities or {},
                    panel_tools_context=panel_tools_context or {},
                    tools_disabled_mid_run=bool(tools_disabled_mid_run),
+                   prior_run=prior_run if isinstance(prior_run, str) else None,
                    config=config or {},
                    gate_security_mode=plan_mod.gate_security_mode(args))
 
@@ -296,6 +300,15 @@ def _host_capabilities_field(host_capabilities, key):
     return host_capabilities.get(key)
 
 
+def _prior_run(value):
+    """`meta.prior_run` (#3271, ruling D2): {host, run_id} off the driver's
+    `HOST:RUN_ID8`, or None for anything out of shape."""
+    host, _, run_id = (value or "").partition(":")
+    if re.fullmatch(r"[a-z][a-z0-9-]{0,31}", host) and re.fullmatch(r"[0-9a-f]{1,8}", run_id):
+        return {"host": host, "run_id": run_id}
+    return None
+
+
 def _config_block(config):
     """`meta.config` (#1681 Plan 2, spec §4): what the target's committed
     config asked for, what this run honoured, and what it refused or clamped.
@@ -323,6 +336,13 @@ def assemble(run, resolved, reconciled, graded, cost):
     for f in resolved.findings:
         f.pop("_group", None)
         f.pop("_repo_root", None)
+    # #3270: every external app this run launched -- the host CLI off
+    # host-capabilities.json, docker off the tools manifest -- repaired at both
+    # reads (both are target-writable). `meta.apps` is present only when one was.
+    apps = app_trace.home_relative(
+        app_trace.repair(_host_capabilities_field(run.host_capabilities, "apps"))
+        + reconciled.tools_apps)                  # #3271 S2: never the operator's home
+    prior = _prior_run(run.prior_run)
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
         "meta": {
@@ -367,7 +387,10 @@ def assemble(run, resolved, reconciled, graded, cost):
                 # internal network behind an allowlisting proxy, or do not run
                 # at all. This is where the run says which. `{}` means no
                 # manifest: nothing measured, not nothing granted.
-                "network": reconciled.tools_network},
+                "network": reconciled.tools_network,
+                # #3270: present only when the runner recorded the image.
+                **({"image": reconciled.tools_image} if reconciled.tools_image else {})},
+            **({"apps": apps} if apps else {}),
             "integrity": reconciled.integrity,
             "cost": cost,
             # 5.1 surface 2: the verified host posture, verbatim off the
@@ -400,6 +423,7 @@ def assemble(run, resolved, reconciled, graded, cost):
                     run.host_capabilities, hosts.CLI_FLAGS),
             },
             "config": _config_block(run.config),
+            **({"prior_run": prior} if prior else {}),
         },
         "summary": graded.summary,
         "groups": graded.groups,

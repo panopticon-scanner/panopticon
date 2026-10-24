@@ -5,6 +5,8 @@ import json
 import os
 import tempfile
 import tomllib
+
+import pytest
 from unittest import mock
 
 
@@ -379,3 +381,122 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         self.assertEqual(status["status"], "complete", status)
         # ...and usage.json is live during the batch, not only after it
         self.assertEqual({"reply": True, "ledger": True, "usage": True}, seen)
+
+
+class TestHeadlessGuardSettingsAreBuiltFresh:
+    """The headless settings file is the run folder's own, so arming builds it
+    from the two guards' entries alone, never merged from what is on disk --
+    in setup's flat folder and a review's `runs/<tag>/` alike."""
+
+    PRIOR = {"hooks": {"PreToolUse": [{"matcher": "Read", "hooks": [
+                 {"type": "command", "command": "true"}]}],
+                       "SessionStart": [{"hooks": [{"type": "command", "command": "true"}]}]},
+             "env": {"EXTRA": "1"}, "permissions": {"allow": ["Bash"]}, "model": "x"}
+
+    def _guards(self, root, namespace):
+        import scripts.phases.persist as persist
+        run_dir = persist.run_dir(root, namespace)
+        os.makedirs(os.path.join(run_dir, "out"), exist_ok=True)
+        return orchestrate.Guards("headless", run_dir=run_dir), run_dir
+
+    def _entry(self, run_dir, n=1):
+        return {"id": "e%d" % n, "agent": "panopticon-advisor", "model": "m",
+                "out_file": os.path.join(run_dir, "out", "e%d.json" % n),
+                "scope": {"files": [], "dirs": [], "reads": []}}
+
+    def _commands(self, doc):
+        return [h["command"] for e in doc["hooks"]["PreToolUse"] for h in e["hooks"]]
+
+    @pytest.mark.parametrize("namespace", ["setup", None])
+    def test_only_the_guards_own_entries_are_in_the_armed_file(self, tmp_path, namespace):
+        root = os.path.realpath(str(tmp_path))
+        if namespace is None:
+            runio._write_json(runio._pano(root, "run-manifest.json"),
+                              {"schema_version": 1, "run_id": "0123456789abcdef", "host": "claude",
+                               "review_root": root, "created": "2026-10-24T00:00:00Z",
+                               "security_mode": "standard", "scope": {"mode": "repo"}})
+        guards, run_dir = self._guards(root, namespace)
+        assert (run_dir == os.path.join(root, ".panopticon")) == (namespace == "setup")
+        runio._write_json(guards.settings_path, self.PRIOR)
+        guards.arm([self._entry(run_dir)])
+        with open(guards.settings_path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        assert list(doc) == ["hooks"] and list(doc["hooks"]) == ["PreToolUse"]
+        entries = doc["hooks"]["PreToolUse"]
+        assert len(entries) == 2
+        assert all(write_guard_hook._is_our_entry(e) or read_guard_hook._is_our_entry(e)
+                   for e in entries)
+        assert any(write_guard_hook._is_our_entry(e) for e in entries)
+        assert any(read_guard_hook._is_our_entry(e) for e in entries)
+
+    def test_a_re_arm_keeps_both_guards_and_adds_nothing(self, tmp_path):
+        root = os.path.realpath(str(tmp_path))
+        guards, run_dir = self._guards(root, "setup")
+        guards.arm([self._entry(run_dir, 1)])
+        with open(guards.settings_path, encoding="utf-8") as fh:
+            first = json.load(fh)
+        seen = []
+        real = write_guard_hook.install
+
+        def install(*a, **k):   # the file as the second fan-out finds it
+            with open(guards.settings_path, encoding="utf-8") as fh:
+                seen.append(self._commands(json.load(fh)))
+            return real(*a, **k)
+
+        with mock.patch.object(write_guard_hook, "install", side_effect=install):
+            guards.arm([self._entry(run_dir, 2)])
+        assert seen == [self._commands(first)]       # never a state with a guard missing
+        with open(guards.settings_path, encoding="utf-8") as fh:
+            assert len(json.load(fh)["hooks"]["PreToolUse"]) == 2
+
+    def _near_entries(self):
+        """Entries that name a guard's script without being the entry its
+        installer writes: a second hook beside it, or a longer command."""
+        guard = os.path.abspath(write_guard_hook.__file__)
+        return [{"matcher": "*", "hooks": [{"type": "command", "command": "true " + guard},
+                                            {"type": "command", "command": "true extra"}]},
+                {"matcher": "*", "hooks": [{"type": "command", "command": "true; " + guard}]}]
+
+    def test_only_the_exact_installer_entries_are_carried(self, tmp_path):
+        root = os.path.realpath(str(tmp_path))
+        guards, run_dir = self._guards(root, "setup")
+        near = self._near_entries()
+        assert all(write_guard_hook._is_our_entry(e) for e in near)
+        runio._write_json(guards.settings_path, {"hooks": {"PreToolUse": near}})
+        base.own_settings(guards.settings_path)
+        with open(guards.settings_path, encoding="utf-8") as fh:
+            assert json.load(fh) == {}
+
+    def test_nothing_else_survives_an_arm_whose_second_install_fails(self, tmp_path):
+        root = os.path.realpath(str(tmp_path))
+        guards, run_dir = self._guards(root, "setup")
+        runio._write_json(guards.settings_path,
+                          dict(self.PRIOR, hooks={"PreToolUse": self._near_entries()}))
+        with mock.patch.object(read_guard_hook, "install", side_effect=RuntimeError("x")):
+            with pytest.raises(RuntimeError):
+                guards.arm([self._entry(run_dir)])
+        with open(guards.settings_path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        assert list(doc) == ["hooks"]
+        assert [write_guard_hook._is_our_entry(e) for e in doc["hooks"]["PreToolUse"]] == [True]
+        assert doc["hooks"]["PreToolUse"] == [write_guard_hook._hook_entry(guards.allowlist_path)]
+
+    def test_an_unreadable_file_is_replaced_not_refused(self, tmp_path):
+        root = os.path.realpath(str(tmp_path))
+        guards, run_dir = self._guards(root, "setup")
+        with open(guards.settings_path, "w", encoding="utf-8") as fh:
+            fh.write("{not json")
+        guards.arm([self._entry(run_dir)])
+        with open(guards.settings_path, encoding="utf-8") as fh:
+            assert list(json.load(fh)) == ["hooks"]
+
+    def test_a_session_s_settings_are_still_merged(self, tmp_path):
+        # The session file is the operator's own; its keys stay.
+        root = os.path.realpath(str(tmp_path))
+        settings = os.path.join(root, ".claude", "settings.local.json")
+        os.makedirs(os.path.dirname(settings))
+        runio._write_json(settings, {"permissions": {"allow": ["Read"]}})
+        guards = orchestrate.Guards("session", session_root=root)
+        guards.arm([self._entry(os.path.join(root, ".panopticon"))])
+        with open(settings, encoding="utf-8") as fh:
+            assert json.load(fh)["permissions"] == {"allow": ["Read"]}

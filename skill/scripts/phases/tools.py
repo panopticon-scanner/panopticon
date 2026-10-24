@@ -3,6 +3,7 @@ import sys
 
 import scripts.ingest_tools as ingest_tools
 import scripts.redact as redact
+import scripts.tools_image as tools_image
 import scripts.tools_manifest as tools_manifest
 from . import child
 from . import engine
@@ -161,6 +162,12 @@ def tools_execute(review_root, manifest):
     for glob in runio.committed_exclude_paths(review_root):
         cmd += ["--exclude", glob]
     proc = child._run_child(cmd, review_root=review_root, phase="tools")
+    # #3270: the runner's halt (an unnameable tools image, a PATH entry inside
+    # the target) stops the RUN, where any other runner failure is best-effort.
+    if proc.returncode == tools_image.HALT_EXIT:
+        halts = [line[len(tools_image.HALT_PREFIX):] for line in (proc.stderr or "").splitlines()
+                 if line.startswith(tools_image.HALT_PREFIX)]
+        raise runio.DriverError(halts[-1] if halts else "tool scan halted (rc=%s)" % proc.returncode)
     # The runner's own report of what it did with the captures it wrote (#1639
     # P11 F5). Tolerant: a crash before the manifest was written leaves nothing
     # to copy, and the marker then claims nothing.

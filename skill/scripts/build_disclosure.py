@@ -1,4 +1,11 @@
-"""Human disclosures for the adapter that executes the target's build.
+"""Human disclosures the report's two views share.
+
+#3270 adds the provenance lines: the tools image a scan was dispatched by, and
+every external app the run launched. They read `meta.tools.image` and
+`meta.apps`, which synth has repaired; this module stays import-free so
+html_report's flat import branch can load it.
+
+The rest is for the adapter that executes the target's build.
 
 roslyn-secguard builds the reviewed repository (its MSBuild and analyzer code),
 so it is opt-in and off by default (#3265, owner ruling 2026-10-23), and when
@@ -32,3 +39,52 @@ def partial_audit_line(name, count):
         return ("%s: %d project%s not analysed (outside the one solution or "
                 "project it builds)" % (name, count, "" if count == 1 else "s"))
     return "%s: %d requirement lines not audited (editable/local/VCS)" % (name, count)
+
+
+# #3271 (ruling D2): a stamped run by ANOTHER host is ours, so it is said, not
+# halted on. `first_contact` prints the same sentence on stderr.
+PRIOR_RUN = "this run started over an earlier %s run (%s) in .panopticon/"
+
+
+def _text(value):
+    return value if isinstance(value, str) and value else None
+
+
+def image_line(image):
+    """`meta.tools.image` as one line, or None."""
+    if not isinstance(image, dict) or not _text(image.get("ref")):
+        return None
+    if not _text(image.get("id")):
+        return "Tools image: %s not available; the tool scan was skipped" % image["ref"]
+    digests = [d for d in image.get("repo_digests") or [] if _text(d)]
+    registry = ("registry digest %s" % digests[0].rpartition("@")[2] if digests
+                else "local build, no registry digest")
+    code = _text(image.get("adapter_code"))
+    return "Tools image: %s @ %s (%s); adapter code %s" % (
+        image["ref"], image["id"], registry, code or "unrecorded")
+
+
+def app_line(app):
+    """One `meta.apps` row as one line, or None."""
+    if not isinstance(app, dict) or not _text(app.get("name")):
+        return None
+    sha = _text(app.get("sha256"))
+    line = "Host app: %s %s at %s (%s)" % (
+        app["name"], _text(app.get("version")) or "(version unknown)",
+        _text(app.get("path")) or "no trusted path",
+        "sha256:%s" % sha if sha else "sha256 unknown")
+    return line + ("; %s" % app["reason"] if _text(app.get("reason")) else "")
+
+
+def provenance_lines(meta):
+    """The image line, then one line per app; [] when neither was recorded."""
+    if not isinstance(meta, dict):
+        return []
+    tools, apps = meta.get("tools"), meta.get("apps")
+    tools = tools if isinstance(tools, dict) else {}
+    apps = apps if isinstance(apps, list) else []
+    prior = meta.get("prior_run")
+    lines = [image_line(tools.get("image"))] + [app_line(app) for app in apps]
+    if isinstance(prior, dict) and _text(prior.get("host")) and _text(prior.get("run_id")):
+        lines.append("Prior run: " + PRIOR_RUN % (prior.get("host"), prior.get("run_id")))
+    return [line for line in lines if line]
