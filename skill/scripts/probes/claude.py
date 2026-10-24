@@ -360,16 +360,8 @@ def _round_trip_confines_reads():
 
 def _read_round_trip():
     """(verdict, detail) for the sandbox round trip -- verdict None when it
-    PROVED and there is nothing to report yet.
-
-    #1917: the round trip has a third answer. `ok is None` means the planted
-    hard-link fixture could not be created, so that sub-check went unmeasured:
-    UNKNOWN (which is never benign here -- it is consumed as refuted -- but
-    keeps "nobody could measure it" apart from "the guard is broken"), never a
-    refutation of a host whose only fault is its tmp volume."""
+    PROVED and there is nothing to report yet."""
     ok, detail = _round_trip_confines_reads()
-    if ok is None:
-        return hosts.UNKNOWN, detail
     return (None if ok else hosts.REFUTED), detail
 
 

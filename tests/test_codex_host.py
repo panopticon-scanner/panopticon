@@ -463,7 +463,7 @@ def test_missing_effective_observation_is_not_inferred_from_config(requests):
 
 
 def test_probe_script_quotes_paths_as_data_and_rejects_an_incomplete_set():
-    paths = ['inside"; text("not code")', "outside\\path\nline", "hard-link"]
+    paths = ['inside"; text("not code")', "outside\\path\nline"]
     script = codex_host._probe_script(paths, "file:///probe.mjs")
     assert json.dumps(paths) in script
     assert "ALL_TOOLS.map" in script
@@ -479,10 +479,10 @@ def test_probe_script_quotes_paths_as_data_and_rejects_an_incomplete_set():
     assert "tools.read_mcp_resource" in script
     assert "server: 'panopticon_scope'" in script
     assert "tools.mcp__panopticon_scope__read_file" in script
-    # #1642: the third path is the planted hard link, and a measurement missing
-    # it would leave the probe's refutation row unmeasured.
-    for incomplete in (["only-one"], paths[:2]):
-        with pytest.raises(ValueError, match="triple"):
+    # A measurement missing the outside path would leave the probe's
+    # out-of-scope refusal row unmeasured (#3271: a pair, no hard link).
+    for incomplete in (["only-one"], [*paths, "a third"]):
+        with pytest.raises(ValueError, match="pair"):
             codex_host._probe_script(incomplete)
 
 
@@ -496,12 +496,12 @@ def test_inspection_uses_same_command_and_injected_transport_without_network(tmp
 
     monkeypatch.setattr(codex_host, "_capture_requests", fake_transport)
     result = codex_host.inspect_surface(entry, env, root, root / "run", runner=_fake_catalog,
-                                         probe_paths=("inside", "outside", "linked"))
+                                         probe_paths=("inside", "outside"))
     assert result["model"] == "gpt-test"
     assert captured["runner"] is _fake_catalog
     assert captured["env"] == env
     assert _config(captured["argv"])["features"]["shell_tool"] is False
-    assert '["inside", "outside", "linked"]' in captured["script"]
+    assert '["inside", "outside"]' in captured["script"]
 
 
 def test_transport_is_local_only_and_closes_on_failure(tmp_path, monkeypatch):

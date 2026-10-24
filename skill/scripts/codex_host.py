@@ -479,15 +479,14 @@ def validate_command(argv, env, review_root):
 def _probe_script(probe_paths, probe_module="file:///panopticon-probe.mjs"):
     """The inspection script, reading each of `probe_paths` through the broker.
 
-    The paths are the inside/outside/hard-link TRIPLE the codex probe plants
-    (#1642): the third is a hard link inside the directory grant naming the file
-    outside it, and a measurement that carried only the first two would leave
-    the probe's hard-link refutation row unmeasured -- which is the shape the
-    row exists to catch. All of 0 or all of 3; never a subset.
+    The paths are the inside/outside PAIR the codex probe writes: the granted
+    file and its sibling outside the grant. A measurement that carried only one
+    would leave the probe's out-of-scope refusal row unmeasured. All of 0 or all
+    of 2; never a subset.
     """
     paths = list(probe_paths or ())
-    if len(paths) not in (0, 3) or any(not isinstance(path, str) for path in paths):
-        raise ValueError("probe_paths must be the inside/outside/hard-link probe triple")
+    if len(paths) not in (0, 2) or any(not isinstance(path, str) for path in paths):
+        raise ValueError("probe_paths must be the inside/outside probe pair")
     probe_module = probe_module or "file:///panopticon-probe.mjs"
     if not isinstance(probe_module, str) or not probe_module.startswith("file:"):
         raise ValueError("probe_module must be a file URL")

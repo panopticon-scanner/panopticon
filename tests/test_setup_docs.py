@@ -86,45 +86,24 @@ class TestCodexHostDocs(unittest.TestCase):
 
 
     def test_the_hard_link_rule_for_directory_grants_is_stated(self):
-        # M-3 recorded this as an inherent limit: a hard link to a file outside
-        # a directory grant "reads as a file in the grant, because it is one".
-        # #1642 closed it, so the guide states the RULE instead -- including
-        # which grant kind refuses what, and what it costs, because the
-        # reviewer whose hard-linked build output stopped being readable is the
-        # one who comes here to find out why.
+        # M-3 recorded this as an inherent limit; #1642/#1683 made it a per-read
+        # rule; #3271 B1 made it a first-contact halt. The guide states where
+        # the rule lives now, the one invariant that keeps the uncounted `.git`
+        # store unreadable, and the two limits -- the host's own traversal and
+        # mid-run links -- because an operator deciding whether a prepared tree
+        # is safe to scan reads this paragraph.
         doc = _read_doc()
-        self.assertIn("hard link", doc)
-        self.assertIn("st_nlink", doc)
-        self.assertIn("Exact grants are not narrowed this way", doc)
-        self.assertNotIn("inherent to path-based confinement", doc)
-        # Fix round 1 (F1): and the DIRECTORY-argument half, because an
-        # operator deciding whether `--host claude` is safe against a prepared
-        # tree reads this paragraph. It was a stated residual until #1683
-        # closed it; what the paragraph must now carry is the rule and its two
-        # limits, since a rule with an unstated cap is a promise, not a fence.
-        self.assertIn("#1683", doc)
-        self.assertNotIn("that residual is tracked as #1683", doc)
-        self.assertIn("walks the granted directory ONCE", doc)
-        self.assertIn("past 256 recorded files", doc)
-        self.assertIn("planted AFTER the grant is issued is not in the list", doc)
-        # Fix round 1 (A): and the operator's remedy, in the same words the
-        # stderr line uses -- `phases/setup._HARD_LINK_REMEDY`.
-        self.assertIn("git clone --no-hardlinks", doc)
-        # Fix round 2 (B1): the fold is a security property an operator relies
-        # on -- and so is its asymmetry, which is why both are stated.
-        self.assertIn("case- and normalization-folded", doc)
-        self.assertIn("the grant itself is never folded", doc)
-        # Fix round 3 (N6): and what the skip line actually promises -- at most
-        # eight named, inside a bounded block, the rest counted.
-        self.assertIn("at most eight are named", doc)
-        self.assertNotIn("apply the same rule to their own directory grants", doc)
-        # Fix round 2 (N4): anchored on the phrase that STATES the limit, not
-        # on the first line mentioning the issue -- a second #1683 reference
-        # added above this one would silently move the checks to that paragraph.
-        sentence = next(line for line in doc.splitlines()
-                        if "traversed by the host's own tool" in line)
-        for phrase in ("#1683", "Grep", "Glob", "Codex has no such gap"):
+        sentence = next(line for line in doc.split("\n\n")
+                        if "first-contact halt (H4, #3271)" in line)
+        for phrase in ("hard link", "in-tree name count", "walks on every invocation",
+                       "walks once per run", "In-tree pairs",
+                       "a dirs grant never covers <root>/.git; first contact does not count it.",
+                       "`.github/` and `.gitignore` still read", "traversed by the host's own tool",
+                       "Links created mid-run are out of scope"):
             self.assertIn(phrase, sentence)
+        for gone in ("st_nlink", "git clone --no-hardlinks", "past 256 recorded files",
+                     "[skipped", "case- and normalization-folded", "Codex has no such gap"):
+            self.assertNotIn(gone, doc)
 
     def test_the_headless_runner_sentence_has_its_antecedent(self):
         # M-8: "...session when it does not (Claude and Codex have headless

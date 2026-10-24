@@ -5,11 +5,9 @@ import os
 import re
 import shlex
 import tempfile
-import unicodedata
 import unittest
 from unittest import mock
 
-from tests._test_helpers import hard_link_or_skip
 from tests._test_helpers import write_host_evidence
 from scripts import hosts
 import scripts.probes.claude as claude_probes
@@ -23,11 +21,10 @@ import scripts.read_guard_hook as rg
 from scripts import read_guard_hook
 
 
-def _scope(files=(), dirs=(), reads=(), hard_linked=()):
+def _scope(files=(), dirs=(), reads=()):
     return {"files": [os.path.realpath(p) for p in files],
             "dirs": [os.path.realpath(p) for p in dirs],
-            "reads": [os.path.realpath(p) for p in reads],
-            "hard_linked": [os.path.realpath(p) for p in hard_linked]}
+            "reads": [os.path.realpath(p) for p in reads]}
 
 
 class TestMarker(unittest.TestCase):
@@ -87,28 +84,7 @@ class TestScopeFromPlan(unittest.TestCase):
         # A well-typed-but-malformed dispatch plan must degrade to an empty
         # scope for that key, never raise.
         out = rg.scope_from_plan([{"id": "e", "scope": {"files": 5}}])
-        self.assertEqual({"files": [], "dirs": [], "reads": [], "hard_linked": []}, out["e"])
-
-    def test_hard_linked_is_realpathed_like_every_other_key(self):
-        # #1683: the walker's result travels in the scope, and the rule that
-        # reads it compares realpaths -- so this key is normalised exactly
-        # like `files` and `dirs`, and an absent one is an empty list (an old
-        # plan, and every entry that never got a directory grant).
-        with tempfile.TemporaryDirectory() as d:
-            d = os.path.realpath(d)
-            planted = os.path.join(d, "root", "a", "b.txt")
-            os.makedirs(os.path.dirname(planted), exist_ok=True)
-            open(planted, "w").close()
-            alias = os.path.join(d, "alias")
-            os.symlink(os.path.join(d, "root"), alias)
-            out = rg.scope_from_plan([
-                {"id": "e1", "scope": {"dirs": [d],
-                                       "hard_linked": [os.path.join(alias, "a", "b.txt")]}},
-                {"id": "e2", "scope": {"dirs": [d]}}])
-            self.assertEqual([planted], out["e1"]["hard_linked"])
-            self.assertEqual([], out["e2"]["hard_linked"])
-        self.assertIn("hard_linked", rg.SCOPE_KEYS)
-
+        self.assertEqual({"files": [], "dirs": [], "reads": []}, out["e"])
 
 class TestDecide(unittest.TestCase):
     def setUp(self):
@@ -131,6 +107,71 @@ class TestDecide(unittest.TestCase):
 
     def test_read_of_an_in_scope_file_is_allowed(self):
         self.assertEqual((True, ""), rg.decide("Read", {"file_path": self.inside}, self.cell))
+
+    def test_a_directory_grant_never_covers_its_own_git_store(self):
+        # #3271 G-a: first contact does not count <root>/.git (a work tree's
+        # own store), so no grant reads it -- matched as a path COMPONENT, so
+        # `.github/` and `.gitignore` still read.
+        store = os.path.join(self.root, ".git", "objects", "ab", "cdef")
+        workflow = os.path.join(self.root, ".github", "workflows", "ci.yml")
+        ignore = os.path.join(self.root, ".gitignore")
+        for p in (store, workflow, ignore):
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            open(p, "w").close()
+        for tool, key in (("Read", "file_path"), ("Grep", "path")):
+            with self.subTest(tool=tool):
+                ok, reason = rg.decide(tool, {key: store, "pattern": "x"}, self.scan)
+                self.assertFalse(ok, reason)
+                self.assertIn("outside your cell's scope", reason)
+                self.assertEqual((True, ""), rg.decide(tool, {key: workflow, "pattern": "x"}, self.scan))
+                self.assertEqual((True, ""), rg.decide(tool, {key: ignore, "pattern": "x"}, self.scan))
+        for tool in ("Grep", "Glob"):
+            with self.subTest(tool=tool, path="store"):
+                self.assertFalse(rg.decide(tool, {"pattern": "*", "path": os.path.dirname(store)},
+                                           self.scan)[0])
+        for pattern in (".git/**", "a/.git/*", ".git"):
+            with self.subTest(pattern=pattern):
+                ok, reason = rg.decide("Glob", {"pattern": pattern, "path": self.root}, self.scan)
+                self.assertFalse(ok, reason)
+                self.assertEqual(rg.GIT_STORE_DENIAL % pattern, reason)
+        self.assertEqual((True, ""), rg.decide("Glob", {"pattern": ".github/**", "path": self.root},
+                                               self.scan))
+
+    def test_the_git_store_exclusion_is_not_fooled_by_case_or_an_alias(self):
+        # #3284 r1: APFS and NTFS resolve `.GIT/config` to `.git/config`, and
+        # realpath keeps the spelling it was given -- so the component test
+        # casefolds, on every volume (a real `.GIT/` on a case-sensitive one is
+        # refused too, which is only over-strict).
+        os.makedirs(os.path.join(self.root, ".git"), exist_ok=True)
+        config = os.path.join(self.root, ".git", "config")
+        open(config, "w").close()
+        for alias in (".GIT/config", ".Git/objects/x", ".gIt"):
+            with self.subTest(path=alias):
+                path = os.path.join(self.root, alias)
+                self.assertFalse(rg.decide("Read", {"file_path": path}, self.scan)[0])
+                self.assertFalse(rg.decide("Grep", {"pattern": "x", "path": path}, self.scan)[0])
+        for pattern in (".GIT/**", "a/.Git/*"):
+            with self.subTest(pattern=pattern):
+                self.assertEqual(rg.GIT_STORE_DENIAL % pattern,
+                                 rg.decide("Glob", {"pattern": pattern, "path": self.root}, self.scan)[1])
+        if not os.path.exists(os.path.join(self.root, ".GIT", "config")):
+            self.skipTest("case-sensitive volume: .GIT is not .git here")
+        self.assertTrue(os.path.samefile(config, os.path.join(self.root, ".GIT", "config")))
+
+    def test_any_other_alias_of_the_store_is_refused_by_identity(self):
+        # The samefile half: a name the volume resolves to `<root>/.git` that
+        # casefolding does not catch. No portable way to make one exists, so
+        # the identity answer is supplied; the rule under test is "same file
+        # as the store means not granted".
+        alias = os.path.join(self.root, "alias", "config")
+        os.makedirs(os.path.dirname(alias), exist_ok=True)
+        open(alias, "w").close()
+        os.makedirs(os.path.join(self.root, ".git"), exist_ok=True)
+        self.assertEqual((True, ""), rg.decide("Read", {"file_path": alias}, self.scan))
+        real = os.path.samefile
+        with mock.patch("os.path.samefile",
+                        side_effect=lambda a, b: os.path.basename(a) == "alias" or real(a, b)):
+            self.assertFalse(rg.decide("Read", {"file_path": alias}, self.scan)[0])
 
     def test_read_outside_scope_is_denied_and_names_the_prompt(self):
         ok, reason = rg.decide("Read", {"file_path": self.sibling}, self.cell)
@@ -219,63 +260,6 @@ class TestDecide(unittest.TestCase):
         self.assertFalse(rg.decide("Read", {"file_path": self.root_other}, self.scan)[0])
         self.assertFalse(rg.decide("Grep", {"pattern": "x", "path": os.path.dirname(self.root_other)}, self.scan)[0])
 
-    def test_a_hard_link_inside_a_directory_grant_is_denied(self):
-        # #1642: realpath resolves SYMlinks, not HARD links, and a directory
-        # grant is matched by name -- so a link planted inside the granted
-        # subtree, naming a file outside it, read as in-scope. It IS the file.
-        planted = hard_link_or_skip(self.outside, os.path.join(self.root, "innocent.py"))
-        for tool, arguments in (("Read", {"file_path": planted}),
-                                ("Grep", {"pattern": "x", "path": planted})):
-            with self.subTest(tool=tool):
-                ok, reason = rg.decide(tool, arguments, self.scan)
-                self.assertFalse(ok, reason)
-                self.assertIn("hard-linked", reason)
-                self.assertIn("st_nlink=2", reason)
-
-    def test_an_exact_grant_reads_a_hard_linked_file_whatever_its_link_count(self):
-        # The other half of the rule: `files`/`reads` name a file the
-        # orchestrator chose, and an exact grant has no subtree to hide in --
-        # including when a directory grant also covers it (the normal cell
-        # shape, a granted file inside the repository the scan is scoped to).
-        planted = hard_link_or_skip(self.outside, os.path.join(self.root, "innocent.py"))
-        for scope in (_scope(files=[planted]), _scope(reads=[planted]),
-                      _scope(files=[planted], dirs=[self.root])):
-            with self.subTest(scope=scope):
-                self.assertEqual((True, ""), rg.decide("Read", {"file_path": planted}, scope))
-
-    def test_a_path_with_no_inode_passes_through_to_the_tool(self):
-        # Fix round 2 (N2): ENOENT/ENOTDIR are not "could not measure" -- they
-        # are a successful measurement that there is NO INODE at that name, so
-        # there is nothing for a read fence to confine. The scout profiles an
-        # unknown tree by probing for absent marker files (go.mod, Cargo.toml),
-        # and the setup scan is the only directory grant there is: denying those
-        # probes reads as a fence and nudges it toward the #1683 Grep path. The
-        # tool reports not-found, as it did before #1642.
-        missing = os.path.join(self.root, "go.mod")
-        self.assertEqual((True, ""), rg.decide("Read", {"file_path": missing}, self.scan))
-        self.assertEqual((True, ""), rg.decide(
-            "Grep", {"pattern": "x", "path": missing}, self.scan))
-        # ENOTDIR: a path component that is a file, not a directory.
-        through_file = os.path.join(self.root_file, "inner.py")
-        self.assertEqual((True, ""), rg.decide("Read", {"file_path": through_file}, self.scan))
-        # A dangling symlink resolves to a name with no inode: same answer.
-        dangling = os.path.join(self.root, "dangling.py")
-        os.symlink(os.path.join(self.root, "nowhere.py"), dangling)
-        self.assertEqual((True, ""), rg.decide("Read", {"file_path": dangling}, self.scan))
-
-    def test_a_target_the_rule_cannot_stat_is_denied_not_allowed(self):
-        # Fix round 1 (F4): the rule used to answer "" -- allow -- when os.stat
-        # raised, which is a guard answering "yes" about something it could not
-        # measure. It denies now, with the error in the reason, and only inside
-        # a directory grant: an exact grant never reaches the stat. Everything
-        # except the no-inode errnos above: EACCES, ELOOP, EIO, ENAMETOOLONG.
-        with mock.patch.object(os, "stat", side_effect=PermissionError("no stat here")):
-            ok, reason = rg.decide("Read", {"file_path": self.root_file}, self.scan)
-            self.assertFalse(ok, reason)
-            self.assertIn("no stat here", reason)
-            self.assertEqual((True, ""), rg.decide(
-                "Read", {"file_path": self.root_file}, _scope(files=[self.root_file])))
-
     def test_a_directory_grants_ordinary_files_and_directories_are_unchanged(self):
         # A directory's st_nlink is its subdirectory count, so the rule is for
         # REGULAR files only: over a grant whose walk recorded NOTHING, Grep
@@ -286,142 +270,15 @@ class TestDecide(unittest.TestCase):
         self.assertEqual((True, ""), rg.decide("Grep", {"pattern": "x", "path": self.root}, self.scan))
         self.assertEqual((True, ""), rg.decide("Glob", {"pattern": "*.py", "path": self.root}, self.scan))
 
-    def test_a_directory_grep_above_a_recorded_link_is_denied_and_names_it(self):
-        # #1683. The hook adjudicates the PATH ARGUMENT and the HOST's own
-        # Grep/Glob does the traversal, so a granted directory used to hand
-        # over the very file `_hard_link_reason` refuses by name. The walk is
-        # the driver's (phases/hard_links), once, when the grant is built;
-        # what is left here is a list test.
-        os.makedirs(os.path.join(self.root, "a"), exist_ok=True)
-        planted = hard_link_or_skip(self.outside, os.path.join(self.root, "a", "b.txt"))
-        scope = _scope(dirs=[self.root], hard_linked=[planted])
-        for tool, arguments in (("Grep", {"pattern": "x", "path": self.root}),
-                                ("Glob", {"pattern": "*", "path": self.root}),
-                                ("Grep", {"pattern": "x", "path": os.path.join(self.root, "a")})):
-            with self.subTest(tool=tool, path=arguments["path"]):
-                ok, reason = rg.decide(tool, arguments, scope)
-                self.assertFalse(ok, reason)
-                self.assertIn("b.txt", reason)
-                self.assertIn("narrower", reason)
-
-    def test_a_sibling_directory_with_no_recorded_link_is_still_greppable(self):
-        # The rule denies exactly the traversals that would cross a link. A
-        # profiling scan that may only Read files one at a time is not the
-        # same scan, so a clean subtree keeps its Grep and its Glob.
-        clean = os.path.join(self.root, "c")
-        os.makedirs(clean, exist_ok=True)
-        scope = _scope(dirs=[self.root],
-                       hard_linked=[os.path.join(self.root, "a", "b.txt")])
-        self.assertEqual((True, ""), rg.decide("Grep", {"pattern": "x", "path": clean}, scope))
-        self.assertEqual((True, ""), rg.decide("Glob", {"pattern": "*", "path": clean}, scope))
-
-    def test_the_overflow_encoding_denies_every_directory_under_the_grant(self):
-        # Past the walker's cap the driver records the granted directory
-        # ITSELF, which is why the rule tests both containment directions: a
-        # recorded path AT or ABOVE the argument denies it too.
-        deep = os.path.join(self.root, "pkg", "sub")
-        os.makedirs(deep, exist_ok=True)
-        scope = _scope(dirs=[self.root], hard_linked=[self.root])
-        for path in (self.root, deep):
-            with self.subTest(path=path):
-                self.assertFalse(rg.decide("Grep", {"pattern": "x", "path": path}, scope)[0])
-
-    def test_a_recorded_link_denies_a_case_folded_directory_argument(self):
-        # B1 (fix round 2). APFS/HFS+/NTFS resolve names case-insensitively,
-        # so a byte-exact list test let `Grep <root>/src` through with
-        # `<root>/Src/x.txt` recorded -- and the host then opened the very
-        # directory the fence had refused. A DENIAL may be folded: the worst a
-        # fold can do here is over-deny.
-        src = os.path.join(self.root, "src")
-        clean = os.path.join(self.root, "clean")
-        for d in (src, clean):
-            os.makedirs(d, exist_ok=True)
-        scope = _scope(dirs=[self.root],
-                       hard_linked=[os.path.join(self.root, "Src", "x.txt")])
-        ok, reason = rg.decide("Grep", {"pattern": "x", "path": src}, scope)
-        self.assertFalse(ok, reason)
-        self.assertIn("x.txt", reason)
-        self.assertEqual((True, ""), rg.decide("Grep", {"pattern": "x", "path": clean}, scope))
-
-    def test_a_recorded_link_denies_a_differently_normalised_argument(self):
-        # The same bypass through Unicode: NFC and NFD "café" are two byte
-        # strings and one directory on macOS. Built both ways explicitly, so
-        # this measures the fold and not the filesystem's normalisation.
-        nfd = os.path.join(self.root, unicodedata.normalize("NFD", "café"))
-        os.makedirs(nfd, exist_ok=True)
-        nfc = os.path.join(self.root, unicodedata.normalize("NFC", "café"))
-        scope = _scope(dirs=[self.root], hard_linked=[os.path.join(nfc, "x.txt")])
-        self.assertFalse(rg.decide("Grep", {"pattern": "x", "path": nfd}, scope)[0])
-
     def test_the_dirs_grant_itself_is_never_folded(self):
-        # The asymmetry, pinned. Folding a DENIAL can only over-deny; folding
-        # the GRANT would ADMIT /REPO/x under a /repo grant on a case-sensitive
-        # volume. Strings only, no filesystem: `isdir` is False, so this is the
-        # scope test rather than the directory branch.
-        scope = {"files": [], "dirs": ["/repo"], "reads": [], "hard_linked": []}
+        # Folding the GRANT would ADMIT /REPO/x under a /repo grant on a
+        # case-sensitive volume. Strings only, no filesystem: `isdir` is False,
+        # so this is the scope test rather than the directory branch.
+        scope = {"files": [], "dirs": ["/repo"], "reads": []}
         ok, reason = rg.decide("Grep", {"pattern": "x", "path": "/REPO/x.py"}, scope)
         self.assertFalse(ok, reason)
         self.assertIn("outside your cell's scope", reason)
         self.assertFalse(rg.decide("Read", {"file_path": "/REPO/x.py"}, scope)[0])
-
-    def test_the_overflow_encoding_says_the_grant_is_closed_not_to_narrow(self):
-        # I2 (fix round 2): with the review ROOT recorded, the old wording
-        # called it "a hard-linked file beneath" the argument -- it is neither
-        # -- and told the agent to grep a narrower directory, which is denied
-        # at every depth. A grant closed whole says so, and says what to do.
-        deep = os.path.join(self.root, "pkg", "sub")
-        os.makedirs(deep, exist_ok=True)
-        scope = _scope(dirs=[self.root], hard_linked=[self.root])
-        for path in (self.root, deep):
-            with self.subTest(path=path):
-                ok, reason = rg.decide("Grep", {"pattern": "x", "path": path}, scope)
-                self.assertFalse(ok, reason)
-                self.assertIn("the whole directory grant is closed", reason)
-                self.assertNotIn("narrower", reason)
-                self.assertIn("Read files by name", reason)
-        # A link genuinely BENEATH the argument keeps the other wording.
-        _ok, reason = rg.decide(
-            "Grep", {"pattern": "x", "path": self.root},
-            _scope(dirs=[self.root], hard_linked=[os.path.join(deep, "b.txt")]))
-        self.assertIn("narrower", reason)
-        self.assertNotIn("closed", reason)
-
-    def test_a_recorded_path_is_separator_bounded_like_every_other(self):
-        # /root/ab recorded must not deny a Grep of /root/a.
-        os.makedirs(os.path.join(self.root, "a"), exist_ok=True)
-        scope = _scope(dirs=[self.root],
-                       hard_linked=[os.path.join(self.root, "ab", "x.txt")])
-        self.assertEqual((True, ""), rg.decide(
-            "Grep", {"pattern": "x", "path": os.path.join(self.root, "a")}, scope))
-
-    def test_a_recorded_link_leaves_file_arguments_to_the_st_nlink_rule(self):
-        # `hard_linked` gates DIRECTORY arguments only. A read whose argument
-        # is the file is still answered by `_hard_link_reason` -- which reads
-        # the live link count rather than the list, and still lets an EXACT
-        # grant through whatever that count is.
-        planted = hard_link_or_skip(self.outside, os.path.join(self.root, "innocent.py"))
-        scope = _scope(dirs=[self.root], hard_linked=[planted])
-        ok, reason = rg.decide("Read", {"file_path": planted}, scope)
-        self.assertFalse(ok, reason)
-        self.assertIn("st_nlink=2", reason)
-        self.assertNotIn("narrower", reason)
-        self.assertEqual((True, ""), rg.decide(
-            "Read", {"file_path": planted},
-            _scope(files=[planted], dirs=[self.root], hard_linked=[planted])))
-
-    def test_a_link_planted_after_the_grant_is_the_stated_residual(self):
-        # Honest limit, pinned so it stays visible: the list is a snapshot of
-        # the tree AT GRANT TIME. The tree is static for the length of a run,
-        # and a target that can write into it mid-run has already won more
-        # than this. Nothing recorded -> nothing denied.
-        hard_link_or_skip(self.outside, os.path.join(self.root, "innocent.py"))
-        self.assertEqual((True, ""), rg.decide("Grep", {"pattern": "x", "path": self.root}, self.scan))
-
-    def test_a_scope_with_no_hard_linked_key_is_read_as_an_empty_list(self):
-        # An old scope file (or a hand-built plan) keeps working rather than
-        # raising KeyError inside a hook that must never crash.
-        legacy = {"files": [], "dirs": [os.path.realpath(self.root)], "reads": []}
-        self.assertEqual((True, ""), rg.decide("Grep", {"pattern": "x", "path": self.root}, legacy))
 
     def test_symlink_out_of_scope_is_denied_by_realpath(self):
         link = os.path.join(os.path.dirname(self.inside), "link.py")
@@ -579,40 +436,6 @@ class TestAdjudicate(unittest.TestCase):
 
     def test_unbound_subagent_is_denied(self):
         self.assertFalse(rg.adjudicate(self._payload("Read", "unknown-agent", file_path=self.inside), self.scope_path)[0])
-
-    def test_a_hard_link_planted_in_a_directory_grant_is_denied_and_names_the_entry(self):
-        planted = hard_link_or_skip(self.outside, os.path.join(self.root, "innocent.py"))
-        allow, reason = rg.adjudicate(self._payload("Read", "scan-agent", file_path=planted),
-                                      self.scope_path)
-        self.assertFalse(allow, reason)
-        self.assertIn("hard-linked", reason)
-        self.assertIn("setup-scan", reason)
-
-    def test_a_directory_grep_over_a_recorded_link_is_denied_end_to_end(self):
-        # #1683 through the real entry point: a link planted in the granted
-        # tree, the walk's result armed in the scope file, and the payload the
-        # host would send. The denial names the file AND the bound entry.
-        planted = hard_link_or_skip(self.outside, os.path.join(self.root, "innocent.py"))
-        with open(self.scope_path, "w", encoding="utf-8") as fh:
-            json.dump({"setup-scan": _scope(dirs=[self.root], hard_linked=[planted])}, fh)
-        for tool, arguments in (("Grep", {"pattern": "x", "path": self.root}),
-                                ("Glob", {"pattern": "*", "path": self.root})):
-            with self.subTest(tool=tool):
-                allow, reason = rg.adjudicate(
-                    self._payload(tool, "scan-agent", **arguments), self.scope_path)
-                self.assertFalse(allow, reason)
-                self.assertIn("innocent.py", reason)
-                self.assertIn("setup-scan", reason)
-
-    def test_an_old_scope_file_without_the_key_still_arms(self):
-        # The key is additive: a scope file written before #1683 loads with an
-        # empty list rather than denying every read in the run.
-        with open(self.scope_path, "w", encoding="utf-8") as fh:
-            json.dump({"setup-scan": {"files": [], "dirs": [os.path.realpath(self.root)],
-                                      "reads": []}}, fh)
-        self.assertTrue(rg.adjudicate(
-            self._payload("Grep", "scan-agent", pattern="x", path=self.root),
-            self.scope_path)[0])
 
     def test_bound_to_an_id_the_scope_does_not_name_is_denied_and_says_so(self):
         ok, reason = rg.adjudicate(self._payload("Read", "stray-agent", file_path=self.inside), self.scope_path)
@@ -963,7 +786,7 @@ class TestInstallUninstall(unittest.TestCase):
                            settings_path=self.settings, scope_path=self.scope_path)
         self.assertEqual({"e1"}, set(added))
         self.assertEqual({"e1": {"files": [os.path.realpath(self.a)], "dirs": [],
-                                 "reads": [], "hard_linked": []}},
+                                 "reads": []}},
                          rg._read_scope_file(self.scope_path))
         hooks = self._settings()["hooks"]["PreToolUse"]
         self.assertEqual(1, len(hooks))
@@ -1028,7 +851,7 @@ class TestInstallUninstall(unittest.TestCase):
         # what an intentionally-empty scope means (R-P5-2), not a hole.
         rg.install([_entry("e1")], settings_path=self.settings, scope_path=self.scope_path)
         self.assertEqual((True, 1), rg.is_armed(settings_path=self.settings, scope_path=self.scope_path))
-        self.assertEqual({"e1": {"files": [], "dirs": [], "reads": [], "hard_linked": []}},
+        self.assertEqual({"e1": {"files": [], "dirs": [], "reads": []}},
                          rg._read_scope_file(self.scope_path))
 
     def test_install_overwrites_a_planted_row_under_a_dispatched_empty_scope_id(self):
@@ -1041,7 +864,7 @@ class TestInstallUninstall(unittest.TestCase):
             json.dump({"verify-tool-X": _scope(dirs=[self.tmp.name])}, fh)
         rg.install([_entry("verify-tool-X")], settings_path=self.settings, scope_path=self.scope_path)
         on_disk = rg._read_scope_file(self.scope_path)
-        self.assertEqual({"files": [], "dirs": [], "reads": [], "hard_linked": []},
+        self.assertEqual({"files": [], "dirs": [], "reads": []},
                          on_disk["verify-tool-X"])
         # ...and adjudicate() actually denies a read of a file that used to be
         # inside the planted grant, for a subagent bound to that id.
@@ -1346,17 +1169,15 @@ class TestTheReadScopeHelpersAreACopy(unittest.TestCase):
     """
 
     # Every helper the read-scope decision is made of, in both hooks. `_readable`
-    # is the decision itself, the other six are what it is built from.
-    NAMES = ("_resolve_path", "_under", "_fold", "_readable", "_load_scope",
-             "_hard_link_reason", "_glob_pattern_climbs")
+    # is the decision itself, the others are what it is built from.
+    NAMES = ("_resolve_path", "_under", "_in_dir_grant", "_names_git_store", "_readable",
+             "_load_scope", "_glob_pattern_climbs")
     # The Codex broker is an isolated-mode (`-I`) stdio MCP subprocess, not a
     # hook -- stdlib-only by construction rather than by convention, and it says
-    # so itself. It shares the path arithmetic and the denial wording, and
-    # nothing else (it opens every file itself, so it has no directory-argument
-    # traversal to adjudicate and no `hard_linked` key to read --
-    # tests/test_codex_read_tools.py owns that boundary). `_under` is the one
-    # piece of code all three run.
-    BROKER_NAMES = ("_under",)
+    # so itself. It shares the path arithmetic -- `_under`, and (#3271 G-a)
+    # `_in_dir_grant`, the grant that never covers its own `.git` -- and the
+    # denial wording, and nothing else.
+    BROKER_NAMES = ("_under", "_in_dir_grant")
 
     def _functions(self, module, names):
         """{name: ast.dump} for `names` in `module`, docstring stripped."""
@@ -1393,24 +1214,15 @@ class TestTheReadScopeHelpersAreACopy(unittest.TestCase):
                 self.assertEqual(theirs.get(name), mine[name],
                                  "%s has drifted from read_guard_hook's copy" % name)
 
-    def test_the_scope_keys_are_one_tuple_across_the_two_hooks(self):
+    def test_the_scope_keys_are_one_tuple_across_all_three(self):
         # The constant is the drift's own lesson: a key added here must reach
-        # Kimi's loader too, and only a pin makes that true. The broker's
-        # `SCOPE_KEYS` is deliberately NOT in this pin -- it reads the same
-        # scope objects but has no `hard_linked` walk to refuse, which its own
-        # test states.
-        import scripts.kimi_guard_hook as kg
-        self.assertEqual(rg.SCOPE_KEYS, kg.SCOPE_KEYS)
-        self.assertIn("hard_linked", kg.SCOPE_KEYS)
-
-    def test_the_hard_link_denial_is_one_wording_in_all_three(self):
-        # Pinned from the broker's side too (its `_under`'s neighbours are that
-        # file's business); stated here because this class is where a reader
-        # comes to find the whole read-scope copy contract in one place.
+        # Kimi's loader and the Codex broker too, and only a pin makes that
+        # true. Since #3271 the three read the same three keys.
         import scripts.kimi_guard_hook as kg
         from scripts import codex_read_tools
-        self.assertEqual(rg.HARD_LINK_DENIAL, kg.HARD_LINK_DENIAL)
-        self.assertEqual(rg.HARD_LINK_DENIAL, codex_read_tools.HARD_LINK_DENIAL)
+        self.assertEqual(rg.SCOPE_KEYS, kg.SCOPE_KEYS)
+        self.assertEqual(rg.SCOPE_KEYS, codex_read_tools.SCOPE_KEYS)
+        self.assertEqual(("files", "dirs", "reads"), rg.SCOPE_KEYS)
 
     def test_a_root_directory_grant_admits_only_the_root_in_all_three(self):
         # The root edge is what `directory.rstrip(os.sep) or os.sep` is for:

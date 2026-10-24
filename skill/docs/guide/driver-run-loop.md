@@ -228,53 +228,24 @@ loop's `PANOPTICON_READ_SCOPE` file: exact `scope.files` and `scope.reads`, or d
 are denied. Directories above a grant are only passed through: the broker opens them for search
 alone (`O_PATH` on Linux, `O_SEARCH` where CPython exposes it — macOS from 3.13), so a review root
 under a directory that grants `--x` and not `r` is readable; on an interpreter with neither flag the
-walk stays read-only and such a root fails closed (#2839). A **hard link** inside a directory grant
-is denied too: a regular file that only `scope.dirs`
-admits is refused when it carries more than one link (`st_nlink` > 1, read off the open descriptor),
-because a link planted in the granted subtree can name an inode outside it and the link IS the file.
-Exact grants are not narrowed this way — a file `scope.files` or `scope.reads` names is the one the
-orchestrator chose, and stays readable whatever its link count. The cost is deliberate: ordinary
-hard-linked build output under a directory grant is unreadable by design — `read_file` refuses it, a
-directory-wide `search` skips it and says so in a `[skipped …]` line rather than failing the whole
-search — at most eight are named, inside a 2 KiB block with long paths elided in the middle, and any
-beyond that arrive as one `[skipped N more …]` count, so a tree full of planted links can neither
-hide the disclosure nor crowd the matches out of the answer — and `list_files` still lists a name
-`read_file` will then refuse, because listing names is not reading content. Claude's and Kimi's read
-guards apply the same rule to reads whose argument is a FILE path (`Read`, `ReadMediaFile`, `Grep`
-of a file). A `Grep` or `Glob` whose argument is a granted DIRECTORY is adjudicated by path and then
-traversed by the host's own tool, so those guards answer it from a list instead (#1683): the driver
-walks the granted directory ONCE, when the grant is issued, records the multiply-linked regular
-files beneath it in the entry's scope, and the hook denies a directory `Grep`/`Glob` whenever a
-recorded path lies at, above or below the argument. A link BELOW the argument is named in the
-denial, which says to grep a narrower directory or a file by its path; a recorded path AT or ABOVE
-it means the grant is closed whole and the denial says to Read files by name instead, because
-narrowing is refused at every depth there. `Glob`'s second argument is adjudicated too (#1917),
+walk stays read-only and such a root fails closed (#2839). A **hard link** out of the reviewed tree
+never reaches a grant: it is a first-contact halt (H4, #3271). `driver run` and `driver setup` walk
+the tree before any phase writes, and a regular file whose link count exceeds its in-tree name count
+stops the run with one line naming it. `driver setup`, whose scan holds the one directory grant over
+the whole tree, walks on every invocation; `driver run` walks once per run. In-tree pairs (a `cp -al`
+fixture, a pnpm store) read like any other file. A git work tree's own `.git/` is not counted —
+`git clone <local path>` hard-links its object store into the source repository — so **a dirs grant
+never covers <root>/.git; first contact does not count it.** Every reader refuses a path whose first
+component under the grant is `.git` (`.github/` and `.gitignore` still read), and a `Glob` pattern
+naming `.git` is denied. A directory `Grep` or `Glob` over the grant itself is adjudicated by its path
+argument and then traversed by the host's own tool, so what that traversal reaches is the host's
+rule. Links created mid-run are out of scope: nothing in a review can make one — the target is
+static content, and no reviewer has a link-making tool. `Glob`'s second argument is adjudicated too (#1917),
 since a pattern is a PATH pattern expanded against `path`: over a granted directory, a pattern that
 is absent, empty, absolute, `~`-rooted or holds a `..` segment is denied, so `Glob(path=<granted
 dir>, pattern="../Src/*")` can no longer name entries outside the grant — names, not content, but a
 confined cell does not get to enumerate the tree. `Grep`'s pattern is a regex over content and stays
-unadjudicated. Those comparisons are case- and normalization-folded as
-well as byte-exact, so `Grep <root>/src` cannot walk past a recorded `<root>/Src/x.txt` on a
-case-insensitive volume (APFS, HFS+, NTFS) — folding a DENIAL can only over-deny, and the grant
-itself is never folded, since that would admit `/REPO/x` under a `/repo` grant. A clean tree is
-unaffected: nothing recorded, nothing denied. So is a tree whose links all sit INSIDE the review
-root (#1917) — the walk counts the in-tree names of each inode and records a file only when its link
-count EXCEEDS them, so a `cp -al` fixture or a pnpm store keeps its directory `Grep`, every name for
-that content being in the tree the driver measured, while a `git clone --local` store does not,
-its partner inodes living in the source repository, which is the class this fence exists for. A
-multiply-linked FIFO or socket is skipped for the same reason a directory is: no out-of-tree content
-rides on one. Two limits, stated: past 256 recorded files (the cap bounds findings, not files walked
-— a clean million-file target pays the whole walk on every `driver setup`) the grant records the
-granted DIRECTORY itself, which denies every directory `Grep`/`Glob`
-beneath it until the tree is fixed; and a link planted AFTER the grant is issued is not in the list
-— the tree is static for the length of a run, and a hook may not walk the target on every call.
-`driver setup` discloses either case on stderr with the count and the first offending path, and
-names the remedy: **re-clone the target without hard links (`git clone --no-hardlinks`, or a fresh
-clone) to restore directory `Grep`/`Glob` for the setup scan.** A locally-cloned checkout is the
-common case — `git clone <local path>` hardlinks its object store by default, and those links do
-name inodes outside the tree (the source repo), which is the class this rule exists for; the guard
-cannot tell one from a planted link, so it refuses both. Codex has no such gap: its broker reads the
-files itself. There is no reviewer shell command, patch, browser, write, or agent-spawning tool. The
+unadjudicated. There is no reviewer shell command, patch, browser, write, or agent-spawning tool. The
 native read-only sandbox is defense in depth; `--add-dir` grants writable roots, not a read fence,
 so it is not the confinement primitive. A launch-local copy of the CLI's bundled model catalog
 removes tool-enabling patch, multi-agent, and experimental-tool metadata while retaining model

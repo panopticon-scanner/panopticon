@@ -354,6 +354,107 @@ class TestAnOutOfTreeHardLinkHalts(_Trees):
             "the target cannot be assessed at first contact: "), status["message"])
 
 
+    def test_an_entry_the_walk_cannot_lstat_fails_closed(self):
+        # A directory that can be LISTED but not searched (r--): its names are
+        # known and none of them can be measured.
+        if os.geteuid() == 0:
+            self.skipTest("root reads every directory")
+        root = self._tree(False)
+        sealed = os.path.join(root, "src", "listed")
+        os.makedirs(sealed)
+        with open(os.path.join(sealed, "f.py"), "w", encoding="utf-8") as fh:
+            fh.write("x")
+        os.chmod(sealed, 0o400)
+        self.addCleanup(os.chmod, sealed, 0o700)
+        with self.assertRaisesRegex(first_contact.FirstContactHalt,
+                                    "^the target cannot be assessed at first contact: "
+                                    "src/listed/f.py: "):
+            first_contact.assess(root, "run-manifest.json")
+
+
+class TestDriverSetupWalksEveryInvocation(_Trees):
+    """#3271 B1 (ruling G-b): `driver setup`'s scan holds the one directory
+    grant over the whole tree, so it runs the H4 walk on every invocation --
+    a resume included -- where `driver run` walks once per run."""
+
+    def _setup(self, root):
+        with contextlib.redirect_stderr(io.StringIO()):
+            return setup.run_setup_flow(driver.build_parser().parse_args(["setup", root]))
+
+    def _plant_outside(self, root):
+        outside = os.path.join(self._dir(), "secret")
+        with open(outside, "w", encoding="utf-8") as fh:
+            fh.write("s")
+        hard_link_or_skip(outside, os.path.join(root, "src", "later.py"))
+
+    def test_driver_setup_halts_on_an_out_of_tree_link(self):
+        root = self._tree(True)
+        self._plant_outside(root)
+        status = self._setup(root)
+        self.assertEqual(("error", H4 % ("src/later.py", 2, 1)),
+                         (status["status"], status["message"]))
+
+    def test_a_link_that_appears_between_two_setup_invocations_halts_the_second(self):
+        root = self._tree(True)
+        first = self._setup(root)
+        self.assertFalse(str(first.get("message")).endswith("in-tree names); review a copy "
+                                                            "without hard links (a plain cp)"))
+        manifest = setup.load_setup_manifest(root)
+        self.assertIsInstance(manifest.get("first_contact"), dict)      # a resume follows
+        self._plant_outside(root)
+        status = self._setup(root)
+        self.assertEqual(("error", H4 % ("src/later.py", 2, 1)),
+                         (status["status"], status["message"]))
+        self.assertEqual(manifest["run_id"], setup.load_setup_manifest(root)["run_id"])
+
+    def test_a_resumed_setup_walks_but_records_nothing_new(self):
+        # The walk is every time; the record is still the manifest's, once.
+        root = self._tree(True)
+        self._setup(root)
+        walks = []
+        real = first_contact._outside_links
+        with mock.patch.object(first_contact, "_outside_links",
+                               side_effect=lambda *a, **k: walks.append(1) or real(*a, **k)):
+            self.assertIsNone(first_contact.assess(root, setup.SETUP_MANIFEST, walk_every_time=True))
+        self.assertEqual([1], walks)
+
+    def test_driver_run_still_walks_once_per_run(self):
+        root = self._tree(True)
+        self.assertNotEqual("error", self._run(root)["status"])
+        self._plant_outside(root)
+        self.assertNotEqual("error", self._run(root)["status"])          # a resume
+
+
+class TestWhatTheWalkDoesNotCountNoGrantReads(_Trees):
+    """#3271 B1 (ruling G-a): a work tree's own `.git/` is not counted by H4
+    (ruling A1), so setup's directory grant never covers it -- including the
+    complete `.git/` a tarball can ship, which passes for a work tree's."""
+
+    def test_a_link_under_a_shipped_git_store_does_not_halt_and_cannot_be_read(self):
+        import scripts.read_guard_hook as read_guard_hook
+        import scripts.kimi_guard_hook as kimi_guard_hook
+        from scripts import codex_read_tools
+        root = self._tree(True)                    # `git ls-files` succeeds: a work tree
+        outside = os.path.join(self._dir(), "secret")
+        with open(outside, "w", encoding="utf-8") as fh:
+            fh.write("SEALED-CONTENT")
+        store = os.path.join(root, ".git", "objects", "zz", "planted")
+        os.makedirs(os.path.dirname(store))
+        hard_link_or_skip(outside, store)
+        self.assertEqual([], first_contact._outside_links(root, git=True)[0])     # A1: not counted
+        entry = setup._setup_scan_entry(root, "PROMPT", "claude")
+        scope = read_guard_hook.scope_from_plan([entry])[entry["id"]]
+        for tool, key in (("Read", "file_path"), ("Grep", "path")):
+            with self.subTest(reader="claude", tool=tool):
+                self.assertFalse(read_guard_hook.decide(tool, {key: store, "pattern": "p"}, scope)[0])
+            with self.subTest(reader="kimi", tool=tool):
+                self.assertFalse(kimi_guard_hook._decide_read(tool, {"path": store, "pattern": "p"},
+                                                              scope, root)[0])
+        reader = codex_read_tools.Reader(entry["scope"], root)
+        result = reader.call("read_file", {"path": store})
+        self.assertTrue(result["isError"])
+        self.assertNotIn("SEALED-CONTENT", json.dumps(result))
+
 class TestAnotherHostsPriorRunIsDisclosed(_Trees):
     def test_starting_over_a_stamped_run_of_another_host_says_so(self):
         root = self._tree(True)

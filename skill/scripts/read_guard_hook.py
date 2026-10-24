@@ -46,20 +46,17 @@ import glob
 import json
 import os
 import shlex
-import stat
 import sys
-import unicodedata
 
 _READ_TOOLS_LIST = ["Read", "Grep", "Glob"]
 _READ_TOOLS = set(_READ_TOOLS_LIST)
 _MATCHER = "|".join(_READ_TOOLS_LIST)
 
 MARKER_PREFIX = "panopticon-entry: "
-# `hard_linked` (#1683) is the driver's ONE walk of a directory grant, taken
-# when it is built (phases/hard_links, via phases/setup): the paths beneath it
-# a directory-argument Grep/Glob must not traverse. An older scope file has no
-# such key and loads as an empty list.
-SCOPE_KEYS = ("files", "dirs", "reads", "hard_linked")
+# #3271: a hard link out of the tree is a first-contact halt (H4), not a key
+# here; a scope file from an older version may still carry `hard_linked`, and
+# it is ignored.
+SCOPE_KEYS = ("files", "dirs", "reads")
 
 # Spec 5.3 (plan 6): the headless runner exports this per subprocess, and it
 # is the FIRST binding source -- a headless `claude -p` session is the
@@ -134,17 +131,6 @@ def _under(path, directory):
     return path == directory or path.startswith(directory + os.sep)
 
 
-def _fold(path):
-    """Case- and Unicode-folded, for DENIALS ONLY (#1683 fix round 2).
-
-    APFS/HFS+/NTFS resolve names case- and normalization-insensitively, so a
-    byte-exact list test let `Grep <root>/src` past a recorded
-    `<root>/Src/x.txt`. Folding a DENIAL can only over-deny; folding the
-    `dirs` GRANT would ADMIT /REPO/x under /repo on a case-sensitive volume,
-    which is why `_readable` and the grant test stay byte-exact."""
-    return unicodedata.normalize("NFC", path).casefold()
-
-
 def _resolve_path(raw):
     """realpath of a payload path, or None when it cannot be resolved -- a
     non-string, empty or NUL-bearing path is malformed and fails closed."""
@@ -156,82 +142,47 @@ def _resolve_path(raw):
         return None
 
 
+def _in_dir_grant(target, directory):
+    """`_under`, except that a directory grant never covers its own `.git`
+    store (#3271 G-a): first contact does not count `<root>/.git`, so no grant
+    may read it. A path COMPONENT, never a prefix: `.github/` still reads."""
+    if not _under(target, directory):
+        return False
+    rest = target[len(directory.rstrip(os.sep)):].lstrip(os.sep)
+    first = rest.split(os.sep, 1)[0]
+    if first.casefold() == ".git":      # `.GIT/config` opens `.git/config` on APFS/NTFS
+        return False
+    try:                                # and any other alias of the store the volume makes
+        return not (first and os.path.samefile(os.path.join(directory, first),
+                                               os.path.join(directory, ".git")))
+    except (OSError, ValueError):
+        return True
+
+
+def _names_git_store(pattern):
+    """True when a Glob pattern names a `.git` component (#3271 G-a)."""
+    return isinstance(pattern, str) and ".git" in [
+        part.casefold() for part in pattern.replace("\\", "/").split("/")]
+
+
 def _readable(target, scope):
-    # Byte-exact by design; see _fold. Folding HERE would widen the grant.
+    # Byte-exact by design: folding a GRANT would widen it.
     return (target in scope["files"] or target in scope["reads"]
-            or any(_under(target, d) for d in scope["dirs"]))
+            or any(_in_dir_grant(target, d) for d in scope["dirs"]))
 
 
-# #1642: one wording for one rule, across three read brokers.
-# `codex_read_tools.HARD_LINK_DENIAL` is the original and
-# tests/test_codex_read_tools.py pins the copies equal. Copied rather than
-# imported for the reason everything here is: the hook stands alone.
-HARD_LINK_DENIAL = "read scope denies a hard-linked file inside a directory grant (st_nlink=%d)"
-
-# #1683: the same rule, for the read whose argument is the DIRECTORY -- one
-# wording EACH, identical across the two hooks and pinned in
-# tests/test_codex_read_tools.py. LINK_DENIAL takes (tool, raw, the recorded
-# path that fired); GRANT_CLOSED takes (tool, raw), for a recorded path AT or
-# ABOVE the argument, where "grep something narrower" cannot work (I2).
-DIRECTORY_LINK_DENIAL = (
-    "%s of directory %s is denied: this tool traverses the directory itself, "
-    "and the read scope recorded a hard-linked file beneath it (%s) -- a link "
-    "can name an inode outside the granted tree. Grep a narrower directory, "
-    "or a file by its path.")
-DIRECTORY_GRANT_CLOSED = (
-    "%s of directory %s is denied: the whole directory grant is closed (too "
-    "many hard-linked files beneath it, or a subtree nothing could read -- see "
-    "the setup-scan stderr line). Read files by name.")
 # #1917: Glob's SECOND argument. `path` says where the expansion starts and is
 # adjudicated above; the pattern says what it expands to, and it is a PATH
 # pattern, so `../Src/*` under a clean granted directory names entries the
 # grant never covered. One wording, both hooks, pinned in
-# tests/test_codex_read_tools.py beside the other two.
+# tests/test_codex_read_tools.py.
 GLOB_PATTERN_DENIAL = ("Glob pattern %r is denied: patterns are relative to `path` and may "
                        "not climb out of it")
+# #3271 G-a: and may not name the repository's `.git` store, which no directory
+# grant covers. Same pinning as the line above.
+GIT_STORE_DENIAL = "Glob pattern %r is denied: no directory grant covers the .git store"
 
 
-def _hard_link_reason(tool_name, raw, target, scope):
-    """The denial for a multiply-linked REGULAR file that only a DIRECTORY grant
-    admits, or "" (#1642).
-
-    realpath resolves SYMlinks; nothing resolves a hard link, because the link
-    IS the file -- and a directory grant is matched by NAME, so a target that
-    plants one inside the granted subtree, naming a file outside it, read as
-    in-scope. An EXACT grant (`files`/`reads`) is the file the orchestrator
-    chose and is unaffected whatever its link count, including when a directory
-    grant covers it too (the normal cell shape). Directories are not the
-    subject: a directory's st_nlink is its subdirectory count, and the rule is
-    about reading content. A path that cannot be stat'ed DENIES and a path
-    with NO INODE passes through, for the reasons the two `except` clauses
-    below give (fix rounds 1 and 2, F4 and N2).
-
-    THE OTHER HALF (#1683): a `Grep`/`Glob` argued with a granted DIRECTORY is
-    adjudicated by path and then traversed by the host's own tool, so `decide`
-    refuses those from `scope["hard_linked"]` -- a hook may not walk the tree
-    on every call. And unlike the Codex broker, which reads the count off the
-    descriptor it then reads FROM, a PreToolUse hook adjudicates a NAME the
-    host reopens: as path-based as the realpath check beside it, same race.
-    """
-    if target in scope["files"] or target in scope["reads"]:
-        return ""
-    try:
-        info = os.stat(target)
-    except (FileNotFoundError, NotADirectoryError):
-        # Fix round 2 (N2): ENOENT/ENOTDIR -- a dangling symlink included --
-        # are not "could not measure". They measure that there is NO INODE at
-        # that name: nothing to confine, nothing an attacker gains by inducing
-        # one, and the tool's own not-found is the honest answer.
-        return ""
-    except OSError as exc:
-        # Fix round 1 (F4): a guard that cannot measure DENIES -- every other
-        # errno (EACCES, ELOOP, ENAMETOOLONG, EIO). It used to allow, guessing
-        # that the host's own read of an unstattable name fails the same way.
-        return ("%s of %s is denied: the read guard could not stat it to apply "
-                "the hard-link rule: %s" % (tool_name, raw, exc))
-    if not stat.S_ISREG(info.st_mode) or info.st_nlink <= 1:
-        return ""
-    return "%s of %s is denied: %s" % (tool_name, raw, HARD_LINK_DENIAL % info.st_nlink)
 
 
 def _glob_pattern_climbs(pattern):
@@ -278,8 +229,7 @@ def decide(tool_name, tool_input, scope):
         if target is None:
             return False, "Read is denied: unresolvable path %r" % (raw,)
         if _readable(target, scope):
-            denial = _hard_link_reason(tool_name, raw, target, scope)
-            return (False, denial) if denial else (True, "")
+            return True, ""
         return False, ("Read of %s is outside your cell's scope; the files you may "
                        "read are listed in your prompt" % raw)
     raw = tool_input.get("path")
@@ -288,22 +238,13 @@ def decide(tool_name, tool_input, scope):
         return False, ("%s is denied: pass `path` explicitly -- a file from the list "
                        "in your prompt" % tool_name)
     if os.path.isdir(target):
-        if any(_under(target, d) for d in scope["dirs"]):
-            # #1683. Both directions, exact and folded (fix round 2): a link
-            # recorded BENEATH the argument is what the traversal would reach;
-            # the argument AT or BENEATH a recorded path is the overflow
-            # encoding or an unreadable subtree -- a grant closed whole, which
-            # gets its own sentence because narrowing cannot work there.
-            ft = _fold(target)
-            for p in scope.get("hard_linked") or ():
-                if _under(target, p) or _under(ft, _fold(p)):
-                    return False, DIRECTORY_GRANT_CLOSED % (tool_name, raw)
-                if _under(p, target) or _under(_fold(p), ft):
-                    return False, DIRECTORY_LINK_DENIAL % (tool_name, raw, p)
+        if any(_in_dir_grant(target, d) for d in scope["dirs"]):
             # #1917: and for Glob, the second argument -- the only one of these
             # tools whose pattern is a PATH pattern, expanded against `path`.
             if tool_name == "Glob" and _glob_pattern_climbs(tool_input.get("pattern")):
                 return False, GLOB_PATTERN_DENIAL % (tool_input.get("pattern"),)
+            if tool_name == "Glob" and _names_git_store(tool_input.get("pattern")):
+                return False, GIT_STORE_DENIAL % (tool_input.get("pattern"),)
             return True, ""
         if tool_name == "Grep":
             return False, ("Grep over a directory is denied in a confined cell: grep a "
@@ -312,8 +253,7 @@ def decide(tool_name, tool_input, scope):
                        "your prompt")
     if tool_name == "Grep":
         if _readable(target, scope):
-            denial = _hard_link_reason(tool_name, raw, target, scope)
-            return (False, denial) if denial else (True, "")
+            return True, ""
         return False, ("Grep of %s is outside your cell's scope; the files you may "
                        "search are listed in your prompt" % raw)
     return False, "Glob is not available in a confined cell: your file list is in your prompt"

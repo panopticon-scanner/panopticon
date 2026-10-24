@@ -3,11 +3,9 @@ import io
 import json
 import os
 import tempfile
-import unicodedata
 import unittest
 from unittest import mock
 
-from tests._test_helpers import hard_link_or_skip
 import scripts.kimi_guard_hook as guard
 import scripts.write_guard_hook as wg
 
@@ -47,9 +45,9 @@ class GuardCase(unittest.TestCase):
                                 "write", self.allowlist_path, env=self.env)
 
 
-class TestHardLinksInDirectoryGrants(GuardCase):
-    """#1642, the Kimi copy of the rule: this hook's read branch is Claude's,
-    with Kimi's `path` field, so the boundary has to move on both."""
+class TestDirectoryGrants(GuardCase):
+    """The Kimi copy of the directory-grant rules: this hook's read branch is
+    Claude's, with Kimi's `path` field, so the boundary has to move on both."""
 
     def setUp(self):
         super().setUp()
@@ -57,57 +55,16 @@ class TestHardLinksInDirectoryGrants(GuardCase):
         _write(self.scope_path,
                {"entry-1": {"files": [self.inside], "dirs": [], "reads": []},
                 "entry-dir": {"files": [], "dirs": [self.cell], "reads": []}})
-        self.planted = hard_link_or_skip(self.outside, os.path.join(self.cell, "innocent.py"))
 
     def scan(self, tool, **tool_input):
         return guard.adjudicate({"tool_name": tool, "tool_input": tool_input,
                                  "cwd": self.tmp.name}, "read", self.scope_path,
                                 env={guard.ENV_ENTRY_ID: "entry-dir"})
 
-    def test_a_hard_link_inside_the_directory_grant_is_denied(self):
-        for tool in ("Read", "ReadMediaFile", "Grep"):
-            with self.subTest(tool=tool):
-                allow, reason = self.scan(tool, path=self.planted, pattern="x")
-                self.assertFalse(allow, reason)
-                self.assertIn("hard-linked", reason)
-                self.assertIn("st_nlink=2", reason)
-                self.assertIn("entry-dir", reason)
-
-    def test_the_singly_linked_files_and_directories_of_that_grant_are_unchanged(self):
+    def test_the_files_and_directories_of_that_grant_are_readable(self):
         self.assertEqual((True, ""), self.scan("Read", path=self.inside))
         self.assertEqual((True, ""), self.scan("Grep", pattern="x", path=self.inside))
         self.assertEqual((True, ""), self.scan("Grep", pattern="x", path=self.cell))
-
-    def test_a_link_planted_after_the_grant_is_the_stated_residual(self):
-        # The honest limit, the Kimi copy: `hard_linked` is a snapshot of the
-        # tree taken when the grant was built, so a link the walk never saw is
-        # traversed. The tree is static for the length of a run.
-        self.assertEqual((True, ""), self.scan("Grep", pattern="x", path=self.cell))
-        self.assertEqual((True, ""), self.scan("Glob", pattern="*.py", path=self.cell))
-        # The half the st_nlink rule closes: the same file, named directly.
-        self.assertFalse(self.scan("Read", path=self.planted)[0])
-
-    def test_a_directory_grep_above_a_recorded_link_is_denied_and_names_it(self):
-        # #1683, the Kimi copy. The hook adjudicates the path ARGUMENT and
-        # Kimi does the traversal, so a granted directory used to hand over
-        # the very file the st_nlink rule refuses by name. The walk is the
-        # driver's, once, when the grant is built.
-        _write(self.scope_path,
-               {"entry-dir": {"files": [], "dirs": [self.cell], "reads": [],
-                              "hard_linked": [self.planted]}})
-        for tool, arguments in (("Grep", {"pattern": "x", "path": self.cell}),
-                                ("Glob", {"pattern": "*.py", "path": self.cell})):
-            with self.subTest(tool=tool):
-                allow, reason = self.scan(tool, **arguments)
-                self.assertFalse(allow, reason)
-                self.assertIn("innocent.py", reason)
-                self.assertIn("narrower", reason)
-                self.assertIn("entry-dir", reason)
-        # ...including the PATHLESS Grep that defaults to the working directory.
-        allow, reason = guard.adjudicate(
-            {"tool_name": "Grep", "tool_input": {"pattern": "x"}, "cwd": self.cell},
-            "read", self.scope_path, env={guard.ENV_ENTRY_ID: "entry-dir"})
-        self.assertFalse(allow, reason)
 
     def test_a_glob_pattern_that_climbs_out_of_the_granted_path_is_denied(self):
         # #1917, the Kimi copy: `path` was the only argument adjudicated, and
@@ -125,125 +82,69 @@ class TestHardLinksInDirectoryGrants(GuardCase):
         # Grep's pattern is a regex over CONTENT and stays unadjudicated.
         self.assertEqual((True, ""), self.scan("Grep", pattern="../Src/*", path=self.cell))
 
-    def test_a_clean_subdirectory_of_that_grant_is_still_greppable(self):
-        clean = os.path.join(self.cell, "clean")
-        os.makedirs(clean, exist_ok=True)
-        _write(self.scope_path,
-               {"entry-dir": {"files": [], "dirs": [self.cell], "reads": [],
-                              "hard_linked": [self.planted]}})
-        self.assertEqual((True, ""), self.scan("Grep", pattern="x", path=clean))
-        self.assertEqual((True, ""), self.scan("Glob", pattern="*.py", path=clean))
-
-    def test_the_overflow_encoding_denies_every_directory_under_the_grant(self):
-        # Past the walker's cap the driver records the granted directory
-        # itself, so the rule tests both containment directions.
-        deep = os.path.join(self.cell, "pkg", "sub")
-        os.makedirs(deep, exist_ok=True)
-        _write(self.scope_path,
-               {"entry-dir": {"files": [], "dirs": [self.cell], "reads": [],
-                              "hard_linked": [self.cell]}})
-        for path in (self.cell, deep):
-            with self.subTest(path=path):
-                self.assertFalse(self.scan("Grep", pattern="x", path=path)[0])
-
-    def _dir_scope(self, *recorded):
-        _write(self.scope_path,
-               {"entry-dir": {"files": [], "dirs": [self.cell], "reads": [],
-                              "hard_linked": list(recorded)}})
-
-    def test_a_recorded_link_denies_a_case_folded_directory_argument(self):
-        # B1 (fix round 2), the Kimi copy: APFS/HFS+/NTFS resolve names
-        # case-insensitively, so a byte-exact list test let `Grep <cell>/src`
-        # past a recorded `<cell>/Src/x.txt` and Kimi opened it.
-        src = os.path.join(self.cell, "src")
-        clean = os.path.join(self.cell, "clean")
-        for d in (src, clean):
-            os.makedirs(d, exist_ok=True)
-        self._dir_scope(os.path.join(self.cell, "Src", "x.txt"))
-        allow, reason = self.scan("Grep", pattern="x", path=src)
-        self.assertFalse(allow, reason)
-        self.assertIn("x.txt", reason)
-        self.assertEqual((True, ""), self.scan("Grep", pattern="x", path=clean))
-
-    def test_a_recorded_link_denies_a_differently_normalised_argument(self):
-        nfd = os.path.join(self.cell, unicodedata.normalize("NFD", "café"))
-        os.makedirs(nfd, exist_ok=True)
-        nfc = os.path.join(self.cell, unicodedata.normalize("NFC", "café"))
-        self._dir_scope(os.path.join(nfc, "x.txt"))
-        self.assertFalse(self.scan("Grep", pattern="x", path=nfd)[0])
-
     def test_the_dirs_grant_itself_is_never_folded(self):
         # Folding a DENIAL can only over-deny; folding the GRANT would ADMIT
         # /REPO/x under a /repo grant on a case-sensitive volume. Strings
         # only, so `isdir` is False and this is the scope test.
         _write(self.scope_path,
-               {"entry-dir": {"files": [], "dirs": ["/repo"], "reads": [],
-                              "hard_linked": []}})
+               {"entry-dir": {"files": [], "dirs": ["/repo"], "reads": []}})
         allow, reason = self.scan("Grep", pattern="x", path="/REPO/x.py")
         self.assertFalse(allow, reason)
         self.assertIn("outside your cell's scope", reason)
 
-    def test_the_overflow_encoding_says_the_grant_is_closed_not_to_narrow(self):
-        # I2 (fix round 2): with the grant's own root recorded, "a hard-linked
-        # file beneath it (<root>)" was false and "grep a narrower directory"
-        # was advice denied at every depth.
-        deep = os.path.join(self.cell, "pkg", "sub")
-        os.makedirs(deep, exist_ok=True)
-        self._dir_scope(self.cell)
-        for path in (self.cell, deep):
-            with self.subTest(path=path):
-                allow, reason = self.scan("Grep", pattern="x", path=path)
+    def test_the_grant_never_covers_its_own_git_store(self):
+        # #3271 G-a: first contact does not count <root>/.git, so no grant
+        # reads it -- a path COMPONENT, so `.github/` and `.gitignore` still do.
+        store = os.path.join(self.cell, ".git", "objects", "ab", "cdef")
+        workflow = os.path.join(self.cell, ".github", "workflows", "ci.yml")
+        ignore = os.path.join(self.cell, ".gitignore")
+        for path in (store, workflow, ignore):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("x")
+        for tool in ("Read", "ReadMediaFile", "Grep"):
+            with self.subTest(tool=tool):
+                allow, reason = self.scan(tool, path=store, pattern="x")
                 self.assertFalse(allow, reason)
-                self.assertIn("the whole directory grant is closed", reason)
-                self.assertNotIn("narrower", reason)
+                self.assertIn("outside your cell's scope", reason)
+                self.assertFalse(self.scan(tool, path=os.path.dirname(store), pattern="x")[0])
+                self.assertEqual((True, ""), self.scan(tool, path=workflow, pattern="x"))
+                self.assertEqual((True, ""), self.scan(tool, path=ignore, pattern="x"))
+        for pattern in (".git/**", "a/.git/*", ".git"):
+            with self.subTest(pattern=pattern):
+                allow, reason = self.scan("Glob", pattern=pattern, path=self.cell)
+                self.assertFalse(allow, reason)
+                self.assertIn("no directory grant covers the .git store", reason)
+        self.assertEqual((True, ""), self.scan("Glob", pattern=".github/**", path=self.cell))
+
+    def test_the_git_store_exclusion_is_not_fooled_by_case_or_an_alias(self):
+        # #3284 r1, the Kimi copy: casefolded on every volume, and by identity.
+        os.makedirs(os.path.join(self.cell, ".git"), exist_ok=True)
+        for alias in (".GIT/config", ".Git/objects/x"):
+            with self.subTest(path=alias):
+                path = os.path.join(self.cell, alias)
+                self.assertFalse(self.scan("Read", path=path)[0])
+                self.assertFalse(self.scan("Grep", pattern="x", path=path)[0])
+        allow, reason = self.scan("Glob", pattern=".GIT/**", path=self.cell)
+        self.assertFalse(allow, reason)
+        other = os.path.join(self.cell, "alias", "config")
+        os.makedirs(os.path.dirname(other), exist_ok=True)
+        with open(other, "w", encoding="utf-8") as fh:
+            fh.write("x")
+        self.assertEqual((True, ""), self.scan("Read", path=other))
+        real = os.path.samefile
+        with mock.patch("os.path.samefile",
+                        side_effect=lambda a, b: os.path.basename(a) == "alias" or real(a, b)):
+            self.assertFalse(self.scan("Read", path=other)[0])
 
     def test_a_directory_read_keeps_its_previous_answer(self):
         # I3 (fix round 2): the new rule is about a tool that TRAVERSES, and
         # the Kimi hook shares one `isdir` branch across Read/ReadMediaFile/
         # Grep/Glob -- so it was telling a directory `Read` that "this tool
         # traverses the directory itself". Read's answer is unchanged.
-        self._dir_scope(self.planted)
         for tool in ("Read", "ReadMediaFile"):
             with self.subTest(tool=tool):
                 self.assertEqual((True, ""), self.scan(tool, path=self.cell))
-
-    def test_a_recorded_link_leaves_file_arguments_to_the_st_nlink_rule(self):
-        # `hard_linked` gates DIRECTORY arguments only; a read whose argument
-        # is the file is still answered by `_hard_link_reason`.
-        _write(self.scope_path,
-               {"entry-dir": {"files": [], "dirs": [self.cell], "reads": [],
-                              "hard_linked": [self.planted]}})
-        allow, reason = self.scan("Read", path=self.planted)
-        self.assertFalse(allow, reason)
-        self.assertIn("st_nlink=2", reason)
-        self.assertNotIn("narrower", reason)
-
-    def test_a_scope_file_without_the_key_still_arms(self):
-        # The key is additive: a scope file written before #1683 loads with an
-        # empty list rather than denying every read in the run.
-        self.assertEqual((True, ""), self.scan("Grep", pattern="x", path=self.cell))
-
-    def test_a_path_with_no_inode_passes_through_to_the_tool(self):
-        # Fix round 2 (N2), the Kimi copy: no inode at that name is nothing to
-        # confine, and the tool's own not-found is the honest answer.
-        self.assertEqual((True, ""), self.scan("Read", path=os.path.join(self.cell, "go.mod")))
-        self.assertEqual((True, ""), self.scan("Grep", pattern="x",
-                                               path=os.path.join(self.cell, "go.mod")))
-        self.assertEqual((True, ""), self.scan("Read", path=os.path.join(self.inside, "inner.py")))
-
-    def test_a_target_the_rule_cannot_stat_is_denied_not_allowed(self):
-        # Fix round 1 (F4), the Kimi copy: a guard that cannot measure denies --
-        # every errno except the no-inode ones above.
-        with mock.patch.object(os, "stat", side_effect=PermissionError("no stat here")):
-            allow, reason = self.scan("Read", path=self.inside)
-            self.assertFalse(allow, reason)
-            self.assertIn("no stat here", reason)
-
-    def test_an_exact_grant_reads_a_hard_linked_file(self):
-        _write(self.scope_path,
-               {"entry-1": {"files": [self.planted], "dirs": [], "reads": []}})
-        self.assertEqual((True, ""), self.read("Read", path=self.planted))
-
 
 class TestReads(GuardCase):
     def test_an_in_scope_read_is_allowed(self):
