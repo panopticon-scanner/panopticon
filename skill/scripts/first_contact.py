@@ -74,14 +74,13 @@ def _quote(rel):
 
 
 def _tracked(review_root, runner):
-    """Whether any path under `.panopticon/` is in the git index (False on a
-    non-git tree)."""
+    """(a git work tree?, any path under `.panopticon/` in its index?)."""
     proc = safe_git.probe(review_root, ["ls-files", "-z", "--", PANO],
                           runner=runner or subprocess.run, timeout=30)
     if proc.returncode == 0:
-        return bool((proc.stdout or "").strip("\0"))
+        return True, bool((proc.stdout or "").strip("\0"))
     if proc.returncode == 128 and "not a git repository" in (proc.stderr or ""):
-        return False
+        return False, False
     raise FirstContactHalt(H5 % ("git ls-files", "exit %s" % proc.returncode))
 
 
@@ -127,13 +126,16 @@ def _stray_links(pano):
     return sorted(stray)
 
 
-def _outside_links(review_root):
+def _outside_links(review_root, git=False):
     """[(rel, nlink, names)] for every regular file whose link count is greater
-    than its in-tree name count, `.git/` pruned. One walk, lstat only."""
+    than its in-tree name count. One walk, lstat only. Only a work tree's OWN
+    `.git/` is pruned (review C2): a `vendor/.git/`, or a `.git/` shipped in a
+    tarball, is target content like any other."""
     seen: dict = {}
     files = 0
     for here, dirs, names in os.walk(review_root, onerror=_walk_errors):
-        dirs[:] = [d for d in dirs if d != ".git"]
+        if git and here == review_root:
+            dirs[:] = [d for d in dirs if d != ".git"]
         for name in names:
             path = os.path.join(here, name)
             try:
@@ -184,7 +186,8 @@ def assess_artifacts(review_root, *, reset=False, runner=None):
         run_stamp.key()
     except run_stamp.KeyUnavailable as exc:
         raise FirstContactHalt(H5 % ("run stamp", exc)) from None
-    if _tracked(review_root, runner):
+    git, tracked = _tracked(review_root, runner)
+    if tracked:
         raise FirstContactHalt(H1)
     pano = os.path.join(review_root, PANO)
     if os.path.lexists(pano) and (os.path.islink(pano) or not os.path.isdir(pano)):
@@ -198,12 +201,18 @@ def assess_artifacts(review_root, *, reset=False, runner=None):
         raise FirstContactHalt(H5 % (PANO, exc.strerror or type(exc).__name__)) from None
     if empty:
         _write_owner(pano, review_root)
-        return {}
+        return {"git": git}
     owner = _load(os.path.join(pano, OWNER))
     # Signed here AND for this tree: a real mark copied from another checkout
     # carries a valid stamp over ITS review_root, not this one.
     unverified = not (run_stamp.verifies(owner) and isinstance(owner, dict)
                       and owner.get("review_root") == os.path.abspath(review_root))
+    manifests = {n: _load(os.path.join(pano, n)) for n in _MANIFESTS}
+    # Review C1: the mark proves the DIRECTORY; a manifest a resume trusts must
+    # prove itself too, so one planted into a directory of ours does not pass.
+    # An unparseable one is trusted by nothing (`load_manifest` discards it).
+    unverified = unverified or any(isinstance(m, dict) and not _bound(m, owner, review_root)
+                                   for m in manifests.values())
     stray = _stray_links(pano)
     if unverified or stray:
         if not reset:
@@ -212,8 +221,22 @@ def assess_artifacts(review_root, *, reset=False, runner=None):
             _halt([(_quote(rel),) for rel in stray], H3)
         _move_aside(pano)
         _write_owner(pano, review_root)
-        return {}
-    return {n: _load(os.path.join(pano, n)) for n in _MANIFESTS}
+        return {"git": git}
+    return dict(manifests, git=git)
+
+
+def _bound(manifest, owner, review_root):
+    return (run_stamp.verifies(manifest) and manifest.get("owner") == owner.get("run_id")
+            and manifest.get("review_root") == os.path.abspath(review_root))
+
+
+def bind(review_root, manifest):
+    """Stamp a new run or setup `manifest` to this tree's `owner.json`, so a
+    later first contact can tell it from one planted beside the mark."""
+    owner = _load(os.path.join(review_root, PANO, OWNER)) or {}
+    manifest["owner"] = owner.get("run_id")
+    manifest["stamp"] = run_stamp.sign(manifest)
+    return manifest
 
 
 def assess(review_root, manifest_name, *, reset=False, host=None, other_roots=(), runner=None):
@@ -228,7 +251,7 @@ def assess(review_root, manifest_name, *, reset=False, host=None, other_roots=()
     prior = ours.get(manifest_name)
     if isinstance(prior, dict) and isinstance(prior.get("first_contact"), dict) and not reset:
         return None
-    found, files = _outside_links(review_root)
+    found, files = _outside_links(review_root, git=ours.get("git", False))
     if found:
         _halt([(_quote(rel), nlink, names) for rel, nlink, names in found], H4)
     record = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "files": files}

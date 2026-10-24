@@ -16,7 +16,7 @@ from unittest import mock
 
 import pytest
 
-from tests._test_helpers import adopt_panopticon, fake_pem
+from tests._test_helpers import adopt_panopticon, fake_pem, our_manifest
 import scripts.phases.runio as runio
 import scripts.phases.coverage as coverage
 import scripts.phases.review as review
@@ -968,7 +968,7 @@ def _root(tmp_path):
     body = {"host": "claude", "security_mode": "standard",
             "scope": {"mode": "repo"}, "created": "2026-09-23T00:00:00Z",
             "run_id": "abc123", "review_root": str(root)}
-    run_manifest.write_manifest(str(root), body)
+    run_manifest.write_manifest(str(root), our_manifest(str(root), body))
     return root, pano, run_manifest.run_tag(body)
 
 

@@ -1,4 +1,5 @@
 """The `driver setup` flow: scan + ingest, its manifest and SETUP_PHASES."""
+import hashlib
 import json
 import os
 import subprocess
@@ -23,6 +24,8 @@ from . import setup_readiness
 
 
 SETUP_MANIFEST = run_manifest.SETUP_MANIFEST_NAME
+# #3277 review S2: the persisted proposal's bytes, bound in the setup manifest.
+PROPOSAL_SHA256 = "proposal_sha256"
 
 def _setup_manifest_path(review_root):
     return run_manifest.manifest_path(review_root, "setup")
@@ -48,12 +51,35 @@ def record_dispatch_request(review_root, checkpoint, sha256, at=None):
     manifest[run_manifest.DISPATCH_REQUEST] = {
         "checkpoint": checkpoint, "sha256": sha256,
         "at": at or run_manifest._now_iso()}
+    return _rewrite_setup_manifest(review_root, manifest)
+
+def _rewrite_setup_manifest(review_root, manifest):
     path = _setup_manifest_path(review_root)
     tmp = path + ".tmp"
     with runio._open_w_nofollow(tmp) as fh:
         json.dump(manifest, fh, indent=2, sort_keys=True)
     os.replace(tmp, path)
     return manifest
+
+def _sha256_of(path):
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+    except OSError:
+        return None
+
+def record_proposal(out_file):
+    """(ok, reason): anchor the sha256 of the setup proposal `driver persist`
+    just wrote at `out_file` in the setup manifest beside it (#3277 review S2),
+    so `scan_done` accepts those bytes and no others. Called at the one seam
+    that writes a returned proposal, never from a predicate reading one."""
+    review_root = os.path.dirname(os.path.dirname(os.path.abspath(out_file)))
+    manifest, digest = load_setup_manifest(review_root), _sha256_of(out_file)
+    if not isinstance(manifest, dict) or digest is None:
+        return False, "could not record the setup proposal's sha256 beside %s" % out_file
+    manifest[PROPOSAL_SHA256] = digest
+    _rewrite_setup_manifest(review_root, manifest)
+    return True, ""
 
 def _read_text(path):
     with open(path, encoding="utf-8") as fh:
@@ -201,7 +227,8 @@ def _unbound_setup_artifact(review_root, name, manifest):
                      "artifact is never committed -- remove it from the repository "
                      "(while it is there this phase ignores it and runs again)")
     if name != "setup-complete.json":
-        return doc, _unrequested_proposal(review_root, path, manifest)
+        return doc, (_unrequested_proposal(review_root, path, manifest)
+                     or _unpersisted_proposal(review_root, path))
     want = (manifest or {}).get("run_id")
     got = doc.get("run_id") if isinstance(doc, dict) else None
     if want and got == want:
@@ -227,6 +254,16 @@ def _unrequested_proposal(review_root, path, manifest):
     return ("no setup-scan dispatch request of this run names it (%s), so it is not this run's "
             "scan result -- `driver setup --reset` starts over"
             % (refusal or "no request of this run's"))
+
+def _unpersisted_proposal(review_root, path):
+    """Why `path` is not the bytes this run's `driver persist` wrote (S2), read
+    off the setup manifest ON DISK: persist records it after the flow loaded
+    its own copy."""
+    recorded = (load_setup_manifest(review_root) or {}).get(PROPOSAL_SHA256)
+    if recorded and recorded == _sha256_of(path):
+        return None
+    return ("its contents are not the reply this run's setup scan persisted -- "
+            "`driver setup --reset` starts over")
 
 def _clear_proposal(review_root):
     """Remove whatever sits at the proposal's path before the scan request is
@@ -575,7 +612,7 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
                                       or overrides["max_per_group"]),
                     "max_groups": getattr(args, "max_groups", None) or overrides["max_groups"],
                     "first_contact": first or {}}
-        runio._write_json(_setup_manifest_path(review_root), manifest)
+        runio._write_json(_setup_manifest_path(review_root), first_contact.bind(review_root, manifest))
     # #1737: read off THIS invocation's argv, every time, and never off the
     # stored manifest. `setup-manifest.json` sits at a `.panopticon` path a
     # hostile target can force-commit and is written once and reused, so a

@@ -6,7 +6,10 @@ the tree can say "this is ours". The stamp is an HMAC-SHA256 over a record's
 `run_id` and `review_root`, keyed by 32 random bytes that live on the operator
 side and never enter a target: a planted `.panopticon/owner.json` cannot carry
 a valid one, and a real one copied from another checkout fails on its
-`review_root`.
+`review_root`. The run and setup manifests carry one too, over their own
+run_id and review_root and the `owner.json` run_id they were written under, so
+a manifest planted into a directory that IS ours (a tarball re-extracted over
+a scanned checkout) does not verify either.
 
 The key lives under `$PANOPTICON_STATE_DIR` (default `~/.local/state/panopticon`,
 shared with #3272's probe cache). The directory is 0700 and the key 0600. It is
@@ -115,9 +118,11 @@ def key():
 
 
 def _message(manifest):
-    return ("panopticon-run-stamp-1\0%s\0%s" % (manifest.get("run_id"),
-                                                manifest.get("review_root"))).encode(
-        "utf-8", "surrogateescape")
+    # `owner` binds a manifest to the directory mark it was written under
+    # (#3271 review C1); the mark itself has none, and signs "".
+    return ("panopticon-run-stamp-1\0%s\0%s\0%s" % (
+        manifest.get("run_id"), manifest.get("review_root"),
+        manifest.get("owner") or "")).encode("utf-8", "surrogateescape")
 
 
 def sign(manifest):

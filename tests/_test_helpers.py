@@ -37,6 +37,16 @@ def adopt_panopticon(review_root):
     return marker
 
 
+def our_manifest(review_root, manifest):
+    """#3271 review C1: `manifest` (run or setup) as a run of OURS writes it --
+    stamped to the tree's `owner.json` (adopting the tree first if it has none)
+    -- so a resume trusts it. A bare one beside the mark halts on H2."""
+    import scripts.first_contact as first_contact
+    if not os.path.isfile(os.path.join(review_root, ".panopticon", "owner.json")):
+        adopt_panopticon(review_root)
+    return first_contact.bind(review_root, manifest)
+
+
 def write_host_evidence(review_root, states, host="claude", cli_flags=None):
     """A host-capabilities.json proving exactly `states` (a
     {capability: state} mapping); every other capability is UNKNOWN. Lands

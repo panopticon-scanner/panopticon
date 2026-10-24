@@ -7,6 +7,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -130,6 +131,81 @@ class TestAPrePlantedPanopticonHalts(_Trees):
         self.assertTrue(run_stamp.verifies(first_contact._load(
             os.path.join(root, ".panopticon", "owner.json"))))
 
+    def test_a_tarball_re_extracted_over_a_scanned_checkout_halts(self):
+        # Review C1: `owner.json` proves the DIRECTORY is ours, not the files in
+        # it. v2 of the tarball ships `.panopticon/run-manifest.json` (and no
+        # mark) over a tree a run of ours already scanned.
+        for manifest in ("run-manifest.json", "setup-manifest.json"):
+            with self.subTest(manifest=manifest):
+                root = self._tree(False)
+                self.assertNotEqual("error", self._run(root)["status"])
+                pano = os.path.join(root, ".panopticon")
+                with open(os.path.join(pano, manifest), "w", encoding="utf-8") as fh:
+                    json.dump({"schema_version": 1, "run_id": "evil", "host": "claude",
+                               "review_root": root, "target": root, "flags": {"tools": False},
+                               "first_contact": {"files": 1}}, fh)
+                walks = []
+                real = first_contact._outside_links
+                with mock.patch.object(first_contact, "_outside_links",
+                                       side_effect=lambda *a, **k: walks.append(1) or real(*a, **k)):
+                    self._halts(root, H2)
+                    self.assertEqual([], walks)
+                    self.assertNotEqual("error", self._run(root, "--reset")["status"])
+                    self.assertEqual([1], walks)            # the walk is not skipped
+                self.assertNotEqual("evil", run_manifest.load_manifest(root)["run_id"])
+
+    def test_a_manifest_of_an_earlier_mark_does_not_resume_under_a_new_one(self):
+        # Every manifest is signed over the mark it was written under, so even a
+        # real one of ours, from a `.panopticon/` since moved aside, does not
+        # pass as this directory's.
+        root = self._tree(False)
+        self.assertNotEqual("error", self._run(root)["status"])
+        path = os.path.join(root, ".panopticon", "run-manifest.json")
+        with open(path, encoding="utf-8") as fh:
+            earlier = fh.read()
+        os.rename(os.path.join(root, ".panopticon"), os.path.join(root, ".panopticon.old"))
+        self.assertNotEqual("error", self._run(root)["status"])          # a new mark
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(earlier)
+        self._halts(root, H2)
+
+    def _owned(self):
+        root = self._tree(False)
+        self.assertNotEqual("error", self._run(root)["status"])
+        pano = os.path.join(root, ".panopticon")
+        with open(os.path.join(pano, "owner.json"), encoding="utf-8") as fh:
+            owner = json.load(fh)
+        with open(os.path.join(pano, "run-manifest.json"), encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        return root, pano, owner, manifest
+
+    def _rewrite(self, pano, manifest):
+        with open(os.path.join(pano, "run-manifest.json"), "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh)
+
+    def test_a_manifest_must_carry_its_own_stamp_not_just_the_mark_s_id(self):
+        root, pano, owner, manifest = self._owned()
+        self._rewrite(pano, dict(manifest, run_id="other", stamp="0" * 64))
+        self._halts(root, H2)
+
+    def test_the_mark_s_id_is_under_the_manifest_s_stamp(self):
+        # A real manifest of an earlier mark, its `owner` field rewritten to
+        # this mark's id: the stamp was made over the old one.
+        root, pano, _, earlier = self._owned()
+        os.rename(pano, pano + ".old")
+        self.assertNotEqual("error", self._run(root)["status"])          # a new mark
+        with open(os.path.join(pano, "owner.json"), encoding="utf-8") as fh:
+            now = json.load(fh)["run_id"]
+        self.assertNotEqual(now, earlier["owner"])
+        self._rewrite(pano, dict(earlier, owner=now))
+        self._halts(root, H2)
+
+    def test_a_manifest_stamped_for_another_tree_does_not_verify_here(self):
+        root, pano, owner, manifest = self._owned()
+        self._rewrite(pano, first_contact.bind(root, dict(manifest, review_root="/elsewhere")))
+        with self.assertRaisesRegex(first_contact.FirstContactHalt, "^%s$" % re.escape(H2)):
+            first_contact.assess_artifacts(root)
+
     def test_driver_setup_halts_on_the_same_tree(self):
         root = self._tree(True)
         self._plant_manifest(root)
@@ -202,15 +278,29 @@ class TestAnOutOfTreeHardLinkHalts(_Trees):
         hard_link_or_skip(pair, os.path.join(outside, "c.py"))               # 3 links, 2 names
         self.assertEqual([("src/a.py", 3, 2)], first_contact._outside_links(root)[0])
 
-    def test_git_objects_are_not_counted(self):
-        # Ruling A1: `git clone /local/path` hard-links .git/objects by default.
-        root, outside = self._tree(False), self._dir()
-        os.makedirs(os.path.join(root, ".git", "objects", "ab"))
+    def _linked_git_dir(self, root, where):
+        outside = self._dir()
+        os.makedirs(os.path.join(root, where, "objects", "ab"))
         blob = os.path.join(outside, "blob")
         with open(blob, "w", encoding="utf-8") as fh:
             fh.write("z")
-        hard_link_or_skip(blob, os.path.join(root, ".git", "objects", "ab", "cdef"))
-        self.assertEqual([], first_contact._outside_links(root)[0])
+        hard_link_or_skip(blob, os.path.join(root, where, "objects", "ab", "cdef"))
+        return where + "/objects/ab/cdef"
+
+    def test_only_the_work_tree_s_own_git_objects_are_not_counted(self):
+        # Ruling A1: `git clone /local/path` hard-links .git/objects by default.
+        root = self._tree(True)
+        self._linked_git_dir(root, ".git")
+        self.assertNotEqual("error", self._run(root)["status"])
+
+    def test_a_shipped_git_directory_is_target_content(self):
+        # Review C2: a nested `vendor/.git/`, or a `.git/` in a tree that is no
+        # git work tree (a tarball), is the target's -- it hides nothing.
+        for git, where in ((True, "vendor/.git"), (False, ".git")):
+            with self.subTest(where=where, git=git):
+                root = self._tree(git)
+                rel = self._linked_git_dir(root, where)
+                self._halts(root, H4 % (rel, 2, 1))
 
     def test_a_symlink_or_fifo_is_not_a_hard_link(self):
         root, outside = self._tree(False), self._dir()
@@ -238,9 +328,9 @@ class TestAnOutOfTreeHardLinkHalts(_Trees):
         calls = []
         real = first_contact._outside_links
 
-        def counted(review_root):
+        def counted(review_root, **kw):
             calls.append(review_root)
-            return real(review_root)
+            return real(review_root, **kw)
 
         with mock.patch.object(first_contact, "_outside_links", side_effect=counted):
             for _ in range(3):

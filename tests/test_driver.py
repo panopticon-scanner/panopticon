@@ -16,8 +16,9 @@ import scripts.phases.runio as runio
 import scripts.phases.coverage as coverage
 
 from tests._test_helpers import all_proven_artifact as _all_proven_artifact
-from tests._test_helpers import adopt_panopticon, docker_probe_runner, only
+from tests._test_helpers import adopt_panopticon, docker_probe_runner, only, our_manifest
 import scripts.driver as driver
+import scripts.first_contact as first_contact
 import scripts.inert as inert
 import scripts.host_disclosure as host_disclosure
 import scripts.run_manifest as run_manifest
@@ -104,7 +105,13 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
                 error = io.StringIO()
                 with mock.patch.object(runio, "_manifest_committed", return_value=tracked), \
                         contextlib.redirect_stderr(error):
-                    driver.run(args)
+                    status = driver.run(args)
+                if not tracked:
+                    # #3271 review C1: a manifest stamped for another tree no
+                    # longer verifies, so first contact halts (H2) before this
+                    # message's branch is reached.
+                    self.assertEqual(first_contact.H2, status["message"])
+                    continue
                 line = next(line for line in error.getvalue().splitlines()
                             if "ignoring foreign run-manifest.json" in line)
                 self.assertIn("git-tracked" if tracked else "stamped review_root", line)
@@ -831,7 +838,7 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         adopt_panopticon(d)          # #3271: OUR run, interrupted
         m = run_manifest.build_manifest(
             target=d, review_root=d, host="claude", security_mode="standard")
-        run_manifest.write_manifest(d, m)        # manifest, but NO baseline
+        run_manifest.write_manifest(d, our_manifest(d, m))   # manifest, NO baseline
         self.assertFalse(os.path.exists(runio._pano(d, "tree-baseline.txt")))
         driver.run(self._args(d))                # resume -> should self-heal
         self.assertTrue(os.path.exists(runio._pano(d, "tree-baseline.txt")))

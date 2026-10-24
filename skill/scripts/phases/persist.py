@@ -625,6 +625,9 @@ def write_reply(entry, text):
         runio._write_json(out_file, data)
     except (OSError, ValueError) as exc:
         return False, "could not write %s: %s" % (out_file, exc)
+    if role_of(entry) == "setup-scan":
+        from . import setup      # #3277 S2; local: setup reaches persist through loop_batch
+        return setup.record_proposal(out_file)
     return True, ""
 
 

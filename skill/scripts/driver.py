@@ -995,7 +995,7 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
             worktree=worktree,
             scope=scope, pr=args.pr, pr_base=pr_base)
         manifest["first_contact"] = first or {}
-        run_manifest.write_manifest(review_root, manifest)
+        run_manifest.write_manifest(review_root, first_contact.bind(review_root, manifest))
     else:
         cli_flags = _cli_flags(args, review_root=review_root, resolution=resolution)
         conflicts = run_manifest.conflicting_flags(
