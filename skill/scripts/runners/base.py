@@ -36,17 +36,23 @@ def own_settings(path):
 
     The file is the run folder's, never the operator's: unlike a session's
     `.claude/settings.local.json` there is nothing of anyone else's in it to
-    keep, so it is built fresh rather than merged from disk. The guards' own
-    entries ARE carried, so a re-arm while another fan-out is in flight never
-    passes through a state with either guard missing. Returns `path`."""
+    keep, so it is built fresh rather than merged from disk. Only the exact
+    entries the two installers write for this run folder are carried, so a
+    re-arm while another fan-out is in flight never passes through a state
+    with either guard missing. Returns `path`."""
+    run_dir = os.path.dirname(path)
+    try:
+        exact = [write_guard_hook._hook_entry(os.path.join(run_dir, ALLOWLIST_FILE)),
+                 read_guard_hook._hook_entry(os.path.join(run_dir, SCOPE_FILE))]
+    except RuntimeError:                # no hook can be built: carry nothing
+        exact = []
     try:
         doc = write_guard_hook._load(path)
     except RuntimeError:                # unreadable: nothing in it is kept
         doc = None
     hooks = doc.get("hooks") if isinstance(doc, dict) else None
     pre = hooks.get("PreToolUse") if isinstance(hooks, dict) else None
-    ours = [h for h in pre if write_guard_hook._is_our_entry(h)
-            or read_guard_hook._is_our_entry(h)] if isinstance(pre, list) else []
+    ours = [h for h in pre if h in exact] if isinstance(pre, list) else []
     fresh = {"hooks": {"PreToolUse": ours}} if ours else {}
     if doc != fresh:
         write_guard_hook.atomic_write_json(path, fresh, indent=2)

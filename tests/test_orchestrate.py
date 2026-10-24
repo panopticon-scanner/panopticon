@@ -449,6 +449,38 @@ class TestHeadlessGuardSettingsAreBuiltFresh:
         with open(guards.settings_path, encoding="utf-8") as fh:
             assert len(json.load(fh)["hooks"]["PreToolUse"]) == 2
 
+    def _near_entries(self):
+        """Entries that name a guard's script without being the entry its
+        installer writes: a second hook beside it, or a longer command."""
+        guard = os.path.abspath(write_guard_hook.__file__)
+        return [{"matcher": "*", "hooks": [{"type": "command", "command": "true " + guard},
+                                            {"type": "command", "command": "true extra"}]},
+                {"matcher": "*", "hooks": [{"type": "command", "command": "true; " + guard}]}]
+
+    def test_only_the_exact_installer_entries_are_carried(self, tmp_path):
+        root = os.path.realpath(str(tmp_path))
+        guards, run_dir = self._guards(root, "setup")
+        near = self._near_entries()
+        assert all(write_guard_hook._is_our_entry(e) for e in near)
+        runio._write_json(guards.settings_path, {"hooks": {"PreToolUse": near}})
+        base.own_settings(guards.settings_path)
+        with open(guards.settings_path, encoding="utf-8") as fh:
+            assert json.load(fh) == {}
+
+    def test_nothing_else_survives_an_arm_whose_second_install_fails(self, tmp_path):
+        root = os.path.realpath(str(tmp_path))
+        guards, run_dir = self._guards(root, "setup")
+        runio._write_json(guards.settings_path,
+                          dict(self.PRIOR, hooks={"PreToolUse": self._near_entries()}))
+        with mock.patch.object(read_guard_hook, "install", side_effect=RuntimeError("x")):
+            with pytest.raises(RuntimeError):
+                guards.arm([self._entry(run_dir)])
+        with open(guards.settings_path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        assert list(doc) == ["hooks"]
+        assert [write_guard_hook._is_our_entry(e) for e in doc["hooks"]["PreToolUse"]] == [True]
+        assert doc["hooks"]["PreToolUse"] == [write_guard_hook._hook_entry(guards.allowlist_path)]
+
     def test_an_unreadable_file_is_replaced_not_refused(self, tmp_path):
         root = os.path.realpath(str(tmp_path))
         guards, run_dir = self._guards(root, "setup")
