@@ -206,8 +206,8 @@ def _plan_owed(manifest):
     `_snapshot_review_out_files` names as its own threat -- deleting the stamp
     is one unmediated `Write` and restores the benign reading. What is
     unconditional is that forging it is a SECOND, separate write, and that
-    `runio._foreign_manifest` discards a manifest that is git-tracked in the
-    reviewed tree or stamped for another checkout. The same is true of #1727's
+    first contact halts on a manifest that is git-tracked in the reviewed
+    tree or not stamped by this machine for it (#3271). The same is true of #1727's
     own `dispatch_request` anchor.
 
     Fails OPEN by design in exactly one case, which is the same case every

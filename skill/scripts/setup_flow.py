@@ -18,7 +18,6 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from scripts import plan_contract  # noqa: E402
 from scripts import discovery  # noqa: E402  (P6.5 Slice A: discovery primitives, moved off orchestrator)
 from scripts import grouping_engine  # noqa: E402  (5.2: stage-3 size policy + setup report)
 from scripts import coverage_model  # noqa: E402  (5.2: the surfaces enum for the brief)
@@ -35,8 +34,8 @@ from scripts import tolerant_json  # noqa: E402  (#2959: the JSON depth bound)
 # #1577 (SEC-D1C): the five artifact writes below go through the driver's own
 # confined O_NOFOLLOW writers rather than a plain open(). A target repo can
 # commit any of these paths as a symlink (`.gitignore` needs no `git add -f` at
-# all), and `plan_contract.artifact_root` vets the `.panopticon` DIRECTORY, never
-# the leaf. Imported as a module, not as names (tests/test_layout.py rule 1), and
+# all), and first contact vets the `.panopticon` DIRECTORY (#3271), never the
+# leaf. Imported as a module, not as names (tests/test_layout.py rule 1), and
 # this direction only -- `phases/setup.py` already calls into this module.
 from scripts.phases import runio  # noqa: E402
 
@@ -839,7 +838,7 @@ def format_budget(spine):
 
 
 def write_spine(repo, spine):
-    path = os.path.join(plan_contract.artifact_root(repo), _SPINE_FILE)
+    path = os.path.join(os.path.abspath(repo), ".panopticon", _SPINE_FILE)
     with runio._open_w_nofollow(path) as fh:   # #1577
         json.dump(spine, fh, indent=1, sort_keys=True)
         fh.write("\n")
@@ -848,7 +847,7 @@ def write_spine(repo, spine):
 
 def read_spine(repo):
     """The persisted spine, or None when absent/unreadable/not a v1 mapping."""
-    path = os.path.join(plan_contract.artifact_root(repo), _SPINE_FILE)
+    path = os.path.join(os.path.abspath(repo), ".panopticon", _SPINE_FILE)
     try:
         with open(path, encoding="utf-8") as fh:
             doc = json.load(fh)
@@ -953,7 +952,7 @@ def render_scan_brief(repo, vocabulary, layers=None, spine=None, host=None):
         "layer_catalog": render_layer_catalog(layers),
         "surfaces": ", ".join(sorted(coverage_model.SURFACES)),
     }, host=host)
-    path = os.path.join(plan_contract.artifact_root(repo), "setup-scan-brief.md")
+    path = os.path.join(os.path.abspath(repo), ".panopticon", "setup-scan-brief.md")
     with runio._open_w_nofollow(path) as fh:   # #1577
         fh.write(brief)
     return path
@@ -1196,7 +1195,7 @@ def record_readiness(repo, readiness, section=None):
     artifact (#1577), so a symlink planted at either name refuses rather than
     writing through.
     """
-    root = plan_contract.artifact_root(repo)
+    root = os.path.join(os.path.abspath(repo), ".panopticon")     # first contact vetted it
     json_path = os.path.join(root, "setup-report.json")
     document = runio._load_json(json_path)
     if not isinstance(document, dict):
@@ -1279,7 +1278,7 @@ def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups
     if verr or aerr or lerr:
         return {"ok": False, "errors": ["data error: %s" % e for e in verr + aerr + lerr]}
     proposal_path = proposal_path or os.path.join(
-        plan_contract.artifact_root(repo), "setup-proposal.json")
+        os.path.abspath(repo), ".panopticon", "setup-proposal.json")
     try:
         # #run10 COD-F1B: the cap used to be os.path.getsize() and then a separate unbounded
         # open()+json.load() -- a stat-then-open pair. The bytes actually read were never
@@ -1324,7 +1323,7 @@ def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups
     report_text = grouping_engine.format_report(report, disclosure)
     report_json = json.dumps({"schema_version": 1, "report": report, "disclosure": disclosure,
                               "diff": diff}, indent=1, sort_keys=True) + "\n"
-    root = plan_contract.artifact_root(repo)
+    root = os.path.join(os.path.abspath(repo), ".panopticon")     # first contact vetted it
     draft = repo_config.draft_path(repo)
     report_path = os.path.join(root, "setup-report.md")
     for path, text in ((draft, draft_text), (report_path, report_text),

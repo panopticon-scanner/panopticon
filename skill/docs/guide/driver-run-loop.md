@@ -232,7 +232,12 @@ walk stays read-only and such a root fails closed (#2839). A **hard link** out o
 never reaches a grant: it is a first-contact halt (H4, #3271). `driver run` and `driver setup` walk
 the tree before any phase writes, and a regular file whose link count exceeds its in-tree name count
 stops the run with one line naming it. `driver setup`, whose scan holds the one directory grant over
-the whole tree, walks on every invocation; `driver run` walks once per run. In-tree pairs (a `cp -al`
+the whole tree, walks on every invocation; `driver run` walks once per run. `driver loop` and
+`driver loop --setup` make the `.panopticon/` half (H1-H3, on the operator's checkout too under
+`--pr`) before they read a manifest or a crash record or delete anything one names. Standalone tool
+entries do not run first contact; driver run/setup/loop do — `discovery.py`, `run_tools.py` and
+`synthesize.py` run directly (as CI runs `run_tools.py`) keep only a read-only check that
+`.panopticon` is a real in-tree directory, and write no mark and no key. In-tree pairs (a `cp -al`
 fixture, a pnpm store) read like any other file. A git work tree's own `.git/` is not counted —
 `git clone <local path>` hard-links its object store into the source repository — so **a dirs grant
 never covers <root>/.git; first contact does not count it.** Every reader refuses a path whose first

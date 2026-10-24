@@ -9,6 +9,7 @@ import json
 from unittest import mock
 
 import scripts.driver as driver
+import scripts.first_contact as first_contact
 import scripts.ledger as ledger_mod
 import scripts.loop_batch as loop_batch
 import scripts.orchestrate as orchestrate
@@ -180,17 +181,12 @@ class TestHostAndModeResolution(LoopCase):
         self.assertEqual(calls, [("claude", "session")])
 
     def test_a_target_committed_manifest_does_not_choose_the_host(self):
-        # Fix round 3: I5 reads the run's host off run-manifest.json, but
-        # `driver.run` does NOT trust every manifest it finds -- #1093 / #run8
-        # AGT-C1A -- because a hostile target can force-commit its own
-        # `.panopticon/run-manifest.json`. driver.run discards a foreign one
-        # and rebuilds from the real CLI args; `_resolve_host` read it
-        # unconditionally, so a committed `"host": "gemini"` steered THIS
-        # invocation's runner while the run itself proceeded as claude. The
-        # target got to pick which family's agents were dispatched at it.
-        # Still spelled `gemini` after the retirement (#1621): the point is a
-        # name the registry KNOWS but this invocation never chose, and a
-        # foreign manifest is discarded before selectability is ever consulted.
+        # Fix round 3: I5 reads the run's host off run-manifest.json, and a
+        # hostile target can force-commit its own (#1093 / #run8 AGT-C1A): a
+        # committed `"host": "gemini"` once steered THIS invocation's runner
+        # while the run itself proceeded as claude. #3271 B2: `driver loop`
+        # makes first contact before it resolves a host, so such a manifest
+        # halts the loop (H2) before any runner is chosen -- none is built.
         d, _ = self._repo(); s = self._session_root(d)
         runio._write_json(driver.run_manifest.manifest_path(d),
                           {"schema_version": 1, "run_id": "r" * 8, "host": "gemini",
@@ -198,8 +194,9 @@ class TestHostAndModeResolution(LoopCase):
         calls = []
         with self._spy(calls), contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(io.StringIO()):
-            orchestrate.loop(self._args(d, "--mode", "session", "--session-dir", s))
-        self.assertEqual(calls, [(runio._DEFAULTS["host"], "session")])
+            status = orchestrate.loop(self._args(d, "--mode", "session", "--session-dir", s))
+        self.assertEqual(("error", first_contact.H2), (status["status"], status["message"]))
+        self.assertEqual(calls, [])
 
     def test_a_host_with_no_headless_runner_degrades_to_session_with_a_reason(self):
         # I8, spec 4.4: "A host with no headless runner registered gets session

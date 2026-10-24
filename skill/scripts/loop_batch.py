@@ -18,7 +18,6 @@ import sys
 import scripts.dispatch as dispatch
 import scripts.hosts as hosts
 import scripts.ledger as ledger_mod
-import scripts.plan_contract as plan_contract
 import scripts.phases.persist as persist
 import scripts.phases.requests as requests
 import scripts.phases.runio as runio
@@ -168,9 +167,8 @@ def _owner_stamp(doc):
 def recover_stale(review_root, request, host, mode, namespace=None, discard=None):
     """Validate every crash record before deleting anything, then retry the phase.
 
-    The manifest lists artifacts, but the bound outgoing request supplies the
-    authority: entries, output paths and checkpoint must agree. Nothing from a
-    foreign run is followed; the normal first-run path discards that run.
+    The bound outgoing request, not the manifest, supplies the authority: entries,
+    output paths and checkpoint must agree. `loop`'s first contact vetted both (#3271).
 
     Two records reach here and they owe different things (#1698). An
     UNFLAGGED one is a crash nobody has accounted for: its artifacts go, its
@@ -194,12 +192,10 @@ def recover_stale(review_root, request, host, mode, namespace=None, discard=None
     deleted for it in this validation pass; the acceptance is recorded in the
     act loop below, next to the rollback it authorises.
     """
-    plan_contract.artifact_root(review_root)
     manifest = (setup.load_setup_manifest(review_root) if namespace == "setup"
                 else run_manifest.load_manifest(review_root))
-    mpath = (setup._setup_manifest_path(review_root) if namespace == "setup"
-             else run_manifest.manifest_path(review_root))
-    if manifest is None or runio._foreign_manifest(manifest, review_root, mpath):
+    mpath = run_manifest.manifest_path(review_root, namespace)
+    if manifest is None:
         # No run of this tree's own to discard from: the flag would otherwise
         # pass silently through the one branch that reads no records at all.
         if discard is not None:
@@ -259,8 +255,6 @@ def recover_stale(review_root, request, host, mode, namespace=None, discard=None
                 if (not isinstance(artifact, str) or not os.path.isabs(artifact)
                         or os.path.commonpath((root, os.path.realpath(os.path.dirname(artifact)))) != root):
                     raise ValueError(refusal + "artifact escapes the run folder")
-                if i and os.path.islink(os.path.dirname(artifact)):
-                    raise ValueError(refusal + "retained-reply parent is a symlink")
                 if i and (os.path.realpath(os.path.dirname(artifact)) != os.path.join(root, persist.REJECTED_DIR)
                           or not re.fullmatch(re.escape(safe_id) + r"-[0-9]+\.json",
                                               os.path.basename(artifact))
@@ -820,3 +814,9 @@ def prove_output_schema_shape(run_dir, host, runner, pending, env_for):
              verdict.get(hosts.SHAPE_DETAIL) or "no detail recorded"),
           file=sys.stderr, flush=True)
     return verdict
+
+
+def _resolve_target(args):
+    """`(review_root, worktree, pr_base)` -- resolved ONCE per invocation and passed down (#1616 item 6):
+    `driver.run` takes it as `resolved=`, not a `gh pr view` and a worktree acquisition per iteration."""
+    return runio.resolve_review_root(args.target, base=args.base, pr=args.pr)

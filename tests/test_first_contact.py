@@ -16,13 +16,17 @@ import unittest
 from unittest import mock
 
 import scripts.driver as driver
+import scripts.loop_batch as loop_batch
+import scripts.orchestrate as orchestrate
+import scripts.phases.requests as requests
+import scripts.phases.runio as runio
 import scripts.first_contact as first_contact
 import scripts.phases.setup as setup
 import scripts.run_manifest as run_manifest
 import scripts.run_stamp as run_stamp
 import scripts.safe_write as safe_write
 from tests._test_helpers import adopt_panopticon, hard_link_or_skip
-from tests.tools.git_repo import make_git_repo
+from tests.tools.git_repo import make_git_repo, plant_fsmonitor_command
 
 # The fixed reasons, verbatim: an operator reads these, and a remedy that
 # drifts is a remedy that stops working.
@@ -370,6 +374,32 @@ class TestASymlinkUnderPanopticonHalts(_Trees):
                 self._halts(root, H3 % "runs")
                 self.assertEqual([], os.listdir(outside))
 
+    def test_a_link_where_a_reset_clears_halts_too(self):
+        # #3271 B2's contract change: the active run folder, tools/ and
+        # verdicts/ as a planted link are H3 like any other stray link.
+        root = self._tree(False)
+        self.assertNotEqual("error", self._run(root)["status"])
+        pano = os.path.join(root, ".panopticon")
+        tag = run_manifest.run_tag(run_manifest.load_manifest(root))
+        with contextlib.suppress(FileNotFoundError):      # it would follow runs/<tag> out
+            os.unlink(os.path.join(pano, "runs", "latest"))
+        for rel in ("runs/" + tag, "tools", "verdicts"):
+            with self.subTest(rel=rel):
+                outside = self._dir()
+                path = os.path.join(pano, rel)
+                if os.path.isdir(path):
+                    shutil.rmtree(path)
+                os.symlink(outside, path)
+                self._halts(root, H3 % rel)
+                self.assertEqual([], os.listdir(outside))
+                os.unlink(path)
+
+    def test_the_artifact_directory_as_a_plain_file_halts(self):
+        root = self._tree(False)
+        with open(os.path.join(root, ".panopticon"), "w", encoding="utf-8") as fh:
+            fh.write("not a directory")
+        self._halts(root, H5 % (".panopticon", "not a directory"))
+
     def test_the_artifact_directory_itself_as_a_link_halts(self):
         root, outside = self._tree(False), self._dir()
         os.symlink(outside, os.path.join(root, ".panopticon"))
@@ -397,6 +427,101 @@ class TestASymlinkUnderPanopticonHalts(_Trees):
         self.assertEqual(["runs/latest"], first_contact._stray_links(pano))   # absolute: not ours
 
 
+class TestDriverLoopMakesFirstContactFirst(_Trees):
+    """#3271 B2: `driver loop` and `driver loop --setup` make first contact
+    before they resolve a host off the manifest, read the outgoing request, or
+    recover a crash record -- every one of which first contact vouches for."""
+
+    def _loop(self, root, *extra, resolved=None):
+        args = driver.build_parser().parse_args(["loop", root, "--no-tools", *extra])
+        with contextlib.ExitStack() as stack:
+            spies = [stack.enter_context(mock.patch.object(owner, name))
+                     for owner, name in ((runio, "resolve_host"), (requests, "previous_request"),
+                                         (loop_batch, "recover_stale"))]
+            if resolved is not None:
+                stack.enter_context(mock.patch.object(runio, "resolve_review_root",
+                                                      return_value=resolved))
+            stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+            status = orchestrate.loop(args)
+        for spy in spies:
+            spy.assert_not_called()
+        return status
+
+    def _planted_outside(self):
+        """A `.panopticon/`'s worth of planted records, outside the tree."""
+        outside = self._dir()
+        os.makedirs(os.path.join(outside, "runs", "t", "rejected"))
+        for rel, body in (("run-manifest.json", {"run_id": "planted", "host": "claude"}),
+                          ("runs/t/batch-1.json", {"entries": [{"id": "e"}]}),
+                          ("runs/t/rejected/e-1.json", {"entry_id": "e"})):
+            with open(os.path.join(outside, rel), "w", encoding="utf-8") as fh:
+                json.dump(body, fh)
+        return outside, sorted(os.walk(outside))
+
+    def test_a_linked_artifact_directory_halts_both_loops_and_nothing_it_names_moves(self):
+        for extra in ((), ("--setup",)):
+            with self.subTest(setup=bool(extra)):
+                root = self._tree(True)
+                outside, before = self._planted_outside()
+                os.symlink(outside, os.path.join(root, ".panopticon"))
+                status = self._loop(root, *extra)
+                self.assertEqual(("error", H3 % ""), (status["status"], status["message"]))
+                self.assertEqual(before, sorted(os.walk(outside)))
+
+    def test_a_planted_manifest_halts_both_loops_before_the_host_is_read(self):
+        for extra in ((), ("--setup",)):
+            with self.subTest(setup=bool(extra)):
+                root = self._tree(False)
+                adopt_panopticon(root)
+                with open(os.path.join(root, ".panopticon", "run-manifest.json"), "w",
+                          encoding="utf-8") as fh:
+                    json.dump({"run_id": "planted", "host": "claude", "review_root": root}, fh)
+                status = self._loop(root, *extra)
+                self.assertEqual(("error", H2), (status["status"], status["message"]))
+
+    def test_reset_moves_a_planted_directory_aside_and_the_loop_goes_on(self):
+        root = self._tree(False)
+        adopt_panopticon(root)
+        with open(os.path.join(root, ".panopticon", "run-manifest.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"run_id": "planted"}, fh)
+        args = driver.build_parser().parse_args(["loop", root, "--no-tools", "--reset"])
+        with mock.patch.object(runio, "resolve_host", side_effect=RuntimeError("reached")), \
+                contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError, "^reached$"):
+                orchestrate.loop(args)
+        self.assertEqual([True], [n.startswith(".panopticon.unverified-") for n in os.listdir(root)
+                                  if n.startswith(".panopticon.")])
+
+    def test_under_pr_the_operator_s_checkout_is_assessed_and_the_worktree_released(self):
+        checkout, worktree = self._tree(False), self._tree(False)
+        adopt_panopticon(checkout)
+        with open(os.path.join(checkout, ".panopticon", "run-manifest.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"run_id": "planted"}, fh)
+        with mock.patch("scripts.diff_map.release_worktree") as release:
+            status = self._loop(checkout, "--pr", "7", resolved=(worktree, "/wt/7", "main"))
+        self.assertEqual(("error", H2), (status["status"], status["message"]))
+        release.assert_called_once_with("/wt/7", repo=checkout)
+        self.assertFalse(os.path.lexists(os.path.join(worktree, ".panopticon")))
+
+
+class TestTheTrackedProbeIsTheTrustedGit(_Trees):
+    def test_the_target_s_fsmonitor_never_runs(self):
+        root = make_git_repo(test_case=self, files={"src/a.py": "x = 1\n"})
+        marker = plant_fsmonitor_command(root)
+        first_contact.assess_artifacts(root)
+        self.assertFalse(os.path.exists(marker))
+
+    def test_no_trusted_git_halts_on_one_line_naming_no_stderr(self):
+        root = self._tree(True)
+        with mock.patch.object(first_contact.safe_git, "probe",
+                               side_effect=FileNotFoundError("git: /tmp/evil said hi")):
+            status = self._run(root)
+        self.assertEqual(("error", H5 % ("git ls-files", "FileNotFoundError")),
+                         (status["status"], status["message"]))
+
+
 class TestAnOutOfTreeHardLinkHalts(_Trees):
     def test_a_file_linked_outside_halts_in_a_tarball_and_a_git_tree(self):
         for git in (False, True):
@@ -418,7 +543,8 @@ class TestAnOutOfTreeHardLinkHalts(_Trees):
 
     def _linked_git_dir(self, root, where):
         outside = self._dir()
-        os.makedirs(os.path.join(root, where, "objects", "ab"))
+        # exist_ok: a real repo's own objects land in `ab/` one time in ~256 per object.
+        os.makedirs(os.path.join(root, where, "objects", "ab"), exist_ok=True)
         blob = os.path.join(outside, "blob")
         with open(blob, "w", encoding="utf-8") as fh:
             fh.write("z")

@@ -27,7 +27,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 import scripts.config_schema as config_schema  # noqa: E402
 import scripts.diff_map as diff_map  # noqa: E402
 import scripts.first_contact as first_contact  # noqa: E402
-import scripts.plan_contract as plan_contract  # noqa: E402
 import scripts.run_manifest as run_manifest  # noqa: E402
 from scripts import hosts, procgroup  # noqa: E402
 import scripts.host_disclosure as host_disclosure  # noqa: E402
@@ -193,16 +192,12 @@ def _clear_run_artifacts(review_root):
     deliverable (§5.1). NEVER touches the committed root config — since #1681
     the matrix lives outside `.panopticon/` entirely — or another run's
     folder/report. MUST run BEFORE the manifest is removed, so the tag still
-    resolves; with no/corrupt manifest it degrades to the legacy flat sweep."""
-    try:
-        base = plan_contract.artifact_root(review_root)
-    except ValueError as exc:
-        raise runio.DriverError("unsafe artifact root: %s" % exc) from exc
+    resolves; with no/corrupt manifest it degrades to the legacy flat sweep.
+    Both callers run after first contact (#3271), which vetted `.panopticon/`
+    and every manifest in it."""
+    base = os.path.join(os.path.abspath(review_root), ".panopticon")
     manifest = run_manifest.load_manifest(review_root)
-    tag = None
-    if manifest and runio._foreign_manifest_reason(
-            manifest, review_root, run_manifest.manifest_path(review_root)) is None:
-        tag = run_manifest.run_tag(manifest)
+    tag = run_manifest.run_tag(manifest) if manifest else None
     # Defense at the deletion boundary, independent of the tag producer.
     if tag is not None and (not isinstance(tag, str) or
                             re.fullmatch(r"[A-Za-z0-9-]{1,220}", tag) is None):
@@ -487,8 +482,8 @@ def _disclose_posture(review_root, manifest, fresh, namespace=None):
     Decided from the RUN MANIFEST's stamp, never from `host-capabilities.json`.
     That file lives on a `.panopticon` path a hostile target can pre-commit,
     so a target able to guess its own posture could suppress the first
-    disclosure; the manifest is the one artifact `driver.run` refuses to
-    inherit from the tree (`runio._foreign_manifest`).
+    disclosure; the manifest is the one artifact first contact proves this
+    machine wrote for this tree (its stamp, #3271).
 
     The stamp is only recorded when a manifest already exists on disk. Every
     production caller has one -- `driver.run` writes it before this runs --
@@ -936,21 +931,16 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
     else:
         base = args.base
         scope = _scope_from_args(args)
-    # #5.0-09: verify .panopticon is a real in-repo directory BEFORE any write or
-    # delete under it. A committed .panopticon symlink in a hostile target (or PR
-    # fork checkout) would otherwise redirect the driver's own reset/manifest/
-    # baseline writes outside the repo, because discovery's artifact_root guard
-    # runs only later, inside the discovery subprocess.
+    # #5.0-09 / #3271: first contact BEFORE any write or delete under .panopticon/ --
+    # a tracked or unstamped one, a symlinked one or one holding a stray link, and
+    # an out-of-tree hard link all halt here, on every tree this run writes to.
     try:
-        # #3271: first contact -- tracked/unstamped .panopticon/, stray links, hard links.
         first = first_contact.assess(review_root, "run-manifest.json", reset=args.reset,
                                      host=args.host, other_roots=(args.target,) if args.pr else ())
-        plan_contract.artifact_root(review_root)
-    except ValueError as exc:
+    except first_contact.FirstContactHalt as exc:
         if worktree:
             diff_map.release_worktree(worktree, repo=args.target)
-        return runio._error_status(str(exc) if isinstance(exc, first_contact.FirstContactHalt)
-                                   else "unsafe artifact root: %s" % exc)
+        return runio._error_status(str(exc))
     if args.reset:
         try:
             _clear_run_artifacts(review_root)  # resolve the tag before the manifest goes
@@ -961,16 +951,9 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
     # it, so the disclosures print once and the manifest records exactly what
     # the flags were composed from.
     resolution = _resolve_config(args, review_root)
+    # #1093's foreign manifest (a target-committed or another tree's) halts at first
+    # contact above (#3271), so what loads here is this machine's, for this tree.
     manifest = run_manifest.load_manifest(review_root)
-    foreign_reason = runio._foreign_manifest_reason(
-        manifest, review_root, run_manifest.manifest_path(review_root))
-    if foreign_reason:
-        # #1093: a target-committed run-manifest.json (foreign review_root) could
-        # preset flags to skip tools / force gate:PASS. Drop it and rebuild from
-        # the real CLI args, exactly like a corrupt manifest below.
-        print("driver: ignoring foreign run-manifest.json (%s)" % foreign_reason,
-              file=sys.stderr, flush=True)
-        manifest = None
     if manifest is None:
         # I1: no manifest means no prior run should count — clear any stale
         # derived artifacts so done()-predicates never resume on another run's

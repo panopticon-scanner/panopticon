@@ -1,12 +1,17 @@
 """Setup artifact path safety and the readiness live-probe guard."""
 
 import ast
+import contextlib
+import io
 import json
 import os
 import tempfile
 import unittest
 
 
+import scripts.driver as driver
+import scripts.first_contact as first_contact
+import scripts.phases.setup as setup
 import scripts.setup_flow as setup_flow
 import shutil
 
@@ -125,16 +130,17 @@ class TestSetupArtifactWritesDoNotFollowSymlinks(unittest.TestCase):
 
     def test_a_planted_intermediate_panopticon_directory_is_refused(self):
         # The sibling half of the same plant: a real leaf under a `.panopticon`
-        # that is itself a link out of the tree. `artifact_root` already refuses
-        # this -- the assertion is that the writes stay behind it rather than
-        # acquiring their own weaker check.
+        # that is itself a link out of the tree. #3271 B2: `driver setup`'s
+        # first contact halts on it (H3) before any of these writes runs, and
+        # writes nothing through it.
         d = os.path.realpath(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
         outside = os.path.realpath(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(outside, ignore_errors=True))
         os.symlink(outside, os.path.join(d, ".panopticon"))
-        with self.assertRaises(ValueError):
-            setup_flow.write_spine(d, {"schema_version": 1})
+        with contextlib.redirect_stderr(io.StringIO()):
+            status = setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
+        self.assertEqual(("error", first_contact.H3 % ""), (status["status"], status["message"]))
         self.assertEqual([], os.listdir(outside))
 
 class TestNoReadinessUnitTestReachesALiveProbe(unittest.TestCase):

@@ -158,44 +158,30 @@ def _unbound_setup_artifact(review_root, name, manifest):
     marker satisfies BOTH predicates, so `driver setup` runs no phase at all
     and reports setup complete over a tree nothing classified.
 
-    A REASON, reported by the caller, the way `_foreign_manifest_reason` does
-    it: one helper decides, so the predicate and the stderr line can never
-    disagree about what was refused. Both signals already exist here:
+    A REASON, reported by the caller: one helper decides, so the predicate and
+    the stderr line can never disagree about what was refused. A TRACKED one
+    never gets here -- first contact halts on any tracked `.panopticon/` path
+    (H1, #3271) -- so what is left is binding to THIS run:
 
-    * tracked-ness (`runio._manifest_committed`), the manifest guard's primary
-      and non-secret signal -- a driver-written artifact is gitignored and
-      untracked, so a tracked one was committed by the target. It applies to
-      both names, and to the marker even when its `run_id` matches: a run id
-      lives in a file the target can read, so it is not a secret either.
     * the marker's own `run_id`. `_scan_fallback` stamps it
       (`run_id=manifest["run_id"]`) and `run_setup_flow` pins the setup
       manifest ONCE, so the id is stable across resumes and a marker carrying
-      another id -- or none at all -- was not written by this run. The proposal
-      carries no such field, which is why tracked-ness is all it has.
+      another id -- or none at all -- was not written by this run.
 
-    * for the proposal, setup's own dispatch request (#2130). Tracked-ness
-      alone left a residual: an UNTRACKED proposal -- and on a NON-GIT target,
-      where `runio._manifest_committed` answers False, every proposal -- read
-      as the host's own return. Closed now: a proposal is this run's scan
-      result only when the setup namespace's request, read through
+    * for the proposal, setup's own dispatch request (#2130): a proposal is
+      this run's scan result only when the setup namespace's request, read through
       `requests.load_bound_request` (sha-bound to this setup manifest since
       #1727), carries this run's id and names that path as its setup-scan
       `out_file`; and `scan_execute` clears the path before it writes that
       request, so what is there afterwards came after this run's dispatch.
 
     An absent or unparseable file is nobody's evidence and gets no reason: it
-    satisfies no predicate anyway, and a refusal named over it would be noise --
-    and the caller's `doc is None` is what keeps a missing artifact from costing
-    a `git ls-files`.
+    satisfies no predicate anyway, and a refusal named over it would be noise.
     """
     path = runio._pano(review_root, name)
     doc = runio._load_json(path)
     if doc is None:
         return None, None
-    if runio._manifest_committed(review_root, path):
-        return doc, ("it is git-tracked in the target, and a driver-written setup "
-                     "artifact is never committed -- remove it from the repository "
-                     "(while it is there this phase ignores it and runs again)")
     if name != "setup-complete.json":
         return doc, (_unrequested_proposal(review_root, path, manifest)
                      or _unpersisted_proposal(review_root, path))
@@ -244,12 +230,11 @@ def _clear_proposal(review_root):
     if os.path.isdir(path) and not os.path.islink(path):
         raise runio.DriverError("%s is a directory; the setup scan writes a file there -- "
                                 "remove it, or `driver setup --reset`" % path)
-    if os.path.lexists(path) and not runio._manifest_committed(review_root, path):
+    if os.path.lexists(path):         # never a tracked one: first contact halts on those (H1)
         os.unlink(path)
 
 def _bound_setup_artifact(review_root, name, manifest):
-    """True when `.panopticon/<name>` parses AND this run wrote it. ONE read for
-    both halves, and an absent artifact still costs no `git ls-files`."""
+    """True when `.panopticon/<name>` parses AND this run wrote it, off ONE read."""
     doc, reason = _unbound_setup_artifact(review_root, name, manifest)
     return doc is not None and reason is None
 
@@ -259,9 +244,7 @@ def _report_unbound_setup_artifacts(review_root, manifest):
 
     Here rather than inside the predicates because `run_engine` re-evaluates
     those up to twice each, and one refusal said four times reads as four
-    problems. Called from inside `run_setup_flow`'s status `try`:
-    `_manifest_committed` raises DriverError rather than trust an ambiguous git
-    failure, and that refusal is this verb's `error` status like every other."""
+    problems."""
     for name in ("setup-proposal.json", "setup-complete.json"):
         _doc, reason = _unbound_setup_artifact(review_root, name, manifest)
         if reason:
@@ -553,20 +536,9 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
     if getattr(args, "reset", False):
         _clear_setup_artifacts(review_root)               # Task 3
     _drop_stale_fallback_marker(review_root)
+    # #run7/#run8 AGT-C1A's planted setup manifest (a preset `vocabulary_path` or
+    # `host`) halts at first contact above (#3271): what loads here is ours.
     manifest = load_setup_manifest(review_root)
-    foreign_reason = runio._foreign_manifest_reason(
-        manifest, review_root, _setup_manifest_path(review_root))
-    if foreign_reason:
-        # #run7/#run8 AGT-C1A: a target repo can force-commit its own
-        # .panopticon/setup-manifest.json (gitignored but `git add -f`-able) to
-        # preset an attacker-chosen `vocabulary_path` -- which setup_flow reads and
-        # embeds verbatim into the classifier scan brief -- or `host`. Mirror the
-        # run-manifest guard (#1093): a manifest that is git-tracked in this tree,
-        # or whose stamped review_root isn't THIS checkout, is not a legitimate
-        # resume state; discard and rebuild from args.
-        print("driver: ignoring foreign setup-manifest.json (%s)" % foreign_reason,
-              file=sys.stderr, flush=True)
-        manifest = None
     if manifest is None:
         # 5.2 size policy, pinned at scan time so the brief's arithmetic and
         # the ingest's layers agree (anti-drift, like the run manifest's

@@ -22,6 +22,7 @@ import scripts.phases.coverage as coverage
 import scripts.phases.review as review
 
 import scripts.driver as driver
+import scripts.first_contact as first_contact
 import scripts.run_manifest as run_manifest
 import scripts.safe_git as safe_git
 
@@ -990,8 +991,13 @@ def test_linked_runs_parent_refuses_before_any_delete(tmp_path, neighbor):
     assert (pano / "groups.json").read_text() == "keep legacy"
 
 
+@pytest.mark.parametrize("reset", [False, True])
 @pytest.mark.parametrize("name", ["active", "tools", "verdicts"])
-def test_final_link_never_deletes_referent(tmp_path, name):
+def test_final_link_never_deletes_referent(tmp_path, name, reset):
+    # #3271 B2 CONTRACT CHANGE: a directory link planted where a reset clears
+    # (the active run folder, tools/, verdicts/) used to be unlinked and the run
+    # went on; it is now a first-contact halt (H3), and --reset moves the whole
+    # `.panopticon/` aside. Either way its referent is never read or deleted.
     root, pano, tag = _root(tmp_path)
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -999,7 +1005,16 @@ def test_final_link_never_deletes_referent(tmp_path, name):
     path = pano / "runs" / tag if name == "active" else pano / name
     path.parent.mkdir(exist_ok=True)
     path.symlink_to(outside, target_is_directory=True)
-    driver._clear_run_artifacts(str(root))
+    argv = ["run", str(root), "--no-tools"] + (["--reset"] if reset else [])
+    with contextlib.redirect_stderr(io.StringIO()):
+        status = driver.run(driver.build_parser().parse_args(argv), phases=())
+    if reset:
+        assert status["status"] != "error", status
+        assert not (root / ".panopticon").is_symlink() and (root / ".panopticon").is_dir()
+    else:
+        rel = "runs/" + tag if name == "active" else name
+        assert (status["status"], status["message"]) == ("error", first_contact.H3 % rel)
+    assert sorted(p.name for p in outside.iterdir()) == ["sentinel"]
     assert (outside / "sentinel").read_text() == "keep"
 
 
@@ -1126,25 +1141,6 @@ def test_fresh_manifest_path_cleans_legacy_artifacts(tmp_path, monkeypatch):
         driver.run(args, phases=())
     assert not (pano / "groups.json").exists()
     assert (root / "panopticon.yaml").read_text() == "keep"
-
-
-@pytest.mark.parametrize("tracked", [False, True])
-def test_foreign_manifest_cannot_authorize_existing_run_delete(tmp_path, tracked):
-    root, pano, tag = _root(tmp_path)
-    active = pano / "runs" / tag
-    active.mkdir(parents=True)
-    (active / "sentinel").write_text("keep")
-    path = pano / "run-manifest.json"
-    body = json.loads(path.read_text())
-    if tracked:
-        subprocess.run(["git", "init", "-q", str(root)], check=True, timeout=30)
-        subprocess.run(["git", "-C", str(root), "add", "-f",
-                        ".panopticon/run-manifest.json"], check=True, timeout=30)
-    else:
-        body["review_root"] = str(tmp_path / "foreign")
-        path.write_text(json.dumps(body))
-    driver._clear_run_artifacts(str(root))
-    assert (active / "sentinel").read_text() == "keep"
 
 
 def test_normal_cleanup_preserves_unrelated_run_report_and_config(tmp_path):

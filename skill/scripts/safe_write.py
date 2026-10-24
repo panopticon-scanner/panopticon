@@ -149,8 +149,8 @@ def read_manifest_json(path):
 
 def confine_artifact_path(path):
     """Reject a `.panopticon` artifact path whose REAL location escapes the real
-    `.panopticon` via a symlinked component (#run9 SEC-X0X). plan_contract.
-    artifact_root() vets only the TOP-LEVEL `.panopticon` (once, at run start) and
+    `.panopticon` via a symlinked component (#run9 SEC-X0X). First contact
+    (#3271) vets `.panopticon` once per invocation, at its start, and
     open_w_nofollow's O_NOFOLLOW only the FINAL component, so a hostile target can
     plant an INTERMEDIATE symlink (`.panopticon/runs -> /elsewhere`) that a write
     would traverse. Anchor on the path's own `.panopticon` segment and require the

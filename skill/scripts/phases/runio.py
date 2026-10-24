@@ -605,14 +605,13 @@ def resolve_host(host, review_root, reset=False):
     the caller (`orchestrate.loop`), not here, because this returns a name and
     the refusal is a status document.
 
-    A FOREIGN manifest is ignored on exactly the terms `driver.run` ignores it
-    (#1093 / #run8 AGT-C1A, `_foreign_manifest`): a target can force-commit its
-    own `.panopticon/run-manifest.json`, and driver.run discards such a file and
-    rebuilds from the real CLI args. Reading it here unconditionally handed the
-    TARGET the choice of which family's agents got dispatched at it -- a
-    committed `"host": "gemini"` steered this invocation's runner while the run
-    itself proceeded as claude. Same check, same call shape, so the two cannot
-    drift on what "the run's host" means.
+    A FOREIGN manifest is ignored (#1093 / #run8 AGT-C1A, `_foreign_manifest`):
+    a target can force-commit its own `.panopticon/run-manifest.json`, and a
+    committed `"host": "gemini"` once steered the runner while the run itself
+    proceeded as claude. The check is for `driver readiness`, which makes no
+    first contact (it writes nothing). `driver loop` calls this AFTER its own
+    first contact (#3271), which has already halted on such a tree, so there
+    the check is moot -- it is kept here so the two callers share one rule.
 
     `source` is which of those three rules answered, for a surface that has to
     tell an operator WHY it assumed a host (`driver readiness`). The loop
@@ -635,7 +634,10 @@ def _error_status(message):
             "message": message}
 
 def _manifest_committed(review_root, manifest_file):
-    """True if `manifest_file` is TRACKED by git in review_root -- i.e. it was
+    """READINESS-ONLY (#3271 B2), with the two `_foreign_manifest*` below: every
+    verb that writes makes first contact instead, which halts on a tracked
+    `.panopticon/` (H1) and an unstamped manifest (H2). Do not call these from
+    a new path; call `first_contact`. True if `manifest_file` is TRACKED by git in review_root -- i.e. it was
     committed INTO the target (an attacker `git add -f`-ing past the
     `.panopticon/` gitignore), never written by a prior driver run, whose
     manifest stays gitignored/untracked.
@@ -673,18 +675,10 @@ def _manifest_committed(review_root, manifest_file):
 
 def _foreign_manifest(manifest, review_root, manifest_file=None):
     """#1093 / #run8 AGT-C1A: True if a loaded manifest was NOT written by a
-    prior run in THIS tree, so it must be discarded and rebuilt from the real CLI
-    args rather than trusted as run config (a target that force-commits its own
-    `.panopticon/run-manifest.json` could preset flags.tools:false to skip the
-    scan, or flags.fail_on to force gate:PASS).
-
-    Two independent signals, either sufficient:
-      * the manifest FILE is git-tracked in review_root (`_manifest_committed`)
-        -- the primary, non-secret check: a driver-written resume manifest is
-        gitignored/untracked, so a tracked one was committed by the target.
-      * the stamped `review_root` differs from this checkout (the original #1093
-        signal, kept as a fallback for a non-git target where nothing is tracked
-        and for a manifest carried over from another machine)."""
+    prior run in THIS tree (a target that force-commits its own manifest could
+    preset flags.tools:false, or flags.fail_on to force gate:PASS), on either
+    of two signals: the FILE is git-tracked (`_manifest_committed`), or its
+    stamped `review_root` is not this checkout. Readiness-only; see above."""
     return _foreign_manifest_reason(manifest, review_root, manifest_file) is not None
 
 
