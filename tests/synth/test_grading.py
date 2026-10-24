@@ -13,6 +13,7 @@ try:
 except ImportError:
     resource = None
 
+import scripts.coverage_model as coverage_model
 import scripts.hosts as hosts_mod
 import scripts.synth.coverage_io as coverage_io
 import scripts.synth.delta as delta_mod
@@ -71,6 +72,64 @@ class TestCertify(unittest.TestCase):
             self.assertEqual(result["gate"], expected)
             self.assertFalse(result["coverage_certified"])
             self.assertIn("partial scanner file coverage: eslint-security", result["coverage_note"])
+
+    @staticmethod
+    def _skips(*names, **overrides):
+        """semgrep's file_coverage for a run whose only gap is size-skipped `names`."""
+        facts = {"status": "partial", "parsed_files": 4, "unparsed_files": len(names),
+                 "unavailable_files": 0, "files": [{"file": n, "reason": "size_skipped"} for n in names],
+                 "files_omitted": 0, "capabilities_unavailable": [], "rule_timeouts": 0,
+                 "size_skipped": len(names), "size_limit": 1_000_000, "size_listing": "listed",
+                 "unlocated_records": 0}
+        facts.update(overrides)
+        return {"semgrep": facts}
+
+    def test_an_asset_only_size_skip_certifies_with_the_count_disclosed(self):
+        for names in (("a.png",), ("docs/a.GIF", "x/y.woff2", "z.pdf")):
+            with self.subTest(names=names):
+                r = grading_mod.certify("A", [], "high", set(), [], tools_file_partial=self._skips(*names))
+                self.assertEqual((r["gate"], r["coverage_certified"]), ("PASS", True))
+                self.assertEqual(coverage_model.ASSET_SKIP_NOTE % len(names), r["coverage_note"])
+
+    def test_a_size_skip_that_is_code_json_or_unaccounted_still_decertifies(self):
+        cut = "a/" * 120 + "x.png"
+        cases = {
+            "go": self._skips("pkg/dict.go"), "py": self._skips("a.py"), "json": self._skips("b.json"),
+            "no extension": self._skips("Makefile"), "mixed": self._skips("a.png", "b.go"),
+            "cut name": self._skips(cut[:200] + "\u2026"),
+            "listing absent": self._skips("a.png", size_listing="absent"),
+            "listing incomplete": self._skips("a.png", size_listing="incomplete"),
+            "a timeout": self._skips("a.png", rule_timeouts=1),
+            "a timeout row": self._skips("a.png", files=[{"file": "a.png", "reason": "rule_timeout"}]),
+            "rows omitted": self._skips("a.png", files_omitted=1),
+            "count not rows": self._skips("a.png", size_skipped=2),
+            "unparsed not rows": self._skips("a.png", unparsed_files=2),
+            "unlocated": self._skips("a.png", unlocated_records=1),
+            "unavailable": self._skips("a.png", unavailable_files=1),
+            "capability": self._skips("a.png", capabilities_unavailable=["x"]),
+            "no rows": self._skips(),
+            "not a dict": {"semgrep": "partial"},
+            "row not a dict": self._skips("a.png", files=["a.png"]),
+        }
+        for label, partial in cases.items():
+            with self.subTest(case=label):
+                r = grading_mod.certify("A", [], "high", set(), [], tools_file_partial=partial)
+                self.assertFalse(r["coverage_certified"])
+                self.assertEqual("partial scanner file coverage: semgrep", r["coverage_note"])
+
+    def test_the_asset_note_composes_after_every_other_reason(self):
+        r = grading_mod.certify("A", [], "high", {"style"}, [],
+                                tools_file_partial=dict(self._skips("a.png"), eslint={"status": "partial"}))
+        self.assertFalse(r["coverage_certified"])
+        self.assertEqual("; ".join(("gate certified; grade provisional \u2014 low-value panel(s) incomplete: style",
+                                    "partial scanner file coverage: eslint",
+                                    coverage_model.ASSET_SKIP_NOTE % 1)), r["coverage_note"])
+
+    def test_certification_and_the_cod_floor_read_one_asset_table(self):
+        for ext in sorted(coverage_model._ASSET_EXTENSIONS) + [".go", ".json", ""]:
+            with self.subTest(ext=ext):
+                asset = coverage_model.certifying_file_gaps(self._skips("f" + ext))[1] == 1
+                self.assertEqual(asset, not coverage_model.has_code_surface(["f" + ext]))
 
     def test_clean_complete_pass_real_grade(self):
         r = grading_mod.certify("A", [], "high", set(), [])
