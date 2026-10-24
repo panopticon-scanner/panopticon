@@ -282,16 +282,14 @@ def write_manifest(review_root, manifest):
 def load_manifest(review_root):
     """Return the manifest dict, or None if absent/unparseable/unusable.
 
-    A host the registry does not know makes the manifest UNUSABLE, which is
-    what "corrupt" already means here: every posture decision downstream reads
-    that key, so resuming on it would produce an unenforced run under a
-    plausible-looking directory name. An ABSENT host key is a different thing
-    and is left alone: every consumer reads it as `get("host", "claude")`, so a
-    manifest written before the key existed still resolves -- unknown is not
-    absent. Returning None puts it on the path the
-    driver already has for a corrupt manifest -- clear the derived artifacts
-    and rebuild from the real CLI args -- instead of raising from a path
-    helper (#1344). Announced on stderr, never silently.
+    A host the registry does not know makes the manifest UNUSABLE, which is what "corrupt"
+    already means here: every posture decision downstream reads that key, so resuming on it
+    would produce an unenforced run under a plausible-looking directory name. An ABSENT host
+    key is a different thing and is left alone: every consumer reads it as `get("host",
+    "claude")`, so a manifest written before the key existed still resolves -- unknown is
+    not absent. Returning None puts it on the path the driver already has for a corrupt
+    manifest -- clear the derived artifacts and rebuild from the real CLI args -- instead of
+    raising from a path helper (#1344). Announced on stderr, never silently.
 
     #2525: a PRESENT `run_id` that is not a non-empty string is unusable the
     same way -- `phases/synthesize` and `phases/tools` thread
@@ -415,7 +413,10 @@ DISPATCH_REQUEST = "dispatch_request"
 # stamped, never re-stamped, so nothing a later phase does can un-owe them.
 DRIVER_PLAN = "driver_plan"
 OUT_FILE_SNAPSHOT = "out_file_snapshot"
-ARTIFACT_STAMPS = (DRIVER_PLAN, OUT_FILE_SNAPSHOT)
+# #3280 S4: the run's ONE output-schema shape verdict ({shape, shape_detail}, #1732).
+# Readers decide from this stamp; host-capabilities.json only displays it.
+OUTPUT_SCHEMA_SHAPE = "output_schema_shape"
+ARTIFACT_STAMPS = (DRIVER_PLAN, OUT_FILE_SNAPSHOT, OUTPUT_SCHEMA_SHAPE)
 
 # #1912: [{"batch": <n>, "at": <iso>}, ...] -- the batch records this run's
 # operator accepted the loss of with `--discard-batch`. The count is the fact
@@ -434,17 +435,16 @@ def _rewrite(review_root, manifest, *, namespace=None):
     interrupt mid-write would leave every `_pano` path unresolvable. The
     ephemeral keys are stripped here, once, rather than at each caller.
 
-    #1735 (SEC-D1C): the STAGING file is as exposed as the artifact. `.panopticon/`
-    is inside the reviewed tree and `run-manifest.json.tmp` is a fixed name, so a
-    redteam target can commit it as a symlink to any file the invoking user can
-    write; the plain `open(tmp, "w")` this used followed the link, replaced that
-    file's contents with the manifest JSON, and then `os.replace` renamed the LINK
-    over `run-manifest.json` (rename does not dereference), so every later
-    `load_manifest` read through it. `write_manifest` escaped only because mode "x"
-    is O_EXCL. The staging write now goes through the shared exclusive staging
-    open and refuses any symlink, special file, or multiply-linked regular file
-    rather than writing somewhere else -- the two fixes this class already had
-    (#1577 and the guard hooks' `_atomic_write_json`) fail the same way.
+    #1735 (SEC-D1C): the STAGING file is as exposed as the artifact. `.panopticon/` is
+    inside the reviewed tree and `run-manifest.json.tmp` is a fixed name, so a redteam
+    target can commit it as a symlink to any file the invoking user can write; the plain
+    `open(tmp, "w")` this used followed the link, replaced that file's contents with the
+    manifest JSON, and then `os.replace` renamed the LINK over `run-manifest.json` (rename
+    does not dereference), so every later `load_manifest` read through it. `write_manifest`
+    escaped only because mode "x" is O_EXCL. The staging write now goes through the shared
+    exclusive staging open and refuses any symlink, special file, or multiply-linked regular
+    file rather than writing somewhere else -- the two fixes this class already had (#1577
+    and the guard hooks' `_atomic_write_json`) fail the same way.
     """
     body = {k: v for k, v in manifest.items() if k not in _EPHEMERAL_KEYS}
     path = manifest_path(review_root, namespace)
@@ -556,7 +556,7 @@ def record_discarded_batch(review_root, manifest, number, at=None, *, namespace=
     return _rewrite(review_root, manifest, namespace=namespace)
 
 
-def record_artifact_stamp(review_root, manifest, key, at=None, **fields):
+def record_artifact_stamp(review_root, manifest, key, at=None, *, namespace=None, **fields):
     """Record that this run WROTE the owed-once artifact `key` (SEC-377944137).
 
     The FIFTH deliberate rewrite, and the only MONOTONE one: an existing stamp
@@ -573,8 +573,8 @@ def record_artifact_stamp(review_root, manifest, key, at=None, **fields):
     the same qualification #1727's `record_dispatch_request` makes above.
 
     A tree with no manifest on disk records NOTHING and does not raise. The
-    pre-manifest window is real (unit callers, and `--setup`, which keeps its
-    own manifest), and a recorder that CREATED one here would be worse than
+    pre-manifest window is real (unit callers; `--setup` passes `namespace=`
+    and its own manifest), and a recorder that CREATED one here would be worse than
     useless: `runio._run_tag` derives the per-run folder from `created`, so
     conjuring a manifest mid-run would move every `_pano` path under a run
     folder the artifacts already written are not in.
@@ -584,14 +584,14 @@ def record_artifact_stamp(review_root, manifest, key, at=None, **fields):
     """
     if key not in ARTIFACT_STAMPS:
         raise ValueError("unknown run artifact: %r" % key)
-    if manifest is None:
+    if manifest is None and namespace is None:
         manifest = load_manifest(review_root)
-    if manifest is None or not os.path.isfile(manifest_path(review_root)):
+    if manifest is None or not os.path.isfile(manifest_path(review_root, namespace)):
         return None
     if artifact_stamp(manifest, key):
         return manifest                  # monotone -- see above
     manifest[key] = dict(fields, at=at or _now_iso())
-    return _rewrite(review_root, manifest)
+    return _rewrite(review_root, manifest, namespace=namespace)
 
 
 def artifact_stamp(manifest, key):
