@@ -7,7 +7,7 @@ spec/plan docs. It records architecture, the design decisions that are settled, 
 history. The live backlog is the issue tracker: every self-scan finding is filed with `severity:*`,
 `evidence:*` and `panel:*` labels (`.github/labels.yml`), and nothing in this file is a to-do list.
 
-**Current version: 5.2.0** (semver — see Versioning below).
+**Current version: 5.2.1** (semver — see Versioning below).
 
 ## What it is
 A **discovery → scout → fan-out → synthesis** pipeline. It profiles a target with a
@@ -752,7 +752,10 @@ changes to the report schema, CLI, or grade contract. Bump `SKILL.md` `metadata.
 `version` together.
 
 History:
-- **5.2.0** (current) — host expansion and hardening. 653 pull requests, 1,223 issues:
+- **5.2.1** (current) — security patch (GHSA-wjpr-jxg9-rmwh): a headless run's guard
+  settings file is built fresh instead of merged from disk, and `driver setup --reset`
+  clears setup's copy. No other change from 5.2.0.
+- **5.2.0** — host expansion and hardening. 653 pull requests, 1,223 issues:
   the release where Panopticon runs on more than one host and each host's safety claims
   are proven by probe rather than declared. Claude, Codex and Kimi are first-class hosts
   behind a verified capability registry (#1344); Gemini stays registered but not

@@ -1,5 +1,18 @@
 # Changelog
 
+## 5.2.1 — Security patch
+
+Fixes [GHSA-wjpr-jxg9-rmwh](https://github.com/panopticon-scanner/panopticon/security/advisories/GHSA-wjpr-jxg9-rmwh)
+(high). Affects 5.1.0 through 5.2.0. Upgrade before running headless setup or review
+on a tree you do not trust.
+
+- **Headless guard settings are built fresh, not merged from disk.** A headless run's
+  `host-settings.json` (setup's in `.panopticon/`, a review's in `runs/<tag>/`) now
+  holds only the read and write guards' own entries, exactly as their installers write
+  them, so nothing else a file on disk held reaches the host CLI's `--settings`. A
+  session's `.claude/settings.local.json` is the operator's and is still merged.
+- **`driver setup --reset` clears setup's `host-settings.json`.**
+
 ## 5.2.0 — Host expansion and hardening
 
 The release where Panopticon runs on more than one host, and each host's
