@@ -1167,3 +1167,67 @@ class TestTheCliRunsUnderTheSigtermWrapper(unittest.TestCase):
         self.assertIn(calls[0], list(ast.walk(guards[0])),
                       "installed outside the __main__ guard, i.e. at import time")
         self.assertEqual(["main"], [ast.unparse(arg) for arg in calls[0].args])
+
+
+
+def _csharp_tree(root):
+    """A root-level project with its dependencies restored: what roslyn's
+    applicability requires (calibration-6), so the opt-in is what decides."""
+    with open(os.path.join(root, "App.csproj"), "w", encoding="utf-8") as fh:
+        fh.write("<Project Sdk=\"Microsoft.NET.Sdk\" />\n")
+    with open(os.path.join(root, "Program.cs"), "w", encoding="utf-8") as fh:
+        fh.write("class P { static void Main() {} }\n")
+    os.makedirs(os.path.join(root, "obj"))
+    with open(os.path.join(root, "obj", "project.assets.json"), "w",
+              encoding="utf-8") as fh:
+        fh.write("{}\n")
+
+
+class TestRoslynIsOptIn(unittest.TestCase):
+    """#3265 (owner ruling 2026-10-23): roslyn-secguard executes the target's own
+    MSBuild/analyzer code, so it runs only when the operator passes
+    --allow-target-build. Semgrep still covers C#."""
+
+    def _manifest(self, *extra):
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "target")
+            os.makedirs(target)
+            _csharp_tree(target)
+            manifest = os.path.join(d, "tools-manifest.json")
+            err = io.StringIO()
+            with mock.patch.object(rt, "docker_available", return_value=False), \
+                    contextlib.redirect_stderr(err):
+                rt.main(["--target", target, "--out", os.path.join(d, "out"),
+                         "--manifest", manifest, *extra])
+            with open(manifest, encoding="utf-8") as fh:
+                return json.load(fh), err.getvalue()
+
+    def test_a_csharp_tree_without_the_flag_runs_semgrep_not_roslyn_and_says_why(self):
+        data, err = self._manifest()
+        self.assertIn("semgrep", data["selected"])
+        self.assertNotIn("roslyn-secguard", data["selected"])
+        self.assertNotIn("roslyn-secguard", data["missing"])      # never a coverage loss
+        self.assertEqual(["roslyn-secguard"], data.get("withheld"))
+        self.assertIn("roslyn-secguard not run: it executes the target's build; "
+                      "pass --allow-target-build to enable.", err)
+
+    def test_the_same_tree_with_the_flag_runs_roslyn_as_today(self):
+        data, _err = self._manifest("--allow-target-build")
+        self.assertIn("roslyn-secguard", data["selected"])
+        self.assertNotIn("withheld", data)        # absent when nothing was withheld
+
+    def test_the_cli_hands_the_operator_s_answer_to_the_runner(self):
+        for argv, expected in (([], False), (["--allow-target-build"], True)):
+            with tempfile.TemporaryDirectory() as d:
+                with mock.patch.object(rt, "docker_available", return_value=True), \
+                        mock.patch.object(rt, "run_tools", return_value=[]) as run, \
+                        contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    rt.main(["--target", d, "--out", os.path.join(d, "out"),
+                             "--tools", "semgrep", *argv])
+                self.assertIs(expected, run.call_args.kwargs.get("allow_target_build"))
+
+    def test_an_explicit_tools_list_naming_roslyn_still_needs_the_flag(self):
+        data, _err = self._manifest("--tools", "semgrep", "roslyn-secguard")
+        self.assertEqual(["semgrep"], data["selected"])
+        self.assertEqual(["roslyn-secguard"], data.get("withheld"))

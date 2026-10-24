@@ -496,3 +496,32 @@ class TestTheNoToolsMarkerIsFlagAware(unittest.TestCase):
                 self.assertFalse(tools_phase.tools_done(
                     self.root, {"run_id": "R", "flags": {"tools": flag},
                                 "invocation": "inv-2"}))
+
+
+
+class TestTheTargetBuildFlagComesOffTheRunManifest(unittest.TestCase):
+    """#3265: like --online, --allow-target-build reaches run_tools only from
+    the controller's write-once run manifest, never from the target's config."""
+
+    def _argv(self, flags):
+        root = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, root, ignore_errors=True)
+        os.makedirs(runio._pano(root))
+        seen = []
+
+        def fake_run(cmd, **_kw):
+            seen.append(cmd)
+            return mock.Mock(returncode=1, stdout="", stderr="")
+
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run), \
+                contextlib.redirect_stderr(io.StringIO()):
+            tools_phase.tools_execute(root, {"run_id": "R", "flags": flags})
+        self.assertEqual(1, len(seen))
+        return seen.pop()
+
+    def test_the_flag_is_passed_when_the_operator_gave_it(self):
+        self.assertIn("--allow-target-build", self._argv({"allow_target_build": True}))
+
+    def test_the_flag_is_absent_otherwise(self):
+        self.assertNotIn("--allow-target-build", self._argv({}))
+        self.assertNotIn("--allow-target-build", self._argv({"allow_target_build": None}))

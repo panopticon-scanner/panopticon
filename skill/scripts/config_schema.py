@@ -47,11 +47,11 @@ GATE_KEYS = ("fail_on", "gate_scope", "max_verify", "security", "severity", "too
 # `settings:` would be asking the driver to throw away a batch record of its
 # own review, which is precisely the acceptance only an operator may give.
 OPERATOR_ONLY_KEYS = (
-    "allow_unenforced", "base", "concurrency", "diff_context", "discard_batch",
-    "egress", "entry_timeout", "host", "max_budget_usd", "max_iterations",
-    "max_turns", "mode", "no_tools", "online", "pr", "reset", "scope_changed",
-    "scope_dir", "scope_file", "scope_files", "scope_group", "session_dir",
-    "setup", "target",
+    "allow_target_build", "allow_unenforced", "base", "concurrency",
+    "diff_context", "discard_batch", "egress", "entry_timeout", "host",
+    "max_budget_usd", "max_iterations", "max_turns", "mode", "no_tools",
+    "online", "pr", "reset", "scope_changed", "scope_dir", "scope_file",
+    "scope_files", "scope_group", "session_dir", "setup", "target",
 )
 CLASS_OF = dict([(k, "grain") for k in GRAIN_KEYS]
                 + [(k, "gate") for k in GATE_KEYS]

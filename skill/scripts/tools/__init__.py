@@ -1,4 +1,7 @@
 """Pluggable static-analysis tool adapters for panopticon."""
+import sys
+
+from scripts import build_disclosure
 from .base import ToolAdapter
 from .pip_audit import PipAuditAdapter
 from .npm_audit import NpmAuditAdapter
@@ -43,6 +46,23 @@ ADAPTERS: dict[str, ToolAdapter] = {
 # below. This comment is what stays, recording the closed exposure, so the
 # disclosure's scope stays documented rather than silently shrinking.
 EXECUTES_TARGET_BUILD = frozenset({"roslyn-secguard"})
+
+# #3265 (owner ruling 2026-10-23): opt-in, off by default. The ONE fixed line
+# for a withheld adapter, owned by build_disclosure so the report says it too.
+TARGET_BUILD_NOT_RUN = build_disclosure.NOT_RUN
+
+
+def withhold_target_builds(chosen, allowed):
+    """`(kept, withheld)`: `chosen` without the EXECUTES_TARGET_BUILD adapters
+    unless the operator passed --allow-target-build (#3265). `withheld` is what
+    the manifest records, so the skip is disclosed rather than silent; it is
+    never `selected`, so an adapter that is off by default is never `missing`."""
+    if allowed:
+        return list(chosen), []
+    withheld = sorted({t for t in chosen if t in EXECUTES_TARGET_BUILD})
+    for name in withheld:
+        print(TARGET_BUILD_NOT_RUN % name, file=sys.stderr)
+    return [t for t in chosen if t not in EXECUTES_TARGET_BUILD], withheld
 
 # Adapters with no offline mode (live advisory-API clients); dispatched only
 # under run_tools --online. Offline substitute: osv-scanner's baked DBs.

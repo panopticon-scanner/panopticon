@@ -42,6 +42,7 @@ _RESUME_FLAGS = (
     ("tools", "--tools", "flag"),
     ("no_tools", "--no-tools", "flag"),
     ("online", "--online", "flag"),
+    ("allow_target_build", "--allow-target-build", "flag"),
     ("include_fixtures", "--include-fixtures", "flag"),
     ("allow_unenforced", "--allow-unenforced", "flag"),
     ("session_dir", "--session-dir", "value"),

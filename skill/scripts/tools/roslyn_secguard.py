@@ -2,7 +2,9 @@
 from __future__ import annotations
 import json
 import os
+import re
 import shutil
+import stat
 import sys
 import tempfile
 from .base import (OutputCapExceeded, as_list, make_finding, omit_none,
@@ -162,6 +164,39 @@ _ROSLYN_VENDOR_DIRS = {".git", "node_modules", "bin", "obj", "packages",
                        "vendor", "third_party", "thirdparty", "examples", "samples"}
 
 
+# #3248: what a solution's own text may decide. The rows are capped here at the
+# producer, and `synth.repair` caps them again at the read.
+_MAX_UNREACHED = 200
+_MAX_SLN_BYTES = 1024 * 1024
+_SLN_PROJECT = re.compile(r'^Project\("[^"]*"\)\s*=\s*"[^"]*",\s*"([^"]+\.csproj)"', re.M)
+
+
+def _referenced_projects(sln):
+    """Normalized absolute paths of the .csproj files `sln` references; an empty
+    set when it cannot be read as a regular file within the size cap (no
+    symlink followed, nothing blocks), which lists every project unreached."""
+    try:
+        fd = os.open(sln, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                     | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return set()
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return set()
+        with os.fdopen(fd, "rb", closefd=False) as fh:
+            data = fh.read(_MAX_SLN_BYTES + 1)
+    except OSError:
+        return set()
+    finally:
+        os.close(fd)
+    if len(data) > _MAX_SLN_BYTES:
+        return set()
+    base = os.path.dirname(sln)
+    text = data.decode("utf-8", errors="replace")
+    return {os.path.normpath(os.path.join(base, ref.replace("\\", "/")))
+            for ref in _SLN_PROJECT.findall(text)}
+
+
 def _rebase_sarif_uris(raw, tmp):
     """Rewrite SARIF artifactLocation/resultFile URIs from the ephemeral build
     copy (`tmp`) to repo-relative paths, so findings report a stable path and the
@@ -271,7 +306,11 @@ class RoslynSecGuardAdapter:
                 return True
         return False
 
-    def _build_target(self, target: str) -> str:
+    @staticmethod
+    def _candidates(target: str) -> tuple[list[str], list[str]]:
+        """(.sln files, .csproj files) under `target`: the ONE walk both the
+        build choice and its #3248 disclosure read (vendored and noise dirs
+        pruned; `os.walk` never follows a symlinked directory)."""
         sln_files = []
         csproj_files = []
         for root, dirs, files in os.walk(target):
@@ -282,6 +321,10 @@ class RoslynSecGuardAdapter:
                     sln_files.append(full_path)
                 elif file.endswith(".csproj"):
                     csproj_files.append(full_path)
+        return sln_files, csproj_files
+
+    def _build_target(self, target: str) -> str:
+        sln_files, csproj_files = self._candidates(target)
         # Prefer a solution over a bare project; within each, the target closest
         # to the repo root, breaking ties deterministically by path. A nested
         # vendored/sample project can no longer sort ahead of the app's own
@@ -295,6 +338,35 @@ class RoslynSecGuardAdapter:
                   % (len(candidates), os.path.relpath(chosen, target)),
                   file=sys.stderr)
         return chosen
+
+    def sanitization_report(self, target: str) -> dict | None:
+        """The projects this run's ONE build does not reach (#3248), for the
+        coverage manifest; None when there is nothing to build.
+
+        Called ON THE HOST, in process, by run_tools.collect_sanitization -- and
+        only for an EFFECTIVE adapter, so only on the --allow-target-build path
+        (#3265). It launches nothing. Every path it publishes comes from the
+        filesystem walk; the solution's own text only decides which of those
+        projects it references, and is never itself emitted. A solution that
+        cannot be read lists every project: the gap is overstated, never hidden.
+        """
+        sln_files, csproj_files = self._candidates(target)
+        if not (sln_files or csproj_files):
+            return None
+        chosen = self._build_target(target)
+        source = os.path.relpath(chosen, target)
+        if chosen.endswith(".sln"):
+            referenced = _referenced_projects(chosen)
+            reason = "not referenced by the analysed solution %s" % source
+            unreached = [p for p in csproj_files if os.path.normpath(p) not in referenced]
+        else:
+            reason = "not analysed: roslyn-secguard builds one project, %s" % source
+            unreached = [p for p in csproj_files if p != chosen]
+        rows = [{"line": os.path.relpath(p, target), "reason": reason}
+                for p in sorted(unreached)]
+        return {"source": source, "kept": len(csproj_files) - len(unreached),
+                "dropped": rows[:_MAX_UNREACHED], "hashes_stripped": False,
+                "truncated": False, "dropped_truncated": max(0, len(rows) - _MAX_UNREACHED)}
 
     def invoke(self, target: str) -> tuple[bytes, int]:
         # Run the target through the DotnetariumSCS standalone scanner and output SARIF.

@@ -143,6 +143,9 @@ def tools_execute(review_root, manifest):
            "--manifest", manifest_path]
     if (manifest.get("flags") or {}).get("online"):
         cmd.append("--online")
+    # #3265: off the controller's run manifest too, never the target's config.
+    if (manifest.get("flags") or {}).get("allow_target_build"):
+        cmd.append("--allow-target-build")
     # #1740 fix round 1: the committed `exclude_paths:` policy, threaded to the
     # scan. Same globs `phases/synthesize.py` hands the ingest as
     # `--tools-exclude`, from the same seam, so the report and the gate are

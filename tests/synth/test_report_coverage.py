@@ -552,6 +552,46 @@ class TestRenderSummaryCoverage(unittest.TestCase):
         self.assertIn("provisional", text.lower())
 
 
+class TestAWithheldTargetBuildIsDisclosedNotGated(unittest.TestCase):
+    """#3265: roslyn-secguard off by default is the intended posture. It is
+    named in meta.coverage and on both rendered views with one fixed line, and
+    it never costs coverage. The manifest is target-writable, so a name this
+    build does not know executes a target build never reaches the report."""
+
+    LINE = ("roslyn-secguard not run: it executes the target's build; pass "
+            "--allow-target-build to enable.")
+
+    def _report(self, withheld):
+        manifest = {"schema_version": 1, "run_id": None, "selected": ["semgrep"],
+                    "produced": ["semgrep"], "missing": [], "outputs": ["semgrep.sarif"],
+                    "excluded_scope": [], "withheld": withheld}
+        return report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=[]),
+            tools=tool_axis_mod.ToolAxis(policy_mode="enforced", tools_ran={"semgrep"},
+                                         dispositions={"semgrep": {"status": "empty",
+                                                                   "findings": 0}},
+                                         manifest=manifest)))
+
+    def test_the_report_names_it_and_stays_valid_and_certifiable(self):
+        r = self._report(["roslyn-secguard", "<b>forged</b>"])
+        cov = r["meta"]["coverage"]
+        self.assertEqual(["roslyn-secguard"], cov.get("target_build_not_run"))
+        self.assertNotIn("roslyn-secguard", cov.get("tools_absent") or [])
+        self.assertEqual([], validate_schema_mod.schema_errors(r))
+        self.assertIn(self.LINE, render_mod.render_summary(r))
+
+    def test_the_html_view_carries_the_same_fixed_line(self):
+        import html
+        import scripts.html_report as html_report
+        page = html.unescape(html_report.render(self._report(["roslyn-secguard"])))
+        self.assertIn(self.LINE, page)
+        self.assertNotIn("forged", page)
+
+    def test_nothing_withheld_publishes_no_key(self):
+        self.assertNotIn("target_build_not_run", self._report([])["meta"]["coverage"])
+
+
 class TestRenderSummaryResume(unittest.TestCase):
     G = [{"name": "g1", "files": ["a.py"]}]
     TS = "2026-01-01T00:00:00Z"

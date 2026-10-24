@@ -8,6 +8,7 @@ import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
 import scripts.redact as redact
 import scripts.safe_write as safe_write
+import scripts.build_disclosure as build_disclosure
 import scripts.tool_cleanup as tool_cleanup
 import scripts.tools.base as tool_base
 from . import coverage_io as coverage_io
@@ -366,6 +367,8 @@ def render_summary(report):
         _cov.get("language_detection_skips"))
     if cleanup:
         lines.insert(3, cleanup)
+    for line in reversed(build_disclosure.not_run_lines(_cov)):   # #3265
+        lines.insert(3, "**Tool not run:** %s" % line)
     rz = (report["meta"].get("coverage") or {}).get("resume") or {}
     _fo = rz.get("fan_out") or {}
     _vf = rz.get("verify") or {}

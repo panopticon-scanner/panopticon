@@ -257,8 +257,14 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                    excluded_dirs=(), depth_bound=VENV_MAX_DEPTH, sanitized=None,
                    network=None, exclude_globs=(), suppression_comments=None,
                    scanner_config=None, ignore_files=None, scanner_scope=None,
-                   cleanup_failures=None, language_detection_skips=None):
+                   cleanup_failures=None, language_detection_skips=None,
+                   withheld=()):
     """Write the exact selected/produced scanner set for coverage gating.
+
+    `withheld` (#3265) names applicable adapters the operator did not enable:
+    roslyn-secguard without --allow-target-build. Never in `selected`, so an
+    adapter that is off by default is never `missing` and never sinks coverage;
+    omitted when nothing was withheld, so every other manifest is unchanged.
 
     `excluded_scope` names adapters that were applicable but whose entire
     surface fell under the gate's --exclude globs; they are disclosed (never
@@ -454,6 +460,9 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     output_receipt(payload, expected_run_id=run_id, required=True)
     if cleanup:
         payload["cleanup_failures"] = cleanup
+    held = sorted({str(t) for t in withheld} - set(selected))
+    if held:                   # #3265: absent when nothing was withheld, like cleanup
+        payload["withheld"] = held
     # #1735: the driver points --manifest at `<run folder>/tools-manifest.json`,
     # inside the reviewed tree. Confine before the makedirs (a symlinked
     # intermediate would be traversed by it) and never open through a link.
