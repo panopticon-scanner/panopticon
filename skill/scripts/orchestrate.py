@@ -208,7 +208,7 @@ def loop(args):
     # resolve failure (a bad --pr, e.g.) is reported the same way driver.run() itself reports it
     # rather than raising out of loop(), which must never raise.
     try:
-        resolved = _resolve_target(args)
+        resolved = loop_batch._resolve_target(args)
     except (RuntimeError, ValueError, OSError) as exc:
         return _status("error", "driver loop: could not resolve review root: %s" % exc)
     review_root = resolved[0]
@@ -569,12 +569,6 @@ def loop(args):
     except Exception as exc:                # noqa: BLE001 -- `loop` never raises (review round 1, item 3)
         status = _status("error", "driver loop: %s: %s" % (type(exc).__name__, exc))
     return _finish(status, review_root, guards, ledger, namespace, mode, runner)
-
-
-def _resolve_target(args):
-    """`(review_root, worktree, pr_base)` -- resolved ONCE per invocation and passed down (#1616 item 6):
-    `driver.run` takes it as `resolved=`, not a `gh pr view` and a worktree acquisition per iteration."""
-    return runio.resolve_review_root(args.target, base=args.base, pr=args.pr)
 
 
 def _run(args, namespace, resolved=None):

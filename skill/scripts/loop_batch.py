@@ -820,3 +820,9 @@ def prove_output_schema_shape(run_dir, host, runner, pending, env_for):
              verdict.get(hosts.SHAPE_DETAIL) or "no detail recorded"),
           file=sys.stderr, flush=True)
     return verdict
+
+
+def _resolve_target(args):
+    """`(review_root, worktree, pr_base)` -- resolved ONCE per invocation and passed down (#1616 item 6):
+    `driver.run` takes it as `resolved=`, not a `gh pr view` and a worktree acquisition per iteration."""
+    return runio.resolve_review_root(args.target, base=args.base, pr=args.pr)
