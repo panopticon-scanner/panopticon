@@ -15,6 +15,15 @@
   solution or project. The `.csproj` files that solution does not reference -- found by the same
   pruned walk, never read off the solution's text -- are now listed in the coverage manifest's
   `sanitized` block and on the coverage line ("N projects not analysed"), not only on stderr.
+- **Language-keyed scanners no longer disappear silently behind the selection prune (#3247,
+  5.3).** Automatic language detection still keeps #1138's vendored/generated/sample-directory
+  prune, so a stray foreign-language file does not select a scanner that can produce no useful
+  output. It now observes that reviewable surface in the same walk and records bounded
+  `meta.coverage.language_detection_skips` rows when a language exists only there, naming the
+  scanner not selected and the fixed reason. The terminal and HTML reports render the disclosure
+  on one coverage line. Explicit `--languages` remains authoritative and omits this automatic
+  measurement; dot directories and dependency/cache trees remain noise. The disclosure changes
+  neither automatically selected tools nor certification.
 
 - **`--online` pip-audit no longer builds a target-named source distribution (#3223, 5.3).**
   pip-audit resolves the generated requirements with pip in a temporary venv, and for a name

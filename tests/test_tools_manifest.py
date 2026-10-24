@@ -1183,6 +1183,34 @@ class TestContainerCleanupManifest(unittest.TestCase):
         self.assertNotIn("cleanup_failures", payload)
 
 
+class TestLanguageDetectionSkipManifest(unittest.TestCase):
+    REASON = "present only under pruned directories"
+    PYTHON = {"language": "python", "tool": "bandit", "reason": REASON}
+
+    def test_legacy_absence_and_measured_clean_remain_distinct(self):
+        with tempfile.TemporaryDirectory() as d:
+            absent = tm.write_manifest(os.path.join(d, "absent.json"), [], [])
+            clean = tm.write_manifest(os.path.join(d, "clean.json"), [], [],
+                                      language_detection_skips=[])
+        self.assertNotIn("language_detection_skips", absent)
+        self.assertEqual(clean["language_detection_skips"], [])
+
+    def test_the_writer_asserts_the_controlled_rows_and_runtime_cap(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(AssertionError):
+                tm.write_manifest(
+                    os.path.join(d, "pair.json"), [], [],
+                    language_detection_skips=[{
+                        "language": "python", "tool": "gosec",
+                        "reason": self.REASON,
+                    }])
+            with self.assertRaises(AssertionError):
+                tm.write_manifest(
+                    os.path.join(d, "cap.json"), [], [],
+                    language_detection_skips=[self.PYTHON] *
+                    (tm.LANGUAGE_DETECTION_SKIPS_MAX + 1))
+
+
 class TestSemgrepScopeBaselineTransition(unittest.TestCase):
     @staticmethod
     def _manifest(path, selected, produced, *, scope=None, globs=("fixtures/**",)):

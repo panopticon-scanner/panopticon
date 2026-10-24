@@ -1920,6 +1920,32 @@ class TestToolCleanupFailuresInHtml(unittest.TestCase):
         self.assertIn("bandit", out)
 
 
+class TestLanguageDetectionSkipsInHtml(unittest.TestCase):
+    def _report(self, value=_NO_KEY):
+        report = _minimal_report()
+        if value is not _NO_KEY:
+            report["meta"].setdefault("coverage", {})[
+                "language_detection_skips"] = value
+        return report
+
+    def test_one_coverage_line_names_the_language_tool_and_fixed_reason(self):
+        out = hr.render(self._report([{
+            "language": "python", "tool": "bandit",
+            "reason": "present only under pruned directories",
+        }]))
+        self.assertEqual(out.count("Language-keyed scanners not selected:"), 1)
+        block = out.split("Language-keyed scanners not selected:", 1)[1].split(
+            "</div>", 1)[0]
+        self.assertIn("python &rarr; bandit", block)
+        self.assertIn("present only under pruned directories", block)
+
+    def test_absent_empty_and_malformed_values_render_no_line(self):
+        for value in (_NO_KEY, [], None, "bad", [{"language": "python"}]):
+            with self.subTest(value=value):
+                self.assertNotIn("Language-keyed scanners not selected",
+                                 hr.render(self._report(value)))
+
+
 class TestSuppressedToolFindingsInHtml(unittest.TestCase):
     """#1578: the same disclosure in the HTML, beside the coverage line where
     the other "what this run did not see" facts live."""

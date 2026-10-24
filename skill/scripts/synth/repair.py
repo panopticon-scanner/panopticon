@@ -32,6 +32,8 @@ import json
 import sys
 
 from scripts import redact as redact_mod
+from scripts import language_detection
+from scripts import tools_manifest
 from . import validate_schema as schema
 
 
@@ -342,6 +344,31 @@ def repair_tools_network(value, warn=None):
         out[name] = _cut(posture, "network.%s" % name, changes)
     warn_repairs("tools-manifest.json", changes, warn)
     return out
+
+
+def repair_language_detection_skips(value, warn=None):
+    """Repair #3247's bounded language/tool non-selection disclosure."""
+    changes = []
+    if not isinstance(value, list):
+        changes.append(("language_detection_skips", "dropped: not a list"))
+        value = []
+    rows = []
+    dropped = 0
+    for row in value:
+        if language_detection.valid_skip_row(row):
+            rows.append(dict(row))
+        else:
+            dropped += 1
+    if dropped:
+        changes.append(("language_detection_skips",
+                        "dropped %d malformed row(s) from" % dropped))
+    limit = tools_manifest.LANGUAGE_DETECTION_SKIPS_MAX
+    if len(rows) > limit:
+        changes.append(("language_detection_skips",
+                        "kept the first %d of %d rows in" % (limit, len(rows))))
+        rows = rows[:limit]
+    warn_repairs("tools-manifest.json", changes, warn)
+    return rows
 
 
 def repair_tool_cleanup_failures(value, warn=None):

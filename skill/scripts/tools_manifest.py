@@ -8,7 +8,9 @@ redaction choke point, what the run did with the target's own inline suppression
 comments and its `.gitleaksignore`, which configuration file each pinned scanner
 ran under, the adapters the gate's globs disqualified, the virtualenv
 directories the scan pruned, what an adapter refused to hand its scanner, and
-scanner containers whose best-effort cleanup failed.
+scanner containers whose best-effort cleanup failed. It also distinguishes a
+clean automatic language measurement from a language-keyed scanner withheld by
+the selection prune.
 `security_gate` reads it, the tools phase copies `redacted` out of it and
 `synthesize` refuses to certify against another run's, so every key here is a
 published contract and the order they are written in is part of it.
@@ -47,6 +49,7 @@ import os
 import sys
 
 from scripts import safe_write
+from scripts import language_detection
 from scripts.tolerant_json import depth_checked
 # BY NAME, never `from scripts import scanner_config`: `write_manifest`'s
 # published `scanner_config=` keyword would shadow a module binding inside the
@@ -68,6 +71,7 @@ from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS
 # tests that read it there. Venvs live near the root, and that walk is paid on
 # every scan.
 VENV_MAX_DEPTH = 3
+LANGUAGE_DETECTION_SKIPS_MAX = language_detection.SKIPS_MAX
 
 
 # What egress each tool was granted this run, keyed by tool name (#1645). Same
@@ -253,7 +257,8 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                    excluded_dirs=(), depth_bound=VENV_MAX_DEPTH, sanitized=None,
                    network=None, exclude_globs=(), suppression_comments=None,
                    scanner_config=None, ignore_files=None, scanner_scope=None,
-                   cleanup_failures=None, withheld=()):
+                   cleanup_failures=None, language_detection_skips=None,
+                   withheld=()):
     """Write the exact selected/produced scanner set for coverage gating.
 
     `withheld` (#3265) names applicable adapters the operator did not enable:
@@ -372,6 +377,11 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     `{kind, detail}` row. It defaults to the capture ledger populated at the
     same point as the stderr diagnostic and is omitted when no failure occurred;
     old manifests therefore remain readable without inventing a measurement.
+
+    `language_detection_skips` (#3247) records the bounded language/tool rows
+    auto-detection saw only under #1138's selection-pruned directories. ``[]``
+    means measured clean; ``None`` omits the field when explicit CLI selection
+    bypassed detection.
     """
     network = {str(k): str(v) for k, v in
                (_NETWORK_POSTURE if network is None else network).items()}
@@ -442,6 +452,11 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                "exclude_globs": [str(g) for g in exclude_globs or ()],
                "excluded_dirs": [_excluded_dir_row(d) for d in excluded_dirs or ()],
                "depth_bound": depth_bound}
+    if language_detection_skips is not None:
+        rows = list(language_detection_skips)
+        assert len(rows) <= LANGUAGE_DETECTION_SKIPS_MAX
+        assert all(language_detection.valid_skip_row(row) for row in rows)
+        payload["language_detection_skips"] = [dict(row) for row in rows]
     output_receipt(payload, expected_run_id=run_id, required=True)
     if cleanup:
         payload["cleanup_failures"] = cleanup

@@ -12,6 +12,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts import groups_schema
 from scripts import executable
+from scripts import language_detection
 from scripts.tools import ADAPTERS, ONLINE_ONLY, withhold_target_builds
 from scripts.tools import egress
 from scripts.tools.base import SECURITY_FLAG
@@ -126,7 +127,7 @@ from scripts.venv_scope import (
 # the legacy bare-eslint tool can never run on arbitrary targets (eslint >=9
 # requires a project eslint.config.js) and was retired from language selection
 # (calibration 2026-08-03: perpetual "tool eslint exited 2; skipping").
-LANG_TOOL = {"python": "bandit", "go": "gosec"}
+LANG_TOOL = dict(language_detection.LANGUAGE_TOOLS)
 
 # Phase 1 adapters selected by ecosystem detection; they are dispatched through
 # _run_adapter.py inside the panopticon-tools container.
@@ -171,13 +172,12 @@ def recommendable_tools(languages=None, target=None):
 # socket cannot hang the whole scan pipeline (#1112).
 DOCKER_PROBE_TIMEOUT = 30
 
-# #run8 OPS-D1A: TOOL_TIMEOUT bounds wall-clock and MAX_TOOL_OUTPUT_BYTES the
-# captured stdout; NEITHER bounds the in-container memory/CPU/PID footprint, so
-# a target that drives a scanner to allocate pathologically (a recursive archive
-# fed to dependency-check) can destabilize the host/CI runner long before either
-# cap. Every container this module and the fixture runner launch gets a hard
-# ceiling (the runner's two only since #1767, ARC-3859414366). Retunable via env;
-# an empty value drops that ceiling (both memory flags, or --cpus, or --pids-limit).
+# #run8 OPS-D1A: TOOL_TIMEOUT bounds wall-clock and MAX_TOOL_OUTPUT_BYTES the captured stdout;
+# NEITHER bounds the in-container memory/CPU/PID footprint, so a target that drives a scanner to
+# allocate pathologically (a recursive archive fed to dependency-check) can destabilize the host/CI
+# runner long before either cap. Every container this module and the fixture runner launch gets a
+# hard ceiling (the runner's two only since #1767, ARC-3859414366). Retunable via env; an empty
+# value drops that ceiling (both memory flags, or --cpus, or --pids-limit).
 CONTAINER_MEMORY = os.environ.get("PANOPTICON_TOOL_MEMORY", "6g")
 CONTAINER_CPUS = os.environ.get("PANOPTICON_TOOL_CPUS", "4")
 CONTAINER_PIDS_LIMIT = os.environ.get("PANOPTICON_TOOL_PIDS", "1024")
@@ -243,44 +243,12 @@ def docker_available(image="panopticon-tools", runner=None, target=None):
         return False
 
 
-_LANG_EXTS = {".py": "python", ".go": "go",
-              ".js": "javascript", ".jsx": "javascript",
-              ".ts": "typescript", ".tsx": "typescript"}
-_DETECT_PRUNE = {".git", ".venv", "venv", "node_modules", "__pycache__",
-                 ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", "tmp",
-                 # #1138: vendored / generated / sample trees carry foreign-language
-                 # files that are NOT the project's own source. A single stray file
-                 # here used to trigger that language's SAST tool (e.g. a vendored
-                 # .go making gosec run on a Python repo), which then produced
-                 # nothing and read as a "selected-but-unproduced" tool-coverage
-                 # gap. Prune the dirs where a foreign-language file is definitively
-                 # not project source; conservatively leave tests/ alone (a real
-                 # test suite IS legitimate language surface).
-                 "vendor", "third_party", "third-party", "testdata", "fixtures",
-                 "examples", "example", "dist", "build", "target", "site-packages",
-                 "docs"}
-
-
-def detect_languages(target):
-    """Best-effort language detection by source-file extension.
-
-    The bare CLI invocation (README/CI) passes no --languages, which previously
-    meant the language-keyed SAST tools (bandit/gosec/eslint) NEVER ran
-    (calibration 2026-08-03). Walks with noise-dir pruning; stops once every
-    known language is seen.
-    """
-    found = set()
-    want = set(_LANG_EXTS.values())
-    for dirpath, dirnames, filenames in os.walk(target):
-        dirnames[:] = [d for d in dirnames
-                       if d not in _DETECT_PRUNE and not d.startswith(".")]
-        for fn in filenames:
-            lang = _LANG_EXTS.get(os.path.splitext(fn)[1].lower())
-            if lang:
-                found.add(lang)
-                if found == want:
-                    return sorted(found)
-    return sorted(found)
+def detect_languages(target, skipped=None):
+    """Best-effort source-extension detection; optionally return #3247 gaps."""
+    languages, rows = language_detection.detect(target)
+    if skipped is not None:
+        skipped[:] = rows
+    return languages
 
 
 # #1740 (ARC-F2A): the scan half of the security mode `security_gate` keys on.
@@ -721,7 +689,7 @@ def main(argv=None):
     ap.add_argument("--target", default=".")
     ap.add_argument("--out", default=os.path.join(".panopticon", "tools"))
     ap.add_argument("--tools", nargs="*", default=None)
-    ap.add_argument("--languages", nargs="*", default=[])
+    ap.add_argument("--languages", nargs="*", default=None)
     ap.add_argument("--deps", action="store_true")
     ap.add_argument("--online", action="store_true", help="allow pip-audit/npm-audit to reach their advisory APIs")
     ap.add_argument("--allow-target-build", action="store_true", help="run roslyn-secguard (builds the target)")
@@ -750,6 +718,7 @@ def main(argv=None):
                          "(no pyvenv.cfg), so the gate has findings to re-admit")
     a = ap.parse_args(argv)
     excluded_scope = []
+    language_detection_skips: list[dict[str, str]] | None = None
     if a.tools is not None:
         if a.exclude:
             # partition_by_exclusion iterates adapters.items(), so it needs a
@@ -768,7 +737,11 @@ def main(argv=None):
             selected_adapters, a.target, a.exclude)
         phase1 = [name for name in required_names if name in PHASE1_ADAPTERS]
         phase2 = [name for name in required_names if name in PHASE2_ADAPTERS]
-        languages = a.languages or detect_languages(a.target)
+        if a.languages is None:
+            language_detection_skips = []
+            languages = detect_languages(a.target, language_detection_skips)
+        else:
+            languages = a.languages
         chosen = select_tools(languages, a.deps) + phase1 + phase2
     effective, withheld = withhold_target_builds(filter_online(chosen, a.online), a.allow_target_build)
     # #1646: what the adapters refused to hand their scanners. Computed from the
@@ -796,7 +769,8 @@ def main(argv=None):
             tools_manifest.write_manifest(
                 a.manifest, effective, [], excluded_scope=excluded_scope,
                 run_id=a.run_id, excluded_dirs=venv_rows, withheld=withheld,
-                sanitized=sanitized, exclude_globs=a.exclude, cleanup_failures={})
+                sanitized=sanitized, exclude_globs=a.exclude, cleanup_failures={},
+                language_detection_skips=language_detection_skips)
         return 0
     paths = run_tools(a.target, effective, a.out, online=a.online,
                       progress=make_progress(a.progress), venv_dirs=skip_dirs,
@@ -806,7 +780,8 @@ def main(argv=None):
         tools_manifest.write_manifest(
             a.manifest, effective, paths, excluded_scope=excluded_scope,
             run_id=a.run_id, excluded_dirs=venv_rows, withheld=withheld,
-            sanitized=sanitized, exclude_globs=a.exclude)
+            sanitized=sanitized, exclude_globs=a.exclude,
+            language_detection_skips=language_detection_skips)
     print("\n".join(paths))
     return 0
 
