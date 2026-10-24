@@ -10,7 +10,7 @@ arguments:
 disableModelInvocation: false
 license: MIT
 metadata:
-  version: "5.2.0"
+  version: "5.2.1"
 ---
 
 # panopticon

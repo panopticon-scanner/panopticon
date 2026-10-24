@@ -2,11 +2,6 @@
 
 ## Unreleased
 
-- **Headless guard settings are built fresh, not merged from disk.** A headless run's
-  `host-settings.json` (setup's in `.panopticon/`, a review's in `runs/<tag>/`) is the run
-  folder's own, so arming the read and write guards now rebuilds it from their two entries alone
-  rather than keeping whatever else the file held. A session's `.claude/settings.local.json` is the
-  operator's and is still merged. `driver setup --reset` now clears setup's copy too.
 - **Operator-visible: a PATH entry inside the target now halts the run (#3270, owner ruling D2).**
   An entry inside the reviewed tree -- or one whose program is a symlink into it -- used to be
   skipped silently. It is hostility or a badly broken machine, and most often the operator
@@ -142,6 +137,19 @@
   replies and zero returned stamps. All three production receipt schemas remain outside Codex's
   strict generation subset; the exact blockers and compatible provider-schema directions are
   recorded in the host-capabilities guide and follow-up #3241.
+
+## 5.2.1 — Security patch
+
+Fixes [GHSA-wjpr-jxg9-rmwh](https://github.com/panopticon-scanner/panopticon/security/advisories/GHSA-wjpr-jxg9-rmwh)
+(high). Affects 5.1.0 through 5.2.0. Upgrade before running headless setup or review
+on a tree you do not trust.
+
+- **Headless guard settings are built fresh, not merged from disk.** A headless run's
+  `host-settings.json` (setup's in `.panopticon/`, a review's in `runs/<tag>/`) now
+  holds only the read and write guards' own entries, exactly as their installers write
+  them, so nothing else a file on disk held reaches the host CLI's `--settings`. A
+  session's `.claude/settings.local.json` is the operator's and is still merged.
+- **`driver setup --reset` clears setup's `host-settings.json`.**
 
 ## 5.2.0 — Host expansion and hardening
 
