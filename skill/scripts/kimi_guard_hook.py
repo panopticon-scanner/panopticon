@@ -16,9 +16,9 @@ twice::
 The scope and allowlist DATA files are the ones the loop already arms through
 read_guard_hook.install / write_guard_hook.install (orchestrate.Guards):
 ``read-scope.json`` is ``{entry id: {"files": [...], "dirs": [...],
-"reads": [...], "hard_linked": [...]}}`` -- the last key being the walk the
-driver took over a `dirs` grant when it was issued (#1683), absent from a file
-written before it and read as empty -- and ``write-allowlist.json`` is the v2
+"reads": [...]}}`` -- a `hard_linked` key an older version wrote is ignored
+(#3271: out-of-tree hard links are a first-contact halt) -- and
+``write-allowlist.json`` is the v2
 document
 ``{"version": 2, "entries": {entry id: [path, ...]}, "paths": [...]}`` (#1571;
 version 1 was a flat list and is refused, not read). This
@@ -66,7 +66,6 @@ import os
 import shlex
 import stat
 import sys
-import unicodedata
 
 
 def hook_command(*argv):
@@ -104,17 +103,11 @@ ALLOWLIST_VERSION = 2
 # and pinned equal to the write guard's in tests/test_write_guard_hook.py.
 UNBOUND_ENTRY = "<unbound>"
 # The read-scope keys, ONE tuple per guard rather than a literal per loader
-# (ARC-1784455652/#1767). `hard_linked` (#1683) is the driver's ONE walk of a
-# directory grant, taken when it is built: the paths beneath it a
-# directory-argument Grep/Glob must not traverse. An older scope file has no
-# such key and loads as an empty list -- the FORMAT is unchanged, a new
-# optional key in a schema-less object, so there is no version to bump (the
-# `read-scope.json` contract has no version field, and the one that does, the
-# v2 write allowlist, is not this file). A copy of read_guard_hook's constant,
-# for the reason everything here is one, and pinned equal to it in
+# (ARC-1784455652/#1767). A copy of read_guard_hook's constant, for the reason
+# everything here is one, and pinned equal to it in
 # tests/test_read_guard_hook.py: a key added to the read guard alone would be
 # honoured by Claude's hook and silently ignored by this one.
-SCOPE_KEYS = ("files", "dirs", "reads", "hard_linked")
+SCOPE_KEYS = ("files", "dirs", "reads")
 ENV_READ_SCOPE = "PANOPTICON_READ_SCOPE"
 ENV_WRITE_ALLOWLIST = "PANOPTICON_WRITE_ALLOWLIST"
 
@@ -144,17 +137,6 @@ def _under(path, directory):
     """Separator-bounded prefix test: /repo admits /repo/x, never /repo-other."""
     directory = directory.rstrip(os.sep) or os.sep
     return path == directory or path.startswith(directory + os.sep)
-
-
-def _fold(path):
-    """Case- and Unicode-folded, for DENIALS ONLY (#1683 fix round 2).
-
-    APFS/HFS+/NTFS resolve names case- and normalization-insensitively, so a
-    byte-exact list test let `Grep <root>/src` past a recorded
-    `<root>/Src/x.txt`. Folding a DENIAL can only over-deny; folding the
-    `dirs` GRANT would ADMIT /REPO/x under /repo on a case-sensitive volume,
-    which is why `_readable` and the grant test stay byte-exact."""
-    return unicodedata.normalize("NFC", path).casefold()
 
 
 def _load_scope(scope_path):
@@ -289,7 +271,7 @@ def _component_fault(component):
     A component with NO INODE passes: the plan is written before the run
     folder is created, and refusing an absent component would refuse every
     first run. A component that exists but cannot be measured DENIES -- the
-    same rule `_hard_link_reason` applies one layer down (#1642, fix round 1):
+    same fail-closed rule the read guards apply (#1642, fix round 1):
     a guard may not answer "allowed" about something it could not look at.
     """
     try:
@@ -333,38 +315,35 @@ def _escaped_component(path):
 # --- end of the write_guard_hook copy ---
 
 
+def _in_dir_grant(target, directory):
+    """`_under`, except that a directory grant never covers its own `.git`
+    store (#3271 G-a). `read_guard_hook._in_dir_grant`'s twin."""
+    if not _under(target, directory):
+        return False
+    rest = target[len(directory.rstrip(os.sep)):].lstrip(os.sep)
+    return rest.split(os.sep, 1)[0] != ".git"
+
+
+def _names_git_store(pattern):
+    """True when a Glob pattern names a `.git` component (#3271 G-a)."""
+    return isinstance(pattern, str) and ".git" in pattern.replace("\\", "/").split("/")
+
+
 def _readable(target, scope):
-    # Byte-exact by design; see _fold. Folding HERE would widen the grant.
+    # Byte-exact by design: folding a GRANT would widen it.
     return (target in scope["files"] or target in scope["reads"]
-            or any(_under(target, d) for d in scope["dirs"]))
+            or any(_in_dir_grant(target, d) for d in scope["dirs"]))
 
 
-# #1642: one wording for one rule, across three read brokers.
-# `codex_read_tools.HARD_LINK_DENIAL` is the original, and
-# tests/test_codex_read_tools.py::test_the_hard_link_denial_is_one_wording pins
-# the copies equal. Copied rather than imported for the reason everything in
-# this module is: the hook runs standing alone, with no package on sys.path.
-HARD_LINK_DENIAL = "read scope denies a hard-linked file inside a directory grant (st_nlink=%d)"
-
-# #1683: the same rule, for the read whose argument is the DIRECTORY -- one
-# wording across both hooks, pinned in tests/test_codex_read_tools.py beside
-# the one above. Takes (tool, raw argument, the recorded path that fired).
-DIRECTORY_LINK_DENIAL = (
-    "%s of directory %s is denied: this tool traverses the directory itself, "
-    "and the read scope recorded a hard-linked file beneath it (%s) -- a link "
-    "can name an inode outside the granted tree. Grep a narrower directory, "
-    "or a file by its path.")
-DIRECTORY_GRANT_CLOSED = (
-    "%s of directory %s is denied: the whole directory grant is closed (too "
-    "many hard-linked files beneath it, or a subtree nothing could read -- see "
-    "the setup-scan stderr line). Read files by name.")
 # #1917: Glob's SECOND argument. `path` says where the expansion starts and is
 # adjudicated above; the pattern says what it expands to, and it is a PATH
 # pattern, so `../Src/*` under a clean granted directory names entries the grant
 # never covered. One wording, both hooks, pinned in
-# tests/test_codex_read_tools.py beside the other two.
+# tests/test_codex_read_tools.py.
 GLOB_PATTERN_DENIAL = ("Glob pattern %r is denied: patterns are relative to `path` and may "
                        "not climb out of it")
+# #3271 G-a: and may not name the `.git` store no directory grant covers.
+GIT_STORE_DENIAL = "Glob pattern %r is denied: no directory grant covers the .git store"
 
 
 def _glob_pattern_climbs(pattern):
@@ -392,60 +371,6 @@ def _glob_pattern_climbs(pattern):
     return any(part == ".." for part in pattern.replace("\\", "/").split("/"))
 
 
-def _hard_link_reason(tool_name, raw, target, scope):
-    """The denial for a multiply-linked REGULAR file that only a DIRECTORY grant
-    admits, or "" (#1642).
-
-    realpath resolves SYMlinks; nothing resolves a hard link, because the link
-    IS the file -- and a directory grant is matched by NAME, so a target that
-    plants one inside the granted subtree, naming a file outside it, read as
-    in-scope. An EXACT grant (`files`/`reads`) is the file the orchestrator
-    chose and is unaffected whatever its link count, including when a directory
-    grant covers it too (the normal cell shape).
-
-    Directories are not the subject: a directory's st_nlink is its subdirectory
-    count, and the rule is about reading content. A path that cannot be stat'ed
-    DENIES (fix round 1, F4): a guard may not answer "allowed" about something
-    it could not measure. A path with NO INODE (ENOENT/ENOTDIR, a dangling
-    symlink included) is the exception and passes through (fix round 2, N2):
-    that is a successful measurement of nothing to confine, not a failure to
-    measure, and the tool's own not-found is what the caller should see.
-
-    THE OTHER HALF (#1683). This rule reaches reads whose argument is a FILE.
-    A `Grep`/`Glob` argued with a granted DIRECTORY is adjudicated by path and
-    then TRAVERSED by the host's own tool; `_decide_read` refuses those two
-    tools from `scope["hard_linked"]` -- the walk the driver takes once when
-    the grant is built, because a hook may not walk the tree on every call.
-
-    Unlike the Codex broker, which reads the count off the descriptor it then
-    reads FROM, a PreToolUse hook adjudicates a NAME the host reopens: as
-    path-based as the realpath check beside it, and carrying the same race.
-    """
-    if target in scope["files"] or target in scope["reads"]:
-        return ""
-    try:
-        info = os.stat(target)
-    except (FileNotFoundError, NotADirectoryError):
-        # Fix round 2 (N2): ENOENT/ENOTDIR -- including a dangling symlink --
-        # are not "could not measure". They are a successful measurement that
-        # there is NO INODE at that name, so there is nothing for a read fence
-        # to confine and nothing an attacker gains by inducing one. The tool's
-        # own not-found is the honest answer; a denial here reads as a fence to
-        # the scout probing an unknown tree for absent marker files.
-        return ""
-    except OSError as exc:
-        # Fix round 1 (F4): a guard that cannot measure DENIES -- every other
-        # errno (EACCES, ELOOP, ENAMETOOLONG, EIO). This used to answer "" --
-        # allow -- reasoning that the host's own read of an unstattable name
-        # fails the same way; that is a guess about another process's syscall,
-        # made by the one component whose job is to be sure.
-        return ("%s of %s is denied: the read guard could not stat it to apply "
-                "the hard-link rule: %s" % (tool_name, raw, exc))
-    if not stat.S_ISREG(info.st_mode) or info.st_nlink <= 1:
-        return ""
-    return "%s of %s is denied: %s" % (tool_name, raw, HARD_LINK_DENIAL % info.st_nlink)
-
-
 def _decide_read(tool_name, tool_input, scope, cwd):
     """(allow, reason) for a bound entry's Read/Grep/Glob. Mirrors
     read_guard_hook.decide's rules with Kimi's `path` field."""
@@ -461,26 +386,13 @@ def _decide_read(tool_name, tool_input, scope, cwd):
         return False, ("%s is denied: pass `path` explicitly -- a file from the "
                        "list in your prompt" % tool_name)
     if os.path.isdir(target):
-        if any(_under(target, d) for d in scope["dirs"]):
-            # #1683, for the tools that TRAVERSE only (fix round 2, I3: this
-            # branch is shared with Read/ReadMediaFile, which do not, and were
-            # being told they did). Both directions, exact and folded: a link
-            # recorded BENEATH the argument is what the traversal would reach;
-            # the argument AT or BENEATH a recorded path is the overflow
-            # encoding or an unreadable subtree -- a grant closed whole, which
-            # gets its own sentence because narrowing cannot work there.
-            if tool_name in ("Grep", "Glob"):
-                ft = _fold(target)
-                for p in scope.get("hard_linked") or ():
-                    if _under(target, p) or _under(ft, _fold(p)):
-                        return False, DIRECTORY_GRANT_CLOSED % (tool_name, raw)
-                    if _under(p, target) or _under(_fold(p), ft):
-                        return False, DIRECTORY_LINK_DENIAL % (tool_name, raw, p)
-                # #1917: and for Glob, the second argument -- the only one of
-                # these tools whose pattern is a PATH pattern, expanded
-                # against `path`.
-                if tool_name == "Glob" and _glob_pattern_climbs(tool_input.get("pattern")):
-                    return False, GLOB_PATTERN_DENIAL % (tool_input.get("pattern"),)
+        if any(_in_dir_grant(target, d) for d in scope["dirs"]):
+            # #1917: for Glob, the second argument -- the only one of these
+            # tools whose pattern is a PATH pattern, expanded against `path`.
+            if tool_name == "Glob" and _glob_pattern_climbs(tool_input.get("pattern")):
+                return False, GLOB_PATTERN_DENIAL % (tool_input.get("pattern"),)
+            if tool_name == "Glob" and _names_git_store(tool_input.get("pattern")):
+                return False, GIT_STORE_DENIAL % (tool_input.get("pattern"),)
             return True, ""
         if tool_name in ("Read", "ReadMediaFile"):
             return False, ("%s of directory %s is outside your cell's scope; the "
@@ -493,14 +405,12 @@ def _decide_read(tool_name, tool_input, scope, cwd):
                        "in your prompt")
     if tool_name in ("Read", "ReadMediaFile"):
         if _readable(target, scope):
-            denial = _hard_link_reason(tool_name, raw, target, scope)
-            return (False, denial) if denial else (True, "")
+            return True, ""
         return False, ("%s of %s is outside your cell's scope; the files you may "
                        "read are listed in your prompt" % (tool_name, raw))
     if tool_name == "Grep":
         if _readable(target, scope):
-            denial = _hard_link_reason(tool_name, raw, target, scope)
-            return (False, denial) if denial else (True, "")
+            return True, ""
         return False, ("Grep of %s is outside your cell's scope; the files you may "
                        "search are listed in your prompt" % raw)
     return False, ("Glob is not available in a confined cell: your file list is in "

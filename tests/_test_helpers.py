@@ -434,9 +434,9 @@ def assert_adapter_finds_at(test_case, adapter_name, target, group="g1",
 
 
 # --- #1642: the hard-link fixture -------------------------------------------
-# Every read broker refuses a multiply-linked regular file that only a
-# DIRECTORY grant admits, and the only honest way to test that is to plant a
-# real hard link -- a mocked st_nlink would prove the branch, not the rule.
+# First contact halts on a file hard-linked out of the reviewed tree (H4,
+# #3271), and the only honest way to test that is to plant a real hard link --
+# a mocked st_nlink would prove the branch, not the rule.
 # Some filesystems have no links to plant (FAT/exFAT volumes, a few container
 # tmpfs mounts), so the fixture SKIPS with the reason rather than failing a
 # suite on the machine's storage. Every caller sits under the default temp

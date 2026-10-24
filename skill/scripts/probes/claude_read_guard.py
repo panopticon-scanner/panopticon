@@ -33,16 +33,15 @@ def _fake_subagent(parent_transcript, agent_id, entry_id, layout="direct"):
 
 def _round_trip_confines_reads():
     """Arm the read guard in a throwaway sandbox, bind four fake subagents
-    through fake transcripts, and drive the thirteen payloads of design spec 5,
-    plus four env-binding payloads of spec 5.3 (plan 6) and the planted-hard-link
-    check of #1917, through adjudicate(), then launch the installed hook for
-    allow and deny payloads. Never touches the session's real settings, scope
-    file or transcripts.
+    through fake transcripts, and drive the payloads of design spec 5 -- with
+    the two of #3271 G-a, a directory grant that never covers its own `.git`
+    store -- plus four env-binding payloads of spec 5.3 (plan 6), through
+    adjudicate(), then launch the installed hook for allow and deny payloads.
+    Never touches the session's real settings, scope file or transcripts.
 
-    Returns (ok, detail), where `ok` is True, False -- or None for the one
-    outcome that is neither (#1917): the planted-hard-link fixture could not be
-    established, so that sub-check went unmeasured. The caller reports None as
-    UNKNOWN, never as a refutation."""
+    Returns (ok, detail). A hard link out of the reviewed tree is a
+    first-contact halt (H4, #3271), not a hook rule, so there is nothing to
+    plant here."""
     try:
         with tempfile.TemporaryDirectory(prefix="panopticon-read ' ; $() ") as sandbox:
             settings = os.path.join(sandbox, "settings.json")
@@ -50,7 +49,9 @@ def _round_trip_confines_reads():
             inside = os.path.join(sandbox, "cell", "a.py")
             outside = os.path.join(sandbox, "elsewhere", "b.py")
             root = os.path.join(sandbox, "root")
-            for p in (inside, outside, os.path.join(root, "c.py")):
+            git_object = os.path.join(root, ".git", "objects", "ab", "cdef")
+            workflow = os.path.join(root, ".github", "workflows", "ci.yml")
+            for p in (inside, outside, os.path.join(root, "c.py"), git_object, workflow):
                 os.makedirs(os.path.dirname(p), exist_ok=True)
                 with open(p, "w", encoding="utf-8") as fh:
                     fh.write("")
@@ -60,60 +61,9 @@ def _round_trip_confines_reads():
             _fake_subagent(parent, "agent-x", "probe-cell")
             _fake_subagent(parent, "agent-z", "probe-scan")
             _fake_subagent(parent, "agent-w", "probe-cell", layout="workflow")
-            _fake_subagent(parent, "agent-v", "probe-links")
-            # #1917: the refutation fixture the Codex probe has carried since
-            # #1642 (probes/codex.py). A hard link INSIDE a directory grant
-            # naming an inode OUTSIDE it is the one case where "this name is
-            # under the grant" and "this content is in scope" come apart, and a
-            # directory-argument Grep is adjudicated ONCE, by path, then
-            # traversed by the host's own tool. Its own grant, so the clean
-            # `probe-scan` rows keep measuring a clean tree. The recorded list
-            # is built by the DRIVER's walker (phases/hard_links), which is what
-            # makes this the whole rule rather than the hook's half of it.
-            import scripts.phases.hard_links as hard_links
-            links_root = os.path.join(sandbox, "links")
-            clean = os.path.join(links_root, "clean")
-            os.makedirs(clean, exist_ok=True)
-            planted = os.path.join(links_root, "planted.py")
-            try:
-                os.link(outside, planted)
-            except OSError as exc:
-                # F3, as codex does it: a volume with no links to plant has not
-                # refuted a healthy host. None -> UNKNOWN for this row, and no
-                # stand-in path -- a grant whose list nobody walked must not
-                # pass for one that was measured.
-                return None, ("the hard-link refutation fixture could not be "
-                              "planted at %s: %s" % (planted, exc))
-            # ...and the same tolerance one volume class narrower (fix round 1,
-            # finding 2): `os.link` can SUCCEED where `lstat` does not report the
-            # link count (some FUSE and network mounts), and the walker then
-            # legitimately records nothing. Measuring the plant is the only way
-            # to tell that unestablished fixture from a walker gone blind, so
-            # the count is taken here and the refutation below is narrowed to
-            # "the volume DID report a link and the walk still missed it".
-            try:
-                planted_links = os.lstat(planted).st_nlink
-            except OSError as exc:
-                return None, ("the hard-link refutation fixture planted at %s could not be "
-                              "measured: %s" % (planted, exc))
-            if planted_links <= 1:
-                return None, ("the hard-link refutation fixture was planted at %s, but the "
-                              "volume reports st_nlink=%d: it does not count links, so there "
-                              "is nothing here to record" % (planted, planted_links))
-            recorded = hard_links.hard_links_under(links_root)[0]
-            if not recorded:
-                # The plant SUCCEEDED, the volume counts links, and the walk
-                # still found nothing: half the rule is missing, which is a
-                # refutation and not a fixture problem (and the rows below would
-                # otherwise have no path to name).
-                return False, ("the guard's own walker recorded no hard link beneath %s "
-                               "after one was planted at %s (st_nlink=%d)"
-                               % (links_root, planted, planted_links))
             read_guard_hook.install(
                 [{"id": "probe-cell", "scope": {"files": [inside], "dirs": [], "reads": []}},
-                 {"id": "probe-scan", "scope": {"files": [], "dirs": [root], "reads": []}},
-                 {"id": "probe-links",
-                  "scope": hard_links.scope(dirs=[links_root], hard_linked=recorded)}],
+                 {"id": "probe-scan", "scope": {"files": [], "dirs": [root], "reads": []}}],
                 settings_path=settings, scope_path=scope_file)
             if not read_guard_hook.guard_state(settings_path=settings, scope_path=scope_file)["armed"]:
                 return False, "install() did not register the PreToolUse hook"
@@ -146,30 +96,16 @@ def _round_trip_confines_reads():
                 # shipped dispatch workflow binds every entry through it.
                 ("workflow-layout Read inside scope", call("Read", "agent-w", file_path=inside), True),
                 ("workflow-layout Read outside scope", call("Read", "agent-w", file_path=outside), False),
-                # #1917: a clean subdirectory of a grant that recorded a link
-                # elsewhere keeps its Grep -- the rule denies the traversals
-                # that would cross a link, not the grant.
-                ("directory-scoped Grep of a clean subdirectory",
-                 call("Grep", "agent-v", pattern="x", path=clean), True),
+                # #3271 G-a: what first contact does not count, no grant reads
+                # -- the grant's own `.git` store is out, `.github/` is not.
+                ("directory-scoped Read under its dir's .git store",
+                 call("Read", "agent-z", file_path=git_object), False),
+                ("directory-scoped Read under its dir's .github",
+                 call("Read", "agent-z", file_path=workflow), True),
             )
             for name, got, want in rows:
                 if got != want:
                     return False, "the guard %s: %s" % ("ALLOWED" if got else "DENIED", name)
-
-            # ...and the row whose WORDING is the measurement (#1917, the N-2
-            # argument from codex's probe): every entry here would deny this
-            # path for some other reason on a build where the directory-grant
-            # rule was gone, so a bare denial proves nothing. The sentence is
-            # taken from the hook's own constant, so a reworded rule is a
-            # reworded expectation and never a silent pass.
-            allowed, reason = adjudicated("Grep", "agent-v", pattern="x", path=links_root)
-            # A SUBSTRING test, not equality: adjudicate() appends which entry
-            # the call was bound to, and that suffix is not this rule's wording.
-            expected = read_guard_hook.DIRECTORY_LINK_DENIAL % ("Grep", links_root, recorded[0])
-            if allowed or expected not in reason:
-                return False, ("the guard did not refuse a directory Grep over a planted "
-                               "hard-link by the hard-link rule: %s"
-                               % ("ALLOWED" if allowed else reason))
 
             # Spec 5.3 (plan 6): the env binding the headless runner relies on.
             env_rows: tuple[tuple[str, dict[str, Any], dict[str, str], bool], ...] = (
@@ -203,9 +139,8 @@ def _round_trip_confines_reads():
     except (OSError, RuntimeError, ValueError, TypeError) as exc:
         return False, common.failure_detail(
             exc, "the read-guard sandbox round-trip could not run")
-    return True, ("arm/bind/deny round-trip ok (%d rows), and a directory Grep over a hard link "
-                  "planted inside a directory grant refused as hard-linked; subprocess "
-                  "allow/deny ok" % (len(rows) + len(env_rows)))
+    return True, ("arm/bind/deny round-trip ok (%d rows); subprocess allow/deny ok"
+                  % (len(rows) + len(env_rows)))
 
 
 class _ReadHookProcess(children.ChildProcesses):

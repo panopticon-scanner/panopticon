@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Operator-visible: hard links are a first-contact halt, not a per-read rule (#3271 B1).**
+  The read guards (Claude, Kimi) and the Codex read broker no longer refuse a multiply-linked file
+  inside a directory grant, and `driver setup` no longer walks the tree for them or prints the
+  "re-clone without hard links" line: a file hard-linked out of the tree halts the run at first
+  contact (H4), and `driver setup` now runs that walk on every invocation. So:
+  - an in-tree pair (a `cp -al` fixture, a pnpm store) reads like any file, Codex included;
+  - the Codex `[skipped ...]` search note is gone;
+  - a directory grant never covers its own `.git` store. Every reader refuses a path under
+    `<grant>/.git`, and a `Glob` pattern naming `.git` is denied. `.github/` and `.gitignore` still read;
+  - the Codex read-scope probe makes two reads instead of three, and Claude's `read-guard-armed`
+    probe drives eighteen payloads instead of seventeen.
 - **Operator-visible: first contact halts on a `.panopticon/` this machine did not start (#3271).**
   `driver run` and `driver setup` now assess the target once, before any phase writes, and halt
   with one fixed line on: a `.panopticon/` tracked in git; a `.panopticon/` holding anything but

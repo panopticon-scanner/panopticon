@@ -21,8 +21,11 @@ reason, on clear hostility:
   H5  something the sweep cannot read, which fails closed.
 
 The whole-tree walk (H4) runs once per run, when its manifest is new: the
-manifest records `first_contact`, and a resume of a stamped run skips it. The
-cheap half -- H1 to H3 -- runs on every invocation.
+manifest records `first_contact`, and a resume of a stamped run skips it --
+except under `driver setup`, whose directory grant covers the whole tree, which
+walks on every invocation (#3271 B1, G-b). The cheap half -- H1 to H3 -- runs
+on every invocation. What H4 does not count, no grant reads: a directory grant
+never covers `<root>/.git` (G-a).
 
 Every message is one line; a target-authored name in it is JSON-quoted
 (control characters escaped) and bounded.
@@ -239,21 +242,29 @@ def bind(review_root, manifest):
     return manifest
 
 
-def assess(review_root, manifest_name, *, reset=False, host=None, other_roots=(), runner=None):
+def assess(review_root, manifest_name, *, reset=False, host=None, other_roots=(), runner=None,
+           walk_every_time=False):
     """The whole first contact for the run whose manifest is `manifest_name`:
     H1-H3 on `review_root` (and on each of `other_roots` -- the operator's own
     checkout under --pr, which the run copies its report into), then, unless
     that stamped manifest is resuming, the one H4 walk. Returns the record a
-    NEW manifest carries as `first_contact`, or None on a resume."""
+    NEW manifest carries as `first_contact`, or None on a resume.
+
+    `walk_every_time` (#3271 B1, ruling G-b) is `driver setup`'s: its scan
+    holds the one directory grant over the whole tree, so the H4 walk runs on
+    every setup invocation, a resume included, not once per run."""
     for root in other_roots:
         assess_artifacts(root, reset=reset, runner=runner)
     ours = assess_artifacts(review_root, reset=reset, runner=runner)
     prior = ours.get(manifest_name)
-    if isinstance(prior, dict) and isinstance(prior.get("first_contact"), dict) and not reset:
+    resuming = isinstance(prior, dict) and isinstance(prior.get("first_contact"), dict) and not reset
+    if resuming and not walk_every_time:
         return None
     found, files = _outside_links(review_root, git=ours.get("git", False))
     if found:
         _halt([(_quote(rel), nlink, names) for rel, nlink, names in found], H4)
+    if resuming:
+        return None
     record = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "files": files}
     if isinstance(prior, dict) and host and prior.get("host") not in (None, host):
         # Owner ruling D2: a stamped run by ANOTHER host is ours; say so.

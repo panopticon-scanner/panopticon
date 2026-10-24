@@ -148,7 +148,7 @@ def _component_fault(component):
     A component with NO INODE passes: the plan is written before the run
     folder is created, and refusing an absent component would refuse every
     first run. A component that exists but cannot be measured DENIES -- the
-    same rule `_hard_link_reason` applies one layer down (#1642, fix round 1):
+    same fail-closed rule the read guards apply (#1642, fix round 1):
     a guard may not answer "allowed" about something it could not look at.
     """
     try:

@@ -17,7 +17,6 @@ import scripts.synth.plan as plan_mod
 from scripts import hosts
 from scripts import model_resolver
 from scripts import read_guard_hook
-from . import hard_links
 # D10 ruling 2: the retry prompt carries the last refusal, and `persist` owns
 # both the records and the run-folder resolver. A mutual pair like
 # coverage<->requests: read by module attribute, at call time only.
@@ -82,10 +81,20 @@ def entry_marker(entry_id):
     return read_guard_hook.marker_line(entry_id) + "\n"
 
 
-def scope(files=(), dirs=(), reads=(), hard_linked=None):
-    """Build an entry's read scope, including its directory-link measurement."""
-    return hard_links.scope(files=files, dirs=dirs, reads=reads,
-                            hard_linked=hard_linked)
+def scope(files=(), dirs=(), reads=()):
+    """An entry's read scope: absolute, byte-exact paths the read guard
+    matches after realpath. `files` duplicates entry["files"] on purpose (the
+    guard reads one key of one shape); `dirs` is a directory scope (setup-
+    scan), which never covers its own `.git` store; `reads` is the extra-file
+    allowance -- whatever the builder grants beyond the entry's files (the SEC
+    cell's security checklist, `review._cell_reads`), plus the entry's own
+    `prompt_file` once `requests._materialize_prompts` stamps one, so a host
+    that dispatches from the file (marker line first, pointer second) is not
+    denied its own prompt by the read guard.
+
+    A hard link out of the tree is a first-contact halt (H4, #3271), so a
+    `dirs` grant carries no record of one."""
+    return {"files": list(files), "dirs": list(dirs), "reads": list(reads)}
 
 
 # #1344 F4 (a). The ONE wording for the return-persist instruction. Two builders
