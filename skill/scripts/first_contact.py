@@ -78,9 +78,15 @@ def _quote(rel):
 
 
 def _tracked(review_root, runner):
-    """(a git work tree?, any path under `.panopticon/` in its index?)."""
-    proc = safe_git.probe(review_root, ["ls-files", "-z", "--", PANO],
-                          runner=runner or subprocess.run, timeout=30)
+    """(a git work tree?, any path under `.panopticon/` in its index?). Through
+    `safe_git.probe`: a trusted git, with the target's own config (fsmonitor,
+    hooks) suppressed. No trusted git, or a launch that fails, halts H5 on one
+    line -- never a traceback, and never a stderr the target wrote."""
+    try:
+        proc = safe_git.probe(review_root, ["ls-files", "-z", "--", PANO],
+                              runner=runner or subprocess.run, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise FirstContactHalt(H5 % ("git ls-files", type(exc).__name__)) from None
     if proc.returncode == 0:
         return True, bool((proc.stdout or "").strip("\0"))
     if proc.returncode == 128 and "not a git repository" in (proc.stderr or ""):
@@ -242,6 +248,25 @@ def bind(review_root, manifest):
     manifest["owner"] = owner.get("run_id")
     manifest["stamp"] = run_stamp.sign(manifest)
     return manifest
+
+
+def assess_loop(args, resolved):
+    """`driver loop`'s first contact (#3271 B2), in `driver loop` and `driver
+    loop --setup` alike: H1-H3 on the review root and, under --pr, on the
+    operator's checkout, BEFORE the loop reads a manifest, a dispatch request
+    or a crash record, and before it deletes anything a crash record names.
+    Each iteration's `driver.run` / `run_setup_flow` then makes the whole
+    contact, H4 included. A halt releases a --pr worktree, as `driver.run`'s does."""
+    review_root, worktree = resolved[0], resolved[1]
+    reset = getattr(args, "reset", False)
+    try:
+        for root in ((args.target,) if getattr(args, "pr", None) else ()) + (review_root,):
+            assess_artifacts(root, reset=reset)
+    except FirstContactHalt:
+        if worktree:
+            import scripts.diff_map as diff_map
+            diff_map.release_worktree(worktree, repo=args.target)
+        raise
 
 
 def assess(review_root, manifest_name, *, reset=False, host=None, other_roots=(), runner=None,

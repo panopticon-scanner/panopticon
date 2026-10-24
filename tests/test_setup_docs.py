@@ -99,7 +99,8 @@ class TestCodexHostDocs(unittest.TestCase):
                        "walks once per run", "In-tree pairs",
                        "a dirs grant never covers <root>/.git; first contact does not count it.",
                        "`.github/` and `.gitignore` still read", "traversed by the host's own tool",
-                       "Links created mid-run are out of scope"):
+                       "Links created mid-run are out of scope",
+                       "Standalone tool entries do not run first contact; driver run/setup/loop do"):
             self.assertIn(phrase, sentence)
         for gone in ("st_nlink", "git clone --no-hardlinks", "past 256 recorded files",
                      "[skipped", "case- and normalization-folded", "Codex has no such gap"):

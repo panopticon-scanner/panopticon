@@ -12,6 +12,7 @@ import os
 import sys
 
 import scripts.driver as driver
+import scripts.first_contact as first_contact
 import scripts.hosts as hosts
 import scripts.ledger as ledger_mod
 import scripts.loop_batch as loop_batch
@@ -209,6 +210,9 @@ def loop(args):
     # rather than raising out of loop(), which must never raise.
     try:
         resolved = loop_batch._resolve_target(args)
+        first_contact.assess_loop(args, resolved)         # #3271 B2: before ANY read below
+    except first_contact.FirstContactHalt as exc:
+        return _status("error", str(exc))
     except (RuntimeError, ValueError, OSError) as exc:
         return _status("error", "driver loop: could not resolve review root: %s" % exc)
     review_root = resolved[0]

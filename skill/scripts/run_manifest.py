@@ -384,9 +384,9 @@ _EPHEMERAL_KEYS = ("session_dir", "invocation")
 # stamp lives here rather than beside the evidence in
 # `runs/<tag>/host-capabilities.json` because it decides whether a disclosure
 # is PRINTED, and this is the one `.panopticon` file with an anti-forgery
-# guard: `driver.run` discards a manifest that is git-tracked in the reviewed
-# tree or stamped for another checkout (`runio._foreign_manifest`) and rebuilds
-# from argv. A target that force-commits an artifact matching what the probe
+# guard: first contact halts on a manifest that is git-tracked in the reviewed
+# tree or not stamped by this machine for this checkout (#3271), before any
+# phase runs. A target that force-commits an artifact matching what the probe
 # is about to find could otherwise silence surface 1 on the first invocation.
 POSTURE_DISCLOSED = "posture_disclosed"
 
@@ -498,8 +498,8 @@ def record_dispatch_request(review_root, manifest, checkpoint, sha256, at=None):
     out of reach. It is the better-defended of the two: on a host whose write
     guard mediates `Write`, no dispatched agent may write it (the write
     guard's allowlist is the entries' out_files) and
-    `runio._foreign_manifest` discards a manifest that is git-tracked in the
-    tree or stamped for another checkout, while the request is rewritten by
+    first contact halts on a manifest that is git-tracked in the tree or
+    not stamped by this machine for it (#3271), while the request is rewritten by
     the driver every iteration and read by every family. Forging the record
     as well is a second, harder write -- and one the loop's in-memory
     `request_sha256` cross-check still catches.

@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **Operator-visible: first contact replaces the older provenance and symlink checks (#3271 B2).**
+  `driver loop` and `driver loop --setup` now make first contact (H1-H3, and on the operator's
+  checkout too under `--pr`) before they read the run's host off the manifest, read the outgoing
+  dispatch request, or recover a crash record. A planted or tracked `.panopticon/` halts the loop
+  there, before any runner is built.
+  - The "ignoring foreign run-manifest.json / setup-manifest.json" stderr lines are gone. Such a
+    manifest halts at first contact (H1 or H2) instead of being discarded and rebuilt.
+  - **Contract change:** a directory symlink planted at the active run folder (`runs/<tag>`),
+    `tools/` or `verdicts/` used to be unlinked by `--reset` cleanup while the run went on. It
+    now halts the run (H3). `--reset` moves the whole `.panopticon/` aside, and the link's
+    referent is never read or deleted.
+  - When trusted git cannot be launched for first contact's tracked-path check, the run now halts
+    with one H5 line rather than raising.
+  - Standalone `discovery.py`, `run_tools.py` and `synthesize.py` (CI runs `run_tools.py` directly)
+    do not make first contact. They keep their read-only check that `.panopticon` is a real in-tree
+    directory, and write no stamp key and no mark.
+  - `driver readiness` keeps its own foreign-manifest check, since it writes nothing.
 - **Operator-visible: a manifest first contact cannot read whole halts the run (#3271 F0).**
   A `run-manifest.json` or `setup-manifest.json` that is present but oversize (over 1 MiB),
   not a regular file (a FIFO no longer hangs the run), unreadable, not valid JSON, nested past

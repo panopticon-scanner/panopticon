@@ -302,8 +302,8 @@ def write_dispatch_request_bound(review_root, run_id, checkpoint, group, entries
     -- INSIDE the reviewed tree, like the request itself. It is not a safe
     place; it is a BETTER-DEFENDED one: the write guard's allowlist is the
     entries' out_files, so no dispatched agent may write it, and
-    `runio._foreign_manifest` discards one that is git-tracked in the tree or
-    stamped for another checkout. What the record buys is that forging the
+    first contact halts on one that is git-tracked in the tree or not
+    stamped by this machine for it (#3271). What the record buys is that forging the
     request now costs a second, harder write -- and the loop, which also holds
     `request_sha256` in memory off its own checkpoint status, catches even
     that pair.

@@ -526,18 +526,6 @@ class TestDriverSetup(unittest.TestCase):
         self.assertNotEqual(m["run_id"], "FOREIGN")                # rebuilt, not reused
         self.assertIsNone(m["vocabulary_path"])                    # hostile path dropped
 
-    def test_tracked_setup_manifest_message_does_not_claim_the_stamp_differs(self):
-        root = self._repo()
-        args = driver.build_parser().parse_args(["setup", root])
-        setup.run_setup_flow(args)
-        self.assertEqual(root, setup.load_setup_manifest(root)["review_root"])
-        err = io.StringIO()
-        with mock.patch.object(runio, "_manifest_committed", return_value=True), \
-                contextlib.redirect_stderr(err):
-            setup.run_setup_flow(args)
-        self.assertIn("ignoring foreign setup-manifest.json (the file is git-tracked", err.getvalue())
-        self.assertNotIn("stamped review_root", err.getvalue())
-
     def test_reset_preserves_the_committed_root_config(self):
         d = self._repo()
         committed_path = os.path.join(d, repo_config.CONFIG_NAMES[0])
@@ -2085,23 +2073,6 @@ class TestSetupDonePredicatesBindToThisRun(unittest.TestCase):
     def test_a_clean_tree_satisfies_neither_predicate(self):
         d = self._repo()
         m = self._manifest(d)
-        self.assertFalse(setup.scan_done(d, m))
-        self.assertFalse(setup.ingest_done(d, m))
-
-    def test_a_committed_proposal_satisfies_no_predicate(self):
-        # The proposal carries no run binding at all, so the signal is the one
-        # `_foreign_manifest` uses: a driver-written artifact is never committed.
-        d = self._repo()
-        self._plant(d, "setup-proposal.json", self._PROPOSAL, commit=True)
-        self.assertFalse(setup.scan_done(d, self._manifest(d)))
-
-    def test_a_committed_complete_marker_satisfies_no_predicate(self):
-        d = self._repo()
-        m = self._manifest(d)
-        # Right run_id AND committed: tracked-ness alone refuses it, so a
-        # target that learns a run id off the tree gains nothing.
-        self._plant(d, "setup-complete.json",
-                    {"schema_version": 1, "run_id": m["run_id"]}, commit=True)
         self.assertFalse(setup.scan_done(d, m))
         self.assertFalse(setup.ingest_done(d, m))
 

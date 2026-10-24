@@ -199,8 +199,8 @@ Four surfaces carry it, and all four are mandatory:
    schema's path where it wants the text, and 309 launches went to that gap while this line said "5
    of 5 capabilities proven". Whether it has already been said is read off the **run manifest's**
    own `posture_disclosed` stamp — never off `host-capabilities.json`, which sits on a `.panopticon`
-   path a hostile target can pre-commit, while a foreign run-manifest is discarded and rebuilt from
-   the CLI args. A disclosure that changes at all — including a `detail` that moved under an
+   path a hostile target can pre-commit, while a foreign run-manifest halts the run at first
+   contact (#3271). A disclosure that changes at all — including a `detail` that moved under an
    unchanged state, or an operational note — says the whole thing again. A line that contradicts
    itself is not printable at all: the probe and detail print only when the artifact's own recorded
    state is present and equal to the claim-masked one every surface renders; otherwise the line
