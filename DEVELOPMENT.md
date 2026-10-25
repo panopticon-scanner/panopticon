@@ -199,6 +199,20 @@ characters, and matching consumes the whole path.
   `--limit 1` takes the newest completed run at a sha whatever its
   conclusion, a cancelled run costs one hop.
 
+  **A merge commit inherits its PR's captures (#3292).** At each commit of the
+  walk, a `security.yml` run *at* that commit is used first. Failing that, a
+  merge commit can use the captures its own PR uploaded. That needs one
+  completed `security.yml` `pull_request` run for the merge's second parent (the
+  PR head), from a **same-repository** head, whose head tree is the merge
+  commit's tree. Same tree, same scanned bytes, same findings, so this
+  baseline is exact rather than older. The head-repository filter is the trust
+  boundary: on a fork PR, GitHub runs the fork's own copy of `security.yml` on
+  the `pull_request` route, and it can upload an artifact under the same name.
+  A merge whose tree differs from its PR head (a branch not up to date at merge
+  time) inherits nothing, and the walk takes its next first-parent hop, as
+  before. This is what lets `main` stop rescanning every merge: a PR's own run
+  already scanned the tree the merge produces.
+
   Every route is delta-aware because a half-delta eats itself: leaving the push
   to `main` strict means main's own gate fails on the standing set, the run's
   conclusion is `failure`, no PR's lookup can then find a usable run at its

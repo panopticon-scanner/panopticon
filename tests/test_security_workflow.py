@@ -1,5 +1,8 @@
+import json
 import os
 import re
+import shutil
+import subprocess
 import unittest
 
 import yaml
@@ -531,13 +534,17 @@ class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
             found = re.findall(pattern, run)
             self.assertEqual(len(found), 1, (pattern, run))
             return int(found[0])
+        # #3292: two `gh api` calls per hop -- the commit read and the
+        # merged-PR run lookup -- each with its own cap, both counted.
+        api = [int(cap) for cap in re.findall(r"timeout (\d+) gh api", run)]
+        self.assertEqual(len(api), 2, run)
         return {
             "hops": one(r"MAX_HOPS=(\d+)"),
             "deadline": one(r"DEADLINE=(\d+)"),
             "limit": one(r"--limit (\d+)"),
             "list": one(r"timeout (\d+) gh run list"),
             "download": one(r"timeout (\d+) gh run download"),
-            "api": one(r"timeout (\d+) gh api"),
+            "api": sum(api),
             "ceiling": job["timeout-minutes"] * 60,
         }
 
@@ -660,6 +667,70 @@ class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
                     run)
                 self.assertNotIn("${RUNNER_TEMP:?}", run)
 
+    # #3292: a merge commit inherits the captures its PR's own run uploaded,
+    # so the walk no longer needs a scan of every main commit. The capture is
+    # exact rather than an older baseline -- same tree, same findings -- and it
+    # is only ever read from a TRUSTED run: GitHub runs a fork PR's OWN copy of
+    # this file on the `pull_request` route, which can upload an artifact of
+    # the same name, so the head-repository filter is the trust boundary.
+    _INHERIT_FILTERS = (
+        'select(.path == ".github/workflows/security.yml"',
+        ".head_repository.full_name == env.GH_REPO",
+        ".head_commit.tree_id == env.TREE",
+    )
+
+    def _inherit_jq(self, run):
+        found = re.findall(r"--jq '(\[\.workflow_runs\[\][^']*)'", run)
+        self.assertEqual(len(found), 1, run)
+        return found[0]
+
+    def test_an_inherited_capture_is_a_same_repo_pr_run_of_the_same_tree(self):
+        for path, name in self.ROUTES:
+            with self.subTest(workflow=path):
+                run = _without_comments(
+                    self._step(self._job(path, name), self.BASELINE)["run"])
+                self.assertIn(".parents[1].sha", run)
+                self.assertIn(".commit.tree.sha", run)
+                self.assertIn(
+                    "actions/runs?head_sha=$second&event=pull_request"
+                    "&status=completed", run)
+                for clause in self._INHERIT_FILTERS:
+                    self.assertIn(clause, self._inherit_jq(run))
+                # The exact commit's own run is tried first; inheritance is
+                # the fallback, never an override of a run AT this commit.
+                self.assertIn('if [ -z "$run_id" ] && [ -n "$second" ] && [ -n "$tree" ]', run)
+                self.assertLess(run.index("gh run list"), run.index("actions/runs?head_sha"))
+                # One download per hop, whichever lookup found the run.
+                self.assertEqual(run.count("gh run download"), 1)
+                # The next hop is still the FIRST parent: main's own line.
+                self.assertIn('sha="$first"', run)
+
+    @unittest.skipUnless(shutil.which("jq"), "jq not installed")
+    def test_the_inherit_filter_admits_only_the_trusted_run(self):
+        run = _without_comments(
+            self._step(self._job(WORKFLOW, "scan"), self.BASELINE)["run"])
+        expr = self._inherit_jq(run)
+        repo, tree = "owner/repo", "t" * 40
+        good = {"id": 7, "path": ".github/workflows/security.yml",
+                "head_repository": {"full_name": repo},
+                "head_commit": {"tree_id": tree}}
+        cases = {
+            "trusted": ([good], "7"),
+            "fork head": ([dict(good, id=1, head_repository={"full_name": "fork/repo"})], ""),
+            "other workflow": ([dict(good, id=2, path=".github/workflows/security-fork.yml")], ""),
+            "other tree": ([dict(good, id=3, head_commit={"tree_id": "u" * 40})], ""),
+            "fork first, trusted second": (
+                [dict(good, id=1, head_repository={"full_name": "fork/repo"}), good], "7"),
+            "none": ([], ""),
+        }
+        env = dict(os.environ, GH_REPO=repo, TREE=tree)
+        for label, (runs, want) in cases.items():
+            with self.subTest(case=label):
+                out = subprocess.run(
+                    ["jq", "-r", expr], input=json.dumps({"workflow_runs": runs}),
+                    capture_output=True, text=True, env=env, check=True).stdout
+                self.assertEqual(out.strip(), want)
+
     def test_the_notice_names_the_sha_the_baseline_came_from(self):
         for path, name in self.ROUTES:
             with self.subTest(workflow=path):
@@ -708,7 +779,8 @@ class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
                 run = _without_comments(
                     self._step(self._job(path, name), self.BASELINE)["run"])
                 calls = [m.start() for m in re.finditer(r"(?<![\w-])gh\s", run)]
-                self.assertEqual(len(calls), 3, run)   # list, download, api
+                # commit read, list, merged-PR run lookup, download (#3292)
+                self.assertEqual(len(calls), 4, run)
                 for pos in calls:
                     self.assertRegex(run[max(0, pos - 24):pos],
                                      r"timeout \d+ $")

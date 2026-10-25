@@ -333,6 +333,16 @@ jobs:
           # The all-zero sha is what a branch creation or a force push reports
           # as `before`; protected main cannot produce either, which is exactly
           # why the guard is written down.
+          #
+          # #3292: at each commit, a run AT it is used first. Failing that, a
+          # merge commit inherits its PR's own captures: a completed
+          # `security.yml` `pull_request` run for the second parent (the PR
+          # head), from a SAME-REPO head, whose head tree is this commit's
+          # tree. Same tree means the same findings, so the baseline is exact,
+          # not older. The head-repository filter is the trust boundary: a
+          # fork PR's own copy of this file runs on `pull_request` and can
+          # upload an artifact of the same name. One download per hop, and
+          # the next hop is still the first parent.
           set -euo pipefail
           MAX_HOPS=5
           DEADLINE=300
@@ -342,24 +352,39 @@ jobs:
           hops=0
           while [ -n "$sha" ] && [ "$sha" != "$ZERO_SHA" ] \
                 && [ "$SECONDS" -lt "$DEADLINE" ]; do
-            if run_id="$(timeout 60 gh run list --workflow security.yml \
+            # One read of the commit: its first parent (the next hop), its
+            # second parent (the PR head, on a merge commit) and its tree.
+            first="" second="" tree=""
+            if commit="$(timeout 60 gh api "repos/$GH_REPO/commits/$sha" \
+                  --jq '[.parents[0].sha // "", .parents[1].sha // "", .commit.tree.sha // ""] | join(":")')"; then
+              IFS=: read -r first second tree <<< "$commit" || true
+            fi
+            source_desc="security.yml run at commit $sha"
+            if ! run_id="$(timeout 60 gh run list --workflow security.yml \
                   --commit "$sha" --status completed --json databaseId --limit 1 \
-                  --jq '.[0].databaseId // empty')" \
-               && [ -n "$run_id" ] \
+                  --jq '.[0].databaseId // empty')"; then
+              run_id=""
+            fi
+            if [ -z "$run_id" ] && [ -n "$second" ] && [ -n "$tree" ]; then
+              source_desc="pull_request run of merged head $second (same tree as $sha)"
+              if ! run_id="$(TREE="$tree" timeout 60 gh api \
+                    "repos/$GH_REPO/actions/runs?head_sha=$second&event=pull_request&status=completed&per_page=20" \
+                    --jq '[.workflow_runs[] | select(.path == ".github/workflows/security.yml" and .head_repository.full_name == env.GH_REPO and .head_commit.tree_id == env.TREE)][0].id // empty')"; then
+                run_id=""
+              fi
+            fi
+            if [ -n "$run_id" ] \
                && [ -n "${RUNNER_TEMP:-}" ] && rm -rf "$RUNNER_TEMP/baseline" \
                && timeout 180 gh run download "$run_id" \
                     -n raw-scanner-captures -D "$RUNNER_TEMP/baseline"; then
               found=true
-              echo "::notice::Baseline: security.yml run $run_id at commit $sha, $hops hop(s) back from $BASE_SHA."
+              echo "::notice::Baseline: run $run_id ($source_desc), $hops hop(s) back from $BASE_SHA."
               break
             elif [ "$hops" -ge "$MAX_HOPS" ]; then
               break
             else
               hops=$((hops + 1))
-              if ! sha="$(timeout 60 gh api "repos/$GH_REPO/commits/$sha" \
-                    --jq '.parents[0].sha // empty')"; then
-                sha=""
-              fi
+              sha="$first"
             fi
           done
           if [ "$found" != true ]; then

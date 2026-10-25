@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **CI: a merge commit inherits its PR's scanner captures as the security gate's baseline (#3292).**
+  The baseline walk in `security.yml` and `security-fork.yml` falls back, at each main commit with
+  no run of its own, to the merged PR's own `security.yml` run. It accepts that run only when it is
+  a same-repository `pull_request` run for the merge's second parent and its head tree is the merge
+  commit's tree, so the capture is exact. A fork's run is never read. This is the first step toward
+  dropping the full rescan on every push to `main`; the push trigger is unchanged in this change.
 - **Fix: a large setup proposal wrapped in prose or code fences is read as its OUTER document.**
   `tolerant_json.first_balanced_object` kept at most 256 closed spans in closing order, so a reply
   nesting more than that (a monorepo proposal: one object per group, layer and profile) lost the
