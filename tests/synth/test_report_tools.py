@@ -14,7 +14,6 @@ import scripts.synth.repair as repair_mod
 import scripts.synth.tool_axis as tool_axis_mod
 import scripts.synth.report as report_mod
 import scripts.evidence as evidence_mod
-import scripts.tools_manifest as tools_manifest_mod
 from tests.synth.helpers import DEFAULT_TIMESTAMP, _make_finding, _agentic
 
 
@@ -318,23 +317,6 @@ class TestLanguageDetectionSkipCoverage(unittest.TestCase):
         self.assertNotIn("language_detection_skips",
                          self._report()["meta"]["coverage"])
 
-    def test_boundary_drops_bad_rows_with_one_count_and_caps_the_list(self):
-        warnings = []
-        bad = [self.PYTHON, {"language": "go", "tool": "gosec",
-                             "reason": "target text"}, 7, {"language": "python"}]
-        self.assertEqual(
-            repair_mod.repair_language_detection_skips(bad, warn=warnings.append),
-            [self.PYTHON])
-        self.assertEqual(len(warnings), 1)
-        self.assertIn("dropped 3 malformed row(s)", warnings[0])
-
-        warnings.clear()
-        rows = [self.PYTHON] * (tools_manifest_mod.LANGUAGE_DETECTION_SKIPS_MAX + 1)
-        repaired = repair_mod.repair_language_detection_skips(rows, warn=warnings.append)
-        self.assertEqual(len(repaired),
-                         tools_manifest_mod.LANGUAGE_DETECTION_SKIPS_MAX)
-        self.assertTrue(any("kept the first" in line for line in warnings))
-
 
 class TestToolCleanupCoverage(unittest.TestCase):
     def _report(self, cleanup=None):
@@ -505,12 +487,31 @@ class TestSanitizedRequirementLinesReachTheReport(unittest.TestCase):
     def test_a_run_with_no_manifest_says_nothing_rather_than_nothing_dropped(self):
         self.assertEqual(self._meta(None)["tools"]["sanitized"], {})
 
-    def test_a_hostile_manifest_block_is_repaired_not_carried(self):
-        with contextlib.redirect_stderr(io.StringIO()):
-            meta = self._meta({"schema_version": 1, "selected": [], "produced": [],
-                               "sanitized": {"pip-audit": {"kept": "lots"},
-                                             "npm-audit": "nope"}})
-        self.assertEqual(meta["tools"]["sanitized"], {"pip-audit": {}})
+    def test_a_planted_manifest_halts_before_any_reader(self):
+        # #3273 cut 12: the block is read as written, because a manifest a target
+        # planted never reaches the reader -- first contact halts on the tree.
+        # (The write-side bound on the language skips is pinned in
+        # tests/test_tools_manifest.py; the run's own producers bound the rest.)
+        import scripts.synthesize as synthesize
+        with tempfile.TemporaryDirectory() as d:
+            pano = os.path.join(d, ".panopticon")
+            os.makedirs(os.path.join(pano, "tools"))
+            with open(os.path.join(pano, "tools-manifest.json"), "w", encoding="utf-8") as fh:
+                json.dump({"schema_version": 1, "selected": [], "produced": [],
+                           "sanitized": {"pip-audit": {"kept": "lots"}}}, fh)
+            out = os.path.join(d, "report.json")
+            err = io.StringIO()
+            prev = os.getcwd()
+            os.chdir(d)
+            try:
+                with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                    rc = synthesize.main(["--repo", "--tools-dir", os.path.join(pano, "tools"),
+                                          "--out", out])
+            finally:
+                os.chdir(prev)
+            self.assertEqual(2, rc)
+            self.assertIn("was not created by a panopticon run on this machine", err.getvalue())
+            self.assertFalse(os.path.lexists(out))
 
     def test_the_schema_declares_the_field(self):
         with open(os.path.join(validate_schema_mod.REFERENCE_DIR,

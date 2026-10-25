@@ -28,8 +28,6 @@ path enforces (fix round 2):
   `repair_verdict`   an advisor's verdict, via THE sanitizer `evidence._agent_verdict`
                      -- PRESENTATION fields only, see REPAIRABLE_VERDICT_FIELDS
   `repair.repair_groups_json`        the target-writable `.panopticon/groups.json`
-  `repair.repair_tools_sanitized`    `tools-manifest.json`'s partial-audit block
-  `repair.repair_tools_network`      `tools-manifest.json`'s egress-posture block
   `integrity.cross_domain_findings`  agent-stated domains on a cross-domain claim
   `coverage_io.normalized_cell`      the target-writable `.panopticon/coverage-*.json`
   `codes.*` / `x0x_report._domain`   an agent `code` naming no OCRDb domain, for

@@ -8,8 +8,9 @@ to fail the artifact it rides into. A malformed row costs a warning and the
 row; it never costs the run.
 
 These repairs normalize target-writable `groups.json` and the tools manifest's
-sanitized inputs, network posture, exclusions, Git-driver declarations and
-suppression counts. They split out of `validate_schema` as the boundary work
+exclusions, Git-driver declarations and suppression counts. (The manifest's
+sanitized, network, cleanup and language-skip blocks are read as written since
+#3273: the run's own producers bound them, and first contact vouches for the file.) They split out of `validate_schema` as the boundary work
 outgrew its 700-line ratchet. Agent-sourced repairs (`repair_finding` and
 `repair_verdict`) stay there with the schema-node machinery this module uses.
 
@@ -31,9 +32,6 @@ any filesystem lets a path be, so a name for nothing -- is dropped whole.
 import json
 import sys
 
-from scripts import redact as redact_mod
-from scripts import language_detection
-from scripts import tools_manifest
 from . import validate_schema as schema
 
 
@@ -43,8 +41,6 @@ from . import validate_schema as schema
 ROWS_MAX = 200
 NAME_MAX = 200
 VALUE_MAX = 200
-CLEANUP_KIND_MAX = 64
-CLEANUP_DETAIL_MAX = 500
 
 # How many repair lines a single read may announce before it summarises the
 # rest. The content bounds above stopped a hostile manifest from reaching the
@@ -242,174 +238,6 @@ def repair_groups_json(gj, warn=None):
         changes.append(("security_mode", "dropped"))
     warn_repairs("groups.json", changes, warn)
     return gj
-
-
-_SANITIZED_ROW = ("source", "kept", "dropped", "hashes_stripped",
-                  "truncated", "dropped_truncated")
-
-
-def repair_tools_sanitized(value, warn=None):
-    """`tools-manifest.json`'s `sanitized` block, normalized to what the schema
-    pins for `meta.tools.sanitized` (#1646).
-
-    THE PRINCIPLE (see the module docstring and `synth/coverage_io`): the schema
-    pins the CONTROLLER's output, so a target-sourced input is repaired to the
-    pinned types AT ITS BOUNDARY. The manifest is written into the scanned tree
-    and a hostile target can pre-commit one, so every field this block carries
-    into the report -- and the HTML renders -- is checked here rather than
-    trusted, and a malformed row costs a warning and the row, never the run and
-    never an `artifact invalid` exit on a report the target authored a corner of.
-
-    DROPPED, never coerced: a `kept` of "lots" has no honest integer, and
-    inventing one would publish a number nobody measured. A bool is not an
-    integer for this purpose -- `jsonschema` rejects `True` where `integer` is
-    pinned, so an unrepaired one would fail the artifact it rode into. Keys the
-    schema does not describe go too: `meta` is closed and the parity walk is
-    stricter still.
-
-    BOUNDED HERE, not at the producer (#1645 fix round 2, N2). `scripts.tools.
-    pip_audit` caps what it writes at 200 rows and 200 published characters --
-    but the manifest this function exists for is the one a HOSTILE TARGET
-    pre-committed into the scanned tree, which never passed through that
-    producer at all. A producer cap is a statement about the controller's own
-    output; the bound at the read is the one that holds on the path the
-    repairer was written for.
-    """
-    changes: list[tuple[str, str]] = []
-    out = {}
-    for name, row in _named_rows(value, "sanitized", changes):
-        if not isinstance(row, dict):
-            changes.append(("sanitized.%s" % name, "dropped: not an object"))
-            continue
-        kept_row = {}
-        for field in _SANITIZED_ROW:
-            if field not in row:
-                continue
-            got = row[field]
-            if field == "source" and isinstance(got, str):
-                kept_row[field] = _cut(got, "sanitized.%s.source" % name, changes)
-            elif field == "kept" and isinstance(got, int) and not isinstance(got, bool):
-                kept_row[field] = got
-            elif field in ("hashes_stripped", "truncated") and isinstance(got, bool):
-                kept_row[field] = got
-            elif field == "dropped_truncated" and isinstance(got, int) \
-                    and not isinstance(got, bool):
-                kept_row[field] = got
-            elif field == "dropped" and isinstance(got, list):
-                path = "sanitized.%s.dropped" % name
-                rows = _bounded(got, path, changes)
-                kept_row[field] = [
-                    {"line": _cut(r["line"], path + ".line", changes),
-                     "reason": _cut(r["reason"], path + ".reason", changes)}
-                    for r in rows
-                    if isinstance(r, dict) and isinstance(r.get("line"), str)
-                    and isinstance(r.get("reason"), str)]
-                if len(kept_row[field]) != len(rows):
-                    changes.append((path, "dropped %d malformed row(s) from"
-                                    % (len(rows) - len(kept_row[field]))))
-            else:
-                changes.append(("sanitized.%s.%s" % (name, field), "dropped"))
-        for extra in sorted(set(row) - set(_SANITIZED_ROW)):
-            changes.append(("sanitized.%s.%s" % (name, str(extra)[:NAME_MAX]),
-                            "dropped: the schema describes no such field in"))
-        out[name] = kept_row
-    warn_repairs("tools-manifest.json", changes, warn)
-    return out
-
-
-def repair_tools_network(value, warn=None):
-    """`tools-manifest.json`'s `network` block, normalized to what the schema
-    pins for `meta.tools.network` (#1645).
-
-    The principle and the manifest's hostility are `repair_tools_sanitized`'s
-    above, unchanged: a malformed row costs a warning and the row, never the
-    run and never an `artifact invalid` exit.
-
-    Flat by design: a posture is one string per tool (`none`,
-    `proxied:<allowlist>`, `excluded:<reason>`), so anything that is not a
-    string is DROPPED rather than stringified -- `str({"kind": "none"})` would
-    publish a posture nobody recorded. Cutting an over-long POSTURE is the one
-    coercion, the same one every other block of republished target text gets; a
-    NAME over the bound is dropped instead, because a name is an identity and
-    cutting one could collide two rows and file an adapter's posture under
-    another's. Rows are taken sorted-first, so one manifest always yields one
-    report.
-    """
-    changes: list[tuple[str, str]] = []
-    out = {}
-    for name, posture in _named_rows(value, "network", changes):
-        if not isinstance(posture, str):
-            changes.append(("network.%s" % name, "dropped: not a string"))
-            continue
-        out[name] = _cut(posture, "network.%s" % name, changes)
-    warn_repairs("tools-manifest.json", changes, warn)
-    return out
-
-
-def repair_language_detection_skips(value, warn=None):
-    """Repair #3247's bounded language/tool non-selection disclosure."""
-    changes = []
-    if not isinstance(value, list):
-        changes.append(("language_detection_skips", "dropped: not a list"))
-        value = []
-    rows = []
-    dropped = 0
-    for row in value:
-        if language_detection.valid_skip_row(row):
-            rows.append(dict(row))
-        else:
-            dropped += 1
-    if dropped:
-        changes.append(("language_detection_skips",
-                        "dropped %d malformed row(s) from" % dropped))
-    limit = tools_manifest.LANGUAGE_DETECTION_SKIPS_MAX
-    if len(rows) > limit:
-        changes.append(("language_detection_skips",
-                        "kept the first %d of %d rows in" % (limit, len(rows))))
-        rows = rows[:limit]
-    warn_repairs("tools-manifest.json", changes, warn)
-    return rows
-
-
-def repair_tool_cleanup_failures(value, warn=None):
-    """Repair scanner-container cleanup failures from `tools-manifest.json`.
-
-    The capture path writes one `{kind, detail}` row per affected tool. The
-    manifest sits inside the reviewed tree, so synthesis treats that shape as
-    target-writable: malformed rows and extra fields are dropped, tool names
-    and row counts are bounded deterministically, and the operator detail is
-    redacted and bounded again before it reaches report JSON or either human
-    renderer. A bad disclosure never costs the rest of a paid-for run.
-    """
-    changes: list[tuple[str, str]] = []
-    out = {}
-    for name, row in _named_rows(value, "cleanup_failures", changes):
-        path = "cleanup_failures.%s" % name
-        if not isinstance(row, dict):
-            changes.append((path, "dropped: not an object"))
-            continue
-        kind, detail = row.get("kind"), row.get("detail")
-        if not isinstance(kind, str) or not kind:
-            changes.append((path + ".kind", "dropped row: not a non-empty string"))
-            continue
-        if not isinstance(detail, str) or not detail:
-            changes.append((path + ".detail", "dropped row: not a non-empty string"))
-            continue
-        for extra in sorted(set(row) - {"kind", "detail"}):
-            changes.append((path + "." + str(extra)[:NAME_MAX],
-                            "dropped: the schema describes no such field in"))
-        safe_detail = redact_mod.redact_diagnostic(
-            detail, CLEANUP_DETAIL_MAX)
-        if len(detail) > CLEANUP_DETAIL_MAX:
-            changes.append((path + ".detail",
-                            "cut a value to %d of %d characters in"
-                            % (CLEANUP_DETAIL_MAX, len(detail))))
-        out[name] = {
-            "kind": _cut_to(kind, path + ".kind", changes, CLEANUP_KIND_MAX),
-            "detail": safe_detail,
-        }
-    warn_repairs("tools-manifest.json", changes, warn)
-    return out
 
 
 def repair_tools_excluded(value, warn=None):

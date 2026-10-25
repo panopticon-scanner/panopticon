@@ -33,13 +33,6 @@ from . import plan as plan_mod
 from . import repair as repair_mod
 from . import validate_schema as validate_schema_mod
 
-# #1899: stands in for a network-excluded row the raw manifest named but
-# `repair_tools_network` could not publish (over `NAME_MAX`, or past
-# `ROWS_MAX`) -- fail closed, it still sinks certification, but as one
-# generic marker rather than the name a hostile manifest chose.
-UNPUBLISHABLE_NETWORK_TOOL = "(unpublishable)"
-
-
 class ToolManifestError(ValueError):
     """A stale or foreign tool manifest cannot be used for synthesis."""
 
@@ -289,24 +282,14 @@ def reconcile(plan, tools, resolved, run=None):
     # (no adapter, or inapplicable to the target) is disclosed as non-gating
     # `requested_unavailable`, never sinking coverage_certified. With no manifest
     # (e.g. --no-tools, or a pre-manifest run) the 4.x scout-derived gate stands.
-    # #1646: repaired AT THE READ, like every other manifest field this function
-    # takes -- the file is target-writable and this block reaches the artifact.
-    sanitized = (repair_mod.repair_tools_sanitized(
-        tools.manifest.get("sanitized")) if isinstance(tools.manifest, dict) else {})
-    # #1645: same read, same repair -- the block is target-writable and reaches
-    # the artifact and the HTML.
-    network = (repair_mod.repair_tools_network(
-        tools.manifest.get("network")) if isinstance(tools.manifest, dict) else {})
-    cleanup_failures = (
-        repair_mod.repair_tool_cleanup_failures(
-            tools.manifest.get("cleanup_failures"))
-        if isinstance(tools.manifest, dict)
-        and "cleanup_failures" in tools.manifest else {})
-    language_detection_skips = (
-        repair_mod.repair_language_detection_skips(
-            tools.manifest.get("language_detection_skips"))
-        if isinstance(tools.manifest, dict)
-        and "language_detection_skips" in tools.manifest else None)
+    # #3273 cut 12: the four blocks are read as written. The manifest is this
+    # run's own (first contact, then `manifest_state`'s run_id and receipt), and
+    # its producers bound each block when they write it.
+    manifest = tools.manifest if isinstance(tools.manifest, dict) else {}
+    sanitized = manifest.get("sanitized") or {}
+    network = manifest.get("network") or {}
+    cleanup_failures = manifest.get("cleanup_failures") or {}
+    language_detection_skips = manifest.get("language_detection_skips")
     if tools.manifest_invalid:
         # #1644: corruption is not absence, and the scout-derived fallback below
         # is only honest when nothing WAS corrupted. With the manifest
@@ -338,12 +321,7 @@ def reconcile(plan, tools, resolved, run=None):
         # usability by, inferring "unusable" from their absence would fail every
         # selected adapter on a run that never ingested.
         if tools.tools_ran is not None:
-            # #1899: the helper takes its own read of the `network` block;
-            # hand it the REPAIRED table so a row `repair_tools_network`
-            # dropped is never republished here under `requested_absent`
-            # (`security_gate` shares the helper and keeps the raw read).
-            lost = ingest_tools.lost_required_coverage(
-                {**tools.manifest, "network": network}, tools.dispositions or {})
+            lost = ingest_tools.lost_required_coverage(tools.manifest, tools.dispositions or {})
             tools_absent = sorted(set(tools_absent) | set(lost))
             tool_divergence.update(
                 {t: "produced_unusable" if info["kind"] == "unusable"
@@ -354,23 +332,8 @@ def reconcile(plan, tools, resolved, run=None):
     else:
         tools_absent = sorted(set(plan.scout_requested or []) - produced)
         tool_divergence = {t: "requested_absent" for t in tools_absent}
-    # #1899: certify on the SAME repaired `network` table `meta.tools.network`
-    # publishes (the `network` local above), not a second raw read of
-    # `tools.manifest` -- a row `repair_tools_network` drops used to sink
-    # `coverage_certified` and be NAMED in `coverage_note` while never
-    # appearing in the table the report actually printed. The published table
-    # and the verdict are one thing now.
+    # #1899: certify on the `network` table `meta.tools.network` publishes.
     network_excluded = ingest_tools.network_exclusions({"network": network})
-    # A row the raw manifest excluded for network but the repair above could
-    # not publish is unpublishable, not resolved: fail closed, it still counts
-    # as a gap, as one generic marker standing in for however many such rows
-    # there were -- never the name a hostile manifest chose, since that name
-    # is exactly what could not be published.
-    if isinstance(tools.manifest, dict):
-        raw_network_excluded = ingest_tools.network_exclusions(tools.manifest)
-        if set(raw_network_excluded) - set(network_excluded):
-            network_excluded = dict(network_excluded)
-            network_excluded[UNPUBLISHABLE_NETWORK_TOOL] = "excluded:unpublishable"
     tools_absent = sorted(set(tools_absent) | set(network_excluded))
     tool_divergence.update({t: "network_unavailable" for t in network_excluded})
     # #1335: an adapter that ran but scanned nothing is disclosed, never gated.
