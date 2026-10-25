@@ -614,6 +614,32 @@ class TestDependencyAuditCoverage(unittest.TestCase):
         self.assertFalse(report["summary"]["coverage_certified"])
         self.assertEqual(report["summary"]["coverage_note"], self.NOTE)
 
+    def test_receipt_produced_must_exist_in_top_level_output_without_ingest(self):
+        receipt = {"applicable": ["javascript"],
+                   "selected": ["osv-scanner"], "produced": ["osv-scanner"]}
+        manifest = {
+            "schema_version": 1,
+            "selected": ["osv-scanner"],
+            "produced": [],
+            "missing": [],
+            "excluded_scope": [],
+            "dependency_audit": receipt,
+        }
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            tools=tool_axis_mod.ToolAxis(
+                tools_ran=None, dispositions={}, manifest=manifest),
+        ))
+        self.assertEqual(report["meta"]["coverage"]["dependency_audit"], {
+            "applicable": ["javascript"],
+            "selected": ["osv-scanner"],
+            "produced": [],
+        })
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertEqual(report["summary"]["coverage_note"], self.NOTE)
+
     def test_unusable_dedicated_output_earns_no_sca_credit(self):
         receipt = {"applicable": ["python"],
                    "selected": ["pip-audit"], "produced": ["pip-audit"]}
