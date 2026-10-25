@@ -58,7 +58,7 @@ PENDING: dict[str, int] = {
     "scripts/reconcile_apply.py": 829,
     "scripts/triage.py": 792,
     "skill/scripts/diff_map.py": 1215,
-    "skill/scripts/discovery.py": 1931,
+    "skill/scripts/discovery.py": 1926,
     "skill/scripts/driver.py": 1208,
     "skill/scripts/evidence.py": 982,
     "skill/scripts/html_report.py": 1568,

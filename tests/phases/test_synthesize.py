@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 
 from scripts import hosts
-from tests._test_helpers import only, write_host_evidence
+from tests._test_helpers import adopt_panopticon, only, our_manifest, write_host_evidence
 import scripts.config_schema as config_schema
 import scripts.evidence as evidence
 import scripts.group_runner as group_runner
@@ -249,6 +249,7 @@ class TestSynthesizePhase(unittest.TestCase):
         self._t = tempfile.TemporaryDirectory()
         self.root = os.path.realpath(self._t.name)
         os.makedirs(runio._pano(self.root))
+        adopt_panopticon(self.root)   # #3273 P1: a run of ours (synthesize makes first contact)
         self.addCleanup(self._t.cleanup)
         self.manifest = {"run_id": "R", "security_mode": "standard",
                          "flags": {"fail_on": "high"}}
@@ -349,6 +350,7 @@ class TestSynthesizePhase(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = os.path.realpath(directory)
             os.makedirs(runio._pano(root))
+            adopt_panopticon(root)   # #3273 P1: a run of ours
             runio._write_json(runio._pano(root, "groups.json"), {"mode": "repo", "groups": []})
             report = runio._report_out(root)
             paths = {
@@ -421,28 +423,43 @@ class TestSynthesizePhase(unittest.TestCase):
             still_planted=lambda path: stat.S_ISFIFO(os.lstat(path).st_mode),
         )
 
-    def test_real_child_refuses_a_dangling_html_symlink(self):
-        self._assert_real_child_refuses_artifact_leaf(
-            "html", None,
-            {"report": True, "x0x": True, "failure": False, "html": False},
-            plant=lambda path, root: os.symlink(os.path.join(root, "missing"), path),
-            still_planted=os.path.islink,
-            detail="escapes .panopticon",
-        )
+    def _assert_real_child_halts_on_a_planted_html_link(self, plant):
+        """#3273 P1: a link planted in `.panopticon/` is refused at the child's
+        first contact (H3), before any writer runs and before anything is
+        published. The writer's own refusal of the same links is pinned
+        directly in `tests/test_artifact_write_symlinks.py::TestHtmlReport`."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = os.path.realpath(directory)
+            os.makedirs(runio._pano(root))
+            adopt_panopticon(root)
+            runio._write_json(runio._pano(root, "groups.json"), {"mode": "repo", "groups": []})
+            report = runio._report_out(root)
+            plant(report + ".html", root)
+            manifest = {"run_id": "R", "host": "generic",
+                        "security_mode": "standard", "flags": {"fail_on": "high"}}
+            with contextlib.redirect_stderr(io.StringIO()), \
+                    self.assertRaises(runio.DriverError) as caught:
+                synthesize.synthesize_execute(root, manifest)
+            refusal = str(caught.exception)
+            self.assertIn("rc=2", refusal)
+            self.assertIn("synthesize: .panopticon/%s is a symlink"
+                          % os.path.relpath(report + ".html", runio._pano(root)), refusal)
+            self.assertNotIn("Traceback", refusal)
+            self.assertTrue(os.path.islink(report + ".html"), "the planted link was touched")
+            self.assertFalse(os.path.lexists(report))
+            self.assertFalse(os.path.lexists(report.replace(".json", "-x0x.json")))
 
-    def test_real_child_refuses_an_html_symlink_to_a_directory(self):
+    def test_real_child_halts_on_a_dangling_html_symlink(self):
+        self._assert_real_child_halts_on_a_planted_html_link(
+            lambda path, root: os.symlink(os.path.join(root, "missing"), path))
+
+    def test_real_child_halts_on_an_html_symlink_to_a_directory(self):
         def plant(path, root):
             target = os.path.join(root, "outside-directory")
             os.mkdir(target)
             os.symlink(target, path)
 
-        self._assert_real_child_refuses_artifact_leaf(
-            "html", None,
-            {"report": True, "x0x": True, "failure": False, "html": False},
-            plant=plant,
-            still_planted=os.path.islink,
-            detail="escapes .panopticon",
-        )
+        self._assert_real_child_halts_on_a_planted_html_link(plant)
 
     @unittest.skipIf(getattr(os, "geteuid", lambda: 0)() == 0,
                      "root bypasses parent write permissions")
@@ -451,6 +468,7 @@ class TestSynthesizePhase(unittest.TestCase):
             root = os.path.realpath(directory)
             pano = runio._pano(root)
             os.makedirs(pano)
+            adopt_panopticon(root)   # #3273 P1: a run of ours
             groups = runio._pano(root, "groups.json")
             runio._write_json(groups, {"mode": "repo", "groups": []})
             report = runio._report_out(root)
@@ -1108,6 +1126,7 @@ class TestTheDispatchPlanObligationReachesTheChild(unittest.TestCase):
         self.root = os.path.realpath(
             self.enterContext(tempfile.TemporaryDirectory()))
         os.makedirs(runio._pano(self.root))
+        adopt_panopticon(self.root)   # #3273 P1: a run of ours (synthesize makes first contact)
         # No groups => `_driver_plan_entries` declares no cells => this phase
         # writes NO dispatch-plan-driver.json. That is the on-disk state a
         # deletion leaves, reached without tampering with the tree. The
@@ -1256,11 +1275,12 @@ class TestTheOwedPlanOnTheLiveDriverPath(unittest.TestCase):
         with open(os.path.join(self.root, "src", "app.py"), "w") as fh:
             fh.write("def f():\n    return 1\n")
         os.makedirs(runio._pano(self.root))
+        adopt_panopticon(self.root)   # #3273 P1: a run of ours (synthesize makes first contact)
         self.manifest = run_manifest.build_manifest(
             target=self.root, review_root=self.root, host="claude",
             security_mode="standard", run_id=self.RUN_ID,
             flags={"fail_on": "high"})
-        run_manifest.write_manifest(self.root, self.manifest)
+        run_manifest.write_manifest(self.root, our_manifest(self.root, self.manifest))
         write_host_evidence(self.root, {c: hosts.PROVEN for c in hosts.CAPABILITIES})
         runio._write_json(runio._pano(self.root, "groups.json"),
                           {"mode": "repo", "groups": [{"name": "app", "files": ["src/app.py"]}]})

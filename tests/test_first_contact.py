@@ -745,6 +745,318 @@ class TestAnotherHostsPriorRunIsDisclosed(_Trees):
             first_contact.assess(worktree, "run-manifest.json", other_roots=(operator,))
 
 
+class TestADirectSynthesizeMakesFirstContact(_Trees):
+    """#3273 P1: `synthesize.py` run by hand reads `.panopticon/` artifacts
+    (groups.json, the tools manifest, run folders) that only first contact
+    vouches for. It now makes first contact's `.panopticon/` half itself --
+    H1-H3 and the mark, on the cwd and on every tree a run-artifact flag points
+    into -- and marks an absent or empty directory only where it writes into
+    one (ruling R1), through the driver's own writer."""
+
+    def setUp(self):
+        state = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, state, ignore_errors=True)
+        self.state = os.path.join(state, "panopticon")
+        patcher = mock.patch.dict(os.environ, {"PANOPTICON_STATE_DIR": self.state})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        run_stamp._KEY_CACHE.clear()
+        self.addCleanup(run_stamp._KEY_CACHE.clear)
+        run_stamp.key()                              # a machine that has run before
+
+    def _findings(self):
+        path = os.path.join(self._dir(), "findings-g-COD.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"findings": []}, fh)
+        return path
+
+    def _groups(self, root):
+        pano = os.path.join(root, ".panopticon")
+        os.makedirs(pano, exist_ok=True)
+        path = os.path.join(pano, "groups.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"groups": [{"name": "g", "files": ["src/a.py"]}]}, fh)
+        return path
+
+    def _synthesize(self, cwd, *argv):
+        import scripts.synthesize as synthesize
+        out = os.path.join(self._dir(), "report.json")
+        err = io.StringIO()
+        prev = os.getcwd()
+        os.chdir(cwd)
+        try:
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                rc = synthesize.main(["--repo", "--out", out, *argv, self._findings()])
+        finally:
+            os.chdir(prev)
+        return rc, err.getvalue(), out
+
+    def _refused(self, reason, cwd, *argv):
+        rc, err, out = self._synthesize(cwd, *argv)
+        self.assertEqual((2, "synthesize: %s\n" % reason), (rc, err))
+        self.assertFalse(os.path.lexists(out))
+        return err
+
+    def test_a_planted_artifact_directory_in_the_cwd_halts(self):
+        for git in (False, True):
+            with self.subTest(git=git):
+                root = self._tree(git)
+                self._groups(root)
+                self._refused(H2, root)
+                self.assertEqual(["groups.json"], os.listdir(os.path.join(root, ".panopticon")))
+
+    def test_a_planted_tree_named_by_a_flag_halts_from_a_tree_of_ours(self):
+        ours, planted = self._tree(False), self._tree(False)
+        adopt_panopticon(ours)
+        groups = self._groups(planted)
+        self._refused(H2, ours, "--groups", groups)
+        self._refused(H2, ours, "--run-dir", os.path.dirname(groups))
+        self._refused(H2, ours, "--tools-dir", os.path.join(planted, ".panopticon", "tools"))
+
+    def test_a_symlink_cannot_route_a_flag_into_an_unassessed_directory(self):
+        ours, planted = self._tree(False), self._tree(False)
+        adopt_panopticon(ours)
+        self._groups(planted)
+        link = os.path.join(ours, "build")
+        os.symlink(os.path.join(planted, ".panopticon"), link)
+        # Spelled, the run folder names no .panopticon/; resolved, it is the planted one.
+        self._refused(H2, ours, "--run-dir", link)
+        # And a link INSIDE our .panopticon/ is itself H3.
+        os.symlink(os.path.join(planted, ".panopticon"), os.path.join(ours, ".panopticon", "r1"))
+        self._refused(H3 % "r1", ours, "--run-dir", os.path.join(ours, ".panopticon", "r1"))
+
+    def test_a_tracked_artifact_directory_halts(self):
+        root = make_git_repo(test_case=self, files={"src/a.py": "x = 1\n",
+                                                    ".panopticon/groups.json": "{}\n"})
+        self._refused(H1, root)
+
+    def test_a_machine_with_no_key_verifies_nothing_and_makes_no_key(self):
+        root = self._tree(False)
+        adopt_panopticon(root)
+        shutil.rmtree(self.state)
+        run_stamp._KEY_CACHE.clear()
+        self._refused(H2, root)
+        self.assertFalse(os.path.lexists(self.state))
+
+    def test_an_absent_or_empty_directory_is_marked_only_where_synthesis_writes(self):
+        for make in (False, True):
+            with self.subTest(empty_directory=make):
+                root = self._tree(False)
+                pano = os.path.join(root, ".panopticon")
+                if make:
+                    os.makedirs(pano)
+                shutil.rmtree(self.state, ignore_errors=True)
+                run_stamp._KEY_CACHE.clear()
+                rc, err, out = self._synthesize(root)          # --out lies outside the tree
+                self.assertEqual(0, rc, err)
+                self.assertTrue(os.path.isfile(out))
+                self.assertFalse(os.path.lexists(os.path.join(pano, "owner.json")))
+                self.assertFalse(os.path.lexists(self.state))  # no key either
+                # Writing the report into the tree marks it, by the driver's own writer.
+                report = os.path.join(pano, "report.json")
+                rc, err, _out = self._synthesize(root, "--out", report)
+                self.assertEqual(0, rc, err)
+                owner = json.load(open(os.path.join(pano, "owner.json"), encoding="utf-8"))
+                self.assertTrue(run_stamp.verifies(owner))
+                self.assertEqual(root, owner["review_root"])
+                first_contact.assess_artifacts(root)           # the driver now trusts it
+
+    def test_the_two_passes_of_a_hand_run_agree(self):
+        # Pass 1 writes the verify queue into a fresh .panopticon/ and marks it;
+        # pass 2 then trusts what pass 1 wrote (ruling R1).
+        root = self._tree(False)
+        rc, err, _out = self._synthesize(root, "--emit-verify-queue")
+        self.assertEqual(0, rc, err)
+        self.assertTrue(os.path.isfile(os.path.join(root, ".panopticon", "owner.json")))
+        rc, err, _out = self._synthesize(root)
+        self.assertEqual(0, rc, err)
+
+    def test_a_pass_1_that_queues_marks_no_tree_it_does_not_write(self):
+        # A pass 1 that queues writes the queue into its run folder and no
+        # report: the cwd's absent .panopticon/ is neither created nor marked.
+        import scripts.synth.verdicts as verdicts_mod
+        cwd, run = self._tree(False), self._tree(False)
+        run_dir = os.path.join(run, ".panopticon")
+        import scripts.synthesize as synthesize
+        prev = os.getcwd()
+        os.chdir(cwd)                   # no --out: the default report would land in the cwd
+        try:
+            with mock.patch.object(verdicts_mod, "emit_verify_queue", return_value=True), \
+                    contextlib.redirect_stderr(io.StringIO()) as err, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                rc = synthesize.main(["--repo", "--emit-verify-queue", "--run-dir", run_dir,
+                                      self._findings()])
+        finally:
+            os.chdir(prev)
+        self.assertEqual(0, rc, err.getvalue())
+        self.assertFalse(os.path.lexists(os.path.join(cwd, ".panopticon")))
+        self.assertTrue(os.path.isfile(os.path.join(run_dir, "owner.json")))
+
+    def test_a_pass_1_that_falls_through_marks_the_tree_its_report_lands_in(self):
+        # The control for the late mark (#3296 review): a pass 1 whose run folder
+        # is tree X queues nothing, so it writes its report into the cwd's absent
+        # .panopticon/ (tree Y) -- which must be marked then, or the next pass
+        # halts H2 on its own report.
+        import scripts.synth.verdicts as verdicts_mod
+        import scripts.synthesize as synthesize
+        y, x = self._tree(False), self._tree(False)
+        run_dir = os.path.join(x, ".panopticon")
+        prev = os.getcwd()
+        os.chdir(y)                     # no --out: the report lands in the cwd's .panopticon/
+        try:
+            with mock.patch.object(verdicts_mod, "emit_verify_queue", return_value=False), \
+                    contextlib.redirect_stderr(io.StringIO()) as err, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                rc = synthesize.main(["--repo", "--emit-verify-queue", "--run-dir", run_dir,
+                                      self._findings()])
+        finally:
+            os.chdir(prev)
+        self.assertEqual(0, rc, err.getvalue())
+        self.assertTrue(os.path.isfile(os.path.join(run_dir, "owner.json")))
+        with open(os.path.join(y, ".panopticon", "owner.json"), encoding="utf-8") as fh:
+            owner = json.load(fh)
+        self.assertTrue(run_stamp.verifies(owner))
+        self.assertEqual(y, owner["review_root"])
+        first_contact.assess_artifacts(y)               # the next pass trusts it
+
+    def test_the_entries_mark_through_first_contact_s_one_writer(self):
+        root = self._tree(False)
+        real = first_contact._write_owner
+        with mock.patch.object(first_contact, "_write_owner", wraps=real) as writer:
+            rc, err, _out = self._synthesize(
+                root, "--out", os.path.join(root, ".panopticon", "report.json"))
+        self.assertEqual(0, rc, err)
+        writer.assert_called_once_with(os.path.join(root, ".panopticon"), root)
+        with mock.patch.object(first_contact, "_write_owner", wraps=real) as writer:
+            self._run(self._tree(False))                     # the driver's first contact
+        self.assertEqual(1, writer.call_count)
+
+    def test_the_writer_never_marks_over_what_appeared_or_through_a_link(self):
+        root, elsewhere = self._tree(False), self._tree(False)
+        pano = os.path.join(root, ".panopticon")
+        os.makedirs(pano)
+        with open(os.path.join(pano, "groups.json"), "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        with self.assertRaises(FileExistsError):
+            first_contact._write_owner(pano, root)
+        shutil.rmtree(pano)
+        os.symlink(os.path.join(elsewhere, "src"), pano)
+        with self.assertRaises(FileExistsError):
+            first_contact._write_owner(pano, root)
+        self.assertEqual(["a.py"], os.listdir(os.path.join(elsewhere, "src")))
+
+    def test_a_directory_planted_after_the_assessment_is_assessed_again(self):
+        root = self._tree(False)
+        pano = os.path.join(root, ".panopticon")
+        real = first_contact._write_owner
+
+        def plant_first(path, review_root):
+            if not os.path.lexists(pano):
+                os.makedirs(pano)
+                with open(os.path.join(pano, "groups.json"), "w", encoding="utf-8") as fh:
+                    fh.write("{}")
+            return real(path, review_root)
+
+        with mock.patch.object(first_contact, "_write_owner", side_effect=plant_first):
+            self._refused(H2, root, "--out", os.path.join(pano, "report.json"))
+        self.assertEqual(["groups.json"], os.listdir(pano))
+
+    def _discover(self, root, *argv):
+        import scripts.discovery as discovery
+        with contextlib.redirect_stderr(io.StringIO()) as err, \
+                contextlib.redirect_stdout(io.StringIO()):
+            rc = discovery.main(["--repo-scan", root, *argv])
+        return rc, err.getvalue()
+
+    def test_hand_run_discovery_marks_what_it_writes_and_synthesis_trusts_it(self):
+        root = self._tree(False)
+        groups = os.path.join(root, ".panopticon", "groups.json")
+        real = first_contact._write_owner
+        with mock.patch.object(first_contact, "_write_owner", wraps=real) as writer:
+            rc, err = self._discover(root, "--out", groups)
+        self.assertEqual(0, rc, err)
+        writer.assert_called_once_with(os.path.join(root, ".panopticon"), root)
+        rc, err, _out = self._synthesize(root, "--groups", groups)   # the hand-run pair
+        self.assertEqual(0, rc, err)
+
+    def test_hand_run_discovery_halts_on_a_planted_directory_before_writing(self):
+        root = self._tree(False)
+        groups = self._groups(root)
+        with open(groups, encoding="utf-8") as fh:
+            planted = fh.read()
+        rc, err = self._discover(root, "--out", groups)
+        self.assertEqual((2, "panopticon: %s\n" % H2), (rc, err))
+        with open(groups, encoding="utf-8") as fh:
+            self.assertEqual(planted, fh.read())
+
+    def test_discovery_that_writes_nothing_keeps_its_flat_import_graph(self):
+        # Ruling D1: the package-root bootstrap and the first_contact import are
+        # lazy -- only `_first_contact` holds them, and a stdout-only run never
+        # calls it, nor creates .panopticon/.
+        import ast
+        import scripts.discovery as discovery
+        root = self._tree(False)
+        with mock.patch.object(discovery, "_first_contact") as contact:
+            rc, err = self._discover(root)
+        self.assertEqual(0, rc, err)
+        contact.assert_not_called()
+        self.assertFalse(os.path.lexists(os.path.join(root, ".panopticon")))
+        tree = ast.parse(open(discovery.__file__, encoding="utf-8").read())
+        holders = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef):
+                for inner in ast.walk(node):
+                    if isinstance(inner, ast.ImportFrom) and any(
+                            a.name == "first_contact" for a in inner.names):
+                        holders.setdefault("import", set()).add(node.name)
+                    if (isinstance(inner, ast.Call) and "realpath(__file__)" in ast.unparse(inner)
+                            and ast.unparse(inner.func) == "sys.path.insert"):
+                        holders.setdefault("insert", set()).add(node.name)
+        self.assertEqual({"import": {"_first_contact"}, "insert": {"_first_contact"}}, holders)
+        self.assertNotIn("first_contact", {a.name for n in tree.body
+                                           if isinstance(n, (ast.Import, ast.ImportFrom))
+                                           for a in n.names})
+
+    def test_run_tools_stays_markless(self):
+        # Ruling R1, condition 3: only discovery and synthesize mark. A later
+        # "consistency" change must not give the CI entry the writer.
+        import ast
+        import scripts.run_tools as run_tools
+        tree = ast.parse(open(run_tools.__file__, encoding="utf-8").read())
+        names = {a.name for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))
+                 for a in n.names} | {n.module for n in ast.walk(tree)
+                                      if isinstance(n, ast.ImportFrom) and n.module}
+        self.assertFalse({"scripts.first_contact", "first_contact", "scripts.run_stamp",
+                          "run_stamp"} & names, names)
+
+    def test_a_tree_of_ours_passes(self):
+        root = self._tree(False)
+        adopt_panopticon(root)
+        groups = self._groups(root)
+        for argv in ((), ("--groups", groups), ("--run-dir", os.path.dirname(groups))):
+            with self.subTest(argv=argv):
+                rc, err, _out = self._synthesize(root, *argv)
+                self.assertEqual(0, rc, err)
+
+    def test_the_tree_is_assessed_as_the_driver_spelled_it(self):
+        # The mark binds `abspath(review_root)`; `getcwd()` is resolved. A tree
+        # marked through a symlinked spelling (macOS `/tmp`) must pass when the
+        # driver names it (`--root`, or a run-artifact flag), and only then.
+        real = self._tree(False)
+        alias = os.path.join(self._dir(), "alias")
+        os.symlink(real, alias)
+        adopt_panopticon(alias)
+        groups = self._groups(real)
+        with mock.patch.dict(os.environ, {"PWD": real}):
+            self._refused(H2, real)
+            for argv in (("--root", alias),
+                         ("--groups", os.path.join(alias, ".panopticon", "groups.json"))):
+                with self.subTest(argv=argv):
+                    rc, err, _out = self._synthesize(real, *argv)
+                    self.assertEqual(0, rc, err)
+        self.assertTrue(os.path.isfile(groups))
+
+
 class TestTheRunStamp(unittest.TestCase):
     def setUp(self):
         state = os.path.realpath(tempfile.mkdtemp())
@@ -812,6 +1124,28 @@ class TestTheRunStamp(unittest.TestCase):
         os.chmod(self.state, 0o755)
         run_stamp.key()
         self.assertEqual(0o700, stat.S_IMODE(os.stat(self.state).st_mode))
+
+    def test_a_record_no_encoding_can_sign_is_not_verified_and_never_raises(self):
+        # #3273 P1: a planted owner.json is read whole, and JSON can carry a lone
+        # surrogate or a non-ASCII stamp; either is "not ours", never a traceback.
+        good = self._record()
+        for field, value in (("run_id", "\ud800"), ("review_root", "/srv/\udfff"),
+                             ("stamp", "\u00e9" * 64), ("stamp", "\ud800")):
+            with self.subTest(field=field, value=value):
+                self.assertFalse(run_stamp.verifies(dict(good, **{field: value})))
+        self.assertTrue(run_stamp.verifies(good))
+
+    def test_a_planted_mark_holding_a_lone_surrogate_halts_h2(self):
+        root = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        os.makedirs(os.path.join(root, ".panopticon"))
+        with open(os.path.join(root, ".panopticon", "owner.json"), "w", encoding="utf-8") as fh:
+            fh.write('{"run_id": "\\ud800", "review_root": %s, "stamp": "\\ud800"}'
+                     % json.dumps(root))
+        for read_only in (False, True):
+            with self.subTest(read_only=read_only), \
+                    self.assertRaisesRegex(first_contact.FirstContactHalt, "^" + re.escape(H2)):
+                first_contact.assess_artifacts(root, read_only=read_only)
 
     def test_a_key_nobody_can_trust_halts_the_run(self):
         os.makedirs(self.state, mode=0o700)

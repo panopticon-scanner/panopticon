@@ -235,9 +235,18 @@ stops the run with one line naming it. `driver setup`, whose scan holds the one 
 the whole tree, walks on every invocation; `driver run` walks once per run. `driver loop` and
 `driver loop --setup` make the `.panopticon/` half (H1-H3, on the operator's checkout too under
 `--pr`) before they read a manifest or a crash record or delete anything one names. Standalone tool
-entries do not run first contact; driver run/setup/loop do — `discovery.py`, `run_tools.py` and
-`synthesize.py` run directly (as CI runs `run_tools.py`) keep only a read-only check that
-`.panopticon` is a real in-tree directory, and write no mark and no key. In-tree pairs (a `cp -al`
+entries do not run the whole first contact; driver run/setup/loop do. `run_tools.py` run
+directly (as CI runs it) keeps only a read-only check that `.panopticon` is a real in-tree
+directory, and writes no mark and no key. `discovery.py` and `synthesize.py` run directly make
+first contact's `.panopticon/` half (#3273, ruling R1): H1-H3 and the mark, read-only, on every
+tree one of their artifact paths lies in (as spelled and as resolved), and for `synthesize.py` on
+its cwd, before they read or write any of them. A non-empty `.panopticon/` that is not this
+machine's halts. One that was absent or empty is marked ours, through the driver's own writer and
+creating the stamp key on a new machine, only when that invocation writes into it
+(`discovery.py --out` inside it or its delta-mode `diff-hunks.json`; `synthesize.py`'s report or
+pass 1's verify queue). So a hand-run `discovery.py` → `synthesize.py` pair, and synthesize's two
+passes, trust what the earlier step wrote, while findings collected by hand into an unmarked
+`.panopticon/` halt. In-tree pairs (a `cp -al`
 fixture, a pnpm store) read like any other file. A git work tree's own `.git/` is not counted —
 `git clone <local path>` hard-links its object store into the source repository — so **a dirs grant
 never covers <root>/.git; first contact does not count it.** Every reader refuses a path whose first

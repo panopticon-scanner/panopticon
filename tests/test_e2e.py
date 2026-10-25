@@ -5,7 +5,7 @@ import sys
 import tempfile
 import unittest
 
-from tests._test_helpers import first, only
+from tests._test_helpers import adopt_panopticon, first, only
 
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
 SCRIPTS = os.path.join(ROOT, "skill", "scripts")
@@ -43,6 +43,7 @@ class TestEndToEnd(unittest.TestCase):
             gname = first(groups["groups"], "group")["name"]
             # 2. write a findings file as a panel agent would
             os.makedirs(os.path.join(d, ".panopticon"))
+            adopt_panopticon(d)   # #3273 P1: a run of ours (synthesize makes first contact)
             fp = os.path.join(d, ".panopticon", "findings-%s-COD.json" % gname)
             with open(fp, "w") as fh:
                 json.dump({"findings": [{"id": "CD-001", "title": "smell",
@@ -104,6 +105,7 @@ class TestX0XEmissionEndToEnd(unittest.TestCase):
             groups = json.loads(r.stdout)
             gname = first(groups["groups"], "group")["name"]
             os.makedirs(os.path.join(d, ".panopticon"))
+            adopt_panopticon(d)   # #3273 P1: a run of ours (synthesize makes first contact)
             fp = os.path.join(d, ".panopticon", "findings-%s-COD.json" % gname)
             with open(fp, "w") as fh:
                 json.dump({"findings": [{

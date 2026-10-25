@@ -174,9 +174,17 @@ def _move_aside(pano):
 
 
 def _write_owner(pano, review_root):
-    """Mark a new or empty `.panopticon/` as this machine's: an exclusive,
-    no-follow create of `owner.json` carrying the stamp."""
-    os.makedirs(pano, exist_ok=True)
+    """Mark a new or empty `.panopticon/` as this machine's: a no-follow create
+    of the directory and an exclusive, no-follow create of `owner.json`
+    carrying the stamp. The one writer of the mark, for the driver's first
+    contact and the standalone entries alike (#3273 P1). FileExistsError when
+    anything is there by now -- a link, a file, an entry, the mark itself --
+    so a directory that appeared after its assessment is never marked over."""
+    try:
+        os.mkdir(pano, 0o755)        # never follows a link at `pano`
+    except FileExistsError:
+        if os.path.islink(pano) or not os.path.isdir(pano) or os.listdir(pano):
+            raise
     marker = {"run_id": secrets.token_hex(16), "review_root": os.path.abspath(review_root)}
     marker["stamp"] = run_stamp.sign(marker)
     fd = os.open(os.path.join(pano, OWNER),
@@ -185,20 +193,41 @@ def _write_owner(pano, review_root):
         json.dump(marker, fh)
 
 
-def assess_artifacts(review_root, *, reset=False, runner=None):
+def _nothing_to_trust(pano):
+    """Absent, or a real directory with nothing in it."""
+    if not os.path.lexists(pano):
+        return True
+    try:
+        return not os.path.islink(pano) and os.path.isdir(pano) and not os.listdir(pano)
+    except OSError:
+        return False             # the full assessment halts on it (H5)
+
+
+def assess_artifacts(review_root, *, reset=False, runner=None, read_only=False):
     """H1-H3 for `review_root`'s `.panopticon/`, and its ownership: a new or
     empty one is marked ours (`owner.json`, stamped), a non-empty one must
     already carry this machine's mark. Returns {manifest name: its parsed
     contents} for the manifests present. `reset` moves an unverified
-    `.panopticon/` aside instead of halting on H2 or H3 (never on H1)."""
+    `.panopticon/` aside instead of halting on H2 or H3 (never on H1).
+
+    `read_only` is the standalone entries' assessment (#3273 P1): the same
+    halts, but no mark and no key are written -- a new or empty `.panopticon/`
+    passes as it is, and on a machine with no key nothing non-empty can verify
+    (H2). `assess_standalone` marks afterwards, only where the entry writes."""
+    keyless = None
     try:
-        run_stamp.key()
+        run_stamp.key(create=not read_only)
     except run_stamp.KeyUnavailable as exc:
-        raise FirstContactHalt(H5 % ("run stamp", exc)) from None
+        if not (read_only and not os.path.lexists(
+                os.path.join(run_stamp.state_dir(), run_stamp.KEY_NAME))):
+            raise FirstContactHalt(H5 % ("run stamp", exc)) from None
+        keyless = exc
+    pano = os.path.join(review_root, PANO)
+    if read_only and _nothing_to_trust(pano):
+        return {"git": None}      # no launch: an absent or empty directory vouches for nothing
     git, tracked = _tracked(review_root, runner)
     if tracked:
         raise FirstContactHalt(H1)
-    pano = os.path.join(review_root, PANO)
     if os.path.lexists(pano) and (os.path.islink(pano) or not os.path.isdir(pano)):
         if not reset:
             raise FirstContactHalt(H3 % "" if os.path.islink(pano)
@@ -209,8 +238,11 @@ def assess_artifacts(review_root, *, reset=False, runner=None):
     except OSError as exc:
         raise FirstContactHalt(H5 % (PANO, exc.strerror or type(exc).__name__)) from None
     if empty:
-        _write_owner(pano, review_root)
+        if not read_only:        # emptied since `_nothing_to_trust`: still never marked here
+            _write_owner(pano, review_root)
         return {"git": git}
+    if keyless is not None:
+        raise FirstContactHalt(H2)
     owner = _load(os.path.join(pano, OWNER))
     # Signed here AND for this tree: a real mark copied from another checkout
     # carries a valid stamp over ITS review_root, not this one.
@@ -267,6 +299,80 @@ def assess_loop(args, resolved):
             import scripts.diff_map as diff_map
             diff_map.release_worktree(worktree, repo=args.target)
         raise
+
+
+def _owning_roots(path):
+    """The trees whose `.panopticon/` holds `path`, as spelled and as resolved:
+    a symlink cannot route a run artifact into an unassessed `.panopticon/`."""
+    roots = []
+    for spelled in (os.path.abspath(path), os.path.realpath(path)):
+        head = spelled
+        while True:
+            parent, name = os.path.split(head)
+            if name == PANO:
+                roots.append(parent)
+                break
+            if parent == head:
+                break
+            head = parent
+    return roots
+
+
+def _mark_or_reassess(root, runner):
+    """Mark `root`'s absent or empty `.panopticon/` through `_write_owner`; when
+    something appeared there since its assessment, assess it again instead
+    (it halts unless it is now ours). Twice at most."""
+    pano = os.path.join(root, PANO)
+    for _ in range(2):
+        try:
+            _write_owner(pano, root)
+            return
+        except FileExistsError:
+            assess_artifacts(root, runner=runner, read_only=True)
+            if not _nothing_to_trust(pano):
+                return               # it verified as ours
+    raise FirstContactHalt(H5 % (PANO, "it kept changing while it was being marked"))
+
+
+def assess_standalone(cwd, read_paths, write_paths=(), *, root_hints=(), runner=None):
+    """A direct `synthesize.py` / `discovery.py`'s first contact (#3273 P1):
+    H1-H3 and the ownership mark, read-only, on `cwd` (None: discovery, which
+    reads no cwd artifact) and on every tree whose
+    `.panopticon/` holds one of `read_paths` or `write_paths`, before the
+    entry reads or writes any of them. A tree whose `.panopticon/` was absent
+    or empty and that this invocation writes into is then marked ours, by the
+    driver's own writer (ruling R1); one it only reads is left unmarked. The
+    driver's children pass: their parent made the whole contact. No H4 walk:
+    neither entry grants an agent a read. `run_tools.py` stays markless.
+
+    The mark binds the tree as the driver SPELLED it (`abspath`), and
+    `getcwd()` is resolved (`/tmp` vs `/private/tmp`), so each tree is
+    assessed under an unresolved spelling when one is found (a `root_hints`
+    entry -- --root, $PWD -- naming the cwd, or an artifact path), and as
+    resolved only otherwise."""
+    found = [os.path.abspath(h) for h in root_hints
+             if h and cwd and os.path.realpath(h) == os.path.realpath(cwd)]
+    written = set()
+    for paths, writes in ((read_paths, False), (write_paths, True)):
+        for path in paths:
+            for root in _owning_roots(path) if path else ():
+                found.append(root)
+                if writes:
+                    written.add(os.path.realpath(root))
+    if cwd:
+        found.append(cwd)
+    roots: list = []
+    for unresolved_only in (True, False):
+        for root in found:
+            if unresolved_only and root == os.path.realpath(root):
+                continue
+            if all(os.path.realpath(root) != os.path.realpath(r) for r in roots):
+                roots.append(root)
+    for root in roots:
+        assess_artifacts(root, runner=runner, read_only=True)
+        if (os.path.realpath(root) in written
+                and _nothing_to_trust(os.path.join(root, PANO))):
+            _mark_or_reassess(root, runner)
 
 
 def assess(review_root, manifest_name, *, reset=False, host=None, other_roots=(), runner=None,

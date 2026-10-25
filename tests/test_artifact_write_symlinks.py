@@ -51,6 +51,7 @@ import scripts.evidence as evidence
 import scripts.group_runner as group_runner
 import scripts.html_report as html_report
 import scripts.run_manifest as run_manifest
+import scripts.safe_write as safe_write
 import scripts.phases.runio as runio
 import scripts.phases.validate as validate_phase
 import scripts.tool_capture as tool_capture
@@ -58,6 +59,7 @@ import scripts.tools_manifest as tools_manifest
 import scripts.synthesize as synthesize
 import scripts.synth.render as render_mod
 import scripts.synth.validate_schema as validate_schema_mod
+from tests._test_helpers import adopt_panopticon
 
 
 _FIFO_DEADLINE = (hasattr(os, "mkfifo") and hasattr(signal, "SIGALRM")
@@ -124,6 +126,22 @@ class TestHtmlReport(_Planted):
         with self.assertRaises(ValueError):
             html_report.write_html({"findings": [], "meta": {}}, path)
         self.assert_victim_intact()
+
+    def test_write_html_refuses_a_dangling_link_and_a_link_to_a_directory(self):
+        # #3273 P1: through synthesize these now halt earlier, at first contact
+        # (H3); the writer's own refusal stays pinned here.
+        outside = os.path.join(self.root, "outside-directory")
+        os.mkdir(outside)
+        for name, target in (("dangling.html", os.path.join(self.root, "missing")),
+                             ("directory.html", outside)):
+            with self.subTest(name=name):
+                path = os.path.join(self.pano, name)
+                os.symlink(target, path)
+                with self.assertRaisesRegex(ValueError, "escapes .panopticon"):
+                    html_report.write_html({"findings": [], "meta": {}}, path)
+                self.assertTrue(os.path.islink(path))
+                self.assertFalse(os.path.lexists(os.path.join(self.root, "missing")))
+                self.assertEqual([], os.listdir(outside))
 
 
 class TestVerifyQueue(_Planted):
@@ -273,24 +291,41 @@ class TestX0xArtifact(_Planted):
         cwd = os.getcwd()
         os.chdir(self.root)            # run_dir falls back to a cwd-relative .panopticon
         self.addCleanup(os.chdir, cwd)
+        adopt_panopticon(self.root)    # #3273 P1: a run of ours, as --out spells it
 
-    def test_the_x0x_staging_write_refuses_a_planted_link(self):
+    def _halts_at_first_contact(self, planted, finding=None):
+        """#3273 P1: through `synthesize.main` a link planted in `.panopticon/`
+        now halts at first contact (H3), before any writer runs; the writers'
+        own refusals are pinned directly below."""
         findings = os.path.join(self.root, "findings-g1-SEC.json")
         with open(findings, "w", encoding="utf-8") as fh:
-            json.dump({"findings": []}, fh)
+            json.dump({"findings": [finding] if finding else []}, fh)
         out = os.path.join(self.pano, "report.json")
-        staging = self.plant("report-x0x.json.tmp")
-        # #2952 moves the refusal to the CLI's named artifact status; the
-        # confinement, victim, and planted-link cleanup assertions stay put.
         with contextlib.redirect_stderr(io.StringIO()) as err:
             rc = synthesize.main(["--repo", "--out", out, findings])
-        self.assertEqual(rc, validate_schema_mod.ARTIFACT_INVALID)
-        self.assertIn("artifact path refused", err.getvalue())
+        self.assertEqual(2, rc)
+        self.assertIn("synthesize: .panopticon/%s is a symlink"
+                      % os.path.relpath(planted, self.pano), err.getvalue())
         self.assertNotIn("Traceback", err.getvalue())
         self.assert_victim_intact()
-        # Round 1 ruling: a refusal must not leave the planted link sitting in
-        # the run folder for the next invocation to trip over.
-        self.assertFalse(os.path.lexists(staging))
+        self.assertFalse(os.path.lexists(out))
+
+    def test_the_x0x_staging_write_refuses_a_planted_link(self):
+        self._halts_at_first_contact(self.plant("report-x0x.json.tmp"))
+
+    def test_the_x0x_staging_writers_refuse_a_planted_link_and_clear_it(self):
+        # The writer itself (`safe_write.publish_texts`), for the candidate and
+        # the failure log's staging names alike: refused, victim intact, and the
+        # planted link not left for the next invocation (round 1 ruling).
+        for name in ("report-x0x.json", "report-x0x-failures.json"):
+            with self.subTest(name=name):
+                staging = self.plant(name + ".tmp")
+                with self.assertRaisesRegex(ValueError, "escapes .panopticon"):
+                    safe_write.publish_texts(
+                        [(os.path.join(self.pano, name), staging, "{}")])
+                self.assert_victim_intact()
+                self.assertFalse(os.path.lexists(staging))
+                self.assertFalse(os.path.lexists(os.path.join(self.pano, name)))
 
     def test_the_x0x_staging_write_refuses_a_hard_link(self):
         findings = os.path.join(self.root, "findings-g1-SEC.json")
@@ -320,39 +355,19 @@ class TestX0xArtifact(_Planted):
         self.assertFalse(os.path.lexists(staging))
 
     def test_the_x0x_failure_log_staging_write_refuses_a_planted_link(self):
-        findings = os.path.join(self.root, "findings-g1-SEC.json")
-        finding = {
+        self._halts_at_first_contact(self.plant("report-x0x-failures.json.tmp"), {
             "id": "SE-077", "domain": "SEC", "code": "SEC-X0X",
             "severity": "LOW", "confidence": "POSSIBLE",
             "title": "repo-wide dependency gap", "short_title": "dependency gap",
             "category": "catalog-gap", "panel": "security", "location": {},
-        }
-        with open(findings, "w", encoding="utf-8") as fh:
-            json.dump({"findings": [finding]}, fh)
-        out = os.path.join(self.pano, "report.json")
-        staging = self.plant("report-x0x-failures.json.tmp")
+        })
 
-        # #2952: same status boundary as the candidate artifact, with the
-        # original no-follow and cleanup proof preserved below.
-        with contextlib.redirect_stderr(io.StringIO()) as err:
-            rc = synthesize.main(["--repo", "--out", out, findings])
-        self.assertEqual(rc, validate_schema_mod.ARTIFACT_INVALID)
-        self.assertIn("artifact path refused", err.getvalue())
-        self.assertNotIn("Traceback", err.getvalue())
-
-        self.assert_victim_intact()
-        self.assertFalse(os.path.lexists(staging))
-        self.assertFalse(os.path.lexists(os.path.join(self.pano, "report-x0x.json.tmp")))
-
-    def test_a_clean_x0x_run_removes_a_stale_failure_log_symlink(self):
-        findings = os.path.join(self.root, "findings-g1-SEC.json")
-        with open(findings, "w", encoding="utf-8") as fh:
-            json.dump({"findings": []}, fh)
-        out = os.path.join(self.pano, "report.json")
+    def test_a_stale_failure_log_symlink_halts_and_its_writer_removes_one(self):
         stale = self.plant("report-x0x-failures.json")
-
-        self.assertEqual(synthesize.main(["--repo", "--out", out, findings]), 0)
-
+        self._halts_at_first_contact(stale)
+        # The writer a clean run calls (`safe_write.remove_artifact`) unlinks the
+        # stale leaf without touching its target (also tests/test_safe_write.py).
+        safe_write.remove_artifact(stale)
         self.assertFalse(os.path.lexists(stale))
         self.assert_victim_intact()
 

@@ -25,7 +25,7 @@ import scripts.synth.integrity as integrity_mod
 import scripts.synth.plan as plan_mod
 import scripts.synthesize as syn
 import shutil
-from tests._test_helpers import write_host_evidence
+from tests._test_helpers import adopt_panopticon, write_host_evidence
 from scripts import hosts
 import scripts.phases.runio as runio
 import scripts.phases.requests as requests
@@ -349,6 +349,7 @@ class EndToEndCertificationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             run_dir = os.path.join(d, ".panopticon")
             os.makedirs(run_dir)
+            adopt_panopticon(d)   # #3273 P1: a run of ours (synthesize makes first contact)
             with open(os.path.join(run_dir, "coverage-App.json"), "w") as fh:
                 json.dump({"group": "App", "floor": ["SEC"], "effective": ["SEC"]}, fh)
             cell = os.path.join(run_dir, "findings-App-SEC.json")

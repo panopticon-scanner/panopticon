@@ -30,7 +30,7 @@ import scripts.evidence as evidence_mod
 
 import pytest
 
-from tests._test_helpers import only
+from tests._test_helpers import adopt_panopticon, only
 from tests.synth.helpers import (
     _chdir, _agentic,
     _isolate_cwd_from_stale_panopticon as _isolate_cwd_from_stale_panopticon,
@@ -462,6 +462,8 @@ class TestHtmlOut(unittest.TestCase):
         self.assertEqual(render_mod._derive_html_path("dir"), os.path.join("dir", "report.html"))
 
 class TestTwoPassCli(unittest.TestCase):
+    # #3273 P1: each tree is a run of ours (synthesize makes first contact) --
+    # marked as synthesize spells it: a --verdicts-dir under it, else the cwd.
     def _write_findings(self, d, findings):
         fp = os.path.join(d, ".panopticon", "findings-g1-SEC.json")
         os.makedirs(os.path.dirname(fp), exist_ok=True)
@@ -471,6 +473,7 @@ class TestTwoPassCli(unittest.TestCase):
 
     def test_pass1_emits_queue_not_report(self):
         with tempfile.TemporaryDirectory() as d, _chdir(d):
+            adopt_panopticon(os.getcwd())
             fp = self._write_findings(d, [_agentic()])
             out = os.path.join(d, "report.json")
             rc = syn.main(["--repo", "--emit-verify-queue", "--out", out, fp])
@@ -489,6 +492,7 @@ class TestTwoPassCli(unittest.TestCase):
         # Post-SEC-102 an agent-authored finding always queues; an empty queue
         # means there was nothing agentic to verify.
         with tempfile.TemporaryDirectory() as d, _chdir(d):
+            adopt_panopticon(os.getcwd())
             fp = self._write_findings(d, [])
             out = os.path.join(d, "report.json")
             rc = syn.main(["--repo", "--emit-verify-queue", "--out", out, fp])
@@ -500,6 +504,7 @@ class TestTwoPassCli(unittest.TestCase):
             # #2101: carries a real OCRDb code so the verdict below can carry a
             # VALID differing one -- the shape that used to be applied.
             finding = _agentic(code="SEC-A1A", domain="SEC")
+            adopt_panopticon(d)
             fp = self._write_findings(d, [finding])
             vd = os.path.join(d, ".panopticon", "verdicts")
             os.makedirs(vd)
@@ -534,6 +539,7 @@ class TestTwoPassCli(unittest.TestCase):
 
     def test_gate_unverified_flag(self):
         with tempfile.TemporaryDirectory() as d, _chdir(d):
+            adopt_panopticon(os.getcwd())
             fp = self._write_findings(d, [_agentic(sev="CRITICAL")])
             out = os.path.join(d, "report.json")
             rc = syn.main(["--repo", "--gate-unverified", "--fail-on", "critical", "--out", out, fp])
@@ -547,6 +553,7 @@ class TestTwoPassCli(unittest.TestCase):
         # Post-P2 EVERY finding queues -- tool findings included -- so "empty
         # queue this time" means the run produced no findings at all.
         with tempfile.TemporaryDirectory() as d, _chdir(d):
+            adopt_panopticon(os.getcwd())
             fp = self._write_findings(d, [])
             qpath = os.path.join(d, ".panopticon", "verify-queue.json")
             with open(qpath, "w") as fh:
@@ -570,6 +577,7 @@ class TestTwoPassCli(unittest.TestCase):
         # findings -- keying the note on the dict being non-empty silently
         # swallowed this case.
         with tempfile.TemporaryDirectory() as d, _chdir(d):
+            adopt_panopticon(d)
             fp = self._write_findings(d, [_agentic()])
             vd = os.path.join(d, ".panopticon", "verdicts")
             os.makedirs(vd)
@@ -585,6 +593,7 @@ class TestTwoPassCli(unittest.TestCase):
         # route through load_verdicts_detailed into meta.coverage.verdicts.
         # unloadable, not vanish with only a stderr note.
         with tempfile.TemporaryDirectory() as d, _chdir(d):
+            adopt_panopticon(d)
             fp = self._write_findings(d, [_agentic()])
             vd = os.path.join(d, ".panopticon", "verdicts")
             os.makedirs(vd)
@@ -605,6 +614,7 @@ class TestTwoPassCli(unittest.TestCase):
     def test_two_distinct_corrupt_verdict_files_counted_once_each(self):
         with tempfile.TemporaryDirectory() as d, _chdir(d):
             finding = _agentic()
+            adopt_panopticon(d)
             fp = self._write_findings(d, [finding])
             vd = os.path.join(d, ".panopticon", "verdicts")
             os.makedirs(vd)
@@ -635,6 +645,7 @@ class TestTwoPassCli(unittest.TestCase):
         # hit -- only the ingest_tools path sets it), and compares the
         # resulting id sets directly.
         with tempfile.TemporaryDirectory() as d, _chdir(d):
+            adopt_panopticon(os.getcwd())
             agent = os.path.join(d, "findings-g1-COD.json")
             with open(agent, "w") as fh:
                 json.dump(
@@ -762,6 +773,7 @@ class TestTwoPassCli(unittest.TestCase):
 class TestToolsDirSilentSkipGuard(unittest.TestCase):
     def test_warns_when_tools_present_but_not_ingested(self):
         with tempfile.TemporaryDirectory() as d, _chdir(d):
+            adopt_panopticon(os.getcwd())   # #3273 P1: a run of ours
             os.makedirs(os.path.join(d, ".panopticon", "tools"))
             with open(os.path.join(d, ".panopticon", "tools", "semgrep.sarif"), "w") as fh:
                 fh.write("{}")
@@ -775,6 +787,7 @@ class TestToolsDirSilentSkipGuard(unittest.TestCase):
 
     def test_no_warning_when_tools_dir_supplied(self):
         with tempfile.TemporaryDirectory() as d, _chdir(d):
+            adopt_panopticon(d)   # #3273 P1: a run of ours
             tools = os.path.join(d, ".panopticon", "tools")
             os.makedirs(tools)
             with open(os.path.join(tools, "semgrep.sarif"), "w") as fh:
@@ -794,6 +807,7 @@ class TestMainExitAndScout(unittest.TestCase):
         import tempfile, json as _json
 
         with tempfile.TemporaryDirectory() as d:
+            adopt_panopticon(d)   # #3273 P1: a run of ours
             pan = os.path.join(d, ".panopticon")
             os.makedirs(os.path.join(pan, "tools"), exist_ok=True)
             # a scout requested semgrep; no tool output will exist for it
@@ -828,6 +842,7 @@ class TestMainExitAndScout(unittest.TestCase):
         list with non-string items) must never abort the run -- see the
         scout-discovery loop's type guard in main()."""
         with tempfile.TemporaryDirectory() as d:
+            adopt_panopticon(d)   # #3273 P1: a run of ours
             pan = os.path.join(d, ".panopticon")
             os.makedirs(pan, exist_ok=True)
             with open(os.path.join(pan, "scout-a.json"), "w", encoding="utf-8") as fh:
@@ -865,6 +880,7 @@ class TestScoutToolDisclosure(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d, _chdir(d):
             os.makedirs(".panopticon")
+            adopt_panopticon(os.getcwd())   # #3273 P1: a run of ours
             with open(os.path.join(".panopticon", "scout-g1.json"), "w") as fh:
                 json.dump({"group": "g1", "tools": [], "panels": ["code"]}, fh)
             fp = os.path.join(d, "findings-g1-COD.json")
@@ -1052,6 +1068,7 @@ class TestRunDirArtifactResolution(unittest.TestCase):
     against a stale/foreign manifest (#17)."""
 
     def _layout(self, d, manifest=None):
+        adopt_panopticon(d)   # #3273 P1: a run of ours (synthesize makes first contact)
         run_dir = os.path.join(d, ".panopticon", "runs", "tag")
         os.makedirs(run_dir)
         with open(os.path.join(run_dir, "groups.json"), "w") as fh:
@@ -1097,6 +1114,7 @@ class TestRunDirArtifactResolution(unittest.TestCase):
         # is absent -> driver_cost_counts returns None -> cost_dispatches falls back
         # to the empty 4.x shape, silently falsifying meta.cost on EVERY 5.1 run.
         with tempfile.TemporaryDirectory() as d, _chdir(d):
+            adopt_panopticon(d)   # #3273 P1: a run of ours
             run_dir = os.path.join(d, ".panopticon", "runs", "tag")
             os.makedirs(os.path.join(run_dir, "verdicts"))
             with open(os.path.join(run_dir, "groups.json"), "w") as fh:
@@ -1199,6 +1217,7 @@ class MainLoaderOrderTest(unittest.TestCase):
                 json.dump({"findings": []}, fh)   # nothing to queue this run
             panopticon_dir = os.path.join(d, ".panopticon")
             os.makedirs(panopticon_dir)
+            adopt_panopticon(os.getcwd())   # #3273 P1: a run of ours
             qpath = os.path.join(panopticon_dir, "verify-queue.json")
             with open(qpath, "w") as fh:
                 # A leftover queue from a PREVIOUS run -- a real run_id and
@@ -1706,8 +1725,8 @@ def test_a_target_pre_committed_coverage_file_cannot_end_the_run(tmp_path):
     # can pre-commit one. `meta.coverage.cells.missing_floor` publishes its
     # group/domain pair as two strings -- a non-string pair must be dropped
     # here, not carried into the artifact and rejected at the exit.
+    adopt_panopticon(str(tmp_path))   # #3273 P1: a run of ours
     run_dir = tmp_path / ".panopticon"
-    run_dir.mkdir()
     (run_dir / "coverage-evil.json").write_text(
         json.dumps({"group": 7, "floor": ["SEC"], "effective": ["SEC"]}), encoding="utf-8")
     (run_dir / "coverage-ok.json").write_text(
@@ -2116,6 +2135,7 @@ class TestDiscoveryDisclosuresReachTheReport(unittest.TestCase):
                  "git_failure": "exit 128: fatal: <ROOT>/.git: not a directory"}
 
     def _run(self, d, discovery):
+        adopt_panopticon(d)   # #3273 P1: a run of ours (synthesize makes first contact)
         run_dir = os.path.join(d, ".panopticon", "runs", "tag")
         os.makedirs(run_dir)
         groups = {"groups": [{"name": "g1", "files": ["a.py"]}]}
@@ -2199,6 +2219,7 @@ class TestSecCarveOutDisclosureReachesTheReport(unittest.TestCase):
              "count": 1}
 
     def _run(self, d, carve):
+        adopt_panopticon(d)   # #3273 P1: a run of ours (synthesize makes first contact)
         run_dir = os.path.join(d, ".panopticon", "runs", "tag")
         os.makedirs(run_dir)
         groups = {"groups": [{"name": "g1", "files": ["a.py"]}]}

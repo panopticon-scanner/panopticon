@@ -26,6 +26,7 @@ import scripts.group_runner as gr
 import scripts.group_runner as group_runner_mod
 from scripts._version import __version__
 
+from tests._test_helpers import adopt_panopticon
 from tests.synth.helpers import _chdir, _agentic, _cli_args
 
 
@@ -293,6 +294,9 @@ class TestDriverPlanReconcile(unittest.TestCase):
     def _setup(self, d, decoy=False, stray_plan=False):
         pan = os.path.join(d, ".panopticon")
         os.makedirs(pan, exist_ok=True)
+        # #3273 P1: a run of ours (synthesize makes first contact), marked as
+        # its cwd spells the tree.
+        adopt_panopticon(os.path.realpath(d))
         cells = [("g1", "COD"), ("g2", "COD")]
         plan = [{"group": g, "domain": dom, "enforced": True,
                  "out_file": os.path.join(pan, "findings-%s-%s.json" % (g, dom))}

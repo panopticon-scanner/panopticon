@@ -10,6 +10,7 @@ import unittest.mock
 
 from scripts import diff_map
 
+from tests._test_helpers import adopt_panopticon
 from tests.discovery_test_helpers import (
     discovery, orchestrator, touch, run_scan, run_scan_with_err, grouped,
     init_repo, git_cmd, make_git_repo, run_script, run_scan_helper,
@@ -70,6 +71,7 @@ class TestRepoScanDiscovery(unittest.TestCase):
             self._touch(d, "src/app.py")
             pano = os.path.join(d, ".panopticon")
             os.makedirs(pano, exist_ok=True)
+            adopt_panopticon(d)   # #3273 P1: the stale hunk map of an earlier run of ours
             hunks = os.path.join(pano, "diff-hunks.json")
             with open(hunks, "w") as fh:
                 fh.write('{"base": "main", "hunks": {}}')

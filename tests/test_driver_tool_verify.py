@@ -17,7 +17,7 @@ import shutil
 import tempfile
 import unittest
 from unittest import mock
-from tests._test_helpers import write_host_evidence
+from tests._test_helpers import adopt_panopticon, write_host_evidence
 from scripts import hosts
 import scripts.phases.runio as runio
 import scripts.phases.verify as verify
@@ -60,6 +60,7 @@ class _ToolVerifyBase(unittest.TestCase):
         os.makedirs(os.path.join(d, "src"))
         with open(os.path.join(d, "src", "app.py"), "w") as fh:
             fh.write("import os\nx = 1\ny = 2\nz = 3\npw = 'dummy'\n")
+        adopt_panopticon(d)   # #3273 P1: a run of ours (synthesize makes first contact)
         # #1344 F3: the tool-verify advisor's `enforced` now reads posture(),
         # which requires PROVEN evidence, not the bare claim -- no manifest is
         # ever persisted in this suite, so this lands in the flat top-level

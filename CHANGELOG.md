@@ -14,6 +14,20 @@
   outermost object, and ingest refused the proposal ("'groups' must be a non-empty list") after
   a paid setup dispatch. Seen twice on langfuse in the 2026-10-24 calibration batch. A closing span
   now supersedes the inner spans it encloses.
+- **Operator-visible: hand-run `synthesize.py` and `discovery.py` make first contact's `.panopticon/` half (#3273 P1).**
+  Before they read or write a run artifact, they check H1-H3 and the ownership mark on every tree
+  one of their artifact paths lies in (`--groups`, `--run-dir`, `--tools-dir`, `--verdicts-dir`,
+  `--diff-hunks`, `--out`, as spelled and as resolved), and `synthesize.py` checks its cwd too. A
+  tracked, planted or foreign `.panopticon/` now exits 2 with the first-contact line instead of
+  being read.
+  - An absent or empty `.panopticon/` is marked ours only when that invocation writes into it.
+    The mark is the one first contact writes, and on a new machine this creates the stamp key.
+    So `discovery.py` → `synthesize.py` by hand, and synthesize's two passes, keep working.
+  - Findings collected by hand belong outside an unmarked `.panopticon/`.
+  - A link planted in `.panopticon/` now halts synthesis at first contact (H3), before the
+    writers that refuse it. The halt leaves the link in place for the operator to remove.
+  - `run_tools.py` (CI) stays markless. The driver's own steps are unchanged: their tree is
+    already ours.
 - **Operator-visible: a resumed run no longer trusts two stored files it did not bind (#3280, GHSA-wjpr-jxg9-rmwh's family).**
   - **The readiness tail on `driver setup` / `driver loop --setup` completion.** It is read off
     `setup-report.json` only when those bytes are the ones this setup run recorded (their sha256, in
@@ -36,9 +50,9 @@
     referent is never read or deleted.
   - When trusted git cannot be launched for first contact's tracked-path check, the run now halts
     with one H5 line rather than raising.
-  - Standalone `discovery.py`, `run_tools.py` and `synthesize.py` (CI runs `run_tools.py` directly)
-    do not make first contact. They keep their read-only check that `.panopticon` is a real in-tree
-    directory, and write no stamp key and no mark.
+  - Standalone `run_tools.py` (CI runs it directly) does not make first contact. It keeps its
+    read-only check that `.panopticon` is a real in-tree directory, and writes no stamp key and no
+    mark. (Standalone `discovery.py` and `synthesize.py` make the `.panopticon/` half since #3273.)
   - `driver readiness` keeps its own foreign-manifest check, since it writes nothing.
 - **Operator-visible: a manifest first contact cannot read whole halts the run (#3271 F0).**
   A `run-manifest.json` or `setup-manifest.json` that is present but oversize (over 1 MiB),

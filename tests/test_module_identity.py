@@ -168,7 +168,7 @@ PERMITTED_BOOTSTRAPS = {
     "scripts/triage.py": 1,
     "skill/scripts/_run_adapter.py": 1,
     "skill/scripts/capture_goldens.py": 1,
-    "skill/scripts/discovery.py": 1,
+    "skill/scripts/discovery.py": 2,
     "skill/scripts/dispatch.py": 2,
     "skill/scripts/driver.py": 2,
     "skill/scripts/reconcile.py": 1,
@@ -185,8 +185,8 @@ PERMITTED_BOOTSTRAPS = {
 # making one resolvable is a fix, adding one is not.
 UNRESOLVED_ROOTS = ("scripts/replay_report.py",)
 
-# Per-root advice, because "any `sys.path` write" is not one hazard. Of the 20
-# sites in 18 modules, SEVEN add the flat root, TWELVE add the package root and
+# Per-root advice, because "any `sys.path` write" is not one hazard. Of the 21
+# sites in 18 modules, SEVEN add the flat root, THIRTEEN add the package root and
 # one builds its root in a form this walk cannot follow; advice that lumps them
 # together tells the `scripts/`-side filers to stop doing the very thing that
 # makes `from scripts import x` work at all.
