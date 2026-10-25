@@ -892,6 +892,33 @@ class TestADirectSynthesizeMakesFirstContact(_Trees):
         self.assertFalse(os.path.lexists(os.path.join(cwd, ".panopticon")))
         self.assertTrue(os.path.isfile(os.path.join(run_dir, "owner.json")))
 
+    def test_a_pass_1_that_falls_through_marks_the_tree_its_report_lands_in(self):
+        # The control for the late mark (#3296 review): a pass 1 whose run folder
+        # is tree X queues nothing, so it writes its report into the cwd's absent
+        # .panopticon/ (tree Y) -- which must be marked then, or the next pass
+        # halts H2 on its own report.
+        import scripts.synth.verdicts as verdicts_mod
+        import scripts.synthesize as synthesize
+        y, x = self._tree(False), self._tree(False)
+        run_dir = os.path.join(x, ".panopticon")
+        prev = os.getcwd()
+        os.chdir(y)                     # no --out: the report lands in the cwd's .panopticon/
+        try:
+            with mock.patch.object(verdicts_mod, "emit_verify_queue", return_value=False), \
+                    contextlib.redirect_stderr(io.StringIO()) as err, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                rc = synthesize.main(["--repo", "--emit-verify-queue", "--run-dir", run_dir,
+                                      self._findings()])
+        finally:
+            os.chdir(prev)
+        self.assertEqual(0, rc, err.getvalue())
+        self.assertTrue(os.path.isfile(os.path.join(run_dir, "owner.json")))
+        with open(os.path.join(y, ".panopticon", "owner.json"), encoding="utf-8") as fh:
+            owner = json.load(fh)
+        self.assertTrue(run_stamp.verifies(owner))
+        self.assertEqual(y, owner["review_root"])
+        first_contact.assess_artifacts(y)               # the next pass trusts it
+
     def test_the_entries_mark_through_first_contact_s_one_writer(self):
         root = self._tree(False)
         real = first_contact._write_owner
