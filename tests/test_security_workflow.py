@@ -158,10 +158,11 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
             "(github.event_name == 'pull_request' && "
             "github.event.pull_request.head.repo.full_name == github.repository)",
             compact)
-        self.assertTrue(                                # push always runs, OR-joined first
-            compact.startswith("github.event_name == 'push' || ("))
+        self.assertTrue(                                # #3292: no push route; PR first
+            compact.startswith("(github.event_name == 'pull_request' && "))
+        self.assertNotIn("'push'", compact)
         self.assertEqual(                               # and there is no third route
-            compact.count("github.event_name"), 4)
+            compact.count("github.event_name"), 3)
 
     def test_the_pull_request_types_are_the_defaults(self):
         # M3: the same-repo scan only fires on the actions `pull_request`
@@ -286,7 +287,7 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
         condition = " ".join(audit["if"].split())
         self.assertEqual(
             condition,
-            "always() && github.event_name == 'push' && "
+            "always() && env.ROUTE == 'audit' && "
             "github.ref == 'refs/heads/main' && "
             "steps.upload-sarif.outcome == 'success'",
         )
@@ -570,13 +571,18 @@ class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
         # own findings and excuse every one of them. Any other event (schedule,
         # dispatch) resolves to the empty string, which the script reads as "no
         # base" and runs strict.
+        # #3292: security.yml has no push route; its nightly `main-audit`
+        # reads the commit the previous scheduled run scanned, resolved by
+        # its own step. The fork file keeps its expression (it has no push).
+        expected = {
+            WORKFLOW: "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha"
+                      " || steps.nightly-base.outputs.sha }}",
+            FORK_WORKFLOW: "${{ github.event_name == 'push' && github.event.before"
+                           " || github.event.pull_request.base.sha }}"}
         for path, name in self.ROUTES:
             with self.subTest(workflow=path):
                 step = self._step(self._job(path, name), self.BASELINE)
-                self.assertEqual(
-                    step["env"]["BASE_SHA"],
-                    "${{ github.event_name == 'push' && github.event.before"
-                    " || github.event.pull_request.base.sha }}")
+                self.assertEqual(step["env"]["BASE_SHA"], expected[path])
                 self.assertEqual(step["env"]["GH_TOKEN"], "${{ github.token }}")
                 self.assertEqual(step["env"]["GH_REPO"], "${{ github.repository }}")
                 self.assertNotIn("${{ github.event", _without_comments(step["run"]))
@@ -846,8 +852,7 @@ class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
         for path, name in self.ROUTES:
             with self.subTest(workflow=path):
                 step = self._step(self._job(path, name), self.BASELINE)
-                expected = ("github.event_name == 'push' || github.event_name == 'pull_request'"
-                            if path == WORKFLOW else None)
+                expected = "env.ROUTE != 'strict'" if path == WORKFLOW else None
                 self.assertEqual(step.get("if"), expected)
 
     def test_the_gate_receives_the_flags_only_when_the_download_succeeded(self):
@@ -900,7 +905,7 @@ class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
         run = _without_comments(gate["run"])
         self.assertIn('if [ "$BASELINE_FOUND" = "true" ]; then', run)
         self.assertNotIn('"$BASELINE_FOUND" !=', run)
-        self.assertEqual(gate.get("if"), "github.event_name == 'push' || github.event_name == 'pull_request'")
+        self.assertEqual(gate.get("if"), "env.ROUTE != 'strict'")
 
     def test_actions_read_is_the_only_permission_either_file_gained(self):
         # Pinned as whole blocks: `actions: read` is what reads another run's
@@ -995,23 +1000,42 @@ class TestStrictScheduledBackstop(unittest.TestCase):
         self.job = self.workflow["jobs"]["scan"]
         self.steps = {s.get("name"): s for s in self.job["steps"]}
 
+    STRICT = ("(github.event.schedule == '23 7 * * 1' || (github.event_name == "
+              "'workflow_dispatch' && inputs.route != 'main-audit'))")
+
     def test_full_events_have_a_distinct_name_even_when_skipped(self):
-        self.assertEqual(self.workflow[True]["schedule"], [{"cron": "23 7 * * 1"}])
-        self.assertIn("workflow_dispatch", self.workflow[True])
-        self.assertEqual(self.job["name"],
-                         "${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'strict-full-tree' || 'scan' }}")
+        # #3292: two schedules -- weekly strict, nightly main-audit -- and a
+        # dispatch that picks either. Only a pull request is `scan`: a
+        # dispatch skipped on a branch posts `strict-full-tree` or
+        # `main-audit`, never a green `scan` (#1900).
+        self.assertEqual(self.workflow[True]["schedule"],
+                         [{"cron": "23 7 * * 1"}, {"cron": "41 6 * * *"}])
+        self.assertNotIn("push", self.workflow[True])
+        route = self.workflow[True]["workflow_dispatch"]["inputs"]["route"]
+        self.assertEqual(route["options"], ["strict-full-tree", "main-audit"])
+        self.assertEqual(route["default"], "strict-full-tree")
+        self.assertEqual(" ".join(self.job["name"].split()),
+                         "${{ github.event_name == 'pull_request' && 'scan' || ("
+                         + self.STRICT + " && 'strict-full-tree' || 'main-audit') }}")
+        self.assertEqual(" ".join(self.job["env"]["ROUTE"].split()),
+                         "${{ github.event_name == 'pull_request' && 'pr' || ("
+                         + self.STRICT + " && 'strict' || 'audit') }}")
+        self.assertEqual(" ".join(self.workflow["run-name"].split()),
+                         "${{ github.event_name == 'pull_request' && github.event.pull_request.title || ("
+                         + self.STRICT + " && 'Security Scan: strict-full-tree' || "
+                         "'Security Scan: main-audit') }}")
         self.assertIn("(github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'",
                       " ".join(self.job["if"].split()))
 
     def test_full_gate_has_no_baseline_and_reporting_survives_red(self):
         gate = self.steps["Strict full-tree gate"]
-        self.assertEqual(gate["if"], "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'")
+        self.assertEqual(gate["if"], "env.ROUTE == 'strict'")
         self.assertIn("python controller/skill/scripts/security_gate.py", gate["run"])
         self.assertNotIn("baseline", gate["run"])
         self.assertEqual(gate["run"].count("--exclude"), 2)
         for name in ("Publish strict security snapshot and summary", "Upload strict security snapshot"):
             self.assertIn("always()", self.steps[name]["if"])
-            self.assertIn("github.event_name == 'schedule'", self.steps[name]["if"])
+            self.assertIn("env.ROUTE == 'strict'", self.steps[name]["if"])
         self.assertEqual(self.steps["Upload strict security snapshot"]["with"]["name"],
                          "strict-security-snapshot")
 
@@ -1024,11 +1048,37 @@ class TestStrictScheduledBackstop(unittest.TestCase):
         self.assertNotIn("GH_TOKEN", self.steps["Publish strict security snapshot and summary"].get("env", {}))
         self.assertIn("docker image inspect", self.steps["Record actual scanner image identity"]["run"])
 
-    def test_delta_steps_are_only_for_pr_and_push(self):
+    def test_delta_steps_are_for_the_pr_and_audit_routes(self):
         for name in ("Download the base commit's scanner captures",
                      "Gate on HIGH/CRITICAL tool findings (unverified-strict policy)"):
-            self.assertEqual(self.steps[name]["if"],
-                             "github.event_name == 'push' || github.event_name == 'pull_request'")
+            self.assertEqual(self.steps[name]["if"], "env.ROUTE != 'strict'")
+
+    def test_every_step_selects_on_the_route_not_the_event(self):
+        # #3292: one `ROUTE`, so a third schedule or dispatch input cannot
+        # half-select a route. Checkout refs read the PR head, not the event.
+        for step in self.job["steps"]:
+            self.assertNotIn("event_name", step.get("if", ""), step.get("name"))
+
+    def test_the_nightly_base_is_the_previous_scheduled_scan(self):
+        step = self.steps["Resolve the nightly base commit"]
+        self.assertEqual(step["if"], "env.ROUTE == 'audit'")
+        self.assertEqual(step["id"], "nightly-base")
+        run = step["run"]
+        for part in ("timeout 60 gh run list --workflow security.yml",
+                     "--event schedule --branch main --status completed --limit 1",
+                     "--json headSha", "*[!0-9a-f]*) sha=\"\" ;;",
+                     '[ "${#sha}" -eq 40 ] || sha=""', 'echo "sha=$sha" >> "$GITHUB_OUTPUT"'):
+            self.assertIn(part, run)
+        self.assertLess(self.job["steps"].index(step),
+                        self.job["steps"].index(self.steps["Download the base commit's scanner captures"]))
+
+    def test_codeql_runs_nightly_before_the_audit_and_not_on_push(self):
+        with open(os.path.join(ROOT, ".github", "workflows", "codeql.yml"), encoding="utf-8") as fh:
+            on = yaml.safe_load(fh)[True]
+        self.assertNotIn("push", on)
+        self.assertIn("pull_request", on)
+        self.assertIn("workflow_dispatch", on)
+        self.assertEqual(on["schedule"], [{"cron": "41 5 * * *"}])   # main-audit: 41 6
 
 
 if __name__ == "__main__":

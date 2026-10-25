@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **CI: main is gated and audited nightly, not on every push (#3292, cut 18).**
+  - `security.yml` and `codeql.yml` drop their `push` triggers; a merge commit's baseline is its PR's own captures (#3295).
+  - New nightly `main-audit` route (06:41 UTC): delta gate against the commit the previous scheduled run scanned, Security tab upload, raw captures, and the zero-alert audit. Its check name is `main-audit`.
+  - CodeQL runs nightly at 05:41 UTC, plus on dispatch.
+  - A merge between the two nightly runs reds that night's audit (fail-closed); the next night retries.
+  - The weekly `strict-full-tree` run is unchanged; its history lookup now selects the previous strict run by run title.
+  - Each step selects on one job-level `ROUTE`.
+
 - **CI: a merge commit inherits its PR's scanner captures as the security gate's baseline (#3292).**
   The baseline walk in `security.yml` and `security-fork.yml` falls back, at each main commit with
   no run of its own, to the merged PR's own `security.yml` run. It accepts that run only when it is

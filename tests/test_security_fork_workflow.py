@@ -290,7 +290,15 @@ class TestTheTwoWorkflowsDoNotDrift(unittest.TestCase):
         self.assertIsNotNone(base)
         self.assertIsNotNone(fork)
         self.assertEqual(_script(base).split(), _script(fork).split())
-        self.assertEqual(base.get("env"), fork.get("env"))
+        # #3292: `BASE_SHA` differs by design -- security.yml's non-PR route
+        # is the nightly main-audit, whose base its own step resolves -- and
+        # each file's expression is pinned whole by
+        # test_each_route_resolves_its_own_base_and_reads_it_through_env.
+        # Every other key is the same gate's.
+        base_env, fork_env = ({k: v for k, v in step["env"].items() if k != "BASE_SHA"}
+                              for step in (base, fork))
+        self.assertEqual(set(base["env"]), set(fork["env"]))
+        self.assertEqual(base_env, fork_env)
         self.assertEqual(base.get("timeout-minutes"), fork.get("timeout-minutes"))
         self.assertEqual(base.get("continue-on-error"),
                          fork.get("continue-on-error"))

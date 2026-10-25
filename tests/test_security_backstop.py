@@ -20,6 +20,10 @@ backstop = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(backstop)
 SHA = "a" * 40
 IMAGE = "sha256:" + "b" * 64
+STRICT = "Security Scan: strict-full-tree"
+# #3292: nightly main-audit runs share the schedule event and carry no snapshot.
+NIGHTLY = {"databaseId": 13, "headSha": "c" * 40, "displayTitle": "Security Scan: main-audit"}
+OLDER = {"databaseId": 9, "headSha": "d" * 40, "displayTitle": STRICT}
 
 
 def snapshot(root, level="error", missing=False):
@@ -127,11 +131,12 @@ class TestHistory(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             data = snapshot(Path(tmp))
         fetch, calls = self.transport([
-            json.dumps([{"databaseId": 12, "headSha": SHA}]).encode(),
+            json.dumps([NIGHTLY, {"databaseId": 12, "headSha": SHA, "displayTitle": STRICT}, OLDER]).encode(),
             json.dumps({"artifacts": [{"id": 34, "name": "strict-security-snapshot", "expired": False}]}).encode(),
             archive(data)])
         previous, reason = backstop.retrieve("owner/repo", fetch)
         self.assertEqual(previous, data)
+        self.assertIn("runs/12/artifacts", calls[1][1])     # newest STRICT run, not the nightly
         self.assertEqual(reason, "")
         self.assertIn("--event", calls[0])
         self.assertIn("schedule", calls[0])
@@ -139,13 +144,22 @@ class TestHistory(unittest.TestCase):
         self.assertIn("completed", calls[0])
         self.assertNotIn("success", calls[0])
         self.assertIn("--limit", calls[0])
+        self.assertIn("displayTitle", calls[0][-1])
         self.assertEqual(len(calls), 3)
         self.assertTrue(all("--method" not in command for command in calls))
 
+    def test_only_nightly_runs_in_the_window_is_unavailable(self):
+        # #3292: never a nightly main-audit run's (absent) snapshot.
+        fetch, calls = self.transport([json.dumps([NIGHTLY, NIGHTLY]).encode()])
+        previous, reason = backstop.retrieve("owner/repo", fetch)
+        self.assertIsNone(previous)
+        self.assertIn("strict", reason)
+        self.assertEqual(len(calls), 1)
+
     def test_first_run_missing_corrupt_and_api_failure_are_unavailable(self):
         for responses in ([b"[]"], [b"bad json"], [OSError("offline")],
-                          [b'[{"databaseId":12,"headSha":"' + SHA.encode() + b'"}]', b'{"artifacts":[]}'],
-                          [b'[{"databaseId":12,"headSha":"' + SHA.encode() + b'"}]',
+                          [b'[{"databaseId":12,"displayTitle":"Security Scan: strict-full-tree","headSha":"' + SHA.encode() + b'"}]', b'{"artifacts":[]}'],
+                          [b'[{"databaseId":12,"displayTitle":"Security Scan: strict-full-tree","headSha":"' + SHA.encode() + b'"}]',
                            b'{"artifacts":[{"id":34,"name":"strict-security-snapshot","expired":false}]}', b'bad zip']):
             fetch, _ = self.transport(responses)
             previous, reason = backstop.retrieve("owner/repo", fetch)
