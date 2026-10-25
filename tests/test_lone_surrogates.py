@@ -51,7 +51,7 @@ import scripts.tools.base as base
 import scripts.tools.legacy_sarif as legacy_sarif
 import scripts.x0x_report as x0x_report
 import tests.test_schema_parity as parity
-from tests._test_helpers import SKILL_ROOT, first
+from tests._test_helpers import SKILL_ROOT, adopt_panopticon, first
 from tests.discovery_test_helpers import run_script
 
 SCRIPTS = os.path.join(SKILL_ROOT, "scripts")
@@ -599,6 +599,7 @@ class TestTheRealChild(unittest.TestCase):
         `beside` is more of the run directory's own files, by name (the tools manifest, a hunk map)."""
         repo = self.repo()
         pano = os.path.join(repo, ".panopticon")
+        adopt_panopticon(repo)   # #3273 P1: a run of ours (synthesize makes first contact)
 
         def write(path, document):
             os.makedirs(os.path.dirname(path), exist_ok=True)

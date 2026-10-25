@@ -10,6 +10,7 @@ import scripts.synthesize as syn
 import scripts.synth.findings as findings_mod
 import scripts.synth.report as report_mod
 import scripts.hosts as hosts_mod
+from tests._test_helpers import adopt_panopticon
 from tests.synth.helpers import _chdir
 
 
@@ -116,6 +117,9 @@ class TestHostCapabilitiesResolvesUnderTheRunDir(unittest.TestCase):
     `dirname(abspath(args.groups or "."))` resolved to, and which for the
     synthesize child -- `cwd=review_root` -- is the parent of the reviewed
     tree).
+
+    #3273 P1: each tree is a run of ours (synthesize makes first contact),
+    marked as synthesize spells it: a --run-dir under it, else its cwd.
     """
 
     def _seed_run(self, run_dir, envelope=None):
@@ -141,6 +145,7 @@ class TestHostCapabilitiesResolvesUnderTheRunDir(unittest.TestCase):
             tree = os.path.join(parent, "tree")
             os.makedirs(tree)
             self._seed_run(os.path.join(tree, ".panopticon"), _hc_envelope())
+            adopt_panopticon(os.path.realpath(tree))
             with _chdir(tree):
                 report = self._synth(["--target", "src", "--out", "report.json"])
         hc = report["meta"]["host_capabilities"]
@@ -152,6 +157,7 @@ class TestHostCapabilitiesResolvesUnderTheRunDir(unittest.TestCase):
             tree = os.path.join(parent, "tree")
             run = os.path.join(tree, ".panopticon", "runs", "claude-redteam-repo-x")
             self._seed_run(run, _hc_envelope())
+            adopt_panopticon(tree)
             with _chdir(tree):
                 report = self._synth(["--target", "src", "--run-dir", run,
                                       "--out", "report.json"])
@@ -171,6 +177,7 @@ class TestHostCapabilitiesResolvesUnderTheRunDir(unittest.TestCase):
         with tempfile.TemporaryDirectory() as parent:
             tree = os.path.join(parent, "tree")
             self._seed_run(os.path.join(tree, ".panopticon"))   # no artifact of its own
+            adopt_panopticon(os.path.realpath(tree))
             with open(os.path.join(parent, "host-capabilities.json"), "w") as fh:
                 json.dump(forged, fh)
             with _chdir(tree):

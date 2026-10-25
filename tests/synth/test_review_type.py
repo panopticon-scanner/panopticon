@@ -10,6 +10,7 @@ import pytest
 import scripts.driver as driver
 import scripts.synthesize as synthesize
 from scripts.synth import findings, plan, report, validate_schema
+from tests._test_helpers import adopt_panopticon
 from tests.synth.helpers import DEFAULT_TIMESTAMP, _cli_args
 
 
@@ -140,6 +141,7 @@ def test_scope_refusal_cannot_advance_the_driver_using_an_old_report(tmp_path, m
     monkeypatch.chdir(tmp_path)
     pano = tmp_path / ".panopticon"
     pano.mkdir()
+    adopt_panopticon(str(tmp_path))   # #3273 P1: a run of ours (synthesize makes first contact)
     (pano / "groups.json").write_text(json.dumps({"groups": []}))
     output = pano / "report.json"
     previous = json.dumps({"summary": {}, "meta": {"review_type": "repo"}}).encode()

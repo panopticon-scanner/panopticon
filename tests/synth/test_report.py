@@ -10,6 +10,7 @@ import scripts.synthesize as syn
 import scripts.synth.findings as findings_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.report as report_mod
+from tests._test_helpers import adopt_panopticon
 from tests.synth.helpers import DEFAULT_TIMESTAMP, _chdir, _make_finding
 
 
@@ -180,6 +181,7 @@ class TestReport(unittest.TestCase):
         # (groups[].files drives the HTML heatmap and grouped findings).
         with tempfile.TemporaryDirectory() as d:
             os.makedirs(os.path.join(d, ".panopticon"))
+            adopt_panopticon(os.path.realpath(d))   # #3273 P1: a run of ours, seen from its cwd
             with open(os.path.join(d, ".panopticon", "groups.json"), "w") as fh:
                 json.dump(
                     {
@@ -224,6 +226,7 @@ class TestReport(unittest.TestCase):
         # An explicit --groups still wins over the .panopticon/groups.json default.
         with tempfile.TemporaryDirectory() as d:
             os.makedirs(os.path.join(d, ".panopticon"))
+            adopt_panopticon(os.path.realpath(d))   # #3273 P1: a run of ours, seen from its cwd
             with open(os.path.join(d, ".panopticon", "groups.json"), "w") as fh:
                 json.dump({"groups": [{"name": "auto", "files": ["a.py"]}]}, fh)
             explicit = os.path.join(d, "explicit.json")

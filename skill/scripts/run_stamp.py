@@ -94,20 +94,25 @@ def _create(directory, path):
         os.unlink(tmp)
 
 
-def key():
-    """This machine's stamp key, created on first use; KeyUnavailable otherwise."""
+def key(create=True):
+    """This machine's stamp key, created on first use; KeyUnavailable otherwise.
+    `create=False` reads an existing key only, and an absent one is
+    KeyUnavailable (a standalone entry writes no key, #3273 P1)."""
     directory = state_dir()
     path = os.path.join(directory, KEY_NAME)
     cached = _KEY_CACHE.get(path)
     if cached is not None:
         return cached
     try:
-        _ensure_dir(directory)
-        try:
+        if not create:
             data = _read(path)
-        except FileNotFoundError:
-            _create(directory, path)
-            data = _read(path)
+        else:
+            _ensure_dir(directory)
+            try:
+                data = _read(path)
+            except FileNotFoundError:
+                _create(directory, path)
+                data = _read(path)
     except KeyUnavailable as exc:
         raise KeyUnavailable("run-stamp key: %s" % exc) from None
     except OSError as exc:
@@ -139,4 +144,7 @@ def verifies(manifest):
     stamp, run_id, root = manifest.get("stamp"), manifest.get("run_id"), manifest.get("review_root")
     if not (isinstance(stamp, str) and isinstance(run_id, str) and isinstance(root, str)):
         return False
-    return hmac.compare_digest(stamp, sign(manifest))
+    try:
+        return hmac.compare_digest(stamp.encode("ascii"), sign(manifest).encode("ascii"))
+    except (UnicodeEncodeError, ValueError):
+        return False         # a lone surrogate or a non-ASCII stamp is no stamp of ours

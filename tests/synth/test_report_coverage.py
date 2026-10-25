@@ -17,6 +17,7 @@ import scripts.synth.report as report_mod
 import scripts.synth.render as render_mod
 import scripts.evidence as evidence_mod
 import scripts.ocrdb as ocrdb
+from tests._test_helpers import adopt_panopticon
 from tests.synth.helpers import DEFAULT_TIMESTAMP, _chdir, _target_with_files, _agentic
 
 
@@ -490,6 +491,7 @@ class TestResumeDisclosure(unittest.TestCase):
         # artifact. A malformed queue must never abort a run.
         with tempfile.TemporaryDirectory() as d, _chdir(d):
             os.makedirs(os.path.join(d, ".panopticon"), exist_ok=True)
+            adopt_panopticon(os.getcwd())   # #3273 P1: a run of ours (synthesize makes first contact)
             with open(os.path.join(d, ".panopticon", "verify-queue.json"), "w") as fh:
                 json.dump({"entries": 42}, fh)
             with open(os.path.join(d, ".panopticon", "groups.json"), "w") as fh:

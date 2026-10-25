@@ -19,7 +19,7 @@ import scripts.phases.verify as verify
 import scripts.phases.synthesize as synthesize
 import scripts.phases.validate as validate_phase
 
-from tests._test_helpers import write_host_evidence
+from tests._test_helpers import adopt_panopticon, our_manifest, write_host_evidence
 import scripts.driver as driver
 import scripts.diff_map as diff_map
 import scripts.groups_schema as groups_schema
@@ -109,6 +109,9 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
                 "  Auth:\n    match: ['src/auth/**']\n    panels: [SEC]\n"
                 "  Checkout:\n    match: ['src/checkout/**']\n    panels: [SEC]\n")
         subprocess.run(["git", "init", "-q"], cwd=d, check=True, timeout=30)
+        # #3273 P1: an operator's artifact directory is ignored, never committed (H1).
+        with open(os.path.join(d, ".git", "info", "exclude"), "a") as fh:
+            fh.write(".panopticon/\n")
         subprocess.run(["git", "add", "-A"], cwd=d, check=True, timeout=30)
         subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
                         "commit", "-qm", "x"], cwd=d, check=True, timeout=30)
@@ -344,6 +347,7 @@ class TestDriverIntegrityWiring(unittest.TestCase):
         with open(os.path.join(d, "src", "app.py"), "w") as fh:
             fh.write("def f():\n    return 1\n")
         os.makedirs(os.path.join(d, ".panopticon"))
+        adopt_panopticon(d)   # #3273 P1: a run of ours (synthesize makes first contact)
         # #1511 BR-06: PERSIST the manifest before writing any run artifact.
         # These tests used an in-memory manifest dict that was never written, so
         # `_run_tag` found nothing and every `_pano` call resolved the flat
@@ -353,7 +357,7 @@ class TestDriverIntegrityWiring(unittest.TestCase):
         self._m = run_manifest.build_manifest(
             target=d, review_root=d, host="claude", security_mode="standard",
             run_id=self.RUN_ID, flags={"fail_on": "high"})
-        run_manifest.write_manifest(d, self._m)
+        run_manifest.write_manifest(d, our_manifest(d, self._m))
         self._run_dir = os.path.join(d, ".panopticon", "runs",
                                      run_manifest.run_tag(self._m))
         # #1344 F3: host-capabilities.json is itself a per-run artifact once a

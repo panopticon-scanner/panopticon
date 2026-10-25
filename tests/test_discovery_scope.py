@@ -309,6 +309,9 @@ def test_a_narrowing_scope_flag_does_not_review_an_out_of_scope_carved_file(tmp_
     # scope narrows the carve-out, it does not switch the policy off.
     (repo / "src" / "helm").mkdir(parents=True)
     (repo / "src" / "helm" / "values.yaml").write_text("x: 1\n")
+    # #3273 P1: the scans above marked `.panopticon/` ours; it is never committed.
+    with open(repo / ".git" / "info" / "exclude", "a") as fh:
+        fh.write(".panopticon/\n")
     git_cmd(repo, "add", "-A")
     git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "c2")
     (repo / "panopticon.yml").write_text(

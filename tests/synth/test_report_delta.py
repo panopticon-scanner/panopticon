@@ -13,6 +13,7 @@ import scripts.synth.plan as plan_mod
 import scripts.synth.report as report_mod
 import scripts.evidence as evidence_mod
 import scripts.synthesize as syn
+from tests._test_helpers import adopt_panopticon
 from tests.synth.helpers import _chdir, _cli_args
 
 
@@ -816,6 +817,7 @@ class TestTheHandRunPairIsBoundToo(unittest.TestCase):
             hunks["run_id"] = hunks_stamp
         with tempfile.TemporaryDirectory() as d:
             os.makedirs(os.path.join(d, ".panopticon"))
+            adopt_panopticon(d)   # #3273 P1: a run of ours (synthesize makes first contact)
             with open(os.path.join(d, ".panopticon", "groups.json"), "w") as fh:
                 json.dump(groups, fh)
             hp = os.path.join(d, ".panopticon", "diff-hunks.json")

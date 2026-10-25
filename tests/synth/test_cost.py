@@ -7,6 +7,7 @@ import json
 import tempfile
 import unittest
 
+from tests._test_helpers import adopt_panopticon
 from tests.synth.helpers import _chdir
 from unittest import mock
 
@@ -164,6 +165,7 @@ class TestCostLedgerDriver(unittest.TestCase):
             pano = os.path.join(d, ".panopticon")
             vdir = os.path.join(pano, "verdicts")
             os.makedirs(vdir)
+            adopt_panopticon(d)   # #3273 P1: a run of ours (synthesize makes first contact)
             fpaths, plan = [], []
             for g, dom in (("Auth", "SEC"), ("Auth", "COD")):
                 fp = os.path.join(pano, "findings-%s-%s.json" % (g, dom))

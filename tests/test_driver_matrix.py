@@ -452,6 +452,9 @@ class TestDriverSingleScopeEndToEnd(unittest.TestCase):
         # discovery_execute subprocesses the REAL discovery.py --repo-scan,
         # which discovers via `git ls-files` -- commit the fixture so it's seen.
         subprocess.run(["git", "init", "-q"], cwd=d, check=True, timeout=30)
+        # #3273 P1: an operator's artifact directory is ignored, never committed (H1).
+        with open(os.path.join(d, ".git", "info", "exclude"), "a") as fh:
+            fh.write(".panopticon/\n")
         subprocess.run(["git", "add", "-A"], cwd=d, check=True, timeout=30)
         subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
                         "commit", "-qm", "x"], cwd=d, check=True, timeout=30)

@@ -16,6 +16,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import scripts.config_schema as config_schema
+import scripts.executable as executable
+import scripts.first_contact as first_contact
 import scripts.html_report as html_report
 import scripts.ocrdb as ocrdb
 import scripts.plan_contract as plan_contract
@@ -200,6 +202,18 @@ def _artifact_path_refused(exc):
     return validate_schema_mod.ARTIFACT_INVALID
 
 
+def _first_contact(args, read_paths, write_paths):
+    """#3273 P1: first contact's `.panopticon/` half (`assess_standalone`).
+    True when it halted, with its one line printed."""
+    try:
+        first_contact.assess_standalone(os.getcwd(), read_paths, write_paths,
+                                        root_hints=(args.root, os.environ.get("PWD")))
+    except (first_contact.FirstContactHalt, executable.TargetPathEntry) as exc:
+        print("synthesize: %s" % exc, file=sys.stderr)
+        return True
+    return False
+
+
 def main(argv=None):
     """Main entry point: load findings, enrich citations, build and validate report."""
     args = build_parser().parse_args(argv)
@@ -239,6 +253,20 @@ def main(argv=None):
         default_groups = os.path.join(".panopticon", "groups.json")
         if os.path.isfile(default_groups):
             groups_path = default_groups
+    # #3273 P1: run artifacts are trusted only from a `.panopticon/` first
+    # contact verifies as this machine's -- the driver's child always is, and a
+    # direct invocation in a tree that planted one halts here, not at a reader.
+    # One this run writes into (the report, pass 1's verify queue) and finds
+    # absent or empty is marked ours, so the next pass trusts it (R1). Pass 1
+    # writes the report only when it queues nothing: its tree is assessed now
+    # and marked then.
+    report_writes = [args.out or os.path.join(".panopticon", "report.json"), args.html_out]
+    writes = ([args.run_dir or (os.path.dirname(groups_path) if groups_path else "")
+               or ".panopticon"] if args.emit_verify_queue else report_writes)
+    reads = (groups_path, args.run_dir, args.tools_dir, args.verdicts_dir, args.diff_hunks)
+    if _first_contact(args, reads + (tuple(report_writes) if args.emit_verify_queue else ()),
+                      writes):
+        return 2
     # #1639 P15 (F6): groups.json is read from the target's own `.panopticon/`,
     # and five of its fields are type-pinned by the time they reach the
     # artifact. `load_groups_json` normalizes them at the read, so its "never
@@ -363,6 +391,8 @@ def main(argv=None):
     if args.emit_verify_queue and verdicts_mod.emit_verify_queue(
             prepared[0], run_dir, args.max_verify):
         return 0
+    if args.emit_verify_queue and _first_contact(args, (), report_writes):
+        return 2
     queue = integrity_mod.load_verify_queue(run_dir)
     fs = findings_mod.FindingSet.load(args, tool_findings, run.security_mode,
                                       verdict_run_id=(queue[0] or {}).get("run_id"),

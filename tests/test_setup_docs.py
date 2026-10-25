@@ -100,7 +100,11 @@ class TestCodexHostDocs(unittest.TestCase):
                        "a dirs grant never covers <root>/.git; first contact does not count it.",
                        "`.github/` and `.gitignore` still read", "traversed by the host's own tool",
                        "Links created mid-run are out of scope",
-                       "Standalone tool entries do not run first contact; driver run/setup/loop do"):
+                       "Standalone tool entries do not run the whole first contact; driver "
+                       "run/setup/loop do",
+                       # #3273 P1 (ruling R1): which two entries mark, and when; CI's stays markless.
+                       "`run_tools.py` run directly (as CI runs it) keeps only a read-only check",
+                       "only when that invocation writes into it"):
             self.assertIn(phrase, sentence)
         for gone in ("st_nlink", "git clone --no-hardlinks", "past 256 recorded files",
                      "[skipped", "case- and normalization-folded", "Codex has no such gap"):
