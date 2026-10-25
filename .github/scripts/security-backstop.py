@@ -20,6 +20,10 @@ import time
 import zipfile
 
 MAX_BYTES = 8 * 1024 * 1024
+# #3292: security.yml titles its strict runs so; the nightly main-audit runs
+# share the `schedule` event. A week of nightlies plus the strict run fits.
+STRICT_RUN_TITLE = "Security Scan: strict-full-tree"
+SCHEDULED_WINDOW = 20
 SEVERITIES = ("INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL")
 
 
@@ -92,12 +96,14 @@ def retrieve(repository, fetch=gh_read):
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         return None, "invalid repository"
     try:
+        # Only the NEWEST strict run is considered, never an older one.
         runs = json.loads(fetch([
             "run", "list", "--repo", repository, "--workflow", "security.yml",
             "--event", "schedule", "--branch", "main", "--status", "completed",
-            "--limit", "1", "--json", "databaseId,headSha"]))
+            "--limit", str(SCHEDULED_WINDOW), "--json", "databaseId,headSha,displayTitle"]))
+        runs = [r for r in runs if r.get("displayTitle") == STRICT_RUN_TITLE]
         if not runs:
-            return None, "no completed scheduled main run (first run)"
+            return None, "no completed strict scheduled main run (first run)"
         run = runs[0]
         run_id = run["databaseId"]
         if type(run_id) is not int or run_id < 1:

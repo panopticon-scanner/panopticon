@@ -1,12 +1,13 @@
 name: CodeQL
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+  # No `push` (#3292). Nightly, one hour before security.yml's `main-audit`,
+  # whose alert audit needs this analysis at main's current SHA.
   schedule:
-    - cron: '0 9 * * 1'
+    - cron: '41 5 * * *'
+  workflow_dispatch:
 
 jobs:
   analyze:

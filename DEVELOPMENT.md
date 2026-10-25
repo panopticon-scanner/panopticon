@@ -167,7 +167,7 @@ characters, and matching consumes the whole path.
   `--fail-on medium` sees a correspondingly smaller tool axis on such a tree.
   **That floor is applied to what a commit ADDS** (#1790, owner ruling
   2026-09-23; route coverage settled by the controller's C1 ruling the same
-  day). Every route — push to `main`, same-repo PR, fork PR — downloads a base
+  day). Every delta route — same-repo PR, fork PR, the nightly `main-audit` — downloads a base
   commit's own `raw-scanner-captures` artifact and passes it to the gate as
   `--baseline-dir`/`--baseline-manifest`; the gate ingests it through the same
   call with the same `--exclude` globs and the same security mode, and a head
@@ -177,8 +177,9 @@ characters, and matching consumes the whole path.
   does not resurrect it — is printed under `pre-existing (in the base commit's
   scan; …)` and not counted. **A new HIGH/CRITICAL still fails the check.**
   Which commit is the base depends on the route: a PR compares against its
-  `base.sha`, a push to `main` against the previous main head
-  (`github.event.before`). From there the workflow walks the base itself plus
+  `base.sha`; the nightly `main-audit` (#3292, which replaced the push route)
+  against the commit the previous scheduled run scanned — the push route's
+  "previous main head", one day wide. From there the workflow walks the base itself plus
   **up to five first-parent ancestors** looking for a **completed**
   `security.yml` run to download from — `completed`, not `successful`. A run
   whose gate went red still uploaded its captures (`if: always()`), and the
@@ -545,7 +546,7 @@ file — which also means a version bump with stale digests fails the build rath
 something unpinned.
 
 **Scanning a fork PR (#1900).** Two workflows, and which one speaks for a fork PR is the whole
-design. `security.yml` (check name `scan`) runs on pushes to main and on same-repo PRs only; on a
+design. `security.yml` (check name `scan`) runs on same-repo PRs only (plus main-only scheduled runs under their own names); on a
 fork PR its job skips and says nothing. `security-fork.yml` (check name `fork-scan`) runs under
 `pull_request_target` and is the fork PR's required check — the one to register in branch
 protection.
@@ -580,7 +581,7 @@ clicking *Approve and run*.
 The fork path deliberately scans less than a main-branch run: no registry login, no `--deps` (so no
 dependency scanner reading the PR's own lockfiles) and no SARIF upload, because under
 `pull_request_target` the upload would be filed against `main`'s Security tab. The full set runs on
-the push to main after the merge.
+the nightly `main-audit` after the merge.
 
 What the fork path does NOT scan less of is the delta. A fork PR is gated on exactly the same terms
 as a same-repo one (#1790): `fork-scan` downloads the same base-commit `raw-scanner-captures`
@@ -617,7 +618,8 @@ identities do not prove fixes. Reporting never changes the strict verdict. A
 manual run does not replace scheduled history. A missing valid capture/image
 identity leaves a summary explaining why no snapshot could be published.
 
-**Post-merge zero-alert audit.** On a push to `main`, `security.yml` follows its actionable SARIF
+**Post-merge zero-alert audit.** Nightly, on the `main-audit` route (#3292; until then every push to
+`main` ran it), `security.yml` follows its actionable SARIF
 upload with a read-only `scripts/code_scanning_audit.py` check. The check independently proves that
 the Security upload and CodeQL's separate Python upload both finished for the exact current main
 SHA, then reads every page of `state=open` code-scanning alerts without a severity or tool filter.
@@ -630,6 +632,14 @@ fails at once.
 Any open note, warning, or error fails. There is no alert-number baseline or allowlist: fixed and
 dismissed findings pass because GitHub omits them from `state=open`, while a reopened or newly
 fingerprinted alert is open again and fails.
+
+`codeql.yml` runs nightly one hour earlier, so the two analyses normally share main's SHA. A merge
+landing between the two runs leaves them at different SHAs, and the audit fails closed (main
+moved); the next night retries, and dispatching `codeql.yml` and then `security.yml` with
+`route: main-audit` re-runs it on demand. Its check name is `main-audit`, never `scan`: a dispatch
+skipped on a branch must not post a green `scan` (#1900). The weekly `strict-full-tree` run is
+unchanged, and its week-over-week history finds the previous strict run by its run title
+(`Security Scan: strict-full-tree`), not merely as the newest scheduled run.
 
 This is a post-merge detector, not universal pre-merge protection. The fork workflow intentionally
 uploads no SARIF, so a fork warning/note may first turn the main audit red after merge; the raw

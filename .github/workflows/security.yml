@@ -1,7 +1,17 @@
 name: Security Scan
+# #3292: each route's run carries its own title. `security-backstop.py
+# retrieve` finds the previous strict run by it, among scheduled runs that
+# are now mostly nightly `main-audit` ones. A pull request keeps its title.
+run-name: >-
+  ${{ github.event_name == 'pull_request' && github.event.pull_request.title ||
+  ((github.event.schedule == '23 7 * * 1' ||
+  (github.event_name == 'workflow_dispatch' && inputs.route != 'main-audit'))
+  && 'Security Scan: strict-full-tree' || 'Security Scan: main-audit') }}
 
 on:
-  # TRUSTED routes: main pushes, same-repo PRs, and main-only full scans.
+  # TRUSTED routes: same-repo PRs, and main-only scheduled and dispatched scans.
+  # No `push` (#3292): a merge commit inherits its PR's captures as the next
+  # gate's baseline, and main itself is gated and audited nightly instead.
   # Same-repo branch PRs carry write access + required review. This file has NO
   # `pull_request_target`; fork PRs are scanned by `security-fork.yml`, behind
   # a maintainer's `safe-to-scan` label, and report under the name `fork-scan`.
@@ -21,16 +31,26 @@ on:
   # review, the repository's "require approval for all outside collaborators"
   # setting -- which, unlike `pull_request_target`, DOES cover this route --
   # and the required `fork-scan` check from `security-fork.yml`.
-  push:
-    branches: [main]
   # No `types:`: the defaults (opened, synchronize, reopened) are what keep a
   # new head from inheriting the previous head's verdict.
   pull_request:
     branches: [main]
 
   schedule:
+    # Weekly strict full-tree scan (red by design while the standing set is
+    # dismissed, not fixed), and the nightly `main-audit`: the old push
+    # route, once a day -- delta gate, Security tab upload, alert audit.
+    # codeql.yml's nightly runs one hour earlier, so the audit finds both
+    # analyses at main's SHA unless a merge lands in between.
     - cron: "23 7 * * 1"
+    - cron: "41 6 * * *"
   workflow_dispatch:
+    inputs:
+      route:
+        description: "strict-full-tree, or main-audit (the nightly route, on demand)"
+        type: choice
+        options: [strict-full-tree, main-audit]
+        default: strict-full-tree
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}-tools:latest
@@ -55,7 +75,11 @@ env:
   GOLDEN_GLOB: tests/goldens/tool-raw/**
 jobs:
   scan:
-    name: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'strict-full-tree' || 'scan' }}
+    name: >-
+      ${{ github.event_name == 'pull_request' && 'scan' ||
+      ((github.event.schedule == '23 7 * * 1' ||
+      (github.event_name == 'workflow_dispatch' && inputs.route != 'main-audit'))
+      && 'strict-full-tree' || 'main-audit') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # push always runs; a PR runs only from a SAME-REPO head. A fork PR skips
@@ -63,10 +87,20 @@ jobs:
     # security-fork.yml instead. Full events run only on main and carry their
     # own check name even when skipped.
     if: >-
-      github.event_name == 'push' ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository) ||
       ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main')
+    # One route per run, decided once (#3292): `pr` (the required `scan`),
+    # `strict` (weekly or dispatched full tree) and `audit` (nightly or
+    # dispatched main-audit). Every step below selects on it. Neither
+    # non-PR route can post `scan`: a dispatch skipped on a branch must
+    # never be a green `scan` on that branch's head (#1900).
+    env:
+      ROUTE: >-
+        ${{ github.event_name == 'pull_request' && 'pr' ||
+        ((github.event.schedule == '23 7 * * 1' ||
+        (github.event_name == 'workflow_dispatch' && inputs.route != 'main-audit'))
+        && 'strict' || 'audit') }}
     permissions:
       contents: read
       packages: read
@@ -142,8 +176,33 @@ jobs:
       # way (`pull_request_target` is `branches: [main]`, and a push route
       # reads main's previous head), so nothing a fork controls chooses which
       # baseline is fetched.
+      # #3292: the nightly route's base is the commit the previous scheduled
+      # run scanned -- the push route's "previous main head", one day wide.
+      # Either scheduled route's captures serve. A failed read resolves to no
+      # base, so the gate below runs strict: loud, never silently lax.
+      - name: Resolve the nightly base commit
+        if: env.ROUTE == 'audit'
+        id: nightly-base
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          sha=""
+          if ! sha="$(timeout 60 gh run list --workflow security.yml \
+                --event schedule --branch main --status completed --limit 1 \
+                --json headSha --jq '.[0].headSha // empty')"; then
+            sha=""
+          fi
+          case "$sha" in
+            *[!0-9a-f]*) sha="" ;;
+          esac
+          [ "${#sha}" -eq 40 ] || sha=""
+          echo "::notice::Nightly base: ${sha:-none, so the gate runs strict}."
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
       - name: Download the base commit's scanner captures
-        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        if: env.ROUTE != 'strict'
         id: baseline
         env:
           GH_TOKEN: ${{ github.token }}
@@ -157,7 +216,7 @@ jobs:
           # resolves to the empty string, which the script reads as "no base"
           # and runs strict. Through `env:`, like every other event value
           # either file reads.
-          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || steps.nightly-base.outputs.sha }}
         run: |
           # NO `continue-on-error` and NO `timeout-minutes` (review M3, fix
           # round 2). This step must not be able to red a required check
@@ -265,7 +324,7 @@ jobs:
       # Read-only history is fetched before any scan target is on disk. The
       # helper has no third-party imports on this path; deps are installed later.
       - name: Download previous scheduled main snapshot
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        if: env.ROUTE == 'strict'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -345,7 +404,7 @@ jobs:
           fi
 
       - name: Record actual scanner image identity
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        if: env.ROUTE == 'strict'
         run: |
           docker image inspect panopticon-tools --format '{{.Id}}' > "$RUNNER_TEMP/strict-image-id.txt"
 
@@ -452,7 +511,7 @@ jobs:
       # The advisor/evidence pipeline is the authority for the *reported* grade;
       # this is a conservative merge guard, not that grade.
       - name: Gate on HIGH/CRITICAL tool findings (unverified-strict policy)
-        if: github.event_name == 'push' || github.event_name == 'pull_request'
+        if: env.ROUTE != 'strict'
         env:
           BASELINE_FOUND: ${{ steps.baseline.outputs.found }}
         run: |
@@ -482,7 +541,7 @@ jobs:
             ${baseline[@]+"${baseline[@]}"}
 
       - name: Strict full-tree gate
-        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        if: env.ROUTE == 'strict'
         run: |
           python controller/skill/scripts/security_gate.py \
             --tools-dir "$RUNNER_TEMP/${{ env.TOOLS_OUT }}" \
@@ -493,7 +552,7 @@ jobs:
 
       - name: Publish strict security snapshot and summary
         id: strict-report
-        if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        if: always() && env.ROUTE == 'strict'
         run: |
           python controller/.github/scripts/security-backstop.py report \
             --tools-dir "$RUNNER_TEMP/${{ env.TOOLS_OUT }}" \
@@ -508,7 +567,7 @@ jobs:
             --security redteam
 
       - name: Upload strict security snapshot
-        if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && steps.strict-report.outcome == 'success'
+        if: always() && env.ROUTE == 'strict' && steps.strict-report.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: strict-security-snapshot
@@ -573,7 +632,7 @@ jobs:
       - name: Audit current main for open code-scanning alerts
         if: >-
           always() &&
-          github.event_name == 'push' &&
+          env.ROUTE == 'audit' &&
           github.ref == 'refs/heads/main' &&
           steps.upload-sarif.outcome == 'success'
         timeout-minutes: 5
