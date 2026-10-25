@@ -193,6 +193,13 @@ class TestTheDependencyAuditReceipt(unittest.TestCase):
             open(os.path.join(d, "requirements-dev.txt"), "w").close()
             self.assertEqual(tm.dependency_audit_applicable(d), ["python"])
 
+    def test_variant_requirements_under_a_glob_metacharacter_path_is_found(self):
+        with tempfile.TemporaryDirectory() as root:
+            target = os.path.join(root, "repo[a]")
+            os.mkdir(target)
+            open(os.path.join(target, "requirements-dev.txt"), "w").close()
+            self.assertEqual(tm.dependency_audit_applicable(target), ["python"])
+
     def test_markers_removed_from_osv_still_make_their_ecosystem_applicable(self):
         markers = {
             "pyproject.toml": "python",
@@ -224,6 +231,14 @@ class TestTheDependencyAuditReceipt(unittest.TestCase):
         })
         self.assertNotIn("trivy", payload["dependency_audit"]["selected"])
         self.assertNotIn("trivy", payload["dependency_audit"]["produced"])
+
+    def test_writer_drops_non_producer_ecosystem_values(self):
+        with tempfile.TemporaryDirectory() as d:
+            payload = tm.write_manifest(
+                os.path.join(d, "manifest.json"), ["semgrep"], [],
+                dependency_applicable=["python", "unknown", "forged"],
+            )
+        self.assertEqual(payload["dependency_audit"]["applicable"], ["python"])
 
 
 # Captured from the tree at the commit this split branched from, BEFORE any code

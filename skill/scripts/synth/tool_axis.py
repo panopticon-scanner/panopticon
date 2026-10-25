@@ -284,6 +284,10 @@ def reconcile(plan, tools, resolved, run=None):
     panels_incomplete = {p for p, n in planned.items() if executed.get(p, 0) < n}
     tools_ran = tools.tools_ran
     produced = set(tools_ran if tools_ran is not None else resolved.tool_names)
+    selected_m = (set(validate_schema_mod.string_list(tools.manifest.get("selected")))
+                  if isinstance(tools.manifest, dict) else set())
+    produced_m = (set(validate_schema_mod.string_list(tools.manifest.get("produced")))
+                  if isinstance(tools.manifest, dict) else set())
     # #1031: certify on the runner's DETERMINISTIC adapter set when its manifest
     # is present -- `missing` (applicable known adapters that didn't produce) is
     # the only real tool-coverage loss, so it drives the gate (`tools_absent`).
@@ -313,9 +317,6 @@ def reconcile(plan, tools, resolved, run=None):
         repair_mod.repair_dependency_audit(tools.manifest.get("dependency_audit"))
         if isinstance(tools.manifest, dict)
         and "dependency_audit" in tools.manifest else None)
-    dependency_audit_gap = bool(
-        dependency_audit and dependency_audit["applicable"]
-        and not dependency_audit["produced"])
     if tools.manifest_invalid:
         # #1644: corruption is not absence, and the scout-derived fallback below
         # is only honest when nothing WAS corrupted. With the manifest
@@ -327,11 +328,9 @@ def reconcile(plan, tools, resolved, run=None):
         # INCONCLUSIVE with every other integrity failure (fix round 1 F1).
         tools_absent, tool_divergence = [], {}
     elif isinstance(tools.manifest, dict):
-        selected = set(validate_schema_mod.string_list(tools.manifest.get("selected")))
-        produced_m = set(validate_schema_mod.string_list(tools.manifest.get("produced")))
         missing = tools.manifest.get("missing")
         missing_list = sorted(validate_schema_mod.string_list(missing)
-                              if isinstance(missing, list) else selected - produced_m)
+                              if isinstance(missing, list) else selected_m - produced_m)
         tools_absent = list(missing_list)
         tool_divergence = {t: "requested_absent" for t in missing_list}
         # #1512 (Codex BR-02): the manifest records what the RUNNER wrote, which
@@ -358,7 +357,7 @@ def reconcile(plan, tools, resolved, run=None):
                 {t: "produced_unusable" if info["kind"] == "unusable"
                  else "requested_absent"
                  for t, info in lost.items()})
-        unavailable = sorted(set(plan.scout_requested or []) - selected - produced_m)
+        unavailable = sorted(set(plan.scout_requested or []) - selected_m - produced_m)
         tool_divergence.update({t: "requested_unavailable" for t in unavailable})
     else:
         tools_absent = sorted(set(plan.scout_requested or []) - produced)
@@ -394,6 +393,20 @@ def reconcile(plan, tools, resolved, run=None):
     if noscan:
         tools_absent = [t for t in tools_absent if t not in noscan]
         tool_divergence.update({t: "produced_noscan" for t in noscan})
+    if dependency_audit is not None:
+        # The receipt is target-adjacent. Bind its claims back to the manifest's
+        # reconciled selection/output rather than trusting a second spelling of
+        # those facts; unusable output in tools_absent earns no SCA credit.
+        effective_selected = set(dependency_audit["selected"]) & selected_m
+        effective_produced = ((set(dependency_audit["produced"]) & produced_m
+                               & effective_selected) - set(tools_absent)
+                              if not tools.manifest_invalid else set())
+        dependency_audit = {**dependency_audit,
+                            "selected": sorted(effective_selected),
+                            "produced": sorted(effective_produced)}
+    dependency_audit_gap = bool(
+        dependency_audit and dependency_audit["applicable"]
+        and not dependency_audit["produced"])
     divergence = {
         "panels": {p: {"planned": planned[p], "executed": executed.get(p, 0)}
                    for p in sorted(panels_incomplete)},

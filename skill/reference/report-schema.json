@@ -272,7 +272,7 @@
                   "items": {"enum": ["bundler-audit", "cargo-audit", "dependency-check", "npm-audit", "osv-scanner", "pip-audit"]}
                 }
               },
-              "description": "#3269 SCA: the runner's repaired dependency-coverage receipt. applicable names deterministic dependency ecosystems in the tree; selected and produced name only dedicated SCA adapters intersected with the runner's actual selection and output receipt. Empty Trivy SARIF earns no credit. A non-empty applicable list with no produced adapter makes coverage NOT CERTIFIED and a PASS gate INCONCLUSIVE. `unknown` is the fixed fail-closed repair of a malformed target-adjacent receipt. The key is absent on legacy/direct manifests that never measured this axis."
+              "description": "#3269 SCA: the runner's repaired dependency-coverage receipt. applicable names deterministic dependency ecosystems in the tree; selected and produced name only dedicated SCA adapters intersected with the runner's actual selection and output receipt, and produced is further reconciled against usable ingest coverage. Failed or forged output and empty Trivy SARIF earn no credit. A non-empty applicable list with no produced adapter makes coverage NOT CERTIFIED and a PASS gate INCONCLUSIVE. `unknown` is the fixed fail-closed repair of a malformed target-adjacent receipt. The key is absent on legacy/direct manifests that never measured this axis."
             },
             "tool_policy_mode": {
               "type": "string",

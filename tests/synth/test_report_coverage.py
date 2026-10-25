@@ -600,6 +600,36 @@ class TestDependencyAuditCoverage(unittest.TestCase):
         self.assertTrue(report["summary"]["coverage_certified"])
         self.assertIsNone(report["summary"]["coverage_note"])
 
+    def test_receipt_cannot_claim_output_absent_from_reconciled_manifest(self):
+        receipt = {"applicable": ["javascript"],
+                   "selected": ["osv-scanner"], "produced": ["osv-scanner"]}
+        report = self._report(
+            receipt, ["trivy"], ["trivy"],
+            {"trivy": {"status": "empty", "findings": 0}},
+        )
+        self.assertEqual(report["meta"]["coverage"]["dependency_audit"], {
+            "applicable": ["javascript"], "selected": [], "produced": [],
+        })
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertEqual(report["summary"]["coverage_note"], self.NOTE)
+
+    def test_unusable_dedicated_output_earns_no_sca_credit(self):
+        receipt = {"applicable": ["python"],
+                   "selected": ["pip-audit"], "produced": ["pip-audit"]}
+        report = self._report(
+            receipt, ["pip-audit"], ["pip-audit"],
+            {"pip-audit": {"status": "failed", "findings": 0,
+                           "reason": "malformed capture"}},
+        )
+        self.assertEqual(report["meta"]["coverage"]["dependency_audit"], {
+            "applicable": ["python"],
+            "selected": ["pip-audit"],
+            "produced": [],
+        })
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+        self.assertEqual(report["summary"]["coverage_note"], self.NOTE)
+
     def test_measured_tree_with_no_dependency_surface_has_no_sca_gap(self):
         receipt = {"applicable": [], "selected": [], "produced": []}
         report = self._report(receipt, ["trivy"], ["trivy"],

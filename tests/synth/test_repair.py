@@ -671,6 +671,16 @@ class TestRepairDependencyAudit(unittest.TestCase):
         self.assertEqual(got["applicable"], ["unknown"])
         self.assertEqual(got["produced"], [])
 
+    def test_unknown_applicability_cannot_carry_claimed_scanner_output(self):
+        got, _err = self._repair({
+            "applicable": ["unknown"],
+            "selected": ["osv-scanner"],
+            "produced": ["osv-scanner"],
+        })
+        self.assertEqual(got, {
+            "applicable": ["unknown"], "selected": [], "produced": [],
+        })
+
 
 if __name__ == "__main__":
     unittest.main()

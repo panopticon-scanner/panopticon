@@ -106,7 +106,7 @@ def dependency_audit_applicable(target):
     """
     found = {ecosystem for ecosystem, markers in _DEPENDENCY_AUDIT_MARKERS.items()
              if any(os.path.isfile(os.path.join(target, marker)) for marker in markers)}
-    if next(glob.iglob(os.path.join(target, "requirements*.txt")), None):
+    if next(glob.iglob(os.path.join(glob.escape(target), "requirements*.txt")), None):
         found.add("python")
     return sorted(found)
 
