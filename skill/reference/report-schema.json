@@ -251,6 +251,29 @@
               },
               "description": "#3265 (owner ruling 2026-10-23): adapters from EXECUTES_TARGET_BUILD that applied to the target but were NOT run, because the operator did not pass --allow-target-build. Running one executes the target's own build code inside the tools container, so it is opt-in and off by default. Present only when something was withheld. Read off the tools manifest's `withheld` list and repaired to EXECUTES_TARGET_BUILD names (the manifest is target-writable). Non-sinking: an off-by-default adapter is never `missing` and never affects coverage_certified."
             },
+            "dependency_audit": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["applicable", "selected", "produced"],
+              "properties": {
+                "applicable": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {"enum": ["go", "java", "javascript", "python", "ruby", "rust", "unknown"]}
+                },
+                "selected": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {"enum": ["bundler-audit", "cargo-audit", "dependency-check", "npm-audit", "osv-scanner", "pip-audit"]}
+                },
+                "produced": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {"enum": ["bundler-audit", "cargo-audit", "dependency-check", "npm-audit", "osv-scanner", "pip-audit"]}
+                }
+              },
+              "description": "#3269 SCA: the runner's repaired dependency-coverage receipt. applicable names deterministic dependency ecosystems in the tree; selected and produced name only dedicated SCA adapters intersected with the runner's actual selection and output receipt. Empty Trivy SARIF earns no credit. A non-empty applicable list with no produced adapter makes coverage NOT CERTIFIED and a PASS gate INCONCLUSIVE. `unknown` is the fixed fail-closed repair of a malformed target-adjacent receipt. The key is absent on legacy/direct manifests that never measured this axis."
+            },
             "tool_policy_mode": {
               "type": "string",
               "enum": [

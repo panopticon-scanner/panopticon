@@ -62,6 +62,41 @@ FILES_MAX = 10000
 PATH_MAX = 4096
 
 
+def repair_dependency_audit(value, warn=None):
+    """Repair the target-adjacent #3269 SCA receipt to closed enums.
+
+    ``None`` is a legacy manifest with no measurement. Any present malformed
+    receipt becomes one fixed applicable/zero-output state, so corrupting it
+    can only cost certification and no target-authored value reaches a report.
+    """
+    if value is None:
+        return None
+    fallback = {"applicable": ["unknown"], "selected": [], "produced": []}
+    if not isinstance(value, dict) or set(value) != {"applicable", "selected", "produced"}:
+        warn_repairs("tools-manifest.json", [("dependency_audit", "repaired")], warn)
+        return fallback
+    allowed = {
+        "applicable": tools_manifest.DEPENDENCY_AUDIT_ECOSYSTEMS,
+        "selected": tools_manifest.DEPENDENCY_AUDIT_TOOLS,
+        "produced": tools_manifest.DEPENDENCY_AUDIT_TOOLS,
+    }
+    repaired = {}
+    for key, enum in allowed.items():
+        rows = value.get(key)
+        if not isinstance(rows, list) or any(not isinstance(row, str) or row not in enum
+                                             for row in rows):
+            warn_repairs("tools-manifest.json",
+                         [("dependency_audit.%s" % key, "repaired")], warn)
+            return fallback
+        repaired[key] = sorted(set(rows))
+    if (not set(repaired["produced"]).issubset(repaired["selected"])
+            or ("unknown" in repaired["applicable"]
+                and (repaired["selected"] or repaired["produced"]))):
+        warn_repairs("tools-manifest.json", [("dependency_audit", "repaired")], warn)
+        return fallback
+    return repaired
+
+
 def warn_repairs(artifact, changes, warn):
     """Announce the repairs a boundary read made, one line each -- through
     `warn` when a caller supplied one (synthesis collects them), on stderr

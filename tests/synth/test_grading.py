@@ -168,6 +168,20 @@ class TestCertify(unittest.TestCase):
         self.assertEqual(r["gate"], "INCONCLUSIVE")
         self.assertFalse(r["coverage_certified"])
 
+    def test_dependency_audit_gap_preserves_gate_precedence(self):
+        cases = [
+            ([], "high", "INCONCLUSIVE"),
+            (self._crit(), "high", "FAIL"),
+            ([], None, "OFF"),
+        ]
+        for findings, fail_on, expected in cases:
+            with self.subTest(expected=expected):
+                r = grading_mod.certify(
+                    "A", findings, fail_on, set(), [], dependency_audit_gap=True)
+                self.assertEqual(r["gate"], expected)
+                self.assertFalse(r["coverage_certified"])
+                self.assertEqual(r["coverage_note"], grading_mod.NO_SCA_COVERAGE_NOTE)
+
     def test_an_unreadable_manifest_sinks_certification_on_its_own(self):
         # A UNIT contract of this parameter, deliberately called with
         # integrity_ok=True: the reason alone is enough to refuse certification

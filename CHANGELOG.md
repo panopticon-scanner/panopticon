@@ -96,6 +96,20 @@
   planted link. Explicit output paths outside `.panopticon` retain their safe replace-without-
   following behavior; intentional artifact removal and the run's owned compatibility links are
   unchanged.
+- **Dependency coverage is now a visible, certifying receipt (#3269 SCA, 5.3).**
+  `meta.coverage.dependency_audit` records which dependency ecosystems were applicable and which
+  dedicated SCA adapters were selected and produced output. If a dependency surface exists but no
+  dedicated adapter produces output, coverage is NOT CERTIFIED, a would-be PASS is INCONCLUSIVE,
+  and both rendered reports say “no SCA tool produced output on an applicable tree”. An empty
+  generic Trivy SARIF earns no SCA credit.
+  - osv-scanner applicability now matches the automatic parsers in the pinned v1.8.2 binary and
+    the npm, PyPI, Go, RubyGems, crates.io and Maven databases baked into the tools image.
+    `pyproject.toml` is covered by pip-audit when online; without that output it is not audited and
+    the receipt is NOT CERTIFIED. `Cargo.toml` and `go.sum` alone are not audited and are NOT
+    CERTIFIED (their `Cargo.lock` and `go.mod` counterparts select the offline scanners).
+    `build.gradle` requires resolved JVM artifacts for dependency-check; without them it is not
+    audited and is NOT CERTIFIED. `npm-shrinkwrap.json`, also absent from v1.8.2's parser table, is
+    covered by npm-audit when online and otherwise is not audited and NOT CERTIFIED.
 
 - **Operator-visible: first contact halts on a `.panopticon/` this machine did not start (#3271).**
   `driver run` and `driver setup` now assess the target once, before any phase writes, and halt

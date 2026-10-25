@@ -554,6 +554,75 @@ class TestRenderSummaryCoverage(unittest.TestCase):
         self.assertIn("provisional", text.lower())
 
 
+class TestDependencyAuditCoverage(unittest.TestCase):
+    NOTE = "no SCA tool produced output on an applicable tree"
+    TS = "2026-10-25T00:00:00Z"
+
+    def _report(self, receipt, selected, produced, dispositions):
+        manifest = {
+            "schema_version": 1,
+            "selected": list(selected),
+            "produced": list(produced),
+            "missing": sorted(set(selected) - set(produced)),
+            "excluded_scope": [],
+            "dependency_audit": receipt,
+        }
+        return report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            tools=tool_axis_mod.ToolAxis(
+                tools_ran=set(produced), dispositions=dispositions, manifest=manifest),
+        ))
+
+    def test_applicable_tree_with_only_empty_trivy_is_visible_and_inconclusive(self):
+        receipt = {"applicable": ["python"], "selected": [], "produced": []}
+        report = self._report(
+            receipt, ["trivy"], ["trivy"],
+            {"trivy": {"status": "empty", "findings": 0}},
+        )
+        self.assertEqual(report["meta"]["coverage"]["dependency_audit"], receipt)
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertEqual(report["summary"]["coverage_note"], self.NOTE)
+        self.assertIn(self.NOTE, render_mod.render_summary(report))
+        import html
+        import scripts.html_report as html_report
+        self.assertIn(self.NOTE, html.unescape(html_report.render(report)))
+
+    def test_clean_dedicated_adapter_output_clears_the_sca_gap(self):
+        receipt = {"applicable": ["python"],
+                   "selected": ["pip-audit"], "produced": ["pip-audit"]}
+        report = self._report(
+            receipt, ["pip-audit"], ["pip-audit"],
+            {"pip-audit": {"status": "empty", "findings": 0}},
+        )
+        self.assertEqual(report["summary"]["gate"], "PASS")
+        self.assertTrue(report["summary"]["coverage_certified"])
+        self.assertIsNone(report["summary"]["coverage_note"])
+
+    def test_measured_tree_with_no_dependency_surface_has_no_sca_gap(self):
+        receipt = {"applicable": [], "selected": [], "produced": []}
+        report = self._report(receipt, ["trivy"], ["trivy"],
+                              {"trivy": {"status": "empty", "findings": 0}})
+        self.assertEqual(report["meta"]["coverage"]["dependency_audit"], receipt)
+        self.assertEqual(report["summary"]["gate"], "PASS")
+        self.assertTrue(report["summary"]["coverage_certified"])
+
+    def test_malformed_receipt_is_repaired_to_a_fixed_fail_closed_gap(self):
+        report = self._report(
+            {"applicable": ["<forged>"], "selected": "pip-audit",
+             "produced": ["trivy"]},
+            ["trivy"], ["trivy"],
+            {"trivy": {"status": "empty", "findings": 0}},
+        )
+        self.assertEqual(report["meta"]["coverage"]["dependency_audit"], {
+            "applicable": ["unknown"], "selected": [], "produced": [],
+        })
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+        self.assertEqual(report["summary"]["coverage_note"], self.NOTE)
+        self.assertEqual([], validate_schema_mod.schema_errors(report))
+
+
 class TestAWithheldTargetBuildIsDisclosedNotGated(unittest.TestCase):
     """#3265: roslyn-secguard off by default is the intended posture. It is
     named in meta.coverage and on both rendered views with one fixed line, and

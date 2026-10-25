@@ -175,6 +175,57 @@ class TestTheOutputReceipt(unittest.TestCase):
                               expected_run_id="OTHER", required=True)
 
 
+class TestTheDependencyAuditReceipt(unittest.TestCase):
+    """#3269 SCA: applicability, selection and output are three facts."""
+
+    def test_dependency_surfaces_are_reported_by_ecosystem(self):
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("pyproject.toml", "Cargo.toml", "go.sum", "build.gradle",
+                         "package.json", "Gemfile"):
+                open(os.path.join(d, name), "w").close()
+            self.assertEqual(
+                tm.dependency_audit_applicable(d),
+                ["go", "java", "javascript", "python", "ruby", "rust"],
+            )
+
+    def test_variant_requirements_file_is_still_a_python_surface(self):
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "requirements-dev.txt"), "w").close()
+            self.assertEqual(tm.dependency_audit_applicable(d), ["python"])
+
+    def test_markers_removed_from_osv_still_make_their_ecosystem_applicable(self):
+        markers = {
+            "pyproject.toml": "python",
+            "Cargo.toml": "rust",
+            "go.sum": "go",
+            "build.gradle": "java",
+            "npm-shrinkwrap.json": "javascript",
+        }
+        for marker, ecosystem in markers.items():
+            with self.subTest(marker=marker), tempfile.TemporaryDirectory() as d:
+                open(os.path.join(d, marker), "w").close()
+                self.assertEqual(tm.dependency_audit_applicable(d), [ecosystem])
+
+    def test_writer_records_only_dedicated_dependency_adapters(self):
+        with tempfile.TemporaryDirectory() as d:
+            captures = [os.path.join(d, "trivy.sarif"),
+                        os.path.join(d, "osv-scanner.json")]
+            for path in captures:
+                open(path, "w").close()
+            payload = tm.write_manifest(
+                os.path.join(d, "manifest.json"),
+                ["trivy", "osv-scanner", "pip-audit"], captures,
+                dependency_applicable=["python"],
+            )
+        self.assertEqual(payload["dependency_audit"], {
+            "applicable": ["python"],
+            "selected": ["osv-scanner", "pip-audit"],
+            "produced": ["osv-scanner"],
+        })
+        self.assertNotIn("trivy", payload["dependency_audit"]["selected"])
+        self.assertNotIn("trivy", payload["dependency_audit"]["produced"])
+
+
 # Captured from the tree at the commit this split branched from, BEFORE any code
 # moved (the command is in the PR's implementation notes). A difference here is
 # the extraction being wrong: fix the extraction, never this table.

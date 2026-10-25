@@ -205,6 +205,8 @@ class Reconciled:
     # beside `integrity` (which also publishes it) the way `integrity_ok` is:
     # certification takes it as an input, and must not have to read a section.
     tools_manifest_invalid: str | None = None
+    # #3269 SCA: measured dependency surface with no dedicated adapter output.
+    dependency_audit_gap: bool = False
     # #1701/#3269 G4: source-scope drops this run's gate counts anyway (redteam
     # only; `[]` in every other mode). Beside `coverage` like the two blocks
     # above and for the same reason: `meta.coverage` is what the report SAYS,
@@ -307,6 +309,13 @@ def reconcile(plan, tools, resolved, run=None):
             tools.manifest.get("language_detection_skips"))
         if isinstance(tools.manifest, dict)
         and "language_detection_skips" in tools.manifest else None)
+    dependency_audit = (
+        repair_mod.repair_dependency_audit(tools.manifest.get("dependency_audit"))
+        if isinstance(tools.manifest, dict)
+        and "dependency_audit" in tools.manifest else None)
+    dependency_audit_gap = bool(
+        dependency_audit and dependency_audit["applicable"]
+        and not dependency_audit["produced"])
     if tools.manifest_invalid:
         # #1644: corruption is not absence, and the scout-derived fallback below
         # is only honest when nothing WAS corrupted. With the manifest
@@ -612,6 +621,8 @@ def reconcile(plan, tools, resolved, run=None):
     if language_detection_skips is not None:
         # Disclosure only: selection and `tools_absent` were reconciled above.
         coverage["language_detection_skips"] = language_detection_skips
+    if dependency_audit is not None:
+        coverage["dependency_audit"] = dependency_audit
     # #1757 (AGT-1355709320), owner ruling 2026-09-25: what the TARGET's own
     # `exclude_paths:` could not hide -- the objective SEC surface it excluded,
     # kept for the SEC domain in a review group of its own. Conditional, unlike
@@ -643,4 +654,5 @@ def reconcile(plan, tools, resolved, run=None):
                       tools_image=tools_image.repair(manifest_dict.get("image")),
                       tools_apps=app_trace.repair(manifest_dict.get("apps")),
                       tools_manifest_invalid=tools.manifest_invalid,
+                      dependency_audit_gap=dependency_audit_gap,
                       gated_suppressed=gated)
