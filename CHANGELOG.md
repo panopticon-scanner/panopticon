@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Fix: a large setup proposal wrapped in prose or code fences is read as its OUTER document.**
+  `tolerant_json.first_balanced_object` kept at most 256 closed spans in closing order, so a reply
+  nesting more than that (a monorepo proposal: one object per group, layer and profile) lost the
+  outermost object, and ingest refused the proposal ("'groups' must be a non-empty list") after
+  a paid setup dispatch. Seen twice on langfuse in the 2026-10-24 calibration batch. A closing span
+  now supersedes the inner spans it encloses.
 - **Operator-visible: a resumed run no longer trusts two stored files it did not bind (#3280, GHSA-wjpr-jxg9-rmwh's family).**
   - **The readiness tail on `driver setup` / `driver loop --setup` completion.** It is read off
     `setup-report.json` only when those bytes are the ones this setup run recorded (their sha256, in
