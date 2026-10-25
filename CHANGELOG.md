@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Fix: a large setup proposal wrapped in prose or code fences is read as its OUTER document.**
+  `tolerant_json.first_balanced_object` kept at most 256 closed spans in closing order, so a reply
+  nesting more than that (a monorepo proposal: one object per group, layer and profile) lost the
+  outermost object, and ingest refused the proposal ("'groups' must be a non-empty list") after
+  a paid setup dispatch. Seen twice on langfuse in the 2026-10-24 calibration batch. A closing span
+  now supersedes the inner spans it encloses.
 - **Operator-visible: hand-run `synthesize.py` and `discovery.py` make first contact's `.panopticon/` half (#3273 P1).**
   Before they read or write a run artifact, they check H1-H3 and the ownership mark on every tree
   one of their artifact paths lies in (`--groups`, `--run-dir`, `--tools-dir`, `--verdicts-dir`,
