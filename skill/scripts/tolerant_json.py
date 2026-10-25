@@ -93,6 +93,16 @@ def first_balanced_object(body):
             overflow -= 1
         elif char == "}" and starts:
             start = starts.pop()
+            # A span that closes encloses every span recorded since it opened
+            # -- a contiguous suffix, because spans land in closing order --
+            # and a parent that parses supersedes its children, so they yield
+            # their slots to it. Without this the OUTERMOST object, which
+            # closes last, was the one the candidate cap dropped on any
+            # document nesting more than _SCAN_CANDIDATES objects, and a
+            # prose-wrapped setup proposal read as its first inner group
+            # (tests/test_tolerant_json_outer_object.py).
+            while spans and spans[-1][0] > start:
+                spans.pop()
             if len(spans) < _SCAN_CANDIDATES:
                 spans.append((start, pos + 1))
     budget = max(_SCAN_BUDGET_FLOOR, 2 * len(body))
