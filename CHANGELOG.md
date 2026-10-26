@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **CI: the AI-usage inventory leaves the Security tab again.**
+  - Since #1335 and #3193, every Semgrep capture carries Panopticon's own run stamps, `panopticon_scanned_files` and `panopticon_size_skipped`. `code_scanning_reports.py` read them as unreviewed metadata and failed closed, so all 270 `detect-generic-ai-*` notes stayed on the Security tab and kept main's alert audit red.
+  - Those two keys, in exactly their writers' shapes, are now a reviewed run context. Any other key or shape still keeps the run actionable.
+  - On the live captures, 1,544 inventory results now route to the AI inventory; 0 did before.
+
 - **CI: main is gated and audited nightly, not on every push (#3292, cut 18).**
   - `security.yml` and `codeql.yml` drop their `push` triggers; a merge commit's baseline is its PR's own captures (#3295).
   - New nightly `main-audit` route (06:41 UTC): delta gate against the commit the previous scheduled run scanned, Security tab upload, raw captures, and the zero-alert audit. Its check name is `main-audit`.
