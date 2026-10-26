@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Change: one finding's line span counts at most 50 lines in the health index (#3230).**
+  - `weighted_defect` multiplied each finding's severity weight by every line it spanned. So whether a reviewer cited a whole file decided the headline grade. On one commit, a single 7,458-line "monolithic module" MEDIUM was a third of a run's total, and two runs of the same commit graded A (health 90.38) and C (73.25).
+  - A finding's span now counts at most `SPAN_CAP` = 50 lines, about one function. A MEDIUM at any span is worth at most ten one-line HIGHs, and a localized multi-line defect still outweighs a one-liner. Owner ruling: the A/B/C bands are kept as set, and recalibrating them is a follow-up.
+  - Replaying the two corpus runs' synthesis exactly: health 90.38 A becomes 96.38 A, and 73.25 C becomes 94.76 A.
+  - **Every report's health rises.** Span weight was most of every run's footprint. The gate, certification and severity are unchanged; only the health index and the letter it drives move.
+  - The report says so about itself: `summary.health.span_cap` is new (schema-optional), `formula` names the cap, and the Markdown and HTML explanations state it. A report written before the cap keeps its numbers and its wording.
 - **Fix: a full disk or I/O error at run start is a status, not a traceback (#2094).**
   - `driver.run` writes two things into the reviewed tree before any phase: the `runs/latest` link and the clean-tree baseline. It turned a planted-path refusal from either into a status, but an `OSError` (ENOSPC, EIO, a read-only mount) escaped as a Python traceback with no status JSON. Since #1809 the disk state after such a failure was already right; only the operator's diagnostic was wrong.
   - It is now `status: error`, naming which write failed ("capturing the clean-tree baseline" or "creating the run links"), the path, and the system's error text.

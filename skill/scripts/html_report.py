@@ -532,10 +532,9 @@ def _render_header(report):
         f"<span class='badge {_severity_class(summary.get('risk_level', 'INFO') or 'unknown')}'>Risk: {_escape(summary.get('risk_level', '-') or 'unknown')}</span>",
         f"<span class='badge {_gate_class(summary.get('gate', 'OFF'))}'>Gate: {_escape(summary.get('gate', 'OFF'))}{_gate_mode_label(meta)}</span>",
     ]
-    # Health never affects the gate (#1057). Across six calibration targets, every grade was D/F
-    # while health ranged from 35.68 to 70.45. That sample is too small for healthy/fair/poor bands,
-    # so the number and inputs show how much of the measured codebase is clean without assigning a
-    # qualitative label.
+    # Health never affects the gate (#1057). Across six calibration targets every grade was D/F while
+    # health ranged 35.68-70.45, too small a sample for healthy/fair/poor bands, so the number and
+    # inputs show how much of the measured codebase is clean without a qualitative label.
     health = summary.get("health")
     if isinstance(health, dict) and health.get("score") is not None:
         parts.append(
@@ -551,7 +550,7 @@ def _render_header(report):
             "<table><tr><td>CRITICAL</td><td>&times;125</td>"
             "<td>HIGH</td><td>&times;25</td><td>MEDIUM</td><td>&times;5</td>"
             "<td>LOW</td><td>&times;1</td><td>INFO</td><td>&times;0</td></tr></table>"
-            "Each finding contributes its weight multiplied by the lines it spans, "
+            "Each finding contributes its weight multiplied by the lines it spans%s, "
             "so a wide CRITICAL costs far more than a one-line LOW."
             "<span class='hp-note'>Counts gate-eligible findings only &mdash; "
             "rejected and unverified ones do not drag it down. It is reported "
@@ -564,7 +563,8 @@ def _render_header(report):
                 _escape(str(health["score"])),                      # badge
                 _escape("{:,}".format(health.get("total_loc", 0))),
                 _escape("{:,}".format(health.get("weighted_defect", 0))),
-                _escape(str(health["score"]))))                     # popover
+                _escape(str(health["score"])),                      # popover
+                _escape(" (at most %s)" % cap if isinstance(cap := health.get("span_cap"), int) else "")))
     parts.append("</div>")
     if summary.get("coverage_certified") is False:
         note = summary.get("coverage_note") or "gate-relevant coverage did not complete"

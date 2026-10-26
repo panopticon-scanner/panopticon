@@ -31,8 +31,15 @@ class TestHealthWeightExplanation(unittest.TestCase):
             "**Health:** 97.56 / 100 — 1,000 clean LoC against 25 weighted "
             "defect; HIGHER IS BETTER, 100 = no gate-eligible weighted defect "
             "(weights: CRITICAL x125, HIGH x25, MEDIUM x5, LOW x1, INFO x0, "
-            "each x lines spanned). Gate-eligible findings only; never affects "
+            "each x lines spanned, at most 50). Gate-eligible findings only; never affects "
             "the gate.")
+
+    def test_a_report_from_before_the_span_cap_keeps_its_wording(self):
+        # #3230: the cap is read from the report, so a pre-cap report's line
+        # never claims a bound its numbers were not computed under
+        health = grading_mod.health_stats(1000, [_agentic(sev="HIGH")])
+        del health["span_cap"]
+        self.assertIn("each x lines spanned). Gate-eligible", render_mod._render_health(health))
 
 
 class TestHealthLetterGrade(unittest.TestCase):

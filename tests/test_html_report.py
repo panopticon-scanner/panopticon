@@ -904,6 +904,18 @@ class TestHtmlReport(unittest.TestCase):
         for weight in ("125", "25", "5", "1"):        # the severity weights
             self.assertIn("&times;%s" % weight, out)
 
+    def test_health_explainer_names_the_span_cap_only_when_the_report_has_one(self):
+        # #3230: the bound is read from the report, never assumed for an old one
+        for cap, expected in ((50, "the lines it spans (at most 50), "),
+                              (None, "the lines it spans, ")):
+            with self.subTest(span_cap=cap):
+                report = _minimal_report()
+                report["summary"]["health"] = {"score": 48.58, "total_loc": 68932,
+                                               "weighted_defect": 72954}
+                if cap is not None:
+                    report["summary"]["health"]["span_cap"] = cap
+                self.assertIn(expected, hr.render(report))
+
     def test_health_explainer_is_keyboard_reachable(self):
         # A hover-only affordance is unusable by keyboard; the popover must also
         # open on focus, and the control must be a real focusable element.
