@@ -259,9 +259,23 @@ class TestValidatePhase(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             fifo = os.path.join(root, "target-pipe")
             os.mkfifo(fifo)
-            with mock.patch("builtins.open", side_effect=AssertionError("FIFO was opened")):
+            with mock.patch("builtins.open", side_effect=AssertionError("FIFO was read")), \
+                    mock.patch.object(validate_phase.os, "open",
+                                      side_effect=AssertionError("FIFO was opened")) as opened:
                 entry = validate_phase._file_entry(fifo)
         self.assertEqual(entry, {"type": "non-regular"})
+        opened.assert_not_called()
+
+    def test_file_entry_does_not_open_a_known_character_device(self):
+        """#3269 G10: lstat-classified devices are skipped before open."""
+        device = "/target/character-device"
+        character = mock.Mock(st_mode=stat.S_IFCHR | 0o600)
+        with mock.patch.object(validate_phase.os, "lstat", return_value=character), \
+                mock.patch.object(validate_phase.os, "open",
+                                  side_effect=AssertionError("device was opened")) as opened:
+            entry = validate_phase._file_entry(device)
+        self.assertEqual(entry, {"type": "non-regular"})
+        opened.assert_not_called()
 
     def test_file_entry_rechecks_the_open_descriptor_type(self):
         """#3269 G10: a regular-to-FIFO race is opened nonblocking then skipped."""
@@ -302,6 +316,27 @@ class TestValidatePhase(unittest.TestCase):
             "CONTENT target-pipe (non-regular -> file)",
             validate_phase._tree_delta(repo, unchanged_status),
         )
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "requires symlink support")
+    def test_retargeting_an_untracked_symlink_is_a_content_delta(self):
+        """#3269 G10: the symlink target remains part of baseline identity."""
+        repo = self._git_repo()
+        rel = "target-link"
+        link = os.path.join(repo, rel)
+        try:
+            os.symlink("first-target", link)
+        except (NotImplementedError, OSError) as exc:
+            self.skipTest("cannot create symlink: %s" % exc)
+        baseline = validate_phase.capture_tree_baseline(repo)
+        with open(baseline, encoding="utf-8") as fh:
+            snapshot = json.load(fh)
+        self.assertEqual(snapshot["entries"][rel],
+                         {"type": "symlink", "target": "first-target"})
+
+        os.unlink(link)
+        os.symlink("second-target", link)
+        self.assertEqual(validate_phase._tree_delta(repo, subprocess.run),
+                         ["CONTENT target-link"])
 
     def test_panopticon_prefix_sibling_is_flagged(self):
         # a repo-root file sharing the '.panopticon' prefix WITHOUT a '/' boundary
