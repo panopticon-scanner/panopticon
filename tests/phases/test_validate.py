@@ -354,8 +354,8 @@ class TestFinalizeWorktree(unittest.TestCase):
             {"summary": {"gate": "PASS"}})
         err = io.StringIO()
         with mock.patch.object(diff_map, "release_worktree") as rel, \
-             mock.patch("shutil.copyfile",
-                        side_effect=OSError("disk full")), \
+             mock.patch.object(validate_phase.safe_write, "read_regular_bytes",
+                               side_effect=OSError("disk full")), \
              contextlib.redirect_stderr(err):
             validate_phase._finalize_worktree(worktree, manifest)
         rel.assert_not_called()                        # worktree KEPT, not destroyed
@@ -377,6 +377,167 @@ class TestFinalizeWorktree(unittest.TestCase):
             self.assertTrue(
                 os.path.isfile(os.path.join(target, ".panopticon", f"{tag}-{part}")),
                 "%s not surfaced" % part)
+
+
+class TestFinalizeIntoAPlantedCallerTree(unittest.TestCase):
+    """#3225: in --pr mode first contact vets the WORKTREE, never the caller
+    checkout, so the caller's `.panopticon` is whatever the target's default
+    branch committed. The surface writes there through a held directory fd:
+    a planted root is refused (the worktree is kept), a planted leaf or link
+    is swapped rather than written through, and nothing lands outside."""
+
+    def _dir(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
+        return d
+
+    def _run(self, html=False):
+        worktree, target, outside = self._dir(), self._dir(), self._dir()
+        manifest = {"run_id": "R", "worktree": worktree, "target": target}
+        tag = run_manifest.run_tag(manifest)
+        src = os.path.join(worktree, ".panopticon")
+        runio._write_json(os.path.join(src, f"{tag}-report.json"), {"gate": "PASS"})
+        if html:
+            with open(os.path.join(src, f"{tag}-report.json.html"), "w") as fh:
+                fh.write("<html>report</html>")
+        return worktree, target, outside, manifest, tag
+
+    def _finalize(self, worktree, manifest):
+        err = io.StringIO()
+        with mock.patch.object(diff_map, "release_worktree") as rel, \
+                contextlib.redirect_stderr(err):
+            validate_phase._finalize_worktree(worktree, manifest)
+        return rel, err.getvalue()
+
+    def _assert_kept(self, rel, err, reason):
+        rel.assert_not_called()
+        self.assertIn("KEEPING the worktree", err)
+        self.assertIn(reason, err)
+
+    def test_a_symlinked_panopticon_is_refused_and_nothing_lands_outside(self):
+        worktree, target, outside, manifest, _tag = self._run()
+        os.symlink(outside, os.path.join(target, ".panopticon"))
+        rel, err = self._finalize(worktree, manifest)
+        self._assert_kept(rel, err, "not a symlink")
+        self.assertEqual(os.listdir(outside), [])
+
+    def test_a_panopticon_that_is_a_file_is_refused(self):
+        worktree, target, _outside, manifest, _tag = self._run()
+        open(os.path.join(target, ".panopticon"), "w").close()
+        rel, err = self._finalize(worktree, manifest)
+        self._assert_kept(rel, err, "not a directory")
+
+    def _swap(self, target, outside):
+        real = os.path.join(target, ".panopticon")
+        os.rename(real, os.path.join(target, "moved"))
+        os.symlink(outside, real)
+
+    def test_a_swap_after_the_check_is_refused_by_the_open(self):
+        # The order the review asked for: `.panopticon` passes the check and is
+        # THEN swapped for a link. A path-based write follows it (measured:
+        # `publish_texts` published into the link's target). The O_NOFOLLOW
+        # open refuses the link instead, and the worktree is kept.
+        worktree, target, outside, manifest, _tag = self._run()
+        os.mkdir(os.path.join(target, ".panopticon"))
+        checked = validate_phase.plan_contract.artifact_root
+
+        def check_then_swap(root):
+            path = checked(root)
+            self._swap(target, outside)
+            return path
+
+        with mock.patch.object(validate_phase.plan_contract, "artifact_root",
+                               side_effect=check_then_swap):
+            rel, err = self._finalize(worktree, manifest)
+        self._assert_kept(rel, err, ".panopticon")
+        self.assertEqual(os.listdir(outside), [])
+
+    def test_a_swap_after_the_open_cannot_redirect_the_write(self):
+        # The later window: the directory is already held when the name is
+        # swapped. Every write is relative to the fd, so the reports land in
+        # the real directory (wherever it was renamed to), never outside.
+        worktree, target, outside, manifest, tag = self._run()
+        os.mkdir(os.path.join(target, ".panopticon"))
+        opened = validate_phase._open_caller_artifact_dir
+
+        def open_then_swap(root):
+            fd = opened(root)
+            self._swap(target, outside)
+            return fd
+
+        with mock.patch.object(validate_phase, "_open_caller_artifact_dir",
+                               side_effect=open_then_swap):
+            self._finalize(worktree, manifest)
+        self.assertEqual(os.listdir(outside), [])
+        self.assertTrue(os.path.isfile(os.path.join(target, "moved", f"{tag}-report.json")))
+
+    def test_a_planted_leaf_link_is_replaced_not_written_through(self):
+        worktree, target, outside, manifest, tag = self._run()
+        victim = os.path.join(outside, "victim")
+        with open(victim, "w") as fh:
+            fh.write("untouched")
+        os.mkdir(os.path.join(target, ".panopticon"))
+        leaf = os.path.join(target, ".panopticon", f"{tag}-report.json")
+        os.symlink(victim, leaf)
+        rel, _err = self._finalize(worktree, manifest)
+        rel.assert_called_once()
+        with open(victim) as fh:
+            self.assertEqual(fh.read(), "untouched")
+        self.assertFalse(os.path.islink(leaf))
+        self.assertEqual(runio._load_json(leaf), {"gate": "PASS"})
+
+    def test_a_planted_report_json_link_is_swapped_for_ours(self):
+        worktree, target, outside, manifest, tag = self._run(html=True)
+        os.mkdir(os.path.join(target, ".panopticon"))
+        for link in ("report.json", "report.json.html"):
+            os.symlink(os.path.join(outside, link), os.path.join(target, ".panopticon", link))
+        self._finalize(worktree, manifest)
+        for link, name in (("report.json", f"{tag}-report.json"),
+                           ("report.json.html", f"{tag}-report.json.html")):
+            self.assertEqual(os.readlink(os.path.join(target, ".panopticon", link)), name)
+        self.assertEqual(os.listdir(outside), [])
+
+    def test_a_relink_that_fails_keeps_the_worktree_instead_of_raising(self):
+        # A planted DIRECTORY at report.json: the link cannot be swapped onto
+        # it. Before #3225 the relink's refusal escaped as a traceback after
+        # the copies had landed.
+        worktree, target, _outside, manifest, _tag = self._run()
+        os.makedirs(os.path.join(target, ".panopticon", "report.json", "x"))
+        rel, err = self._finalize(worktree, manifest)
+        self._assert_kept(rel, err, "report.json (")
+
+    def test_an_over_cap_source_is_a_failed_surface_never_a_partial_copy(self):
+        worktree, target, _outside, manifest, tag = self._run(html=True)
+        with mock.patch.object(validate_phase, "MAX_SURFACED_BYTES", 8):
+            rel, err = self._finalize(worktree, manifest)
+        self._assert_kept(rel, err, "read limit")
+        self.assertEqual(os.listdir(os.path.join(target, ".panopticon")), [])
+
+    def test_no_dir_fd_support_refuses_rather_than_writing_by_path(self):
+        worktree, target, _outside, manifest, _tag = self._run()
+
+        def unsupported():
+            pass
+
+        with mock.patch.object(validate_phase, "_DIR_FD_CALLS",
+                               validate_phase._DIR_FD_CALLS + (unsupported,)):
+            rel, err = self._finalize(worktree, manifest)
+        self._assert_kept(rel, err, "no dir_fd support for unsupported")
+        self.assertFalse(os.path.lexists(os.path.join(target, ".panopticon")))
+
+    def test_the_happy_path_surfaces_byte_identical_reports_and_links(self):
+        worktree, target, _outside, manifest, tag = self._run(html=True)
+        rel, _err = self._finalize(worktree, manifest)
+        rel.assert_called_once_with(worktree, repo=target)
+        dst = os.path.join(target, ".panopticon")
+        for name in (f"{tag}-report.json", f"{tag}-report.json.html"):
+            with open(os.path.join(worktree, ".panopticon", name), "rb") as a, \
+                    open(os.path.join(dst, name), "rb") as b:
+                self.assertEqual(a.read(), b.read(), name)
+        self.assertEqual(os.readlink(os.path.join(dst, "report.json")), f"{tag}-report.json")
+        self.assertEqual(sorted(os.listdir(dst)),
+                         sorted([f"{tag}-report.json", f"{tag}-report.json.html",
+                                 "report.json", "report.json.html"]))
 
 
 class TestBaselineDiagnosticRedaction(unittest.TestCase):
