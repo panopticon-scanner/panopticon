@@ -468,10 +468,11 @@ def _redact_capture(tool, data):
     one quoted literal per line -- is bounded to 16 KiB and cannot span two
     `-----BEGIN` blocks. So a flat-pass match over a structured document is
     bounded rather than open-ended; it is not the guarantee parsing gives, which
-    is why JSON never takes this path. That length bound has a cost worth
-    knowing before you publish a capture: a PEM block whose body runs longer
-    than 16 KiB is not masked AT ALL -- header included -- so a capture quoting
-    one very large key can still carry it verbatim.
+    is why JSON never takes this path. A PEM block whose body runs longer than
+    that bound is masked too, by `redact._mask_overlong_keys` after the pattern
+    pass (#2987; it used to reach the capture verbatim, header included), and
+    still one block at a time: only a header that meets its own END before any
+    other `-----BEGIN`.
 
     Whichever path runs, it is `scripts/redact.py`'s pattern set -- never a
     second copy: two redactors drift, and the one reached only by raw captures
