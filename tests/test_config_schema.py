@@ -500,11 +500,8 @@ class TestATargetCannotAllowItsOwnBuild(unittest.TestCase):
             asked = argparse.Namespace(allow_target_build=True)
             self.assertIs(True, driver._cli_flags(asked, review_root=d).get("allow_target_build"))
 
-    def test_run_and_loop_take_the_flag_and_a_resume_carries_it(self):
+    def test_run_and_loop_take_the_flag(self):
         parser = driver.build_parser()
         for verb in ("run", "loop"):
             args = parser.parse_args([verb, "--allow-target-build"])
             self.assertIs(True, args.allow_target_build, verb)
-        import scripts.runners.resume as resume
-        self.assertIn(("allow_target_build", "--allow-target-build", "flag"),
-                      resume._RESUME_FLAGS)

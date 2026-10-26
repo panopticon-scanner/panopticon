@@ -672,12 +672,9 @@ class TestSkillMd(unittest.TestCase):
         import scripts.runners.outage as outage
         self.assertIn("`paused`", loop)
         self.assertIn(outage.HOST_OUTAGE_CLAUSE, loop)
-        # #1732: the SECOND stop rule ends a run the same way, for a
-        # different cause and a different remedy -- an operator whose run
-        # stopped has to be able to tell "wait for the host" from "fix the
-        # launch", and the give-back is the part they act on.
-        self.assertIn("%d ms" % outage.UNIFORM_FAST_MS, loop)
-        self.assertIn("charges **nobody**", loop)
+        # #3273 cut 10: the way back is the operator's own command, and the
+        # guide names the bounds a retyped one must keep.
+        self.assertIn("the bounds included", loop)
         # ...and the ledger row that makes an identical batch diagnosable at
         # all: the CLI's own words, which run 14's rows did not carry.
         self.assertIn("`stderr`", loop)

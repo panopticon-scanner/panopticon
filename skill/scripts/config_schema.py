@@ -41,8 +41,8 @@ GATE_KEYS = ("fail_on", "gate_scope", "max_verify", "security", "severity", "too
 # unclassified (spec §4).
 # `discard_batch` (#1912) sits here with `reset` for the same reason, and the
 # reason is sharper for it: both are one-shot destructive choices the person at
-# the terminal makes about a run folder -- never carried into a resume
-# (`runners/resume.py`) -- and this table is what stops the REVIEWED TREE from
+# the terminal makes about a run folder -- never part of a resume -- and this
+# table is what stops the REVIEWED TREE from
 # making one of them. A target that could set `discard_batch: 1` under
 # `settings:` would be asking the driver to throw away a batch record of its
 # own review, which is precisely the acceptance only an operator may give.

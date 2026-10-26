@@ -553,10 +553,11 @@ on Claude hooks, and always uses the return-persist path.
   host-class failures, even when an earlier launch in it failed for its own reasons — that one keeps
   its charge, and a success from a launch made *after* the first host-class failure is what says the
   host is back and cancels the pause. The status names the host, the failure class, how many
-  launches it took down, how many of the batch's entries were never launched at all, and the exact
-  command that resumes the run — with every flag the run was invoked with, because the engine
-  refuses a resume that changed one and a resume that dropped `--max-budget-usd` would run
-  unbounded. Nothing is lost by stopping: no entry's attempt budget was charged and the failed
+  launches it took down and how many of the batch's entries were never launched at all, and it tells
+  you to re-run the same command with the same flags once the host is back, the bounds included
+  (`--max-budget-usd`, `--max-iterations`, `--concurrency`, `--entry-timeout`, `--max-turns`):
+  the engine refuses a resume that changed an anti-drift flag, but a re-run that dropped a bound
+  would run unbounded. Nothing is lost by stopping: no entry's attempt budget was charged and the failed
   launches left nothing behind, so every reply that did land is kept and re-running the loop resumes
   this run where it stopped; the interrupted checkpoint's per-cell attempt marker is given back
   exactly as a Ctrl-C gives it back, for the cells the host failed and the cells the stop never
@@ -565,22 +566,10 @@ on Claude hooks, and always uses the return-persist path.
   the run after the stop has already fired, so three paused runs during one outage do not drop the
   cells the way three automatic iterations of it used to. `paused` exits **non-zero**, so a CI job
   cannot read an outage as a clean review. A batch that mixes the two classes charges only the
-  entry-class failures, and the cap above is unchanged for them. A **second stop rule** sits beside
-  the host-class one and ends the run the same way (#1732), and a **third** — the `--max-budget-usd`
-  cap described with the flags above — stops launching the same way without charging anyone: when
-  the first `max(2, --concurrency)` results of a batch, by arrival, are all entry-class launch
-  failures, each in under 2000 ms, carrying byte-identical redacted messages, that is the **launch**
-  being refused before any entry did any work — the argv or the configuration, not N different
-  entries and not the host. Run 14 is the case: 103 tool-verify entries each exited in ~120 ms with
-  the same message over one wrong argv token, and the per-entry cap needed three whole rounds (309
-  launches, ~35 minutes) to notice. A success, a persist refusal (the launch came back), a
-  host-class failure (the rule above owns that one), an unmeasured duration or two different
-  messages each break it, so the two rules can never describe the same results. A uniform batch
-  pauses with a message of its own, composed once rather than per entry, naming the count, the
-  window, the message and the same resume command — and it charges **nobody**: every failed id gets
-  its attempt marker back, exactly as the host-class rule gives them back, and no entry's streak is
-  incremented. The loop's own "stopped launching after …" line names which of the three rules fired,
-  so an argv defect does not read as a host outage. A **review cell** is bounded separately, by its
+  entry-class failures, and the cap above is unchanged for them. A **second** stop rule — the
+  `--max-budget-usd` cap described with the flags above — stops launching the same way without
+  charging anyone, and the loop's own "stopped launching after …" line names which of the two
+  fired, so a budget stop does not read as a host outage. A **review cell** is bounded separately, by its
   own three-dispatch retry budget: once a cell has spent it the phase advances rather than wedging
   on a cell that cannot be recovered, so the run reaches `complete` having lost it. That is not a
   clean run and the terminal status says so — `cells_exhausted: <n>`, with the same count and each

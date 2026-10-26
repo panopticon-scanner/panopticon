@@ -98,8 +98,7 @@ class TestAHostWideOutage(LoopCase):
         self.assertIn(outage.HOST_FAILURE, message)             # the failure class
         self.assertIn("4", message)                           # how many launches it took down
         self.assertIn("403 Forbidden", message)               # what the host actually said
-        self.assertIn("driver loop", message)                 # the exact resume command
-        self.assertIn("--host claude", message)
+        self.assertIn(outage.RESUME_ADVICE, message)           # the way back, bounds named
 
     def test_a_paused_run_still_ledgers_every_failed_launch(self):
         # Nothing is rolled back -- nothing was written -- so the evidence of
@@ -148,8 +147,7 @@ class TestAHostWideOutage(LoopCase):
         self.assertEqual("paused", status["status"], status)
         self.assertIn(outage.HOST_FAILURE, message)
         self.assertIn("resets 10:10am", message)
-        self.assertIn("driver loop", message)
-        self.assertIn("--host claude", message)
+        self.assertIn(outage.RESUME_ADVICE, message)
         # no cell charged: a healthy re-run dispatches every cell again.
         # (coordinator review, Nit 6: `_load_json(...) or {}` would make this
         # vacuously true if the file were never written at all, so the file's
@@ -232,22 +230,20 @@ class TestAHostWideOutage(LoopCase):
         self.assertTrue(os.path.exists(landed), "the successful cell was persisted")
         self.assertNotIn("nothing was written", status["message"])
 
-    def test_the_resume_command_carries_every_flag_the_run_was_given(self):
-        # m2. A copy-pasted resume that silently dropped the operator's bounds
-        # would run unbounded, and the message calls itself the way back "with
-        # the same flags".
+    def test_the_way_back_names_every_bound_and_never_reset(self):
+        # m2, after #3273 cut 10: the message no longer composes a command, so
+        # what it must carry is the instruction -- the operator's own command,
+        # the same flags, and each BOUND by name, because a retyped command that
+        # dropped one would run unbounded.
         d, floor = self._repo(floor=self.FLOOR)
-        status = self._run_loop(d, floor, self.Outage(), "--security", "redteam",
-                                "--concurrency", "2", "--max-iterations", "7",
-                                "--max-budget-usd", "5", "--entry-timeout", "60",
-                                "--max-turns", "9", "--allow-unenforced")
-        for token in ("--host claude", "--mode headless", "--security redteam",
-                      "--fail-on high", "--no-tools", "--allow-unenforced",
-                      "--concurrency 2", "--max-iterations 7", "--max-budget-usd 5",
-                      "--entry-timeout 60", "--max-turns 9", d):
-            self.assertIn(token, status["message"])
+        status = self._run_loop(d, floor, self.Outage(), "--max-budget-usd", "5")
+        message = status["message"]
+        self.assertIn("same command with the same flags", message)
+        for bound in ("--max-budget-usd", "--max-iterations", "--concurrency",
+                      "--entry-timeout", "--max-turns"):
+            self.assertIn("`%s`" % bound, message)
         # ...and never `--reset`, which would discard the run it is resuming
-        self.assertNotIn("--reset", status["message"])
+        self.assertNotIn("--reset", message)
 
     def test_the_pause_and_the_cap_redact_what_the_host_said(self):
         # M3. The one message whose whole purpose is to surface an AUTH
