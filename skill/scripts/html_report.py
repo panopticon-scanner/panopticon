@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Render a CodeReviewReport as a self-contained HTML document."""
 from typing import TYPE_CHECKING, Any
+import base64
 import hashlib
 import html
 import json
@@ -223,8 +224,7 @@ button, .tab { font-family: var(--ui); }
 button:focus-visible, summary:focus-visible, a:focus-visible { outline: 2px solid var(--accent-border); outline-offset: 2px; }
 """
 
-_JS = """
-(function () {
+_JS = """(function () {
   'use strict';
   var THEME_KEY = 'panopticon-theme';
   function applyTheme(t) {
@@ -292,8 +292,9 @@ _JS = """
       });
     });
   });
-})();
-"""
+})();"""
+
+_JS_SHA256 = base64.b64encode(hashlib.sha256(_JS.encode("utf-8")).digest()).decode("ascii")
 
 
 def _escape(value):
@@ -308,7 +309,7 @@ def _html_doc(title, body):
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; script-src 'self' 'unsafe-inline'; img-src 'self' data:;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; script-src 'sha256-{_JS_SHA256}'; img-src 'self' data:;">
 <title>{_escape(title)}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>

@@ -1,4 +1,6 @@
+import base64
 import dataclasses
+import hashlib
 import html
 import os
 import tempfile
@@ -127,6 +129,26 @@ class TestHtmlReport(unittest.TestCase):
         self.assertIn("<p>hello</p>", doc)
         self.assertIn(hr._CSS, doc)
         self.assertIn(hr._JS, doc)
+
+    def test_html_doc_csp_hashes_the_exact_inline_script(self):
+        """#3269 G11: only the bytes rendered by the trusted script get execution."""
+        doc = hr._html_doc("Test Report", "<p>hello</p>")
+        root = _parse(doc)
+        csp_meta = only([
+            node for node in _nodes(root, "meta")
+            if node["attrs"].get("http-equiv") == "Content-Security-Policy"
+        ], "CSP meta tag")
+        script = only(_nodes(root, "script"), "inline script")
+        digest = base64.b64encode(
+            hashlib.sha256(_text(script).encode("utf-8")).digest()
+        ).decode("ascii")
+        script_src = only([
+            directive.strip()
+            for directive in csp_meta["attrs"]["content"].split(";")
+            if directive.strip().startswith("script-src ")
+        ], "script-src directive")
+
+        self.assertEqual(script_src, "script-src 'sha256-%s'" % digest)
 
     def test_title_escaped_once(self):
         report = _minimal_report()
