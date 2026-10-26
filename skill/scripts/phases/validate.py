@@ -103,6 +103,24 @@ def _write_baseline(baseline, emit):
         raise
     return baseline
 
+def start_write_failure(review_root, baseline, exc):
+    """#2094: the status message for an OSError from `driver.run`'s two run-start
+    writes -- a full disk, EIO, a read-only mount. That is the filesystem refusing,
+    not a bug, so it gets a status, not a traceback, naming WHICH write failed.
+    A failed baseline write leaves nothing at the real path (`_write_baseline`
+    unlinks its own staging file), and a missing baseline is only ever written
+    before the first dispatch (#3255), so a plain rerun captures it again."""
+    if baseline:
+        what, path = "capturing the clean-tree baseline", runio._pano(review_root, "tree-baseline.txt")
+        remedy = ("nothing partial was left and no reviewer has run, so free the space "
+                  "or fix the filesystem and rerun; the rerun captures the baseline again")
+    else:
+        what = "creating the run links"
+        path = os.path.join(review_root, ".panopticon", "runs", "latest")
+        remedy = "free the space or fix the filesystem under .panopticon/runs and rerun"
+    where = exc.filename if exc.filename is not None else path
+    return "driver: %s failed at %s: %s; %s" % (what, where, exc.strerror or exc, remedy)
+
 def _write_probe_failed_baseline(baseline):
     return _write_baseline(baseline, lambda fh: fh.write(_TREE_BASELINE_PROBE_FAILED))
 
