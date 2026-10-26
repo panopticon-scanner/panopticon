@@ -789,6 +789,19 @@ class TestDiffAnchors(unittest.TestCase):
 _REPO_SCOPE_LISTING = "local\0core.repositoryformatversion\n0\0"
 
 
+def _logical(argv):
+    """argv with its program reduced to the NAME: #3222 launches `gh` and the
+    fetch's `git` by the absolute path `executable.resolve` returned."""
+    argv = list(argv)
+    return [os.path.basename(argv[0])] + argv[1:] if argv else argv
+
+
+def _is_operator(kwargs):
+    """The two launches that keep the operator's environment carry its HOME;
+    `safe_git`'s allowlisted environment never does."""
+    return "HOME" in (kwargs.get("env") or {})
+
+
 class _PrRunner:
     """Only the commands acquire_pr/release_worktree issue, with visible state."""
 
@@ -820,8 +833,8 @@ class _PrRunner:
         assert kwargs.get("capture_output") is True, argv
         assert kwargs.get("text") is True, argv
         assert 0 < kwargs["timeout"] <= diff_map._PR_TIMEOUT, argv
-        if argv == ["gh", "pr", "view", str(self.pr), "--json", "baseRefName"]:
-            assert "env" not in kwargs, argv
+        if _logical(argv) == ["gh", "pr", "view", str(self.pr), "--json", "baseRefName"]:
+            assert os.path.isabs(argv[0]) and _is_operator(kwargs), argv
             phase = "gh"
             result = (self.gh_returncode, self.gh_stdout, self.gh_stderr)
         else:
@@ -831,7 +844,7 @@ class _PrRunner:
             assert argv[5] == "-c" and argv[6].startswith("core.hooksPath="), argv
             root, command = argv[2], argv[7:]
             if command[:1] == ["fetch"]:
-                assert "env" not in kwargs, argv
+                assert os.path.isabs(argv[0]) and _is_operator(kwargs), argv
                 assert root == self.repo, argv
                 assert command[:4] == ["fetch", "--no-recurse-submodules",
                                        "--no-write-fetch-head", diff_map._PR_REMOTE], argv
@@ -841,7 +854,7 @@ class _PrRunner:
                 assert re.fullmatch(rf"refs/panopticon/pr-{self.pr}-[0-9a-f]+", ref), argv
                 phase = "fetch"
             else:
-                assert "env" in kwargs, argv  # confined safe_git launch
+                assert "env" in kwargs and not _is_operator(kwargs), argv  # safe_git
                 assert root in (self.repo, os.path.realpath(self.repo), self.wt), argv
                 if command == ["worktree", "list", "--porcelain", "-z"]:
                     assert root == self.repo, argv
@@ -1056,7 +1069,7 @@ class TestPrWorktree(unittest.TestCase):
         # The two calls that keep the operator's environment are a single launch
         # each, so they carry the whole bound exactly.
         operator = [t for argv, t in seen
-                    if argv[:3] == ["gh", "pr", "view"] or "fetch" in argv]
+                    if _logical(argv)[:3] == ["gh", "pr", "view"] or "fetch" in argv]
         self.assertEqual(len(operator), 2, seen)
         self.assertTrue(all(t == diff_map._PR_TIMEOUT for t in operator), operator)
 
@@ -1392,6 +1405,96 @@ class TestPrWorktreeLeafIsOursOrRefused(unittest.TestCase):
         self.assertEqual(0, runner.adds)
 
 
+class TestPrLaunchesResolveOffATrustedPath(unittest.TestCase):
+    """#3222: `gh pr view` and the PR fetch keep the operator's environment,
+    and were the two launches still found by bare name on the operator's PATH
+    -- before #3270's PATH check, which runs only once `acquire_pr` returns.
+    Both now resolve first: a relative entry is dropped, an entry inside the
+    checkout HALTS before anything launches, and the child gets a clean PATH
+    and no startup or exec-path hooks."""
+
+    def setUp(self):
+        root = os.path.realpath(tempfile.mkdtemp(prefix="panopticon-3222-"))
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.repo = os.path.join(root, "repo")
+        os.makedirs(os.path.join(self.repo, "bin"))
+        subprocess.run(["git", "init", "-q", self.repo], check=True, timeout=30)
+        for planted in (os.path.join(self.repo, n) for n in
+                        ("git", "gh", os.path.join("bin", "git"), os.path.join("bin", "gh"))):
+            with open(planted, "w") as fh:
+                fh.write("#!/bin/sh\nexit 97\n")
+            os.chmod(planted, 0o755)
+        self.trusted = os.path.join(root, "trusted-bin")
+        os.mkdir(self.trusted)
+        os.symlink(shutil.which("git"), os.path.join(self.trusted, "git"))
+        with open(os.path.join(self.trusted, "gh"), "w") as fh:
+            fh.write("#!/bin/sh\nexit 99\n")
+        os.chmod(os.path.join(self.trusted, "gh"), 0o755)
+        self.wt = tempfile.mkdtemp(prefix="panopticon-test-wt-")
+        self.addCleanup(shutil.rmtree, self.wt, ignore_errors=True)
+
+    def _acquire(self, path, **env):
+        runner = _PrRunner(self.repo, self.wt)
+        with mock.patch.dict(os.environ, dict(env, PATH=path)), \
+                mock.patch.object(diff_map, "_worktree_dir", return_value=self.wt), \
+                contextlib.redirect_stderr(io.StringIO()):
+            diff_map.acquire_pr(7, repo=self.repo, runner=runner)
+        return [(argv, kw) for argv, kw in runner.calls if _is_operator(kw)]
+
+    def _inside(self, path):
+        return os.path.realpath(path).startswith(self.repo + os.sep)
+
+    def test_a_relative_entry_is_dropped_and_both_launch_by_absolute_path(self):
+        with contextlib.chdir(self.repo):   # `.` IS the checkout, with a planted git and gh
+            operator = self._acquire(os.pathsep.join([".", self.trusted]))
+        self.assertEqual([_logical(a)[0] for a, _kw in operator], ["gh", "git"])
+        for argv, kwargs in operator:
+            with self.subTest(program=argv[0]):
+                self.assertTrue(os.path.isabs(argv[0]), argv)
+                self.assertFalse(self._inside(argv[0]), argv)
+                entries = kwargs["env"]["PATH"].split(os.pathsep)
+                self.assertTrue(all(os.path.isabs(e) and not self._inside(e)
+                                    for e in entries), entries)
+
+    def test_an_entry_inside_the_checkout_halts_before_anything_launches(self):
+        runner = _PrRunner(self.repo, self.wt)
+        with mock.patch.dict(os.environ, {"PATH": os.pathsep.join(
+                [os.path.join(self.repo, "bin"), self.trusted])}):
+            with self.assertRaises(diff_map.executable.TargetPathEntry):
+                diff_map.acquire_pr(7, repo=self.repo, runner=runner)
+        self.assertEqual(runner.calls, [])
+
+    def test_no_trusted_gh_is_a_loud_refusal_and_no_launch(self):
+        runner = _PrRunner(self.repo, self.wt)
+        only_git = os.path.join(os.path.dirname(self.trusted), "only-git")
+        os.mkdir(only_git)
+        os.symlink(shutil.which("git"), os.path.join(only_git, "git"))
+        with mock.patch.dict(os.environ, {"PATH": only_git}):
+            with self.assertRaisesRegex(RuntimeError, "no trusted `gh` on PATH"):
+                diff_map.acquire_pr(7, repo=self.repo, runner=runner)
+        self.assertEqual(runner.calls, [])
+
+    def test_startup_and_exec_path_hooks_do_not_reach_the_operator_launches(self):
+        # The coordinator's pin: `git -C repo fetch` with GIT_EXEC_PATH into the
+        # checkout ran a planted `git-remote-https` (measured), so it is removed;
+        # the loader hook goes with every trusted CLI launch. HOME and the
+        # credential-shaped variables are what this exemption exists for.
+        operator = self._acquire(self.trusted,
+                                 DYLD_INSERT_LIBRARIES="/x/inject.dylib",
+                                 LD_PRELOAD="/x/inject.so",
+                                 GIT_EXEC_PATH=os.path.join(self.repo, "bin"),
+                                 GH_TOKEN="not-a-real-token",
+                                 GIT_TERMINAL_PROMPT="0")
+        self.assertEqual(len(operator), 2)
+        for argv, kwargs in operator:
+            env = kwargs["env"]
+            with self.subTest(program=_logical(argv)[0]):
+                for gone in ("DYLD_INSERT_LIBRARIES", "LD_PRELOAD", "GIT_EXEC_PATH"):
+                    self.assertNotIn(gone, env)
+                for kept in ("HOME", "GH_TOKEN", "GIT_TERMINAL_PROMPT"):
+                    self.assertIn(kept, env)
+
+
 class TestPrAcquisitionIsConfined(unittest.TestCase):
     """#2012: `--pr` acquisition must run no command the TARGET authored.
 
@@ -1535,10 +1638,10 @@ class TestPrAcquisitionIsConfined(unittest.TestCase):
         never overrides.
         """
         def runner(argv, **kwargs):
-            if list(argv[:3]) == ["gh", "pr", "view"]:
+            if _logical(argv)[:3] == ["gh", "pr", "view"]:
                 return subprocess.CompletedProcess(argv, 0, '{"baseRefName": "main"}', "")
-            if global_config is not None and "env" not in kwargs:
-                kwargs["env"] = dict(os.environ, GIT_CONFIG_GLOBAL=global_config)
+            if global_config is not None and _is_operator(kwargs):
+                kwargs["env"] = dict(kwargs["env"], GIT_CONFIG_GLOBAL=global_config)
             return subprocess.run(argv, **kwargs)
         return runner
 

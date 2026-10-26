@@ -24,13 +24,16 @@ import uuid
 # SAME module object every other caller sees -- see host_disclosure.py for the
 # same fallback on the same seam.
 if TYPE_CHECKING:
+    import scripts.executable as executable
     import scripts.repo_config as repo_config
     import scripts.safe_git as safe_git
 else:
     try:
+        import scripts.executable as executable
         import scripts.repo_config as repo_config
         import scripts.safe_git as safe_git
     except ModuleNotFoundError:
+        import executable
         import repo_config
         import safe_git
 
@@ -924,6 +927,39 @@ def _main_worktree(listing_out, repo):
     return next(iter(_worktree_paths(listing_out)), os.path.abspath(repo))
 
 
+def _operator_launches(repo):
+    """`{name: (absolute program, env)}` for the two launches that keep the
+    operator's environment: `gh pr view` and the PR fetch (#3222).
+
+    They were the last two here found by bare name on the operator's PATH, and
+    they ran before #3270's PATH check, which `runio` applies only once
+    `acquire_pr` returns. Both now resolve FIRST, the way `safe_git` resolves
+    its own git: relative and empty PATH entries are dropped, and an entry
+    inside the checkout raises `TargetPathEntry` before anything launches.
+
+    The environment is the operator's, minus what `sanitize_startup_environment`
+    removes from every trusted CLI launch (loader and interpreter startup
+    hooks), so HOME, GH_* and GIT_* -- the credential helper this exemption
+    exists for -- still arrive. Plus one git-specific removal: GIT_EXEC_PATH is
+    where git looks up the helpers a fetch execs (`git-remote-https`), and
+    `-C` does not override it (measured: a planted helper ran)."""
+    boundary = safe_git._checkout_boundary(repo)
+    try:
+        base_env = executable.sanitize_startup_environment(os.environ)
+    except executable.EnvironmentCanonicalizationError as exc:
+        raise RuntimeError("panopticon --pr: operator environment refused: %s" % exc) from exc
+    base_env.pop("GIT_EXEC_PATH", None)
+    launches = {}
+    for name in ("gh", "git"):
+        try:
+            resolved = executable.resolve(name, boundary, os.environ.get("PATH", ""))
+        except executable.ExecutableResolutionError as exc:
+            raise RuntimeError("panopticon --pr: no trusted `%s` on PATH: %s"
+                               % (name, exc)) from exc
+        launches[name] = (resolved.path, dict(base_env, PATH=resolved.path_env))
+    return launches
+
+
 def acquire_pr(pr_number, repo=".", runner=subprocess.run):
     """Fetch a PR head into a DETERMINISTIC throwaway worktree and return its
     base branch. Idempotent: if the deterministic worktree already exists and
@@ -996,9 +1032,14 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
                   file=sys.stderr)
 
     def _run(argv):
-        """One call that keeps the OPERATOR's environment: `gh`, and the fetch."""
+        """One call that keeps the OPERATOR's environment: `gh`, and the fetch.
+
+        #3222: launched by the absolute path `launches` resolved, never by bare
+        name, with PATH replaced by the resolved one. Messages keep the name."""
+        program, env = launches[argv[0]]
         try:
-            r = runner(argv, capture_output=True, text=True, timeout=_PR_TIMEOUT)
+            r = runner([program] + list(argv[1:]), capture_output=True, text=True,
+                       timeout=_PR_TIMEOUT, env=env)
         except subprocess.TimeoutExpired:
             raise RuntimeError("panopticon --pr: `%s` timed out after %ss"
                                % (" ".join(argv), _PR_TIMEOUT))
@@ -1034,6 +1075,7 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
                                % (shown, (r.stderr or "").strip()))
         return r.stdout
 
+    launches = _operator_launches(repo)
     view = _run(["gh", "pr", "view", str(pr_number), "--json", "baseRefName"])
     try:
         pr_info = _json.loads(view)

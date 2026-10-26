@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Fix: `--pr` no longer launches `gh` and the PR fetch's `git` by bare name from the operator's PATH (#3222).**
+  - These are the two launches that keep the operator's environment, which the credential helper needs. They were found on the inherited PATH and ran before #3270's PATH check, which applies only once the worktree is acquired. A `.` or `<repo>/bin` entry could run a binary the target planted.
+  - Both now resolve first, the way `safe_git` resolves its own git (`executable.resolve` against the checkout boundary). Relative entries are dropped, and an entry inside the checkout halts with `TargetPathEntry` before anything launches. They launch by absolute path with PATH replaced by the resolved one.
+  - Their environment also goes through `sanitize_startup_environment`, the existing policy for trusted CLI launches. It removes loader and interpreter startup hooks (`LD_*`, `DYLD_*`, `PYTHONPATH`, `NODE_OPTIONS`, ...), and `GIT_EXEC_PATH` is removed too: a fetch execs its transport helpers from there, and `-C` does not override it. HOME, `GH_*` and other `GIT_*` variables still arrive, so private-repository auth is unchanged.
 - **Fix: a findings link re-pointed after the fan-out snapshot no longer drops out of the integrity check (#3249).**
   - The snapshot records each review cell by its realpath. A link re-pointed afterwards resolved to a key the snapshot never saw, so `verify_out_file_hashes` skipped it and the recorded cell went unverified. `reconcile_findings_files` could not see it either, because it realpaths the plan and the ingested path at the same moment, so both moved together.
   - Every recorded cell must now be re-read. One that no ingested path resolves to is listed in `meta.integrity.content_mismatched_files` under its recorded path, and the run is not certified. No legitimate path removes, renames or rewrites a recorded findings file between the snapshot and synthesize, so a clean run is unchanged. No schema change.
