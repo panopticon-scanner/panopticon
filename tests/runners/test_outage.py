@@ -167,6 +167,15 @@ CLASSIFIER_CASES = (
 )
 
 
+# The N1 rows by role, for `tests/runners/test_claude.py`, which feeds the same
+# texts through the Claude envelope: the CLI's own renderings, and the agent's
+# opening words (the plain-text ones; `""`, None and the JSON body are gate-only).
+N1_CLI_ERRORS = tuple(row[1] for row in CLASSIFIER_CASES if row[0] == "N1" and row[3] == "pass")
+N1_AGENT_OPENERS = tuple(row[1] for row in CLASSIFIER_CASES
+                         if row[0] == "N1" and row[3] == "block" and row[1]
+                         and not row[1].startswith("{"))
+
+
 @pytest.mark.parametrize(
     "origin,surface,expected,gate", CLASSIFIER_CASES,
     ids=["%s:%s" % (row[0], repr(row[1])[:60]) for row in CLASSIFIER_CASES])

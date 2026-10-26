@@ -507,14 +507,14 @@ class TestEnvelope(unittest.TestCase):
         # off itself on the way (for a verify entry that cap is the ONLY bound).
         r = claude_runner.Runner("claude")
         import tests.runners.test_outage as outage_tests
-        for text in outage_tests.TestTheHostOutageClassifier.AGENT_OPENERS:
+        for text in outage_tests.N1_AGENT_OPENERS:
             with self.subTest(text=text):
                 for envelope in (dict(ENVELOPE, is_error=True, result=text),
                                  dict(ENVELOPE, result=text)):
                     res = r.parse_envelope("e1", json.dumps(envelope), 1)
                     self.assertIsNone(res.host_error)
                     self.assertEqual(outage.ENTRY_FAILURE, res.failure_class)
-        for text in outage_tests.TestTheHostOutageClassifier.CLI_ERRORS:
+        for text in outage_tests.N1_CLI_ERRORS:
             with self.subTest(text=text):
                 res = r.parse_envelope("e1", json.dumps(
                     dict(ENVELOPE, is_error=True, result=text)), 0)
