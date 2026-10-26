@@ -568,6 +568,8 @@ def require_unenforced_ack(review_root, manifest, entries):
     ordinary runs everywhere. Adding disclosure is in scope; adding a gate is
     not. `test_an_unregistered_machine_without_the_flag_still_runs` pins that.
 
+    #3226, the one refusal beside a PROVEN boundary, is keyed on the named gap AND the
+    dispatch path, never on the capability alone: `hosts.session_dispatch_gaps` says why.
     Returns the ack path when one was written, else None.
     """
     evidence = runio.host_evidence(review_root)
@@ -579,13 +581,19 @@ def require_unenforced_ack(review_root, manifest, entries):
     overrode_tool_policy = bool(
         allow and entries
         and posture[hosts.TOOL_POLICY_ENFORCED] == hosts.REFUTED)
+    session_gap = bool(entries) and bool(hosts.session_dispatch_gaps(
+        manifest.get("host", "claude"), posture, manifest.get("dispatch_mode")))
     if posture[hosts.ARTIFACT_WRITE_GUARD] == hosts.PROVEN:
-        # This gate's posture is proven; any §7.3 override, including its
-        # separate Bash-path gap, still gets recorded.
-        if not overrode_tool_policy:
+        if session_gap and not allow:
+            raise runio.DriverError(hosts.SESSION_BASH_GAP % (
+                manifest.get("host", "claude"), posture[hosts.TOOL_POLICY_ENFORCED],
+                (evidence.get(hosts.TOOL_POLICY_ENFORCED) or {}).get("detail") or "no evidence",
+                ", ".join(sorted(write_capable_roles())), UNENFORCED_ACK))
+        # Proven here; a §7.3 override or an accepted session gap is still recorded.
+        if not (overrode_tool_policy or session_gap):
             return None
         return _record_unenforced_ack(review_root, manifest, entries, evidence,
-                                      posture)
+                                      posture, session_gap=session_gap)
     if not entries:
         return None                    # no cells declared: no risk to accept
     if not allow:
@@ -620,7 +628,7 @@ def require_unenforced_ack(review_root, manifest, entries):
                                   posture)
 
 
-def _record_unenforced_ack(review_root, manifest, entries, evidence, posture):
+def _record_unenforced_ack(review_root, manifest, entries, evidence, posture, session_gap=False):
     """Write the ack, or ADD to one that is already there. Never overwrite.
 
     Additive by construction: a key the stored ack already carries is left
@@ -642,7 +650,8 @@ def _record_unenforced_ack(review_root, manifest, entries, evidence, posture):
         "gaps": list(hosts.write_boundary_gaps(manifest.get("host", "claude"), posture)),
         "self_write_delivery": bool(getattr(hosts.spec(
             manifest.get("host", "claude")), "self_write_delivery", False)),
-        "note": ("Tool policy enforcement is REFUTED for this run and the "
+        "note": (hosts.SESSION_GAP_ACK_NOTE if session_gap else
+                 "Tool policy enforcement is REFUTED for this run and the "
                  "operator overrode the spec 7.3 refusal with "
                  "--allow-unenforced. The artifact_write_guard posture remains "
                  "PROVEN; refuting detail and any named gap are recorded below."

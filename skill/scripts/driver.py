@@ -1034,12 +1034,10 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
                 manifest = run_manifest.record_tools_downgrade(review_root, manifest)
             except ValueError as exc:     # #1735: the same refusal, the same protocol
                 return runio._error_status(str(exc))
-    # In-memory only, and deliberately NOT a manifest field: it names where the
-    # HOST SESSION runs, which is a property of this invocation rather than of
-    # the run, and it feeds nothing but the cost-ledger transcript lookup. Not
-    # persisted means it is also not an anti-drift key -- resuming from a
-    # different session is normal and must not be reported as drift. A resume
-    # that needs it simply passes it again (#calibration-4).
+    # In-memory only, and deliberately NOT a manifest field: it names where the HOST SESSION runs,
+    # a property of this invocation rather than of the run, and feeds only the cost-ledger
+    # transcript lookup. Not persisted, so not an anti-drift key: resuming from another session is
+    # normal, and a resume that needs it passes it again (#calibration-4).
     if getattr(args, "session_dir", None):
         manifest["session_dir"] = os.path.abspath(args.session_dir)
     # #1637 P08 F1: ONE token per invocation, carried on the in-memory manifest
@@ -1052,6 +1050,8 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
     # fresh token per iteration by construction, since every iteration calls
     # this function.
     manifest["invocation"] = run_manifest.new_run_id()
+    # #3226: ephemeral too. Only a headless loop's launch argv takes Bash from a reviewer.
+    manifest["dispatch_mode"] = "headless" if getattr(args, "mode", None) == "headless" else "session"
     # Both writes below land inside the REVIEWED tree, and each can refuse a
     # planted component -- `_ensure_run_symlinks` with DriverError, the baseline
     # write with the confinement's ValueError. They sat outside every `except` on

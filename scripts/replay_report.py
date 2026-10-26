@@ -152,6 +152,9 @@ def replay(args):
         missing = [f for f in required if not os.path.isfile(os.path.join(run_folder, f))]
         if missing:
             sys.exit(f"{run_folder} lacks {missing}: synthesize_execute would write into it")
+        # #3226: what `driver.run` attaches per invocation. A replay dispatches nothing, so the
+        # session-dispatch Bash gate has no launch to guard -- it must not refuse the oracle.
+        manifest["dispatch_mode"] = "headless"
         with mock.patch("scripts.phases.child._run_child", new=fake_run_child):
             try:
                 synthesize_phase.synthesize_execute(root, manifest)
