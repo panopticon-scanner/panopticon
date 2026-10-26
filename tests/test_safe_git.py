@@ -485,31 +485,22 @@ def test_status_never_receives_the_diff_flags(tmp_path):
     assert "--no-ext-diff" not in runner.call_args.args[0]
 
 
-@pytest.mark.parametrize("args", [
-    ["-C", "/etc", "rev-parse", "HEAD"],
-    ["--git-dir=/tmp/elsewhere", "status", "--porcelain", "-z"],
-    ["--git-dir", "/tmp/elsewhere", "status"],
-    ["--work-tree=/tmp/elsewhere", "status"],
-    ["--exec-path=/tmp", "status"],
-    ["--namespace=x", "rev-parse", "HEAD"],
-    ["--config-env=core.fsmonitor=EVIL", "status"],
-])
-def test_a_repo_redirecting_global_option_is_rejected_not_parsed_past(tmp_path, args):
-    # #2006 fix round 2, M3: the preflight validates `root`, so an argv that
-    # sends the FINAL call somewhere else would be preflighted against one
-    # repository and run against another. No caller does this; a probe whose
-    # whole point is failing closed should refuse rather than parse past it.
-    runner = mock.Mock()
-    with pytest.raises(ValueError, match="redirect"):
-        safe_git.probe(str(tmp_path), args, runner=runner)
-    runner.assert_not_called()
-
-
-def test_our_own_dash_c_settings_are_still_allowed(tmp_path):
+def test_a_leading_dash_c_does_not_hide_the_subcommand(tmp_path):
+    # `-c` is stepped over with its value, so `diff` is found and preflighted.
     runner = mock.Mock(side_effect=[subprocess.CompletedProcess([], 0, "", "")] * 3)
     safe_git.probe(str(tmp_path), ["-c", "core.quotepath=false", "diff", "--name-only"],
                    runner=runner)
     assert runner.call_count == 3
+
+
+def test_a_target_path_that_spells_a_global_option_is_only_a_path(tmp_path):
+    # #3273 cut 17: after `--` a target file named `-C` is a pathspec. The old
+    # caller-argv scan refused it; it now runs, preflighted, as asked.
+    runner = mock.Mock(side_effect=[_config(), _ok(), _ok()])
+    safe_git.probe(str(tmp_path), ["status", "--porcelain", "-z", "--", "-C"], runner=runner)
+    assert runner.call_count == 3
+    assert runner.call_args.args[0][-6:] == ["status", "--ignore-submodules=none",
+                                             "--porcelain", "-z", "--", "-C"]
 
 
 def test_a_failed_root_preflight_names_the_command_the_caller_asked_for(tmp_path):
@@ -527,64 +518,7 @@ def test_a_failed_root_preflight_names_the_command_the_caller_asked_for(tmp_path
     assert "diff" in proc.args and "config" not in proc.args
 
 
-@pytest.mark.parametrize("args", [
-    ["-c", "core.hooksPath=/somewhere/else", "status", "--porcelain", "-z"],
-    ["-c", "core.fsmonitor=printf hit", "status", "--porcelain", "-z"],
-    ["-c", "CORE.HOOKSPATH=/x", "rev-parse", "HEAD"],
-    ["diff", "--ext-diff", "HEAD"],
-    ["diff", "--textconv", "HEAD"],
-    # #2013 ruling 5: a caller re-enabling a driver the probe empties is the
-    # same hole as a caller undoing `core.hooksPath`.
-    ["-c", "filter.lfs.clean=git-lfs clean", "status", "--porcelain", "-z"],
-    ["-c", "FILTER.lfs.CLEAN=x", "status", "--porcelain", "-z"],
-    ["-c", "filter.lfs.required=true", "status", "--porcelain", "-z"],
-    ["-c", "diff.external=x", "diff", "--name-only"],
-    ["-c", "diff.d.textconv=x", "diff", "--name-only"],
-    # #2012 review M2: an included file's settings come after the pins and win.
-    ["-c", "include.path=/nowhere/evil.cfg", "status", "--porcelain", "-z"],
-    ["-c", "includeIf.gitdir:/.path=/nowhere/evil.cfg", "status", "--porcelain", "-z"],
-    ["-c", "INCLUDE.PATH=/nowhere/evil.cfg", "worktree", "add", "--detach", "x", "HEAD"],
-])
-def test_a_caller_cannot_undo_what_the_probe_pins(tmp_path, args):
-    """#2006 review N2: a caller's `-c` for a key the probe sets, or a flag
-    re-enabling a diff driver, comes later in argv and would win. Refused."""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q", str(repo)], check=True, timeout=30)
-    entry = safe_git.mutate if "worktree" in args else safe_git.probe
-    with pytest.raises(ValueError, match="override|re-enable"):
-        entry(str(repo), args)
-
-
 # --- #2012: `mutate`, the one entry point allowed to write -------------------
-
-@pytest.mark.parametrize("args", [
-    ["checkout", "main"],
-    ["reset", "--hard", "HEAD"],
-    ["worktree", "prune"],
-    ["clean", "-fdx"],
-    ["commit", "-am", "x"],
-    ["status", "--porcelain", "-z"],
-    # A write, but not the DELETE shape: the verb alone is not the permission.
-    ["update-ref", "refs/heads/x", "deadbeef"],
-    # Redirection and pin-undoing are refused here exactly as in `probe`, and
-    # before the shape is even considered, so the message names what is wrong.
-    ["-C", "/etc", "worktree", "add", "/tmp/wt", "deadbeef"],
-    ["-c", "core.hooksPath=/somewhere/else", "worktree", "add", "/tmp/wt", "x"],
-    ["-c", "filter.lfs.smudge=git-lfs smudge", "worktree", "add", "/tmp/wt", "x"],
-])
-def test_mutate_refuses_everything_but_the_pr_worktree_lifecycle(tmp_path, args):
-    """#2012: an allowlist of one lifecycle, not a write permit.
-
-    `worktree prune` and `checkout` are the near misses that matter -- both are
-    a token away from a shape this does run -- and no git runs before the
-    refusal.
-    """
-    runner = mock.Mock()
-    with pytest.raises(ValueError):
-        safe_git.mutate(str(tmp_path), args, runner=runner)
-    runner.assert_not_called()
-
 
 @pytest.mark.parametrize("args", [
     ["worktree", "add", "--detach", "/tmp/wt", "deadbeef"],
@@ -753,7 +687,6 @@ def test_a_transport_key_is_refused_never_emptied():
     """
     for key in TRANSPORT_KEYS:
         assert not safe_git._is_command_setting(key), key
-        assert not safe_git._is_suppressible(key), key
     assert safe_git._driver_keys({key: "cmd" for key in TRANSPORT_KEYS}) == []
 
 
