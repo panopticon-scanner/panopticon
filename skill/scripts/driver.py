@@ -52,16 +52,13 @@ import scripts.phases.validate as validate
 _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.json",
                 "validate.json",
                 "report.json", "dispatch-request.json",
-                # #1809: the trailing `*` sweeps a `tree-baseline.txt.tmp`
-                # orphaned by a SIGKILL between the staging open and the
-                # replace. --reset is the remedy the corrupt-baseline
-                # diagnostics name, so it must clear the litter too.
+                # #1809: the trailing `*` sweeps a `tree-baseline.txt.tmp` orphaned by a SIGKILL
+                # between the staging open and the replace -- --reset is the corrupt-baseline remedy.
                 "tree-baseline.txt*",
                 "verify-queue.json", "findings-*.json",
-                # #5.0-07: stale delta artifacts must not survive a --reset and
-                # silently delta-scope (or content-check) the next run.
-                # #5.0-16: the driver's own dispatch plan clears too, so a
-                # --reset run re-declares cells from fresh coverage.
+                # #5.0-07: stale delta artifacts must not survive a --reset and silently delta-scope
+                # (or content-check) the next run. #5.0-16: the driver's own dispatch plan clears
+                # too, so a --reset run re-declares cells from fresh coverage.
                 "diff-hunks.json", "out-file-hashes.json",
                 "dispatch-plan-driver.json",
                 # #1637 P08: the readiness verdict and the per-cell
@@ -208,11 +205,10 @@ def _clear_run_artifacts(review_root):
     run_dir = os.path.join(base, "runs", tag) if tag else None
     latest = os.path.join(base, "runs", "latest")
     paths = []
-    # Migration safety: sweep any legacy FLAT run artifacts a pre-5.1 run may have
-    # left at top-level. The report.json SYMLINK points at the durable tag-named
-    # report and is kept; only a STALE FLAT report.json (a real file — pre-5.1 or
-    # a corrupt/orphaned state) is swept, preserving the I1 no-resume-on-stale-data
-    # invariant. The tag-named reports themselves are never in _RESET_GLOBS.
+    # Migration safety: sweep any legacy FLAT run artifacts a pre-5.1 run may have left at top-level.
+    # The report.json SYMLINK points at the durable tag-named report and is kept; only a STALE FLAT
+    # report.json (a real file -- pre-5.1 or a corrupt/orphaned state) is swept, preserving the I1
+    # no-resume-on-stale-data invariant. The tag-named reports themselves are never in _RESET_GLOBS.
     for pat in _RESET_GLOBS:
         for path in _glob.glob(os.path.join(base, pat)):
             if os.path.basename(path) == "report.json" and os.path.islink(path):
@@ -234,6 +230,10 @@ def _clear_run_artifacts(review_root):
         if os.path.lexists(latest):
             os.unlink(latest)
     for path in paths:
+        if os.path.isdir(path) and not os.path.islink(path):   # #2095: the tree's, never ours
+            print("driver: --reset left %s alone: a directory is never a run artifact of ours"
+                  % path, file=sys.stderr, flush=True)
+            continue
         os.remove(path)
     for path in dirs:
         remove_dir(path)

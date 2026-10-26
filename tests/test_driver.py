@@ -8,7 +8,9 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -688,6 +690,75 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         # reset never deletes the committed matrix (#1681: it lives at the
         # repo root, outside the `.panopticon` scratch reset clears at all)
         self.assertTrue(os.path.isfile(os.path.join(d, "panopticon.yml")))
+
+    def _plant_dir(self, d, name):
+        planted = os.path.join(d, ".panopticon", name)
+        os.makedirs(planted)
+        with open(os.path.join(planted, "inside.txt"), "w") as fh:
+            fh.write("the tree's own file")
+        return planted
+
+    def test_reset_leaves_a_directory_at_every_reset_name_and_still_resets(self):
+        # #2095: every `_RESET_GLOBS` name is a FILE this driver writes, so a
+        # directory there is the tree's. `os.remove` raised on it and `--reset`
+        # -- the remedy the #1809 baseline diagnoses name -- refused to run.
+        for pattern in driver._RESET_GLOBS:
+            name = pattern.replace("*", "x")
+            with self.subTest(name=name):
+                d = self._repo()
+                args = self._args(d, "--no-tools")
+                driver.run(args)
+                planted = self._plant_dir(d, name)
+                sibling = os.path.join(d, ".panopticon",
+                                       "scout-zz.json" if not name.startswith("scout-") else "groups.json")
+                with open(sibling, "w") as fh:
+                    fh.write("{}")
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    status = driver.run(self._args(d, "--no-tools", "--reset"))
+                self.assertNotIn("unsafe reset cleanup", status.get("message") or "", status)
+                self.assertEqual("checkpoint", status["status"], status)
+                with open(os.path.join(planted, "inside.txt")) as fh:
+                    self.assertEqual("the tree's own file", fh.read())
+                self.assertIn("--reset left %s alone" % planted, err.getvalue())
+                self.assertFalse(os.path.exists(sibling))     # the rest is still swept
+
+    def test_a_link_to_a_directory_at_a_reset_name_is_still_unlinked(self):
+        # only a REAL directory is left: a link at our name is removed as
+        # before -- the link itself, never what it points at. Through
+        # driver.run first contact moves a `.panopticon/` holding any link
+        # aside before reset runs, so this pins the deletion boundary itself.
+        d = self._repo()
+        driver.run(self._args(d, "--no-tools"))
+        outside = tempfile.mkdtemp(prefix="reset-referent-")
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        with open(os.path.join(outside, "keep.txt"), "w") as fh:
+            fh.write("keep")
+        link = os.path.join(d, ".panopticon", "coverage-x.json")
+        os.symlink(outside, link)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            driver._clear_run_artifacts(d)
+        self.assertFalse(os.path.lexists(link))
+        self.assertTrue(os.path.isfile(os.path.join(outside, "keep.txt")))
+        self.assertNotIn("left", err.getvalue())
+
+    def test_a_directory_at_the_baseline_name_never_meets_the_baseline_write(self):
+        # The coordinator's follow-through: reset skips a planted
+        # `.panopticon/tree-baseline.txt/`, so does the next baseline write
+        # dead-end on it? No: the baseline is a per-run artifact
+        # (`runio._pano` routes it to `runs/<tag>/`), and the run after a reset
+        # writes into a fresh run folder, so the flat name is never written.
+        d = self._repo()
+        driver.run(self._args(d, "--no-tools"))
+        planted = self._plant_dir(d, "tree-baseline.txt")
+        with contextlib.redirect_stderr(io.StringIO()):
+            status = driver.run(self._args(d, "--no-tools", "--reset"))
+        self.assertEqual("checkpoint", status["status"], status)
+        baseline = runio._pano(d, "tree-baseline.txt")
+        self.assertNotEqual(os.path.realpath(planted), os.path.realpath(baseline))
+        self.assertTrue(os.path.isfile(baseline), baseline)
+        self.assertTrue(os.path.isdir(planted))
 
     def test_main_prints_status_and_returns_exit_code(self):
         d = self._repo()

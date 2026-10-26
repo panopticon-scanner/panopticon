@@ -1097,7 +1097,11 @@ def test_public_reset_reports_latest_directory_cleanup_failure(tmp_path):
     assert (pano / "run-manifest.json").exists()
 
 
-def test_public_fresh_manifest_reports_legacy_directory_cleanup_failure(tmp_path):
+def test_public_fresh_manifest_leaves_a_legacy_directory_and_runs(tmp_path, capsys):
+    # #2095: a directory at a flat reset name is the tree's, never ours -- left
+    # and named, not a cleanup refusal. Once the manifest exists every such name
+    # but report.json is per-run (runio._TOP_LEVEL), and flat report.json is only
+    # used with no manifest (runio._report_out), so the run never meets it.
     root = tmp_path / "review"
     pano = root / ".panopticon"
     pano.mkdir(parents=True)
@@ -1112,11 +1116,11 @@ def test_public_fresh_manifest_reports_legacy_directory_cleanup_failure(tmp_path
     args = driver.build_parser().parse_args(["run", str(root)])
     status = driver.run(args, phases=())
 
-    assert status["status"] == "error"
-    assert "fresh-manifest cleanup" in status["message"]
+    assert status["status"] == "complete", status
+    assert "--reset left %s alone" % stale in capsys.readouterr().err
     assert (stale / "sentinel").read_text() == "keep malformed artifact"
     assert (other / "sentinel").read_text() == "keep other"
-    assert not (pano / "run-manifest.json").exists()
+    assert (pano / "run-manifest.json").exists()
 
 
 def test_fresh_manifest_path_cleans_legacy_artifacts(tmp_path, monkeypatch):

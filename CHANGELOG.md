@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Fix: `--reset` no longer ends as `unsafe reset cleanup` on a directory the tree planted at one of its file names (#2095).**
+  - The legacy flat sweep globs `.panopticon/` for the names in `_RESET_GLOBS` (`coverage-*.json`, `tree-baseline.txt*`, ...) and removed each match with `os.remove`. A directory at such a name raised there, after the run folder was already gone, and the run ended with the generic cleanup refusal.
+  - A real directory at a reset name is now left alone and named on stderr (`driver: --reset left <path> alone`): every one of those names is a file of ours, so a directory there is the tree's, never ours to delete. The rest of the sweep and the run go on as normal. A link at a reset name is still unlinked, never followed.
+  - A planted `.panopticon/tree-baseline.txt/` never meets the next baseline write. The baseline is per-run (`runio._pano` routes it to `runs/<tag>/`), and the run after a reset writes into a fresh run folder.
 - **Fix: a `--no-tools` run now discloses scanner output a target planted under `.panopticon/tools/` (#3197).**
   - Such output was already refused by every consumer. It was not disclosed, though: synthesize was never handed the directory on a `--no-tools` run, so `meta.integrity.unbound_tool_outputs` stayed `[]` and the run stayed certified, where the same plant under `--tools` is named and costs certification (#2070).
   - The driver now passes the directory with a new internal `--tools-skipped`, keyed on the run manifest's own `flags.tools`, never the target-writable marker. Synthesize then ingests nothing and lists every present output as unbound, which sinks certification with #2070's message. None of the file's text is published.
