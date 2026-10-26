@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Internal: synthesis drops read-side repairs that first contact made dead weight (#3273 cuts 12 and 16).**
+  - The tools manifest's `sanitized`, `network`, `cleanup_failures` and `language_detection_skips` blocks are read as written. Their producers bound each one, and first contact (#3271, #3296) halts on any `.panopticon/` this machine did not create. An honest run's coverage output is byte-identical.
+  - `groups.json` is no longer repaired row by row. A file whose shape the report cannot carry (`groups` not a list, a row not `{name, files, parent}` strings, a non-string `mode`, or an unknown `security_mode`) is rejected whole and announced like an unreadable one. This matters only for a hand-named `--groups`: the driver's own file is discovery's.
+  - The repairs of target-carried text stay: exclusion globs, the SEC carve-out, Git-driver keys and suppression counts.
 - **CI: main is gated and audited nightly, not on every push (#3292, cut 18).**
   - `security.yml` and `codeql.yml` drop their `push` triggers; a merge commit's baseline is its PR's own captures (#3295).
   - New nightly `main-audit` route (06:41 UTC): delta gate against the commit the previous scheduled run scanned, Security tab upload, raw captures, and the zero-alert audit. Its check name is `main-audit`.
