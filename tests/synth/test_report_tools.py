@@ -6,6 +6,7 @@ import os
 import json
 import tempfile
 import unittest
+from unittest import mock
 import scripts.synth.validate_schema as validate_schema_mod
 import scripts.synth.corroborate as corroborate_mod
 import scripts.synth.findings as findings_mod
@@ -14,6 +15,8 @@ import scripts.synth.repair as repair_mod
 import scripts.synth.tool_axis as tool_axis_mod
 import scripts.synth.report as report_mod
 import scripts.evidence as evidence_mod
+import scripts.tools_manifest as tools_manifest_mod
+import scripts.first_contact as first_contact
 from tests.synth.helpers import DEFAULT_TIMESTAMP, _make_finding, _agentic
 
 
@@ -318,6 +321,41 @@ class TestLanguageDetectionSkipCoverage(unittest.TestCase):
                          self._report()["meta"]["coverage"])
 
 
+class TestARunWrittenManifestReachesTheReportAsWritten(unittest.TestCase):
+    """#3273 cut 12, condition C12.2: the positive control. A manifest the
+    runner's own `write_manifest` writes, with all four once-repaired blocks
+    present, publishes each of them as written: the raw reads change no
+    honest run. (It passes before the cut too; the PR body carries the
+    before/after byte comparison of the whole coverage output.)"""
+
+    SANITIZED = {"pip-audit": {"source": "requirements.txt", "kept": 3,
+                               "dropped": [{"line": "-e .", "reason": "editable"}],
+                               "hashes_stripped": True, "truncated": False,
+                               "dropped_truncated": 0}}
+    CLEANUP = {"semgrep": {"kind": "kill_failed",
+                           "detail": "docker kill exited 125 — daemon unavailable"}}
+    SKIPS = [{"language": "python", "tool": "bandit",
+              "reason": "present only under pruned directories"}]
+
+    def test_the_four_blocks_are_published_as_the_runner_wrote_them(self):
+        with tempfile.TemporaryDirectory() as d:
+            payload = tools_manifest_mod.write_manifest(
+                os.path.join(d, "tools-manifest.json"), ["semgrep"], [], run_id="RID",
+                sanitized=self.SANITIZED, cleanup_failures=self.CLEANUP,
+                language_detection_skips=self.SKIPS)
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=[]),
+            tools=tool_axis_mod.ToolAxis(manifest=payload)))
+        meta = report["meta"]
+        self.assertEqual(payload["sanitized"], meta["tools"]["sanitized"])
+        self.assertEqual(payload["network"], meta["tools"]["network"])
+        self.assertEqual(payload["cleanup_failures"], meta["coverage"]["tools_cleanup_failures"])
+        self.assertEqual(payload["language_detection_skips"],
+                         meta["coverage"]["language_detection_skips"])
+        self.assertEqual([], validate_schema_mod.schema_errors(report))
+
+
 class TestToolCleanupCoverage(unittest.TestCase):
     def _report(self, cleanup=None):
         manifest = {"selected": ["semgrep"], "produced": [],
@@ -504,13 +542,18 @@ class TestSanitizedRequirementLinesReachTheReport(unittest.TestCase):
             prev = os.getcwd()
             os.chdir(d)
             try:
-                with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()), \
+                        mock.patch.object(tool_axis_mod.ToolAxis, "manifest_state") as state, \
+                        mock.patch.object(tool_axis_mod, "reconcile") as reconcile:
                     rc = synthesize.main(["--repo", "--tools-dir", os.path.join(pano, "tools"),
                                           "--out", out])
             finally:
                 os.chdir(prev)
-            self.assertEqual(2, rc)
-            self.assertIn("was not created by a panopticon run on this machine", err.getvalue())
+            # The halt is first contact's H2, by its fixed line, and it comes
+            # before the manifest is read or reconciled at all.
+            self.assertEqual((2, "synthesize: %s\n" % first_contact.H2), (rc, err.getvalue()))
+            state.assert_not_called()
+            reconcile.assert_not_called()
             self.assertFalse(os.path.lexists(out))
 
     def test_the_schema_declares_the_field(self):
