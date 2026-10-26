@@ -55,8 +55,9 @@ def local_pr(tmp_path, monkeypatch):
     def runner(argv, **kwargs):
         assert kwargs["timeout"] <= diff_map._PR_TIMEOUT
         calls.append(list(argv))
-        if argv[:3] == ["gh", "pr", "view"]:
-            assert argv == ["gh", "pr", "view", "7", "--json", "baseRefName"]
+        # #3222: `gh` and the fetch's `git` are launched by absolute path.
+        if Path(argv[0]).name == "gh":
+            assert Path(argv[0]).is_absolute() and argv[1:] == ["pr", "view", "7", "--json", "baseRefName"]
             return SimpleNamespace(returncode=0, stdout=json.dumps({"baseRefName": "main"}), stderr="")
         assert Path(argv[0]).name == "git"
         kwargs.setdefault("env", env)
