@@ -127,8 +127,11 @@ class ToolAxis:
                 manifest_invalid = ("tools-manifest.json declares no `selected` "
                                     "list (%s)" % type(manifest.get("selected")).__name__)
                 manifest = None
+        # #3197: never on `--tools-skipped`, whose missing receipt is the operator's
+        # `--no-tools`, not a failed read -- or every clean `--no-tools` run de-certifies.
         receipt_required = bool(getattr(args, "run_id", None)
-                                and getattr(args, "tools_dir", None))
+                                and getattr(args, "tools_dir", None)
+                                and not getattr(args, "tools_skipped", False))
         if manifest is not None:
             try:
                 allowed_outputs = tools_manifest.output_receipt(

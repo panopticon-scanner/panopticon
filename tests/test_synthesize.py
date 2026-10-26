@@ -137,6 +137,58 @@ class TestToolsDirIntegration(unittest.TestCase):
         self.assertEqual(report["meta"]["integrity"]["unbound_tool_outputs"],
                          ["semgrep.sarif"])
 
+    def _no_tools_run(self, *, plant, skipped):
+        """A `--no-tools` run as the driver hands it over: no tools-manifest
+        (the scan never ran), optionally a target-planted capture."""
+        with tempfile.TemporaryDirectory() as d:
+            agent = os.path.join(d, "findings-g1-SEC.json")
+            with open(agent, "w", encoding="utf-8") as fh:
+                json.dump({"findings": []}, fh)
+            tools_dir = os.path.join(d, "tools")
+            os.makedirs(tools_dir)
+            if plant:
+                with open(os.path.join(tools_dir, "semgrep.sarif"), "w", encoding="utf-8") as fh:
+                    json.dump({"version": "2.1.0", "runs": [{
+                        "tool": {"driver": {"name": "semgrep", "rules": []}},
+                        "results": [{"ruleId": "planted", "level": "error",
+                                     "message": {"text": "PLANTED-ALREADY-REPORTED"},
+                                     "locations": [{"physicalLocation": {
+                                         "artifactLocation": {"uri": "app.py"},
+                                         "region": {"startLine": 1}}}]}]}]}, fh)
+            out = os.path.join(d, "report.json")
+            argv = ["--repo", "--target", "src", "--run-dir", d, "--run-id", "RID",
+                    "--fail-on", "high", "--out", out, agent]
+            if skipped:
+                argv[0:0] = ["--tools-dir", tools_dir, "--tools-skipped"]
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rc = syn.main(argv)
+            with open(out, encoding="utf-8") as fh:
+                text = fh.read()
+            return rc, json.loads(text), text
+
+    def test_a_no_tools_run_names_a_planted_output_and_is_not_certified(self):
+        # #3197: refused at every consumer already; now DISCLOSED too, the way
+        # the `--tools` path discloses the same plant (#2070)
+        rc, report, text = self._no_tools_run(plant=True, skipped=True)
+        self.assertEqual(["semgrep.sarif"], report["meta"]["integrity"]["unbound_tool_outputs"])
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertEqual([], report["findings"])
+        self.assertNotIn("PLANTED-ALREADY-REPORTED", text)
+        self.assertIsNone(report["meta"]["integrity"].get("tools_manifest_invalid"))
+
+    def test_a_clean_no_tools_run_reads_exactly_as_before(self):
+        # the opposite failure the issue's literal fix had: a missing receipt
+        # is the operator's `--no-tools`, not a failed read, so a clean run
+        # keeps its certification and every coverage and integrity field
+        _rc, flagged, _ = self._no_tools_run(plant=False, skipped=True)
+        _rc, before, _ = self._no_tools_run(plant=False, skipped=False)
+        self.assertEqual([], flagged["meta"]["integrity"]["unbound_tool_outputs"])
+        self.assertEqual(before["summary"]["coverage_certified"],
+                         flagged["summary"]["coverage_certified"])
+        self.assertEqual(before["meta"]["coverage"], flagged["meta"]["coverage"])
+        self.assertEqual(before["meta"]["integrity"], flagged["meta"]["integrity"])
+
     def test_tool_findings_merged_and_reinforced(self):
         with tempfile.TemporaryDirectory() as d:
             agent = os.path.join(d, "findings-g1-SEC.json")
