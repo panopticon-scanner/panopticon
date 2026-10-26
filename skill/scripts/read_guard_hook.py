@@ -37,31 +37,74 @@ CLAUDE-ONLY BY CONSTRUCTION, like the write guard; other families confine
 reads their own way (spec 7.2). Stdlib-only and self-locating: Claude Code
 runs this as ONE SHELL STRING with every element shell-quoted (#1633) -- the
 trusted absolute interpreter, ``-I``, this standalone script, and the absolute
-scope path, because PATH and PYTHONPATH must not choose the interpreter (or
-inject a `sitecustomize`) for a confinement decision (#1996) -- and with no
-package on sys.path, which is why the settings plumbing below copies
-write_guard_hook's (plan 5, R-P5-5).
+scope path. The interpreter is the driver's own, resolved, because PATH must
+not choose it; ``-I`` keeps PYTHONPATH, the user site and the script's
+directory off sys.path (#1996), though not that interpreter's own
+site-packages or a `sitecustomize` installed there. With no package on
+sys.path (plan 5, R-P5-5), the rules this hook shares with the other two are
+loaded BY PATH from `guard_rules.py` beside it, where they used to be copied
+(#3273 cut 11; the loader stanza below).
 """
-import glob
 import json
 import os
-import shlex
 import sys
 
 _READ_TOOLS_LIST = ["Read", "Grep", "Glob"]
 _READ_TOOLS = set(_READ_TOOLS_LIST)
 _MATCHER = "|".join(_READ_TOOLS_LIST)
 
-MARKER_PREFIX = "panopticon-entry: "
-# #3271: a hard link out of the tree is a first-contact halt (H4), not a key
-# here; a scope file from an older version may still carry `hard_linked`, and
-# it is ignored.
-SCOPE_KEYS = ("files", "dirs", "reads")
+# Every name this hook reads from guard_rules; the loader refuses a module that
+# lacks one, so a renamed rule denies at load rather than crashing mid-call.
+_GUARD_RULES_USED = (
+    "MARKER_PREFIX", "SCOPE_KEYS", "ENV_ENTRY_ID", "GLOB_PATTERN_DENIAL", "GIT_STORE_DENIAL",
+    "_resolve_path", "_readable", "_in_dir_grant", "_glob_pattern_climbs", "_names_git_store",
+    "_load_scope", "bind", "hook_command", "_trusted_hook_argv", "_is_our_entry", "_load",
+    "atomic_write_json", "_write_hook_entry", "_remove_hook_entry", "_armed")
 
-# Spec 5.3 (plan 6): the headless runner exports this per subprocess, and it
-# is the FIRST binding source -- a headless `claude -p` session is the
-# reviewer itself, so a transcript-only rule would fail OPEN for every entry.
-ENV_ENTRY_ID = "PANOPTICON_ENTRY_ID"
+# --- GUARD RULES LOADER (#3273 cut 11) ---
+# Byte-identical in the three guard hooks (tests/test_guard_rules.py). Run as a
+# hook (`<python> -I <abs path>`) this module has no package, so guard_rules.py
+# is loaded by PATH from this file's real directory -- never `import scripts.*`,
+# which a foreign `scripts` package in site-packages could answer. Imported
+# under our package (the driver, the tests, `python -m`), it is the sibling
+# module, so a patch lands where the hook looks. ANY failure -- a missing file,
+# a raise or a SyntaxError in it, a name it lacks -- leaves `guard_rules` None,
+# and every call this hook guards is then DENIED: an import-time crash here
+# would fail OPEN.
+def _load_guard_rules():
+    spec = globals().get("__spec__")
+    if spec is not None and spec.parent:
+        from . import guard_rules as rules
+    else:
+        import importlib.util
+        path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "guard_rules.py")
+        found = importlib.util.spec_from_file_location("panopticon_guard_rules", path)
+        if found is None or found.loader is None:
+            raise ImportError("no loader for %s" % path)
+        rules = importlib.util.module_from_spec(found)
+        found.loader.exec_module(rules)
+    missing = [name for name in _GUARD_RULES_USED if not hasattr(rules, name)]
+    if missing:
+        raise AttributeError("guard_rules lacks %s" % ", ".join(missing))
+    return rules
+
+
+try:
+    guard_rules = _load_guard_rules()
+    _GUARD_RULES_FAULT = ""
+except Exception as exc:  # noqa: BLE001 -- see above: never an import-time raise
+    guard_rules = None
+    _GUARD_RULES_FAULT = "the shared guard rules could not load (%s: %s)" % (
+        type(exc).__name__, exc)
+# --- END GUARD RULES LOADER ---
+
+if guard_rules is not None:
+    # The shared constants, under the names this hook's consumers already read.
+    MARKER_PREFIX = guard_rules.MARKER_PREFIX
+    SCOPE_KEYS = guard_rules.SCOPE_KEYS
+    ENV_ENTRY_ID = guard_rules.ENV_ENTRY_ID
+    GLOB_PATTERN_DENIAL = guard_rules.GLOB_PATTERN_DENIAL
+    GIT_STORE_DENIAL = guard_rules.GIT_STORE_DENIAL
 
 
 def marker_line(entry_id):
@@ -75,18 +118,7 @@ def marker_line(entry_id):
     entry_id = "" if entry_id is None else str(entry_id)
     if not entry_id or "\n" in entry_id or "\r" in entry_id:
         raise ValueError("entry id must be a non-empty single line: %r" % entry_id)
-    return MARKER_PREFIX + entry_id
-
-
-def marker_of(text):
-    """The entry id `text`'s FIRST line names, or None. Only the first line:
-    a marker anywhere else is content, not a binding."""
-    if not isinstance(text, str):
-        return None
-    first = text.split("\n", 1)[0].rstrip("\r")
-    if not first.startswith(MARKER_PREFIX):
-        return None
-    return first[len(MARKER_PREFIX):].strip() or None
+    return guard_rules.MARKER_PREFIX + entry_id
 
 
 def _realpaths(paths):
@@ -121,94 +153,8 @@ def scope_from_plan(plan):
         eid, scope = entry.get("id"), entry.get("scope")
         if not isinstance(eid, str) or not eid or not isinstance(scope, dict):
             continue
-        out[eid] = {k: _realpaths(scope.get(k)) for k in SCOPE_KEYS}
+        out[eid] = {k: _realpaths(scope.get(k)) for k in guard_rules.SCOPE_KEYS}
     return out
-
-
-def _under(path, directory):
-    """Separator-bounded prefix test: /repo admits /repo/x, never /repo-other."""
-    directory = directory.rstrip(os.sep) or os.sep
-    return path == directory or path.startswith(directory + os.sep)
-
-
-def _resolve_path(raw):
-    """realpath of a payload path, or None when it cannot be resolved -- a
-    non-string, empty or NUL-bearing path is malformed and fails closed."""
-    if not isinstance(raw, str) or not raw:
-        return None
-    try:
-        return os.path.realpath(os.path.abspath(raw))
-    except (ValueError, OSError, TypeError):
-        return None
-
-
-def _in_dir_grant(target, directory):
-    """`_under`, except that a directory grant never covers its own `.git`
-    store (#3271 G-a): first contact does not count `<root>/.git`, so no grant
-    may read it. A path COMPONENT, never a prefix: `.github/` still reads."""
-    if not _under(target, directory):
-        return False
-    rest = target[len(directory.rstrip(os.sep)):].lstrip(os.sep)
-    first = rest.split(os.sep, 1)[0]
-    if first.casefold() == ".git":      # `.GIT/config` opens `.git/config` on APFS/NTFS
-        return False
-    try:                                # and any other alias of the store the volume makes
-        return not (first and os.path.samefile(os.path.join(directory, first),
-                                               os.path.join(directory, ".git")))
-    except (OSError, ValueError):
-        return True
-
-
-def _names_git_store(pattern):
-    """True when a Glob pattern names a `.git` component (#3271 G-a)."""
-    return isinstance(pattern, str) and ".git" in [
-        part.casefold() for part in pattern.replace("\\", "/").split("/")]
-
-
-def _readable(target, scope):
-    # Byte-exact by design: folding a GRANT would widen it.
-    return (target in scope["files"] or target in scope["reads"]
-            or any(_in_dir_grant(target, d) for d in scope["dirs"]))
-
-
-# #1917: Glob's SECOND argument. `path` says where the expansion starts and is
-# adjudicated above; the pattern says what it expands to, and it is a PATH
-# pattern, so `../Src/*` under a clean granted directory names entries the
-# grant never covered. One wording, both hooks, pinned in
-# tests/test_codex_read_tools.py.
-GLOB_PATTERN_DENIAL = ("Glob pattern %r is denied: patterns are relative to `path` and may "
-                       "not climb out of it")
-# #3271 G-a: and may not name the repository's `.git` store, which no directory
-# grant covers. Same pinning as the line above.
-GIT_STORE_DENIAL = "Glob pattern %r is denied: no directory grant covers the .git store"
-
-
-
-
-def _glob_pattern_climbs(pattern):
-    """True when a `Glob` pattern could name entries outside the `path` it is
-    relative to (#1917).
-
-    Glob is the one read primitive with TWO path-shaped arguments, and only the
-    first was ever adjudicated: a pattern is expanded against `path`, so
-    `../Src/*` under a granted directory names entries the `dirs` grant does not
-    cover. Names, not content -- a following `Read` still meets the per-file
-    rule -- but a confined cell should not be able to enumerate the tree.
-
-    Absent, empty or non-string DENIES: there is no pattern to reason about,
-    and fail-closed is this file's rule everywhere else. Absolute and
-    `~`-rooted patterns ignore `path` outright. A `..` SEGMENT climbs; a name
-    that merely begins with two dots (`..hidden`) does not, which is why this
-    splits on separators instead of searching for the substring. Both
-    separators, because a Windows-style pattern is still a pattern here.
-
-    Grep's `pattern` is a REGEX over content, not a path, and is not this
-    rule's subject."""
-    if not isinstance(pattern, str) or not pattern:
-        return True
-    if pattern.startswith("~") or pattern.startswith("/") or os.path.isabs(pattern):
-        return True
-    return any(part == ".." for part in pattern.replace("\\", "/").split("/"))
 
 
 def decide(tool_name, tool_input, scope):
@@ -220,31 +166,32 @@ def decide(tool_name, tool_input, scope):
         return False, ("%s is denied: this subagent is not bound to a dispatch "
                        "entry (its dispatch prompt did not begin with '%s<entry "
                        "id>'), and reads are confined while the guard is armed"
-                       % (tool_name, MARKER_PREFIX))
+                       % (tool_name, guard_rules.MARKER_PREFIX))
     if not isinstance(tool_input, dict):
         return False, "%s is denied: malformed tool input" % tool_name
     if tool_name == "Read":
         raw = tool_input.get("file_path")
-        target = _resolve_path(raw)
+        target = guard_rules._resolve_path(raw)
         if target is None:
             return False, "Read is denied: unresolvable path %r" % (raw,)
-        if _readable(target, scope):
+        if guard_rules._readable(target, scope):
             return True, ""
         return False, ("Read of %s is outside your cell's scope; the files you may "
                        "read are listed in your prompt" % raw)
     raw = tool_input.get("path")
-    target = _resolve_path(raw)
+    target = guard_rules._resolve_path(raw)
     if target is None:
         return False, ("%s is denied: pass `path` explicitly -- a file from the list "
                        "in your prompt" % tool_name)
     if os.path.isdir(target):
-        if any(_in_dir_grant(target, d) for d in scope["dirs"]):
+        if any(guard_rules._in_dir_grant(target, d) for d in scope["dirs"]):
             # #1917: and for Glob, the second argument -- the only one of these
             # tools whose pattern is a PATH pattern, expanded against `path`.
-            if tool_name == "Glob" and _glob_pattern_climbs(tool_input.get("pattern")):
-                return False, GLOB_PATTERN_DENIAL % (tool_input.get("pattern"),)
-            if tool_name == "Glob" and _names_git_store(tool_input.get("pattern")):
-                return False, GIT_STORE_DENIAL % (tool_input.get("pattern"),)
+            pattern = tool_input.get("pattern")
+            if tool_name == "Glob" and guard_rules._glob_pattern_climbs(pattern):
+                return False, guard_rules.GLOB_PATTERN_DENIAL % (pattern,)
+            if tool_name == "Glob" and guard_rules._names_git_store(pattern):
+                return False, guard_rules.GIT_STORE_DENIAL % (pattern,)
             return True, ""
         if tool_name == "Grep":
             return False, ("Grep over a directory is denied in a confined cell: grep a "
@@ -252,96 +199,11 @@ def decide(tool_name, tool_input, scope):
         return False, ("Glob is not available in a confined cell: your file list is in "
                        "your prompt")
     if tool_name == "Grep":
-        if _readable(target, scope):
+        if guard_rules._readable(target, scope):
             return True, ""
         return False, ("Grep of %s is outside your cell's scope; the files you may "
                        "search are listed in your prompt" % raw)
     return False, "Glob is not available in a confined cell: your file list is in your prompt"
-
-
-def subagent_transcript(transcript_path, agent_id):
-    """The calling subagent's own transcript, or None.
-
-    The payload's `transcript_path` is the PARENT session's file (spike,
-    design spec 3); the subagent's lives beside it, keyed by `agent_id`, in
-    one of two layouts. `agent_id` is used as a path segment, so anything
-    path-shaped is refused outright."""
-    if not isinstance(transcript_path, str) or not isinstance(agent_id, str):
-        return None
-    if not agent_id or "/" in agent_id or os.sep in agent_id or agent_id in (".", ".."):
-        return None
-    stem = transcript_path[:-len(".jsonl")] if transcript_path.endswith(".jsonl") else transcript_path
-    name = "agent-%s.jsonl" % agent_id
-    direct = os.path.join(stem, "subagents", name)
-    if os.path.isfile(direct):
-        return direct
-    found = sorted(glob.glob(os.path.join(glob.escape(stem), "subagents", "workflows", "*", name)))
-    return found[0] if found else None
-
-
-def _first_text(record):
-    msg = record.get("message")
-    content = msg.get("content") if isinstance(msg, dict) else None
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        for part in content:
-            if (isinstance(part, dict) and part.get("type") == "text"
-                    and isinstance(part.get("text"), str)):
-                return part["text"]
-    return ""
-
-
-def bind(agent_id, transcript_path):
-    """The entry id this subagent was dispatched for, or None (unbound).
-
-    Reads the transcript only up to its FIRST `type: user` record -- the
-    dispatch prompt -- and requires that record's `agentId` to be the caller.
-    A later user turn is a tool result and can never re-bind (design 4.4)."""
-    path = subagent_transcript(transcript_path, agent_id)
-    if path is None:
-        return None
-    try:
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                try:
-                    record = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(record, dict) or record.get("type") != "user":
-                    continue
-                if record.get("agentId") != agent_id:
-                    return None
-                return marker_of(_first_text(record))
-    except (OSError, ValueError):
-        return None
-    return None
-
-
-def _load_scope(scope_path):
-    """(scopes, error): the armed {entry id: scope} map, or (None, why)."""
-    try:
-        with open(scope_path, encoding="utf-8") as fh:
-            loaded = json.load(fh)
-    except (OSError, ValueError) as exc:
-        return None, "read guard scope is unavailable: %s" % exc
-    if not isinstance(loaded, dict):
-        return None, "read guard scope is malformed"
-    out = {}
-    for eid, scope in loaded.items():
-        if not isinstance(eid, str) or not isinstance(scope, dict):
-            return None, "read guard scope is malformed"
-        entry: dict[str, list[str]] = {}
-        for k in SCOPE_KEYS:
-            val = scope.get(k)
-            if val is None:
-                entry[k] = []
-                continue
-            if not isinstance(val, list):
-                return None, "read guard scope is malformed"
-            entry[k] = [p for p in val if isinstance(p, str)]
-        out[eid] = entry
-    return out, ""
 
 
 def adjudicate(payload, scope_path, env=None):
@@ -349,14 +211,19 @@ def adjudicate(payload, scope_path, env=None):
     `scope_path`. Binding order (spec 5.3): the environment's ENV_ENTRY_ID,
     else the subagent transcript marker, else an `agent_type` with no binding
     DENIES, else the orchestrator is never confined. `env` defaults to
-    os.environ; the probe and the tests pass their own."""
+    os.environ; the probe and the tests pass their own.
+
+    With the shared rules unloaded, every call denies, before anything else is
+    asked: the loader stanza's contract (#3273 cut 11)."""
+    if guard_rules is None:
+        return False, "read guard: %s" % _GUARD_RULES_FAULT
     if not isinstance(payload, dict):
         return True, ""
     tool_name = payload.get("tool_name", "")
     if tool_name not in _READ_TOOLS:
         return True, ""
     env = os.environ if env is None else env
-    env_id = env.get(ENV_ENTRY_ID)
+    env_id = env.get(guard_rules.ENV_ENTRY_ID)
     agent_id = payload.get("agent_id")
     agent_type = payload.get("agent_type")
     if not env_id and not agent_id:
@@ -364,9 +231,9 @@ def adjudicate(payload, scope_path, env=None):
             return False, ("%s is denied: this session runs as agent_type %r but "
                            "nothing bound it to a panopticon entry (no %s in the "
                            "environment, no subagent transcript)"
-                           % (tool_name, agent_type, ENV_ENTRY_ID))
+                           % (tool_name, agent_type, guard_rules.ENV_ENTRY_ID))
         return True, ""
-    scopes, error = _load_scope(scope_path)
+    scopes, error = guard_rules._load_scope(scope_path)
     if scopes is None:
         return False, error
     tool_input = payload.get("tool_input")
@@ -378,7 +245,7 @@ def adjudicate(payload, scope_path, env=None):
     if env_id:
         entry_id = env_id if isinstance(env_id, str) else None
     else:
-        entry_id = bind(agent_id, payload.get("transcript_path"))
+        entry_id = guard_rules.bind(agent_id, payload.get("transcript_path"))
     if entry_id is None:
         return decide(tool_name, tool_input, None)
     scope = scopes.get(entry_id)
@@ -403,29 +270,11 @@ def _deny_response(reason):
     })
 
 
-def hook_command(*argv):
-    """One hook `command` string, every element shell-quoted (#1633, SEC-A1A).
-
-    A registered PreToolUse command is SHELL SOURCE: Claude Code runs it
-    through `sh -c`, so an element interpolated into it is not an argument. The
-    `"%s"` this replaces stopped a space and nothing else, leaving a `"`, a
-    backtick or a `$(...)` in the scope path -- or in this script's own
-    checkout path -- executing on every tool call. Copied into each guard hook
-    rather than imported, like the settings plumbing (R-P5-5)."""
-    return " ".join(shlex.quote(a) for a in argv)
-
-
 # #495: self-locate, shell-quoted -- the install path may contain spaces, or
 # worse (#1633). The interpreter is the trusted process already running the
 # driver; PATH and PYTHONPATH must not choose code for a dispatched read.
 def _trusted_hook_argv():
-    executable = sys.executable
-    if not executable or not os.path.isabs(executable):
-        raise RuntimeError("read guard interpreter is unavailable or not absolute: %r" % executable)
-    executable = os.path.realpath(executable)
-    if not os.path.isfile(executable) or not os.access(executable, os.X_OK):
-        raise RuntimeError("read guard interpreter is unavailable: %s" % executable)
-    return executable, "-I", os.path.abspath(__file__)
+    return guard_rules._trusted_hook_argv(__file__, "read guard")
 
 
 def __getattr__(name):
@@ -449,11 +298,11 @@ def __getattr__(name):
     if name == "_HOOK_ARGV":
         return _trusted_hook_argv()
     if name == "_HOOK_CMD":
-        return hook_command(*_trusted_hook_argv())
+        return guard_rules.hook_command(*_trusted_hook_argv())
     if name == "_HOOK_ENTRY":
         return {"matcher": _MATCHER,
                 "hooks": [{"type": "command",
-                           "command": hook_command(*_trusted_hook_argv())}]}
+                           "command": guard_rules.hook_command(*_trusted_hook_argv())}]}
     raise AttributeError("module %r has no attribute %r" % (__name__, name))
 
 DEFAULT_SETTINGS_PATH = ".claude/settings.local.json"
@@ -466,100 +315,15 @@ def _hook_entry(scope_path=None):
     argv = list(_trusted_hook_argv())
     if scope_path:
         argv.append(os.path.abspath(scope_path))
-    cmd = hook_command(*argv)
+    cmd = guard_rules.hook_command(*argv)
     return {"matcher": _MATCHER, "hooks": [{"type": "command", "command": cmd}]}
-
-
-def _runs_this_script(command):
-    """True when `command` invokes THIS module -- quoted (#1633) or in the bare
-    form an earlier version wrote.
-
-    Tokenizing is what keeps our own entry recognisable once the script path is
-    quoted: a checkout path that needed escaping no longer appears verbatim in
-    the command, and an entry uninstall cannot recognise is one it orphans,
-    leaving the guard armed. Both legacy spellings tokenize cleanly, so the
-    substring test is the fallback for a command no shell can parse -- one
-    that still names this script is ours, one that does not answers False."""
-    mine = os.path.abspath(__file__)
-    try:
-        tokens = shlex.split(command)
-    except ValueError:                  # unbalanced quotes in a foreign entry
-        tokens = []
-    return mine in tokens or mine in command
 
 
 def _is_our_entry(entry):
     """True for any PreToolUse entry that runs THIS module (never the write
     guard's -- the two coexist in one settings file, each keyed on its own
     script path)."""
-    if not isinstance(entry, dict):
-        return False
-    for h in entry.get("hooks", []) or []:
-        if isinstance(h, dict) and _runs_this_script(str(h.get("command", ""))):
-            return True
-    return False
-
-
-def _load(settings_path):
-    try:
-        with open(settings_path, encoding="utf-8") as fh:
-            return json.load(fh)
-    except FileNotFoundError:
-        return {}
-    except (OSError, ValueError) as exc:
-        # #1098: never re-serialize over a file we could not read.
-        raise RuntimeError(
-            "refusing to overwrite unreadable %s: %s" % (settings_path, exc)) from exc
-
-
-def _atomic_write_json(path, data, indent=None):
-    """Stage at `<path>.tmp`, then rename -- never writing THROUGH a symlink
-    planted at that temp name (I7).
-
-    A plain `open(tmp, "w")` follows a link, and the files this writes live
-    where an untrusted target can reach: the run folder sits inside the scanned
-    tree, and a redteam target can commit `<name>.tmp` as a link to any file
-    the invoking user can write (a dotfile, authorized_keys), whose contents
-    this would then replace with the guard's own JSON -- the #run9 SEC-X0X
-    class, which `runio._open_w_nofollow` closed for `.panopticon` artifacts.
-    Spelled with os flags rather than by calling that helper because a guard
-    hook imports standing alone. O_EXCL|O_NOFOLLOW refuses both a symlink and
-    a stale regular leftover, so the leftover is removed first and the open
-    creates a fresh file or fails loudly -- never silently somewhere else."""
-    parent = os.path.dirname(path) or "."
-    os.makedirs(parent, exist_ok=True)
-    tmp = path + ".tmp"
-    if os.path.islink(tmp) or os.path.exists(tmp):
-        os.unlink(tmp)                  # drop the LINK, never follow it
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                 | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=indent)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
-
-
-def _write_hook_entry(settings_path, scope_path=None):
-    settings = _load(settings_path)
-    hooks = settings.setdefault("hooks", {})
-    pre = [h for h in hooks.get("PreToolUse", []) if not _is_our_entry(h)]
-    pre.append(_hook_entry(scope_path))
-    hooks["PreToolUse"] = pre
-    _atomic_write_json(settings_path, settings, indent=2)
-
-
-def _remove_hook_entry(settings_path):
-    settings = _load(settings_path)
-    hooks = settings.get("hooks", {})
-    if "PreToolUse" not in hooks:
-        return
-    hooks["PreToolUse"] = [h for h in hooks["PreToolUse"] if not _is_our_entry(h)]
-    if not hooks["PreToolUse"]:
-        del hooks["PreToolUse"]
-    if not hooks:
-        settings.pop("hooks", None)
-    _atomic_write_json(settings_path, settings, indent=2)
+    return guard_rules._is_our_entry(entry, __file__)
 
 
 def _read_scope_file(scope_path):
@@ -623,8 +387,8 @@ def install(plan, settings_path=None, scope_path=None, *, session_root=None):
     _trusted_hook_argv()  # refuse before writing either private artifact
     merged = dict(_read_scope_file(scope_path))
     merged.update(added)
-    _atomic_write_json(scope_path, merged)
-    _write_hook_entry(settings_path, scope_path)
+    guard_rules.atomic_write_json(scope_path, merged)
+    guard_rules._write_hook_entry(settings_path, __file__, _hook_entry(scope_path))
     return added
 
 
@@ -640,14 +404,7 @@ def guard_state(settings_path=None, scope_path=None, *, session_root=None):
 def is_armed(settings_path=None, scope_path=None, *, session_root=None):
     """(armed, entries): is the guard registered, and over how many entries?"""
     settings_path, scope_path, _ = _resolve(settings_path, scope_path, session_root)
-    try:
-        with open(settings_path, encoding="utf-8") as fh:
-            settings = json.load(fh)
-    except (OSError, ValueError):
-        return False, 0
-    hooks = (settings.get("hooks") or {}).get("PreToolUse") or []
-    armed = any(_is_our_entry(entry) for entry in hooks)
-    if not armed:
+    if not guard_rules._armed(settings_path, __file__):
         return False, 0
     return True, len(_read_scope_file(scope_path))
 
@@ -661,9 +418,9 @@ def uninstall(settings_path=None, scope_path=None, *, plan=None, session_root=No
         for eid in scope_from_plan(plan):
             remaining.pop(eid, None)
         if remaining:
-            _atomic_write_json(scope_path, remaining)
+            guard_rules.atomic_write_json(scope_path, remaining)
             return
-    _remove_hook_entry(settings_path)
+    guard_rules._remove_hook_entry(settings_path, __file__)
     try:
         os.remove(scope_path)
     except OSError:
@@ -709,8 +466,11 @@ def main(argv=None):
         # deny below. #2394: the roster test sits inside too, so a bad tool_name denies, never crashes.
         if payload.get("tool_name", "") not in _READ_TOOLS:
             return 0
-        _trusted_hook_argv()
-        allow, reason = adjudicate(payload, _resolve_scope_path(args[0] if args else None))
+        if guard_rules is None:            # #3273 cut 11: before the argv check, which needs it
+            allow, reason = adjudicate(payload, None)
+        else:
+            _trusted_hook_argv()
+            allow, reason = adjudicate(payload, _resolve_scope_path(args[0] if args else None))
     except Exception as exc:  # noqa: BLE001 -- fail CLOSED, never crash the hook
         # A non-2 exit is NON-blocking in Claude Code (the tool proceeds), so an uncaught
         # exception here would fail OPEN despite every tolerant early return above.

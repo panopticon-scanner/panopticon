@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import scripts.guard_rules as guard_rules
 import scripts.write_guard_hook as wg
 
 
@@ -1391,7 +1392,7 @@ class TestLoadFailLoud(unittest.TestCase):
 
     def test_absent_settings_returns_empty(self):
         with tempfile.TemporaryDirectory() as d:
-            self.assertEqual(wg._load(os.path.join(d, "settings.local.json")), {})
+            self.assertEqual(guard_rules._load(os.path.join(d, "settings.local.json")), {})
 
     def test_corrupt_settings_refuses(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1399,7 +1400,7 @@ class TestLoadFailLoud(unittest.TestCase):
             with open(p, "w") as fh:
                 fh.write("{not valid json")
             with self.assertRaises(RuntimeError):
-                wg._load(p)
+                guard_rules._load(p)
 
     def test_install_will_not_clobber_corrupt_settings(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1691,7 +1692,7 @@ class TestAllowlistBoundAtInstall(unittest.TestCase):
         for bake in (None, "/tmp/x/.panopticon/write-allowlist.json"):
             with tempfile.TemporaryDirectory() as d:
                 sp = os.path.join(d, "settings.json")
-                wg._write_hook_entry(sp, bake)
+                guard_rules._write_hook_entry(sp, wg.__file__, wg._hook_entry(bake))
                 with open(sp, encoding="utf-8") as fh:
                     self.assertEqual(len(json.load(fh)["hooks"]["PreToolUse"]), 1)
                 wg.uninstall(settings_path=sp,
@@ -1704,7 +1705,7 @@ class TestAllowlistBoundAtInstall(unittest.TestCase):
             sp = os.path.join(d, "settings.json")
             ap = os.path.join(d, ".panopticon", "write-allowlist.json")
             plan = [{"out_file": os.path.join(d, ".panopticon", "f.json")}]
-            wg._write_hook_entry(sp, None)                      # legacy entry first
+            guard_rules._write_hook_entry(sp, wg.__file__, wg._hook_entry(None))  # legacy entry first
             wg.install(plan, settings_path=sp, allowlist_path=ap)
             wg.install(plan, settings_path=sp, allowlist_path=ap)
             with open(sp, encoding="utf-8") as fh:
@@ -1802,21 +1803,11 @@ class TestAtomicWriteRefusesASymlinkedTmp(unittest.TestCase):
         os.symlink(outside, target + ".tmp")
         return outside, target
 
-    def test_the_planted_link_is_neutralized_and_its_target_untouched(self):
-        with tempfile.TemporaryDirectory() as d:
-            outside, target = self._planted(d, "settings.json")
-            wg._atomic_write_json(target, {"hooks": {"PreToolUse": []}}, indent=2)
-            with open(outside, encoding="utf-8") as fh:
-                self.assertEqual(fh.read(), "PRECIOUS")
-            self.assertFalse(os.path.islink(target))
-            self.assertEqual(json.load(open(target, encoding="utf-8")),
-                             {"hooks": {"PreToolUse": []}})
-            self.assertFalse(os.path.exists(target + ".tmp"))
-
     def test_the_real_writer_that_arms_the_guard_refuses_it_too(self):
         with tempfile.TemporaryDirectory() as d:
             outside, settings = self._planted(d, "settings.json")
-            wg._write_hook_entry(settings, os.path.join(d, "write-allowlist.json"))
+            guard_rules._write_hook_entry(
+                settings, wg.__file__, wg._hook_entry(os.path.join(d, "write-allowlist.json")))
             with open(outside, encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), "PRECIOUS")
             with open(settings, encoding="utf-8") as fh:
@@ -2110,87 +2101,14 @@ class TestPerEntryWriteBinding(unittest.TestCase):
             json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
 
 
-class TestBindingHelpersAreACopy(unittest.TestCase):
-    """The binding resolution is DUPLICATED from read_guard_hook, not shared.
-
-    A guard hook is invoked by absolute path, as its own process, with no
-    package on sys.path -- the same constraint that already keeps the read
-    guard's settings plumbing (R-P5-5) and `hook_command` (#1633) copies
-    rather than imports. A copy that drifts is worse than either, so pin the
-    two against each other: same source, compared as ASTs.
-    """
-
-    NAMES = ("marker_of", "subagent_transcript", "_first_text", "bind")
-    # #1640: the component walk is the same shape of copy -- kimi_guard_hook's
-    # write branch IS this module's, with Kimi's `path` field, and the walk it
-    # calls has to be the same walk or one of the two guards quietly stops
-    # refusing a nested symlink.
-    COMPONENT_NAMES = ("_components", "_component_fault", "_escaped_component")
-
-    def _functions(self, module, names=None):
-        import ast
-        names = self.NAMES if names is None else names
-        with open(module.__file__, encoding="utf-8") as fh:
-            tree = ast.parse(fh.read(), module.__file__)
-        return {n.name: ast.dump(n) for n in tree.body
-                if isinstance(n, ast.FunctionDef) and n.name in names}
-
-    def test_the_binding_helpers_are_ast_identical_in_both_guards(self):
-        import scripts.read_guard_hook as rg
-        mine, theirs = self._functions(wg), self._functions(rg)
-        self.assertEqual(sorted(theirs), sorted(self.NAMES))
-        for name in self.NAMES:
-            with self.subTest(name=name):
-                self.assertEqual(mine.get(name), theirs[name],
-                                 "%s has drifted from read_guard_hook's copy" % name)
-
-    def test_the_component_walk_is_ast_identical_in_both_write_guards(self):
-        import scripts.kimi_guard_hook as kg
-        mine = self._functions(wg, self.COMPONENT_NAMES)
-        theirs = self._functions(kg, self.COMPONENT_NAMES)
-        self.assertEqual(sorted(theirs), sorted(self.COMPONENT_NAMES))
-        for name in self.COMPONENT_NAMES:
-            with self.subTest(name=name):
-                self.assertEqual(mine.get(name), theirs[name],
-                                 "%s has drifted from the kimi guard's copy" % name)
-
-    def test_the_component_constants_match_too(self):
-        import scripts.kimi_guard_hook as kg
-        self.assertEqual(wg.ARTIFACT_DIR, kg.ARTIFACT_DIR)
-        self.assertEqual(wg.SYMLINKED_COMPONENT, kg.SYMLINKED_COMPONENT)
-        self.assertEqual(wg.UNMEASURABLE_COMPONENT, kg.UNMEASURABLE_COMPONENT)
-        self.assertEqual(wg.ESCAPED_ARTIFACT_TREE, kg.ESCAPED_ARTIFACT_TREE)
-        self.assertEqual(wg.PARENT_COMPONENT, kg.PARENT_COMPONENT)
-        # Fix round 2 (N1): all four carry a `%s`. A refusal that cannot say
-        # WHICH path or component it is about sends its reader to grep the
-        # plan -- and `allowlist_from_plan` re-raises these with no context of
-        # its own, so the constant is the only place the context can come from.
-        for name in ("SYMLINKED_COMPONENT", "UNMEASURABLE_COMPONENT",
-                     "ESCAPED_ARTIFACT_TREE", "PARENT_COMPONENT"):
-            with self.subTest(constant=name):
-                self.assertIn("%s", getattr(wg, name))
-
-    def test_the_binding_constants_match_too(self):
-        # The names the three hooks agree on by copy rather than by import:
-        # the marker prefix and env var the binding reads, and the reserved
-        # bucket both write guards must refuse (F2 -- one spelling, or one of
-        # them silently stops refusing it).
-        import scripts.kimi_guard_hook as kg
-        import scripts.read_guard_hook as rg
-        self.assertEqual(wg.MARKER_PREFIX, rg.MARKER_PREFIX)
-        self.assertEqual(wg.ENV_ENTRY_ID, rg.ENV_ENTRY_ID)
-        self.assertEqual(wg.ENV_ENTRY_ID, kg.ENV_ENTRY_ID)
-        self.assertEqual(wg.UNBOUND_ENTRY, kg.UNBOUND_ENTRY)
-
-
 class TestTheSymlinkRefusingWritersAgreeOnTheirFlags(unittest.TestCase):
     """One rule, hand-written per writer -- pinned against each other (#1767,
     ARC-2812051140).
 
-    The family this covers, named rather than counted: the three
-    stage-and-rename writers -- the two guard hooks' (`write_guard_hook.atomic_write_json`,
-    `read_guard_hook._atomic_write_json`) and `runners/kimi_home._write_text` --
-    and `safe_write`'s artifact pair. Not every no-follow create in the tree --
+    The family this covers, named rather than counted: the two
+    stage-and-rename writers -- the guard hooks' one (`guard_rules.atomic_write_json`,
+    shared since #3273 cut 11; the two hooks each carried a copy before) and
+    `runners/kimi_home._write_text` -- and `safe_write`'s artifact pair. Not every no-follow create in the tree --
     `setup_flow` and `diff_map` make files this way too, under their own rules.
 
     The duplication is decided: `safe_write` owns the `.panopticon` artifact
@@ -2239,22 +2157,12 @@ class TestTheSymlinkRefusingWritersAgreeOnTheirFlags(unittest.TestCase):
         return seen[0]
 
     def _stagers(self):
-        """Every stage-at-`<path>.tmp`-and-rename writer.
-
-        `read_guard_hook._atomic_write_json` is the write guard's writer
-        body-for-body, which is exactly why it is in here: a copy nothing
-        measures is the case this class exists for, and it sits in the module
-        the read-scope parity net is built around.
-        """
-        import scripts.read_guard_hook as rg
+        """Every stage-at-`<path>.tmp`-and-rename writer."""
         import scripts.runners.kimi_home as kimi_home
         return {
-            "write_guard_hook.atomic_write_json": self._opened(
-                lambda: wg.atomic_write_json(os.path.join(self.root, "allowlist.json"),
-                                             wg.allowlist_document({}))),
-            "read_guard_hook._atomic_write_json": self._opened(
-                lambda: rg._atomic_write_json(os.path.join(self.root, "read-scope.json"),
-                                              {})),
+            "guard_rules.atomic_write_json": self._opened(
+                lambda: guard_rules.atomic_write_json(os.path.join(self.root, "allowlist.json"),
+                                                      wg.allowlist_document({}))),
             "runners/kimi_home._write_text": self._opened(
                 lambda: kimi_home._write_text(os.path.join(self.root, "config.toml"),
                                               "model = 'x'\n")),
@@ -2278,7 +2186,7 @@ class TestTheSymlinkRefusingWritersAgreeOnTheirFlags(unittest.TestCase):
 
     def test_no_writer_will_follow_a_symlink_planted_at_its_name(self):
         measured = dict(self._stagers(), **self._artifact_writers())
-        self.assertEqual(len(measured), 5)
+        self.assertEqual(len(measured), 4)
         for name, (flags, _mode) in sorted(measured.items()):
             with self.subTest(writer=name):
                 self.assertEqual(flags & self.NOFOLLOW, self.NOFOLLOW)
@@ -2287,7 +2195,7 @@ class TestTheSymlinkRefusingWritersAgreeOnTheirFlags(unittest.TestCase):
 
     def test_the_stage_and_rename_writers_open_identically(self):
         measured = self._stagers()
-        self.assertEqual(len(measured), 3)
+        self.assertEqual(len(measured), 2)
         self.assertEqual(len(set(measured.values())), 1,
                          "the staging writers have drifted: %r" % (measured,))
         expected = os.O_WRONLY | os.O_CREAT | os.O_EXCL | self.NOFOLLOW
@@ -2319,13 +2227,13 @@ class TestTheSymlinkRefusingWritersAgreeOnTheirFlags(unittest.TestCase):
 
     @staticmethod
     def _private_hook_attributes(source, path="<source>"):
-        """The `write_guard_hook._*` attributes `source` reaches for."""
+        """The `write_guard_hook._*` / `guard_rules._*` attributes `source` reaches for."""
         import ast
         return sorted({node.attr for node in ast.walk(ast.parse(source, path))
                        if isinstance(node, ast.Attribute)
                        and node.attr.startswith("_")
                        and isinstance(node.value, ast.Name)
-                       and node.value.id == "write_guard_hook"})
+                       and node.value.id in ("write_guard_hook", "guard_rules")})
 
     def test_the_batch_runner_reaches_for_no_private_name_of_this_hook(self):
         # ARC-2812051140 as a rule rather than a one-time edit. The alias that
@@ -2336,18 +2244,10 @@ class TestTheSymlinkRefusingWritersAgreeOnTheirFlags(unittest.TestCase):
         import scripts.runners.batch as batch_mod
         with open(batch_mod.__file__, encoding="utf-8") as fh:
             source = fh.read()
-        self.assertIn("write_guard_hook.atomic_write_json", source)
+        self.assertIn("guard_rules.atomic_write_json", source)
         self.assertEqual(
             self._private_hook_attributes(source, batch_mod.__file__), [],
             "runners/batch.py is reaching into the hook's private surface again")
         # and not by any spelling: a `from`-import of the private name would
         # evade the attribute walk above.
         self.assertNotIn("_atomic_write_json", source)
-
-    def test_the_private_name_is_the_public_one(self):
-        # ARC-2812051140's other residual: `runners/batch.py` reached into the
-        # hook's `_atomic_write_json`, the one arrangement no comment justified.
-        # The writer has a public name now; the underscore spelling stays as an
-        # alias, so this module's own tests and the prose that cites it keep
-        # naming the same object rather than a second writer.
-        self.assertIs(wg._atomic_write_json, wg.atomic_write_json)

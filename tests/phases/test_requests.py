@@ -461,11 +461,11 @@ class TestTheOwedOnceArtifactsAreNeverReCreated(unittest.TestCase):
 
 class TestEntryMarkerAndScope(unittest.TestCase):
     def test_entry_marker_is_the_hooks_marker_line_plus_newline(self):
-        from scripts import read_guard_hook
+        from scripts import guard_rules, read_guard_hook
         self.assertEqual(read_guard_hook.marker_line("review-app-SEC") + "\n",
                          requests.entry_marker("review-app-SEC"))
         self.assertEqual("review-app-SEC",
-                         read_guard_hook.marker_of(requests.entry_marker("review-app-SEC") + "body"))
+                         guard_rules.marker_of(requests.entry_marker("review-app-SEC") + "body"))
 
     def test_scope_has_exactly_the_guards_keys(self):
         from scripts import read_guard_hook

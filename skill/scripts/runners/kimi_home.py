@@ -67,6 +67,7 @@ import tomllib
 
 import scripts.dispatch as dispatch
 import scripts.kimi_toml as kimi_toml
+import scripts.guard_rules as guard_rules
 import scripts.kimi_guard_hook as kimi_guard_hook
 
 
@@ -183,7 +184,7 @@ def _hook_entry(matcher, mode, data_path):
     # #2163: `-I` pairs with it, the read guard's precedent -- no `sitecustomize`
     # may choose code for a confinement decision (#1996).
     return {"event": "PreToolUse", "matcher": matcher,
-            "command": kimi_guard_hook.hook_command(
+            "command": guard_rules.hook_command(
                 _interpreter(), "-I", _GUARD, mode, os.path.abspath(data_path)),
             "timeout": 30}
 

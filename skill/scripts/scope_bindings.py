@@ -8,6 +8,7 @@ Codex MCP input.
 import os
 
 import scripts.phases.requests as requests
+import scripts.guard_rules as guard_rules
 import scripts.read_guard_hook as read_guard_hook
 import scripts.safe_write as safe_write
 
@@ -30,7 +31,7 @@ class EntryScopes:
         for entry_id, scope in scopes.items():
             path = self.path(entry_id)
             safe_write.confine_artifact_path(path)
-            read_guard_hook._atomic_write_json(path, {entry_id: scope})
+            guard_rules.atomic_write_json(path, {entry_id: scope})
             self.paths[entry_id] = path
 
     def ensure(self, entry):
