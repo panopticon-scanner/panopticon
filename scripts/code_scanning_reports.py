@@ -62,6 +62,46 @@ SARIF_SCHEMA_SHA256 = "ad6db49878699b091f3eeb765b6e29e92a34bad4da88664d000c923b5
 SARIF_REFERENCE_DIR = Path(__file__).with_name("reference")
 SARIF_SCHEMA_PATH = SARIF_REFERENCE_DIR / "sarif-schema-2.1.0.json"
 SARIF_NOTICE_PATH = SARIF_REFERENCE_DIR / "SARIF-2.1.0-NOTICES.md"
+# Run-level keys Panopticon's own runner stamps on every Semgrep capture
+# (`tool_capture._annotate_scanned_files`, #1335; `semgrep_targets.STAMP_KEY`,
+# #3193). They describe the SCAN, not any finding, so a run carrying them in
+# exactly this shape is still a reviewed context. Any other key, or either
+# key in any other shape, keeps the whole run actionable as before.
+MAX_SIZE_SKIPPED_LISTED = 100
+
+
+def _is_count(value: Any) -> bool:
+    return type(value) is int and value >= 0
+
+
+def _reviewed_scan_files(value: Any) -> bool:
+    return _is_count(value)
+
+
+def _reviewed_size_skipped(value: Any) -> bool:
+    return (isinstance(value, dict) and
+            set(value) == {"limit", "count", "files", "complete"} and
+            _is_count(value["limit"]) and _is_count(value["count"]) and
+            type(value["complete"]) is bool and
+            isinstance(value["files"], list) and
+            len(value["files"]) <= min(value["count"], MAX_SIZE_SKIPPED_LISTED) and
+            all(isinstance(name, str) for name in value["files"]))
+
+
+PANOPTICON_RUN_PROPERTIES = {
+    "panopticon_scanned_files": _reviewed_scan_files,
+    "panopticon_size_skipped": _reviewed_size_skipped,
+}
+
+
+def _without_reviewed_run_properties(properties: Any) -> Any:
+    if not isinstance(properties, dict):
+        return properties
+    return {key: value for key, value in properties.items()
+            if not (key in PANOPTICON_RUN_PROPERTIES and
+                    PANOPTICON_RUN_PROPERTIES[key](value))}
+
+
 _PLACEHOLDER = re.compile(r"(?<!\{)\{([0-9]+)\}(?!\})")
 
 
@@ -237,8 +277,8 @@ def _shared_contexts(document: dict[str, Any], run: dict[str, Any]) -> tuple[
     driver = tool["driver"]
     return (
         {key: value for key, value in document.items() if key != "runs"},
-        {key: value for key, value in run.items()
-         if key not in {"results", "tool"}},
+        {key: (_without_reviewed_run_properties(value) if key == "properties" else value)
+         for key, value in run.items() if key not in {"results", "tool"}},
         {key: value for key, value in tool.items() if key != "driver"},
         {key: value for key, value in driver.items()
          if key not in {"globalMessageStrings", "rules"}},

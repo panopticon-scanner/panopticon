@@ -891,3 +891,57 @@ def test_the_scan_root_mount_is_the_one_run_tools_uses():
     # mounts the target at; a drift here would silently match nothing.
     import scripts.run_tools as rt
     assert reports.SCAN_ROOT_MOUNT == rt.TARGET_MOUNT
+
+
+SCAN_STAMPS = {
+    "panopticon_scanned_files": 658,
+    "panopticon_size_skipped": {"limit": 1000000, "count": 1,
+                                "files": [".test_durations"], "complete": True},
+}
+
+
+def _inventory_count(output):
+    return json.loads((output / "inventory" / "ai-inventory.json").read_text())["count"]
+
+
+def test_panopticon_scan_stamps_keep_the_run_inventory_eligible(tmp_path):
+    # The live shape of every semgrep capture since #1335/#3193: before this,
+    # these two keys kept all 270 AI-usage notes on the Security tab.
+    document = _sarif([_rule(ANTHROPIC)], [_result(ANTHROPIC)],
+                      run_properties=copy.deepcopy(SCAN_STAMPS))
+    _raw, output, _before = _prepare(tmp_path, {"semgrep.sarif": document})
+    security = json.loads((output / "security" / "semgrep.sarif").read_text())
+    assert security["runs"][0]["results"] == []
+    assert security["runs"][0]["properties"] == SCAN_STAMPS     # carried, not stripped
+    assert _inventory_count(output) == 1
+
+
+@pytest.mark.parametrize("properties", [
+    {**SCAN_STAMPS, "cve": "CVE-2026-1234"},                          # a third key
+    {"panopticon_scanned_files": True},                                # bool is not a count
+    {"panopticon_scanned_files": -1},
+    {"panopticon_scanned_files": "658"},
+    {"panopticon_size_skipped": {"limit": 1, "count": 1, "files": [], "complete": "yes"}},
+    {"panopticon_size_skipped": {"limit": 1, "count": 1, "files": [],
+                                 "complete": True, "cwe": "CWE-79"}},  # extra field
+    {"panopticon_size_skipped": {"limit": 1, "count": 0, "files": ["a"], "complete": True}},
+    {"panopticon_size_skipped": {"limit": 1, "count": 1, "files": [{"cve": "x"}],
+                                 "complete": True}},
+    {"panopticon_size_skipped": {"limit": 1, "count": 200, "complete": True,
+                                 "files": ["f%d" % i for i in range(101)]}},
+    {"panopticon_size_skipped": ["not", "a", "listing"]},
+])
+def test_any_other_run_property_shape_keeps_the_run_actionable(tmp_path, properties):
+    document = _sarif([_rule(ANTHROPIC)], [_result(ANTHROPIC)], run_properties=properties)
+    _raw, output, _before = _prepare(tmp_path, {"semgrep.sarif": document})
+    assert json.loads((output / "security" / "semgrep.sarif").read_text()) == document
+    assert _inventory_count(output) == 0
+
+
+def test_the_stamps_are_reviewed_only_on_the_run(tmp_path):
+    # The same keys on the driver, tool or document are not Panopticon's stamp.
+    document = _sarif([_rule(ANTHROPIC)], [_result(ANTHROPIC)])
+    document["runs"][0]["tool"]["driver"]["properties"] = copy.deepcopy(SCAN_STAMPS)
+    _raw, output, _before = _prepare(tmp_path, {"semgrep.sarif": document})
+    assert _inventory_count(output) == 0
+

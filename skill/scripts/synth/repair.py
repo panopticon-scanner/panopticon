@@ -8,8 +8,8 @@ to fail the artifact it rides into. A malformed row costs a warning and the
 row; it never costs the run.
 
 These repairs normalize the tools manifest's exclusions, Git-driver
-declarations and suppression counts -- target-carried text that reaches the
-artifact. They split out of `validate_schema` as the boundary work outgrew its
+declarations, suppression counts and #3269 dependency-audit receipt --
+target-carried or target-adjacent content that reaches the artifact. They split out of `validate_schema` as the boundary work outgrew its
 700-line ratchet. Agent-sourced repairs (`repair_finding` and `repair_verdict`)
 stay there with the schema-node machinery this module uses. Since #3273 the
 manifest's run-written blocks are read as written (its producers bound them,
@@ -24,6 +24,8 @@ artifacts.
 """
 import json
 import sys
+
+from scripts import tools_manifest
 
 
 # One bound for every target-carried block read here: the numbers a hostile one
@@ -43,6 +45,41 @@ PATH_MAX = 4096
 # exists to prevent, one layer out. Nothing is hidden: the tail line carries
 # the true remaining count.
 WARN_LINES_MAX = 20
+
+def repair_dependency_audit(value, warn=None):
+    """Repair the target-adjacent #3269 SCA receipt to closed enums.
+
+    ``None`` is a legacy manifest with no measurement. Any present malformed
+    receipt becomes one fixed applicable/zero-output state, so corrupting it
+    can only cost certification and no target-authored value reaches a report.
+    """
+    if value is None:
+        return None
+    fallback = {"applicable": ["unknown"], "selected": [], "produced": []}
+    if not isinstance(value, dict) or set(value) != {"applicable", "selected", "produced"}:
+        warn_repairs("tools-manifest.json", [("dependency_audit", "repaired")], warn)
+        return fallback
+    allowed = {
+        "applicable": tools_manifest.DEPENDENCY_AUDIT_ECOSYSTEMS,
+        "selected": tools_manifest.DEPENDENCY_AUDIT_TOOLS,
+        "produced": tools_manifest.DEPENDENCY_AUDIT_TOOLS,
+    }
+    repaired = {}
+    for key, enum in allowed.items():
+        rows = value.get(key)
+        if not isinstance(rows, list) or any(not isinstance(row, str) or row not in enum
+                                             for row in rows):
+            warn_repairs("tools-manifest.json",
+                         [("dependency_audit.%s" % key, "repaired")], warn)
+            return fallback
+        repaired[key] = sorted(set(rows))
+    if (not set(repaired["produced"]).issubset(repaired["selected"])
+            or ("unknown" in repaired["applicable"]
+                and (repaired["selected"] or repaired["produced"]))):
+        warn_repairs("tools-manifest.json", [("dependency_audit", "repaired")], warn)
+        return fallback
+    return repaired
+
 
 def warn_repairs(artifact, changes, warn):
     """Announce the repairs a boundary read made, one line each -- through

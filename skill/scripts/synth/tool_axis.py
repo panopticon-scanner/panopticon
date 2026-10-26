@@ -198,6 +198,8 @@ class Reconciled:
     # beside `integrity` (which also publishes it) the way `integrity_ok` is:
     # certification takes it as an input, and must not have to read a section.
     tools_manifest_invalid: str | None = None
+    # #3269 SCA: measured dependency surface with no dedicated adapter output.
+    dependency_audit_gap: bool = False
     # #1701/#3269 G4: source-scope drops this run's gate counts anyway (redteam
     # only; `[]` in every other mode). Beside `coverage` like the two blocks
     # above and for the same reason: `meta.coverage` is what the report SAYS,
@@ -275,6 +277,10 @@ def reconcile(plan, tools, resolved, run=None):
     panels_incomplete = {p for p, n in planned.items() if executed.get(p, 0) < n}
     tools_ran = tools.tools_ran
     produced = set(tools_ran if tools_ran is not None else resolved.tool_names)
+    selected_m = (set(validate_schema_mod.string_list(tools.manifest.get("selected")))
+                  if isinstance(tools.manifest, dict) else set())
+    produced_m = (set(validate_schema_mod.string_list(tools.manifest.get("produced")))
+                  if isinstance(tools.manifest, dict) else set())
     # #1031: certify on the runner's DETERMINISTIC adapter set when its manifest
     # is present -- `missing` (applicable known adapters that didn't produce) is
     # the only real tool-coverage loss, so it drives the gate (`tools_absent`).
@@ -290,6 +296,10 @@ def reconcile(plan, tools, resolved, run=None):
     network = manifest.get("network") or {}
     cleanup_failures = manifest.get("cleanup_failures") or {}
     language_detection_skips = manifest.get("language_detection_skips")
+    dependency_audit = (
+        repair_mod.repair_dependency_audit(tools.manifest.get("dependency_audit"))
+        if isinstance(tools.manifest, dict)
+        and "dependency_audit" in tools.manifest else None)
     if tools.manifest_invalid:
         # #1644: corruption is not absence, and the scout-derived fallback below
         # is only honest when nothing WAS corrupted. With the manifest
@@ -301,11 +311,9 @@ def reconcile(plan, tools, resolved, run=None):
         # INCONCLUSIVE with every other integrity failure (fix round 1 F1).
         tools_absent, tool_divergence = [], {}
     elif isinstance(tools.manifest, dict):
-        selected = set(validate_schema_mod.string_list(tools.manifest.get("selected")))
-        produced_m = set(validate_schema_mod.string_list(tools.manifest.get("produced")))
         missing = tools.manifest.get("missing")
         missing_list = sorted(validate_schema_mod.string_list(missing)
-                              if isinstance(missing, list) else selected - produced_m)
+                              if isinstance(missing, list) else selected_m - produced_m)
         tools_absent = list(missing_list)
         tool_divergence = {t: "requested_absent" for t in missing_list}
         # #1512 (Codex BR-02): the manifest records what the RUNNER wrote, which
@@ -327,7 +335,7 @@ def reconcile(plan, tools, resolved, run=None):
                 {t: "produced_unusable" if info["kind"] == "unusable"
                  else "requested_absent"
                  for t, info in lost.items()})
-        unavailable = sorted(set(plan.scout_requested or []) - selected - produced_m)
+        unavailable = sorted(set(plan.scout_requested or []) - selected_m - produced_m)
         tool_divergence.update({t: "requested_unavailable" for t in unavailable})
     else:
         tools_absent = sorted(set(plan.scout_requested or []) - produced)
@@ -348,6 +356,20 @@ def reconcile(plan, tools, resolved, run=None):
     if noscan:
         tools_absent = [t for t in tools_absent if t not in noscan]
         tool_divergence.update({t: "produced_noscan" for t in noscan})
+    if dependency_audit is not None:
+        # The receipt is target-adjacent. Bind its claims back to the manifest's
+        # reconciled selection/output rather than trusting a second spelling of
+        # those facts; unusable output in tools_absent earns no SCA credit.
+        effective_selected = set(dependency_audit["selected"]) & selected_m
+        effective_produced = ((set(dependency_audit["produced"]) & produced_m
+                               & effective_selected) - set(tools_absent)
+                              if not tools.manifest_invalid else set())
+        dependency_audit = {**dependency_audit,
+                            "selected": sorted(effective_selected),
+                            "produced": sorted(effective_produced)}
+    dependency_audit_gap = bool(
+        dependency_audit and dependency_audit["applicable"]
+        and not dependency_audit["produced"])
     divergence = {
         "panels": {p: {"planned": planned[p], "executed": executed.get(p, 0)}
                    for p in sorted(panels_incomplete)},
@@ -575,6 +597,8 @@ def reconcile(plan, tools, resolved, run=None):
     if language_detection_skips is not None:
         # Disclosure only: selection and `tools_absent` were reconciled above.
         coverage["language_detection_skips"] = language_detection_skips
+    if dependency_audit is not None:
+        coverage["dependency_audit"] = dependency_audit
     # #1757 (AGT-1355709320), owner ruling 2026-09-25: what the TARGET's own
     # `exclude_paths:` could not hide -- the objective SEC surface it excluded,
     # kept for the SEC domain in a review group of its own. Conditional, unlike
@@ -606,4 +630,5 @@ def reconcile(plan, tools, resolved, run=None):
                       tools_image=tools_image.repair(manifest_dict.get("image")),
                       tools_apps=app_trace.repair(manifest_dict.get("apps")),
                       tools_manifest_invalid=tools.manifest_invalid,
+                      dependency_audit_gap=dependency_audit_gap,
                       gated_suppressed=gated)

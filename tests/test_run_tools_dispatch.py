@@ -133,6 +133,17 @@ class TestDefaultSelectionBranch(unittest.TestCase):
         self.assertTrue(set(rt.PHASE2_ADAPTERS) & set(payload["selected"]),
                         "phase-2 adapters never reached the selection")
 
+    def test_pyproject_only_offline_run_records_zero_sca_output(self):
+        with tempfile.TemporaryDirectory() as target:
+            with open(os.path.join(target, "pyproject.toml"), "w") as fh:
+                fh.write("[project]\nname = 'sample'\ndependencies = ['requests']\n")
+            payload = self._selection_for(target, extra=["--deps"])
+        self.assertEqual(payload["dependency_audit"], {
+            "applicable": ["python"],
+            "selected": [],
+            "produced": [],
+        })
+
     def test_the_default_branch_really_is_the_one_production_takes(self):
         # Pin the premise rather than trusting it: if driver ever started
         # passing --tools, this test would be guarding the wrong arm.

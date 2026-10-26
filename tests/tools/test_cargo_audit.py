@@ -95,7 +95,8 @@ class TestCargoAuditAdapter(unittest.TestCase):
 
     def test_not_applicable_with_only_cargo_toml(self):
         # a Cargo.toml-only (library) repo has no lockfile -> not applicable
-        # (osv-scanner still covers it); avoids a "selected but unproduced" gap.
+        # to this adapter. #3269's dependency receipt keeps that unaudited
+        # surface visible and refuses certification when nothing else covers it.
         with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("Cargo.toml")):
             self.assertFalse(ca.CargoAuditAdapter().is_applicable("/tmp/fake"))
 

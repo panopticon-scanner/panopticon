@@ -89,24 +89,23 @@ def gate_severity_roles(gate_eligible, fail_on):
 _SUPPRESSED_DRIVER_EFFECT = ("paths under a suppressed driver compare as "
                              "modified: dirtiness for them is unknown and a "
                              "delta may include them")
+NO_SCA_COVERAGE_NOTE = "no SCA tool produced output on an applicable tree"
 
 
 def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_absent,
             integrity_ok=True, verdicts_unloadable=0, verdicts_unanswered=0,
             missing_floor=0, tools_manifest_invalid=None, tools_network_excluded=None,
             delta_scope_suppressed_git_drivers=None, tools_file_partial=None,
-            delta_zero_hunks=None):
+            delta_zero_hunks=None, dependency_audit_gap=False):
     """Coverage-aware certification. Gate keys on high-value-panel completeness
     (+ requested-absent tools + artifact integrity + verdict loadability +
     missing FLOOR review cells); grade is holistic (provisional on ANY gap).
     Precedence FAIL > INCONCLUSIVE > PASS; OFF preserved. Tolerant: pure,
     never raises.
-
     A verdict file that survived re-dispatch but is unloadable or fails its
     finding-id echo is lost verify coverage. A PASS with supplied verdict work
     left unanswered is INCONCLUSIVE, so malformed/misrouted advisor output
     cannot silently keep a clean gate.
-
     `missing_floor` (5.0, matrix Sec5.1) is the count of FLOOR (domain, group)
     cells that produced no findings file at all -- see audit_floor_cells.
     Mirrors `tools_absent`'s treatment exactly: it only feeds
@@ -114,7 +113,6 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     missing floor cell forces the gate to INCONCLUSIVE without downgrading the
     holistic overall_grade to provisional -- the same asymmetry a
     requested-absent tool already gets.
-
     `tools_manifest_invalid` (#1644) is the REASON an unreadable
     `tools-manifest.json` sank certification, and it is what `coverage_note`
     reports. It is not the channel that moves the gate: the same fact rides in
@@ -124,7 +122,6 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     target-writable file the cheapest way to turn an INCONCLUSIVE run into a
     PASS, on identical findings. It stays in `coverage_certified` too, so a
     caller that passes only the reason still cannot certify.
-
     `delta_scope_suppressed_git_drivers` (#2013 fix round 1) is the same
     two-channel shape: the keys whose suppression scoped a DELTA run. Emptying
     the target's clean filter makes git compare raw worktree bytes against a
@@ -136,7 +133,6 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     `coverage_certified` on its own so a caller that passes only the reason
     cannot certify either. `None` on a full-repo run, where suppression costs
     provenance and nothing the findings depend on.
-
     `delta_zero_hunks` (#2178, owner ruling 2026-09-27) is the REASON an ACTIVE
     delta review's diff-hunks map carried no ranges while GATE-ELIGIBLE findings
     existed under `--gate-scope on-diff` -- `delta.zero_hunk_population`, i.e.
@@ -165,7 +161,8 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     gate_relevant_gap = (bool(high_value_incomplete) or bool(tools_absent)
                          or not integrity_ok or bool(verdicts_unloadable)
                          or bool(verdicts_unanswered) or bool(missing_floor)
-                         or bool(tools_network_excluded) or bool(delta_zero_hunks))
+                         or bool(tools_network_excluded) or bool(delta_zero_hunks)
+                         or dependency_audit_gap)
     any_incomplete = bool(panels_incomplete)
 
     if base_gate == "PASS" and gate_relevant_gap:
@@ -197,6 +194,8 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
         tail = sorted(p for p in panels_incomplete if p not in findings_mod.HIGH_VALUE_PANELS)
         note = ("gate certified; grade provisional — low-value panel(s) incomplete: %s"
                 % ", ".join(tail))
+    if dependency_audit_gap:
+        note = "; ".join(filter(None, (note, NO_SCA_COVERAGE_NOTE)))
     if delta_zero_hunks:
         # Directly after the manifest note and before every other caveat: an
         # empty gate scope invalidates the gate WHOLESALE, where a missing online
@@ -658,7 +657,8 @@ def grade_report(run, resolved, reconciled, delta=None):
                    delta_scope_suppressed_git_drivers=(
                        reconciled.delta_scope_suppressed_git_drivers),
                    tools_file_partial=reconciled.coverage.get("tools_file_partial"),
-                   delta_zero_hunks=delta_zero_hunks)
+                   delta_zero_hunks=delta_zero_hunks,
+                   dependency_audit_gap=getattr(reconciled, "dependency_audit_gap", False))
     summary = {
         "overall_grade": cert["overall_grade"],
         "provisional_grade": cert["provisional_grade"],

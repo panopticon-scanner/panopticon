@@ -764,13 +764,14 @@ class TestVirtualenvExclusion(unittest.TestCase):
         for entry in ("/.venv", ".venv", "/venv", "venv"):
             self.assertIn(entry, excludes)
 
-    # Ruling 3's five manifests, and the adapters that key on each. poetry.lock
-    # and uv.lock select no adapter today -- trivy reads them from its own root
-    # scan, which the venv skip-dir never covers.
+    # Ruling 3's five manifests, and the adapters that key on each. uv.lock
+    # selects no dedicated adapter today -- trivy reads it from its own root
+    # scan, which the venv skip-dir never covers. #3269 SCA pins the OSV rows
+    # to the automatic parsers in v1.8.2.
     _DEP_MARKERS = {"requirements.txt": ("pip-audit", "osv-scanner"),
-                    "pyproject.toml": ("pip-audit", "osv-scanner"),
+                    "pyproject.toml": ("pip-audit",),
                     "Pipfile.lock": ("osv-scanner",),
-                    "poetry.lock": (),
+                    "poetry.lock": ("osv-scanner",),
                     "uv.lock": ()}
 
     def test_every_python_manifest_survives_beside_an_excluded_venv(self):

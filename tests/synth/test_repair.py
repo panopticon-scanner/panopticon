@@ -266,5 +266,63 @@ class TestRepairSecCarveOut(unittest.TestCase):
         self.assertIn("not a list", err)
 
 
+class TestRepairDependencyAudit(unittest.TestCase):
+    """The target-adjacent SCA receipt publishes only fixed enum values."""
+
+    def _repair(self, value):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            got = repair_mod.repair_dependency_audit(value)
+        return got, err.getvalue()
+
+    def test_a_well_formed_receipt_passes_sorted_and_deduplicated(self):
+        got, err = self._repair({
+            "applicable": ["rust", "python", "rust"],
+            "selected": ["osv-scanner", "cargo-audit", "osv-scanner"],
+            "produced": ["cargo-audit"],
+        })
+        self.assertEqual(got, {
+            "applicable": ["python", "rust"],
+            "selected": ["cargo-audit", "osv-scanner"],
+            "produced": ["cargo-audit"],
+        })
+        self.assertEqual(err, "")
+
+    def test_absent_legacy_receipt_stays_absent(self):
+        self.assertIsNone(self._repair(None)[0])
+
+    def test_any_malformed_or_non_enum_value_fails_closed(self):
+        bad = {
+            "applicable": ["<script>forged</script>"],
+            "selected": ["trivy"],
+            "produced": ["trivy"],
+        }
+        got, err = self._repair(bad)
+        self.assertEqual(got, {
+            "applicable": ["unknown"], "selected": [], "produced": [],
+        })
+        self.assertNotIn("forged", repr(got))
+        self.assertIn("dependency_audit", err)
+
+    def test_produced_must_be_a_subset_of_selected(self):
+        got, _err = self._repair({
+            "applicable": ["python"],
+            "selected": [],
+            "produced": ["pip-audit"],
+        })
+        self.assertEqual(got["applicable"], ["unknown"])
+        self.assertEqual(got["produced"], [])
+
+    def test_unknown_applicability_cannot_carry_claimed_scanner_output(self):
+        got, _err = self._repair({
+            "applicable": ["unknown"],
+            "selected": ["osv-scanner"],
+            "produced": ["osv-scanner"],
+        })
+        self.assertEqual(got, {
+            "applicable": ["unknown"], "selected": [], "produced": [],
+        })
+
+
 if __name__ == "__main__":
     unittest.main()

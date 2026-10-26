@@ -58,11 +58,15 @@ OSV_REAL_SAMPLE = json.dumps({
 
 
 MARKERS = [
-    "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml",
-    "requirements.txt", "pyproject.toml", "Pipfile.lock",
-    "go.mod", "go.sum",
-    "Cargo.lock", "Cargo.toml",
-    "pom.xml", "build.gradle", "gradle.lockfile",
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+    "requirements.txt", "Pipfile.lock", "poetry.lock", "pdm.lock",
+    "go.mod", "Cargo.lock", "Gemfile.lock", "pom.xml",
+    "buildscript-gradle.lockfile", "gradle.lockfile",
+    "gradle/verification-metadata.xml",
+]
+
+UNSUPPORTED_MARKERS = [
+    "pyproject.toml", "Cargo.toml", "go.sum", "build.gradle", "npm-shrinkwrap.json",
 ]
 
 
@@ -214,8 +218,17 @@ class TestOsvScannerAdapter(unittest.TestCase):
         adapter = osv.OsvScannerAdapter()
         for marker in MARKERS:
             with tempfile.TemporaryDirectory() as d:
-                open(os.path.join(d, marker), "w").close()
+                path = os.path.join(d, marker)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                open(path, "w").close()
                 self.assertTrue(adapter.is_applicable(d), f"failed for {marker}")
+
+    def test_is_applicable_rejects_markers_the_pinned_offline_scanner_cannot_parse(self):
+        adapter = osv.OsvScannerAdapter()
+        for marker in UNSUPPORTED_MARKERS:
+            with self.subTest(marker=marker), tempfile.TemporaryDirectory() as d:
+                open(os.path.join(d, marker), "w").close()
+                self.assertFalse(adapter.is_applicable(d), marker)
 
     def test_is_applicable_false_when_no_marker(self):
         with tempfile.TemporaryDirectory() as d:
