@@ -101,6 +101,11 @@
   planted link. Explicit output paths outside `.panopticon` retain their safe replace-without-
   following behavior; intentional artifact removal and the run's owned compatibility links are
   unchanged.
+- **bundler-audit never retries without its scanner-owned config (#3269 G6, 5.3).**
+  The image-pinned 0.9.3 invocation runs once with the generated empty `--config`. A rejected
+  option or scanner failure now remains a coverage failure instead of launching a legacy second
+  command that could read the target's `.bundler-audit.yml` ignore list. The legacy text parser
+  remains for existing captures; the runner no longer downgrades to an unpinned command shape.
 - **Dependency coverage is now a visible, certifying receipt (#3269 SCA, 5.3).**
   `meta.coverage.dependency_audit` records which dependency ecosystems were applicable and which
   dedicated SCA adapters were selected and produced output. If a dependency surface exists but no
@@ -484,8 +489,9 @@ evidence exposed.
   - The argv drops `--quiet`. The reader now takes the LAST line that starts with the summary, so
     target-authored text earlier on stderr, such as a file name in an error message, cannot stand
     in for the count.
-  - Probed alongside, as asked: no other capture signal is parsed from stderr. Bundler-audit's
-    `Unknown switches` fallback check reads stderr, and nothing on its argv suppresses it.
+  - Probed alongside, as asked: no other capture signal is parsed from stderr. At the time of this
+    fix, bundler-audit's `Unknown switches` compatibility fallback read stderr; #3269 G6 later
+    removes that fallback entirely.
   Pins: `tests/test_tool_capture.py` holds that the argv carries no `--quiet` and that the closing
   line wins. `tests/tools/test_legacy_sarif_integration.py` runs the real argv in the tools image,
   where the count is the number of files scanned and a real zero-file run reaches `noscan`.
