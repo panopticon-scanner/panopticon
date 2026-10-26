@@ -32,12 +32,17 @@ cannot certify its coverage (`synth/tool_axis.reconcile`).
 
 `mutate` is the ONE entry point here allowed to WRITE to the target repository
 (#2012): the same fresh environment, hooks pin and driver neutralization as
-`probe`, an unskippable preflight, and an allowlist of exactly three subcommand
-shapes (`worktree add`, `worktree remove`, `update-ref -d`) -- the `--pr`
-worktree lifecycle and nothing else. It exists because `git worktree add` is a
-CHECKOUT: it runs the target's smudge filters and its `post-checkout` hook, so
-`diff_map.acquire_pr` used to execute target-authored code on the operator's
-machine on every `--pr` run.
+`probe`, and an unskippable preflight. Its callers are the `--pr` worktree
+lifecycle (`worktree add`, `worktree remove`, `update-ref -d`). It exists
+because `git worktree add` is a CHECKOUT: it runs the target's smudge filters
+and its `post-checkout` hook, so `diff_map.acquire_pr` used to execute
+target-authored code on the operator's machine on every `--pr` run.
+
+Neither entry point polices its CALLER's argv (#3273 cut 17). Every caller is
+our own code and puts a literal subcommand first, so a target-derived token --
+a pathspec after `--`, a ref, a resolved SHA -- never sits where git reads a
+global option. What the target controls is its repository, and that is what
+the environment scrub, the pins and the preflight bound.
 """
 from typing import TYPE_CHECKING
 import os
@@ -111,17 +116,8 @@ _NO_CONFIGURED_COMMAND = {
 _DIFF_PRODUCING = ("diff", "log", "show")
 _NO_DRIVERS = ("--no-ext-diff", "--no-textconv")
 
-# Global options that would send the FINAL call at a different repository, or
-# at different code, than the one the preflight just validated. REFUSED rather
-# than parsed past (#2006 fix round 2, M3): the preflight checks `root`, so an
-# argv carrying one of these would be cleared against one repository and run
-# against another, which is the one failure mode this module exists to prevent.
-# No caller passes them; a caller that needs a different repository passes a
-# different `root`.
-_REDIRECTING_GLOBAL_OPTIONS = ("-C", "--git-dir", "--work-tree", "--namespace",
-                               "--exec-path", "--config-env", "--super-prefix")
-# `-c <key>=<value>` is the one global option with a separate value that the
-# probe itself uses, so it stays legal and its value is never a subcommand.
+# `-c <key>=<value>` is the one global option with a separate value that
+# `_subcommand_index` steps over, so its value is never read as a subcommand.
 _VALUED_GLOBAL_OPTIONS = ("-c",)
 
 
@@ -219,54 +215,6 @@ def _subcommand(args):
     return None if index is None else args[index]
 
 
-# Settings `_launch_argv` pins on every launch. A caller's own `-c key=...`
-# comes AFTER the probe's in argv and would win (measured in the #2006
-# review: `-c core.hooksPath=<evil>` ran the planted hook), so the probe
-# refuses them rather than trusting every future caller to know that.
-_PROBE_PINNED_CONFIG = ("core.fsmonitor", "core.hookspath")
-
-
-def _undoes_a_pin(key):
-    """A caller `-c` for a pinned key -- or for `include.path` / `includeIf.*`,
-    which pull in a file whose settings come AFTER the pins in argv and win
-    (#2012 review M2, measured: an included `core.hooksPath` ran the hook)."""
-    lowered = key.lower()
-    return (lowered in _PROBE_PINNED_CONFIG or lowered == "include.path"
-            or lowered.startswith("includeif."))
-
-
-# Likewise the flags that would re-enable the diff drivers `_NO_DRIVERS`
-# turns off (a later flag wins in git).
-_DRIVER_ENABLING_OPTIONS = ("--ext-diff", "--textconv")
-
-
-def _reject_redirection(args):
-    """Refuse an argv that could move the final call off the validated root,
-    or undo a setting the probe pins on every launch."""
-    previous = None
-    for token in args:
-        if token.split("=", 1)[0] in _REDIRECTING_GLOBAL_OPTIONS:
-            raise ValueError(
-                "safe Git: %r would redirect the probe off the root it validated; "
-                "pass a different root instead" % token)
-        if previous == "-c":
-            key = token.split("=", 1)[0]
-            if _undoes_a_pin(key):
-                raise ValueError(
-                    "safe Git: %r would override a setting the probe pins itself" % token)
-            if _is_suppressible(key):
-                # #2013 ruling 5: the probe's own driver overrides are internal
-                # and not subject to this, but a CALLER's come later in argv and
-                # would win -- re-enabling exactly what the preflight emptied.
-                raise ValueError(
-                    "safe Git: %r would re-enable a repository command setting the "
-                    "probe neutralizes" % token)
-        if token in _DRIVER_ENABLING_OPTIONS:
-            raise ValueError(
-                "safe Git: %r would re-enable a diff driver the probe disables" % token)
-        previous = token
-
-
 def _subcommand_index(args):
     """Where the subcommand sits in `args`, or None when it cannot be found."""
     position = 0
@@ -319,8 +267,7 @@ def _is_command_setting(key):
     plain checkout of one commit -- filters yes, merge driver never -- and
     overriding a key would claim a suppression for a command we never invoke.
     Revisit if either entry point ever merges (`worktree add` of a branch that
-    needs one, `checkout -m`), which the mutating allowlist would have to admit
-    first.
+    needs one, `checkout -m`).
     """
     if key.startswith("filter.") and key.endswith((".clean", ".process", ".smudge")):
         return True
@@ -462,18 +409,6 @@ def _canonical_key(key):
     return ".".join([parts[0].lower(), *parts[1:-1], parts[-1].lower()])
 
 
-def _is_suppressible(key):
-    """Whether `key` is one the preflight would empty (#2013 ruling 5).
-
-    Read by `_reject_redirection` against a CALLER's `-c`, so it normalizes
-    case first: a caller's `-c FILTER.lfs.CLEAN=...` names the same setting
-    git would, and re-enabling a driver the probe empties is the same hole as
-    undoing `core.hooksPath`.
-    """
-    canonical = _canonical_key(key)
-    return _is_command_setting(canonical) or _is_required_flag(canonical)
-
-
 def _driver_keys(settings):
     """The keys in `settings` this probe must empty, sorted.
 
@@ -594,42 +529,14 @@ def _needs_preflight(args):
     return any(token.split("=", 1)[0] in excluded for token in args)
 
 
-# The only subcommand shapes `mutate` will run (#2012), matched as a prefix of
-# the argv from its subcommand onward: the verb is pinned, the flags and paths
-# after it stay the caller's business. This is an allowlist of one lifecycle --
-# `diff_map`'s `--pr` worktree acquire and release -- not a general write
-# permit, so `worktree prune`, `checkout`, `reset`, `clean`, `gc`, `commit` and
-# every other way to write to a repository fail CLOSED here rather than
-# depending on a reviewer noticing a new call site. None of them is in
-# `_NO_CONFIGURED_COMMAND`, and a mutating call never consults it anyway: a
-# write to the repository always takes the preflight.
-_MUTATING_SHAPES = (("worktree", "add"), ("worktree", "remove"), ("update-ref", "-d"))
-
-
-def _mutating_shape(args):
-    """The `_MUTATING_SHAPES` entry `args` matches, or None for "not one of them".
-
-    None is also the answer when the subcommand cannot be identified at all,
-    which is the same fail-closed reading `_needs_preflight` gives it.
-    """
-    index = _subcommand_index(args)
-    if index is None:
-        return None
-    for shape in _MUTATING_SHAPES:
-        if tuple(args[index:index + len(shape)]) == shape:
-            return shape
-    return None
-
-
 def _guarded(root, args, runner, timeout, text, suppressed, mutating):
     """The shared body of `probe` and `mutate`; see both for the contract.
 
     ONE implementation on purpose (#2012): a mutating call needs every
     suppression a read-only one needs and one more besides (it checks out), so a
     second copy of this machinery would be a second place to forget the
-    fsmonitor `-c`, the hooks pin, the redirection refusal or the confirmation
-    re-read. `mutating` changes exactly two things: the subcommand must match
-    `_MUTATING_SHAPES`, and the preflight is not optional.
+    fsmonitor `-c`, the hooks pin or the confirmation re-read. `mutating`
+    changes exactly one thing: the preflight is not optional.
     """
     def preflight_failure(proc):
         """A failed ROOT preflight, as a result for the command the caller asked for.
@@ -648,14 +555,6 @@ def _guarded(root, args, runner, timeout, text, suppressed, mutating):
             proc.stdout if text else _encoded(proc.stdout),
             proc.stderr if text else _encoded(proc.stderr))
 
-    _reject_redirection(args)
-    if mutating and _mutating_shape(args) is None:
-        # After `_reject_redirection`, so a `-C`/`--git-dir` argv is named as the
-        # redirection it is rather than as an unrecognized verb.
-        raise ValueError(
-            "safe Git: %r is not one of the mutating shapes this entry point "
-            "runs (%s); every other write to a repository is refused"
-            % (list(args), ", ".join(" ".join(s) for s in _MUTATING_SHAPES)))
     resolved = executable.resolve("git", _checkout_boundary(root), os.environ.get("PATH", ""))
     env = {"PATH": resolved.path_env, "LC_ALL": "C",
            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_SYSTEM": os.devnull,
@@ -827,14 +726,8 @@ def mutate(root, args, runner=subprocess.run, timeout=15, text=True, suppressed=
     resolved outside the checkout, `core.fsmonitor=false`, `core.hooksPath`
     pinned to a directory this process owns and never writes to, every
     repository-configured `filter.*`/`diff.*` command emptied and re-read to
-    prove the override took, caller redirection refused, one shared deadline --
-    plus two differences (#2012):
-
-    - The subcommand must be one of `_MUTATING_SHAPES`: `worktree add`,
-      `worktree remove`, `update-ref -d`. Anything else is a `ValueError`
-      before any git runs. This is the `--pr` worktree lifecycle, not a write
-      permit; a new mutation has to be argued for in that list.
-    - The preflight is never skipped.
+    prove the override took, one shared deadline -- plus one difference
+    (#2012): the preflight is never skipped.
 
     WHY it exists rather than the caller keeping its own environment:
     `git worktree add` CHECKS OUT the fetched tree, so on the old path the

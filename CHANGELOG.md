@@ -7,6 +7,10 @@
   - Those two keys, in exactly their writers' shapes, are now a reviewed run context. Any other key or shape still keeps the run actionable.
   - On the live captures, 1,544 inventory results now route to the AI inventory; 0 did before.
 
+- **Internal: `safe_git` stops policing its callers' argv (#3273 cut 17).**
+  - Removed: the refusal of redirecting global options (`-C`, `--git-dir`, ...), of a caller `-c` that undoes a pin or re-enables a neutralized driver, of `--ext-diff`/`--textconv`, and `mutate`'s three-shape allowlist. Every caller is our own code and puts a literal subcommand first, so no target-derived token reaches a global-option position.
+  - Unchanged: everything that bounds the target's repository, namely the environment scrub, the trusted git outside the checkout, the fsmonitor and hooks pins, driver neutralization with its confirmation re-read, the submodule bounds, `--ignore-submodules=none` on `status`, the shared deadline, and `mutate`'s unskippable preflight.
+  - A target file named like a global option (`-C`) after `--` is no longer falsely refused. `safe_git.py` goes from 852 to 745 lines, and its ceiling pin moves down to match.
 - **Internal: synthesis drops read-side repairs that first contact made dead weight (#3273 cuts 12 and 16).**
   - The tools manifest's `sanitized`, `network`, `cleanup_failures` and `language_detection_skips` blocks are read as written. Their producers bound each one, and first contact (#3271, #3296) halts on any `.panopticon/` this machine did not create. An honest run's coverage output is byte-identical.
   - `groups.json` is no longer repaired row by row. A file whose shape the report cannot carry (`groups` not a list, a row not `{name, files, parent}` strings, a non-string `mode`, or an unknown `security_mode`) is rejected whole and announced like an unreadable one. This matters only for a hand-named `--groups`: the driver's own file is discovery's.
