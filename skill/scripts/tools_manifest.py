@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """The tools manifest: `tools-manifest.json`'s schema and the ledgers it reads.
 
 The one writer of the SCANNER coverage manifest -- what was selected, what was
@@ -43,11 +42,9 @@ That is why `VENV_MAX_DEPTH` lives here while the walk that reads it back
 (`find_virtualenvs`) lives in `venv_scope`, part 4 of the same split, which
 imports it from here. Stdlib-only.
 """
-import argparse
 import glob
 import json
 import os
-import sys
 
 from scripts import safe_write
 from scripts import language_detection
@@ -126,8 +123,8 @@ _NETWORK_POSTURE: dict[str, str] = {}
 _IGNORE_FILE_POSTURE: dict[str, str] = {}
 
 # The Semgrep argv policy that first removes the pin's four default test-path
-# exclusions. The manifest records it from the command actually launched so a
-# workflow can expand an older baseline by scanning its exact commit once.
+# exclusions. The manifest records it from the command actually launched, so a
+# capture says which test-path policy its Semgrep ran under.
 SEMGREP_SCOPE_POLICY = "test-paths-v1"
 _SCANNER_SCOPE_POSTURE: dict[str, str] = {}
 
@@ -186,90 +183,6 @@ def validate_scanner_scope(data):
                    for k, v in scope.items())):
         raise ValueError("scanner manifest scanner_scope is malformed")
     return scope
-
-
-def semgrep_scope_transition_needed(current_manifest, base_manifest):
-    """Whether an exact base rescan is needed for Semgrep's v1 scope."""
-    current = current_manifest.get("scanner_scope", {}).get("semgrep")
-    previous = base_manifest.get("scanner_scope", {}).get("semgrep")
-    return (current == SEMGREP_SCOPE_POLICY and previous is None
-            and "semgrep" in current_manifest.get("selected", [])
-            and "semgrep" in current_manifest.get("produced", [])
-            and "semgrep" in base_manifest.get("selected", [])
-            and "semgrep" in base_manifest.get("produced", []))
-
-
-def _read_scope_manifest(path):
-    """Read the bounded common manifest shape used by the rollout helper."""
-    try:
-        with open(path, "rb") as stream:
-            raw = stream.read(1_000_001)
-        if len(raw) > 1_000_000:
-            raise ValueError("scanner manifest exceeds 1000000 bytes")
-        data = json.loads(raw)
-    except (OSError, ValueError, TypeError) as exc:
-        raise ValueError("cannot read scanner manifest %s: %s" % (path, exc)) from exc
-    if not isinstance(data, dict):
-        raise ValueError("scanner manifest is not an object: %s" % path)
-    for key in ("selected", "produced", "missing"):
-        if (not isinstance(data.get(key), list)
-                or any(not isinstance(value, str) for value in data[key])):
-            raise ValueError("scanner manifest %s is malformed: %s" % (path, key))
-    if set(data["missing"]) != set(data["selected"]) - set(data["produced"]):
-        raise ValueError("scanner manifest missing set is inconsistent: %s" % path)
-    data["scanner_scope"] = validate_scanner_scope(data)
-    return data
-
-
-def prepare_semgrep_scope_baseline(baseline_dir, baseline_manifest_path,
-                                   expanded_dir, expanded_manifest_path):
-    """Replace old Semgrep evidence with an exact-base v1 scope capture.
-
-    The expanded capture is made in the same job, with the current controller
-    and image, against the commit that supplied the downloaded baseline. The
-    manifest marker is published last so an interrupted preparation fails
-    strictly instead of claiming coverage the baseline capture did not have.
-    """
-    baseline = _read_scope_manifest(baseline_manifest_path)
-    expanded = _read_scope_manifest(expanded_manifest_path)
-    if not semgrep_scope_transition_needed(expanded, baseline):
-        raise ValueError("Semgrep scope baseline preparation was not required")
-    if (set(expanded["selected"]) != {"semgrep"}
-            or set(expanded["produced"]) != {"semgrep"}
-            or expanded["missing"]
-            or expanded.get("redacted") is not True
-            or expanded.get("network", {}).get("semgrep") != "none"
-            or expanded.get("exclude_globs", []) != baseline.get("exclude_globs", [])):
-        raise ValueError("expanded Semgrep baseline has a different scan policy")
-    source = os.path.join(expanded_dir, "semgrep.sarif")
-    destination = os.path.join(baseline_dir, "semgrep.sarif")
-    try:
-        if os.path.islink(source):
-            raise ValueError("expanded Semgrep capture is a symlink")
-        with open(source, "rb") as stream:
-            raw = stream.read(MAX_TOOL_OUTPUT_BYTES + 1)
-        if len(raw) > MAX_TOOL_OUTPUT_BYTES:
-            raise ValueError("expanded Semgrep capture exceeds the output cap")
-        text = raw.decode("utf-8")
-        sarif = json.loads(depth_checked(text))                # #2959
-    except (OSError, UnicodeError, ValueError, TypeError) as exc:
-        raise ValueError("cannot read expanded Semgrep capture: %s" % exc) from exc
-    if not isinstance(sarif, dict) or not isinstance(sarif.get("runs"), list):
-        raise ValueError("expanded Semgrep capture is not SARIF")
-    baseline["scanner_scope"] = dict(baseline.get("scanner_scope", {}))
-    baseline["scanner_scope"]["semgrep"] = SEMGREP_SCOPE_POLICY
-    for key in ("network", "suppression_comments", "scanner_config"):
-        if not isinstance(baseline.get(key, {}), dict):
-            raise ValueError("baseline scanner manifest is malformed: %s" % key)
-        baseline[key] = dict(baseline.get(key, {}))
-        if "semgrep" in expanded.get(key, {}):
-            baseline[key]["semgrep"] = expanded[key]["semgrep"]
-    safe_write.publish_texts([
-        (baseline_manifest_path, baseline_manifest_path + ".scope.tmp",
-         json.dumps(baseline, indent=2) + "\n"),
-        (destination, destination + ".scope.tmp", text),
-    ])
-    return baseline
 
 
 def _excluded_dir_row(d):
@@ -406,8 +319,7 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
 
     `scanner_scope` records a scanner-owned coverage policy observed on the
     launched argv. Its Semgrep v1 value marks the first policy that restores
-    real test paths after disabling the target and embedded ignore files, and
-    lets CI request an exact-base transition scan instead of waiving findings.
+    real test paths after disabling the target and embedded ignore files.
 
     `cleanup_failures` records a scanner container the best-effort timeout
     cleanup could not prove stopped, keyed by tool with a bounded, redacted
@@ -532,35 +444,3 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
         json.dump(payload, fh, indent=2)
         fh.write("\n")
     return payload
-
-
-def manifest_cli(argv=None):
-    parser = argparse.ArgumentParser(description="manage scanner-scope manifests")
-    commands = parser.add_subparsers(dest="command", required=True)
-    needed = commands.add_parser("semgrep-scope-transition-needed")
-    needed.add_argument("--current-manifest", required=True)
-    needed.add_argument("--baseline-manifest", required=True)
-    prepare = commands.add_parser("prepare-semgrep-scope-baseline")
-    prepare.add_argument("--baseline-dir", required=True)
-    prepare.add_argument("--baseline-manifest", required=True)
-    prepare.add_argument("--expanded-dir", required=True)
-    prepare.add_argument("--expanded-manifest", required=True)
-    args = parser.parse_args(argv)
-    try:
-        if args.command == "semgrep-scope-transition-needed":
-            current = _read_scope_manifest(args.current_manifest)
-            baseline = _read_scope_manifest(args.baseline_manifest)
-            print("true" if semgrep_scope_transition_needed(current, baseline)
-                  else "false")
-        else:
-            prepare_semgrep_scope_baseline(
-                args.baseline_dir, args.baseline_manifest,
-                args.expanded_dir, args.expanded_manifest)
-    except ValueError as exc:
-        print("tools-manifest: %s" % exc, file=sys.stderr)
-        return 2
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(manifest_cli())

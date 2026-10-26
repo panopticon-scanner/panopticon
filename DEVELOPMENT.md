@@ -232,28 +232,31 @@ characters, and matching consumes the whole path.
   stderr line naming what was wrong. It fails toward strictness in every
   direction and never toward silence.
 
-  **One blind spot in the identity, inherent to the ruling — and wider since
-  #2309.** Replacement *inside one file is invisible*: five findings in a file
-  that share one identity are matched five-for-five, so a diff deleting all five
-  and adding five fresh ones gates on nothing. Replacement *across two files* is
-  invisible too, whenever the base's copy leaves. What this gate promises is that
-  the COUNT of a (tool, rule, message) did not increase — not that no finding
-  appeared at a new place, and it cannot tell an extraction from a deletion plus
-  an unrelated addition of the same key. For lint-shaped adapters the message is
-  rule-generic, so one `B603` deleted anywhere excuses one `B603` added anywhere.
-  It is the blind spot an author controls; a full-tree review, not this gate, is
-  what catches it.
+  **One blind spot in the identity, inherent to the ruling.** Replacement
+  *inside one file is invisible*: five findings in a file that share one
+  identity are matched five-for-five, so a diff deleting all five and adding
+  five fresh ones gates on nothing. What this gate promises is that the COUNT of
+  a (tool, rule, path, message) did not increase. For lint-shaped adapters the
+  message is rule-generic, so one `B603` deleted in a file excuses one `B603`
+  added in the same file. It is the blind spot an author controls; a full-tree
+  review, not this gate, is what catches it.
 
-  **A MOVED finding is pre-existing (moved)** (#2309, ruling 2026-09-28): a head
-  finding the exact pass left as new pairs with ONE unmatched base finding of the
-  same tool, rule and message — one the base carried one more copy of than the
-  head has here. A second copy, or one with no orphan left to pair with, is still
-  new. The pairing never crosses the suppression: a name-suppressed orphan cannot
-  excuse a first-party finding, nor the reverse. Moved rows print under their own
-  heading and never gate. An adapter that writes the path into its own message
-  (gitleaks) keys itself, so a move of such a finding still counts as new; trivy's
-  message embeds its grade instead, so a moved trivy finding pairs but a re-graded
-  one does not.
+  **A RELOCATED finding is new at its new path** (#3273 cut 6B). The path is in
+  the identity, so a verbatim extraction that carries a standing HIGH into
+  another file reds the required `scan` (or `fork-scan`) check on that PR, even
+  though the base carried the finding at the old path. #2309's move-aware pass,
+  which paired such a finding with the base's unspent copy, was withdrawn: it
+  let a deletion in one file excuse an addition in another, and nothing could
+  tell that from a move. **There is no in-repo way through.** `# nosemgrep` is
+  not one, because every CI route gates under `--security redteam`, which
+  ignores in-source suppression comments. A Security-tab dismissal is not one,
+  because the gate reads the run's own captures, not alerts. What remains is
+  the owner's: branch protection on `main` does not enforce its required checks
+  on admins, so the owner can merge the PR past the red check after reading
+  the moved finding. The next PR is clean, because the merge's own captures (or
+  main's next audit) carry the finding at its new path. The author's only other
+  route is to fix the finding itself in the moved code, which is a behaviour
+  change and belongs in its own PR, not in a verbatim extraction.
 
   **One residual to know about**: the tools image
   (`ghcr.io/…-tools:latest`) is unpinned, so an image that re-grades a semgrep

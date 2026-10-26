@@ -837,11 +837,7 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   intentional fixture or golden corpus does not consume the expanded scan; ingest applies the same
   disclosed policy to every tool. A target Semgrep file cannot make that choice. A produced capture
   records `scanner_scope.semgrep: test-paths-v1` only when every scanner-owned scope argument was on
-  the launched argv. When a downloaded CI baseline predates that marker, CI scans the exact commit
-  which supplied the artifact with the current controller and image, then replaces only its Semgrep
-  capture. The ordinary delta gate therefore matches standing test findings while a finding added by
-  the PR is absent from the expanded base and still gates. The extra scan stops after main publishes
-  a baseline carrying the marker.
+  the launched argv.
   **Semgrep's per-file limits are stated, and every hit is disclosed (#2957).** The argv passes
   `--timeout=5` and `--timeout-threshold=3`, Semgrep's own defaults. A rule that runs longer than
   5 seconds on one file loses its findings in that file. A file on which 3 rules time out is

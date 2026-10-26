@@ -428,7 +428,7 @@ class TestBothScanStepsCarryBothExclusions(unittest.TestCase):
     scanner capture): a blind spot is exactly as wide as the argument for it.
     """
 
-    STEPS = ("Run static-analysis tools", "Expand exact Semgrep scope baseline",
+    STEPS = ("Run static-analysis tools",
              "Gate on HIGH/CRITICAL tool findings (unverified-strict policy)")
     WORKFLOWS = (WORKFLOW, FORK_WORKFLOW)
 
@@ -486,10 +486,9 @@ class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
     and the PR routes resolve `base.sha`, and from whichever sha that is the
     step walks up to five FIRST-PARENT ancestors looking for one with a
     COMPLETED run (`--status completed`). Walking further back changes WHICH
-    findings are excused, and since #2309 that is not monotone: an older
-    baseline can carry a finding main
-    has since removed, whose leftover pairs as "moved" with a new head occurrence
-    of the same tool, rule and message. Only the pool SHRINKING -- a rejected or
+    findings are excused, and that is not monotone: an older baseline can
+    carry a finding main has since removed, which a head re-adding it at the
+    same path matches. Only the pool SHRINKING -- a rejected or
     partial baseline -- is monotone, and that direction is stricter.
 
     Everything else here is a fail-toward-strictness pin. The gate receives the
@@ -925,72 +924,27 @@ class TestTheDeltaBaselineIsFetchedOnEveryRoute(unittest.TestCase):
                              {"contents": "read", "packages": "read"})
 
 
-class TestSemgrepScopeTransitionUsesAnExactBase(unittest.TestCase):
+class TestNoRouteRescansTheBase(unittest.TestCase):
+    """#3273 cut 6C: the one-time #2109 Semgrep scope transition is gone.
+
+    It rescanned the baseline's exact commit when main's artifact predated the
+    `test-paths-v1` marker, and every main capture since b8ddb8e2 carries it.
+    Its CLI went with it, so a step that still called `scripts.tools_manifest`
+    would exit 2 on every route.
+    """
     ROUTES = ((WORKFLOW, "scan"), (FORK_WORKFLOW, "fork-scan"))
 
-    @staticmethod
-    def _job(path, name):
-        with open(path, encoding="utf-8") as stream:
-            return yaml.safe_load(stream)["jobs"][name]
-
-    @staticmethod
-    def _step(job, name):
-        return next(step for step in job["steps"] if step.get("name") == name)
-
-    def test_transition_steps_are_conditional_and_run_before_the_gate(self):
+    def test_no_step_runs_the_manifest_module_or_checks_out_a_second_tree(self):
         for path, name in self.ROUTES:
             with self.subTest(workflow=path):
-                job = self._job(path, name)
-                steps = {step["name"]: step for step in job["steps"]
-                         if "name" in step}
-                detect = steps["Detect Semgrep scanner-scope transition"]
-                checkout = steps["Checkout exact Semgrep scope baseline"]
-                expand = steps["Expand exact Semgrep scope baseline"]
-                self.assertEqual(detect["if"],
-                                 "steps.baseline.outputs.found == 'true'")
-                condition = "steps.semgrep-scope-baseline.outputs.required == 'true'"
-                self.assertEqual(checkout["if"], condition)
-                self.assertEqual(expand["if"], condition)
-                order = [step.get("name") for step in job["steps"]]
-                self.assertLess(order.index("Run static-analysis tools"),
-                                order.index(detect["name"]))
-                self.assertLess(order.index(expand["name"]), order.index(
-                    "Gate on HIGH/CRITICAL tool findings (unverified-strict policy)"))
-
-    def test_checkout_is_the_artifact_commit_and_never_the_pr_head(self):
-        for path, name in self.ROUTES:
-            with self.subTest(workflow=path):
-                step = self._step(self._job(path, name),
-                                  "Checkout exact Semgrep scope baseline")
-                self.assertEqual(step["uses"],
-                                 "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1")
-                self.assertEqual(step["with"]["repository"],
-                                 "${{ github.repository }}")
-                self.assertEqual(step["with"]["ref"],
-                                 "${{ steps.baseline.outputs.sha }}")
-                self.assertEqual(step["with"]["path"],
-                                 "semgrep-scope-baseline-target")
-                self.assertIs(step["with"]["persist-credentials"], False)
-
-    def test_expansion_scans_only_semgrep_then_prepares_the_downloaded_artifact(self):
-        for path, name in self.ROUTES:
-            with self.subTest(workflow=path):
-                job = self._job(path, name)
-                detect = _without_comments(self._step(
-                    job, "Detect Semgrep scanner-scope transition")["run"])
-                expand = _without_comments(self._step(
-                    job, "Expand exact Semgrep scope baseline")["run"])
-                self.assertIn("semgrep-scope-transition-needed", detect)
-                self.assertIn("PYTHONPATH=controller/skill", detect)
-                self.assertIn("python -m scripts.tools_manifest", detect)
-                self.assertIn("--current-manifest", detect)
-                self.assertIn("--baseline-manifest", detect)
-                self.assertIn("--target semgrep-scope-baseline-target", expand)
-                self.assertIn("--tools semgrep", expand)
-                self.assertIn("prepare-semgrep-scope-baseline", expand)
-                self.assertIn("PYTHONPATH=controller/skill", expand)
-                self.assertIn("python -m scripts.tools_manifest", expand)
-                self.assertNotIn("--deps", expand)
+                with open(path, encoding="utf-8") as stream:
+                    job = yaml.safe_load(stream)["jobs"][name]
+                for step in job["steps"]:
+                    self.assertNotIn("Semgrep scope", step.get("name", ""))
+                    self.assertNotIn("scripts.tools_manifest",
+                                     _without_comments(step.get("run", "")))
+                    self.assertNotIn("semgrep-scope-baseline-target",
+                                     str(step.get("with", {})))
 
 
 class TestStrictScheduledBackstop(unittest.TestCase):
