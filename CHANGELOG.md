@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Fix: a `--pr` run no longer writes its reports through a `.panopticon` the target committed (#3225).**
+  - In `--pr` mode first contact vets the throwaway worktree, never the caller checkout, so the caller's `.panopticon` is whatever the target's default branch committed. A committed `.panopticon -> /elsewhere` link redirected the surfaced `<tag>-report*.json` and `.html` there.
+  - The surface now checks the root (`plan_contract.artifact_root`) and then holds it open (`O_DIRECTORY|O_NOFOLLOW`). Every staging write, publish and `report.json` relink is made relative to that directory fd, so a swap of the name after the check cannot move a write out of the tree. A path-based confinement check (`safe_write.confine_artifact_path`) would not catch that swap, because it anchors on the link's own target.
+  - A refused root, a source over 16 MiB, a platform without the `*at` calls, or a relink that cannot land is now a failed surface. The worktree is kept and stderr says why, instead of a partial copy or a traceback after the copies.
 - **Tests: the kill path's known escape is pinned, and so is what keeps the reviewed tree out of it (#3294).**
   - A descendant that calls `setsid()` or `setpgid()` leaves the process group `procgroup.kill_group` signals, so it outlives a timeout or a Ctrl-C. `test_procgroup.py` now pins that as a strict xfail, so a future sweep has to update the docs it would make wrong.
   - The reviewed tree cannot start such a descendant: no role grants an exec tool, Claude and Kimi deny their shell tools on every launch (the setup scan included), and Codex runs with `shell_tool`, `unified_exec` and `shell_snapshot` off. The new `tests/test_no_exec_grant.py` fails on any change to that, and its message names the sweep designed in #3294 as what has to land with the grant.
