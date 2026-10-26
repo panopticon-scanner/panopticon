@@ -513,6 +513,37 @@ class TestFinalizeIntoAPlantedCallerTree(unittest.TestCase):
         self._assert_kept(rel, err, "read limit")
         self.assertEqual(os.listdir(os.path.join(target, ".panopticon")), [])
 
+    def test_a_later_sibling_that_fails_publishes_nothing_and_leaves_no_tmp(self):
+        # The main report stages; the html after it is over the cap. Nothing
+        # may go live -- not even the main report -- and no staging leaf may be
+        # left behind (review of #3310: without the early return, the publish
+        # loop paired the SHORTER staged list with the names and published a
+        # tmp under the wrong final name).
+        worktree, target, _outside, manifest, tag = self._run()
+        with open(os.path.join(worktree, ".panopticon", f"{tag}-report.json.html"), "w") as fh:
+            fh.write("x" * 4096)
+        with mock.patch.object(validate_phase, "MAX_SURFACED_BYTES", 1024):
+            rel, err = self._finalize(worktree, manifest)
+        self._assert_kept(rel, err, f"{tag}-report.json.html")
+        self.assertEqual(os.listdir(os.path.join(target, ".panopticon")), [])
+
+    def test_the_main_report_goes_live_last(self):
+        worktree, target, _outside, manifest, tag = self._run(html=True)
+        runio._write_json(os.path.join(worktree, ".panopticon", f"{tag}-report_part2.json"),
+                          {"part": 2})
+        published = []
+        replace = os.replace
+
+        def spy(src, dst, **kwargs):
+            if ".finalize-" in src:
+                published.append(dst)
+            return replace(src, dst, **kwargs)
+
+        with mock.patch.object(validate_phase.os, "replace", side_effect=spy):
+            self._finalize(worktree, manifest)
+        self.assertEqual(len(published), 3, published)
+        self.assertEqual(published[-1], f"{tag}-report.json")
+
     def test_no_dir_fd_support_refuses_rather_than_writing_by_path(self):
         worktree, target, _outside, manifest, _tag = self._run()
 
