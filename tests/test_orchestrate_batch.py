@@ -325,10 +325,146 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         self.assertIn("batch-1.json", status["message"])
         self.assertIn("already exists", status["message"])
         self.assertNotIn("FileExistsError", status["message"])
-        # armed for this batch, and taken back down on the way out
-        settings = os.path.join(runner.run_dir, base.SETTINGS_FILE)
-        self.assertFalse(write_guard_hook.is_armed(
-            settings, os.path.join(runner.run_dir, "write-allowlist.json"))[0])
+        # #3227: the open is the batch's lock, so a loop turned away by it
+        # never armed anything to take back down
+        self.assertEqual((False, False), self._guards_armed(runner))
+
+    def _guard_files(self, runner):
+        out = {}
+        for name in (base.SETTINGS_FILE, base.ALLOWLIST_FILE, base.SCOPE_FILE):
+            with open(os.path.join(runner.run_dir, name), "rb") as fh:
+                out[name] = fh.read()
+        return out
+
+    def test_a_loop_turned_away_by_the_lock_never_touches_the_live_loops_grants(self):
+        # #3227: two loops on one run folder, one batch file between them. The
+        # loser used to arm FIRST -- rebuilding the folder's settings file and
+        # re-installing the same entries' grants under the live loop -- and
+        # then, refused, disarm them from under it on its way out. Both doors
+        # it can be refused at: the record already there when it looks, and
+        # the one that lands between the look and the O_EXCL.
+        for door in ("check", "open"):
+            with self.subTest(door=door):
+                d, floor = self._repo(floor=("SEC", "ACC"))
+                runner = FakeRunner()
+                live = {}
+
+                def the_live_loop_arms():
+                    req = orchestrate.requests.load_dispatch_request(runner.review_root)
+                    live["guards"] = orchestrate.Guards("headless", run_dir=runner.run_dir)
+                    live["guards"].arm(req["entries"])
+                    live["files"] = self._guard_files(runner)
+
+                def at_the_check(review_root):
+                    seeded = self._seed_coverage(review_root, floor)
+                    batch_mod.Batch(orchestrate.persist.run_dir(review_root), 1,
+                                    "review", []).open()
+                    return seeded
+
+                def at_the_open(*_a, **_k):
+                    the_live_loop_arms()
+                    raise FileExistsError(17, "File exists")
+
+                real_check = loop_batch.batch_in_use
+
+                def check_then_arm(*a, **k):
+                    refusal = real_check(*a, **k)
+                    the_live_loop_arms()
+                    return refusal
+
+                patches = ([mock.patch.object(loop_batch, "batch_in_use", side_effect=check_then_arm),
+                            mock.patch.object(orchestrate, "_after_first_run", side_effect=at_the_check)]
+                           if door == "check" else
+                           [mock.patch.object(batch_mod.Batch, "open", side_effect=at_the_open)])
+                with contextlib.ExitStack() as stack, \
+                        mock.patch.object(orchestrate.Guards, "arm", autospec=True,
+                                          side_effect=orchestrate.Guards.arm) as arm:
+                    for p in patches:
+                        stack.enter_context(p)
+                    with mock.patch("scripts.host_probes.run_probes",
+                                    side_effect=_write_guard_not_proven), \
+                            mock.patch("scripts.runners.base.runner_for", return_value=runner), \
+                            contextlib.redirect_stdout(io.StringIO()), \
+                            contextlib.redirect_stderr(io.StringIO()):
+                        status = orchestrate.loop(self._args(d, "--allow-unenforced"))
+                self.assertEqual(status["status"], "error", status)
+                self.assertIn("batch-1.json", status["message"])
+                self.assertEqual([], runner.launched)
+                # the ONLY arm was the live loop's
+                self.assertEqual([live["guards"]], [c.args[0] for c in arm.call_args_list])
+                self.assertEqual((True, True), self._guards_armed(runner))
+                self.assertEqual(live["files"], self._guard_files(runner))
+
+    def test_a_failure_between_the_open_and_the_first_launch_leaves_no_record(self):
+        # #3227: the batch file now exists BEFORE `arm`, the launch backoff and
+        # the shape proof -- seconds of work, any of which can raise. Nothing
+        # has launched by then, so the record has nothing to say and must not
+        # outlive the failure: left behind, the next loop would "recover" a
+        # batch that never ran.
+        cases = (("arm", orchestrate.Guards, "arm", OSError(28, "No space left on device")),
+                 ("prove", loop_batch, "prove_output_schema_shape", RuntimeError("probe broke")),
+                 ("interrupt", loop_batch, "prove_output_schema_shape", KeyboardInterrupt()))
+        for name, owner, attr, exc in cases:
+            with self.subTest(step=name):
+                d, floor = self._repo(floor=("SEC",))
+                runner = FakeRunner()
+                seen = []
+
+                def fail(*_a, exc=exc, **_k):
+                    seen.append(self._manifests(runner.run_dir))
+                    raise exc
+
+                with mock.patch.object(owner, attr, side_effect=fail), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    status = self._return_persist(d, floor, runner)
+                self.assertEqual(status["status"], "error", status)
+                self.assertEqual([["batch-1.json"]], seen)    # it WAS open when it failed
+                self.assertEqual([], runner.launched)
+                self.assertEqual([], self._manifests(runner.run_dir))
+                self.assertEqual((False, False), self._guards_armed(runner))
+                # ...and nothing was launched, so nothing is ledgered as cut:
+                # the interrupt reads exactly as it did before the window
+                # moved behind the open
+                self.assertFalse([r for r in ledger_mod.Ledger(runner.run_dir).lines()
+                                  if r.get("status") == ledger_mod.CANCELLED])
+                if name == "interrupt":
+                    self.assertIn(loop_batch.INTERRUPTED_IDLE, status["message"])
+
+    def test_a_crash_before_the_first_launch_recovers_on_the_next_loop(self):
+        # #3227: what a process KILLED in that window leaves: a record whose
+        # artifacts were never written, owned by a pid that is gone. It is an
+        # ordinary dead-owner rollback -- the next loop clears it and runs the
+        # batch -- not a record that blocks every loop after it.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        runner = FakeRunner()
+        left = {}
+
+        def killed(*_a, **_k):
+            name = self._manifests(runner.run_dir)[0]
+            with open(os.path.join(runner.run_dir, name), "rb") as fh:
+                left[name] = fh.read()
+            raise RuntimeError("killed")
+
+        with mock.patch.object(loop_batch, "prove_output_schema_shape", side_effect=killed), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self._return_persist(d, floor, runner)
+        for name, body in left.items():      # ...and so never got to close it
+            with open(os.path.join(runner.run_dir, name), "wb") as fh:
+                fh.write(body)
+        self._stamp_crash_owner(runner.run_dir, pid=dead_pid())
+        record = self._crash_record(runner.run_dir)
+        self.assertEqual(2, len(record["entries"]))
+        self.assertFalse([p for row in record["entries"] for p in row["artifacts"]
+                          if os.path.exists(p)])
+        resumed = FakeRunner()
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            status = self._return_persist(d, floor, resumed)
+        self.assertEqual(status["status"], "complete", status)
+        self.assertIn("recovered stale batch", err.getvalue())
+        self.assertIn("review-app-SEC", resumed.launched)
+        self.assertIn("review-app-ACC", resumed.launched)
+        self.assertEqual([], self._manifests(resumed.run_dir))
 
     def test_an_interrupted_recovery_never_refunds_the_attempt_twice(self):
         d, floor = self._repo(floor=("SEC", "ACC"))

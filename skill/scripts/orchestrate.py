@@ -100,6 +100,9 @@ class Guards:
         else:
             write_guard_hook.uninstall(plan=entries, session_root=self.session_root)
             read_guard_hook.uninstall(plan=entries, session_root=self.session_root)
+        # #3227: down is no longer armed, or `_finish`'s error exit takes it down again under another loop.
+        gone = {e.get("id") for e in (self.armed_entries if entries is None else entries) if isinstance(e, dict)}
+        self.armed_entries = [e for e in self.armed_entries if e.get("id") not in gone]
 
     def env_for(self, entry):
         scope_path = self.entry_scopes.ensure(entry) if self.mode == "headless" else self.scope_path
@@ -427,28 +430,36 @@ def loop(args):
             if stuck:
                 return _finish(_status("error", stuck), review_root, guards, ledger,
                                namespace, mode, runner)
-            # #1698: a crash record this batch must not overwrite, refused
-            # before a single grant is installed. `recover_stale` has already
-            # dealt with the ones it is allowed to; anything still here under
-            # `--reset` (which skips recovery) used to reach `Batch.open`'s
-            # O_EXCL and come back out of `loop` as a traceback.
+            # #1698: a crash record this batch must not overwrite, refused before a single grant is
+            # installed. `recover_stale` has already dealt with the ones it is allowed to; anything still
+            # here under `--reset` (which skips recovery) used to reach `Batch.open`'s O_EXCL and come
+            # back out of `loop` as a traceback.
             in_use = loop_batch.batch_in_use(run_dir, iterations)
             if in_use:
                 return _finish(_status("error", in_use), review_root, guards, ledger,
                                namespace, mode, runner)
-            guards.arm(pending)
             if mode == "session":
                 # Branched on the MODE, not on a None the headless path can no
                 # longer return: the session runner prints the batch, launches
                 # nothing, and the loop exits `dispatch` still armed (spec 4.3).
+                guards.arm(pending)
                 runner.run_batch(pending, getattr(args, "concurrency", None), guards.env_for)
                 return _dispatch_exit(review_root, req, pending, namespace, runner.request_sha256)
-            done, total = 0, len(pending)
-            handled, landed = [], []
-            tally.pause_before_launch(mode, pending)   # #2506, before any launch
-            # #1732: the ONE shape proof, here not at posture time: the guards are armed NOW, so it is confined.
-            loop_batch.prove_output_schema_shape(run_dir, host, runner, pending, guards.env_for,
-                                                 review_root, namespace)
+            # #1662: the list the rollback deletes (never a glob over the run folder), written BEFORE the
+            # first submit; #3227: and before `arm`, as the batch's LOCK -- `Batch.before_launch` says why.
+            try:
+                opened = batch_mod.Batch(run_dir, iterations, req.get("checkpoint"), pending).open()
+            except FileExistsError:       # the race the check above cannot close
+                return _finish(_status("error", loop_batch.BATCH_IN_USE % batch_mod.manifest_path(
+                    run_dir, iterations)), review_root, guards, ledger, namespace, mode, runner)
+            done, total, handled, landed = 0, len(pending), [], []
+            with opened.before_launch():
+                guards.arm(pending)
+                tally.pause_before_launch(mode, pending)   # #2506, before any launch
+                # #1732: the ONE shape proof, here not at posture time: the guards are armed NOW, so it is confined.
+                loop_batch.prove_output_schema_shape(run_dir, host, runner, pending, guards.env_for,
+                                                     review_root, namespace)
+            batch = opened
             # #1721: the pool is FIFO, so an entry's index in `pending` is its
             # LAUNCH order -- which is what tells the tally a success that
             # proves the host is back from one that was merely in flight when
@@ -459,17 +470,6 @@ def loop(args):
             # copies of one expression.
             width = runner.batch_width(getattr(args, "concurrency", None))
             order = {e.get("id"): i for i, e in enumerate(pending)}
-            # #1662: the list the rollback deletes, written BEFORE the first
-            # submit -- taking a cancelled batch back must never be a glob
-            # over the run folder, which would reach a prior phase's outputs
-            # and, on a redteam target, whatever the tree planted next to them.
-            try:
-                batch = batch_mod.Batch(run_dir, iterations,
-                                        req.get("checkpoint"), pending).open()
-            except FileExistsError:       # the race the check above cannot close
-                return _finish(_status("error", loop_batch.BATCH_IN_USE
-                                       % batch_mod.manifest_path(run_dir, iterations)),
-                               review_root, guards, ledger, namespace, mode, runner)
             # P07 (#1636): persisted, ledgered and counted into usage.json the moment EACH entry
             # finishes, so an interrupt keeps everything already yielded and `done`/`total` say
             # how much that was. `closing` because an exception here abandons the generator: it
