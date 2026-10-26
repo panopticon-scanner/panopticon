@@ -88,7 +88,11 @@ def _mask_jwt_chain(match: re.Match[str]) -> str:
 _PATTERNS: list[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]]] = [
     (re.compile(r"(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{16,}"),
      "[REDACTED_TOKEN]"),                                   # GitHub PAT / OAuth
-    (re.compile(r"sk-[A-Za-z0-9_-]{16,}"), "[REDACTED_KEY]"),  # OpenAI-style key
+    # OpenAI-style key. #3291: left-anchored, because unanchored it matched
+    # inside words -- every one of 33 hits in the #3173 audit was a semgrep rule
+    # id (`flask-`, `risk-`, `mask-` + 16 id chars). The accepted miss: a key
+    # glued directly after a word char, `-` or `_` is left as it is.
+    (re.compile(r"(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{16,}"), "[REDACTED_KEY]"),
     (re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._-]{16,}"), r"\1[REDACTED]"),
     (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED_AWS_KEY]"),   # AWS access-key id
     (re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), "[REDACTED_SLACK_TOKEN]"),

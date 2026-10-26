@@ -1482,7 +1482,9 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
     def test_locus_free_log_redacts_a_token_crossing_the_short_title_cut(self):
         secret = "".join(chr(ord("A") + offset) for offset in range(20))
         token = "".join(chr(code) for code in (115, 107, 45)) + secret
-        title = "p" * 88 + token + " after token"
+        # #3291: a space before the token. The sk- pattern is left-anchored,
+        # so a key glued straight onto a word (`pppsk-...`) is its accepted miss.
+        title = "p" * 87 + " " + token + " after token"
         token_start = title.index(token)
         self.assertLess(token_start, 99)
         self.assertGreater(token_start + len(token), 99)
