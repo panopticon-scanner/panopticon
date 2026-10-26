@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Fix: a `--no-tools` run now discloses scanner output a target planted under `.panopticon/tools/` (#3197).**
+  - Such output was already refused by every consumer. It was not disclosed, though: synthesize was never handed the directory on a `--no-tools` run, so `meta.integrity.unbound_tool_outputs` stayed `[]` and the run stayed certified, where the same plant under `--tools` is named and costs certification (#2070).
+  - The driver now passes the directory with a new internal `--tools-skipped`, keyed on the run manifest's own `flags.tools`, never the target-writable marker. Synthesize then ingests nothing and lists every present output as unbound, which sinks certification with #2070's message. None of the file's text is published.
+  - The missing output receipt on such a run is the operator's choice, not a failed read, so a clean `--no-tools` run keeps its certification, coverage and integrity exactly as before.
+  - A run whose scan ran before a mid-run `--no-tools` keeps its own receipt-bound outputs. `tools_done` stops at `ran`, so its marker is never rewritten as a skip.
 - **Fix: a batch record's owner check fails closed on a planted pid and on another container's pid namespace (#2065).**
   - **A planted huge pid.** A target-planted `pid` beyond the C int range made `os.kill` raise `OverflowError`, which escaped `owner_state` and ended the loop as `driver loop: OverflowError: ...`. It is now the `unstamped` verdict and the "no owner stamp" refusal, never `dead`, the one verdict recovery acts on.
   - **Another pid namespace.** Containers on `--network host` share the MAC that `machine_id` reads, so each read the other's batch record as same-machine and asked `os.kill` about a pid from another namespace. A pid that happened to be dead here read as a crash, and recovery rolled back a live sibling's batch.

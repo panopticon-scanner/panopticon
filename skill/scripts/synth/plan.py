@@ -506,6 +506,16 @@ def ingest_tool_findings(args, allowed_outputs=None, unbound_out=None):
     the gate counted and what stayed suppressed from it, so the two published
     numbers still sum to what stderr and `security_gate` print.
     """
+    if getattr(args, "tools_skipped", False):
+        # #3197: an operator's `--no-tools` run has no receipt BY DESIGN, so
+        # nothing in the directory is this run's. Ingest nothing; name every
+        # present output as unbound -- #2070's disclosure, which sinks
+        # certification exactly as a plant does on the `--tools` path -- and
+        # leave every other part of the report as a run with no tool axis.
+        if args.tools_dir and unbound_out is not None:
+            ingest_tools._capped_output_files(args.tools_dir, allowed_outputs=(),
+                                              unbound_out=unbound_out)
+        return [], {}, None, None, [], excluded_block(args, 0)
     if not args.tools_dir:
         default_tools = os.path.join(".panopticon", "tools")
         if os.path.isdir(default_tools) and os.listdir(default_tools):
