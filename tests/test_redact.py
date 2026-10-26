@@ -114,16 +114,17 @@ class TestRedact(unittest.TestCase):
         self.assertEqual(f["location"], {"file": "app/crypto.py", "line_start": 4})
         self.assertEqual(f["id"], "SEC-1")
 
-    def test_a_pem_body_is_length_bounded_so_a_flat_pass_cannot_run_away(self):
-        """What replaces the `"` bound: a body over 16 KiB does not match AT
-        ALL -- not the header, not the filler, not the END. A real private key
-        is a couple of KiB, so the bound costs nothing on the shapes that
-        matter, and it is what keeps a flat pass over a structured document
-        from swallowing an unbounded run of fields between two blocks."""
+    def test_a_pem_body_over_the_rule_bound_is_still_masked(self):
+        """The rule's 16 KiB bound keeps a flat pass from swallowing fields
+        between two blocks; it used to mean a body LONGER than that was not
+        masked at all, header included (#2987). `_mask_overlong_keys` closes
+        that: the same block, unbounded, still one block at a time."""
         far = fake_pem("A" * 20000)
-        out = redact.redact("before " + far + " after")
-        self.assertNotIn("[REDACTED_PRIVATE_KEY]", out)
-        self.assertEqual(out, "before " + far + " after")
+        self.assertIsNone(
+            [pat for pat, _r in redact._PATTERNS if "PRIVATE KEY" in pat.pattern][0]
+            .search(far), "the bounded rule itself must still decline this body")
+        self.assertEqual("before [REDACTED_PRIVATE_KEY] after",
+                         redact.redact("before " + far + " after"))
 
     def test_an_unterminated_pem_over_the_bound_is_not_a_runaway(self):
         """The same bound from the other side: a BEGIN with no END anywhere
@@ -168,6 +169,98 @@ class TestRedact(unittest.TestCase):
         self.assertEqual(redact.redact_tree(42), 42)
         self.assertEqual(redact.redact_tree(None), None)
         self.assertEqual(redact.redact_tree(True), True)
+
+
+class TestAKeyLongerThanTheRuleBound(unittest.TestCase):
+    """#2987: an overlong private-key block that HAS its END. The bounded rule
+    declines it, and `_mask_overlong_keys` must finish the job without ever
+    spanning two blocks."""
+
+    LINES = "\n".join("A" * 64 for _ in range(400))      # ~26 KiB of 64-char lines
+
+    def _assert_no_key_line(self, out):
+        self.assertNotIn("A" * 64, out)
+        self.assertIn("[REDACTED_PRIVATE_KEY]", out)
+
+    def test_both_body_shapes_are_masked_whole(self):
+        for body in (self.LINES, "A" * 20000):
+            with self.subTest(lines="\n" in body):
+                out = redact.redact("x " + fake_pem(body) + " y")
+                self.assertEqual("x [REDACTED_PRIVATE_KEY] y", out)
+
+    def test_every_label_the_rule_takes(self):
+        # the rule's labels are `[A-Z ]*` on each side and need not agree, so
+        # the post-pass must take the same blocks -- an RSA BEGIN closed by an
+        # EC END included
+        for begin, end in (("RSA ", "RSA "), ("EC ", "EC "), ("OPENSSH ", "OPENSSH "),
+                           ("ENCRYPTED ", "ENCRYPTED "), ("", ""), ("RSA ", "EC ")):
+            with self.subTest(begin=begin, end=end):
+                block = "%s\n%s\n%s" % (pem_begin(begin), self.LINES, pem_end(end))
+                self.assertEqual("[REDACTED_PRIVATE_KEY]", redact.redact(block))
+
+    def test_a_header_the_rule_does_not_take_is_not_one_to_the_post_pass(self):
+        # one source for both readers: a PUBLIC KEY header opens no block for
+        # the rule, so it opens none for the post-pass either, whatever END
+        # comes after it
+        for size in (100, len(self.LINES)):
+            with self.subTest(overlong=size > 16384):
+                text = "-----BEGIN PUBLIC KEY-----\n%s\n%s" % (self.LINES[:size], pem_end())
+                self.assertEqual(text, redact.redact(text))
+
+    def test_a_label_word_inside_the_body_does_not_end_the_block(self):
+        # the END is the rule's own `-----END[A-Z ]*PRIVATE KEY-----`, not a
+        # bare `PRIVATE KEY-----`: a body that happens to carry that tail must
+        # not close the block early and publish the rest of the key
+        body = self.LINES[:8000] + "\nxPRIVATE KEY-----\n" + self.LINES[8000:]
+        self.assertEqual("[REDACTED_PRIVATE_KEY]", redact.redact(fake_pem(body)))
+
+    def test_text_between_two_blocks_survives(self):
+        out = redact.redact("a " + fake_pem(self.LINES) + " MID " + fake_pem("MIIBshort")
+                            + " " + fake_pem(self.LINES) + " z")
+        self.assertEqual("a [REDACTED_PRIVATE_KEY] MID [REDACTED_PRIVATE_KEY] "
+                         "[REDACTED_PRIVATE_KEY] z", out)
+
+    def test_an_unterminated_header_never_borrows_a_later_blocks_end(self):
+        # the #1639 guarantee, kept: a truncated header (a scanner snippet)
+        # followed by a complete overlong block. Only the block is masked;
+        # the snippet and everything between stay exactly as they were.
+        snippet = pem_begin() + "\nMIIBtruncated\n<Record id=2/>\n"
+        out = redact.redact(snippet + fake_pem(self.LINES))
+        self.assertEqual(snippet + "[REDACTED_PRIVATE_KEY]", out)
+
+    def test_the_stored_reply_keeps_no_key_line(self):
+        # the issue's own surface: `persist` stores `_safe_reply`'s `kept`
+        kept, _truncated = redact._safe_reply(
+            '{"findings": [], "note": "%s"}' % fake_pem(self.LINES).replace("\n", "\\n"))
+        self._assert_no_key_line(kept)
+        kept, _truncated = redact._safe_reply("prose\n" + fake_pem(self.LINES) + "\ntail")
+        self._assert_no_key_line(kept)
+        self.assertTrue(kept.endswith("\ntail"), kept[-40:])
+
+    def test_a_report_leaf_keeps_no_key_line(self):
+        tree = redact.redact_tree({"findings": [{"id": "SEC-1",
+                                                 "snippet": fake_pem(self.LINES)}]})
+        self.assertEqual("[REDACTED_PRIVATE_KEY]", tree["findings"][0]["snippet"])
+        self.assertEqual("SEC-1", tree["findings"][0]["id"])
+
+    def test_the_post_pass_is_linear_in_the_surviving_headers(self):
+        # 20k unterminated headers ahead of ONE overlong block at the end.
+        # Searching for an END from each header rescans to the end of the
+        # string every time -- O(n*h), seconds at this size; the two forward
+        # cursors make it one pass. The bound separates the two by well over
+        # an order of magnitude on any machine this suite runs on.
+        # The second case has no END anywhere, the other way to rescan.
+        import time
+        headers = (pem_begin() + "\n" + "B" * 60 + "\n") * 20000
+        for tail, expected in ((fake_pem(self.LINES), "[REDACTED_PRIVATE_KEY]"),
+                               (pem_end()[:-1], pem_end()[:-1])):
+            with self.subTest(closed=tail != expected):
+                text = headers + tail
+                started = time.perf_counter()
+                out = redact._mask_overlong_keys(text)
+                elapsed = time.perf_counter() - started
+                self.assertEqual(headers + expected, out)
+                self.assertLess(elapsed, 0.5, "%.2fs for %d bytes" % (elapsed, len(text)))
 
 
 class TestRedactBareUuidSecret(unittest.TestCase):

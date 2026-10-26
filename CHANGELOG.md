@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Fix: a private key longer than 16 KiB is no longer stored, reported or published unmasked (#2987).**
+  - The PEM rule's body is bounded at 16 KiB (#1639), so a flat pass cannot swallow the fields between two blocks. A body over the bound was not matched at all, header included. A concatenated key block over 16 KiB, with its END present, therefore reached three places verbatim: the stored retained reply (`_safe_reply` drops only a header with no END), every report.json string leaf, and a non-JSON tool capture.
+  - `redact()` now finishes the job after its pattern pass. Any surviving private-key header that meets its own END before any other `-----BEGIN` becomes `[REDACTED_PRIVATE_KEY]`. The header and END come from the same fragments as the rule, so the two recognise the same blocks, labels included.
+  - The pass is linear (a forward-only END cursor), and an unterminated header is left exactly as before, so a match still never spans two blocks. No schema change, and the committed scanner goldens are byte-identical.
 - **Fix: a session dispatch no longer runs unenforced, write-capable reviewers over the Bash gap without an acknowledgement (#3226).**
   - On Claude and Kimi, a PROVEN `artifact_write_guard` covers the write tools only. A headless loop closes the Bash path on every launch (Claude's `--tools`/`--disallowedTools`, Kimi's `tools.disabled`). A session dispatch does not: an entry with no registered shell goes to a default subagent, and its Bash reaches neither guard hook. Nothing refused that, and nothing recorded it.
   - A session dispatch (`driver loop --mode session`, or a plain `driver run`) over `hosts.write_boundary_gaps` now refuses, unless tool policy is PROVEN. The refusal names three remedies: `driver setup`, the headless loop, or `--allow-unenforced`. The flag writes `unenforced-ack.json` with `write_guard_covers_bash: false` and the named gap, at REFUTED or UNKNOWN alike.

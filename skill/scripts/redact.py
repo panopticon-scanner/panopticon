@@ -85,6 +85,15 @@ def _mask_jwt_chain(match: re.Match[str]) -> str:
 
 # (compiled pattern, replacement). Replacements use \1 back-refs where the match
 # keeps a benign prefix (Bearer). Ordered generic->specific; each is independent.
+# The PEM rule's three fragments, ONE source for the rule and for
+# `_mask_overlong_keys`, so the post-pass can never recognise a different block
+# than the rule does (#2987). The labels need not agree -- an RSA BEGIN closed
+# by an EC END is one block to both.
+_PEM_BEGIN = r"-----BEGIN[A-Z ]*PRIVATE KEY-----"
+_PEM_END = r"-----END[A-Z ]*PRIVATE KEY-----"
+_ANY_BEGIN = "-----BEGIN"
+_PEM_MARKER = "[REDACTED_PRIVATE_KEY]"
+
 _PATTERNS: list[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]]] = [
     (re.compile(r"(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{16,}"),
      "[REDACTED_TOKEN]"),                                   # GitHub PAT / OAuth
@@ -175,8 +184,9 @@ _PATTERNS: list[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]]] = 
     #   `{1,16384}?`     -- and it can never run more than 16 KiB, so what a
     #     flat pass over a STRUCTURED document could swallow between two blocks
     #     is bounded. An RSA-4096 key is ~3.2 KiB; a body LONGER than the bound
-    #     is not masked by this rule at all (no match, header included), which
-    #     is the completeness limit this rule does have.
+    #     is not masked by this rule (no match, header included) -- which left a
+    #     concatenated key block stored verbatim (#2987), so `_mask_overlong_keys`
+    #     finishes the job after the pass, linearly and still one block at a time.
     # `[\s\S]` is DOTALL semantics without the flag, so the body crosses
     # newlines AND quotes. It must: a PEM embedded in C/Java/older-Python source
     # is written one double-quoted literal per line, and a `[^"]` bound (round 1
@@ -184,9 +194,8 @@ _PATTERNS: list[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]]] = 
     # real key into report.json. Structure safety for a JSON capture comes from
     # PARSING (tool_capture._redact_capture) and for the report from the per-leaf
     # walk below -- never from this character class.
-    (re.compile(
-        r"-----BEGIN[A-Z ]*PRIVATE KEY-----(?:(?!-----BEGIN)[\s\S]){1,16384}?"
-        + r"-----END[A-Z ]*PRIVATE KEY-----"), "[REDACTED_PRIVATE_KEY]"),
+    (re.compile(_PEM_BEGIN + r"(?:(?!" + _ANY_BEGIN + r")[\s\S]){1,16384}?" + _PEM_END),
+     _PEM_MARKER),
     # Shape-only, and last: every rule above needs a prefix or an assignment to
     # anchor on, but a secret SCANNER reports the secret with that context
     # stripped (gitleaks emitted a leaked API key as a bare snippet, matching
@@ -226,6 +235,40 @@ def _mask_uuid(m):
 
 
 
+_PEM_BEGIN_RE = re.compile(_PEM_BEGIN)
+_PEM_END_RE = re.compile(_PEM_END)
+
+
+def _mask_overlong_keys(text):
+    """Mask every private-key block the bounded rule left: one whose body runs
+    past 16 KiB (#2987). A header that survives `_PATTERNS` and meets its own
+    END before any other `-----BEGIN` is exactly the rule's block, unbounded;
+    a header with no such END is left as the rule left it, so a match still
+    never spans two blocks and an unterminated snippet swallows nothing.
+
+    Linear. The next END is a cursor that only moves forward: searched once,
+    re-searched only when a header has passed it, and the end of the pass when
+    there is none. Searching for it from each header instead is O(n*h) -- every
+    unterminated header in a capture would rescan to the end of the string. The
+    next BEGIN needs no cursor: it never lies beyond the next header, so the
+    per-header searches cover disjoint spans.
+    """
+    pieces, kept_to = [], 0
+    end = None
+    for header in _PEM_BEGIN_RE.finditer(text):
+        if end is None or end.start() < header.end():
+            end = _PEM_END_RE.search(text, header.end())
+            if end is None:
+                break                   # no END from here on: nothing left to close
+        next_begin = text.find(_ANY_BEGIN, header.end())
+        if next_begin < 0 or end.start() <= next_begin:
+            pieces.append(text[kept_to:header.start()])
+            pieces.append(_PEM_MARKER)
+            kept_to = end.end()          # a closed block holds no BEGIN, so no header is skipped
+    pieces.append(text[kept_to:])
+    return "".join(pieces)
+
+
 def redact(text):
     """Mask unambiguous secret formats in a string. Returns '' for falsy input;
     coerces non-str via str()."""
@@ -234,7 +277,7 @@ def redact(text):
     out = str(text)
     for pat, repl in _PATTERNS:
         out = pat.sub(repl, out)
-    return out
+    return _mask_overlong_keys(out)
 
 
 # Operator excerpts may discard the remainder of a capture; structured/general

@@ -945,6 +945,23 @@ class TestCaptureRedactionKeepsEveryFinding(unittest.TestCase):
         self.assertIn(b"[REDACTED_PRIVATE_KEY]", out)
         self.assertNotIn(b"MIIBrealkey", out)
 
+    def test_a_capture_masks_a_key_longer_than_the_rule_bound(self):
+        """#2987: a key block over 16 KiB, END present, used to pass the bounded
+        rule untouched and reach the published capture verbatim, on the flat
+        path and in a JSON leaf alike."""
+        lines = "\n".join("A" * 64 for _ in range(400))
+        flat = ('<BugInstance type="ONE" file="app/a.java"/>\n<Snippet>%s</Snippet>\n'
+                '<BugInstance type="TWO" file="app/b.java"/>\n' % fake_pem(lines)).encode()
+        out = tc._redact_capture("spotbugs", flat)
+        self.assertNotIn(b"A" * 64, out)
+        self.assertIn(b"[REDACTED_PRIVATE_KEY]", out)
+        self.assertIn(b'<BugInstance type="TWO" file="app/b.java"/>', out)
+        doc = {"runs": [{"results": [{"ruleId": "private-key",
+                                      "message": {"text": fake_pem(lines)}}]}]}
+        out = tc._redact_capture("gitleaks", json.dumps(doc).encode("utf-8"))
+        self.assertNotIn(b"A" * 64, out)
+        self.assertEqual("private-key", json.loads(out)["runs"][0]["results"][0]["ruleId"])
+
     def test_a_non_json_capture_masks_a_pem_quoted_from_source(self):
         """Round 2 N1: a scanner snippet that quotes a key out of C/Java/older-
         Python source -- one double-quoted literal per PEM line -- is the shape
