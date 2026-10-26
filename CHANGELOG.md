@@ -7,6 +7,10 @@
   - Those two keys, in exactly their writers' shapes, are now a reviewed run context. Any other key or shape still keeps the run actionable.
   - On the live captures, 1,544 inventory results now route to the AI inventory; 0 did before.
 
+- **Fix: the fixture runner no longer leaves a container running after a timeout (#3246 S4, #3273).**
+  - On a timeout, `subprocess.run` kills the `docker run` client, which cannot forward the kill, so the `--rm` container kept running and was never removed. For `run_tests` that was a 30-minute pytest container with CPU and memory caps.
+  - Both `run_fixture_tests.py` launches now name their container. A timeout or an interrupt removes it with `docker rm -f <name>`. A failed removal is reported with that command.
+  - Tests: `tests/test_orchestrate_outage.py` stubs the backoff sleep (the schedule is still the shipped one), so it runs in about 10 s instead of 37 s.
 - **Internal: `safe_git` stops policing its callers' argv (#3273 cut 17).**
   - Removed: the refusal of redirecting global options (`-C`, `--git-dir`, ...), of a caller `-c` that undoes a pin or re-enables a neutralized driver, of `--ext-diff`/`--textconv`, and `mutate`'s three-shape allowlist. Every caller is our own code and puts a literal subcommand first, so no target-derived token reaches a global-option position.
   - Unchanged: everything that bounds the target's repository, namely the environment scrub, the trusted git outside the checkout, the fsmonitor and hooks pins, driver neutralization with its confirmation re-read, the submodule bounds, `--ignore-submodules=none` on `status`, the shared deadline, and `mutate`'s unskippable preflight.

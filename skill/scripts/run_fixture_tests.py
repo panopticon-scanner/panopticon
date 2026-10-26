@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -74,6 +76,39 @@ def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
 
 def _docker_bin() -> str:
     return shutil.which("docker") or "docker"
+
+
+def _container_name() -> str:
+    """A name for one `docker run --rm` container this process launches.
+
+    #3246 S4: on a timeout `subprocess.run` SIGKILLs the docker CLIENT, which
+    cannot forward the kill, so the `--rm` container keeps running and is never
+    removed -- the bug `tool_capture._kill_container` fixes with a cidfile. A
+    name we chose is enough here: nothing reads the container's output after
+    the timeout, so `docker rm -f <name>` is the whole cleanup.
+    """
+    return "panopticon-fixtures-%d-%s" % (os.getpid(), secrets.token_hex(4))
+
+
+def _remove_container(name: str) -> None:
+    """Best-effort `docker rm -f` of a container whose client was killed.
+
+    A failure is named with the command that finishes the job, so a timeout
+    never implies the container is gone. Launched through `run`, the one
+    checked launch here, rather than a new call site.
+    """
+    try:
+        run([_docker_bin(), "rm", "-f", name],
+            capture_output=True, text=True, timeout=PROBE_TIMEOUT)
+        return
+    except subprocess.CalledProcessError as e:
+        if "No such container" in (e.stderr or ""):
+            return                        # `--rm` got there first
+        why = "exit %s" % e.returncode
+    except (subprocess.SubprocessError, OSError) as e:
+        why = type(e).__name__
+    print("could not remove container %s (%s); remove it with `docker rm -f %s`"
+          % (name, why, name), file=sys.stderr, flush=True)
 
 
 def docker_available() -> bool:
@@ -156,16 +191,23 @@ def check_fixtures(tag: str, fixtures: list[dict]) -> tuple[list[str], list[str]
     # The probe stats baked paths only, but it launches under the same policy as
     # every other container here: the same flags in the same order as the tool
     # runner's own dispatch, and a network it cannot use.
+    name = _container_name()
     cmd = [_docker_bin(), "run", "--rm",
            *run_tools.resource_limit_flags(),
            *scanner_config.privilege_drop_flags(),
+           "--name", name,
            "--network", "none",
            tag, "sh", "-c", test_script, "sh", *paths]
     # Bound the docker call so a hung container can't wedge the fixture run
     # (consistent with run_tools.py's timeouts; run-4 self-scan C15).
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)  # nosec B603
+    except KeyboardInterrupt:
+        _remove_container(name)
+        raise
     except (subprocess.SubprocessError, OSError) as e:
+        if isinstance(e, subprocess.TimeoutExpired):
+            _remove_container(name)
         # #run7 OPS-E1A: a crashed/timed-out docker probe was silently treated
         # as "all fixtures absent" -- give the operator a signal so a broken
         # daemon isn't mistaken for genuinely-missing baked fixtures.
@@ -206,6 +248,7 @@ def run_tests(tag: str, test: str | None = None) -> int:
     if test:
         pytest_args.extend(["-k", f"test_{test}_integration"])
     pytest_args.extend(test_paths)
+    name = _container_name()
     cmd = [
         _docker_bin(), "run", "--rm",
         # This container runs the whole adapter suite on a developer machine:
@@ -222,6 +265,7 @@ def run_tests(tag: str, test: str | None = None) -> int:
         # #1767 (ARC-3859414366). Each flag set comes from the module that owns it.
         *run_tools.resource_limit_flags(),
         *scanner_config.privilege_drop_flags(),
+        "--name", name,
         # #calibration-6: scans run with NO NETWORK, so the fixture suite must
         # too -- otherwise it certifies scanners in an environment that does not
         # exist. Three broken adapters passed here for exactly that reason:
@@ -247,7 +291,11 @@ def run_tests(tag: str, test: str | None = None) -> int:
     ]
     try:
         result = subprocess.run(cmd, timeout=TEST_TIMEOUT)  # nosec B603
+    except KeyboardInterrupt:
+        _remove_container(name)
+        raise
     except subprocess.TimeoutExpired:
+        _remove_container(name)
         # `--cpus` only throttles, but it throttles against a pre-existing
         # wall-clock bound, so a run that used to fit can now cross it.
         # PANOPTICON_TOOL_CPUS retunes that ceiling or drops it.

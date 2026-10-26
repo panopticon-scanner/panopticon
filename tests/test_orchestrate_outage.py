@@ -20,8 +20,20 @@ from tests._test_helpers import docker_probe_runner
 
 from tests.orchestrate_helpers import (_MidBatchGated, FakeRunner, LoopCase)
 
+def _no_sleep_pause(tally, mode, pending, sleep=None, jitter=None):
+    """#3273 cut 10: the shipped backoff schedule, printed and returned as
+    ever; only the sleep is the test's. Four tests here slept ~7 s each."""
+    return _REAL_PAUSE(tally, mode, pending, sleep=lambda seconds: None, jitter=jitter)
+
+
+_REAL_PAUSE = outage.FailureTally.pause_before_launch
+
+
 def setUpModule():
-    global _patch, _readiness_docker_patch
+    global _patch, _readiness_docker_patch, _pause_patch
+    _pause_patch = mock.patch.object(outage.FailureTally, "pause_before_launch",
+                                     _no_sleep_pause)
+    _pause_patch.start()
     _patch = mock.patch("scripts.host_probes.run_probes",
                         side_effect=lambda host, target, **kw: _all_proven_artifact(host))
     _patch.start()
@@ -36,6 +48,7 @@ def setUpModule():
 def tearDownModule():
     _patch.stop()
     _readiness_docker_patch.stop()
+    _pause_patch.stop()
 
 
 # #3185: verify now caps its own dispatches at 3, which would end these runs before the loop's
