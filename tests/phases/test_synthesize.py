@@ -20,6 +20,7 @@ import scripts.phases.runio as runio
 import scripts.phases.discovery as discovery_phase
 import scripts.phases.requests as requests
 import scripts.phases.review as review_phase
+import scripts.phases.tools as tools_phase
 import scripts.phases.verify as verify_phase
 import scripts.phases.verify_tools as verify_tools
 import scripts.run_manifest as run_manifest
@@ -788,6 +789,43 @@ class TestSynthesizePhase(unittest.TestCase):
                 side_effect=_write_passing_synthesize_report) as run:
             synthesize.synthesize_execute(self.root, self.manifest)
         self.assertIn("--tools-dir", run.call_args[0][0])
+
+    def _cmd_for(self, marker, tools):
+        runio._write_json(runio._pano(self.root, "tools-ran.json"), marker)
+        manifest = dict(self.manifest, flags=dict(self.manifest.get("flags") or {}, tools=tools))
+        with mock.patch("scripts.phases.child._run_child",
+                        side_effect=_write_passing_synthesize_report) as run:
+            synthesize.synthesize_execute(self.root, manifest)
+        return run.call_args[0][0]
+
+    def test_a_no_tools_run_hands_over_its_tools_dir_as_skipped(self):
+        # #3197: so a planted capture is NAMED unbound rather than never looked at
+        # Keyed on the CONTROLLER's flags, never the target-writable marker: a
+        # marker that does not say `skipped` changes nothing.
+        for marker in ({"ran": False, "skipped": True, "run_id": "R", "note": tools_phase.NO_TOOLS_NOTE},
+                       {"ran": False, "run_id": "R", "note": tools_phase.NO_TOOLS_NOTE}):
+            with self.subTest(marker=marker):
+                cmd = self._cmd_for(marker, tools=False)
+                self.assertIn("--tools-skipped", cmd)
+                self.assertEqual(runio._pano(self.root, "tools"), cmd[cmd.index("--tools-dir") + 1])
+
+    def test_a_downgrade_after_a_real_scan_keeps_its_own_outputs_bound(self):
+        # The coordinator's case: tools RAN, then `--no-tools` was recorded
+        # mid-run. `tools_done` stops at `ran`, so the marker is never rewritten
+        # as a skip, and synthesis ingests this run's own receipt-bound outputs
+        # exactly as on main -- they are never read as a plant.
+        cmd = self._cmd_for({"ran": True, "run_id": "R", "outputs": ["semgrep.sarif"]},
+                            tools=False)
+        self.assertIn("--tools-dir", cmd)
+        self.assertNotIn("--tools-skipped", cmd)
+        self.assertTrue(tools_phase.tools_done(self.root, dict(
+            self.manifest, flags={"tools": False}, invocation="I")))
+
+    def test_a_tools_enabled_run_never_says_skipped(self):
+        for marker in ({"ran": True, "run_id": "R"}, {"ran": False, "run_id": "R"},
+                       {"ran": False, "skipped": True, "run_id": "R"}):     # a marker saying so
+            with self.subTest(marker=marker):
+                self.assertNotIn("--tools-skipped", self._cmd_for(marker, tools=True))
 
     def test_gate_fail_nonzero_still_advances_when_report_present(self):
         def fake_run(cmd, **kw):

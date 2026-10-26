@@ -3,15 +3,16 @@ import glob as _glob
 import hashlib
 import json
 import os
-import shutil
 import stat
 import subprocess
 import sys
 
 import scripts.diff_map as diff_map
+import scripts.plan_contract as plan_contract
 import scripts.run_manifest as run_manifest
 import scripts.safe_git as safe_git
 import scripts.redact as redact
+import scripts.safe_write as safe_write
 from . import engine
 from . import runio
 
@@ -102,6 +103,24 @@ def _write_baseline(baseline, emit):
                 pass
         raise
     return baseline
+
+def start_write_failure(review_root, baseline, exc):
+    """#2094: the status message for an OSError from `driver.run`'s two run-start
+    writes -- a full disk, EIO, a read-only mount. That is the filesystem refusing,
+    not a bug, so it gets a status, not a traceback, naming WHICH write failed.
+    A failed baseline write leaves nothing at the real path (`_write_baseline`
+    unlinks its own staging file), and a missing baseline is only ever written
+    before the first dispatch (#3255), so a plain rerun captures it again."""
+    if baseline:
+        what, path = "capturing the clean-tree baseline", runio._pano(review_root, "tree-baseline.txt")
+        remedy = ("nothing partial was left and no reviewer has run, so free the space "
+                  "or fix the filesystem and rerun; the rerun captures the baseline again")
+    else:
+        what = "creating the run links"
+        path = os.path.join(review_root, ".panopticon", "runs", "latest")
+        remedy = "free the space or fix the filesystem under .panopticon/runs and rerun"
+    where = exc.filename if exc.filename is not None else path
+    return "driver: %s failed at %s: %s; %s" % (what, where, exc.strerror or exc, remedy)
 
 def _write_probe_failed_baseline(baseline):
     return _write_baseline(baseline, lambda fh: fh.write(_TREE_BASELINE_PROBE_FAILED))
@@ -396,6 +415,97 @@ def validate_execute(review_root, manifest, runner=subprocess.run):
                           + "; ".join(delta[:10]))
     return engine.PhaseResult(kind="advanced", message="validate: clean tree")
 
+# #3225: the largest report artifact `--pr` surfaces into the caller's tree --
+# the 16 MiB the synth reader and readiness already accept for a report. An
+# over-cap source is a FAILED surface (the worktree is kept), never a partial copy.
+MAX_SURFACED_BYTES = 1 << 24
+# The *at calls the confined surface makes. `os.replace` is `renameat` under
+# the same entry `os.supports_dir_fd` lists for `os.rename`.
+_DIR_FD_CALLS = (os.open, os.mkdir, os.symlink, os.rename, os.unlink)
+
+
+def _open_caller_artifact_dir(target):
+    """`<target>/.panopticon` as a HELD directory fd, or raise (#3225).
+
+    A hostile default branch can commit `.panopticon` as a symlink, and the
+    caller checkout is never first-contact vetted (only the worktree is).
+    `plan_contract.artifact_root` gives the readable refusal, but it is a
+    check on a path, and a path can be swapped after it passes:
+    `safe_write.confine_artifact_path` would not notice, since it anchors on
+    the realpath of `.panopticon` -- the link's target, once it is a link. So
+    the directory is opened once, O_NOFOLLOW relative to the target, and
+    every write is made relative to that fd. Renaming the name later cannot
+    move a write out of the tree. No dir_fd support means no surface: a
+    path-based fallback would reopen exactly this race."""
+    missing = [f.__name__ for f in _DIR_FD_CALLS if f not in os.supports_dir_fd]
+    if missing:
+        raise ValueError("no dir_fd support for %s" % ", ".join(missing))
+    plan_contract.artifact_root(target)
+    tfd = os.open(target, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        try:
+            os.mkdir(".panopticon", 0o755, dir_fd=tfd)
+        except FileExistsError:
+            pass
+        return os.open(".panopticon", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                       dir_fd=tfd)
+    finally:
+        os.close(tfd)
+
+
+def _unlink_at(dfd, name):
+    try:
+        os.unlink(name, dir_fd=dfd)       # a name in the held dir, never followed
+    except FileNotFoundError:
+        pass
+
+
+def _surface_into(dfd, src_dir, names):
+    """Stage every artifact in the held dir, then publish in reverse.
+
+    Each leaf is created O_EXCL|O_NOFOLLOW and `os.replace`d onto its final
+    name, so a planted leaf link is swapped, never written through. Nothing is
+    published unless every source read and staged, and the failures are
+    returned rather than raised, so the caller keeps the worktree."""
+    staged, failed = [], []
+    try:
+        for name in names:
+            tmp = "%s.finalize-%d.tmp" % (name, os.getpid())
+            try:
+                data = safe_write.read_regular_bytes(os.path.join(src_dir, name),
+                                                     MAX_SURFACED_BYTES)
+                _unlink_at(dfd, tmp)              # our own interrupted leftover
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o644, dir_fd=dfd)
+                staged.append(tmp)
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(data)
+            except (OSError, ValueError) as e:
+                failed.append((name, e))
+                return failed
+        for tmp, name in reversed(list(zip(staged, names))):
+            try:
+                os.replace(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)
+            except OSError as e:
+                failed.append((name, e))
+        return failed
+    finally:
+        for tmp in staged:
+            _unlink_at(dfd, tmp)
+
+
+def _relink_at(dfd, link, name):
+    """`link -> name` in the held dir: a fresh link swapped onto the old name,
+    so a planted `report.json` link is replaced, never followed."""
+    tmp = "%s.relink-%d.tmp" % (link, os.getpid())
+    _unlink_at(dfd, tmp)
+    os.symlink(name, tmp, dir_fd=dfd)
+    try:
+        os.replace(tmp, link, src_dir_fd=dfd, dst_dir_fd=dfd)
+    except OSError:
+        _unlink_at(dfd, tmp)
+        raise
+
 def _finalize_worktree(review_root, manifest):
     """On a completed --pr run, review_root IS the disposable worktree. Surface
     report.json to the caller's target .panopticon/ BEFORE releasing the worktree
@@ -421,24 +531,28 @@ def _finalize_worktree(review_root, manifest):
         names.append(f"{tag}-report.json.html")
     else:
         names = ["report.json"]
+    # #3225: the main report first, so `_surface_into` publishes it LAST and
+    # its siblings are already in place when it goes live.
+    names = [n for n in names if os.path.isfile(os.path.join(src_dir, n))]
+    names.sort(key=lambda n: n != (f"{tag}-report.json" if tag else "report.json"))
     failed = []
-    for name in names:
-        src, dst = os.path.join(src_dir, name), os.path.join(dst_dir, name)
-        if os.path.realpath(src) == os.path.realpath(dst) or not os.path.isfile(src):
-            continue
+    try:
+        dfd = _open_caller_artifact_dir(target)
+    except (OSError, ValueError) as e:
+        failed.append((".panopticon", e))
+    else:
         try:
-            os.makedirs(dst_dir, exist_ok=True)
-            shutil.copyfile(src, dst)
-        except OSError as e:
-            failed.append((name, e))   # #run7 OPS-E1A: no longer silently swallowed
-    if tag and os.path.isfile(os.path.join(dst_dir, f"{tag}-report.json")):
-        try:
-            runio._relink(os.path.join(dst_dir, "report.json"), f"{tag}-report.json")
-            if os.path.isfile(os.path.join(dst_dir, f"{tag}-report.json.html")):
-                runio._relink(os.path.join(dst_dir, "report.json.html"),
-                        f"{tag}-report.json.html")
-        except OSError:
-            pass
+            failed = _surface_into(dfd, src_dir, names)
+            if tag and not failed and f"{tag}-report.json" in names:
+                for link, name in (("report.json", f"{tag}-report.json"),
+                                   ("report.json.html", f"{tag}-report.json.html")):
+                    if name in names:
+                        try:
+                            _relink_at(dfd, link, name)
+                        except OSError as e:
+                            failed.append((link, e))
+        finally:
+            os.close(dfd)
     # #run7 OPS-E1A: the worktree is the ONLY other copy of the report. If ANY
     # artifact failed to surface, releasing it (git worktree remove --force) would
     # destroy the deliverable irrecoverably while run() still returns

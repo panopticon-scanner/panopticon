@@ -282,6 +282,13 @@ def synthesize_execute(review_root, manifest):
         # but synthesize_execute never forwarded it.
         if verify_tools._tools_include_fixtures(manifest):
             cmd += ["--include-fixtures"]
+    elif flags.get("tools") is False:
+        # #3197: the operator's `--no-tools` -- off the controller's manifest,
+        # never the target-writable marker. A scan that DID run keeps its
+        # marker (`tools_done` stops at `ran`), so it takes the branch above
+        # even after a mid-run downgrade; this one has no output of its own on
+        # disk, so whatever is there is listed as unbound, never ingested.
+        cmd += ["--tools-dir", runio._pano(review_root, "tools"), "--tools-skipped"]
     # #1637 P08 F2: the mid-run `--no-tools` rescue is a real downgrade of what
     # this run's later panels were shown, so the report says so. Threaded from
     # the manifest the driver is already holding rather than re-read from disk

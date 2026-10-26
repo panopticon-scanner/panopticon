@@ -429,6 +429,29 @@ class TestHeadlessGuardSettingsAreBuiltFresh:
         assert any(write_guard_hook._is_our_entry(e) for e in entries)
         assert any(read_guard_hook._is_our_entry(e) for e in entries)
 
+    def test_an_error_exit_never_disarms_what_this_loop_already_took_down(self, tmp_path):
+        # #3227: a loop that finished batch 1 kept its entries on
+        # `armed_entries`, so `_finish`'s error-path disarm took them down
+        # AGAIN -- by then another loop's grants for the same entries, in the
+        # same run folder's settings and allowlist.
+        root = os.path.realpath(str(tmp_path))
+        mine, run_dir = self._guards(root, "setup")
+        first, second = self._entry(run_dir, 1), self._entry(run_dir, 2)
+        mine.arm([first, second])
+        mine.disarm([first])
+        assert [e["id"] for e in mine.armed_entries] == ["e2"]
+        mine.disarm([second])
+        assert mine.armed_entries == []
+        theirs = orchestrate.Guards("headless", run_dir=run_dir)
+        theirs.arm([first])
+        orchestrate._finish(orchestrate._status("error", "refused"), root, mine,
+                            None, "setup", "headless")
+        assert write_guard_hook.is_armed(theirs.settings_path, theirs.allowlist_path)[0]
+        assert read_guard_hook.is_armed(theirs.settings_path, theirs.scope_path)[0]
+        mine.arm([second])
+        mine.disarm()
+        assert mine.armed_entries == []
+
     def test_a_re_arm_keeps_both_guards_and_adds_nothing(self, tmp_path):
         root = os.path.realpath(str(tmp_path))
         guards, run_dir = self._guards(root, "setup")

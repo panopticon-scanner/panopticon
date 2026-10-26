@@ -44,11 +44,13 @@ forbids `runners/* -> phases` imports and the loop is what calls both halves
 of the rollback: the artifact half here, and the interrupted phase's
 per-dispatch marker in `phases.persist.rollback_markers`.
 """
+import contextlib
 import json
 import os
 import re
 import socket
 import stat
+import sys
 import time
 import uuid
 from typing import TypedDict
@@ -160,18 +162,40 @@ def machine_id():
     What this id is NOT is a pid-namespace identity (review round 1, finding
     4): it names the interface, so two containers sharing the host's network
     (`--network host`, hence the same MAC) under different hostnames, with
-    separate pid namespaces and the same reviewed tree bind-mounted, now read
-    each other's records as same-machine and ask `os.kill` about a pid from the
-    other namespace -- where the hostname rule alone had failed closed as
-    `foreign`. It needs all three of shared MAC, separate pid namespaces and a
-    shared run folder; a boot-id or namespace discriminator would close it, and
-    the #1727 hash-binding TODO above owns the authenticity half regardless.
+    separate pid namespaces and the same reviewed tree bind-mounted, read each
+    other's records as same-machine and asked `os.kill` about a pid from the
+    other namespace. `pid_namespace` is the discriminator that closes it
+    (#2065); the #1727 hash-binding TODO above owns the authenticity half
+    regardless.
     """
     node = uuid.getnode()
     if (isinstance(node, bool) or not isinstance(node, int) or node <= 0
             or node & _MULTICAST_BIT):
         return None
     return "%012x" % node
+
+
+def pid_namespace():
+    """The pid namespace this process's pids mean something in, or None (#2065).
+
+    A pid is a number in ONE namespace. Two containers on `--network host`
+    share the MAC `machine_id` reads, so their batch records looked
+    same-machine and each asked `os.kill` about the other's pid -- and a pid
+    that happened to be dead HERE read as a crash THERE, so recovery rolled
+    back a live sibling container's batch: #1698's accident, destructively.
+    Linux names the namespace (`/proc/self/ns/pid`, e.g. `pid:[4026531836]`);
+    the initial namespace's inode is fixed, so a plain reboot keeps it, while a
+    restarted container gets a new one and reads its old record as foreign --
+    the fail-closed direction, and `--discard-batch` is the remedy.
+
+    None -- no /proc, a refusal, anything at all -- means the field is OMITTED
+    and the comparison falls back to the two ids, never a refusal.
+    """
+    try:
+        name = os.readlink("/proc/self/ns/pid")
+    except (OSError, ValueError):
+        return None
+    return name if isinstance(name, str) and name else None
 
 
 def _same_machine(doc):
@@ -186,11 +210,31 @@ def _same_machine(doc):
     returns a multicast value and never returns a non-string, so a record
     carrying the random fallback, a malformed field or no field at all can
     never match, and each of those falls back to the hostname.
+
+    #2065: but a pid namespace that DIFFERS overrides both ids -- the pid in
+    the record means nothing in ours. Only when both sides name one; a record
+    from before the field, a malformed one, or a platform with no namespace to
+    read is judged by the ids exactly as before.
     """
+    theirs, ours = doc.get("pidns"), pid_namespace()
+    if isinstance(theirs, str) and theirs and ours is not None and theirs != ours:
+        return False
     if doc.get("host") == host_id():
         return True
     mine = machine_id()
     return mine is not None and doc.get("machine") == mine
+
+
+def owner_phrase(stamp):
+    """How an operator's discard names the owner it accepted the loss of (#2065).
+
+    An unstamped record has no pid or host worth printing -- `pid None on host
+    None` read as if a process called None had been checked -- so it is named
+    for what it is.
+    """
+    if stamp.get("state") == OWNER_UNSTAMPED:
+        return "no usable owner stamp"
+    return "pid %r on host %r" % (stamp.get("pid"), stamp.get("host"))
 
 
 def owner_state(doc):
@@ -247,6 +291,11 @@ def owner_state(doc):
         return OWNER_FOREIGN
     try:
         os.kill(pid, 0)
+    except OverflowError:
+        # #2065: a pid beyond what the OS can hold is no stamp at all -- a
+        # planted one, since this module never writes it. Never `dead`: that
+        # is the one verdict recovery acts on.
+        return OWNER_UNSTAMPED
     except PermissionError:
         return OWNER_LIVE
     except OSError:                       # ProcessLookupError, and nothing else lands here
@@ -363,11 +412,12 @@ class Batch:
         "compare the hostname", which is what a reader does with it; a null one
         would only invite a reader to compare nothing to nothing.
         """
-        machine = machine_id()
+        machine, pidns = machine_id(), pid_namespace()
         return {"schema_version": 1, "batch": self.number,
                 "checkpoint": self.checkpoint, "opened_at": self.opened_at,
                 "pid": os.getpid(), "host": host_id(),
                 **({"machine": machine} if machine else {}),
+                **({"pidns": pidns} if pidns else {}),
                 "entries": self.entries,
                 **({"recovering": True} if self.recovering else {})}
 
@@ -481,3 +531,44 @@ class Batch:
         except OSError as exc:
             return ["%s: %s" % (self.path, exc)]
         return []
+
+    @contextlib.contextmanager
+    def before_launch(self, teardown=None):
+        """#3227: the window between `open` and the batch's first launch.
+
+        `orchestrate.loop` opens the batch BEFORE it arms the guards, because
+        the O_EXCL create in `open` is the batch's lock: a second loop on the
+        same run that loses it must not have armed. It used to arm first --
+        rebuilding the run folder's settings file and re-installing the same
+        entries' grants under the live loop -- and then, refused, disarm them
+        from under it on its way out.
+
+        Arming, the launch backoff and the shape proof therefore run with the
+        record already on disk, and any of them can raise (an interrupt too).
+        Nothing has launched yet, so there is nothing to roll back and the
+        record has nothing to say: it is closed, and the failure goes on
+        exactly as it did when this window still came before `open`. A
+        process KILLED here leaves the record behind with no artifact on disk
+        -- an ordinary dead-owner record, which `loop_batch.recover_stale`
+        rolls back on the next loop.
+
+        `teardown` (the caller's disarm) runs FIRST: the record is the lock,
+        so the grants come down before it is released, or a second loop could
+        open in the gap, arm the same ids, and have them stripped from under
+        it -- the order `loop_batch.rolled_back` already keeps. A teardown
+        that fails is reported, never raised: it must not mask the failure
+        that brought the window down.
+        """
+        try:
+            yield self
+        except BaseException:
+            if teardown is not None:
+                try:
+                    teardown()
+                except BaseException as exc:     # noqa: BLE001 -- the original failure goes on
+                    print("driver loop: guards not disarmed: %s: %s" % (type(exc).__name__, exc),
+                          file=sys.stderr, flush=True)
+            for note in self.close():
+                print("driver loop: batch manifest not removed: %s" % note,
+                      file=sys.stderr, flush=True)
+            raise

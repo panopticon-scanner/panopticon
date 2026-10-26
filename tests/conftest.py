@@ -83,13 +83,17 @@ os.environ["USERPROFILE"] = _TEST_HOME        # Windows' spelling of the same th
 # candidate so those tests remain about their injected runner. Hostile-PATH
 # boundary tests replace PATH explicitly and therefore still exercise the real
 # resolver refusal.
-if shutil.which("docker") is None:
+# #3222: `--pr` resolves `gh` the same way before its injected runner is
+# reached, so a host without the GitHub CLI gets one too.
+_MISSING_CLIS = [name for name in ("docker", "gh") if shutil.which(name) is None]
+if _MISSING_CLIS:
     _TEST_BIN = tempfile.mkdtemp(prefix="panopticon-test-bin-")
     atexit.register(shutil.rmtree, _TEST_BIN, ignore_errors=True)
-    _TEST_DOCKER = os.path.join(_TEST_BIN, "docker")
-    with open(_TEST_DOCKER, "w", encoding="utf-8") as _fh:
-        _fh.write("#!/bin/sh\nexit 99\n")
-    os.chmod(_TEST_DOCKER, 0o700)
+    for _name in _MISSING_CLIS:
+        _stub = os.path.join(_TEST_BIN, _name)
+        with open(_stub, "w", encoding="utf-8") as _fh:
+            _fh.write("#!/bin/sh\nexit 99\n")
+        os.chmod(_stub, 0o700)
     os.environ["PATH"] = os.pathsep.join([_TEST_BIN, os.environ.get("PATH", "")])
 
 # #3271: the run-stamp key lives operator-side. The suite gets its own, so no

@@ -25,6 +25,7 @@ from tests._test_helpers import docker_probe_runner
 from scripts import hosts
 import scripts.write_guard_hook as write_guard_hook
 from tests._test_helpers import (all_proven_artifact as _all_proven_artifact,
+                           refuted_tool_policy_artifact as _refuted_artifact,
                            write_guard_not_proven as _write_guard_not_proven)
 from tests.orchestrate_helpers import FakeRunner, LoopCase
 
@@ -45,6 +46,78 @@ def setUpModule():
 def tearDownModule():
     _patch.stop()
     _readiness_docker_patch.stop()
+
+
+class TestTheSessionDispatchBashGap(LoopCase):
+    """#3226 end to end: a write guard proven on the write tools, tool policy
+    refuted (a machine that never ran `driver setup`). A session dispatch
+    refuses without `--allow-unenforced`; the headless loop, whose launch argv
+    takes Bash away, runs as before. `dispatch_mode` is `driver.run`'s own,
+    per invocation, and never reaches run-manifest.json."""
+
+    REFUTED = staticmethod(lambda host, target, **kw: _refuted_artifact(host))
+
+    def _ack(self, d):
+        return runio._pano(d, "unenforced-ack.json")
+
+    def _manifest_bytes(self, d):
+        with open(runio._pano(d, "run-manifest.json"), "rb") as fh:
+            return fh.read()
+
+    def _session_loop(self, d, floor, *extra):
+        s = self._session_root(d)
+        args = self._args(d, "--mode", "session", "--session-dir", s, *extra)
+        with mock.patch("scripts.host_probes.run_probes", side_effect=self.REFUTED), \
+                mock.patch.object(orchestrate, "_after_first_run",
+                                  side_effect=lambda rr: self._seed_coverage(rr, floor)), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            return orchestrate.loop(args)
+
+    def test_a_session_loop_refuses_and_writes_no_ack(self):
+        d, floor = self._repo()
+        status = self._session_loop(d, floor)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("SESSION", status["message"])
+        self.assertIn("--allow-unenforced", status["message"])
+        self.assertFalse(os.path.exists(self._ack(d)))
+        self.assertNotIn(b"dispatch_mode", self._manifest_bytes(d))
+
+    def test_a_session_loop_with_the_flag_dispatches_and_records_the_gap(self):
+        d, floor = self._repo()
+        status = self._session_loop(d, floor, "--allow-unenforced")
+        self.assertEqual("dispatch", status["status"], status)
+        with open(self._ack(d), encoding="utf-8") as fh:
+            ack = json.load(fh)
+        self.assertFalse(ack["write_guard_covers_bash"])
+        self.assertIn(hosts.BASH_PATH_ARTIFACT_WRITE_GAP, ack["gaps"])
+        self.assertNotIn(b"dispatch_mode", self._manifest_bytes(d))
+
+    def test_the_headless_loop_over_the_same_posture_still_runs(self):
+        d, floor = self._repo()
+        runner = FakeRunner()
+        status = self._run_loop(d, floor, runner, probes=self.REFUTED)
+        self.assertEqual("complete", status["status"], status)
+        self.assertIn("review-app-SEC", runner.launched)
+        self.assertFalse(os.path.exists(self._ack(d)))
+        self.assertNotIn(b"dispatch_mode", self._manifest_bytes(d))
+
+    def test_a_plain_driver_run_is_a_session_dispatch(self):
+        # No `--mode` at all: `driver run` hands its entries to the session.
+        d, floor = self._repo()
+        args = driver.build_parser().parse_args(["run", d, "--no-tools", "--fail-on", "high"])
+        with mock.patch("scripts.host_probes.run_probes", side_effect=self.REFUTED), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            driver.run(args)                      # mints the manifest
+            self._seed_coverage(d, floor)
+            status = driver.run(args)             # ...and reaches the review cells
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("SESSION", status["message"])
+        self.assertFalse(os.path.exists(self._ack(d)))
+        # read off the bytes `driver.run` wrote, not through a helper
+        self.assertNotIn(b"dispatch_mode", self._manifest_bytes(d))
+        self.assertIn(b'"run_id"', self._manifest_bytes(d))
 
 
 class TestSessionMode(LoopCase):

@@ -497,11 +497,17 @@ on Claude hooks, and always uses the return-persist path.
   nothing to take back. **The owner is a pid on another machine** — the record names a host that is
   not this machine, and a machine id that is not this machine's either, so this one cannot ask that
   one whether the process is still running; a pid number from over there names some unrelated local
-  process here, so the loop refuses to decide either way. **The record carries no owner stamp** — an
-  absent or malformed owner is either a record from before the field existed or one the target
-  wrote, and neither is evidence that a crash happened. A fourth refusal guards the other end: **a
-  record this batch would overwrite**, a leftover carrying the iteration number this batch is about
-  to open, refused before the guards are armed rather than silently replaced (that `O_EXCL` used to
+  process here, so the loop refuses to decide either way. The same refusal covers **a pid from another
+  pid namespace** (#2065): on Linux the record also names its pid namespace, and two containers that
+  share the host's network (and so its machine id) under separate pid namespaces read each other's
+  records as foreign rather than asking about a pid that means something else here. A restarted
+  container gets a new pid namespace, so it reads its old record as foreign too: discard it
+  explicitly with `--discard-batch N`. **The record carries no owner stamp** — an absent or malformed
+  owner (a pid too large for the OS to hold included) is either a record from before the field
+  existed or one the target wrote, and neither is evidence that a crash happened. A fourth refusal
+  guards the other end: **a record this batch would overwrite**, a leftover carrying the iteration
+  number this batch is about to open, refused before the guards are armed rather than silently
+  replaced (that `O_EXCL` used to
   escape as a `FileExistsError` traceback with the write guard still armed). Under `--setup` these
   records live in the flat `.panopticon/` beside setup's other artifacts rather than in a run
   folder, and `--setup --reset` sweeps them — all but one whose owner is still running, which it

@@ -321,6 +321,9 @@ class TestTheOwedOnceArtifactsAreNeverReCreated(unittest.TestCase):
             "security_mode": "standard", "created": "2026-09-26T00:00:00Z",
             "review_root": self.root, "target": self.root})
         self.manifest = run_manifest.load_manifest(self.root)
+        # what `driver.run` attaches per invocation (#3226): this class is about the
+        # owed artifacts, so it runs under the dispatch that has no Bash gap to refuse
+        self.manifest["dispatch_mode"] = "headless"
         write_host_evidence(self.root, {hosts.ARTIFACT_WRITE_GUARD: hosts.PROVEN})
         runio._write_json(runio._pano(self.root, "groups.json"),
                           {"groups": [{"name": "Auth", "files": ["a.py"]}]})

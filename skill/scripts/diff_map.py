@@ -33,6 +33,7 @@ else:
     except ModuleNotFoundError:
         import repo_config
         import safe_git
+executable = safe_git.executable   # #3222: the module safe_git resolves its own git with
 
 class DiffMapError(Exception):
     """A delta-map computation failed in a way that must NOT silently degrade to
@@ -996,15 +997,14 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
                   file=sys.stderr)
 
     def _run(argv):
-        """One call that keeps the OPERATOR's environment: `gh`, and the fetch."""
+        """One call that keeps the OPERATOR's environment (`gh`, the fetch), off a trusted PATH."""
+        shown, (argv, env) = " ".join(argv), executable.operator_launch(argv, boundary)
         try:
-            r = runner(argv, capture_output=True, text=True, timeout=_PR_TIMEOUT)
+            r = runner(argv, capture_output=True, text=True, timeout=_PR_TIMEOUT, env=env)
         except subprocess.TimeoutExpired:
-            raise RuntimeError("panopticon --pr: `%s` timed out after %ss"
-                               % (" ".join(argv), _PR_TIMEOUT))
+            raise RuntimeError("panopticon --pr: `%s` timed out after %ss" % (shown, _PR_TIMEOUT))
         if r.returncode != 0:
-            raise RuntimeError("panopticon --pr: `%s` failed: %s"
-                               % (" ".join(argv), (r.stderr or "").strip()))
+            raise RuntimeError("panopticon --pr: `%s` failed: %s" % (shown, (r.stderr or "").strip()))
         return r.stdout
 
     def _safe(root, args, mutating=False):
@@ -1034,6 +1034,7 @@ def acquire_pr(pr_number, repo=".", runner=subprocess.run):
                                % (shown, (r.stderr or "").strip()))
         return r.stdout
 
+    boundary = safe_git._checkout_boundary(repo)       # #3222: resolve outside the checkout
     view = _run(["gh", "pr", "view", str(pr_number), "--json", "baseRefName"])
     try:
         pr_info = _json.loads(view)

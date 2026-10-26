@@ -99,6 +99,31 @@ def _inside(root, candidate):
         current = parent
 
 
+# #3222: where git looks up the helpers a fetch execs (`git-remote-https`).
+# `git -C <repo>` does not override it: one pointed into a repo ran a planted
+# helper (measured), so an operator launch never inherits it.
+_OPERATOR_EXEC_PATH = ("GIT_EXEC_PATH",)
+
+
+def operator_launch(argv, review_root):
+    """`(argv, env)` for a trusted CLI that keeps the operator's environment.
+
+    For a launch that needs the operator's own credentials -- `--pr`'s `gh pr
+    view` and fetch, where `safe_git`'s allowlisted environment would strip the
+    helper (#3222). argv[0] is resolved like any trusted executable (relative
+    entries dropped, an in-target entry raises `TargetPathEntry` before anything
+    runs) and replaced by its absolute path. The environment is the operator's,
+    minus the startup hooks every trusted launch loses and `_OPERATOR_EXEC_PATH`,
+    with PATH replaced by the resolved one: HOME and the credential variables
+    still arrive."""
+    resolved = resolve(argv[0], review_root)
+    env = sanitize_startup_environment(os.environ)
+    for name in _OPERATOR_EXEC_PATH:
+        env.pop(name, None)
+    env["PATH"] = resolved.path_env
+    return [resolved.path] + list(argv[1:]), env
+
+
 def resolve(command, review_root, path=None):
     """Return an absolute executable and the PATH safe to give its child.
 

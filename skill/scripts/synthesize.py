@@ -93,6 +93,10 @@ def build_parser():
     ap.add_argument("--prior-run", default=None, metavar="HOST:RUN_ID",
                     help="this run started over an earlier run of another host "
                          "in .panopticon/ (#3271); disclosed as meta.prior_run")
+    ap.add_argument("--tools-skipped", action="store_true",
+                    help="no scanner ran this run (--no-tools), so no output in "
+                         "--tools-dir is bound to it: none is ingested, every one "
+                         "present is listed as an unbound tool output (#3197)")
     ap.add_argument("--tools-disabled-mid-run", action="store_true",
                     help="this run started with the tool scan enabled and had "
                          "it switched off with --no-tools while in flight "
