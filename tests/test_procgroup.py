@@ -25,6 +25,8 @@ import time
 import unittest
 from unittest import mock
 
+import pytest
+
 import scripts.procgroup as procgroup
 
 _POSIX = os.name == "posix"
@@ -287,6 +289,36 @@ class TestKillGroupEndsTheWholeTree(_GroupCase):
         rather than re-decided: short on purpose, because the deadline that
         brought us here has already passed."""
         self.assertEqual(2.0, procgroup.KILL_GRACE)
+
+
+class TestTheEscapeIsADocumentedLimit(_GroupCase):
+    """#3294: a descendant that calls `setsid()` has left the group, so no
+    `killpg` reaches it. That is the bound `kill_group`'s docstring names, and
+    tests/test_no_exec_grant.py is what keeps the reviewed tree from being
+    that descendant. If a sweep ever lands, this test passes, the strict xfail
+    fails, and the docstrings and DEVELOPMENT.md have to change with it."""
+
+    def _escaping_tree(self, pidfile):
+        worker = ("import os, time\n"
+                  "os.setsid()\n"
+                  "open(%r, 'w').write(str(os.getpid()))\n"
+                  "time.sleep(60)\n" % pidfile)
+        return ("import subprocess, sys, time\n"
+                "subprocess.Popen([sys.executable, '-c', %r])\n"
+                "time.sleep(60)\n" % worker)
+
+    @pytest.mark.xfail(strict=True, reason="#3294: kill_group cannot reach a "
+                       "descendant that left its process group")
+    def test_a_descendant_that_calls_setsid_is_ended_too(self):
+        pidfile = os.path.join(self.root, "escaped.pid")
+        proc = self._spawn(self._escaping_tree(pidfile))
+        pid = self._grandchild_of(proc, pidfile)          # cleanup kills it
+        self.assertTrue(_alive(pid), "the escaping descendant was never running")
+        self.assertNotEqual(os.getpgid(pid), os.getpgid(proc.pid),
+                            "the descendant never left the group")
+        self.assertTrue(procgroup.kill_group(proc, grace=0.2))
+        self.assertTrue(_await_death(pid, seconds=1.0),
+                        "the escaped descendant outlived kill_group")
 
 
 class TestTheHandleFallback(unittest.TestCase):

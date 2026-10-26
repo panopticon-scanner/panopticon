@@ -212,6 +212,15 @@ def kill_group(proc, grace=KILL_GRACE):
     `setsid` itself) cannot be signalled, and a caller on a deadline path must
     not be made to wait for it for ever. An unreaped child is left to
     `Popen.__del__`, which is a warning; an unbounded wait was the hang.
+
+    THAT DESCENDANT KEEPS RUNNING (#3294), and nothing here reports it. The bound
+    holds because no host is handed a tool that runs a command: every role
+    grants Glob/Grep/Read/Write only, Claude and Kimi deny their shell tools
+    even on an unenforced launch, and Codex runs with its shell features off
+    (tests/test_no_exec_grant.py). The reviewed tree therefore cannot start
+    one, and today only a vendor CLI's own helper can escape. A grant that
+    changes that has to bring the sweep designed in #3294 with it.
+    `test_procgroup.TestTheEscapeIsADocumentedLimit` pins the escape itself.
     """
     try:
         grace = max(0.0, float(grace))

@@ -990,6 +990,15 @@ Everything else the 2.x rounds listed here has either shipped (see the version h
 lives as an issue with its evidence attached; the round-by-round remediation notes for 2.2.x were
 removed from this file in the 5.2 docs pass.
 
+One limitation from 5.3 (#3294): a descendant that calls `setsid()` or `setpgid()` leaves the
+process group `procgroup.kill_group` signals. It outlives a timeout or a Ctrl-C, and nothing
+reports it. No host can be told to start one. Every role grants Glob/Grep/Read/Write only,
+Claude and Kimi deny their shell tools on every launch, and Codex runs with `shell_tool`,
+`unified_exec` and `shell_snapshot` off. So today only a vendor CLI's own helper process can
+escape. `tests/test_no_exec_grant.py` fails on any grant that changes that, and names the sweep
+designed in #3294 as what has to land with it. `test_procgroup.TestTheEscapeIsADocumentedLimit`
+pins the escape itself as a strict xfail.
+
 ## Ideas not scheduled (a future minor, or major if breaking)
 - SonarQube per-axis A–E ratings; ISO 25010 mapping; **SARIF export** of our own report;
   OWASP Risk Rating scoring.
