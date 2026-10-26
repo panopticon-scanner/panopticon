@@ -32,6 +32,36 @@ class TestRedact(unittest.TestCase):
         self.assertIn("Bearer [REDACTED]", out)
         self.assertNotIn("z" * 24, out)
 
+    # #3291: the sk- pattern is left-anchored. Every hit of the unanchored one
+    # in the #3173 audit was a word ending in `sk` -- a semgrep rule id -- and
+    # none was a key.
+    SK_BODY = "Qw3rTy7uI9oP1aS5dF"            # 18 id chars: over the 16 floor
+
+    def test_an_sk_inside_a_word_is_left_alone(self):
+        for text in ("python.flask-" + self.SK_BODY,
+                     "rules.high-risk-" + self.SK_BODY,
+                     "generic.unmask-" + self.SK_BODY,
+                     "x_sk-" + self.SK_BODY,       # the lookbehind's `_` edge
+                     "9sk-" + self.SK_BODY,        # ...its digit edge
+                     "a-sk-" + self.SK_BODY):      # ...and its `-` edge
+            with self.subTest(text=text):
+                self.assertEqual(redact.redact("rule %s fired" % text),
+                                 "rule %s fired" % text)
+
+    def test_an_sk_key_after_a_boundary_is_still_redacted(self):
+        for key in ("sk-" + self.SK_BODY,
+                    "sk-proj-" + self.SK_BODY,
+                    "sk-ant-api03-" + self.SK_BODY):
+            for shape in ("%s", "leak %s", "OPENAI_API_KEY=%s", "key: %s",
+                          '"%s"', "'%s'", "Authorization: Bearer %s",
+                          "(%s)", "[%s]", "a,%s", "https://api.example/v1/%s",
+                          "https://api.example/v1?key=%s"):
+                text = shape % key
+                with self.subTest(text=text):
+                    out = redact.redact(text)
+                    self.assertNotIn(self.SK_BODY, out)
+                    self.assertTrue("[REDACTED_KEY]" in out or "[REDACTED]" in out, out)
+
     def test_masks_pem_private_key_block(self):
         pem = fake_pem("MIIEpAIBAAKCAQEA...secret...")
         out = redact.redact("here it is:\n%s\nend" % pem)
