@@ -446,6 +446,82 @@ class TestFixtureRunnerMatchesScanConditions(unittest.TestCase):
             self.assertEqual(run.call_args.kwargs["timeout"], rft.TEST_TIMEOUT)
 
 
+class TestATimedOutContainerIsRemoved(unittest.TestCase):
+    """#3246 S4: a timeout kills the docker CLIENT, not the `--rm` container.
+
+    Both launches name their container, and a timeout or an interrupt removes
+    it by that name. Argv only; no daemon is reached.
+    """
+
+    FIXTURES = [{"name": "rust", "path": "/opt/f/rust", "baked": True}]
+
+    def _launch(self, site, *outcomes):
+        stderr = io.StringIO()
+        with mock.patch.object(rft, "_docker_bin", return_value="docker-unit-test"), \
+                mock.patch.object(rft.subprocess, "run", side_effect=list(outcomes)) as run, \
+                contextlib.redirect_stderr(stderr):
+            try:
+                if site == "pytest":
+                    rft.run_tests("fixture-image:test")
+                else:
+                    rft.check_fixtures("fixture-image:test", self.FIXTURES)
+            except KeyboardInterrupt:
+                pass
+        launch = run.call_args_list[0].args[0]
+        name = launch[launch.index("--name") + 1]
+        return name, run.call_args_list[1:], stderr.getvalue()
+
+    def _timeout(self):
+        return rft.subprocess.TimeoutExpired("docker", 1)
+
+    def test_a_timed_out_container_is_removed_by_the_name_it_was_given(self):
+        for site in ("pytest", "probe"):
+            with self.subTest(site=site):
+                name, cleanup, err = self._launch(site, self._timeout(), _Res(0))
+                self.assertTrue(name.startswith("panopticon-fixtures-%d-" % os.getpid()))
+                self.assertEqual([c.args[0] for c in cleanup],
+                                 [["docker-unit-test", "rm", "-f", name]])
+                self.assertEqual(cleanup[0].kwargs["timeout"], rft.PROBE_TIMEOUT)
+                self.assertNotIn("could not remove", err)
+
+    def test_an_interrupted_container_is_removed_and_the_interrupt_kept(self):
+        for site in ("pytest", "probe"):
+            with self.subTest(site=site):
+                with self.assertRaises(KeyboardInterrupt):
+                    with mock.patch.object(rft.subprocess, "run",
+                                           side_effect=[KeyboardInterrupt(), _Res(0)]) as run:
+                        if site == "pytest":
+                            rft.run_tests("fixture-image:test")
+                        else:
+                            rft.check_fixtures("fixture-image:test", self.FIXTURES)
+                launch = run.call_args_list[0].args[0]
+                self.assertEqual(run.call_args_list[1].args[0][1:],
+                                 ["rm", "-f", launch[launch.index("--name") + 1]])
+
+    def test_a_cleanup_that_fails_says_so_and_names_the_remedy(self):
+        for failure in (OSError("daemon gone"), self._timeout(),
+                        _Res(1, stderr="Error: permission denied")):
+            with self.subTest(failure=type(failure).__name__):
+                name, _cleanup, err = self._launch("pytest", self._timeout(), failure)
+                self.assertIn("could not remove container %s" % name, err)
+                self.assertIn("docker rm -f %s" % name, err)
+
+    def test_a_container_docker_already_removed_is_not_a_failure(self):
+        name, _cleanup, err = self._launch(
+            "pytest", self._timeout(), _Res(1, stderr="Error: No such container: x"))
+        self.assertNotIn("could not remove", err)
+
+    def test_a_container_that_finished_is_left_to_its_own_rm(self):
+        for site, done in (("pytest", _Res(0)), ("probe", _Res(stdout="PRESENT:/opt/f/rust\n"))):
+            with self.subTest(site=site):
+                _name, cleanup, _err = self._launch(site, done)
+                self.assertEqual(cleanup, [])
+
+    def test_every_launch_gets_its_own_name(self):
+        names = {self._launch("pytest", _Res(0))[0] for _ in range(5)}
+        self.assertEqual(len(names), 5)
+
+
 class TestContainerHardeningComesFromItsOwners(unittest.TestCase):
     """#1767 ARC-3859414366: one owner for the container-launch policy.
 
