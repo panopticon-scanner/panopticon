@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Fix: a finding path that only looks like a doc path no longer borrows the doc policy's INFO downgrade (#3207).**
+  - The planning-doc policy (#487) downgrades a non-secret finding to INFO when its path matches a doc glob (`docs/*`, `specs/*`, `plans/*`, `--doc-paths`). It matched the SPELLING only, and `norm_path` keeps `..` and a trailing `/` on purpose. So a HIGH at `docs/../src.py` (root-level code), `docs/x.py/` (not a file) or `docs/missing.py` (no file) became INFO, and the gate passed. A committed `docs/link.py -> ../src.py`, or a doc tree that is itself a symlink, borrowed it the same way.
+  - The downgrade now also needs the path to name an existing regular file under `--root` (else `--target`, the same root LOC grading uses). The path must be spelled with no `.`, `..` or empty component, and every directory on it is opened with `O_NOFOLLOW` from the root, so it is reached through no symlink. Anything else keeps its severity and is counted in the new `meta.coverage.doc_policy.not_a_doc_file`. The doc policy is an open object, so there is no schema change.
+  - Unchanged: the secrets and gitleaks carve-out, the redteam bypass, genuine doc files, and `norm_path`'s identity contract. A standalone `synthesize.py` with neither `--root` nor a `--target` directory downgrades nothing, failing closed.
 - **Fix: a private key longer than 16 KiB is no longer stored, reported or published unmasked (#2987).**
   - The PEM rule's body is bounded at 16 KiB (#1639), so a flat pass cannot swallow the fields between two blocks. A body over the bound was not matched at all, header included. A concatenated key block over 16 KiB, with its END present, therefore reached three places verbatim: the stored retained reply (`_safe_reply` drops only a header with no END), every report.json string leaf, and a non-JSON tool capture.
   - `redact()` now finishes the job after its pattern pass. Any surviving private-key header that meets its own END before any other `-----BEGIN` becomes `[REDACTED_PRIVATE_KEY]`. The header and END come from the same fragments as the rule, so the two recognise the same blocks, labels included.

@@ -78,7 +78,10 @@ though under redteam the prune is disclosed and the gate counts it anyway, #1740
 non-fixture paths), `--doc-paths GLOB` (doc-tree globs for the planning-doc severity policy; in
 standard mode, non-secret code findings under doc trees are soft-downgraded to INFO -- secrets keep
 severity, redteam bypasses entirely, and every downgrade is disclosed at
-`meta.coverage.doc_policy`). `--base` on `--files` makes it an explicit delta request — plain
+`meta.coverage.doc_policy`). Only a path that names an existing regular file under `--root` (else
+`--target`), spelled with no `.`, `..` or empty component and reached through no symlink, is
+downgraded; a doc-glob match that names no such file keeps its severity and is counted in
+`doc_policy.not_a_doc_file` (#3207). `--base` on `--files` makes it an explicit delta request — plain
 `--files` (no `--base`) is a normal whole-file review and emits no delta artifact.
 
 ## Contents

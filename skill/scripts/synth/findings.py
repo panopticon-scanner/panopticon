@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import fnmatch
 import os
 import re
+import stat
 import sys
 
 import scripts.citations as citations
@@ -85,8 +86,10 @@ class FindingSet:
         catalog = citations.load_cwe_catalog()
         citations.enrich_citations(findings, catalog, epss_enabled=args.epss,
                                    cache_path=os.path.join(".panopticon", "epss-cache.json"))
-        doc_policy = apply_doc_severity_policy(findings, security_mode,
-                                               doc_globs=args.doc_paths)
+        # #3207: the root the files are under -- grading's own rule (`--root`, else `--target`)
+        doc_policy = apply_doc_severity_policy(
+            findings, security_mode, doc_globs=args.doc_paths,
+            root=args.root if getattr(args, "root", None) is not None else getattr(args, "target", None))
         if doc_policy and doc_policy["downgraded"]:
             print("synthesize: %d code finding(s) under doc trees soft-downgraded "
                   "to INFO (#487; secrets exempt, redteam bypasses) -- see "
@@ -469,7 +472,40 @@ DOC_PATH_GLOBS = ["docs/*", "specs/*", "*/specs/*", "plans/*", "*/plans/*"]
 _SECRET_FINDING_RE = re.compile(
     r"secret|credential|token|password|api[-_ ]?key|private[-_ ]key", re.I)
 
-def apply_doc_severity_policy(findings, security_mode, doc_globs=None):
+def _regular_file_in_tree(root, path):
+    """Does `path` name an existing regular file under `root`, by exactly that
+    spelling and through no symlink (#3207)?
+
+    The doc policy matches a glob against the finding's SPELLING, and
+    `evidence.norm_path` keeps `..` and a trailing `/` on purpose (#977), so
+    `docs/../src.py`, `docs/x.py/` and `docs/missing.py` all read as a doc
+    path. A committed `docs/link.py -> ../src.py`, or a `docs` that is itself a
+    link, borrows the tree the same way. So the spelling must be clean (every
+    component a real name) and every directory on it is opened with
+    `O_NOFOLLOW` from the root, the leaf `lstat`ed without being opened: what
+    the glob matched is then the in-tree file itself. No root, no file.
+    """
+    parts = path.split("/")
+    if root is None or os.path.isabs(path) or any(p in ("", ".", "..") for p in parts):
+        return False
+    try:
+        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    except (OSError, TypeError, ValueError):
+        return False
+    try:
+        for part in parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        info = os.stat(parts[-1], dir_fd=fd, follow_symlinks=False)
+    except (OSError, ValueError):
+        return False
+    finally:
+        os.close(fd)
+    return stat.S_ISREG(info.st_mode)
+
+
+def apply_doc_severity_policy(findings, security_mode, doc_globs=None, root=None):
     """Soft-downgrade code findings under doc-classified paths to INFO (#487).
 
     Standard mode only -- redteam scans docs for planted content at full
@@ -479,11 +515,15 @@ def apply_doc_severity_policy(findings, security_mode, doc_globs=None):
     never rewritten upward; the downgrade is recorded on the finding
     (doc_policy.downgraded_from) and disclosed in the returned summary, never
     silent. Mutates findings in place.
+
+    #3207: only for a path that names a real regular file under `root`
+    (`_regular_file_in_tree`); one that matches a doc glob and names none keeps
+    its severity, counted in `not_a_doc_file` so a declined downgrade is seen.
     """
     if security_mode == "redteam":
         return None
     globs = doc_globs or DOC_PATH_GLOBS
-    downgraded = 0
+    downgraded = not_a_doc_file = 0
     examples: list[dict[str, str]] = []
     for f in findings:
         if not isinstance(f, dict):
@@ -499,12 +539,15 @@ def apply_doc_severity_policy(findings, security_mode, doc_globs=None):
                          str(f.get("source", ""))])
         if _SECRET_FINDING_RE.search(blob) or "gitleaks" in blob:
             continue
+        if not _regular_file_in_tree(root, path):
+            not_a_doc_file += 1
+            continue
         f["severity"] = "INFO"
         f["doc_policy"] = {"downgraded_from": sev}
         downgraded += 1
         if len(examples) < 10:
             examples.append({"file": path, "from": sev})
-    return {"downgraded": downgraded, "examples": examples}
+    return {"downgraded": downgraded, "examples": examples, "not_a_doc_file": not_a_doc_file}
 
 
 def evidence_stats(findings):
