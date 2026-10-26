@@ -409,6 +409,7 @@ groups:
       - tests/test_group_runner_integration.py
       - tests/test_phases_child.py
       - tests/test_procgroup.py
+      - tests/test_no_exec_grant.py
       - tests/test_model_resolver.py
       - tests/test_run_manifest.py
       - tests/test_first_contact.py

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Tests: the kill path's known escape is pinned, and so is what keeps the reviewed tree out of it (#3294).**
+  - A descendant that calls `setsid()` or `setpgid()` leaves the process group `procgroup.kill_group` signals, so it outlives a timeout or a Ctrl-C. `test_procgroup.py` now pins that as a strict xfail, so a future sweep has to update the docs it would make wrong.
+  - The reviewed tree cannot start such a descendant: no role grants an exec tool, Claude and Kimi deny their shell tools on every launch (the setup scan included), and Codex runs with `shell_tool`, `unified_exec` and `shell_snapshot` off. The new `tests/test_no_exec_grant.py` fails on any change to that, and its message names the sweep designed in #3294 as what has to land with the grant.
+  - Today only a vendor CLI's own helper process can escape. `procgroup.kill_group`'s docstring and DEVELOPMENT.md's known-limitations section say so. No runtime behaviour changes.
 - **CI: the security gate no longer excuses a HIGH that changed file, and the one-time Semgrep scope rescan is gone (#3273 cut 6).**
   - Withdrawn: #2309's "pre-existing (moved)" category. A head finding the exact baseline match leaves new used to pair with an unspent base copy of the same tool, rule and message at another path, and did not gate. That let a deletion in one file excuse an addition in another, which on a fork PR is a placement the author picks. The identity is path-keyed again, so a relocated HIGH is new.
   - The cost: a verbatim extraction that carries a standing HIGH into another file reds the required `scan`/`fork-scan` check on that PR, as it did for #2305. There is no in-repo way through: `# nosemgrep` is ignored under the `--security redteam` every CI route passes, and the gate does not read Security-tab dismissals. The owner can merge past the red check (branch protection on `main` does not enforce it on admins). The next PR is clean, because the merge's own captures carry the finding at its new path. `DEVELOPMENT.md` says the same.
