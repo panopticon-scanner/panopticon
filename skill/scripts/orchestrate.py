@@ -453,7 +453,7 @@ def loop(args):
                 return _finish(_status("error", loop_batch.BATCH_IN_USE % batch_mod.manifest_path(
                     run_dir, iterations)), review_root, guards, ledger, namespace, mode, runner)
             done, total, handled, landed = 0, len(pending), [], []
-            with opened.before_launch():
+            with opened.before_launch(teardown=lambda: guards.disarm(pending)):
                 guards.arm(pending)
                 tally.pause_before_launch(mode, pending)   # #2506, before any launch
                 # #1732: the ONE shape proof, here not at posture time: the guards are armed NOW, so it is confined.
@@ -525,11 +525,11 @@ def loop(args):
                 print("driver loop: stopped launching after %s; %d of %d entries "
                       "not launched" % (rule, len(unlaunched), len(pending)),
                       file=sys.stderr, flush=True)
+            guards.disarm(pending)    # armed per batch, dropped per batch -- #3227: BEFORE the lock goes
             for note in batch.close():        # a clean batch leaves no manifest
                 print("driver loop: batch manifest not removed: %s" % note,
                       file=sys.stderr, flush=True)
             batch = None
-            guards.disarm(pending)                    # armed per batch, dropped per batch
             # #1623: the batch is charged HERE, not as each entry landed, because a
             # host-wide outage (auth, quota, rate limit) is not the entries' failure --
             # and three iterations of one used to spend every pending cell's attempt

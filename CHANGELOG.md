@@ -5,6 +5,7 @@
 - **Fix: a second headless `driver loop` on the same run no longer re-arms, and then disarms, the live loop's guards (#3227).**
   - The batch record's O_EXCL create is the batch's lock, but it came after `Guards.arm`, the launch backoff and the shape proof. A loop that lost the race had already rebuilt the run folder's settings file and re-installed the same entries' grants. It was then refused, and its exit took those grants down under the loop still running.
   - Headless mode now opens the batch record first, so a refused loop has armed nothing. If arming, the backoff or the proof raises after the open (an interrupt included), the record is closed and the failure reads as before. A process killed in that window leaves a record with no artifacts and a dead owner, and the next loop rolls it back as an ordinary stale batch.
+  - The guards now come down before the record is released, on the clean end of a batch and in that failure window, as the interrupt path already did. Released first, the lock let a second loop open in the gap and arm the same ids, only to have them stripped.
   - `Guards.disarm` now drops what it disarms from `armed_entries`. The error-exit teardown no longer takes down ids this loop had already disarmed, which may by then be another loop's.
   - Session mode is unchanged: it arms and prints the batch without opening a record.
 - **Fix: `--pr` no longer launches `gh` and the PR fetch's `git` by bare name from the operator's PATH (#3222).**

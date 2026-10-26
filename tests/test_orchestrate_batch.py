@@ -430,6 +430,48 @@ class TestHeadlessLoop(_HeadlessLoopCase):
                 if name == "interrupt":
                     self.assertIn(loop_batch.INTERRUPTED_IDLE, status["message"])
 
+    def test_the_guards_come_down_before_the_lock_is_released(self):
+        # #3227 review: the batch record IS the lock, so its grants come down
+        # first -- released first, a second loop could open in the gap, arm
+        # the same ids, and have this loop's disarm strip them. Both ends of a
+        # batch: the clean close, and the window that fails before a launch.
+        # (The interrupt path, `loop_batch.rolled_back`, already disarms
+        # first.)
+        for path in ("clean", "failed"):
+            with self.subTest(path=path):
+                d, floor = self._repo(floor=("SEC",))
+                runner = FakeRunner()
+                order = []
+                real_disarm, real_close = orchestrate.Guards.disarm, batch_mod.Batch.close
+
+                def disarm(guards, entries=None):
+                    order.append("disarm")
+                    return real_disarm(guards, entries)
+
+                def close(batch):
+                    order.append("close")
+                    return real_close(batch)
+
+                with contextlib.ExitStack() as stack:
+                    stack.enter_context(mock.patch.object(
+                        orchestrate.Guards, "disarm", autospec=True, side_effect=disarm))
+                    stack.enter_context(mock.patch.object(
+                        batch_mod.Batch, "close", autospec=True, side_effect=close))
+                    stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+                    if path == "failed":
+                        stack.enter_context(mock.patch.object(
+                            loop_batch, "prove_output_schema_shape",
+                            side_effect=RuntimeError("probe broke")))
+                    status = self._return_persist(d, floor, runner)
+                self.assertEqual("error" if path == "failed" else "complete",
+                                 status["status"], status)
+                closes = [i for i, step in enumerate(order) if step == "close"]
+                self.assertTrue(closes, order)
+                for i in closes:
+                    self.assertGreater(i, 0, order)
+                    self.assertEqual("disarm", order[i - 1], order)
+                self.assertEqual([], self._manifests(runner.run_dir))
+
     def test_a_crash_before_the_first_launch_recovers_on_the_next_loop(self):
         # #3227: what a process KILLED in that window leaves: a record whose
         # artifacts were never written, owned by a pid that is gone. It is an
