@@ -300,7 +300,7 @@ def _discovery_disclosures(discovery):
     `groups.json` `discovery` block, as `(git_failure, files_truncated)`
     (#2271).
 
-    `(None, None)` for an absent or unusable block -- NOT MEASURED, which is
+    `(None, None)` for an absent block -- NOT MEASURED, which is
     what a direct `synthesize.py` call over hand-collected findings publishes
     and what a run folder written before the block existed (#1576) carries. A
     measured `0` truncation is a different fact and survives as `0`:
@@ -308,22 +308,13 @@ def _discovery_disclosures(discovery):
     reader comparing two runs can see that this one reviewed the whole tree
     rather than a prefix of it.
 
-    isinstance-guarded, because `groups.json` is written inside the reviewed
-    tree and a hostile target can pre-commit one. `repair.repair_groups_json`
-    pins the five fields of that file which already reached the artifact; these
-    two are pinned here, at the boundary that publishes them, for the same
-    reason. A bool is not an integer for this purpose -- `jsonschema` rejects
-    `True` where `integer` is pinned, so an unrepaired one would fail the
-    artifact it rode into.
+    Read as written beyond the block's own presence (#3273 cut 16): the
+    driver's `groups.json` is discovery's, which writes both facts typed, and
+    a hand-named `--groups` is the operator's; a mistyped value here fails the
+    artifact loudly rather than being repaired.
     """
     block = discovery if isinstance(discovery, dict) else {}
-    failure, truncated = block.get("git_failure"), block.get("files_truncated")
-    # An empty reason is the no-failure case `None` already means, and a
-    # negative count is not a measurement this pipeline can produce
-    # (`_cap_discovered` writes `max(0, ...)`): both publish None (#2271 review).
-    return ((failure or None) if isinstance(failure, str) else None,
-            truncated if isinstance(truncated, int)
-            and not isinstance(truncated, bool) and truncated >= 0 else None)
+    return block.get("git_failure") or None, block.get("files_truncated")
 
 
 def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,

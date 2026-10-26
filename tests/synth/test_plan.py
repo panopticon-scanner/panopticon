@@ -4,6 +4,7 @@ axis and its loaders.
 import contextlib
 import io
 import os
+import re
 import json
 import tempfile
 import unittest
@@ -605,17 +606,75 @@ class PlanLoadersTest(unittest.TestCase):
             with contextlib.redirect_stderr(err):
                 self.assertEqual(plan_mod.load_groups_json(lst), {})
             self.assertIn("is not a JSON object", err.getvalue())
-            good = os.path.join(d, "groups.json")
-            with open(good, "w") as fh:
+            # #3273 cut 16: a group without `files` is no longer repaired to
+            # `[]`; the whole file is rejected like an unreadable one, because
+            # `grading` subscripts `g["files"]` (TestTheGroupsShapeGate).
+            short = os.path.join(d, "groups.json")
+            with open(short, "w") as fh:
                 json.dump({"groups": [{"name": "g1"}], "mode": "repo"}, fh)
-            # The reader REPAIRS as well as parses (#1639 P15 R2-6): the file is
-            # target-writable and `grading` subscripts `g["files"]`, so an entry
-            # without one comes back with the empty list, not a KeyError later.
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
-                loaded = plan_mod.load_groups_json(good)
-            self.assertEqual(loaded["groups"], [{"name": "g1", "files": []}])
-            self.assertIn("groups.json:", err.getvalue())
+                self.assertEqual(plan_mod.load_groups_json(short), {})
+            self.assertIn("could not read", err.getvalue())
+
+
+class TestTheGroupsShapeGate(unittest.TestCase):
+    """#3273 cut 16, ruling K: `load_groups_json` is a fail-closed shape gate at
+    the operator boundary (a hand-run `--groups` may name any file), not a
+    repair. Each shape the report cannot carry rejects the WHOLE file, announced
+    as an unreadable one is; the size is the read's byte cap."""
+
+    GOOD = {"groups": [{"name": "g1", "files": ["a.py"], "parent": "g"}],
+            "mode": "repo", "security_mode": "standard"}
+
+    def _load(self, doc):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "groups.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(doc, fh)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                got = plan_mod.load_groups_json(path)
+        return got, err.getvalue()
+
+    def _rejected(self, doc, reason):
+        got, err = self._load(doc)
+        self.assertEqual({}, got)
+        self.assertRegex(err, r"^synthesize: could not read \S+groups\.json \(%s\); ignoring\n$"
+                         % re.escape(reason))
+
+    def test_a_well_shaped_file_is_returned_as_written_and_silently(self):
+        got, err = self._load(self.GOOD)
+        self.assertEqual((self.GOOD, ""), (got, err))
+        self.assertEqual(({}, ""), self._load({}))       # no groups at all is a shape too
+
+    def test_groups_that_is_not_a_list_rejects_the_file(self):
+        self._rejected(dict(self.GOOD, groups={"g1": ["a.py"]}), "groups is not a list")
+
+    def test_a_row_that_is_not_name_files_parent_rejects_the_file(self):
+        reason = "a group is not {name: str, files: [str], parent: str}"
+        for row in ("g1", {"files": ["a.py"]}, {"name": 7, "files": []},
+                    {"name": "g1"}, {"name": "g1", "files": "a.py"},
+                    {"name": "g1", "files": ["a.py", 3]},
+                    {"name": "g1", "files": [], "parent": ["g"]}):
+            with self.subTest(row=row):
+                self._rejected(dict(self.GOOD, groups=[self.GOOD["groups"][0], row]), reason)
+
+    def test_a_mode_that_is_not_a_string_rejects_the_file(self):
+        self._rejected(dict(self.GOOD, mode=["repo"]), "mode is not a string")
+
+    def test_a_security_mode_outside_the_enum_rejects_the_file(self):
+        self._rejected(dict(self.GOOD, security_mode="paranoid"),
+                       "security_mode is not one of standard, redteam")
+        got, _err = self._load(dict(self.GOOD, security_mode=None))   # absent: from_args decides
+        self.assertIsNone(got["security_mode"])
+
+    def test_the_read_is_byte_capped(self):
+        # Ruling K.2: "well-typed but huge" is at most a capped file.
+        with mock.patch.object(plan_mod.artifacts_mod, "MAX_JSON_BYTES", 64):
+            got, err = self._load(dict(self.GOOD, groups=[{"name": "g", "files": ["x" * 80]}]))
+        self.assertEqual({}, got)
+        self.assertIn("could not read", err)
 
     def test_load_scout_requests_unions_tools_and_counts_profiles(self):
         with tempfile.TemporaryDirectory() as d:

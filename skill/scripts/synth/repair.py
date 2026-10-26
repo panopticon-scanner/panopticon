@@ -7,40 +7,34 @@ normalized to the pinned types AT ITS BOUNDARY -- never trusted, never allowed
 to fail the artifact it rides into. A malformed row costs a warning and the
 row; it never costs the run.
 
-These repairs normalize target-writable `groups.json` and the tools manifest's
-exclusions, Git-driver declarations and suppression counts. (The manifest's
-sanitized, network, cleanup and language-skip blocks are read as written since
-#3273: the run's own producers bound them, and first contact vouches for the file.) They split out of `validate_schema` as the boundary work
-outgrew its 700-line ratchet. Agent-sourced repairs (`repair_finding` and
-`repair_verdict`) stay there with the schema-node machinery this module uses.
+These repairs normalize the tools manifest's exclusions, Git-driver
+declarations and suppression counts -- target-carried text that reaches the
+artifact. They split out of `validate_schema` as the boundary work outgrew its
+700-line ratchet. Agent-sourced repairs (`repair_finding` and `repair_verdict`)
+stay there with the schema-node machinery this module uses. Since #3273 the
+manifest's run-written blocks are read as written (its producers bound them,
+first contact vouches for the file), and `groups.json` is shape-gated whole at
+its read (`plan._groups_shape_fault`) rather than repaired.
 
 BOUNDS. These functions bound already-parsed content for the report and HTML:
 row counts, names and values, plus the diagnostics about dropped or repaired
 content. They do not bound the bytes the caller reads before parsing JSON.
 Producer-side limits alone cannot protect these readers of target-writable
 artifacts.
-
-The one thing NOT cut, said plainly rather than covered by "identically":
-`groups.json`'s `files[]` entries. They are repo-relative paths, a cut path
-names a file that does not exist, and corrupting a location is worse than
-republishing a long one -- so they are type-checked (`string_list`, and the
-schema node) and bounded by DROPPING rather than cutting: a list is kept to
-its first `FILES_MAX` entries (the group row cap says nothing about how many
-files ONE group may list), and an entry longer than `PATH_MAX` -- longer than
-any filesystem lets a path be, so a name for nothing -- is dropped whole.
 """
 import json
 import sys
 
-from . import validate_schema as schema
 
-
-# One bound for every artifact read here. The controller's own manifests are an
-# order of magnitude inside all three; these are the numbers a hostile one is
-# held to. `sanitized`'s producer uses the same 200/200 for its own output.
+# One bound for every target-carried block read here: the numbers a hostile one
+# is held to. The controller's own output is an order of magnitude inside all three.
 ROWS_MAX = 200
 NAME_MAX = 200
 VALUE_MAX = 200
+
+# A path's length bound (the carve-out's files, a Git-driver row's repo): PATH_MAX
+# on every platform panopticon runs on, so a longer one names nothing.
+PATH_MAX = 4096
 
 # How many repair lines a single read may announce before it summarises the
 # rest. The content bounds above stopped a hostile manifest from reaching the
@@ -49,14 +43,6 @@ VALUE_MAX = 200
 # exists to prevent, one layer out. Nothing is hidden: the tail line carries
 # the true remaining count.
 WARN_LINES_MAX = 20
-
-# `groups[].files[]` is the one list bounded by dropping, not cutting (module
-# docstring). The count is an order of magnitude above the largest group the
-# grouping engine forms and the fixture sinks a hand-written config
-# carries; the length is PATH_MAX on every platform panopticon runs on.
-FILES_MAX = 10000
-PATH_MAX = 4096
-
 
 def warn_repairs(artifact, changes, warn):
     """Announce the repairs a boundary read made, one line each -- through
@@ -140,104 +126,6 @@ def _cut_to(text, path, changes, limit):
 def _cut(text, path, changes):
     """`text` cut to the shared published-value bound."""
     return _cut_to(text, path, changes, VALUE_MAX)
-
-
-def _bounded_paths(files, changes):
-    """`groups[].files[]` kept to `FILES_MAX` entries, each no longer than
-    `PATH_MAX` -- by dropping, never cutting, because a cut path is a location
-    that does not exist. Both announced once per list, not once per entry."""
-    if len(files) > FILES_MAX:
-        changes.append(("groups[].files", "kept the first %d of %d rows in"
-                        % (FILES_MAX, len(files))))
-        files = files[:FILES_MAX]
-    kept = [f for f in files if not (isinstance(f, str) and len(f) > PATH_MAX)]
-    if len(kept) != len(files):
-        changes.append(("groups[].files[]", "dropped %d paths longer than %d in"
-                        % (len(files) - len(kept), PATH_MAX)))
-    return kept
-
-
-_GROUPS_KEEP_KEYS = ("name", "files", "parent")
-
-
-# ---------------------------------------------------------------------------
-# The TARGET boundary: `.panopticon/groups.json`.
-# ---------------------------------------------------------------------------
-# Same principle, third source (#1639 P15 fix round 2, F6). `groups.json` is
-# read out of `.panopticon/` inside the reviewed tree -- the same
-# target-writable directory as the `coverage-*.json` files `coverage_io`
-# already repairs -- and `plan.load_groups_json` is tolerant BY DESIGN: it
-# announces a corrupt file and returns {} rather than abort a paid-for run.
-# That promise stopped at the parse. Five of its fields reach the artifact or a
-# bare subscript untouched: `groups[].name` and `groups[].files` are copied
-# into the report's type-pinned `groups[]`, `parent` becomes a rolled-up unit's
-# name, `security_mode` becomes `meta.security_mode` (an enum), and `mode` is
-# used as a dict KEY -- so a list there raised TypeError, and a group without
-# `files` a KeyError, from a file the target can write.
-def repair_groups_json(gj, warn=None):
-    """Normalize the run's `groups.json` to the types the report pins.
-
-    Repairs in place and returns `gj` ({} when it is not a dict). Never raises
-    and never aborts: a group that cannot be repaired is dropped with a warning
-    and the rest of the run proceeds, which is `load_groups_json`'s contract
-    carried all the way to the artifact instead of only to the parse.
-    """
-    if not isinstance(gj, dict):
-        return {}
-    props = schema._report_doc().get("properties") or {}
-    item = (((props.get("groups") or {}).get("items") or {}).get("properties")) or {}
-    meta = ((props.get("meta") or {}).get("properties")) or {}
-    changes = []
-    if "groups" in gj:
-        raw = gj["groups"]
-        if not isinstance(raw, list):
-            changes.append(("groups", "dropped"))
-            raw = []
-        kept = []
-        for g in _bounded(raw, "groups", changes):
-            if not isinstance(g, dict) or not isinstance(g.get("name"), (str, int, float)) \
-                    or isinstance(g.get("name"), bool):
-                changes.append(("groups[]", "dropped"))
-                continue
-            for key in _GROUPS_KEEP_KEYS:
-                node = item.get(key) or ({"type": "string"} if key == "parent" else None)
-                if node is None or key not in g:
-                    continue
-                ok, repaired = schema._repair_node(g[key], node, "groups[].%s" % key, changes)
-                if ok:
-                    g[key] = repaired
-                else:
-                    g.pop(key, None)
-            # `name` and `parent` are NAMES that ride into the report's
-            # type-pinned `groups[]` and its HTML, from a file the target can
-            # pre-commit -- so they are bounded like every other name here.
-            # `files[]` entries are NOT cut: they are repo-relative paths, and
-            # a cut path names a file that does not exist, which corrupts a
-            # location rather than bounding text -- they are bounded below by
-            # dropping instead (`_bounded_paths`). See the module docstring.
-            for key in ("name", "parent"):
-                if isinstance(g.get(key), str):
-                    g[key] = _cut(g[key], "groups[].%s" % key, changes)
-            if not isinstance(g.get("files"), list):
-                # grading subscripts `g["files"]` directly; absent is not a
-                # shape the report's groups[] can carry either (it is required).
-                g["files"] = []
-                changes.append(("groups[].files", "defaulted to []"))
-            else:
-                g["files"] = _bounded_paths(g["files"], changes)
-            kept.append(g)
-        gj["groups"] = kept
-    if "mode" in gj and not isinstance(gj["mode"], str):
-        # Read as a dict KEY (findings.MODE_TO_REVIEW_TYPE): unhashable raises.
-        gj.pop("mode")
-        changes.append(("mode", "dropped"))
-    node = meta.get("security_mode") or {}
-    if "security_mode" in gj and gj["security_mode"] is not None \
-            and not schema._conforms(gj["security_mode"], node):
-        gj.pop("security_mode")            # from_args then defaults it
-        changes.append(("security_mode", "dropped"))
-    warn_repairs("groups.json", changes, warn)
-    return gj
 
 
 def repair_tools_excluded(value, warn=None):

@@ -27,7 +27,7 @@ path enforces (fix round 2):
   `repair_finding`   agent and tool findings, via `findings.normalize_finding`
   `repair_verdict`   an advisor's verdict, via THE sanitizer `evidence._agent_verdict`
                      -- PRESENTATION fields only, see REPAIRABLE_VERDICT_FIELDS
-  `repair.repair_groups_json`        the target-writable `.panopticon/groups.json`
+  `plan._groups_shape_fault`         a hand-named `--groups` file, rejected whole (#3273)
   `integrity.cross_domain_findings`  agent-stated domains on a cross-domain claim
   `coverage_io.normalized_cell`      the target-writable `.panopticon/coverage-*.json`
   `codes.*` / `x0x_report._domain`   an agent `code` naming no OCRDb domain, for

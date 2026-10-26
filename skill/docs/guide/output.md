@@ -84,10 +84,13 @@ checked and it passed" must not look the same. **The schema pins the *controller
 input that comes from a review agent or from a target-writable file is normalized to the pinned
 types before it reaches the report, at every boundary and for both schemas —
 `synth/validate_schema.repair_finding` (findings), `repair_verdict` (an advisor's verdict, through
-the one sanitizer `evidence._agent_verdict`), `synth/repair.repair_groups_json`
-(`.panopticon/groups.json`) and its two `tools-manifest.json` siblings there,
+the one sanitizer `evidence._agent_verdict`), the target-carried `tools-manifest.json` blocks in
+`synth/repair` (exclusions, the SEC carve-out, Git drivers, suppression counts),
 `integrity.cross_domain_findings`, `synth/coverage_io` (`.panopticon/coverage-*.json`) and the
-OCRDb-domain clamp `codes`/`x0x_report` share — so a schema error can only ever mean a bug in
+OCRDb-domain clamp `codes`/`x0x_report` share. `groups.json` and the manifest's run-written blocks
+are read as written (#3273): first contact halts on a `.panopticon/` that is not this machine's,
+their producers bound them, and a hand-named `--groups` file of the wrong shape is ignored whole
+(`plan._groups_shape_fault`) — so a schema error can only ever mean a bug in
 panopticon itself — never a lever a reviewed repository or a reviewer can pull. That is what makes
 it safe for this failure to be terminal; it is also why `meta.host_capabilities`, which is copied
 verbatim out of an untrusted artifact, is described in the schema without being constrained by it.

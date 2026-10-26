@@ -12,7 +12,6 @@ Split out of `test_validate_schema.py` with the module itself (#1645 fix round
 2); the agent-sourced repairs stay there with the schema-node machinery.
 """
 import contextlib
-import copy
 import io
 import unittest
 
@@ -76,71 +75,6 @@ class TestWarningStreamIsBounded(unittest.TestCase):
         text = self._stderr({"globs": ["x" * 100000], "count": 0})
         self.assertLessEqual(len(text), 1000, "%d chars" % len(text))
         self.assertIn("tools_excluded.globs", text)
-
-
-class TestRepairGroupsJson(unittest.TestCase):
-    """#1645 fix round 3, N-2. `groups.json` is the third boundary this module
-    names, it is equally target-writable, and `groups[].name` is copied into
-    the report's type-pinned `groups[]` -- but it applied none of the bounds
-    the module docstring claimed for all three."""
-
-    def _repair(self, gj):
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            got = repair_mod.repair_groups_json(gj)
-        return got, err.getvalue()
-
-    def test_the_group_rows_are_bounded(self):
-        got, err = self._repair(
-            {"groups": [{"name": "g%d" % n, "files": []} for n in range(50000)]})
-        self.assertEqual(len(got["groups"]), repair_mod.ROWS_MAX)
-        self.assertIn("50000", err)
-        self.assertEqual(err.count("rows in"), 1, "one aggregate warning")
-
-    def test_a_group_name_is_cut_and_says_so(self):
-        got, err = self._repair({"groups": [{"name": "x" * 50000, "files": []}]})
-        kept = got["groups"]
-        self.assertEqual(len(kept), 1)
-        self.assertEqual(len(kept[0]["name"]), repair_mod.NAME_MAX)
-        self.assertIn("cut", err)
-
-    def test_a_parent_name_is_cut(self):
-        got, _err = self._repair(
-            {"groups": [{"name": "g", "parent": "p" * 50000, "files": []}]})
-        self.assertEqual(len(got["groups"][0]["parent"]), repair_mod.NAME_MAX)
-
-    def test_a_group_file_list_is_bounded_in_count(self):
-        # Round-3 re-review: the 200-group cap bounds how many GROUPS survive,
-        # not how many files one group may list -- one group with 100,000
-        # entries reached the report and its HTML with zero warnings.
-        got, err = self._repair(
-            {"groups": [{"name": "g", "files": ["f%d.py" % n
-                                                 for n in range(100000)]}]})
-        self.assertEqual(len(got["groups"][0]["files"]), repair_mod.FILES_MAX)
-        self.assertIn("100000", err)
-        self.assertEqual(err.count("rows in"), 1, "one aggregate warning")
-
-    def test_an_impossible_path_is_dropped_not_cut(self):
-        # A cut path names a file that does not exist; a path longer than any
-        # filesystem allows names none either, so it is dropped, and the
-        # neighbouring real path survives untouched.
-        long = "d/" * (repair_mod.PATH_MAX // 2) + "x.py"
-        got, err = self._repair(
-            {"groups": [{"name": "g", "files": ["a.py", long, "b.py"]}]})
-        self.assertEqual(got["groups"][0]["files"], ["a.py", "b.py"])
-        self.assertIn("dropped", err)
-        self.assertLessEqual(len(err), 1000, "%d chars" % len(err))
-
-    def test_a_correct_groups_json_is_unchanged_and_silent(self):
-        gj = {"groups": [{"name": "App", "files": ["a.py"], "parent": "Core"}],
-              "mode": "repo"}
-        got, err = self._repair(copy.deepcopy(gj))
-        self.assertEqual(got, gj)
-        self.assertEqual(err, "")
-
-    def test_a_non_dict_is_still_an_empty_mapping(self):
-        got, _err = self._repair(["not", "a", "mapping"])
-        self.assertEqual(got, {})
 
 
 class TestRepairToolsSuppressed(unittest.TestCase):
