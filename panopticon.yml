@@ -451,6 +451,7 @@ groups:
       - skill/scripts/codex_read_tools.py
       - skill/scripts/kimi_guard_hook.py
       - skill/scripts/read_guard_hook.py
+      - skill/scripts/guard_rules.py
       - skill/scripts/probes/**
       - skill/reference/probe-output-schema.json
       - skill/workflows/**
@@ -474,6 +475,7 @@ groups:
       - tests/test_codex_read_tools.py
       - tests/test_kimi_guard_hook.py
       - tests/test_read_guard_hook.py
+      - tests/test_guard_rules.py
       - tests/test_hook_command_quoting.py
       - tests/test_generic_retirement_bar.py
       - tests/test_family_guardrails_doc.py

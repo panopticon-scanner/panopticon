@@ -168,8 +168,11 @@ class _HookLaunch(unittest.TestCase):
     def _launch(self, python, hook_path, argv, payload, cwd, extra_env=None):
         env = {"PATH": os.environ.get("PATH", ""), "PANOPTICON_ENTRY_ID": "e1"}
         env.update(extra_env or {})
-        proc = subprocess.run([python, "-I", hook_path, *argv], input=json.dumps(payload),
-                              capture_output=True, text=True, cwd=cwd, env=env, timeout=60)
+        # `env` with an ABSOLUTE interpreter executes exactly that file (no PATH
+        # search): the process is `<python> -I <hook>`, under a literal launcher.
+        proc = subprocess.run(["/usr/bin/env", python, "-I", hook_path, *argv],
+                              input=json.dumps(payload), capture_output=True, text=True,
+                              cwd=cwd, env=env, timeout=60)
         return proc
 
     def _assert_denied(self, proc, fragment=None):
@@ -239,11 +242,12 @@ class TestADecoyNeverAnswersForOurRules(_HookLaunch):
     @classmethod
     def setUpClass(cls):
         cls.venv = tempfile.mkdtemp()
-        subprocess.run([sys.executable, "-m", "venv", "--without-pip", cls.venv],
+        subprocess.run(["/usr/bin/env", sys.executable, "-m", "venv", "--without-pip", cls.venv],
                        check=True, capture_output=True, timeout=120)
         cls.python = os.path.join(cls.venv, "bin", "python")
         cls.site = subprocess.run(
-            [cls.python, "-I", "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+            ["/usr/bin/env", cls.python, "-I", "-c",
+             "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
             check=True, capture_output=True, text=True, timeout=60).stdout.strip()
 
     @classmethod
@@ -274,8 +278,8 @@ class TestADecoyNeverAnswersForOurRules(_HookLaunch):
         # The positive control: the venv's interpreter DOES import the
         # site-packages decoy when asked to, so its absence below is the
         # loader's doing, not a decoy nothing could reach.
-        subprocess.run([self.python, "-I", "-c", "import scripts.guard_rules"], check=True,
-                       capture_output=True, cwd=self.root, timeout=60)
+        subprocess.run(["/usr/bin/env", self.python, "-I", "-c", "import scripts.guard_rules"],
+                       check=True, capture_output=True, cwd=self.root, timeout=60)
         with open(marker, encoding="utf-8") as fh:
             self.assertIn(os.path.join(self.site, "scripts", "guard_rules.py"), fh.read())
         os.remove(marker)
