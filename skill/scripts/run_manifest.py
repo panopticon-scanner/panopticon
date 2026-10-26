@@ -373,9 +373,8 @@ def is_tools_downgrade(manifest, flags):
 # Keys `driver.run` attaches to the IN-MEMORY manifest that must never reach
 # disk: they describe this invocation, not the run. `session_dir` names where
 # the host session runs (I2); `invocation` is the per-call token `tools_done`
-# reads back off the tools marker (#1637 P08 F1); `dispatch_mode` whether its entries go to a
-# headless runner or a session (#3226). Persisting any of them would make a resume inherit a
-# fact about a process that has exited.
+# reads back off the tools marker (#1637 P08 F1); `dispatch_mode` whether its entries go to a headless
+# runner or a session (#3226). Persisting any would make a resume inherit an exited process's facts.
 _EPHEMERAL_KEYS = ("session_dir", "invocation", "dispatch_mode")
 
 # #1596: {"digest": <host_disclosure.disclosure_digest>, "at": <probed_at>} --
@@ -465,7 +464,8 @@ def record_tools_downgrade(review_root, manifest):
     """
     previous = (manifest.get("flags") or {}).get("tools")
     manifest.setdefault("flags", {})["tools"] = False
-    manifest["flag_changes"] = list(manifest.get("flag_changes") or []) + [
+    existing = manifest.get("flag_changes")      # #2065: discarded_batches' spelling
+    manifest["flag_changes"] = (existing if isinstance(existing, list) else []) + [
         {"flag": "tools", "from": previous, "to": False, "at": _now_iso()}]
     return _rewrite(review_root, manifest)
 
@@ -676,13 +676,13 @@ def posture_disclosed_at(manifest, digest):
 def tools_downgraded_mid_run(manifest):
     """Did this run have its tool scan switched off after it started?
 
-    Read off the manifest's own `flag_changes` record rather than inferred
-    from `flags.tools` being False, which is equally true of a run that was
-    `--no-tools` from its first invocation -- a different, weaker statement.
-    """
-    return any(isinstance(change, dict) and change.get("flag") == "tools"
-               and change.get("to") is False
-               for change in (manifest or {}).get("flag_changes") or [])
+    Read off the manifest's own `flag_changes` record rather than inferred from `flags.tools` being
+    False, which is equally true of a run that was `--no-tools` from its first invocation -- a
+    different, weaker statement."""
+    changes = (manifest or {}).get("flag_changes")    # #2065: a non-list is no record at all
+    return isinstance(changes, list) and any(
+        isinstance(change, dict) and change.get("flag") == "tools" and change.get("to") is False
+        for change in changes)
 
 
 def reset_run(review_root):

@@ -138,6 +138,23 @@ class TestRunManifest(unittest.TestCase):
              "at": "2026-09-25T12:00:00Z"}])
         self.assertTrue(rm.tools_downgraded_mid_run(loaded))
 
+    def test_a_malformed_flag_changes_is_replaced_not_exploded(self):
+        # #2065: `list(... or [])` turned a str into its characters and a dict
+        # into its keys, then appended to THAT; the seam now spells it as
+        # `discarded_batches` does. The reader was already safe (each element
+        # must be a dict), and stays so.
+        for bad in ("tools", {"flag": "tools", "to": False}, 7):
+            with self.subTest(bad=bad):
+                manifest = rm.build_manifest(**self._params(flags={"tools": True}))
+                manifest["flag_changes"] = bad
+                self.assertFalse(rm.tools_downgraded_mid_run(manifest))
+                rm.write_manifest(self.root, manifest) if not os.path.exists(
+                    rm.manifest_path(self.root)) else rm._rewrite(self.root, manifest)
+                with mock.patch("scripts.run_manifest._now_iso", return_value="T"):
+                    rm.record_tools_downgrade(self.root, manifest)
+                self.assertEqual([{"flag": "tools", "from": True, "to": False, "at": "T"}],
+                                 rm.load_manifest(self.root)["flag_changes"])
+
     def test_posture_disclosure_round_trips_and_replaces_old_digest(self):
         manifest = rm.build_manifest(**self._params())
         rm.write_manifest(self.root, manifest)

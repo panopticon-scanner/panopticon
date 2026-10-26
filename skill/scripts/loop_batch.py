@@ -64,8 +64,8 @@ BATCH_OWNER_LIVE = (
     "refusing to resume this run folder -- two loops would delete each other's "
     "in-flight artifacts. Wait for it to finish, or stop it and re-run.")
 BATCH_OWNER_ELSEWHERE = (
-    "batch record %s was written by pid %r on host %r, not this machine, so this loop "
-    "cannot tell whether that process is still running. After confirming no other "
+    "batch record %s was written by pid %r on host %r, not this machine or pid namespace, "
+    "so this loop cannot tell whether that process is still running. After confirming no other "
     "loop is running on this folder, re-run with `--discard-batch %s` to throw away "
     "THAT batch and keep the rest of the run, or with `--reset` to throw the whole "
     "run away.")
@@ -95,7 +95,7 @@ DISCARD_NO_RUN = (
 # rollback removed and what is being retried -- so this one says only what is
 # not already there: whose loss was accepted, and where that is written down.
 DISCARD_ACCEPTED = (
-    "driver loop: discarded batch %d on --discard-batch: its owner (pid %r on host %r, "
+    "driver loop: discarded batch %d on --discard-batch: its owner (%s, "
     "verdict %s) could not be checked for liveness and you accepted the loss. "
     "Recorded in %s.")
 
@@ -299,8 +299,7 @@ def recover_stale(review_root, request, host, mode, namespace=None, discard=None
             # Its own sentence, not "recovered stale batch": what happened here
             # is that an operator RULED, and the run's stderr is where that is
             # said out loud (#1912).
-            print(DISCARD_ACCEPTED % (batch.number, stamp["pid"], stamp["host"],
-                                      stamp["state"],
+            print(DISCARD_ACCEPTED % (batch.number, batch_mod.owner_phrase(stamp), stamp["state"],
                                       batch_mod.discarded_path(root)),
                   file=sys.stderr, flush=True)
         print("driver loop: %s; removed %d artifact(s); retrying %s"

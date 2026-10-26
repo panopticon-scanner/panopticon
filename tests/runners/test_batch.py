@@ -157,6 +157,72 @@ class TestTheOwnerStampNamesTheMachineAndNotOnlyTheHostname(unittest.TestCase):
         self.assertEqual(batch_mod.OWNER_UNSTAMPED, batch_mod.owner_state("not a dict"))
 
 
+class TestAPidMeansSomethingInOneNamespace(unittest.TestCase):
+    """#2065: the owner verdict for a planted huge pid, and for a pid from
+    another pid namespace on the same MAC."""
+
+    MINE = "acde48001122"
+
+    def _doc(self, **fields):
+        doc = {"pid": os.getpid(), "host": "box", "machine": self.MINE}
+        doc.update(fields)
+        return doc
+
+    def _state(self, doc, ns="pid:[4026531836]"):
+        with mock.patch.object(batch_mod, "host_id", return_value="box"), \
+                mock.patch.object(batch_mod, "machine_id", return_value=self.MINE), \
+                mock.patch.object(batch_mod, "pid_namespace", return_value=ns):
+            return batch_mod.owner_state(doc)
+
+    def test_a_pid_the_os_cannot_hold_is_no_stamp_and_never_dead(self):
+        for pid in (2 ** 31, 2 ** 63, 2 ** 64, 10 ** 30):
+            with self.subTest(pid=pid):
+                self.assertEqual(batch_mod.OWNER_UNSTAMPED, self._state(self._doc(pid=pid)))
+
+    def test_a_differing_pid_namespace_is_foreign_whatever_the_ids_say(self):
+        # the destructive case: a pid dead HERE but from another namespace must
+        # never read as a crash, or recovery rolls back a live sibling's batch
+        dead = dead_pid()
+        for pid in (dead, os.getpid()):
+            with self.subTest(dead=pid == dead):
+                self.assertEqual(batch_mod.OWNER_FOREIGN,
+                                 self._state(self._doc(pid=pid, pidns="pid:[4026532999]")))
+
+    def test_an_equal_absent_or_malformed_namespace_is_judged_as_before(self):
+        dead = dead_pid()
+        for pidns in ("pid:[4026531836]", None, 4026532999, ""):
+            with self.subTest(pidns=pidns):
+                fields = {} if pidns is None else {"pidns": pidns}
+                self.assertEqual(batch_mod.OWNER_LIVE, self._state(self._doc(**fields)))
+                self.assertEqual(batch_mod.OWNER_DEAD, self._state(self._doc(pid=dead, **fields)))
+        # and a process that can read no namespace of its own compares the ids
+        self.assertEqual(batch_mod.OWNER_DEAD,
+                         self._state(self._doc(pid=dead, pidns="pid:[4026532999]"), ns=None))
+
+    def test_an_unreadable_namespace_is_omitted_never_a_refusal(self):
+        root = tempfile.mkdtemp(prefix="batch-ns-")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        batch = batch_mod.Batch(root, 1, "review", [])
+        for exc in (FileNotFoundError(2, "no /proc"), PermissionError(13, "EACCES"), OSError(22, "x")):
+            with self.subTest(exc=type(exc).__name__), \
+                    mock.patch.object(batch_mod.os, "readlink", side_effect=exc):
+                self.assertIsNone(batch_mod.pid_namespace())
+                self.assertNotIn("pidns", batch.document())
+
+    def test_a_readable_namespace_is_stamped(self):
+        root = tempfile.mkdtemp(prefix="batch-ns-")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        batch = batch_mod.Batch(root, 1, "review", [])
+        with mock.patch.object(batch_mod.os, "readlink", return_value="pid:[4026532001]"):
+            self.assertEqual("pid:[4026532001]", batch.document()["pidns"])
+
+    def test_an_unstamped_owner_is_named_for_what_it_is(self):
+        self.assertEqual("no usable owner stamp", batch_mod.owner_phrase(
+            {"pid": None, "host": None, "state": batch_mod.OWNER_UNSTAMPED}))
+        self.assertEqual("pid 7 on host 'box'", batch_mod.owner_phrase(
+            {"pid": 7, "host": "box", "state": batch_mod.OWNER_FOREIGN}))
+
+
 class TestTheRecordCarriesBothIds(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp()
