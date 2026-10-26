@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Fix: a full disk or I/O error at run start is a status, not a traceback (#2094).**
+  - `driver.run` writes two things into the reviewed tree before any phase: the `runs/latest` link and the clean-tree baseline. It turned a planted-path refusal from either into a status, but an `OSError` (ENOSPC, EIO, a read-only mount) escaped as a Python traceback with no status JSON. Since #1809 the disk state after such a failure was already right; only the operator's diagnostic was wrong.
+  - It is now `status: error`, naming which write failed ("capturing the clean-tree baseline" or "creating the run links"), the path, and the system's error text.
+  - For the baseline it also says what to do: nothing partial was left and no reviewer has run, so free the space or fix the filesystem and rerun. The rerun captures the baseline again, since a missing baseline is still captured before the first dispatch (#3255).
 - **Fix: `--reset` no longer ends as `unsafe reset cleanup` on a directory the tree planted at one of its file names (#2095).**
   - The legacy flat sweep globs `.panopticon/` for the names in `_RESET_GLOBS` (`coverage-*.json`, `tree-baseline.txt*`, ...) and removed each match with `os.remove`. A directory at such a name raised there, after the run folder was already gone, and the run ended with the generic cleanup refusal.
   - A real directory at a reset name is now left alone and named on stderr (`driver: --reset left <path> alone`): every one of those names is a file of ours, so a directory there is the tree's, never ours to delete. The rest of the sweep and the run go on as normal. A link at a reset name is still unlinked, never followed.

@@ -9,6 +9,9 @@ this was the common path, not a corner.
 Mocked status output cannot validate any of this: the whole defect is that the
 status text is IDENTICAL before and after. These use real temporary git repos.
 """
+import contextlib
+import errno
+import io
 import json
 import os
 import subprocess
@@ -607,3 +610,87 @@ class AGoneOrGuttedBaselineIsNotCleanTest(unittest.TestCase):
         os.makedirs(runio._pano(d))
         self.assertIsNone(validate_phase.capture_tree_baseline(d))
         self.assertEqual([], validate_phase._tree_delta(d, subprocess.run))
+
+
+def _enospc(path):
+    return OSError(errno.ENOSPC, os.strerror(errno.ENOSPC), path)
+
+
+class RunStartWriteFailureTest(unittest.TestCase):
+    """#2094: an OSError from `driver.run`'s run-start writes (a full disk, EIO, a
+    read-only mount) ended the invocation with a traceback and no status JSON.
+    It is now a status naming which write failed, and a rerun recovers."""
+
+    def _repo(self):
+        return make_git_repo(test_case=self, files={"app.py": "value = 1\n"})
+
+    def _run(self, repo):
+        args = driver.build_parser().parse_args(["run", repo])
+        with contextlib.redirect_stderr(io.StringIO()):
+            return driver.run(args, phases=())
+
+    def test_a_failed_baseline_write_is_a_status_and_a_rerun_recaptures(self):
+        real_replace = os.replace
+
+        def failing_open(path):
+            raise _enospc(path)
+
+        class _FullDisk:
+            """Lands half of the first write in the staging file, then the disk is full."""
+            def __init__(self, path):
+                self._path = path
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+            def write(self, text):
+                with open(self._path, "w", encoding="utf-8") as fh:
+                    fh.write(text[:len(text) // 2])
+                raise _enospc(self._path)
+
+        def failing_replace(src, dst, *a, **kw):
+            if str(dst).endswith("tree-baseline.txt"):
+                raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC), src, None, dst)
+            return real_replace(src, dst, *a, **kw)
+
+        cases = {
+            "the staging open": mock.patch.object(runio, "_open_staging_nofollow", failing_open),
+            "the staging write": mock.patch.object(runio, "_open_staging_nofollow", _FullDisk),
+            "the replace": mock.patch.object(validate_phase.os, "replace", failing_replace),
+        }
+        for where, patch in cases.items():
+            with self.subTest(where=where):
+                repo = self._repo()
+                with patch:
+                    status = self._run(repo)
+                baseline = runio._pano(repo, "tree-baseline.txt")
+                self.assertEqual("error", status["status"], status)
+                message = status["message"]
+                self.assertIn("capturing the clean-tree baseline failed at %s.tmp" % baseline, message)
+                self.assertIn(os.strerror(errno.ENOSPC), message)
+                self.assertIn("rerun captures the baseline again", message)
+                self.assertNotIn("run links", message)
+                self.assertFalse(os.path.lexists(baseline))
+                self.assertFalse(os.path.lexists(baseline + ".tmp"))
+                again = self._run(repo)
+                self.assertNotEqual("error", again["status"], again)
+                self.assertTrue(os.path.isfile(runio._pano(repo, "tree-baseline.txt")))
+
+    def test_a_failed_run_link_is_a_status_that_names_the_links(self):
+        # Pinned through a patched raise: `_ensure_run_symlinks` swallows its own
+        # `_relink` OSError today, so this keeps the two actions' words apart
+        # should that ever change.
+        repo = self._repo()
+        latest = os.path.join(repo, ".panopticon", "runs", "latest")
+        with mock.patch.object(runio, "_ensure_run_symlinks",
+                               side_effect=OSError(errno.EROFS, os.strerror(errno.EROFS), latest)):
+            status = self._run(repo)
+        self.assertEqual("error", status["status"], status)
+        message = status["message"]
+        self.assertIn("creating the run links failed at %s" % latest, message)
+        self.assertIn(os.strerror(errno.EROFS), message)
+        self.assertNotIn("baseline", message)
+        self.assertFalse(os.path.lexists(runio._pano(repo, "tree-baseline.txt")))

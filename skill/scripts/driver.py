@@ -1040,37 +1040,37 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
     # normal, and a resume that needs it passes it again (#calibration-4).
     if getattr(args, "session_dir", None):
         manifest["session_dir"] = os.path.abspath(args.session_dir)
-    # #1637 P08 F1: ONE token per invocation, carried on the in-memory manifest
-    # -- which is the context object every phase already receives -- and
-    # deliberately never written to disk (run_manifest._EPHEMERAL_KEYS). It is
-    # what makes an environmental tool skip retried once per `driver run`
-    # rather than once per ENGINE STEP: `run_engine` recomputes the cursor
-    # every step, so a phase that is simply "not done" after executing is
-    # re-selected immediately and spins to max_steps. `driver loop` gets a
-    # fresh token per iteration by construction, since every iteration calls
-    # this function.
+    # #1637 P08 F1: ONE token per invocation, carried on the in-memory manifest -- which is the
+    # context object every phase already receives -- and deliberately never written to disk
+    # (run_manifest._EPHEMERAL_KEYS). It is what makes an environmental tool skip retried once per
+    # `driver run` rather than once per ENGINE STEP: `run_engine` recomputes the cursor every step,
+    # so a phase that is simply "not done" after executing is re-selected immediately and spins to
+    # max_steps. `driver loop` gets a fresh token per iteration by construction, since every
+    # iteration calls this function.
     manifest["invocation"] = run_manifest.new_run_id()
     # #3226: ephemeral too. Only a headless loop's launch argv takes Bash from a reviewer.
     manifest["dispatch_mode"] = "headless" if getattr(args, "mode", None) == "headless" else "session"
     # Both writes below land inside the REVIEWED tree, and each can refuse a
     # planted component -- `_ensure_run_symlinks` with DriverError, the baseline
-    # write with the confinement's ValueError. They sat outside every `except` on
-    # this path, so on the hostile tree #1735 is about they ended the invocation
-    # with a traceback and no JSON. Same rule as `run_engine` below: refusing is
+    # write with the confinement's ValueError -- or meet a full disk (OSError,
+    # #2094). Outside every `except` on this path, they ended the invocation with a
+    # traceback and no JSON (#1735). Same rule as `run_engine` below: refusing is
     # the guard working, and it speaks this verb's status protocol.
+    baseline = False
     try:
         # §5.1: point runs/latest at the active run folder now that the manifest
-        # (hence the tag) is established — so the pointer exists throughout the
-        # run, not just after synthesize writes the report.
+        # (hence the tag) is established — so the pointer exists throughout the run.
         runio._ensure_run_symlinks(review_root)
-        # I2: capture the clean-tree baseline unconditionally and BEFORE the
-        # engine runs. Idempotent (returns the existing baseline if present) ->
-        # no-op on a normal resume, but self-heals a baseline that a
-        # mid-first-run interrupt left missing (which had silently disabled the
-        # clean-tree guard) -- only before the first dispatch, #3255.
+        # I2: capture the clean-tree baseline unconditionally and BEFORE the engine
+        # runs. Idempotent (an existing baseline is returned) -> no-op on a normal
+        # resume, but self-heals one a mid-first-run interrupt left missing (which
+        # had silently disabled the guard) -- only before the first dispatch, #3255.
+        baseline = True
         validate.capture_tree_baseline(review_root, runner=runner, manifest=manifest)
     except (runio.DriverError, ValueError) as exc:
         return runio._error_status(str(exc))
+    except OSError as exc:
+        return runio._error_status(validate.start_write_failure(review_root, baseline, exc))
     # 5.2: establish this host's capability posture BEFORE any phase can build
     # a dispatch entry, and re-establish it on every resume. Not an
     # engine.Phase: phases are skipped once their done-predicate holds, which
