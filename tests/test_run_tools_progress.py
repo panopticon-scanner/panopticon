@@ -246,7 +246,7 @@ class TestTheTwoCallSitesDisagreeOnPurpose(unittest.TestCase):
         steps = workflow["jobs"]["scan"]["steps"]
         scan = [s for s in steps if "run_tools.py" in (s.get("run") or "")]
         self.assertEqual(
-            {"Run static-analysis tools", "Expand exact Semgrep scope baseline"},
+            {"Run static-analysis tools"},
             {step["name"] for step in scan},
             "every CI scanner invocation must be identified explicitly")
         for step in scan:
