@@ -155,43 +155,30 @@ class TestBundlerAuditAdapter(unittest.TestCase):
         # The config path lives inside the scratch cwd, not the target.
         self.assertTrue(config_path.startswith(cwd + os.sep))
 
-    def test_invoke_falls_back_to_text_when_json_unsupported(self):
-        """Older bundler-audit (< 0.8.0) rejects --format json."""
-        calls = []
+    def test_invoke_never_retries_without_the_owned_config(self):
+        cases = [
+            (b"json rejected", b"Unknown switches '--format'", 1),
+            (b"scanner failed", b"unexpected failure", 2),
+        ]
+        for stdout, stderr, returncode in cases:
+            calls = []
 
-        def fake_run_tool(cmd, **kwargs):
-            calls.append((cmd, kwargs.get("cwd")))
-            if "--format" in cmd:
-                return (b"", b"Unknown switches '--format'", 1)
-            return (BUNDLE_AUDIT_SAMPLE, 0)
+            def fake_run_tool(cmd, **kwargs):
+                calls.append(cmd)
+                if kwargs.get("capture_stderr"):
+                    return stdout, stderr, returncode
+                return stdout, returncode
 
-        with mock.patch("scripts.tools.bundler_audit.run_tool",
-                        side_effect=fake_run_tool):
-            raw, rc = ba.BundlerAuditAdapter().invoke("/tmp/fake")
+            with self.subTest(returncode=returncode), mock.patch(
+                    "scripts.tools.bundler_audit.run_tool", side_effect=fake_run_tool):
+                raw, rc = ba.BundlerAuditAdapter().invoke("/tmp/fake")
 
-        self.assertEqual(rc, 0)
-        self.assertEqual(raw, BUNDLE_AUDIT_SAMPLE)
-        self.assertEqual(len(calls), 2)
-        (json_cmd, json_cwd), (text_cmd, text_cwd) = calls
-        self.assertEqual(json_cmd[:3], ["bundle-audit", "check", "/tmp/fake"])
-        self.assertIn("--config", json_cmd)
-        self.assertIn("--format", json_cmd)
-        self.assertEqual(text_cmd[:3], ["bundle-audit", "check", "/tmp/fake"])
-        # #1742 fix round 1 finding 3: --format json arrived in bundler-audit
-        # 0.8.0; --config and .bundler-audit.yml support arrived together in
-        # 0.9.0. A gem old enough to reject --format json therefore neither
-        # reads that config file nor accepts the switch, so passing --config
-        # here would turn a working fallback into a second "Unknown switches"
-        # failure with nothing left to fall back to.
-        self.assertNotIn("--config", text_cmd)
-        self.assertNotIn("--format", text_cmd)
-        # Both calls run from the SAME scratch cwd, never the target.
-        self.assertIsNotNone(json_cwd)
-        self.assertEqual(json_cwd, text_cwd)
-        self.assertNotEqual(json_cwd, "/tmp/fake")
-        # Fallback output is still shape-guarded by parse().
-        findings = ba.BundlerAuditAdapter().parse(raw, "g1")
-        self.assertEqual(len(findings), 2)
+            self.assertEqual((raw, rc), (stdout, returncode))
+            self.assertEqual(len(calls), 1)
+            cmd = calls[0]
+            self.assertEqual(cmd[:3], ["bundle-audit", "check", "/tmp/fake"])
+            self.assertIn("--config", cmd)
+            self.assertIn("--format", cmd)
 
     def test_parse_json_produces_findings(self):
         findings = ba.BundlerAuditAdapter().parse(BUNDLE_AUDIT_JSON_SAMPLE, "g1")
