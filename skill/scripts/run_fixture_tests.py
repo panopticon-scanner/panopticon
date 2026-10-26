@@ -94,20 +94,21 @@ def _remove_container(name: str) -> None:
     """Best-effort `docker rm -f` of a container whose client was killed.
 
     A failure is named with the command that finishes the job, so a timeout
-    never implies the container is gone.
+    never implies the container is gone. Launched through `run`, the one
+    checked launch here, rather than a new call site.
     """
     try:
-        result = subprocess.run(  # nosec B603
-            [_docker_bin(), "rm", "-f", name],
-            capture_output=True, text=True, timeout=PROBE_TIMEOUT,
-        )
-        failed = result.returncode != 0 and "No such container" not in (result.stderr or "")
-        why = "exit %s" % result.returncode
+        run([_docker_bin(), "rm", "-f", name],
+            capture_output=True, text=True, timeout=PROBE_TIMEOUT)
+        return
+    except subprocess.CalledProcessError as e:
+        if "No such container" in (e.stderr or ""):
+            return                        # `--rm` got there first
+        why = "exit %s" % e.returncode
     except (subprocess.SubprocessError, OSError) as e:
-        failed, why = True, type(e).__name__
-    if failed:
-        print("could not remove container %s (%s); remove it with `docker rm -f %s`"
-              % (name, why, name), file=sys.stderr, flush=True)
+        why = type(e).__name__
+    print("could not remove container %s (%s); remove it with `docker rm -f %s`"
+          % (name, why, name), file=sys.stderr, flush=True)
 
 
 def docker_available() -> bool:

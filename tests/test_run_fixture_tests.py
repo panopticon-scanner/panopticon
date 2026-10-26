@@ -500,7 +500,7 @@ class TestATimedOutContainerIsRemoved(unittest.TestCase):
 
     def test_a_cleanup_that_fails_says_so_and_names_the_remedy(self):
         for failure in (OSError("daemon gone"), self._timeout(),
-                        _Res(1, stderr="Error: permission denied")):
+                        subprocess.CalledProcessError(1, "docker", stderr="Error: permission denied")):
             with self.subTest(failure=type(failure).__name__):
                 name, _cleanup, err = self._launch("pytest", self._timeout(), failure)
                 self.assertIn("could not remove container %s" % name, err)
@@ -508,7 +508,7 @@ class TestATimedOutContainerIsRemoved(unittest.TestCase):
 
     def test_a_container_docker_already_removed_is_not_a_failure(self):
         name, _cleanup, err = self._launch(
-            "pytest", self._timeout(), _Res(1, stderr="Error: No such container: x"))
+            "pytest", self._timeout(), subprocess.CalledProcessError(1, "docker", stderr="Error: No such container: x"))
         self.assertNotIn("could not remove", err)
 
     def test_a_container_that_finished_is_left_to_its_own_rm(self):
