@@ -765,6 +765,7 @@ def main(argv=None):
                 run_id=a.run_id, excluded_dirs=venv_rows, withheld=withheld,
                 sanitized=sanitized, exclude_globs=a.exclude, cleanup_failures={},
                 language_detection_skips=language_detection_skips,
+                dependency_applicable=tools_manifest.dependency_audit_applicable(a.target),
                 image={"ref": "panopticon-tools", "id": None})
         return 0
     image = dict(found, adapter_code=tools_image.adapter_code(os.path.dirname(os.path.abspath(__file__))))
@@ -778,7 +779,8 @@ def main(argv=None):
             a.manifest, effective, paths, excluded_scope=excluded_scope,
             run_id=a.run_id, excluded_dirs=venv_rows, withheld=withheld,
             sanitized=sanitized, exclude_globs=a.exclude,
-            language_detection_skips=language_detection_skips, image=image, apps=apps)
+            language_detection_skips=language_detection_skips, image=image, apps=apps,
+            dependency_applicable=tools_manifest.dependency_audit_applicable(a.target))
     print("\n".join(paths))
     return 0
 

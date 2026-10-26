@@ -15,8 +15,9 @@ class CargoAuditAdapter:
         # cannot generate one (parse() even hardcodes location=Cargo.lock). A
         # Cargo.toml-only library repo was marked applicable, then failed at
         # invoke -> "selected but unproduced" coverage loss. Gate on the lockfile
-        # (mirrors bundler-audit/Gemfile.lock); osv-scanner still covers
-        # Cargo.toml-only repos, so nothing is lost by narrowing here.
+        # (mirrors bundler-audit/Gemfile.lock). The dependency-audit receipt
+        # still marks a Cargo.toml-only repo applicable and refuses to certify
+        # it when no dedicated SCA adapter produced output (#3269 SCA).
         return os.path.exists(os.path.join(target, "Cargo.lock"))
 
     def invoke(self, target: str) -> tuple[bytes, int]:

@@ -55,12 +55,17 @@ class OsvScannerAdapter:
     prefix = "OS"
 
     def is_applicable(self, target: str) -> bool:
+        # Exact intersection of v1.8.2's automatic parser basenames and the
+        # npm/PyPI/Go/RubyGems/crates.io/Maven databases Dockerfile bakes.
+        # A broader dependency surface belongs in dependency_audit.applicable;
+        # claiming it here makes "selected but no bytes" depend on a parser the
+        # pinned binary does not have (#3269 SCA).
         markers = [
-            "package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml",
-            "requirements.txt", "pyproject.toml", "Pipfile.lock",
-            "go.mod", "go.sum",
-            "Cargo.lock", "Cargo.toml",
-            "pom.xml", "build.gradle", "gradle.lockfile",
+            "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+            "requirements.txt", "Pipfile.lock", "poetry.lock", "pdm.lock",
+            "go.mod", "Cargo.lock", "Gemfile.lock", "pom.xml",
+            "buildscript-gradle.lockfile", "gradle.lockfile",
+            "gradle/verification-metadata.xml",
         ]
         return has_any_file(target, *markers)
 

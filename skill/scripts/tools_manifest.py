@@ -44,6 +44,7 @@ That is why `VENV_MAX_DEPTH` lives here while the walk that reads it back
 imports it from here. Stdlib-only.
 """
 import argparse
+import glob
 import json
 import os
 import sys
@@ -72,6 +73,42 @@ from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS
 # every scan.
 VENV_MAX_DEPTH = 3
 LANGUAGE_DETECTION_SKIPS_MAX = language_detection.SKIPS_MAX
+
+# #3269 SCA: the dependency surface is a separate fact from whether one pinned
+# scanner can parse it. These six ecosystems are exactly the offline databases
+# baked for osv-scanner; the broader marker table keeps an unaudited manifest
+# visible instead of making truthful OSV selection weaken the coverage gate.
+DEPENDENCY_AUDIT_ECOSYSTEMS = frozenset(
+    {"go", "java", "javascript", "python", "ruby", "rust", "unknown"})
+DEPENDENCY_AUDIT_TOOLS = frozenset({
+    "bundler-audit", "cargo-audit", "dependency-check",
+    "npm-audit", "osv-scanner", "pip-audit",
+})
+_DEPENDENCY_AUDIT_MARKERS = {
+    "go": ("go.mod", "go.sum"),
+    "java": ("pom.xml", "build.gradle", "build.gradle.kts", "gradle.lockfile",
+             "buildscript-gradle.lockfile", "gradle/verification-metadata.xml"),
+    "javascript": ("package.json", "package-lock.json", "npm-shrinkwrap.json",
+                   "pnpm-lock.yaml", "yarn.lock"),
+    "python": ("Pipfile", "Pipfile.lock", "pdm.lock", "poetry.lock",
+               "pyproject.toml", "requirements.txt"),
+    "ruby": ("Gemfile", "Gemfile.lock"),
+    "rust": ("Cargo.toml", "Cargo.lock"),
+}
+
+
+def dependency_audit_applicable(target):
+    """Sorted ecosystems with a root dependency surface in *target*.
+
+    This deliberately recognizes manifests a dedicated offline adapter cannot
+    parse. That mismatch is the receipt's purpose: applicable with no produced
+    SCA output is visible and certification-sinking, never silently "clean".
+    """
+    found = {ecosystem for ecosystem, markers in _DEPENDENCY_AUDIT_MARKERS.items()
+             if any(os.path.isfile(os.path.join(target, marker)) for marker in markers)}
+    if next(glob.iglob(os.path.join(glob.escape(target), "requirements*.txt")), None):
+        found.add("python")
+    return sorted(found)
 
 
 # What egress each tool was granted this run, keyed by tool name (#1645). Same
@@ -258,7 +295,7 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                    network=None, exclude_globs=(), suppression_comments=None,
                    scanner_config=None, ignore_files=None, scanner_scope=None,
                    cleanup_failures=None, language_detection_skips=None,
-                   withheld=(), image=None, apps=None):
+                   withheld=(), image=None, apps=None, dependency_applicable=None):
     """Write the exact selected/produced scanner set for coverage gating.
 
     `withheld` (#3265) names applicable adapters the operator did not enable:
@@ -382,6 +419,14 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     auto-detection saw only under #1138's selection-pruned directories. ``[]``
     means measured clean; ``None`` omits the field when explicit CLI selection
     bypassed detection.
+
+    `dependency_applicable` (#3269 SCA) enables the dependency-audit receipt.
+    Applicability is an ecosystem enum measured from the target; selected and
+    produced are derived here from the dedicated SCA adapters and this writer's
+    exact output receipt. Trivy is intentionally not one: an empty generic
+    filesystem SARIF does not prove that a dependency manifest was audited.
+    ``None`` preserves direct/legacy callers that did not make the measurement;
+    production `run_tools` always supplies it.
     """
     network = {str(k): str(v) for k, v in
                (_NETWORK_POSTURE if network is None else network).items()}
@@ -452,6 +497,14 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                "exclude_globs": [str(g) for g in exclude_globs or ()],
                "excluded_dirs": [_excluded_dir_row(d) for d in excluded_dirs or ()],
                "depth_bound": depth_bound}
+    if dependency_applicable is not None:
+        ecosystems = DEPENDENCY_AUDIT_ECOSYSTEMS - {"unknown"}
+        payload["dependency_audit"] = {
+            "applicable": sorted({value for value in dependency_applicable
+                                  if value in ecosystems}),
+            "selected": sorted(set(selected) & DEPENDENCY_AUDIT_TOOLS),
+            "produced": sorted(set(produced) & DEPENDENCY_AUDIT_TOOLS),
+        }
     if language_detection_skips is not None:
         rows = list(language_detection_skips)
         assert len(rows) <= LANGUAGE_DETECTION_SKIPS_MAX
