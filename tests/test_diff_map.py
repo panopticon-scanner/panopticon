@@ -1470,7 +1470,8 @@ class TestPrLaunchesResolveOffATrustedPath(unittest.TestCase):
         os.mkdir(only_git)
         os.symlink(shutil.which("git"), os.path.join(only_git, "git"))
         with mock.patch.dict(os.environ, {"PATH": only_git}):
-            with self.assertRaisesRegex(RuntimeError, "no trusted `gh` on PATH"):
+            # An OSError the driver's review-root handler already reports.
+            with self.assertRaises(diff_map.executable.ExecutableResolutionError):
                 diff_map.acquire_pr(7, repo=self.repo, runner=runner)
         self.assertEqual(runner.calls, [])
 
