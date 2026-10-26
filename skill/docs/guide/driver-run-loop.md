@@ -504,9 +504,10 @@ on Claude hooks, and always uses the return-persist path.
   container gets a new pid namespace, so it reads its old record as foreign too: discard it
   explicitly with `--discard-batch N`. **The record carries no owner stamp** — an absent or malformed
   owner (a pid too large for the OS to hold included) is either a record from before the field
-  existed or one the target wrote, and neither is evidence that a crash happened. A fourth refusal guards the other end: **a
-  record this batch would overwrite**, a leftover carrying the iteration number this batch is about
-  to open, refused before the guards are armed rather than silently replaced (that `O_EXCL` used to
+  existed or one the target wrote, and neither is evidence that a crash happened. A fourth refusal
+  guards the other end: **a record this batch would overwrite**, a leftover carrying the iteration
+  number this batch is about to open, refused before the guards are armed rather than silently
+  replaced (that `O_EXCL` used to
   escape as a `FileExistsError` traceback with the write guard still armed). Under `--setup` these
   records live in the flat `.panopticon/` beside setup's other artifacts rather than in a run
   folder, and `--setup --reset` sweeps them — all but one whose owner is still running, which it
