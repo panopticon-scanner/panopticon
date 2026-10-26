@@ -215,13 +215,16 @@ class TestTheSpelling(unittest.TestCase):
                 self.assertEqual((0, 0, 0), (spelled.count(BACKSLASH), spelled.count("/"), len(set(spelled) & set("*?["))))
                 self.assertEqual(plain(spelled), plain(evidence.norm_path(spelled)))
                 found = [{"severity": "HIGH", "title": "smell", "category": "structure", "location": {"file": spelled}}]
-                self.assertEqual(plain({"downgraded": 0, "examples": []}),
+                self.assertEqual(plain({"downgraded": 0, "examples": [], "not_a_doc_file": 0}),
                                  plain(findings_mod.apply_doc_severity_policy(found, "standard")))
                 self.assertEqual("HIGH", found[0]["severity"])
         inside = [{"severity": "HIGH", "title": "smell", "category": "structure",
                    "location": {"file": inert.escape_surrogates("docs/a" + LONE + ".md")}}]
-        findings_mod.apply_doc_severity_policy(inside, "standard")          # a file that IS in the doc tree is
-        self.assertEqual("INFO", inside[0]["severity"])                     # still read as one
+        with tempfile.TemporaryDirectory() as root:                         # #3207: the doc file is real
+            os.makedirs(os.path.join(root, "docs"))
+            open(os.path.join(root, inside[0]["location"]["file"]), "w").close()
+            findings_mod.apply_doc_severity_policy(inside, "standard", root=root)  # a file that IS in the
+        self.assertEqual("INFO", inside[0]["severity"])                     # doc tree is still read as one
 
     def test_a_cut_takes_a_surrogates_spelling_as_the_plain_text_it_is(self):
         # A backslash escape cut short is dropped before the marker (`_INERT_PARTIAL_TAIL`, as on main). A
@@ -584,11 +587,16 @@ class TestTheRealChild(unittest.TestCase):
             fh.write("x = 1\n" * 100)
         return made
 
-    def child(self, *flags, findings=None, verdicts=None, scans=None, groups=None, beside=None):
+    def child(self, *flags, findings=None, verdicts=None, scans=None, groups=None, beside=None, tree=None):
         """One run, laid out as tests/test_e2e.py lays it out: (status, stderr, {artifact name: bytes}). The child
         is started by the suite's own `run_script`, which holds the one `subprocess.run` these tests need.
-        `beside` is more of the run directory's own files, by name (the tools manifest, a hunk map)."""
+        `beside` is more of the run directory's own files, by name (the tools manifest, a hunk map); `tree` is
+        more of the TARGET's files, by relative path (#3207: a doc file the doc policy finds on disk)."""
         repo = self.repo()
+        for name, text in (tree or {}).items():
+            os.makedirs(os.path.dirname(os.path.join(repo, name)), exist_ok=True)
+            with open(os.path.join(repo, name), "w") as fh:
+                fh.write(text)
         pano = os.path.join(repo, ".panopticon")
         adopt_panopticon(repo)   # #3273 P1: a run of ours (synthesize makes first contact)
 
@@ -740,14 +748,15 @@ class TestTheRealChild(unittest.TestCase):
                     "ruleId": "sqli", "level": "error", "message": {"text": "SQL injection"}, "locations": [{
                         "physicalLocation": {"artifactLocation": {"uri": name}, "region": {"startLine": 3}}}]}]}]}}
 
+        docs = {"docs/x.py": "x = 1\n"}     # #3207: the policy downgrades only a file that is really there
         for name, severity, gate in (("docsax.py", "HIGH", "FAIL"), ("docs" + LONE + "x.py", "HIGH", "FAIL"),
                                      ("docs/x.py", "INFO", "PASS")):          # the last IS in the doc tree
             with self.subTest(name=plain(name), source="agent"):
-                run = self.child(*flags, findings=high(name))
+                run = self.child(*flags, findings=high(name), tree=docs)
                 report = self.whole(run)
                 self.assertEqual((severity, gate), (report["findings"][0]["severity"], report["summary"]["gate"]))
             with self.subTest(name=plain(name), source="scanner"):
-                found = self.whole(self.child(findings=[], scans=tool(name)))["findings"]
+                found = self.whole(self.child(findings=[], scans=tool(name), tree=docs))["findings"]
                 self.assertEqual([(severity, severity == "INFO")], [(f["severity"], "doc_policy" in f) for f in found])
         lone, twin = "docs" + LONE + "x.py", "docs" + SPELLED + "x.py"
         self.same(self.child(*flags, findings=high(lone)), self.child(*flags, findings=high(twin)))

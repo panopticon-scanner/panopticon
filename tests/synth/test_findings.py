@@ -1524,6 +1524,79 @@ class TestShortTitle(unittest.TestCase):
         )
         self.assertEqual(f["short_title"], "Short and sweet")
 
+class TestADocPathMustNameARealDocFile(unittest.TestCase):
+    """#3207: the doc policy's INFO downgrade needs a path that names an
+    existing regular file under the root, by that spelling and through no
+    symlink. The issue's five rows, end to end through `synthesize.main`, plus
+    the committed-symlink routes a hostile tree can plant."""
+
+    CODE = "".join("x%d = %d\n" % (i, i) for i in range(20))
+
+    def _tree(self, d):
+        root = os.path.join(d, "target")
+        os.makedirs(os.path.join(root, "docs"))
+        os.makedirs(os.path.join(root, "real"))
+        for rel in ("src.py", "docs/x.py", "real/y.py"):
+            with open(os.path.join(root, rel), "w") as fh:
+                fh.write(self.CODE)
+        os.symlink(os.path.join("..", "src.py"), os.path.join(root, "docs", "link.py"))
+        os.symlink("real", os.path.join(root, "specs"))          # a doc tree that is a link
+        return root
+
+    def _run(self, d, root, file):
+        fp = os.path.join(d, "findings-g1-COD.json")
+        with open(fp, "w") as fh:
+            json.dump({"findings": [{
+                "id": "COD-1", "title": "Unsafe deserializer executes code", "severity": "HIGH",
+                "confidence": "CONFIRMED", "panel": "code", "category": "logic",
+                "location": {"file": file, "line_start": 1}}]}, fh)
+        out = os.path.join(d, "r.json")
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc = syn.main(["--repo", "--root", root, "--target", root, "--security", "standard",
+                           "--fail-on", "high", "--gate-unverified", "--out", out, fp])
+        with open(out) as fh:
+            report = json.load(fh)
+        return (report["findings"][0]["severity"], report["summary"]["gate"], rc,
+                report["meta"]["coverage"]["doc_policy"])
+
+    def test_only_a_real_in_tree_doc_file_borrows_the_doc_policy(self):
+        for file, severity, gate, rc, declined in (
+                ("docs/../src.py", "HIGH", "FAIL", 1, 1),     # resolves to root-level code
+                ("docs/x.py/", "HIGH", "FAIL", 1, 1),         # not a file
+                ("docs/missing.py", "HIGH", "FAIL", 1, 1),    # does not exist
+                ("docs/link.py", "HIGH", "FAIL", 1, 1),       # a committed link to ../src.py
+                ("specs/y.py", "HIGH", "FAIL", 1, 1),         # under a doc tree that is a link
+                ("docs//x.py", "HIGH", "FAIL", 1, 1),         # an empty component
+                ("src.py", "HIGH", "FAIL", 1, 0),             # control: code, no doc glob
+                ("docs/x.py", "INFO", "PASS", 0, 0),          # control: a real doc file
+                ("./docs/x.py", "INFO", "PASS", 0, 0)):       # norm_path's one collapse, kept
+            with self.subTest(file=file), tempfile.TemporaryDirectory() as d, _chdir(d):
+                sev, got_gate, got_rc, policy = self._run(d, self._tree(d), file)
+                self.assertEqual((severity, gate, rc), (sev, got_gate, got_rc))
+                self.assertEqual(declined, policy["not_a_doc_file"])
+                self.assertEqual(int(severity == "INFO"), policy["downgraded"])
+
+    def test_no_root_downgrades_nothing(self):
+        # `--target unknown` (the parser's default) names no tree: fail closed
+        f = {"severity": "HIGH", "title": "x", "category": "logic", "location": {"file": "docs/x.py"}}
+        for root in (None, "unknown", "/nonexistent-%d" % os.getpid()):
+            with self.subTest(root=root):
+                g = dict(f)
+                self.assertEqual({"downgraded": 0, "examples": [], "not_a_doc_file": 1},
+                                 findings_mod.apply_doc_severity_policy([g], "standard", root=root))
+                self.assertEqual("HIGH", g["severity"])
+
+    def test_the_spelling_and_the_walk_are_both_required(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = self._tree(d)
+            os.makedirs(os.path.join(root, "docs", "sub"))
+            for path, real in (("docs/x.py", True), ("docs/sub", False), (os.path.join(root, "docs/x.py"), False),
+                               ("docs/./x.py", False), ("docs/link.py", False), ("specs/y.py", False),
+                               ("docs/x.py/", False), ("docs/x.py\0", False)):    # a NUL is a ValueError
+                with self.subTest(path=path):
+                    self.assertIs(real, findings_mod._regular_file_in_tree(root, path))
+
+
 class TestDocSeverityPolicy(unittest.TestCase):
     """#487: path-scoped, mode-gated, severity-only soft downgrade with a
     secrets carve-out -- disclosed, never silent, never upward."""
@@ -1543,7 +1616,10 @@ class TestDocSeverityPolicy(unittest.TestCase):
 
     def test_code_finding_under_doc_tree_downgrades_to_info(self):
         f = self._f("docs/superpowers/plans/x.md")
-        res = findings_mod.apply_doc_severity_policy([f], "standard")
+        with tempfile.TemporaryDirectory() as root:      # #3207: a doc file that is really there
+            os.makedirs(os.path.join(root, "docs", "superpowers", "plans"))
+            open(os.path.join(root, "docs", "superpowers", "plans", "x.md"), "w").close()
+            res = findings_mod.apply_doc_severity_policy([f], "standard", root=root)
         self.assertEqual(f["severity"], "INFO")
         self.assertEqual(f["doc_policy"], {"downgraded_from": "MEDIUM"})
         self.assertEqual(res["downgraded"], 1)
@@ -1595,6 +1671,9 @@ class TestDocSeverityPolicy(unittest.TestCase):
                     },
                     fh,
                 )
+            # #3207: `--target src` is the root the policy looks under; the doc file is real
+            os.makedirs(os.path.join(d, "src", "docs", "plans"))
+            open(os.path.join(d, "src", "docs", "plans", "roadmap.md"), "w").close()
             out = os.path.join(d, "r.json")
             err = io.StringIO()
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
