@@ -373,9 +373,10 @@ def is_tools_downgrade(manifest, flags):
 # Keys `driver.run` attaches to the IN-MEMORY manifest that must never reach
 # disk: they describe this invocation, not the run. `session_dir` names where
 # the host session runs (I2); `invocation` is the per-call token `tools_done`
-# reads back off the tools marker (#1637 P08 F1). Persisting either would make
-# a resume inherit a fact about a process that has exited.
-_EPHEMERAL_KEYS = ("session_dir", "invocation")
+# reads back off the tools marker (#1637 P08 F1); `dispatch_mode` whether its entries go to a
+# headless runner or a session (#3226). Persisting any of them would make a resume inherit a
+# fact about a process that has exited.
+_EPHEMERAL_KEYS = ("session_dir", "invocation", "dispatch_mode")
 
 # #1596: {"digest": <host_disclosure.disclosure_digest>, "at": <probed_at>} --
 # the posture this run has already disclosed IN FULL on stderr, and when. The

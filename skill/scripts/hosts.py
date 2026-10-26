@@ -455,6 +455,37 @@ def write_boundary_gaps(host, posture):
     return ()
 
 
+# #3226: what `requests.require_unenforced_ack` says, refusing a session dispatch over the gap
+# `session_dispatch_gaps` names, and what the ack records when the operator accepts it.
+SESSION_BASH_GAP = (
+    "%s dispatches this run's entries in a SESSION, and tool_policy_enforced is %s -- %s. "
+    "%s use templates that request Write, and an entry with no registered shell goes to a "
+    "default subagent whose Bash reaches neither guard hook. Run `driver setup` first (a "
+    "registered shell proves tool policy), or run headless with `driver loop --mode headless` "
+    "(its launch takes Bash away), or re-run with --allow-unenforced to accept the gap "
+    "explicitly (it is recorded in %s).")
+SESSION_GAP_ACK_NOTE = (
+    "This run's entries are dispatched by a SESSION, whose unenforced reviewers keep Bash, and "
+    "tool policy enforcement is not proven. The operator accepted that gap with "
+    "--allow-unenforced. The artifact_write_guard posture remains PROVEN; the named gap is "
+    "recorded below.")
+
+
+def session_dispatch_gaps(host, posture, dispatch_mode):
+    """`write_boundary_gaps` that are LIVE for this invocation's dispatch (#3226).
+
+    A headless runner takes Bash from every unenforced reviewer on its launch
+    argv (Claude's `--tools`/`--disallowedTools`, Kimi's `tools.disabled`), so
+    the gap is named but closed there. A SESSION dispatch has nothing of the
+    kind: an entry with no registered shell goes to a default subagent, and its
+    Bash reaches neither the write hook nor the read hook. `dispatch_mode` is
+    `driver.run`'s per-invocation mark; anything but "headless" -- a missing
+    mark included -- is a session. Keyed on the gap, never on the host: a host
+    whose session subagent cannot reach Bash proves tool policy instead.
+    """
+    return () if dispatch_mode == "headless" else write_boundary_gaps(host, posture)
+
+
 def unselectable_host_message(host, verb):
     """The refusal for a run whose MANIFEST names a registered-but-unselectable
     host, spelled once because two entrypoints have to say it.

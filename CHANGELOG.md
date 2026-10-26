@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Fix: a session dispatch no longer runs unenforced, write-capable reviewers over the Bash gap without an acknowledgement (#3226).**
+  - On Claude and Kimi, a PROVEN `artifact_write_guard` covers the write tools only. A headless loop closes the Bash path on every launch (Claude's `--tools`/`--disallowedTools`, Kimi's `tools.disabled`). A session dispatch does not: an entry with no registered shell goes to a default subagent, and its Bash reaches neither guard hook. Nothing refused that, and nothing recorded it.
+  - A session dispatch (`driver loop --mode session`, or a plain `driver run`) over `hosts.write_boundary_gaps` now refuses, unless tool policy is PROVEN. The refusal names three remedies: `driver setup`, the headless loop, or `--allow-unenforced`. The flag writes `unenforced-ack.json` with `write_guard_covers_bash: false` and the named gap, at REFUTED or UNKNOWN alike.
+  - The predicate is the gap and the dispatch path, not the host, so Kimi session dispatches refuse too. If a session-side Kimi subagent proves unable to reach Bash, the fix is a probe that proves tool policy, not a host exemption.
+  - Headless is unchanged. `driver.run` marks each invocation's dispatch in the in-memory manifest, as it already does for `session_dir`. A manifest without the mark reads as a session, and the mark is never written to `run-manifest.json`.
 - **Fix: a second headless `driver loop` on the same run no longer re-arms, and then disarms, the live loop's guards (#3227).**
   - The batch record's O_EXCL create is the batch's lock, but it came after `Guards.arm`, the launch backoff and the shape proof. A loop that lost the race had already rebuilt the run folder's settings file and re-installed the same entries' grants. It was then refused, and its exit took those grants down under the loop still running.
   - Headless mode now opens the batch record first, so a refused loop has armed nothing. If arming, the backoff or the proof raises after the open (an interrupt included), the record is closed and the failure reads as before. A process killed in that window leaves a record with no artifacts and a dead owner, and the next loop rolls it back as an ordinary stale batch.

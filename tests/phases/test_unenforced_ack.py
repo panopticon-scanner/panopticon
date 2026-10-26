@@ -33,8 +33,11 @@ ENTRIES = [{"group": "Auth", "domain": "SEC", "enforced": False,
             "out_file": "/abs/findings-Auth-SEC.json"}]
 
 
-def _manifest(host, allow=False):
-    return {"host": host, "flags": {"allow_unenforced": allow}}
+def _manifest(host, allow=False, dispatch=None):
+    manifest = {"host": host, "flags": {"allow_unenforced": allow}}
+    if dispatch is not None:          # `driver.run`'s per-invocation key (#3226)
+        manifest["dispatch_mode"] = dispatch
+    return manifest
 
 
 class TestWriteCapableRoles(unittest.TestCase):
@@ -64,8 +67,8 @@ class TestGate(unittest.TestCase):
         # #1344 F3: the gate now reads posture(), which requires PROVEN
         # evidence, not just claude's claim -- prove the write guard.
         write_host_evidence(root, {hosts.ARTIFACT_WRITE_GUARD: hosts.PROVEN})
-        self.assertIsNone(
-            requests.require_unenforced_ack(root, _manifest("claude"), ENTRIES))
+        self.assertIsNone(requests.require_unenforced_ack(
+            root, _manifest("claude", dispatch="headless"), ENTRIES))
         self.assertFalse(os.path.exists(
             runio._pano(root, requests.UNENFORCED_ACK)))
 
@@ -298,7 +301,7 @@ class TestTheAckRecordsAShadowedOverride(unittest.TestCase):
         # refused (see the next test).
         root = self._root(hosts.REFUTED, detail=self.SHADOW)
         self.assertIsNone(requests.require_unenforced_ack(
-            root, _manifest("claude"), ENTRIES))
+            root, _manifest("claude", dispatch="headless"), ENTRIES))
         self.assertFalse(os.path.exists(runio._pano(root, requests.UNENFORCED_ACK)))
 
     def test_the_flag_alone_does_not_manufacture_an_ack(self):
@@ -307,11 +310,14 @@ class TestTheAckRecordsAShadowedOverride(unittest.TestCase):
         # --allow-unenforced run on a fully enforced host, and
         # meta.integrity.unenforced_acknowledged would go true for a run
         # nothing was overridden in.
+        # #3226: on the HEADLESS dispatch -- a session dispatch at UNKNOWN does
+        # override something (the session Bash gap) and records it
+        # (TestTheSessionDispatchRefusesOverTheBashGap)
         for state in (hosts.PROVEN, hosts.UNKNOWN):
             with self.subTest(tool_policy=state):
                 root = self._root(state)
                 self.assertIsNone(requests.require_unenforced_ack(
-                    root, _manifest("claude", allow=True), ENTRIES))
+                    root, _manifest("claude", allow=True, dispatch="headless"), ENTRIES))
                 self.assertFalse(os.path.exists(
                     runio._pano(root, requests.UNENFORCED_ACK)))
 
@@ -324,8 +330,10 @@ class TestTheAckRecordsAShadowedOverride(unittest.TestCase):
         root = self._root(hosts.REFUTED,
                           detail="no registration directory at /nope: this "
                                  "host's enforcement shells were never emitted")
+        # #3226: on the HEADLESS dispatch, whose launch argv takes Bash away --
+        # a session dispatch over the same gap refuses (TestTheSessionDispatch)
         self.assertIsNone(requests.require_unenforced_ack(
-            root, _manifest("claude"), ENTRIES))
+            root, _manifest("claude", dispatch="headless"), ENTRIES))
 
     def test_a_resume_extends_the_ack_without_disturbing_its_binding(self):
         # Additive: a shadow file that appears mid-run adds its disclosure,
@@ -382,6 +390,78 @@ class TestTheAckRecordsAShadowedOverride(unittest.TestCase):
         with open(written, encoding="utf-8") as fh:
             ack = json.load(fh)
         self.assertIn("no detail", ack["tool_policy_detail"])
+
+
+class TestTheSessionDispatchRefusesOverTheBashGap(unittest.TestCase):
+    """#3226: beside a PROVEN write boundary, the one refusal is a SESSION
+    dispatch over `hosts.write_boundary_gaps`. A headless runner takes Bash
+    from an unenforced reviewer on its argv; a session subagent keeps it, and
+    its Bash reaches neither guard hook."""
+
+    def _root(self, tool_policy, host="claude"):
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        os.makedirs(os.path.join(root, ".panopticon"), exist_ok=True)
+        states = {hosts.ARTIFACT_WRITE_GUARD: hosts.PROVEN}
+        if tool_policy is not None:
+            states[hosts.TOOL_POLICY_ENFORCED] = tool_policy
+        write_host_evidence(root, states, host=host)
+        return root
+
+    def _ack(self, root):
+        return runio._pano(root, requests.UNENFORCED_ACK)
+
+    def test_a_session_dispatch_refuses_whatever_unproven_tool_policy_reads(self):
+        for host in ("claude", "kimi"):           # the gap is the predicate, not the host
+            for tool_policy in (hosts.REFUTED, hosts.UNKNOWN, None):
+                for mode in ("session", None):    # no key reads as a session
+                    with self.subTest(host=host, tool_policy=tool_policy, dispatch=mode):
+                        root = self._root(tool_policy, host)
+                        with self.assertRaises(runio.DriverError) as cm:
+                            requests.require_unenforced_ack(
+                                root, _manifest(host, dispatch=mode), ENTRIES)
+                        message = str(cm.exception)
+                        self.assertIn("SESSION", message)
+                        self.assertIn("driver setup", message)
+                        self.assertIn("--mode headless", message)
+                        self.assertIn("--allow-unenforced", message)
+                        self.assertIn(requests.UNENFORCED_ACK, message)
+                        self.assertFalse(os.path.exists(self._ack(root)))
+
+    def test_the_flag_records_the_gap_it_accepted(self):
+        root = self._root(hosts.UNKNOWN)
+        path = requests.require_unenforced_ack(
+            root, _manifest("claude", allow=True, dispatch="session"), ENTRIES)
+        self.assertEqual(self._ack(root), path)
+        with open(path, encoding="utf-8") as fh:
+            ack = json.load(fh)
+        self.assertTrue(ack["acknowledged"])
+        self.assertFalse(ack["write_guard_covers_bash"])
+        self.assertEqual([hosts.BASH_PATH_ARTIFACT_WRITE_GAP], ack["gaps"])
+        self.assertEqual(hosts.PROVEN, ack[hosts.ARTIFACT_WRITE_GUARD])
+        self.assertEqual(hosts.UNKNOWN, ack[hosts.TOOL_POLICY_ENFORCED])
+        self.assertIn("SESSION", ack["note"])
+        self.assertNotIn("REFUTED", ack["note"])
+        self.assertEqual(integrity._plan_hash(ENTRIES), ack["plan_sha256"])
+
+    def test_a_headless_dispatch_over_the_same_gap_is_untouched(self):
+        for tool_policy in (hosts.REFUTED, hosts.UNKNOWN):
+            with self.subTest(tool_policy=tool_policy):
+                root = self._root(tool_policy)
+                self.assertIsNone(requests.require_unenforced_ack(
+                    root, _manifest("claude", dispatch="headless"), ENTRIES))
+                self.assertFalse(os.path.exists(self._ack(root)))
+
+    def test_proven_tool_policy_leaves_a_session_dispatch_nothing_to_refuse(self):
+        root = self._root(hosts.PROVEN)
+        self.assertIsNone(requests.require_unenforced_ack(
+            root, _manifest("claude", dispatch="session"), ENTRIES))
+        self.assertFalse(os.path.exists(self._ack(root)))
+
+    def test_no_cells_means_nothing_is_dispatched_and_nothing_refused(self):
+        root = self._root(hosts.REFUTED)
+        self.assertIsNone(requests.require_unenforced_ack(
+            root, _manifest("claude", dispatch="session"), []))
 
 
 class TestTheAckIsReadableBySynthesize(unittest.TestCase):

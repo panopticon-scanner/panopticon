@@ -36,9 +36,11 @@ once and then reads UNKNOWN, which still refuses the run. That refusal asks for 
 (the next run probes again) and names `--allow-unenforced` only after it (#3220).
 Bash-path writes belong to `tool_policy_enforced`.
 When that posture is REFUTED and the operator passes `--allow-unenforced`,
-`unenforced-ack.json` records the named gap rather than broadening the claim. For that
-PROVEN-boundary case, with no flag or with tool policy UNKNOWN, no acknowledgement is written; the
-gap appears only in the `tool_policy_enforced` posture line.
+`unenforced-ack.json` records the named gap rather than broadening the claim. In headless mode,
+with no flag or with tool policy UNKNOWN, no acknowledgement is written, because the launch argv
+closes Bash; the gap appears only in the `tool_policy_enforced` posture line. A session dispatch
+has no such argv, so over the same gap it refuses without `--allow-unenforced`, and with the flag it
+records the gap (#3226, see the guide's notes).
 `usage_ledger` — probed by `usage-source`, which follows the mode: in headless
 mode the run folder can hold the dispatch ledger, the host's CLI is on PATH and its `--help`
 advertises the flags that make a launch print the JSON envelope (`-p`, `--output-format` — any
