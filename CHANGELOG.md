@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Fix: a batch record's owner check fails closed on a planted pid and on another container's pid namespace (#2065).**
+  - **A planted huge pid.** A target-planted `pid` beyond the C int range made `os.kill` raise `OverflowError`, which escaped `owner_state` and ended the loop as `driver loop: OverflowError: ...`. It is now the `unstamped` verdict and the "no owner stamp" refusal, never `dead`, the one verdict recovery acts on.
+  - **Another pid namespace.** Containers on `--network host` share the MAC that `machine_id` reads, so each read the other's batch record as same-machine and asked `os.kill` about a pid from another namespace. A pid that happened to be dead here read as a crash, and recovery rolled back a live sibling's batch.
+    - On Linux the record now also carries `pidns` (`/proc/self/ns/pid`). One that differs from this process's makes the record foreign.
+    - An unreadable namespace omits the field and is never a refusal. A record without the field is judged by hostname and machine id exactly as before.
+    - **A restarted container reads its old record as foreign; discard it explicitly with `--discard-batch N`.**
+  - **Discard wording.** `--discard-batch` on an unstamped record now names "no usable owner stamp" instead of `pid None on host None`.
+  - **`flag_changes`.** A malformed `flag_changes` (a non-list) is replaced rather than turned into its characters or keys, and `tools_downgraded_mid_run` no longer raises on a non-iterable one.
 - **Fix: a finding path that only looks like a doc path no longer borrows the doc policy's INFO downgrade (#3207).**
   - The planning-doc policy (#487) downgrades a non-secret finding to INFO when its path matches a doc glob (`docs/*`, `specs/*`, `plans/*`, `--doc-paths`). It matched the SPELLING only, and `norm_path` keeps `..` and a trailing `/` on purpose. So a HIGH at `docs/../src.py` (root-level code), `docs/x.py/` (not a file) or `docs/missing.py` (no file) became INFO, and the gate passed. A committed `docs/link.py -> ../src.py`, or a doc tree that is itself a symlink, borrowed it the same way.
   - The downgrade now also needs the path to name an existing regular file under `--root` (else `--target`, the same root LOC grading uses). The path must be spelled with no `.`, `..` or empty component, and every directory on it is opened with `O_NOFOLLOW` from the root, so it is reached through no symlink. Anything else keeps its severity and is counted in the new `meta.coverage.doc_policy.not_a_doc_file`. The doc policy is an open object, so there is no schema change.

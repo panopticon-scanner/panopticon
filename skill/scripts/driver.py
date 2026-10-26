@@ -371,8 +371,8 @@ def build_parser():
                            metavar="N",
                            help="roll back batch record N and continue the run, "
                                 "accepting that its owner is gone (only for a "
-                                "foreign/unstamped owner; recorded in "
-                                "discarded-batches.json)")
+                                "foreign/unstamped owner -- a restarted container reads "
+                                "its old record as foreign; recorded in discarded-batches.json)")
     sp = sub.add_parser("setup")
     sp.add_argument("target", nargs="?", default=".")
     sp.add_argument("--host", default=None, type=_host_choice,

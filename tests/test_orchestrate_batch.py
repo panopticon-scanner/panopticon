@@ -217,6 +217,64 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         self.assertIsNone(
             driver.run_manifest.load_manifest(d).get("discarded_batches"))
 
+    def test_a_planted_huge_pid_is_refused_as_unstamped_and_nothing_moves(self):
+        # #2065: `os.kill` raises OverflowError past the C int range. It used
+        # to escape `owner_state` and end the loop as `driver loop:
+        # OverflowError: ...`; it is the fail-closed refusal now, never `dead`
+        # (the one verdict recovery acts on).
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        self._stamp_crash_owner(crashed.run_dir, pid=2 ** 64)
+        before = self._untouched(d, crashed.run_dir)
+        resumed = FakeRunner()
+        status = self._return_persist(d, floor, resumed)
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("carries no owner stamp", status["message"])
+        self.assertNotIn("OverflowError", status["message"])
+        self.assertEqual([], resumed.launched)
+        self.assertEqual(before, self._untouched(d, crashed.run_dir))
+
+    def test_discarding_an_unstamped_record_names_no_phantom_owner(self):
+        # #2065: every other discard test throws away a FOREIGN record; an
+        # unstamped one rendered `pid None on host None`
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        crashed = self._leave_crashed_batch(d, floor)
+        self._stamp_crash_owner(crashed.run_dir, pid=None)
+        err = io.StringIO()
+        resumed = FakeRunner()
+        with contextlib.redirect_stderr(err):
+            status = self._return_persist(d, floor, resumed, "--discard-batch", "1")
+        self.assertEqual("complete", status["status"], status)
+        self.assertIn("its owner (no usable owner stamp, verdict unstamped)", err.getvalue())
+        self.assertNotIn("pid None", err.getvalue())
+        self.assertEqual([1], [row["batch"] for row in self._accepted(crashed.run_dir)])
+        self.assertIn("review-app-SEC", resumed.launched)
+
+    def test_a_pid_from_another_namespace_is_never_read_as_a_crash(self):
+        # #2065, the destructive case: same host, same MAC (`--network host`),
+        # another container's pid namespace. Its pid is dead HERE, so it read
+        # as `dead` and recovery rolled back the live sibling's batch. A record
+        # naming a different namespace is foreign now; the same namespace still
+        # recovers on its own.
+        for theirs, refused in (("pid:[4026532999]", True), ("pid:[4026531836]", False)):
+            with self.subTest(refused=refused):
+                d, floor = self._repo(floor=("SEC", "ACC"))
+                crashed = self._leave_crashed_batch(d, floor)
+                self._stamp_crash_owner(crashed.run_dir, pidns=theirs)
+                before = self._untouched(d, crashed.run_dir)
+                resumed = FakeRunner()
+                with mock.patch.object(batch_mod, "pid_namespace", return_value="pid:[4026531836]"), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    status = self._return_persist(d, floor, resumed)
+                if refused:
+                    self.assertEqual("error", status["status"], status)
+                    self.assertIn("not this machine or pid namespace", status["message"])
+                    self.assertIn("--discard-batch 1", status["message"])
+                    self.assertEqual([], resumed.launched)
+                    self.assertEqual(before, self._untouched(d, crashed.run_dir))
+                else:
+                    self.assertEqual("complete", status["status"], status)
+
     def test_the_two_recoverable_refusals_name_the_narrow_remedy_first(self):
         # Read off the constants: an operator meeting either refusal is offered
         # the one-record remedy BEFORE the one that throws the run away.
