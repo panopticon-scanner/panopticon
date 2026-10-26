@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Changed: a `paused` run no longer prints a composed resume command, and the "uniform instant failure" stop is gone (#3273 cut 10).**
+  - The host-outage pause now ends with the way back in words: re-run the same command with the same flags once the host is back, the bounds included (`--max-budget-usd`, `--max-iterations`, `--concurrency`, `--entry-timeout`, `--max-turns`). `runners/resume.py` is deleted. The engine still refuses a resume that changed an anti-drift flag.
+  - The second stop rule (#1732: a batch whose first results were one identical sub-2-second entry-class failure) is removed. A broken launch of our own is now stopped by the per-entry cap after three rounds, as before #1732. The host-outage classifier, the trailing-run tally, the budget stop and the launch backoff are unchanged.
+  - Tests: the classifier's five test classes are one table of 150 cases, each tagged with the review finding it came from, and none was dropped. The 50 KB backtracking bound stays its own test. About 9 s comes off the suite.
+- **Internal: `procgroup` docstrings trimmed (#3273 cut 13).** The own-group check in `_pgid` stays: a reaped pid recycled to one of the driver's own same-group children can reach it while `terminate_children` races `launch`'s reaping thread.
 - **Internal: the three guard hooks share one `guard_rules.py` instead of three copies (#3273 cut 11).**
   - The read scope, the binding, the findings component walk, the v2 allowlist and the settings plumbing now live once, in `skill/scripts/guard_rules.py`. `read_guard_hook`, `write_guard_hook` and `kimi_guard_hook` load it by path from their own directory when they run as hooks (`<python> -I <abs path>`). They never use `import scripts.*`, which a foreign `scripts` package in site-packages could answer. Imported under our package, they take the sibling module, so a patch lands where the hook looks.
   - Any failure to load it (a missing file, a raise or a SyntaxError in it, a name it lacks) denies every call the hook guards, exit 0 with the deny JSON. Never a crash, which would fail open.

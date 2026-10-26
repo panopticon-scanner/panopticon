@@ -1,20 +1,11 @@
 """One kill path, for every child this repo spawns (#1575).
 
-Two existed. `phases/child.py` ended a timed-out PHASE child by signalling its
-whole process group; `runners/base.py` ended a registered HOST child by
-calling `terminate()` and then `kill()` on the handle. A tree has whichever
-guarantee the caller happened to use, so the weaker one was the real one: a
-host CLI that spawns its own workers -- every one of the three shipped
-families does -- outlived both a family-side timeout and an operator's Ctrl-C,
-because the signal reached the direct pid only.
+A host CLI spawns its own workers, so a signal to the direct pid alone leaves
+them running past a timeout or a Ctrl-C. The PROCESS-GROUP kill lives here, in
+one stdlib-only module both `phases/child.py` and `runners/` call: `runners/`
+may not import `scripts.phases` (tests/test_layout.py rule 3).
 
-So the group kill lives HERE, in one stdlib-only module that neither package
-owns, and both sides call it. `runners/` may not import `scripts.phases`
-(tests/test_layout.py rule 3), which is why this is a top-level module rather
-than a fourth function in `phases/child.py`.
-
-Three entry points, because the two callers need different shapes of the same
-thing:
+Entry points, because the two callers need different shapes of the same thing:
 
 * `kill_group(proc, grace)` -- the whole sequence for ONE child: SIGTERM to
   its group, `grace` to exit, then SIGKILL. What a timeout wants.
@@ -47,28 +38,20 @@ KILL_GRACE = 2.0
 
 def _pgid(proc):
     """`proc`'s process group id, or None when there is no group to signal
-    -- in which case the caller signals the HANDLE instead.
+    -- in which case the caller signals the HANDLE instead. None covers:
 
-    None covers four cases that the caller must treat identically:
-
-    * a handle with no `pid` at all (what `HostRunner.register_child` accepts,
-      and what the suite's fakes are), or a platform without process groups;
-    * a child this process has already REAPED. Its pid went back to the OS,
-      and pids are handed out in order, so that number may already name
-      somebody else's session leader -- `killpg` on it would end their whole
-      tree. `Popen.send_signal` has always been immune (it returns early once
-      `returncode` is set) and the group kill has to make the same check
-      BEFORE it asks the OS what group that pid is in. The window is real:
-      `launch` reaps in `communicate` and unregisters a moment later, and an
-      interrupt can arrive in between;
-    * a child in OUR OWN process group -- anything registered by a caller
-      that did not pass `start_new_session=True`. `killpg` there is a signal
-      to the driver itself and to every sibling sharing its group; measured
-      while writing this guard, it SIGTERMed the test runner.
+    * a handle with no `pid` (the suite's fakes), or no process groups;
+    * a child already REAPED: its pid is the OS's again and may name somebody
+      else's session leader, so `killpg` would end their tree. Checked BEFORE
+      asking the OS for the group, as `Popen.send_signal` checks `returncode`;
+    * a pid in OUR OWN group -- a caller without `start_new_session=True`, or
+      a reaped pid recycled to one of our own same-group children between the
+      `returncode` read and `getpgid`, which `HostRunner.terminate_children`
+      can race against `launch`'s reaping thread. `killpg` there signals the
+      driver itself (measured: it SIGTERMed the test runner).
 
     `returncode` is read with `getattr`: a registered handle need not be a
-    `Popen`, and one that does not carry the attribute has no pid of ours to
-    protect.
+    `Popen`, and one without it has no pid of ours to protect.
     """
     if getattr(proc, "returncode", None) is not None:
         return None                        # reaped: the pid may be somebody else's
@@ -151,18 +134,11 @@ def group_id(proc):
 def end_group(proc, sig):
     """Send `sig` to `proc`'s current group, and wait for nothing.
 
-    The child is spawned with `start_new_session=True` by both callers, so its
-    pid IS its group id and one `killpg` reaches every process it started --
-    the scanner's workers, the host CLI's helpers -- rather than the one pid
-    at the root of the tree.
-
-    With no group to reach -- see `_pgid` for the four ways that happens --
-    it falls back to the HANDLE: `terminate()` for a SIGTERM, `kill()` for a
-    SIGKILL. That fallback is what a non-POSIX platform gets, and it is also
-    the pre-#1575 behaviour of `HostRunner.terminate_children` -- a bare
-    handle keeps exactly the treatment it had, rather than being skipped for
-    want of a pid -- and it is recycle-safe, because `Popen.send_signal`
-    refuses a handle whose `returncode` is set.
+    Both callers spawn with `start_new_session=True`, so the pid IS the group
+    id and one `killpg` reaches every process the child started. With no group
+    to reach (see `_pgid`) it falls back to the HANDLE -- `terminate()` for a
+    SIGTERM, `kill()` for a SIGKILL -- which is recycle-safe because
+    `Popen.send_signal` refuses a handle whose `returncode` is set.
     """
     _end_group(proc, sig, _pgid(proc))
 
@@ -221,12 +197,9 @@ def reaped(proc, timeout):
 def kill_group(proc, grace=KILL_GRACE):
     """End a child's whole PROCESS GROUP: SIGTERM, `grace`, then SIGKILL.
 
-    `proc.kill()` reaches the direct child only. A phase child that forked a
-    worker -- `run_tools.py` launching a scanner, a scanner launching its own
-    workers -- left that worker alive holding the stdout pipe it inherited, so
-    the reader never saw EOF and the descendant went on running after the
-    driver had already reported the phase timed out. That is not "no timeout";
-    it is a nominal deadline that bounds one process out of a tree.
+    `proc.kill()` reaches the direct child only, and a worker it forked keeps
+    the inherited stdout pipe open, so the reader never sees EOF and the
+    deadline bounds one process out of a tree.
 
     SIGTERM first, so a scanner can flush and unlink its temp files. SIGKILL
     follows when the GROUP's grace passes, or immediately when its leader has
@@ -275,12 +248,10 @@ def sigterm_as_interrupt(main):
     """Run `main()` with a SIGTERM raising `Terminated` in the main thread,
     and return what `main` returns (#2199).
 
-    At the default disposition a SIGTERM -- a supervisor's stop, a CI
-    cancel, a plain `kill` -- ended the driver without running one `except`
-    or `finally`. The phase child and the runner children lead their own
-    sessions, so no signal to the driver's group reached them, and they were
-    left running. Raised as the interrupt instead, a SIGTERM takes the path a
-    Ctrl-C takes, and that path ends them first.
+    At the default disposition a SIGTERM ended the driver without running one
+    `except` or `finally`, and the children -- which lead their own sessions --
+    were left running. Raised as the interrupt, it takes the Ctrl-C path, which
+    ends them first.
 
     Only the FIRST SIGTERM raises. Every later one is absorbed until `main`
     returns: the kills that path is waiting on escalate to SIGKILL only after
@@ -292,14 +263,10 @@ def sigterm_as_interrupt(main):
     did.
 
     A `Terminated` that escapes `main` stops here, with one line on stderr --
-    `driver: stopped by SIGTERM` -- and 143 (128 + SIGTERM) as the status.
-    Left to the interpreter it would not leave the same way on every
-    supported Python: an escaping KeyboardInterrupt SUBCLASS exits 1 with a
-    traceback before 3.14 and dies by SIGINT from 3.14 on. Where
-    `orchestrate.loop` catches the interrupt, it still rolls back and
-    returns its own status; this is for the interrupts nothing caught. A
-    real Ctrl-C -- `KeyboardInterrupt` itself -- is not caught here and
-    escapes exactly as before.
+    `driver: stopped by SIGTERM` -- and 143 (128 + SIGTERM) as the status:
+    left to the interpreter, an escaping KeyboardInterrupt SUBCLASS exits 1
+    with a traceback before 3.14 and dies by SIGINT from 3.14 on. A real
+    Ctrl-C is not caught here and escapes exactly as before.
 
     Installed only over the DEFAULT disposition, Python's own rule for
     SIGINT: a parent that set SIGTERM to be ignored meant it, and a handler

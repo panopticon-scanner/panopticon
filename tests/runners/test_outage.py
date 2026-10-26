@@ -3,59 +3,49 @@ batch of them (#1623)."""
 import contextlib
 import io
 import time
-import shlex
 import unittest
-from unittest import mock
 
 import pytest
 
 import scripts.runners.base as base
 import scripts.runners.outage as outage
-import scripts.runners.resume as resume
-import scripts.driver as driver
 
 
-class TestTheHostOutageClassifier(unittest.TestCase):
-    """#1623: 243 of the 247 failed launches in the Kimi evidence run were ONE
-    `provider.auth_error: 403` -- the host, not the entries -- and the loop
-    charged every one of them to the entry that happened to be holding it.
-
-    What is classified is the HOST's own error surface (`RunResult.host_error`),
-    never the composed `error` text: on two of the three shipped families that
-    text is built out of up to 200 characters of the AGENT's output, so a cell
-    reviewing `src/billing/quota.py` would otherwise report its own findings as
-    a quota outage. The match is anchored on structured shapes -- an error KIND
-    the provider names, or a status sitting next to its reason -- not on a
-    substring anywhere in a sentence.
-    """
-
-    HOST = (
-        # the shapes #1623 itself names, across four families
-        "provider.auth_error: 403",
-        "kimi -p exited 1: provider.auth_error: 403",
-        "stream error: exceeded rate limit",
-        "429 Too Many Requests",
+# --- #3273 cut 10: every classifier case, in ONE table -----------------------
+#
+# Each row is (origin, surface, class, gate). `class` is what `classify_failure`
+# must answer, or None where the case only ever pinned the gate. `gate` is
+# "pass" (`cli_error` returns the text unchanged), "block" (it returns None) or
+# None (the case is not about the gate). The origin tag is the review finding
+# or issue the case was written for, so a flipped row fails by name:
+#   #1623  the original corpus: host shapes, and failures that only MENTION them
+#   N1     the CLI-framing gate vs the agent's own opening words
+#   N2     `Permission denied` is the OS's English, never the provider's
+#   N3     a provider error OBJECT, read by its structure
+#   N5     a delimiter is necessary, not sufficient: host-shaped content must follow
+#   N6     `code` and 500 qualify a status only inside the provider's object
+#   N7     the same envelope as raw JSON on stderr
+#   #1729  Claude's subscription-limit line (no `error` object at all)
+#   C2     tool and test output that `_S` let through as a KIND
+#   I3     a name between "limit" and the `· resets` delimiter
+#   I4     a curly apostrophe
+#   I5     the older `|<epoch>` form and the N-hour form, and their negatives
+# C1 (the ReDoS filler) is a time bound, not a row: `test_a_50kb_pathological_...`.
+H, E = outage.HOST_FAILURE, outage.ENTRY_FAILURE
+_RUN14 = "You've hit your session limit · resets 10:10am (America/Chicago)"
+CLASSIFIER_CASES = (
+    # #1623: the shapes the issue names, across four families, and the rest of the shipped surfaces
+    *(("#1623", s, H, None) for s in (
+        "provider.auth_error: 403", "kimi -p exited 1: provider.auth_error: 403",
+        "stream error: exceeded rate limit", "429 Too Many Requests",
         "429 RESOURCE_EXHAUSTED: Quota exceeded for quota metric",
-        "You exceeded your current quota",
-        # ...and the rest of the shipped surfaces
-        "Error: 403 Forbidden",
-        'API Error: 401 {"type":"authentication_error"}',
-        "Invalid API key - please run /login",
-        "quota exceeded for this organization",
-        "Your credit balance is too low",
-        "503 Service Unavailable",
-        "upstream connect error",
-        "Overloaded",
-        "rate_limit_error",
-        "insufficient_quota",
-        "permission_denied",              # the provider's wire kind, not the OS's English
-    )
-    ENTRY = (
-        # The review's corpus: REAL entry-class failures whose text merely
-        # MENTIONS the vocabulary of an outage -- a finding about auth, a path
-        # under src/billing/, a line number that happens to be 403. Every one
-        # of these read `host` before the classifier was anchored, and a batch
-        # of them stopped the run.
+        "You exceeded your current quota", "Error: 403 Forbidden",
+        'API Error: 401 {"type":"authentication_error"}', "Invalid API key - please run /login",
+        "quota exceeded for this organization", "Your credit balance is too low",
+        "503 Service Unavailable", "upstream connect error", "Overloaded", "rate_limit_error",
+        "insufficient_quota")),
+    # #1623: real entry-class failures whose text merely MENTIONS the vocabulary
+    *(("#1623", s, E, None) for s in (
         'claude -p exited 1: {"findings": [{"title": "Missing authentication on /admin"}]}',
         "claude -p reported is_error: the handler returns 403 for a signed-out user; "
         "see src/auth/view.py",
@@ -66,78 +56,132 @@ class TestTheHostOutageClassifier(unittest.TestCase):
         "codex exited with status 1: assertion failed: expected 200, got 503 in "
         "tests/test_gateway.py",
         "claude -p reported is_error: the OAuth callback in src/login.py has no state parameter",
-        # ...and every other failure this suite and the three families produce
-        "always", "flaky", "concurrency cap", "is_error",
-        "persist refused: shape check failed",
-        "claude -p timed out after 300s",
-        "codex timed out after 500s",
-        "kimi -p timed out after 403s",          # the number is a duration, not a status
+        "always", "flaky", "concurrency cap", "is_error", "persist refused: shape check failed",
+        "claude -p timed out after 300s", "codex timed out after 500s",
+        "kimi -p timed out after 403s",            # a duration, not a status
         "could not launch kimi: [Errno 2] No such file or directory",
-        "claude -p printed no JSON envelope (exit 2)",
-        "codex returned no final message",
+        "claude -p printed no JSON envelope (exit 2)", "codex returned no final message",
         "enforcement shell not registered at /tmp/x/panopticon-domain-panel.sh",
-        "ValueError: Codex requires delivery: return_json; it cannot self-write",
-        # N2. kimi and codex hand over their WHOLE stderr as the host surface,
-        # so every EACCES line from the CLI or a tool it spawned arrives here.
-        # `permission denied` is the OS's English, not a shape any provider
-        # emits -- and a run told to wait for the provider and re-run
-        # reproduces a local file-mode problem for ever.
+        "ValueError: Codex requires delivery: return_json; it cannot self-write")),
+    # N2: the provider's wire kind is a host failure; every OS `Permission denied` line is not
+    ("N2", "permission_denied", H, None),
+    *(("N2", s, E, None) for s in (
         "grep: /repo/.git/objects/pack: Permission denied",
         "find: '/repo/node_modules/.cache': Permission denied",
         "PermissionError: [Errno 13] Permission denied: '/repo/.panopticon/runs'",
         "Error: EACCES: permission denied, open '/tmp/panopticon-kimi-x/config.toml'",
         "kimi: could not open the session wire file: Permission denied",
-        "warning: unable to access '/repo/.git/config': Permission denied",
-    )
+        "warning: unable to access '/repo/.git/config': Permission denied")),
+    # N3: each status key qualifies its own number; a bare message from the agent's side does not
+    *(("N3", s, H, None) for s in (
+        {"type": "authentication_error", "message": "invalid x-api-key"},
+        {"error": {"type": "rate_limit_error", "message": "slow down"}},
+        {"status": 429, "message": "please retry"}, {"code": "insufficient_quota"},
+        {"code": 403, "message": "Forbidden"}, {"code": 401, "message": "Unauthorized"},
+        {"error": {"code": 403, "message": "Forbidden"}}, {"statusCode": 429, "message": "slow down"},
+        {"status_code": 429}, {"http_status": 503}, {"error_code": 500, "message": "internal"},
+        {"type": "permission_error"}, {"type": "api_error", "status": 500})),
+    *(("N3", s, E, None) for s in (
+        {"message": "the cell found a 403 handler"}, {"message": "src/billing/quota.py is missing"},
+        {"type": "api_error"}, {"file": "/repo/src/login.py", "line": 403})),
+    # #1623: no surface at all is the entry's own failure
+    *(("#1623", s, E, None) for s in (None, "", {})),
+    # N1: the CLI's own renderings pass the gate; the agent's opening words never do
+    *(("N1", s, H, "pass") for s in (
+        "API Error: 403 Forbidden", 'API Error: 401 {"type":"authentication_error"}',
+        "API Error: 429 Too Many Requests", "Invalid API key - please run /login",
+        "Invalid API key · Please run /login", "Overloaded", "Error: 503 Service Unavailable")),
+    *(("N1", s, None, "block") for s in (
+        "API Error responses leak stack traces; the 429 Too Many Requests branch "
+        "returns the upstream body verbatim",
+        "Authentication error handling is missing in src/login.py",
+        "Rate limit exceeded responses are not handled",
+        "Overloaded __eq__ hides the 403 Forbidden check",
+        "Invalid API key handling: the 401 Unauthorized path logs the key",
+        "Credit balance is too low is rendered to the user verbatim",
+        '{"findings": [{"title": "API Error: 403 Forbidden is not handled"}]}', "", None)),
+    # #1729: the run-14 line and its siblings pass; prose that mentions a limit does not
+    *(("#1729", s, H, "pass") for s in (
+        _RUN14, _RUN14 + "\n",
+        "You've hit your usage limit · resets 3:10pm (America/Chicago)",
+        "You've reached your weekly (7-day) usage limit · resets 1:10am (America/Chicago)",
+        "You've hit your weekly limit · resets 10:10am (America/Chicago)")),
+    *(("#1729", s, E, "block") for s in (
+        "You've hit your session limit handling is wrong in src/quota.py",
+        "the per-user usage limit is never enforced (src/quota.py:41)",
+        "session limit", "The weekly limit report is generated by cron",
+        '{"findings": [{"title": "You\'ve hit your session limit is shown to users verbatim"}]}',
+        "usage limit exceeded responses are not handled")),
+    # I3 / I4 / I5: fix round 1's genuine renderings
+    ("I3", "You've reached your usage limit for Claude Opus 4.5 · resets 3:10pm (America/Chicago)",
+     H, "pass"),
+    ("I4", "You’ve hit your session limit · resets 10:10am (America/Chicago)", H, "pass"),
+    ("I5", "Claude AI usage limit reached|1758400000", H, "pass"),
+    ("I5", "5-hour limit reached · resets 3pm", H, "pass"),
+    ("I5", "The 5-hour limit reached counter is reset nightly (src/quota.py)", E, "block"),
+    ("I5", "Claude AI usage limit reached is shown as a toast", E, "block"),
+    # C2: identifiers and tool output are never a KIND
+    *(("C2", s, E, "block") for s in (
+        "pytest: FAILED tests/test_quota.py::test_usage_limit_reached",
+        "ruff: `hit_your_plan_limit()` is unused",
+        "mypy: the daily limit reached branch is unreachable",
+        "The monthly limit exceeded banner is never shown",
+        "raise QuotaError('weekly limit reached')")),
+    # N5: a prose sentence behind the framing is not the CLI; the genuine framings still are
+    *(("N5", s, None, "block") for s in (
+        "error: 500 lines reviewed", "Error: 500 lines reviewed across 12 files; no blocking issues",
+        "Error: 401 handling is missing in src/auth/view.py", "Error: 403 responses are never logged",
+        "API Error: the 429 rate limit path is unhandled",
+        "API Error: 401 handling is absent -- src/login.py returns the body verbatim",
+        "Overloaded: the scheduler drops tasks under burst load (src/sched.py:41)",
+        "Overloaded - the queue never drains; see worker.py",
+        "Invalid API key, invalid session token and invalid nonce are all logged at INFO")),
+    *(("N5", s, H, "pass") for s in (
+        "API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\"}}",
+        "API Error: 529 {\"type\":\"overloaded_error\"}", "Error: 503 Service Unavailable",
+        "Error: 429 Too Many Requests", "API Error: 401 Unauthorized",
+        "API Error: 500 Internal Server Error", "API Error: 503 upstream connect error",
+        "Invalid API key, please run /login", "Invalid API key", "Overloaded",
+        "API Error: 502 Bad Gateway")),
+    # N6: tool stderr counting errors is not the provider; its object still qualifies its number
+    *(("N6", s, E, None) for s in (
+        "mypy: Found 500 errors in 42 files (checked 118 source files)",
+        "eslint: 500 problems (500 errors, 0 warnings)", "error: 500 problems found",
+        "Compilation failed: 500 errors", "the code (403 lines) was reviewed", "exit code 500",
+        "npm ERR! code 500", "internal error code 500 while reading the cache", "500 errors",
+        "Found 500 error(s)")),
+    *(("N6", s, H, None) for s in (
+        {"code": 403, "message": "Forbidden"}, {"statusCode": 429}, {"http_status": 503},
+        {"type": "permission_error"}, {"type": "api_error", "status": 500},
+        {"error": {"code": 500, "type": "api_error"}})),
+    # N7: the envelope on stderr is read through its quotes; JSON with a mere number is not
+    *(("N7", s, H, None) for s in (
+        '{"error":{"status":403,"message":"Forbidden"}}', '{"error":{"code":403,"message":"Forbidden"}}',
+        '{"status_code":429,"message":"slow down"}', '{"http_status":503}', '{"statusCode":429}',
+        '{"error":{"message":"Forbidden"},"status":403}',
+        'opening noise\n{"error":{"status":403,"message":"Forbidden"}}\nclosing noise')),
+    *(("N7", s, E, None) for s in (
+        '{"file":"src/api.py","line":403}', '{"error":"at line 403 of src/api.py"}',
+        "kimi -p timed out after 403s", '{"findings":[{"severity":"HIGH","line":500}]}',
+        'opening noise\n{"findings":[{"code":403,"title":"ordinary finding"}]}\nclosing noise')),
+)
 
-    def test_the_provider_side_surfaces_read_as_a_host_failure(self):
-        for host_error in self.HOST:
-            with self.subTest(host_error=host_error):
-                self.assertEqual(outage.HOST_FAILURE, outage.classify_failure(host_error))
 
-    def test_a_failure_that_merely_mentions_the_vocabulary_is_the_entrys_own(self):
-        for text in self.ENTRY:
-            with self.subTest(text=text):
-                self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(text))
+@pytest.mark.parametrize(
+    "origin,surface,expected,gate", CLASSIFIER_CASES,
+    ids=["%s:%s" % (row[0], repr(row[1])[:60]) for row in CLASSIFIER_CASES])
+def test_the_classifier_case(origin, surface, expected, gate):
+    if gate == "pass":
+        assert outage.cli_error(surface) == surface
+    elif gate == "block":
+        assert outage.cli_error(surface) is None
+    if expected is not None:
+        assert outage.classify_failure(surface) == expected
 
-    def test_a_provider_error_object_is_read_by_its_structure(self):
-        # N3: the flattener joins key by key and `message` comes last, so a
-        # status under `code`/`statusCode` and its reason in `message` were
-        # never adjacent -- which is exactly what the status rule requires.
-        # Each status key now qualifies its own number, and the camelCase and
-        # `http_` spellings are read rather than dropped. These are the
-        # CANONICAL shapes, not exotic ones, and missing them is the old
-        # #1623 behaviour: the cells burn.
-        for surface in ({"type": "authentication_error", "message": "invalid x-api-key"},
-                        {"error": {"type": "rate_limit_error", "message": "slow down"}},
-                        {"status": 429, "message": "please retry"},
-                        {"code": "insufficient_quota"},
-                        {"code": 403, "message": "Forbidden"},
-                        {"code": 401, "message": "Unauthorized"},
-                        {"error": {"code": 403, "message": "Forbidden"}},
-                        {"statusCode": 429, "message": "slow down"},
-                        {"status_code": 429},
-                        {"http_status": 503},
-                        {"error_code": 500, "message": "internal"},
-                        {"type": "permission_error"},
-                        {"type": "api_error", "status": 500}):
-            with self.subTest(surface=surface):
-                self.assertEqual(outage.HOST_FAILURE, outage.classify_failure(surface))
-        # ...and a bare message from the agent's side of the world still is not
-        for surface in ({"message": "the cell found a 403 handler"},
-                        {"message": "src/billing/quota.py is missing"},
-                        {"type": "api_error"},
-                        {"file": "/repo/src/login.py", "line": 403}):
-            with self.subTest(surface=surface):
-                self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(surface))
 
-    def test_no_surface_at_all_is_an_entry_failure(self):
-        # A family that recorded no host error said nothing about the host, and
-        # the loop treats silence as the entry's own failure -- which is what
-        # every failure was before #1623.
-        self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(None))
-        self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(""))
-        self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure({}))
+class TestTheHostOutageClassifier(unittest.TestCase):
+    """#1623: the seam between a family's result and the classifier. The
+    cases themselves are the table above."""
 
     def test_a_failed_result_classifies_from_the_host_surface_not_the_message(self):
         composed = "claude -p exited 1: the finding is that /admin returns 403 Forbidden"
@@ -174,183 +218,6 @@ class TestTheHostOutageClassifier(unittest.TestCase):
                              model=None, session_id=None, denials=[], error=None)
         self.assertEqual(outage.ENTRY_FAILURE, res.failure_class)
 
-    # The CLI's own error renderings, which this gate exists to let through.
-    CLI_ERRORS = (
-        "API Error: 403 Forbidden",
-        'API Error: 401 {"type":"authentication_error"}',
-        "API Error: 429 Too Many Requests",
-        "Invalid API key - please run /login",
-        "Invalid API key \u00b7 Please run /login",
-        "Overloaded",
-        "Error: 503 Service Unavailable",
-    )
-    # ...and the AGENT's own opening words, which it must not. Every one of
-    # these is a plausible first sentence of a review cell's reply, and every
-    # one of them started with a prefix the gate used to accept on sight --
-    # after which the anchored classifier ran over the WHOLE reply, so any
-    # outage vocabulary anywhere in it flipped the class.
-    AGENT_OPENERS = (
-        "API Error responses leak stack traces; the 429 Too Many Requests branch "
-        "returns the upstream body verbatim",
-        "Authentication error handling is missing in src/login.py",
-        "Rate limit exceeded responses are not handled",
-        "Overloaded __eq__ hides the 403 Forbidden check",
-        "Invalid API key handling: the 401 Unauthorized path logs the key",
-        "Credit balance is too low is rendered to the user verbatim",
-    )
-
-    def test_the_cli_error_reader_takes_only_the_clis_own_rendering(self):
-        # How a family tells the host's words from the agent's inside ONE text
-        # field. The prefix must be followed by the DELIMITER a CLI actually
-        # emits -- a colon, a middot, a dash, or the end of the line -- never
-        # by more prose, or the gate is just a list of English sentence
-        # openings.
-        for text in self.CLI_ERRORS:
-            with self.subTest(text=text):
-                self.assertEqual(text, outage.cli_error(text))
-                self.assertEqual(outage.HOST_FAILURE, outage.classify_failure(outage.cli_error(text)))
-        for text in self.AGENT_OPENERS:
-            with self.subTest(text=text):
-                self.assertIsNone(outage.cli_error(text))
-        self.assertIsNone(outage.cli_error(
-            '{"findings": [{"title": "API Error: 403 Forbidden is not handled"}]}'))
-        self.assertIsNone(outage.cli_error(""))
-        self.assertIsNone(outage.cli_error(None))
-
-
-class TestTheSubscriptionLimitLine(unittest.TestCase):
-    """#1729, tool-confirmed on run 14: three episodes, 225 wasted launches.
-
-    A Claude subscription that hits its plan limit exits every `claude -p`
-    with `1` and a JSON envelope carrying NO `error` object -- only the CLI's
-    own `result` string, e.g.:
-
-        You've hit your session limit · resets 10:10am (America/Chicago)
-
-    `outage._CLI_ERROR` did not recognise the opening, so `cli_error`
-    returned None, `host_error` stayed None, and `classify_failure` never saw
-    the line: every failure was ENTRY-class, the trailing-run pause (#1721)
-    never fired, and the 19 remaining review cells were charged three
-    attempts each while the phase advanced without them.
-    """
-
-    # The exact run-14 line, plus the sibling renderings the same CLI prints
-    # for the same class (a plan limit, a usage limit, a weekly/7-day limit).
-    RUN14 = "You've hit your session limit · resets 10:10am (America/Chicago)"
-    SIBLINGS = (
-        "You've hit your usage limit · resets 3:10pm (America/Chicago)",
-        "You've reached your weekly (7-day) usage limit · resets 1:10am (America/Chicago)",
-        "You've hit your weekly limit · resets 10:10am (America/Chicago)",
-    )
-    GENUINE = (RUN14,) + SIBLINGS
-
-    def test_the_genuine_renderings_pass_both_the_gate_and_the_classifier(self):
-        for text in self.GENUINE:
-            with self.subTest(text=text):
-                self.assertEqual(text, outage.cli_error(text))
-                self.assertEqual(outage.HOST_FAILURE, outage.classify_failure(text))
-                self.assertEqual(outage.HOST_FAILURE,
-                                 outage.classify_failure(outage.cli_error(text)))
-
-    def test_a_trailing_newline_still_classifies(self):
-        text = self.RUN14 + "\n"
-        self.assertEqual(text, outage.cli_error(text))
-        self.assertEqual(outage.HOST_FAILURE, outage.classify_failure(text))
-
-    # Every one of these MENTIONS the vocabulary -- "session limit", "usage
-    # limit", "weekly limit" -- without being the CLI talking: an agent's own
-    # finding, a prose sentence continuing past the framing, or the framing
-    # quoted inside a JSON findings body. None of these is the delimiter the
-    # real CLI line carries (`· resets ...` or end of line).
-    PROSE = (
-        "You've hit your session limit handling is wrong in src/quota.py",
-        "the per-user usage limit is never enforced (src/quota.py:41)",
-        "session limit",
-        "The weekly limit report is generated by cron",
-        '{"findings": [{"title": "You\'ve hit your session limit is shown to users verbatim"}]}',
-    )
-
-    def test_prose_that_merely_mentions_a_plan_or_session_limit_is_the_entrys_own(self):
-        for text in self.PROSE:
-            with self.subTest(text=text):
-                self.assertIsNone(outage.cli_error(text))
-                self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(text))
-
-    # Superseded by fix round 1 (coordinator review, Critical 2): this used to
-    # be ACCEPTED as a host surface on the theory that "usage limit exceeded"
-    # is its own KIND rendering, the neighbour of "rate limit exceeded" --
-    # but that same unguarded tail is what let `raise QuotaError('weekly
-    # limit reached')` and four other tool/test-output strings through too
-    # (see `TestTheSubscriptionLimitLineFixRound1` below). The end guard now
-    # on this KIND as well means a prose CONTINUATION past "exceeded" sinks
-    # it exactly the way one past "limit" always did on the first pattern.
-    def test_usage_limit_exceeded_prose_fails_the_gate_and_the_kind(self):
-        text = "usage limit exceeded responses are not handled"
-        self.assertIsNone(outage.cli_error(text))
-        self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(text))
-
-
-class TestTheSubscriptionLimitLineFixRound1(unittest.TestCase):
-    """Coordinator review round 1 on #1729. Four findings against the first
-    cut: a cubic-backtracking filler (Critical 1), new host-class false
-    positives on ordinary tool/test output because `_S` admits `_`/`.`/`-`
-    (Critical 2), the end guard firing before the `· resets` delimiter is
-    even considered when a name (a model, a plan) sits between "limit" and
-    the middot (Important 3), and a curly apostrophe the CLI may print
-    instead of a straight one (Important 4). Also folds in two more real
-    renderings of the same class the reviewer flagged as out of scope for a
-    strict read of the brief: the older `Claude AI usage limit
-    reached|<epoch>` form, and `<N>-hour limit reached`.
-    """
-
-    # Item 3: a rendering with descriptive text between "limit" and the
-    # middot must still pass -- the CONTENT there does not matter, but the
-    # eventual `· resets` delimiter still must arrive (within a bounded
-    # lookahead, so this stays cheap).
-    # Item 4: the CLI may print a curly apostrophe (U+2019) rather than a
-    # straight one.
-    # Item 5: the two additional renderings.
-    GENUINE = (
-        "You've reached your usage limit for Claude Opus 4.5 · resets 3:10pm (America/Chicago)",
-        "You’ve hit your session limit · resets 10:10am (America/Chicago)",
-        "Claude AI usage limit reached|1758400000",
-        "5-hour limit reached · resets 3pm",
-    )
-
-    def test_the_round_1_renderings_pass_both_the_gate_and_the_classifier(self):
-        for text in self.GENUINE:
-            with self.subTest(text=text):
-                self.assertEqual(text, outage.cli_error(text))
-                self.assertEqual(outage.HOST_FAILURE, outage.classify_failure(text))
-                self.assertEqual(outage.HOST_FAILURE,
-                                 outage.classify_failure(outage.cli_error(text)))
-
-    # Item 2: `_S` (`[\s_.-]`) let a Python identifier or a pytest node id
-    # stand in for a real space, so a `{s}`-separated KIND read straight
-    # through `test_usage_limit_reached` and `hit_your_plan_limit()`. And the
-    # bare `(?!\s*[a-z])` guard from the first cut let a directly-attached
-    # quote (`'weekly limit reached'`, no space before the closing `'`)
-    # through, because a quote character is not `[a-z]`.
-    TOOL_AND_TEST_OUTPUT = (
-        "pytest: FAILED tests/test_quota.py::test_usage_limit_reached",
-        "ruff: `hit_your_plan_limit()` is unused",
-        "mypy: the daily limit reached branch is unreachable",
-        "The monthly limit exceeded banner is never shown",
-        "raise QuotaError('weekly limit reached')",
-    )
-    # Item 5's own negatives: the two new renderings' own vocabulary, quoted
-    # or continued into ordinary prose rather than the CLI's own line.
-    NEW_RENDERING_NEGATIVES = (
-        "The 5-hour limit reached counter is reset nightly (src/quota.py)",
-        "Claude AI usage limit reached is shown as a toast",
-    )
-
-    def test_tool_and_test_output_never_reads_as_the_host(self):
-        for text in self.TOOL_AND_TEST_OUTPUT + self.NEW_RENDERING_NEGATIVES:
-            with self.subTest(text=text):
-                self.assertIsNone(outage.cli_error(text))
-                self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(text))
-
 
 class TestNoCatastrophicBacktrackingInTheFiller(unittest.TestCase):
     """Coordinator review round 1, Critical 1: `(?:\\S+{s}){0,3}?` with
@@ -383,126 +250,11 @@ class TestNoCatastrophicBacktrackingInTheFiller(unittest.TestCase):
         self.assertLess(elapsed_cli_error, 1.0, elapsed_cli_error)
 
 
-class TestTheClassifierAfterTheR2ReReview(unittest.TestCase):
-    """Item 25d PR 1, R2 re-review N5/N6/N7 (closed by the controller)."""
-
-    # N5: the CLI framing must be followed by host-shaped content. A finding
-    # that opens with `Error: 401 handling…` or `Overloaded: the scheduler…`
-    # is the agent talking, however it is delimited.
-    PROSE_FRAMINGS = (
-        "error: 500 lines reviewed",
-        "Error: 500 lines reviewed across 12 files; no blocking issues",
-        "Error: 401 handling is missing in src/auth/view.py",
-        "Error: 403 responses are never logged",
-        "API Error: the 429 rate limit path is unhandled",
-        "API Error: 401 handling is absent -- src/login.py returns the body verbatim",
-        "Overloaded: the scheduler drops tasks under burst load (src/sched.py:41)",
-        "Overloaded - the queue never drains; see worker.py",
-        "Invalid API key, invalid session token and invalid nonce are all logged at INFO",
-    )
-    GENUINE_FRAMINGS = (
-        "API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\"}}",
-        "API Error: 529 {\"type\":\"overloaded_error\"}",
-        "Error: 503 Service Unavailable",
-        "Error: 429 Too Many Requests",
-        "API Error: 401 Unauthorized",
-        "API Error: 500 Internal Server Error",
-        "API Error: 503 upstream connect error",
-        "Invalid API key, please run /login",
-        "Invalid API key",
-        "Overloaded",
-        "API Error: 502 Bad Gateway",
-    )
-
-    def test_a_prose_sentence_behind_the_framing_is_not_the_cli(self):
-        # The gate is the whole defence on this path: the claude `result`
-        # string reaches the classifier only when `cli_error` lets it through.
-        for text in self.PROSE_FRAMINGS:
-            with self.subTest(text=text):
-                self.assertIsNone(outage.cli_error(text))
-
-    def test_the_genuine_renderings_still_pass_the_framing(self):
-        for text in self.GENUINE_FRAMINGS:
-            with self.subTest(text=text):
-                self.assertEqual(text, outage.cli_error(text))
-                self.assertEqual(outage.HOST_FAILURE, outage.classify_failure(text))
-
-    # N6: `code` and 500 qualify a status only inside the provider's error
-    # OBJECT; in free text (kimi's and codex's whole stderr) they are what a
-    # tool says about the code under review.
-    TOOL_STDERR = (
-        "mypy: Found 500 errors in 42 files (checked 118 source files)",
-        "eslint: 500 problems (500 errors, 0 warnings)",
-        "error: 500 problems found",
-        "Compilation failed: 500 errors",
-        "the code (403 lines) was reviewed",
-        "exit code 500",
-        "npm ERR! code 500",
-        "internal error code 500 while reading the cache",
-        "500 errors",
-        "Found 500 error(s)",
-    )
-    OBJECT_SHAPES = (
-        {"code": 403, "message": "Forbidden"},
-        {"statusCode": 429},
-        {"http_status": 503},
-        {"type": "permission_error"},
-        {"type": "api_error", "status": 500},
-        {"error": {"code": 500, "type": "api_error"}},
-    )
-
-    def test_tool_stderr_counting_errors_is_not_the_provider(self):
-        for text in self.TOOL_STDERR:
-            with self.subTest(text=text):
-                self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(text))
-
-    def test_the_provider_object_still_qualifies_its_own_number(self):
-        for obj in self.OBJECT_SHAPES:
-            with self.subTest(obj=obj):
-                self.assertEqual(outage.HOST_FAILURE, outage.classify_failure(obj))
-
-    # N7: the same envelope arriving as raw JSON on a family's stderr.
-    RAW_JSON = (
-        '{"error":{"status":403,"message":"Forbidden"}}',
-        '{"error":{"code":403,"message":"Forbidden"}}',
-        '{"status_code":429,"message":"slow down"}',
-        '{"http_status":503}',
-        '{"statusCode":429}',
-        '{"error":{"message":"Forbidden"},"status":403}',
-    )
-    RAW_JSON_ENTRY = (
-        '{"file":"src/api.py","line":403}',
-        '{"error":"at line 403 of src/api.py"}',
-        "kimi -p timed out after 403s",
-        '{"findings":[{"severity":"HIGH","line":500}]}',
-    )
-
-    def test_a_json_envelope_on_stderr_is_read_through_its_quotes(self):
-        for text in self.RAW_JSON:
-            with self.subTest(text=text):
-                self.assertEqual(outage.HOST_FAILURE, outage.classify_failure(text))
-
-    def test_json_that_merely_contains_a_number_is_not(self):
-        for text in self.RAW_JSON_ENTRY:
-            with self.subTest(text=text):
-                self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(text))
-
-    def test_json_host_error_inside_noisy_multiline_stderr(self):
-        self.assertEqual(outage.HOST_FAILURE, outage.classify_failure(
-            'opening noise\n{"error":{"status":403,"message":"Forbidden"}}\nclosing noise'))
-        self.assertEqual(outage.ENTRY_FAILURE, outage.classify_failure(
-            'opening noise\n{"findings":[{"code":403,"title":"ordinary finding"}]}\nclosing noise'))
-
-
 class TestTheFailureTally(unittest.TestCase):
     """#1623: the loop's per-entry streaks, and the host-outage verdict read
     off them. Here rather than in orchestrate.py because the classification and
     everything decided from it have one owner (and orchestrate.py is an entry
     script at its size ceiling)."""
-
-    def _args(self, **kw):
-        return type("Args", (), dict({"target": "/tmp/repo", "mode": "headless",
-                                      "pr": None, "base": None, "setup": False}, **kw))()
 
     def _fail(self, error, host_error=None):
         """A failed launch. `host_error` is the HOST's own surface -- the only
@@ -515,14 +267,14 @@ class TestTheFailureTally(unittest.TestCase):
                               model=None, session_id=None, denials=[], error=None)
 
     def test_an_entry_failure_charges_that_entry_and_nothing_else(self):
-        tally = outage.FailureTally("claude", self._args())
+        tally = outage.FailureTally("claude")
         tally.record("a", self._fail("always"))
         tally.record("b", self._ok())
         self.assertIsNone(tally.settle())
         self.assertEqual({"a": 1}, tally.streaks)
 
     def test_a_clean_launch_clears_the_streak(self):
-        tally = outage.FailureTally("claude", self._args())
+        tally = outage.FailureTally("claude")
         for _ in range(2):
             tally.record("a", self._fail("always"))
             tally.settle()
@@ -533,13 +285,13 @@ class TestTheFailureTally(unittest.TestCase):
     def test_a_refused_reply_is_the_entrys_failure_whatever_the_host_said(self):
         # persist refusing a reply is panopticon's own verdict: the launch
         # itself came back fine, so nothing about it can be the host's fault.
-        tally = outage.FailureTally("claude", self._args())
+        tally = outage.FailureTally("claude")
         tally.record("a", self._ok(), refusal="persist refused: 403 findings were not adjudicated")
         self.assertIsNone(tally.settle())
         self.assertEqual({"a": 1}, tally.streaks)
 
     def test_a_whole_batch_of_host_failures_charges_nobody_and_pauses(self):
-        tally = outage.FailureTally("kimi", self._args())
+        tally = outage.FailureTally("kimi")
         for eid in ("a", "b", "c", "d"):
             tally.record(eid, self._fail("kimi -p exited 1: Error: 403 Forbidden",
                                          host_error="Error: 403 Forbidden"))
@@ -549,8 +301,7 @@ class TestTheFailureTally(unittest.TestCase):
         self.assertIn("kimi", message)                       # the host
         self.assertIn(outage.HOST_FAILURE, message)            # the failure class
         self.assertIn("4", message)                          # the count
-        self.assertIn("driver loop", message)                # the exact resume command
-        self.assertIn("--host kimi", message)
+        self.assertIn(outage.RESUME_ADVICE, message)          # the way back, bounds named
 
     def test_a_mixed_batch_charges_only_the_entry_class_failures(self):
         # #1721: the VERDICT this used to pin -- "a mixed batch is not an
@@ -558,7 +309,7 @@ class TestTheFailureTally(unittest.TestCase):
         # the batch ends (an entry-class failure neither extends nor closes
         # it), so it pauses; what is unchanged, and is what this test is for,
         # is the CHARGE.
-        tally = outage.FailureTally("claude", self._args())
+        tally = outage.FailureTally("claude")
         tally.record("a", self._fail("claude -p exited 1: 403 Forbidden",
                                      host_error="403 Forbidden"), seq=0)
         tally.record("b", self._fail("always"), seq=1)
@@ -573,12 +324,12 @@ class TestTheFailureTally(unittest.TestCase):
         self.assertEqual({"b": 2}, tally.streaks)
 
     def test_a_batch_with_no_failures_at_all_is_not_an_outage(self):
-        tally = outage.FailureTally("claude", self._args())
+        tally = outage.FailureTally("claude")
         tally.record("a", self._ok())
         self.assertIsNone(tally.settle())
 
     def test_settling_closes_the_batch(self):
-        tally = outage.FailureTally("claude", self._args())
+        tally = outage.FailureTally("claude")
         tally.record("a", self._fail("403 Forbidden", host_error="403 Forbidden"))
         self.assertIsNotNone(tally.settle())
         self.assertIsNone(tally.settle())                    # the next batch is empty
@@ -590,7 +341,7 @@ class TestTheFailureTally(unittest.TestCase):
     # settles a batch now is whether it ENDED in a run of host-class failures.
 
     def test_a_trailing_run_pauses_despite_an_earlier_entry_class_failure(self):
-        tally = outage.FailureTally("kimi", self._args())
+        tally = outage.FailureTally("kimi")
         tally.record("a", self._ok(), seq=0)
         tally.record("b", self._fail("kimi -p exited 1: All files read"), seq=1)
         for i, eid in enumerate(("c", "d", "e")):
@@ -605,13 +356,13 @@ class TestTheFailureTally(unittest.TestCase):
     def test_a_success_that_was_in_flight_before_the_outage_does_not_cancel_it(self):
         # The pool is FIFO, so a launch that STARTED before the first 403 can
         # still land after it. That says nothing about the host being back.
-        tally = outage.FailureTally("kimi", self._args())
+        tally = outage.FailureTally("kimi")
         tally.record("b", self._fail("403", host_error="403 Forbidden"), seq=3)
         tally.record("a", self._ok(), seq=1)               # launched before the outage
         self.assertIsNotNone(tally.settle())
 
     def test_a_success_launched_after_the_outage_closes_the_run(self):
-        tally = outage.FailureTally("kimi", self._args())
+        tally = outage.FailureTally("kimi")
         for seq, eid in ((0, "a"), (1, "b")):
             tally.record(eid, self._fail("403", host_error="403 Forbidden"), seq=seq)
         self.assertTrue(tally.outage(2))
@@ -622,7 +373,7 @@ class TestTheFailureTally(unittest.TestCase):
         self.assertEqual(["a", "b"], tally.uncharged)
 
     def test_an_entry_class_failure_neither_opens_extends_nor_closes_the_run(self):
-        tally = outage.FailureTally("kimi", self._args())
+        tally = outage.FailureTally("kimi")
         tally.record("a", self._fail("its own fault"), seq=0)
         self.assertFalse(tally.outage(1))                  # opens nothing
         self.assertIsNone(tally.settle())
@@ -634,7 +385,7 @@ class TestTheFailureTally(unittest.TestCase):
 
     def test_the_short_circuit_needs_two_launches_or_a_whole_pool_round(self):
         for width, threshold in ((None, 2), (1, 2), (2, 2), (4, 4), (8, 8)):
-            tally = outage.FailureTally("kimi", self._args())
+            tally = outage.FailureTally("kimi")
             for seq in range(threshold):
                 self.assertFalse(tally.outage(width), (width, seq))
                 tally.record("e%d" % seq, self._fail("403", host_error="403 Forbidden"),
@@ -646,7 +397,7 @@ class TestTheFailureTally(unittest.TestCase):
         # the stop FIRED. `_trailing` by then is whatever the drain left --
         # zero, when a success with a later seq closed the run -- and
         # "stopped launching after 0 host-class failure(s)" says nothing.
-        tally = outage.FailureTally("kimi", self._args())
+        tally = outage.FailureTally("kimi")
         self.assertIsNone(tally.stopped_at)
         for seq in range(2):
             tally.record("e%d" % seq, self._fail("403", host_error="403 Forbidden"), seq=seq)
@@ -659,7 +410,7 @@ class TestTheFailureTally(unittest.TestCase):
         self.assertIsNone(tally.stopped_at, "stopped_at outlived its batch")
 
     def test_the_pause_says_how_many_entries_were_never_launched(self):
-        tally = outage.FailureTally("kimi", self._args())
+        tally = outage.FailureTally("kimi")
         for seq in range(2):
             tally.record("e%d" % seq, self._fail("403", host_error="403 Forbidden"), seq=seq)
         message = tally.settle(70)
@@ -667,7 +418,7 @@ class TestTheFailureTally(unittest.TestCase):
         self.assertIn(outage.HOST_OUTAGE_CLAUSE, message)  # the guide quotes this verbatim
 
     def test_host_pause_redacts_secret_and_keeps_safe_context(self):
-        tally = outage.FailureTally("kimi", self._args())
+        tally = outage.FailureTally("kimi")
         secret = "sk-ant-api03-AAAABBBBCCCCDDDD"
         for seq in range(2):
             tally.record("e%d" % seq, self._fail(
@@ -680,7 +431,7 @@ class TestTheFailureTally(unittest.TestCase):
         self.assertNotIn(secret, message)
 
     def test_uncharged_lists_the_host_class_ids_and_resets_per_batch(self):
-        tally = outage.FailureTally("kimi", self._args())
+        tally = outage.FailureTally("kimi")
         tally.record("a", self._ok(), seq=0)
         tally.record("b", self._fail("its own fault"), seq=1)
         tally.record("c", self._fail("403", host_error="403 Forbidden"), seq=2)
@@ -691,7 +442,7 @@ class TestTheFailureTally(unittest.TestCase):
         self.assertEqual([], tally.uncharged)
 
     def test_the_cap_message_names_the_entry_the_count_and_its_last_error(self):
-        tally = outage.FailureTally("claude", self._args())
+        tally = outage.FailureTally("claude")
         for _ in range(3):
             tally.record("a", self._fail("always"))
             tally.settle()
@@ -701,7 +452,7 @@ class TestTheFailureTally(unittest.TestCase):
         self.assertIn("last: always", message)
 
     def test_exhausted_entry_redacts_secret_and_keeps_failure_context(self):
-        tally = outage.FailureTally("claude", self._args())
+        tally = outage.FailureTally("claude")
         secret = "sk-ant-api03-AAAABBBBCCCCDDDD"
         for _ in range(3):
             tally.record("a", self._fail("entry parse failure with key " + secret))
@@ -712,7 +463,7 @@ class TestTheFailureTally(unittest.TestCase):
         self.assertNotIn(secret, message)
 
     def test_an_entry_the_host_failed_never_reaches_the_cap(self):
-        tally = outage.FailureTally("kimi", self._args())
+        tally = outage.FailureTally("kimi")
         for _ in range(9):
             tally.record("a", self._fail("kimi -p exited 1: 429 rate limit",
                                          host_error="429 Too Many Requests"))
@@ -748,7 +499,7 @@ class TestTheFailureTally(unittest.TestCase):
         return tally
 
     def test_an_entry_that_has_not_failed_is_not_waited_for(self):
-        tally = outage.FailureTally("claude", self._args())
+        tally = outage.FailureTally("claude")
         self.assertEqual((0.0, [], "", []), self._waited(tally, [{"id": "a"}]))
 
     def test_the_wait_doubles_with_the_streak_and_stops_at_the_cap(self):
@@ -758,7 +509,7 @@ class TestTheFailureTally(unittest.TestCase):
         # pinned anyway -- it is what bounds a cap a later run raises.
         for streak, expected in ((1, 2.0), (2, 4.0), (3, 8.0), (9, 8.0)):
             with self.subTest(streak=streak):
-                tally = self._streak(outage.FailureTally("claude", self._args()),
+                tally = self._streak(outage.FailureTally("claude"),
                                      "a", streak)
                 returned, slept, line, _asked = self._waited(tally, [{"id": "a"}])
                 self.assertEqual(expected, returned)
@@ -768,7 +519,7 @@ class TestTheFailureTally(unittest.TestCase):
 
     def test_the_jitter_adds_at_most_a_quarter_of_the_wait(self):
         # Entries that failed together would otherwise come back in lockstep.
-        tally = self._streak(outage.FailureTally("claude", self._args()), "a", 1)
+        tally = self._streak(outage.FailureTally("claude"), "a", 1)
         returned, slept, _line, asked = self._waited(tally, [{"id": "a"}], jitter=0.25)
         self.assertEqual([(0, outage.LAUNCH_BACKOFF_JITTER)], asked)
         self.assertEqual(0.25, outage.LAUNCH_BACKOFF_JITTER)
@@ -776,12 +527,12 @@ class TestTheFailureTally(unittest.TestCase):
         self.assertEqual([2.5], slept)
 
     def test_session_mode_never_waits_because_a_human_advances_it(self):
-        tally = self._streak(outage.FailureTally("claude", self._args()), "a", 2)
+        tally = self._streak(outage.FailureTally("claude"), "a", 2)
         self.assertEqual((0.0, [], "", []),
                          self._waited(tally, [{"id": "a"}], mode="session"))
 
     def test_the_line_is_printed_once_and_counts_what_is_re_launched(self):
-        tally = outage.FailureTally("claude", self._args())
+        tally = outage.FailureTally("claude")
         self._streak(tally, "a", 2)
         self._streak(tally, "b", 1)
         _returned, _slept, line, _asked = self._waited(
@@ -794,7 +545,7 @@ class TestTheFailureTally(unittest.TestCase):
         self.assertIn("re-launching 1 entry after", one)
 
     def test_a_clean_launch_clears_the_wait_with_the_streak(self):
-        tally = self._streak(outage.FailureTally("claude", self._args()), "a", 2)
+        tally = self._streak(outage.FailureTally("claude"), "a", 2)
         tally.record("a", self._ok())
         tally.settle()
         self.assertEqual((0.0, [], "", []), self._waited(tally, [{"id": "a"}]))
@@ -802,310 +553,11 @@ class TestTheFailureTally(unittest.TestCase):
     def test_an_entry_the_host_failed_is_never_waited_for_either(self):
         # The wait is keyed on the streak, and a host-class failure charges
         # none of it -- the same reason such an entry never reaches the cap.
-        tally = self._streak(outage.FailureTally("kimi", self._args()), "a", 3,
+        tally = self._streak(outage.FailureTally("kimi"), "a", 3,
                              host_error="429 Too Many Requests")
         self.assertEqual((0.0, [], "", []), self._waited(tally, [{"id": "a"}]))
 
     def test_a_pending_entry_that_is_not_a_dict_is_not_waited_for(self):
         # `exhausted` reads `pending` the same defensive way.
-        tally = self._streak(outage.FailureTally("claude", self._args()), "a", 2)
+        tally = self._streak(outage.FailureTally("claude"), "a", 2)
         self.assertEqual((0.0, [], "", []), self._waited(tally, ["a", None]))
-
-    def test_the_resume_command_names_the_program_this_process_was_started_as(self):
-        # #495: `python3 skill/scripts/driver.py` is the GUIDE's placeholder
-        # for the install directory, so hard-coding it prints a path that does
-        # not exist on an installed skill. Read off argv, with the abbreviated
-        # form every other runtime hint uses as the fallback.
-        tally = outage.FailureTally("claude", self._args())
-        with mock.patch.object(resume.sys, "argv", ["/opt/panopticon/skill/scripts/driver.py",
-                                                    "loop"]):
-            self.assertEqual("python3 /opt/panopticon/skill/scripts/driver.py",
-                             resume.program())
-            self.assertIn("python3 /opt/panopticon/skill/scripts/driver.py loop",
-                          tally.resume_command())
-        with mock.patch.object(resume.sys, "argv", ["/usr/local/bin/pytest"]):
-            self.assertEqual("driver", resume.program())
-
-    def test_the_resume_command_never_carries_reset(self):
-        # It would discard the very run the line exists to resume.
-        args = self._args()
-        args.reset = True
-        self.assertNotIn("--reset", outage.FailureTally("claude", args).resume_command())
-
-    def test_zero_budget_survives_resume(self):
-        args = self._args(max_budget_usd=0)
-        with mock.patch.object(resume.sys, "argv", ["/opt/panopticon/driver.py"]):
-            argv = shlex.split(outage.FailureTally("claude", args).resume_command())
-        self.assertEqual(argv[-2:], ["--max-budget-usd", "0"])
-        self.assertEqual(driver.build_parser().parse_args(argv[2:]).max_budget_usd, 0)
-
-    def test_resume_argv_preserves_every_set_contract_flag_and_parser_accepts_it(self):
-        args = self._args(target="/tmp/repo with space", pr=17, base="ignored base",
-                          setup=True, mode="headless", security="redteam",
-                          fail_on="high", severity="all", gate_scope="on-diff",
-                          diff_context=0, tools=True, no_tools=False, online=True,
-                          include_fixtures=True, allow_unenforced=True,
-                          session_dir="/tmp/session 'quoted'; $(echo nope)",
-                          max_per_group=8, max_verify=3,
-                          scope_group="Team 'Q'; $(echo nope)",
-                          concurrency=2, max_iterations=4, max_budget_usd=0,
-                          max_turns=5, entry_timeout=90, max_groups=6,
-                          reset=True)
-        installed = "/opt/Panopticon Skill/driver.py"
-        with mock.patch.object(resume.sys, "argv", [installed, "loop"]):
-            command = outage.FailureTally("codex", args).resume_command()
-        expected = ["python3", installed, "loop", "/tmp/repo with space",
-                    "--pr", "17", "--setup", "--host", "codex", "--mode", "headless",
-                    "--security", "redteam", "--fail-on", "high", "--severity", "all",
-                    "--gate-scope", "on-diff", "--diff-context", "0", "--tools",
-                    "--online",
-                    "--include-fixtures", "--allow-unenforced", "--session-dir",
-                    "/tmp/session 'quoted'; $(echo nope)", "--max-per-group", "8",
-                    "--max-verify", "3", "-g", "Team 'Q'; $(echo nope)",
-                    "--concurrency", "2", "--max-iterations", "4",
-                    "--max-budget-usd", "0", "--max-turns", "5",
-                    "--entry-timeout", "90", "--max-groups", "6"]
-        argv = shlex.split(command)
-        self.assertEqual(argv, expected)
-        parsed = driver.build_parser().parse_args(argv[2:])
-        self.assertEqual(parsed.target, "/tmp/repo with space")
-        self.assertEqual(parsed.pr, 17)
-        self.assertEqual(parsed.scope_group, "Team 'Q'; $(echo nope)")
-        self.assertEqual(parsed.max_budget_usd, 0)
-        self.assertTrue(parsed.setup)
-        self.assertTrue(parsed.tools)
-        self.assertTrue(parsed.online)
-        self.assertTrue(driver._cli_flags(
-            parsed, resolution=mock.Mock(effective={"online": False}))["online"])
-        self.assertFalse(parsed.reset)
-
-    def test_resume_scope_forms_base_and_omissions(self):
-        scopes = (("scope_file", "-f", "a file.py"),
-                  ("scope_dir", "-d", "src/odd; dir"),
-                  ("scope_group", "-g", "review group"),
-                  ("scope_changed", "-c", True),
-                  ("scope_files", "--files", ["a b.py", "x' y.py"]))
-        for attr, flag, value in scopes:
-            with self.subTest(attr=attr):
-                args = self._args(target=None, base="main 'release'; $(echo nope)",
-                                  no_tools=True, **{attr: value})
-                with mock.patch.object(resume.sys, "argv", ["pytest"]):
-                    argv = shlex.split(outage.FailureTally("claude", args).resume_command())
-                expected = ["driver", "loop", ".", "--base",
-                            "main 'release'; $(echo nope)", "--host", "claude",
-                            "--mode", "headless", "--no-tools", flag]
-                if isinstance(value, list):
-                    expected.extend(value)
-                elif value is not True:
-                    expected.append(value)
-                self.assertEqual(argv, expected)
-                parsed = driver.build_parser().parse_args(argv[1:])
-                self.assertEqual(getattr(parsed, attr), value)
-        for online in (False, None):
-            with self.subTest(online=online):
-                args = self._args(mode=None, security="", tools=False, no_tools=False,
-                                  online=online, scope_files=[], max_budget_usd=None,
-                                  reset=True)
-                with mock.patch.object(resume.sys, "argv", ["pytest"]):
-                    argv = shlex.split(outage.FailureTally("claude", args).resume_command())
-                self.assertEqual(argv, ["driver", "loop", "/tmp/repo", "--host",
-                                        "claude", "--mode", "headless"])
-                parsed = driver.build_parser().parse_args(argv[1:])
-                self.assertIsNone(driver._cli_flags(
-                    parsed, resolution=mock.Mock(effective={"online": True}))["online"])
-
-    def test_the_resume_command_carries_the_flags_that_resolve_the_same_run(self):
-        tally = outage.FailureTally("codex", self._args(target="/tmp/repo", pr=7, mode="headless"))
-        tally.record("a", self._fail("codex exited with status 1: 503 Service Unavailable",
-                                     host_error="503 Service Unavailable"))
-        message = tally.settle()
-        self.assertIn("--pr 7", message)
-        self.assertIn("/tmp/repo", message)
-        self.assertIn("--mode headless", message)
-
-
-class TestTheUniformInstantFailure(unittest.TestCase):
-    """#1732 part 2: a whole batch refused before any entry did any work.
-
-    Run 14's tool-verify checkpoint launched 103 entries, and every one of
-    them exited non-zero in ~120 ms with the SAME message, because one argv
-    token was wrong. Nothing in the loop could tell that from 103 entries each
-    failing on its own account: the per-entry cap needs three rounds to fire,
-    so the driver launched all 103 three times -- 309 launches, ~35 minutes --
-    for a defect the first two results had already proved.
-
-    Same message, same instant, entry class, first K by arrival: that is the
-    LAUNCH refusing, not the entries.
-    """
-
-    MESSAGE = "claude -p printed no JSON envelope (exit 1)"
-
-    def _args(self, **kw):
-        return type("Args", (), dict({"target": "/tmp/repo", "mode": "headless",
-                                      "pr": None, "base": None, "setup": False}, **kw))()
-
-    def _tally(self):
-        return outage.FailureTally("claude", self._args())
-
-    def _fail(self, error, host_error=None):
-        return base.RunResult.failed("e", error, host_error=host_error)
-
-    def _ok(self):
-        return base.RunResult(entry_id="e", ok=True, text="{}", usage={}, cost_usd=None,
-                              model=None, session_id=None, denials=[], error=None)
-
-    def _instant_batch(self, tally, n, width=2, message=None, **kw):
-        for seq in range(n):
-            tally.record("e%d" % seq, self._fail(message or self.MESSAGE, **kw),
-                         seq=seq, duration_ms=120)
-        return tally.uniform(width)
-
-    def test_k_identical_instant_entry_failures_are_uniform(self):
-        self.assertTrue(self._instant_batch(self._tally(), 2, width=2))
-
-    def test_it_needs_a_whole_pool_round_when_the_pool_is_wider(self):
-        for width, threshold in ((None, 2), (1, 2), (2, 2), (4, 4), (8, 8)):
-            tally = self._tally()
-            for seq in range(threshold - 1):
-                tally.record("e%d" % seq, self._fail(self.MESSAGE), seq=seq, duration_ms=120)
-                self.assertFalse(tally.uniform(width), (width, seq))
-            tally.record("last", self._fail(self.MESSAGE), seq=threshold, duration_ms=120)
-            self.assertTrue(tally.uniform(width), width)
-
-    def test_one_success_among_the_first_k_breaks_it(self):
-        tally = self._tally()
-        tally.record("a", self._fail(self.MESSAGE), seq=0, duration_ms=120)
-        tally.record("b", self._ok(), seq=1, duration_ms=120)
-        tally.record("c", self._fail(self.MESSAGE), seq=2, duration_ms=120)
-        self.assertFalse(tally.uniform(2))
-
-    def test_different_messages_break_it(self):
-        tally = self._tally()
-        tally.record("a", self._fail("no JSON envelope (exit 1)"), seq=0, duration_ms=120)
-        tally.record("b", self._fail("no JSON envelope (exit 2)"), seq=1, duration_ms=120)
-        self.assertFalse(tally.uniform(2))
-
-    def test_two_messages_that_differ_only_in_a_secret_are_still_one_message(self):
-        # The comparison is over the REDACTED text, which is also what the
-        # pause prints: a per-launch request id or key in an otherwise
-        # identical refusal must not read as two different failures.
-        tally = self._tally()
-        tally.record("a", self._fail("bad key sk-ant-api03-AAAABBBBCCCCDDDD"),
-                     seq=0, duration_ms=120)
-        tally.record("b", self._fail("bad key sk-ant-api03-EEEEFFFFGGGGHHHH"),
-                     seq=1, duration_ms=120)
-        self.assertTrue(tally.uniform(2))
-
-    def test_one_slow_failure_breaks_it(self):
-        # A launch that ran for two seconds got far enough to do work; the
-        # whole point of the rule is a refusal that happens before any entry
-        # could have started.
-        tally = self._tally()
-        tally.record("a", self._fail(self.MESSAGE), seq=0, duration_ms=120)
-        tally.record("b", self._fail(self.MESSAGE), seq=1,
-                     duration_ms=outage.UNIFORM_FAST_MS)
-        self.assertFalse(tally.uniform(2))
-
-    def test_an_unmeasured_duration_breaks_it(self):
-        tally = self._tally()
-        tally.record("a", self._fail(self.MESSAGE), seq=0, duration_ms=120)
-        tally.record("b", self._fail(self.MESSAGE), seq=1)
-        self.assertFalse(tally.uniform(2))
-
-    def test_a_host_class_failure_breaks_it_and_outage_still_governs(self):
-        tally = self._tally()
-        for seq in range(2):
-            tally.record("e%d" % seq,
-                         self._fail("claude -p exited 1: 403 Forbidden",
-                                    host_error="provider.auth_error: 403 Forbidden"),
-                         seq=seq, duration_ms=120)
-        self.assertFalse(tally.uniform(2))
-        self.assertTrue(tally.outage(2))
-        self.assertIn(outage.HOST_FAILURE, tally.settle(0, 2))
-
-    def test_a_persist_refusal_breaks_it(self):
-        # persist refusing a reply means the launch CAME BACK -- the one thing
-        # a uniform launch failure says did not happen.
-        tally = self._tally()
-        tally.record("a", self._ok(), refusal="persist refused: not a findings envelope",
-                     seq=0, duration_ms=120)
-        tally.record("b", self._ok(), refusal="persist refused: not a findings envelope",
-                     seq=1, duration_ms=120)
-        self.assertFalse(tally.uniform(2))
-
-    def test_the_stop_remembers_its_own_count(self):
-        tally = self._tally()
-        self.assertIsNone(tally.stopped_uniform)
-        self._instant_batch(tally, 2, width=2)
-        self.assertEqual(2, tally.stopped_uniform)
-        tally.settle(0, 2)
-        self.assertIsNone(tally.stopped_uniform, "stopped_uniform outlived its batch")
-
-    def test_settling_a_uniform_batch_charges_nobody_and_gives_every_id_back(self):
-        tally = self._tally()
-        self._instant_batch(tally, 3, width=2)
-        message = tally.settle(97, 2)
-        self.assertEqual({}, tally.streaks, "a uniform batch charged an entry")
-        self.assertEqual(["e0", "e1", "e2"], tally.uncharged)
-        self.assertTrue(message.startswith("paused:"), message)
-        self.assertIn("97 of the batch's entries were never launched", message)
-        self.assertIn(self.MESSAGE, message)
-        self.assertIn("--host claude", message)              # the resume command
-        self.assertNotIn(outage.HOST_FAILURE + "-class", message)
-
-    def test_the_pause_quotes_the_identical_message_not_a_drained_stray(self):
-        # The message is the EVIDENCE for the verdict, so it has to be the
-        # message the verdict was reached on -- the one the first K arrivals
-        # all carried. Quoting the last failure of the batch instead let a
-        # launch that was already in flight when the stop fired, and drained
-        # afterwards, supply it: "all failed ... with the same entry-class
-        # message ... and not the host; message: API Error: 403 Forbidden".
-        # A pause that contradicts itself in one sentence sends the operator
-        # to wait out a host that is fine.
-        tally = self._tally()
-        for seq in range(2):
-            tally.record("e%d" % seq, self._fail(self.MESSAGE), seq=seq, duration_ms=120)
-        tally.record("e9", self._fail("claude -p exited 1: API Error: 403 Forbidden",
-                                      host_error="API Error: 403 Forbidden"),
-                     seq=9, duration_ms=800)
-        message = tally.settle(50, 2)
-        self.assertIn(self.MESSAGE, message)
-        self.assertNotIn("403", message)
-        self.assertNotIn("API Error", message)
-
-    def test_the_quoted_message_is_redacted(self):
-        tally = self._tally()
-        for seq in range(2):
-            tally.record("e%d" % seq, self._fail("bad key sk-ant-api03-AAAABBBBCCCCDDDD"),
-                         seq=seq, duration_ms=120)
-        self.assertNotIn("sk-ant-", tally.settle(0, 2))
-
-    def test_the_message_is_not_the_host_outage_one(self):
-        tally = self._tally()
-        self._instant_batch(tally, 2, width=2)
-        self.assertNotIn(outage.HOST_OUTAGE_CLAUSE, tally.settle(0, 2))
-
-    def test_a_batch_that_ended_uniform_without_a_stop_still_pauses(self):
-        # `settle` is the terminal reading, exactly as it is for the trailing
-        # run: a batch narrower than the pool never asks `uniform` at all.
-        tally = self._tally()
-        for seq in range(2):
-            tally.record("e%d" % seq, self._fail(self.MESSAGE), seq=seq, duration_ms=120)
-        self.assertIsNone(tally.stopped_uniform)
-        self.assertIsNotNone(tally.settle(0, 2))
-
-    def test_a_non_uniform_batch_charges_exactly_as_before(self):
-        tally = self._tally()
-        tally.record("a", self._fail("its own fault"), seq=0, duration_ms=120)
-        tally.record("b", self._fail("a different fault"), seq=1, duration_ms=120)
-        self.assertIsNone(tally.settle(0, 2))
-        self.assertEqual({"a": 1, "b": 1}, tally.streaks)
-        self.assertEqual([], tally.uncharged)
-
-    def test_the_verdict_does_not_survive_its_batch(self):
-        tally = self._tally()
-        self._instant_batch(tally, 2, width=2)
-        self.assertIsNotNone(tally.settle(0, 2))
-        tally.record("z", self._fail(self.MESSAGE), seq=0, duration_ms=120)
-        self.assertFalse(tally.uniform(2))
-        self.assertIsNone(tally.settle(0, 2))

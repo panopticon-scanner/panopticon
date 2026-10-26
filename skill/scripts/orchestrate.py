@@ -161,8 +161,8 @@ class _BudgetStop:
     turns the same fault into the `error` status that names the line.
 
     `stopped` is what the loop's "stopped launching after ..." line reads:
-    which of the three rules cancelled the queue. Kept here rather than as a
-    counter beside `FailureTally.stopped_uniform` because `runners/outage`
+    which of the two rules cancelled the queue. Kept here rather than as a
+    counter beside `FailureTally.stopped_at` because `runners/outage`
     classifies FAILURES and reaching a cap is not one -- nothing failed, no
     entry is charged or refunded on its account, and `settle` is asked for no
     verdict about it. One instance per batch, so the flag cannot outlive the
@@ -336,7 +336,7 @@ def loop(args):
         iterations = 0
         # The per-entry failure streaks, and (#1623) the verdict on whether a whole batch was
         # really the HOST going down. `runners.outage.FailureTally` documents and owns both.
-        tally = outage.FailureTally(host, args)
+        tally = outage.FailureTally(host)
         # M8: the pre-loop setup lives INSIDE the try, and so, since #2200, do `_first_run` and the
         # resume seam's `_run` above. They touch the filesystem (the run folder, host-settings.json,
         # the guard paths) or call `driver.run`/`run_setup_flow`, and a KeyboardInterrupt, or an
@@ -475,17 +475,13 @@ def loop(args):
             # how much that was. `closing` because an exception here abandons the generator: it
             # drains the pool now, before `_finish` tears the guards and the runner's scratch area
             # down, rather than at GC's convenience.
-            # #1732 then #1760: THREE stop rules. `outage` asks whether the HOST went down;
-            # `uniform` asks whether the LAUNCH is being refused (run 14: 103 launches, ~120 ms
-            # each, one identical message, one wrong argv token); `over_budget` asks whether the
-            # operator's cap has been reached. Neither of the first two can be true of the same
-            # results, and the third is built per batch so its flag cannot outlive the batch that
-            # set it.
+            # #1760: TWO stop rules. `outage` asks whether the HOST went down; `over_budget`
+            # asks whether the operator's cap has been reached, and is built per batch so its
+            # flag cannot outlive the batch that set it.
             over_budget = _BudgetStop(ledger, budget)
             with contextlib.closing(runner.iter_batch(
                     pending, getattr(args, "concurrency", None), guards.env_for,
-                    stop=lambda: (tally.outage(width) or tally.uniform(width)
-                                  or over_budget()))) as stream:
+                    stop=lambda: tally.outage(width) or over_budget())) as stream:
                 for entry, result, timing in stream:
                     eid = entry.get("id")
                     refusal = loop_batch.record_entry(
@@ -493,8 +489,7 @@ def loop(args):
                         mode, runner)
                     handled.append(eid)
                     landed.append((entry, result))
-                    tally.record(eid, result, refusal, seq=order.get(eid),
-                                 duration_ms=timing.get("duration_ms"))
+                    tally.record(eid, result, refusal, seq=order.get(eid))
                     done += 1
                     # Best-effort, exactly as `_finish`'s own call is (F1): derived
                     # from a ledger already on disk, and `_finish` rewrites it. Fatal
@@ -519,16 +514,11 @@ def loop(args):
                 # closed the run, and the settle verdict below is the only thing entitled to call
                 # this an outage.
                 #
-                # #1732, then #1760: which RULE fired, too. One wording for each, because a batch
-                # stopped for an argv defect -- or for a cap the operator set themselves -- reported
-                # as "N host-class failure(s)" sends them to wait for a host that is perfectly
-                # healthy, and a budget stop would render that N as zero. Exclusive by construction,
-                # not by precedence: the `stop` above is `outage or uniform or over_budget`, so its
-                # short-circuit means the rule that answered True is the only one that recorded
-                # anything before the break.
-                if tally.stopped_uniform:
-                    rule = "%d identical instant failure(s)" % tally.stopped_uniform
-                elif over_budget.stopped:
+                # #1760: which RULE fired, too: a stop for a cap the operator set themselves,
+                # reported as "N host-class failure(s)", would render that N as zero. Exclusive by
+                # construction: the `stop` above is `outage or over_budget`, so its short-circuit
+                # means the rule that answered True is the only one that recorded anything.
+                if over_budget.stopped:
                     rule = over_budget.stopped
                 else:
                     rule = "%d host-class failure(s)" % (tally.stopped_at or 0)
@@ -548,7 +538,7 @@ def loop(args):
             # nothing, so no ARTIFACT is rolled back; the per-dispatch attempt marker is
             # given back exactly as the interrupt gives it back, or three paused runs
             # exhaust the same budget the automatic iterations used to.
-            paused = tally.settle(len(unlaunched), width)
+            paused = tally.settle(len(unlaunched))
             # NOT every pending entry (#1721): an entry-class failure during an outage is still the
             # entry's own and keeps its charge, and a cell that landed is done. What is given back
             # is what the host took down, plus what the short-circuit never launched -- and it is
