@@ -124,6 +124,11 @@
   option or scanner failure now remains a coverage failure instead of launching a legacy second
   command that could read the target's `.bundler-audit.yml` ignore list. The legacy text parser
   remains for existing captures; the runner no longer downgrades to an unpinned command shape.
+- **The HTML report CSP authorizes only its exact built-in script (#3269 G11, 5.3).**
+  `script-src` no longer admits every inline script or same-origin script. Its sole source is a
+  SHA-256 hash derived from the exact `_JS` bytes embedded in the self-contained report, so a
+  script injected into report content does not share the authorized digest. Editing `_JS`
+  automatically updates the policy instead of leaving a copied hash stale.
 - **Dependency coverage is now a visible, certifying receipt (#3269 SCA, 5.3).**
   `meta.coverage.dependency_audit` records which dependency ecosystems were applicable and which
   dedicated SCA adapters were selected and produced output. If a dependency surface exists but no
