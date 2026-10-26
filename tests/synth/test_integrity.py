@@ -684,6 +684,34 @@ class TestADeletedDispatchPlanIsDeletedEvidence(unittest.TestCase):
         self.assertFalse(sec["dispatch_plan_missing"])
         self.assertFalse(self._integrity_ok(sec))
 
+    def test_row_2b_re_pointing_a_findings_link_is_caught(self):
+        # #3249: the SEC cell's out_file is a LINK when the snapshot is taken,
+        # and is re-pointed afterwards at a copy with the HIGH dropped. Both
+        # sides of reconcile realpath at verify time, so they move together and
+        # it stays clean; only the snapshot remembers the old target, and the
+        # recorded cell must not drop out of the check.
+        cells = os.path.join(self.run_dir, "cells")
+        os.mkdir(cells)
+        recorded, substitute = (os.path.join(cells, n) for n in ("sec.json", "other.json"))
+        os.rename(self.paths[0], recorded)
+        os.symlink(recorded, self.paths[0])
+        plan = plan_mod.load_dispatch_plans_detailed(self.run_dir)[0][0]
+        _hashes, self.snapshot_sha256 = gr.snapshot_out_files(
+            plan, out_path=os.path.join(self.run_dir, "out-file-hashes.json"))
+        with open(substitute, "w", encoding="utf-8") as fh:
+            json.dump({"_panopticon": {"group": "Core", "domain": "SEC"},
+                       "findings": []}, fh)
+        os.remove(self.paths[0])
+        os.symlink(substitute, self.paths[0])
+
+        sec, err = self._section(plan_owed=True)
+        self.assertEqual(sec["unexpected_findings_files"], [])
+        self.assertEqual(sec["missing_planned_files"], [])
+        self.assertEqual(sec["content_hashes_checked"], 1)          # one cell short
+        self.assertEqual(sec["content_mismatched_files"], [recorded])
+        self.assertIn("no longer verifiable", err)
+        self.assertFalse(self._integrity_ok(sec))
+
     def test_row_3_deleting_the_snapshot_does_not_erase_it(self):
         # #1208, unchanged: the plan still declares cells, so the snapshot is OWED.
         self._substitute()

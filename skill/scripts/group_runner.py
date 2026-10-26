@@ -270,7 +270,9 @@ def verify_out_file_hashes(ingested_paths, hashes_path=None):
     concurrent replacement cannot make verification read one snapshot and the
     manifest-binding check read another. In that tuple:
       - ``mismatched`` lists the ORIGINAL path strings whose current bytes no
-        longer hash to the recorded value.
+        longer hash to the recorded value, plus (#3249) the recorded realpath of
+        every snapshot entry no ingested path resolved to -- a cell the
+        snapshot saw that verification never re-read.
       - ``snapshot_unreadable`` is True when the snapshot file EXISTS but cannot
         be read as a non-empty dict. #run7 #1208: snapshot_out_files only writes
         the file when it has entries, so a present-but-corrupt/empty file is NOT a
@@ -296,11 +298,13 @@ def verify_out_file_hashes(ingested_paths, hashes_path=None):
         return None, [], True, snapshot_sha256  # present but malformed/empty -> tamper
     checked = 0
     mismatched = []
+    matched = set()
     for p in ingested_paths or []:
         rp = os.path.realpath(str(p))
         if rp not in recorded:
             continue
         checked += 1
+        matched.add(rp)
         try:
             digest = _sha256_file(p)
         except OSError:
@@ -308,4 +312,11 @@ def verify_out_file_hashes(ingested_paths, hashes_path=None):
             continue
         if digest != recorded[rp]:
             mismatched.append(str(p))
+    # #3249: every recorded cell must be re-read. A findings link re-pointed
+    # after the snapshot resolves to a key the snapshot never saw, so the loop
+    # above skips it and the recorded file goes unverified; `reconcile` cannot
+    # see that either, since it realpaths the plan and the ingested path at the
+    # same moment. Nothing legitimate removes or renames a recorded file
+    # between the two reads, so a leftover key is listed as its recorded path.
+    mismatched.extend(rp for rp in recorded if rp not in matched)
     return checked, sorted(mismatched), False, snapshot_sha256
