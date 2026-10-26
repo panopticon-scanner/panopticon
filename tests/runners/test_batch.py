@@ -252,5 +252,46 @@ class TestTheDiscardAcceptanceFile(unittest.TestCase):
                          r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 
+
+class TestTheWindowBeforeTheFirstLaunch(unittest.TestCase):
+    """#3227: `before_launch` closes the still-empty record on any failure,
+    and takes the caller's grants down BEFORE it does -- the record is the
+    batch's lock."""
+
+    def _batch(self):
+        root = tempfile.mkdtemp(prefix="batch-window-")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        return batch_mod.Batch(root, 1, "review", []).open()
+
+    def test_the_teardown_runs_while_the_lock_is_still_held(self):
+        batch = self._batch()
+        held = []
+        with self.assertRaises(KeyboardInterrupt):
+            with batch.before_launch(teardown=lambda: held.append(os.path.exists(batch.path))):
+                raise KeyboardInterrupt
+        self.assertEqual([True], held)
+        self.assertFalse(os.path.exists(batch.path))
+
+    def test_a_failing_teardown_never_masks_the_failure_and_still_closes(self):
+        batch = self._batch()
+
+        def broken():
+            raise OSError(5, "teardown broke")
+
+        with mock.patch("sys.stderr") as err, self.assertRaisesRegex(ValueError, "the real one"):
+            with batch.before_launch(teardown=broken):
+                raise ValueError("the real one")
+        self.assertIn("guards not disarmed", "".join(c.args[0] for c in err.write.call_args_list))
+        self.assertFalse(os.path.exists(batch.path))
+
+    def test_a_window_that_succeeds_keeps_the_record_and_tears_nothing_down(self):
+        batch = self._batch()
+        torn = []
+        with batch.before_launch(teardown=lambda: torn.append(1)):
+            pass
+        self.assertEqual([], torn)
+        self.assertTrue(os.path.exists(batch.path))
+
+
 if __name__ == "__main__":
     unittest.main()

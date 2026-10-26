@@ -44,11 +44,13 @@ forbids `runners/* -> phases` imports and the loop is what calls both halves
 of the rollback: the artifact half here, and the interrupted phase's
 per-dispatch marker in `phases.persist.rollback_markers`.
 """
+import contextlib
 import json
 import os
 import re
 import socket
 import stat
+import sys
 import time
 import uuid
 from typing import TypedDict
@@ -481,3 +483,44 @@ class Batch:
         except OSError as exc:
             return ["%s: %s" % (self.path, exc)]
         return []
+
+    @contextlib.contextmanager
+    def before_launch(self, teardown=None):
+        """#3227: the window between `open` and the batch's first launch.
+
+        `orchestrate.loop` opens the batch BEFORE it arms the guards, because
+        the O_EXCL create in `open` is the batch's lock: a second loop on the
+        same run that loses it must not have armed. It used to arm first --
+        rebuilding the run folder's settings file and re-installing the same
+        entries' grants under the live loop -- and then, refused, disarm them
+        from under it on its way out.
+
+        Arming, the launch backoff and the shape proof therefore run with the
+        record already on disk, and any of them can raise (an interrupt too).
+        Nothing has launched yet, so there is nothing to roll back and the
+        record has nothing to say: it is closed, and the failure goes on
+        exactly as it did when this window still came before `open`. A
+        process KILLED here leaves the record behind with no artifact on disk
+        -- an ordinary dead-owner record, which `loop_batch.recover_stale`
+        rolls back on the next loop.
+
+        `teardown` (the caller's disarm) runs FIRST: the record is the lock,
+        so the grants come down before it is released, or a second loop could
+        open in the gap, arm the same ids, and have them stripped from under
+        it -- the order `loop_batch.rolled_back` already keeps. A teardown
+        that fails is reported, never raised: it must not mask the failure
+        that brought the window down.
+        """
+        try:
+            yield self
+        except BaseException:
+            if teardown is not None:
+                try:
+                    teardown()
+                except BaseException as exc:     # noqa: BLE001 -- the original failure goes on
+                    print("driver loop: guards not disarmed: %s: %s" % (type(exc).__name__, exc),
+                          file=sys.stderr, flush=True)
+            for note in self.close():
+                print("driver loop: batch manifest not removed: %s" % note,
+                      file=sys.stderr, flush=True)
+            raise
