@@ -392,8 +392,8 @@ def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
               "%s. Treating as a deleted baseline (fail-closed), not an unmeasured "
               "run; integrity is NOT certified." % snapshot_path, file=sys.stderr)
     if content_mismatched:
-        print("synthesize: %d findings file(s) changed AFTER the fan-out "
-              "snapshot (content substitution?): %s"
+        print("synthesize: %d findings file(s) changed, or were no longer "
+              "verifiable, AFTER the fan-out snapshot (content substitution?): %s"
               % (len(content_mismatched), ", ".join(content_mismatched)),
               file=sys.stderr)
     if content_snapshot_unreadable:

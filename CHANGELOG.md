@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Fix: a findings link re-pointed after the fan-out snapshot no longer drops out of the integrity check (#3249).**
+  - The snapshot records each review cell by its realpath. A link re-pointed afterwards resolved to a key the snapshot never saw, so `verify_out_file_hashes` skipped it and the recorded cell went unverified. `reconcile_findings_files` could not see it either, because it realpaths the plan and the ingested path at the same moment, so both moved together.
+  - Every recorded cell must now be re-read. One that no ingested path resolves to is listed in `meta.integrity.content_mismatched_files` under its recorded path, and the run is not certified. No legitimate path removes, renames or rewrites a recorded findings file between the snapshot and synthesize, so a clean run is unchanged. No schema change.
 - **Fix: a `--pr` run no longer writes its reports through a `.panopticon` the target committed (#3225).**
   - In `--pr` mode first contact vets the throwaway worktree, never the caller checkout, so the caller's `.panopticon` is whatever the target's default branch committed. A committed `.panopticon -> /elsewhere` link redirected the surfaced `<tag>-report*.json` and `.html` there.
   - The surface now checks the root (`plan_contract.artifact_root`) and then holds it open (`O_DIRECTORY|O_NOFOLLOW`). Every staging write, publish and `report.json` relink is made relative to that directory fd, so a swap of the name after the check cannot move a write out of the tree. A path-based confinement check (`safe_write.confine_artifact_path`) would not catch that swap, because it anchors on the link's own target.

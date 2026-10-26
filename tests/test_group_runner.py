@@ -320,10 +320,47 @@ class TestOutFileContentHashes(unittest.TestCase):
             self.assertEqual((checked, mismatched, unreadable),
                              (2, [deleted], False))
             self.assertIsNotNone(observed)
+            # #3249: a recorded file left out of the ingested list is no longer
+            # silently unverified -- it is listed, under its recorded realpath.
             checked, mismatched, unreadable, observed = gr.verify_out_file_hashes(
                 [unrecorded, unchanged], hashes_path=hashes)
-            self.assertEqual((checked, mismatched, unreadable), (1, [], False))
+            self.assertEqual((checked, mismatched, unreadable),
+                             (1, [os.path.realpath(deleted)], False))
             self.assertIsNotNone(observed)
+
+    def test_a_re_pointed_link_leaves_its_recorded_cell_unverified_and_listed(self):
+        # #3249: the out_file is a link at snapshot time; re-pointed afterwards,
+        # its realpath is a key the snapshot never saw.
+        with tempfile.TemporaryDirectory() as d:
+            d = os.path.realpath(d)
+            recorded, substitute = (os.path.join(d, n) for n in ("real.json", "other.json"))
+            for path, body in ((recorded, '{"findings": []}'),
+                               (substitute, '{"findings": ["INJECTED"]}')):
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(body)
+            link = os.path.join(d, "findings-g1-SEC.json")
+            os.symlink(recorded, link)
+            hashes = os.path.join(d, "out-file-hashes.json")
+            gr.snapshot_out_files([{"out_file": link}], out_path=hashes)
+            os.remove(link)
+            os.symlink(substitute, link)
+            checked, mismatched, unreadable, _observed = gr.verify_out_file_hashes(
+                [link], hashes_path=hashes)
+        self.assertEqual((checked, mismatched, unreadable), (0, [recorded], False))
+
+    def test_two_names_for_one_recorded_file_are_matched_not_flagged(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = os.path.realpath(d)
+            real = os.path.join(d, "findings-g1-SEC.json")
+            with open(real, "w", encoding="utf-8") as fh:
+                fh.write('{"findings": []}')
+            alias = os.path.join(d, "alias.json")
+            os.symlink(real, alias)
+            hashes = os.path.join(d, "out-file-hashes.json")
+            gr.snapshot_out_files([{"out_file": real}], out_path=hashes)
+            checked, mismatched, unreadable, _observed = gr.verify_out_file_hashes(
+                [real, alias], hashes_path=hashes)
+        self.assertEqual((checked, mismatched, unreadable), (2, [], False))
 
     def test_no_snapshot_reads_as_not_measured(self):
         # #1208 read this as a PINNED FAIL-OPEN: deleting the baseline looks
