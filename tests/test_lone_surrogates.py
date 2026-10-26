@@ -464,15 +464,6 @@ class TestTheReader(unittest.TestCase):
         clean = {"a": ["b", {"c": "d\\ud800 as six characters"}], "n": 1}
         self.assertEqual(clean, self.read(clean))
 
-    def test_a_cap_is_applied_to_the_spelled_text(self):
-        # The tools manifest's `cleanup_failures` row is cut to 64 and 500 as it is read (`synth/repair`). Cut
-        # BEFORE the spelling, 59 characters and a surrogate came out as 65, past the schema's bound.
-        import scripts.synth.repair as repair_mod
-        manifest = self.read({"cleanup_failures": {"semgrep": {"kind": "k" * 59 + LONE, "detail": "d" * 495 + LONE}}})
-        row = repair_mod.repair_tool_cleanup_failures(manifest["cleanup_failures"], warn=lambda *said: None)["semgrep"]
-        self.assertEqual(("k" * 59 + SPELLED[:5], 500), (row["kind"], len(row["detail"])))
-        self.assertEqual([], surrogates(row))
-
     def test_a_failure_log_row_spells_it_the_same_way(self):
         self.assertEqual(plain("a" + SPELLED + " b"), plain(x0x_report._redacted_one_line("a" + LONE + " b")))
 
@@ -761,21 +752,6 @@ class TestTheRealChild(unittest.TestCase):
         lone, twin = "docs" + LONE + "x.py", "docs" + SPELLED + "x.py"
         self.same(self.child(*flags, findings=high(lone)), self.child(*flags, findings=high(twin)))
         self.same(self.child(findings=[], scans=tool(lone)), self.child(findings=[], scans=tool(twin)))
-
-    def test_a_manifest_row_at_its_cap_writes_a_valid_report(self):
-        # Round 2, B2: 59 characters and a surrogate were cut to 60 and THEN spelled to 65, past the schema's 64,
-        # and the run ended `artifact invalid` (status 4) where its spelled twin was cut to 64 and written.
-        def manifest(text):
-            return {"tools-manifest.json": {"schema_version": 1, "run_id": RUN_ID, "selected": [], "missing": [],
-                                            "cleanup_failures": {"semgrep": {"kind": "k" * 59 + text,
-                                                                             "detail": "d" * 495 + text}}}}
-
-        for text in (LONE, LONE * 600):
-            with self.subTest(surrogates=len(text)):
-                run = self.child(findings=[a_finding(1)], beside=manifest(text))
-                row = self.whole(run)["meta"]["coverage"]["tools_cleanup_failures"]["semgrep"]
-                self.assertEqual((0, 64, 500), (run[0], len(row["kind"]), len(row["detail"])), run[1])
-                self.same(run, self.child(findings=[a_finding(1)], beside=manifest(text.replace(LONE, SPELLED))))
 
     def test_a_hunk_map_names_a_file_as_the_finding_on_it_does(self):
         # The `--diff-hunks` case of round 2's B3: the map's keys were read as written while the finding's path

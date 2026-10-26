@@ -21,8 +21,8 @@ from . import artifacts as artifacts_mod
 from . import coverage_io as coverage_io
 from . import findings as findings_mod
 from . import integrity as integrity_mod
-from . import repair as repair_mod
 from . import tool_axis as tool_axis_mod
+from . import validate_schema as validate_schema_mod
 
 
 @dataclass(frozen=True)
@@ -306,11 +306,10 @@ def load_groups_json(path, raw_groups=None):
     it cannot be read, or it is not a JSON object -- tolerant by design (never
     abort a run); the two failure modes are announced on stderr.
 
-    The file is target-writable, and five of its fields are type-pinned by the
-    time they reach the artifact, so the dict is normalized HERE rather than by
-    the caller (#1639 P15 fix round 3, R2-6): repairing at the read is what
-    makes a second caller safe by construction. It lived at the caller for one
-    round only because this module was two lines under its ceiling.
+    A file whose shape the report cannot carry is rejected whole, announced the
+    same way (`_groups_shape_fault`, #3273): the driver's groups.json is
+    discovery's own, behind first contact, and a hand-run `--groups` is the
+    operator's to name.
 
     `raw_groups`, when a list, is extended with the file's `groups` as read, a
     lone surrogate still in each name (#2962): the one reading `#2964`'s
@@ -330,7 +329,35 @@ def load_groups_json(path, raw_groups=None):
     if not isinstance(gj, dict):
         print("synthesize: %s is not a JSON object; ignoring" % path, file=sys.stderr)
         return {}
-    return repair_mod.repair_groups_json(gj)
+    fault = _groups_shape_fault(gj)
+    if fault:
+        print("synthesize: could not read %s (%s); ignoring" % (path, fault), file=sys.stderr)
+        return {}
+    return gj
+
+
+def _groups_shape_fault(gj):
+    """Why `gj` is not a groups.json the report can carry, or None (#3273 cut
+    16, ruling K). A fail-closed gate at the operator boundary, not a repair:
+    the driver's groups.json is discovery's own, and a hand-run `--groups` may
+    name any file, so a wrong shape anywhere rejects the WHOLE file, as an
+    unreadable one is. Size is the read's byte cap (`MAX_JSON_BYTES`)."""
+    groups = gj.get("groups", [])
+    if not isinstance(groups, list):
+        return "groups is not a list"
+    for g in groups:
+        if not (isinstance(g, dict) and isinstance(g.get("name"), str)
+                and isinstance(g.get("files"), list)
+                and all(isinstance(f, str) for f in g["files"])
+                and isinstance(g.get("parent", ""), str)):
+            return "a group is not {name: str, files: [str], parent: str}"
+    if not isinstance(gj.get("mode", ""), str):
+        return "mode is not a string"
+    modes = (((validate_schema_mod._report_doc().get("properties") or {}).get("meta") or {})
+             .get("properties", {}).get("security_mode", {}).get("enum") or ())
+    if gj.get("security_mode") is not None and gj["security_mode"] not in modes:
+        return "security_mode is not one of %s" % ", ".join(modes)
+    return None
 
 
 PANEL_TOOLS_CONTEXT = "panel-tools-context.json"

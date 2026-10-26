@@ -1964,7 +1964,8 @@ def test_no_groups_json_a_target_can_write_ends_the_run(tmp_path, label, groups_
                        "--out", str(out), str(fp)])
     assert rc == 0, err.getvalue()
     assert "artifact invalid" not in err.getvalue()
-    assert "groups.json:" in err.getvalue(), err.getvalue()
+    # #3273 cut 16 (ruling K): rejected whole, announced as an unreadable file is.
+    assert "could not read %s (" % groups in err.getvalue(), err.getvalue()
     report = json.loads(out.read_text(encoding="utf-8"))
     assert report["meta"]["security_mode"] in ("standard", "redteam")
 

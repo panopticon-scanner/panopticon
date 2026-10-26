@@ -578,24 +578,14 @@ class TestTheDiscoveryBlockReachesTheSection(unittest.TestCase):
         self.assertIsNone(sec["discovery_git_failure"])
         self.assertEqual(sec["discovery_files_truncated"], 0)
 
-    def test_a_mistyped_field_publishes_nothing_rather_than_its_type(self):
-        # The file is target-writable and both values are type-pinned in the
-        # schema; a bool is not an integer for this purpose (`jsonschema`
-        # rejects `True` where `integer` is pinned).
-        sec = self._section({"files_truncated": True, "git_failure": ["boom"]})
-        self.assertIsNone(sec["discovery_git_failure"])
-        self.assertIsNone(sec["discovery_files_truncated"])
-        sec = self._section({"files_truncated": "2", "git_failure": 128})
-        self.assertIsNone(sec["discovery_git_failure"])
-        self.assertIsNone(sec["discovery_files_truncated"])
-
-    def test_an_empty_reason_and_a_negative_count_publish_nothing(self):
+    def test_an_empty_reason_publishes_nothing(self):
         # #2271 review: an empty reason is the no-failure case `None` already
-        # means, and a negative count is not a measurement `_cap_discovered`
-        # can produce -- neither may become a third state or a false Note.
-        sec = self._section({"files_truncated": -5, "git_failure": ""})
+        # means, never a third state or a false Note. (The types are read as
+        # discovery writes them since #3273 cut 16: a mistyped block fails the
+        # artifact loudly, and `_cap_discovered` cannot write a negative count.)
+        sec = self._section({"files_truncated": 0, "git_failure": ""})
         self.assertIsNone(sec["discovery_git_failure"])
-        self.assertIsNone(sec["discovery_files_truncated"])
+        self.assertEqual(0, sec["discovery_files_truncated"])
 
 
 class TestADeletedDispatchPlanIsDeletedEvidence(unittest.TestCase):
