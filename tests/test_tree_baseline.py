@@ -636,18 +636,19 @@ class RunStartWriteFailureTest(unittest.TestCase):
             raise _enospc(path)
 
         class _FullDisk:
+            """Lands half of the first write in the staging file, then the disk is full."""
             def __init__(self, path):
-                self._path, self._fh = path, open(path, "w", encoding="utf-8")
+                self._path = path
 
             def __enter__(self):
                 return self
 
             def __exit__(self, *_exc):
-                self._fh.close()
                 return False
 
             def write(self, text):
-                self._fh.write(text[:len(text) // 2])
+                with open(self._path, "w", encoding="utf-8") as fh:
+                    fh.write(text[:len(text) // 2])
                 raise _enospc(self._path)
 
         def failing_replace(src, dst, *a, **kw):
