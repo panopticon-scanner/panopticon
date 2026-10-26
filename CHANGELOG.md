@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Internal: the three guard hooks share one `guard_rules.py` instead of three copies (#3273 cut 11).**
+  - The read scope, the binding, the findings component walk, the v2 allowlist and the settings plumbing now live once, in `skill/scripts/guard_rules.py`. `read_guard_hook`, `write_guard_hook` and `kimi_guard_hook` load it by path from their own directory when they run as hooks (`<python> -I <abs path>`). They never use `import scripts.*`, which a foreign `scripts` package in site-packages could answer. Imported under our package, they take the sibling module, so a patch lands where the hook looks.
+  - Any failure to load it (a missing file, a raise or a SyntaxError in it, a name it lacks) denies every call the hook guards, exit 0 with the deny JSON. Never a crash, which would fail open.
+  - The settings helpers take the hook's script path as a parameter. The Codex broker keeps its 24-line copy of `_under`, `_in_dir_grant` and `SCOPE_KEYS`, now byte-identical and pinned by the same single test as the three hooks' loader stanza.
+  - The hooks' docstrings no longer overstate `-I`: it keeps PYTHONPATH, the user site and the script's directory off `sys.path`, not the interpreter's own site-packages.
+  - `read_guard_hook.py` goes from 726 to 486 lines and leaves the ceiling list; `write_guard_hook.py` goes from 1184 to 875; `kimi_guard_hook.py` from 571 to 344.
 - **CI: the AI-usage inventory leaves the Security tab again.**
   - Since #1335 and #3193, every Semgrep capture carries Panopticon's own run stamps, `panopticon_scanned_files` and `panopticon_size_skipped`. `code_scanning_reports.py` read them as unreviewed metadata and failed closed, so all 270 `detect-generic-ai-*` notes stayed on the Security tab and kept main's alert audit red.
   - Those two keys, in exactly their writers' shapes, are now a reviewed run context. Any other key or shape still keeps the run actionable.

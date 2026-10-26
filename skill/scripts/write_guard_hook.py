@@ -37,159 +37,78 @@ tracked as #1344.
 
 The matcher and ``_WRITE_TOOLS`` are derived from one source below so they can
 never silently drift apart from each other.
+
+The binding, the findings component walk, the v2 allowlist and the settings
+plumbing are the rules this hook shares with the read guard and Kimi's, loaded
+BY PATH from `guard_rules.py` beside it (#3273 cut 11; the loader stanza
+below): a hook runs as its own `-I` process, with no package on sys.path.
 """
-import glob
 import json
 import os
 import re
-import shlex
-import stat
 import sys
 
 _WRITE_TOOLS_LIST = ["Write", "Edit", "NotebookEdit"]
 _WRITE_TOOLS = set(_WRITE_TOOLS_LIST)
 _MATCHER = "|".join(_WRITE_TOOLS_LIST)
 
-# #1571. Version 1 was a flat JSON list of writable paths, with nothing in it
-# saying whose grant each path was; version 2 is
-# ``{"version": 2, "entries": {<entry id>: [path, ...]}, "paths": [...]}``.
-# The version is CHECKED, not sniffed: a stale v1 file left in a run folder
-# must deny rather than quietly restore the batch-wide grant.
-ALLOWLIST_VERSION = 2
-# The bucket for a plan entry that declares no `id` (the probes' sandbox plans
-# and much of the suite). Its paths stay writable by the unbound orchestrator
-# and are reachable by NO bound agent: the driver's entry ids match
-# ``^[A-Za-z0-9._:-]+$``, so the brackets cannot collide with a real id, and
-# `adjudicate` refuses this key explicitly rather than resting on that.
-UNBOUND_ENTRY = "<unbound>"
+# Every name this hook reads from guard_rules; the loader refuses a module that
+# lacks one, so a renamed rule denies at load rather than crashing mid-call.
+_GUARD_RULES_USED = (
+    "ALLOWLIST_VERSION", "UNBOUND_ENTRY", "MARKER_PREFIX", "ENV_ENTRY_ID", "ARTIFACT_DIR",
+    "SYMLINKED_COMPONENT", "UNMEASURABLE_COMPONENT", "ESCAPED_ARTIFACT_TREE", "PARENT_COMPONENT",
+    "_escaped_component", "bind", "_load_allowlist", "hook_command", "_trusted_hook_argv",
+    "_is_our_entry", "_load", "atomic_write_json", "_write_hook_entry", "_remove_hook_entry",
+    "_armed")
 
-# --- BINDING: a VERBATIM COPY of read_guard_hook's, pinned AST-identical by
-# tests/test_write_guard_hook.py::TestBindingHelpersAreACopy. It is copied and
-# not imported for the reason every other shared piece in these hooks is (the
-# settings plumbing, R-P5-5; `hook_command`, #1633): a guard hook is invoked by
-# absolute path as its own process with no package on sys.path, so there is no
-# module for the two of them to share. Edit read_guard_hook's copy and this one
-# together; the parity test fails loudly if you do not.
-MARKER_PREFIX = "panopticon-entry: "
-ENV_ENTRY_ID = "PANOPTICON_ENTRY_ID"
-
-
-# --- BINDING: the nested-component walk below is a VERBATIM COPY of
-# kimi_guard_hook's, pinned AST-identical by
-# tests/test_write_guard_hook.py::TestBindingHelpersAreACopy. Kimi's write
-# branch IS this module's rules with Kimi's `path` field, and a copy that
-# drifts means one of the two guards quietly stops refusing a nested symlink.
-# Copied and not imported for the reason the binding helpers above are.
-#
-# #1640 (run-13 AGT-861284148). The `.panopticon` segment is found LEXICALLY
-# -- here and in `_is_run_folder` -- so every directory between the review
-# root and the findings file is a component whose NAME the guard trusted and
-# whose target it never looked at. The old rule refused a symlink only when
-# the out_file's IMMEDIATE parent was named `.panopticon`; a real findings
-# path is `<root>/.panopticon/runs/<tag>/findings-<group>-<domain>.json`,
-# whose immediate parent is the run folder, so a target repo that commits
-# `.panopticon/runs` as a link had `allowlist_from_plan` store the EXTERNAL
-# realpath as a grant and `_resolve_target` resolve the reviewer's Write to
-# that same external path. Install and enforcement AGREED on a destination
-# outside the artifact tree, which is what makes it a hole rather than a
-# mismatch -- so both of them walk, and both of them anchor.
-ARTIFACT_DIR = ".panopticon"
-SYMLINKED_COMPONENT = "findings output cannot pass through a symlinked directory: %s"
-UNMEASURABLE_COMPONENT = ("findings output cannot pass through a directory the guard "
-                          "could not measure: %s (%s)")
-ESCAPED_ARTIFACT_TREE = ("findings output resolves outside the review artifact tree: "
-                         "%s is not a %s path under %s")
-# Refused on the DECLARED path, before anything normalises it. `abspath`
-# collapses `..` lexically, so `<root>/.panopticon/runs/r1/../../../src/x.json`
-# arrives at `_components` as `<root>/src/x.json` -- no `.panopticon` segment,
-# therefore no walk and no anchor, therefore a grant on a source file. Today
-# that path cannot be built (`groups_schema._invalid_name` rejects `..` in a
-# group name and out_files are `findings-<group>-<domain>.json`), and a guard
-# whose correctness rests on an upstream regex is one edit from being a hole.
-# The rule is the COMPONENT, not where it lands: a `..` that stays inside the
-# tree is refused too, because a declared findings path has no business
-# carrying one and deciding from the destination would have to be re-decided
-# at every enforcement. It names the offending out_file like its three
-# siblings name theirs: `allowlist_from_plan` re-raises these with no context
-# of its own, so a fan-out aborting on one bad path out of two hundred would
-# otherwise say only that a `..` exists somewhere in it.
-PARENT_COMPONENT = "findings output cannot contain '..': %s"
+# --- GUARD RULES LOADER (#3273 cut 11) ---
+# Byte-identical in the three guard hooks (tests/test_guard_rules.py). Run as a
+# hook (`<python> -I <abs path>`) this module has no package, so guard_rules.py
+# is loaded by PATH from this file's real directory -- never `import scripts.*`,
+# which a foreign `scripts` package in site-packages could answer. Imported
+# under our package (the driver, the tests, `python -m`), it is the sibling
+# module, so a patch lands where the hook looks. ANY failure -- a missing file,
+# a raise or a SyntaxError in it, a name it lacks -- leaves `guard_rules` None,
+# and every call this hook guards is then DENIED: an import-time crash here
+# would fail OPEN.
+def _load_guard_rules():
+    spec = globals().get("__spec__")
+    if spec is not None and spec.parent:
+        from . import guard_rules as rules
+    else:
+        import importlib.util
+        path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "guard_rules.py")
+        found = importlib.util.spec_from_file_location("panopticon_guard_rules", path)
+        if found is None or found.loader is None:
+            raise ImportError("no loader for %s" % path)
+        rules = importlib.util.module_from_spec(found)
+        found.loader.exec_module(rules)
+    missing = [name for name in _GUARD_RULES_USED if not hasattr(rules, name)]
+    if missing:
+        raise AttributeError("guard_rules lacks %s" % ", ".join(missing))
+    return rules
 
 
-def _components(path):
-    """(review root, [directory component, ...]) for a path anchored in a
-    `.panopticon` tree: every directory from the `.panopticon` segment's
-    PARENT -- the review root -- down to the file's own parent, outermost
-    first.
+try:
+    guard_rules = _load_guard_rules()
+    _GUARD_RULES_FAULT = ""
+except Exception as exc:  # noqa: BLE001 -- see above: never an import-time raise
+    guard_rules = None
+    _GUARD_RULES_FAULT = "the shared guard rules could not load (%s: %s)" % (
+        type(exc).__name__, exc)
+# --- END GUARD RULES LOADER ---
 
-    (None, []) when the path carries no `.panopticon` segment. There is no
-    artifact tree to anchor on then, so there is nothing for this rule to say;
-    `_carried_paths_this_run_owns` already refuses to carry such a grant
-    forward, and the probes' sandbox plans legitimately declare out_files that
-    live nowhere near an artifact tree.
-
-    The review root itself is the outermost component checked, and nothing
-    ABOVE it is: `os.path.islink` tests only a path's final component, so a
-    checkout reached through a symlinked ancestor (a macOS `/tmp`, a home
-    directory on another volume) is not the subject -- a review root whose own
-    name is a link is.
-    """
-    parts = os.path.abspath(path).split(os.sep)
-    if ARTIFACT_DIR not in parts:
-        return None, []
-    start = parts.index(ARTIFACT_DIR)
-    return (os.sep.join(parts[:start]) or os.sep,
-            [os.sep.join(parts[:i + 1]) or os.sep for i in range(start - 1, len(parts) - 1)])
-
-
-def _component_fault(component):
-    """Why this directory component may not be traversed, or "".
-
-    A component with NO INODE passes: the plan is written before the run
-    folder is created, and refusing an absent component would refuse every
-    first run. A component that exists but cannot be measured DENIES -- the
-    same fail-closed rule the read guards apply (#1642, fix round 1):
-    a guard may not answer "allowed" about something it could not look at.
-    """
-    try:
-        info = os.lstat(component)
-    except (FileNotFoundError, NotADirectoryError):
-        return ""
-    except (OSError, ValueError) as exc:
-        return UNMEASURABLE_COMPONENT % (component, exc)
-    if stat.S_ISLNK(info.st_mode):
-        return SYMLINKED_COMPONENT % component
-    return ""
-
-
-def _escaped_component(path):
-    """Why `path` may not be trusted as a findings destination, or "".
-
-    Two rules, and the second is not redundant. The walk is a check at a
-    moment in time; the ANCHOR is what the destination must satisfy whatever
-    the components looked like -- a link swapped in after the walk, a bind
-    mount, a leaf that is itself a link into another tree. So the resolved
-    path must still carry a `.panopticon` segment and still lie under the
-    resolved review root the declared path named.
-    """
-    if os.pardir in str(path).split(os.sep):
-        return PARENT_COMPONENT % (path,)
-    root, components = _components(path)
-    if root is None:
-        return ""
-    for component in components:
-        fault = _component_fault(component)
-        if fault:
-            return fault
-    real = os.path.realpath(path)
-    real_root = os.path.realpath(root)
-    if ARTIFACT_DIR not in real.split(os.sep) or not (
-            real == real_root or real.startswith(real_root + os.sep)):
-        return ESCAPED_ARTIFACT_TREE % (real, ARTIFACT_DIR, real_root)
-    return ""
-
-
-# --- end of the kimi_guard_hook copy ---
+if guard_rules is not None:
+    # The shared constants, under the names this hook's consumers already read.
+    ALLOWLIST_VERSION = guard_rules.ALLOWLIST_VERSION
+    UNBOUND_ENTRY = guard_rules.UNBOUND_ENTRY
+    MARKER_PREFIX = guard_rules.MARKER_PREFIX
+    ENV_ENTRY_ID = guard_rules.ENV_ENTRY_ID
+    ARTIFACT_DIR = guard_rules.ARTIFACT_DIR
+    SYMLINKED_COMPONENT = guard_rules.SYMLINKED_COMPONENT
+    UNMEASURABLE_COMPONENT = guard_rules.UNMEASURABLE_COMPONENT
+    ESCAPED_ARTIFACT_TREE = guard_rules.ESCAPED_ARTIFACT_TREE
+    PARENT_COMPONENT = guard_rules.PARENT_COMPONENT
 
 
 def allowlist_from_plan(plan):
@@ -223,12 +142,12 @@ def allowlist_from_plan(plan):
         path = entry.get("out_file") if isinstance(entry, dict) else None
         if not isinstance(path, str) or not path:
             continue
-        fault = _escaped_component(path)
+        fault = guard_rules._escaped_component(path)
         if fault:
             raise ValueError(fault)
         eid = entry.get("id")
         if not isinstance(eid, str) or not eid:
-            eid = UNBOUND_ENTRY
+            eid = guard_rules.UNBOUND_ENTRY
         out.setdefault(eid, set()).add(os.path.realpath(path))
     return {eid: sorted(paths) for eid, paths in out.items()}
 
@@ -254,7 +173,7 @@ def allowlist_document(allowlist):
     count, the probes, the orchestrator branch) gets it without re-deriving
     it, and a reader that opens the file by hand sees the same two answers the
     guard does."""
-    return {"version": ALLOWLIST_VERSION,
+    return {"version": guard_rules.ALLOWLIST_VERSION,
             "entries": {eid: sorted(paths) for eid, paths in allowlist.items()},
             "paths": sorted(union_paths(allowlist))}
 
@@ -272,7 +191,7 @@ def _resolve_target(file_path):
                 "write to %s is denied: findings targets must not be symlinks" % file_path)
         # The DECLARED string, not `raw`: `abspath` has already collapsed any
         # `..` by this point, and that collapse is the thing being refused.
-        fault = _escaped_component(file_path or "")
+        fault = guard_rules._escaped_component(file_path or "")
         if fault:
             return None, "write to %s is denied: %s" % (file_path, fault)
         return os.path.realpath(raw), None
@@ -323,116 +242,6 @@ def _deny_response(reason):
     })
 
 
-def marker_of(text):
-    """The entry id `text`'s FIRST line names, or None. Only the first line:
-    a marker anywhere else is content, not a binding."""
-    if not isinstance(text, str):
-        return None
-    first = text.split("\n", 1)[0].rstrip("\r")
-    if not first.startswith(MARKER_PREFIX):
-        return None
-    return first[len(MARKER_PREFIX):].strip() or None
-
-def subagent_transcript(transcript_path, agent_id):
-    """The calling subagent's own transcript, or None.
-
-    The payload's `transcript_path` is the PARENT session's file (spike,
-    design spec 3); the subagent's lives beside it, keyed by `agent_id`, in
-    one of two layouts. `agent_id` is used as a path segment, so anything
-    path-shaped is refused outright."""
-    if not isinstance(transcript_path, str) or not isinstance(agent_id, str):
-        return None
-    if not agent_id or "/" in agent_id or os.sep in agent_id or agent_id in (".", ".."):
-        return None
-    stem = transcript_path[:-len(".jsonl")] if transcript_path.endswith(".jsonl") else transcript_path
-    name = "agent-%s.jsonl" % agent_id
-    direct = os.path.join(stem, "subagents", name)
-    if os.path.isfile(direct):
-        return direct
-    found = sorted(glob.glob(os.path.join(glob.escape(stem), "subagents", "workflows", "*", name)))
-    return found[0] if found else None
-
-def _first_text(record):
-    msg = record.get("message")
-    content = msg.get("content") if isinstance(msg, dict) else None
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        for part in content:
-            if (isinstance(part, dict) and part.get("type") == "text"
-                    and isinstance(part.get("text"), str)):
-                return part["text"]
-    return ""
-
-def bind(agent_id, transcript_path):
-    """The entry id this subagent was dispatched for, or None (unbound).
-
-    Reads the transcript only up to its FIRST `type: user` record -- the
-    dispatch prompt -- and requires that record's `agentId` to be the caller.
-    A later user turn is a tool result and can never re-bind (design 4.4)."""
-    path = subagent_transcript(transcript_path, agent_id)
-    if path is None:
-        return None
-    try:
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                try:
-                    record = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(record, dict) or record.get("type") != "user":
-                    continue
-                if record.get("agentId") != agent_id:
-                    return None
-                return marker_of(_first_text(record))
-    except (OSError, ValueError):
-        return None
-    return None
-
-
-# --- end of the read_guard_hook copy ---
-
-
-def _parse_allowlist(loaded):
-    """(mapping, error) for a parsed allowlist document. Version 2 only.
-
-    #1571: a version-1 file is a flat list with no attribution, so honouring
-    one would silently restore the batch-wide grant this format exists to
-    end. A stale file must never widen a guard -- name the version and deny.
-    """
-    if isinstance(loaded, list):
-        return None, ("write guard allowlist is a version-1 flat list, not version "
-                      "%d: it records no per-entry grants, so the guard cannot tell "
-                      "whose out_file a path is and denies every write until the "
-                      "loop re-arms it" % ALLOWLIST_VERSION)
-    if not isinstance(loaded, dict):
-        return None, "write guard allowlist is malformed"
-    version = loaded.get("version")
-    if version != ALLOWLIST_VERSION:
-        return None, ("write guard allowlist is version %r, not version %d "
-                      "(per-entry grants); re-arm the guard"
-                      % (version, ALLOWLIST_VERSION))
-    entries = loaded.get("entries")
-    if not isinstance(entries, dict):
-        return None, "write guard allowlist is malformed"
-    out = {}
-    for eid, paths in entries.items():
-        if not isinstance(eid, str) or not isinstance(paths, list):
-            return None, "write guard allowlist is malformed"
-        out[eid] = [p for p in paths if isinstance(p, str)]
-    return out, ""
-
-
-def _load_allowlist(allowlist_path):
-    """(mapping, error): the armed {entry id: [path]} map, or (None, why)."""
-    try:
-        with open(allowlist_path, encoding="utf-8") as fh:
-            loaded = json.load(fh)
-    except (OSError, ValueError) as exc:
-        return None, "write guard allowlist is unavailable: %s" % exc
-    return _parse_allowlist(loaded)
-
-
 def _payload_path(tool_name, tool_input):
     """The path THIS tool writes to.
 
@@ -470,18 +279,23 @@ def adjudicate(payload, allowlist_path, env=None):
     agent_id, no agent_type) is the ORCHESTRATOR -- it runs the driver and
     writes the run's own artifacts -- and keeps the union, exactly as the read
     guard never confines it.
+
+    With the shared rules unloaded, every call denies, before anything else is
+    asked: the loader stanza's contract (#3273 cut 11).
     """
+    if guard_rules is None:
+        return False, "write guard: %s" % _GUARD_RULES_FAULT
     if not isinstance(payload, dict):
         return True, ""
     tool_name = payload.get("tool_name", "")
     if tool_name not in _WRITE_TOOLS:
         return True, ""
     file_path = _payload_path(tool_name, payload.get("tool_input"))
-    allowlist, error = _load_allowlist(allowlist_path)
+    allowlist, error = guard_rules._load_allowlist(allowlist_path)
     if allowlist is None:
         return False, error
     env = os.environ if env is None else env
-    env_id = env.get(ENV_ENTRY_ID)
+    env_id = env.get(guard_rules.ENV_ENTRY_ID)
     agent_id = payload.get("agent_id")
     agent_type = payload.get("agent_type")
     if env_id or agent_id:
@@ -490,25 +304,25 @@ def adjudicate(payload, allowlist_path, env=None):
         # orchestrator -- degrading it into the union is the fail-OPEN this
         # whole change is about.
         entry_id = (env_id if isinstance(env_id, str) else None) if env_id \
-            else bind(agent_id, payload.get("transcript_path"))
+            else guard_rules.bind(agent_id, payload.get("transcript_path"))
         if entry_id is None:
             return False, (
                 "%s to %s is denied: this reviewer is not bound to a dispatch "
                 "entry (no usable %s, and its dispatch prompt did not begin "
                 "with '%s<entry id>'), and a reviewer may write only its own "
                 "declared out_file"
-                % (tool_name, file_path, ENV_ENTRY_ID, MARKER_PREFIX))
+                % (tool_name, file_path, guard_rules.ENV_ENTRY_ID, guard_rules.MARKER_PREFIX))
     elif agent_type:
         return False, ("%s is denied: this session runs as agent_type %r but "
                        "nothing bound it to a panopticon entry (no %s in the "
                        "environment, no subagent transcript)"
-                       % (tool_name, agent_type, ENV_ENTRY_ID))
+                       % (tool_name, agent_type, guard_rules.ENV_ENTRY_ID))
     else:
         return decide(tool_name, file_path, union_paths(allowlist))
     # UNBOUND_ENTRY holds the grants of plan entries that declared no id. They
     # belong to the orchestrator; no bound agent may select that bucket, and
     # refusing it here does not rest on the id grammar making it unreachable.
-    granted = None if entry_id == UNBOUND_ENTRY else allowlist.get(entry_id)
+    granted = None if entry_id == guard_rules.UNBOUND_ENTRY else allowlist.get(entry_id)
     if granted is None:
         return False, ("%s is denied: this agent is bound to entry %r, which the "
                        "armed write allowlist does not name"
@@ -594,8 +408,11 @@ def main(argv=None):
         if payload.get("tool_name", "") not in _WRITE_TOOLS:
             return 0
         argv_path = args[0] if args else None
-        _trusted_hook_argv()
-        allow, reason = adjudicate(payload, _resolve_allowlist_path(argv_path))
+        if guard_rules is None:            # #3273 cut 11: before the argv check, which needs it
+            allow, reason = adjudicate(payload, None)
+        else:
+            _trusted_hook_argv()
+            allow, reason = adjudicate(payload, _resolve_allowlist_path(argv_path))
     except Exception as exc:  # noqa: BLE001 -- fail CLOSED, never crash the hook
         print(_deny_response("write guard crashed: %s" % exc))
         return 0
@@ -605,29 +422,9 @@ def main(argv=None):
     return 0
 
 
-def hook_command(*argv):
-    """One hook `command` string, every element shell-quoted (#1633, SEC-A1A).
-
-    A registered PreToolUse command is SHELL SOURCE: the host runs it through `sh -c`, so an
-    interpolated element is not an argument. The `"%s"` this replaces stopped a space and nothing
-    else, so a `"`, a backtick or a `$(...)` in an install path -- the allowlist path, the scope
-    path, the checkout this script sits in -- executed on every tool call. Copied into each guard
-    hook, not imported, like the settings plumbing (R-P5-5): a hook has no package on sys.path.
-    """
-    return " ".join(shlex.quote(a) for a in argv)
-
-
 def _trusted_hook_argv():
-    """THIS process's interpreter, `-I`, this module's absolute path (#495). #2161: a bare
-    `python3` resolves in the CHILD's rewritten PATH (`executable.resolve` drops the review root)
-    -- a fail-OPEN. `-I` so no `sitecustomize` picks the code (#1996). Shape: the read guard's."""
-    executable = sys.executable
-    if not executable or not os.path.isabs(executable):
-        raise RuntimeError("write guard interpreter unavailable or not absolute: %r" % executable)
-    executable = os.path.realpath(executable)
-    if not os.path.isfile(executable) or not os.access(executable, os.X_OK):
-        raise RuntimeError("write guard interpreter is unavailable: %s" % executable)
-    return executable, "-I", os.path.abspath(__file__)
+    """THIS process's interpreter, `-I`, this module's absolute path (#495, #2161, #1996)."""
+    return guard_rules._trusted_hook_argv(__file__, "write guard")
 
 
 def __getattr__(name):
@@ -635,7 +432,7 @@ def __getattr__(name):
     if name == "_HOOK_ARGV":
         return _trusted_hook_argv()
     if name == "_HOOK_CMD":
-        return hook_command(*_trusted_hook_argv())
+        return guard_rules.hook_command(*_trusted_hook_argv())
     if name == "_HOOK_ENTRY":
         return _hook_entry()
     raise AttributeError("module %r has no attribute %r" % (__name__, name))
@@ -644,23 +441,8 @@ def __getattr__(name):
 def _hook_entry(allowlist_path=None):
     """The entry to register; `allowlist_path` is baked in absolutely, never inferred from a CWD."""
     baked = [os.path.abspath(allowlist_path)] if allowlist_path else []
-    cmd = hook_command(*_trusted_hook_argv(), *baked)
+    cmd = guard_rules.hook_command(*_trusted_hook_argv(), *baked)
     return {"matcher": _MATCHER, "hooks": [{"type": "command", "command": cmd}]}
-
-
-def _runs_this_script(command):
-    """True when `command` invokes THIS module -- quoted (#1633) or bare (an earlier version's).
-
-    Tokenizing is what keeps our own entry recognisable once the script path is quoted: an escaped
-    checkout path no longer appears verbatim, and an unrecognised entry is one uninstall would
-    orphan, leaving the guard armed and every later write denied. The substring test is the
-    fallback for a command no shell can parse: naming this script is ours, else False, no raise."""
-    mine = os.path.abspath(__file__)
-    try:
-        tokens = shlex.split(command)
-    except ValueError:                  # unbalanced quotes in a foreign entry
-        tokens = []
-    return mine in tokens or mine in command
 
 
 def _is_our_entry(entry):
@@ -668,28 +450,7 @@ def _is_our_entry(entry):
     allowlist argument. Removal matches on the script path rather than on dict
     equality so uninstall still clears an entry written by a different version
     (or with a different allowlist baked in) instead of orphaning it."""
-    if not isinstance(entry, dict):
-        return False
-    for h in entry.get("hooks", []) or []:
-        if isinstance(h, dict) and _runs_this_script(str(h.get("command", ""))):
-            return True
-    return False
-
-
-def _load(settings_path):
-    try:
-        with open(settings_path, encoding="utf-8") as fh:
-            return json.load(fh)
-    except FileNotFoundError:
-        return {}                       # absent is fine -> a fresh settings file
-    except (OSError, ValueError) as exc:
-        # #1098: present but unreadable/corrupt. Returning {} let install()
-        # unconditionally re-serialize a minimal file, DESTROYING the user's
-        # permissions.allow/deny and unrelated hooks (a fail-open that can widen
-        # session policy). Refuse instead so install() never overwrites a file it
-        # could not read.
-        raise RuntimeError(
-            "refusing to overwrite unreadable %s: %s" % (settings_path, exc)) from exc
+    return guard_rules._is_our_entry(entry, __file__)
 
 
 def _read_allowlist(allowlist_path):
@@ -700,14 +461,13 @@ def _read_allowlist(allowlist_path):
     HERE only affects the merge arithmetic, never enforcement. A v1 file
     reading as empty is the wanted behaviour on both sides: its paths carry no
     attribution, so they may not be carried into a v2 grant either.)"""
-    return _load_allowlist(allowlist_path)[0] or {}
+    return guard_rules._load_allowlist(allowlist_path)[0] or {}
 
 
 # The dispatch families that write into a run folder, and the ONE artifact each
-# family's entry id declares. Spelled here rather than imported, for the reason
-# `atomic_write_json` carries the os-flag form itself: this hook is its own
-# subprocess under the host's PreToolUse command and may not import the driver's
-# packages. tests/test_write_guard_hook.py pins each against the builder that owns
+# family's entry id declares. Spelled here rather than imported: this hook is its
+# own subprocess under the host's PreToolUse command and may not import the
+# driver's packages. tests/test_write_guard_hook.py pins each against the builder that owns
 # it -- `phases/review`, `phases/verify`, `phases/verify_tools`, `phases/coverage`
 # -- so a rename on either side fails a test rather than silently revoking a grant.
 RUNS_DIR = "runs"
@@ -949,65 +709,6 @@ def _merge_grants(*mappings):
     return out
 
 
-def atomic_write_json(path, data, indent=None):
-    """Stage at `<path>.tmp`, then rename -- never writing THROUGH a symlink
-    planted at that temp name (I7).
-
-    A plain `open(tmp, "w")` follows a link. The settings, allowlist and scope
-    files this writes all live where an untrusted target can reach: the run
-    folder sits inside the scanned tree, and a redteam target can commit
-    `<name>.tmp` as a link to any file the invoking user can write (a dotfile,
-    authorized_keys), whose contents this would then replace with the guard's
-    own JSON. Same class as #run9 SEC-X0X, which `runio._open_w_nofollow`
-    closed for `.panopticon` artifacts.
-
-    Spelled with os flags rather than by calling that helper: a guard hook is
-    executed as its own subprocess by the host's PreToolUse command and has to
-    import standing alone, so it may not reach into the driver's packages.
-    O_EXCL|O_NOFOLLOW refuses both a symlink and a stale regular leftover, so
-    the leftover is removed first and the open then creates a fresh file or
-    fails loudly -- it never silently writes somewhere else.
-    """
-    parent = os.path.dirname(path) or "."
-    os.makedirs(parent, exist_ok=True)
-    tmp = path + ".tmp"
-    if os.path.islink(tmp) or os.path.exists(tmp):
-        os.unlink(tmp)                  # drop the LINK, never follow it
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                 | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=indent)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
-
-
-_atomic_write_json = atomic_write_json   # the private spelling its own tests use
-
-
-def _write_hook_entry(settings_path, allowlist_path=None):
-    settings = _load(settings_path)
-    hooks = settings.setdefault("hooks", {})
-    entry = _hook_entry(allowlist_path)
-    pre = [h for h in hooks.get("PreToolUse", []) if not _is_our_entry(h)]
-    pre.append(entry)
-    hooks["PreToolUse"] = pre
-    atomic_write_json(settings_path, settings, indent=2)
-
-
-def _remove_hook_entry(settings_path):
-    settings = _load(settings_path)
-    hooks = settings.get("hooks", {})
-    if "PreToolUse" not in hooks:
-        return
-    hooks["PreToolUse"] = [h for h in hooks["PreToolUse"] if not _is_our_entry(h)]
-    if not hooks["PreToolUse"]:
-        del hooks["PreToolUse"]
-    if not hooks:
-        settings.pop("hooks", None)
-    atomic_write_json(settings_path, settings, indent=2)
-
-
 DEFAULT_SETTINGS_PATH = ".claude/settings.local.json"
 DEFAULT_ALLOWLIST_PATH = ".panopticon/write-allowlist.json"
 
@@ -1096,9 +797,9 @@ def install(plan, settings_path=None, allowlist_path=None, *, session_root=None)
     # #1571: the union is merged PER ENTRY ID, so a concurrent fan-out's grant
     # survives (the #11 property) without becoming writable by this batch's
     # reviewers -- which is exactly what a flat union made it.
-    atomic_write_json(allowlist_path,
-                      allowlist_document(_merge_grants(carried, added)))
-    _write_hook_entry(settings_path, allowlist_path)
+    guard_rules.atomic_write_json(allowlist_path,
+                                  allowlist_document(_merge_grants(carried, added)))
+    guard_rules._write_hook_entry(settings_path, __file__, _hook_entry(allowlist_path))
     return added
 
 
@@ -1133,17 +834,7 @@ def is_armed(settings_path=None, allowlist_path=None, *, session_root=None):
     """
     settings_path, allowlist_path, _ = _resolve(
         settings_path, allowlist_path, session_root)
-    try:
-        with open(settings_path, encoding="utf-8") as fh:
-            settings = json.load(fh)
-    except (OSError, ValueError):
-        return False, 0
-    hooks = (settings.get("hooks") or {}).get("PreToolUse") or []
-    # #1633: the same predicate uninstall removes by. A literal `_HOOK_CMD` comparison read an entry
-    # written by ANY other version -- including every pre-quoting one -- as disarmed, so a guard
-    # that was in fact armed reported clear.
-    armed = any(_is_our_entry(entry) for entry in hooks)
-    if not armed:
+    if not guard_rules._armed(settings_path, __file__):
         return False, 0
     try:
         return True, len(union_paths(_read_allowlist(allowlist_path)))
@@ -1171,9 +862,9 @@ def uninstall(settings_path=None, allowlist_path=None, *, plan=None,
             if kept:
                 remaining[eid] = kept
         if remaining:
-            atomic_write_json(allowlist_path, allowlist_document(remaining))
+            guard_rules.atomic_write_json(allowlist_path, allowlist_document(remaining))
             return   # other fan-outs still armed -> keep the hook entry + file
-    _remove_hook_entry(settings_path)
+    guard_rules._remove_hook_entry(settings_path, __file__)
     try:
         os.remove(allowlist_path)
     except OSError:

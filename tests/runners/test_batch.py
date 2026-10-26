@@ -27,7 +27,7 @@ import uuid
 from unittest import mock
 
 import scripts.runners.batch as batch_mod
-import scripts.write_guard_hook as write_guard_hook
+import scripts.guard_rules as guard_rules
 from tests._test_helpers import dead_pid
 
 # getnode()'s documented random fallback: the multicast bit, set.
@@ -229,7 +229,7 @@ class TestTheDiscardAcceptanceFile(unittest.TestCase):
         # ...and a link to a REAL list is not read back either: whatever it
         # pointed at is not this run's acceptance history.
         planted = os.path.join(self.root, "elsewhere.json")
-        write_guard_hook._atomic_write_json(planted, [{"batch": 99}])
+        guard_rules.atomic_write_json(planted, [{"batch": 99}])
         os.symlink(planted, self.path)
         batch_mod.record_discard(self.root, 3, self.OWNER)
         self.assertEqual([3], [row["batch"] for row in self._read()])

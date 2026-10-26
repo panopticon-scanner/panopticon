@@ -13,6 +13,7 @@ import time
 import traceback
 
 import scripts.dispatch as dispatch
+import scripts.guard_rules as guard_rules
 import scripts.read_guard_hook as read_guard_hook
 import scripts.write_guard_hook as write_guard_hook
 import scripts.runners.children as children
@@ -47,7 +48,7 @@ def own_settings(path):
     except RuntimeError:                # no hook can be built: carry nothing
         exact = []
     try:
-        doc = write_guard_hook._load(path)
+        doc = guard_rules._load(path)
     except RuntimeError:                # unreadable: nothing in it is kept
         doc = None
     hooks = doc.get("hooks") if isinstance(doc, dict) else None
@@ -55,7 +56,7 @@ def own_settings(path):
     ours = [h for h in pre if h in exact] if isinstance(pre, list) else []
     fresh = {"hooks": {"PreToolUse": ours}} if ours else {}
     if doc != fresh:
-        write_guard_hook.atomic_write_json(path, fresh, indent=2)
+        guard_rules.atomic_write_json(path, fresh, indent=2)
     return path
 # M5: the two guard files the loop writes into the run folder and the
 # runner bakes into host-settings.json's hook commands. Both sides have to

@@ -90,8 +90,9 @@ def test_a_root_directory_grant_admits_only_the_root_itself():
     # filesystem through a grant the hooks read as the root directory ALONE
     # (`directory.rstrip(os.sep) or os.sep`). A `/` grant is not the normal
     # shape, but a copy that answers the same grant differently is a
-    # confinement hole rather than a nit -- which is why the three copies are
-    # now pinned AST-identical in tests/test_read_guard_hook.py.
+    # confinement hole rather than a nit -- which is why the hooks now share
+    # one `guard_rules._under` and this broker's copy of it is pinned byte for
+    # byte in tests/test_guard_rules.py (#3273 cut 11).
     assert read_tools._under(os.sep, os.sep)
     assert not read_tools._under("/etc/passwd", os.sep)
     # ...and the ordinary edges are unchanged.

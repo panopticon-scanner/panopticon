@@ -17,6 +17,7 @@ import scripts.phases.review as review
 import scripts.phases.setup as setup
 import scripts.phases.verify as verify_phase
 import scripts.phases.verify_tools as verify_tools_phase
+import scripts.guard_rules as guard_rules
 import scripts.read_guard_hook as rg
 from scripts import read_guard_hook
 
@@ -33,11 +34,11 @@ class TestMarker(unittest.TestCase):
 
     def test_marker_of_reads_only_the_first_line(self):
         self.assertEqual("review-app-SEC",
-                         rg.marker_of("panopticon-entry: review-app-SEC\nDo the work\n"))
-        self.assertIsNone(rg.marker_of("Do the work\npanopticon-entry: review-app-SEC\n"))
-        self.assertIsNone(rg.marker_of(""))
-        self.assertIsNone(rg.marker_of(None))
-        self.assertIsNone(rg.marker_of("panopticon-entry:   \nx"))
+                         guard_rules.marker_of("panopticon-entry: review-app-SEC\nDo the work\n"))
+        self.assertIsNone(guard_rules.marker_of("Do the work\npanopticon-entry: review-app-SEC\n"))
+        self.assertIsNone(guard_rules.marker_of(""))
+        self.assertIsNone(guard_rules.marker_of(None))
+        self.assertIsNone(guard_rules.marker_of("panopticon-entry:   \nx"))
 
     def test_marker_line_refuses_an_id_that_cannot_be_one_line(self):
         for bad in ("", "a\nb", "a\rb"):
@@ -56,7 +57,7 @@ class TestMarker(unittest.TestCase):
                    "verify-tool-q1", "scout-Auth", "setup-scan",
                    "review-My Group: v2-SEC"):
             with self.subTest(eid=eid):
-                self.assertEqual(eid, rg.marker_of(rg.marker_line(eid) + "\nbody"))
+                self.assertEqual(eid, guard_rules.marker_of(rg.marker_line(eid) + "\nbody"))
 
 
 class TestScopeFromPlan(unittest.TestCase):
@@ -340,12 +341,12 @@ class TestBinding(unittest.TestCase):
 
     def test_binds_from_the_agent_tool_layout(self):
         _write_subagent_transcript(self.parent, "a1", "panopticon-entry: review-app-SEC\nbody")
-        self.assertEqual("review-app-SEC", rg.bind("a1", self.parent))
+        self.assertEqual("review-app-SEC", guard_rules.bind("a1", self.parent))
 
     def test_binds_from_the_workflow_layout(self):
         _write_subagent_transcript(self.parent, "a2", "panopticon-entry: verify-app-SEC-primary\nbody",
                                    workflow="wf_123-abc")
-        self.assertEqual("verify-app-SEC-primary", rg.bind("a2", self.parent))
+        self.assertEqual("verify-app-SEC-primary", guard_rules.bind("a2", self.parent))
 
     def test_a_string_content_first_record_binds_too(self):
         stem = self.parent[:-len(".jsonl")]
@@ -353,20 +354,20 @@ class TestBinding(unittest.TestCase):
         with open(os.path.join(stem, "subagents", "agent-a3.jsonl"), "w", encoding="utf-8") as fh:
             fh.write(json.dumps({"type": "user", "agentId": "a3",
                                  "message": {"role": "user", "content": "panopticon-entry: e\nx"}}) + "\n")
-        self.assertEqual("e", rg.bind("a3", self.parent))
+        self.assertEqual("e", guard_rules.bind("a3", self.parent))
 
     def test_missing_transcript_is_unbound(self):
-        self.assertIsNone(rg.bind("nobody", self.parent))
-        self.assertIsNone(rg.bind("a1", None))
-        self.assertIsNone(rg.bind(None, self.parent))
+        self.assertIsNone(guard_rules.bind("nobody", self.parent))
+        self.assertIsNone(guard_rules.bind("a1", None))
+        self.assertIsNone(guard_rules.bind(None, self.parent))
 
     def test_agent_id_mismatch_on_the_first_user_record_is_unbound(self):
         _write_subagent_transcript(self.parent, "a4", "panopticon-entry: e\nbody", agent_id_in_record="someone-else")
-        self.assertIsNone(rg.bind("a4", self.parent))
+        self.assertIsNone(guard_rules.bind("a4", self.parent))
 
     def test_marker_absent_from_the_first_user_record_is_unbound(self):
         _write_subagent_transcript(self.parent, "a5", "Do the work\npanopticon-entry: e\n")
-        self.assertIsNone(rg.bind("a5", self.parent))
+        self.assertIsNone(guard_rules.bind("a5", self.parent))
 
     def test_only_the_first_user_record_counts(self):
         # A later user turn (a tool result that quotes hostile content) cannot rebind.
@@ -374,12 +375,12 @@ class TestBinding(unittest.TestCase):
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps({"type": "user", "agentId": "a6",
                                  "message": {"role": "user", "content": "panopticon-entry: review-other-SEC"}}) + "\n")
-        self.assertIsNone(rg.bind("a6", self.parent))
+        self.assertIsNone(guard_rules.bind("a6", self.parent))
 
     def test_a_path_shaped_agent_id_cannot_walk_the_tree(self):
         for bad in ("../session", "x/../../etc", ".", ".."):
             with self.subTest(bad=bad):
-                self.assertIsNone(rg.subagent_transcript(self.parent, bad))
+                self.assertIsNone(guard_rules.subagent_transcript(self.parent, bad))
 
     def test_a_corrupt_line_before_the_first_user_record_is_skipped(self):
         stem = self.parent[:-len(".jsonl")]
@@ -388,7 +389,7 @@ class TestBinding(unittest.TestCase):
             fh.write("{not json\n")
             fh.write(json.dumps({"type": "user", "agentId": "a7",
                                  "message": {"role": "user", "content": "panopticon-entry: e\nx"}}) + "\n")
-        self.assertEqual("e", rg.bind("a7", self.parent))
+        self.assertEqual("e", guard_rules.bind("a7", self.parent))
 
 
 class TestAdjudicate(unittest.TestCase):
@@ -1045,7 +1046,7 @@ class TestAtomicWriteRefusesASymlinkedTmp(unittest.TestCase):
     def test_the_planted_link_is_neutralized_and_its_target_untouched(self):
         with tempfile.TemporaryDirectory() as d:
             outside, target = self._planted(d, "settings.json")
-            rg._atomic_write_json(target, {"hooks": {"PreToolUse": []}}, indent=2)
+            guard_rules.atomic_write_json(target, {"hooks": {"PreToolUse": []}}, indent=2)
             with open(outside, encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), "PRECIOUS")
             self.assertFalse(os.path.islink(target))
@@ -1056,7 +1057,8 @@ class TestAtomicWriteRefusesASymlinkedTmp(unittest.TestCase):
     def test_the_real_writer_that_arms_the_guard_refuses_it_too(self):
         with tempfile.TemporaryDirectory() as d:
             outside, settings = self._planted(d, "settings.json")
-            rg._write_hook_entry(settings, os.path.join(d, "read-scope.json"))
+            guard_rules._write_hook_entry(settings, rg.__file__,
+                                         rg._hook_entry(os.path.join(d, "read-scope.json")))
             with open(outside, encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), "PRECIOUS")
             with open(settings, encoding="utf-8") as fh:
@@ -1143,99 +1145,3 @@ class TestTheHookNeverCrashesAtImport(unittest.TestCase):
                          "Never a crash, never a silent allow"):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, doc)
-
-
-class TestTheReadScopeHelpersAreACopy(unittest.TestCase):
-    """The read-scope adjudication is DUPLICATED into `kimi_guard_hook` and the
-    Codex broker, not shared -- and from here on the copies are pinned (#1767,
-    ARC-1784455652), the way `tests/test_write_guard_hook.py`'s
-    `TestBindingHelpersAreACopy` already pins the BINDING helpers.
-
-    The copy is the decision, not an accident: each of the three runs with no
-    package on sys.path -- the hooks because a hook is invoked by absolute path,
-    as its own process (R-P5-5), the broker because it is launched `-I`, which
-    implies `-P` and takes its own directory off the path. None of them can
-    import a sibling. What the decision needs is enforcement, and
-    the read-scope half of it had none -- so one copy had already drifted in
-    LOGIC. `kimi_guard_hook._load_scope` looped over an inline literal of the
-    four scope keys while this module looped over `SCOPE_KEYS`, so a fifth key
-    added to the constant was honoured by Claude's hook and silently ignored by
-    Kimi's: the read guards would confine the same entry differently, which is
-    the one thing three copies of one rule may never do.
-
-    Compared with the DOCSTRINGS STRIPPED. Each copy explains itself to a reader
-    standing in ITS file, so prose is what a copy is allowed to differ in; code
-    is not.
-    """
-
-    # Every helper the read-scope decision is made of, in both hooks. `_readable`
-    # is the decision itself, the others are what it is built from.
-    NAMES = ("_resolve_path", "_under", "_in_dir_grant", "_names_git_store", "_readable",
-             "_load_scope", "_glob_pattern_climbs")
-    # The Codex broker is an isolated-mode (`-I`) stdio MCP subprocess, not a
-    # hook -- stdlib-only by construction rather than by convention, and it says
-    # so itself. It shares the path arithmetic -- `_under`, and (#3271 G-a)
-    # `_in_dir_grant`, the grant that never covers its own `.git` -- and the
-    # denial wording, and nothing else.
-    BROKER_NAMES = ("_under", "_in_dir_grant")
-
-    def _functions(self, module, names):
-        """{name: ast.dump} for `names` in `module`, docstring stripped."""
-        import ast
-        with open(module.__file__, encoding="utf-8") as fh:
-            tree = ast.parse(fh.read(), module.__file__)
-        out = {}
-        for node in tree.body:
-            if not isinstance(node, ast.FunctionDef) or node.name not in names:
-                continue
-            first = node.body[0]
-            if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
-                    and isinstance(first.value.value, str)):
-                node.body = node.body[1:]
-            out[node.name] = ast.dump(node)
-        return out
-
-    def test_every_read_scope_helper_is_ast_identical_in_both_hooks(self):
-        import scripts.kimi_guard_hook as kg
-        mine, theirs = self._functions(rg, self.NAMES), self._functions(kg, self.NAMES)
-        self.assertEqual(sorted(mine), sorted(self.NAMES))
-        for name in self.NAMES:
-            with self.subTest(name=name):
-                self.assertEqual(theirs.get(name), mine[name],
-                                 "%s has drifted from read_guard_hook's copy" % name)
-
-    def test_the_brokers_path_arithmetic_is_the_hooks(self):
-        from scripts import codex_read_tools
-        mine = self._functions(rg, self.BROKER_NAMES)
-        theirs = self._functions(codex_read_tools, self.BROKER_NAMES)
-        self.assertEqual(sorted(mine), sorted(self.BROKER_NAMES))
-        for name in self.BROKER_NAMES:
-            with self.subTest(name=name):
-                self.assertEqual(theirs.get(name), mine[name],
-                                 "%s has drifted from read_guard_hook's copy" % name)
-
-    def test_the_scope_keys_are_one_tuple_across_all_three(self):
-        # The constant is the drift's own lesson: a key added here must reach
-        # Kimi's loader and the Codex broker too, and only a pin makes that
-        # true. Since #3271 the three read the same three keys.
-        import scripts.kimi_guard_hook as kg
-        from scripts import codex_read_tools
-        self.assertEqual(rg.SCOPE_KEYS, kg.SCOPE_KEYS)
-        self.assertEqual(rg.SCOPE_KEYS, codex_read_tools.SCOPE_KEYS)
-        self.assertEqual(("files", "dirs", "reads"), rg.SCOPE_KEYS)
-
-    def test_a_root_directory_grant_admits_only_the_root_in_all_three(self):
-        # The root edge is what `directory.rstrip(os.sep) or os.sep` is for:
-        # without the `or`, `directory` is "" and every absolute path starts
-        # with os.sep, so a `/` grant admits the whole filesystem. The hooks
-        # have always carried the `or`; the broker did not, and a copy that
-        # answers a grant differently is a confinement hole, not a nit.
-        import scripts.kimi_guard_hook as kg
-        from scripts import codex_read_tools
-        for under in (rg._under, kg._under, codex_read_tools._under):
-            with self.subTest(copy=under.__module__):
-                self.assertTrue(under(os.sep, os.sep))
-                self.assertFalse(under("/etc/passwd", os.sep))
-                self.assertTrue(under("/repo", "/repo"))
-                self.assertTrue(under("/repo/x", "/repo"))
-                self.assertFalse(under("/repo-other/x", "/repo"))

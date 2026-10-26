@@ -102,15 +102,18 @@ def _path(value, cwd):
     return os.path.abspath(os.path.join(cwd, value))
 
 
+# --- VENDORED from guard_rules.py (#3273 cut 11): `_under`, `_in_dir_grant`
+# and `SCOPE_KEYS` above, byte for byte, pinned in tests/test_guard_rules.py.
+# This broker is launched `sys.executable -I <path>` (codex_host.safety_config),
+# so it cannot import a sibling either; it is an MCP server rather than a hook,
+# and these 24 lines are all it shares -- less than the guard hooks' loader
+# stanza and the second failure path it would add to the broker's protocol.
 def _under(path, directory):
     """Separator-bounded prefix test: /repo admits /repo/x, never /repo-other.
 
-    The `or os.sep` is the ROOT edge, and it is why this is the guard hooks'
-    function rather than a near-copy of it (ARC-1784455652/#1767): with `/` as
-    the grant, `rstrip(os.sep)` leaves "" and every absolute path starts with
-    os.sep, so the grant admitted the whole filesystem here while the hooks read
-    it as the root directory alone. Pinned AST-identical to
-    `read_guard_hook._under` in tests/test_read_guard_hook.py."""
+    The `or os.sep` is the ROOT edge: with `/` as the grant, `rstrip(os.sep)`
+    leaves "" and every absolute path starts with os.sep, so without it the
+    grant would admit the whole filesystem (ARC-1784455652/#1767)."""
     directory = directory.rstrip(os.sep) or os.sep
     return path == directory or path.startswith(directory + os.sep)
 
@@ -118,8 +121,7 @@ def _under(path, directory):
 def _in_dir_grant(target, directory):
     """`_under`, except that a directory grant never covers its own `.git`
     store (#3271 G-a): first contact does not count `<root>/.git`, so no grant
-    may read it. A path COMPONENT, never a prefix: `.github/` still reads.
-    The hooks' `_in_dir_grant` is the same rule."""
+    may read it. A path COMPONENT, never a prefix: `.github/` still reads."""
     if not _under(target, directory):
         return False
     rest = target[len(directory.rstrip(os.sep)):].lstrip(os.sep)

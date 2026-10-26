@@ -1124,17 +1124,21 @@ class TestReadGuardArmedProbe(unittest.TestCase):
     def test_each_round_trip_row_can_refute(self):
         # Spec 5: a probe that cannot fail is the defect this epic exists to
         # prevent. Break the guard three ways; each must REFUTE and name a row.
-        from scripts import read_guard_hook
+        # #3273 cut 11: `bind` is guard_rules' now, and the hook calls it there. Each
+        # patch must be REACHED as well as refuted -- a patch on a name the hook no
+        # longer calls would refute for some other reason and pass vacuously.
+        from scripts import guard_rules, read_guard_hook
         with tempfile.TemporaryDirectory() as session_root:
             self._session_root(session_root)
             cases = {
                 "decide allows everything": mock.patch.object(read_guard_hook, "decide", return_value=(True, "")),
                 "decide denies everything": mock.patch.object(read_guard_hook, "decide", return_value=(False, "x")),
-                "bind never binds": mock.patch.object(read_guard_hook, "bind", return_value=None),
+                "bind never binds": mock.patch.object(guard_rules, "bind", return_value=None),
             }
             for name, patch in cases.items():
-                with self.subTest(case=name), patch:
+                with self.subTest(case=name), patch as fake:
                     state, by, detail = claude_probes.probe_read_guard_armed("claude", session_root=session_root)
+                    self.assertTrue(fake.called, "%s: the patched function was never called" % name)
                     self.assertEqual(hosts.REFUTED, state)
                     self.assertEqual("read-guard-armed", by)
                     self.assertIn("the guard", detail)
@@ -1296,18 +1300,21 @@ class TestReadGuardArmedProbe(unittest.TestCase):
         # subagent through that layout; a guard that only knew the direct
         # layout leaves it unbound (every read denied) and the probe refutes,
         # naming the row.
-        from scripts import read_guard_hook
+        from scripts import guard_rules
         ok, detail = claude_probes._round_trip_confines_reads()
         self.assertTrue(ok, detail)
-        real = read_guard_hook.subagent_transcript
+        real = guard_rules.subagent_transcript
+        refused = []                    # #3273 cut 11: the positive control
 
         def direct_layout_only(transcript_path, agent_id):
             found = real(transcript_path, agent_id)
             if found and (os.sep + "workflows" + os.sep) in found:
+                refused.append(found)
                 return None
             return found
-        with mock.patch.object(read_guard_hook, "subagent_transcript", direct_layout_only):
+        with mock.patch.object(guard_rules, "subagent_transcript", direct_layout_only):
             ok, detail = claude_probes._round_trip_confines_reads()
+        self.assertTrue(refused, "the patched layout lookup never saw the workflow transcript")
         self.assertFalse(ok)
         self.assertIn("workflow", detail)
 
