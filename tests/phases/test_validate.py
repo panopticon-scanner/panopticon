@@ -7,6 +7,7 @@ import json
 import os
 import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -251,6 +252,56 @@ class TestValidatePhase(unittest.TestCase):
         validate_phase.capture_tree_baseline(repo)
         with mock.patch.object(validate_phase, "_MAX_BASELINE_FILES", 0):
             self._assert_delta_refuses_validation(repo, "a.py content equality not established")
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires POSIX FIFOs")
+    def test_file_entry_skips_a_fifo_without_opening_it(self):
+        """#3269 G10: a target FIFO cannot block the run-start baseline."""
+        with tempfile.TemporaryDirectory() as root:
+            fifo = os.path.join(root, "target-pipe")
+            os.mkfifo(fifo)
+            with mock.patch("builtins.open", side_effect=AssertionError("FIFO was opened")):
+                entry = validate_phase._file_entry(fifo)
+        self.assertEqual(entry, {"type": "non-regular"})
+
+    def test_file_entry_rechecks_the_open_descriptor_type(self):
+        """#3269 G10: a regular-to-FIFO race is opened nonblocking then skipped."""
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "raced")
+            open(path, "wb").close()
+            regular = mock.Mock(st_mode=stat.S_IFREG | 0o644)
+            fifo = mock.Mock(st_mode=stat.S_IFIFO | 0o644)
+            with mock.patch.object(validate_phase.os, "lstat", return_value=regular), \
+                    mock.patch.object(validate_phase.os, "open", return_value=37) as opened, \
+                    mock.patch.object(validate_phase.os, "fstat", return_value=fifo), \
+                    mock.patch.object(validate_phase.os, "close") as closed:
+                entry = validate_phase._file_entry(path)
+
+        self.assertEqual(entry, {"type": "non-regular"})
+        flags = opened.call_args.args[1]
+        for name in ("O_NONBLOCK", "O_NOFOLLOW"):
+            if hasattr(os, name):
+                self.assertTrue(flags & getattr(os, name), name)
+        closed.assert_called_once_with(37)
+
+    def test_recorded_nonregular_leaf_becoming_regular_is_a_delta(self):
+        """#3269 G10 control: skipping bytes does not drop the integrity entry."""
+        repo = self._git_repo()
+        rel = "target-pipe"
+        status = "?? %s\0" % rel
+        with open(runio._pano(repo, "tree-baseline.txt"), "w", encoding="utf-8") as fh:
+            json.dump({"schema_version": 2, "status": status,
+                       "entries": {rel: {"type": "non-regular"}},
+                       "truncated": False}, fh)
+        with open(os.path.join(repo, rel), "wb") as fh:
+            fh.write(b"now regular")
+
+        def unchanged_status(*args, **_kwargs):
+            return subprocess.CompletedProcess(args[0], 0, stdout=status, stderr="")
+
+        self.assertIn(
+            "CONTENT target-pipe (non-regular -> file)",
+            validate_phase._tree_delta(repo, unchanged_status),
+        )
 
     def test_panopticon_prefix_sibling_is_flagged(self):
         # a repo-root file sharing the '.panopticon' prefix WITHOUT a '/' boundary

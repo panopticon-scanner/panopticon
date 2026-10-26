@@ -139,6 +139,12 @@
   SHA-256 hash derived from the exact `_JS` bytes embedded in the self-contained report, so a
   script injected into report content does not share the authorized digest. Editing `_JS`
   automatically updates the policy instead of leaving a copied hash stale.
+- **Clean-tree baselines never block while opening a special file (#3269 G10, 5.3).**
+  A FIFO, socket or device named by the target's Git status is recorded as non-regular without
+  reading it. Regular candidates are opened nonblocking and without following a final symlink,
+  then checked again on the descriptor before their streaming digest is read. This also closes
+  the race where a regular path becomes a FIFO between classification and open; replacing a
+  recorded non-regular leaf with a regular file remains a visible content-type change.
 - **Dependency coverage is now a visible, certifying receipt (#3269 SCA, 5.3).**
   `meta.coverage.dependency_audit` records which dependency ecosystems were applicable and which
   dedicated SCA adapters were selected and produced output. If a dependency surface exists but no
