@@ -686,9 +686,10 @@ class TestPerRunFolders(unittest.TestCase):
         d, _ = self._repo()
         base = os.path.join(d, ".panopticon")
         for name in ("run-manifest.json",
-                     "setup-manifest.json", "epss-cache.json",
+                     "setup-manifest.json",
                      "report.json", "report.json.html", "write-allowlist.json"):
             self.assertEqual(runio._pano(d, name), os.path.join(base, name), name)
+        self.assertNotIn("epss-cache.json", runio._TOP_LEVEL)  # #3269 G8: operator state
 
     def test_pano_falls_back_flat_without_manifest(self):
         d = os.path.realpath(tempfile.mkdtemp())

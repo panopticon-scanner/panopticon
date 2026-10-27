@@ -244,6 +244,100 @@ class TestEpss(unittest.TestCase):
         self.assertEqual(holder["resp"].last_read_size, 1000000)
 
 
+class TestEpssCacheTrustBoundary(unittest.TestCase):
+    """#3269 G8: a cache hit is report data, so the reader must earn it."""
+
+    CVE = "CVE-2023-1234"
+
+    @classmethod
+    def _entry(cls, **changes):
+        entry = {
+            "cve": cls.CVE,
+            "score": 0.99,
+            "percentile": 0.99,
+            "as_of": "2026-07-20",
+            "source": "FIRST.org",
+        }
+        entry.update(changes)
+        return entry
+
+    @classmethod
+    def _network(cls, calls):
+        def opener(req, timeout=0):
+            calls.append(req.full_url)
+            return _FakeResp({"data": [{"cve": cls.CVE, "epss": "0.42",
+                                        "percentile": "0.75",
+                                        "date": "2026-07-21"}]})
+        return opener
+
+    def test_cache_read_is_byte_bounded_with_exact_limit_control(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "epss-cache.json")
+            raw = json.dumps({self.CVE: self._entry()}).encode("utf-8")
+            with open(path, "wb") as fh:
+                fh.write(raw)
+            with mock.patch.object(cit, "EPSS_CACHE_MAX_BYTES", len(raw)):
+                self.assertEqual(cit._load_cache(path)[self.CVE]["score"], 0.99)
+
+            with open(path, "ab") as fh:
+                fh.write(b" ")
+            calls = []
+            with mock.patch.object(cit, "EPSS_CACHE_MAX_BYTES", len(raw)):
+                out = cit.epss_lookup([self.CVE], path, opener=self._network(calls))
+            self.assertEqual(out[self.CVE]["score"], 0.42)
+            self.assertEqual(len(calls), 1)
+
+    def test_cache_read_does_not_follow_a_symlink(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as d:
+            victim = os.path.join(d, "planted.json")
+            path = os.path.join(d, "epss-cache.json")
+            with open(victim, "w", encoding="utf-8") as fh:
+                json.dump({self.CVE: self._entry()}, fh)
+            os.symlink(victim, path)
+            out = cit.epss_lookup([self.CVE], path, opener=self._network(calls))
+        self.assertEqual(out[self.CVE]["score"], 0.42)
+        self.assertEqual(len(calls), 1)
+
+    def test_cache_rejects_invalid_entry_shapes_and_score_bounds(self):
+        bad_entries = (
+            self._entry(score=True),
+            self._entry(score=-0.01),
+            self._entry(score=float("nan")),
+            self._entry(percentile=1.01),
+            self._entry(cve="CVE-2024-9999"),
+            self._entry(source="target-supplied"),
+            self._entry(as_of="2026-07-20\n"),
+            dict(self._entry(), extra="unversioned shape"),
+        )
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "epss-cache.json")
+            for entry in bad_entries:
+                with self.subTest(entry=entry):
+                    with open(path, "w", encoding="utf-8") as fh:
+                        json.dump({self.CVE: entry}, fh)
+                    self.assertEqual(cit._load_cache(path), {})
+
+    def test_cache_entry_count_is_bounded(self):
+        other = "CVE-2023-5678"
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "epss-cache.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({self.CVE: self._entry(),
+                           other: self._entry(cve=other)}, fh)
+            with mock.patch.object(cit, "EPSS_CACHE_ENTRIES_MAX", 2):
+                self.assertEqual(len(cit._load_cache(path)), 2)
+            with mock.patch.object(cit, "EPSS_CACHE_ENTRIES_MAX", 1):
+                self.assertEqual(cit._load_cache(path), {})
+
+    def test_score_and_percentile_bounds_are_inclusive(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "epss-cache.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({self.CVE: self._entry(score=0, percentile=1)}, fh)
+            self.assertEqual(cit._load_cache(path)[self.CVE]["score"], 0)
+
+
 class TestEpssLookupBudget(unittest.TestCase):
     """#1576 (run-13 OPS-746377351): EPSS enrichment was request-unbounded.
 

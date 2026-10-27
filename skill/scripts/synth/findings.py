@@ -85,8 +85,7 @@ class FindingSet:
         for tf in tool_findings:
             findings.append(normalize_finding(tf))
         catalog = citations.load_cwe_catalog()
-        citations.enrich_citations(findings, catalog, epss_enabled=args.epss,
-                                   cache_path=os.path.join(".panopticon", "epss-cache.json"))
+        citations.enrich_citations(findings, catalog, epss_enabled=args.epss)
         # #3207: the root the files are under -- grading's own rule (`--root`, else `--target`)
         doc_policy = apply_doc_severity_policy(
             findings, security_mode, doc_globs=args.doc_paths,

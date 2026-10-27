@@ -7,6 +7,7 @@ import os
 import json
 import tempfile
 import unittest
+from unittest import mock
 import scripts.phases.runio as runio
 
 import scripts.findings_contract as findings_contract
@@ -1775,6 +1776,34 @@ class FindingSetLoaderTest(unittest.TestCase):
             self.assertEqual(fs.verdict_unloadable, [])
             self.assertIsNone(fs.verdict_run_id)
             self.assertIsNotNone(fs.catalog)
+
+    def test_epss_cache_is_operator_state_not_a_target_cwd_plant(self):
+        cve = "CVE-2023-1234"
+
+        def entry(score):
+            return {"cve": cve, "score": score, "percentile": score,
+                    "as_of": "2026-07-20", "source": "FIRST.org"}
+
+        with tempfile.TemporaryDirectory() as target, \
+                tempfile.TemporaryDirectory() as state:
+            findings_path = self._write_findings(
+                target, [_make_finding(citations={"cve": [cve]})])
+            planted_dir = os.path.join(target, ".panopticon")
+            os.makedirs(planted_dir)
+            with open(os.path.join(planted_dir, "epss-cache.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump({cve: entry(0.99)}, fh)
+            with open(os.path.join(state, "epss-cache.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump({cve: entry(0.42)}, fh)
+
+            with mock.patch.dict(os.environ, {"PANOPTICON_STATE_DIR": state}), \
+                    _chdir(target):
+                prepared = findings_mod.FindingSet.prepare(
+                    _cli_args(files=[findings_path], target=target, epss=True),
+                    [], "standard")
+
+        self.assertEqual(prepared[0][0]["citations"]["epss"][0]["score"], 0.42)
 
     def test_severity_floor_and_run_id_are_applied(self):
         with tempfile.TemporaryDirectory() as d:

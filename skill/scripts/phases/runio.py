@@ -43,9 +43,9 @@ def _script(name):
     return os.path.join(_SCRIPTS_DIR, name)
 
 # §5.1 per-run folders. These artifacts stay at `.panopticon/` top-level: setup
-# files, the resume anchors (run-manifest / setup-manifest), the cross-run EPSS
-# cache, the transient write-guard allowlist (the hook reads it CWD-relative and is
-# run-context-free), and the compat report symlinks. EVERY other artifact is per-run
+# files, the resume anchors (run-manifest / setup-manifest), the transient write-guard
+# allowlist (the hook reads it CWD-relative and is run-context-free), and the compat
+# report symlinks. EVERY other artifact is per-run
 # and routes into `.panopticon/runs/<tag>/`. The durable reports live top-level and
 # tag-named (`<tag>-report.json`), so the run folder can be cleared — reclaiming the
 # findings/verdicts bulk — without losing any report.
@@ -62,7 +62,7 @@ _TOP_LEVEL = frozenset({
     # `unenforced-ack.json`: that name is per-run by design, and setup is not
     # a run.
     "setup-unenforced-ack.json",
-    "epss-cache.json", "write-allowlist.json",
+    "write-allowlist.json",
     "report.json", "report.json.html",
 })
 
@@ -74,7 +74,7 @@ def _run_tag(review_root):
     return run_manifest.run_tag(run_manifest.load_manifest(review_root))
 
 def _pano(review_root, *parts):
-    """Resolve a `.panopticon` artifact path: top-level for setup/anchor/cache/report
+    """Resolve a `.panopticon` artifact path: top-level for setup/anchor/report
     (`_TOP_LEVEL`), else per-run under `.panopticon/runs/<tag>/`. The manifest anchors
     the tag, so every done-predicate (which stats a `_pano` path) resolves the same
     folder on every resume."""
