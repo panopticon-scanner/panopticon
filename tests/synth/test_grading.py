@@ -414,6 +414,33 @@ class TestHealthScore(unittest.TestCase):
         # inverted range floors at 1, never negative
         self.assertEqual(grading_mod._loc_span({"location": {"line_start": 9, "line_end": 3}}), 1)
 
+    def test_loc_span_is_capped_at_span_cap(self):
+        # #3230 (owner ruling (a)): a finding counts at most SPAN_CAP lines
+        self.assertEqual(50, grading_mod.SPAN_CAP)
+        for end, span in ((50, 50), (51, 50), (7458, 50), (10 ** 9, 50), (49, 49)):
+            with self.subTest(line_end=end):
+                self.assertEqual(span, grading_mod._loc_span(
+                    {"location": {"line_start": 1, "line_end": end}}))
+
+    def test_a_wide_medium_never_outweighs_ten_one_line_highs(self):
+        # #3230: one whole-file "monolith" MEDIUM (7,458 lines) was 35% of a
+        # run's weighted total and swung the commit from A to C
+        def wd(severity, lines):
+            return grading_mod.weighted_defect(
+                [{"severity": severity, "location": {"line_start": 1, "line_end": lines}}])
+        ten_highs = 10 * wd("HIGH", 1)
+        for lines in (1, 50, 51, 2469, 7458, 10 ** 6):
+            with self.subTest(lines=lines):
+                self.assertLessEqual(wd("MEDIUM", lines), ten_highs)
+        self.assertEqual(ten_highs, wd("MEDIUM", 7458))      # the bound is tight, not loose
+        self.assertGreater(wd("HIGH", 50), wd("MEDIUM", 7458))
+        self.assertGreater(wd("HIGH", 2), wd("HIGH", 1))      # a span still counts, under the cap
+
+    def test_the_report_states_the_span_cap(self):
+        health = grading_mod.health_stats(100, [])
+        self.assertEqual(grading_mod.SPAN_CAP, health["span_cap"])
+        self.assertIn("min(lines spanned, %d)" % grading_mod.SPAN_CAP, health["formula"])
+
     def test_weighted_defect_line_span_weighting(self):
         findings = [
             {"severity": "HIGH", "location": {"line_start": 20, "line_end": 59}},
