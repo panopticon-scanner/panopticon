@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Vendored OCRDb catalog bumped from 0.5.0 to 0.6.0.**
+  - `skill/reference/ocrdb-0.6.0.json` is the shipped v0.6.0 bundle, byte-identical to the release asset. It has 398 codes, 3 more than before: COD-B2F (unguarded web-storage access), COD-F2C (unbounded collection rendered in one pass) and COD-F3E (async action without an in-flight guard), absorbed from the FRN calibration domain.
+  - Reports now stamp `meta.ocrdb_version` = 0.6.0, and reviewers' menus offer the new codes. No existing code was renamed or removed.
 - **Fix: a full disk or I/O error at run start is a status, not a traceback (#2094).**
   - `driver.run` writes two things into the reviewed tree before any phase: the `runs/latest` link and the clean-tree baseline. It turned a planted-path refusal from either into a status, but an `OSError` (ENOSPC, EIO, a read-only mount) escaped as a Python traceback with no status JSON. Since #1809 the disk state after such a failure was already right; only the operator's diagnostic was wrong.
   - It is now `status: error`, naming which write failed ("capturing the clean-tree baseline" or "creating the run links"), the path, and the system's error text.

@@ -365,7 +365,7 @@ class TestOcrdbValidation(unittest.TestCase):
                 findings=[{"title": "t", "severity": "LOW", "code": "SEC-A1A", "domain": "SEC"}],
             ),
         ))
-        self.assertEqual(report["meta"]["ocrdb_version"], "0.5.0")
+        self.assertEqual(report["meta"]["ocrdb_version"], "0.6.0")
         self.assertIsNotNone(report["meta"]["coverage"]["ocrdb"])
 
     def test_build_report_bundle_absent_is_null_and_safe(self):

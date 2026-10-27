@@ -76,7 +76,7 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
         self.assertIsNotNone(schema_rules.inline_schema(_published()))
 
     def test_inline_refuses_a_published_file_too_large_for_one_argv_token(self):
-        # skill/reference/ also publishes ocrdb-0.5.0.json (176 KB compacted),
+        # skill/reference/ also publishes ocrdb-0.6.0.json (~180 KB compacted),
         # over Linux MAX_ARG_STRLEN: execve would answer E2BIG and the runner
         # would burn three launches per entry -- the run-14 failure mode by a
         # second road (review round 1, item 2).
@@ -92,7 +92,7 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
                                                       inline=True))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
-        published = os.path.join(os.path.dirname(_published()), "ocrdb-0.5.0.json")
+        published = os.path.join(os.path.dirname(_published()), "ocrdb-0.6.0.json")
         if os.path.isfile(published):
             self.assertIsNone(schema_rules.inline_schema(published))
 
