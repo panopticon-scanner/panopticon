@@ -226,7 +226,7 @@ def strict_output_schema(path):
 # argv string at MAX_ARG_STRLEN (128 KiB) and `execve` answers E2BIG, which
 # the runner reports as a failed entry -- three burned launches per entry,
 # the exact failure this helper exists to prevent. `skill/reference/` also
-# publishes `ocrdb-0.5.0.json` (176 KB compacted), and a rewritten
+# publishes `ocrdb-0.6.0.json` (~180 KB compacted), and a rewritten
 # `dispatch-request.json` can name any published file,
 # so the cap is what keeps "published" from meaning "launchable". Half the
 # kernel limit, well above every schema stamped on an entry today (the
