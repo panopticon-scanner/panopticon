@@ -18,6 +18,11 @@
     `meta.coverage.ocrdb.overrides.clamped`. Controlled OCRDb severity-modifier
     reasons remain the explicit below-floor exception. Bundles with no
     `severity_range` retain the prior override behavior.
+- **Fix: `scripts/replay_report.py` replays again; a foreign archive now needs `--trust-archive` (#3332).**
+  - Since #3271 every replay failed. The scratch root linked `runs/<tag>`, which the artifact confinement refuses. Its symlinked source counted 0 lines, so health came out null, a silent wrong answer. And the run's own stamp never verifies at the scratch root's new path.
+  - The scratch root is now built from copies, skipping `.git`; links inside a copied tree stay links. Every stamp in a replay is signed and checked under a throwaway key that lives in the replay's temp dir, so the operator's state dir is never written.
+  - Without the flag, replay first runs first contact's own read-only check on `<review-root>` with this machine's key, and replays only a verified run of ours whose manifest is the one being replayed. It refuses anything else, including a missing key or a moved tree, and names the flag. Nothing is created to verify against. Such a replay prints nothing extra and is unmarked, so the WS-0 oracle compares as before.
+  - `--trust-archive` replays a foreign archive without that check and without reading any operator key. It says so on stderr and marks the report `meta.unverified_archive: true`, a new schema-declared field absent from every real run's report.
 - **Git listing failures no longer disclose a target-authored gitdir on Git 2.56 (#3329).**
   Discovery now classifies a failed `git ls-files` structurally: no `.git` entry on the target's
   resolved ancestor chain is an ordinary non-worktree, while a present entry is a broken
