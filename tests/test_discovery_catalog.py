@@ -1473,12 +1473,34 @@ class TestGitListingFailureIsNamed(unittest.TestCase):
             self.assertEqual("", err.getvalue())
             self.assertNotIn("git_failure", info)
 
+    def test_a_subdirectory_of_a_broken_worktree_is_disclosed(self):
+        # #3329 r1: the target itself has no `.git`, but its enclosing worktree
+        # still supplies the index and ignore policy that the fallback loses.
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "sub")
+            touch(d, "sub/app.py")
+            init_repo(d)
+            git_cmd(d, "add", "-A")
+            git_cmd(d, "commit", "-qm", "init")
+            with open(os.path.join(d, ".git", "index"), "wb") as fh:
+                fh.write(b"not an index")
+            info, err = {}, io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertIsNone(orchestrator._git_listed_files(target, info))
+
+        disclosure = err.getvalue()
+        self.assertIn("Git listing FAILED", disclosure)
+        self.assertIn("does NOT honour", disclosure)
+        self.assertEqual(
+            "a .git entry is present but git does not read this tree as a repository",
+            info.get("git_failure"),
+        )
+        self.assertNotIn("index file", disclosure)
+
     def test_a_worktree_whose_gitlink_dangles_is_disclosed_without_the_path(self):
         # A `.git` entry IS present, so the operator asked to scan a worktree and
-        # got a raw walk -- but git's sentence for this one failure is
-        # `fatal: not a git repository: <gitdir>`, which the substring test
-        # cannot separate from a plain non-git directory. Disclosed in the
-        # module's own words: the target-authored path never reaches stderr.
+        # got a raw walk. Git's sentence differs by version and names the
+        # target-authored gitdir, so the module discloses in its own words.
         with tempfile.TemporaryDirectory() as d:
             touch(d, "src/app.py")
             with open(os.path.join(d, ".git"), "w", encoding="utf-8") as fh:
@@ -1495,6 +1517,31 @@ class TestGitListingFailureIsNamed(unittest.TestCase):
         self.assertIn("does not read this tree as a repository",
                       info.get("git_failure") or "")
         self.assertNotIn("/nonexistent/elsewhere", info["git_failure"])
+
+    def test_dangling_gitlink_classification_is_independent_of_git_wording(self):
+        expected = "a .git entry is present but git does not read this tree as a repository"
+        messages = (
+            b"fatal: not a git repository: /target/chosen/gitdir-2.55",
+            b"fatal: gitfile does not point to a valid repository: "
+            b"/target/chosen/gitdir-2.56",
+        )
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, ".git"), "w", encoding="utf-8") as fh:
+                fh.write("gitdir: /target/chosen/gitdir\n")
+            for message in messages:
+                with self.subTest(message=message):
+                    failure = subprocess.CalledProcessError(
+                        128, ["git", "ls-files"], stderr=message)
+                    info, err = {}, io.StringIO()
+                    with mock.patch.object(orchestrator, "_git",
+                                           side_effect=failure), \
+                            contextlib.redirect_stderr(err):
+                        self.assertIsNone(orchestrator._git_listed_files(d, info))
+                    self.assertEqual(expected, info.get("git_failure"))
+                    self.assertNotIn("/target/chosen", info["git_failure"])
+                    self.assertIn(expected, err.getvalue())
+                    self.assertNotIn("fatal", err.getvalue())
+                    self.assertNotIn("/target/chosen", err.getvalue())
 
     def test_a_worktree_whose_git_fails_is_disclosed_and_still_walked(self):
         with tempfile.TemporaryDirectory() as d:

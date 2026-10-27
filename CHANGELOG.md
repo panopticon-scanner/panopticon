@@ -7,6 +7,13 @@
   - The scratch root is now built from copies, skipping `.git`; links inside a copied tree stay links. Every stamp in a replay is signed and checked under a throwaway key that lives in the replay's temp dir, so the operator's state dir is never written.
   - Without the flag, replay first runs first contact's own read-only check on `<review-root>` with this machine's key, and replays only a verified run of ours whose manifest is the one being replayed. It refuses anything else, including a missing key or a moved tree, and names the flag. Nothing is created to verify against. Such a replay prints nothing extra and is unmarked, so the WS-0 oracle compares as before.
   - `--trust-archive` replays a foreign archive without that check and without reading any operator key. It says so on stderr and marks the report `meta.unverified_archive: true`, a new schema-declared field absent from every real run's report.
+- **Git listing failures no longer disclose a target-authored gitdir on Git 2.56 (#3329).**
+  Discovery now classifies a failed `git ls-files` structurally: no `.git` entry on the target's
+  resolved ancestor chain is an ordinary non-worktree, while a present entry is a broken
+  enclosing worktree whose fallback is disclosed in Panopticon's own fixed words. Git's stderr
+  is never repeated for that case, whether it uses 2.55's “not a git repository” wording or
+  2.56's “gitfile does not point to a valid repository”, so the path written by the target cannot
+  reach the operator's terminal or report metadata.
 - **Change: one finding's line span counts at most 50 lines in the health index (#3230).**
   - `weighted_defect` multiplied each finding's severity weight by every line it spanned. So whether a reviewer cited a whole file decided the headline grade. On one commit, a single 7,458-line "monolithic module" MEDIUM was a third of a run's total, and two runs of the same commit graded A (health 90.38) and C (73.25).
   - A finding's span now counts at most `SPAN_CAP` = 50 lines, about one function. A MEDIUM at any span is worth at most ten one-line HIGHs, and a localized multi-line defect still outweighs a one-liner. Owner ruling: the A/B/C bands are kept as set, and recalibrating them is a follow-up.
