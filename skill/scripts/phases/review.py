@@ -11,6 +11,7 @@ import scripts.ingest_tools as ingest_tools
 # read the same function or a run can refuse itself.
 import scripts.loop_batch as loop_batch
 import scripts.ocrdb as ocrdb
+import scripts.synth.artifacts as artifacts_mod
 import scripts.synth.findings as findings_mod
 import scripts._version as _version
 from scripts import read_guard_hook
@@ -144,7 +145,11 @@ def _cell_exhausted(review_root, group, domain):
 
 
 def _get_valid_cell_data(review_root, manifest, group, domain):
-    data = runio._load_json(runio._pano(review_root, "findings-%s-%s.json" % (group, domain)))
+    path = runio._pano(review_root, "findings-%s-%s.json" % (group, domain))
+    try:
+        data = artifacts_mod.read_json(path)
+    except (OSError, ValueError):
+        return None
     # #1513: shape-only was too shallow -- `findings: [null]` is a list, so a
     # reviewer that returned garbage counted as a completed clean review. The
     # contract rule is shared with resume and direct synthesis; fixing this site

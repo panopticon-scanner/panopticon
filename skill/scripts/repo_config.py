@@ -32,8 +32,6 @@ MAX_CONFIG_BYTES = 1_048_576
 VERSION = 1
 TOP_LEVEL_KEYS = frozenset({"version", "groups", "exclude_paths", "settings"})
 
-_GROUP_LEAF_FIELDS = frozenset({"match", "tests", "panels", "exclude"})
-
 Resolution = namedtuple("Resolution", "path disclosures")
 Document = namedtuple("Document", "path doc errors disclosures")
 
@@ -107,8 +105,9 @@ def _committed_count_error(doc):
     # Lazy because setup_proposal imports this module for config names and the
     # version. At read time both modules can share its established #1107 limits
     # without copying the numbers or creating an import-time cycle.
-    module_name = "scripts.setup_proposal" if __package__ else "setup_proposal"
-    setup_proposal = importlib.import_module(module_name)
+    module_root = "scripts." if __package__ else ""
+    setup_proposal = importlib.import_module(module_root + "setup_proposal")
+    groups_schema = importlib.import_module(module_root + "groups_schema")
     max_groups = setup_proposal._MAX_GROUPS
     max_entries = setup_proposal._MAX_GROUP_ENTRIES
 
@@ -130,7 +129,7 @@ def _committed_count_error(doc):
         error = _group_entry_count_error(label, body, max_entries)
         if error:
             return error
-        if not isinstance(body, dict) or _GROUP_LEAF_FIELDS & body.keys():
+        if not isinstance(body, dict) or groups_schema.RESERVED & body.keys():
             continue
         if len(body) > max_groups:
             return ("group %r has too many committed subgroups (%d > %d); refused"
