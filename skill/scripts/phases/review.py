@@ -2,6 +2,7 @@
 from typing import Any
 import functools
 import os
+import shlex
 
 import scripts.dispatch as dispatch
 import scripts.evidence as evidence
@@ -11,6 +12,7 @@ import scripts.ingest_tools as ingest_tools
 # read the same function or a run can refuse itself.
 import scripts.loop_batch as loop_batch
 import scripts.ocrdb as ocrdb
+import scripts.safe_write as safe_write
 import scripts.synth.artifacts as artifacts_mod
 import scripts.synth.findings as findings_mod
 import scripts._version as _version
@@ -56,6 +58,7 @@ _TOOLS_CONTEXT_FILE = "panel-tools-context.json"
 # about the matrix entry every one of the group's domains shares. Read back at
 # synthesis as meta.coverage.test_inventory.
 _TEST_INVENTORY_FILE = "panel-test-inventory.json"
+_OCRDB_GUIDE_FILE = "ocrdb-guide.tsv"
 
 
 def _cell_key(group, domain):
@@ -173,7 +176,32 @@ def _security_checklist_path():
     return os.path.abspath(_version.reference_path("security-checklists.md"))
 
 
-def _cell_reads(domain):
+def _guide_is_readable(path):
+    return bool(path and os.path.isfile(path) and not os.path.islink(path))
+
+
+def _ensure_ocrdb_guide(review_root, bundle):
+    """Materialize the 0.7 all-domain guide once in the run-owned directory."""
+    rendered = ocrdb.render_guide_tsv(bundle)
+    if rendered is None:
+        return None
+    path = os.path.abspath(runio._pano(review_root, _OCRDB_GUIDE_FILE))
+    payload = rendered.encode("utf-8")
+    try:
+        current = safe_write.read_regular_bytes(path, len(payload))
+    except (FileNotFoundError, safe_write.ReadLimitExceeded):
+        current = None
+    if current != payload:
+        safe_write.write_text(path, rendered)
+    return path
+
+
+def _guide_reads(guide_path):
+    return ([os.path.abspath(guide_path)]
+            if _guide_is_readable(guide_path) else [])
+
+
+def _cell_reads(domain, guide_path=None):
     """The extra files a cell's prompt points its reviewer at, granted through
     the scope's `reads` allowance so the pointer is not a dead end.
 
@@ -181,9 +209,11 @@ def _cell_reads(domain):
     SEC prompt handed the reviewer an absolute checklist path and the read
     guard -- fail-closed, scoped to the cell's files and nothing else --
     denied it (`permission_denials` in the ledger named the file). Today the
-    SEC checklist is the only such pointer; a future one is added HERE and
-    nowhere else, next to the pointer it serves."""
-    return [_security_checklist_path()] if domain == "SEC" else []
+    SEC checklist and the optional all-domain OCRDb guide are the only such
+    pointers; a future one is added HERE and nowhere else, next to the pointer
+    it serves."""
+    reads = [_security_checklist_path()] if domain == "SEC" else []
+    return reads + _guide_reads(guide_path)
 
 
 def _render_security_checklist(domain):
@@ -210,10 +240,72 @@ def _render_security_checklist(domain):
         "treat a hit as a candidate finding, still graded against the criteria "
         "above.\n" % _security_checklist_path())
 
-def _render_menu(bundle, domain):
-    lines = ["%s %s (%s)" % (m["code"], m["name"], m["severity"])
-             for m in ocrdb.domain_menu(bundle, domain)]
-    return "\n".join(lines) or "(no OCRDb bundle vendored — use general %s judgment)" % domain
+def _guide_example_prefix(domain, outline):
+    """A concrete subtree prefix for the prompt's grep example."""
+    if domain == "TST":
+        for area in outline["areas"]:
+            if area["key"] == "F" and any(
+                    category["key"] == "1" for category in area["categories"]):
+                return "TST-F1"
+    for area in outline["areas"]:
+        if area["categories"]:
+            return "%s-%s%s" % (domain, area["key"], area["categories"][0]["key"])
+    return domain + "-"
+
+
+def _render_guide_pointer(domain, outline, guide_path):
+    if not _guide_is_readable(guide_path):
+        return []
+    path = runio._prompt_safe(os.path.abspath(guide_path))
+    quoted_path = shlex.quote(path)
+    prefix = _guide_example_prefix(domain, outline)
+    return [
+        "All-domain OCRDb routing guide — `%s`" % path,
+        "Before choosing between close codes or citing outside %s, grep it:" % domain,
+        "  grep '^%s' %s" % (prefix, quoted_path),
+        "  grep -i 'timeout' %s" % quoted_path,
+    ]
+
+
+def _render_menu(bundle, domain, guide_path=None):
+    menu = ocrdb.domain_menu(bundle, domain)
+    legacy = ["%s %s (%s)" % (m["code"], m["name"], m["severity"])
+              for m in menu]
+    outline = ocrdb.domain_outline(bundle, domain)
+    if not outline:
+        return "\n".join(legacy) or (
+            "(no OCRDb bundle vendored — use general %s judgment)" % domain)
+
+    def menu_line(item):
+        bounds = ocrdb.severity_range(bundle, item["code"])
+        if not bounds:
+            return "%s %s (%s)" % (item["code"], item["name"], item["severity"])
+        return "%s %s (default %s; permitted %s..%s)" % (
+            item["code"], item["name"], item["severity"],
+            bounds["floor"], bounds["ceiling"])
+
+    lines = []
+    if outline["guide"]:
+        lines.append("Domain guide — " + outline["guide"])
+    lines.extend(_render_guide_pointer(domain, outline, guide_path))
+    for item in menu:
+        lines.append(menu_line(item))
+        bounds = ocrdb.severity_range(bundle, item["code"])
+        if not bounds:
+            continue
+        for rung_name in ("lower_when", "raise_when"):
+            rungs = bounds.get(rung_name)
+            if not isinstance(rungs, list):
+                continue
+            for index, rung in enumerate(rungs):
+                if not isinstance(rung, dict):
+                    continue
+                target, condition = rung.get("to"), rung.get("condition")
+                if isinstance(target, str) and isinstance(condition, str):
+                    lines.append("  %s[%d] -> %s — %s" % (
+                        rung_name, index, target, condition))
+    return "\n".join(lines) or (
+        "(no OCRDb bundle vendored — use general %s judgment)" % domain)
 
 def _render_criteria(bundle, domain):
     """The domain's explicit OCRDb pass/fail criteria for the advisor to grade a
@@ -339,7 +431,7 @@ def _tool_hits_for_cell(review_root, manifest, domain, files):
     return _format_tool_hits(hits)
 
 def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle,
-                tools_context=False, inventory=None, unit=None):
+                tools_context=False, inventory=None, unit=None, guide_path=None):
     file_list = runio._abs_file_list(review_root, files)
     # #1190 AGT-A1A, via fix round 3: prompt-sanitized like `file_list`, with
     # the SAME function. Since fix round 2 (N1) a chunk's list is built from
@@ -360,7 +452,7 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
         "tests": test_list,
         "tst_guidance": inventory_mod.render_tst_guidance(domain, inventory_line),
         "security_mode": manifest.get("security_mode", "standard"),
-        "menu": _render_menu(bundle, domain),
+        "menu": _render_menu(bundle, domain, guide_path),
         "criteria": _render_criteria(bundle, domain), "run_id": manifest["run_id"],
         "tool_hits": _tool_hits_for_cell(review_root, manifest, domain, files),
         "security_checklist": _render_security_checklist(domain),
@@ -401,7 +493,8 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
             # keyed by THIS, so the report names a group the operator can find
             # in their own matrix (#1638 P13 fix round 1, F3).
             "inventory_unit": unit or group,
-            "scope": requests.scope(files=abs_files, reads=_cell_reads(domain))}
+            "scope": requests.scope(
+                files=abs_files, reads=_cell_reads(domain, guide_path))}
     if mode:
         entry["delivery"] = mode
     return entry
@@ -495,6 +588,7 @@ def review_execute(review_root, manifest):
     requests._write_driver_plan(review_root, manifest)
     host = manifest.get("host", "claude")
     bundle = runio._load_ocrdb_bundle()
+    guide_path = _ensure_ocrdb_guide(review_root, bundle)
     # group tests come from the committed matrix (parse_groups tests field)
     matrix, errors = runio.load_committed_groups(review_root)
     if errors:
@@ -546,7 +640,7 @@ def review_execute(review_root, manifest):
             _cell_entry(review_root, manifest, group, d, files, tests, host, bundle,
                         tools_context=tools_context,
                         inventory=inventory_of.get(unit),
-                        unit=unit)
+                        unit=unit, guide_path=guide_path)
             for d in pending)
     if all_entries:
         _record_attempts(review_root, [_cell_key(e["group"], e["domain"])

@@ -106,7 +106,11 @@
           "properties": {
             "from": {"type": "string"},
             "to": {"type": "string"},
-            "reason": {"type": "string"}
+            "reason": {"type": "string"},
+            "rung": {
+              "type": "string",
+              "description": "OCRDb severity_range rung label (for example raise_when[0]) or its exact condition text."
+            }
           }
         },
         "category": {"type": "string"},

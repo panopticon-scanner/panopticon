@@ -45,6 +45,11 @@ graded on its menu one-liner above.
 
 {criteria}
 
+When present, the domain guide in the menu and the area/category records in its
+linked all-domain routing guide route you toward candidate codes; they do not
+redefine those codes. When guide prose and a code's explicit criteria differ,
+the criteria win.
+
 ## Your task
 
 For EACH claim above, verify it by exploring the repository yourself:
@@ -59,6 +64,18 @@ For EACH claim above, verify it by exploring the repository yourself:
    opinion about the catalog and never applied to the finding, so disagreeing
    costs the claim nothing and is the only catalog mis-fit signal the pipeline
    produces.
+
+For a claim with `severity_override` on a code whose menu line has a `permitted`
+range, grade the override independently too. A free-form `reason` is not enough:
+locate its cited `rung` in the menu. Verify whether its condition actually holds
+in the code you read and reaches the requested severity. State that severity
+judgment in `reasoning`. If the defect is real but the cited rung is absent or
+its condition does not hold, the defect may still be `CONFIRMED` at the catalog
+default (synthesis clamps the unsupported override); do not confirm the rung
+merely because the reason sounds plausible.
+For a below-floor override, verify that `reason` begins with one of the menu
+contract's controlled `severity_modifier` slugs and that its concrete instance
+fact is true.
 
 ## Backup round
 

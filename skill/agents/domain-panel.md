@@ -29,6 +29,11 @@ Review the listed files through the **`{domain}`** domain lens, grading against 
 
 Some codes carry a precise pass/fail definition. Where a code above has criteria, choose it ONLY if its criteria are actually met — grade against the criteria, not the one-line name. These are the SAME criteria the verify phase will hold your finding to, so coding to them now avoids first-pass miscoding.
 
+When present, the domain guide in the menu and the area/category records in its
+linked all-domain routing guide are routing aids: use them to navigate to the
+most specific candidate code. They never broaden or redefine a code. When a
+guide and that code's explicit grading criteria differ, the criteria win.
+
 {criteria}
 
 Pick the **most specific** matching code for each finding. If nothing in the menu fits, use the domain fallback `{domain}-X0X` and say why in the description (this is the catalog-gap signal).
@@ -45,14 +50,37 @@ chaining with another issue — or the blast radius is bounded — it is **HIGH*
 not CRITICAL, EVEN IF the code defaults to CRITICAL (down-override to HIGH with a
 reason). When genuinely torn between CRITICAL and HIGH, choose **HIGH**.
 
+For a menu code with a `permitted` range, its `raise_when[...]` and
+`lower_when[...]` lines are the citable severity rungs:
+
+- Keep an ordinary override inside the permitted floor and ceiling, and include
+  `"rung": "raise_when[0]"` (or the exact condition text) in
+  `severity_override`. Cite the rung whose condition the concrete instance
+  actually meets; a free-form reason alone is not a rung.
+- Never raise above the default unless the cited `raise_when` rung reaches the
+  requested severity. Never select above the ceiling.
+- A controlled OCRDb `severity_modifier` may justify lowering below the floor.
+  Start `reason` with exactly `<modifier>: <concrete instance fact>`, using one
+  of: `test-or-fixture-scope`, `operator-controlled-input`,
+  `local-or-offline-context`, `regenerable-or-recoverable-data`,
+  `dev-or-ci-tooling`, `intentionally-public-value`,
+  `documented-accepted-risk`, or `compensating-control-present`. Merely naming
+  a modifier elsewhere in the sentence does not qualify.
+
 ## Finding format
 
 Each finding MUST carry:
 - `domain: "{domain}"` and `code`: the chosen menu code (or `{domain}-X0X` fallback)
 - `severity` (default from the code; you MAY override). If you override, you MUST
   also include `severity_override: {"from": "<the code's default severity>", "to":
-  "<your severity>", "reason": "<one sentence justifying it>"}`. An override with
-  no reason is reverted to the code default at synthesis.
+  "<your severity>", "reason": "<one sentence justifying it>"}`. When that
+  code's menu line has a `permitted` range, also include `"rung":
+  "raise_when[0]"` (or the exact condition); use the relevant
+  `lower_when[...]` label for a downward in-range override. A below-floor
+  controlled-modifier exception may omit a rung when the code has no lower
+  rung. Any off-default severity without this `severity_override` object is
+  reverted to the code default at synthesis; an object with no reason is also
+  reverted.
 - `title`, `description`, `location: {file, line_start, line_end}` — `file` MUST be
   **repository-relative** (e.g. `src/app.py`; never absolute or `./`-prefixed, so the
   delta/`--pr` gate can match it against the diff). `line_start`/`line_end` are

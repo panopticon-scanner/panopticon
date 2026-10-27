@@ -720,7 +720,15 @@
                   "properties": {
                     "count": {"type": "integer"},
                     "up": {"type": "integer"},
-                    "down": {"type": "integer"}
+                    "down": {"type": "integer"},
+                    "clamped": {
+                      "type": "integer",
+                      "description": "Reasoned overrides whose requested severity synthesis reduced to the OCRDb range/rung limit."
+                    },
+                    "missing": {
+                      "type": "integer",
+                      "description": "Agent findings reverted to the OCRDb default because an off-default severity omitted severity_override. Tool severities are excluded."
+                    }
                   }
                 },
                 "domainless": {"type": "integer"},
@@ -1370,7 +1378,11 @@
             "properties": {
               "from": {"type": "string"},
               "to": {"type": "string"},
-              "reason": {"type": "string"}
+              "reason": {"type": "string"},
+              "rung": {
+                "type": "string",
+                "description": "OCRDb severity_range rung label (for example raise_when[0]) or its exact condition text."
+              }
             }
           },
           "backup_confirmed": {"type": "boolean"},

@@ -252,21 +252,35 @@ def _render_findings(review_root, cell):
     embedded verbatim here would steer the advisor to read outside the review
     tree in BOTH verify rounds -- the prior _confined_to_root guard covered only
     the derived backup file list, never this channel."""
-    slim = [{"id": f["id"], "code": f.get("code"), "severity": f["severity"],
-             "title": runio.capped_title(f["title"]), "category": f.get("category"),
-             "location": claim_scope.confine_claim_location(review_root,
-                                                            f.get("location")),
-             "description": _capped_description(f.get("description", ""))}
-            for f in cell]
+    slim = []
+    for f in cell:
+        claim = {"id": f["id"], "code": f.get("code"), "severity": f["severity"],
+                 "title": runio.capped_title(f["title"]),
+                 "category": f.get("category"),
+                 "location": claim_scope.confine_claim_location(
+                     review_root, f.get("location")),
+                 "description": _capped_description(f.get("description", ""))}
+        override = f.get("severity_override")
+        if isinstance(override, dict):
+            # The advisor needs the exact catalog-rung citation to grade it.
+            # Carry only the public override contract, never arbitrary nested
+            # agent keys that happen to sit beside it.
+            claim["severity_override"] = {
+                key: override[key] for key in ("from", "to", "reason", "rung")
+                if key in override
+            }
+        slim.append(claim)
     return json.dumps(slim, indent=2)
 
 def _verify_entry(review_root, manifest, group, domain, files, cell, host,
-                  bundle, stage, part=0, grant=None, ambiguous=None):
+                  bundle, stage, part=0, grant=None, ambiguous=None,
+                  guide_path=None):
     file_list = runio._abs_file_list(review_root, files)
     out_file = _verify_out_file(review_root, group, domain, stage, part)
     prompt = dispatch.render_prompt("domain-advisor.md", {
         "domain": domain, "group": group, "file_list": file_list,
-        "findings": _render_findings(review_root, cell), "menu": review._render_menu(bundle, domain),
+        "findings": _render_findings(review_root, cell),
+        "menu": review._render_menu(bundle, domain, guide_path),
         "criteria": review._render_criteria(bundle, domain),   # #1035
         "run_id": manifest["run_id"], "stage": stage, "out_file": out_file}, host)
     # #975: pin the review root for the advisor too. Unlike the scout/panel file
@@ -305,7 +319,8 @@ def _verify_entry(review_root, manifest, group, domain, files, cell, host,
             "run_id": manifest["run_id"], "group": group, "domain": domain,
             "stage": stage,
             "files": abs_files,
-            "scope": requests.scope(files=abs_files)}
+            "scope": requests.scope(
+                files=abs_files, reads=review._guide_reads(guide_path))}
     if mode:
         entry["delivery"] = mode
     return entry
@@ -318,6 +333,7 @@ def verify_execute(review_root, manifest):
     os.makedirs(runio._pano(review_root, "verdicts"), exist_ok=True)
     host = manifest.get("host", "claude")
     bundle = runio._load_ocrdb_bundle()
+    guide_path = review._ensure_ocrdb_guide(review_root, bundle)
     # PRIMARY round: one advisor per engaged (>= F_p), not-yet-verified cell.
     # #5: batch every pending primary advisor across ALL groups into one
     # checkpoint (like review + scout), instead of one group per round trip. The
@@ -344,7 +360,8 @@ def verify_execute(review_root, manifest):
             ngroups += 1
             all_entries.extend(
                 _verify_entry(review_root, manifest, group, d, files, c,
-                              host, bundle, "primary", part)
+                              host, bundle, "primary", part,
+                              guide_path=guide_path)
                 for d, c, part in pending)
     if all_entries:
         _charge_verify_dispatch(review_root, all_entries)
@@ -355,7 +372,8 @@ def verify_execute(review_root, manifest):
                            message="verify: %d primary advisor(s) across %d group(s)"
                            % (len(all_entries), ngroups))
     # BACKUP round (Task 4 fills this branch).
-    backup = _verify_backup_execute(review_root, manifest, host, bundle)
+    backup = _verify_backup_execute(
+        review_root, manifest, host, bundle, guide_path=guide_path)
     if backup is not None:
         return backup
     # TOOL round (#5.0-03): dispatch a per-finding advisor for each tool finding
@@ -482,7 +500,7 @@ def _backup_scope_files(review_root, files, scope):
     """Just the file list out of `_backup_grant` -- what the entry reads."""
     return _backup_grant(review_root, files, scope)["granted"]
 
-def _verify_backup_execute(review_root, manifest, host, bundle):
+def _verify_backup_execute(review_root, manifest, host, bundle, guide_path=None):
     # #20: batch every pending BACKUP advisor across ALL groups into one
     # checkpoint (group=None), like review + verify-primary (#5). The backup
     # round is sequenced AFTER primary completes (verify_execute returns primary
@@ -527,7 +545,8 @@ def _verify_backup_execute(review_root, manifest, host, bundle):
                 all_entries.append(
                     _verify_entry(review_root, manifest, group, d,
                                   grant["granted"], c, host, bundle, "backup",
-                                  part, grant=grant, ambiguous=ambiguous))
+                                  part, grant=grant, ambiguous=ambiguous,
+                                  guide_path=guide_path))
     if all_entries:
         _charge_verify_dispatch(review_root, all_entries)
         req, sha = requests.write_dispatch_request_bound(
