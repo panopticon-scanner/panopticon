@@ -44,6 +44,11 @@
         "timestamp": {
           "type": "string"
         },
+        "unverified_archive": {
+          "type": "boolean",
+          "const": true,
+          "description": "#3332: present only on a report re-synthesized by `scripts/replay_report.py --trust-archive` from a run whose stamp (#3271) was NOT verified as this machine's -- a foreign archive. Its findings are the archive's own; nothing about where they came from was checked. Absent from every report a real run writes."
+        },
         "version": {
           "type": "string"
         },

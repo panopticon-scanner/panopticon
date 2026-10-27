@@ -6,12 +6,14 @@ or reshape PR is only clean when a replay on the branch is byte-for-byte the
 replay on the base commit, for every reference run folder.
 
     python3 scripts/replay_report.py replay <review-root> <run-folder> <out-dir>
-            [--manifest PATH] [--repo CHECKOUT]
+            [--manifest PATH] [--repo CHECKOUT] [--trust-archive]
     python3 scripts/replay_report.py diff <out-dir-a> <out-dir-b>
 
-`replay` never touches the reference: it builds a scratch review root (a
-symlink farm of <review-root>'s top-level entries plus a REAL `.panopticon/`
-holding a copy of the manifest and a `runs/<tag>` symlink to <run-folder>),
+`replay` never touches the reference: it builds a scratch review root of
+COPIES -- <review-root>'s top-level entries but `.git`, plus a REAL
+`.panopticon/` holding the manifest and a copy of <run-folder> at `runs/<tag>`
+(#3332: the artifact confinement refuses a linked `runs/<tag>`, and the LOC
+count opens with no-follow, so a symlink farm read as 0 lines),
 calls `phases.synthesize.synthesize_execute` with `_run_child` patched to record the
 command instead of running it, then re-runs that recorded synthesize argv
 with `--out` redirected into <out-dir>. cwd is the scratch root, so every
@@ -30,6 +32,16 @@ out-dir to `<out>` in every output -- the report files and the captured
 `synthesize.stdout` / `synthesize.stderr` alike -- so two replays compare
 wherever they were written.
 
+The scratch root is a new path, so the run's own stamp (#3271) can never
+verify there; replay re-binds it under a throwaway key in its temp dir, never
+the operator's. Without `--trust-archive` it does so only after first contact's
+own read-only assessment verified <review-root>'s mark and manifest with this
+machine's key -- a run of ours, replayed unmarked -- and refuses anything else.
+`--trust-archive` skips that check for a foreign archive, reads no operator key,
+says so on stderr and marks the report `meta.unverified_archive` (#3332).
+Keep <out-dir> outside every tree's `.panopticon/`: the child's first contact
+assesses the tree it writes into, and under the throwaway key none verifies.
+
 `--repo` points at the checkout whose skill/ should do the replay (default:
 this file's own repo) -- use it to produce the base-commit replay from the
 branch checkout before the tool exists on the base.
@@ -45,9 +57,11 @@ out-dir files are named `<tag>-report*.json` exactly like the driver's, so
 un-gated) drift from the historical report.
 """
 import argparse
+import contextlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -101,23 +115,83 @@ def _scrub_scratch(path, root, out_dir):
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(scrubbed)
 
-def _scratch_root(tmp, review_root, manifest, tag, run_folder):
+def _copy_in(src, dst):
+    """#3332: COPY, never link. A link inside a copied tree stays a link."""
+    if os.path.isdir(src) and not os.path.islink(src):
+        shutil.copytree(src, dst, symlinks=True)
+    else:
+        shutil.copy2(src, dst, follow_symlinks=False)
+
+def _scratch_root(tmp, review_root, manifest, tag, run_folder, bind=None):
     root = os.path.join(tmp, "root")
-    os.makedirs(os.path.join(root, ".panopticon", "runs"))
+    os.makedirs(root)
     for name in os.listdir(review_root):
-        if name != ".panopticon":
-            os.symlink(os.path.join(review_root, name), os.path.join(root, name))
+        if name not in (".panopticon", ".git"):
+            _copy_in(os.path.join(review_root, name), os.path.join(root, name))
+    if bind is not None:
+        bind(root, manifest)     # marks the still-absent `.panopticon/`, so before runs/
+    os.makedirs(os.path.join(root, ".panopticon", "runs"), exist_ok=True)
     with open(os.path.join(root, ".panopticon", "run-manifest.json"), "w",
               encoding="utf-8") as fh:
         json.dump(manifest, fh, indent=2)
-    os.symlink(run_folder, os.path.join(root, ".panopticon", "runs", tag))
+    _copy_in(run_folder, os.path.join(root, ".panopticon", "runs", tag))
     return root
+
+
+def _unverified(first_contact, review_root, manifest):
+    """#3332: why <review-root> is NOT a verified run of this machine's, or None.
+    First contact's own read-only assessment (no key or mark is written, and a
+    missing key verifies nothing), and the manifest replayed must be the one it
+    verified. Anything that could not be checked is unverified."""
+    try:
+        found = first_contact.assess_artifacts(review_root, read_only=True)
+    except first_contact.FirstContactHalt as exc:
+        return str(exc)
+    if found.get("run-manifest.json") != manifest:
+        return "%s holds no verified run manifest of this machine's matching it" % review_root
+    return None
+
+
+def _rebind(first_contact, root, manifest):
+    """Stamp the scratch copy as ours under the throwaway key (#3332): the mark,
+    then the manifest re-pointed at the copy, as an archive's review root was
+    also its target."""
+    original = manifest.get("review_root")
+    for key in ("review_root", "target"):
+        if manifest.get(key) == original:
+            manifest[key] = os.path.abspath(root)
+    first_contact._write_owner(os.path.join(root, ".panopticon"), root)
+    first_contact.bind(root, manifest)
+
+
+@contextlib.contextmanager
+def _throwaway_state(tmp):
+    """#3332: every stamp in a replay is signed and checked under a key that
+    lives and dies in its temp dir -- the operator's state dir is never touched."""
+    saved = os.environ.get("PANOPTICON_STATE_DIR")
+    os.environ["PANOPTICON_STATE_DIR"] = os.path.join(tmp, "state")
+    try:
+        yield
+    finally:
+        if saved is None:
+            os.environ.pop("PANOPTICON_STATE_DIR", None)
+        else:
+            os.environ["PANOPTICON_STATE_DIR"] = saved
+
+
+def _mark_unverified(path):
+    with open(path, encoding="utf-8") as fh:
+        report = json.load(fh)
+    report.setdefault("meta", {})["unverified_archive"] = True
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(report, indent=2))
 
 
 def replay(args):
     repo = os.path.abspath(args.repo or os.path.dirname(HERE))
     sys.path.insert(0, os.path.join(repo, "skill"))
     from scripts import hosts
+    import scripts.first_contact as first_contact
     import scripts.phases.child as child_mod
     import scripts.phases.runio as runio
     import scripts.phases.synthesize as synthesize_phase
@@ -133,6 +207,17 @@ def replay(args):
     folder_id = _folder_run_id(run_folder)
     if folder_id != manifest.get("run_id"):
         sys.exit(f"manifest run_id {manifest.get('run_id')!r} != run folder's {folder_id!r}")
+    trust = getattr(args, "trust_archive", False)
+    if trust:
+        print(f"replay: --trust-archive: {review_root}'s stamp is NOT verified; its copy is "
+              "re-signed under a throwaway key and the report marked meta.unverified_archive",
+              file=sys.stderr, flush=True)
+    else:
+        why = _unverified(first_contact, review_root, manifest)
+        if why:
+            sys.exit(f"replay: {review_root} is not a verified run of this machine's ({why}); "
+                     "to replay a foreign archive anyway, pass --trust-archive (the report "
+                     "is then marked meta.unverified_archive)")
     before = _listing(run_folder)
     os.makedirs(out_dir, exist_ok=True)
     recorded = []
@@ -141,8 +226,9 @@ def replay(args):
         recorded.append(list(cmd))
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    with tempfile.TemporaryDirectory(prefix="replay-") as tmp:
-        root = _scratch_root(tmp, review_root, manifest, tag, run_folder)
+    with tempfile.TemporaryDirectory(prefix="replay-") as tmp, _throwaway_state(tmp):
+        root = _scratch_root(tmp, review_root, manifest, tag, run_folder,
+                             bind=lambda r, m: _rebind(first_contact, r, m))
         # Match the phase's measured posture, including the deliberate absent-
         # host default. Read evidence through the scratch root so archived runs
         # use their own capability artifact, not the live checkout's latest run.
@@ -171,6 +257,8 @@ def replay(args):
         for name in os.listdir(out_dir):
             if name.startswith(tag):
                 _scrub_scratch(os.path.join(out_dir, name), root, out_dir)
+        if trust and os.path.isfile(out_path):
+            _mark_unverified(out_path)
     with open(os.path.join(out_dir, "replay.json"), "w", encoding="utf-8") as fh:
         json.dump({"repo": repo, "review_root": review_root, "run_folder": run_folder,
                    "argv": [a.replace(root, "<scratch>") for a in cmd],
@@ -281,6 +369,9 @@ def main(argv=None):
     r.add_argument("out_dir")
     r.add_argument("--manifest", help="run-manifest.json (default: <review-root>/.panopticon/)")
     r.add_argument("--repo", help="checkout whose skill/ replays (default: this file's repo)")
+    r.add_argument("--trust-archive", action="store_true",
+                   help="replay a run whose stamp is not this machine's (a foreign archive); "
+                        "the report is marked meta.unverified_archive (#3332)")
     r.set_defaults(fn=replay)
     d = sub.add_parser("diff", help="compare two replay out-dirs")
     d.add_argument("a")
