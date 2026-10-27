@@ -189,7 +189,7 @@ def _ensure_ocrdb_guide(review_root, bundle):
     payload = rendered.encode("utf-8")
     try:
         current = safe_write.read_regular_bytes(path, len(payload))
-    except (FileNotFoundError, safe_write.ReadLimitExceeded):
+    except (OSError, safe_write.ReadLimitExceeded):
         current = None
     if current != payload:
         safe_write.write_text(path, rendered)

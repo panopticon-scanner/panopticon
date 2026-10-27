@@ -13,7 +13,9 @@ from pathlib import Path
 import tempfile
 from unittest import mock
 
-from scripts import dispatch, ocrdb
+import pytest
+
+from scripts import dispatch, ocrdb, safe_write
 from scripts.phases import review, runio, verify
 
 
@@ -213,6 +215,24 @@ def test_07_run_guide_is_written_once_and_granted_to_panel_and_advisor():
         for entry in (panel, advisor):
             assert guide in entry["scope"]["reads"]
             assert guide in entry["prompt"]
+
+
+def test_07_guide_preread_symlink_uses_uniform_artifact_path_error(tmp_path):
+    bundle = _bundle_07()
+    pano = tmp_path / ".panopticon"
+    pano.mkdir()
+    victim = pano / "precious"
+    victim.write_text("PRECIOUS", encoding="utf-8")
+    guide = pano / "ocrdb-guide.tsv"
+    guide.symlink_to(victim.name)
+
+    with pytest.raises(safe_write.ArtifactPathError) as raised:
+        review._ensure_ocrdb_guide(str(tmp_path), bundle)
+
+    assert type(raised.value) is safe_write.ArtifactPathError
+    assert raised.value.action == "write"
+    assert guide.is_symlink()
+    assert victim.read_text(encoding="utf-8") == "PRECIOUS"
 
 
 def test_advisor_receives_the_panel_rung_and_grades_its_condition():

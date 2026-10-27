@@ -416,6 +416,34 @@ class TestHtmlOut(unittest.TestCase):
             self.assertNotIn("Traceback", err.getvalue())
             self.assertTrue(os.path.isdir(html_out))
 
+    def test_compare_mode_routes_a_planted_html_link_through_artifact_refusal(self):
+        with tempfile.TemporaryDirectory() as d, _chdir(d), \
+                mock.patch.object(datetime_mod, "datetime", _FrozenDateTime):
+            findings = os.path.join(d, "findings.json")
+            report = os.path.join(d, "report.json")
+            with open(findings, "w", encoding="utf-8") as fh:
+                json.dump({"findings": []}, fh)
+            self.assertEqual(syn.main(["--repo", "--out", report, findings]), 0)
+            pano = os.path.join(d, ".panopticon")
+            os.makedirs(pano)
+            victim = os.path.join(d, "victim.html")
+            with open(victim, "w", encoding="utf-8") as fh:
+                fh.write("PRECIOUS")
+            html_out = os.path.join(pano, "compare.html")
+            os.symlink(victim, html_out)
+
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                rc = syn.main([
+                    "--compare", report, report, "--html-out", html_out,
+                ])
+
+            self.assertEqual(rc, 4)
+            self.assertIn("synthesize: artifact path refused:", err.getvalue())
+            self.assertNotIn("Traceback", err.getvalue())
+            self.assertTrue(os.path.islink(html_out))
+            with open(victim, encoding="utf-8") as fh:
+                self.assertEqual(fh.read(), "PRECIOUS")
+
     def test_a_clean_run_repeats_the_same_artifact_bytes_and_status(self):
         with tempfile.TemporaryDirectory() as d, _chdir(d), \
                 mock.patch.object(datetime_mod, "datetime", _FrozenDateTime):
