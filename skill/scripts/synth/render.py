@@ -93,11 +93,13 @@ def _render_health(health):
     # is better. Weights are stated so the footprint can be checked, not trusted.
     weights = ", ".join("%s x%s" % (severity, grading_mod.HEALTH_WEIGHTS[severity])
                         for severity in findings_mod.SEV_ORDER)
+    cap = health.get("span_cap")    # #3230; a report from before the cap has none
+    spanned = "lines spanned, at most %s" % cap if isinstance(cap, int) else "lines spanned"
     return ("**Health:** %s / 100 \u2014 %s clean LoC against %s weighted "
             "defect; HIGHER IS BETTER, 100 = no gate-eligible weighted defect "
             "(weights: %s, "
-            "each x lines spanned). Gate-eligible findings only; never affects "
-            "the gate." % (score, "{:,}".format(loc), "{:,}".format(wd), weights))
+            "each x %s). Gate-eligible findings only; never affects "
+            "the gate." % (score, "{:,}".format(loc), "{:,}".format(wd), weights, spanned))
 
 def _suppressed_line(suppressed, not_gated=None):
     """What controlled source-scope rules dropped, named per reason.

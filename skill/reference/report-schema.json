@@ -1206,11 +1206,16 @@
             },
             "weighted_defect": {
               "type": "integer",
-              "description": "Sum over gate-eligible findings of weight[severity] * lines-spanned."
+              "description": "Sum over gate-eligible findings of weight[severity] * lines-spanned, each finding's span capped at `span_cap` lines (#3230)."
             },
             "weights": {
               "type": "object",
               "description": "Severity weights used: info 0, low 1, medium 5, high 25, critical 125."
+            },
+            "span_cap": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "#3230: the most lines one finding's span counts for in weighted_defect, so citing a whole file cannot outweigh a run's real defects. Absent from a report written before the cap, whose span was unbounded."
             },
             "formula": {
               "type": "string",

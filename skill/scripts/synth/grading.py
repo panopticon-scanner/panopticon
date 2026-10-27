@@ -235,15 +235,17 @@ def severity_stats(findings):
             stats[sev] += 1
     return stats
 
-# Severity weights for the defect footprint used by the bounded health score.
-# The score drives the report's letter grade when available; severity/evidence
-# policy independently determines the gate. Weights escalate x5 per band;
-# INFO is weightless.
+# Severity weights for the defect footprint used by the bounded health score. The score drives the
+# letter grade when available; severity/evidence policy alone sets the gate. x5 per band; INFO is 0.
 HEALTH_WEIGHTS = {"INFO": 0, "LOW": 1, "MEDIUM": 5, "HIGH": 25, "CRITICAL": 125}
+# #3230 (owner ruling (a), 2026-10-26): a finding counts at most SPAN_CAP lines, so citing a
+# whole file cannot outweigh a run's real defects: one span-weighted 7,458-line MEDIUM swung a
+# commit's grade from A to C. 50 is about one function; the A/B/C bands were kept as set.
+SPAN_CAP = 50
 
 def _loc_span(finding):
-    """Lines a finding spans: line_end - line_start + 1, floored at 1. Tolerant
-    of missing/None/non-int/inverted ranges (any such finding counts as 1)."""
+    """Lines a finding spans: line_end - line_start + 1, floored at 1 and capped at
+    SPAN_CAP. Missing/None/non-int/inverted ranges count as 1."""
     loc = finding.get("location") or {}
     start = loc.get("line_start")
     if not isinstance(start, int):
@@ -251,11 +253,11 @@ def _loc_span(finding):
     end = loc.get("line_end", start)
     if not isinstance(end, int):
         end = start
-    return max(1, end - start + 1)
+    return min(SPAN_CAP, max(1, end - start + 1))
 
 def weighted_defect(findings):
     """Severity-weighted defect footprint: sum over `findings` of
-    weight[severity] * _loc_span(finding). INFO (weight 0) contributes nothing."""
+    weight[severity] * _loc_span(finding) (span capped, #3230). INFO adds nothing."""
     total = 0
     for f in findings:
         weight = HEALTH_WEIGHTS.get(str(f.get("severity", "INFO")).upper(), 0)
@@ -385,36 +387,33 @@ def nonblank_loc(target, groups_meta):
         os.close(root_fd)
     return total
 
-HEALTH_FORMULA = "100 * total_loc / (total_loc + weighted_defect)"
+HEALTH_FORMULA = ("100 * total_loc / (total_loc + weighted_defect), weighted_defect = "
+                  "sum(weight[severity] * min(lines spanned, %d))" % SPAN_CAP)
 
 def health_score(total_loc, weighted):
-    """Bounded health index: the share of the reviewed codebase NOT under
-    severity-weighted defect footprint, as 0-100. Higher = healthier; a repo with
-    no gate-eligible weighted defect scores exactly 100. Rounded to 2 decimals.
+    """Bounded health index: the share of the reviewed codebase NOT under severity-weighted defect
+    footprint, as 0-100. Higher = healthier; a repo with no gate-eligible weighted defect scores
+    exactly 100. Rounded to 2 decimals.
 
-    Replaces the original `total_loc / weighted_defect` ratio, which was wrong in
-    three ways at once. It ran BACKWARDS from the intuition a reader brings to a
-    number labelled "health" (the divisor carried the defect); it was unbounded
-    above, so there was no value meaning "perfect"; and it divided by
-    `weighted_defect`, which is 0 for a CLEAN repo -- so the single best possible
+    Replaces the original `total_loc / weighted_defect` ratio, which was wrong in three ways at
+    once. It ran BACKWARDS from the intuition a reader brings to a number labelled "health" (the
+    divisor carried the defect); it was unbounded above, so there was no value meaning "perfect";
+    and it divided by `weighted_defect`, which is 0 for a CLEAN repo -- so the single best possible
     outcome was the one case that had to return None.
 
-    This form inverts all three. The remaining degenerate case is total_loc == 0
-    -- no reviewed file was readable -- which returns None because it is a broken
-    MEASUREMENT, not a health of zero. That distinction became load-bearing when
-    the letter grade started keying on this score: nonblank_loc() skips missing,
-    unreadable and binary files silently, so a run whose paths do not resolve (a
-    stale worktree, a moved checkout, a revoked volume permission) would otherwise
+    This form inverts all three. The remaining degenerate case is total_loc == 0 -- no reviewed
+    file was readable -- which returns None because it is a broken MEASUREMENT, not a health of
+    zero. That distinction became load-bearing when the letter grade started keying on this score:
+    nonblank_loc() skips missing, unreadable and binary files silently, so a run whose paths do not
+    resolve (a stale worktree, a moved checkout, a revoked volume permission) would otherwise
     report the floor grade for a codebase it never managed to read.
 
-    Deliberately NOT `100 - weighted/total_loc`, the obvious inversion: that
-    reads as a percentage but has no floor (a file-scoped run with wide HIGH
-    findings goes negative), and it compresses real spread to nothing. Measured
-    on the six calibration targets it puts every one between 98.20 and 99.58 --
-    1.38 points to separate codebases whose defect density differs 4.3x, leaving
-    gate-F/risk-CRITICAL gotify and the healthiest target 1.25 points apart. The
-    saturating form used here spreads the same six across 35.68-70.45, in the
-    same order.
+    Deliberately NOT `100 - weighted/total_loc`, the obvious inversion: that reads as a percentage
+    but has no floor (a file-scoped run with wide HIGH findings goes negative), and it compresses
+    real spread to nothing. Measured on the six calibration targets it puts every one between 98.20
+    and 99.58 -- 1.38 points to separate codebases whose defect density differs 4.3x, leaving
+    gate-F/risk-CRITICAL gotify and the healthiest target 1.25 points apart. The saturating form
+    used here spreads the same six across 35.68-70.45, in the same order.
     """
     if not total_loc:
         return None
@@ -430,6 +429,7 @@ def health_stats(total_loc, gate_eligible):
         "total_loc": total_loc,
         "weighted_defect": weighted,
         "weights": {k.lower(): v for k, v in HEALTH_WEIGHTS.items()},
+        "span_cap": SPAN_CAP,
         # Stated so a report is self-describing: the score changed shape once
         # already, and both inputs are emitted, so any reader (or an older
         # report) can be recomputed against whichever formula it names.
