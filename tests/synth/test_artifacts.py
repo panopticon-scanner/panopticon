@@ -196,12 +196,18 @@ def test_descriptor_closes_when_inspection_or_wrapping_fails(tmp_path, monkeypat
     path.write_text("{}")
     opened = []
     real_open, real_fstat = os.open, os.fstat
+    real_failure_point = getattr(os, failure_point)
     def track_open(*args, **kwargs):
         fd = real_open(*args, **kwargs)
         opened.append(fd)
         return fd
-    def fail(*_args, **_kwargs):
-        raise OSError("injected I/O failure")
+    # `artifacts.os` is the process-wide `os` module: fail only the descriptor
+    # this test opened, so pytest's own capture (9.2 fstats its tmpfile while
+    # the patch is live) keeps working.
+    def fail(fd, *args, **kwargs):
+        if fd in opened:
+            raise OSError("injected I/O failure")
+        return real_failure_point(fd, *args, **kwargs)
     monkeypatch.setattr(artifacts.os, "open", track_open)
     monkeypatch.setattr(artifacts.os, failure_point, fail)
     with pytest.raises(OSError, match="injected"):
