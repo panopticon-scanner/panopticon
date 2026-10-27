@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Git listing failures no longer disclose a target-authored gitdir on Git 2.56 (#3329).**
+  Discovery now classifies a failed `git ls-files` structurally: no `.git` entry is an ordinary
+  non-worktree, while a present entry is a broken worktree whose fallback is disclosed in
+  Panopticon's own fixed words. Git's stderr is never repeated for that case, whether it uses
+  2.55's “not a git repository” wording or 2.56's “gitfile does not point to a valid repository”,
+  so the path written by the target cannot reach the operator's terminal or report metadata.
 - **Vendored OCRDb catalog bumped from 0.5.0 to 0.6.0.**
   - `skill/reference/ocrdb-0.6.0.json` is the shipped v0.6.0 bundle, byte-identical to the release asset. It has 398 codes, 3 more than before: COD-B2F (unguarded web-storage access), COD-F2C (unbounded collection rendered in one pass) and COD-F3E (async action without an in-flight guard), absorbed from the FRN calibration domain.
   - Reports now stamp `meta.ocrdb_version` = 0.6.0, and reviewers' menus offer the new codes. No existing code was renamed or removed.

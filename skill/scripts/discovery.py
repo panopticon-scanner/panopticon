@@ -915,10 +915,10 @@ def _git_listed_files(repo, info=None):
     except (OSError, subprocess.SubprocessError) as exc:
         said = os.fsdecode(getattr(exc, "stderr", None) or b"").strip()
         detail = said.splitlines()[0] if said else "%s: %s" % (type(exc).__name__, exc)
-        if "not a git repository" in detail:
+        if isinstance(exc, subprocess.CalledProcessError):
             if not os.path.lexists(os.path.join(repo, ".git")):
                 return None                # no .git entry: not a worktree
-            # A `.git` git will not open; never echo git's text: it names the gitdir.
+            # #3329: structural across Git 2.55/2.56; never echo the target's gitdir.
             detail = "a .git entry is present but git does not read this tree as a repository"
         print("panopticon: the target's Git listing FAILED (%s); discovery falls back "
               "to a raw walk, which does NOT honour the target's .gitignore -- this "
