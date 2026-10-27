@@ -200,6 +200,12 @@
   then checked again on the descriptor before their streaming digest is read. This also closes
   the race where a regular path becomes a FIFO between classification and open; replacing a
   recorded non-regular leaf with a regular file remains a visible content-type change.
+- **Reviewer JSON fallback and findings-file reads are bounded (#3269 G7, 5.3).**
+  A miss in the linear tolerant-JSON scanner now refuses the reply instead of replaying it through
+  a quadratic greedy regex. Driver completion, resume completion, and canonical synthesis ingestion
+  share the existing 16 MiB regular-file boundary, so an oversized reviewer file is never called
+  complete or loaded into a report. The G12 count walker now also imports the schema's leaf-field
+  vocabulary instead of copying it.
 - **Committed group matrices have count bounds, not only a byte bound (#3269 G12, 5.3).**
   The committed reader now reuses the setup proposal's 500-group and 1,000-entry limits instead of
   relying on the byte cap alone. Both mapping and legacy-list groups are bounded, one parent cannot

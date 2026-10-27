@@ -12,8 +12,12 @@ profile object, each valid JSON on its own.
 """
 import json
 import unittest
+from unittest import mock
+
+import pytest
 
 import scripts.tolerant_json as tolerant_json
+from tests.test_shell_reader import LinearGrowth
 
 
 def proposal(n_groups, n_layers):
@@ -65,6 +69,35 @@ class OuterObjectSurvivesTheCandidateCap(unittest.TestCase):
                        "{a{b{c{d{e}}}}}" * 30):
             with self.subTest(prefix=prefix[:20]):
                 self.assertEqual(tolerant_json.loads(prefix + encoded), bundle)
+
+
+class QuadraticFallbackIsRetired(LinearGrowth, unittest.TestCase):
+    def test_bounded_scanner_miss_never_reaches_regex_replay(self):
+        """#3269 G7: a scanner miss raises; it never starts the greedy fallback."""
+        body = "{" * 4096
+        with (mock.patch.object(tolerant_json, "first_balanced_object",
+                                return_value=None),
+              mock.patch.object(tolerant_json.re, "search",
+                                side_effect=AssertionError("unbounded regex replay"))
+              as replay):
+            with self.assertRaises(json.JSONDecodeError):
+                tolerant_json.loads(body)
+        replay.assert_not_called()
+
+    @pytest.mark.serial
+    def test_all_opening_braces_refuse_in_linear_time(self):
+        """#3269 G7: the former regex worst case scales with the bounded scan."""
+        def parse(body):
+            try:
+                tolerant_json.loads(body)
+            except json.JSONDecodeError as exc:
+                return exc
+            self.fail("an all-opening-braces reply parsed")
+
+        self.assert_linear_growth(
+            20_000, lambda size: "{" * size,
+            lambda _size, result: self.assertIsInstance(result, json.JSONDecodeError),
+            parser=parse)
 
 
 if __name__ == "__main__":

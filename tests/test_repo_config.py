@@ -307,6 +307,20 @@ class TestReadDocument(unittest.TestCase):
                 self.assertIn(path, doc.errors[0])
                 self.assertIn(reason, doc.errors[0])
 
+    def test_committed_leaf_fields_come_from_the_group_schema(self):
+        """#3269 G12 follow-up: count traversal reuses the schema's leaf rule."""
+        from scripts import groups_schema, setup_proposal
+
+        body = "version: 1\ngroups:\n  App:\n    marker: true\n    child: {}\n"
+        with (mock.patch.object(setup_proposal, "_MAX_GROUPS", 1),
+              mock.patch.object(groups_schema, "RESERVED",
+                                groups_schema.RESERVED | {"marker"}),
+              tempfile.TemporaryDirectory() as d):
+            _write(d, "panopticon.yml", body)
+            doc = rc.read_document(d)
+        self.assertEqual(doc.errors, [])
+        self.assertIsNotNone(doc.doc)
+
     def test_unknown_top_level_keys_are_disclosed_and_ignored(self):
         with tempfile.TemporaryDirectory() as d:
             _write(d, "panopticon.yml", GOOD + "colour: blue\n")

@@ -171,15 +171,9 @@ def loads(body):
         # #1058: narrative wrapping lost 8/79 advisor verdicts in run-5; three
         # repeated on retry, so it was prompt-induced rather than noise. The
         # bounded scanner accepts the first object despite prose braces at
-        # either end. The greedy regex remains a last resort; a total miss is
-        # still `unloadable` (#938).
+        # either end. A total miss is still `unloadable` (#938); #3269 removed
+        # the greedy regex replay that made an all-opening-braces miss quadratic.
         obj = first_balanced_object(body)
         if obj is not None:
             return obj
-        match = re.search(r"(\{.*\})", body, re.DOTALL)
-        if match:
-            try:
-                return json.loads(depth_checked(match.group(1)))
-            except (json.JSONDecodeError, RecursionError, MemoryError):
-                pass
         raise first_err
