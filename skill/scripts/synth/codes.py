@@ -72,6 +72,67 @@ def validate_finding_codes(findings, bundle):
 # desyncing meta.coverage.ocrdb.overrides.
 _SEV_ORDINAL = {s: i for i, s in enumerate(reversed(findings_mod.SEV_ORDER))}
 
+# OCRDb 0.7's controlled, consumer-side reasons. A reason uses
+# ``<modifier>: <instance fact>`` so prose that merely mentions a modifier does
+# not acquire its below-floor exception.
+_SEVERITY_MODIFIERS = frozenset({
+    "test-or-fixture-scope",
+    "operator-controlled-input",
+    "local-or-offline-context",
+    "regenerable-or-recoverable-data",
+    "dev-or-ci-tooling",
+    "intentionally-public-value",
+    "documented-accepted-risk",
+    "compensating-control-present",
+})
+
+
+def _has_severity_modifier(reason):
+    if not isinstance(reason, str) or ":" not in reason:
+        return False
+    modifier, fact = reason.split(":", 1)
+    return modifier.strip() in _SEVERITY_MODIFIERS and bool(fact.strip())
+
+
+def _cited_raise_target(bounds, citation):
+    """Highest raise rung named by its label or exact condition text."""
+    if not isinstance(citation, str):
+        return None
+    targets = []
+    rungs = bounds.get("raise_when")
+    if not isinstance(rungs, list):
+        return None
+    for index, rung in enumerate(rungs):
+        if not isinstance(rung, dict):
+            continue
+        if citation not in ("raise_when[%d]" % index, rung.get("condition")):
+            continue
+        target = rung.get("to")
+        if target in _SEV_ORDINAL:
+            targets.append(target)
+    return max(targets, key=lambda severity: _SEV_ORDINAL[severity]) if targets else None
+
+
+def _clamp_to_range(default, requested, override, bounds):
+    """Return the deterministic 0.7 range/rung-constrained severity."""
+    base = _SEV_ORDINAL.get(default)
+    current = _SEV_ORDINAL.get(requested)
+    floor = _SEV_ORDINAL.get(bounds.get("floor"))
+    ceiling = _SEV_ORDINAL.get(bounds.get("ceiling"))
+    if base is None or current is None or floor is None or ceiling is None:
+        return requested
+
+    allowed = current
+    if current > base:
+        cited = _cited_raise_target(bounds, override.get("rung"))
+        cited_ordinal = _SEV_ORDINAL[cited] if cited is not None else base
+        allowed = min(current, ceiling, max(base, cited_ordinal))
+    elif current < floor and not _has_severity_modifier(override.get("reason")):
+        allowed = floor
+
+    by_ordinal = {ordinal: severity for severity, ordinal in _SEV_ORDINAL.items()}
+    return by_ordinal[allowed]
+
 def apply_verdict_quality(findings, matched, bundle):
     """Apply the backup-corroboration flag and the severity-override discipline;
     return the counters merged into meta.coverage.ocrdb.
@@ -88,7 +149,7 @@ def apply_verdict_quality(findings, matched, bundle):
     default severity. `matched` maps id(finding) -> the winning verdict (or None)
     from build_report's match loop.
     """
-    ov_count = ov_up = ov_down = 0
+    ov_count = ov_up = ov_down = ov_clamped = 0
     for f in findings:
         v = matched.get(id(f))
         if v:
@@ -112,10 +173,23 @@ def apply_verdict_quality(findings, matched, bundle):
                       file=sys.stderr)
             else:
                 ov_count += 1
+                requested = f.get("severity")
+                bounds = ocrdb.severity_range(bundle, f.get("code"))
+                if default and bounds:
+                    applied = _clamp_to_range(default, requested, ov, bounds)
+                    if applied != requested:
+                        ov_clamped += 1
+                        f["severity"] = applied
+                        ov["to"] = applied
+                        print("synthesize: %s: severity override %s clamped to %s "
+                              "by OCRDb %s severity_range"
+                              % (f.get("id") or "?", requested, applied,
+                                 f.get("code") or "?"), file=sys.stderr)
                 cur = _SEV_ORDINAL.get(f.get("severity"), 0)
                 base = _SEV_ORDINAL.get(default, cur)
                 if cur > base:
                     ov_up += 1
                 elif cur < base:
                     ov_down += 1
-    return {"overrides": {"count": ov_count, "up": ov_up, "down": ov_down}}
+    return {"overrides": {"count": ov_count, "up": ov_up, "down": ov_down,
+                          "clamped": ov_clamped}}

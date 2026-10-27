@@ -211,9 +211,79 @@ def _render_security_checklist(domain):
         "above.\n" % _security_checklist_path())
 
 def _render_menu(bundle, domain):
-    lines = ["%s %s (%s)" % (m["code"], m["name"], m["severity"])
-             for m in ocrdb.domain_menu(bundle, domain)]
-    return "\n".join(lines) or "(no OCRDb bundle vendored — use general %s judgment)" % domain
+    menu = ocrdb.domain_menu(bundle, domain)
+    legacy = ["%s %s (%s)" % (m["code"], m["name"], m["severity"])
+              for m in menu]
+    outline = ocrdb.domain_outline(bundle, domain)
+    if not outline:
+        return "\n".join(legacy) or (
+            "(no OCRDb bundle vendored — use general %s judgment)" % domain)
+
+    # Assign every code to the longest matching category prefix. Longest wins
+    # so a future category 10 cannot be swallowed by category 1.
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    assigned: set[str] = set()
+    for item in menu:
+        code = item["code"]
+        suffix = code.split("-", 1)[1] if "-" in code else ""
+        choices = []
+        for area in outline["areas"]:
+            area_key = area["key"]
+            if not suffix.startswith(area_key):
+                continue
+            tail = suffix[len(area_key):]
+            for category in area["categories"]:
+                category_key = category["key"]
+                if tail.startswith(category_key):
+                    choices.append((len(category_key), area_key, category_key))
+        if choices:
+            _, area_key, category_key = max(choices)
+            groups.setdefault((area_key, category_key), []).append(item)
+            assigned.add(code)
+
+    def menu_line(item):
+        bounds = ocrdb.severity_range(bundle, item["code"])
+        if not bounds:
+            return "%s %s (%s)" % (item["code"], item["name"], item["severity"])
+        return "%s %s (default %s; permitted %s..%s)" % (
+            item["code"], item["name"], item["severity"],
+            bounds["floor"], bounds["ceiling"])
+
+    lines = []
+    if outline["guide"]:
+        lines.append("Domain guide — " + outline["guide"])
+    for area in outline["areas"]:
+        populated = [c for c in area["categories"]
+                     if groups.get((area["key"], c["key"]))]
+        if not populated:
+            continue
+        lines.append("Area %s %s — %s" % (
+            area["key"], area["name"], area["guide"]))
+        for category in populated:
+            lines.append("Category %s%s %s — %s" % (
+                area["key"], category["key"], category["name"], category["guide"]))
+            for item in groups[(area["key"], category["key"])]:
+                lines.append(menu_line(item))
+                bounds = ocrdb.severity_range(bundle, item["code"])
+                if not bounds:
+                    continue
+                for rung_name in ("lower_when", "raise_when"):
+                    rungs = bounds.get(rung_name)
+                    if not isinstance(rungs, list):
+                        continue
+                    for index, rung in enumerate(rungs):
+                        if not isinstance(rung, dict):
+                            continue
+                        target, condition = rung.get("to"), rung.get("condition")
+                        if isinstance(target, str) and isinstance(condition, str):
+                            lines.append("  %s[%d] -> %s — %s" % (
+                                rung_name, index, target, condition))
+
+    # A guide map is routing metadata, not an omission filter. If a future
+    # bundle adds an entry before its area/category metadata, keep it visible.
+    lines.extend(menu_line(item) for item in menu if item["code"] not in assigned)
+    return "\n".join(lines) or (
+        "(no OCRDb bundle vendored — use general %s judgment)" % domain)
 
 def _render_criteria(bundle, domain):
     """The domain's explicit OCRDb pass/fail criteria for the advisor to grade a

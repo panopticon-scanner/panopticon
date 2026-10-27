@@ -626,6 +626,7 @@ groups:
       tests:
       - tests/test_citations.py
       - tests/test_ocrdb.py
+      - tests/test_ocrdb_07.py
       - tests/test_evidence.py
       - tests/test_provenance.py
       - tests/test_score_gate.py

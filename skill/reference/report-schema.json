@@ -715,7 +715,11 @@
                   "properties": {
                     "count": {"type": "integer"},
                     "up": {"type": "integer"},
-                    "down": {"type": "integer"}
+                    "down": {"type": "integer"},
+                    "clamped": {
+                      "type": "integer",
+                      "description": "Reasoned overrides whose requested severity synthesis reduced to the OCRDb range/rung limit."
+                    }
                   }
                 },
                 "domainless": {"type": "integer"},
@@ -1365,7 +1369,11 @@
             "properties": {
               "from": {"type": "string"},
               "to": {"type": "string"},
-              "reason": {"type": "string"}
+              "reason": {"type": "string"},
+              "rung": {
+                "type": "string",
+                "description": "OCRDb severity_range rung label (for example raise_when[0]) or its exact condition text."
+              }
             }
           },
           "backup_confirmed": {"type": "boolean"},

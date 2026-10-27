@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **OCRDb 0.7 guides and severity ranges now drive review and synthesis (#3330).**
+  - A 0.7-shaped bundle renders the domain guide first, then each area and
+    category guide immediately before its codes. The routing prose never
+    replaces a code's criteria, and the shipped OCRDb bundle remains pinned to
+    0.6.0 until the upstream release is cut; pre-0.7 menus render byte-for-byte
+    as before.
+  - Menus show each code's default, permitted floor/ceiling and citable
+    raise/lower conditions. Panel overrides carry the cited rung into the
+    advisor prompt, where the advisor checks the condition itself rather than
+    accepting free-form justification.
+  - Synthesis clamps unsupported raises to the highest cited rung (or the
+    default), clamps above-ceiling and unmodified below-floor overrides, emits
+    a fixed stderr disclosure, and counts the result in
+    `meta.coverage.ocrdb.overrides.clamped`. Controlled OCRDb severity-modifier
+    reasons remain the explicit below-floor exception. Bundles with no
+    `severity_range` retain the prior override behavior.
 - **Git listing failures no longer disclose a target-authored gitdir on Git 2.56 (#3329).**
   Discovery now classifies a failed `git ls-files` structurally: no `.git` entry on the target's
   resolved ancestor chain is an ordinary non-worktree, while a present entry is a broken

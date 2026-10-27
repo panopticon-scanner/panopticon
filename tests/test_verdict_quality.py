@@ -1,5 +1,9 @@
+import contextlib
+import functools
+import io
 import json
 import os
+from pathlib import Path
 import tempfile
 import unittest
 
@@ -15,6 +19,13 @@ def _bundle():
     return {"domains": {"SEC": {"entries": {
         "SEC-A1A": {"name": "n1", "default_severity": "MEDIUM"},
         "SEC-B2B": {"name": "n2", "default_severity": "HIGH"}}}}}
+
+
+@functools.lru_cache(maxsize=1)
+def _bundle_07():
+    path = Path(__file__).parent / "fixtures" / "ocrdb-0.7.0-dev.json"
+    with path.open(encoding="utf-8") as fh:
+        return json.load(fh)
 
 
 class TestVerdictQuality(unittest.TestCase):
@@ -96,7 +107,8 @@ class TestVerdictQuality(unittest.TestCase):
              "severity_override": {"from": "MEDIUM", "to": "CRITICAL", "reason": "prod exposed"}}
         cov = codes_mod.apply_verdict_quality([f], {}, b)
         self.assertEqual(f["severity"], "CRITICAL")
-        self.assertEqual(cov["overrides"], {"count": 1, "up": 1, "down": 0})
+        self.assertEqual(cov["overrides"],
+                         {"count": 1, "up": 1, "down": 0, "clamped": 0})
 
     def test_backup_confirm_sets_flag(self):
         f = {"id": "SEC-1", "code": "SEC-A1A", "severity": "HIGH"}
@@ -131,7 +143,88 @@ class TestVerdictQuality(unittest.TestCase):
         f = {"id": "SEC-1", "code": "SEC-A1A", "severity": "LOW", "domain": "SEC",
              "severity_override": {"from": "MEDIUM", "to": "LOW", "reason": "intended lower"}}
         cov = codes_mod.apply_verdict_quality([f], {}, b)
-        self.assertEqual(cov["overrides"], {"count": 1, "up": 0, "down": 1})
+        self.assertEqual(cov["overrides"],
+                         {"count": 1, "up": 0, "down": 1, "clamped": 0})
+
+    def test_07_in_range_raise_accepts_rung_label_or_exact_condition(self):
+        b = _bundle_07()
+        condition = (b["domains"]["TST"]["entries"]["TST-A1D"]
+                     ["severity_range"]["raise_when"][0]["condition"])
+        for rung in ("raise_when[0]", condition):
+            with self.subTest(rung=rung):
+                f = {"id": "TST-raise", "code": "TST-A1D", "severity": "MEDIUM",
+                     "domain": "TST", "severity_override": {
+                         "from": "LOW", "to": "MEDIUM",
+                         "reason": "the flag controls an enforcement mode", "rung": rung}}
+                cov = codes_mod.apply_verdict_quality([f], {}, b)
+                self.assertEqual(f["severity"], "MEDIUM")
+                self.assertEqual(f["severity_override"]["to"], "MEDIUM")
+                self.assertEqual(cov["overrides"]["clamped"], 0)
+
+    def test_07_above_ceiling_is_clamped_even_with_a_rung(self):
+        b = _bundle_07()
+        secret_reason = "do-not-echo-this-agent-text"
+        f = {"id": "TST-ceiling", "code": "TST-A1D", "severity": "HIGH",
+             "domain": "TST", "severity_override": {
+                 "from": "LOW", "to": "HIGH", "reason": secret_reason,
+                 "rung": "raise_when[0]"}}
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            cov = codes_mod.apply_verdict_quality([f], {}, b)
+        self.assertEqual(f["severity"], "MEDIUM")
+        self.assertEqual(f["severity_override"]["to"], "MEDIUM")
+        self.assertEqual(cov["overrides"],
+                         {"count": 1, "up": 1, "down": 0, "clamped": 1})
+        self.assertIn("TST-ceiling: severity override HIGH clamped to MEDIUM", stderr.getvalue())
+        self.assertNotIn(secret_reason, stderr.getvalue())
+
+    def test_07_raise_without_rung_is_clamped_to_default(self):
+        b = _bundle_07()
+        f = {"id": "TST-no-rung", "code": "TST-A1D", "severity": "MEDIUM",
+             "domain": "TST", "severity_override": {
+                 "from": "LOW", "to": "MEDIUM", "reason": "enforcement matters"}}
+        cov = codes_mod.apply_verdict_quality([f], {}, b)
+        self.assertEqual(f["severity"], "LOW")
+        self.assertEqual(f["severity_override"]["to"], "LOW")
+        self.assertEqual(cov["overrides"],
+                         {"count": 1, "up": 0, "down": 0, "clamped": 1})
+
+    def test_07_raise_is_clamped_to_highest_cited_rung(self):
+        b = _bundle_07()
+        f = {"id": "SEC-rung", "code": "SEC-E1B", "severity": "CRITICAL",
+             "domain": "SEC", "severity_override": {
+                 "from": "MEDIUM", "to": "CRITICAL", "reason": "reachable advisory",
+                 "rung": "raise_when[0]"}}
+        cov = codes_mod.apply_verdict_quality([f], {}, b)
+        self.assertEqual(f["severity"], "HIGH")
+        self.assertEqual(f["severity_override"]["to"], "HIGH")
+        self.assertEqual(cov["overrides"]["clamped"], 1)
+
+    def test_07_below_floor_without_modifier_is_clamped_to_floor(self):
+        b = _bundle_07()
+        f = {"id": "TST-floor", "code": "TST-A1B", "severity": "INFO",
+             "domain": "TST", "severity_override": {
+                 "from": "MEDIUM", "to": "INFO",
+                 "reason": "the context is test-or-fixture-scope: a small helper",
+                 "rung": "lower_when[0]"}}
+        cov = codes_mod.apply_verdict_quality([f], {}, b)
+        self.assertEqual(f["severity"], "LOW")
+        self.assertEqual(f["severity_override"]["to"], "LOW")
+        self.assertEqual(cov["overrides"],
+                         {"count": 1, "up": 0, "down": 1, "clamped": 1})
+
+    def test_07_controlled_modifier_can_lower_below_floor(self):
+        b = _bundle_07()
+        f = {"id": "TST-modifier", "code": "TST-A1B", "severity": "INFO",
+             "domain": "TST", "severity_override": {
+                 "from": "MEDIUM", "to": "INFO",
+                 "reason": "test-or-fixture-scope: the helper exists only in a fixture",
+                 "rung": "lower_when[0]"}}
+        cov = codes_mod.apply_verdict_quality([f], {}, b)
+        self.assertEqual(f["severity"], "INFO")
+        self.assertEqual(f["severity_override"]["to"], "INFO")
+        self.assertEqual(cov["overrides"],
+                         {"count": 1, "up": 0, "down": 1, "clamped": 0})
 
     def test_bundle_absent_missing_reason_override_leaves_severity_no_crash(self):
         f = {"id": "SEC-1", "code": "SEC-A1A", "severity": "CRITICAL",

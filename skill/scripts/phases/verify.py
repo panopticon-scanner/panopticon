@@ -252,12 +252,24 @@ def _render_findings(review_root, cell):
     embedded verbatim here would steer the advisor to read outside the review
     tree in BOTH verify rounds -- the prior _confined_to_root guard covered only
     the derived backup file list, never this channel."""
-    slim = [{"id": f["id"], "code": f.get("code"), "severity": f["severity"],
-             "title": runio.capped_title(f["title"]), "category": f.get("category"),
-             "location": claim_scope.confine_claim_location(review_root,
-                                                            f.get("location")),
-             "description": _capped_description(f.get("description", ""))}
-            for f in cell]
+    slim = []
+    for f in cell:
+        claim = {"id": f["id"], "code": f.get("code"), "severity": f["severity"],
+                 "title": runio.capped_title(f["title"]),
+                 "category": f.get("category"),
+                 "location": claim_scope.confine_claim_location(
+                     review_root, f.get("location")),
+                 "description": _capped_description(f.get("description", ""))}
+        override = f.get("severity_override")
+        if isinstance(override, dict):
+            # The advisor needs the exact catalog-rung citation to grade it.
+            # Carry only the public override contract, never arbitrary nested
+            # agent keys that happen to sit beside it.
+            claim["severity_override"] = {
+                key: override[key] for key in ("from", "to", "reason", "rung")
+                if key in override
+            }
+        slim.append(claim)
     return json.dumps(slim, indent=2)
 
 def _verify_entry(review_root, manifest, group, domain, files, cell, host,

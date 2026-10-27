@@ -9,7 +9,7 @@ corrupt entry can't kill a whole review (see #run7 ARC-F2D). Mirrors
 citations.load_cwe_catalog.
 See docs/superpowers/specs/2026-08-15-panopticon-5.0-review-matrix-design.md §4.
 """
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 import json
 import os
 
@@ -83,6 +83,74 @@ def _entries_for(bundle, domain):
     doms = _safe_get_dict(bundle, "domains")
     dom = _safe_get_dict(doms, domain)
     return _safe_get_dict(dom, "entries")
+
+
+def domain_outline(bundle, domain):
+    """The optional 0.7 domain/area/category routing guide hierarchy.
+
+    ``None`` means the bundle predates guides (including the shipped 0.6
+    bundle), which lets the prompt renderer retain its legacy byte-for-byte
+    menu. Malformed guide nodes are skipped rather than taking a review down,
+    matching the per-entry tolerance of :func:`domain_menu`.
+    """
+    domains = _safe_get_dict(bundle, "domains")
+    dom = _safe_get_dict(domains, domain)
+    domain_guide = dom.get("guide")
+    areas = _safe_get_dict(dom, "areas")
+    domain_guide_text = domain_guide if isinstance(domain_guide, str) else ""
+    has_guide = bool(domain_guide_text)
+    if not has_guide:
+        has_guide = any(
+            isinstance(area, dict)
+            and ((isinstance(area.get("guide"), str) and bool(area.get("guide")))
+                 or any(isinstance(value, str) and bool(value)
+                        for value in _safe_get_dict(area, "category_guides").values()))
+            for area in areas.values()
+        )
+    if not has_guide:
+        return None
+
+    outline: dict[str, Any] = {"guide": domain_guide_text, "areas": []}
+    for area_key in sorted(areas):
+        area = areas[area_key]
+        if not isinstance(area, dict):
+            continue
+        categories = _safe_get_dict(area, "categories")
+        category_guides = _safe_get_dict(area, "category_guides")
+        category_rows = []
+        for category_key in sorted(
+                categories, key=lambda key: (not str(key).isdigit(),
+                                             int(key) if str(key).isdigit() else str(key))):
+            category_rows.append({
+                "key": str(category_key),
+                "name": str(categories[category_key] or ""),
+                "guide": (category_guides.get(category_key)
+                          if isinstance(category_guides.get(category_key), str) else ""),
+            })
+        outline["areas"].append({
+            "key": str(area_key),
+            "name": str(area.get("name") or ""),
+            "guide": area.get("guide") if isinstance(area.get("guide"), str) else "",
+            "categories": category_rows,
+        })
+    return outline
+
+
+def severity_range(bundle, code):
+    """A code's optional 0.7 ``severity_range`` object, else ``None``.
+
+    The floor and ceiling are the minimum shape needed by a consumer. Rungs
+    remain verbatim so their conditions can be rendered and cited exactly.
+    """
+    domain = domain_of(code) if isinstance(code, str) else None
+    entry = _safe_get_dict(_entries_for(bundle, domain), code) if domain else {}
+    value = entry.get("severity_range")
+    if not isinstance(value, dict):
+        return None
+    if not (isinstance(value.get("floor"), str)
+            and isinstance(value.get("ceiling"), str)):
+        return None
+    return value
 
 
 def domain_menu(bundle, domain):
