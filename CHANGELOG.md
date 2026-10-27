@@ -200,6 +200,12 @@
   then checked again on the descriptor before their streaming digest is read. This also closes
   the race where a regular path becomes a FIFO between classification and open; replacing a
   recorded non-regular leaf with a regular file remains a visible content-type change.
+- **Committed group matrices have count bounds, not only a byte bound (#3269 G12, 5.3).**
+  The committed reader now reuses the setup proposal's 500-group and 1,000-entry limits instead of
+  relying on the byte cap alone. Both mapping and legacy-list groups are bounded, one parent cannot
+  hide more than 500 subgroups, and leaf, subgroup, and `exclude_paths` glob lists are checked. An
+  over-count document is refused whole at the read boundary; counts exactly at either limit remain
+  accepted.
 - **Dependency coverage is now a visible, certifying receipt (#3269 SCA, 5.3).**
   `meta.coverage.dependency_audit` records which dependency ecosystems were applicable and which
   dedicated SCA adapters were selected and produced output. If a dependency surface exists but no

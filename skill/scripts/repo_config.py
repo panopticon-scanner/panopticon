@@ -18,8 +18,10 @@ and REFUSES the document if the package is absent, rather than raising, because
 every caller here is documented as never raising and `driver readiness`'s
 `dependencies` row is the place a missing `pyyaml` gets named (#2369).
 """
+import importlib
 import os
 import stat
+from collections.abc import Iterable
 from collections import namedtuple
 
 CONFIG_NAMES = ("panopticon.yml", ".panopticon.yml")
@@ -29,6 +31,8 @@ LEGACY_CONFIG_JSON = os.path.join(".panopticon", "config.json")
 MAX_CONFIG_BYTES = 1_048_576
 VERSION = 1
 TOP_LEVEL_KEYS = frozenset({"version", "groups", "exclude_paths", "settings"})
+
+_GROUP_LEAF_FIELDS = frozenset({"match", "tests", "panels", "exclude"})
 
 Resolution = namedtuple("Resolution", "path disclosures")
 Document = namedtuple("Document", "path doc errors disclosures")
@@ -85,6 +89,63 @@ def stale_config_json(review_root):
 
 def draft_path(review_root):
     return os.path.join(review_root, DRAFT_NAME)
+
+
+def _group_entry_count_error(label, body, max_entries):
+    if not isinstance(body, dict):
+        return None
+    for field in ("match", "tests"):
+        entries = body.get(field)
+        if isinstance(entries, list) and len(entries) > max_entries:
+            return ("group %r has too many %s entries (%d > %d); refused"
+                    % (label, field, len(entries), max_entries))
+    return None
+
+
+def _committed_count_error(doc):
+    """First committed matrix count over the proposal path's bounds, or None."""
+    # Lazy because setup_proposal imports this module for config names and the
+    # version. At read time both modules can share its established #1107 limits
+    # without copying the numbers or creating an import-time cycle.
+    module_name = "scripts.setup_proposal" if __package__ else "setup_proposal"
+    setup_proposal = importlib.import_module(module_name)
+    max_groups = setup_proposal._MAX_GROUPS
+    max_entries = setup_proposal._MAX_GROUP_ENTRIES
+
+    groups = doc.get("groups")
+    if isinstance(groups, (dict, list)) and len(groups) > max_groups:
+        return ("too many committed groups (%d > %d); refused"
+                % (len(groups), max_groups))
+
+    group_items: Iterable[tuple[object, object]]
+    if isinstance(groups, dict):
+        group_items = groups.items()
+    elif isinstance(groups, list):
+        group_items = ((g.get("name", "#%d" % i), g)
+                       for i, g in enumerate(groups) if isinstance(g, dict))
+    else:
+        group_items = ()
+
+    for label, body in group_items:
+        error = _group_entry_count_error(label, body, max_entries)
+        if error:
+            return error
+        if not isinstance(body, dict) or _GROUP_LEAF_FIELDS & body.keys():
+            continue
+        if len(body) > max_groups:
+            return ("group %r has too many committed subgroups (%d > %d); refused"
+                    % (label, len(body), max_groups))
+        for sublabel, subbody in body.items():
+            error = _group_entry_count_error(
+                "%s:%s" % (label, sublabel), subbody, max_entries)
+            if error:
+                return error
+
+    excluded = doc.get("exclude_paths")
+    if isinstance(excluded, list) and len(excluded) > max_entries:
+        return ("too many exclude_paths entries (%d > %d); refused"
+                % (len(excluded), max_entries))
+    return None
 
 
 def read_document(review_root):
@@ -148,6 +209,9 @@ def read_document(review_root):
         return Document(res.path, None,
                         ["%s must declare `version: %d` (found %r)"
                          % (res.path, VERSION, doc.get("version"))], disclosures)
+    count_error = _committed_count_error(doc)
+    if count_error:
+        return Document(res.path, None, ["%s: %s" % (res.path, count_error)], disclosures)
     unknown = sorted(k for k in doc if k not in TOP_LEVEL_KEYS)
     if unknown:
         disclosures.append("%s: unknown top-level key(s) ignored: %s"
