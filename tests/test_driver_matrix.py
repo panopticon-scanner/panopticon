@@ -101,7 +101,7 @@ class TestReviewMatrixEndToEnd(unittest.TestCase):
         report = runio._load_json(runio._pano(d, "report.json"))
         codes = [f.get("code") for f in report.get("findings", [])]
         self.assertTrue(any(c and c.startswith("COD") for c in codes))
-        self.assertEqual(report["meta"]["ocrdb_version"], "0.5.0")
+        self.assertEqual(report["meta"]["ocrdb_version"], "0.6.0")
 
 
 class TestVerifyMatrixEndToEnd(unittest.TestCase):

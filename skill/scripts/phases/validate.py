@@ -3,6 +3,7 @@ import glob as _glob
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 
@@ -141,19 +142,32 @@ _MAX_BASELINE_FILES = 20000
 
 
 def _file_entry(path):
-    """Content identity for one path: symlink target, file digest + exec bit,
-    or absence. Mode is reduced to the executable bit because that is the only
-    permission git itself tracks."""
-    if os.path.islink(path):
-        return {"type": "symlink", "target": os.readlink(path)}
-    if not os.path.exists(path):
+    """Content identity for one path without reading a non-regular leaf."""
+    try:
+        path_stat = os.lstat(path)
+    except FileNotFoundError:
         return {"type": "absent"}
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-            h.update(chunk)
+    if stat.S_ISLNK(path_stat.st_mode):
+        return {"type": "symlink", "target": os.readlink(path)}
+    if not stat.S_ISREG(path_stat.st_mode):
+        return {"type": "non-regular"}
+    flags = (os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+             | getattr(os, "O_NOFOLLOW", 0))
+    fd = os.open(path, flags)
+    try:
+        opened_stat = os.fstat(fd)
+        if not stat.S_ISREG(opened_stat.st_mode):
+            return {"type": "non-regular"}
+        h = hashlib.sha256()
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(chunk)
+    finally:
+        if fd >= 0:
+            os.close(fd)
     return {"type": "file", "sha": h.hexdigest(),
-            "exec": bool(os.stat(path).st_mode & 0o111)}
+            "exec": bool(opened_stat.st_mode & 0o111)}
 
 
 def _dir_entry(path, budget):

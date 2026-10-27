@@ -8,6 +8,9 @@
   - Replaying the two corpus runs' synthesis exactly: health 90.38 A becomes 96.38 A, and 73.25 C becomes 94.76 A.
   - **Every report's health rises.** Span weight was most of every run's footprint. The gate, certification and severity are unchanged; only the health index and the letter it drives move.
   - The report says so about itself: `summary.health.span_cap` is new (schema-optional), `formula` names the cap, and the Markdown and HTML explanations state it. A report written before the cap keeps its numbers and its wording.
+- **Vendored OCRDb catalog bumped from 0.5.0 to 0.6.0.**
+  - `skill/reference/ocrdb-0.6.0.json` is the shipped v0.6.0 bundle, byte-identical to the release asset. It has 398 codes, 3 more than before: COD-B2F (unguarded web-storage access), COD-F2C (unbounded collection rendered in one pass) and COD-F3E (async action without an in-flight guard), absorbed from the FRN calibration domain.
+  - Reports now stamp `meta.ocrdb_version` = 0.6.0, and reviewers' menus offer the new codes. No existing code was renamed or removed.
 - **Fix: a full disk or I/O error at run start is a status, not a traceback (#2094).**
   - `driver.run` writes two things into the reviewed tree before any phase: the `runs/latest` link and the clean-tree baseline. It turned a planted-path refusal from either into a status, but an `OSError` (ENOSPC, EIO, a read-only mount) escaped as a Python traceback with no status JSON. Since #1809 the disk state after such a failure was already right; only the operator's diagnostic was wrong.
   - It is now `status: error`, naming which write failed ("capturing the clean-tree baseline" or "creating the run links"), the path, and the system's error text.
@@ -200,6 +203,24 @@
   SHA-256 hash derived from the exact `_JS` bytes embedded in the self-contained report, so a
   script injected into report content does not share the authorized digest. Editing `_JS`
   automatically updates the policy instead of leaving a copied hash stale.
+- **Clean-tree baselines never block while opening a special file (#3269 G10, 5.3).**
+  A FIFO, socket or device named by the target's Git status is recorded as non-regular without
+  reading it. Regular candidates are opened nonblocking and without following a final symlink,
+  then checked again on the descriptor before their streaming digest is read. This also closes
+  the race where a regular path becomes a FIFO between classification and open; replacing a
+  recorded non-regular leaf with a regular file remains a visible content-type change.
+- **Reviewer JSON fallback and findings-file reads are bounded (#3269 G7, 5.3).**
+  A miss in the linear tolerant-JSON scanner now refuses the reply instead of replaying it through
+  a quadratic greedy regex. Driver completion, resume completion, and canonical synthesis ingestion
+  share the existing 16 MiB regular-file boundary, so an oversized reviewer file is never called
+  complete or loaded into a report. The G12 count walker now also imports the schema's leaf-field
+  vocabulary instead of copying it.
+- **Committed group matrices have count bounds, not only a byte bound (#3269 G12, 5.3).**
+  The committed reader now reuses the setup proposal's 500-group and 1,000-entry limits instead of
+  relying on the byte cap alone. Both mapping and legacy-list groups are bounded, one parent cannot
+  hide more than 500 subgroups, and leaf, subgroup, and `exclude_paths` glob lists are checked. An
+  over-count document is refused whole at the read boundary; counts exactly at either limit remain
+  accepted.
 - **Dependency coverage is now a visible, certifying receipt (#3269 SCA, 5.3).**
   `meta.coverage.dependency_audit` records which dependency ecosystems were applicable and which
   dedicated SCA adapters were selected and produced output. If a dependency surface exists but no

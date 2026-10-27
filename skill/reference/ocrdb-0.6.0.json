@@ -888,6 +888,9 @@
             "corpus"
           ],
           "recurrence": 1,
+          "see_also": [
+            "ARC-C1F"
+          ],
           "status": "active"
         },
         "ARC-C1C": {
@@ -930,6 +933,7 @@
           "status": "active"
         },
         "ARC-C1F": {
+          "criteria": "Qualifies when a generated artifact (a JSON/Go/OpenAPI file derived from a generator source) is committed but no CI or build step regenerates it and fails on a diff, so a stale artifact ships silently. Does not qualify if a regeneration check exists but is skipped by a path filter \u2014 that is ARC-C1B.",
           "default_severity": "MEDIUM",
           "examples": [
             "A committed generated artifact (engine_traits.json, servicelist.go, an OpenAPI spec) has no CI/build step that regenerates it and fails on a diff against its generator source, so a stale artifact ships silently"
@@ -939,6 +943,9 @@
             "corpus"
           ],
           "recurrence": 2,
+          "see_also": [
+            "ARC-C1B"
+          ],
           "status": "active"
         },
         "ARC-C2A": {
@@ -1828,7 +1835,7 @@
           "status": "active"
         },
         "COD-B2C": {
-          "criteria": "The default home for a swallowed or missing error whose consequence is a WRONG or MISSING RESULT \u2014 an auxiliary load/call whose failure is not checked, so the program proceeds on bad or absent data. When the swallowed failure is specifically security-relevant it is SEC-F1B; when the defect is an OVERBROAD catch clause masking multiple error types it is ARC-F2G; a config-loader that fails open is COD-B1A.",
+          "criteria": "The default home for a swallowed or missing error whose consequence is a WRONG or MISSING RESULT \u2014 an auxiliary load/call whose failure is not checked, so the program proceeds on bad or absent data. When the swallowed failure is specifically security-relevant it is SEC-F1B; when the defect is an OVERBROAD catch clause masking multiple error types it is ARC-F2G; a config-loader that fails open is COD-B1A. A Web Storage call with no handling for its throws is COD-B2F.",
           "cwe": [
             "CWE-755"
           ],
@@ -1845,7 +1852,8 @@
             "SEC-F1B",
             "ARC-F2G",
             "COD-B1A",
-            "OPS-E1A"
+            "OPS-E1A",
+            "COD-B2F"
           ],
           "status": "active"
         },
@@ -1871,6 +1879,26 @@
             "corpus"
           ],
           "recurrence": 1,
+          "status": "active"
+        },
+        "COD-B2F": {
+          "criteria": "Qualifies when a client path calls the Web Storage API (localStorage or sessionStorage getItem, setItem, removeItem, or the property access itself) with no handling for its documented throws, SecurityError when storage is blocked and QuotaExceededError when it is full, so a browser that denies or fills storage breaks a render, boot or persistence path instead of degrading. Evidence names the call and the path it aborts. A generic auxiliary load whose failure goes unchecked is COD-B2C.",
+          "cwe": [
+            "CWE-755"
+          ],
+          "default_severity": "LOW",
+          "examples": [
+            "A theme hook reads localStorage in its state initializer and writes it in a layout effect with no try/catch, so a blocked or full storage throws and aborts the app's first render",
+            "A draft-persistence path updates in-memory state, then calls sessionStorage.setItem unguarded, so a quota error leaves the two diverged"
+          ],
+          "name": "unguarded-web-storage-access",
+          "provenance": [
+            "corpus"
+          ],
+          "recurrence": 9,
+          "see_also": [
+            "COD-B2C"
+          ],
           "status": "active"
         },
         "COD-C1A": {
@@ -2230,6 +2258,7 @@
           "status": "active"
         },
         "COD-F1B": {
+          "criteria": "Qualifies when a condition is checked and then acted on non-atomically, so the state can change between the check and the act. A repeatable user action with no in-flight guard is COD-F3E.",
           "cwe": [
             "CWE-367"
           ],
@@ -2244,9 +2273,13 @@
             "corpus"
           ],
           "recurrence": 2,
+          "see_also": [
+            "COD-F3E"
+          ],
           "status": "active"
         },
         "COD-F1C": {
+          "criteria": "Qualifies when state shared between threads, tasks or concurrent async continuations is read and written without synchronisation, so an interleaving corrupts or overwrites it, including an older async result applied over a newer one. A user action that can be re-entered while its own request is in flight is COD-F3E.",
           "cwe": [
             "CWE-362"
           ],
@@ -2257,6 +2290,9 @@
             "prior-art",
             "gap-review",
             "corpus"
+          ],
+          "see_also": [
+            "COD-F3E"
           ],
           "status": "active"
         },
@@ -2273,11 +2309,37 @@
           "status": "active"
         },
         "COD-F2B": {
+          "criteria": "Qualifies when a synchronous blocking call (I/O, sleep, lock wait, or heavy CPU work) runs on an async event loop or UI thread and stalls it. Rendering an unbounded collection in one pass is COD-F2C.",
           "default_severity": "MEDIUM",
           "name": "blocking-call-in-async-context",
           "provenance": [
             "prior-art",
             "gap-review"
+          ],
+          "see_also": [
+            "COD-F2C"
+          ],
+          "status": "active"
+        },
+        "COD-F2C": {
+          "criteria": "Qualifies when one interaction renders every item of a collection that grows with user data (rows, messages, participants, search results) into the UI in a single pass, with no paging, virtualisation, windowing or cap, so the interaction's main-thread time and DOM size scale with the data. Evidence names the collection's source, why it is unbounded, and the render site. Loading an unbounded collection into memory is QAL-G2A; an endpoint or query returning an unbounded result set is OPS-D1B; a synchronous blocking call on an async path is COD-F2B.",
+          "cwe": [
+            "CWE-400"
+          ],
+          "default_severity": "MEDIUM",
+          "examples": [
+            "A table view renders every row of a user-data collection in a single render pass, with no paging, virtualisation or cap, so render time and DOM size grow with the data",
+            "A chat panel maps a session's full message history to rendered message components when it opens"
+          ],
+          "name": "unbounded-collection-rendered-in-one-pass",
+          "provenance": [
+            "corpus"
+          ],
+          "recurrence": 8,
+          "see_also": [
+            "QAL-G2A",
+            "OPS-D1B",
+            "COD-F2B"
           ],
           "status": "active"
         },
@@ -2320,6 +2382,24 @@
           "provenance": [
             "prior-art",
             "gap-review"
+          ],
+          "status": "active"
+        },
+        "COD-F3E": {
+          "criteria": "Qualifies when a user-triggered asynchronous action (a mutation, submit or create) can be activated again while an earlier activation is still in flight, because nothing disables the control, tracks a pending state, or deduplicates the request, so repeated activation issues duplicate side effects. Evidence names the trigger, the async call, and the missing guard. Threads or tasks racing on unsynchronised shared state are COD-F1C; a check that is stale by the time it is acted on is COD-F1B.",
+          "default_severity": "MEDIUM",
+          "examples": [
+            "A Save button calls an async upload mutation and stays enabled until the success callback navigates away, so a second click submits a duplicate",
+            "A confirm handler starts a permission change without recording or checking an in-flight state, so repeated activation fires the request again"
+          ],
+          "name": "async-action-without-in-flight-guard",
+          "provenance": [
+            "corpus"
+          ],
+          "recurrence": 8,
+          "see_also": [
+            "COD-F1C",
+            "COD-F1B"
           ],
           "status": "active"
         },
@@ -2694,7 +2774,7 @@
             "Per-row update_attribute in find_each instead of update_all"
           ],
           "name": "n-plus-one-query",
-          "notes": "moved from QAL-G1D at ratification",
+          "notes": "moved at the 0.1 seeding session from the draft QAL-G1D (a code that did not survive the 0.2.0 identity-base reset)",
           "provenance": [
             "prior-art",
             "corpus"
@@ -3278,6 +3358,10 @@
             "corpus"
           ],
           "recurrence": 14,
+          "see_also": [
+            "COD-F2C",
+            "QAL-G2A"
+          ],
           "status": "active"
         },
         "OPS-E1A": {
@@ -4047,6 +4131,7 @@
         },
         "QAL-G2A": {
           "character": "defect",
+          "criteria": "Qualifies when a collection that grows with the data is loaded into memory whole where streaming, paging or a bound is available. Rendering such a collection into the UI in one pass is COD-F2C; an endpoint or query returning it unbounded is OPS-D1B.",
           "cwe": [
             "CWE-400"
           ],
@@ -4054,6 +4139,10 @@
           "name": "unbounded-collection-load",
           "provenance": [
             "prior-art"
+          ],
+          "see_also": [
+            "COD-F2C",
+            "OPS-D1B"
           ],
           "status": "active"
         },
@@ -4560,6 +4649,7 @@
           "status": "active"
         },
         "SEC-B4B": {
+          "criteria": "Qualifies when personal data is collected or stored beyond what the stated purpose needs (over-collection at intake). Distinct from SEC-B4C (data kept too long) and SEC-B4D (no path for the subject to access or erase it).",
           "cwe": [
             "CWE-359"
           ],
@@ -4568,18 +4658,27 @@
           "provenance": [
             "prior-art"
           ],
+          "see_also": [
+            "SEC-B4C",
+            "SEC-B4D"
+          ],
           "status": "active"
         },
         "SEC-B4C": {
-          "criteria": "Covers a retention window that is either ABSENT or present-but-unconfigurable (a hardcoded / compile-time constant with no config key to set it) \u2014 both leave the operator unable to bound how long personal data is kept. (Widened in 0.5.0 when the CMP-absorb corpus surfaced hardcoded-retention alongside missing-retention.)",
+          "criteria": "Covers a retention window that is either ABSENT or present-but-unconfigurable (a hardcoded / compile-time constant with no config key to set it) \u2014 both leave the operator unable to bound how long personal data is kept. (Widened in 0.5.0 when the CMP-absorb corpus surfaced hardcoded-retention alongside missing-retention.) Distinct from SEC-B4B (over-collection at intake) and SEC-B4D (no subject-rights path).",
           "default_severity": "LOW",
           "name": "missing-retention-limit",
           "provenance": [
             "prior-art"
           ],
+          "see_also": [
+            "SEC-B4B",
+            "SEC-B4D"
+          ],
           "status": "active"
         },
         "SEC-B4D": {
+          "criteria": "Qualifies when the data model holds a subject's personal data but the product exposes no self-service path for that subject to exercise access, portability (export in a portable form), or erasure (delete or anonymize) \u2014 GDPR Art. 15 / 20 / 17. Distinct from SEC-B4B (over-collection) and SEC-B4C (retention window): the data may be minimal and time-bounded and this still qualifies.",
           "default_severity": "LOW",
           "examples": [
             "The data model holds a subject's personal data but exposes no self-service path for that subject to exercise access / portability (export their own data in a portable form) or erasure (delete or anonymize), so an access/portability/erasure request has no product path"
@@ -4589,6 +4688,10 @@
             "corpus"
           ],
           "recurrence": 6,
+          "see_also": [
+            "SEC-B4B",
+            "SEC-B4C"
+          ],
           "status": "active"
         },
         "SEC-C1A": {
@@ -4792,6 +4895,7 @@
           "status": "active"
         },
         "SEC-C4B": {
+          "criteria": "Qualifies when a sensitive action (fund transfer, privilege change, data export, deletion) executes with no audit record written at all. If the record IS written but can later be destroyed through the channel it audits, that is SEC-C4C, not this code.",
           "cwe": [
             "CWE-778",
             "CWE-223"
@@ -4805,9 +4909,13 @@
             "corpus"
           ],
           "recurrence": 2,
+          "see_also": [
+            "SEC-C4C"
+          ],
           "status": "active"
         },
         "SEC-C4C": {
+          "criteria": "Qualifies when audit records are destroyed or orphaned through the same channel they audit \u2014 a CASCADE from the audited row (e.g. LogEntry.user) wipes the actor's trail on account deletion, or a bulk-deletion workflow purges history \u2014 with no append-only store or tamper protection. The log is written, then lost. Distinct from SEC-C4B, where no record is written.",
           "default_severity": "MEDIUM",
           "examples": [
             "Audit records are destroyed or orphaned through the same channel they audit \u2014 a LogEntry.user CASCADE wipes a user's admin-action trail on account deletion, or a bulk-deletion workflow purges Version/Communication/Comment history \u2014 with no append-only or tamper protection. (The log IS written, then destroyed; distinct from SEC-C4B missing-audit-logging.)"
@@ -4817,6 +4925,9 @@
             "corpus"
           ],
           "recurrence": 2,
+          "see_also": [
+            "SEC-C4B"
+          ],
           "status": "active"
         },
         "SEC-D1A": {
@@ -6521,5 +6632,5 @@
   },
   "license": "CC BY-SA 4.0",
   "schema_version": "1.0",
-  "version": "0.5.0"
+  "version": "0.6.0"
 }

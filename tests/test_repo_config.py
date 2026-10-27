@@ -221,6 +221,106 @@ class TestReadDocument(unittest.TestCase):
             self.assertIsNone(doc.doc)
             self.assertIn("1048576", doc.errors[0])
 
+    def test_committed_group_count_is_capped_in_mapping_and_legacy_forms(self):
+        """#3269 G12: committed input gets the proposal's 500-group bound."""
+        cases = {
+            "mapping": "groups:\n" + "".join(
+                "  G%d: null\n" % i for i in range(501)),
+            "legacy-list": "groups:\n" + "".join(
+                "  - {name: G%d, match: ['x']}\n" % i for i in range(501)),
+        }
+        for label, groups in cases.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as d:
+                path = _write(d, "panopticon.yml", "version: 1\n" + groups)
+                doc = rc.read_document(d)
+                self.assertTrue(doc.errors)
+                self.assertIsNone(doc.doc)
+                self.assertIn(path, doc.errors[0])
+                self.assertIn("too many committed groups (501 > 500)", doc.errors[0])
+
+    def test_committed_parent_subgroup_count_is_capped(self):
+        """#3269 G12: one parent cannot hide an unbounded group mapping."""
+        subgroups = "".join(
+            "    S%d: {match: ['x']}\n" % i for i in range(501))
+        with tempfile.TemporaryDirectory() as d:
+            path = _write(d, "panopticon.yml",
+                          "version: 1\ngroups:\n  Parent:\n" + subgroups)
+            doc = rc.read_document(d)
+        self.assertTrue(doc.errors)
+        self.assertIsNone(doc.doc)
+        self.assertIn(path, doc.errors[0])
+        self.assertIn("too many committed subgroups (501 > 500)", doc.errors[0])
+
+    def test_committed_glob_lists_are_capped(self):
+        """#3269 G12: every committed glob list gets the proposal's 1,000 bound."""
+        entries = ", ".join("'p%d'" % i for i in range(1001))
+        cases = {
+            "leaf-match": "groups:\n  App:\n    match: [%s]\n" % entries,
+            "leaf-tests": "groups:\n  App:\n    match: ['x']\n    tests: [%s]\n" % entries,
+            "subgroup-match": (
+                "groups:\n  Product:\n    API:\n      match: [%s]\n" % entries),
+            "subgroup-tests": (
+                "groups:\n  Product:\n    API:\n      match: ['x']\n      tests: [%s]\n" % entries),
+            "exclude-paths": "groups: {}\nexclude_paths: [%s]\n" % entries,
+        }
+        for label, body in cases.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as d:
+                path = _write(d, "panopticon.yml", "version: 1\n" + body)
+                doc = rc.read_document(d)
+                self.assertTrue(doc.errors)
+                self.assertIsNone(doc.doc)
+                self.assertIn(path, doc.errors[0])
+                self.assertIn("too many", doc.errors[0])
+                self.assertIn("1001 > 1000", doc.errors[0])
+
+    def test_committed_count_boundaries_are_accepted(self):
+        """#3269 G12 control: the limits are inclusive, like proposal limits."""
+        entries = ", ".join("'p%d'" % i for i in range(1000))
+        groups = "".join("  G%d: null\n" % i for i in range(499))
+        groups += "  App:\n    match: [%s]\n    tests: [%s]\n" % (entries, entries)
+        with tempfile.TemporaryDirectory() as d:
+            _write(d, "panopticon.yml",
+                   "version: 1\ngroups:\n%s\nexclude_paths: [%s]\n"
+                   % (groups, entries))
+            doc = rc.read_document(d)
+        self.assertEqual(doc.errors, [])
+        self.assertIsNotNone(doc.doc)
+
+    def test_committed_count_caps_come_from_the_proposal_path(self):
+        """#3269 G12: the committed reader imports, rather than copies, both caps."""
+        from scripts import setup_proposal
+
+        cases = {
+            "groups": ("_MAX_GROUPS", "groups:\n  A: null\n  B: null\n",
+                       "too many committed groups (2 > 1)"),
+            "entries": ("_MAX_GROUP_ENTRIES",
+                        "groups:\n  A: {match: ['a', 'b']}\n",
+                        "too many match entries (2 > 1)"),
+        }
+        for label, (constant, body, reason) in cases.items():
+            with (self.subTest(label=label),
+                  mock.patch.object(setup_proposal, constant, 1),
+                  tempfile.TemporaryDirectory() as d):
+                path = _write(d, "panopticon.yml", "version: 1\n" + body)
+                doc = rc.read_document(d)
+                self.assertIsNone(doc.doc)
+                self.assertIn(path, doc.errors[0])
+                self.assertIn(reason, doc.errors[0])
+
+    def test_committed_leaf_fields_come_from_the_group_schema(self):
+        """#3269 G12 follow-up: count traversal reuses the schema's leaf rule."""
+        from scripts import groups_schema, setup_proposal
+
+        body = "version: 1\ngroups:\n  App:\n    marker: true\n    child: {}\n"
+        with (mock.patch.object(setup_proposal, "_MAX_GROUPS", 1),
+              mock.patch.object(groups_schema, "RESERVED",
+                                groups_schema.RESERVED | {"marker"}),
+              tempfile.TemporaryDirectory() as d):
+            _write(d, "panopticon.yml", body)
+            doc = rc.read_document(d)
+        self.assertEqual(doc.errors, [])
+        self.assertIsNotNone(doc.doc)
+
     def test_unknown_top_level_keys_are_disclosed_and_ignored(self):
         with tempfile.TemporaryDirectory() as d:
             _write(d, "panopticon.yml", GOOD + "colour: blue\n")

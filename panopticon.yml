@@ -622,7 +622,7 @@ groups:
       - skill/reference/advisor-verdict-schema.json
       - skill/reference/verdict-bundle-schema.json
       - skill/reference/cwe-catalog.json
-      - skill/reference/ocrdb-0.5.0.json
+      - skill/reference/ocrdb-0.6.0.json
       tests:
       - tests/test_citations.py
       - tests/test_ocrdb.py

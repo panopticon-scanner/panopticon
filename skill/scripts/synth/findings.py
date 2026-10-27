@@ -18,6 +18,7 @@ import scripts.inert as inert
 import scripts.ocrdb as ocrdb
 import scripts.redact as redact
 import scripts.tools.base as tool_base
+from . import artifacts as artifacts_mod
 from . import validate_schema as validate_schema_mod
 
 
@@ -375,8 +376,7 @@ def load_findings_detailed(paths):
         # keyed by the same cell, so nothing here can read as two cells.
         cell = findings_contract.cell_of(path)
         try:
-            with open(path, encoding="utf-8") as fh:
-                data = evidence_mod.load_json_tolerant(fh.read())
+            data = artifacts_mod.read_json(path, tolerant=True)
         except Exception as e:  # noqa: BLE001 - tolerant by design
             print("PARSE ERROR %s: %s" % (path, e), file=sys.stderr)
             diagnostics.append({"file": str(path), "cell": cell,

@@ -15,11 +15,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import scripts.findings_contract as fc
 import scripts.group_runner as gr
 import scripts.phases.review as review
 import scripts.synth.coverage_io as coverage_io
+import scripts.synth.artifacts as artifacts_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.integrity as integrity_mod
 import scripts.synth.plan as plan_mod
@@ -273,6 +275,61 @@ class SharedAcceptanceTest(unittest.TestCase):
             path = self._cell(d)
             with contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(findings_mod.load_findings([path]), [])
+
+
+class FindingsReadBoundTest(unittest.TestCase):
+    """#3269 G7: every primary reader refuses one reviewer file at one cap."""
+
+    PAYLOAD = {
+        "findings": [{"title": "real", "severity": "LOW", "domain": "SEC",
+                      "code": "SEC-A1A", "category": "test",
+                      "location": {"file": "a.py", "line_start": 1}}],
+        "_panopticon": {"run_id": "RID", "role": "domain_panel",
+                         "domain": "SEC", "group": "App"},
+    }
+
+    def _cell(self, root):
+        directory = os.path.join(root, ".panopticon")
+        os.makedirs(directory)
+        path = os.path.join(directory, "findings-App-SEC.json")
+        body = json.dumps(self.PAYLOAD, separators=(",", ":"))
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        return path, len(body.encode("utf-8"))
+
+    @staticmethod
+    def _entry(path):
+        return {"run_id": "RID", "group": "App", "domain": "SEC",
+                "out_file": path}
+
+    def _read_all_three(self, root, path):
+        with contextlib.redirect_stderr(io.StringIO()):
+            findings, diagnostics = findings_mod.load_findings_detailed([path])
+        return {
+            "resume": gr.entry_is_done(path, self._entry(path)),
+            "driver": review._load_cell_findings(
+                root, {"run_id": "RID"}, "App", "SEC") is not None,
+            "synthesis": bool(findings),
+        }, diagnostics
+
+    def test_exact_byte_limit_is_accepted_by_all_three_readers(self):
+        with tempfile.TemporaryDirectory() as root:
+            path, size = self._cell(root)
+            with mock.patch.object(artifacts_mod, "MAX_JSON_BYTES", size):
+                accepted, diagnostics = self._read_all_three(root, path)
+        self.assertEqual(accepted, {"resume": True, "driver": True,
+                                    "synthesis": True})
+        self.assertEqual(diagnostics, [])
+
+    def test_limit_plus_one_is_refused_by_all_three_readers(self):
+        with tempfile.TemporaryDirectory() as root:
+            path, size = self._cell(root)
+            with mock.patch.object(artifacts_mod, "MAX_JSON_BYTES", size - 1):
+                accepted, diagnostics = self._read_all_three(root, path)
+        self.assertEqual(accepted, {"resume": False, "driver": False,
+                                    "synthesis": False})
+        self.assertEqual(len(diagnostics), 1)
+        self.assertIn("read limit", diagnostics[0]["defects"][0]["reason"])
 
 
 class BoundedRedispatchTest(unittest.TestCase):
