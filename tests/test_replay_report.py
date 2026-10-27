@@ -7,6 +7,8 @@ and stderr as well as on the report files, or the stdout gate (spec §6.1)
 has to be a hand-masked compare.
 """
 import argparse
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -20,6 +22,7 @@ import scripts.phases.runio as runio
 from scripts import hosts
 
 import replay_report
+from tests._test_helpers import adopt_panopticon, our_manifest
 
 MANIFEST = {"host": "codex", "security_mode": "redteam", "scope": {"mode": "repo"},
             "created": "2026-09-06T00:00:00Z", "run_id": "0123456789abcdef"}
@@ -36,6 +39,38 @@ def _run_folder(base):
     with open(os.path.join(folder, "validate.json"), "w", encoding="utf-8") as fh:
         json.dump({"run_id": MANIFEST["run_id"]}, fh)
     return folder
+
+
+_REAL_RUN = subprocess.run
+
+
+@contextlib.contextmanager
+def _child(fake=None):
+    """Fake only the synthesize CHILD (#3332): replay's first-contact git probe
+    goes through the same `subprocess.run` and must still run for real."""
+    child = fake if fake is not None else mock.MagicMock()
+
+    def run(cmd, *args, **kwargs):
+        if len(cmd) > 1 and os.path.basename(str(cmd[1])) == "synthesize.py":
+            return child(cmd, *args, **kwargs)
+        return _REAL_RUN(cmd, *args, **kwargs)
+
+    with mock.patch.object(replay_report.subprocess, "run", new=run):
+        yield child
+
+
+def _mpath(review_root):
+    return os.path.join(review_root, ".panopticon", "run-manifest.json")
+
+
+def _write_ours(review_root, manifest):
+    """#3332: a run of OURS -- the tree adopted and the manifest stamped to it
+    with the suite's key -- which replay's flag-less verification accepts."""
+    if not os.path.isfile(os.path.join(review_root, ".panopticon", "owner.json")):
+        adopt_panopticon(review_root)
+    stamped = our_manifest(review_root, dict(manifest, review_root=os.path.abspath(review_root)))
+    with open(_mpath(review_root), "w", encoding="utf-8") as fh:
+        json.dump(stamped, fh)
 
 
 def _fake_synthesize_execute(root, manifest):
@@ -60,13 +95,13 @@ def _fake_child(cmd, cwd, capture_output, text, env):
         stderr=f"ingest: path mismatch under {cwd}/.panopticon/runs/{TAG}\n")
 
 
-def _replay_into(review_root, run_folder, out_dir):
+def _replay_into(review_root, run_folder, out_dir, trust=False, child=_fake_child):
     with mock.patch("scripts.phases.synthesize.synthesize_execute", new=_fake_synthesize_execute), \
-            mock.patch.object(replay_report.subprocess, "run", new=_fake_child), \
+            _child(child), \
             mock.patch("sys.stdout"):
         replay_report.replay(argparse.Namespace(
             repo=None, review_root=review_root, run_folder=run_folder,
-            out_dir=out_dir, manifest=os.path.join(review_root, "run-manifest.json")))
+            out_dir=out_dir, manifest=_mpath(review_root), trust_archive=trust))
 
 
 class ReplayScrubTest(unittest.TestCase):
@@ -75,9 +110,7 @@ class ReplayScrubTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.review_root = os.path.join(self.tmp.name, "review")
         os.makedirs(self.review_root)
-        with open(os.path.join(self.review_root, "run-manifest.json"), "w",
-                  encoding="utf-8") as fh:
-            json.dump(MANIFEST, fh)
+        _write_ours(self.review_root, MANIFEST)
         self.run_folder = _run_folder(self.tmp.name)
 
     def _read(self, out_dir, name):
@@ -88,14 +121,14 @@ class ReplayScrubTest(unittest.TestCase):
         return argparse.Namespace(repo=None, review_root=self.review_root,
                                   run_folder=self.run_folder,
                                   out_dir=os.path.join(self.tmp.name, name),
-                                  manifest=os.path.join(self.review_root, "run-manifest.json"))
+                                  manifest=_mpath(self.review_root))
 
     def test_mismatched_run_id_refuses_before_child_or_source_change(self):
         path = os.path.join(self.run_folder, "validate.json")
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"run_id": "different"}, fh)
         before = replay_report._listing(self.run_folder)
-        with mock.patch.object(replay_report.subprocess, "run") as child:
+        with _child() as child:
             with self.assertRaisesRegex(SystemExit, "manifest run_id.*run folder"):
                 replay_report.replay(self._args("mismatch"))
         child.assert_not_called()
@@ -107,7 +140,7 @@ class ReplayScrubTest(unittest.TestCase):
                 path = os.path.join(self.run_folder, name)
                 os.unlink(path)
                 before = replay_report._listing(self.run_folder)
-                with mock.patch.object(replay_report.subprocess, "run") as child, \
+                with _child() as child, \
                         mock.patch("scripts.phases.synthesize.synthesize_execute") as phase:
                     with self.assertRaisesRegex(SystemExit, "lacks.*" + name):
                         replay_report.replay(self._args("missing-" + name))
@@ -119,7 +152,7 @@ class ReplayScrubTest(unittest.TestCase):
 
     def test_no_synthesize_command_refuses_before_child_or_source_change(self):
         before = replay_report._listing(self.run_folder)
-        with mock.patch.object(replay_report.subprocess, "run") as child, \
+        with _child() as child, \
                 mock.patch("scripts.phases.synthesize.synthesize_execute"):
             with self.assertRaisesRegex(SystemExit, "did not build a synthesize command"):
                 replay_report.replay(self._args("no-command"))
@@ -134,7 +167,7 @@ class ReplayScrubTest(unittest.TestCase):
 
         with mock.patch("scripts.phases.synthesize.synthesize_execute",
                         new=_fake_synthesize_execute), \
-                mock.patch.object(replay_report.subprocess, "run", new=mutate_reference):
+                _child(mutate_reference):
             with self.assertRaisesRegex(SystemExit, "REFERENCE RUN FOLDER MUTATED"):
                 replay_report.replay(self._args("mutated"))
 
@@ -145,7 +178,7 @@ class ReplayScrubTest(unittest.TestCase):
         before = replay_report._listing(self.run_folder)
         with mock.patch("scripts.phases.synthesize.synthesize_execute",
                         new=_fake_synthesize_execute), \
-                mock.patch.object(replay_report.subprocess, "run", new=no_report):
+                _child(no_report):
             with self.assertRaisesRegex(SystemExit, "no report written"):
                 replay_report.replay(self._args("no-report"))
         self.assertEqual(replay_report._listing(self.run_folder), before)
@@ -191,8 +224,7 @@ class ReplayScrubTest(unittest.TestCase):
                     mock.patch("sys.stdout"):
                 replay_report.replay(argparse.Namespace(
                     repo=None, review_root=self.review_root, run_folder=self.run_folder,
-                    out_dir=out, manifest=os.path.join(self.review_root,
-                                                       "run-manifest.json")))
+                    out_dir=out, manifest=_mpath(self.review_root)))
             self.assertFalse(os.path.exists(marker))
 
 
@@ -205,8 +237,7 @@ class ReplayScrubTest(unittest.TestCase):
                         manifest.pop("host")
                     else:
                         manifest["host"] = host
-                    with open(os.path.join(self.review_root, "run-manifest.json"), "w") as fh:
-                        json.dump(manifest, fh)
+                    _write_ours(self.review_root, manifest)
                     with open(os.path.join(self.run_folder, "host-capabilities.json"), "w") as fh:
                         json.dump({"capabilities": {hosts.USAGE_LEDGER: {"state": state}}}, fh)
                     out = os.path.join(self.tmp.name, "out-%s-%s" % (host, state))
@@ -216,6 +247,174 @@ class ReplayScrubTest(unittest.TestCase):
                     else:
                         _replay_into(self.review_root, self.run_folder, out)
                     self.assertFalse(os.path.exists(os.path.join(self.run_folder, "usage.json")))
+
+
+class ArchiveTrustTest(unittest.TestCase):
+    """#3332: the scratch root is a new path, so the run's own stamp never
+    verifies there. Without --trust-archive, replay re-binds it only after first
+    contact's read-only assessment verified <review-root> with this machine's
+    key; --trust-archive replays a foreign run, says so, and marks the report."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = tmp.name
+        self.review_root = os.path.join(self.base, "review")
+        os.makedirs(self.review_root)
+        _write_ours(self.review_root, MANIFEST)
+        self.run_folder = _run_folder(self.base)
+
+    def _replay(self, name, trust=False, child=_fake_child):
+        out = os.path.join(self.base, name)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            _replay_into(self.review_root, self.run_folder, out, trust=trust, child=child)
+        with open(os.path.join(out, f"{TAG}-report.json"), encoding="utf-8") as fh:
+            return json.load(fh), err.getvalue()
+
+    def _foreign(self):
+        # the stamp another machine's key made: well-formed, never ours
+        with open(_mpath(self.review_root), encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        manifest["stamp"] = "0" * 64
+        with open(_mpath(self.review_root), "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh)
+
+    def _refused(self, name):
+        with _child() as child, self.assertRaises(SystemExit) as ctx, mock.patch("sys.stdout"):
+            replay_report.replay(argparse.Namespace(
+                repo=None, review_root=self.review_root, run_folder=self.run_folder,
+                out_dir=os.path.join(self.base, name), manifest=_mpath(self.review_root),
+                trust_archive=False))
+        child.assert_not_called()
+        return str(ctx.exception.code)
+
+    def test_a_verified_run_replays_unmarked_and_silent(self):
+        report, err = self._replay("out")
+        self.assertNotIn("unverified_archive", report["meta"])
+        self.assertNotIn("--trust-archive", err)
+
+    def test_the_child_meets_a_scratch_root_its_first_contact_accepts(self):
+        seen = []
+
+        def child(cmd, cwd, capture_output, text, env):
+            import scripts.first_contact as first_contact
+            with mock.patch.dict(os.environ, env, clear=True):
+                found = first_contact.assess_artifacts(cwd, read_only=True)
+            seen.append((found.get("run-manifest.json") or {}).get("review_root") == cwd)
+            return _fake_child(cmd, cwd, capture_output, text, env)
+
+        for trust in (False, True):
+            with self.subTest(trust=trust):
+                self._replay("out-%s" % trust, trust=trust, child=child)
+        self.assertEqual([True, True], seen)
+
+    def test_an_unverified_run_refuses_without_the_flag_and_names_it(self):
+        self._foreign()
+        self.assertIn("--trust-archive", self._refused("foreign"))
+        os.remove(os.path.join(self.review_root, ".panopticon", "owner.json"))
+        self.assertIn("--trust-archive", self._refused("unmarked"))
+
+    def test_a_manifest_other_than_the_verified_one_refuses(self):
+        elsewhere = os.path.join(self.base, "elsewhere.json")
+        with open(_mpath(self.review_root), encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        manifest["security_mode"] = "standard"
+        with open(elsewhere, "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh)
+        with _child() as child, self.assertRaises(SystemExit) as ctx, mock.patch("sys.stdout"):
+            replay_report.replay(argparse.Namespace(
+                repo=None, review_root=self.review_root, run_folder=self.run_folder,
+                out_dir=os.path.join(self.base, "x"), manifest=elsewhere, trust_archive=False))
+        child.assert_not_called()
+        self.assertIn("--trust-archive", str(ctx.exception.code))
+
+    def test_no_operator_key_refuses_and_creates_nothing(self):
+        absent = os.path.join(self.base, "no-state")
+        with mock.patch.dict(os.environ, {"PANOPTICON_STATE_DIR": absent}):
+            self.assertIn("--trust-archive", self._refused("keyless"))
+        self.assertFalse(os.path.lexists(absent))
+
+    def test_trust_archive_replays_a_foreign_run_marked_and_says_so(self):
+        self._foreign()
+        report, err = self._replay("out", trust=True)
+        self.assertIs(True, report["meta"]["unverified_archive"])
+        self.assertIn("--trust-archive", err)
+        self.assertIn("NOT verified", err)
+
+    def test_the_operator_state_dir_is_never_written_and_trust_never_reads_it(self):
+        from scripts import run_stamp
+        operator = run_stamp.state_dir()
+        key = os.path.join(operator, run_stamp.KEY_NAME)
+        before = (os.stat(key).st_mtime_ns, os.stat(key).st_ino, sorted(os.listdir(operator)))
+        self._replay("verified")
+        self.assertEqual(before, (os.stat(key).st_mtime_ns, os.stat(key).st_ino,
+                                  sorted(os.listdir(operator))))
+        # --trust-archive never touches an operator dir: one with no key stays empty
+        empty = os.path.join(self.base, "operator-empty")
+        os.makedirs(empty)
+        self._foreign()
+        with mock.patch.dict(os.environ, {"PANOPTICON_STATE_DIR": empty}):
+            self._replay("trusted", trust=True)
+        self.assertEqual([], os.listdir(empty))
+
+    def test_the_marker_is_a_declared_report_field(self):
+        # meta is closed (additionalProperties: false): an undeclared marker
+        # would fail every marked report's schema validation
+        from scripts.synth import validate_schema
+        doc = {"meta": {"timestamp": "t"}}
+        plain = set(validate_schema.schema_errors(doc))
+        self.assertEqual(plain, set(validate_schema.schema_errors(
+            {"meta": {"timestamp": "t", "unverified_archive": True}})))
+        self.assertNotEqual(plain, set(validate_schema.schema_errors(
+            {"meta": {"timestamp": "t", "unverified_archive": False}})))
+
+    def test_two_verified_replays_are_identical(self):
+        self._replay("a")
+        self._replay("b")
+        with mock.patch("builtins.print"):
+            self.assertEqual(0, replay_report.diff(argparse.Namespace(
+                a=os.path.join(self.base, "a"), b=os.path.join(self.base, "b"), limit=50)))
+
+
+class ScratchRootCopiesTest(unittest.TestCase):
+    """#3332: the scratch root is COPIES. A linked `runs/<tag>` is refused by the
+    artifact confinement, and the no-follow LOC count reads a symlink farm as 0
+    lines -- a silent null health, not an error."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = os.path.realpath(tmp.name)
+        self.review_root = os.path.join(self.base, "review")
+        os.makedirs(os.path.join(self.review_root, "src"))
+        with open(os.path.join(self.review_root, "src", "a.py"), "w", encoding="utf-8") as fh:
+            fh.write("x = 1\n\ny = 2\nz = 3\n")
+        os.symlink("a.py", os.path.join(self.review_root, "src", "alias.py"))
+        os.makedirs(os.path.join(self.review_root, ".git"))
+        self.run_folder = _run_folder(self.base)
+        os.symlink("validate.json", os.path.join(self.run_folder, "linked.json"))
+        self.scratch = os.path.join(self.base, "scratch")
+        os.makedirs(self.scratch)
+        self.root = replay_report._scratch_root(self.scratch, self.review_root, MANIFEST, TAG,
+                                                self.run_folder)
+
+    def test_the_run_folder_and_the_source_are_copied_never_linked(self):
+        copied = os.path.join(self.root, ".panopticon", "runs", TAG)
+        for path in (copied, os.path.join(self.root, "src")):
+            with self.subTest(path=os.path.relpath(path, self.root)):
+                self.assertFalse(os.path.islink(path))
+                self.assertTrue(os.path.isdir(path))
+        self.assertEqual(sorted(replay_report._listing(self.run_folder)),
+                         sorted(replay_report._listing(copied)))
+        # a link INSIDE a copied tree stays a link, never its target's bytes
+        self.assertEqual("validate.json", os.readlink(os.path.join(copied, "linked.json")))
+        self.assertEqual("a.py", os.readlink(os.path.join(self.root, "src", "alias.py")))
+        self.assertFalse(os.path.lexists(os.path.join(self.root, ".git")))
+
+    def test_the_loc_count_reads_the_source_through_the_copy(self):
+        from scripts.synth import grading
+        self.assertEqual(3, grading.nonblank_loc(self.root, [{"files": ["src/a.py"]}]))
 
 
 class ScrubTest(unittest.TestCase):
