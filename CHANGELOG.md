@@ -209,6 +209,13 @@
   share the existing 16 MiB regular-file boundary, so an oversized reviewer file is never called
   complete or loaded into a report. The G12 count walker now also imports the schema's leaf-field
   vocabulary instead of copying it.
+- **EPSS cache hits come only from bounded operator state (#3269 G8, 5.3).**
+  The cross-run cache now lives under `PANOPTICON_STATE_DIR` (by default
+  `~/.local/state/panopticon`) instead of the reviewed tree's cwd-relative `.panopticon/`, so a
+  committed cache cannot plant a score in a report. Cache reads are regular-file-only, no-follow,
+  capped at 4 MiB and 10,000 rows, depth checked, and accepted only when every row has the exact
+  writer shape, matching canonical CVE, FIRST.org source, and finite score and percentile in
+  `[0, 1]`. An invalid cache is a miss; live lookup remains best-effort.
 - **Committed group matrices have count bounds, not only a byte bound (#3269 G12, 5.3).**
   The committed reader now reuses the setup proposal's 500-group and 1,000-entry limits instead of
   relying on the byte cap alone. Both mapping and legacy-list groups are bounded, one parent cannot

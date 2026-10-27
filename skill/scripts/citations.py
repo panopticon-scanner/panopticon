@@ -5,6 +5,7 @@ derivation, reduced-SSVC decisioning, and opt-in EPSS lookup. Stdlib-only.
 from typing import TYPE_CHECKING, Any
 import logging
 import json
+import math
 import os
 import re
 import sys
@@ -13,24 +14,40 @@ import urllib.request
 
 if TYPE_CHECKING:
     from scripts import _version
+    from scripts import run_stamp
     from scripts import safe_write
+    from scripts import tolerant_json
     from scripts._version import __version__
     from scripts.evidence import is_tool_sourced
 else:
     try:
         from scripts import _version
+        from scripts import run_stamp
         from scripts import safe_write
+        from scripts import tolerant_json
         from scripts._version import __version__
         from scripts.evidence import is_tool_sourced
     except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
         import _version
+        import run_stamp
         import safe_write
+        import tolerant_json
         from _version import __version__
         from evidence import is_tool_sourced
 
 CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
 CWE_RE = re.compile(r"^CWE-\d+$", re.IGNORECASE)
 SSVC_MODEL = "deployer-reduced"
+
+# #3269 G8: an EPSS cache hit changes report content. Production keeps that
+# cache in operator state, never at a cwd-relative name a reviewed tree can
+# plant. The reader still treats operator state as durable input: one bounded,
+# descriptor-checked read followed by an exact schema and numeric-range check.
+EPSS_CACHE_NAME = "epss-cache.json"
+EPSS_CACHE_MAX_BYTES = 4 * 1024 * 1024
+EPSS_CACHE_ENTRIES_MAX = 10_000
+_EPSS_ENTRY_KEYS = {"cve", "score", "percentile", "as_of", "source"}
+_EPSS_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 CATEGORY_CWE_OVERRIDES = {
     # #run7 COD-C3B: "injection" is the GENERIC injection category --
@@ -124,33 +141,62 @@ def ssvc_decide(exploitation, exposure, impact):
     return "Attend"
 
 
+def epss_cache_path():
+    """The operator-owned EPSS cache path, never inside the reviewed tree."""
+    return os.path.join(run_stamp.state_dir(), EPSS_CACHE_NAME)
+
+
+def _valid_cache_entry(cve, entry):
+    """Whether one cache row has exactly the shape this module writes."""
+    if not (isinstance(cve, str) and len(cve) <= 64 and cve == cve.upper()
+            and CVE_RE.fullmatch(cve)):
+        return False
+    if not isinstance(entry, dict) or set(entry) != _EPSS_ENTRY_KEYS:
+        return False
+    if entry.get("cve") != cve or entry.get("source") != "FIRST.org":
+        return False
+    for name in ("score", "percentile"):
+        value = entry.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return False
+        if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            return False
+    as_of = entry.get("as_of")
+    return isinstance(as_of, str) and (not as_of or bool(_EPSS_DATE_RE.fullmatch(as_of)))
+
+
 def _load_cache(cache_path):
+    """Read only a bounded, regular, non-symlink cache with valid rows."""
     try:
-        with open(cache_path, encoding="utf-8") as fh:
-            data = json.load(fh)
-            return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
+        raw = safe_write.read_regular_bytes(cache_path, EPSS_CACHE_MAX_BYTES)
+        data = json.loads(tolerant_json.depth_checked(raw.decode("utf-8")))
+        if not isinstance(data, dict) or len(data) > EPSS_CACHE_ENTRIES_MAX:
+            return {}
+        return data if all(_valid_cache_entry(cve, entry)
+                           for cve, entry in data.items()) else {}
+    except (OSError, UnicodeError, ValueError, RecursionError, MemoryError):
         return {}
 
 
 def _save_cache(cache_path, cache):
     """Best-effort: the EPSS cache is an optimization, never a run input.
 
-    #1735: it defaults to `.panopticon/epss-cache.json` in the REVIEWED tree,
-    a fixed name a target can pre-commit as a symlink -- so the write goes
-    through the no-follow open. Its refusal (ValueError) joins OSError in the
-    shrug rather than taking the run down: an uncacheable score has always been
-    a shrug here, and the refusal has already done the only job that mattered.
+    #3269 G8 moved the default to operator state. Explicit callers can still
+    choose another path, so the write remains no-follow and artifact-confined.
+    A refusal (ValueError) joins OSError in the shrug rather than taking the
+    run down: an uncacheable score has always been a shrug here, and the
+    refusal has already done the only job that mattered.
 
-    Swallowed is not the same as unsaid, though (round 1 ruling). A refused
-    path means someone COMMITTED a link at this name, which is an attack signal
-    and the operator's to act on; an OSError means the directory is read-only,
-    which is boring and self-correcting. So the refusal gets one stderr line
-    and the OSError keeps its silence.
+    Swallowed is not the same as unsaid, though (round 1 ruling). At an explicit
+    artifact path, refusal means someone COMMITTED a link at this name, which
+    is an attack signal and the operator's to act on; an OSError means the
+    directory is read-only, which is boring and self-correcting. So the refusal
+    gets one stderr line and the OSError keeps its silence.
     """
     try:
         safe_write.confine_artifact_path(cache_path)
-        os.makedirs(os.path.dirname(os.path.abspath(cache_path)), exist_ok=True)
+        os.makedirs(os.path.dirname(os.path.abspath(cache_path)), mode=0o700,
+                    exist_ok=True)
         with safe_write.open_w_nofollow(cache_path) as fh:
             json.dump(cache, fh)
     except ValueError as exc:
@@ -212,9 +258,12 @@ def epss_lookup(cves, cache_path, opener=None):
                 "as_of": row.get("date", ""),
                 "source": "FIRST.org",
             }
+            if not _valid_cache_entry(cve, entry):
+                raise ValueError("FIRST.org returned an invalid EPSS row")
             out[cve] = entry
-            cache[cve] = entry
-            dirty = True
+            if len(cache) < EPSS_CACHE_ENTRIES_MAX:
+                cache[cve] = entry
+                dirty = True
         except Exception as e:  # noqa: BLE001 - lookup is best-effort by design
             logging.warning("EPSS network failure or error for %s: %s", cve, e)
             continue
@@ -327,7 +376,7 @@ def enrich_citations(findings, catalog, epss_enabled=False, cache_path=None, ope
             f["citation_quality"] = "none"
 
     if epss_enabled and all_cves:
-        scores = epss_lookup(sorted(all_cves), cache_path or ".panopticon/epss-cache.json",
+        scores = epss_lookup(sorted(all_cves), cache_path or epss_cache_path(),
                              opener=opener)
         for f in findings:
             c = f.get("citations")
