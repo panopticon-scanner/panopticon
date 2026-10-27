@@ -45,9 +45,10 @@ graded on its menu one-liner above.
 
 {criteria}
 
-The domain, area, and category guides route you toward candidate codes; they do
-not redefine those codes. When guide prose and a code's explicit criteria
-differ, the criteria win.
+When present, the domain guide in the menu and the area/category records in its
+linked all-domain routing guide route you toward candidate codes; they do not
+redefine those codes. When guide prose and a code's explicit criteria differ,
+the criteria win.
 
 ## Your task
 

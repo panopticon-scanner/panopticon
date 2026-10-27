@@ -29,10 +29,10 @@ Review the listed files through the **`{domain}`** domain lens, grading against 
 
 Some codes carry a precise pass/fail definition. Where a code above has criteria, choose it ONLY if its criteria are actually met — grade against the criteria, not the one-line name. These are the SAME criteria the verify phase will hold your finding to, so coding to them now avoids first-pass miscoding.
 
-The domain, area, and category guides in the menu are routing aids: use them to
-navigate to the most specific candidate code. They never broaden or redefine a
-code. When a guide and that code's explicit grading criteria differ, the
-criteria win.
+When present, the domain guide in the menu and the area/category records in its
+linked all-domain routing guide are routing aids: use them to navigate to the
+most specific candidate code. They never broaden or redefine a code. When a
+guide and that code's explicit grading criteria differ, the criteria win.
 
 {criteria}
 
@@ -78,7 +78,9 @@ Each finding MUST carry:
   "raise_when[0]"` (or the exact condition); use the relevant
   `lower_when[...]` label for a downward in-range override. A below-floor
   controlled-modifier exception may omit a rung when the code has no lower
-  rung. An override with no reason is reverted to the code default at synthesis.
+  rung. Any off-default severity without this `severity_override` object is
+  reverted to the code default at synthesis; an object with no reason is also
+  reverted.
 - `title`, `description`, `location: {file, line_start, line_end}` — `file` MUST be
   **repository-relative** (e.g. `src/app.py`; never absolute or `./`-prefixed, so the
   delta/`--pr` gate can match it against the diff). `line_start`/`line_end` are

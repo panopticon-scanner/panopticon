@@ -12,6 +12,7 @@ See docs/superpowers/specs/2026-08-15-panopticon-5.0-review-matrix-design.md §4
 from typing import Any, TYPE_CHECKING
 import json
 import os
+import re
 
 if TYPE_CHECKING:
     from scripts import _version
@@ -151,6 +152,102 @@ def severity_range(bundle, code):
             and isinstance(value.get("ceiling"), str)):
         return None
     return value
+
+
+def _guide_field(value):
+    """One TSV field: deterministic, single-line, and tab-free."""
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _guide_name(value):
+    """Turn OCRDb's source slugs into compact display names."""
+    return _guide_field(str(value or "").replace("-", " ").replace("_", " ")).capitalize()
+
+
+def _guide_row(*fields):
+    return "\t".join(_guide_field(field) for field in fields)
+
+
+def _guide_groups(menu, outline):
+    """Assign codes to their longest area/category prefix."""
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    assigned: set[str] = set()
+    for item in menu:
+        code = item["code"]
+        suffix = code.split("-", 1)[1] if "-" in code else ""
+        choices = []
+        for area in outline["areas"]:
+            area_key = area["key"]
+            if not suffix.startswith(area_key):
+                continue
+            tail = suffix[len(area_key):]
+            for category in area["categories"]:
+                category_key = category["key"]
+                if tail.startswith(category_key):
+                    choices.append((len(category_key), area_key, category_key))
+        if choices:
+            _, area_key, category_key = max(choices)
+            groups.setdefault((area_key, category_key), []).append(item)
+            assigned.add(code)
+    return groups, assigned
+
+
+def _guide_code_row(bundle, domain, item):
+    code = item["code"]
+    bounds = severity_range(bundle, code)
+    compact_range = item["severity"]
+    if bounds:
+        compact_range += " (%s-%s)" % (bounds["floor"], bounds["ceiling"])
+    entry = _safe_get_dict(_entries_for(bundle, domain), code)
+    references = entry.get("see_also")
+    if not isinstance(references, list):
+        references = []
+    see_also = ", ".join(value for value in references if isinstance(value, str))
+    return _guide_row(code, "code", _guide_name(item["name"]), compact_range,
+                      "see_also: " + see_also)
+
+
+def render_guide_tsv(bundle):
+    """Render the optional 0.7 routing hierarchy as an all-domain TSV.
+
+    Area/category prose belongs in this greppable run artifact, not in every
+    panel/advisor prompt. One record occupies one physical line; code records
+    intentionally carry only their display name, compact severity range, and
+    cross-references because criteria and rung conditions remain inline in the
+    prompts. ``None`` preserves the 0.6 no-guide posture.
+    """
+    domains = _safe_get_dict(bundle, "domains")
+    outlines = {domain: domain_outline(bundle, domain) for domain in domains}
+    if not any(outlines.values()):
+        return None
+
+    rows = []
+    for domain in sorted(domains):
+        dom = _safe_get_dict(domains, domain)
+        outline = outlines[domain] or {"guide": "", "areas": []}
+        rows.append(_guide_row(domain, "domain", _guide_name(dom.get("name")),
+                               outline["guide"]))
+        menu = domain_menu(bundle, domain)
+        groups, assigned = _guide_groups(menu, outline)
+        for area in outline["areas"]:
+            area_key = area["key"]
+            rows.append(_guide_row("%s-%s" % (domain, area_key), "area",
+                                   _guide_name(area["name"]), area["guide"]))
+            for category in area["categories"]:
+                category_key = category["key"]
+                rows.append(_guide_row(
+                    "%s-%s%s" % (domain, area_key, category_key),
+                    "category", _guide_name(category["name"]), category["guide"]))
+                rows.extend(
+                    _guide_code_row(bundle, domain, item)
+                    for item in groups.get((area_key, category_key), [])
+                )
+
+        # A newly added code must remain discoverable even if its hierarchy
+        # metadata has not caught up yet.
+        rows.extend(_guide_code_row(bundle, domain, item) for item in menu
+                    if item["code"] not in assigned)
+    return "\n".join(rows) + "\n"
 
 
 def domain_menu(bundle, domain):

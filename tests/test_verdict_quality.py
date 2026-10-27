@@ -108,7 +108,8 @@ class TestVerdictQuality(unittest.TestCase):
         cov = codes_mod.apply_verdict_quality([f], {}, b)
         self.assertEqual(f["severity"], "CRITICAL")
         self.assertEqual(cov["overrides"],
-                         {"count": 1, "up": 1, "down": 0, "clamped": 0})
+                         {"count": 1, "up": 1, "down": 0,
+                          "clamped": 0, "missing": 0})
 
     def test_backup_confirm_sets_flag(self):
         f = {"id": "SEC-1", "code": "SEC-A1A", "severity": "HIGH"}
@@ -144,7 +145,31 @@ class TestVerdictQuality(unittest.TestCase):
              "severity_override": {"from": "MEDIUM", "to": "LOW", "reason": "intended lower"}}
         cov = codes_mod.apply_verdict_quality([f], {}, b)
         self.assertEqual(cov["overrides"],
-                         {"count": 1, "up": 0, "down": 1, "clamped": 0})
+                         {"count": 1, "up": 0, "down": 1,
+                          "clamped": 0, "missing": 0})
+
+    def test_07_agentic_off_default_without_override_reverts_and_counts_missing(self):
+        b = _bundle_07()
+        f = {"id": "AGT-implicit", "code": "AGT-A1B", "severity": "HIGH",
+             "domain": "AGT", "source_role": "domain_panel"}
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            cov = codes_mod.apply_verdict_quality([f], {}, b)
+        self.assertEqual(f["severity"], "MEDIUM")
+        self.assertNotIn("severity_override", f)
+        self.assertEqual(cov["overrides"],
+                         {"count": 0, "up": 0, "down": 0,
+                          "clamped": 0, "missing": 1})
+        self.assertIn("AGT-implicit: agent severity HIGH without severity_override "
+                      "reverted to OCRDb AGT-A1B default MEDIUM", stderr.getvalue())
+
+    def test_07_tool_severity_without_override_is_not_clamped(self):
+        b = _bundle_07()
+        f = {"id": "TOOL-1", "code": "AGT-A1B", "severity": "HIGH",
+             "domain": "AGT", "source": "tool:semgrep"}
+        cov = codes_mod.apply_verdict_quality([f], {}, b)
+        self.assertEqual(f["severity"], "HIGH")
+        self.assertEqual(cov["overrides"]["missing"], 0)
 
     def test_07_in_range_raise_accepts_rung_label_or_exact_condition(self):
         b = _bundle_07()
@@ -174,7 +199,8 @@ class TestVerdictQuality(unittest.TestCase):
         self.assertEqual(f["severity"], "MEDIUM")
         self.assertEqual(f["severity_override"]["to"], "MEDIUM")
         self.assertEqual(cov["overrides"],
-                         {"count": 1, "up": 1, "down": 0, "clamped": 1})
+                         {"count": 1, "up": 1, "down": 0,
+                          "clamped": 1, "missing": 0})
         self.assertIn("TST-ceiling: severity override HIGH clamped to MEDIUM", stderr.getvalue())
         self.assertNotIn(secret_reason, stderr.getvalue())
 
@@ -187,7 +213,8 @@ class TestVerdictQuality(unittest.TestCase):
         self.assertEqual(f["severity"], "LOW")
         self.assertEqual(f["severity_override"]["to"], "LOW")
         self.assertEqual(cov["overrides"],
-                         {"count": 1, "up": 0, "down": 0, "clamped": 1})
+                         {"count": 1, "up": 0, "down": 0,
+                          "clamped": 1, "missing": 0})
 
     def test_07_raise_is_clamped_to_highest_cited_rung(self):
         b = _bundle_07()
@@ -200,6 +227,31 @@ class TestVerdictQuality(unittest.TestCase):
         self.assertEqual(f["severity_override"]["to"], "HIGH")
         self.assertEqual(cov["overrides"]["clamped"], 1)
 
+    def test_07_lower_without_rung_or_modifier_reverts_to_default(self):
+        b = _bundle_07()
+        f = {"id": "ACC-no-rung", "code": "ACC-A1A", "severity": "MEDIUM",
+             "domain": "ACC", "severity_override": {
+                 "from": "HIGH", "to": "MEDIUM", "reason": "secondary control"}}
+        cov = codes_mod.apply_verdict_quality([f], {}, b)
+        self.assertEqual(f["severity"], "HIGH")
+        self.assertEqual(f["severity_override"]["to"], "HIGH")
+        self.assertEqual(cov["overrides"]["clamped"], 1)
+
+    def test_07_cited_lower_rung_is_honoured(self):
+        b = _bundle_07()
+        condition = (b["domains"]["ACC"]["entries"]["ACC-A1A"]
+                     ["severity_range"]["lower_when"][0]["condition"])
+        for rung in ("lower_when[0]", condition):
+            with self.subTest(rung=rung):
+                f = {"id": "ACC-rung", "code": "ACC-A1A", "severity": "MEDIUM",
+                     "domain": "ACC", "severity_override": {
+                         "from": "HIGH", "to": "MEDIUM",
+                         "reason": "duplicate named control", "rung": rung}}
+                cov = codes_mod.apply_verdict_quality([f], {}, b)
+                self.assertEqual(f["severity"], "MEDIUM")
+                self.assertEqual(f["severity_override"]["to"], "MEDIUM")
+                self.assertEqual(cov["overrides"]["clamped"], 0)
+
     def test_07_below_floor_without_modifier_is_clamped_to_floor(self):
         b = _bundle_07()
         f = {"id": "TST-floor", "code": "TST-A1B", "severity": "INFO",
@@ -211,7 +263,8 @@ class TestVerdictQuality(unittest.TestCase):
         self.assertEqual(f["severity"], "LOW")
         self.assertEqual(f["severity_override"]["to"], "LOW")
         self.assertEqual(cov["overrides"],
-                         {"count": 1, "up": 0, "down": 1, "clamped": 1})
+                         {"count": 1, "up": 0, "down": 1,
+                          "clamped": 1, "missing": 0})
 
     def test_07_controlled_modifier_can_lower_below_floor(self):
         b = _bundle_07()
@@ -224,7 +277,8 @@ class TestVerdictQuality(unittest.TestCase):
         self.assertEqual(f["severity"], "INFO")
         self.assertEqual(f["severity_override"]["to"], "INFO")
         self.assertEqual(cov["overrides"],
-                         {"count": 1, "up": 0, "down": 1, "clamped": 0})
+                         {"count": 1, "up": 0, "down": 1,
+                          "clamped": 0, "missing": 0})
 
     def test_bundle_absent_missing_reason_override_leaves_severity_no_crash(self):
         f = {"id": "SEC-1", "code": "SEC-A1A", "severity": "CRITICAL",

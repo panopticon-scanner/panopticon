@@ -77,7 +77,7 @@ def test_report_ocrdb_coverage_has_override_counters():
     ocrdb = (_load("report-schema.json")["properties"]["meta"]["properties"]
              ["coverage"]["properties"]["ocrdb"]["properties"])
     assert set(ocrdb["overrides"]["properties"]) == {
-        "count", "up", "down", "clamped"
+        "count", "up", "down", "clamped", "missing"
     }
     assert "code_corrections" not in ocrdb            # retired with #2101
 

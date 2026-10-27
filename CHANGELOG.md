@@ -3,21 +3,24 @@
 ## Unreleased
 
 - **OCRDb 0.7 guides and severity ranges now drive review and synthesis (#3330).**
-  - A 0.7-shaped bundle renders the domain guide first, then each area and
-    category guide immediately before its codes. The routing prose never
-    replaces a code's criteria, and the shipped OCRDb bundle remains pinned to
-    0.6.0 until the upstream release is cut; pre-0.7 menus render byte-for-byte
+  - A 0.7-shaped bundle keeps each domain guide beside its code menu and writes
+    all domain/area/category routing prose once to the run-owned, greppable
+    `ocrdb-guide.tsv`. Panels and advisors receive that artifact in their
+    confined read scope. The routing prose never replaces a code's criteria,
+    and the shipped OCRDb bundle remains pinned to 0.6.0 until the upstream
+    release is cut; pre-0.7 runs write no guide and render menus byte-for-byte
     as before.
   - Menus show each code's default, permitted floor/ceiling and citable
     raise/lower conditions. Panel overrides carry the cited rung into the
     advisor prompt, where the advisor checks the condition itself rather than
     accepting free-form justification.
-  - Synthesis clamps unsupported raises to the highest cited rung (or the
-    default), clamps above-ceiling and unmodified below-floor overrides, emits
-    a fixed stderr disclosure, and counts the result in
-    `meta.coverage.ocrdb.overrides.clamped`. Controlled OCRDb severity-modifier
-    reasons remain the explicit below-floor exception. Bundles with no
-    `severity_range` retain the prior override behavior.
+  - Synthesis clamps unsupported raises or lowers to the cited rung (or the
+    default), clamps above-ceiling and unmodified below-floor overrides, and
+    reverts an agent's undeclared off-default severity. Fixed stderr disclosures
+    and `meta.coverage.ocrdb.overrides.{clamped,missing}` count both paths; tool
+    severities remain independent. Controlled OCRDb severity-modifier reasons
+    are the explicit downward exception. Bundles with no `severity_range`
+    retain the prior override behavior.
 - **Fix: `scripts/replay_report.py` replays again; a foreign archive now needs `--trust-archive` (#3332).**
   - Since #3271 every replay failed. The scratch root linked `runs/<tag>`, which the artifact confinement refuses. Its symlinked source counted 0 lines, so health came out null, a silent wrong answer. And the run's own stamp never verifies at the scratch root's new path.
   - The scratch root is now built from copies, skipping `.git`; links inside a copied tree stay links. Every stamp in a replay is signed and checked under a throwaway key that lives in the replay's temp dir, so the operator's state dir is never written.
