@@ -10,6 +10,7 @@
   locus-free findings with identical normalized public content now produce one
   finding instead of one duplicate-id schema error; distinct locus-free claims
   remain separate.
+- **Fix: a reviewer that omits a CVSS vector it can't justify, as its prompt says to, no longer fails the report's schema (#3162).** An agent-sourced security/redteam CRITICAL/HIGH finding without `cvss` (or with an empty one) is disclosed in the new `meta.cvss_unscored` (finding ids, present only when non-empty) and in a Markdown summary line, instead of counting in `meta.schema_errors`. A malformed `cvss` in a report is still a schema error.
 - **Security: every deterministic code group now receives the non-excludable SEC floor (#3338).**
   The floor no longer depends on security vocabulary appearing in filenames:
   file shape alone classifies code, while explicit documentation and known

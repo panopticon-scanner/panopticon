@@ -297,6 +297,7 @@ def render_summary(report):
     s = report["summary"]
     gate_mode = report["meta"].get("gate_security_mode")
     health_line = _render_health(s.get("health"))
+    unscored = report["meta"].get("cvss_unscored") or []      # #3162
     lines = [
         # #1829 SEC-798292895: belt and braces for the two fields the
         # normalization boundary does not own -- the target path this run was
@@ -316,7 +317,9 @@ def render_summary(report):
         "**Evidence:** %s" % ", ".join(
             "%s %d" % (k, v) for k, v in s["evidence_stats"].items() if v),
         "",
-    ] + ([health_line, ""] if health_line else []) + [
+    ] + ([health_line, ""] if health_line else []) + ([
+        "**Unscored:** %d high-severity security finding(s) carry no CVSS vector (omitted, not invented)"
+        % len(unscored), ""] if unscored else []) + [
         "## Groups",
     ]
     if not s.get("coverage_certified", True):

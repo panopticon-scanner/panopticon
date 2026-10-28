@@ -336,6 +336,9 @@ def assemble(run, resolved, reconciled, graded, cost):
     for f in resolved.findings:
         f.pop("_group", None)
         f.pop("_repo_root", None)
+        if "cvss" in f and f["cvss"] in (None, "", {}):
+            del f["cvss"]          # #3162: an empty score is no score -- unscored, not malformed
+    unscored = cvss_unscored(resolved.active)
     # #3270: every external app this run launched -- the host CLI off
     # host-capabilities.json, docker off the tools manifest -- repaired at both
     # reads (both are target-writable). `meta.apps` is present only when one was.
@@ -424,6 +427,7 @@ def assemble(run, resolved, reconciled, graded, cost):
             },
             "config": _config_block(run.config),
             **({"prior_run": prior} if prior else {}),
+            **({"cvss_unscored": unscored} if unscored else {}),      # #3162
         },
         "summary": graded.summary,
         "groups": graded.groups,
@@ -431,6 +435,20 @@ def assemble(run, resolved, reconciled, graded, cost):
         "discarded_claims": resolved.rejected,
         "cross_panel": {"integration_findings": resolved.integration_findings},
     }
+
+
+def _needs_cvss(f):
+    """The findings the reviewer prompt asks to score: agent-sourced security /
+    redteam CRITICAL or HIGH. #3162: the same prompt says to OMIT a vector it
+    cannot justify, so a missing one is disclosed (`meta.cvss_unscored`), never
+    a schema error -- an invented score is worse than none."""
+    return (not evidence_mod.is_tool_sourced(f) and f.get("panel") in ("security", "redteam")
+            and f.get("severity") in ("CRITICAL", "HIGH"))
+
+
+def cvss_unscored(findings):
+    """#3162: the sorted ids of the findings `_needs_cvss` names that carry none."""
+    return sorted(str(f.get("id")) for f in findings if _needs_cvss(f) and not f.get("cvss"))
 
 
 def attach_schema_status(report, errors):
@@ -490,10 +508,10 @@ def validate_report(report, schema_path=None):
         # #2174: a located finding with no line is the sanctioned whole-file shape (#1522).
         if not loc.get("file"):
             warnings.append("finding[%d] missing location.file" % i)
-        agent_sourced = not evidence_mod.is_tool_sourced(f)
-        if agent_sourced and f.get("panel") in ("security", "redteam") and f.get("severity") in ("CRITICAL", "HIGH"):
-            if not f.get("cvss"):
-                errors.append("finding[%d] %s %s missing cvss" % (i, f["panel"], f["severity"]))
+        if _needs_cvss(f):
+            if not f.get("cvss"):      # #3162: disclosed as unscored, not an error
+                warnings.append("finding[%d] %s %s has no cvss (meta.cvss_unscored)"
+                                % (i, f["panel"], f["severity"]))
             if not f.get("exploit_scenario"):
                 errors.append("finding[%d] %s %s missing exploit_scenario" % (i, f["panel"], f["severity"]))
     id_counts: dict[str, int] = {}
