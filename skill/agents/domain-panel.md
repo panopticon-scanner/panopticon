@@ -101,7 +101,7 @@ reviewer cannot re-derive that from a title alone:
   precondition, the step, the outcome. Redact secrets as `[REDACTED]`.
 - `citations: {"cwe": ["CWE-89", ...]}` when a standard class applies; omit rather
   than guess an id.
-- `cvss` only when you can justify the vector; omit it rather than invent a score.
+- `cvss` only when you can justify the vector; omit it rather than invent a score. An omitted vector is reported as unscored, never as an error.
 Omit any of these when they genuinely do not apply — an empty exploit_scenario is
 worse than none.
 

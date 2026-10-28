@@ -44,6 +44,12 @@
         "timestamp": {
           "type": "string"
         },
+        "cvss_unscored": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 1,
+          "description": "#3162: ids of the agent-sourced security/redteam CRITICAL/HIGH findings that carry no CVSS vector. The reviewer prompt says to omit a vector it cannot justify rather than invent one, so an omission is disclosed here instead of counted in schema_errors. Present only when non-empty."
+        },
         "unverified_archive": {
           "type": "boolean",
           "const": true,
