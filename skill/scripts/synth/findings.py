@@ -135,6 +135,14 @@ SHORT_TITLE_MAX = 100
 
 def normalize_finding(f):
     """Normalize and validate finding fields with sensible defaults."""
+    # #2992 M3: `line` is the legacy spelling of schema-owned `line_start`.
+    # Bridge it BEFORE repair so a numeric spelling is coerced and one bad
+    # value is dropped with disclosure, instead of being copied afterwards
+    # into both line fields and making the completed artifact invalid.
+    legacy_loc = f.get("location")
+    if (isinstance(legacy_loc, dict) and "line_start" not in legacy_loc
+            and legacy_loc.get("line") is not None):
+        legacy_loc["line_start"] = legacy_loc.pop("line")
     # #1639 P15: pinned types first, at the boundary -- see validate_schema.repair_finding.
     validate_schema_mod.repair_finding(f)
     written = f.get("severity")
@@ -182,11 +190,6 @@ def normalize_finding(f):
     if not isinstance(f.get("location"), dict):
         f["location"] = {}
     loc = f["location"]
-    # #5.0-04: bridge the {file, line} shape agents emit (older templates /
-    # non-conforming output) into the pipeline's canonical line_start, so id
-    # uniqueness, delta classification, and schema validation all work.
-    if "line_start" not in loc and loc.get("line") is not None:
-        loc["line_start"] = loc.pop("line")
     # #1829 SEC-798292895: the path is TARGET-authored and the terminal summary
     # prints it. Inert before the emptiness rule below, which is unchanged: an
     # inert "" is still "".

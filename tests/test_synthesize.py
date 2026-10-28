@@ -1606,7 +1606,7 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
             with self.subTest(start=start):
                 self.assertNotIn(secret[start:start + 8], diagnostic)
 
-    def test_equal_duplicate_discards_are_all_logged_and_counted(self):
+    def test_equal_locus_free_duplicates_are_deduped_before_failure_log(self):
         with tempfile.TemporaryDirectory() as d, _chdir(d):
             fp = os.path.join(d, "findings-g1-SEC.json")
             located = _agentic(
@@ -1628,13 +1628,15 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
                 ["--target", "src", "--out", out, fp])
             with open(failure_path, encoding="utf-8") as fh:
                 failure_log = json.load(fh)
+            with open(out, encoding="utf-8") as fh:
+                report = json.load(fh)
 
         self.assertEqual(rc, 0, stderr)
         rows = failure_log["discarded_findings"]
-        self.assertEqual(len(rows), 2)
-        first_row, second_row = rows
-        self.assertEqual(first_row, second_row)
-        self.assertIn("discarded 2 locus-free", stderr)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("discarded 1 locus-free", stderr)
+        self.assertEqual(len(report["findings"]), 2)
+        self.assertEqual(report["meta"]["schema_errors"], 0)
 
     def test_an_unhydratable_part_is_an_invalid_artifact_not_a_silent_pass(self):
         # A `meta.parts` pointer at a file that cannot be read makes the union
@@ -1799,6 +1801,52 @@ def test_a_sloppy_agent_finding_never_ends_the_run(label, patch, announces, tmp_
     if announces:
         assert announces in err.getvalue(), \
             "%s was accepted silently; the boundary must say what it changed" % label
+
+
+@pytest.mark.parametrize(
+    "legacy_line,expected_line,action",
+    [
+        pytest.param("three", None, "dropped", id="string"),
+        pytest.param(4.5, None, "dropped", id="non-integral-float"),
+        pytest.param(-1, None, "dropped", id="negative"),
+        pytest.param("42", 42, "repaired", id="numeric-string-control"),
+    ],
+)
+def test_legacy_location_line_is_repaired_before_schema_write(
+        legacy_line, expected_line, action, tmp_path):
+    # #2992 M3: legacy `line` must cross the same schema-owned boundary as
+    # canonical `line_start`. One bad field is dropped, not the whole finding
+    # (or the whole paid-for run); a numeric spelling is retained as an int.
+    finding = {
+        "id": "SE-001",
+        "title": "legacy location survives",
+        "severity": "MEDIUM",
+        "confidence": "LIKELY",
+        "panel": "code",
+        "category": "correctness",
+        "location": {"file": "a.py", "line": legacy_line},
+    }
+    fp = tmp_path / "findings-g1-COD.json"
+    fp.write_text(json.dumps({"findings": [finding]}), encoding="utf-8")
+    out = tmp_path / "report.json"
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with _chdir(str(tmp_path)), contextlib.redirect_stdout(stdout), \
+            contextlib.redirect_stderr(stderr):
+        rc = syn.main(["--repo", "--target", "src", "--out", str(out), str(fp)])
+
+    assert rc == 0, stderr.getvalue()
+    report = json.loads(out.read_text(encoding="utf-8"))
+    kept = only(report["findings"], "kept finding")
+    assert kept["title"] == "legacy location survives"
+    assert kept["location"]["file"] == "a.py"
+    if expected_line is None:
+        assert "line_start" not in kept["location"]
+        assert "line_end" not in kept["location"]
+    else:
+        assert kept["location"]["line_start"] == expected_line
+        assert kept["location"]["line_end"] == expected_line
+    assert "findings: SE-001: %s location.line_start" % action in stderr.getvalue()
+    assert "artifact invalid" not in stderr.getvalue()
 
 
 def test_a_target_pre_committed_coverage_file_cannot_end_the_run(tmp_path):

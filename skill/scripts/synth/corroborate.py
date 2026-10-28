@@ -156,9 +156,12 @@ def dedupe(findings):
     still reinforced in place. Same file+line+category+rule findings are
     intentionally deduped to the most severe.
     Findings without a file OR without a concrete integer line pass through
-    unmerged (clustering them on file+category alone would drop distinct issues
-    that merely omit a line number)."""
+    unmerged unless their normalized public content is identical (#2992 M5).
+    Clustering them on file+category alone would drop distinct issues that
+    merely omit a line number; exact duplicates are fungible and otherwise
+    publish the same content-derived id twice."""
     passthrough = []
+    locus_free_content = []
     by_locus: dict[tuple[str, int], list[dict[str, Any]]] = {}
     order = []
     for f in findings:
@@ -166,6 +169,17 @@ def dedupe(findings):
         fkey = evidence_mod.norm_path(loc.get("file"))
         line = findings_mod._norm_line(loc.get("line_start"))
         if not fkey or not isinstance(line, int):
+            # Identity is decided before the public id is bound: an agent's id
+            # is regenerated from content, and controller-only `_group` et al.
+            # are not finding content. Dict equality deliberately keeps every
+            # non-identical locus-free claim separate.
+            content = {
+                key: value for key, value in f.items()
+                if key != "id" and not str(key).startswith("_")
+            }
+            if content in locus_free_content:
+                continue
+            locus_free_content.append(content)
             passthrough.append(f)
             continue
         key = (fkey, line)
