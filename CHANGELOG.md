@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Fix: malformed legacy finding lines no longer invalidate synthesis, and exact
+  locus-free duplicates collapse (#2992).** Legacy `location.line` now crosses
+  the schema repair boundary as `line_start`: numeric spellings are coerced,
+  while strings, non-integral floats and negative values lose only that field
+  with a disclosure. The otherwise-sound finding and run survive. Two
+  locus-free findings with identical normalized public content now produce one
+  finding instead of one duplicate-id schema error; distinct locus-free claims
+  remain separate.
 - **Security: every deterministic code group now receives the non-excludable SEC floor (#3338).**
   The floor no longer depends on security vocabulary appearing in filenames:
   file shape alone classifies code, while explicit documentation and known

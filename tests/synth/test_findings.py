@@ -455,12 +455,22 @@ class TestDedupe(unittest.TestCase):
         ]
         self.assertEqual(len(corroborate_mod.dedupe(findings)), 2)
 
-    def test_no_file_findings_not_merged(self):
+    def test_identical_locus_free_findings_are_deduped(self):
+        # #2992 M5: controller-only provenance does not make two otherwise
+        # identical repo-wide findings distinct. Keeping both publishes the
+        # same content-derived id twice and records a schema error.
+        finding = {
+            "id": "COD-123456789",
+            "title": "same repo-wide gap",
+            "severity": "LOW",
+            "confidence": "NOTE",
+            "category": "x",
+        }
         findings = [
-            {"severity": "LOW", "confidence": "NOTE", "category": "x", "location": {}},
-            {"severity": "LOW", "confidence": "NOTE", "category": "x", "location": {}},
+            dict(finding, _group="app"),
+            dict(finding, id="COD-987654321", _group="lib"),
         ]
-        self.assertEqual(len(corroborate_mod.dedupe(findings)), 2)
+        self.assertEqual(len(corroborate_mod.dedupe(findings)), 1)
 
     def test_no_line_same_category_both_kept(self):
         # CD-001 regression: two distinct issues in the same file that both omit
