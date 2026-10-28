@@ -311,13 +311,22 @@ def remove_artifact(path):
 
 
 def write_text(path, text):
-    """Write one text artifact without following a planted path component."""
+    """Write text with path refusals normalized, but encoding errors intact."""
     try:
-        confine_artifact_path(path)
+        try:
+            confine_artifact_path(path)
+        except ValueError as exc:
+            raise ArtifactPathError("write", path, exc) from None
         parent = os.path.dirname(os.path.abspath(path))
         os.makedirs(parent, exist_ok=True)
-        with open_w_nofollow(path) as stream:
+        try:
+            stream = open_w_nofollow(path)
+        except ValueError as exc:
+            raise ArtifactPathError("write", path, exc) from None
+        with stream:
             stream.write(text)
+    except ArtifactPathError:
+        raise
     except OSError as exc:
         raise ArtifactPathError("write", path, exc) from None
 

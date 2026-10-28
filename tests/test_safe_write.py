@@ -114,6 +114,26 @@ class TestNoFollowOpen(unittest.TestCase):
         with open(victim, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "PRECIOUS")
 
+    def test_write_text_wraps_an_external_artifact_link_path_refusal(self):
+        victim = self._victim()
+        artifact = os.path.join(self.pano, "artifact.txt")
+        os.symlink(victim, artifact)
+
+        with self.assertRaises(safe_write.ArtifactPathError) as raised:
+            safe_write.write_text(artifact, "NEW")
+
+        self.assertIs(type(raised.exception.cause), ValueError)
+        self.assertIn("escapes .panopticon", str(raised.exception.cause))
+        self.assertTrue(os.path.islink(artifact))
+        with open(victim, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "PRECIOUS")
+
+    def test_write_text_does_not_relabel_an_encoding_error_as_a_path_refusal(self):
+        artifact = os.path.join(self.pano, "artifact.txt")
+        with self.assertRaises(UnicodeEncodeError) as raised:
+            safe_write.write_text(artifact, "\ud800")
+        self.assertIs(type(raised.exception), UnicodeEncodeError)
+
     def test_a_planted_symlink_is_replaced_not_written_through(self):
         victim = self._victim()
         artifact = os.path.join(self.root, "artifact.json")   # no .panopticon segment

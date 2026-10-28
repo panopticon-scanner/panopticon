@@ -123,7 +123,7 @@ class _Planted(unittest.TestCase):
 class TestHtmlReport(_Planted):
     def test_write_html_refuses_a_planted_link(self):
         path = self.plant("run-report.json.html")
-        with self.assertRaises(ValueError):
+        with self.assertRaises(safe_write.ArtifactPathError):
             html_report.write_html({"findings": [], "meta": {}}, path)
         self.assert_victim_intact()
 
@@ -137,7 +137,8 @@ class TestHtmlReport(_Planted):
             with self.subTest(name=name):
                 path = os.path.join(self.pano, name)
                 os.symlink(target, path)
-                with self.assertRaisesRegex(ValueError, "escapes .panopticon"):
+                with self.assertRaisesRegex(
+                        safe_write.ArtifactPathError, "escapes .panopticon"):
                     html_report.write_html({"findings": [], "meta": {}}, path)
                 self.assertTrue(os.path.islink(path))
                 self.assertFalse(os.path.lexists(os.path.join(self.root, "missing")))

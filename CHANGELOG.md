@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Fix: a planted OCRDb guide path now uses the uniform artifact-write refusal (#3335).**
+  A symlink, directory, or other non-regular file at the run's
+  `ocrdb-guide.tsv` used to fail during the guide's idempotence pre-read and
+  escape as a bare filesystem error. The pre-read now treats any filesystem
+  refusal as absent and normalizes the guarded writer's refusal as
+  `ArtifactPathError`; a symlink is never followed or removed, and its target
+  remains unchanged.
 - **OCRDb 0.7 guides and severity ranges now drive review and synthesis (#3330).**
   - A 0.7-shaped bundle keeps each domain guide beside its code menu and writes
     all domain/area/category routing prose once to the run-owned, greppable
