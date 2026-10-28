@@ -20,8 +20,8 @@
 # pip itself: the tool that installs everything below it. Leaving THIS unpinned
 # (`pip install --upgrade pip`) was the finding -- pinning what pip installs
 # says nothing about what pip is.
-pip==26.2.1 \
-    --hash=sha256:71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e
+pip==26.2.2 \
+    --hash=sha256:fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70
 
 # The gate's own dependencies. Versions track pyproject.toml's floors.
 pyyaml==6.0.3 \

@@ -686,7 +686,7 @@ entry groups routine Python version updates and filters proposals that would bre
 pinned tools graph: all version updates for `mcp`, `opentelemetry-*`, and `pydantic-core` (Pydantic
 2.14.1 requires exactly pydantic-core 2.50.1); major updates for `peewee`, `boltons`, `protobuf`,
 `pyjwt`, `wcmatch`, and `wrapt`; and major/minor updates for `click`, `jsonschema`,
-`exceptiongroup`, `importlib-metadata`, and `tomli`. Semgrep 1.181.0 (whose requirements are
+`exceptiongroup`, `importlib-metadata`, and `tomli`. Semgrep 1.182.0 (whose requirements are
 1.179.0's, unchanged) constrains `boltons`, `exceptiongroup`, `pyjwt` (to its major line:
 `<3,>=2.15.0`, where 1.178.0 held it to 2.13.x), `tomli` (`~=2.4.0`), and `wcmatch`; pinned
 OpenTelemetry packages constrain `importlib-metadata`, `protobuf`, and `wrapt`. These filters match
