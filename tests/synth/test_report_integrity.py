@@ -832,10 +832,9 @@ class TestAnAbsorbedUnknownSeverityIsNamed(unittest.TestCase):
 
 
 class TestASecLessCodeGroupIsNamed(unittest.TestCase):
-    """#3245: the SEC floor keys on file NAMES, so a config that never lists
-    SEC plus a scout steered off it left a code group with no security cell,
-    and only `coverage-<group>.json` knew. It is a non-sinking integrity key
-    now, printed on a CERTIFIED run, which is the case that matters."""
+    """#3245/#3338: preserve disclosure for legacy/malformed coverage that
+    names a code group with no SEC cell. New runs floor every code group, but
+    an artifact reader must still explain this impossible-on-new-output shape."""
 
     TS = "2026-01-01T00:00:00Z"
 
@@ -847,7 +846,7 @@ class TestASecLessCodeGroupIsNamed(unittest.TestCase):
 
     def test_the_issue_s_repro_group_is_named(self):
         # panopticon.yml: group Api, match [src/server/handler.py], no SEC in
-        # panels; the scout returned [COD]; the filename floor did not fire.
+        # panels; the scout returned [COD]; this is a pre-#3338 artifact shape.
         report = self._report([{"group": "Api", "effective": ["COD"]}],
                               [{"name": "Api", "files": ["src/server/handler.py"]}])
         self.assertEqual(["Api"], report["meta"]["integrity"]["sec_less_groups"])
@@ -858,12 +857,15 @@ class TestASecLessCodeGroupIsNamed(unittest.TestCase):
             [{"group": "Api", "effective": ["COD"]},
              {"group": "Auth", "effective": ["COD", "SEC"]},
              {"group": "Art", "effective": []},
+             {"group": "Docs", "effective": ["COD"]},
              {"group": "Lost", "effective": ["COD"]},
              {"group": "", "effective": ["COD"]}],       # names no group, as in planned_pairs
             [{"name": "Api", "files": ["src/server/handler.py"]},
              {"name": "Auth", "files": ["src/auth.py"]},
-             {"name": "Art", "files": ["img/logo.png", "img/font.woff2"]}])
-        # Auth has SEC; Art has no code; Lost has no file list, which is not "no code".
+             {"name": "Art", "files": ["img/logo.png", "img/font.woff2"]},
+             {"name": "Docs", "files": ["README.md", "docs/guide.rst"]}])
+        # Auth has SEC; Art and Docs have no SEC-reviewable code; Lost has no
+        # file list, which is unknown rather than proof that it has no code.
         self.assertEqual(["Api", "Lost"], report["meta"]["integrity"]["sec_less_groups"])
 
     def test_both_renderers_print_it_on_a_certified_run(self):

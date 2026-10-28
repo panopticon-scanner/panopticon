@@ -1159,8 +1159,8 @@ def fold_tiny_commons(commons_named, catalog):
     dropping already-committed category names.
 
     Merging cannot weaken SEC coverage: ``coverage_model.applicable_sec_floor``
-    keys on FILES, not group names, so a `.env` or a lockfile still floors its
-    group to SEC wherever it lands.
+    keys on FILE shapes, not group names, so any code-shaped file still floors
+    its group to SEC wherever it lands.
     """
     if any(tests_axis.group_labels(n)[:1] and
            tests_axis.group_labels(n)[0].casefold() == COMMONS_FOLD_NAME.casefold()
@@ -1662,7 +1662,7 @@ def _repo_scan(argv=None):
     # Task 4 (#1136): committed top-level `exclude_paths:` globs prune matching files
     # BEFORE any grouping (build_result's default chunking, --scope-* narrowing, and
     # catalog_groups/assign_by_catalog all consume `allf` from here on): a pruned file
-    # reaches NO group and no leftover. #1757 carves the SEC surface back out of that.
+    # reaches NO group and no leftover; #1757/#3338 carve code-shaped files back for SEC.
     try:
         committed_doc = _committed_document(repo)
         exclude_globs = _committed_exclude_paths(repo, committed_doc)
@@ -1870,8 +1870,8 @@ def _repo_scan(argv=None):
                      + (" …" if len(leftovers) > 10 else "")),
                   file=sys.stderr)
     # #1757 (AGT-1355709320), owner ruling 2026-09-25: a target's `exclude_paths:`
-    # may not take the objective SEC surface out of the SEC domain, so the carved
-    # files get one SEC-only group here instead of reaching no reviewer at all.
+    # may not take code-shaped files out of the SEC domain, so the carved files
+    # get one SEC-only group here instead of reaching no reviewer at all (#3338).
     # After BOTH grouping paths, and never back into `allf`: the other domains
     # keep honouring the exclusion. The sink name is reserved (`groups_schema`),
     # so a committed group cannot already own it -- the matrix read refused above.
@@ -1892,7 +1892,7 @@ def _repo_scan(argv=None):
         result["exclude_paths"] = exclude_globs
         result["excluded_count"] = len(excluded_files)
         # #1757: `excluded_count` still counts what left EVERY domain; the files
-        # the SEC floor matched are the other number, in their own block.
+        # the code-group SEC floor matched are the other number, in their own block.
         result["exclude_paths_sec_carve_out"] = exclude_carve_out.disclosure(
             exclude_globs, carved_files)
         print("exclude_paths: pruned %d file(s) matching %s before grouping, and "

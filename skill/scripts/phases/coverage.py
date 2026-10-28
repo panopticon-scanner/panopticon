@@ -169,8 +169,8 @@ def _sec_carve_out_groups(review_root):
     `groups.json` the same way `_chunk_of_map` reads `chunk_of`.
 
     A SET rather than a per-group lookup: the marker only ever says "this group
-    exists because a target's `exclude_paths:` could not take the objective SEC
-    surface out of the SEC domain". Two guards, both because `groups.json` is
+    exists because a target's `exclude_paths:` could not take code-shaped files
+    out of the SEC domain". Two guards, both because `groups.json` is
     TARGET-WRITABLE: `is True` (a truthy string or a 1 must not narrow a cell),
     and the NAME must be one `exclude_carve_out.install` actually mints
     (`groups_schema.is_sec_carve_out_name`) -- the marker on a real group would
@@ -366,17 +366,15 @@ def coverage_execute(review_root, manifest):
         # scout_added regardless of the gate, so this only drops floor domains
         # the scout omitted AND whose surface is objectively absent.
         gated_floor = coverage_model.applicable_global_floor(files, scout)
-        # #run8 SEC-G2A: SEC has no place in the universal GLOBAL_FLOOR (a blanket
-        # SEC floor reintroduces the #5.0-19 surfaceless noise), but a group whose
-        # OBJECTIVE files carry a security surface -- a supply-chain
-        # manifest/CI/Docker file, a db/SQLi file, or an auth/crypto/secrets file
-        # -- must get a deterministic SEC review even when neither the committed
-        # `panels:` nor the scout asked for it, so a mis-reporting or adversarial
-        # config cannot silently skip its own security review.
+        # #3338: every deterministic CODE group gets SEC even when neither the
+        # committed `panels:` nor the scout asks for it. The file-shape gate is
+        # separate from GLOBAL_FLOOR because explicit docs/assets-only groups
+        # stay SEC-free; unknown types fail toward code. Group names and scout
+        # claims never decide this (#1193).
         sec_floor = coverage_model.applicable_sec_floor(files)
         # #1757 (AGT-1355709320), owner ruling 2026-09-25: this group exists ONLY
-        # so the objective SEC surface a target's `exclude_paths:` excluded still
-        # reaches the SEC domain. Every OTHER domain honours that exclusion -- so
+        # so code-shaped files a target's `exclude_paths:` excluded still reach
+        # the SEC domain. Every OTHER domain honours that exclusion -- so
         # nothing here may widen the cell: not the surface-gated global floor,
         # not a scout request (netted out, and still disclosed as `scout_added`
         # would be: the answer is `[]`), and not a committed spec, which cannot
@@ -401,9 +399,9 @@ def coverage_execute(review_root, manifest):
             # `sec_carve_out` is true, suppressed BY POLICY (#1757): all four
             # are listed and none of them was measured as surfaceless. Read the
             # two keys together; the carve-out flag is the discriminator.
-            "sec_floor_applied": sorted(sec_floor),     # #run8 SEC-G2A: objective
+            "sec_floor_applied": sorted(sec_floor),     # #3338: code group
             "sec_carve_out": carved,                    # #1757: SEC-only by policy
-            "effective": sorted(effective),             # security surface -> SEC forced on
+            "effective": sorted(effective),             # code surface -> SEC forced on
             "scout_file": os.path.abspath(scout_path),
             "run_id": manifest["run_id"],
         }
@@ -418,8 +416,8 @@ def coverage_execute(review_root, manifest):
         # reached the gate (run-6). Persist the override AND warn loudly: to drop
         # a path corpus entirely, use top-level `exclude_paths:`, which prunes
         # before grouping so no domain reviews it -- every domain but SEC, since
-        # #1757: a file the objective SEC floor matches is carved back in for the
-        # SEC domain alone, so `exclude_paths:` no longer silences SEC either.
+        # #1757/#3338: a code-shaped file is carved back in for the SEC domain
+        # alone, so `exclude_paths:` no longer silences SEC either.
         # #1838 SEC-71240568 (review finding 1): `rejected` names every
         # NON_EXCLUDABLE domain the config tried to exclude, but that does not
         # mean the domain ran -- a docs-only group's `exclude: [SEC]` is

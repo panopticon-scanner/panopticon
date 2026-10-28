@@ -246,7 +246,7 @@ GOLDEN_REPORT = """\
 - cap: 48 files per dispatch unit; ceiling: 8 code leaves (+2 engine-owned: Tests and the Commons categories, which the ceiling does not budget)
 - leaves: 7 (committed 1, verticals 1, layers 3, Tests 1, Commons 1)
 - leaf size: min 5 / mean 13.9 / max 42
-- estimated cells: >= 22 (dispatch units x floor domains; the scout only widens)
+- estimated cells: >= 23 (dispatch units x floor domains; the scout only widens)
 
 ## Leaves
 
@@ -256,7 +256,7 @@ GOLDEN_REPORT = """\
 | Auth:API | layer | 11 | 1 | COD, SEC, TST |
 | Auth:Worker | layer | 8 | 1 | COD, SEC |
 | Auth:Core | layer | 42 | 1 | ARC, COD, SEC, TST |
-| Search | vertical | 14 | 1 | ARC, COD, TST |
+| Search | vertical | 14 | 1 | ARC, COD, SEC, TST |
 | Tests | tests | 5 | 1 | ARC, COD, SEC, TST |
 | Commons | commons | 9 | 1 | ARC, COD, SEC |
 

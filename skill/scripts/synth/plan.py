@@ -53,8 +53,8 @@ class PlanInputs:
     # it: a direct synthesize.py call has no driver to ask.
     git_drivers_suppressed: Any = None
     # #1757 (AGT-1355709320): the SEC carve-out block of the run's `groups.json`
-    # -- the objective SEC surface a target's own `exclude_paths:` could not take
-    # out of the SEC domain. Held RAW and repaired where it is read into the
+    # -- the code-shaped files a target's own `exclude_paths:` could not take out
+    # of the SEC domain. Held RAW and repaired where it is read into the
     # artifact (`tool_axis.reconcile`, via `repair.repair_sec_carve_out`), like
     # every other target-carried block. None when this run committed no
     # `exclude_paths:` at all, or had no discovery run to ask -- and the report

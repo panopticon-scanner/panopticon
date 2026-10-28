@@ -603,8 +603,8 @@ def reconcile(plan, tools, resolved, run=None):
     if dependency_audit is not None:
         coverage["dependency_audit"] = dependency_audit
     # #1757 (AGT-1355709320), owner ruling 2026-09-25: what the TARGET's own
-    # `exclude_paths:` could not hide -- the objective SEC surface it excluded,
-    # kept for the SEC domain in a review group of its own. Conditional, unlike
+    # `exclude_paths:` could not hide -- code-shaped files kept for the SEC
+    # domain in a review group of their own. Conditional, unlike
     # `tools_excluded` beside it: this one is a disclosure about a committed
     # pruning policy, so a run with no such policy publishes no key, exactly as
     # `exclude_paths` itself is absent from `groups.json` on that run. Repaired

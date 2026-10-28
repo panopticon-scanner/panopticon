@@ -222,15 +222,15 @@ def _excluded_tools_line(value):
     # Silent without a policy: the clause is a disclosure about THIS run.
     # #1757: "every domain but SEC" -- the clause used to end "not just this
     # axis", which read as SEC included, and the owner ruling of 2026-09-25 made
-    # that false. The SEC surface it could not take is the line ABOVE this one.
+    # that false. The code it could not take out of SEC is the line ABOVE this one.
     cells = (" — a committed `exclude_paths:` prunes review CELLS too, not just"
              " this axis (every domain but SEC)") if globs else ""
     return "**Tool findings excluded by policy:** %d — globs: %s%s" % (count, policy, cells)
 
 
 def _sec_carve_out_line(value):
-    """#1757 (AGT-1355709320): the objective SEC surface a target's committed
-    `exclude_paths:` could not take out of the SEC domain.
+    """#1757/#3338: code a target's committed `exclude_paths:` could not take
+    out of the SEC domain.
 
     Owner ruling 2026-09-25 -- such an exclusion is DISCLOSED in the coverage
     section rather than silently applied, and this is that disclosure on the
@@ -249,8 +249,8 @@ def _sec_carve_out_line(value):
     if len(kept) > 20:
         names += " … (+%d more)" % (len(kept) - 20)
     return ("**`exclude_paths:` SEC carve-out:** %d file(s) kept for SEC review "
-            "only: %s — a target's own exclusion cannot hide the objective SEC "
-            "surface (#1757)" % (count, names or "none"))
+            "only: %s — a target's own exclusion cannot hide code-shaped files "
+            "from SEC (#1757, #3338)" % (count, names or "none"))
 
 
 def _config_line(config):

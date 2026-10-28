@@ -2,15 +2,17 @@
 """The SEC carve-out for a target-authored `exclude_paths:` (#1757, AGT-1355709320).
 
 Owner ruling 2026-09-25: *a target-authored `exclude_paths` may not remove a file
-the objective SEC floor matches from the SEC domain; such an exclusion is
+the deterministic SEC floor matches from the SEC domain; such an exclusion is
 disclosed in the report's coverage section instead of silently applied. Other
-domains keep honouring the exclusion.* The floor exists so operator taste cannot
-hide the attack surface, and in `--pr` mode the PR cannot touch the config at
-all -- so the operator-authored config gets exactly the same treatment.
+domains keep honouring the exclusion.* Since #3338 that means every code-shaped
+file, while explicit documentation and known assets remain prunable. The floor
+exists so operator taste cannot hide code from security review, and in `--pr`
+mode the PR cannot touch the config at all -- so the operator-authored config
+gets exactly the same treatment.
 
 A review cell is (group x domain) and nothing in the matrix restricts a domain to
-a SUBSET of a group's files, so the carve-out has to be a GROUP: the files the
-objective SEC floor matches leave the pruned set and form
+a SUBSET of a group's files, so the carve-out has to be a GROUP: code-shaped
+files the SEC floor matches leave the pruned set and form
 `groups_schema.SEC_CARVE_OUT_SINK`, whose coverage `phases/coverage.py` pins to
 exactly `{"SEC"}` off the `groups_schema.SEC_CARVE_OUT_MARKER` field stamped
 here. They deliberately do NOT rejoin their natural groups: every other domain
@@ -40,11 +42,11 @@ else:
 
 
 def sec_surface(path):
-    """True when the objective SEC floor matches `path` ON ITS OWN.
+    """True when the deterministic code-group SEC floor matches `path` ON ITS OWN.
 
     One file at a time, because `applicable_sec_floor` answers for a whole group
     and the carve-out is a per-FILE decision: a group-wide answer would carve out
-    every excluded file as soon as one of them carried a manifest.
+    docs/assets beside code as soon as one code-shaped file appeared.
     """
     try:
         from scripts import coverage_model
@@ -57,10 +59,10 @@ def split(files, exclude_re):
     """Split `files` into `(kept, pruned, carved)` by the committed
     `exclude_paths:` regexes.
 
-    `kept` reached no glob. `pruned` matched one and carries no objective SEC
-    surface, so it behaves exactly as every excluded file did before #1757: no
-    group, no leftover, no review cell of any domain. `carved` matched one and
-    DOES carry that surface, so it goes to `install` instead of being dropped.
+    `kept` reached no glob. `pruned` matched one and is explicit documentation or
+    a known asset, so it behaves exactly as every excluded file did before #1757:
+    no group, no leftover, no review cell of any domain. `carved` matched one and
+    is code-shaped, so it goes to `install` instead of being dropped.
     Identity (and no carve-out) when nothing is committed -- the same no-op the
     whole feature has always been on a tree with no `exclude_paths:`.
     """
@@ -81,7 +83,8 @@ def install(result, carved, max_per_group, chunker):
     """Append the SEC-only carve-out group(s) for `carved` to `result`.
 
     A no-op when nothing was carved, so a run with no `exclude_paths:` -- and a
-    run whose globs matched no SEC surface -- emits the group set it always did.
+    run whose globs matched no code-shaped SEC input -- emits the group set it
+    always did.
     Chunked by `max_per_group` through the caller's `chunker` (discovery's
     `chunk_files`, which packs by directory) like any other oversize group, and
     `counts["groups"]` is refreshed so the group list and the count cannot

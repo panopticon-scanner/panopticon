@@ -2139,8 +2139,8 @@ class TestExcludedToolFindingsInHtml(unittest.TestCase):
 class TestSecCarveOutInHtml(unittest.TestCase):
     """#1757 (AGT-1355709320): the HTML half of the carve-out disclosure.
 
-    Owner ruling 2026-09-25 -- a target-authored `exclude_paths:` may not take
-    the objective SEC surface out of the SEC domain, and the exclusion that was
+    Owner ruling 2026-09-25 plus #3338 -- a target-authored `exclude_paths:` may
+    not take code-shaped files out of the SEC domain, and the exclusion that was
     NOT applied is disclosed in the report's coverage section. Both published
     renderings have to say it, and both have to stay silent on a run that
     carries no such measurement.

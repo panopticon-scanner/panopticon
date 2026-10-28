@@ -239,9 +239,9 @@ def repair_sec_carve_out(value, warn=None):
     the schema pins for `meta.coverage.exclude_paths_sec_carve_out`.
 
     `{"globs": [str], "files": [str], "count": int}` -- which committed
-    `exclude_paths:` globs scoped the exclusion, which of the files they matched
-    the objective SEC floor also matched (so the SEC domain reviews them anyway,
-    per the owner ruling of 2026-09-25), and how many. Target-carried twice over:
+    `exclude_paths:` globs scoped the exclusion, which matched files were
+    code-shaped and therefore kept for SEC (#3338), and how many. Target-carried
+    twice over:
     the globs are authored in the reviewed repository's own root config and the
     paths are repo-relative names out of the reviewed tree, so both lists are
     repaired here exactly as `tools_excluded`'s globs and `groups[].files` are.

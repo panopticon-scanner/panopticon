@@ -11,9 +11,9 @@ shared one policy.
 
 The allowlist itself is #1784 / ARC-124841687. The policy was
 `(".github/workflows",)` plus a blanket skip of every other root dot-path, so
-73 of the 74 dot-leading globs the shipped catalogs claim -- and the
-deterministic SEC floor's own `.circleci` / `.env` / `.npmrc` /
-`.pre-commit-config.yaml` hints -- named files no group could ever receive. A
+73 of the 74 dot-leading globs the shipped catalogs claim -- and code-shaped
+SEC inputs such as `.circleci`, `.env`, `.npmrc` and
+`.pre-commit-config.yaml` -- named files no group could ever receive. A
 file discovery never returns is never `Ungrouped` either, so nothing reported
 the gap: #1508 (top-level `.github/*.yml`) and #1838 (the CI and secret-file
 floor) both rest on claims that could not fire. Owner ruling 2026-09-27: WIDEN
@@ -25,10 +25,11 @@ The policy lives in its own module because `discovery.py` is at its size
 ratchet (`tests/test_flat_module_ceiling.py`), and the ratchet's answer to a
 module that needs more room is a split, never a raised pin. All three
 directions are pinned against the shipped files by
-`tests/test_discovery_catalog.py`: every dot-leading catalog glob and every
-dot-leading floor hint reaches a file BOTH methods keep, every entry BELOW is
-named by one of them (so a widened entry reddens, which is the drift that ends
-in "allow every dot-path"), and the noise classes are dropped by both methods.
+`tests/test_discovery_catalog.py`: every dot-leading catalog glob and the small
+explicit set kept only for SEC reach a file BOTH methods keep, every entry
+BELOW is named by one of those sets (so a widened entry reddens, which is the
+drift that ends in "allow every dot-path"), and the noise classes are dropped
+by both methods.
 
 Stdlib plus `repo_config`, which owns the target config's own dot spelling --
 that name is never spelled here (`tests/test_repo_config_literals.py`).

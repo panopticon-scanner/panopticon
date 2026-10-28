@@ -232,12 +232,12 @@ def test_repo_scan_scope_files_applies_exclude_paths(tmp_path):
     repo = repo_with_exclude(tmp_path)
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo", str(repo), "--repo-scan", "--scope-files",
-                            "src/checkout/pay.py", "vendor/dep.py",
+                            "src/checkout/pay.py", "vendor/README.md",
                             "--out", str(out)])
     assert rc == 0
     doc = json.loads(out.read_text())
     files = sorted(f for g in doc["groups"] for f in g["files"])
-    assert files == ["src/checkout/pay.py"]            # vendor/dep.py pruned
+    assert files == ["src/checkout/pay.py"]            # vendor/README.md pruned
     assert doc["exclude_paths"] == ["vendor/**"]
     assert doc["excluded_count"] == 1                  # delta count, not whole-repo
 
@@ -247,7 +247,7 @@ def test_repo_scan_scope_changed_applies_exclude_paths(tmp_path):
     # output). A changed vendored file must not slip past exclude_paths.
     repo = repo_with_exclude(tmp_path)
     (repo / "src/checkout/pay.py").write_text("x=2\n")
-    (repo / "vendor/dep.py").write_text("y=2\n")
+    (repo / "vendor/README.md").write_text("changed docs\n")
     git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-aqm", "c2")
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
@@ -255,29 +255,69 @@ def test_repo_scan_scope_changed_applies_exclude_paths(tmp_path):
     assert rc == 0
     doc = json.loads(out.read_text())
     files = sorted(f for g in doc["groups"] for f in g["files"])
-    assert files == ["src/checkout/pay.py"]            # vendor/dep.py pruned
+    assert files == ["src/checkout/pay.py"]            # vendor/README.md pruned
     assert doc["excluded_count"] == 1
 
 
 def test_repo_scan_scope_files_carves_the_sec_surface_out_of_the_exclusion(tmp_path):
     # #1757 delta-path parity: the carve-out works the same on the delta paths as
     # on the whole-repo one. `--scope-files` names both excluded files; the one
-    # the objective SEC floor matches reaches the SEC-only carve-out group instead
+    # a code-shaped file reaches the SEC-only carve-out group instead
     # of no reviewer at all, and the other is still pruned from every domain. The
     # ruling is explicit that an operator-authored `--pr` config gets this too.
     repo = repo_with_exclude_and_sec_surface(tmp_path)
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo", str(repo), "--repo-scan", "--scope-files",
-                            "src/checkout/pay.py", "vendor/dep.py",
+                            "src/checkout/pay.py", "vendor/README.md",
                             "vendor/requirements.txt", "--out", str(out)])
     assert rc == 0
     doc = json.loads(out.read_text())
     by_name = {g["name"]: g["files"] for g in doc["groups"]}
     assert by_name[groups_schema.SEC_CARVE_OUT_SINK] == ["vendor/requirements.txt"]
     assert by_name["Checkout"] == ["src/checkout/pay.py"]
-    assert doc["excluded_count"] == 1                  # vendor/dep.py, every domain
+    assert doc["excluded_count"] == 1                  # vendor/README.md, every domain
     assert doc["exclude_paths_sec_carve_out"] == {
         "globs": ["vendor/**"], "files": ["vendor/requirements.txt"], "count": 1}
+
+
+def test_exclude_paths_does_not_carve_a_security_named_png_back_in(tmp_path):
+    # #3338: applicable_sec_floor is also the per-file SEC carve-out predicate.
+    # A binary named auth-token.png used to match two filename hints and return
+    # from exclude_paths in a SEC-only group. The manifest remains carved; the
+    # PNG remains excluded from every review domain. The ordinary Python module
+    # and an extensionless executable-like name join the manifest in the
+    # SEC-only carve-out.
+    repo = repo_with_exclude_and_sec_surface(tmp_path)
+    module = repo / "vendor" / "dep.py"
+    module.write_text("value = 1\n")
+    script = repo / "vendor" / "security-scan"
+    script.write_text("#!/bin/sh\nexit 0\n")
+    png = repo / "vendor" / "auth-token.png"
+    png.write_bytes(b"not-real-png")
+    git_cmd(repo, "add", "vendor/dep.py", "vendor/security-scan",
+            "vendor/auth-token.png")
+    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-qm", "add planted png")
+    out = repo / ".panopticon" / "groups.json"
+
+    rc = orchestrator.main([
+        "--repo", str(repo), "--repo-scan", "--scope-files",
+        "src/checkout/pay.py", "vendor/README.md", "vendor/dep.py",
+        "vendor/requirements.txt", "vendor/security-scan",
+        "vendor/auth-token.png", "--out", str(out),
+    ])
+
+    assert rc == 0
+    doc = json.loads(out.read_text())
+    by_name = {g["name"]: g["files"] for g in doc["groups"]}
+    assert by_name[groups_schema.SEC_CARVE_OUT_SINK] == [
+        "vendor/dep.py", "vendor/requirements.txt", "vendor/security-scan"]
+    assert doc["excluded_count"] == 2
+    assert doc["exclude_paths_sec_carve_out"] == {
+        "globs": ["vendor/**"],
+        "files": ["vendor/dep.py", "vendor/requirements.txt", "vendor/security-scan"],
+        "count": 3,
+    }
 
 
 def test_a_narrowing_scope_flag_does_not_review_an_out_of_scope_carved_file(tmp_path):
@@ -331,7 +371,7 @@ def test_repo_scan_scope_changed_carves_the_sec_surface_out_of_the_exclusion(tmp
     # output and re-derives the exclusion from the CHANGED set.
     repo = repo_with_exclude_and_sec_surface(tmp_path)
     (repo / "vendor/requirements.txt").write_text("flask==1.0\n")
-    (repo / "vendor/dep.py").write_text("y=2\n")
+    (repo / "vendor/README.md").write_text("changed docs\n")
     git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-aqm", "c2")
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
@@ -353,14 +393,12 @@ def _repo_with_fixture_corpus(tmp_path, exclude_paths=True):
                           config="version: 1\n" + yml)
 
 
-def test_redteam_exclude_paths_prunes_fixture_corpus_before_grouping(tmp_path):
-    # #8c regression: redteam mode keeps test-fixture corpora in scope by design
-    # (a red team wants the attack surface), so a self-scan of deliberately-
-    # vulnerable fixtures leaks noise. A committed top-level `exclude_paths:` must
-    # override that inclusion and drop the corpus BEFORE grouping -- so no review
-    # cell of ANY domain sees it (SEC included, which per-group `exclude:` cannot
-    # silence -- #1084). Run-6 leaked 16 illusory HIGHs precisely because the
-    # committed config reached for the `exclude:`-sink, not `exclude_paths:`.
+def test_redteam_exclude_paths_keeps_fixture_code_for_sec_only(tmp_path):
+    # #3338 changes #8c/#1757's boundary deliberately: target-authored
+    # exclude_paths still removes fixture code from every OTHER domain, but an
+    # excluded Python file is code and therefore returns in the SEC-only sink.
+    # This is the same non-excludable floor as a natural code group; only known
+    # docs/assets (the PNG pin above) can be pruned from SEC too.
     repo = _repo_with_fixture_corpus(tmp_path, exclude_paths=True)
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo", str(repo), "--repo-scan",
@@ -370,10 +408,15 @@ def test_redteam_exclude_paths_prunes_fixture_corpus_before_grouping(tmp_path):
     files = sorted(f for g in doc["groups"] for f in g["files"])
     # #1681: `panopticon.yml` is the committed root config -- an ordinary repo
     # file this catalog claims no group for, hence the residual sink.
-    assert files == ["panopticon.yml", "src/real.py"]     # fixture corpus pruned
-    assert "tests/fixtures/vuln/app.py" not in files
+    assert files == ["panopticon.yml", "src/real.py", "tests/fixtures/vuln/app.py"]
+    sink = next(g for g in doc["groups"]
+                if g["name"] == groups_schema.SEC_CARVE_OUT_SINK)
+    assert sink["files"] == ["tests/fixtures/vuln/app.py"]
+    assert sink["panels"] == ["SEC"]
     assert doc["exclude_paths"] == ["tests/fixtures/**"]
-    assert doc["excluded_count"] == 1
+    assert doc["excluded_count"] == 0
+    assert doc["exclude_paths_sec_carve_out"]["files"] == [
+        "tests/fixtures/vuln/app.py"]
 
 
 def test_redteam_without_exclude_paths_keeps_fixture_corpus(tmp_path):
