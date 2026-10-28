@@ -273,15 +273,20 @@ class TestReport(unittest.TestCase):
         with self.assertRaises(SystemExit):
             syn.main(["--target", "src", "--fail-on", "bogus", "x.json"])
 
-    def test_validate_redteam_high_requires_cvss_and_exploit(self):
+    def test_validate_redteam_high_requires_exploit_and_discloses_missing_cvss(self):
+        # #3162: the prompt says to omit a vector it cannot justify, so a missing
+        # cvss is disclosed (meta.cvss_unscored + a warning), never an error;
+        # a missing exploit_scenario still is.
         bad = _make_finding(id="RT-001", panel="redteam", severity="HIGH")
         report = report_mod.build_report(report_mod.ReportInputs(
             run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
             findings=findings_mod.FindingSet(findings=[bad]),
             plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
         ))
-        errors, _ = report_mod.validate_report(report)
-        self.assertTrue(any("cvss" in e for e in errors))
+        errors, warnings = report_mod.validate_report(report)
+        self.assertFalse(any("cvss" in e for e in errors))
+        self.assertTrue(any("has no cvss" in w for w in warnings))
+        self.assertEqual(["RT-001"], report["meta"]["cvss_unscored"])
         self.assertTrue(any("exploit" in e for e in errors))
 
     def test_validate_redteam_critical_filled_is_clean(self):
