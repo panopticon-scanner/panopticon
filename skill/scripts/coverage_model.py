@@ -63,77 +63,6 @@ _DB_FILE_HINTS = ("schema.prisma", ".prisma", ".sql", "migration", "/models/",
 _TEST_FILE_HINTS = (".test.", ".spec.", "_test.", "_spec.", "/__tests__/",
                     "/tests/", "/test/", ".feature", "conftest", "test_")
 
-# #run8 SEC-G2A: objective file signals that force a deterministic SEC review.
-# SEC is deliberately NOT in GLOBAL_FLOOR (a blanket SEC floor reintroduces the
-# #5.0-19 surfaceless-group noise), but a group whose FILES carry a security
-# surface must be security-reviewed even when neither the committed `panels:`
-# nor the scout asked for it -- otherwise a mis-reporting scout, or an
-# adversarial/forgetful root config that never lists SEC, silently exempts its
-# own code from security review (the exact outcome NON_EXCLUDABLE was built to
-# prevent, reached via an unguarded path). Like the global floor this keys ONLY
-# on deterministic signals, never scout-asserted surfaces (#1193). Three
-# categories: the supply-chain surface (SEC E1-E3: CI/CD, container,
-# dependency/build manifests), the db/SQLi surface (reuses _DB_FILE_HINTS), and
-# unambiguous auth/crypto/secrets filename markers.
-_SEC_SUPPLY_CHAIN_HINTS = (
-    ".github/workflows/", ".gitlab-ci", "jenkinsfile", ".circleci",
-    "dockerfile", "docker-compose", ".dockerignore", "/helm/", "/k8s/",
-    "requirements.txt", "package.json", "package-lock", "gemfile", "go.mod",
-    "cargo.toml", "pom.xml", "build.gradle", "pyproject.toml", "poetry.lock",
-    # #1838 SEC-71240568: the surface above is CI/container/manifest files,
-    # but the supply chain also includes every BUILD tool and second-tier CI
-    # system that executes code on its own -- a Makefile target, a setup.py,
-    # a Terraform plan, a pre-commit hook, a project file MSBuild loads
-    # (roslyn-secguard's own hostile-csproj fixture is why that class is
-    # here), and a lockfile whose name is not already a superstring of a
-    # manifest listed above. Table-driven, same style as the block above.
-    # `/configure`, `/workspace` and `.mk` are deliberately broad markers:
-    # the first two still catch a head-of-segment name (`workspace_list.go`,
-    # `ConfigureProfile.tsx` -- killing those needs a basename-exact table,
-    # outside this fix) even after anchoring to a directory boundary, and
-    # `.mk` also reaches `.mkv`/`.mkd` media and doc files since a substring
-    # extension check cannot end-anchor. A false positive costs one SEC cell
-    # per group, same calibration as the block below.
-    "makefile", ".mk", "/setup.py", "setup.cfg", "tox.ini", "noxfile.py", ".tf",
-    ".pre-commit-config.yaml", ".travis.yml", "azure-pipelines.yml",
-    "bitbucket-pipelines.yml", ".drone.yml", "appveyor.yml", ".buildkite/",
-    ".github/actions/", ".csproj", ".sln", "directory.build.props",
-    "nuget.config", "go.sum", "cargo.lock", "yarn.lock", "pnpm-lock",
-    "composer.json", "composer.lock", "mix.exs", "build.sbt",
-    "cmakelists.txt", "/configure", "rakefile", "gruntfile.js", "gulpfile.js",
-    "webpack.config", "vite.config", "build.bazel", "/workspace",
-    "pnpm-workspace", "module.bazel", "justfile", "taskfile", "podfile", "pubspec.yaml",
-    ".gemspec", ".devcontainer/", "/ansible/", "serverless.yml",
-    "template.yaml",
-    # #1838 SEC-71240568 review finding 2: each of the above CI systems has
-    # two equally-valid YAML spellings, and the first pass pinned only one --
-    # so the other spelling was a live miss for its own tool. Both spellings,
-    # as explicit rows (`.pre-commit-config.yaml` is intentionally excluded:
-    # that tool recognizes only the `.yaml` spelling, not `.yml`).
-    ".travis.yaml", "azure-pipelines.yaml", "bitbucket-pipelines.yaml",
-    ".drone.yaml", "appveyor.yaml", "serverless.yaml", "template.yml",
-)
-_SEC_CODE_HINTS = (
-    "auth", "login", "session", "token", "oauth", "jwt",
-    "crypto", "cipher", "encrypt", "secret", "password", "credential",
-)
-# #run10 SEC-G2A: the code hints above key on security-relevant *names*, but a
-# group can carry the highest-value secret surface of all -- the secret-bearing
-# FILES themselves -- without any of those words appearing. A `.env`, a private
-# key, an `.npmrc` with a token: none match `auth`/`secret`/`password`, so a
-# root config that never lists SEC exempted exactly the files most worth
-# reviewing. These are extension/exact-name markers, deliberately unambiguous:
-# a false positive costs one SEC cell, a false negative costs the review.
-_SEC_SECRET_FILE_HINTS = (
-    ".env", ".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".asc",
-    "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "authorized_keys", "known_hosts",
-    ".npmrc", ".netrc", ".pgpass", "htpasswd", ".htaccess",
-    "secrets.", "credentials.", "keyfile", "vault",
-)
-_SEC_FILE_HINTS = (_SEC_SUPPLY_CHAIN_HINTS + _SEC_CODE_HINTS
-                   + _SEC_SECRET_FILE_HINTS + _DB_FILE_HINTS)
-
-
 # #1489: extensions with no code surface for COD to review. Deliberately a
 # DENYLIST, so the gate fails OPEN: an unrecognized extension counts as source
 # and keeps COD. Only a group that is ENTIRELY recognized assets loses it --
@@ -154,11 +83,59 @@ _ASSET_EXTENSIONS = frozenset((
     ".psd", ".ai", ".sketch", ".fig",
 ))
 
+# #3338: the SEC floor's code-group test fails closed without pretending every
+# prose file is code. This is deliberately a small, explicit allowlist: an
+# unfamiliar extension remains code and therefore gets SEC. Documentation is
+# identified by FILE shape only, never by its group label or directory --
+# `docs/conf.py`, `mkdocs.yml` and a JavaScript docs pipeline execute code and
+# must stay on the floor. Extensionless conventional documents are exempt too;
+# a suffix on one must itself be a known documentation extension, so
+# `README.sprocket` fails toward SEC rather than widening this allowlist.
+_DOC_EXTENSIONS = frozenset((
+    ".md", ".markdown", ".mdown", ".mkd", ".rst", ".adoc", ".asciidoc",
+))
+_DOC_EXACT_NAMES = frozenset({"authors", "copying", "install", "citation.cff"})
+_DOC_NAME_PREFIXES = (
+    "changelog", "contributing", "license", "notice", "readme", "security",
+)
+
 
 def _is_asset(path):
     """The one membership test for `_ASSET_EXTENSIONS`: COD's floor and
     certification's size-skip rule read it, so the two cannot drift (#3283)."""
     return os.path.splitext(str(path))[1].lower() in _ASSET_EXTENSIONS
+
+
+def _is_documentation(path):
+    """True only for an explicitly recognized documentation file shape."""
+    name = os.path.basename(str(path)).casefold()
+    stem, extension = os.path.splitext(name)
+    if extension in _DOC_EXTENSIONS:
+        return True
+    if name in _DOC_EXACT_NAMES:
+        return True
+    # Plain text is too broad to exempt wholesale (`requirements.txt` executes
+    # dependency policy), but the conventional document basenames keep their
+    # meaning in a `.txt` spelling.
+    candidate = stem if extension == ".txt" else name
+    if extension and extension != ".txt":
+        return False
+    if candidate in _DOC_EXACT_NAMES:
+        return True
+    return any(candidate == prefix or candidate.startswith(prefix + "-")
+               or candidate.startswith(prefix + "_")
+               for prefix in _DOC_NAME_PREFIXES)
+
+
+def has_sec_code_surface(files):
+    """True when a group contains code for the deterministic SEC floor (#3338).
+
+    Known assets and explicit documentation shapes are the only exemptions.
+    Everything else, including an unknown extension, fails toward running SEC.
+    The answer depends only on files: a group name or scout claim has no say.
+    """
+    return any(not _is_asset(path) and not _is_documentation(path)
+               for path in (files or ()))
 
 
 def has_code_surface(files):
@@ -286,17 +263,16 @@ def applicable_global_floor(files, scout, global_floor=GLOBAL_FLOOR):
 
 
 def applicable_sec_floor(files):
-    """`frozenset({"SEC"})` when this group carries an OBJECTIVE security surface
-    (see _SEC_FILE_HINTS), else an empty frozenset (#run8 SEC-G2A).
+    """`frozenset({"SEC"})` for every deterministic code group (#3338).
 
-    Keys ONLY on deterministic file signals, never scout-asserted surfaces
-    (#1193), so a mis-reporting or adversarial scout -- or a root config that
-    never lists `panels: [SEC]` -- cannot suppress security review of a group
-    whose surface objectively exists. SEC is NON_EXCLUDABLE, so once floored here
-    it also cannot be excluded away (#1084). Pure; a surfaceless group with none
-    of these signals still spends no SEC cell (#5.0-19 stays honored).
+    Code is derived only from file shapes via `has_sec_code_surface`, never a
+    group name or scout assertion (#1193). Known documentation and asset-only
+    groups stay SEC-free (#5.0-19); an unfamiliar file type fails toward SEC.
+    SEC remains NON_EXCLUDABLE once floored (#1084). The same per-file answer is
+    the `exclude_paths` carve-out predicate, so security-looking binary names no
+    longer re-admit PNGs or other known assets (#1757).
     """
-    return frozenset({"SEC"}) if _any_hint(files, _SEC_FILE_HINTS) else frozenset()
+    return frozenset({"SEC"}) if has_sec_code_surface(files) else frozenset()
 
 
 def effective_panels(floor, scout_added, exclude, global_floor=GLOBAL_FLOOR,

@@ -63,14 +63,14 @@ INTEGRITY_KEYS: dict[str, IntegrityKey] = {
         False, "%s carried an unknown or no severity and were read as CRITICAL "
                "(the value as written is kept on each finding, null where none "
                "was written). Does NOT affect certification."),
-    # #3245: a group with code that no SEC cell reviews. The SEC floor keys on
-    # file NAMES, so a config without SEC and a steered scout could leave one
-    # with no security reviewer, and only `coverage-<group>.json` knew. Non-
-    # gating: SEC was never that group's floor. Evidence: the count and names.
+    # #3245/#3338: a legacy or malformed coverage artifact can still describe a
+    # code group that no SEC cell reviews. New runs floor every deterministic
+    # code group, so this is now a compatibility/tamper disclosure. Evidence:
+    # the count and names; kept non-gating for the established artifact contract.
     "sec_less_groups": IntegrityKey(
         False, "%s with code have no SEC review cell, so no security reviewer read "
-               "them (the SEC floor keys on file names; neither the config nor the "
-               "scout added SEC). Does NOT affect certification."),
+               "them (the file-derived code-group floor should have added SEC; "
+               "coverage may be legacy or malformed). Does NOT affect certification."),
     # #2271: discovery's two DEGRADATION disclosures, which the driver path
     # dropped -- `discovery.py` printed them on its own stderr and wrote them
     # into `groups.json`, and nothing downstream read either. NON-GATING, on

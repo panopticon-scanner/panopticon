@@ -42,8 +42,9 @@ RESERVED = frozenset({"match", "tests", "panels", "exclude"})
 RESIDUAL_SINK = "Ungrouped"
 
 # #1757 (AGT-1355709320), owner ruling 2026-09-25: a target-authored
-# `exclude_paths:` may not remove a file the objective SEC floor matches from the
-# SEC domain. A review cell is (group x domain) and no domain can be restricted
+# `exclude_paths:` may not remove a file the deterministic SEC floor matches from
+# the SEC domain. Since #3338 that is every code-shaped file. A review cell is
+# (group x domain) and no domain can be restricted
 # to a subset of a group's files, so those files get a GROUP of their own that
 # reviews SEC and nothing else -- minted under this name by
 # `exclude_carve_out.install`, and recognised by `phases/coverage.py` through the

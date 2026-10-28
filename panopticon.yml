@@ -191,13 +191,14 @@
 # but for THIS self-scan they are pure noise -- they are SUPPOSED to be
 # vulnerable. `exclude_paths:` (top-level, #1136) prunes them BEFORE grouping,
 # so no review cell sees them -- EXCEPT SEC, since #1757: the owner ruling of
-# 2026-09-25 says a target-authored exclusion may not take a file the objective
-# SEC floor matches out of the SEC domain, and this repository is a target like
-# any other. Measured on this tree: 6 of the 19 tracked fixture files (the
-# dependency manifests and lockfiles) are carved into the dedicated
+# 2026-09-25 says a target-authored exclusion may not take a file the
+# deterministic SEC floor matches out of the SEC domain, and this repository is
+# a target like any other. After #3338, all 20 tracked fixture files on this
+# tree are code-shaped and therefore carved into the dedicated
 # `exclude_paths_sec_carve_out` group under `--security redteam`, which is one
-# SEC cell over deliberately-vulnerable manifests. Standard mode is unaffected
-# (the corpora are pruned at discovery, before the exclusion runs at all).
+# SEC cell over the deliberately-vulnerable corpus. Explicit docs/assets would
+# remain excluded. Standard mode is unaffected (the corpora are pruned at
+# discovery, before the exclusion runs at all).
 version: 1
 groups:
   ToolAdapters:

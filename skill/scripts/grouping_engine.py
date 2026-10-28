@@ -302,7 +302,7 @@ def _top(flat_id):
 
 def _domains(panels, files):
     """The leaf's floor domains as the driver will floor them: the declared
-    panels plus the file-gated global floor and the objective SEC floor."""
+    panels plus the file-gated global floor and deterministic code-group SEC floor."""
     return sorted(set(panels or [])
                   | coverage_model.applicable_global_floor(files, None)
                   | coverage_model.applicable_sec_floor(files))

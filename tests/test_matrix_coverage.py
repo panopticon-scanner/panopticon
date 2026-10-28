@@ -37,6 +37,7 @@ import os
 import unittest
 
 from tests._test_helpers import REPO_ROOT
+import scripts.coverage_model as coverage_model
 import scripts.discovery as discovery
 
 # The surfaces a reviewer is expected to see with its architecture context.
@@ -219,6 +220,61 @@ class TestMatrixCoverage(unittest.TestCase):
             "with an empty test inventory (#1638 P13). Split the leaf into "
             "layers in panopticon.yml instead."
             % (len(over), cap, "\n  ".join(over)))
+
+    def test_sec_code_floor_has_the_measured_reach_and_matrix_cost(self):
+        # #3338, measured on current main before the implementation. The old
+        # filename heuristic reached these 14 groups; preserve that baseline as
+        # evidence rather than keeping its retired production word list alive.
+        legacy_sec = {
+            "ToolAdapters:Image", "ToolAdapters:Core",
+            "Orchestration:Phases", "Orchestration:Loop",
+            "Orchestration:Hosts", "Orchestration:Runners",
+            "RepoProfiling:Discovery", "RepoProfiling:Profiling",
+            "Reporting:Synth", "Reporting:Core", "CI:Shell", "CI:Workflows",
+            "Commons", "Ungrouped_1",
+        }
+        added = {
+            "ToolAdapters:Contract", "ToolAdapters:Integration",
+            "Orchestration:Driver", "Orchestration:Core", "Orchestration:Docs",
+            "Reporting:Report", "Reporting:Outputs", "CI:WorkflowGuard",
+            "CI:WorkflowForms", "CI:WorkflowFetch", "CI:WorkflowPrograms", "Tests",
+        }
+        groups, _residual = discovery.catalog_groups(
+            self.files, self.catalog, discovery.DEFAULT_MAX_PER_GROUP, "standard")
+        files = {group["name"]: group["files"] for group in groups}
+        current_sec = {name for name, group_files in files.items()
+                       if coverage_model.applicable_sec_floor(group_files)}
+
+        self.assertEqual(len(groups), 27)
+        self.assertEqual(len(legacy_sec), 14)
+        self.assertEqual(current_sec, legacy_sec | added)
+        self.assertEqual(len(current_sec), 26)       # Docs is the sole exemption
+        self.assertEqual(len(added), 12)
+        # The group label is not evidence: these executable tests make the mixed
+        # Orchestration:Docs group code-shaped. Name one for the PR's audit trail.
+        self.assertIn("tests/doc_helpers.py", files["Orchestration:Docs"])
+
+        def matrix(signal_groups):
+            total = 0
+            by_group = {}
+            for name, group_files in files.items():
+                spec = self.catalog.get(name) or {}
+                effective, _disclosure = coverage_model.effective_panels(
+                    spec.get("floor", set()), set(), spec.get("exclude", set()),
+                    global_floor=coverage_model.applicable_global_floor(
+                        group_files, None),
+                    signal_floor={"SEC"} if name in signal_groups else set())
+                by_group[name] = effective
+                total += len(effective)
+            return total, by_group
+
+        before, old_groups = matrix(legacy_sec)
+        after, new_groups = matrix(current_sec)
+        paid = {name for name in files if old_groups[name] != new_groups[name]}
+        self.assertEqual((before, after, after - before), (113, 117, 4))
+        self.assertEqual(paid, {
+            "Orchestration:Docs", "Reporting:Report", "Reporting:Outputs", "Tests",
+        })
 
     def test_guarded_group_leaves_keep_headroom(self):
         # #2315: `ToolAdapters:Integration` reached 48 of 48 the moment

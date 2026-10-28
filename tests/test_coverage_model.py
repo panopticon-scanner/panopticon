@@ -248,19 +248,19 @@ def test_directory_hints_remain_case_insensitive():
     assert cov.applicable_sec_floor(["K8S/deploy.yaml"]) == frozenset({"SEC"})
 
 
-def test_directory_hints_do_not_match_near_names():
+def test_directory_near_names_do_not_conjure_dat_or_tst_but_code_gets_sec():
     for path in ("mymodels/record.txt", "models_extra/record.txt",
                  "mymodel/record.txt", "modeling/record.txt",
                  "mydb.query.py", "dbase/record.txt"):
         assert "DAT" not in cov.applicable_global_floor([path], {})
-        assert cov.applicable_sec_floor([path]) == frozenset()
+        assert cov.applicable_sec_floor([path]) == frozenset({"SEC"})
     for path in ("mytests/check.py", "tests_extra/check.py",
                  "mytest/check.py", "testing/check.py",
                  "my__tests__/check.py", "__tests___extra/check.py"):
         assert "TST" not in cov.applicable_global_floor([path], {})
     for path in ("myhelm/deploy.yaml", "helm_extra/deploy.yaml",
                  "myk8s/deploy.yaml", "k8s_extra/deploy.yaml"):
-        assert cov.applicable_sec_floor([path]) == frozenset()
+        assert cov.applicable_sec_floor([path]) == frozenset({"SEC"})
 
 
 def test_root_hint_change_preserves_other_floor_gates():
@@ -406,8 +406,46 @@ def test_sec_floor_on_secret_bearing_files():
 def test_sec_floor_absent_on_surfaceless_group():
     # #5.0-19 stays honored: a docs-only group with no security surface spends
     # no SEC cell -- the floor widens coverage, it does not blanket every group.
-    if cov.applicable_sec_floor(["README.md", "docs/intro.md", "LICENSE"]) != frozenset():
+    docs = ["README.md", "README.txt", "docs/intro.md", "docs/auth-token.rst", "LICENSE"]
+    if cov.applicable_sec_floor(docs) != frozenset():
         raise AssertionError()
+
+
+def test_sec_floor_on_code_without_a_security_filename_hint():
+    # #3338: SEC is a floor for every code group, not only code whose filename
+    # happens to contain auth/crypto/db/build vocabulary. This is #3245's exact
+    # adversarial-scout shape: neither the committed plan nor the scout added SEC.
+    files = ["src/server/handler.py"]
+    assert cov.applicable_sec_floor(files) == frozenset({"SEC"})
+    eff, disc = cov.effective_panels(
+        set(), set(), {"SEC"}, global_floor=set(),
+        signal_floor=cov.applicable_sec_floor(files))
+    assert eff == {"SEC"}
+    assert disc["floor"] == ["SEC"]
+    assert disc["exclude_rejected"] == ["SEC"]
+
+
+def test_sec_code_classification_uses_file_shape_not_group_or_directory_name():
+    # #3338 ruling: a group LABEL is never evidence. Executed files beneath a
+    # docs directory and docs-tool config remain code even when a group called
+    # Docs owns them; only explicit documentation/asset file shapes are exempt.
+    for path in ("docs/conf.py", "docs/pipeline.js", "mkdocs.yml"):
+        assert cov.applicable_sec_floor([path]) == frozenset({"SEC"}), path
+
+
+def test_sec_code_classification_fails_toward_sec_for_unknown_extensions():
+    # The code definition is a denylist of known docs/assets, not a language
+    # allowlist an unfamiliar source type can evade.
+    assert cov.applicable_sec_floor(["src/widget.sprocket"]) == frozenset({"SEC"})
+
+
+def test_sec_floor_does_not_treat_security_named_assets_as_code():
+    # #3338: the old substring hints matched auth/token in a PNG path. Through
+    # exclude_carve_out.sec_surface that re-admitted target-excluded binaries
+    # into a paid SEC cell. Known assets remain outside the SEC floor even when
+    # their names carry old security vocabulary.
+    files = ["static/auth-token.png", "static/secret-login.webp"]
+    assert cov.applicable_sec_floor(files) == frozenset()
 
 def test_sec_floor_keys_on_files_not_scout_or_missing():
     # #1193: applicable_sec_floor takes only files; no scout claim can conjure it,
@@ -463,37 +501,30 @@ def test_sec_floor_on_build_ci_yaml_alternate_spellings():
             raise AssertionError(f"{f} failed to floor SEC")
 
 
-def test_sec_floor_setup_py_hint_is_anchored():
-    # review finding 3 (MEDIUM): the bare "setup.py" hint matched any
-    # *setup.py, including this very repo's own
-    # skill/scripts/phases/setup.py (a driver PHASE, not a packaging script)
-    # and tests/phases/test_setup.py. A root-level setup.py must still floor
-    # SEC; the suffix-pattern false positives must not.
-    if cov.applicable_sec_floor(["setup.py"]) != frozenset({"SEC"}):
-        raise AssertionError("root setup.py must floor SEC")
-    for f in ["tests/phases/test_setup.py", "src/db_setup.py",
+def test_sec_code_floor_no_longer_depends_on_the_setup_filename_hint():
+    # #3338 retires the old false-positive distinction: setup.py is a build
+    # surface, while each suffix lookalike is ordinary Python code. Both are
+    # code groups and both intentionally receive SEC now.
+    for f in ["setup.py", "tests/phases/test_setup.py", "src/db_setup.py",
               "app/bootstrap_setup.py", "tools/env_setup.py"]:
-        if cov.applicable_sec_floor([f]) != frozenset():
-            raise AssertionError(f"{f} must not floor SEC (suffix false positive)")
+        if cov.applicable_sec_floor([f]) != frozenset({"SEC"}):
+            raise AssertionError(f"{f} must floor SEC as code")
 
 
-def test_sec_floor_workspace_and_configure_hints_are_anchored():
-    # review finding 4 (LOW): bare "configure" and "workspace" reach ordinary
-    # application paths (my_workspace.py, reconfigure.go) because a product
-    # whose domain noun is literally "workspace" turns the floor effectively
-    # unconditional. Anchored to a directory boundary; a pnpm monorepo's
-    # pnpm-workspace.yaml is added explicitly since it has no such boundary.
+def test_sec_code_floor_no_longer_depends_on_workspace_or_configure_hints():
+    # Build surfaces and ordinary application files both get SEC because their
+    # file shapes are code. Filename nouns no longer decide the floor.
     for f in ["WORKSPACE", "configure", "pnpm-workspace.yaml"]:
         if cov.applicable_sec_floor([f]) != frozenset({"SEC"}):
             raise AssertionError(f"{f} must still floor SEC")
     for f in ["my_workspace.py", "reconfigure.go"]:
-        if cov.applicable_sec_floor([f]) != frozenset():
-            raise AssertionError(f"{f} must not floor SEC (name-noun false positive)")
+        if cov.applicable_sec_floor([f]) != frozenset({"SEC"}):
+            raise AssertionError(f"{f} must floor SEC as code")
 
 
-def test_sec_floor_existing_supply_chain_entries_unchanged():
-    # the #1838 extension must not disturb the 19 markers that already floored
-    # SEC (finding SEC-71240568: "_SEC_SUPPLY_CHAIN_HINTS names 19 markers").
+def test_sec_floor_existing_supply_chain_surfaces_remain_code():
+    # #3338 deletes the filename table rather than leaving a second policy.
+    # These former entries still floor SEC because every one is code-shaped.
     existing = [
         ".github/workflows/ci.yml", ".gitlab-ci.yml", "Jenkinsfile",
         ".circleci/config.yml", "Dockerfile", "docker-compose.yml",
@@ -507,18 +538,6 @@ def test_sec_floor_existing_supply_chain_entries_unchanged():
     for f in existing:
         if cov.applicable_sec_floor([f]) != frozenset({"SEC"}):
             raise AssertionError(f"{f} regressed off the SEC floor")
-    # review NIT 10: the loop above catches DELETING an original hint but not
-    # WIDENING one (e.g. "dockerfile" -> "file" still floors every path above).
-    # This is the one place asserting the table's literal contents is correct:
-    # pin the original 19 entries byte-for-byte, in order.
-    original_19 = (
-        ".github/workflows/", ".gitlab-ci", "jenkinsfile", ".circleci",
-        "dockerfile", "docker-compose", ".dockerignore", "/helm/", "/k8s/",
-        "requirements.txt", "package.json", "package-lock", "gemfile", "go.mod",
-        "cargo.toml", "pom.xml", "build.gradle", "pyproject.toml", "poetry.lock",
-    )
-    if cov._SEC_SUPPLY_CHAIN_HINTS[:19] != original_19:
-        raise AssertionError(cov._SEC_SUPPLY_CHAIN_HINTS[:19])
 
 
 def test_exclude_rejected_wording_does_not_claim_the_domain_ran():

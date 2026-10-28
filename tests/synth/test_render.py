@@ -754,7 +754,7 @@ class TestExcludedToolFindingsAreRendered(unittest.TestCase):
 
 class TestSecCarveOutLineIsRendered(unittest.TestCase):
     """#1757 (AGT-1355709320): the one line that says a target's own
-    `exclude_paths:` did not hide the objective SEC surface.
+    `exclude_paths:` did not hide code-shaped files from SEC.
 
     Owner ruling 2026-09-25: such an exclusion is DISCLOSED in the report's
     coverage section rather than silently applied, so the summary has to carry

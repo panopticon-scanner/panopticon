@@ -915,7 +915,7 @@ def _render_suppressed_gated_tools(meta):
 
 
 def _render_sec_carve_out(meta):
-    """#1757: the SEC surface a target's `exclude_paths:` could not hide."""
+    """#1757/#3338: code a target's `exclude_paths:` could not hide from SEC."""
     coverage = meta.get("coverage")
     carve = coverage.get("exclude_paths_sec_carve_out") if isinstance(coverage, dict) else None
     if not isinstance(carve, dict) or not isinstance(carve.get("count"), int) \
@@ -925,7 +925,7 @@ def _render_sec_carve_out(meta):
     more = " &hellip; (+%d more)" % (len(kept) - 20) if len(kept) > 20 else ""
     return ("<div class='coverage'><code>exclude_paths:</code> %d file(s) kept "
             "for SEC review only: %s%s &mdash; a target's own exclusion cannot "
-            "hide the objective SEC surface</div>"
+            "hide code-shaped files from SEC</div>"
             % (carve["count"], ", ".join("<code>%s</code>" % _escape(f)
                                          for f in kept[:20]) or "none", more))
 

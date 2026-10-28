@@ -211,14 +211,13 @@ def audit_floor_cells(coverages, present):
 
 
 def sec_less_groups(coverages, groups_meta):
-    """#3245: groups with code whose review plan has no SEC cell, sorted.
+    """#3245/#3338: code groups whose review plan has no SEC cell, sorted.
 
-    SEC reaches `effective` only from the committed floor, the filename signal
-    floor or the scout, so a config that omits it and a scout steered off it
-    leave a code group with no security reviewer -- and nothing said so. "Code"
-    is `coverage_model.has_code_surface` over the group's `groups.json` files;
-    a group with no file list there is named too, since unknown is not "no
-    code". Reported in `meta.integrity`, never gating: SEC was never its floor.
+    New runs floor every deterministic code group through
+    `coverage_model.has_sec_code_surface`; this remains a compatibility and
+    tamper disclosure for older/malformed coverage artifacts. A group with no
+    file list is named too, since unknown is not proof of "no code". Known
+    docs/assets-only groups are not named.
     """
     files = {g["name"]: g.get("files") for g in groups_meta or []
              if isinstance(g, dict) and isinstance(g.get("name"), str)}
@@ -230,7 +229,8 @@ def sec_less_groups(coverages, groups_meta):
         if not isinstance(effective, list) or "SEC" in effective:
             continue
         group_files = files.get(cov["group"])
-        if not isinstance(group_files, list) or coverage_model.has_code_surface(group_files):
+        if (not isinstance(group_files, list)
+                or coverage_model.has_sec_code_surface(group_files)):
             named.add(cov["group"])
     return sorted(named)
 

@@ -518,7 +518,7 @@ class TestCoveragePhase(unittest.TestCase):
         self.assertEqual(cov["effective"], ["ARC", "COD", "DAT", "SEC", "TST"])
         self.assertEqual(cov["global_floor_suppressed"], [])
 
-    def test_group_absent_from_matrix_gets_only_global_floor(self):
+    def test_group_absent_from_matrix_gets_file_derived_floors(self):
         # A group GENUINELY absent from groups.yml (not a <name>_<i> chunk of any
         # committed group) has no VERTICAL floor, but still rides the universal
         # global floor (#5.0-11). (A chunk instead inherits its parent's floor,
@@ -529,16 +529,15 @@ class TestCoveragePhase(unittest.TestCase):
         runio._write_json(runio._pano(self.root, "scout-Orphan.json"), {"g": 1})
         coverage.coverage_execute(self.root, self.manifest)
         cov = runio._load_json(runio._pano(self.root, "coverage-Orphan.json"))
-        # no vertical floor, and a single surfaceless file ('a.py') -> the
-        # surface-gated global floor (#5.0-19) injects only universal COD.
-        self.assertEqual(cov["effective"], ["COD"])
+        # No vertical floor, but a.py deterministically gates universal COD and
+        # #3338's code-group SEC floor. Neither depends on the scout or group.
+        self.assertEqual(cov["effective"], ["COD", "SEC"])
 
-    def test_objective_security_surface_forces_sec_without_floor_or_scout(self):
-        # #run8 SEC-G2A: a group whose committed panels: never lists SEC and
-        # whose scout adds no SEC still gets a deterministic SEC review when its
-        # FILES carry an objective security surface (here a dependency manifest +
-        # an auth file). Without this a forgetful or adversarial groups.yml
-        # silently exempts its own code from security review.
+    def test_code_group_forces_sec_without_committed_floor_or_scout(self):
+        # #3338: a group whose committed panels: never lists SEC and whose scout
+        # adds no SEC still gets a deterministic SEC review when its files are
+        # code-shaped. This former high-value filename-signal case remains on the
+        # floor without keeping a second classification policy alive.
         self._groups_json([{"name": "Api", "files": [
             "requirements.txt", "src/auth/login.py"]}])
         self._groups_yml("groups:\n  Api:\n    match: ['**']\n    panels: [COD]\n")
@@ -546,9 +545,28 @@ class TestCoveragePhase(unittest.TestCase):
                            {"group": "Api", "domains": ["COD"]})   # no SEC from scout
         coverage.coverage_execute(self.root, self.manifest)
         cov = runio._load_json(runio._pano(self.root, "coverage-Api.json"))
-        self.assertIn("SEC", cov["effective"])                 # forced by objective signal
+        self.assertIn("SEC", cov["effective"])                 # forced by code shape
         self.assertEqual(cov["sec_floor_applied"], ["SEC"])    # disclosed
         self.assertIn("SEC", cov["floor"])                     # forced-on, not scout_added
+
+    def test_plain_code_group_forces_disclosed_non_excludable_sec(self):
+        # #3338 / #3245's exact gap: handler.py carries code but no legacy SEC
+        # filename hint; neither the committed plan nor the scout asks for SEC.
+        # The file-derived code-group floor still runs SEC, discloses it as a
+        # floor cell, and a committed exclude cannot remove it.
+        self._groups_json([{"name": "Api", "files": ["src/server/handler.py"]}])
+        self._groups_yml("groups:\n  Api:\n    match: ['src/**']\n    panels: [COD]\n"
+                         "    exclude: [SEC]\n")
+        runio._write_json(runio._pano(self.root, "scout-Api.json"),
+                          {"group": "Api", "domains": ["COD"]})
+
+        coverage.coverage_execute(self.root, self.manifest)
+
+        cov = runio._load_json(runio._pano(self.root, "coverage-Api.json"))
+        self.assertEqual(cov["effective"], ["COD", "SEC"])
+        self.assertEqual(cov["sec_floor_applied"], ["SEC"])
+        self.assertIn("SEC", cov["floor"])
+        self.assertEqual(cov["exclude_rejected"], ["SEC"])
 
     def test_sec_objective_floor_survives_committed_exclude_sec(self):
         # SEC forced by the objective floor is NON_EXCLUDABLE: a groups.yml that
@@ -571,8 +589,8 @@ class TestCoveragePhase(unittest.TestCase):
 
     def test_sec_carve_out_group_reviews_sec_and_nothing_else(self):
         # #1757 (AGT-1355709320), owner ruling 2026-09-25: the carve-out group
-        # exists only so the objective SEC surface a target's `exclude_paths:`
-        # excluded still reaches the SEC domain. Every OTHER domain honours that
+        # exists only so code a target's `exclude_paths:` excluded still reaches
+        # the SEC domain. Every OTHER domain honours that
         # exclusion, so nothing may widen this cell -- not the surface-gated
         # global floor (these two files objectively gate COD and ARC on), and not
         # a scout that asks for COD.
@@ -647,9 +665,9 @@ class TestCoveragePhase(unittest.TestCase):
                 self.assertEqual(cov["effective"], ["ARC", "COD", "SEC"])
                 self.assertIs(cov["sec_carve_out"], False)
 
-    def test_surfaceless_group_gets_no_sec_floor(self):
-        # #5.0-19 stays honored end-to-end: a group with no objective security
-        # surface spends no SEC cell (the floor widens, it does not blanket).
+    def test_docs_only_group_gets_no_sec_floor(self):
+        # #5.0-19 stays honored end-to-end: an explicit docs-only group spends
+        # no SEC cell (the floor covers code, not every possible group).
         self._groups_json([{"name": "Docs", "files": ["README.md", "docs/intro.md"]}])
         self._groups_yml("groups:\n  Docs:\n    match: ['**']\n    panels: [COD]\n")
         runio._write_json(runio._pano(self.root, "scout-Docs.json"),

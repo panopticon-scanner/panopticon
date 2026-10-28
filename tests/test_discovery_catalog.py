@@ -230,31 +230,28 @@ class TestCatalogMatchGroups(unittest.TestCase):
         # vendor/** would otherwise fall to a ._N leftover -- to prove this is
         # exclude_paths doing the work, not #434's fixture pruning.)
         #
-        # #1757 narrowed what this guard can use: the pruned files must carry NO
-        # objective SEC surface, or the carve-out keeps them for SEC rather than
-        # pruning them. `docs/secret/leak.md`, which this test used to prune,
-        # matches the floor's `secret` marker and is now carved -- the test
-        # directly below covers that, and this one stays about the prune.
+        # #1757/#3338 narrowed what this guard can use: pruned files must be
+        # explicit docs/assets, or the code-group floor keeps them for SEC. The
+        # test directly below covers that carve-out; this one stays about prune.
         with tempfile.TemporaryDirectory() as d:
             self._setup(d)
             touch(d, "docs/notes/leak.md")
-            touch(d, "vendor/dep.py")
+            touch(d, "vendor/README.md")
             _write_config(d, self.CATALOG
                           + "exclude_paths: ['docs/notes/**', 'vendor/**']\n")
             out, _err = run_scan_with_err(d)
             all_files = [f for g in out["groups"] for f in g["files"]]
             self.assertNotIn("docs/notes/leak.md", all_files)
-            self.assertNotIn("vendor/dep.py", all_files)
+            self.assertNotIn("vendor/README.md", all_files)
             self.assertNotIn("docs/notes/leak.md", out.get("ungrouped_files", []))
-            self.assertNotIn("vendor/dep.py", out.get("ungrouped_files", []))
+            self.assertNotIn("vendor/README.md", out.get("ungrouped_files", []))
             self.assertEqual(sorted(out["exclude_paths"]), ["docs/notes/**", "vendor/**"])
             self.assertEqual(out["excluded_count"], 2)
             self.assertEqual(out["exclude_paths_sec_carve_out"]["count"], 0)
 
     def test_exclude_paths_keeps_the_objective_sec_surface_in_its_own_group(self):
-        # #1757 (AGT-1355709320), owner ruling 2026-09-25: a target-authored
-        # `exclude_paths:` may not remove a file the objective SEC floor matches
-        # from the SEC domain. `deploy/k8s/x.yaml` carries that surface, so it is
+        # #1757/#3338: a target-authored `exclude_paths:` may not remove a
+        # code-shaped file from the SEC domain. `deploy/k8s/x.yaml` is therefore
         # CARVED into a dedicated SEC-only group instead of being pruned, while
         # `deploy/README.md` -- which the same glob matched and the floor does not
         # -- is pruned from every domain exactly as before. The carved file joins
@@ -287,9 +284,8 @@ class TestCatalogMatchGroups(unittest.TestCase):
             self.assertIn("kept 1 file(s) for SEC review only", err)
 
     def test_exclude_paths_with_no_sec_surface_carves_nothing_and_says_so(self):
-        # The control that proves the carve-out above is the objective SEC
-        # floor's work and not the exclusion's: a glob matching only files the
-        # floor does not match prunes all of them and mints no group -- and the
+        # The docs-only control: a glob matching only files the code-group SEC
+        # floor exempts prunes all of them and mints no group -- and the
         # disclosure is still published, with `count: 0`, because globs that
         # carved nothing are a fact a reader comparing two runs has to see.
         with tempfile.TemporaryDirectory() as d:
@@ -471,8 +467,8 @@ class TestCommonsCatalog(unittest.TestCase):
 
     def test_folded_commons_still_draws_the_SEC_floor(self):
         # The property that makes the merge legal: applicable_sec_floor keys on
-        # FILES, not group names, so folding a secret-bearing or supply-chain
-        # file into `Commons` cannot silently exempt it from SEC review
+        # FILE shapes, not group names, so folding any code-shaped file into
+        # `Commons` cannot silently exempt it from SEC review
         # (#1072 / run-10 SEC-G2A).
         groups, _leftovers = orchestrator.catalog_groups(
             [".env", "package-lock.json"], {},
@@ -1191,11 +1187,11 @@ def _kept_by_both(paths):
 
 class TestDotPathPolicyCoversTheShippedClaims(unittest.TestCase):
     """#1784/#1771 (ARC-124841687 HIGH, ARC-1940929242): the shipped catalogs
-    and the deterministic SEC floor claimed dot-paths discovery threw away.
+    and deterministic SEC code floor claim dot-paths discovery once threw away.
 
     `.circleci/config.yml`, `.github/actions/**`, `.env`, `.npmrc`,
     `.pre-commit-config.yaml` and 70 more were claimed by
-    `skill/data/commons_catalog.yml` or keyed the SEC floor, and the policy was
+    `skill/data/commons_catalog.yml` or are code-shaped SEC surface, and the policy was
     `(".github/workflows",)` plus a blanket skip of every other root dot-path.
     A file discovery never returns is never `Ungrouped` either, so nothing
     reported the gap -- #1508 and #1838 both rest on claims that could not fire.
@@ -1208,36 +1204,12 @@ class TestDotPathPolicyCoversTheShippedClaims(unittest.TestCase):
     DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                             "skill", "data")
 
-    # The dot-leading SEC-floor hints that name a path at the repository ROOT,
-    # each with the canonical file that satisfies it. `_any_hint` matches a hint
-    # as a substring of "/" + path and is asserted on every row below, so a
-    # sample that stopped satisfying its hint cannot pass.
-    ROOT_HINT_FILES = {
-        ".buildkite/": ".buildkite/pipeline.yml",
-        ".circleci": ".circleci/config.yml",
-        ".devcontainer/": ".devcontainer/devcontainer.json",
-        ".dockerignore": ".dockerignore",
-        ".drone.yaml": ".drone.yaml",
-        ".drone.yml": ".drone.yml",
-        ".env": ".env",
-        ".github/actions/": ".github/actions/build/action.yml",
-        ".github/workflows/": ".github/workflows/ci.yml",
-        ".gitlab-ci": ".gitlab-ci.yml",
-        ".htaccess": ".htaccess",
-        ".netrc": ".netrc",
-        ".npmrc": ".npmrc",
-        ".pgpass": ".pgpass",
-        ".pre-commit-config.yaml": ".pre-commit-config.yaml",
-        ".travis.yaml": ".travis.yaml",
-        ".travis.yml": ".travis.yml",
-    }
-    # The rest mark an ORDINARY file's extension and need no dot-path at all
-    # (`src/key.pem`). The split is explicit and exhaustive so a new hint has to
-    # be classified rather than land silently unguarded.
-    EXTENSION_HINTS = frozenset({
-        ".asc", ".csproj", ".gemspec", ".jks", ".key", ".keystore", ".mk",
-        ".orm", ".p12", ".pem", ".pfx", ".prisma", ".sln", ".sql", ".tf",
-    })
+    # Every other allowlisted root dot-path is named by a shipped catalog glob.
+    # These three are the exact exceptions: code-shaped secret/CI files kept for
+    # the SEC floor. Literal sets keep the reverse "and no further" direction;
+    # `has_sec_code_surface` alone would justify any accidental widening.
+    FLOOR_ONLY_FILES = frozenset({".netrc", ".pgpass"})
+    FLOOR_ONLY_STEMS = frozenset({".drone"})
 
     def _catalog_dot_globs(self):
         found = set()
@@ -1248,11 +1220,6 @@ class TestDotPathPolicyCoversTheShippedClaims(unittest.TestCase):
                 found.update(text for text in _yaml_strings(yaml.safe_load(fh))
                              if text.startswith("."))
         return sorted(found)
-
-    def _dot_floor_hints(self):
-        """Every dot-leading hint the deterministic SEC floor keys on."""
-        return sorted(hint for hint in coverage_model._SEC_FILE_HINTS
-                      if hint.startswith("."))
 
     def test_every_allowlist_entry_is_named_by_a_catalog_glob_or_a_floor_hint(self):
         """The REVERSE direction, and the ruling's "and no further" half.
@@ -1266,23 +1233,22 @@ class TestDotPathPolicyCoversTheShippedClaims(unittest.TestCase):
         bare substring (`.mkdocs.yml` must not ride on `.mk`); a stem must begin
         one of them.
         """
-        globs, hints = self._catalog_dot_globs(), self._dot_floor_hints()
-        claims = globs + hints
+        globs = self._catalog_dot_globs()
         unjustified = []
         for entry in sorted(dot_paths.DIRS):
-            if not any(c == entry or c.startswith(entry + "/") for c in claims):
+            if not any(c == entry or c.startswith(entry + "/") for c in globs):
                 unjustified.append("DIRS %s" % entry)
         for entry in sorted(dot_paths.FILES):
-            if not (any(orchestrator._glob_to_re(c).match(entry) for c in globs)
-                    or any(entry == hint or entry.startswith(hint + ".")
-                           for hint in hints)):
+            if (entry not in self.FLOOR_ONLY_FILES
+                    and not any(orchestrator._glob_to_re(c).match(entry) for c in globs)):
                 unjustified.append("FILES %s" % entry)
         for entry in dot_paths.FILE_STEMS:
-            if not any(c.startswith(entry) for c in claims):
+            if (entry not in self.FLOOR_ONLY_STEMS
+                    and not any(c.startswith(entry) for c in globs)):
                 unjustified.append("FILE_STEMS %s" % entry)
         self.assertEqual([], unjustified,
                          "%d dot-path allowlist entr(ies) no shipped catalog glob "
-                         "and no SEC-floor hint names -- the ruling widened to "
+                         "and no explicit SEC-floor exception names -- the ruling widened to "
                          "exactly what those two enumerations say and NO further, "
                          "so either a catalog claims it or it comes out:\n  %s"
                          % (len(unjustified), "\n  ".join(unjustified)))
@@ -1310,34 +1276,14 @@ class TestDotPathPolicyCoversTheShippedClaims(unittest.TestCase):
                          "nothing else reports this:\n  %s"
                          % (len(unreachable), "\n  ".join(unreachable)))
 
-    def test_the_dot_leading_sec_floor_hints_are_classified_exhaustively(self):
-        dotted = set(self._dot_floor_hints())
-        self.assertEqual(
-            dotted, set(self.ROOT_HINT_FILES) | self.EXTENSION_HINTS,
-            "a dot-leading SEC-floor hint is unclassified: say whether it names "
-            "a path at the repository root (and give the file that satisfies "
-            "it) or an ordinary file's extension")
-        self.assertEqual(set(), set(self.ROOT_HINT_FILES) & self.EXTENSION_HINTS)
-
-    def test_every_root_anchored_sec_floor_hint_reaches_a_file_both_paths_keep(self):
-        for hint, sample in self.ROOT_HINT_FILES.items():
-            self.assertTrue(coverage_model._any_hint([sample], (hint,)),
-                            "%r does not satisfy the floor hint %r" % (sample, hint))
-        walked, listed = _kept_by_both(set(self.ROOT_HINT_FILES.values()))
-        unreachable = sorted("%s (floor hint %s)" % (sample, hint)
-                             for hint, sample in self.ROOT_HINT_FILES.items()
-                             if sample not in walked or sample not in listed)
-        self.assertEqual([], unreachable,
-                         "the deterministic SEC floor keys on file(s) discovery "
-                         "never surfaces, so no group can draw SEC from them:\n  %s"
-                         % "\n  ".join(unreachable))
-
-    def test_every_extension_sec_floor_hint_rides_an_ordinary_file(self):
-        samples = {hint: "src/thing" + hint for hint in sorted(self.EXTENSION_HINTS)}
-        for hint, sample in samples.items():
-            self.assertTrue(coverage_model._any_hint([sample], (hint,)), hint)
-        walked, listed = _kept_by_both(set(samples.values()))
-        self.assertEqual(set(samples.values()), walked & listed)
+    def test_floor_only_dot_paths_are_code_and_reach_both_discovery_paths(self):
+        samples = set(self.FLOOR_ONLY_FILES) | {stem + ".yml"
+                                                for stem in self.FLOOR_ONLY_STEMS}
+        for sample in samples:
+            self.assertEqual(coverage_model.applicable_sec_floor([sample]),
+                             frozenset({"SEC"}), sample)
+        walked, listed = _kept_by_both(samples)
+        self.assertEqual(samples, walked & listed)
 
 
 class TestTheNewlyNamedRootDotFilesReachTheConfigGroup(unittest.TestCase):
@@ -1345,7 +1291,7 @@ class TestTheNewlyNamedRootDotFilesReachTheConfigGroup(unittest.TestCase):
     #2274: a root dot-file the shipped catalogs do not NAME stays invisible by
     design, and the remedy for a wanted one is a catalog row per spelling --
     not a widened stem. This repository's own `.bandit` was named by neither a
-    catalog glob nor a floor hint, so it reached no group at all; `.eslintrc.cjs`
+    catalog glob nor the old floor catalog, so it reached no group at all; `.eslintrc.cjs`
     and `.eslintrc.yaml` are ordinary hand-written eslint config that the five
     listed spellings missed. (`.eslintrc.mjs` was named by the ruling too and is
     NOT here: the legacy cascade does not read it -- `.mjs` is flat config, and
@@ -1418,9 +1364,9 @@ class TestBothDiscoveryPathsShareOneDotPolicy(unittest.TestCase):
     KEPT = (
         ".github/workflows/ci.yml",         # the 5.1 policy, unchanged
         ".github/labels.yml",               # #1508's claim; git-only before
-        ".github/actions/a/action.yml",     # SEC floor hint; git-only before
+        ".github/actions/a/action.yml",     # SEC code surface; git-only before
         ".circleci/config.yml",             # dropped by BOTH paths before
-        ".env", ".npmrc",                   # secret-bearing, floor hints
+        ".env", ".npmrc",                   # secret-bearing SEC code surface
         "config/.env",                      # nested dotfile: unchanged
         "a/b/.npmrc",                       # nested dotfile: unchanged
         "src/app.py",

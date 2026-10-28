@@ -148,11 +148,12 @@ class LoopCase(unittest.TestCase):
         write_host_evidence(d, _ALL_PROVEN)
         runio._write_json(runio._pano(d, "groups.json"),
                           {"groups": [{"name": "app", "files": ["src/app.py"]}]})
-        # #1681: `panopticon.yml` is a committed ROOT file now, so it is an
-        # ordinary repo file discovery sees. Excluded here so this fixture keeps
-        # its one-group/one-file shape (the loop's entry ids are pinned).
-        matrix = ("groups:\n  app:\n    match: ['src/**']\n"
-                  "exclude_paths: ['panopticon.yml']\n")
+        # #1681/#3338: `panopticon.yml` is a committed ROOT file discovery sees,
+        # and a target-authored exclusion cannot remove this code-shaped YAML
+        # from SEC. Claim it in the one app group so these loop tests retain one
+        # dispatch cell; the carve-out itself is covered by discovery tests.
+        matrix = ("groups:\n  app:\n"
+                  "    match: ['src/**', 'panopticon.yml']\n")
         with open(os.path.join(d, "panopticon.yml"), "w") as fh:
             fh.write("version: 1\n" + matrix)
         return d, list(floor)

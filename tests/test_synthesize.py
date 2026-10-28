@@ -1885,17 +1885,22 @@ def test_the_coverage_reader_reads_the_shape_the_phase_writes(tmp_path):
     assert len(records) == 1
     cell = records[0]
     assert cell["group"] == "g1"
-    assert cell["floor"] == ["COD", "TST"]
+    assert cell["floor"] == ["COD", "SEC", "TST"]
     assert cell["excluded"] == ["TST"]
-    assert cell["effective"] == ["COD", "OPS"]
+    assert cell["sec_floor_applied"] == ["SEC"]
+    assert cell["effective"] == ["COD", "OPS", "SEC"]
     assert cell["run_id"] == "round-trip"
-    assert coverage_io.audit_floor_cells(records, {}) == {"missing_floor": [["g1", "COD"]]}
-    findings = tmp_path / "findings-g1-COD.json"
-    findings.write_text('{"findings": []}')
-    assert coverage_io.audit_floor_cells(records, coverage_io.present_cells([str(findings)])) == {
+    assert coverage_io.audit_floor_cells(records, {}) == {
+        "missing_floor": [["g1", "COD"], ["g1", "SEC"]]}
+    findings = []
+    for domain in ("COD", "SEC"):
+        path = tmp_path / ("findings-g1-%s.json" % domain)
+        path.write_text('{"findings": []}')
+        findings.append(str(path))
+    assert coverage_io.audit_floor_cells(records, coverage_io.present_cells(findings)) == {
         "missing_floor": []}
     assert coverage_io.audit_floor_cells(records, {"other": {"COD"}}) == {
-        "missing_floor": [["g1", "COD"]]}
+        "missing_floor": [["g1", "COD"], ["g1", "SEC"]]}
     (Path(directory) / "coverage-malformed.json").write_text('{broken')
     assert coverage_io.load_coverage_files(directory) == records
 
@@ -2290,9 +2295,9 @@ class TestDiscoveryDisclosuresReachTheReport(unittest.TestCase):
 
 class TestSecCarveOutDisclosureReachesTheReport(unittest.TestCase):
     """#1757 (AGT-1355709320), owner ruling 2026-09-25: a target-authored
-    `exclude_paths:` may not remove a file the objective SEC floor matches from
-    the SEC domain, and *such an exclusion is disclosed in the report's coverage
-    section instead of silently applied*. The disclosure is the half of the
+    `exclude_paths:` may not remove code-shaped files from the SEC domain, and
+    *such an exclusion is disclosed in the report's coverage section instead of
+    silently applied*. The disclosure is the half of the
     ruling that only the report can keep, so it is proved end to end through
     `main()` -- discovery writes the block into `groups.json`, this is the thread
     that carries it to `meta.coverage` and to the rendered summary.

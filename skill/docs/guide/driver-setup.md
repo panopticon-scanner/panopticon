@@ -133,10 +133,12 @@ symlink at the config path is a disclosure every reader prints and a refusal on 
 --exclude-standard`, so the target's own `.gitignore` scopes the review (#500); a non-git target is
 walked instead. Either way, build/dependency/cache directories are pruned by name
 (`node_modules`, `.venv`, `__pycache__`, …), and a path that starts with a dot is surface only when
-the shipped catalogs or the deterministic SEC floor name it — or name its config family, so a
+the shipped catalogs or the explicit dot-path policy name it — or name its config family, so a
 `.golangci.toml` rides in beside the `.golangci.yml` the catalog spells. The `.eslint` family is
 the one exception: only the seven spellings the catalog names ride in, so the generated
-`.eslintcache` beside them does not (#2330).
+`.eslintcache` beside them does not (#2330). `.netrc`, `.pgpass`, and the `.drone` family are the
+three exact catalog-free exceptions kept as code-shaped SEC inputs; #3338's SEC floor otherwise
+classifies files by shape and does not widen the dot-path allowlist.
 Named: `.github/`, `.circleci/`, `.buildkite/`, `.devcontainer/`, `.husky/` and the other claimed
 dot-directories, plus root dot-files such as `.env*`, `.npmrc`, `.travis.yml` and
 `.pre-commit-config.yaml`. `.git/` and generated tool state stay out, and so does a
@@ -166,16 +168,16 @@ exclude_paths:
   - tests/fixtures/**   # deliberately-vulnerable corpora: reviewed by SEC only
 ```
 
-**`exclude_paths` cannot hide the security surface (#1757).** A file your globs match that *also*
-carries an objective security surface — a CI workflow, a Dockerfile, a dependency manifest or
-lockfile, a `helm/`/`k8s/` path, a db/schema file, a secret-bearing file such as `.env` or a private
-key, or a path with `auth`/`token`/`secret`/`password` in it — is **not** pruned. It is moved into
-one dedicated review group named `exclude_paths_sec_carve_out` that reviews **SEC and nothing
-else**; every other domain still honours your exclusion, and the file joins no other group. The
-objective floor exists so that nobody's taste about scope can hide an attack surface (the same
-reason `exclude: [SEC]` on a group is overridden), so this is deliberate, and it is **disclosed**
-rather than silent: the carved globs, paths and count appear in `groups.json`, on discovery's
-stderr line, and in the report's coverage section as
+**`exclude_paths` cannot hide code from SEC (#1757, #3338).** Every code-shaped file your globs
+match is **not** pruned from SEC. It is moved into one dedicated review group named
+`exclude_paths_sec_carve_out` that reviews **SEC and nothing else**; every other domain still
+honours your exclusion, and the file joins no other group. Classification uses file shape only:
+explicit documentation and known assets remain pruned, even when a PNG is named `auth-token.png`,
+while an unknown extension fails toward code. The floor exists so that nobody's taste about scope
+can hide code from security review (the same reason `exclude: [SEC]` on a code group is
+overridden), so this is deliberate, and it is **disclosed** rather than silent: the carved globs,
+paths and count appear in `groups.json`, on discovery's stderr line, and in the report's coverage
+section as
 `meta.coverage.exclude_paths_sec_carve_out`. `--pr` mode is the same in every respect, and a
 narrowing scope flag narrows the carve-out with the rest of the run: `--scope-dir` keeps the carved
 files under that directory, `--scope-file` and `--scope-group` carve nothing, so a `count: 0` there

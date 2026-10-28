@@ -204,7 +204,7 @@ class TestRepairToolsExcluded(unittest.TestCase):
 
 class TestRepairSecCarveOut(unittest.TestCase):
     """#1757 (AGT-1355709320): `meta.coverage.exclude_paths_sec_carve_out` -- the
-    objective SEC surface a target's committed `exclude_paths:` could not hide.
+    code-shaped files a target's committed `exclude_paths:` could not hide from SEC.
 
     Repaired like `tools_excluded` and for the same reason, twice over: the globs
     are authored in the reviewed repository's own `panopticon.yml`, and the file
