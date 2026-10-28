@@ -88,16 +88,18 @@ _ASSET_EXTENSIONS = frozenset((
 # unfamiliar extension remains code and therefore gets SEC. Documentation is
 # identified by FILE shape only, never by its group label or directory --
 # `docs/conf.py`, `mkdocs.yml` and a JavaScript docs pipeline execute code and
-# must stay on the floor. Extensionless conventional documents are exempt too;
-# a suffix on one must itself be a known documentation extension, so
-# `README.sprocket` fails toward SEC rather than widening this allowlist.
+# must stay on the floor. An extensionless document must match an exact,
+# unambiguous conventional basename; prefix variants are accepted only with a
+# documentation extension or `.txt`. `INSTALL` is deliberately absent because
+# a GNU prose file and an executable install script have the same shape. Thus
+# `README.sprocket` and `bin/readme-render` both fail toward SEC.
 _DOC_EXTENSIONS = frozenset((
     ".md", ".markdown", ".mdown", ".mkd", ".rst", ".adoc", ".asciidoc",
 ))
-_DOC_EXACT_NAMES = frozenset({"authors", "copying", "install", "citation.cff"})
-_DOC_NAME_PREFIXES = (
-    "changelog", "contributing", "license", "notice", "readme", "security",
-)
+_DOC_EXACT_NAMES = frozenset({
+    "readme", "license", "licence", "changelog", "contributing", "notice",
+    "authors", "copying", "security", "citation.cff",
+})
 
 
 def _is_asset(path):
@@ -115,16 +117,14 @@ def _is_documentation(path):
     if name in _DOC_EXACT_NAMES:
         return True
     # Plain text is too broad to exempt wholesale (`requirements.txt` executes
-    # dependency policy), but the conventional document basenames keep their
-    # meaning in a `.txt` spelling.
-    candidate = stem if extension == ".txt" else name
-    if extension and extension != ".txt":
+    # dependency policy), but exact/prefixed conventional basenames keep their
+    # meaning in a `.txt` spelling. Without an extension only the exact-name
+    # check above applies: `security-scan` and `license_check` may be executables.
+    if extension != ".txt":
         return False
-    if candidate in _DOC_EXACT_NAMES:
-        return True
-    return any(candidate == prefix or candidate.startswith(prefix + "-")
-               or candidate.startswith(prefix + "_")
-               for prefix in _DOC_NAME_PREFIXES)
+    return any(stem == basename or stem.startswith(basename + "-")
+               or stem.startswith(basename + "_")
+               for basename in _DOC_EXACT_NAMES)
 
 
 def has_sec_code_surface(files):

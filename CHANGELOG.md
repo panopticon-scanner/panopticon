@@ -6,6 +6,9 @@
   The floor no longer depends on security vocabulary appearing in filenames:
   file shape alone classifies code, while explicit documentation and known
   asset-only groups remain SEC-free and unknown extensions fail toward review.
+  Extensionless docs require an exact conventional basename: ambiguous
+  `INSTALL` and prefix-like names such as `security-scan` fail toward review;
+  variants such as `license-mit` require a documentation extension or `.txt`.
   This widens the self-scan's signal-floor reach from 14 of 27 groups to 26
   (+12); eight already committed SEC, so the paid matrix moves from 113 to 117
   cells (+4). The same classifier stops an `auth`/`token`-named PNG from being

@@ -411,6 +411,32 @@ def test_sec_floor_absent_on_surfaceless_group():
         raise AssertionError()
 
 
+def test_extensionless_document_lookalikes_fail_toward_sec():
+    # #3338 review round 1: a conventional doc prefix is not enough evidence
+    # for an extensionless file. These are executable-shaped names in bin/,
+    # scripts/ and tools/; INSTALL is inherently ambiguous and fails closed too.
+    code = [
+        "bin/install", "scripts/security-scan", "tools/license_check",
+        "bin/readme-render", "bin/changelog_gen", "INSTALL",
+        "LICENSE-MIT", "README_ja",
+    ]
+    missed = [path for path in code
+              if cov.applicable_sec_floor([path]) != frozenset({"SEC"})]
+    assert missed == []
+
+
+def test_extensionless_document_names_are_exact_and_text_variants_stay_docs():
+    # Exact conventional basenames remain docs without an extension. Prefix
+    # variants need a documentation extension or `.txt` and stay exempt there.
+    docs = [
+        "README", "LICENSE", "LICENCE", "CHANGELOG", "CONTRIBUTING",
+        "NOTICE", "AUTHORS", "COPYING", "SECURITY", "CITATION.cff",
+        "LICENSE.txt", "README_ja.md", "license-mit.txt",
+    ]
+    floored = [path for path in docs if cov.applicable_sec_floor([path])]
+    assert floored == []
+
+
 def test_sec_floor_on_code_without_a_security_filename_hint():
     # #3338: SEC is a floor for every code group, not only code whose filename
     # happens to contain auth/crypto/db/build vocabulary. This is #3245's exact

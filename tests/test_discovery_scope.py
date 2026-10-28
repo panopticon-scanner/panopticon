@@ -285,13 +285,17 @@ def test_exclude_paths_does_not_carve_a_security_named_png_back_in(tmp_path):
     # A binary named auth-token.png used to match two filename hints and return
     # from exclude_paths in a SEC-only group. The manifest remains carved; the
     # PNG remains excluded from every review domain. The ordinary Python module
-    # is now code and therefore joins the manifest in the SEC-only carve-out.
+    # and an extensionless executable-like name join the manifest in the
+    # SEC-only carve-out.
     repo = repo_with_exclude_and_sec_surface(tmp_path)
     module = repo / "vendor" / "dep.py"
     module.write_text("value = 1\n")
+    script = repo / "vendor" / "security-scan"
+    script.write_text("#!/bin/sh\nexit 0\n")
     png = repo / "vendor" / "auth-token.png"
     png.write_bytes(b"not-real-png")
-    git_cmd(repo, "add", "vendor/dep.py", "vendor/auth-token.png")
+    git_cmd(repo, "add", "vendor/dep.py", "vendor/security-scan",
+            "vendor/auth-token.png")
     git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
             "commit", "-qm", "add planted png")
     out = repo / ".panopticon" / "groups.json"
@@ -299,19 +303,20 @@ def test_exclude_paths_does_not_carve_a_security_named_png_back_in(tmp_path):
     rc = orchestrator.main([
         "--repo", str(repo), "--repo-scan", "--scope-files",
         "src/checkout/pay.py", "vendor/README.md", "vendor/dep.py",
-        "vendor/requirements.txt", "vendor/auth-token.png", "--out", str(out),
+        "vendor/requirements.txt", "vendor/security-scan",
+        "vendor/auth-token.png", "--out", str(out),
     ])
 
     assert rc == 0
     doc = json.loads(out.read_text())
     by_name = {g["name"]: g["files"] for g in doc["groups"]}
     assert by_name[groups_schema.SEC_CARVE_OUT_SINK] == [
-        "vendor/dep.py", "vendor/requirements.txt"]
+        "vendor/dep.py", "vendor/requirements.txt", "vendor/security-scan"]
     assert doc["excluded_count"] == 2
     assert doc["exclude_paths_sec_carve_out"] == {
         "globs": ["vendor/**"],
-        "files": ["vendor/dep.py", "vendor/requirements.txt"],
-        "count": 2,
+        "files": ["vendor/dep.py", "vendor/requirements.txt", "vendor/security-scan"],
+        "count": 3,
     }
 
 

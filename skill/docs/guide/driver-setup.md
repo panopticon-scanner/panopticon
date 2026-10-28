@@ -173,8 +173,11 @@ match is **not** pruned from SEC. It is moved into one dedicated review group na
 `exclude_paths_sec_carve_out` that reviews **SEC and nothing else**; every other domain still
 honours your exclusion, and the file joins no other group. Classification uses file shape only:
 explicit documentation and known assets remain pruned, even when a PNG is named `auth-token.png`,
-while an unknown extension fails toward code. The floor exists so that nobody's taste about scope
-can hide code from security review (the same reason `exclude: [SEC]` on a code group is
+while an unknown extension fails toward code. An extensionless doc must have an exact conventional
+basename (`README`, `LICENSE`, `SECURITY`, …); ambiguous `INSTALL` and prefix-like executable names
+such as `security-scan` are code, while `license-mit.txt` remains documentation. The floor exists
+so that nobody's taste about scope can hide code from security review (the same reason
+`exclude: [SEC]` on a code group is
 overridden), so this is deliberate, and it is **disclosed** rather than silent: the carved globs,
 paths and count appear in `groups.json`, on discovery's stderr line, and in the report's coverage
 section as
