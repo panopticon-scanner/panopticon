@@ -23,9 +23,9 @@ The host contract (5.2, plan 6):
   `driver loop: <id> done (<ms> ms, <k>/<n>)` progress line on stderr as it lands, so a crash, a
   `kill -9` or a compaction mid-batch keeps everything a batch that had already CLOSED had finished,
   and re-running resumes from disk without repeating those; what the killed batch itself had in
-  flight is taken back on the next run rather than left half-done (#1698, below). **Ctrl-C is
-  deliberately not that** (#1662): it means complete stoppage, cancellation and rollback to the last
-  checkpoint. No entry still queued is launched. Every running child is terminated before anything
+  flight is taken back on the next run rather than left half-done (#1698, below). **Ctrl-C keeps
+  more than that** (#1662, #3349): it means complete stoppage, and cancellation of what had not yet
+  settled. No entry still queued is launched. Every running child is terminated before anything
   else, and as a whole **process group** (SIGTERM to the group, then SIGKILL to whatever has not
   exited within one shared grace window). All three shipped runners register their children for this
   (#1575): Claude, Codex and Kimi launch through the seam's own `HostRunner.launch`, a `Popen` with
@@ -36,22 +36,28 @@ The host contract (5.2, plan 6):
   a blocking `subprocess.run` that hands back no handle. The same group kill bounds a per-entry
   **timeout**: `--entry-timeout` now ends the tree, not just the CLI at the root of it. Both guards
   then come down **before** any artifact is deleted, so a child that outlived either route is denied
-  its write rather than allowed to re-create what is being rolled back. Every entry of the batch is
-  then written to the ledger, at the interrupt's own timestamp: a `cancelled` row for one it cut,
-  and for one that HAD completed a `rolled_back` marker row beside the real row, which is left
-  exactly as it was — the spend it records is a fact, and the marker is what tells a later reader
-  that the artifact that spend bought was deleted. Both kinds carry `cost_usd: null` and
-  `ok: false`, so `total_cost`, `usage.json` and the usage probe read what they always did. The
-  per-entry artifacts the batch had written are deleted **as a unit** — by the list in
-  `runs/<tag>/batch-<n>.json`, which the loop writes before its first launch and removes when the
-  batch ends, never by a glob over the run folder — so a record still on disk is a batch that ended
-  NEITHER way, and the next `driver loop` is what settles it (below). The interrupted **phase**
-  therefore re-runs from its checkpoint on the next `driver loop`, with the retry budget it had (an
-  operator's interrupt is not a cell failing, so it is given back); phases completed before it are
-  untouched, and `usage.json` keeps whatever spend the host had already reported, because spend is a
-  fact and is never rolled back. The run ends `error` with a message beginning `interrupted:` that
-  says how many of how many entries had been handled and have been rolled back. To discard the
-  **whole** run instead of the interrupted phase, re-run with `--reset`.
+  its write rather than allowed to re-create what is being rolled back. The batch's entries then
+  fall into three cases. An entry whose reply was persisted (or refused and retained) **and** whose
+  real ledger row this process appended has **settled**, and is kept exactly as a batch that closed
+  cleanly keeps it: a success keeps its artifact, its row and its spend, and is done; a failure keeps
+  its row, its retained reply and its attempt charge, and is retried on the next `driver loop` as it
+  would have been anyway (a host-class failure's charge is given back, as a clean close gives it
+  back). Which entries settled is the controller's own memory of the rows it appended — never read
+  back from a file in the reviewed tree. Every other entry, in flight or never launched, is
+  **unfinished**: it is written to the ledger as a `cancelled` row at the interrupt's own timestamp,
+  with `cost_usd: null` and `ok: false`, so `total_cost`, `usage.json` and the usage probe read what
+  they always did; the artifacts it had written are deleted **as a unit**; and its attempt is given
+  back, because an operator's interrupt is not a cell failing. The deletion goes by the list in
+  `runs/<tag>/batch-<n>.json` — which the loop writes before its first launch, narrows to the
+  unfinished entries and flags in ONE write before it deletes anything, and removes when the batch
+  ends — never by a glob over the run folder, so a record still on disk is a batch that ended
+  NEITHER way, and the next `driver loop` is what settles it (below). That next `driver loop`
+  resumes the interrupted **phase** where it stopped, dispatching only the unfinished entries and the
+  settled failures owed a retry; phases completed before it are untouched, and `usage.json` keeps
+  whatever spend the host had already reported, because spend is a fact and is never rolled back.
+  The run ends `error` with a message beginning `interrupted:` that says how many of how many
+  entries had settled and were kept, and how many unfinished entries were rolled back to the
+  checkpoint. To discard the **whole** run instead, re-run with `--reset`.
 - **Session mode:** `driver loop --mode session <target>`, and the automatic fallback. When no
   headless runner exists for the host — every host but Claude, Codex and Kimi today, `generic`
   included — the loop degrades to session mode on its own and says so on stderr; pass
@@ -467,12 +473,14 @@ on Claude hooks, and always uses the return-persist path.
   — a `batch-<n>.json` still on disk means a run that reached no teardown at all (`SIGKILL`, an OOM
   kill, a power loss), and the next `driver loop` takes that batch back BEFORE the engine can read a
   half-written artifact as a finished cell (#1698). It is a rollback and not a cleanup: the
-  artifacts the record lists are deleted, every entry of the batch gets the same
-  `cancelled`/`rolled_back` row a Ctrl-C would have written (with `previous process stopped` as the
-  reason rather than `Ctrl-C`), and the interrupted checkpoint's per-cell attempt marker is given
-  back. The leftover used to be simply OVERWRITTEN by the next batch that happened to carry the same
-  iteration number, so a reply the killed run had half-written stayed on disk and the phase read it
-  as done. Nothing is deleted on the record's own say-so — it lives inside the reviewed tree — so
+  artifacts the record lists are deleted, every entry of the batch gets a `cancelled` row, or a
+  `rolled_back` marker beside its real row if it had completed (with `previous process stopped` as
+  the reason), and the interrupted checkpoint's per-cell attempt marker is given back. That is the
+  WHOLE batch, settled entries included: unlike a Ctrl-C (#3349), a crash leaves no controller that
+  remembers which rows it appended, and nothing on disk is trusted to say so in its place (#3351
+  tracks keeping them). The leftover used to be simply OVERWRITTEN by the next batch that happened
+  to carry the same iteration number, so a reply the killed run had half-written stayed on disk and
+  the phase read it as done. Nothing is deleted on the record's own say-so — it lives inside the reviewed tree — so
   every entry id, `out_file` and checkpoint in it must match the dispatch request this run is
   hash-bound to, and a record naming anything else is refused with nothing deleted. Under `--reset`
   no recovery is attempted at all: that flag discards the whole run instead. - **The record names
@@ -606,8 +614,9 @@ on Claude hooks, and always uses the return-persist path.
   SIGTERM while it cleans up is ignored) — cancels the queue, terminates any child its runner
   registered a handle for and the running phase child's whole process group (each leads its own
   session, which the terminal's process-group SIGINT never reaches), ledgers what it cut, disarms
-  both guards, rolls the interrupted phase back to its checkpoint, and exits `error` with a message
-  beginning "interrupted:" — the next `driver loop` re-runs that phase from scratch, and `--reset`
+  both guards, keeps every entry that had settled, rolls the unfinished ones back to the checkpoint,
+  and exits `error` with a message beginning "interrupted:" — the next `driver loop` resumes that
+  phase with only the unfinished entries (and any settled failure owed a retry), and `--reset`
   discards the whole run instead. A `SIGKILL` or a power loss reaches none of that teardown, so it
   leaves the batch's own record behind instead, and the next `driver loop` rolls that batch back
   before it resumes (#1698, above).

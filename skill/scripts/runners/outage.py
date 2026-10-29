@@ -358,6 +358,18 @@ LAUNCH_BACKOFF_CAP_S, LAUNCH_BACKOFF_JITTER = 8, 0.25
 LAUNCH_BACKOFF = "driver loop: waiting %.1fs before re-launching %d entr%s after a failed launch"
 
 
+def landed_class(result, refusal=None):
+    """One landed entry's class: None for a success, else `ENTRY_FAILURE` or `HOST_FAILURE`.
+
+    The one reading `FailureTally.record` charges by, and (#3349) the one the graceful
+    interrupt refunds a settled host-class failure by, so the two paths cannot disagree."""
+    if refusal is not None:
+        return ENTRY_FAILURE
+    if getattr(result, "ok", False):
+        return None
+    return getattr(result, "failure_class", None) or ENTRY_FAILURE
+
+
 class FailureTally:
     """The loop's failure bookkeeping for one INVOCATION: which entries are
     stuck, and whether a batch was really the host going down (#1623).
@@ -440,14 +452,11 @@ class FailureTally:
         order in the batch (#1721), which is what tells a success that proves
         the host is back from one that was merely in flight when it went
         down."""
-        failure: tuple[str, str | None, str | None]
-        if refusal is not None:
-            failure = (entry_id, refusal, ENTRY_FAILURE)
-        elif getattr(result, "ok", False):
-            failure = (entry_id, None, None)
+        cls = landed_class(result, refusal)
+        if refusal is not None or cls is None:
+            failure = (entry_id, refusal, cls)
         else:
-            failure = (entry_id, getattr(result, "error", None),
-                       getattr(result, "failure_class", None) or ENTRY_FAILURE)
+            failure = (entry_id, getattr(result, "error", None), cls)
         self._batch.append(failure)
         self._track(failure[2], seq)
 

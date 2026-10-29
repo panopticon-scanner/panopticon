@@ -303,7 +303,6 @@ def loop(args):
         # settings/allowlist/scope paths it resolves depend only on `session_root`, which does not
         # change across a run.
         guards = Guards(mode, session_root=session_root)
-    done, total = 0, 0        # this batch's progress, read by the handlers below
     # #1662: what a Ctrl-C has to take back. Bound BEFORE the try -- which (#2200) now opens
     # before `_first_run`, so the interrupt can land before the first batch ever opens one.
     batch = None
@@ -447,6 +446,7 @@ def loop(args):
                 return _dispatch_exit(review_root, req, pending, namespace, runner.request_sha256)
             # #1662: the list the rollback deletes (never a glob over the run folder), written BEFORE the
             # first submit; #3227: and before `arm`, as the batch's LOCK -- `Batch.before_launch` says why.
+            ledger.mark_batch()       # #3349: what an interrupt keeps is what lands after THIS
             try:
                 opened = batch_mod.Batch(run_dir, iterations, req.get("checkpoint"), pending).open()
             except FileExistsError:       # the race the check above cannot close
@@ -558,8 +558,7 @@ def loop(args):
             status = _run(args, namespace, resolved)
     except KeyboardInterrupt:
         status = _status("error", loop_batch.rolled_back(
-            review_root, batch, pending, handled, req, ledger, mode, runner,
-            guards, done, total))
+            review_root, batch, pending, req, ledger, mode, runner, guards))
     except Exception as exc:                # noqa: BLE001 -- `loop` never raises (review round 1, item 3)
         status = _status("error", "driver loop: %s: %s" % (type(exc).__name__, exc))
     return _finish(status, review_root, guards, ledger, namespace, mode, runner)

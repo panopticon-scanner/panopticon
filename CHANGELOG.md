@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Fix: a graceful Ctrl-C or SIGTERM no longer deletes the entries that had already settled in the active batch (#3349).**
+  Stopping a live headless review used to roll back the whole checkpoint batch. On a
+  1,000-cell review checkpoint, an emergency stop near the end deleted hundreds of
+  persisted, ledgered, paid-for findings, and every one of them had to be bought again.
+  The rollback now covers only what had not settled. An entry settles once this process
+  has appended its real ledger row in this batch; that record lives in the controller's
+  memory and is never read back from the reviewed tree. A settled entry ends exactly as a
+  clean batch close leaves it: a success keeps its artifact, row and charge; a failure
+  keeps its row, its retained reply and its charge, and is retried as before; and a
+  host-class failure's charge is given back, as the clean close gives it back. In-flight
+  and never-launched entries are cancelled, removed and refunded. The batch record is
+  narrowed to them and flagged in one write, so a second interrupt during cleanup is
+  finished by the next loop without double rows or refunds. The `interrupted:` message
+  now says how many entries were kept and how many were rolled back. A crash (SIGKILL or
+  power loss) still rolls back the whole batch; #3351 tracks that.
 - **Fix: malformed legacy finding lines no longer invalidate synthesis, and exact
   locus-free duplicates collapse (#2992).** Legacy `location.line` now crosses
   the schema repair boundary as `line_start`: numeric spellings are coerced,

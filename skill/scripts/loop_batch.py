@@ -26,17 +26,18 @@ import scripts.probes.shape as shape_probe
 import scripts.run_manifest as run_manifest
 import scripts.runners.batch as batch_mod
 import scripts.runners.base as runner_base
+import scripts.runners.outage as outage
 
 SETUP_NAMESPACE = runner_base.SETUP_NAMESPACE
 
 # #1662: the two sentences a Ctrl-C ends a run with. Constants because
 # docs/guide/driver-run-loop.md quotes the first one and the guide test reads it here.
-# "had been HANDLED", not completed: the count is every entry the loop
-# got back, a failed launch included -- ledgered as the failure it was rather
-# than persisted (F2), and rolled back either way.
-INTERRUPTED = ("interrupted: %d of %d entries had been handled and have been rolled "
-               "back; the phase will re-run from its checkpoint on the next "
-               "`driver loop`; use `--reset` to discard the whole run")
+# #3349: "SETTLED", not handled: what the interrupt keeps is every entry whose real
+# ledger row this process appended -- a failed launch included, which keeps its row
+# and its charge and is retried as it would be after a clean batch.
+INTERRUPTED = ("interrupted: %d of %d entries had settled and were kept; %d unfinished "
+               "entries were rolled back to the checkpoint; re-run `driver loop` (without "
+               "`--reset`) to resume them; use `--reset` to discard the whole run")
 INTERRUPTED_IDLE = ("interrupted: no batch was in flight, so nothing was rolled back; "
                     "re-run to resume, or use `--reset` to discard the whole run")
 
@@ -308,15 +309,19 @@ def recover_stale(review_root, request, host, mode, namespace=None, discard=None
                  len(removed), batch.checkpoint), file=sys.stderr, flush=True)
 
 
-def rolled_back(review_root, batch, pending, handled, req, ledger, mode, runner,
-                guards, done, total):
-    """The Ctrl-C path (#1662): cancel, roll back to the checkpoint, and say so.
+def rolled_back(review_root, batch, pending, req, ledger, mode, runner, guards):
+    """The Ctrl-C path (#1662): cancel what had not settled, roll it back, and say so.
 
-    Returns the operator's MESSAGE; `orchestrate.loop` is what turns it into
-    an `error` status. It lives beside `recover_stale` because the two are the
+    Returns the operator's MESSAGE, which `orchestrate.loop` makes an `error`
+    status. It lives beside `recover_stale` because the two are the
     same mechanism read from either end -- this one takes a batch back while
     the process is still here, that one finishes the job for a process that
     is not -- and they have to agree, file for file, on what a rollback owes.
+
+    #3349: an entry whose real row this process appended in this batch
+    (`ledger.settled`, in memory: the record on disk never decides it) has
+    SETTLED and ends exactly as a clean close leaves it. Only the UNFINISHED
+    rest, in flight or never launched, is rolled back.
 
     `iter_batch` has already stopped the batch: nothing queued was launched,
     and what was running has been terminated. What is left, in this order:
@@ -329,17 +334,14 @@ def rolled_back(review_root, batch, pending, handled, req, ledger, mode, runner,
       again -- the one outcome the rollback exists to prevent. The guard is
       fail-closed the moment its allowlist is unlinked, so disarming first
       denies the straggler's Write; `_finish`'s own disarm is then a no-op.
-    * the batch's entries are ledgered as the interrupt left them
-      (`Ledger.rollback_rows`): `cancelled` for one it cut, a `rolled_back`
-      marker BESIDE the real row of one that had completed. The real rows
-      stand untouched -- spend is a fact -- and the marker is what says the
-      artifact that spend bought was then deleted.
-    * the batch's artifacts go, as a unit and by the list the manifest holds.
-    * the interrupted phase's per-dispatch marker is given back, so the re-run
-      starts with the retry budget it had rather than one interrupt poorer.
-      Only `review` has one today (`persist.rollback_markers`: one charge per
-      dispatched cell in `cell-attempts.json`); scout's and verify's counters
-      are charges against a PREVIOUS reply and are left standing.
+    * the record is narrowed to the unfinished entries and flagged in one
+      write (`Batch.narrow`), or closed when there are none; they are ledgered
+      `cancelled`, and their artifacts go by the list the narrowed record holds.
+    * the per-dispatch marker is given back for them, and for a settled
+      host-class failure as `give_back` gives it back. Only `review` has one today
+      (`persist.rollback_markers`: one charge per dispatched cell in
+      `cell-attempts.json`); scout's and verify's counters are charges against
+      a PREVIOUS reply and are left standing.
 
     Every step is wrapped in `except BaseException`, not `except Exception`: an
     operator who holds the key down -- or presses it again because the first
@@ -352,42 +354,40 @@ def rolled_back(review_root, batch, pending, handled, req, ledger, mode, runner,
     """
     if batch is None:
         return INTERRUPTED_IDLE
-    notes, checkpoint, finished = [], req.get("checkpoint"), set(handled)
+    notes, checkpoint, settled = [], req.get("checkpoint"), ledger.settled or {}
+    unfinished = [e for e in pending if e.get("id") not in settled]
+    message = INTERRUPTED % (len(pending) - len(unfinished), len(pending), len(unfinished))
     try:
         if guards is not None:
             guards.disarm(pending)
     except BaseException as exc:          # noqa: BLE001 -- `loop` never raises
         notes.append("guards not disarmed: %s: %s" % (type(exc).__name__, exc))
     try:
-        # #1698: the record is FLAGGED before the first rollback EFFECT, never
-        # after. `roll_back` keeps the manifest when it has problems (an
-        # artifact path that is a non-empty directory is enough), and an
-        # UNFLAGGED leftover is what `recover_stale` treats as a fresh crash:
-        # the next loop wrote a second ROLLED_BACK/CANCELLED row per entry and
-        # decremented the same attempt counter a second time, on top of the
-        # rows and the refund three lines below. Flagged, that next loop
-        # finishes the file removals and ledgers nothing.
-        batch.begin_recovery()
+        # #1698: FLAGGED before the first rollback effect, or a leftover record is a fresh
+        # crash to `recover_stale`, which ledgers and refunds every entry a second time.
+        if unfinished:
+            batch.narrow([e.get("id") for e in unfinished])
+        else:
+            notes += batch.close()
     except BaseException as exc:          # noqa: BLE001 -- `loop` never raises
         notes.append("the crash record was not flagged; rollback bookkeeping "
                      "is deferred to recovery: %s: %s" % (type(exc).__name__, exc))
-        # Without a durable flag, ledger rows and attempt refunds here would
-        # be repeated when a later process recovers the unflagged manifest.
-        # The guards are already down; leave every other effect to recovery.
-        return INTERRUPTED % (done, total) + "; rollback incomplete: " + "; ".join(notes)
+        # Unflagged, rows and refunds here would be repeated by the recovery of the
+        # leftover record; the guards are already down, so leave the rest to it.
+        return message + "; rollback incomplete: " + "; ".join(notes)
     try:
-        ledger.rollback_rows(pending, finished, checkpoint, mode, runner.host)
+        ledger.rollback_rows(unfinished, (), checkpoint, mode, runner.host)
     except BaseException as exc:          # noqa: BLE001 -- `loop` never raises
         notes.append("the interrupt's own rows not written: %s: %s"
                      % (type(exc).__name__, exc))
     try:
-        _removed, problems = batch.roll_back()
-        notes += problems
-        persist.rollback_markers(review_root, checkpoint, pending)
+        notes += batch.roll_back()[1] if unfinished else []
+        persist.rollback_markers(review_root, checkpoint, unfinished + [
+            e for e in pending if e.get("id") in settled
+            and outage.landed_class(*settled[e.get("id")]) == outage.HOST_FAILURE])
     except BaseException as exc:          # noqa: BLE001 -- `loop` never raises
         notes.append("%s: %s" % (type(exc).__name__, exc))
-    return (INTERRUPTED % (done, total)
-            + ("; rollback incomplete: " + "; ".join(notes) if notes else ""))
+    return message + ("; rollback incomplete: " + "; ".join(notes) if notes else "")
 
 
 # #1727: which enforcement shells each checkpoint DISPATCHES -- `ROLE_FILES`

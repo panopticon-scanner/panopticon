@@ -434,6 +434,24 @@ class Batch:
         self.recovering = True
         self._write()
 
+    def narrow(self, entry_ids):
+        """The graceful interrupt's `begin_recovery` (#3349): keep only `entry_ids` -- the
+        entries that had not settled -- and flag the record, in ONE atomic write.
+
+        One write because the two halves are only safe together. Narrowed but unflagged, a
+        crash leaves what `recover_stale` reads as a fresh crash, and it ledgers and refunds
+        the unfinished entries a second time. Flagged but whole, a crash leaves a record that
+        still lists the settled entries' artifacts, and the recovery that finishes the
+        removals deletes them. A settled entry's retained reply leaves with its row, so it is
+        kept exactly as a clean close keeps it.
+        """
+        wanted = set(entry_ids)
+        if wanted - set(self.entry_ids()):
+            raise ValueError("not this batch's entries: %s"
+                             % ", ".join(sorted(wanted - set(self.entry_ids()))))
+        self.entries = [row for row in self.entries if row["id"] in wanted]
+        self.begin_recovery()
+
     def open(self):
         """Write the manifest. Called BEFORE the first submit, so an interrupt
         that lands on the very first entry still has the list."""
