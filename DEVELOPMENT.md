@@ -686,14 +686,15 @@ entry groups routine Python version updates and filters proposals that would bre
 pinned tools graph: all version updates for `mcp`, `opentelemetry-*`, and `pydantic-core` (Pydantic
 2.14.1 requires exactly pydantic-core 2.50.1); major updates for `peewee`, `boltons`, `protobuf`,
 `pyjwt`, `wcmatch`, and `wrapt`; and major/minor updates for `click`, `jsonschema`,
-`exceptiongroup`, `importlib-metadata`, and `tomli`. Semgrep 1.182.0 (whose requirements are
-1.179.0's, unchanged) constrains `boltons`, `exceptiongroup`, `pyjwt` (to its major line:
-`<3,>=2.15.0`, where 1.178.0 held it to 2.13.x), `tomli` (`~=2.4.0`), and `wcmatch`; pinned
-OpenTelemetry packages constrain `importlib-metadata`, `protobuf`, and `wrapt`. These filters match
-dependency names across the root entry, including the same name in `pyproject.toml`; they are not
-specific to the tools file. Revisit them when upgrading the scanner roots and other pinned parents
-together. They use `update-types`, so security updates remain eligible, though a security fix that
-conflicts with this graph needs manual whole-graph resolution.
+`exceptiongroup`, `importlib-metadata`, and `tomli`. Semgrep 1.182.1 (whose requirements are
+1.179.0's plus a `certifi>=2026.10.19` floor the pinned certifi meets) constrains `boltons`,
+`exceptiongroup`, `pyjwt` (to its major line: `<3,>=2.15.0`, where 1.178.0 held it to 2.13.x),
+`tomli` (`~=2.4.0`), and `wcmatch`; pinned OpenTelemetry packages constrain `importlib-metadata`,
+`protobuf`, and `wrapt`. These filters match dependency names across the root entry, including the
+same name in `pyproject.toml`; they are not specific to the tools file. Revisit them when upgrading
+the scanner roots and other pinned parents together. They use `update-types`, so security updates
+remain eligible, though a security fix that conflicts with this graph needs manual whole-graph
+resolution.
 The digests are still this script's job, and `--require-hashes` fails the build until they match.
 
 It reads every artifact PyPI publishes for that release, keeps the ones a linux build may install
