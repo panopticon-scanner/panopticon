@@ -708,7 +708,7 @@ class TestSkillMd(unittest.TestCase):
         # carry, so it is the only part dropped.
         import scripts.loop_batch as loop_batch
         clause = loop_batch.INTERRUPTED.split(";")[0].split("%d of %d ")[-1]
-        self.assertEqual("entries had been handled and have been rolled back", clause)
+        self.assertEqual("entries had settled and were kept", clause)
         self.assertIn(clause, loop)
         # ...and the termination claim says whose children it can actually reach
         self.assertIn("registered a handle", loop)

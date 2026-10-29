@@ -298,7 +298,8 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         obstructed = []
 
         def obstruct_then_interrupt():
-            obstructed.append(self._obstruct(d, "review-app-SEC"))
+            # #3349: the UNFINISHED entry -- a settled one is no longer the rollback's
+            obstructed.append(self._obstruct(d, "review-app-ACC"))
             raise KeyboardInterrupt
 
         self._gate_on_peer(runner, "review-app-ACC", "review-app-SEC",
@@ -314,7 +315,8 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         rows = ledger_mod.Ledger(run_dir).lines()
         rolled = [r for r in rows if r.get("status") in (ledger_mod.ROLLED_BACK,
                                                          ledger_mod.CANCELLED)]
-        self.assertEqual(len(rolled), 2, rolled)
+        self.assertEqual([("review-app-ACC", ledger_mod.CANCELLED)],
+                         [(r["entry_id"], r["status"]) for r in rolled])
         attempts = runio._load_json(runio._pano(d, review._ATTEMPTS_FILE))
         # the operator clears the obstruction; a LATER loop finishes the job
         shutil.rmtree(obstructed[0])
@@ -588,39 +590,39 @@ class TestHeadlessLoop(_HeadlessLoopCase):
 
     def test_the_interrupt_ledgers_what_it_cut_and_keeps_what_was_spent(self):
         # Spend is a fact and is never rolled back: the completed entry's row
-        # stands, with its real cost. The entry that never completed gets a
-        # `cancelled` row so the run's history says what was cut.
+        # stands, with its real cost -- and since #3349 so does the artifact it
+        # bought, so no `rolled_back` marker follows it. The entry that never
+        # completed gets a `cancelled` row so the run's history says what was cut.
         d, floor = self._repo(floor=("SEC", "ACC"))
         runner = FakeRunner()
         self._interrupt_mid_batch(d, floor, runner)
         rows = ledger_mod.Ledger(runner.run_dir).lines()
         self.assertEqual([("review-app-SEC", None),          # the real, paid launch
-                          ("review-app-SEC", ledger_mod.ROLLED_BACK),
                           ("review-app-ACC", ledger_mod.CANCELLED)],
                          [(row["entry_id"], row.get("status")) for row in rows])
-        paid, marker, cut = rows
+        paid, cut = rows
         # the paid row is untouched: its shape and its spend are what they were
         self.assertEqual(0.01, paid["cost_usd"])
         self.assertNotIn("rolled_back", paid)
-        # ...and the marker beside it says the artifact that spend bought is gone
-        for row in (marker, cut):
-            self.assertIs(True, row["rolled_back"])
-            self.assertIsNone(row["cost_usd"])
-            self.assertFalse(row["ok"])
+        self.assertIs(True, cut["rolled_back"])
+        self.assertIsNone(cut["cost_usd"])
+        self.assertFalse(cut["ok"])
         # ...and usage.json still counts the tokens that were really spent
         usage = runio._load_json(os.path.join(runner.run_dir, "usage.json"))
         self.assertEqual(110, usage["total"])
         self.assertEqual(0, usage["corrupt_rows"])
 
-    def test_the_rollback_returns_the_cells_retry_budget(self):
+    def test_the_rollback_returns_the_unfinished_cells_retry_budget(self):
         # `cell-attempts.json` is charged at DISPATCH time, to bound a cell
         # that never completes. An operator's Ctrl-C is not the host failing,
         # so charging it would silently drop the cell from the review after
-        # three interrupts.
+        # three interrupts. #3349: a SETTLED cell's attempt was really spent,
+        # and keeps its charge exactly as a clean close keeps it.
         d, floor = self._repo(floor=("SEC", "ACC"))
         runner = FakeRunner()
         self._interrupt_mid_batch(d, floor, runner)
-        self.assertEqual({}, {k: v for k, v in review._cell_attempts(d).items() if v})
+        self.assertEqual({"app/SEC": 1},
+                         {k: v for k, v in review._cell_attempts(d).items() if v})
 
     def test_a_prior_phases_artifacts_survive_the_rollback(self):
         # Ruling: phases completed BEFORE the interrupted one are untouched.
@@ -646,14 +648,15 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         self.assertEqual(status["status"], "error", status)
         self.assertEqual(before["bytes"], snapshot())
 
-    def test_the_next_loop_re_dispatches_the_rolled_back_entries(self):
+    def test_the_next_loop_re_dispatches_only_the_rolled_back_entries(self):
+        # #3349: the settled cell is done and is not bought twice
         d, floor = self._repo(floor=("SEC", "ACC"))
         self._interrupt_mid_batch(d, floor, FakeRunner())
         resumed = FakeRunner()
         status = self._return_persist(d, floor, resumed)
         self.assertEqual(status["status"], "complete", status)
-        self.assertEqual({"review-app-SEC", "review-app-ACC"},
-                         {eid for eid in resumed.launched if eid.startswith("review-")})
+        self.assertEqual(["review-app-ACC"],
+                         [eid for eid in resumed.launched if eid.startswith("review-")])
 
     def test_a_batch_that_completes_normally_leaves_no_manifest(self):
         d, floor = self._repo(floor=("SEC", "ACC"))
@@ -738,13 +741,13 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         self.assertEqual("driver loop: RuntimeError: boom", status["message"])
         self.assertEqual(["error"], runner.torn_down)
 
-    def test_a_rejected_reply_from_the_interrupted_batch_is_rolled_back_too(self):
+    def test_a_settled_failures_retained_reply_survives_the_interrupt(self):
         # D10 ruling 5 keeps what a failed launch printed, and ruling 2 reads
-        # it back into the next attempt's prompt -- but a rolled-back phase
-        # re-runs from scratch, so a record of an attempt that is being taken
-        # back must not steer the one that replaces it. It is not knowable at
-        # the manifest's open (retain_rejected names the file only once it has
-        # written it), so the batch gains it mid-flight.
+        # it back into the next attempt's prompt. The batch gains it mid-flight
+        # (retain_rejected names the file only once it has written it). #3349:
+        # the failed launch SETTLED -- its row is on disk -- so the interrupt
+        # keeps its evidence, its row and its charge exactly as a clean close
+        # does, and the retry it is owed reads that evidence back.
         d, floor = self._repo(floor=("SEC", "ACC"))
         runner = FakeRunner()
         runner.fail_once.add("review-app-SEC")     # a launch failure, with output
@@ -766,8 +769,13 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         runner.run_entry = gated
         status = self._return_persist(d, floor, runner)
         self.assertEqual("error", status["status"], status)
-        self.assertEqual(1, len(during["kept"]), during)   # it really was kept...
-        self.assertEqual([], self._rejected(runner))       # ...and taken back
+        self.assertEqual(1, len(during["kept"]), during)
+        self.assertEqual(during["kept"], self._rejected(runner))
+        self.assertEqual({"app/SEC": 1},
+                         {k: v for k, v in review._cell_attempts(d).items() if v})
+        self.assertEqual([("review-app-SEC", None), ("review-app-ACC", ledger_mod.CANCELLED)],
+                         [(r["entry_id"], r.get("status"))
+                          for r in ledger_mod.Ledger(runner.run_dir).lines()])
 
     def test_a_second_interrupt_during_the_rollback_still_tears_down(self):
         # `loop` never raises (review round 1, item 3) -- and a KeyboardInterrupt

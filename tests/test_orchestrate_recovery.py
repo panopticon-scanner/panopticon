@@ -39,33 +39,36 @@ def tearDownModule():
     _readiness_docker_patch.stop()
 
 
+def _unfinished(batch):
+    """The interrupted batch's in-flight entry's row (#3349): the one the rollback still owns."""
+    return next(row for row in batch.entries if row["id"] == "review-app-ACC")
+
+
 class TestHeadlessLoop(_HeadlessLoopCase):
-    def test_an_interrupt_rolls_the_batch_back_to_its_checkpoint(self):
-        # One entry done, one still running when the Ctrl-C lands. While the
-        # batch was live the finished entry really was on disk (P07, `seen`) --
-        # and the interrupt then takes it back, because the phase re-runs from
-        # its checkpoint rather than resuming half-done.
+    def test_an_interrupt_keeps_the_settled_entry_and_rolls_back_the_rest(self):
+        # One entry done, one still running when the Ctrl-C lands. The finished
+        # entry had crossed the settlement boundary -- reply persisted, real row
+        # ledgered, usage rewritten (P07, `seen`) -- so #3349 keeps it exactly as
+        # a clean close would; only the entry still in flight is rolled back.
         d, floor = self._repo(floor=("SEC", "ACC"))
         runner = FakeRunner()
         status, seen = self._interrupt_mid_batch(d, floor, runner)
         self.assertEqual(status["status"], "error", status)
         self.assertEqual({"reply": True, "ledger": True, "usage": True}, seen)
-        # "handled", not "completed": `done` counts every entry the loop got
-        # back, a failed launch included -- it is ledgered as the failure it
-        # was rather than persisted (F2), and the rollback takes back what it
-        # did write either way.
-        self.assertIn("interrupted: 1 of 2 entries had been handled and have been "
-                      "rolled back", status["message"])
-        self.assertIn("the phase will re-run from its checkpoint on the next "
-                      "`driver loop`", status["message"])
+        self.assertIn("interrupted: 1 of 2 entries had settled and were kept; 1 unfinished "
+                      "entries were rolled back to the checkpoint", status["message"])
+        self.assertIn("re-run `driver loop` (without `--reset`) to resume them",
+                      status["message"])
         self.assertIn("use `--reset` to discard the whole run", status["message"])
+        self.assertNotIn("rollback incomplete", status["message"])
 
-        # the reply the loop had persisted is gone, and the entry is pending again
+        # the settled reply stands and is done; the cut entry is pending again
         req = orchestrate.requests.load_dispatch_request(d) or {}
         entries = {e["id"]: e for e in req.get("entries") or []}
-        for eid in ("review-app-SEC", "review-app-ACC"):
-            self.assertFalse(os.path.exists(entries[eid]["out_file"]), eid)
-            self.assertFalse(orchestrate.persist.is_done(entries[eid]), eid)
+        self.assertTrue(os.path.isfile(entries["review-app-SEC"]["out_file"]))
+        self.assertTrue(orchestrate.persist.is_done(entries["review-app-SEC"]))
+        self.assertFalse(os.path.exists(entries["review-app-ACC"]["out_file"]))
+        self.assertFalse(orchestrate.persist.is_done(entries["review-app-ACC"]))
         # the manifest that listed what to take back is gone with it
         self.assertEqual([], self._manifests(runner.run_dir))
         settings = os.path.join(runner.run_dir, base.SETTINGS_FILE)
@@ -85,7 +88,8 @@ class TestHeadlessLoop(_HeadlessLoopCase):
             return original_open(batch_self)
 
         def tamper_and_interrupt():
-            opened[0].entries[0]["artifacts"].append(outside)
+            # #3349: the UNFINISHED entry's list -- a settled entry's leaves the record
+            _unfinished(opened[0])["artifacts"].append(outside)
             raise KeyboardInterrupt
 
         seen = self._gate_on_peer(runner, "review-app-ACC", "review-app-SEC",
@@ -125,7 +129,7 @@ class TestHeadlessLoop(_HeadlessLoopCase):
             return original_open(batch_self)
 
         def tamper_and_interrupt():
-            opened[0].entries[0]["artifacts"].append(outside)
+            _unfinished(opened[0])["artifacts"].append(outside)
             raise KeyboardInterrupt
 
         seen = self._gate_on_peer(runner, "review-app-ACC", "review-app-SEC",

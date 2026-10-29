@@ -347,7 +347,8 @@ class _HeadlessLoopCase(LoopCase):
         rollback with PROBLEMS looks like."""
         req = orchestrate.requests.load_dispatch_request(d) or {}
         out = next(e for e in req["entries"] if e["id"] == entry_id)["out_file"]
-        os.remove(out)
+        if os.path.lexists(out):         # #3349: an unfinished entry may have written nothing
+            os.remove(out)
         os.makedirs(out)
         with open(os.path.join(out, "keep.txt"), "w") as fh:
             fh.write("keep")

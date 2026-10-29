@@ -56,6 +56,14 @@ class Ledger:
 
     def __init__(self, run_dir):
         self.path = os.path.join(run_dir, runners_base.LEDGER_FILE)
+        # #3349: entry id -> `(result, refusal)` for every REAL row this process appended since
+        # `mark_batch`, or None outside a batch. The graceful interrupt's settlement authority:
+        # held in memory, so nothing the reviewed tree can edit decides what an interrupt keeps.
+        self.settled = None
+
+    def mark_batch(self):
+        """Start this batch's settlement record (#3349); called as the batch opens."""
+        self.settled = {}
 
     def record(self, entry, checkpoint, result, mode, host, duration_ms=None,
                refusal=None, timing=None, rejected_file=None,
@@ -153,6 +161,10 @@ class Ledger:
         # symlink confinement every other run-folder write goes through.
         with runio._open_a_nofollow(self.path) as fh:
             fh.write(text + "\n")
+        # AFTER the append, never before: an entry is settled once its real row is on disk, and
+        # an interrupt's own rows (`status`) settle nothing.
+        if status is None and self.settled is not None:
+            self.settled[line["entry_id"]] = (result, refusal)
 
     def rollback_rows(self, entries, completed, checkpoint, mode, host, reason="Ctrl-C"):
         """Write the interrupt's rows for one rolled-back batch (#1662): one
