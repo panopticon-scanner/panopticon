@@ -28,6 +28,8 @@ from tests._test_helpers import docker_probe_runner
 from tests.orchestrate_helpers import FakeRunner, _HeadlessLoopCase
 
 SEC, ACC = "review-app-SEC", "review-app-ACC"
+# Never set: each poll below waits on it for one tick, under a deadline.
+_TICK = threading.Event()
 
 # A runner child that forks a worker, records both pids, and outsleeps every
 # deadline here: what the interrupt has to reap (tests/test_procgroup.py).
@@ -79,7 +81,7 @@ class TestSettledEntriesSurviveTheInterrupt(_HeadlessLoopCase):
         while time.monotonic() < deadline:
             if any(r.get("entry_id") == eid for r in ledger_mod.Ledger(runner.run_dir).lines()):
                 return True
-            time.sleep(0.02)
+            _TICK.wait(0.02)
         return False
 
     def _on_record(self, after):
@@ -308,7 +310,7 @@ class TestSettledEntriesSurviveTheInterrupt(_HeadlessLoopCase):
                     with open(pidfile, encoding="utf-8") as fh:
                         pids.extend(int(p) for p in fh.read().split())
                 except (OSError, ValueError):
-                    time.sleep(0.02)
+                    _TICK.wait(0.02)
             os.kill(os.getpid(), signal.SIGTERM)
 
         def gated(entry, env):
@@ -325,7 +327,7 @@ class TestSettledEntriesSurviveTheInterrupt(_HeadlessLoopCase):
         self.assertEqual(2, len(pids))
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and any(_alive(p) for p in pids):
-            time.sleep(0.05)
+            _TICK.wait(0.05)
         self.assertFalse([p for p in pids if _alive(p)], "the in-flight child group outlived it")
         self.assertEqual([(SEC, None), (ACC, ledger_mod.CANCELLED)], self._rows(runner))
         self.assertTrue(orchestrate.persist.is_done(self._entries(d)[SEC]))
