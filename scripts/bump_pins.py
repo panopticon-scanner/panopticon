@@ -1,52 +1,20 @@
 #!/usr/bin/env python3
-"""Keep this repo's hand-maintained pins current, safely -- one FAMILY per mode.
+"""Maintain the repo's hand-written supply-chain pins, one family per mode.
 
-Dependabot covers this repo's pip and github-actions dependencies. It does NOT
-cover the artifacts the Dockerfile fetches by curl and verifies by SHA256 --
-rustup, Go, gosec, gitleaks and friends -- nor the wheel digests the privileged
-builds install by. Those are pinned by hand, so they drift by hand, and nobody
-notices until something forces the issue.
+Dependabot does not cover Dockerfile downloads or the wheel digests privileged
+builds install. Immutable URLs made those pins stable but their drift silent,
+so scheduled checks keep it visible. Families are:
 
-On 2026-09-01 rustup forced it the bad way: the fetch used the MOVING
-`rustup/dist/` URL, so shipping 1.29.1 upstream broke `sha256sum -c` and every
-from-scratch build with it. Pinning to the immutable archive URL fixed that, and
-in doing so changed the failure mode -- the build is now stable indefinitely,
-which means drift is SILENT rather than loud. A pin that cannot break is a pin
-nobody remembers to bump.
+  rustup          version plus two init checksums from rust-lang's manifest
+  trivy           version plus two publisher-verified archive checksums
+  rust-toolchain  compiler version from the checksum-verified stable manifest
+  requirements    allowed PyPI wheel bytes for committed `name==version` pins
+  gems            version/digest pairs whose reviewed runtime closure is fixed
+  tinyproxy       read-only check of the sidecar's multi-platform digest
 
-So: check on a schedule, and open a PR when upstream moves. The point is not
-urgency (there is none now) but visibility.
-
-Families (`bump_pins.py <family>`), one mode each because they answer to
-different upstreams and different verification steps:
-
-  rustup        the Dockerfile's `ARG RUSTUP_VERSION` + its two init checksums,
-                read from rust-lang's own manifest.
-  trivy         the scanner version + both archive checksums, checked against
-                the publisher's release checksum file and archive bytes.
-  rust-toolchain  the compiler version from a checksum-verified stable manifest.
-  requirements  the `--hash=sha256:` lines in the requirements files the
-                privileged builds install from (#1641), read from PyPI's JSON
-                API. Versions are NOT chosen here -- the `name==version` pins in
-                those files are, and this mode fills in what bytes each one is
-                allowed to be.
-  gems          the Dockerfile's `ARG <GEM>_VERSION` + `ARG <GEM>_GEM_SHA256`
-                pairs, read from rubygems' own API. The tools image installs
-                each .gem from a checksum-gated file with
-                --ignore-dependencies (#1734), so this also refuses to pin a
-                release whose runtime closure has DRIFTED from the reviewed
-                one -- a new dependency, or a tightened constraint on one the
-                base image's ruby provides. Neither is a change a digest can
-                catch, and both break the image rather than the download.
-  tinyproxy     read-only check of the egress sidecar's multi-platform digest;
-                a stale pin produces a workflow warning for manual review.
-
-RULE, inherited from the #run7 FIXME this automates: never guess a checksum.
-Every SHA written here is read from upstream's own metadata AND recomputed from
-the downloaded artifact before it reaches a pinned file.
-
-Needs the network, so it is an OPERATOR tool: nothing in the test suite runs it
-against a live index (tests/test_bump_pins.py drives it off canned responses).
+Writing modes never guess: a SHA comes from upstream metadata and is recomputed
+from the downloaded artifact. This is a networked operator tool; tests inject
+canned responses and never contact a live index.
 """
 from __future__ import annotations
 
@@ -54,13 +22,16 @@ import argparse
 import ast
 import hashlib
 import json
+import os
 import re
 import sys
+import time
 import tomllib
 import urllib.parse
 import urllib.request
 
-from pin_requirements import parse_requirements, rewrite_requirements
+from pin_requirements import (parse_requirement_hashes, parse_requirements,
+                              rewrite_requirements)
 
 RUSTUP_STABLE = "https://static.rust-lang.org/rustup/release-stable.toml"
 RUSTUP_ARCHIVE = "https://static.rust-lang.org/rustup/archive/{v}/{triple}/rustup-init"
@@ -75,9 +46,14 @@ PYPI_RELEASE = "https://pypi.org/pypi/{name}/{version}/json"
 RUBYGEMS_LATEST = "https://rubygems.org/api/v1/versions/{name}/latest.json"
 RUBYGEMS_RELEASE = "https://rubygems.org/api/v2/rubygems/{name}/versions/{version}.json"
 RUBYGEMS_DOWNLOAD = "https://rubygems.org/downloads/{name}-{version}.gem"
-# The files the `requirements` family maintains when none is named.
-REQUIREMENTS_FILES = (".github/requirements-gate.txt", "requirements-fixtures.txt",
-                      "requirements-tools.txt")
+LINUX_ARCHES = ("x86_64", "aarch64")
+# #2877: check policy is per installed file, not "would write mode change it?"
+REQUIREMENTS_POLICIES = {
+    ".github/requirements-gate.txt": ("x86_64",),
+    "requirements-fixtures.txt": LINUX_ARCHES,
+    "requirements-tools.txt": LINUX_ARCHES,
+}
+REQUIREMENTS_FILES = tuple(REQUIREMENTS_POLICIES)
 TIMEOUT = 120
 DOWNLOAD_HOSTS = frozenset({
     "api.github.com",
@@ -148,11 +124,11 @@ class _DownloadRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def _get(url: str | urllib.request.Request) -> bytes:
+def _get(url: str | urllib.request.Request, timeout=TIMEOUT) -> bytes:
     request_url = url.full_url if isinstance(url, urllib.request.Request) else url
     _download_origin(request_url)
     opener = urllib.request.build_opener(_DownloadRedirectHandler())
-    with opener.open(url, timeout=TIMEOUT) as fh:
+    with opener.open(url, timeout=timeout) as fh:
         return fh.read()
 
 
@@ -437,35 +413,14 @@ def run_rust_toolchain(args) -> int:
 
 
 # --- family: gems -------------------------------------------------------------
-# The tools image no longer runs RubyGems' resolver: it downloads each .gem,
-# gates it on `sha256sum -c`, and installs it with --local
-# --ignore-dependencies (#1734). That makes these pins the same shape as the
-# release binaries above, drifting the same silent way, so the rustup family's
-# answer applies unchanged -- read the digest from upstream's own metadata AND
-# recompute it from the artifact before writing it down.
-
-# ARG prefix -> gem name. The Dockerfile spells each pin as a PAIR:
-# `ARG <PREFIX>_VERSION` and `ARG <PREFIX>_GEM_SHA256`.
+# Gems are downloaded, checksum-gated, then installed `--ignore-dependencies`
+# (#1734), so each Dockerfile pin is a version/SHA pair verified like rustup.
 GEMS = (("BRAKEMAN", "brakeman"),
         ("BUNDLER_AUDIT", "bundler-audit"),
         ("THOR", "thor"))
-# The runtime closure this repo has REVIEWED, as {gem: {dependency:
-# requirement}}, read from rubygems' own API on the day each version was
-# pinned. Both halves are load-bearing, and for different reasons:
-#
-#   a new NAME is a gem nothing installs. The image installs with
-#   --ignore-dependencies, so it would simply be absent.
-#
-#   a changed REQUIREMENT is a constraint this tool cannot evaluate. `racc` and
-#   `bundler` come from the base image's ruby, whose version is not knowable
-#   from here, and `thor` is installed at whatever THOR_VERSION says -- so
-#   "does 1.5.0 satisfy `~> 2.0`?" is a question only the image build answers,
-#   at `bundle-audit update` and at smoke_adapters.py. Comparing names alone
-#   let a tightened constraint through --write and deferred the failure to
-#   that build, with a green pin in the diff to argue it was fine.
-#
-# Either way the answer is to stop and make a human look. Update this table in
-# the same commit as the version bump, once the image build is green.
+# Reviewed {gem: {dependency: requirement}} closures. A new name is absent
+# under `--ignore-dependencies`; a changed constraint can only be judged by the
+# image's Ruby. Either drift needs a human and a green image build.
 REVIEWED_GEM_RUNTIME = {
     "brakeman": {"racc": ">= 0"},
     "bundler-audit": {"bundler": ">= 1.2.0", "thor": "~> 1.0"},
@@ -513,16 +468,8 @@ def latest_gem_version(name: str) -> str:
 def verified_gem_sha(name: str, version: str) -> tuple[str, dict[str, str | None]]:
     """(sha256, {runtime dependency: requirement string}) for `name-version.gem`.
 
-    The digest is read from rubygems' release document AND recomputed from the
-    downloaded .gem, for the reason the rustup family states: the published
-    value alone proves only that the index agrees with itself.
-
-    The runtime dependencies come back with it, REQUIREMENTS INCLUDED, because
-    the image installs with --ignore-dependencies: the closure is something
-    this repo asserts rather than something RubyGems works out. A release that
-    requires a new gem -- or that tightens a constraint on one the base image's
-    ruby provides -- carries a perfectly good digest and is still wrong to pin.
-    See `unreviewed_gem_requirements`.
+    Recomputes the published digest. Requirements are retained because
+    `--ignore-dependencies` makes the reviewed closure this repo's assertion.
     """
     version = _gem_version(version)
     body = _get(RUBYGEMS_RELEASE.format(name=name, version=version))
@@ -547,12 +494,7 @@ def verified_gem_sha(name: str, version: str) -> tuple[str, dict[str, str | None
 
 
 def unreviewed_gem_requirements(name: str, runtime: dict[str, str | None]) -> list[str]:
-    """How this release's runtime closure differs from the reviewed one, or [].
-
-    Pure. `runtime` is `verified_gem_sha`'s second value: {dependency:
-    requirement string}. Every difference is reported, not just the first, so
-    one run tells an operator the whole story.
-    """
+    """All differences from this gem's reviewed runtime closure."""
     reviewed = REVIEWED_GEM_RUNTIME.get(name)
     if reviewed is None:
         return [("%s has no reviewed runtime closure; add one to "
@@ -572,13 +514,7 @@ def unreviewed_gem_requirements(name: str, runtime: dict[str, str | None]) -> li
 
 
 def rewrite_gem_pin(text: str, prefix: str, version: str, sha: str) -> str:
-    """Dockerfile text with one gem's version AND digest updated.
-
-    Pure, and total: raises rather than silently no-op'ing if either line it
-    expects is absent. Writing one of the two would leave a digest that cannot
-    match the artifact the new version's URL serves, which is a build that
-    breaks at `sha256sum -c` with nothing in the diff to explain it.
-    """
+    """Update one gem's version and digest; raise if either line is absent."""
     version = _gem_version(version)
     new = re.sub(r"^ARG %s_VERSION=\S+\s*$" % prefix,
                  "ARG %s_VERSION=%s" % (prefix, version), text, count=1,
@@ -719,63 +655,58 @@ def run_tinyproxy(args) -> int:
 
 
 # --- family: requirements -----------------------------------------------------
-# What `--require-hashes` needs is one `--hash=sha256:` line per artifact pip
-# could legitimately choose for the target platform. Writing those by hand is
-# how a digest gets invented; this reads each one from PyPI's JSON API and
-# recomputes it from the downloaded wheel, exactly as the rustup family does.
-
-# The machine architectures the builds these pins protect actually run on.
-# ubuntu-latest (the gate) is amd64 only, but docker-publish.yml builds the
-# tools image -- and with it the fixtures image FROM it -- for linux/amd64 AND
-# linux/arm64, so an x86_64-only hash block fails `--require-hashes` on the
-# arm64 leg alone (#1734). Both are kept for every file: pip only needs ONE
-# `--hash` on a line to match the artifact it actually fetched, so the digests
-# an amd64 build never uses cost it nothing.
-LINUX_ARCHES = ("x86_64", "aarch64")
+# Write mode recomputes every selected wheel; check mode maps committed hashes
+# to PyPI filenames and enforces the narrower policy of the file that owns them.
 
 
-def wheel_is_installable(filename: str) -> bool:
-    """Could the linux builds this repo pins for select this wheel?
+def _requirements_arches(path: str) -> tuple[str, ...]:
+    normalized = os.path.normpath(path).replace("\\", "/")
+    for filename, arches in REQUIREMENTS_POLICIES.items():
+        if normalized == filename or normalized.endswith("/" + filename):
+            return arches
+    raise RuntimeError("no requirements check policy for %s" % path)
 
-    The surfaces are ubuntu-latest for the gate and the `python:3.12-slim`
-    images for the fixtures and the tools -- so the answer is the pure-Python
-    wheels plus the linux binary ones for either architecture in
-    `LINUX_ARCHES`. Every CPython ABI is kept rather than just today's: the
-    gate's `python-version` is a pin of its own and moving it must not silently
-    leave pip with nothing it may install.
 
-    `"linux" in tag` is load-bearing next to the arch suffix, not decoration:
-    `macosx_11_0_arm64` also ends in an arm64 spelling, and `aarch64` is the
-    one manylinux uses, so the two tests together are what keep a macOS wheel
-    out of a linux build's hash block.
-    """
+def wheel_is_installable(filename: str, arches=LINUX_ARCHES) -> bool:
+    """Is this a pure wheel or a linux wheel for one of `arches`?"""
     if not filename.endswith(".whl"):
         return False
     platform_tag = filename[:-len(".whl")].rsplit("-", 1)[-1]
     for tag in platform_tag.split("."):
         if tag == "any":
             return True
-        if "linux" in tag and tag.endswith(LINUX_ARCHES):
+        if "linux" in tag and tag.endswith(arches):
             return True
     return False
 
 
-def verified_pypi_hashes(name: str, version: str) -> list[str]:
-    """Every sha256 `name==version` may install as, read from PyPI AND verified.
+def pypi_release_files(name: str, version: str) -> list[dict]:
+    """Read one release's file list, with bounded retries for check-mode CI."""
+    url = PYPI_RELEASE.format(name=name, version=version)
+    reason = "unknown PyPI failure"
+    for attempt in range(3):
+        try:
+            body = _get(url, timeout=5)
+            try:
+                release = json.loads(body.decode("utf-8", "replace"))
+            except ValueError as exc:
+                raise RuntimeError("PyPI did not answer with JSON for %s==%s: %s"
+                                   % (name, version, exc)) from exc
+            files = release.get("urls") if isinstance(release, dict) else None
+            if not isinstance(files, list) or not all(isinstance(f, dict) for f in files):
+                raise RuntimeError("PyPI JSON has no file list for %s==%s" % (name, version))
+            return files
+        except (OSError, RuntimeError, ValueError) as exc:
+            reason = str(exc)
+            if attempt < 2:
+                time.sleep(0.1 * (attempt + 1))
+    raise RuntimeError(reason)
 
-    PyPI publishes each file's digest beside it, which alone only proves the
-    index is self-consistent. Downloading the wheel and recomputing the digest
-    is what makes the pin a control, and it is the same step the rustup family
-    refuses to skip.
-    """
-    body = _get(PYPI_RELEASE.format(name=name, version=version))
-    try:
-        release = json.loads(body.decode("utf-8", "replace"))
-    except ValueError as exc:
-        raise RuntimeError("PyPI did not answer with JSON for %s==%s: %s"
-                           % (name, version, exc)) from exc
+
+def verified_pypi_hashes(name: str, version: str) -> list[str]:
+    """Every installable wheel sha, read from PyPI and recomputed."""
     digests = []
-    for entry in release.get("urls") or []:
+    for entry in pypi_release_files(name, version):
         filename = entry.get("filename") or ""
         if not wheel_is_installable(filename):
             continue
@@ -796,9 +727,71 @@ def verified_pypi_hashes(name: str, version: str) -> list[str]:
     return sorted(set(digests))
 
 
+def requirement_hash_errors(path: str, text: str,
+                            releases: dict[tuple[str, str], list[dict]]) -> list[str]:
+    """Policy errors in one file, in block/digest/PyPI filename order."""
+    arches = _requirements_arches(path)
+    errors = []
+    for name, version, digests in parse_requirement_hashes(text):
+        pin = (name, version)
+        if pin not in releases:  # its fetch failed; run_requirements reports that separately
+            continue
+        prefix = "%s: %s==%s" % (path, name, version)
+        host_installable = False
+        files = releases[pin]
+        for digest in digests:
+            matches = sorted(
+                (entry for entry in files
+                 if (entry.get("digests") or {}).get("sha256") == digest),
+                key=lambda entry: str(entry.get("filename") or ""))
+            if not matches:
+                errors.append("%s: %s: not published for this release" % (prefix, digest))
+                continue
+            for entry in matches:
+                filename = str(entry.get("filename") or "")
+                if not filename.endswith(".whl"):
+                    reason = "sdist"
+                elif not wheel_is_installable(filename, arches):
+                    reason = "off-policy wheel"
+                else:
+                    host_installable |= wheel_is_installable(filename, ("x86_64",))
+                    continue
+                errors.append("%s: %s: %s: %s" % (prefix, digest, filename, reason))
+        if not host_installable:
+            errors.append("%s: no installable x86_64-or-any digest" % prefix)
+    return errors
+
+
 def run_requirements(args) -> int:
-    rc = 0
-    for path in args.files or list(REQUIREMENTS_FILES):
+    paths = args.files or list(REQUIREMENTS_FILES)
+    if args.check:
+        documents = []
+        pins = set()
+        errors = []
+        for path in paths:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+            try:
+                _requirements_arches(path)
+            except RuntimeError as exc:
+                errors.append(str(exc))
+                continue
+            documents.append((path, text))
+            pins.update(parse_requirements(text))
+        releases = {}
+        unavailable = []
+        for pin in sorted(pins):
+            try:
+                releases[pin] = pypi_release_files(*pin)
+            except RuntimeError as exc:
+                unavailable.append("could not verify %s==%s: %s" % (*pin, exc))
+                break
+        for path, text in documents:
+            errors.extend(requirement_hash_errors(path, text, releases))
+        for error in errors + unavailable:
+            print("bump-pins: " + error, file=sys.stderr)
+        return 2 if unavailable else (1 if errors else 0)  # outage != bad policy
+    for path in paths:
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
         pins = parse_requirements(text)
@@ -812,7 +805,6 @@ def run_requirements(args) -> int:
             continue
         if not args.write:
             print("bump-pins: %s hashes available (re-run with --write)" % path)
-            rc = 0
             continue
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(new)
@@ -820,7 +812,7 @@ def run_requirements(args) -> int:
         for name, version in pins:
             print("  %s==%s  %d artifact(s)" % (name, version,
                                                 len(hashes[(name, version)])))
-    return rc
+    return 0
 
 
 def main(argv=None):
@@ -849,6 +841,9 @@ def main(argv=None):
     reqs.add_argument("--file", action="append", dest="files", metavar="PATH",
                       help="a requirements file to refresh (repeatable; "
                            "default: %s)" % ", ".join(REQUIREMENTS_FILES))
+    req_mode = reqs.add_mutually_exclusive_group()
+    req_mode.add_argument("--write", action="store_true", help="apply the bump")
+    req_mode.add_argument("--check", action="store_true", help="validate committed hashes")
     reqs.set_defaults(run=run_requirements)
 
     gems = families.add_parser(
@@ -860,7 +855,7 @@ def main(argv=None):
     proxy.add_argument("--source", default=PROXY_SOURCE)
     proxy.set_defaults(run=run_tinyproxy)
 
-    for parser in (rustup, trivy, toolchain, reqs, gems):
+    for parser in (rustup, trivy, toolchain, gems):
         parser.add_argument("--write", action="store_true",
                             help="apply the bump (default: report only)")
     args = ap.parse_args(argv)

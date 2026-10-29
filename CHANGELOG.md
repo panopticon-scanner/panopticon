@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Security: privileged requirements hashes can now be checked against their
+  published PyPI filenames (#2877).** `bump_pins.py requirements --check` is a
+  read-only, stdlib-only CI gate: it rejects sdists, unknown digests and wheels
+  outside each file's platform policy, while requiring every pin to retain an
+  x86_64-or-universal wheel. Gate hashes remain x86_64-only; tools and fixtures
+  also permit aarch64. Release metadata is fetched once per pin with bounded
+  retries, and an upstream outage has a distinct diagnostic and exit status
+  from a committed policy violation.
 - **Fix: a graceful Ctrl-C or SIGTERM no longer deletes the entries that had already settled in the active batch (#3349).**
   Stopping a live headless review used to roll back the whole checkpoint batch. On a
   1,000-cell review checkpoint, an emergency stop near the end deleted hundreds of

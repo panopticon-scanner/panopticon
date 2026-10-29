@@ -14,6 +14,7 @@ _PIN = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)(?:\[[A-Za-z0-9._,\s-]+\])?"
                   r"\s*==(?P<version>[^\s;\\]+)")
 _REQUIREMENT_PART = re.compile(
     r'''"[^"]*"|'[^']*'|(?P<comment>(?<!\S)\#.*$)|(?P<hash>(?<!\S)--hash(?:=|\s+)\S+)''')
+_SHA256_OPTION = re.compile(r"--hash(?:=|\s+)sha256:([0-9a-f]{64})\Z")
 
 
 def _requirement_clause(joined: str) -> tuple[str, str]:
@@ -51,16 +52,30 @@ def _logical_lines(text: str) -> list[tuple[int, str]]:
     return out
 
 
-def parse_requirements(text: str) -> list[tuple[str, str]]:
-    """[(name, version)] for every `name==version` pin in a requirements file."""
+def parse_requirement_hashes(text: str) -> list[tuple[str, str, list[str]]]:
+    """[(name, version, sha256 options)] for every pinned logical line."""
     pins = []
     for _n, joined in _logical_lines(text):
         if joined.startswith("#"):
             continue
         m = _PIN.match(joined)
         if m:
-            pins.append((m.group("name"), m.group("version")))
+            digests = []
+            for part in _REQUIREMENT_PART.finditer(joined):
+                if part.group("comment"):
+                    break
+                option = part.group("hash")
+                digest = _SHA256_OPTION.fullmatch(option) if option else None
+                if digest:
+                    digests.append(digest.group(1))
+            pins.append((m.group("name"), m.group("version"), digests))
     return pins
+
+
+def parse_requirements(text: str) -> list[tuple[str, str]]:
+    """[(name, version)] for every `name==version` pin in a requirements file."""
+    return [(name, version) for name, version, _hashes
+            in parse_requirement_hashes(text)]
 
 
 def rewrite_requirements(text: str, hashes: dict[tuple[str, str], list[str]]) -> str:

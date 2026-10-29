@@ -1,11 +1,16 @@
+import contextlib
 import email.message
 import hashlib
 import io
 import json
 import os
 import re
+import subprocess
+import sys
+import tempfile
 import traceback
 import unittest
+import urllib.error
 import urllib.request
 import urllib.response
 from unittest import mock
@@ -738,7 +743,7 @@ def _canned(files):
     """A `_get` answering the release JSON and each artifact it names."""
     bodies = {"https://files.pythonhosted.test/" + n: b for n, b, _s in files}
 
-    def get(url):
+    def get(url, *_args, **_kwargs):
         if url.endswith("/json"):
             return json.dumps(_release(files)).encode()
         return bodies[url]
@@ -817,13 +822,21 @@ class TestPypiVerification(unittest.TestCase):
         self.assertIn("no wheel this platform may install", str(cm.exception))
 
     def test_a_non_json_answer_is_refused(self):
-        with mock.patch.object(bp, "_get", lambda url: b"<html>404</html>"):
+        with mock.patch.object(bp, "_get", lambda url, **_kwargs: b"<html>404</html>"), \
+                mock.patch("time.sleep"):
             with self.assertRaises(RuntimeError) as cm:
                 bp.verified_pypi_hashes("pytest", "9.1.1")
         self.assertIn("did not answer with JSON", str(cm.exception))
 
 
 class TestRequirementsRewrite(unittest.TestCase):
+    def test_hash_parser_shares_the_pin_grammar(self):
+        digest = "a" * 64
+        text = ('demo[fast]==1.2; platform_release == "--hash=sha256:keep" \\\n'
+                '    --hash sha256:%s  # --hash=sha256:%s\n' % (digest, "b" * 64))
+        self.assertEqual(
+            [("demo", "1.2", [digest])], bp.parse_requirement_hashes(text))
+
     def test_markers_extras_and_inline_comments_survive_hash_refresh(self):
         for clause in ('demo==1.2; python_version < "3.13"',
                        'demo[fast,ssl]==1.2; sys_platform == "linux"',
@@ -985,6 +998,207 @@ class TestRequirementsMain(unittest.TestCase):
             (".github/requirements-gate.txt", "requirements-fixtures.txt",
              "requirements-tools.txt"),
             bp.REQUIREMENTS_FILES)
+        self.assertEqual({
+            ".github/requirements-gate.txt": ("x86_64",),
+            "requirements-fixtures.txt": bp.LINUX_ARCHES,
+            "requirements-tools.txt": bp.LINUX_ARCHES,
+        }, bp.REQUIREMENTS_POLICIES)
+
+
+class TestRequirementsCheck(unittest.TestCase):
+    GATE = ".github/requirements-gate.txt"
+    TOOLS = "requirements-tools.txt"
+    PIN = ("demo", "1.0")
+
+    @staticmethod
+    def _block(*digests, name="demo", version="1.0"):
+        return "%s==%s \\\n%s\n" % (
+            name, version,
+            " \\\n".join("    --hash=sha256:" + digest for digest in digests),
+        )
+
+    @staticmethod
+    def _files(*files):
+        return _release(list(files))["urls"]
+
+    def _errors(self, path, text, files, pin=None):
+        return bp.requirement_hash_errors(
+            path, text, {pin or self.PIN: files})
+
+    def test_bad_artifact_rows_name_file_pin_digest_and_reason(self):
+        aarch = "demo-1.0-cp312-cp312-manylinux_2_17_aarch64.whl"
+        cases = (
+            ("sdist", "demo-1.0.tar.gz", WHEEL_SHA, WHEEL_SHA, "sdist"),
+            ("macos", "demo-1.0-cp312-cp312-macosx_11_0_x86_64.whl",
+             WHEEL_SHA, WHEEL_SHA, "off-policy wheel"),
+            ("unknown", "demo-1.0-py3-none-any.whl",
+             OTHER_SHA, WHEEL_SHA, "not published for this release"),
+            ("gate-aarch64", aarch, WHEEL_SHA, WHEEL_SHA, "off-policy wheel"),
+        )
+        for label, filename, published, committed, reason in cases:
+            with self.subTest(label=label):
+                errors = self._errors(
+                    self.GATE, self._block(committed),
+                    self._files((filename, b"unused", published)))
+                rendered = "\n".join(errors)
+                self.assertIn(self.GATE, rendered)
+                self.assertIn("demo==1.0", rendered)
+                self.assertIn(committed, rendered)
+                self.assertIn(reason, rendered)
+                if label != "unknown":
+                    self.assertIn(filename, rendered)
+
+    def test_tools_aarch64_only_fails_the_x86_or_any_floor(self):
+        filename = "demo-1.0-cp312-cp312-manylinux_2_17_aarch64.whl"
+        errors = self._errors(
+            self.TOOLS, self._block(WHEEL_SHA),
+            self._files((filename, b"unused", WHEEL_SHA)))
+        rendered = "\n".join(errors)
+        self.assertNotIn("off-policy wheel", rendered)
+        self.assertIn("no installable x86_64-or-any digest", rendered)
+        self.assertIn("demo==1.0", rendered)
+
+    def test_real_gate_block_and_per_file_controls_are_green(self):
+        # Exact pip block on main when #2877 was fixed.
+        pip_sha = "fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
+        pip_block = self._block(pip_sha, name="pip", version="26.2.2")
+        pip_files = self._files(("pip-26.2.2-py3-none-any.whl", b"", pip_sha))
+        self.assertEqual([], self._errors(
+            self.GATE, pip_block, pip_files, pin=("pip", "26.2.2")))
+
+        x86 = "demo-1.0-cp312-cp312-manylinux_2_17_x86_64.whl"
+        arm = "demo-1.0-cp312-cp312-manylinux_2_17_aarch64.whl"
+        both = self._files((x86, b"", WHEEL_SHA), (arm, b"", OTHER_SHA))
+        self.assertEqual([], self._errors(
+            self.TOOLS, self._block(WHEEL_SHA, OTHER_SHA), both))
+        self.assertEqual([], self._errors(
+            self.GATE, self._block(WHEEL_SHA), both))
+
+    def test_unknown_file_has_no_guessed_policy(self):
+        with self.assertRaisesRegex(RuntimeError, "no requirements check policy"):
+            self._errors("requirements-other.txt", self._block(WHEEL_SHA), PURE)
+        with tempfile.TemporaryDirectory() as root:
+            path = self._path(root, "requirements-other.txt", self._block(WHEEL_SHA))
+            err = io.StringIO()
+            with mock.patch.object(bp, "pypi_release_files") as fetch, \
+                    contextlib.redirect_stderr(err):
+                rc = bp.main(["requirements", "--check", "--file", path])
+        self.assertEqual(1, rc)
+        fetch.assert_not_called()
+        self.assertIn("no requirements check policy", err.getvalue())
+
+    def _path(self, root, policy_path, text):
+        path = os.path.join(root, policy_path)
+        os.makedirs(os.path.dirname(path) or root, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        return path
+
+    def test_check_policy_failure_is_nonzero_and_never_writes(self):
+        with tempfile.TemporaryDirectory() as root:
+            text = self._block(WHEEL_SHA)
+            path = self._path(root, self.GATE, text)
+            files = self._files(("demo-1.0.tar.gz", b"", WHEEL_SHA))
+            err = io.StringIO()
+            with mock.patch.object(bp, "pypi_release_files", return_value=files), \
+                    contextlib.redirect_stderr(err):
+                rc = bp.main(["requirements", "--check", "--file", path])
+            with open(path, encoding="utf-8") as fh:
+                after = fh.read()
+        self.assertEqual(1, rc)
+        self.assertEqual(text, after)
+        self.assertIn("sdist", err.getvalue())
+
+    def test_fetch_failure_retries_and_has_a_distinct_exit(self):
+        with tempfile.TemporaryDirectory() as root:
+            text = self._block(WHEEL_SHA) + self._block(
+                OTHER_SHA, name="zeta", version="2.0")
+            path = self._path(root, self.GATE, text)
+            err = io.StringIO()
+            with mock.patch.object(bp, "_get", side_effect=TimeoutError("timed out")) as get, \
+                    mock.patch("time.sleep") as sleep, contextlib.redirect_stderr(err):
+                rc = bp.main(["requirements", "--check", "--file", path])
+            with open(path, encoding="utf-8") as fh:
+                after = fh.read()
+        self.assertEqual(2, rc)
+        self.assertEqual(3, get.call_count)
+        get.assert_has_calls([
+            mock.call(bp.PYPI_RELEASE.format(name="demo", version="1.0"), timeout=5)
+        ] * 3)
+        self.assertEqual(2, sleep.call_count)
+        self.assertIn("could not verify demo==1.0: timed out", err.getvalue())
+        self.assertNotIn("zeta==2.0", err.getvalue())
+        self.assertEqual(text, after)
+
+    def test_bad_json_is_retried_as_unavailable(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = self._path(root, self.GATE, self._block(WHEEL_SHA))
+            err = io.StringIO()
+            with mock.patch.object(bp, "_get", return_value=b"not json") as get, \
+                    mock.patch("time.sleep"), contextlib.redirect_stderr(err):
+                rc = bp.main(["requirements", "--check", "--file", path])
+        self.assertEqual(2, rc)
+        self.assertEqual(3, get.call_count)
+        self.assertIn("could not verify demo==1.0", err.getvalue())
+
+    def test_http_error_is_retried_offline(self):
+        failure = urllib.error.HTTPError(
+            bp.PYPI_RELEASE.format(name="demo", version="1.0"),
+            503, "service unavailable", {}, None)
+        with mock.patch.object(bp, "_get", side_effect=failure) as get, \
+                mock.patch("time.sleep") as sleep, \
+                self.assertRaisesRegex(RuntimeError, "503"):
+            bp.pypi_release_files("demo", "1.0")
+        self.assertEqual(3, get.call_count)
+        self.assertEqual(2, sleep.call_count)
+
+    def test_release_is_fetched_once_across_files_and_output_is_deterministic(self):
+        with tempfile.TemporaryDirectory() as root:
+            gate = self._path(root, self.GATE, self._block(WHEEL_SHA))
+            tools = self._path(root, self.TOOLS, self._block(WHEEL_SHA))
+            files = self._files(("demo-1.0.tar.gz", b"", WHEEL_SHA))
+            outputs = []
+            for _ in range(2):
+                err = io.StringIO()
+                with mock.patch.object(bp, "pypi_release_files",
+                                       return_value=files) as fetch, \
+                        contextlib.redirect_stderr(err):
+                    rc = bp.main(["requirements", "--check", "--file", gate,
+                                  "--file", tools])
+                self.assertEqual(1, rc)
+                fetch.assert_called_once_with("demo", "1.0")
+                outputs.append(err.getvalue())
+        self.assertEqual(outputs[0], outputs[1])
+        self.assertLess(outputs[0].index(gate), outputs[0].index(tools))
+
+    def test_check_runs_with_only_stdlib_and_the_scripts_directory(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = self._path(root, self.TOOLS, "# no pins\n")
+            with open(path, encoding="utf-8") as fh:
+                before = fh.read()
+            script = os.path.abspath(bp.__file__)
+            bootstrap = (
+                "import runpy,sys;sys.path.insert(0,%r);"
+                "sys.argv=[%r,'requirements','--check','--file',%r];"
+                "runpy.run_path(%r,run_name='__main__')"
+                % (os.path.dirname(script), script, path, script)
+            )
+            completed = subprocess.run(
+                [sys.executable, "-I", "-S", "-c", bootstrap],
+                cwd=root, capture_output=True, text=True, check=False,
+            )
+            with open(path, encoding="utf-8") as fh:
+                after = fh.read()
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(before, after)
+
+    def test_check_and_write_are_mutually_exclusive(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            bp.main(["requirements", "--check", "--write"])
+        self.assertIn("not allowed with argument", err.getvalue())
+        self.assertIn("--check", err.getvalue())
+        self.assertIn("--write", err.getvalue())
 
 
 # --- family: gems (#1734) ----------------------------------------------------
