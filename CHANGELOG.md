@@ -9,7 +9,9 @@
   x86_64-or-universal wheel. Gate hashes remain x86_64-only; tools and fixtures
   also permit aarch64. Release metadata is fetched once per pin with bounded
   retries, and an upstream outage has a distinct diagnostic and exit status
-  from a committed policy violation.
+  from a committed policy violation. The check fails closed on every non-pin
+  line and every hash option that is not lowercase SHA-256, and write mode now
+  uses the same per-file architecture policy as the check.
 - **Fix: a graceful Ctrl-C or SIGTERM no longer deletes the entries that had already settled in the active batch (#3349).**
   Stopping a live headless review used to roll back the whole checkpoint batch. On a
   1,000-cell review checkpoint, an emergency stop near the end deleted hundreds of

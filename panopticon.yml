@@ -266,6 +266,7 @@ groups:
       - scripts/bump_pins.py
       - scripts/dockerfile_args.py
       - scripts/pin_requirements.py
+      - scripts/requirement_policy.py
       - scripts/open_pin_pr.py
       tests:
       - tests/test_dockerfile.py

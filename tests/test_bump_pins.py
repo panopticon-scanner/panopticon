@@ -16,6 +16,8 @@ import urllib.response
 from unittest import mock
 
 import bump_pins as bp
+import pin_requirements as pr
+import requirement_policy as rp
 
 
 class _CannedTransport:
@@ -835,7 +837,7 @@ class TestRequirementsRewrite(unittest.TestCase):
         text = ('demo[fast]==1.2; platform_release == "--hash=sha256:keep" \\\n'
                 '    --hash sha256:%s  # --hash=sha256:%s\n' % (digest, "b" * 64))
         self.assertEqual(
-            [("demo", "1.2", [digest])], bp.parse_requirement_hashes(text))
+            [("demo", "1.2", [digest])], pr.parse_requirement_hashes(text))
 
     def test_markers_extras_and_inline_comments_survive_hash_refresh(self):
         for clause in ('demo==1.2; python_version < "3.13"',
@@ -926,7 +928,8 @@ class TestRequirementsMain(unittest.TestCase):
                     with mock.patch.object(bp, 'verified_pypi_hashes',
                                            return_value=[WHEEL_SHA]) as fetch:
                         self.assertEqual(bp.main(['requirements', '--file', path, '--write']), 0)
-                    fetch.assert_called_once_with('demo', '1.2')
+                    fetch.assert_called_once_with(
+                        'demo', '1.2', bp.LINUX_ARCHES)
                     with open(path, encoding='utf-8') as fh:
                         actual = fh.read()
                 self.assertEqual(actual, expected)
@@ -942,7 +945,8 @@ class TestRequirementsMain(unittest.TestCase):
                 fh.write(clause + "\n")
             with mock.patch.object(bp, "verified_pypi_hashes", return_value=[WHEEL_SHA]) as fetch:
                 self.assertEqual(bp.main(["requirements", "--file", path, "--write"]), 0)
-            fetch.assert_called_once_with("demo", "1.2")
+            fetch.assert_called_once_with(
+                "demo", "1.2", bp.LINUX_ARCHES)
             with open(path, encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), clause + " \\\n    --hash=sha256:" + WHEEL_SHA + "\n")
 
@@ -1002,7 +1006,7 @@ class TestRequirementsMain(unittest.TestCase):
             ".github/requirements-gate.txt": ("x86_64",),
             "requirements-fixtures.txt": bp.LINUX_ARCHES,
             "requirements-tools.txt": bp.LINUX_ARCHES,
-        }, bp.REQUIREMENTS_POLICIES)
+        }, rp.REQUIREMENTS_POLICIES)
 
 
 class TestRequirementsCheck(unittest.TestCase):
@@ -1022,7 +1026,7 @@ class TestRequirementsCheck(unittest.TestCase):
         return _release(list(files))["urls"]
 
     def _errors(self, path, text, files, pin=None):
-        return bp.requirement_hash_errors(
+        return rp.requirement_hash_errors(
             path, text, {pin or self.PIN: files})
 
     def test_bad_artifact_rows_name_file_pin_digest_and_reason(self):
@@ -1073,6 +1077,54 @@ class TestRequirementsCheck(unittest.TestCase):
             self.TOOLS, self._block(WHEEL_SHA, OTHER_SHA), both))
         self.assertEqual([], self._errors(
             self.GATE, self._block(WHEEL_SHA), both))
+
+    def test_non_sha256_hash_options_are_policy_errors(self):
+        for option in ("--hash=sha512:" + "a" * 128,
+                       "--hash=sha384:" + "a" * 96,
+                       "--hash=SHA256:" + "a" * 64,
+                       "--hash"):
+            with self.subTest(option=option):
+                text = "demo==1.0 \\\n    %s\n" % option
+                rendered = "\n".join(self._errors(self.GATE, text, []))
+                self.assertIn(self.GATE, rendered)
+                self.assertIn("demo==1.0", rendered)
+                self.assertIn(option, rendered)
+                self.assertIn("requires lowercase sha256", rendered)
+
+    def test_non_pin_lines_are_policy_errors(self):
+        for line in ("-r shared.txt",
+                     "--extra-index-url https://mirror.example/simple",
+                     "demo @ https://mirror.example/demo.whl"):
+            with self.subTest(line=line):
+                rendered = "\n".join(self._errors(self.GATE, line + "\n", []))
+                self.assertIn(self.GATE, rendered)
+                self.assertIn(line, rendered)
+                self.assertIn("unsupported requirements line", rendered)
+
+    def test_write_uses_each_file_policy_and_the_result_checks_clean(self):
+        x86 = "demo-1.0-cp312-cp312-manylinux_2_17_x86_64.whl"
+        arm = "demo-1.0-cp312-cp312-manylinux_2_17_aarch64.whl"
+        files = [(x86, WHEEL, WHEEL_SHA), (arm, OTHER, OTHER_SHA)]
+        expected = {
+            self.GATE: [WHEEL_SHA],
+            "requirements-fixtures.txt": sorted([WHEEL_SHA, OTHER_SHA]),
+            self.TOOLS: sorted([WHEEL_SHA, OTHER_SHA]),
+        }
+        with tempfile.TemporaryDirectory() as root:
+            for policy_path, digests in expected.items():
+                with self.subTest(policy_path=policy_path):
+                    path = self._path(root, policy_path, "demo==1.0\n")
+                    with mock.patch.object(bp, "_get", _canned(files)):
+                        self.assertEqual(
+                            0, bp.main(["requirements", "--write", "--file", path]))
+                    with open(path, encoding="utf-8") as fh:
+                        text = fh.read()
+                    self.assertEqual(
+                        [("demo", "1.0", digests)],
+                        pr.parse_requirement_hashes(text))
+                    with mock.patch.object(bp, "_get", _canned(files)):
+                        self.assertEqual(
+                            0, bp.main(["requirements", "--check", "--file", path]))
 
     def test_unknown_file_has_no_guessed_policy(self):
         with self.assertRaisesRegex(RuntimeError, "no requirements check policy"):
