@@ -17,8 +17,8 @@ entry -- AFTER `Guards.arm`, so the launch is confined by this run's real read
 scope and write allowlist exactly as a cell is, and the settings file the
 family's argv names has been written. Establishing it at posture time instead
 would mean one unconfined turn in the reviewed tree per run, before anything
-is armed. Cheap (one bounded turn, a trivial prompt, a three-key schema) and
-decisive.
+is armed. It is one bounded turn: Codex carries the largest production
+projection (#3241), while other families retain the trivial three-key shape.
 
 NOT a capability probe, and deliberately not in `host_probes.PROBE_IDS`: it
 returns no `(state, by, detail)` triple, maps to no capability and gates
@@ -31,7 +31,7 @@ as posture drift.
 changes nothing: entries are stamped exactly as they were. Only `refuted`
 moves anything, and what it moves is a fall-back to the state that existed
 before the flag did -- a reply in fenced JSON, which the persist layer has
-always validated against the same schema on receipt.
+always validated against the role's receipt schema.
 """
 import os
 import time
@@ -55,6 +55,16 @@ PROBE_ENTRY_ID = "probe-output-schema"
 # exactly as it applies to a real one.
 PROBE_SCHEMA = "probe-output-schema.json"
 PROBE_PROMPT = 'Reply with the JSON object {"ok": true} and nothing else.'
+# #3241: Codex's once-per-run launch proves the largest PRODUCTION projection,
+# not only the toy schema that established whether the flag takes a path. The
+# exact empty-findings answer is valid under the review projection and costs no
+# finding tokens; what is being measured is provider acceptance of its 64
+# strict variants.
+PRODUCTION_PROBE_PROMPT = (
+    'Reply with exactly this JSON object and nothing else: '
+    '{"schema_version":1,"findings":[],"_panopticon":'
+    '{"run_id":"probe","role":"domain_panel","domain":"COD","group":"probe"}}'
+)
 # One turn and thirty seconds. The measurement is about the ARGV: a CLI that
 # accepted it has said so by the time it starts its first turn, and a model
 # that wants longer than this has already answered the question.
@@ -101,7 +111,7 @@ def _spend(result):
     return "; cost: %s" % ", ".join(parts) if parts else ""
 
 
-def probe_entry(template, run_dir):
+def probe_entry(template, run_dir, *, schema=None, prompt=None):
     """The entry this probe launches: a real entry's BINDING, this probe's
     payload. None when the probe schema is not published.
 
@@ -121,11 +131,11 @@ def probe_entry(template, run_dir):
     outcome rather than an accident. Nothing reads it, and nothing creates it.
     """
     schema = runners_schema.published_schema(
-        os.path.abspath(version.reference_path(PROBE_SCHEMA)))
+        schema or os.path.abspath(version.reference_path(PROBE_SCHEMA)))
     if schema is None:
         return None
     template = template if isinstance(template, dict) else {}
-    return {"id": PROBE_ENTRY_ID, "prompt": PROBE_PROMPT,
+    return {"id": PROBE_ENTRY_ID, "prompt": prompt or PROBE_PROMPT,
             "delivery": "return_json", "output_schema": schema,
             "agent": template.get("agent"),
             "enforced": bool(template.get("enforced")),

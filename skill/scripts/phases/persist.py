@@ -61,24 +61,67 @@ def run_dir(review_root, namespace=None):
     return os.path.dirname(probes_common.headless_settings_path(review_root, namespace))
 
 
-# D10 ruling 3: the PUBLISHED schema each returning role's reply is accepted against, for the CLIs
-# that can constrain their output to one. scout and setup-scan are absent on purpose: their shape
-# lives in code (coverage._scout_shape_errors, "a JSON object") and publishing a second definition
-# of it is how the two drift.
+# D10 ruling 3: the PUBLISHED receipt schema each returning role is accepted
+# against. Claude also uses it at generation; #3241 gives Codex narrower
+# projections below. Scout and setup-scan are absent on purpose: their shape
+# lives in code, and publishing a second definition is how the two drift.
 ROLE_SCHEMAS = {"review-cell": "findings-envelope-schema.json",
                 "verify-cell": "verdict-bundle-schema.json",
                 "tool-advisor": "advisor-verdict-schema.json"}
 
+# #3241: provider-facing projections are NOT receipt contracts. Codex needs
+# every object closed and every exposed property required; replacing the broad
+# role schemas with those projections would reject legacy/optional receipt
+# shapes and would also change Claude's calibrated inline `--json-schema` argv.
+# Keep the split explicit: `role_schema` remains the receipt authority, while
+# `generation_schema` is selected only for the families listed here.
+STRICT_GENERATION_HOSTS = frozenset(("codex",))
+GENERATION_SCHEMAS = {
+    "review-cell": "review-cell-generation-schema.json",
+    "verify-primary": "verify-primary-generation-schema.json",
+    "verify-backup": "verify-backup-generation-schema.json",
+    "tool-advisor": "tool-advisor-generation-schema.json",
+}
+
 
 def role_schema(entry):
-    """Absolute path of this entry's published output schema, or None.
-
-    Stamped onto the entry by `requests._materialize_prompts` and read off it
-    by whichever runner's CLI takes one -- the runners package may not import
-    `phases`, and should not have to know what a role is anyway.
-    """
+    """Absolute path of this entry's published receipt schema, or None."""
     name = ROLE_SCHEMAS.get(role_of(entry))
     return os.path.abspath(version.reference_path(name)) if name else None
+
+
+def generation_schema(entry):
+    """Absolute provider projection for one production entry, or None.
+
+    Verify has two prompt shapes. An absent stage is the controller's existing
+    spelling of primary; an unknown future stage falls back to receipt-only
+    validation rather than ending a run on an optimization it cannot express.
+    """
+    role = role_of(entry)
+    if role == "verify-cell":
+        stage = (entry.get("stage") or "primary"
+                 if isinstance(entry, dict) else "primary")
+        if stage not in ("primary", "backup"):
+            return None
+        key = "verify-%s" % stage
+    else:
+        key = role
+    name = GENERATION_SCHEMAS.get(key)
+    return os.path.abspath(version.reference_path(name)) if name else None
+
+
+def launch_schema(entry, host):
+    """The schema this host sees at generation; receipt stays `role_schema`."""
+    if host in STRICT_GENERATION_HOSTS:
+        return generation_schema(entry)
+    return role_schema(entry)
+
+
+def production_probe_schema(host):
+    """Largest strict projection whose real acceptance protects a run."""
+    if host not in STRICT_GENERATION_HOSTS:
+        return None
+    return generation_schema({"out_file": "findings-probe-COD.json"})
 
 
 # D10 ruling 2: what the retry is told to return, one line per role. The

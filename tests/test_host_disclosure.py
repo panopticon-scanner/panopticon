@@ -650,16 +650,15 @@ class TestTheConstrainedOutputDisclosure(unittest.TestCase):
         self.assertIn("--json-schema", lines[0])
         self.assertNotIn("REFUTED", lines[0])
 
-    def test_codex_with_no_shape_yet_still_omits_every_production_schema(self):
+    def test_codex_with_no_shape_yet_names_the_production_proof_it_owes(self):
         lines = host_disclosure.notes(self._envelope(
             {"flag": "--output-schema", "advertised": True, "detail": "d"},
             host="codex"))
         self.assertEqual(1, len(lines))
         self.assertIn("shape unmeasured until the first batch launches", lines[0])
-        self.assertIn("no production reply is provider-schema-constrained", lines[0])
-        self.assertIn("three production role schemas", lines[0])
+        self.assertIn("production projections await", lines[0])
+        self.assertIn("largest of four strict generation projections", lines[0])
         self.assertIn("persist.write_reply", lines[0])
-        self.assertNotIn("may be schema-constrained", lines[0])
 
     # ---- #1732: the SHAPE of an advertised flag ---------------------------
     #
@@ -682,11 +681,12 @@ class TestTheConstrainedOutputDisclosure(unittest.TestCase):
         self.assertIn("schema-constrained this run", lines[0])
         self.assertNotIn("production role schemas", lines[0])
 
-    def test_codex_proven_shape_says_no_production_reply_is_provider_constrained(self):
+    def test_codex_proven_shape_says_production_replies_are_generation_constrained(self):
         lines = self._shaped(hosts.SHAPE_PROVEN, host="codex")
         self.assertEqual(1, len(lines))
-        self.assertIn("no production reply is provider-schema-constrained", lines[0])
-        self.assertIn("three production role schemas", lines[0])
+        self.assertIn("production replies are provider-schema-constrained", lines[0])
+        self.assertIn("largest of four strict generation projections", lines[0])
+        self.assertIn("broad receipt schema", lines[0])
         self.assertIn("persist.write_reply", lines[0])
 
     def test_a_refuted_shape_says_what_the_run_does_instead(self):
@@ -703,14 +703,13 @@ class TestTheConstrainedOutputDisclosure(unittest.TestCase):
         self.assertIn("shape unmeasured: no `claude` on PATH", lines[0])
         self.assertNotIn("REFUTED", lines[0])
 
-    def test_codex_unmeasured_shape_still_omits_every_production_schema(self):
+    def test_codex_unmeasured_shape_keeps_the_projections_but_claims_no_proof(self):
         lines = self._shaped(hosts.SHAPE_UNMEASURED, "no `codex` on PATH", host="codex")
         self.assertEqual(1, len(lines))
         self.assertIn("shape unmeasured: no `codex` on PATH", lines[0])
-        self.assertIn("no production reply is provider-schema-constrained", lines[0])
-        self.assertIn("three production role schemas", lines[0])
+        self.assertIn("production replies may be provider-schema-constrained", lines[0])
+        self.assertIn("largest strict generation projection", lines[0])
         self.assertIn("persist.write_reply", lines[0])
-        self.assertNotIn("may be schema-constrained", lines[0])
 
     def test_the_shape_never_reaches_the_capability_headline(self):
         # The flag is not a capability, so five stay five whatever the shape

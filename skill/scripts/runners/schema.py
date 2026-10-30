@@ -254,8 +254,9 @@ def inline_schema(path):
     where it is now MEASURED once per run rather than assumed.
 
     None, not a raise, for a file that does not parse: the persist layer
-    validates the reply against the same schema on receipt, so a launch
-    without the flag is the fail-safe and a launch the CLI refuses is not."""
+    independently validates the reply against its broad role schema on
+    receipt, so a launch without the flag is the fail-safe and a launch the
+    CLI refuses is not."""
     path = published_schema(path)
     if path is None:
         return None

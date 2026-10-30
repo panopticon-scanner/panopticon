@@ -1,0 +1,229 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PanopticonVerifyBackupGeneration",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "verdicts": {
+      "type": "array",
+      "items": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/verdict"
+          },
+          {
+            "$ref": "#/$defs/verdict_missing"
+          }
+        ]
+      }
+    },
+    "_panopticon": {
+      "$ref": "#/$defs/stamp"
+    }
+  },
+  "required": [
+    "verdicts",
+    "_panopticon"
+  ],
+  "$defs": {
+    "s": {
+      "type": "string"
+    },
+    "strings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/s"
+      }
+    },
+    "verdict_value": {
+      "type": "string",
+      "enum": [
+        "CONFIRMED",
+        "REJECTED",
+        "NEEDS_MORE_INFO"
+      ]
+    },
+    "confidence": {
+      "type": "string",
+      "enum": [
+        "CERTAIN",
+        "LIKELY",
+        "POSSIBLE"
+      ]
+    },
+    "citations": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cwe": {
+          "$ref": "#/$defs/strings"
+        },
+        "owasp": {
+          "$ref": "#/$defs/strings"
+        },
+        "cve": {
+          "$ref": "#/$defs/strings"
+        }
+      },
+      "required": [
+        "cwe",
+        "owasp",
+        "cve"
+      ]
+    },
+    "stamp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "$ref": "#/$defs/s"
+        },
+        "role": {
+          "type": "string",
+          "const": "domain_advisor"
+        },
+        "domain": {
+          "$ref": "#/$defs/s"
+        },
+        "group": {
+          "$ref": "#/$defs/s"
+        },
+        "stage": {
+          "type": "string",
+          "const": "backup"
+        }
+      },
+      "required": [
+        "run_id",
+        "role",
+        "domain",
+        "group",
+        "stage"
+      ]
+    },
+    "evidence_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "granted": {
+          "$ref": "#/$defs/strings"
+        },
+        "cap": {
+          "type": "integer"
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "entry_cap": {
+          "type": "integer"
+        },
+        "entry_truncated": {
+          "type": "boolean"
+        },
+        "floor_count": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "granted",
+        "cap",
+        "truncated",
+        "entry_cap",
+        "entry_truncated",
+        "floor_count"
+      ]
+    },
+    "verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "finding_id": {
+          "$ref": "#/$defs/s"
+        },
+        "verdict": {
+          "$ref": "#/$defs/verdict_value"
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "code": {
+          "$ref": "#/$defs/s"
+        },
+        "reasoning": {
+          "$ref": "#/$defs/s"
+        },
+        "explored": {
+          "$ref": "#/$defs/strings"
+        },
+        "references": {
+          "$ref": "#/$defs/strings"
+        },
+        "citations": {
+          "$ref": "#/$defs/citations"
+        },
+        "evidence_scope": {
+          "$ref": "#/$defs/evidence_scope"
+        }
+      },
+      "required": [
+        "finding_id",
+        "verdict",
+        "confidence",
+        "code",
+        "reasoning",
+        "explored",
+        "references",
+        "citations",
+        "evidence_scope"
+      ]
+    },
+    "verdict_missing": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "finding_id": {
+          "$ref": "#/$defs/s"
+        },
+        "verdict": {
+          "$ref": "#/$defs/verdict_value"
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "code": {
+          "$ref": "#/$defs/s"
+        },
+        "reasoning": {
+          "$ref": "#/$defs/s"
+        },
+        "explored": {
+          "$ref": "#/$defs/strings"
+        },
+        "references": {
+          "$ref": "#/$defs/strings"
+        },
+        "citations": {
+          "$ref": "#/$defs/citations"
+        },
+        "evidence_scope": {
+          "$ref": "#/$defs/evidence_scope"
+        },
+        "missing_evidence": {
+          "$ref": "#/$defs/strings"
+        }
+      },
+      "required": [
+        "finding_id",
+        "verdict",
+        "confidence",
+        "code",
+        "reasoning",
+        "explored",
+        "references",
+        "citations",
+        "evidence_scope",
+        "missing_evidence"
+      ]
+    }
+  }
+}
