@@ -46,14 +46,16 @@ not trigger the whole-group fallback either. Only an unresolvable
 
 Its own module rather than more of `phases/verify.py`: verify.py is 603 of the
 700-line package ceiling and this is a self-contained, I/O-light concern (a path
-scanner and a small import resolver) with one caller.
+scanner) with one caller. The import resolver it grants (c) from is
+`scripts.py_imports` since #3231, which `phases/inventory.py` and
+`synth/severity_cap.py` read too.
 """
 from typing import Any
-import ast
 import hashlib
 import os
 import re
 
+import scripts.py_imports as py_imports
 import scripts.run_manifest as run_manifest
 import scripts.safe_write as safe_write
 from . import runio
@@ -91,9 +93,10 @@ _PATH_RE = re.compile(
     r"(?<![\w./-])([\w./-]+\.(?:py|js|ts|rb|go|java|cs|rs|toml|yml|yaml|json|md))"
     r"(?![\w/-]|\.[\w/-])")
 
-# Extensions whose imports this module can resolve. Anything else gets (a)+(b):
-# a closure is only worth granting when it is derived, not guessed.
-_PY = ".py"
+# Extensions whose imports `scripts.py_imports` can resolve (#3231 moved the
+# resolver there). Anything else gets (a)+(b): a closure is only worth granting
+# when it is derived, not guessed.
+_PY = py_imports.PY
 
 # How much of a same-named candidate step 4 reads before it gives up on telling
 # two files apart. Four MiB is the smallest read class: these are individual
@@ -101,10 +104,9 @@ _PY = ".py"
 # and a larger file is treated as outside the source-review boundary. Reading
 # further would spend the closure's whole I/O budget proving that two vendored
 # archives differ. Oversized counts as DISTINCT, never as identical -- see
-# `_digest`. Import parsing uses the same cap because it reads the same source
-# class and needs no bytes the content comparison refused.
+# `_digest`. Import parsing (`py_imports.SOURCE_BYTES`) uses the same cap
+# because it reads the same source class.
 _HASH_BYTES = 4 * 1024 * 1024
-_SOURCE_BYTES = 4 * 1024 * 1024
 
 # The controller's own seed for a scope-limited backup's `missing_evidence`.
 # ONE line per name the driver refused to guess at, written into the dispatch
@@ -421,116 +423,6 @@ def disclosure(ambiguous):
         for record in ambiguous)
 
 
-def _module_targets(node):
-    """The dotted module paths one import statement could name.
-
-    `(parts, level)` pairs. `from a import b` yields both `a` and `a.b`: `b` may
-    be a submodule (a file we want) or a name inside `a.py` (the file we want) --
-    resolution below picks whichever actually exists.
-    """
-    if isinstance(node, ast.Import):
-        return [(alias.name.split("."), 0) for alias in node.names]
-    if isinstance(node, ast.ImportFrom):
-        base = (node.module or "").split(".") if node.module else []
-        out = [(base, node.level)] if base else []
-        out += [(base + [alias.name], node.level) for alias in node.names]
-        return out
-    return []
-
-
-def _search_roots(review_root, rel_path, level):
-    """Directories to resolve a module against, nearest first.
-
-    Relative imports (`level > 0`) resolve against the importing file's package,
-    walked up `level - 1` times -- exactly Python's rule. Absolute imports are
-    tried against the importing file's own directory and each ancestor up to
-    `review_root`, which is the conservative stand-in for sys.path: it is how
-    `skill/scripts/synthesize.py`'s `import scripts.synth.render` resolves to
-    `skill/scripts/synth/render.py` in a repo whose source root is not the repo
-    root. Nearest-first, so the closest match wins.
-    """
-    parts = os.path.dirname(rel_path).split("/") if os.path.dirname(rel_path) else []
-    if level:
-        if len(parts) < level - 1:      # `from ...` above the repo root
-            return []
-        return ["/".join(parts[:len(parts) - (level - 1)])]
-    roots = []
-    while True:
-        roots.append("/".join(parts))
-        if not parts:
-            return roots
-        parts = parts[:-1]
-
-
-def _resolve(review_root, rel_path, parts, level):
-    """The in-repo file a single import target names, or None."""
-    if not parts or any(not p for p in parts):
-        return None
-    for root in _search_roots(review_root, rel_path, level):
-        stem = "/".join([p for p in [root] if p] + list(parts))
-        for candidate in (stem + _PY, stem + "/__init__" + _PY):
-            found = _usable(review_root, candidate)
-            if found and found != rel_path:
-                return found
-    return None
-
-
-def _source(review_root, rel_path, cache):
-    memo = cache.setdefault("source", {})
-    if rel_path not in memo:
-        try:
-            raw = _read_regular(review_root, rel_path, _SOURCE_BYTES)
-            memo[rel_path] = raw.decode("utf-8", errors="replace")
-        except (OSError, safe_write.ReadLimitExceeded):
-            memo[rel_path] = None
-    return memo[rel_path]
-
-
-def _imports_of(review_root, rel_path, cache):
-    """Memoized in-repo imports; unsafe or unparseable source imports nothing."""
-    memo = cache.setdefault("imports", {})
-    if rel_path in memo:
-        return memo[rel_path]
-    text = _source(review_root, rel_path, cache) if rel_path.endswith(_PY) else None
-    try:
-        tree = ast.parse(text, rel_path) if text is not None else None
-    except (ValueError, SyntaxError, RecursionError, MemoryError):
-        tree = None
-    if tree is None:
-        memo[rel_path] = []
-        return []
-    out = []
-    for node in ast.walk(tree):
-        for parts, level in _module_targets(node):
-            found = _resolve(review_root, rel_path, parts, level)
-            if found and found not in out:
-                out.append(found)
-    memo[rel_path] = out
-    return out
-
-
-def _mentions(review_root, rel_path, needle, cache):
-    """Cheap cached pre-filter before parsing a possible importer."""
-    text = _source(review_root, rel_path, cache)
-    return text is not None and needle in text
-
-
-def _importers(review_root, rel_path, group_files, cache):
-    """(c, second direction): same-group files that import `rel_path`."""
-    stem = os.path.basename(rel_path)[:-len(_PY)]
-    out = []
-    for other in group_files or []:
-        other = _norm(other)
-        if (not other or other == rel_path or not other.endswith(_PY)
-                or other in out):
-            continue
-        if not _mentions(review_root, other, stem, cache):
-            continue
-        if rel_path in _imports_of(review_root, other, cache):
-            out.append(other)
-    return out
-
-
 def _closure_paths(review_root, claim, group_files, unresolved=None,
                    cache=None, cap=CAP):
     """The FULL ordered closure, before the cap -- (a), then (b), then (c)."""
@@ -547,8 +439,8 @@ def _closure_paths(review_root, claim, group_files, unresolved=None,
         if path not in out:
             out.append(path)
     if primary and primary.endswith(_PY):
-        for path in (_imports_of(review_root, primary, cache)
-                     + _importers(review_root, primary, group_files, cache)):
+        for path in (py_imports.imports_of(review_root, primary, cache)
+                     + py_imports.importers(review_root, primary, group_files, cache)):
             if path not in out:
                 out.append(path)
     return out

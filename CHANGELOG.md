@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **Fix: unconfirmed HIGHs no longer reach the active report at full severity (#3231, part 1 of 2).**
+  The active report now caps two kinds of claim at MEDIUM, because nothing confirms their HIGH. Both
+  caps are disclosed on the finding (`severity_cap`), in `meta.severity_capped`, and in a summary line.
+  - **Unverified heuristic tool claims.** A scanner CRITICAL/HIGH that no advisor confirmed
+    (`tool_reported` or `needs_more_info`) is capped, so a semgrep audit rule hit no longer lands as
+    HIGH just because the advisor was blind. Some findings are never capped:
+    - secrets and credential CWEs;
+    - dependency advisories, including any finding that cites a CVE;
+    - anything under `--gate-unverified`, where the active severity stays the scanner's.
+  - **Coverage-absence claims.** An OCRDb TST-A1* claim that a module is untested keeps HIGH only
+    when the driver confirms that no assigned test is named after the module or imports it.
+    Otherwise it is capped, and it names the tests that do reference the module. A non-Python
+    module can't be confirmed (there is no import witness), so it is capped and says so.
+  - **The test inventory.** A cell is now `split` when another group's test *imports* one of its
+    modules, not only when a test is named after one. The import resolver this uses moved out of
+    `phases/evidence_scope.py` into `scripts/py_imports.py`, unchanged, so inventory and synthesis
+    share it.
 - **Security: privileged requirements hashes can now be checked against their
   published PyPI filenames (#2877).** `bump_pins.py requirements --check` is a
   read-only, stdlib-only CI gate: it rejects sdists, unknown digests and wheels

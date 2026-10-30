@@ -1,7 +1,7 @@
 ## Evidence
 
-Findings carry two independent axes: **severity** (impact if true — never rewritten) and
-**evidence.status** (how hard the claim was verified):
+Findings carry two independent axes: **severity** (impact if true — rewritten only by the two
+disclosed caps below) and **evidence.status** (how hard the claim was verified):
 - `tool_reported` — a static-analysis tool emitted it (or a tool+agent same-locus merge did); no
   advisor has checked it. NOT gate-eligible.
 - `tool_confirmed` — a tool reported it AND an advisor independently confirmed it. Gate-eligible.
@@ -31,6 +31,29 @@ Grades and the CI gate count `tool_confirmed`/`advisor_confirmed` findings, plus
 `backup_scope_limited` (a primary CONFIRMED stands, #1638) — i.e. only claims an advisor verified,
 whatever their source. Run a verify phase (or pass `--gate-unverified`) or the gate has nothing to
 fail on.
+
+**Two severity caps (#3231).** The active report caps two kinds of claim at MEDIUM, because nothing
+confirms the HIGH they arrived with. Each capped finding says so in `severity_cap`
+(`{from, reason, ...}`), and `meta.severity_capped` lists the capped ids per reason; the summary
+prints a `**Capped at MEDIUM:**` line.
+- `unverified_tool` — a tool-sourced CRITICAL/HIGH whose status is `tool_reported` or
+  `needs_more_info`: a scanner pattern hit no advisor confirmed (on a blind advisor, that was 30–40
+  semgrep audit HIGHs per run). An advisor `CONFIRMED` (`tool_confirmed`) keeps the scanner's
+  severity. Never capped: a secret (a secret adapter, or a credential CWE — 798, 259, 321, 522), a
+  dependency advisory (pip-audit, npm-audit, osv-scanner, bundler-audit, cargo-audit,
+  dependency-check, or any finding citing a CVE). **Not under `--gate-unverified`:** that flag asks
+  for the stricter policy, so there the active severity stays the scanner's and gates as such.
+- `unconfirmed_coverage_absence` — an OCRDb TST-A1* ("untested-units") claim that a module has no
+  test, made from a cell that cannot see the rest of the repository. It keeps HIGH only when the
+  driver confirms no assigned test file anywhere is named after the module (`test_<stem>`) or
+  imports it; otherwise it is capped and names up to five of those tests (`referenced_by`). The
+  import witness is Python-only, so a module in any other language cannot be confirmed and is capped
+  with `measured: false`. This cap applies under every gate policy: it is about the claim's premise,
+  not its verification.
+
+Under the default policy the `unverified_tool` cap changes no health, grade or risk number — every
+claim it caps is already outside the gate-eligible set those read. A capped coverage-absence finding
+an advisor confirmed is gate-eligible, so that cap can move health.
 
 `skill/scripts/evidence_sections.py` owns what the HTML report does with these statuses: the
 header's "N verified" counts those same two, the collapsed "Unverified findings" section holds

@@ -615,11 +615,12 @@ def review_execute(review_root, manifest):
     # comparison below is over every other unit's files (#1638 P13 fix round 2,
     # N2).
     stems_of = inventory_mod.unit_stems_map(units)
+    imported_by = inventory_mod.test_importers(review_root, units)    # #3231, once too
     unit_tests, inventory_of = {}, {}
     for unit, unit_files in sorted(units.items()):
         unit_tests[unit] = sorted((matrix.get(unit) or {}).get("tests") or [])
         inventory_of[unit] = inventory_mod.note(
-            review_root, unit, unit_files, unit_tests[unit], units, stems_of)
+            review_root, unit, unit_files, unit_tests[unit], units, stems_of, imported_by)
     for group, files in coverage._discovered_groups(review_root):
         domains = coverage._effective_domains(review_root, group)
         pending = [d for d in domains

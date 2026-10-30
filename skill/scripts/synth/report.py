@@ -21,6 +21,7 @@ from . import findings as findings_mod
 from . import delta as delta_mod
 from . import grading as grading_mod
 from . import plan as plan_mod
+from . import severity_cap as severity_cap_mod
 from . import tool_axis as tool_axis_mod
 from . import cost as cost_mod
 from . import verdicts as verdicts_mod
@@ -238,7 +239,7 @@ def build_report(inp):
     # stage that applies the gate's filters, not appended after it.
     resolved = verdicts_mod.resolve_findings(
         inp.findings, inp.delta, inp.run,
-        gated_suppressed=inp.tools.gated_suppressed)
+        gated_suppressed=inp.tools.gated_suppressed, groups_meta=inp.plan.groups_meta)
     reconciled = tool_axis_mod.reconcile(inp.plan, inp.tools, resolved, run=inp.run)
     # #2178: grading needs the delta context itself, not only the classified
     # findings -- a zero-range hunk map leaves the on-diff gate scoping
@@ -339,6 +340,7 @@ def assemble(run, resolved, reconciled, graded, cost):
         if "cvss" in f and f["cvss"] in (None, "", {}):
             del f["cvss"]          # #3162: an empty score is no score -- unscored, not malformed
     unscored = cvss_unscored(resolved.active)
+    capped = severity_cap_mod.capped_ids(resolved.active)
     # #3270: every external app this run launched -- the host CLI off
     # host-capabilities.json, docker off the tools manifest -- repaired at both
     # reads (both are target-writable). `meta.apps` is present only when one was.
@@ -428,6 +430,7 @@ def assemble(run, resolved, reconciled, graded, cost):
             "config": _config_block(run.config),
             **({"prior_run": prior} if prior else {}),
             **({"cvss_unscored": unscored} if unscored else {}),      # #3162
+            **({"severity_capped": capped} if capped else {}),        # #3231
         },
         "summary": graded.summary,
         "groups": graded.groups,

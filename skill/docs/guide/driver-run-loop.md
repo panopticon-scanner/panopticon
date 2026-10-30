@@ -1070,8 +1070,9 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   defect was confirmed by the primary, reproduced by hand, and published as unverifiable because the
   backup was fenced to one of the three files the call order spans. Each `review` cell's **`TST`**
   prompt also carries an `Inventory:` line — `complete`, `empty`, or `split` (test files named after
-  this group's modules are claimed by another group) — because a reviewer fenced to its own cell
-  cannot tell an empty test inventory from a target with no tests, and run-13's `Ungrouped_1` panel
+  this group's modules, or importing them (#3231), are claimed by another group) — because a
+  reviewer fenced to its own cell cannot tell an empty test inventory from a target with no tests,
+  and run-13's `Ungrouped_1` panel
   published the second reading of the first fact. The driver computes the state (per
   `panopticon.yml` entry, so a run-time `<name>_N` chunk answers as its parent) and the reviewer
   files **no finding** about it — it only withholds the coverage claim it cannot support; the

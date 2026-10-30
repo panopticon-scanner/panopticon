@@ -85,6 +85,11 @@
 #     Parked beside `dot_paths.py`, the other discovery policy that came out for
 #     the same reason. This is the second park in a row on this subsystem; the
 #     `RepoProfiling` layer split tracked as #2273 is what stops the third.
+#   - 2026-10-30 (#3231): `py_imports.py` is claimed by `Orchestration:Core`
+#     beside `claim_scope.py` and `safe_write.py`, the two leaves it reads. It is
+#     the import resolver `phases/evidence_scope.py` gave up so that
+#     `phases/inventory.py` and `synth/severity_cap.py` could share it, which
+#     makes it a shared stdlib-only leaf like them.
 #   - 2026-09-28 (#2233): `ToolAdapters:Core` was at 47 of the 48 cap, and the
 #     `run_tools.py` split owed under #1762 adds six files to it (a module and
 #     a test file per part, three parts). Third `ToolAdapters` layer `Image`
@@ -383,6 +388,7 @@ groups:
       match:
       - skill/scripts/dispatch.py
       - skill/scripts/claim_scope.py
+      - skill/scripts/py_imports.py
       - skill/scripts/money.py
       - skill/scripts/ledger.py
       - skill/scripts/loop_batch.py
