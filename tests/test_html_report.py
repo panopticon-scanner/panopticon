@@ -1831,6 +1831,14 @@ class TestBackupScopeLimited(unittest.TestCase):
         self.assertIn("synth/grading.py", out)
         self.assertIn("synthesize.py", out)
 
+    def test_a_tool_advisors_missing_evidence_is_the_advisors_not_the_backups(self):
+        # #3231 A2: a tool claim has no backup round; its own advisor named the files.
+        f = self._finding(source="tool:semgrep")
+        f["evidence"] = dict(f["evidence"], status="needs_more_info")
+        out = hr._render_card(f)
+        self.assertIn("Advisor could not see", out)
+        self.assertNotIn("Backup could not see", out)
+
     def test_no_line_when_nothing_was_missing(self):
         f = self._finding()
         f["evidence"] = {"status": "advisor_confirmed", "citation_quality": "full"}

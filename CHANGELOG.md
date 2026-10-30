@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Fix: a tool claim's advisor can reach the evidence its claim crosses into (#3231, part 2 of 2).**
+  The tool-verify advisor's read fence used to be just the group holding the cited file, so a claim
+  whose behaviour crossed into another group came back `NEEDS_MORE_INFO`.
+  - The advisor now also gets the claim's bounded closure, the same one the backup round gets: the
+    files the claim names and the cited file's one-hop imports, capped at 12.
+  - A `NEEDS_MORE_INFO` must list the files it could not reach in `missing_evidence`. The driver
+    re-dispatches once with those files added, if they grant anything new, and charges that to the
+    item's own verify budget.
+  - The report carries the names (`evidence.missing_evidence`), and the HTML card shows them as
+    "Advisor could not see".
 - **Fix: unconfirmed HIGHs no longer reach the active report at full severity (#3231, part 1 of 2).**
   The active report now caps two kinds of claim at MEDIUM, because nothing confirms their HIGH. Both
   caps are disclosed on the finding (`severity_cap`), in `meta.severity_capped`, and in a summary line.

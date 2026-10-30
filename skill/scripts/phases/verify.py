@@ -172,6 +172,11 @@ def _verify_exhausted(review_root, key):
     return (budget.count(runio._pano(review_root, _VERIFY_ATTEMPTS_FILE), key,
                          _VERIFY_ATTEMPTS_WHAT) >= _MAX_VERIFY_ATTEMPTS)
 
+def _verify_attempts_key(review_root, key):
+    """Attempts spent under one budget key -- `tool/<queue id>` for a tool advisor."""
+    return budget.count(runio._pano(review_root, _VERIFY_ATTEMPTS_FILE), key,
+                        _VERIFY_ATTEMPTS_WHAT)
+
 def _verify_attempts(review_root, group, domain, stage):
     """Attempts spent on this cell/stage: 0 before the first bump, and a refusal
     when the file is PRESENT but unreadable (#1809) or its value is not a count
