@@ -56,11 +56,15 @@ import hashlib
 import json
 import re
 import sys
+import time
 import tomllib
 import urllib.parse
 import urllib.request
 
 from pin_requirements import parse_requirements, rewrite_requirements
+from requirement_policy import (LINUX_ARCHES, REQUIREMENTS_FILES,
+                                check_requirements, requirements_arches,
+                                wheel_is_installable)
 
 RUSTUP_STABLE = "https://static.rust-lang.org/rustup/release-stable.toml"
 RUSTUP_ARCHIVE = "https://static.rust-lang.org/rustup/archive/{v}/{triple}/rustup-init"
@@ -75,9 +79,6 @@ PYPI_RELEASE = "https://pypi.org/pypi/{name}/{version}/json"
 RUBYGEMS_LATEST = "https://rubygems.org/api/v1/versions/{name}/latest.json"
 RUBYGEMS_RELEASE = "https://rubygems.org/api/v2/rubygems/{name}/versions/{version}.json"
 RUBYGEMS_DOWNLOAD = "https://rubygems.org/downloads/{name}-{version}.gem"
-# The files the `requirements` family maintains when none is named.
-REQUIREMENTS_FILES = (".github/requirements-gate.txt", "requirements-fixtures.txt",
-                      "requirements-tools.txt")
 TIMEOUT = 120
 DOWNLOAD_HOSTS = frozenset({
     "api.github.com",
@@ -148,11 +149,11 @@ class _DownloadRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def _get(url: str | urllib.request.Request) -> bytes:
+def _get(url: str | urllib.request.Request, timeout=TIMEOUT) -> bytes:
     request_url = url.full_url if isinstance(url, urllib.request.Request) else url
     _download_origin(request_url)
     opener = urllib.request.build_opener(_DownloadRedirectHandler())
-    with opener.open(url, timeout=TIMEOUT) as fh:
+    with opener.open(url, timeout=timeout) as fh:
         return fh.read()
 
 
@@ -719,48 +720,35 @@ def run_tinyproxy(args) -> int:
 
 
 # --- family: requirements -----------------------------------------------------
-# What `--require-hashes` needs is one `--hash=sha256:` line per artifact pip
-# could legitimately choose for the target platform. Writing those by hand is
-# how a digest gets invented; this reads each one from PyPI's JSON API and
-# recomputes it from the downloaded wheel, exactly as the rustup family does.
-
-# The machine architectures the builds these pins protect actually run on.
-# ubuntu-latest (the gate) is amd64 only, but docker-publish.yml builds the
-# tools image -- and with it the fixtures image FROM it -- for linux/amd64 AND
-# linux/arm64, so an x86_64-only hash block fails `--require-hashes` on the
-# arm64 leg alone (#1734). Both are kept for every file: pip only needs ONE
-# `--hash` on a line to match the artifact it actually fetched, so the digests
-# an amd64 build never uses cost it nothing.
-LINUX_ARCHES = ("x86_64", "aarch64")
+# Write mode recomputes every selected wheel; check mode maps committed hashes
+# to PyPI filenames and enforces the narrower policy of the file that owns them.
 
 
-def wheel_is_installable(filename: str) -> bool:
-    """Could the linux builds this repo pins for select this wheel?
-
-    The surfaces are ubuntu-latest for the gate and the `python:3.12-slim`
-    images for the fixtures and the tools -- so the answer is the pure-Python
-    wheels plus the linux binary ones for either architecture in
-    `LINUX_ARCHES`. Every CPython ABI is kept rather than just today's: the
-    gate's `python-version` is a pin of its own and moving it must not silently
-    leave pip with nothing it may install.
-
-    `"linux" in tag` is load-bearing next to the arch suffix, not decoration:
-    `macosx_11_0_arm64` also ends in an arm64 spelling, and `aarch64` is the
-    one manylinux uses, so the two tests together are what keep a macOS wheel
-    out of a linux build's hash block.
-    """
-    if not filename.endswith(".whl"):
-        return False
-    platform_tag = filename[:-len(".whl")].rsplit("-", 1)[-1]
-    for tag in platform_tag.split("."):
-        if tag == "any":
-            return True
-        if "linux" in tag and tag.endswith(LINUX_ARCHES):
-            return True
-    return False
+def pypi_release_files(name: str, version: str) -> list[dict]:
+    """Read one release's file list, with bounded retries for check-mode CI."""
+    url = PYPI_RELEASE.format(name=name, version=version)
+    reason = "unknown PyPI failure"
+    for attempt in range(3):
+        try:
+            body = _get(url, timeout=5)
+            try:
+                release = json.loads(body.decode("utf-8", "replace"))
+            except ValueError as exc:
+                raise RuntimeError("PyPI did not answer with JSON for %s==%s: %s"
+                                   % (name, version, exc)) from exc
+            files = release.get("urls") if isinstance(release, dict) else None
+            if not isinstance(files, list) or not all(isinstance(f, dict) for f in files):
+                raise RuntimeError("PyPI JSON has no file list for %s==%s" % (name, version))
+            return files
+        except (OSError, RuntimeError, ValueError) as exc:
+            reason = str(exc)
+            if attempt < 2:
+                time.sleep(0.1 * (attempt + 1))
+    raise RuntimeError(reason)
 
 
-def verified_pypi_hashes(name: str, version: str) -> list[str]:
+def verified_pypi_hashes(name: str, version: str,
+                         arches=LINUX_ARCHES) -> list[str]:
     """Every sha256 `name==version` may install as, read from PyPI AND verified.
 
     PyPI publishes each file's digest beside it, which alone only proves the
@@ -768,16 +756,10 @@ def verified_pypi_hashes(name: str, version: str) -> list[str]:
     is what makes the pin a control, and it is the same step the rustup family
     refuses to skip.
     """
-    body = _get(PYPI_RELEASE.format(name=name, version=version))
-    try:
-        release = json.loads(body.decode("utf-8", "replace"))
-    except ValueError as exc:
-        raise RuntimeError("PyPI did not answer with JSON for %s==%s: %s"
-                           % (name, version, exc)) from exc
     digests = []
-    for entry in release.get("urls") or []:
+    for entry in pypi_release_files(name, version):
         filename = entry.get("filename") or ""
-        if not wheel_is_installable(filename):
+        if not wheel_is_installable(filename, arches):
             continue
         published = (entry.get("digests") or {}).get("sha256") or ""
         if not re.fullmatch(r"[0-9a-f]{64}", published):
@@ -797,22 +779,28 @@ def verified_pypi_hashes(name: str, version: str) -> list[str]:
 
 
 def run_requirements(args) -> int:
-    rc = 0
-    for path in args.files or list(REQUIREMENTS_FILES):
+    paths = args.files or list(REQUIREMENTS_FILES)
+    if args.check:
+        return check_requirements(paths, pypi_release_files)
+    for path in paths:
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
         pins = parse_requirements(text)
         if not pins:
             print("bump-pins: %s pins nothing; nothing to do" % path)
             continue
-        hashes = {pin: verified_pypi_hashes(*pin) for pin in pins}
+        try:
+            arches = requirements_arches(path)
+        except RuntimeError:
+            arches = LINUX_ARCHES  # custom operator file: retain the legacy scope
+        hashes = {pin: verified_pypi_hashes(pin[0], pin[1], arches)
+                  for pin in pins}
         new = rewrite_requirements(text, hashes)
         if new == text:
             print("bump-pins: %s up to date (%d pins)" % (path, len(pins)))
             continue
         if not args.write:
             print("bump-pins: %s hashes available (re-run with --write)" % path)
-            rc = 0
             continue
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(new)
@@ -820,7 +808,7 @@ def run_requirements(args) -> int:
         for name, version in pins:
             print("  %s==%s  %d artifact(s)" % (name, version,
                                                 len(hashes[(name, version)])))
-    return rc
+    return 0
 
 
 def main(argv=None):
@@ -849,6 +837,9 @@ def main(argv=None):
     reqs.add_argument("--file", action="append", dest="files", metavar="PATH",
                       help="a requirements file to refresh (repeatable; "
                            "default: %s)" % ", ".join(REQUIREMENTS_FILES))
+    req_mode = reqs.add_mutually_exclusive_group()
+    req_mode.add_argument("--write", action="store_true", help="apply the bump")
+    req_mode.add_argument("--check", action="store_true", help="validate committed hashes")
     reqs.set_defaults(run=run_requirements)
 
     gems = families.add_parser(
@@ -860,7 +851,7 @@ def main(argv=None):
     proxy.add_argument("--source", default=PROXY_SOURCE)
     proxy.set_defaults(run=run_tinyproxy)
 
-    for parser in (rustup, trivy, toolchain, reqs, gems):
+    for parser in (rustup, trivy, toolchain, gems):
         parser.add_argument("--write", action="store_true",
                             help="apply the bump (default: report only)")
     args = ap.parse_args(argv)

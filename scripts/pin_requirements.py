@@ -13,7 +13,9 @@ import re
 _PIN = re.compile(r"^(?P<name>[A-Za-z0-9._-]+)(?:\[[A-Za-z0-9._,\s-]+\])?"
                   r"\s*==(?P<version>[^\s;\\]+)")
 _REQUIREMENT_PART = re.compile(
-    r'''"[^"]*"|'[^']*'|(?P<comment>(?<!\S)\#.*$)|(?P<hash>(?<!\S)--hash(?:=|\s+)\S+)''')
+    r'''"[^"]*"|'[^']*'|(?P<comment>(?<!\S)\#.*$)|'''
+    r'''(?P<hash>(?<!\S)--hash(?:=\S*|[ \t]+\S+)?(?=\s|$))''')
+_SHA256_OPTION = re.compile(r"--hash(?:=|\s+)sha256:([0-9a-f]{64})\Z")
 
 
 def _requirement_clause(joined: str) -> tuple[str, str]:
@@ -51,16 +53,51 @@ def _logical_lines(text: str) -> list[tuple[int, str]]:
     return out
 
 
-def parse_requirements(text: str) -> list[tuple[str, str]]:
-    """[(name, version)] for every `name==version` pin in a requirements file."""
+def parse_requirement_options(
+        text: str,
+) -> tuple[list[tuple[str, str, list[str]]], list[tuple[int, str]]]:
+    """Return pinned lines with raw hash options, plus unsupported lines.
+
+    Blank lines and standalone comments are prose. Every other logical line is
+    either a pinned requirement or syntax the policy checker must reject; no
+    input disappears merely because this parser does not understand it.
+    """
     pins = []
-    for _n, joined in _logical_lines(text):
-        if joined.startswith("#"):
+    unsupported = []
+    for lineno, joined in _logical_lines(text):
+        if not joined or joined.startswith("#"):
             continue
         m = _PIN.match(joined)
-        if m:
-            pins.append((m.group("name"), m.group("version")))
+        if not m:
+            unsupported.append((lineno, joined))
+            continue
+        options = []
+        for part in _REQUIREMENT_PART.finditer(joined):
+            if part.group("comment"):
+                break
+            if part.group("hash"):
+                options.append(part.group("hash"))
+        pins.append((m.group("name"), m.group("version"), options))
+    return pins, unsupported
+
+
+def parse_requirement_hashes(text: str) -> list[tuple[str, str, list[str]]]:
+    """[(name, version, sha256 options)] for every pinned logical line."""
+    pins = []
+    for name, version, options in parse_requirement_options(text)[0]:
+        digests = []
+        for option in options:
+            digest = _SHA256_OPTION.fullmatch(option)
+            if digest:
+                digests.append(digest.group(1))
+        pins.append((name, version, digests))
     return pins
+
+
+def parse_requirements(text: str) -> list[tuple[str, str]]:
+    """[(name, version)] for every `name==version` pin in a requirements file."""
+    return [(name, version) for name, version, _options
+            in parse_requirement_options(text)[0]]
 
 
 def rewrite_requirements(text: str, hashes: dict[tuple[str, str], list[str]]) -> str:
