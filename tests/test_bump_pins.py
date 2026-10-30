@@ -6,7 +6,6 @@ import json
 import os
 import re
 import subprocess
-import sys
 import tempfile
 import traceback
 import unittest
@@ -1239,7 +1238,7 @@ class TestRequirementsCheck(unittest.TestCase):
                 before = fh.read()
             script = os.path.abspath(bp.__file__)
             completed = subprocess.run(
-                [sys.executable, "-I", "-S", "-c", STDLIB_CHECK_BOOTSTRAP],
+                ["python3", "-I", "-S", "-c", STDLIB_CHECK_BOOTSTRAP],
                 cwd=root, capture_output=True, text=True, check=False,
                 env={**os.environ,
                      "PANOPTICON_BUMP_PINS_SCRIPT": script,
