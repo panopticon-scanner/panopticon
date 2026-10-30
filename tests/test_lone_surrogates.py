@@ -756,7 +756,8 @@ class TestTheRealChild(unittest.TestCase):
                 report = self.whole(run)
                 self.assertEqual((severity, gate), (report["findings"][0]["severity"], report["summary"]["gate"]))
             with self.subTest(name=plain(name), source="scanner"):
-                found = self.whole(self.child(findings=[], scans=tool(name), tree=docs))["findings"]
+                # #3231: under `--gate-unverified`, where an unverified scanner HIGH is not capped
+                found = self.whole(self.child(*flags, findings=[], scans=tool(name), tree=docs))["findings"]
                 self.assertEqual([(severity, severity == "INFO")], [(f["severity"], "doc_policy" in f) for f in found])
         lone, twin = "docs" + LONE + "x.py", "docs" + SPELLED + "x.py"
         self.same(self.child(*flags, findings=high(lone)), self.child(*flags, findings=high(twin)))

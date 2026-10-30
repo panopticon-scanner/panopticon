@@ -16,6 +16,7 @@ from . import corroborate as corroborate_mod
 from . import delta as delta_mod
 from . import findings as findings_mod
 from . import plan as plan_mod
+from . import severity_cap as severity_cap_mod
 
 
 def emit_verify_queue(findings, run_dir, max_verify):
@@ -447,7 +448,7 @@ def _unknown_severity_ids(findings):
                    if isinstance(f, dict) and findings_mod.SEVERITY_AS_WRITTEN in f})
 
 
-def resolve_findings(fs, delta, run, gated_suppressed=()):
+def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
     """The verdict-matching cluster (WS-0 S2): dedupe, queue, bind advisor
     verdicts, derive every finding's evidence object and fingerprint, then
     partition for the gate under the two-axis severity x evidence model.
@@ -493,6 +494,8 @@ def resolve_findings(fs, delta, run, gated_suppressed=()):
         ocrdb_coverage.update(codes_mod.apply_verdict_quality(findings, matches.matched, ocrdb_bundle))
     verdict_stats = _verdict_stats(fs, findings, queue, cut, matches)
     _derive_evidence(findings, catalog, matches.matched, pre_verdict_fps)
+    # #3231: after the verdict-quality step and the evidence it reads, before anything counts.
+    severity_cap_mod.apply(findings, run, groups_meta)
     tool_axis = _tool_axis(findings)
     partitions = _partition_gate(findings, delta, run)
     gated, suppressed_not_gated = _scope_suppressed(gated_suppressed, delta, run)

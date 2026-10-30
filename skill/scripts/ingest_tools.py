@@ -454,10 +454,8 @@ def suppression_class(segment):
 # "secret-class" lives in `sarif_utils.SECRET_ADAPTERS` (imported above): the
 # adapters whose output is credentials by construction, which that module also
 # grades HIGH at the parse. It is defined there because this module imports it
-# and not the other way round, and one list beats two that drift.
-#
-# This half is provenance-free: the CWEs that make ANY adapter's finding
-# secret-class --
+# and not the other way round, and one list beats two that drift. This half is
+# provenance-free: the CWEs that make ANY adapter's finding secret-class --
 # CWE-798 hardcoded credentials, CWE-259 hardcoded password, CWE-321 hardcoded
 # cryptographic key, CWE-522 insufficiently protected credentials.
 SECRET_CWES = frozenset({"CWE-798", "CWE-259", "CWE-321", "CWE-522"})
@@ -500,6 +498,13 @@ def _cwe_tags(finding):
             tags.append(ident.upper())
     tags.extend(m.group(1).upper() for m in CWE_TAG.finditer(_rule_id(finding)))
     return tags
+
+
+def secret_class(finding):
+    """A secret adapter's finding, or any carrying a credential CWE: policy C's class,
+    and (#3231) the one `synth/severity_cap` never caps."""
+    return (evidence_mod.tool_name(finding) in SECRET_ADAPTERS
+            or any(tag in SECRET_CWES for tag in _cwe_tags(finding)))
 
 
 def gates_when_suppressed(finding):
@@ -546,11 +551,7 @@ def gates_when_suppressed(finding):
     if finding.get("suppressed") in (RUN_ARTIFACT_SEGMENT,
                                       GENERATED_BYTECODE_SEGMENT):
         return False
-    if finding.get("severity") == "CRITICAL":
-        return True
-    if evidence_mod.tool_name(finding) in SECRET_ADAPTERS:
-        return True
-    return any(tag in SECRET_CWES for tag in _cwe_tags(finding))
+    return finding.get("severity") == "CRITICAL" or secret_class(finding)
 
 
 def _filter_parsed_findings(parsed, include_fixtures, exclude_globs,

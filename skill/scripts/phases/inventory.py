@@ -23,6 +23,7 @@ import os
 
 import scripts.discovery as discovery
 import scripts.grouping_engine as grouping_engine
+import scripts.py_imports as py_imports
 
 from . import coverage
 from . import runio
@@ -173,7 +174,51 @@ def foreign_tests(unit, stems, units, stems_of):
     return out
 
 
-def note(review_root, unit, files, tests, units=None, stems_of=None):
+def test_importers(review_root, units, cache=None):
+    """`{module path: {unit: [test paths]}}`: which unit's tests IMPORT each module (#3231).
+
+    The second witness `note` reads beside `foreign_tests`' naming rule. Run-5.2
+    published HIGH "no test" rows for `loop_batch.py`, `readiness_checks.py` and
+    `setup_ack.py`, whose tests are `tests/test_orchestrate*.py` and
+    `tests/test_driver.py` -- named after nothing in their cell, so the naming rule
+    called those cells `complete` and the reviewer believed it. An import is the
+    stronger fact: the test module loads the code.
+
+    Every Python test file of every unit is parsed ONCE here, for the whole batch,
+    exactly as `unit_stems_map` classifies once (#1638 P13 fix round 2, N2); `note`
+    then only looks modules up. Python only: no other language has a resolver, so a
+    non-Python module simply has no import witness and keeps the naming rule's answer.
+    """
+    cache = {} if cache is None else cache
+    out: dict = {}
+    for unit, files in units.items():
+        for f in files or ():
+            if not (f.endswith(py_imports.PY) and discovery.is_test_file(f)):
+                continue
+            for module in py_imports.imports_of(review_root, f, cache):
+                hits = out.setdefault(module, {}).setdefault(unit, [])
+                if f not in hits:
+                    hits.append(f)
+    return out
+
+
+def importing_tests(unit, files, untested, imported_by):
+    """`{other unit: [test paths]}` for tests in OTHER units that import one of this
+    unit's modules not already tested here, by name (`untested`) or by an import from
+    one of this unit's own tests -- the shape `foreign_tests` returns, so `note`
+    merges the two."""
+    out: dict = {}
+    for f in files or ():
+        stem = os.path.splitext(os.path.basename(f))[0]
+        by_unit = imported_by.get(f) or {}
+        if stem not in untested or unit in by_unit or discovery.is_test_file(f):
+            continue
+        for other, hits in by_unit.items():
+            out.setdefault(other, set()).update(hits)
+    return {other: sorted(hits) for other, hits in out.items()}
+
+
+def note(review_root, unit, files, tests, units=None, stems_of=None, imported_by=None):
     """`(state, prompt line)` for one review unit's test inventory (#1638 P13).
 
     `split` outranks `empty`: both mean the inventory is not to be trusted,
@@ -206,6 +251,10 @@ def note(review_root, unit, files, tests, units=None, stems_of=None):
         stems_of = unit_stems_map(units)
     stems, tested, own_tests = stems_of.get(unit) or unit_stems(files)
     foreign = foreign_tests(unit, stems - tested, units, stems_of)
+    if imported_by is None:
+        imported_by = test_importers(review_root, units)
+    for other, hits in importing_tests(unit, files, stems - tested, imported_by).items():
+        foreign[other] = sorted(set(foreign.get(other) or ()) | set(hits))
     if foreign:
         # #1190 AGT-A1A, via fix round 3: these are TARGET-tree paths and
         # group names from the run's own `groups.json`, pasted into a single
@@ -220,7 +269,7 @@ def note(review_root, unit, files, tests, units=None, stems_of=None):
         names = sorted(runio._prompt_safe(str(n)) for n in foreign)
         named = names[:PATHS_SHOWN]
         return "split", (
-            "split — %d test file(s) matching this group's modules are "
+            "split — %d test file(s) named after or importing this group's modules are "
             "claimed by group %s%s: %s%s. Tests for this code EXIST and are "
             "outside your scope."
             % (len(paths), ", ".join(named),

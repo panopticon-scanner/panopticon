@@ -316,6 +316,39 @@ class TestTestInventoryNote(unittest.TestCase):
         self.assertIn("Other", entry["prompt"])
         self.assertIn("tests/test_a.py", entry["prompt"])
 
+    def _imported_by(self, test_file, text, also=()):
+        """#3231: `test_file`, held by `Other`, imports `src/z.py` (Lonely's)."""
+        for rel, body in ((test_file, text), ("src/z.py", "Z = 1\n")) + tuple(also):
+            path = os.path.join(self.root, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(body)
+        groups = runio._load_json(runio._pano(self.root, "groups.json"))
+        groups["groups"][1]["files"].append(test_file)
+        runio._write_json(runio._pano(self.root, "groups.json"), groups)
+
+    def test_a_module_another_groups_test_imports_is_split(self):
+        # #3231: `tests/test_driver.py` is named after nothing in Lonely, so the
+        # naming rule alone called it `empty`; the import is the stronger fact.
+        self._imported_by("tests/test_driver.py", "from src import z\n")
+        entry = self._prompts()["Lonely"]
+        self.assertEqual("split", entry["inventory_note"])
+        self.assertIn("named after or importing", entry["prompt"])
+        self.assertIn("Other", entry["prompt"])
+        self.assertIn("tests/test_driver.py", entry["prompt"])
+
+    def test_a_test_that_imports_nothing_of_the_groups_leaves_it_empty(self):
+        self._imported_by("tests/test_driver.py", "import os\n")
+        self.assertEqual("empty", self._prompts()["Lonely"]["inventory_note"])
+
+    def test_the_importer_index_parses_each_test_once_per_batch(self):
+        self._imported_by("tests/test_driver.py", "from src import z\n")
+        import scripts.py_imports as py_imports
+        with mock.patch.object(py_imports.ast, "parse", wraps=py_imports.ast.parse) as spy:
+            self._prompts()
+        parsed = [c.args[1] for c in spy.call_args_list]
+        self.assertEqual(1, parsed.count("tests/test_driver.py"))
+
     def test_a_group_with_its_own_tests_is_complete(self):
         entry = self._prompts()["Other"]
         self.assertEqual("complete", entry["inventory_note"])

@@ -298,6 +298,7 @@ def render_summary(report):
     gate_mode = report["meta"].get("gate_security_mode")
     health_line = _render_health(s.get("health"))
     unscored = report["meta"].get("cvss_unscored") or []      # #3162
+    capped = report["meta"].get("severity_capped") or {}      # #3231
     lines = [
         # #1829 SEC-798292895: belt and braces for the two fields the
         # normalization boundary does not own -- the target path this run was
@@ -319,7 +320,9 @@ def render_summary(report):
         "",
     ] + ([health_line, ""] if health_line else []) + ([
         "**Unscored:** %d high-severity security finding(s) carry no CVSS vector (omitted, not invented)"
-        % len(unscored), ""] if unscored else []) + [
+        % len(unscored), ""] if unscored else []) + ([
+        "**Capped at MEDIUM:** %d unconfirmed claim(s) (%s)" % (sum(map(len, capped.values())), ", ".join(
+            "%s %d" % (k.replace("_", " "), len(v)) for k, v in sorted(capped.items()))), ""] if capped else []) + [
         "## Groups",
     ]
     if not s.get("coverage_certified", True):
@@ -333,14 +336,10 @@ def render_summary(report):
         tools = div.get("tools") or {}
         if tools:
             parts.append("tools " + ", ".join(sorted(tools)))
-        # #1644: the divergence map is the detail for a MEASURED gap. When the
-        # measurement itself could not be made -- an unreadable tools manifest
-        # leaves both maps empty -- the reason lives in `coverage_note`, and
-        # without it this line printed the bare word "incomplete" for the one
-        # state an operator most needs named. The note is a PEER of the
-        # divergence parts, not their fallback (#2013 review M5): a run can
-        # carry both a measured divergence and a named caveat, and the
-        # caveat is the one the operator cannot see anywhere else on the line.
+        # #1644: the divergence map details a MEASURED gap; an unmeasurable one (an
+        # unreadable tools manifest leaves both maps empty) is named by `coverage_note`.
+        # A PEER of the divergence parts, not their fallback (#2013 review M5): a run
+        # can carry both, and the caveat is seen nowhere else on the line.
         if s.get("coverage_note"):
             parts.append(s["coverage_note"])
         lines.insert(3, "**Coverage:** NOT CERTIFIED — %s"

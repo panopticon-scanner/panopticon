@@ -18,6 +18,7 @@ from unittest import mock
 
 import scripts.phases.evidence_scope as evidence_scope
 import scripts.phases.runio as runio
+import scripts.py_imports as py_imports
 import scripts.run_manifest as run_manifest
 import scripts.safe_write as safe_write
 
@@ -83,7 +84,7 @@ class TestClosure(_Repo):
         _write(self.root, "target.py", "VALUE = 1\n")
         _write(self.root, "claim.py", "import target\n" + "x" * 64)
         claim = {"location": {"file": "claim.py"}, "description": "x"}
-        with mock.patch.object(evidence_scope, "_SOURCE_BYTES", 32):
+        with mock.patch.object(py_imports, "SOURCE_BYTES", 32):   # #3231: the resolver moved
             got = evidence_scope.closure(self.root, claim,
                                          ["claim.py", "target.py"])
         self.assertEqual(got, ["claim.py"])
@@ -110,8 +111,8 @@ class TestClosure(_Repo):
         _write(self.root, "claim.py", "VALUE = 1\n")
         _write(self.root, "importer.py", "import claim\n")
         claim = {"location": {"file": "claim.py"}, "description": "x"}
-        parse = evidence_scope.ast.parse
-        with mock.patch.object(evidence_scope.ast, "parse", wraps=parse) as spy:
+        parse = py_imports.ast.parse                              # #3231: the resolver moved
+        with mock.patch.object(py_imports.ast, "parse", wraps=parse) as spy:
             got = evidence_scope.grant(
                 self.root, ["claim.py", "importer.py"], [claim, dict(claim)])
         self.assertEqual(got["granted"], ["claim.py", "importer.py"])

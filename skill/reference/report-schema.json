@@ -50,6 +50,16 @@
           "minItems": 1,
           "description": "#3162: ids of the agent-sourced security/redteam CRITICAL/HIGH findings that carry no CVSS vector. The reviewer prompt says to omit a vector it cannot justify rather than invent one, so an omission is disclosed here instead of counted in schema_errors. Present only when non-empty."
         },
+        "severity_capped": {
+          "type": "object",
+          "properties": {
+            "unverified_tool": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+            "unconfirmed_coverage_absence": {"type": "array", "items": {"type": "string"}, "minItems": 1}
+          },
+          "additionalProperties": false,
+          "minProperties": 1,
+          "description": "#3231: ids of the active findings whose severity was capped at MEDIUM, per reason (each finding's own `severity_cap` says from what). `unverified_tool`: a heuristic tool claim no advisor confirmed (evidence `tool_reported` or `needs_more_info`); secrets, credential CWEs and dependency advisories are never capped, and nothing is under `--gate-unverified`. `unconfirmed_coverage_absence`: an OCRDb TST-A1* claim that a module is untested, where the driver could not confirm that no assigned test names or imports it. Present only when non-empty."
+        },
         "unverified_archive": {
           "type": "boolean",
           "const": true,
@@ -1378,6 +1388,23 @@
           "severity_as_written": {
             "type": ["string", "null"],
             "description": "#2990: the finding's severity as written when it was not one of the five known values (in any case); `severity` then reads CRITICAL. Inert text, at most 100 characters before a marked cut. null (#3210): the finding carried no severity (the key absent or null), also read as CRITICAL."
+          },
+          "severity_cap": {
+            "type": "object",
+            "properties": {
+              "from": {"type": "string", "description": "The severity before the cap: the scanner's, or the OCRDb-disciplined agent severity."},
+              "reason": {"enum": ["unverified_tool", "unconfirmed_coverage_absence"]},
+              "note": {"type": "string", "description": "Why, in words a reader can act on: what was confirmed and what could not be (for example \"advisor confirmed within this group; no-test-anywhere can't be measured for this language\")."},
+              "measured": {"type": "boolean", "description": "unconfirmed_coverage_absence only: false when the module's language has no import witness (non-Python), so its absence could not be confirmed at all."},
+              "references": {"type": "integer", "minimum": 1, "description": "unconfirmed_coverage_absence only: how many assigned test files name or import the module."},
+              "referenced_by": {
+                "type": "array",
+                "items": {"type": "object", "properties": {"group": {"type": ["string", "null"]}, "file": {"type": "string"}}},
+                "description": "unconfirmed_coverage_absence only: up to five of those test files, with the group each was assigned to."
+              }
+            },
+            "required": ["from", "reason"],
+            "description": "#3231: present when synthesis capped this finding's severity at MEDIUM; `meta.severity_capped` lists the ids per reason."
           },
           "severity_override": {
             "type": "object",

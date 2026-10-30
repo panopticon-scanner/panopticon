@@ -67,3 +67,12 @@ def withhold_target_builds(chosen, allowed):
 # Adapters with no offline mode (live advisory-API clients); dispatched only
 # under run_tools --online. Offline substitute: osv-scanner's baked DBs.
 ONLINE_ONLY = frozenset({"pip-audit", "npm-audit"})
+
+# #3231: the adapters whose every finding is a DEPENDENCY ADVISORY -- a package
+# and version matched against an advisory database. That match is a database
+# fact rather than a pattern heuristic, so `synth/severity_cap` never caps an
+# unverified one; a CRITICAL advisory capped to MEDIUM because no advisor read it
+# would under-report. Mixed adapters (trivy scans vuln + secret) are classed per
+# finding instead, by the CVE it cites.
+ADVISORY_ADAPTERS = frozenset({"pip-audit", "npm-audit", "osv-scanner", "bundler-audit",
+                               "cargo-audit", "dependency-check"})
