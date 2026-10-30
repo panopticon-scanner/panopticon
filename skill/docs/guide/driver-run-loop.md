@@ -1024,9 +1024,13 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   advisor ALSO reads its claim's bounded closure (the same one the backup round below is granted,
   for this one claim: the paths the claim names and the cited file's one-hop imports, capped at
   12), listed in its prompt. A `NEEDS_MORE_INFO` that names the files it could not reach in
-  `missing_evidence` earns exactly ONE re-dispatch with them added — resolved, confined and capped
-  by the same resolver, and only when they grant something new — charged to that item's own verify
-  budget; the report carries the names in `evidence.missing_evidence`. The BACKUP round is granted a
+  `missing_evidence` earns exactly ONE re-dispatch with them added — each name resolved whole
+  (any extension), confined and capped by the same resolver, and only when they grant something
+  new — charged to that item's own verify budget. The lift writes to `verdicts/lift/<id>.json`,
+  never over the first answer; the controller promotes it over `verdicts/<id>.json` only when it
+  is a valid verdict, so a failed lift leaves the first `NEEDS_MORE_INFO` standing, and an
+  interrupted lift is rolled back like any entry and owed again on resume. No verdict reader lists
+  the lift folder. The report carries the names in `evidence.missing_evidence`. The BACKUP round is granted a
   **bounded closure**, not the whole cell and not the claim file alone (#1638 P16): each scoped
   claim's `location.file`, every in-repo path that claim's own evidence names (`description`,
   `exploit_scenario`, `remediation`, `evidence.reasoning`, `references`) — a named path is resolved

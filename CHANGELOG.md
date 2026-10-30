@@ -9,7 +9,9 @@
     files the claim names and the cited file's one-hop imports, capped at 12.
   - A `NEEDS_MORE_INFO` must list the files it could not reach in `missing_evidence`. The driver
     re-dispatches once with those files added, if they grant anything new, and charges that to the
-    item's own verify budget.
+    item's own verify budget. Each name is resolved whole, whatever its extension.
+  - The second answer is written to `verdicts/lift/` and replaces the first only when it is a valid
+    verdict. A failed lift leaves the first answer standing; an interrupted one is owed again.
   - The report carries the names (`evidence.missing_evidence`), and the HTML card shows them as
     "Advisor could not see".
 - **Fix: unconfirmed HIGHs no longer reach the active report at full severity (#3231, part 1 of 2).**

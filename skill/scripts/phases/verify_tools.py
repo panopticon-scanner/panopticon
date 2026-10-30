@@ -160,13 +160,21 @@ def _tool_verdict_out_file(review_root, queue_id):
     load_verdict_bundles skips it as not-a-bundle)."""
     return os.path.abspath(runio._pano(review_root, "verdicts", "%s.json" % queue_id))
 
-def _tool_verdict_done(review_root, queue_id):
-    """A tool-finding verdict is settled once verdicts/<queue_id>.json parses as
-    a single-verdict file synthesize will load -- a dict carrying a valid verdict
-    value. Mirrors evidence.load_verdicts_detailed's own acceptance test (tolerant
-    parse, VERDICT_VALUES), so 'done' means 'synthesize will match it', and a
-    truncated/garbled return re-dispatches rather than reading as done."""
-    path = _tool_verdict_out_file(review_root, queue_id)
+def _tool_lift_out_file(review_root, queue_id):
+    """Where a lift's reply lands (#3231 A2): `verdicts/lift/<queue_id>.json`. The
+    first verdict keeps `verdicts/<queue_id>.json`, so the lift entry is not born done
+    (`persist.is_done` reads ITS out_file), and a lift that never answers -- killed,
+    refused, interrupted -- leaves the first answer and its `missing_evidence` standing."""
+    return os.path.abspath(runio._pano(review_root, "verdicts", _lift_dir(),
+                                       "%s.json" % queue_id))
+
+
+def _lift_dir():
+    from . import persist        # persist -> verify -> here: read at call time
+    return persist.LIFT_DIR
+
+
+def _valid_verdict_at(path):
     try:
         with open(path, encoding="utf-8") as fh:
             data = evidence.load_json_tolerant(fh.read())
@@ -174,6 +182,33 @@ def _tool_verdict_done(review_root, queue_id):
         return False
     return (isinstance(data, dict)
             and str(data.get("verdict", "")).upper() in evidence.VERDICT_VALUES)
+
+
+def _promote_lifts(review_root, queue_ids):
+    """Move every landed lift reply over its first verdict, atomically (`os.replace`).
+
+    The second answer is the one asked with the evidence the first said it lacked, so
+    it is the verdict -- a CONFIRMED, a REJECTED, or a second NEEDS_MORE_INFO that then
+    stands. A lift file that is not a valid verdict is never promoted (`write_reply`
+    writes none, so this is only a hostile or truncated leftover). Idempotent: a crash
+    between landing and promoting promotes on the next pass."""
+    for qid in queue_ids:
+        lift = _tool_lift_out_file(review_root, qid)
+        if os.path.isfile(lift) and _valid_verdict_at(lift):
+            os.replace(lift, _tool_verdict_out_file(review_root, qid))
+
+
+def _unpromoted_lift(review_root, queue_id):
+    return _valid_verdict_at(_tool_lift_out_file(review_root, queue_id))
+
+
+def _tool_verdict_done(review_root, queue_id):
+    """A tool-finding verdict is settled once verdicts/<queue_id>.json parses as
+    a single-verdict file synthesize will load -- a dict carrying a valid verdict
+    value. Mirrors evidence.load_verdicts_detailed's own acceptance test (tolerant
+    parse, VERDICT_VALUES), so 'done' means 'synthesize will match it', and a
+    truncated/garbled return re-dispatches rather than reading as done."""
+    return _valid_verdict_at(_tool_verdict_out_file(review_root, queue_id))
 
 # The tool advisor's entry id prefix, one spelling for the entry built here and
 # for `verify._dispatch_key`, which reads its budget key back off a dispatched id.
@@ -244,9 +279,8 @@ def _tool_closure(review_root, finding, cell_abs, lift=None):
     ambiguous: list = []
     paths = evidence_scope.closure(review_root, finding, rel, unresolved=ambiguous)
     if lift:
-        paths += evidence_scope.named_paths(       # one past the cap is its signal; cut there
-            review_root, {"references": _relative_names(review_root, lift)}, rel,
-            ambiguous)[:evidence_scope.CAP]
+        paths += evidence_scope.resolve_names(
+            review_root, _relative_names(review_root, lift), rel, ambiguous)
     seen, extras = set(cell_abs), []
     for path in paths:
         full = os.path.abspath(os.path.join(review_root, path))
@@ -293,7 +327,8 @@ def _tool_verify_entry(review_root, manifest, queue_id, finding, host, lift=None
     the repo-root pin from dispatch.render_advisor_prompts. NO run_id echo line:
     the driver writes no verify-queue.json, so synthesize's verdict_run_id is None
     and match_verdict binds on the finding_id echo alone."""
-    out_file = _tool_verdict_out_file(review_root, queue_id)
+    out_file = (_tool_lift_out_file(review_root, queue_id) if lift
+                else _tool_verdict_out_file(review_root, queue_id))
     # #run8 ARC-F2A: confine the tool finding's location too -- _tool_verify_entry
     # embeds the whole finding dict verbatim into the unconfined advisor's claim.
     safe_finding = finding
@@ -351,7 +386,9 @@ def _verify_tools_execute(review_root, manifest, host):
     """Emit the tool-finding verify checkpoint when any tool finding still lacks
     a verdict; None when every tool finding is verified (or none exist). Runs as
     a round of the verify phase after primary/backup cells."""
-    pending = [(qid, f, lift) for qid, f in _tool_verify_queue(review_root, manifest)
+    queue = _tool_verify_queue(review_root, manifest)
+    _promote_lifts(review_root, [qid for qid, _f in queue])        # #3231 A2: a landed lift
+    pending = [(qid, f, lift) for qid, f in queue
                for lift in [None if not _tool_verdict_done(review_root, qid)
                             else _lift_owed(review_root, qid, f)]
                if (lift or not _tool_verdict_done(review_root, qid))
@@ -371,6 +408,9 @@ def _verify_tools_execute(review_root, manifest, host):
 def _verify_tools_done(review_root, manifest):
     # #3185: an item that spent its budget is done; its finding stays unanswered.
     # #3231 A2: an owed `missing_evidence` re-dispatch holds the round open.
-    return all((_tool_verdict_done(review_root, qid) and not _lift_owed(review_root, qid, f))
-               or _tool_exhausted(review_root, qid)
+    # A landed lift not yet promoted holds it open too, so `_verify_tools_execute` runs
+    # and promotes it before synthesize reads `verdicts/`.
+    return all(not _unpromoted_lift(review_root, qid)
+               and ((_tool_verdict_done(review_root, qid) and not _lift_owed(review_root, qid, f))
+                    or _tool_exhausted(review_root, qid))
                for qid, f in _tool_verify_queue(review_root, manifest))

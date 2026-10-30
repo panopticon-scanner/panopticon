@@ -398,6 +398,30 @@ def named_paths(review_root, claim, group_files=None, unresolved=None,
     return out
 
 
+def resolve_names(review_root, names, group_files=None, unresolved=None, cap=CAP):
+    """`named_paths` for a LIST of names rather than free text (#3231 A2): a tool
+    advisor's `missing_evidence`. Each item is resolved WHOLE through `_resolve_named`
+    -- the same exact/suffix/content ladder, confinement and per-entry search bound --
+    so a name in any language resolves, not only the extensions `_PATH_RE` knows (the
+    backup round's text scan keeps that regex). At most `cap` paths; ambiguities go to
+    `unresolved` exactly as `named_paths` records them."""
+    out: list[str] = []
+    cache: dict = {}
+    for name in names or []:
+        if len(out) >= cap:
+            break
+        if not isinstance(name, str) or not name.strip():
+            continue
+        path, ambiguity = _resolve_named(review_root, group_files, name.strip(), cache)
+        if path:
+            if path not in out:
+                out.append(path)
+        elif ambiguity and unresolved is not None and not any(
+                r.get("name") == ambiguity["name"] for r in unresolved):
+            unresolved.append(ambiguity)
+    return out
+
+
 def disclosure(ambiguous):
     """The prompt block that TELLS a backup advisor what the driver refused to
     guess -- `""` when nothing was ambiguous.

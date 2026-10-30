@@ -1,6 +1,7 @@
 """#3231 part A: the tool advisor's read fence is its claim's cell PLUS the backup
 round's bounded closure (A1), and a NEEDS_MORE_INFO that names the files it could
 not reach earns one re-dispatch with them, charged to the item's own budget (A2)."""
+import json
 import os
 import shutil
 import tempfile
@@ -8,6 +9,8 @@ import unittest
 from unittest import mock
 
 import scripts.evidence as evidence
+import scripts.loop_batch as loop_batch
+import scripts.phases.persist as persist
 import scripts.phases.evidence_scope as evidence_scope
 import scripts.phases.runio as runio
 import scripts.phases.verify as verify
@@ -184,3 +187,135 @@ class LiftTest(_Tree):
         many = dict(verdict, missing_evidence=["f%d.py" % n for n in range(40)])
         self.assertEqual(evidence.SCOPE_NAMES_SHOWN,
                          len(evidence.derive_evidence(_finding(), many)["missing_evidence"]))
+
+
+class LoopSurfacesTest(_Tree):
+    """One item through the real loop surfaces (change request F1/F2): the lift entry
+    as the round builds it, `loop_batch._pending`, `persist.write_reply`, the round's
+    own done predicate, and the evidence synthesize derives. Only the queue is fixed,
+    because recomputing it runs synthesize's whole ingest and is not what is tested."""
+
+    def setUp(self):
+        super().setUp()
+        self.finding = _finding(file="phases/child.py", title="Popen audit")
+        self._spent(1)
+        self._verdict(missing=[self._abs("driver/caller.py")])
+        self.queue = mock.patch.object(verify_tools, "_tool_verify_queue",
+                                       return_value=[(QID, self.finding)])
+        self.queue.start()
+        self.addCleanup(self.queue.stop)
+
+    def _lift_entry(self):
+        captured = []
+        with mock.patch.object(verify_tools.requests, "write_dispatch_request_bound",
+                               side_effect=lambda *a: captured.append(a[4]) or ("r", "s")):
+            verify_tools._verify_tools_execute(self.root, {"run_id": "r"}, "claude")
+        (entry,) = captured[0]
+        return entry
+
+    def _reply(self, verdict, missing=None):
+        body = {"finding_id": "SG-1", "verdict": verdict, "confidence": "LIKELY",
+                "reasoning": "traced the caller", "explored": [], "references": [],
+                "citations": {}}
+        if missing is not None:
+            body["missing_evidence"] = missing
+        return json.dumps(body)
+
+    def _evidence(self):
+        verdicts, unloadable = evidence.load_verdicts_detailed(
+            runio._pano(self.root, "verdicts"))
+        self.assertEqual(([], [QID]), (unloadable, sorted(verdicts)))
+        return evidence.derive_evidence(self.finding, verdicts[QID])
+
+    def _finish(self):
+        done = verify_tools._verify_tools_done(self.root, {"run_id": "r"})
+        if not done:
+            self.assertIsNone(verify_tools._verify_tools_execute(self.root, {"run_id": "r"}, "claude"))
+        self.assertTrue(verify_tools._verify_tools_done(self.root, {"run_id": "r"}))
+
+    def test_the_lift_launches_and_a_confirmed_second_answer_lands(self):
+        entry = self._lift_entry()
+        self.assertEqual([entry], loop_batch._pending([entry]))     # not born done
+        self.assertEqual((True, ""), persist.write_reply(entry, self._reply("CONFIRMED")))
+        self.assertFalse(verify_tools._verify_tools_done(self.root, {"run_id": "r"}))
+        self._finish()
+        self.assertEqual("tool_confirmed", self._evidence()["status"])
+        self.assertFalse(os.path.exists(entry["out_file"]))          # promoted, not left over
+
+    def test_a_second_needs_more_info_stands(self):
+        entry = self._lift_entry()
+        persist.write_reply(entry, self._reply("NEEDS_MORE_INFO", ["driver/second.py"]))
+        self._finish()
+        ev = self._evidence()
+        self.assertEqual(("needs_more_info", ["driver/second.py"]),
+                         (ev["status"], ev.get("missing_evidence")))
+        self.assertIsNone(verify_tools._lift_owed(self.root, QID, self.finding))   # once
+
+    def test_a_failed_lift_keeps_the_first_answer(self):
+        entry = self._lift_entry()
+        ok, _reason = persist.write_reply(entry, "not json at all")
+        self.assertFalse(ok)
+        self._finish()
+        ev = self._evidence()
+        self.assertEqual(("needs_more_info", [self._abs("driver/caller.py")]),
+                         (ev["status"], ev.get("missing_evidence")))
+
+    def test_an_interrupt_on_the_real_rollback_path_leaves_the_lift_owed(self):
+        import scripts.ledger as ledger_mod
+        import scripts.runners.batch as batch_mod
+        entry = self._lift_entry()
+        self.assertEqual(2, self._attempts())
+        run_dir = runio._pano(self.root)
+        batch = batch_mod.Batch(run_dir, 1, "verify", [entry]).open()
+        self.assertEqual([[entry["out_file"]]], [r["artifacts"] for r in batch.entries])
+        ledger = ledger_mod.Ledger(run_dir)
+        ledger.mark_batch()
+        runner = mock.Mock(host="claude")
+        message = loop_batch.rolled_back(self.root, batch, [entry], {"checkpoint": "verify"},
+                                         ledger, "headless", runner, None)
+        self.assertNotIn("rollback incomplete", message)
+        self.assertEqual(1, self._attempts())                        # refunded
+        self.assertTrue(verify_tools._tool_verdict_done(self.root, QID))   # first stands
+        self.assertIsNotNone(verify_tools._lift_owed(self.root, QID, self.finding))
+
+
+class NamesInAnyLanguageTest(_Tree):
+    FILES = dict(_Tree.FILES, **{"web/src/App.tsx": "export {}\n",
+                                 "web/app/User.php": "<?php\n"})
+    GROUPS = _Tree.GROUPS + [{"name": "Web", "files": ["web/src/App.tsx", "web/app/User.php"]}]
+
+    def test_missing_evidence_names_resolve_whole_whatever_the_extension(self):
+        cell = [self._abs("phases/child.py")]
+        extras, _ = verify_tools._tool_closure(
+            self.root, _finding(file="phases/child.py"), cell,
+            [self._abs("web/src/App.tsx"), "web/app/User.php"])
+        self.assertEqual({"web/src/App.tsx", "web/app/User.php"}, set(extras))
+
+
+class PromotionTest(_Tree):
+    def test_a_lift_file_that_is_not_a_verdict_is_never_promoted(self):
+        self._spent(2)
+        self._verdict(missing=[self._abs("driver/caller.py")])
+        lift = verify_tools._tool_lift_out_file(self.root, QID)
+        os.makedirs(os.path.dirname(lift), exist_ok=True)
+        with open(lift, "w", encoding="utf-8") as fh:
+            fh.write('{"verdict": "TRUST ME"}')
+        verify_tools._promote_lifts(self.root, [QID])
+        with open(verify_tools._tool_verdict_out_file(self.root, QID), encoding="utf-8") as fh:
+            self.assertEqual("NEEDS_MORE_INFO", json.load(fh)["verdict"])
+
+    def test_no_verdict_reader_lists_the_lift_folder(self):
+        self._spent(1)
+        self._verdict(missing=[self._abs("driver/caller.py")])
+        lift = verify_tools._tool_lift_out_file(self.root, QID)
+        os.makedirs(os.path.dirname(lift), exist_ok=True)
+        runio._write_json(lift, {"finding_id": "SG-1", "verdict": "CONFIRMED"})
+        vdir = runio._pano(self.root, "verdicts")
+        verdicts, unloadable = evidence.load_verdicts_detailed(vdir)
+        self.assertEqual(([QID], []), (sorted(verdicts), unloadable))
+        import scripts.synth.cost as cost_mod
+        runio._write_json(runio._pano(self.root, "dispatch-plan-driver.json"), [])
+        counts = cost_mod.driver_cost_counts(runio._pano(self.root), vdir, [])
+        self.assertEqual(1, counts["verify_tools"])          # the first verdict only
+        bundles = evidence.load_verdict_bundles(vdir)
+        self.assertEqual({}, bundles[0] if isinstance(bundles, tuple) else bundles)
