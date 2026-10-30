@@ -367,11 +367,10 @@ def _shape_line(row, host):
     detail = row.get(hosts.SHAPE_DETAIL) or "no detail recorded"
     if shape == hosts.SHAPE_PROVEN:
         if host == "codex":
-            return [("no production reply is provider-schema-constrained on host %r -- %s "
-                     + "advertised and the toy shape was proven by one launch (%s), but none "
-                     + "of this build's three production role schemas passes the Codex "
-                     + "compatibility screen; persist.write_reply validates each returned "
-                     + "role with a published schema against its original schema on receipt")
+            return [("production replies are provider-schema-constrained on host %r -- %s "
+                     + "advertised and the largest of four strict generation projections "
+                     + "was proven by one launch (%s); persist.write_reply separately "
+                     + "validates each returned role against its broad receipt schema")
                     % (host, flag, detail)]
         return [("replies are schema-constrained this run on host %r -- %s advertised, "
                  + "shape proven by one launch (%s)") % (host, flag, detail)]
@@ -379,26 +378,25 @@ def _shape_line(row, host):
         return [("replies are not schema-constrained this run on host %r -- %s "
                  + "advertised, shape REFUTED by one launch (%s) -- entries launch "
                  + "without the flag and reply in fenced JSON, which the driver "
-                 + "validates against the same schema on receipt") % (host, flag, detail)]
+                 + "validates against the role's receipt schema") % (host, flag, detail)]
     if shape == hosts.SHAPE_UNMEASURED:
         if host == "codex":
-            return [("no production reply is provider-schema-constrained on host %r -- %s "
-                     + "advertised (shape unmeasured: %s); none of this build's three "
-                     + "production role schemas passes the Codex compatibility screen; "
-                     + "persist.write_reply validates each returned role with a published "
-                     + "schema against its original schema on receipt") % (host, flag, detail)]
+            return [("production replies may be provider-schema-constrained on host %r -- %s "
+                     + "advertised (shape unmeasured: %s); the largest strict generation "
+                     + "projection was not proven, entries retain their projections, and "
+                     + "persist.write_reply still validates each role against its broad "
+                     + "receipt schema") % (host, flag, detail)]
         return [("replies may be schema-constrained this run on host %r -- %s "
                  + "advertised (shape unmeasured: %s); entries carry the flag as "
                  + "before, and the driver validates every returned role with a "
                  + "published schema either way")
                 % (host, flag, detail)]
     if host == "codex":
-        return [("no production reply is provider-schema-constrained on host %r -- %s "
-                 + "advertised (shape unmeasured until the first batch launches); none "
-                 + "of this build's three production role schemas passes the Codex "
-                 + "compatibility screen; the loop still proves the toy shape once under "
-                 + "that batch's own guards; persist.write_reply validates each returned "
-                 + "role with a published schema against its original schema on receipt")
+        return [("production projections await their once-per-run proof on host %r -- %s "
+                 + "advertised (shape unmeasured until the first batch launches); the loop "
+                 + "proves the largest of four strict generation projections under that "
+                 + "batch's own guards before launching it, and persist.write_reply "
+                 + "separately validates every reply against its broad receipt schema")
                 % (host, flag)]
     return [("replies may be schema-constrained this run on host %r -- %s "
              + "advertised (shape unmeasured until the first batch launches); the "

@@ -122,27 +122,23 @@ and `unknown`, so a healthy headless Codex posture is three of five proven.
 
 ### Codex production output-schema compatibility
 
-As of #3221, all three schemas in `phases.persist.ROLE_SCHEMAS` fail Codex's
-`strict_output_schema` provider screen, so the controller omits `--output-schema` for production
-entries and validates their replies only on receipt. The incompatibilities and viable paths are:
+Codex production replies use four provider-facing projections: review, primary verify, backup
+verify and tool-advisor. Every exposed object is closed and fully required. Review preserves true
+omission through 64 strict full-finding variants (with nested `anyOf`/`$defs` for location,
+severity-override and CVSS sub-shapes); verify separates primary from backup; and tool-advisor
+exposes exactly the seven fields its prompt requests. An unknown verify stage carries no generation
+schema and falls back to receipt validation.
 
-- `review-cell` / `findings-envelope-schema.json` uses unsupported `oneOf` and draft-07
-  `definitions`, leaves root and nested properties optional, and contains open nested objects. It
-  can be constrained with a separate provider-facing v5 domain-finding projection using strict
-  `anyOf`/`$defs` variants and closed, fully required objects; the broad receipt schema must remain
-  for legacy and optional-field compatibility.
-- `verify-cell` / `verdict-bundle-schema.json` has optional or open properties in the root,
-  verdict, stamp, citations, and evidence-scope objects, and carries the unsupported
-  `stage.default` keyword. Separate strict primary and backup generation projections can expose
-  exactly the fields each prompt requests while omitting controller-only `stamped_by`.
-- `tool-advisor` / `advisor-verdict-schema.json` combines its required seven-field reply with
-  optional fields, open citations/evidence-scope objects, and `stage.default`. A strict generation
-  schema containing exactly the seven fields from `advisor.md`, including closed required citation
-  arrays, is compatible.
+The projections do **not** replace `phases.persist.ROLE_SCHEMAS`. Those three broad Draft-7 schemas
+remain the receipt authority for legacy and optional-field compatibility, and every constrained
+reply must still pass its role schema after controller stamping. Claude also continues to receive
+those original schemas byte-for-byte on inline `--json-schema`; only Codex selects the strict
+generation projections.
 
-These should be provider-facing schemas, not stricter replacements for the receipt contracts: a
-constrained reply must still pass the existing role schema after controller stamping. Follow-up
-#3241 tracks that work.
+The once-per-run output-schema proof uses the largest production projection (review), not the toy
+shape. A provider refusal records `refuted`, removes every generation schema before that batch
+launches and leaves fenced JSON plus receipt validation. An unmeasured proof changes nothing. The
+review projection is kept below 64 KiB so complexity cannot silently turn into a per-entry outage.
 
 Kimi claims all five. They are measured by the family's own probes (#1344): `kimi-shell-surface`
 (the registered shells; every tool name they allow or forbid verified against the installed CLI's
@@ -188,11 +184,13 @@ Four surfaces carry it, and all four are mandatory:
    which is what one real launch found out about what the CLI takes AFTER the flag (#1732). The
    shape is `proven`, `refuted` or `unmeasured`; only `refuted` changes the run, and what it changes
    is that entries launch without the flag and reply in fenced JSON, which the driver validates
-   against the same schema on receipt. **That launch happens inside the loop**, once per run, on the
+   against the role's receipt schema. **That launch happens inside the loop**, once per run, on the
    first batch that carries a schema-stamped `return_json` entry — after `Guards.arm`, so it is
    confined by that batch's own read scope and write allowlist and the settings file its argv names
    has been written, and it goes out under a real cell's `agent`/`enforced`/`model` so it measures
-   the argv a cell will really launch with. Its `out_file` is deliberately outside the write
+   the argv a cell will really launch with. Codex uses the largest production projection (review)
+   for this launch, so a provider change that refuses a real projection is caught before it can
+   burn every cell; other families retain the tiny shape. Its `out_file` is deliberately outside the write
    allowlist: a probe that wrote anything would be a probe with a side effect. Before that batch
    this line says the shape is unmeasured *until the first batch launches*; afterwards the verdict
    is on `host-capabilities.json`, so a later invocation — a resume, or the next turn of the loop —

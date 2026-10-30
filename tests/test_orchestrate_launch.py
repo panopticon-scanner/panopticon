@@ -15,6 +15,7 @@ import scripts.driver as driver
 import scripts.html_report as html_report
 import scripts.phases.engine as engine
 import scripts.phases.review as review
+import scripts.phases.persist as persist
 import scripts.synth.coverage_io as coverage_io
 import scripts.synth.render as render_mod
 import scripts.phases.runio as runio
@@ -335,6 +336,60 @@ class TestTheOutputSchemaShapeProof(LoopCase):
         self.assertEqual((shape_probe.PROBE_MAX_TURNS, shape_probe.PROBE_ENTRY_TIMEOUT),
                          runner.bounds[0])
         self.assertNotEqual(shape_probe.PROBE_MAX_TURNS, runner.bounds[1][0])
+
+    def test_codex_proves_the_largest_production_projection_not_the_toy_schema(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        run_manifest.write_manifest(
+            d, {"run_id": "r" * 8, "host": "codex", "created": "2026-10-30"})
+        run_dir = os.path.join(d, ".panopticon", "runs", "t")
+        os.makedirs(run_dir)
+        flags = {hosts.OUTPUT_SCHEMA: {
+            "flag": "--output-schema", "advertised": True, "detail": "fixture"}}
+        runio._write_json(os.path.join(run_dir, runio.HOST_CAPABILITIES),
+                          {hosts.CLI_FLAGS: flags})
+        cell = {
+            "id": "review-app-COD", "delivery": "return_json",
+            "agent": "panopticon-domain-panel", "model": "gpt-5", "enforced": True,
+            "scope": {"files": [], "dirs": [], "reads": []}, "prompt": "p",
+            "output_schema": persist.generation_schema({
+                "out_file": os.path.join(run_dir, "findings-app-COD.json")}),
+        }
+        runner = self.Schemed(host="codex")
+        verdict = orchestrate.loop_batch.prove_output_schema_shape(
+            run_dir, "codex", runner, [cell], lambda entry: {}, d)
+        self.assertEqual(hosts.SHAPE_PROVEN, verdict[hosts.SHAPE])
+        probe = runner.probe_launches()[0]
+        self.assertEqual(
+            os.path.basename(persist.generation_schema({
+                "out_file": os.path.join(run_dir, "findings-app-COD.json")})),
+            os.path.basename(probe["output_schema"]),
+        )
+        self.assertIn('"findings"', probe["prompt"])
+
+    def test_codex_production_projection_refusal_strips_this_batch(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        run_manifest.write_manifest(
+            d, {"run_id": "r" * 8, "host": "codex", "created": "2026-10-30"})
+        run_dir = os.path.join(d, ".panopticon", "runs", "t")
+        os.makedirs(run_dir)
+        flags = {hosts.OUTPUT_SCHEMA: {
+            "flag": "--output-schema", "advertised": True, "detail": "fixture"}}
+        runio._write_json(os.path.join(run_dir, runio.HOST_CAPABILITIES),
+                          {hosts.CLI_FLAGS: flags})
+        cell = {
+            "id": "review-app-COD", "delivery": "return_json",
+            "agent": "panopticon-domain-panel", "model": "gpt-5", "enforced": True,
+            "scope": {"files": [], "dirs": [], "reads": []}, "prompt": "p",
+            "output_schema": persist.generation_schema({
+                "out_file": os.path.join(run_dir, "findings-app-COD.json")}),
+        }
+        runner = self.Schemed(verdict="refuse", host="codex")
+        verdict = orchestrate.loop_batch.prove_output_schema_shape(
+            run_dir, "codex", runner, [cell], lambda entry: {}, d)
+        self.assertEqual(hosts.SHAPE_REFUTED, verdict[hosts.SHAPE])
+        self.assertNotIn("output_schema", cell)
 
     def test_a_refutation_strips_the_flag_off_this_very_batch(self):
         # The point of proving it before the first `iter_batch` rather than

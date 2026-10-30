@@ -131,18 +131,19 @@ def _refs(node):
 
 
 def test_every_published_output_schema_is_self_contained():
-    # D10 F9: these three files are handed to a host CLI as the schema its
-    # reply must satisfy (`persist.ROLE_SCHEMAS` -> `--json-schema`). The CLI
+    # D10 F9 / #3241: receipt and generation files may be handed to a host CLI
+    # as the schema its reply must satisfy. The CLI
     # resolves nothing on our behalf and fetches nothing, so a reference OUT of
     # the document -- a sibling file, a URL -- reaches it broken, and the CLI's
     # own answer to a schema it cannot resolve is not ours to predict.
     # INTERNAL refs are allowed and used: the findings envelope's two finding
     # shapes live under `#/definitions`, which every implementation resolves
     # inside the document it was given.
-    for name in sorted(set(persist.ROLE_SCHEMAS.values())):
+    for name in sorted(set(persist.ROLE_SCHEMAS.values())
+                       | set(persist.GENERATION_SCHEMAS.values())):
         schema = _load(name)
         for ref in _refs(schema):
-            assert ref.startswith("#/definitions/"), (name, ref)
+            assert ref.startswith(("#/definitions/", "#/$defs/")), (name, ref)
 
 
 def test_no_published_schema_requires_a_stamp_key_the_driver_cannot_fill():

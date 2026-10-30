@@ -191,32 +191,31 @@ def _materialize_prompts(review_root, entries, namespace=None, *, run_id):
     except (OSError, ValueError):
         run_folder = None
     # D10 F1: does THIS machine's CLI take a constrained-output schema? Read
-    # from the run's own evidence artifact, once, and only `True` counts --
-    # absent (nobody asked: session mode, a host whose row maps no usage
-    # probe) and `False` (asked, not advertised) are the same answer, and it
-    # is the answer that leaves a launch exactly as it was before ruling 3.
-    # Fail-safe, because the alternative is fatal: a CLI that does not know
-    # the flag exits non-zero on it, prints no envelope, and every entry of
-    # every checkpoint burns its three launches.
-    #
-    # #1732: AND the shape. `advertised` is a read of the flag's NAME, from
-    # `<cli> --help`; run 14's CLI advertised `--json-schema` and then refused
-    # what the driver put after it (the schema's path, where it wants the
-    # text), and every return_json entry of every checkpoint burned its three
-    # launches -- 309 of them. `refuted` is the one verdict that takes the
-    # flag back off; `proven`, `unmeasured` and an absent key all stamp
-    # exactly as before, because a fact nobody could measure may not remove a
-    # capability.
+    # the run's evidence once, and only `True` counts. Absent (not measured)
+    # and `False` (not advertised) both leave launches unchanged. Fail-safe:
+    # an unknown flag makes every entry burn its three launches.
+    # #1732 also requires the shape. A CLI can advertise a flag but reject the
+    # schema form after it; one run did that 309 times. Only `refuted` removes
+    # the flag. `proven`, `unmeasured`, and absent preserve prior behavior,
+    # because a fact nobody could measure may not remove a capability.
+    manifest = _manifest_of(review_root, namespace)
     fact = runio.host_cli_flags(review_root).get(hosts.OUTPUT_SCHEMA, {})
-    shape = run_manifest.artifact_stamp(_manifest_of(review_root, namespace),     # #3280 S4
+    shape = run_manifest.artifact_stamp(manifest,                               # #3280 S4
                                         run_manifest.OUTPUT_SCHEMA_SHAPE) or {}
     advertised = fact.get("advertised") is True and shape.get(hosts.SHAPE) != hosts.SHAPE_REFUTED
+    host = manifest.get("host") if isinstance(manifest, dict) else None
+    # Pre-manifest phase fixtures (and old flat artifacts) still carry the
+    # measured flag. `--output-schema` is Codex's declared token; this fallback
+    # keeps their family identity without changing the persisted request shape.
+    if host is None and fact.get("flag") == "--output-schema":
+        host = "codex"
     for entry in entries:
         entry = dict(entry)
-        # D10 ruling 3: the published schema this entry's reply is accepted
-        # against, for a host CLI that can constrain its output to one. Neutral
-        # like `delivery` and `prompt_file`: a family with no such flag ignores
-        # it, and a role with no published schema carries no key at all.
+        # D10 ruling 3 / #3241: the published schema this host constrains the
+        # reply against. Codex selects a strict generation projection; Claude
+        # keeps the broad role schema byte-for-byte. Neutral like `delivery`
+        # and `prompt_file`: a family with no flag ignores it, and a role with
+        # no published schema carries no key at all.
         #
         # RETURN-PERSIST only, because that is what the schema describes: the
         # object the CONTROLLER will persist. A self-writing reviewer put its
@@ -224,7 +223,7 @@ def _materialize_prompts(review_root, entries, namespace=None, *, run_id):
         # one-line confirmation, so constraining its final message to the
         # findings envelope would demand back the very object the self-write
         # path exists to keep out of the loop.
-        schema = (persist.role_schema(entry)
+        schema = (persist.launch_schema(entry, host)
                   if advertised and entry.get("delivery") == "return_json" else None)
         if schema:
             entry["output_schema"] = schema

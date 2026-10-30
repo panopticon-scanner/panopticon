@@ -630,6 +630,11 @@ groups:
       - skill/reference/findings-envelope-schema.json
       - skill/reference/advisor-verdict-schema.json
       - skill/reference/verdict-bundle-schema.json
+      # #3241: provider projections live beside the receipt contracts they narrow.
+      - skill/reference/review-cell-generation-schema.json
+      - skill/reference/tool-advisor-generation-schema.json
+      - skill/reference/verify-backup-generation-schema.json
+      - skill/reference/verify-primary-generation-schema.json
       - skill/reference/cwe-catalog.json
       - skill/reference/ocrdb-0.6.0.json
       tests:
@@ -653,6 +658,7 @@ groups:
       - tests/test_verify_inconclusive.py
       - tests/test_verify_queue.py
       - tests/test_verify_schema_fields.py
+      - tests/test_generation_schemas.py
     Outputs:
       match:
       - skill/scripts/html_report.py
