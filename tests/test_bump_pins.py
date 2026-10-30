@@ -726,6 +726,15 @@ pluggy==1.6.0 \\
     --hash=sha256:%s
 """ % ("9" * 64)
 
+STDLIB_CHECK_BOOTSTRAP = (
+    "import os,runpy,sys;"
+    "script=os.environ['PANOPTICON_BUMP_PINS_SCRIPT'];"
+    "sys.path.insert(0,os.path.dirname(script));"
+    "sys.argv=[script,'requirements','--check','--file',"
+    "os.environ['PANOPTICON_REQUIREMENTS_FILE']];"
+    "runpy.run_path(script,run_name='__main__')"
+)
+
 WHEEL = b"wheel bytes"
 OTHER = b"other wheel bytes"
 WHEEL_SHA = hashlib.sha256(WHEEL).hexdigest()
@@ -1229,15 +1238,12 @@ class TestRequirementsCheck(unittest.TestCase):
             with open(path, encoding="utf-8") as fh:
                 before = fh.read()
             script = os.path.abspath(bp.__file__)
-            bootstrap = (
-                "import runpy,sys;sys.path.insert(0,%r);"
-                "sys.argv=[%r,'requirements','--check','--file',%r];"
-                "runpy.run_path(%r,run_name='__main__')"
-                % (os.path.dirname(script), script, path, script)
-            )
             completed = subprocess.run(
-                [sys.executable, "-I", "-S", "-c", bootstrap],
+                [sys.executable, "-I", "-S", "-c", STDLIB_CHECK_BOOTSTRAP],
                 cwd=root, capture_output=True, text=True, check=False,
+                env={**os.environ,
+                     "PANOPTICON_BUMP_PINS_SCRIPT": script,
+                     "PANOPTICON_REQUIREMENTS_FILE": path},
             )
             with open(path, encoding="utf-8") as fh:
                 after = fh.read()
