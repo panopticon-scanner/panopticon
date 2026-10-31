@@ -175,7 +175,7 @@ class TestTheReadinessVerbIsAdvertised(unittest.TestCase):
     def test_the_quick_reference_leads_with_it_and_shows_the_exit_code_idiom(self):
         skill = _read_skill_md()
         quick = skill.split("## Quick reference", 1)[1]
-        self.assertIn("`driver readiness [target] [--host NAME] [--json]`", quick)
+        self.assertIn("`driver readiness [target] [run flags] [--json]`", quick)
         self.assertIn("driver readiness && driver loop", quick)
         # It has to come before the verbs it gates.
         self.assertLess(quick.index("driver readiness"), quick.index("driver setup"))

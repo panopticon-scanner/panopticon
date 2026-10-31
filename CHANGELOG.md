@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Change: `driver readiness` takes `driver loop`'s flags and says what that run would meet (#3233).**
+  `driver readiness . --security redteam` used to exit 2 with `unrecognized arguments`. The new
+  `run_plan` rows are informational and never move the exit code: the groups discovery will dispatch,
+  a gate left `OFF`, stale enforcement shells, tool findings on a resume, withheld online adapters,
+  and which copy of the skill is running. Readiness still writes nothing under the target and starts
+  no host CLI.
+  - The tools phase now says, when it ends, how many tool findings will each get an advisor, before
+    review merges.
+
 - **Change: a run's prompts can be found by entry name (#3233).** `runs/<tag>/_prompts/index.json`
   maps each entry id to its prompt file, because an id holding a `:` is stored under a hash. It is
   for an operator: no run reads it, and no agent is granted it.

@@ -39,6 +39,37 @@ class TestToolsPhase(unittest.TestCase):
         self.assertTrue(marker["ran"])
         self.assertTrue(tools_phase.tools_done(self.root, self.manifest))
 
+    def test_a_scan_that_produced_output_says_how_many_findings_get_an_advisor(self):
+        # #3233: before any advisor is paid for, and labelled as the count before review merges.
+        def fake_run(cmd, **kw):
+            out = cmd[cmd.index("--out") + 1]
+            os.makedirs(out, exist_ok=True)
+            open(os.path.join(out, "trivy.sarif"), "w").close()
+            runio._write_json(cmd[cmd.index("--manifest") + 1],
+                              {"schema_version": 1, "run_id": "R", "selected": ["trivy"],
+                               "produced": ["trivy"], "missing": [],
+                               "outputs": ["trivy.sarif"]})
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        import scripts.phases.verify_tools as verify_tools
+        err = io.StringIO()
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run), \
+                mock.patch.object(verify_tools, "_tool_verify_queue", return_value=[1, 2, 3]), \
+                contextlib.redirect_stderr(err):
+            result = tools_phase.tools_execute(self.root, self.manifest)
+        said = "3 tool finding(s) will each get an advisor, before review merges (uncapped)"
+        self.assertEqual("tools: produced output; " + said, result.message)
+        self.assertIn("driver: " + said, err.getvalue())
+
+    def test_a_scan_with_no_output_counts_nothing(self):
+        import scripts.phases.verify_tools as verify_tools
+        with mock.patch("scripts.phases.child._run_child",
+                        return_value=mock.Mock(returncode=0, stdout="", stderr="")), \
+                mock.patch.object(verify_tools, "_tool_verify_queue") as queue, \
+                contextlib.redirect_stderr(io.StringIO()):
+            result = tools_phase.tools_execute(self.root, self.manifest)
+        queue.assert_not_called()
+        self.assertNotIn("advisor", result.message)
+
     def test_a_selected_but_unproduced_stale_capture_does_not_mark_ran(self):
         os.makedirs(runio._pano(self.root, "tools"), exist_ok=True)
         open(runio._pano(self.root, "tools", "semgrep.sarif"), "w").close()

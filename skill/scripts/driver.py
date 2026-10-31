@@ -280,7 +280,9 @@ def build_parser():
     # already idempotent + resumes from disk), so it's removed rather than kept
     # as a confusing second spelling. `loop` (plan 6) drives the SAME `run`
     # shape headlessly -- see the loop-only flags appended after scope below.
-    for verb in ("run", "loop"):
+    # #3233: and `readiness` takes the same flags, so one argv serves `driver readiness &&
+    # driver loop`; it reports on them and acts on none.
+    for verb in ("run", "loop", "readiness"):
         p = sub.add_parser(verb)
         p.add_argument("target", nargs="?", default=".")
         p.add_argument("--host", default=None, type=_host_choice,
@@ -335,7 +337,10 @@ def build_parser():
         scope.add_argument("-c", "--changes", dest="scope_changed",
                            action="store_true")
         scope.add_argument("--files", dest="scope_files", nargs="+", default=None)
-        if verb == "loop":
+        if verb == "readiness":
+            p.add_argument("--json", action="store_true",
+                           help="the document as JSON instead of the human table")
+        if verb in ("loop", "readiness"):
             # Plan 6, spec 4.3/5.4: the in-process headless loop's own knobs.
             # None of these become manifest anti-drift keys (_cli_flags/
             # run_manifest._FLAG_KEYS never read them) -- a resume may freely
@@ -391,21 +396,6 @@ def build_parser():
                     help="accept a shell-less setup-scan dispatch when "
                          "tool_policy_enforced is not proven; recorded in "
                          "setup-unenforced-ack.json")
-    # #1637 P10: the read-only preflight. It shares `run`/`loop`'s `target` and
-    # `--host` and NOTHING else on purpose -- it is not a run, so a flag that
-    # configures one (`--no-tools`, `--pr`, `--reset`, ...) would either have
-    # to be ignored or have to mean something new here, and both are worse than
-    # refusing it. The rendering lives in `phases/readiness.py` beside the
-    # checkpoint whose checks and remedy text it reuses; driver.py stays the
-    # argparse wiring and one dispatch line.
-    rp = sub.add_parser("readiness")
-    rp.add_argument("target", nargs="?", default=".")
-    rp.add_argument("--host", default=None, type=_host_choice,
-                    choices=list(hosts.driver_hosts()))
-    rp.add_argument("--json", action="store_true",
-                    help="the document as JSON instead of the human table")
-    rp.add_argument("--online", action="store_true", default=None,
-                    help="also check the pinned egress-proxy image")
     pp = sub.add_parser("persist")
     pp.add_argument("entry_id")
     pp.add_argument("target", nargs="?", default=".")
@@ -1163,11 +1153,15 @@ def parse_cli(argv=None):
 def main(argv=None):
     args = parse_cli(argv)
     if args.verb == "readiness":
-        # Its own exit code, not `emit_status`': the verb speaks no status
-        # protocol, and `driver readiness && driver loop` is the reason it
-        # exists (#1637 P10).
-        return readiness.emit_preflight(args.target, host=args.host,
-                                        as_json=args.json, online=args.online)
+        # Its own exit code, not `emit_status`': the verb speaks no status protocol, and
+        # `driver readiness && driver loop` is the reason it exists (#1637 P10).
+        root = runio.resolve_review_root(args.target)[0]
+        resolution = _resolve_config(args, root)
+        return readiness.emit_preflight(args.target, host=args.host, as_json=args.json,
+                                        online=args.online, plan={
+            "flags": _cli_flags(args, root, resolution), "scope": _scope_from_args(args),
+            "security": args.security or resolution.effective.get("security"),
+            "reset": args.reset, "base": args.base, "pr": args.pr})
     if args.verb == "setup":
         # #1737 fix round 1: WITH the posture step, exactly as
         # `orchestrate.loop --setup` passes it. `driver setup` dispatches an

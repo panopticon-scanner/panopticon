@@ -336,6 +336,7 @@ groups:
       - '!skill/scripts/phases/child.py'
       - '!skill/scripts/phases/verify_tools.py'
       - '!skill/scripts/phases/readiness_checks.py'
+      - '!skill/scripts/phases/readiness_plan.py'
       - '!skill/scripts/phases/setup_ack.py'
       - skill/scripts/progress.py
       tests:
@@ -369,8 +370,10 @@ groups:
       - skill/scripts/orchestrate.py
       - skill/scripts/scope_bindings.py
       - skill/scripts/loop_progress.py
+      - skill/scripts/phases/readiness_plan.py
       tests:
       - tests/test_loop_progress.py
+      - tests/test_readiness_plan.py
       - tests/test_orchestrate.py
       - tests/test_orchestrate_batch.py
       - tests/test_orchestrate_checkpoint.py
