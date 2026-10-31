@@ -230,10 +230,17 @@ def rewrite_rustup_pin(text: str, version: str, shas: dict[str, str]) -> str:
 def run_rustup(args) -> int:
     with open(args.dockerfile, encoding="utf-8") as fh:
         text = fh.read()
-    have, _have_shas = current_rustup_pin(text)
+    have, have_shas = current_rustup_pin(text)
     if not have:
         print("bump-pins: no RUSTUP_VERSION pin found; nothing to do")
         return 0
+    # #3256: a version pin without both checksums is not "up to date" -- the image would download
+    # rustup-init unverified for the arch that lost its line.
+    unpinned = sorted(set(RUSTUP_TRIPLES) - set(have_shas))
+    if unpinned:
+        print("bump-pins: RUSTUP_VERSION=%s has no ARG RUSTUP_INIT_SHA256_%s line"
+              % (have, " / RUSTUP_INIT_SHA256_".join(unpinned)), file=sys.stderr)
+        return 1
     want = latest_rustup_version()
     print("bump-pins: rustup pinned=%s latest=%s" % (have, want))
     if have == want:
