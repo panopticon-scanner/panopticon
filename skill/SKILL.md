@@ -27,9 +27,11 @@ file stays focused on the host-facing contract.
 
 - `superpowers:writing-plans` — before repo/PR/directory reviews with >15 files
   or >10 changes.
-  Save the review plan to `.panopticon/runs/<tag>/plan.md` once a run has a tag,
-  and to `.panopticon/scratch/plan.md` before then — never to
-  `docs/superpowers/`, which is not this review's artifact space.
+  Save the review plan to `.panopticon/runs/<tag>/plan.md` once the first status names
+  the tag. Before then, keep it outside the target, in a file from `mktemp`, and put
+  nothing under `.panopticon/`: first contact halts on a `.panopticon/` it did not
+  create. Never save it to `docs/superpowers/`, which is not this review's artifact
+  space.
   Use only its task breakdown: what to review, and in what order. Skip its TDD steps
   and commits, because a review changes no code, and skip its handoff, which waits on
   a user and must never block an autonomous run.
@@ -81,8 +83,8 @@ Where hosts typically look:
 host's plugin tree.** Proceed with the built-in default, which is what the
 driver does anyway:
 
-- `superpowers:writing-plans` → write the plan yourself to the same place:
-  `.panopticon/runs/<tag>/plan.md`, or `.panopticon/scratch/plan.md` before a run has a tag.
+- `superpowers:writing-plans` → write the plan yourself to the same place: a file from
+  `mktemp` outside the target, moved to `.panopticon/runs/<tag>/plan.md` once a run has a tag.
 - `superpowers:subagent-driven-development` → dispatch per cell through the
   driver: `driver loop` in headless mode, or the printed `dispatch` batch
   through `skill/workflows/dispatch.js` in session mode.

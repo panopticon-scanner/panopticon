@@ -3,8 +3,8 @@
 ## Unreleased
 
 - **Docs: gaps operators hit in the 5.2 redteam runs (#3233).** SKILL.md now spells out the
-  executable, gives one literal pre-run plan path (`.panopticon/scratch/plan.md`), says which parts
-  of `superpowers:writing-plans` apply to a review, and says which copy to drive with when the
+  executable, says to keep a pre-run plan outside the target (first contact halts on a
+  `.panopticon/` it did not create), says which parts of `superpowers:writing-plans` apply to a review, and says which copy to drive with when the
   installed skill and the target's `skill/` differ. The guide names run artifacts under
   `.panopticon/runs/<tag>/`, where they are.
 

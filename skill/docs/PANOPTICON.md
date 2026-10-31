@@ -6,9 +6,10 @@ specialized reviewers in parallel, and synthesizes a validated CodeReviewReport 
 
 ## Required sub-skills
 - `superpowers:writing-plans` — before repo/PR/directory reviews with >15 files or >10 changes. Save
-  the review plan to `.panopticon/runs/<tag>/plan.md` once a run has a tag, and to
-  `.panopticon/scratch/plan.md` before then — never to `docs/superpowers/`, which is not this
-  review's artifact space. Use only its task breakdown: what to review, and in what order. Skip its
+  the review plan to `.panopticon/runs/<tag>/plan.md` once the first status names the tag. Before
+  then, keep it outside the target, in a file from `mktemp`, and put nothing under `.panopticon/`:
+  first contact halts on a `.panopticon/` it did not create. Never save it to `docs/superpowers/`,
+  which is not this review's artifact space. Use only its task breakdown: what to review, and in what order. Skip its
   TDD steps and commits, because a review changes no code, and skip its handoff, which waits on a
   user and must never block an autonomous run.
 - `superpowers:subagent-driven-development` — for matrix-cell and advisor dispatch.
