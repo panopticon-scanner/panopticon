@@ -1,6 +1,5 @@
 """build_report: assemble and validate the CodeReviewReport."""
 import re
-import sys
 from dataclasses import dataclass, field
 
 # #1766 (ARC-11100703): package-qualified, with no fallback arm. A module under
@@ -39,68 +38,6 @@ from . import validate_schema as validate_schema_mod
 # the html compare view, per-run-folder A/B) a discriminator before per-run
 # folders make cross-version report reads routine.
 REPORT_SCHEMA_VERSION = 1
-
-# #1639 P15 fix round 2 (F2): what `models_used[].role` says when the finding
-# does not say. `role` is pinned `type: string`, and the old None reached the
-# artifact and ended the run -- on an ordinary payload (`provenance.model` with
-# no `discovered_by`), which means an agent could deny a paid-for run its result
-# by omitting a field. There is no documented default role in any producer
-# contract, so the honest word is the one that says nobody recorded it.
-UNKNOWN_ROLE = "unknown"
-
-
-def _role_from_discovered_by(discovered_by):
-    """Map a provenance discovered_by value to a model role.
-
-    Never None: see UNKNOWN_ROLE. A non-string value is not a role either --
-    "who found this" is a name, and `str({...})` would publish a dict's repr as
-    one.
-    """
-    if not discovered_by or not isinstance(discovered_by, str):
-        return UNKNOWN_ROLE
-    if discovered_by.startswith("agent:"):
-        return discovered_by.split(":", 1)[1] or UNKNOWN_ROLE
-    return discovered_by
-
-def _collect_models_used(findings):
-    """Collect unique model/version/role triples from agent findings.
-
-    Tool findings (model is null) are skipped. Agent findings contribute their
-    provenance model/version plus a role derived from discovered_by. Advisor
-    confirmations contribute the confirming model with role 'advisor'.
-    """
-    seen: set[tuple[str | None, ...]] = set()
-    out = []
-    for f in findings:
-        prov = f.get("provenance") or {}
-        model = prov.get("model")
-        version = prov.get("model_version")
-        # Skip tool and other entries without a model identifier.
-        if not model:
-            continue
-        role = _role_from_discovered_by(prov.get("discovered_by"))
-        if role == UNKNOWN_ROLE:
-            print("synthesize: %s: provenance.model %r with no usable "
-                  "discovered_by; models_used role recorded as %r"
-                  % (f.get("id") or "?", model, UNKNOWN_ROLE), file=sys.stderr)
-        # Dedup by (model, role): agents self-report model_version
-        # inconsistently (F-CAL-3), which produced duplicate entries.
-        key = (model, role)
-        if key in seen:
-            continue
-        seen.add(key)
-        entry = {"model": model, "role": role}
-        if version:
-            entry["version"] = version
-        out.append(entry)
-        confirmed_by_model = prov.get("confirmed_by_model")
-        if confirmed_by_model:
-            advisor_key = (confirmed_by_model, None, "advisor")
-            if advisor_key not in seen:
-                seen.add(advisor_key)
-                out.append({"model": confirmed_by_model, "role": "advisor"})
-    return out
-
 
 def _unplaceable_by_tool(findings):
     """Counts of active tool findings whose source file could not be placed."""
@@ -253,7 +190,8 @@ def build_report(inp):
     # everything else a report holds -- a group or file name from the target's
     # tree, the run's own artifacts -- meets its first encoder at a writer, and
     # every writer writes THIS. A report holding none comes back itself.
-    return inert.surrogate_free(assemble(inp.run, resolved, reconciled, graded, cost))
+    return inert.surrogate_free(assemble(inp.run, resolved, reconciled, graded, cost,
+                                         models_used=cost_mod.models_used(inp.cost)))
 
 
 def _host_capabilities_verbatim(host_capabilities):
@@ -331,7 +269,21 @@ def _config_block(config):
                             if isinstance(s, str)]}
 
 
-def assemble(run, resolved, reconciled, graded, cost):
+def _fill_category(finding, bundle):
+    """#3368: a reviewer picks a `code`, and is asked for a `category` only on a planted instruction,
+    so most findings reach here as `general`. The code already names one. Done here, after citations,
+    verdicts, merges and grading, because each of those reads `category`, and a replay's verdicts are
+    keyed on ids hashed with `general`. Moving that is #3371. `evidence.finding_fingerprint` reads
+    the marker, so the finding keeps the identity it was stamped and filed under."""
+    if finding.get("category") != "general":
+        return
+    named = ocrdb.category_of(bundle, finding.get("code"))
+    if named:
+        finding["category"] = named
+        finding[evidence_mod.CATEGORY_SOURCE] = "catalog"
+
+
+def assemble(run, resolved, reconciled, graded, cost, models_used=()):
     """Lay the computed sections out as the CodeReviewReport envelope. Key
     order is part of the artifact (write_report dumps insertion order)."""
     for f in resolved.findings:
@@ -339,6 +291,7 @@ def assemble(run, resolved, reconciled, graded, cost):
         f.pop("_repo_root", None)
         if "cvss" in f and f["cvss"] in (None, "", {}):
             del f["cvss"]          # #3162: an empty score is no score -- unscored, not malformed
+        _fill_category(f, resolved.ocrdb_bundle)
     unscored = cvss_unscored(resolved.active)
     capped = severity_cap_mod.capped_ids(resolved.active)
     # #3270: every external app this run launched -- the host CLI off
@@ -359,7 +312,7 @@ def assemble(run, resolved, reconciled, graded, cost):
                               if resolved.ocrdb_bundle is not None else None),
             "security_mode": run.security_mode,
             "gate_security_mode": run.gate_security_mode,
-            "models_used": _collect_models_used(resolved.findings),
+            "models_used": list(models_used),
             "coverage": reconciled.coverage,
             # #1637 P08 ruling 5: a run whose tool scan skipped still produces
             # a full-looking report, and until now nothing in it said that the

@@ -298,11 +298,7 @@ class TestWholeTreeBackstopIsANoOpOnCleanReports(unittest.TestCase):
                  "severity": "HIGH", "confidence": "LIKELY", "panel": "security",
                  "category": "authz",
                  "references": ["docs/PANOPTICON.md", "CVE-2021-44228"],
-                 # The panel can name its own model. Advisor attribution below
-                 # comes through the bound verdict, never through the finding.
-                 "provenance": {"model": "claude-opus-4-1",
-                                "model_version": "20260101",
-                                "discovered_by": "agent:domain_panel"},
+                 "provenance": {"discovered_by": "agent:domain_panel"},
                  "location": {"file": "app/x.py", "line_start": 4}}]}, fh)
         # Ingested but NOT declared by the plan -> meta.integrity
         # .unexpected_findings_files carries this real filename.
@@ -331,6 +327,11 @@ class TestWholeTreeBackstopIsANoOpOnCleanReports(unittest.TestCase):
                        "collected_at": "2026-09-15T00:00:00Z",
                        "by_phase": {"review": 10290000, "verify": 6300000,
                                     "coverage": 4463000}}, fh)
+        # The dispatch ledger -> meta.models_used and dispatches[*].model (#3368).
+        with open(os.path.join(run, "dispatch-ledger.jsonl"), "w", encoding="utf-8") as fh:
+            for entry_id, model in (("review-app-SEC", "claude-opus-4-1"),
+                                    ("verify-app-SEC-primary", "claude-sonnet-4-5")):
+                fh.write(json.dumps({"entry_id": entry_id, "model": model}) + "\n")
         with open(os.path.join(run, "groups.json"), "w", encoding="utf-8") as fh:
             json.dump({"mode": "repo", "groups": [{"name": "app", "files": ["app/x.py"]}]}, fh)
         # A run artifact whose contents are structured, not prose: the posture
@@ -397,7 +398,7 @@ class TestWholeTreeBackstopIsANoOpOnCleanReports(unittest.TestCase):
         self.assertEqual(caps["tool_policy_enforced"]["guid"],
                          "3f2504e0-4f89-11d3-9a0c-0305e82c3301")
         self.assertTrue(caps["read_scope_confined"]["detail"].startswith("sha256:"))
-        # meta.models_used: model names + the advisor role.
+        # meta.models_used: model names + the roles the ledger's entries ran.
         self.assertEqual(sorted(m["model"] for m in meta["models_used"]),
                          ["claude-opus-4-1", "claude-sonnet-4-5"])
         # meta.cost.tokens: a populated dict, not the null slot.

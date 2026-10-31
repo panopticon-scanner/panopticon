@@ -104,6 +104,7 @@
         },
         "models_used": {
           "type": "array",
+          "description": "What the run's dispatch ledger measured, one row per (model, role). With no ledger rows, the names in the host's usage.json with role `unknown`. Empty when neither recorded a model. Never what the run requested.",
           "items": {
             "type": "object",
             "properties": {
@@ -1381,6 +1382,11 @@
           },
           "category": {
             "type": "string"
+          },
+          "category_source": {
+            "type": "string",
+            "enum": ["catalog"],
+            "description": "Present when the report filled `category` in from the OCRDb catalog entry named by `code`. Display only: `fingerprint` still hashes `general` for such a finding."
           },
           "code": {
             "type": "string"

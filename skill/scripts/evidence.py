@@ -252,6 +252,10 @@ def artifact_term(finding):
     return pkg if isinstance(pkg, str) and pkg else None
 
 
+# #3368: on a finding whose `category` the report filled in from the catalog. Ours, never an agent's.
+CATEGORY_SOURCE = "category_source"
+
+
 def finding_fingerprint(finding):
     """Stable cross-run identity for a finding.
 
@@ -269,8 +273,10 @@ def finding_fingerprint(finding):
     # advisor prose, which would be a disastrous identity discriminator.
     rule = tool_rule_id(finding) if is_tool_sourced(finding) else None
     discriminator = str(rule) if rule else str(finding.get("title") or "")
-    parts = [str(finding.get("panel") or ""),
-             str(finding.get("category") or ""), fpath, discriminator]
+    # #3368: a category the report filled in from the catalog is display, not identity. The fill
+    # only ever replaces `general`, so this is the value the finding was stamped and filed under.
+    category = "general" if finding.get(CATEGORY_SOURCE) else finding.get("category")
+    parts = [str(finding.get("panel") or ""), str(category or ""), fpath, discriminator]
     pkg = artifact_term(finding)
     if pkg is not None:
         parts.append(pkg)

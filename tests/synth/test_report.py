@@ -96,53 +96,6 @@ class TestReport(unittest.TestCase):
         ))
         self.assertEqual(report["meta"]["security_mode"], "redteam")
 
-    def test_build_report_populates_models_used(self):
-        findings = [
-            _make_finding(
-                id="CD-001",
-                panel="code",
-                location={"file": "a.py", "line_start": 1},
-                provenance={
-                    "discovered_by": "agent:lens_sweep",
-                    "confirmation_status": "CONFIRMED",
-                    "model": "kimi-k2.7-coding",
-                    "model_version": "v1",
-                },
-            ),
-            _make_finding(
-                id="CD-002",
-                panel="code",
-                location={"file": "a.py", "line_start": 2},
-                provenance={
-                    "discovered_by": "agent:panel_review",
-                    "confirmation_status": "CONFIRMED",
-                    "model": "kimi-k2.7-coding",
-                    "model_version": "v1",
-                },
-            ),
-            _make_finding(
-                id="CD-003",
-                panel="code",
-                location={"file": "a.py", "line_start": 3},
-                provenance={
-                    "discovered_by": "agent:lens_sweep",
-                    "confirmation_status": "CONFIRMED",
-                    "model": "other-model",
-                },
-            ),
-        ]
-        report = report_mod.build_report(report_mod.ReportInputs(
-            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
-            findings=findings_mod.FindingSet(findings=findings),
-        ))
-        models = report["meta"]["models_used"]
-        self.assertEqual(len(models), 3)
-        self.assertIn({"model": "kimi-k2.7-coding", "version": "v1", "role": "lens_sweep"}, models)
-        self.assertIn(
-            {"model": "kimi-k2.7-coding", "version": "v1", "role": "panel_review"}, models
-        )
-        self.assertIn({"model": "other-model", "role": "lens_sweep"}, models)
-
     def test_main_maps_orchestrator_mode_to_review_type(self):
         with tempfile.TemporaryDirectory() as d:
             gj = os.path.join(d, "groups.json")
