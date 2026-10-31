@@ -1575,7 +1575,7 @@
                 "items": {
                   "type": "string"
                 },
-                "description": "Present with status `backup_scope_limited` (#1638 P16): the files the backup advisor said it was not granted. The primary CONFIRMED stands and the report names what the second opinion could not see, instead of implying it looked and could not tell."
+                "description": "Present with status `backup_scope_limited` (#1638 P16): the files the backup advisor said it was not granted. The primary CONFIRMED stands and the report names what the second opinion could not see, instead of implying it looked and could not tell. Also present with status `needs_more_info` on a tool-sourced finding (#3231): the files its advisor named as out of reach, at most 12, after the one re-dispatch the driver grants for them."
               },
               "verified_by": {},
               "reasoning": {

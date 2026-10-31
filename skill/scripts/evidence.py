@@ -82,6 +82,8 @@ MAX_VERDICT_BYTES = 8 * 1024 * 1024
 # below is what actually enforces -- fix round 1 F1 found the comment asserting
 # it while both loaders copied an agent's object verbatim.
 SCOPE_LIMITED_FIELD = "_backup_missing_evidence"
+# #3231: how many of a tool advisor's `missing_evidence` names the report carries.
+SCOPE_NAMES_SHOWN = 12
 
 
 # Identity an advisor may not assert about its own verdict. `stage` decides how
@@ -363,6 +365,10 @@ def derive_evidence(finding, verdict=None):
         if missing and v == "CONFIRMED":
             derived["status"] = BACKUP_SCOPE_LIMITED
             derived["missing_evidence"] = list(missing)
+        elif tool_like and (named := scope_limited_paths(verdict)):
+            # #3231 A2: a tool advisor's NEEDS_MORE_INFO says which files it could
+            # not reach, so the report can say what was missing.
+            derived["missing_evidence"] = named[:SCOPE_NAMES_SHOWN]
         return derived
 
     if tool_like:

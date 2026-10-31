@@ -190,9 +190,12 @@ def _verify_reply(stage="primary", missing=False):
     }
 
 
-def _tool_reply():
+def _tool_reply(missing=()):
     verdict = _verdict()
     verdict.pop("code")
+    verdict["missing_evidence"] = list(missing)
+    if missing:
+        verdict["verdict"] = "NEEDS_MORE_INFO"
     return verdict
 
 
@@ -210,6 +213,8 @@ def test_constrained_examples_pass_unchanged_receipt_contracts_after_stamping():
          "verdict-bundle-schema.json", _verify_reply("backup", True)),
         (_entry("tool"), GENERATION_NAMES["tool"], "advisor-verdict-schema.json",
          _tool_reply()),
+        (_entry("tool"), GENERATION_NAMES["tool"], "advisor-verdict-schema.json",
+         _tool_reply(["caller.py"])),
     )
     for entry, generation_name, receipt_name, reply in cases:
         jsonschema.validate(reply, _load(generation_name))

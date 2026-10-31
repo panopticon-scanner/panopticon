@@ -1161,16 +1161,16 @@ def _render_card(finding, delta=None):
         if value:
             details.append(f"<dt>{label}</dt><dd>{_escape(value)}</dd>")
 
-    # #1638 P16: when the adversarial backup could not reach the files it needed,
-    # say so in the artifact a person opens -- the alternative is a CONFIRMED
-    # finding whose second opinion is silently missing. The paths are advisor-
-    # supplied (already redacted upstream by render.redact_report_secrets) and
-    # escaped here like every other agent string.
+    # #1638 P16: when the adversarial backup could not reach the files it needed, say so
+    # in the artifact a person opens -- else a CONFIRMED finding's second opinion is
+    # silently missing. The paths are advisor-supplied (already redacted upstream by
+    # render.redact_report_secrets) and escaped here like every other agent string.
     missing = [m for m in (finding_evidence.get("missing_evidence") or [])
                if isinstance(m, str) and m]
     if missing:
-        details.append("<dt>Backup could not see</dt><dd>%s</dd>"
-                       % _escape(", ".join(missing)))
+        details.append("<dt>%s could not see</dt><dd>%s</dd>" % (   # #3231: a tool advisor, too
+            "Backup" if finding_evidence.get("status") == "backup_scope_limited" else "Advisor",
+            _escape(", ".join(missing))))
 
     refs = finding.get("references") or []
     if refs:

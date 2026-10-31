@@ -35,6 +35,9 @@ _STAMP_KEYS = ("run_id", "group", "domain", "stage")
 # D10 ruling 1: refused replies are kept HERE, beside the run's other
 # artifacts -- one folder, one shape, never read by a done predicate.
 REJECTED_DIR = "rejected"
+# #3231 A2: a tool advisor's ONE re-dispatch replies in `verdicts/lift/`, which no verdict
+# reader lists, so the first answer stands until `verify_tools._promote_lifts`.
+LIFT_DIR = "lift"
 # What a record is a record OF (D10 F4). The two are kept apart because only one of them is a
 # statement about a REPLY: a refusal means the agent returned something and the controller would not
 # take it, which is the only case the retry note can honestly quote. A launch failure -- a timeout,
@@ -367,6 +370,9 @@ def role_of(entry):
         return "review-cell"
     if parent == "verdicts" and name.endswith(".json"):
         return "verify-cell" if name.startswith("verdicts-") else "tool-advisor"
+    if (parent == LIFT_DIR and name.endswith(".json") and not name.startswith("verdicts-")
+            and os.path.basename(os.path.dirname(os.path.dirname(out_file))) == "verdicts"):
+        return "tool-advisor"
     return None
 
 

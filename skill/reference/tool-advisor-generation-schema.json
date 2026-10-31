@@ -66,6 +66,12 @@
         "owasp",
         "cve"
       ]
+    },
+    "missing_evidence": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     }
   },
   "required": [
@@ -75,6 +81,7 @@
     "reasoning",
     "explored",
     "references",
-    "citations"
+    "citations",
+    "missing_evidence"
   ]
 }

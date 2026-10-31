@@ -43,6 +43,7 @@ import scripts.synth.findings as findings_mod
 from scripts import read_guard_hook
 from . import coverage
 from . import engine
+from . import evidence_scope
 from . import requests
 from . import runio
 from . import tools
@@ -159,13 +160,21 @@ def _tool_verdict_out_file(review_root, queue_id):
     load_verdict_bundles skips it as not-a-bundle)."""
     return os.path.abspath(runio._pano(review_root, "verdicts", "%s.json" % queue_id))
 
-def _tool_verdict_done(review_root, queue_id):
-    """A tool-finding verdict is settled once verdicts/<queue_id>.json parses as
-    a single-verdict file synthesize will load -- a dict carrying a valid verdict
-    value. Mirrors evidence.load_verdicts_detailed's own acceptance test (tolerant
-    parse, VERDICT_VALUES), so 'done' means 'synthesize will match it', and a
-    truncated/garbled return re-dispatches rather than reading as done."""
-    path = _tool_verdict_out_file(review_root, queue_id)
+def _tool_lift_out_file(review_root, queue_id):
+    """Where a lift's reply lands (#3231 A2): `verdicts/lift/<queue_id>.json`. The
+    first verdict keeps `verdicts/<queue_id>.json`, so the lift entry is not born done
+    (`persist.is_done` reads ITS out_file), and a lift that never answers -- killed,
+    refused, interrupted -- leaves the first answer and its `missing_evidence` standing."""
+    return os.path.abspath(runio._pano(review_root, "verdicts", _lift_dir(),
+                                       "%s.json" % queue_id))
+
+
+def _lift_dir():
+    from . import persist        # persist -> verify -> here: read at call time
+    return persist.LIFT_DIR
+
+
+def _valid_verdict_at(path):
     try:
         with open(path, encoding="utf-8") as fh:
             data = evidence.load_json_tolerant(fh.read())
@@ -174,9 +183,133 @@ def _tool_verdict_done(review_root, queue_id):
     return (isinstance(data, dict)
             and str(data.get("verdict", "")).upper() in evidence.VERDICT_VALUES)
 
+
+def _promote_lifts(review_root, queue_ids):
+    """Move every landed lift reply over its first verdict, atomically (`os.replace`).
+
+    The second answer is the one asked with the evidence the first said it lacked, so
+    it is the verdict -- a CONFIRMED, a REJECTED, or a second NEEDS_MORE_INFO that then
+    stands. A lift file that is not a valid verdict is never promoted (`write_reply`
+    writes none, so this is only a hostile or truncated leftover). Idempotent: a crash
+    between landing and promoting promotes on the next pass."""
+    for qid in queue_ids:
+        lift = _tool_lift_out_file(review_root, qid)
+        if os.path.isfile(lift) and _valid_verdict_at(lift):
+            os.replace(lift, _tool_verdict_out_file(review_root, qid))
+
+
+def _unpromoted_lift(review_root, queue_id):
+    return _valid_verdict_at(_tool_lift_out_file(review_root, queue_id))
+
+
+def _tool_verdict_done(review_root, queue_id):
+    """A tool-finding verdict is settled once verdicts/<queue_id>.json parses as
+    a single-verdict file synthesize will load -- a dict carrying a valid verdict
+    value. Mirrors evidence.load_verdicts_detailed's own acceptance test (tolerant
+    parse, VERDICT_VALUES), so 'done' means 'synthesize will match it', and a
+    truncated/garbled return re-dispatches rather than reading as done."""
+    return _valid_verdict_at(_tool_verdict_out_file(review_root, queue_id))
+
 # The tool advisor's entry id prefix, one spelling for the entry built here and
 # for `verify._dispatch_key`, which reads its budget key back off a dispatched id.
 TOOL_ENTRY_PREFIX = "verify-tool-"
+
+
+# #3231 A1: what the tool advisor may read BESIDES its claim's review cell, and the
+# wording that tells it what to do when even that is not enough (A2).
+_CLOSURE_HEADING = "Evidence granted beyond this claim's review cell (bounded closure)"
+_CLOSURE_BLOCK = (
+    "%s\n"
+    "Besides the files of the review cell the claim came from, your Read and Grep may "
+    "reach these: the files the claim names and the cited file's one-hop in-repo "
+    "imports%s. If you need a file that is in neither, return NEEDS_MORE_INFO and list "
+    "it in `missing_evidence`: the driver grants the files you name once, and asks "
+    "you again.\n\n%s\n\n")
+_LIFTED = (", plus the files your previous answer listed in `missing_evidence` -- this "
+           "is that second ask, and there is no third")
+
+
+def _tool_lift(review_root, queue_id):
+    """The paths a tool advisor's NEEDS_MORE_INFO named in `missing_evidence`, when one
+    re-dispatch is owed for them (#3231 A2), else None.
+
+    Owed while the item has spent EXACTLY one dispatch, charged to its own #3185
+    budget. That count is the whole of the state: the lift's dispatch makes it two, so
+    it is never owed twice, and an interrupt that refunds the lift
+    (`persist.rollback_markers`) makes it one again, so an interrupted lift is owed
+    again rather than lost. An item whose first dispatch came back unusable has spent
+    a second dispatch on its retry, so it gets no lift even with budget left
+    (`_MAX_VERIFY_ATTEMPTS` is 3)."""
+    try:
+        with open(_tool_verdict_out_file(review_root, queue_id), encoding="utf-8") as fh:
+            data = evidence.load_json_tolerant(fh.read())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    named = evidence.scope_limited_paths(evidence._agent_verdict(data))
+    from . import verify
+    if not named or verify._verify_attempts_key(review_root, "tool/%s" % queue_id) != 1:
+        return None
+    return named
+
+
+def _relative_names(review_root, names):
+    """The advisor names files as the absolute paths its prompt showed it; a name
+    inside the review root becomes repo-relative, one outside it is dropped."""
+    root = os.path.realpath(review_root)
+    out = []
+    for name in names:
+        name = name.strip()
+        if os.path.isabs(name):
+            real = os.path.realpath(name)
+            if not real.startswith(root + os.sep):
+                continue
+            name = os.path.relpath(real, root)
+        out.append(name)
+    return out
+
+
+def _tool_closure(review_root, finding, cell_abs, lift=None):
+    """`(extra repo paths, ambiguous names)` for one tool advisor (#3231 A1/A2): the
+    backup round's bounded closure for this ONE claim (`evidence_scope.closure`,
+    capped at `evidence_scope.CAP`), then the files a NEEDS_MORE_INFO named, each
+    resolved, confined and capped by the same resolver, minus what the cell already
+    grants. A name that means several files is granted as none of them and disclosed."""
+    rel = [os.path.relpath(f, review_root) for f in cell_abs]
+    ambiguous: list = []
+    paths = evidence_scope.closure(review_root, finding, rel, unresolved=ambiguous)
+    if lift:
+        paths += evidence_scope.resolve_names(
+            review_root, _relative_names(review_root, lift), rel, ambiguous)
+    seen, extras = set(cell_abs), []
+    for path in paths:
+        full = os.path.abspath(os.path.join(review_root, path))
+        if full not in seen:
+            seen.add(full)
+            extras.append(path)
+    return extras, ambiguous
+
+
+def _lift_owed(review_root, queue_id, finding):
+    """`_tool_lift`'s names, but only when they would GRANT something the first ask did
+    not have: a name that resolves to nothing new, or only to an ambiguity, earns no
+    second launch, because the second answer could see no more than the first."""
+    lift = _tool_lift(review_root, queue_id)
+    if not lift or not isinstance(finding, dict):
+        return None
+    located = (finding.get("location") or {}).get("file") if isinstance(
+        finding.get("location"), dict) else None
+    loc = _confine_claim_location(review_root, finding["location"]) if located else None
+    cell = coverage.group_files_containing(
+        review_root, loc.get("file") if loc and loc.get("file") != _REDACTED_CLAIM_PATH
+        else None)
+    if not cell:
+        return None
+    claim = dict(finding, location=loc) if loc else finding
+    before = set(_tool_closure(review_root, claim, cell)[0])
+    after = set(_tool_closure(review_root, claim, cell, lift)[0])
+    return lift if after - before else None
 
 
 def _tool_exhausted(review_root, queue_id):
@@ -185,7 +318,7 @@ def _tool_exhausted(review_root, queue_id):
     from . import verify
     return verify._verify_exhausted(review_root, "tool/%s" % queue_id)
 
-def _tool_verify_entry(review_root, manifest, queue_id, finding, host):
+def _tool_verify_entry(review_root, manifest, queue_id, finding, host, lift=None):
     """One per-finding advisor (advisor.md) dispatch entry for a tool finding.
 
     Return-persist by construction: advisor.md is Read/Grep/Glob only (no Write),
@@ -195,7 +328,8 @@ def _tool_verify_entry(review_root, manifest, queue_id, finding, host):
     the repo-root pin from dispatch.render_advisor_prompts. NO run_id echo line:
     the driver writes no verify-queue.json, so synthesize's verdict_run_id is None
     and match_verdict binds on the finding_id echo alone."""
-    out_file = _tool_verdict_out_file(review_root, queue_id)
+    out_file = (_tool_lift_out_file(review_root, queue_id) if lift
+                else _tool_verdict_out_file(review_root, queue_id))
     # #run8 ARC-F2A: confine the tool finding's location too -- _tool_verify_entry
     # embeds the whole finding dict verbatim into the unconfined advisor's claim.
     safe_finding = finding
@@ -227,6 +361,16 @@ def _tool_verify_entry(review_root, manifest, queue_id, finding, host):
     if located == _REDACTED_CLAIM_PATH:
         located = None
     abs_files = coverage.group_files_containing(review_root, located)
+    # #3231 A1/A2: the cell, plus the claim's bounded closure, plus (once) what a
+    # NEEDS_MORE_INFO named -- recorded in the prompt, so the advisor knows its fence.
+    extras, ambiguous = (_tool_closure(review_root, safe_finding, abs_files, lift)
+                         if abs_files else ([], []))
+    if extras or ambiguous:
+        prompt = _CLOSURE_BLOCK % (
+            _CLOSURE_HEADING, _LIFTED if lift else "",
+            runio._abs_file_list(review_root, extras)
+            + evidence_scope.disclosure(ambiguous)) + prompt
+        abs_files = abs_files + runio._abs_files(review_root, extras)
     entry_id = "%s%s" % (TOOL_ENTRY_PREFIX, queue_id)
     entry = {"id": entry_id,
             "agent": dispatch.registered_agent_name("advisor.md") if enforced else None,
@@ -243,13 +387,17 @@ def _verify_tools_execute(review_root, manifest, host):
     """Emit the tool-finding verify checkpoint when any tool finding still lacks
     a verdict; None when every tool finding is verified (or none exist). Runs as
     a round of the verify phase after primary/backup cells."""
-    pending = [(qid, f) for qid, f in _tool_verify_queue(review_root, manifest)
-               if not _tool_verdict_done(review_root, qid)
+    queue = _tool_verify_queue(review_root, manifest)
+    _promote_lifts(review_root, [qid for qid, _f in queue])        # #3231 A2: a landed lift
+    pending = [(qid, f, lift) for qid, f in queue
+               for lift in [None if not _tool_verdict_done(review_root, qid)
+                            else _lift_owed(review_root, qid, f)]
+               if (lift or not _tool_verdict_done(review_root, qid))
                and not _tool_exhausted(review_root, qid)]
     if not pending:
         return None
-    entries = [_tool_verify_entry(review_root, manifest, qid, f, host)
-               for qid, f in pending]
+    entries = [_tool_verify_entry(review_root, manifest, qid, f, host, lift)
+               for qid, f, lift in pending]
     from . import verify
     verify._charge_verify_dispatch(review_root, entries)          # #3185, at dispatch
     req, sha = requests.write_dispatch_request_bound(
@@ -260,5 +408,10 @@ def _verify_tools_execute(review_root, manifest, host):
 
 def _verify_tools_done(review_root, manifest):
     # #3185: an item that spent its budget is done; its finding stays unanswered.
-    return all(_tool_verdict_done(review_root, qid) or _tool_exhausted(review_root, qid)
-               for qid, _f in _tool_verify_queue(review_root, manifest))
+    # #3231 A2: an owed `missing_evidence` re-dispatch holds the round open.
+    # A landed lift not yet promoted holds it open too, so `_verify_tools_execute` runs
+    # and promotes it before synthesize reads `verdicts/`.
+    return all(not _unpromoted_lift(review_root, qid)
+               and ((_tool_verdict_done(review_root, qid) and not _lift_owed(review_root, qid, f))
+                    or _tool_exhausted(review_root, qid))
+               for qid, f in _tool_verify_queue(review_root, manifest))

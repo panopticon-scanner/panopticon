@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Fix: a tool claim's advisor can reach the evidence its claim crosses into (#3231, part 2 of 2).**
+  The tool-verify advisor's read fence used to be just the group holding the cited file, so a claim
+  whose behaviour crossed into another group came back `NEEDS_MORE_INFO`.
+  - The advisor now also gets the claim's bounded closure, the same one the backup round gets: the
+    files the claim names and the cited file's one-hop imports, capped at 12.
+  - A `NEEDS_MORE_INFO` must list the files it could not reach in `missing_evidence`. The driver
+    re-dispatches once with those files added, if they grant anything new, and charges that to the
+    item's own verify budget. Each name is resolved whole, whatever its extension, and is granted
+    only if this run discovered that file, so an untracked `.env` is never granted.
+  - No read fence reaches a `.git` or `.panopticon` path, as written or through a symlink. This
+    covers the backup round too, whether a claim names the path or is located there.
+  - The second answer is written to `verdicts/lift/` and replaces the first only when it is a valid
+    verdict. A failed lift leaves the first answer standing; an interrupted one is owed again.
+  - The report carries the names (`evidence.missing_evidence`), and the HTML card shows them as
+    "Advisor could not see".
 - **Change: Codex production replies are now constrained at generation (#3241).** Review,
   primary verify, backup verify and tool-advisor entries select separate strict provider schemas;
   the largest production projection is proved once per run before any constrained cell launches.
