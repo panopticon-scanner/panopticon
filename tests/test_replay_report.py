@@ -19,6 +19,8 @@ from unittest import mock
 import pytest
 import scripts.phases.child as child_mod
 import scripts.phases.runio as runio
+import scripts.phases.synthesize as synthesize_phase
+import scripts.run_manifest as run_manifest
 from scripts import hosts
 
 import replay_report
@@ -288,6 +290,33 @@ class ArchiveTrustTest(unittest.TestCase):
                 trust_archive=False))
         child.assert_not_called()
         return str(ctx.exception.code)
+
+    def test_a_run_with_completed_at_replays_and_keeps_it_as_it_was(self):
+        # #3367: #3328's replays depend on this. The key goes through a real stamped rewrite.
+        with open(_mpath(self.review_root), encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        manifest[synthesize_phase.COMPLETED_AT] = "2026-10-31T00:00:00Z"
+        run_manifest._rewrite(self.review_root, manifest)
+        with open(_mpath(self.review_root), "rb") as fh:
+            before = fh.read()
+        report, err = self._replay("out")
+        self.assertNotIn("unverified_archive", report["meta"])
+        self.assertNotIn("--trust-archive", err)
+        with open(_mpath(self.review_root), "rb") as fh:
+            self.assertEqual(before, fh.read())
+
+    def test_a_replay_of_an_older_run_does_not_write_completed_at(self):
+        with open(_mpath(self.review_root), "rb") as fh:
+            before = fh.read()
+        self.assertNotIn(b"completed_at", before)
+        self._replay("out")
+        with open(_mpath(self.review_root), "rb") as fh:
+            self.assertEqual(before, fh.read())
+        scratch = [os.path.join(folder, name) for folder, _d, names in os.walk(self.base)
+                   for name in names if name == "run-manifest.json"]
+        for path in scratch:
+            with open(path, encoding="utf-8") as fh:
+                self.assertNotIn("completed_at", fh.read(), path)
 
     def test_a_verified_run_replays_unmarked_and_silent(self):
         report, err = self._replay("out")

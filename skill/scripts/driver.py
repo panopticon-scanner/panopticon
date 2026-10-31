@@ -1121,7 +1121,7 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
             if empty:
                 result = dict(result, review_axis_empty=True,
                               message=result["message"] + review.AXIS_EMPTY_CLAUSE)
-    return synthesize.attach_x0x_failure_status(result, runio._report_out(review_root))
+    return synthesize.complete_status(result, review_root, manifest)
 
 
 def parse_cli(argv=None):

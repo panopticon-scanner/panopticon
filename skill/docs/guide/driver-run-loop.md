@@ -444,6 +444,11 @@ on Claude hooks, and always uses the return-persist path.
   the retry is told what to fix. The record carries the run's `run_id` and only a record with THIS
   run's id is quoted, as a JSON string (#3253): `rejected/` is in the reviewed tree, so a record
   the target committed, or one an earlier run left, earns no note.
+- **What `complete` tells a reader (#3367).** The status's `artifacts` gives absolute paths for the
+  files that exist: `report`, and `parts`, `discarded`, `x0x` and `html` when there are any. Each is
+  a regular file, not a symlink, and `parts` and `discarded` come from the report's own meta. The
+  manifest gains an optional `completed_at`, first write wins. It marks success only, so a run that
+  ended `error` or `paused` has none and still reads as unfinished there.
 - **What `driver loop` says on stderr (#3232).** The `loop` verb alone stamps every stderr line with
   UTC time, so `grep '^driver'` no longer matches them. `driver: phase <name> started` and `finished
   (<n> s)` mark each transition, and `driver: <phase> still running (<n> s)` beats every 60 s while
@@ -487,8 +492,9 @@ on Claude hooks, and always uses the return-persist path.
   could not read, the lines JSON rejected and the non-integer usage fields it ignored, so a
   non-zero count there marks `total` as a floor (#1782).
   Usage is never estimated from counts. - **The loop tears the guards down** scoped after each batch
-  and unconditionally on `complete` — the `teardown` field on the terminal status is now executed,
-  not printed for a person to remember. - **The loop rolls a crashed batch back before it resumes**
+  and unconditionally on `complete`, so `driver loop`'s terminal status carries no `teardown` field
+  once that disarm has succeeded (#3367). `driver run` and `driver setup` never disarm, and keep
+  it. - **The loop rolls a crashed batch back before it resumes**
   — a `batch-<n>.json` still on disk means a run that reached no teardown at all (`SIGKILL`, an OOM
   kill, a power loss), and the next `driver loop` takes that batch back BEFORE the engine can read a
   half-written artifact as a finished cell (#1698). It is a rollback and not a cleanup: the
