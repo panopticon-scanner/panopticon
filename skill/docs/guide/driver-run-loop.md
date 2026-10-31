@@ -1025,8 +1025,10 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   for this one claim: the paths the claim names and the cited file's one-hop imports, capped at
   12), listed in its prompt. A `NEEDS_MORE_INFO` that names the files it could not reach in
   `missing_evidence` earns exactly ONE re-dispatch with them added — each name resolved whole
-  (any extension), confined and capped by the same resolver, and only when they grant something
-  new — charged to that item's own verify budget. The lift writes to `verdicts/lift/<id>.json`,
+  (any extension), confined and capped by the same resolver, granted only if this run discovered
+  that file (`groups.json`, stamped for this run; no listing, no grant), and only when they grant
+  something new — charged to that item's own verify budget. No grant of any kind reaches a `.git`
+  or `.panopticon` path, as written or through a symlink: that is controller state, not evidence. The lift writes to `verdicts/lift/<id>.json`,
   never over the first answer; the controller promotes it over `verdicts/<id>.json` only when it
   is a valid verdict, so a failed lift leaves the first `NEEDS_MORE_INFO` standing, and an
   interrupted lift is rolled back like any entry and owed again on resume. No verdict reader lists

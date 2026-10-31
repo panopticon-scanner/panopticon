@@ -237,8 +237,9 @@ def _tool_lift(review_root, queue_id):
     budget. That count is the whole of the state: the lift's dispatch makes it two, so
     it is never owed twice, and an interrupt that refunds the lift
     (`persist.rollback_markers`) makes it one again, so an interrupted lift is owed
-    again rather than lost. A first dispatch that came back unusable has already spent
-    the second slot on its retry, which is the budget doing its job."""
+    again rather than lost. An item whose first dispatch came back unusable has spent
+    a second dispatch on its retry, so it gets no lift even with budget left
+    (`_MAX_VERIFY_ATTEMPTS` is 3)."""
     try:
         with open(_tool_verdict_out_file(review_root, queue_id), encoding="utf-8") as fh:
             data = evidence.load_json_tolerant(fh.read())

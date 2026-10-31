@@ -15,8 +15,10 @@ import scripts.phases.evidence_scope as evidence_scope
 import scripts.phases.runio as runio
 import scripts.phases.verify as verify
 import scripts.phases.verify_tools as verify_tools
+import scripts.run_manifest as run_manifest
 
 QID = "0123456789abcdef"
+RUN = "run-3231"
 
 
 def _finding(file="synth/render.py", **kw):
@@ -55,10 +57,20 @@ class _Tree(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(text)
         groups = [dict(g, files=[f for f in g["files"] if f in self.FILES]) for g in self.GROUPS]
-        runio._write_json(runio._pano(self.root, "groups.json"), {"groups": groups})
+        # Stamped for this run, as `discovery_execute` writes it: the listing a
+        # `missing_evidence` name must be in to be granted (F4).
+        runio._write_json(run_manifest.manifest_path(self.root), {"run_id": RUN, "host": "claude"})
+        runio._write_json(runio._pano(self.root, "groups.json"), {"groups": groups, "run_id": RUN})
 
     def _abs(self, rel):
         return os.path.join(self.root, rel)
+
+    def _list(self, files, name="Extra"):
+        """Add `files` to this run's discovered listing as one more group."""
+        path = runio._pano(self.root, "groups.json")
+        doc = runio._load_json(path)
+        doc["groups"].append({"name": name, "files": list(files)})
+        runio._write_json(path, doc)
 
     def _entry(self, finding=None, lift=None):
         return verify_tools._tool_verify_entry(self.root, {"run_id": "r"}, QID,
@@ -171,6 +183,7 @@ class LiftTest(_Tree):
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write("Z = %d\n" % n)
             names.append(rel)
+        self._list(names)
         cell = [self._abs("phases/child.py")]
         base, _ = verify_tools._tool_closure(self.root, self._child(), cell)
         lifted, _ = verify_tools._tool_closure(self.root, self._child(), cell, names)
@@ -292,6 +305,125 @@ class NamesInAnyLanguageTest(_Tree):
         self.assertEqual({"web/src/App.tsx", "web/app/User.php"}, set(extras))
 
 
+class RunDiscoveredOnlyTest(_Tree):
+    """F4: a `missing_evidence` name is granted only if this run discovered the file.
+    F4b: `.git` and `.panopticon` are never evidence, by any path."""
+
+    SECRETS = {".env": "K=v\n", ".git/config": "[core]\n",
+               ".git/info/x.json": "{}\n",
+               ".panopticon/host-settings.json": "{}\n",
+               ".panopticon/runs/t/verdicts/other.json": "{}\n",
+               "terraform.tfstate": "{}\n", "deploy/id_rsa": "k\n"}
+    FILES = dict(_Tree.FILES, **SECRETS)
+
+    def _child(self, **kw):
+        return _finding(file="phases/child.py", title="Popen audit", **kw)
+
+    def _refused(self, name, target=None):
+        """Neither owed, nor in the fence of an entry that was handed the name anyway."""
+        target = self._abs(target or name)
+        self._verdict(missing=[name])
+        self.assertIsNone(verify_tools._lift_owed(self.root, QID, self._child()))
+        entry = self._entry(self._child(), lift=[name])
+        self.assertNotIn(target, entry["scope"]["files"])
+
+    def test_a_file_on_disk_the_run_did_not_discover_is_never_granted(self):
+        self._spent(1)
+        for name, target in ((".env", None), (".git/config", None),
+                             (".panopticon/host-settings.json", None),
+                             (".panopticon/runs/t/verdicts/other.json", None),
+                             ("terraform.tfstate", None), ("id_rsa", "deploy/id_rsa")):
+            with self.subTest(name):
+                self._refused(name, target)
+
+    def test_a_run_discovered_file_still_lifts(self):
+        self._spent(1)
+        self._verdict(missing=["driver/caller.py"])
+        self.assertEqual(["driver/caller.py"],
+                         verify_tools._lift_owed(self.root, QID, self._child()))
+        entry = self._entry(self._child(), lift=["driver/caller.py"])
+        self.assertIn(self._abs("driver/caller.py"), entry["scope"]["files"])
+
+    def test_no_listing_means_no_grant(self):
+        self._spent(1)
+        for name, breakage in (("no stamp", lambda d: d.pop("run_id")),
+                               ("a foreign stamp", lambda d: d.update(run_id="other"))):
+            with self.subTest(name):
+                path = runio._pano(self.root, "groups.json")
+                doc = runio._load_json(path)
+                saved = dict(doc)
+                breakage(doc)
+                runio._write_json(path, doc)
+                self._refused("driver/caller.py")
+                runio._write_json(path, saved)
+
+    def test_a_listed_controller_path_is_still_refused(self):
+        # A listing is discovery's, and discovery prunes dot-dirs, but the refusal does
+        # not lean on that: this is what the `_usable` segment check alone holds.
+        self._spent(1)
+        names = [".git/config", ".panopticon/host-settings.json"]
+        self._list(names)
+        for name in names:
+            with self.subTest(name):
+                self._refused(name)
+
+    def test_a_symlink_into_controller_state_is_refused(self):
+        os.makedirs(self._abs("docs"))
+        os.symlink(self._abs(".git/config"), self._abs("docs/cfg"))
+        self._list(["docs/cfg"])
+        self._spent(1)
+        self._refused("docs/cfg")
+
+    def test_claim_text_cannot_name_controller_state_into_the_closure(self):
+        # F4b: the closure path, which keeps `_PATH_RE` and never reads the listing.
+        for name in (".panopticon/host-settings.json", ".git/info/x.json"):
+            with self.subTest(name):
+                entry = self._entry(self._child(description="see %s" % name))
+                self.assertNotIn(self._abs(name), entry["scope"]["files"])
+        entry = self._entry(self._child(description="see driver/second.py"))
+        self.assertIn(self._abs("driver/second.py"), entry["scope"]["files"])
+
+    def test_a_controller_directory_that_is_itself_a_symlink_is_refused_as_written(self):
+        # Its realpath has no controller segment, so only the spelling can say so.
+        os.makedirs(self._abs("state"))
+        with open(self._abs("state/x.json"), "w", encoding="utf-8") as fh:
+            fh.write("{}\n")
+        shutil.rmtree(self._abs(".git"))
+        os.symlink(self._abs("state"), self._abs(".git"))
+        self.assertIsNone(evidence_scope._usable(self.root, ".git/x.json"))
+        self.assertEqual("state/x.json", evidence_scope._usable(self.root, "state/x.json"))
+
+    def test_a_claim_located_in_controller_state_grants_nothing_there(self):
+        # The location never went through `_usable`, only through confinement.
+        for name in (".panopticon/host-settings.json", ".git/config"):
+            with self.subTest(name):
+                self.assertEqual([], evidence_scope.closure(
+                    self.root, {"location": {"file": name}}, []))
+
+    def test_an_import_that_is_a_symlink_into_controller_state_is_refused(self):
+        for rel, text in ((".git/hook.py", "X = 1\n"), ("pkg/__init__.py", ""),
+                          ("app.py", "import pkg.evil\nimport pkg.fine\n"),
+                          ("pkg/fine.py", "Y = 1\n")):
+            os.makedirs(os.path.dirname(self._abs(rel)), exist_ok=True)
+            with open(self._abs(rel), "w", encoding="utf-8") as fh:
+                fh.write(text)
+        os.symlink(self._abs(".git/hook.py"), self._abs("pkg/evil.py"))
+        closure = evidence_scope.closure(self.root, {"location": {"file": "app.py"}}, [])
+        self.assertIn("pkg/fine.py", closure)
+        self.assertNotIn("pkg/evil.py", closure)
+
+    def test_only_whole_segments_count_and_case_does_not(self):
+        for rel in (".github/workflows/ci.yml", ".gitignore", "docs/.panopticon.md"):
+            os.makedirs(os.path.dirname(self._abs(rel)), exist_ok=True)
+            with open(self._abs(rel), "w", encoding="utf-8") as fh:
+                fh.write("x\n")
+            with self.subTest(rel):
+                self.assertEqual(rel, evidence_scope._usable(self.root, rel))
+        for rel in (".GIT/config", "vendor/lib/.git/config", ".Panopticon/x.json"):
+            with self.subTest(rel):
+                self.assertTrue(evidence_scope._controller_state(self.root, rel))
+
+
 class PromotionTest(_Tree):
     def test_a_lift_file_that_is_not_a_verdict_is_never_promoted(self):
         self._spent(2)
@@ -314,8 +446,9 @@ class PromotionTest(_Tree):
         verdicts, unloadable = evidence.load_verdicts_detailed(vdir)
         self.assertEqual(([QID], []), (sorted(verdicts), unloadable))
         import scripts.synth.cost as cost_mod
-        runio._write_json(runio._pano(self.root, "dispatch-plan-driver.json"), [])
-        counts = cost_mod.driver_cost_counts(runio._pano(self.root), vdir, [])
+        plan = runio._pano(self.root, "dispatch-plan-driver.json")
+        runio._write_json(plan, [])
+        counts = cost_mod.driver_cost_counts(os.path.dirname(plan), vdir, [])
         self.assertEqual(1, counts["verify_tools"])          # the first verdict only
         bundles = evidence.load_verdict_bundles(vdir)
         self.assertEqual({}, bundles[0] if isinstance(bundles, tuple) else bundles)

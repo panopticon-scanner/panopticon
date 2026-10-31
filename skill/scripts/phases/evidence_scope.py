@@ -140,12 +140,31 @@ def _norm(path):
     return path or None
 
 
+# The controller's own state and the VCS store: never evidence, whatever names
+# them (#3231 F4b). A claim's text, or an advisor's `missing_evidence`, is
+# steerable by the reviewed repo, and `.panopticon/host-settings.json` or
+# `.git/config` would otherwise pass as a confined file that exists.
+_NEVER_EVIDENCE = frozenset({".git", ".panopticon"})
+
+
+def _controller_state(review_root, path):
+    """True when `path`, as written OR as its realpath lands, has a `.git` or
+    `.panopticon` segment -- so a symlink into either is refused too. Lowercased,
+    because a case-insensitive filesystem opens `.GIT/config` as `.git/config`."""
+    real = os.path.relpath(os.path.realpath(os.path.join(review_root, path)),
+                           os.path.realpath(review_root))
+    return any(seg.lower() in _NEVER_EVIDENCE
+               for p in (path, real) for seg in p.replace(os.sep, "/").split("/"))
+
+
 def _usable(review_root, path):
-    """A repo-relative path that EXISTS as a file under `review_root` and does
-    not escape it. Both halves matter: existence keeps prose out of the grant,
-    confinement keeps a planted `../` out of the read fence (#1096)."""
+    """A repo-relative path that EXISTS as a file under `review_root`, does not
+    escape it, and is not controller or VCS state. Existence keeps prose out of
+    the grant, confinement keeps a planted `../` out of the read fence (#1096),
+    and `_controller_state` keeps the run's own files out of it (#3231 F4b)."""
     path = _norm(path)
-    if not path or not runio._confined_to_root(review_root, path):
+    if (not path or not runio._confined_to_root(review_root, path)
+            or _controller_state(review_root, path)):
         return None
     return path if os.path.isfile(os.path.join(review_root, path)) else None
 
@@ -404,9 +423,16 @@ def resolve_names(review_root, names, group_files=None, unresolved=None, cap=CAP
     -- the same exact/suffix/content ladder, confinement and per-entry search bound --
     so a name in any language resolves, not only the extensions `_PATH_RE` knows (the
     backup round's text scan keeps that regex). At most `cap` paths; ambiguities go to
-    `unresolved` exactly as `named_paths` records them."""
+    `unresolved` exactly as `named_paths` records them.
+
+    A resolved name is granted only if THIS RUN discovered that file (#3231 F4): it
+    must be in `_repo_files`' stamped listing. Resolving whole drops `_PATH_RE`'s
+    accidental filter, and an advisor that read injected repo text can name `.env`
+    or `terraform.tfstate`; an untracked or ignored file was never discovered, so
+    it is never granted. No listing means no grant, as `_repo_files` says."""
     out: list[str] = []
     cache: dict = {}
+    listed = set(_repo_files(review_root, cache))
     for name in names or []:
         if len(out) >= cap:
             break
@@ -414,7 +440,7 @@ def resolve_names(review_root, names, group_files=None, unresolved=None, cap=CAP
             continue
         path, ambiguity = _resolve_named(review_root, group_files, name.strip(), cache)
         if path:
-            if path not in out:
+            if path in listed and path not in out:
                 out.append(path)
         elif ambiguity and unresolved is not None and not any(
                 r.get("name") == ambiguity["name"] for r in unresolved):
@@ -455,7 +481,8 @@ def _closure_paths(review_root, claim, group_files, unresolved=None,
     loc = claim.get("location")
     loc = loc if isinstance(loc, dict) else {}
     primary = _norm(loc.get("file"))
-    if primary is not None and not runio._confined_to_root(review_root, primary):
+    if primary is not None and (not runio._confined_to_root(review_root, primary)
+                                or _controller_state(review_root, primary)):
         primary = None
     out = [primary] if primary else []
     for path in named_paths(review_root, claim, group_files, unresolved,
@@ -465,7 +492,9 @@ def _closure_paths(review_root, claim, group_files, unresolved=None,
     if primary and primary.endswith(_PY):
         for path in (py_imports.imports_of(review_root, primary, cache)
                      + py_imports.importers(review_root, primary, group_files, cache)):
-            if path not in out:
+            # `py_imports.usable` is the shared leaf's own check, and a module can be
+            # a symlink into either directory.
+            if path not in out and not _controller_state(review_root, path):
                 out.append(path)
     return out
 
