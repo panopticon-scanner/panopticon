@@ -184,8 +184,8 @@ def _sec_carve_out_groups(review_root):
 
 def _chunk_parent(name):
     """The committed parent of a discovery chunk `<name>_<i>` (#5.0-10), or None
-    if `name` is not a `<something>_<digits>` chunk. Leftover `._N` chunks map to
-    parent '.', never in the matrix, so they correctly keep an empty floor.
+    if `name` is not a `<something>_<digits>` chunk. A no-matrix `<directory>_N` chunk (#3376;
+    `._N` before it) maps to a parent no matrix holds, so it correctly keeps an empty floor.
 
     Superseded by discovery's `chunk_of` field, which says this rather than
     guessing it; kept as the fallback for a pre-`chunk_of` groups.json. The

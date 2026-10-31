@@ -16,6 +16,7 @@ Literal comparisons and anchored-prefix rejection avoid most corpus work;
 the general engine uses O(tokens * path length) bounded work and O(tokens)
 matching state. Discovery's total cost still multiplies files by patterns.
 """
+import os
 import re
 import sys
 from functools import lru_cache
@@ -356,6 +357,19 @@ def is_sec_carve_out_name(name):
 
 def _invalid_name(name):
     return not isinstance(name, str) or ".." in name or not _GROUP_NAME_RE.match(name)
+
+
+_UNNAMEABLE_BASE = "root"
+
+
+def derived_group_base(path):
+    """The name a no-matrix review's chunks are named after: the real directory's basename, cut
+    to the group-name alphabet (#3376). `.` used to name them `._N`, which the run-9 A5 sink rename
+    removed everywhere else. A name the committed-name validator would still refuse -- an empty
+    one, `/`, or nothing left once sanitised -- becomes "root" rather than a group nobody named."""
+    name = re.sub(r"[^A-Za-z0-9_.-]", "_", os.path.basename(os.path.realpath(path)))
+    name = re.sub(r"\.{2,}", ".", re.sub(r"^[^A-Za-z0-9]+", "", name))[:56]
+    return _UNNAMEABLE_BASE if _invalid_name(name + "_1") else name
 
 
 def _name_error(name):

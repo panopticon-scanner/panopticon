@@ -556,3 +556,48 @@ class TestChangedSymlinks(unittest.TestCase):
         os.symlink("second.py", os.path.join(repo, "link.py"))
         self.assertEqual(discovery.collect_changed_files(repo, "HEAD"), ["link.py"])
         self.assertEqual(diff_map.hunk_map(repo, "HEAD"), {"link.py": [(1, 1)]})
+
+
+class TestNoMatrixGroupNames(unittest.TestCase):
+    """#3376: with no committed matrix the chunks are named after the real directory, never `._N`,
+    and every name a scan derives passes the validator a committed name must."""
+
+    def _tree(self, name):
+        base = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, base, True)
+        root = os.path.join(base, name)
+        os.makedirs(root)
+        touch(root, "app.py")
+        return root
+
+    def _names(self, out):
+        names = [g["name"] for g in out["groups"]]
+        self.assertTrue(names)
+        for name in names:
+            self.assertFalse(discovery.groups_schema._invalid_name(name), name)
+        return names, {g["chunk_of"] for g in out["groups"]}
+
+    def test_a_scan_from_dot_is_named_after_the_directory_it_is_in(self):
+        root = self._tree("checkout-service")
+        cwd = os.getcwd()
+        self.addCleanup(os.chdir, cwd)
+        os.chdir(root)
+        for repo in (".", "./", root + "/", root):
+            with self.subTest(repo=repo):
+                self.assertEqual((["checkout-service_1"], {"checkout-service"}),
+                                 self._names(run_scan(repo)))
+
+    def test_a_link_is_named_after_what_it_resolves_to(self):
+        root = self._tree("real-name")
+        link = os.path.join(os.path.dirname(root), "link-name")
+        os.symlink(root, link)
+        self.assertEqual(["real-name_1"], self._names(run_scan(link))[0])
+
+    def test_a_name_the_validator_refuses_is_cut_to_its_alphabet_or_becomes_root(self):
+        for name, want in (("..evil x", "evil_x"), (".hidden", "hidden"), ("a..b", "a.b"),
+                           ("___", "root"), ("ü", "root"), ("x" * 80, "x" * 56)):
+            with self.subTest(name=name):
+                self.assertEqual([want + "_1"], self._names(run_scan(self._tree(name)))[0])
+
+    def test_the_filesystem_root_has_no_basename_and_is_named_root(self):
+        self.assertEqual("root", discovery.groups_schema.derived_group_base("/"))

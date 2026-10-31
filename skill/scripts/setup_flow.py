@@ -525,7 +525,7 @@ def _check_groups_manifest(repo):
     if doc.doc is None:
         return ("groups-manifest", None,
                 "no committable config yet -- --setup seeds one; "
-                "files fall back to ._N chunks until you commit it")
+                "files fall back to <directory>_N chunks until you commit it")
     try:
         catalog = discovery._matrix_catalog(repo) or {}
     except ValueError as exc:
