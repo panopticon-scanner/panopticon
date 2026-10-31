@@ -374,6 +374,7 @@ groups:
       - tests/test_orchestrate_evidence.py
       - tests/test_orchestrate_interrupt_settled.py
       - tests/test_orchestrate_launch.py
+      - tests/test_guard_denials.py
       - tests/test_orchestrate_outage.py
       - tests/test_orchestrate_recovery.py
       - tests/test_orchestrate_session.py

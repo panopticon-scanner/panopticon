@@ -426,7 +426,8 @@ class Runner(base.HostRunner):
                                usage=usage, cost_usd=data.get("total_cost_usd"), model=model,
                                session_id=data.get("session_id"), denials=denials, error=error,
                                host_error=host_error, models=model_usage,
-                               stderr=diagnosis if error is not None else None)
+                               stderr=diagnosis if error is not None else None,
+                               reply_via="structured_output" if structured else "result")
 
     def launch_env(self, overlay=None):
         """The seam's preparation (`base.HostRunner.launch_env`) plus this

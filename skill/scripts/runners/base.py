@@ -146,6 +146,7 @@ class RunResult:
                                    # -- the CLI's error line or the provider error object it
                                    # printed, NEVER the agent's text. `error` is the operator's
                                    # message and may quote the agent; this is what is classified.
+    reply_via: object = None       # #3234: claude only: "structured_output" | "result"
     failure_class: object = None   # "host" | "entry" (#1623); None means "classify it for me"
     stderr: object = None          # #1732: what the CLI printed on stderr, on a FAILED result
                                    # only -- `stderr_head` characters, already redacted. The

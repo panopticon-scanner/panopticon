@@ -59,7 +59,7 @@ _GUARD_RULES_USED = (
     "SYMLINKED_COMPONENT", "UNMEASURABLE_COMPONENT", "ESCAPED_ARTIFACT_TREE", "PARENT_COMPONENT",
     "_escaped_component", "bind", "_load_allowlist", "hook_command", "_trusted_hook_argv",
     "_is_our_entry", "_load", "atomic_write_json", "_write_hook_entry", "_remove_hook_entry",
-    "_armed")
+    "_armed", "resolve_policy_path", "record_denial")
 
 # --- GUARD RULES LOADER (#3273 cut 11) ---
 # Byte-identical in the three guard hooks (tests/test_guard_rules.py). Run as a
@@ -371,23 +371,8 @@ def _resolve_allowlist_path(argv_path=None):
     The env override stays first: group_runner sets it deliberately for a
     subprocess, and that is a narrower, more explicit signal than a path baked
     in at install time."""
-    env_path = os.environ.get("PANOPTICON_WRITE_ALLOWLIST")
-    if env_path and os.path.isfile(env_path):
-        return env_path
-    if argv_path:
-        # Returned even when absent: the guard is fail-closed, and an install that named a file which
-        # then vanished must DENY, never fall back to some other tree's allowlist and its writes.
-        return argv_path
-    cur = os.path.abspath(os.getcwd())
-    while True:
-        candidate = os.path.join(cur, ".panopticon", "write-allowlist.json")
-        if os.path.isfile(candidate):
-            return candidate
-        parent = os.path.dirname(cur)
-        if parent == cur:
-            break
-        cur = parent
-    return os.path.join(".panopticon", "write-allowlist.json")
+    return guard_rules.resolve_policy_path("PANOPTICON_WRITE_ALLOWLIST", argv_path,
+                                           "write-allowlist.json")
 
 
 def main(argv=None):
@@ -408,17 +393,21 @@ def main(argv=None):
         if payload.get("tool_name", "") not in _WRITE_TOOLS:
             return 0
         argv_path = args[0] if args else None
+        policy = None
         if guard_rules is None:            # #3273 cut 11: before the argv check, which needs it
             allow, reason = adjudicate(payload, None)
         else:
             _trusted_hook_argv()
-            allow, reason = adjudicate(payload, _resolve_allowlist_path(argv_path))
+            policy = _resolve_allowlist_path(argv_path)
+            allow, reason = adjudicate(payload, policy)
     except Exception as exc:  # noqa: BLE001 -- fail CLOSED, never crash the hook
         print(_deny_response("write guard crashed: %s" % exc))
         return 0
     if allow:
         return 0
-    print(_deny_response(reason))
+    print(_deny_response(reason), flush=True)
+    if policy:
+        guard_rules.record_denial(policy, payload, reason)      # #3234: after the deny, never instead
     return 0
 
 

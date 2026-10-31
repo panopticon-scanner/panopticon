@@ -448,7 +448,14 @@ on Claude hooks, and always uses the return-persist path.
   `error`, and on a FAILED row `stderr`: the
   first 200 characters of what the CLI printed on stderr, redacted before they are cut and redacted
   again at the ledger, which is the one thing that appends to this file. A successful row carries no
-  `stderr` key at all, so its shape is unchanged. Run 14 is why: 309 launches were ledgered as
+  `stderr` key at all, so its shape is unchanged. Three more keys appear only when set (#3234): a
+  denial row's `reason`, the guard hook's own words, redacted and bounded at this writer, joined by
+  `tool_use_id` from `guard-denials.jsonl` beside the ledger (a row there matching no denial is
+  ignored; no `reason` means no hook of ours denied it, or a setup run, which keeps no such file;
+  the row's `tool_input` stays as the host wrote it); `reply_via` on a Claude return-persist row,
+  `structured_output` or `result`; and `result_head` on a self-writing row whose launch came back
+  fine and left no good artifact, bounded and redacted like `stderr`, its `ok` unchanged. No done
+  predicate reads any of them. Run 14 is why: 309 launches were ledgered as
   `claude -p printed no JSON envelope (exit 1)` — the symptom — while the diagnosis (`--json-schema
   is not valid JSON: JSON Parse error: Unrecognized token '/'`) went to a stream nothing kept). The
   `denials` column is what the host reported as BLOCKED, and it is NOT one measurement across the
