@@ -71,6 +71,9 @@ function scenarioId(prompt) {
     .sort((a, b) => b.id.length - a.id.length)
   return hits.length ? hits[0].id : text.slice(MARKER.length).split('\n')[0]
 }
+// `scenario.delay_ms` (#3256) holds each reply that long, so `peak` -- the most agent() calls
+// unresolved at once -- measures the script's in-flight ceiling.
+let inFlight = 0, peak = 0
 function agent(prompt, opts) {
   calls.push({ prompt, opts })
   const id = scenarioId(prompt)
@@ -78,7 +81,11 @@ function agent(prompt, opts) {
     throw new Error(scenario.throws[id])
   }
   const reply = scenario.replies ? scenario.replies[id] : undefined
-  return Promise.resolve(reply === undefined ? null : reply)
+  const value = reply === undefined ? null : reply
+  if (!scenario.delay_ms) return Promise.resolve(value)
+  inFlight += 1
+  peak = Math.max(peak, inFlight)
+  return new Promise(resolve => setTimeout(() => { inFlight -= 1; resolve(value) }, scenario.delay_ms))
 }
 async function parallel(thunks) {
   return Promise.all(thunks.map(async t => {
@@ -101,4 +108,4 @@ try {
 } catch (e) {
   error = e && e.message ? e.message : String(e)
 }
-process.stdout.write(JSON.stringify({ meta, calls, result, error, logs }))
+process.stdout.write(JSON.stringify({ meta, calls, result, error, logs, peak }))

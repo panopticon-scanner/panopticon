@@ -498,3 +498,37 @@ class TestMetaAndDispatchPhase(DispatchScriptTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestInFlightCeiling(DispatchScriptTestCase):
+    """#3256: a checkpoint of many entries never has more than IN_FLIGHT_MAX subagents unresolved
+    at once, every entry still runs, and a throw frees its slot."""
+
+    CEILING = 16
+
+    def _many(self, n, **scenario):
+        entries = [_entry("e%d" % i, delivery="return_json") for i in range(n)]
+        return self.run_harness(dict({"args": {"entries": entries}, "delay_ms": 20,
+                                      "replies": {"e%d" % i: "t%d" % i for i in range(n)}},
+                                     **scenario))
+
+    def test_the_ceiling_is_the_documented_number(self):
+        with open(DISPATCH_JS, encoding="utf-8") as fh:
+            self.assertIn("const IN_FLIGHT_MAX = %d\n" % self.CEILING, fh.read())
+
+    def test_a_large_batch_fills_the_pool_and_never_exceeds_it(self):
+        out = self._many(60)
+        self.assertIsNone(out["error"])
+        self.assertEqual(self.CEILING, out["peak"])
+        self.assertEqual(["e%d" % i for i in range(60)], [r["id"] for r in out["result"]["persist"]])
+        self.assertEqual([], out["result"]["missing"])
+
+    def test_a_batch_under_the_ceiling_launches_at_once(self):
+        self.assertEqual(5, self._many(5)["peak"])
+
+    def test_a_throw_frees_its_slot_and_the_rest_still_run(self):
+        out = self._many(40, throws={"e%d" % i: "died" for i in range(0, 40, 3)})
+        self.assertIsNone(out["error"])
+        self.assertEqual(sorted("e%d" % i for i in range(0, 40, 3)), sorted(out["result"]["missing"]))
+        self.assertEqual(40 - len(range(0, 40, 3)), len(out["result"]["persist"]))
+        self.assertLessEqual(out["peak"], self.CEILING)
