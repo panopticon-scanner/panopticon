@@ -1,9 +1,15 @@
 """The run's dispatch/usage ledger (meta.cost)."""
 from dataclasses import dataclass
 import glob
+import json
 import os
+import re
 import sys
 
+import scripts.runners.base as runners_base
+import scripts.safe_write as safe_write
+import scripts.tolerant_json as tolerant_json
+import scripts.tools.base as tool_base
 from . import artifacts as artifacts_mod
 from . import plan as plan_mod
 
@@ -12,9 +18,11 @@ from . import plan as plan_mod
 class CostInputs:
     """What meta.cost is derived from (WS-0 S2): the driver's per-class
     dispatch counts (None off the driver path) and the host's usage.json
-    (None when the host wrote none -- never an estimate)."""
+    (None when the host wrote none -- never an estimate), and the models its
+    ledger measured (empty on a run with no ledger -- never what was requested)."""
     driver_cost: dict | None = None
     run_usage: dict | None = None
+    ledger_models: tuple = ()
 
     @classmethod
     def load(cls, run_dir, verdicts_dir, tools_produced):
@@ -22,7 +30,8 @@ class CostInputs:
         plan and the verdicts resolve under `run_dir` like every other run
         artifact -- reading them flat left driver_cost None on every 5.1 run."""
         return cls(driver_cost=driver_cost_counts(run_dir, verdicts_dir, tools_produced),
-                   run_usage=load_run_usage(run_dir))
+                   run_usage=load_run_usage(run_dir),
+                   ledger_models=load_ledger_models(run_dir))
 
 
 def load_run_usage(run_dir):
@@ -50,6 +59,90 @@ def load_run_usage(run_dir):
         return None
     return data if isinstance(data, dict) and data else None
 
+# What `models_used[].role` says when nothing ties a model to a dispatch.
+UNKNOWN_ROLE = "unknown"
+_MODEL_NAME_MAX = 200
+_VERIFY_STAGE = re.compile(r"-(primary|backup)(?:-part[0-9]+)?$")
+_ROLE_OF_STAGE = {"primary": "domain_advisor", "backup": "domain_advisor_backup"}
+
+
+def _role_of_entry(entry_id):
+    """The `dispatches[*].role` a ledger row's entry id names, from the id builders in
+    `phases/coverage`, `review`, `verify` and `verify_tools`. A group name may hold a hyphen, so a
+    verify stage is read from the end of the id."""
+    text = entry_id if isinstance(entry_id, str) else ""
+    if text.startswith("scout-"):
+        return "scout"
+    if text.startswith("review-"):
+        return "domain_panel"
+    if text.startswith("verify-tool-"):
+        return "tool_advisor"
+    stage = _VERIFY_STAGE.search(text) if text.startswith("verify-") else None
+    return _ROLE_OF_STAGE[stage.group(1)] if stage else UNKNOWN_ROLE
+
+
+def _model_name(value):
+    """A host-reported model name safe to publish, or None: the file holding it sits in the
+    reviewed tree, as usage.json does."""
+    if not isinstance(value, str):
+        return None
+    return tool_base.inert_text(value, limit=_MODEL_NAME_MAX) or None
+
+
+def load_ledger_models(run_dir):
+    """The distinct (role, model) pairs the run's ledger measured, first seen first (#3368).
+
+    Only what a host REPORTED for a launch. Never a plan entry's `model`: that is what the run
+    requested, and it is None on a host with no model policy. A session-mode run has no ledger
+    rows, so this is empty there. A line that cannot be read is skipped, as `Ledger.lines` does.
+    """
+    if not run_dir:
+        return ()
+    path = os.path.join(run_dir, runners_base.LEDGER_FILE)
+    try:
+        raw = safe_write.read_regular_bytes(path, artifacts_mod.MAX_JSON_BYTES)
+    except FileNotFoundError:
+        return ()
+    except (OSError, ValueError) as exc:
+        print("synthesize: artifact %r could not be read (%s); ignoring" % (path, exc),
+              file=sys.stderr)
+        return ()
+    pairs = {}
+    for line in raw.decode("utf-8", "replace").split("\n"):
+        try:
+            row = json.loads(tolerant_json.depth_checked(line))
+        except (ValueError, RecursionError):
+            continue
+        model = _model_name(row.get("model")) if isinstance(row, dict) else None
+        if model:
+            pairs[(_role_of_entry(row.get("entry_id")), model)] = True
+    return tuple(pairs)
+
+
+def models_used(cost):
+    """`meta.models_used` (#3368): the ledger's pairs. With no ledger pairs, the names a host's
+    usage.json measured, which no dispatch is tied to, so their role is UNKNOWN_ROLE (session mode,
+    `collect_usage`). With neither, empty: a run that recorded no model reports none."""
+    if cost.ledger_models:
+        return [{"model": model, "role": role} for role, model in cost.ledger_models]
+    by_model = (cost.run_usage or {}).get("by_model")
+    names = {_model_name(name) for name in by_model} if isinstance(by_model, dict) else ()
+    return [{"model": name, "role": UNKNOWN_ROLE} for name in sorted(filter(None, names))]
+
+
+def _with_ledger_models(rows, ledger_models):
+    """Put the model on each row whose role ran exactly one. A role that ran two stays null, and
+    `models_used` names both: picking one would claim what the other's dispatches did not run."""
+    by_role: dict[str, list[str]] = {}
+    for role, model in ledger_models:
+        by_role.setdefault(role, []).append(model)
+    for row in rows:
+        models = by_role.get(row["role"], ())
+        if len(models) == 1:
+            row["model"] = models[0]
+    return rows
+
+
 def cost_dispatches(scout_profiles_seen, verify_queued, driver_cost=None):
     """Assemble the meta.cost dispatch ledger rows. Pure.
 
@@ -74,9 +167,10 @@ def cost_dispatches(scout_profiles_seen, verify_queued, driver_cost=None):
     if driver_cost is None:
         return scout + [{"phase": "verify", "role": "advisor", "model": None,
                          "count": verify_queued}]
-    # Driver rows carry model=None like the scout/advisor rows above: the count
-    # is the load-bearing figure, and per-model/token attribution rides the
-    # `tokens` slot (null until a host exposes per-dispatch usage). The verify
+    # Driver rows carry model=None like the scout/advisor rows above, until
+    # `cost_section` fills in what the ledger measured: the count is the
+    # load-bearing figure, and token attribution rides the `tokens` slot (null
+    # until a host exposes per-dispatch usage). The verify
     # rounds are pipeline phases, always disclosed even at count 0; the tool
     # scan row appears only when the scan actually ran.
     rows = scout + [
@@ -174,6 +268,7 @@ def cost_section(cost, scout_profiles_seen, queued):
     plan to read. `tokens` is the host-reported usage when the host wrote
     usage.json (see load_run_usage); still null when it did not."""
     return {
-        "dispatches": cost_dispatches(scout_profiles_seen, queued, cost.driver_cost),
+        "dispatches": _with_ledger_models(
+            cost_dispatches(scout_profiles_seen, queued, cost.driver_cost), cost.ledger_models),
         "tokens": cost.run_usage,
     }

@@ -20,8 +20,6 @@ from . import runio
 from . import requests
 from . import verify_tools
 
-# #3367: when a run reached `complete`. Optional: older manifests have none, and nothing branches on it.
-
 
 _PENDING = "synthesize-pending.json"
 

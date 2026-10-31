@@ -1758,7 +1758,7 @@ _SLOPPY_AGENT_SHAPES = [
     ("domain off-enum with a matching code", {"domain": "XYZ", "code": "XYZ-A1A"},
      "names no OCRDb domain"),                                          # F1
     ("provenance.model with no discovered_by",
-     {"provenance": {"model": "gpt-6"}}, "role recorded as"),           # F2
+     {"provenance": {"model": "gpt-6"}}, "stripped self-asserted"),     # F2, #3368
     ("provenance.discovered_by dict",
      {"provenance": {"model": "m", "discovered_by": {"a": 1}}}, PINS),  # F2
     ("agent-supplied delta outside delta mode",

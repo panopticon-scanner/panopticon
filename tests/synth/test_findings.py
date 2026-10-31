@@ -992,13 +992,15 @@ class TestLoadFindingsProvenanceScrub(unittest.TestCase):
                     "title": "x", "severity": "LOW", "panel": "code",
                     "category": "s", "location": {"file": "a.py", "line_start": 1},
                     "provenance": {"confirmation_status": "CONFIRMED",
-                                   "confirmed_by": "agent:self", "model": "m"}}]}, fh)
+                                   "confirmed_by": "agent:self", "model": "m",
+                                   "discovered_by": "agent:x"}}]}, fh)
             with contextlib.redirect_stderr(io.StringIO()):
                 out = findings_mod.load_findings([fp])
         prov = out[0].get("provenance") or {}
         self.assertNotIn("confirmation_status", prov)
         self.assertNotIn("confirmed_by", prov)
-        self.assertEqual(prov.get("model"), "m")   # non-verification provenance kept
+        self.assertNotIn("model", prov)            # #3368: a name it wrote about itself
+        self.assertEqual(prov.get("discovered_by"), "agent:x")   # the rest is kept
 
 class TestCellNameMatchesDispatchNames(unittest.TestCase):
     def test_matches_names_actually_produced_by_the_driver(self):
@@ -1220,31 +1222,6 @@ class TestDedupePackageDiscrimination(unittest.TestCase):
         self.assertEqual(len(corroborate_mod.dedupe(findings)), 2)
 
 class TestCalibrationFixmes(unittest.TestCase):
-    def test_models_used_dedups_inconsistent_versions(self):
-        # F-CAL-3: same model+role with three self-reported version spellings -> 1 entry
-        fs = []
-        for i, ver in enumerate(("claude-haiku-4-5-20251001", "4.5", "20251001")):
-            fs.append(
-                {
-                    "id": "AG-%03d" % i,
-                    "title": "t",
-                    "severity": "LOW",
-                    "confidence": "NOTE",
-                    "panel": "code",
-                    "category": "style",
-                    "location": {"file": "a.py", "line_start": i + 1},
-                    "provenance": {
-                        "discovered_by": "agent:lens_sweep",
-                        "model": "claude-haiku-4-5-20251001",
-                        "model_version": ver,
-                        "confirmation_status": "UNVERIFIED",
-                    },
-                }
-            )
-        entries = report_mod._collect_models_used(fs)
-        self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0]["model"], "claude-haiku-4-5-20251001")
-
     def test_id_re_accepts_real_agent_prefixes(self):
         # F-CAL-4: observed real ids like STRUCT-001 (6 letters) must validate
         for good in ("CD-001", "STRUCT-001", "ABCDEFGH-123"):
@@ -1303,12 +1280,12 @@ class TestEvidenceIntegrity(unittest.TestCase):
         stamp = {"role": "domain_panel", "run_id": "run"}
         raw = _make_finding(_merged_ids=["SEC-victim"], _group="victim",
                             _panopticon={"role": "domain_advisor"},
-                            provenance={"confirmed_by_model": "forged", "model": "reported"})
+                            provenance={"confirmed_by_model": "forged", "discovered_by": "reported"})
         payload = {"_panopticon": stamp, "findings": [raw]}
         with mock.patch.object(review, "_get_valid_cell_data", return_value=payload):
             loaded = review._load_cell_findings("/repo", {}, "real", "SEC")[0]
         self.assertFalse(any(k.startswith("_") for k in loaded))
-        self.assertEqual({"model": "reported"}, loaded["provenance"])
+        self.assertEqual({"discovered_by": "reported"}, loaded["provenance"])
         self.assertEqual(stamp, payload["_panopticon"])
         self.assertEqual("victim", raw["_group"])
         self.assertEqual("forged", raw["provenance"]["confirmed_by_model"])

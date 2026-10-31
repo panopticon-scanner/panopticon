@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **Change: four report fields now say what they claim (#3368).** No prompt or review schema changes.
+  - `meta.models_used` and `meta.cost.dispatches[*].model` read the dispatch ledger. A role that ran
+    two models has `model: null`, and `models_used` lists both. In session mode there is no ledger:
+    `models_used` lists any names in the host's `usage.json` with role `unknown`, and otherwise stays
+    empty. Neither field ever reads what a run requested.
+  - **A model name an agent wrote about itself no longer reaches a report or a filed issue:**
+    `provenance.model` and `provenance.model_version` are stripped when findings load.
+  - `summary.top_issues` shows the 100-character `short_title`. The stored `title` is unchanged.
+  - `findings[].category` shows the catalog's category when it would have said `general` and the
+    finding's `code` is a real catalog entry, marked by a new optional `category_source: "catalog"`.
+    A category an agent wrote stays, and `X0X` findings stay `general`.
+  - **`fingerprint` does not change,** so a filled finding is not filed again. Ids, counts, verdicts,
+    grades and citations do not change either.
+  - **The HTML compare view can show one finding as removed plus new** when comparing a report from
+    before this change with one after it, because its own key includes `category`.
+  - Replaying an older run now differs from its stored report in those fields and in any stripped
+    `provenance.model`.
+
 - **Change: the `complete` status names what the run produced (#3367).**
   - **One non-additive change: `driver loop`'s `complete` status no longer carries `teardown`** once
     its disarm has succeeded, because it has already done that. `driver run` and `driver setup` keep

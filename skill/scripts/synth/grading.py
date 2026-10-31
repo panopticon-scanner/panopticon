@@ -666,7 +666,7 @@ def grade_report(run, resolved, reconciled, delta=None):
         "coverage_note": (cert["coverage_note"] if not no_review else "; ".join(
             filter(None, (coverage_io.REVIEW_MATRIX_MISSING_NOTE, cert["coverage_note"])))),
         "risk_level": risk,
-        "top_issues": [f.get("title", "") for f in
+        "top_issues": [f.get("short_title") or f.get("title", "") for f in
                        sorted(resolved.active, key=findings_mod._issue_sort)[:3]],
         "gate": cert["gate"],
         "gate_policy": ("include_unverified" if run.gate_unverified

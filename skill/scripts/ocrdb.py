@@ -406,6 +406,18 @@ def validate_code(bundle, code):
     return code in _entries_for(bundle, dom)
 
 
+def category_of(bundle, code):
+    """The catalog's category name for a real entry ('SEC-A1A' -> area A, category 1), or None:
+    a fallback code, or one the bundle has no entry for, names no category."""
+    if not validate_code(bundle, code):
+        return None
+    dom = _safe_get_dict(_safe_get_dict(bundle, "domains"), domain_of(code))
+    suffix = code.split("-", 1)[1]
+    area = _safe_get_dict(_safe_get_dict(dom, "areas"), suffix[:1])
+    name = _safe_get_dict(area, "categories").get(suffix[1:2])
+    return name if isinstance(name, str) and name else None
+
+
 def domain_fallback(domain):
     """The catalog-gap fallback code for a domain: '<DOM>-X0X'."""
     return "%s-X0X" % domain

@@ -295,7 +295,7 @@ def normalize_finding(f):
 # point this entry can go.
 AGENT_FORBIDDEN_FIELDS = ("source", "reinforced", "corroborated", "corroborated_by",
                           "evidence", "fingerprint", "delta", "doc_policy",
-                          "code_corrected_by", "backup_confirmed")
+                          "code_corrected_by", "backup_confirmed", evidence_mod.CATEGORY_SOURCE)
 
 
 def cell_panel(domain):
@@ -334,7 +334,7 @@ def agent_finding(raw, path="<agent payload>"):
     if isinstance(prov, dict):
         clean["provenance"] = dict(prov)
         for key in ("confirmation_status", "confirmed_by", "confirmation_reasoning",
-                    "confirmed_by_model", "advisor_code"):
+                    "confirmed_by_model", "advisor_code", "model", "model_version"):
             if key in prov:
                 print("synthesize: stripped self-asserted provenance.%s from %s in %s"
                       % (key, clean.get("id", "?"), path), file=sys.stderr)

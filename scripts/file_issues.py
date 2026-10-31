@@ -155,8 +155,7 @@ def body_for(f, rejected=False, report=REPORT, report_url=REPORT_URL,
              "**Confidence:** %s" % (defang(f.get("severity")), defang(ev.get("status")),
                                      defang(f.get("confidence"))))
     src = defang(prov.get("discovered_by") or f.get("source") or "unknown")
-    L.append("**Found by:** %s%s" % (src, "  ·  model: %s" % defang(prov["model"])
-                                     if prov.get("model") else ""))
+    L.append("**Found by:** %s" % src)
     cites = _dict(f.get("citations"))
     flat = []
     for k in ("cwe", "owasp", "cve"):

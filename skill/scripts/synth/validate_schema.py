@@ -32,7 +32,6 @@ path enforces (fix round 2):
   `coverage_io.normalized_cell`      the target-writable `.panopticon/coverage-*.json`
   `codes.*` / `x0x_report._domain`   an agent `code` naming no OCRDb domain, for
                                      the x0x schema's `candidates[].domain` enum
-  `report._role_from_discovered_by`  a finding with no usable `provenance.model`
 
 `report.assemble`'s `meta.host_capabilities` subtree is the one deliberate
 exception: copied verbatim from an untrusted artifact, it is described in the
@@ -302,10 +301,9 @@ def _coerce(value, node, path):
 
 # #1639 P15 fix round 2 (F2): a field whose non-conforming value is replaced by
 # a DEFAULT rather than removed, because removing it is what manufactures the
-# invalid output. `provenance.discovered_by` is the case: drop it and
-# `report._collect_models_used` has no role to publish, and the `None` it wrote
-# instead is what ended the run. The repair must not create the bug it exists to
-# prevent.
+# invalid output. `provenance.discovered_by` is the case: `html_report` and
+# `file_issues` print it, and "nobody recorded it" is the honest word for them.
+# The repair must not create the bug it exists to prevent.
 _DEFAULT_WHEN_DROPPED = {"provenance.discovered_by": "unknown"}
 
 
