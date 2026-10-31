@@ -27,8 +27,8 @@ file stays focused on the host-facing contract.
 
 - `superpowers:writing-plans` — before repo/PR/directory reviews with >15 files
   or >10 changes.
-  Save the review plan to `.panopticon/runs/<tag>/plan.md` once the first status names
-  the tag. Before then, keep it outside the target, in a file from `mktemp`, and put
+  Save the review plan to `.panopticon/runs/<tag>/plan.md` once a run has a tag, which
+  `.panopticon/runs/latest` points at. Before then, keep it outside the target, in a file from `mktemp`, and put
   nothing under `.panopticon/`: first contact halts on a `.panopticon/` it did not
   create. Never save it to `docs/superpowers/`, which is not this review's artifact
   space.
