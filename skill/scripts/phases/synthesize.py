@@ -21,7 +21,6 @@ from . import requests
 from . import verify_tools
 
 # #3367: when a run reached `complete`. Optional: older manifests have none, and nothing branches on it.
-COMPLETED_AT = "completed_at"
 
 
 _PENDING = "synthesize-pending.json"
@@ -76,7 +75,7 @@ def _regular_file(path):
     """A host acts on what `artifacts` names, so: a regular file, never through a symlink."""
     try:
         return stat.S_ISREG(os.lstat(path).st_mode)
-    except OSError:
+    except (OSError, ValueError):        # ValueError: a NUL or a lone surrogate in a name
         return False
 
 
@@ -119,20 +118,18 @@ def completion_artifacts(report_path):
 def complete_status(status, review_root, manifest):
     """The terminal `complete` status, for `driver.run` and so for the loop: what it produced, and
     the manifest's `completed_at` for a reader who has only the manifest. It marks success alone,
-    so a run that ended `error` or `paused` still reads as unfinished there. First write wins, and
-    neither step can mask the status: a failure goes in its message."""
+    so a run that ended `error` or `paused` still reads as unfinished there. Neither step can mask
+    the status: a name that can't be a file is left out, and a failed write goes in its message."""
     report_path = runio._report_out(review_root)
     status = attach_x0x_failure_status(status, report_path)
     if status.get("status") != "complete":
         return status
     status = dict(status, artifacts=completion_artifacts(report_path))
-    if not manifest.get(COMPLETED_AT):
-        try:
-            manifest[COMPLETED_AT] = run_manifest._now_iso()
-            run_manifest._rewrite(review_root, manifest)
-        except (OSError, ValueError) as exc:
-            status["message"] = "%s; completed_at not recorded: %s" % (
-                status.get("message"), redact.redact_diagnostic(str(exc), 200))
+    try:
+        run_manifest.record_completed_at(review_root, manifest)
+    except (OSError, ValueError) as exc:
+        status["message"] = "%s; completed_at not recorded: %s" % (
+            status.get("message"), redact.redact_diagnostic(str(exc), 200))
     return status
 
 

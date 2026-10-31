@@ -19,7 +19,6 @@ from unittest import mock
 import pytest
 import scripts.phases.child as child_mod
 import scripts.phases.runio as runio
-import scripts.phases.synthesize as synthesize_phase
 import scripts.run_manifest as run_manifest
 from scripts import hosts
 
@@ -295,7 +294,7 @@ class ArchiveTrustTest(unittest.TestCase):
         # #3367: #3328's replays depend on this. The key goes through a real stamped rewrite.
         with open(_mpath(self.review_root), encoding="utf-8") as fh:
             manifest = json.load(fh)
-        manifest[synthesize_phase.COMPLETED_AT] = "2026-10-31T00:00:00Z"
+        manifest[run_manifest.COMPLETED_AT] = "2026-10-31T00:00:00Z"
         run_manifest._rewrite(self.review_root, manifest)
         with open(_mpath(self.review_root), "rb") as fh:
             before = fh.read()

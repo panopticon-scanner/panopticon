@@ -159,6 +159,18 @@ class CompleteStatusTest(unittest.TestCase):
         self.assertEqual((2, log), (status["x0x_discarded"], status["x0x_failure_log"]))
         self.assertIn("artifacts", status)
 
+    def test_a_name_that_cannot_be_a_file_cannot_crash_a_finished_run(self):
+        for meta in ({"parts": ["a\u0000b"]}, {"discarded_claims_file": "a\u0000b"},
+                     {"parts": ["\ud800x"]}, {"discarded_claims_file": "\ud800x"}):
+            with self.subTest(meta=meta):
+                with open(runio._report_out(self.root), "w", encoding="utf-8") as fh:
+                    json.dump({"meta": meta}, fh)
+                status = synthesize.complete_status(self._complete(), self.root, dict(self.manifest))
+                self.assertEqual({"report": os.path.abspath(runio._report_out(self.root))},
+                                 status["artifacts"])
+                self.assertEqual("all phases complete", status["message"])
+                self.assertEqual(0, engine.emit_status(status, stream=mock.Mock()))
+
     def test_only_complete_gets_either(self):
         for kind in ("error", "paused", "checkpoint"):
             with self.subTest(kind):
@@ -171,6 +183,12 @@ class CompleteStatusTest(unittest.TestCase):
         run_manifest._rewrite(self.root, self.manifest)
         synthesize.complete_status(self._complete(), self.root, self.manifest)
         self.assertEqual("2026-01-01T00:00:00Z", self._on_disk()["completed_at"])
+
+    def test_the_recorder_takes_a_time_keeps_the_first_and_says_so_on_disk(self):
+        run_manifest.record_completed_at(self.root, self.manifest, at="first")
+        self.assertEqual("first", self._on_disk()[run_manifest.COMPLETED_AT])
+        run_manifest.record_completed_at(self.root, self.manifest, at="second")
+        self.assertEqual("first", self._on_disk()[run_manifest.COMPLETED_AT])
 
     def test_a_failed_write_cannot_mask_the_status(self):
         for error in (OSError("disk full"), ValueError("refused")):

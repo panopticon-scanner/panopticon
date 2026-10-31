@@ -6,22 +6,20 @@ PROGRESS never does — the driver re-derives the phase cursor from artifact
 presence. The manifest is written once by the first `driver run`; a conflicting
 flag on re-invocation is refused.
 
-TWO deliberate exceptions rewrite it, both through the one atomic `_rewrite`,
-and neither is an anti-drift key:
+Deliberate exceptions rewrite it, each a `record_*` through the one atomic `_rewrite`, and none is
+an anti-drift key. The first two:
 
 1. `flags.tools` may be relaxed to False on a run already in flight —
-   `record_tools_downgrade` (#1637 P08 F2) — because the alternative was
-   `--reset`, i.e. discarding every paid scout, as the only exit from a scanner
-   environment that moved mid-run. It is recorded, not silent: the previous
-   value and a timestamp land in `flag_changes`, and the report discloses it.
-   The reverse (False -> True) is still refused as drift. See
+   `record_tools_downgrade` (#1637 P08 F2) — because the alternative was `--reset`, i.e. discarding
+   every paid scout, as the only exit from a scanner environment that moved mid-run. It is recorded,
+   not silent: the previous value and a timestamp land in `flag_changes`, and the report discloses
+   it. The reverse (False -> True) is still refused as drift. See
    docs/superpowers/specs/2026-08-15-panopticon-5.0-driver-skeleton-design.md §3.
 2. `posture_disclosed` records that this run's full host-posture block has been
-   printed — `record_posture_disclosure` (#1596). It is the one `.panopticon`
-   file with an anti-forgery guard, which is why the decision reads off it and
-   not off `host-capabilities.json`; it holds what the operator has been TOLD,
-   not a run parameter, so the manifest is a record here rather than config.
-   The nearest thing to PROGRESS this file carries, and deliberately not it: a
+   printed — `record_posture_disclosure` (#1596). It is the one `.panopticon` file with an
+   anti-forgery guard, which is why the decision reads off it and not off `host-capabilities.json`;
+   it holds what the operator has been TOLD, not a run parameter, so the manifest is a record here
+   rather than config. The nearest thing to PROGRESS this file carries, and deliberately not it: a
    lost value costs one repeated disclosure, never a re-run phase.
 """
 import datetime
@@ -377,15 +375,13 @@ def is_tools_downgrade(manifest, flags):
 # runner or a session (#3226). Persisting any would make a resume inherit an exited process's facts.
 _EPHEMERAL_KEYS = ("session_dir", "invocation", "dispatch_mode")
 
-# #1596: {"digest": <host_disclosure.disclosure_digest>, "at": <probed_at>} --
-# the posture this run has already disclosed IN FULL on stderr, and when. The
-# stamp lives here rather than beside the evidence in
-# `runs/<tag>/host-capabilities.json` because it decides whether a disclosure
-# is PRINTED, and this is the one `.panopticon` file with an anti-forgery
-# guard: first contact halts on a manifest that is git-tracked in the reviewed
-# tree or not stamped by this machine for this checkout (#3271), before any
-# phase runs. A target that force-commits an artifact matching what the probe
-# is about to find could otherwise silence surface 1 on the first invocation.
+# #1596: {"digest": <host_disclosure.disclosure_digest>, "at": <probed_at>} -- the posture this run
+# has already disclosed IN FULL on stderr, and when. The stamp lives here rather than beside the
+# evidence in `runs/<tag>/host-capabilities.json` because it decides whether a disclosure is
+# PRINTED, and this is the one `.panopticon` file with an anti-forgery guard: first contact halts on
+# a manifest that is git-tracked in the reviewed tree or not stamped by this machine for this
+# checkout (#3271), before any phase runs. A target that force-commits an artifact matching what the
+# probe is about to find could otherwise silence surface 1 on the first invocation.
 POSTURE_DISCLOSED = "posture_disclosed"
 
 # #1727: {"checkpoint": <runio.CHECKPOINT_KINDS member>, "sha256": <hex>,
@@ -395,22 +391,19 @@ POSTURE_DISCLOSED = "posture_disclosed"
 # spellings of one key is how a reader silently stops finding it.
 DISPATCH_REQUEST = "dispatch_request"
 
-# SEC-377944137 (#1832): {"sha256": <canonical plan hash>, "at": <iso>} -- the
-# durable record that this run WROTE `dispatch-plan-driver.json`, and
-# {"cells": <n>, "sha256": <snapshot hash>, "at": <iso>} for the snapshot
-# (#2115). Each artifact carries
-# its OWN stamp: one shared stamp would make the snapshot's legitimate first
-# take at synthesize (the #5.0-16 fallback for a vacuously-done verify phase)
-# read as a deletion.
+# SEC-377944137 (#1832): {"sha256": <canonical plan hash>, "at": <iso>} -- the durable record that
+# this run WROTE `dispatch-plan-driver.json`, and {"cells": <n>, "sha256": <snapshot hash>, "at":
+# <iso>} for the snapshot (#2115). Each artifact carries its OWN stamp: one shared stamp would make
+# the snapshot's legitimate first take at synthesize (the #5.0-16 fallback for a vacuously-done
+# verify phase) read as a deletion.
 #
-# These replaced an inference off DISPATCH_REQUEST above, which cannot answer
-# the question: that slot is ROLLING (overwritten per checkpoint), so the last
-# recorded kind on any run that verified anything is `verify`, and -- worse --
-# the tamper itself can roll it BACKWARD. Deleting `coverage-<group>.json`
-# makes `coverage_done` False, the coverage phase re-dispatches scout, and the
-# slot goes back to `scout` on a run that had dispatched every review cell.
-# These keys are written by the WRITER of each artifact and are MONOTONE: once
-# stamped, never re-stamped, so nothing a later phase does can un-owe them.
+# These replaced an inference off DISPATCH_REQUEST above, which cannot answer the question: that
+# slot is ROLLING (overwritten per checkpoint), so the last recorded kind on any run that verified
+# anything is `verify`, and -- worse -- the tamper itself can roll it BACKWARD. Deleting
+# `coverage-<group>.json` makes `coverage_done` False, the coverage phase re-dispatches scout, and
+# the slot goes back to `scout` on a run that had dispatched every review cell. These keys are
+# written by the WRITER of each artifact and are MONOTONE: once stamped, never re-stamped, so
+# nothing a later phase does can un-owe them.
 DRIVER_PLAN = "driver_plan"
 OUT_FILE_SNAPSHOT = "out_file_snapshot"
 # #3280 S4: the run's ONE output-schema shape verdict ({shape, shape_detail}, #1732).
@@ -425,26 +418,27 @@ ARTIFACT_STAMPS = (DRIVER_PLAN, OUT_FILE_SNAPSHOT, OUTPUT_SCHEMA_SHAPE)
 # it without flattening two acceptances into one.
 DISCARDED_BATCHES = "discarded_batches"
 
+COMPLETED_AT = "completed_at"            # #3367: see `record_completed_at`
+
 
 def _rewrite(review_root, manifest, *, namespace=None):
     """Write the manifest back through a temp file + `os.replace`.
 
     The manifest is otherwise write-once, and stays so for every anti-drift
-    key -- the two callers below are the deliberate exceptions and each says
+    key -- each `record_*` below is a deliberate exception and says
     why. Atomic because this is the one artifact that anchors the run tag: an
     interrupt mid-write would leave every `_pano` path unresolvable. The
     ephemeral keys are stripped here, once, rather than at each caller.
 
-    #1735 (SEC-D1C): the STAGING file is as exposed as the artifact. `.panopticon/` is
-    inside the reviewed tree and `run-manifest.json.tmp` is a fixed name, so a redteam
-    target can commit it as a symlink to any file the invoking user can write; the plain
-    `open(tmp, "w")` this used followed the link, replaced that file's contents with the
-    manifest JSON, and then `os.replace` renamed the LINK over `run-manifest.json` (rename
-    does not dereference), so every later `load_manifest` read through it. `write_manifest`
-    escaped only because mode "x" is O_EXCL. The staging write now goes through the shared
-    exclusive staging open and refuses any symlink, special file, or multiply-linked regular
-    file rather than writing somewhere else -- the two fixes this class already had (#1577
-    and the guard hooks' `_atomic_write_json`) fail the same way.
+    #1735 (SEC-D1C): the STAGING file is as exposed as the artifact. `.panopticon/` is inside the
+    reviewed tree and `run-manifest.json.tmp` is a fixed name, so a redteam target can commit it as
+    a symlink to any file the invoking user can write; the plain `open(tmp, "w")` this used followed
+    the link, replaced that file's contents with the manifest JSON, and then `os.replace` renamed
+    the LINK over `run-manifest.json` (rename does not dereference), so every later `load_manifest`
+    read through it. `write_manifest` escaped only because mode "x" is O_EXCL. The staging write now
+    goes through the shared exclusive staging open and refuses any symlink, special file, or
+    multiply-linked regular file rather than writing somewhere else -- the two fixes this class
+    already had (#1577 and the guard hooks' `_atomic_write_json`) fail the same way.
     """
     body = {k: v for k, v in manifest.items() if k not in _EPHEMERAL_KEYS}
     path = manifest_path(review_root, namespace)
@@ -486,30 +480,25 @@ def record_posture_disclosure(review_root, manifest, digest, at=None, *, namespa
 def record_dispatch_request(review_root, manifest, checkpoint, sha256, at=None):
     """Record the sha256 of the dispatch request the driver JUST wrote (#1727).
 
-    The THIRD deliberate rewrite, and -- like the two above -- not an
-    anti-drift key. `.panopticon/dispatch-request.json` lives inside the
-    REVIEWED tree, so every field on it is a value a target can choose; the
-    hash of the bytes the driver wrote is anchored here, and
-    `phases/requests.load_bound_request` refuses a file that no longer
-    matches. It records what this driver itself wrote, is overwritten on every
-    write (the request is rolling -- regenerated each iteration), and a lost
-    or stale value fails CLOSED: the readers refuse rather than trust.
+    The THIRD deliberate rewrite, and -- like the two above -- not an anti-drift key.
+    `.panopticon/dispatch-request.json` lives inside the REVIEWED tree, so every field on it is a
+    value a target can choose; the hash of the bytes the driver wrote is anchored here, and
+    `phases/requests.load_bound_request` refuses a file that no longer matches. It records what this
+    driver itself wrote, is overwritten on every write (the request is rolling -- regenerated each
+    iteration), and a lost or stale value fails CLOSED: the readers refuse rather than trust.
 
-    This file is inside the reviewed tree too -- the claim is NOT that it is
-    out of reach. It is the better-defended of the two: on a host whose write
-    guard mediates `Write`, no dispatched agent may write it (the write
-    guard's allowlist is the entries' out_files) and
-    first contact halts on a manifest that is git-tracked in the tree or
-    not stamped by this machine for it (#3271), while the request is rewritten by
-    the driver every iteration and read by every family. Forging the record
-    as well is a second, harder write -- and one the loop's in-memory
-    `request_sha256` cross-check still catches.
+    This file is inside the reviewed tree too -- the claim is NOT that it is out of reach. It is the
+    better-defended of the two: on a host whose write guard mediates `Write`, no dispatched agent
+    may write it (the write guard's allowlist is the entries' out_files) and first contact halts on
+    a manifest that is git-tracked in the tree or not stamped by this machine for it (#3271), while
+    the request is rewritten by the driver every iteration and read by every family. Forging the
+    record as well is a second, harder write -- and one the loop's in-memory `request_sha256`
+    cross-check still catches.
 
-    `manifest` may be None, in which case the on-disk one is loaded. A tree
-    with no manifest at all records nothing and does not raise: the
-    pre-manifest window is real (unit callers, and `--setup`, which anchors in
-    its own manifest via `phases/setup.record_dispatch_request`), and the
-    reader's "no recorded hash" refusal is the fail-closed answer for it.
+    `manifest` may be None, in which case the on-disk one is loaded. A tree with no manifest at all
+    records nothing and does not raise: the pre-manifest window is real (unit callers, and
+    `--setup`, which anchors in its own manifest via `phases/setup.record_dispatch_request`), and
+    the reader's "no recorded hash" refusal is the fail-closed answer for it.
     """
     if manifest is None:
         manifest = load_manifest(review_root)
@@ -523,26 +512,22 @@ def record_dispatch_request(review_root, manifest, checkpoint, sha256, at=None):
 def record_discarded_batch(review_root, manifest, number, at=None, *, namespace=None):
     """Record that this run discarded batch `number` on the operator's word (#1912).
 
-    The FOURTH deliberate rewrite, and not an anti-drift key either: a resume
-    may not un-discard a record, and the value is read by nobody -- it is the
-    run's own account of a batch of paid cells that was thrown away because the
-    loop could not tell whether its owner was alive. Appended, never replaced:
-    a long run may have to do this more than once.
+    The FOURTH deliberate rewrite, and not an anti-drift key either: a resume may not un-discard a
+    record, and the value is read by nobody -- it is the run's own account of a batch of paid cells
+    that was thrown away because the loop could not tell whether its owner was alive. Appended,
+    never replaced: a long run may have to do this more than once.
 
-    `manifest` may be None (the on-disk one is loaded) and a tree with no
-    manifest records nothing rather than raising, exactly as
-    `record_dispatch_request` does -- the acceptance is also written in the run
-    folder beside the record it applied to (`runners/batch.record_discard`),
-    which is where the detail lives; this is the count, where a reader of the
-    run's parameters will look for it.
+    `manifest` may be None (the on-disk one is loaded) and a tree with no manifest records nothing
+    rather than raising, exactly as `record_dispatch_request` does -- the acceptance is also written
+    in the run folder beside the record it applied to (`runners/batch.record_discard`), which is
+    where the detail lives; this is the count, where a reader of the run's parameters will look for
+    it.
 
-    The read-back is TYPE-CHECKED before it is appended to (review round 1,
-    finding 7). This manifest lives inside the reviewed tree, so the key is a
-    value a target can choose: `list(...)` over a planted string yields one
-    entry per character, over a dict one per key, and over an int raises
-    TypeError out of a recorder that must not be able to fail the run. A value
-    that is not a list is treated as absent -- it was never this driver's, so
-    it was never the count of anything.
+    The read-back is TYPE-CHECKED before it is appended to (review round 1, finding 7). This
+    manifest lives inside the reviewed tree, so the key is a value a target can choose: `list(...)`
+    over a planted string yields one entry per character, over a dict one per key, and over an int
+    raises TypeError out of a recorder that must not be able to fail the run. A value that is not a
+    list is treated as absent -- it was never this driver's, so it was never the count of anything.
     """
     # `load_manifest` reads the REVIEW manifest and has no namespace of its
     # own, so only the review namespace may fall back to it: loading it for
@@ -560,25 +545,22 @@ def record_discarded_batch(review_root, manifest, number, at=None, *, namespace=
 def record_artifact_stamp(review_root, manifest, key, at=None, *, namespace=None, **fields):
     """Record that this run WROTE the owed-once artifact `key` (SEC-377944137).
 
-    The FIFTH deliberate rewrite, and the only MONOTONE one: an existing stamp
-    is never replaced. `dispatch-plan-driver.json` and `out-file-hashes.json`
-    are each written once and are one-way by design -- re-hashing the snapshot
-    after a substitution would mask it -- so a second stamp could only ever be
-    a laundering of the first.
+    The FIFTH deliberate rewrite, and the only MONOTONE one: an existing stamp is never replaced.
+    `dispatch-plan-driver.json` and `out-file-hashes.json` are each written once and are one-way by
+    design -- re-hashing the snapshot after a substitution would mask it -- so a second stamp could
+    only ever be a laundering of the first.
 
-    Not an anti-drift key: it records what this driver DID, not what the
-    operator asked for, and `conflicting_flags` never reads it -- so nothing
-    notices a stamp that VANISHES, which on a host whose write guard does not
-    mediate `Write` (`--host generic --allow-unenforced`) is one unmediated
-    write away. Better-defended than the artifact it anchors, not out of reach:
-    the same qualification #1727's `record_dispatch_request` makes above.
+    Not an anti-drift key: it records what this driver DID, not what the operator asked for, and
+    `conflicting_flags` never reads it -- so nothing notices a stamp that VANISHES, which on a host
+    whose write guard does not mediate `Write` (`--host generic --allow-unenforced`) is one
+    unmediated write away. Better-defended than the artifact it anchors, not out of reach: the same
+    qualification #1727's `record_dispatch_request` makes above.
 
-    A tree with no manifest on disk records NOTHING and does not raise. The
-    pre-manifest window is real (unit callers; `--setup` passes `namespace=`
-    and its own manifest), and a recorder that CREATED one here would be worse than
-    useless: `runio._run_tag` derives the per-run folder from `created`, so
-    conjuring a manifest mid-run would move every `_pano` path under a run
-    folder the artifacts already written are not in.
+    A tree with no manifest on disk records NOTHING and does not raise. The pre-manifest window is
+    real (unit callers; `--setup` passes `namespace=` and its own manifest), and a recorder that
+    CREATED one here would be worse than useless: `runio._run_tag` derives the per-run folder from
+    `created`, so conjuring a manifest mid-run would move every `_pano` path under a run folder the
+    artifacts already written are not in.
 
     `fields` is the stamp evidence: `sha256=` for the plan; `cells=` and the
     exact serialized `sha256=` returned by the snapshot writer (#2115).
@@ -593,6 +575,19 @@ def record_artifact_stamp(review_root, manifest, key, at=None, *, namespace=None
         return manifest                  # monotone -- see above
     manifest[key] = dict(fields, at=at or _now_iso())
     return _rewrite(review_root, manifest, namespace=namespace)
+
+
+def record_completed_at(review_root, manifest, at=None):
+    """Record when this run ended `complete`, for a reader who has only the manifest (#3367).
+
+    The SIXTH deliberate rewrite, and not an anti-drift key: `conflicting_flags` never reads it and
+    no reader depends on it. It marks success alone, so a run that ended `error` or `paused` has
+    none. The first write wins, so a second `complete` of the same run leaves it as it was.
+    """
+    if manifest.get(COMPLETED_AT):
+        return manifest
+    manifest[COMPLETED_AT] = at or _now_iso()
+    return _rewrite(review_root, manifest)
 
 
 def artifact_stamp(manifest, key):
