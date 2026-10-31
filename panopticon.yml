@@ -29,8 +29,9 @@
 #     told the Codex scope broker had no automated coverage (P13). Fourth
 #     `Orchestration` layer `Hosts` added over the host boundary, and every
 #     stray test file given the group whose code it exercises.
-#     `tests/test_matrix_coverage.py` now fails the suite when a file is left
-#     unclaimed -- which is how eighteen of them accumulated unnoticed.
+#     `tests/test_matrix_coverage.py` now fails the suite when a file on its
+#     surfaces is left unclaimed -- which is how eighteen of them accumulated
+#     unnoticed. Prose and unlisted file types are Commons by design.
 #     THE MATRIX IS COMMITTED: the guard, `driver readiness` and every
 #     contributor's PR diff all need it in the checkout, and
 #     skill/docs/guide/driver-setup.md tells every target repo to commit
@@ -674,6 +675,7 @@ groups:
       - scripts/reconcile_apply.py
       - scripts/sanitize.py
       - scripts/code_scanning_reports.py
+      - scripts/reference/*.json
       - scripts/code_scanning_audit.py
       tests:
       - tests/test_html_report.py

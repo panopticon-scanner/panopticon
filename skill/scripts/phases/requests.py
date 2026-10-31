@@ -166,22 +166,21 @@ def _materialize_prompts(review_root, entries, namespace=None, *, run_id):
     """Write each entry's prompt to its own file and stamp `prompt_file` on the
     entry (#run10 B2).
 
-    A dispatch entry carried its prompt ONLY inline, averaging 13.3 KB for review
-    cells and 19.6 KB for verify cells -- so a controller dispatching 120 review
-    cells had to reproduce ~1.6 MB of prompt text it had just read from disk, into
-    its own context. Run-10 worked around this by hand-materializing 4.22 MB of
-    prompts and pointing each agent at its file; that worked, but every host has
-    to reinvent it, and one that doesn't blows its context on the review
-    checkpoint alone.
+    A dispatch entry carried its prompt ONLY inline, averaging 13.3 KB for review cells and 19.6 KB
+    for verify cells -- so a controller dispatching 120 review cells had to reproduce ~1.6 MB of
+    prompt text it had just read from disk, into its own context. Run-10 worked around this by
+    hand-materializing 4.22 MB of prompts and pointing each agent at its file; that worked, but
+    every host has to reinvent it, and one that doesn't blows its context on the review checkpoint
+    alone.
 
-    `prompt` stays inline (unchanged contract, no host is forced to migrate);
-    `prompt_file` is the addressable alternative. Best-effort: if the prompts
-    directory cannot be written, entries keep their inline prompt and the run
-    proceeds -- the ENGINE never makes it a dispatch precondition (a host may
-    hand the agent `prompt` verbatim). The Claude session-mode template,
-    `skill/workflows/dispatch.js`, does require it, because it deliberately
-    never carries the inline prompt into the session's context."""
+    `prompt` stays inline (unchanged contract, no host is forced to migrate); `prompt_file` is the
+    addressable alternative. Best-effort: if the prompts directory cannot be written, entries keep
+    their inline prompt and the run proceeds -- the ENGINE never makes it a dispatch precondition (a
+    host may hand the agent `prompt` verbatim). The Claude session-mode template,
+    `skill/workflows/dispatch.js`, does require it, because it deliberately never carries the inline
+    prompt into the session's context."""
     out = []
+    written = {}
     # D10 ruling 2: the ONE chokepoint both modes pass through, so a refusal
     # reaches the next attempt whoever dispatches it. Resolved once, and
     # best-effort: a run folder that cannot be resolved costs the retry note,
@@ -243,6 +242,7 @@ def _materialize_prompts(review_root, entries, namespace=None, *, run_id):
                 with runio._open_w_nofollow(path) as fh:
                     fh.write(prompt)
                 entry["prompt_file"] = os.path.abspath(path)
+                written[str(eid)] = os.path.basename(path)
                 # The read guard confines a bound agent to its entry's scope,
                 # so an agent pointed at `prompt_file` (the documented
                 # alternative to echoing the prompt) must be allowed to read
@@ -261,6 +261,7 @@ def _materialize_prompts(review_root, entries, namespace=None, *, run_id):
                       "inline prompt still stands" % (eid, exc),
                       file=sys.stderr, flush=True)
         out.append(entry)
+    run_artifacts.write_prompt_index(runio._pano(review_root, _prompts_dir(namespace), "index.json"), written)
     return out
 
 def request_path(review_root, namespace=None):

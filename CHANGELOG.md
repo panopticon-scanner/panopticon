@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Change: a run's prompts can be found by entry name (#3233).** `runs/<tag>/_prompts/index.json`
+  maps each entry id to its prompt file, because an id holding a `:` is stored under a hash. It is
+  for an operator: no run reads it, and no agent is granted it.
+
 - **Docs: gaps operators hit in the 5.2 redteam runs (#3233).** SKILL.md now spells out the
   executable, says to keep a pre-run plan outside the target (first contact halts on a
   `.panopticon/` it did not create), says which parts of `superpowers:writing-plans` apply to a review, and says which copy to drive with when the

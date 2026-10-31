@@ -43,7 +43,8 @@ import scripts.discovery as discovery
 # The surfaces a reviewer is expected to see with its architecture context.
 # `skill/scripts/**/*.py` is the package; `skill/workflows/**` the dispatch
 # workflow scripts; `skill/agents/**` the prompt templates; `scripts/**/*.py`
-# the repo-root CLIs; `skill/reference/**/*.{json,yml,yaml}` the shipped
+# the repo-root CLIs; `scripts/reference/**/*.json` what they validate against
+# (#3233); `skill/reference/**/*.{json,yml,yaml}` the shipped
 # contracts (the schemas every artifact is validated against, the CWE catalog,
 # the OCRDb bundle, the model profiles) -- `verdict-bundle-schema.json` shipped
 # in #1637 and landed in `Ungrouped_1` the same week this guard was written,
@@ -59,6 +60,7 @@ RUNTIME_SURFACE = (
     "skill/workflows/**",
     "skill/agents/**",
     "scripts/**/*.py",
+    "scripts/reference/**/*.json",
     "skill/reference/**/*.json",
     "skill/reference/**/*.yml",
     "skill/reference/**/*.yaml",
@@ -245,10 +247,11 @@ class TestMatrixCoverage(unittest.TestCase):
         current_sec = {name for name, group_files in files.items()
                        if coverage_model.applicable_sec_floor(group_files)}
 
-        self.assertEqual(len(groups), 27)
+        # #3233: `Ungrouped_1` held one unclaimed file. It has a group now, so the sink is gone.
+        self.assertEqual(len(groups), 26)
         self.assertEqual(len(legacy_sec), 14)
-        self.assertEqual(current_sec, legacy_sec | added)
-        self.assertEqual(len(current_sec), 26)       # Docs is the sole exemption
+        self.assertEqual(current_sec, (legacy_sec - {"Ungrouped_1"}) | added)
+        self.assertEqual(len(current_sec), 25)       # Docs is the sole exemption
         self.assertEqual(len(added), 12)
         # The group label is not evidence: these executable tests make the mixed
         # Orchestration:Docs group code-shaped. Name one for the PR's audit trail.
@@ -271,7 +274,7 @@ class TestMatrixCoverage(unittest.TestCase):
         before, old_groups = matrix(legacy_sec)
         after, new_groups = matrix(current_sec)
         paid = {name for name in files if old_groups[name] != new_groups[name]}
-        self.assertEqual((before, after, after - before), (113, 117, 4))
+        self.assertEqual((before, after, after - before), (111, 115, 4))   # #3233: less the sink
         self.assertEqual(paid, {
             "Orchestration:Docs", "Reporting:Report", "Reporting:Outputs", "Tests",
         })

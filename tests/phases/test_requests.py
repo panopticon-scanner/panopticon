@@ -6,6 +6,8 @@ import hashlib
 import io
 import json
 import os
+import shutil
+import stat
 import tempfile
 import unittest
 from unittest import mock
@@ -15,6 +17,7 @@ from tests._test_helpers import write_host_evidence
 import scripts.phases.runio as runio
 import scripts.phases.persist as persist
 import scripts.phases.requests as requests
+import scripts.phases.run_artifacts as run_artifacts
 import scripts.phases.coverage as coverage
 import scripts.phases.setup as setup
 import scripts.run_manifest as run_manifest
@@ -936,3 +939,164 @@ class TestLoadBoundRequest(RequestIntegrityCase):
         req, refusal = requests.load_bound_request(self.root)
         self.assertIsNone(req)
         self.assertIn("is not a readable dispatch request", refusal)
+
+
+ODD_IDS = ("review-Orchestration:Core-SEC", "review-a/../../b-COD", 'review-q"uote\nnewline-DAT',
+           "review-ü中-SEC", "x" * 300, "review-plain-SEC")
+
+
+class _PromptIndexCase(unittest.TestCase):
+    """#3233: a prompt stored under a hash can be found by its entry, and the index that says so
+    changes nothing a dispatched agent may read."""
+
+    def setUp(self):
+        self.root = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        os.makedirs(os.path.join(self.root, ".panopticon"))
+        self.index = runio._pano(self.root, "_prompts", "index.json")
+
+    def _entry(self, eid, **extra):
+        return dict({"id": eid, "prompt": "prompt for %r" % eid,
+                     "scope": requests.scope(files=["a.py"])}, **extra)
+
+    def _write(self, *entries, namespace=None):
+        return requests._materialize_prompts(self.root, list(entries), namespace, run_id="RID")
+
+    def _read(self, path=None):
+        with open(path or self.index, encoding="utf-8") as fh:
+            return json.load(fh)
+
+
+class FoundByNameTest(_PromptIndexCase):
+    def test_every_odd_id_round_trips_to_the_file_holding_its_prompt(self):
+        written = self._write(*[self._entry(eid) for eid in ODD_IDS])
+        index = self._read()
+        self.assertEqual(set(ODD_IDS), set(index))
+        for entry in written:
+            with self.subTest(entry["id"]):
+                name = index[entry["id"]]
+                self.assertEqual(os.path.basename(entry["prompt_file"]), name)
+                self.assertEqual(os.path.dirname(self.index), os.path.dirname(entry["prompt_file"]))
+                self.assertNotIn(os.sep, name)
+                with open(os.path.join(os.path.dirname(self.index), name), encoding="utf-8") as fh:
+                    self.assertEqual(entry["prompt"], fh.read())
+
+    def test_a_later_pass_adds_to_it_and_a_rewritten_entry_keeps_one_row(self):
+        self._write(self._entry("scout-A:B"))
+        self._write(self._entry("review-A:B-SEC"), self._entry("scout-A:B"))
+        self.assertEqual({"scout-A:B", "review-A:B-SEC"}, set(self._read()))
+
+    def test_setup_keeps_its_own(self):
+        self._write(self._entry("setup:scan"), namespace="setup")
+        self.assertEqual({"setup:scan"}, set(self._read(
+            runio._pano(self.root, "setup-prompts", "index.json"))))
+        self.assertFalse(os.path.exists(self.index))
+
+    def test_a_pass_that_wrote_no_prompt_writes_no_index(self):
+        self._write({"id": "no-prompt"}, self._entry(None))
+        self.assertFalse(os.path.exists(self.index))
+
+
+class OnePassOneWriteTest(_PromptIndexCase):
+    def test_the_index_is_written_once_for_the_pass_through_the_atomic_writer(self):
+        with mock.patch.object(run_artifacts.runio, "_write_json",
+                               wraps=runio._write_json) as write:
+            self._write(*[self._entry("review-%d:x-SEC" % n) for n in range(5)])
+        self.assertEqual(1, write.call_count)
+        self.assertEqual(self.index, write.call_args.args[0])
+        self.assertEqual(5, len(write.call_args.args[1]))
+        self.assertNotIn("atomic", write.call_args.kwargs)
+        self.assertFalse(os.path.exists(self.index + ".tmp"))
+
+
+class WhatAgentsMayReadTest(_PromptIndexCase):
+    def test_the_grant_is_the_prompt_file_and_never_the_index(self):
+        (entry,) = self._write(self._entry("review-A:B-SEC"))
+        self.assertTrue(os.path.exists(self.index))
+        self.assertEqual([entry["prompt_file"]], entry["scope"]["reads"])
+        self.assertNotIn("index.json", json.dumps(entry))
+
+    def test_the_entry_is_the_same_with_the_index_or_without_it(self):
+        (with_index,) = self._write(self._entry("review-A:B-SEC"))
+        os.remove(self.index)
+        with mock.patch.object(run_artifacts, "write_prompt_index"):
+            (without,) = self._write(self._entry("review-A:B-SEC"))
+        self.assertEqual(with_index, without)
+
+
+class ItCanOnlyCostALookupTest(_PromptIndexCase):
+    def _plant(self, body):
+        os.makedirs(os.path.dirname(self.index), exist_ok=True)
+        with open(self.index, "wb") as fh:
+            fh.write(body)
+
+    def test_a_torn_or_hostile_index_is_replaced_by_what_this_pass_knows(self):
+        for body in (b"{torn", b"[1, 2]", b"7", b"\xff\xfe", b"[" * 100000):
+            with self.subTest(body=body[:8]):
+                self._plant(body)
+                self._write(self._entry("review-A:B-SEC"))
+                self.assertEqual({"review-A:B-SEC"}, set(self._read()))
+
+    def test_rows_of_the_wrong_shape_are_dropped_and_good_ones_kept(self):
+        self._plant(json.dumps({"bad": 7, "also": ["x"], "scout-A:B": "~abc.txt"}).encode())
+        self._write(self._entry("review-A:B-SEC"))
+        self.assertEqual({"scout-A:B", "review-A:B-SEC"}, set(self._read()))
+
+    def test_this_pass_corrects_a_stale_row(self):
+        self._plant(json.dumps({"review-A:B-SEC": "stale.txt"}).encode())
+        (entry,) = self._write(self._entry("review-A:B-SEC"))
+        self.assertEqual(os.path.basename(entry["prompt_file"]), self._read()["review-A:B-SEC"])
+
+    def test_a_planted_pipe_cannot_hang_the_pass(self):
+        os.makedirs(os.path.dirname(self.index), exist_ok=True)
+        os.mkfifo(self.index)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self._write(self._entry("review-A:B-SEC"))
+        self.assertTrue(stat.S_ISREG(os.lstat(self.index).st_mode))     # or the read below hangs
+        self.assertEqual({"review-A:B-SEC"}, set(self._read()))
+
+    def test_a_planted_link_is_not_read_through_and_not_written_through(self):
+        outside = os.path.join(self.root, "outside.json")
+        with open(outside, "w", encoding="utf-8") as fh:
+            json.dump({"copied-from-outside": "secret"}, fh)
+        os.makedirs(os.path.dirname(self.index), exist_ok=True)
+        os.symlink(outside, self.index)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            (entry,) = self._write(self._entry("review-A:B-SEC"))
+        self.assertTrue(os.path.exists(entry["prompt_file"]))
+        self.assertIn("could not write the prompt index", err.getvalue())
+        self.assertEqual({"copied-from-outside": "secret"}, self._read(outside))
+        self.assertTrue(os.path.islink(self.index))
+
+    def test_a_link_at_the_staging_name_is_not_written_through(self):
+        outside = os.path.join(self.root, "outside.json")
+        with open(outside, "w", encoding="utf-8") as fh:
+            fh.write("untouched")
+        os.makedirs(os.path.dirname(self.index), exist_ok=True)
+        os.symlink(outside, self.index + ".tmp")
+        with contextlib.redirect_stderr(io.StringIO()):
+            self._write(self._entry("review-A:B-SEC"))
+        with open(outside, encoding="utf-8") as fh:
+            self.assertEqual("untouched", fh.read())
+
+    def test_a_failed_write_is_said_and_costs_the_prompts_nothing(self):
+        err = io.StringIO()
+        for error in (OSError("disk full"), ValueError("refused")):
+            with self.subTest(error=error), contextlib.redirect_stderr(err), \
+                    mock.patch.object(run_artifacts.runio, "_write_json", side_effect=error):
+                (entry,) = self._write(self._entry("review-A:B-SEC"))
+                self.assertTrue(os.path.exists(entry["prompt_file"]))
+        self.assertIn("could not write the prompt index", err.getvalue())
+
+    def test_a_prompt_that_could_not_be_written_is_not_listed(self):
+        real = runio._open_w_nofollow
+
+        def refuse_one(path):
+            if "refused" in path:
+                raise OSError("no")
+            return real(path)
+        with mock.patch.object(requests.runio, "_open_w_nofollow", refuse_one), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self._write(self._entry("review-refused-SEC"), self._entry("review-A:B-SEC"))
+        self.assertEqual({"review-A:B-SEC"}, set(self._read()))
