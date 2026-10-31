@@ -30,6 +30,13 @@ self-describing signal in the transcript: `scout-<g>.json` -> scout,
 matches none of them lands in `unattributed` rather than being dropped or
 guessed at, so the phase buckets always re-sum to the total.
 
+A prompt file named for its entry id (`_prompts/review-...txt`) decides first.
+An id holding a `:` (every leaf of a layered group) is stored under its hash
+instead, `_prompts/~<sha256 of the id>.txt`, and is read back through the run
+folder's own `_prompts/index.json` (#3373). That file is target-writable, so a
+row counts only when the id it names hashes to the stem: it can name the id
+that produced the file, and nothing else, and the id's own prefix is the phase.
+
 Usage:
     python3 skill/scripts/collect_usage.py --run-dir .panopticon/runs/<tag>
     python3 skill/scripts/collect_usage.py --run-dir <dir> --dry-run
@@ -37,6 +44,7 @@ Usage:
 from typing import TYPE_CHECKING
 import argparse
 import glob
+import hashlib
 import json
 import os
 import re
@@ -74,6 +82,10 @@ TASK_TRANSCRIPTS_MAX = 20_000
 # findings file at all. The entry id already encodes the phase, and it is the
 # most reliable signal available -- checked before the artifact names below.
 _PROMPT_ID_RE = re.compile(r"_prompts/(review|scout|verify)[-/]")
+_HASHED_PROMPT_RE = re.compile(r"_prompts/(~[0-9a-f]{64})\.txt")       # #3373
+_PHASE_OF_ID = re.compile(r"(review|scout|verify)-")
+PROMPT_INDEX = os.path.join("_prompts", "index.json")
+_PROMPT_INDEX_MAX = 16 * 1024 * 1024
 _SCOUT_RE = re.compile(r"\bscout-[^/\\\"'\s]+\.json")
 _FINDINGS_RE = re.compile(r"\bfindings-[^/\\\"'\s]+\.json")
 _VERDICT_RE = re.compile(r"\bverdicts?[-/][^/\\\"'\s]*\.json|/verdicts/")
@@ -271,7 +283,32 @@ def dispatched_prompt(path):
     return ""
 
 
-def classify_transcript(path):
+def load_prompt_index(run_dir):
+    """{hashed stem: entry id} from `<run_dir>/_prompts/index.json`, keeping only the rows whose id
+    hashes to the stem they name. Never through a link, never blocked on a pipe, and bounded.
+    Anything else -- absent, torn, the wrong shape, or a run from before #3375 -- is {}."""
+    try:
+        fd = os.open(os.path.join(run_dir, PROMPT_INDEX),
+                     os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        with os.fdopen(fd, "rb") as fh:
+            raw = fh.read(_PROMPT_INDEX_MAX + 1)
+        rows = json.loads(raw) if len(raw) <= _PROMPT_INDEX_MAX else None
+    except (OSError, ValueError, RecursionError, TypeError):
+        return {}
+    out = {}
+    for entry_id, name in (rows.items() if isinstance(rows, dict) else ()):
+        if not (isinstance(entry_id, str) and isinstance(name, str) and name.endswith(".txt")):
+            continue
+        try:
+            digest = hashlib.sha256(entry_id.encode("utf-8")).hexdigest()
+        except UnicodeEncodeError:
+            continue
+        if name[:-len(".txt")] == "~" + digest:
+            out["~" + digest] = entry_id
+    return out
+
+
+def classify_transcript(path, index=None):
     """Which pipeline phase a subagent transcript belongs to.
 
     Keyed on the artifact the dispatched prompt named, because that is what
@@ -289,6 +326,10 @@ def classify_transcript(path):
     m = _PROMPT_ID_RE.search(blob)
     if m:
         return m.group(1)
+    for stem in _HASHED_PROMPT_RE.findall(blob):
+        phase = _PHASE_OF_ID.match((index or {}).get(stem, ""))
+        if phase:
+            return phase.group(1)
     if _VERDICT_RE.search(blob):
         return "verify"
     if _SCOUT_RE.search(blob):
@@ -356,6 +397,7 @@ def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None,
     agents = 0
     controller_records, subagent_records = 0, 0
     by_phase_transcripts: dict[str, int] = {}
+    index = load_prompt_index(run_dir) if run_dir else {}
 
     if controller:
         t, n, m = scan(controller, since, until, info=found)
@@ -368,7 +410,7 @@ def collect(run_dir, project_dir, transcript=None, tasks_dir=None, since=None,
         t, n, m = scan(p, since, until, info=found)
         if not n:
             continue
-        phase = classify_transcript(p)
+        phase = classify_transcript(p, index)
         _add(by_phase[phase], t)
         _add(by_source["subagents"], t)
         for k, v in m.items():

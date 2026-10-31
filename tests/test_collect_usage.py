@@ -771,3 +771,115 @@ class TestDroppedInputIsCounted(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHashedPromptNames(unittest.TestCase):
+    """#3373: an entry id holding a `:` is stored under its hash, and its tokens still reach its
+    phase through the run folder's own prompt index -- never through a row that does not hash."""
+
+    IDS = (("review-Reporting-SEC", "review"), ("review-Reporting:Core-SEC", "review"),
+           ("scout-Reporting:Core", "scout"), ("verify-Reporting:Core-SEC-primary", "verify"))
+
+    def setUp(self):
+        self.d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, self.d, True)
+        self.run_dir = os.path.join(self.d, "runs", "tag")
+        os.makedirs(os.path.join(self.run_dir, "_prompts"))
+        self.index = os.path.join(self.run_dir, cu.PROMPT_INDEX)
+
+    @staticmethod
+    def _name(entry_id):
+        import scripts.phases.requests as requests
+        return requests.entry_file_component(entry_id) + ".txt"
+
+    def _write_index(self, rows):
+        import scripts.phases.run_artifacts as run_artifacts
+        run_artifacts.write_prompt_index(self.index, rows)
+
+    def _session(self, entry_ids, tokens=10):
+        ctl = _write(os.path.join(self.d, "ctl.jsonl"), [_rec(usage=_u(1))])
+        tasks = os.path.join(self.d, "tasks")
+        for n, entry_id in enumerate(entry_ids):
+            _write(os.path.join(tasks, "%d.output" % n),
+                   [_rec(role="user", content="Your dispatch prompt is the file %s/_prompts/%s"
+                         % (self.run_dir, self._name(entry_id))), _rec(usage=_u(o=tokens))])
+        return cu.collect(self.run_dir, self.d, transcript=ctl, tasks_dir=tasks)
+
+    def _plant(self, body):
+        with open(self.index, "wb") as fh:
+            fh.write(body)
+
+    def test_every_phase_is_attributed_through_the_index_the_run_wrote(self):
+        self._write_index({entry_id: self._name(entry_id) for entry_id, _ in self.IDS})
+        doc = self._session([entry_id for entry_id, _ in self.IDS])
+        self.assertEqual({"review": 20, "scout": 10, "verify": 10, "unattributed": 0},
+                         doc["by_phase"])
+        self.assertEqual(sum(doc["by_phase"].values()), doc["by_source"]["subagents"]["output_tokens"])
+
+    def test_a_run_from_before_the_index_reads_as_it_did(self):
+        doc = self._session(["review-Reporting:Core-SEC", "review-Reporting-SEC"])
+        self.assertEqual({"review": 10, "scout": 0, "verify": 0, "unattributed": 10},
+                         doc["by_phase"])
+
+    def test_a_row_that_does_not_hash_to_its_stem_moves_nothing(self):
+        review = self._name("review-Reporting:Core-SEC")
+        self._write_index({"verify-forged": review, "scout-also-forged": review})
+        self.assertEqual(10, self._session(["review-Reporting:Core-SEC"])["by_phase"]["unattributed"])
+
+    def test_a_valid_row_from_another_run_counts_only_when_this_run_names_its_stem(self):
+        other = "verify-Elsewhere:Leaf-SEC-primary"
+        self._write_index({other: self._name(other),
+                           "review-Reporting:Core-SEC": self._name("review-Reporting:Core-SEC")})
+        doc = self._session(["review-Reporting:Core-SEC"])
+        self.assertEqual({"review": 10, "scout": 0, "verify": 0, "unattributed": 0}, doc["by_phase"])
+        doc = self._session([other])
+        self.assertEqual(10, doc["by_phase"]["verify"])
+
+    def test_an_id_naming_no_phase_is_unattributed(self):
+        odd = "setup:scan"
+        self._write_index({odd: self._name(odd)})
+        self.assertEqual(10, self._session([odd])["by_phase"]["unattributed"])
+
+    def test_a_torn_or_hostile_index_is_an_empty_one(self):
+        good = json.dumps({"review-Reporting:Core-SEC": self._name("review-Reporting:Core-SEC")})
+        for body in (b"{torn", b"[1]", b"7", b"\xff\xfe", b"[" * 100000,
+                     json.dumps({"review-x": 7, "7": "x.txt"}).encode(),
+                     good.encode() + b" " * (cu._PROMPT_INDEX_MAX + 1)):
+            with self.subTest(body=body[:12]):
+                self._plant(body)
+                self.assertEqual({}, cu.load_prompt_index(self.run_dir))
+        self._plant(good.encode())
+        self.assertEqual(1, len(cu.load_prompt_index(self.run_dir)))
+
+    def test_an_id_that_cannot_be_encoded_is_skipped_not_raised(self):
+        self._plant(b'{"review-\\ud800-SEC": "~x.txt", "review-A:B-SEC": "%s"}'
+                    % self._name("review-A:B-SEC").encode())
+        self.assertEqual(["review-A:B-SEC"], list(cu.load_prompt_index(self.run_dir).values()))
+
+    def test_a_hashed_name_outside_a_prompts_folder_is_not_a_dispatch_prompt(self):
+        name = self._name("review-A:B-SEC")
+        p = _write(os.path.join(self.d, "x.jsonl"),
+                   [_rec(role="user", content="Read /r/notes/%s" % name)])
+        self.assertEqual("unattributed", cu.classify_transcript(p, {name[:-4]: "review-A:B-SEC"}))
+
+    def test_a_link_is_not_followed(self):
+        real = os.path.join(self.d, "elsewhere.json")
+        with open(real, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"review-Reporting:Core-SEC": self._name("review-Reporting:Core-SEC")}))
+        os.symlink(real, self.index)
+        self.assertEqual({}, cu.load_prompt_index(self.run_dir))
+
+    def test_a_pipe_cannot_hang_it(self):
+        os.mkfifo(self.index)
+        self.assertEqual({}, cu.load_prompt_index(self.run_dir))
+
+    def test_a_directory_in_its_place_is_an_empty_index(self):
+        os.mkdir(self.index)
+        self.assertEqual({}, cu.load_prompt_index(self.run_dir))
+
+    def test_without_an_index_the_classifier_is_unchanged(self):
+        p = _write(os.path.join(self.d, "x.jsonl"),
+                   [_rec(role="user", content="_prompts/%s" % self._name("review-A:B-SEC"))])
+        self.assertEqual("unattributed", cu.classify_transcript(p))
+        self.assertEqual("review", cu.classify_transcript(
+            p, {self._name("review-A:B-SEC")[:-4]: "review-A:B-SEC"}))

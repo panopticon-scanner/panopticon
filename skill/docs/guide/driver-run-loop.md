@@ -508,7 +508,10 @@ on Claude hooks, and always uses the return-persist path.
   on the headless path. In session mode `collect_usage.py` still runs from synthesize as before,
   and its `usage.json` discloses its own drops too: `sources` counts the transcripts it
   could not read, the lines JSON rejected and the non-integer usage fields it ignored, so a
-  non-zero count there marks `total` as a floor (#1782).
+  non-zero count there marks `total` as a floor (#1782). A subagent's phase comes from the prompt
+  file it was dispatched with. An entry id holding a `:` is stored under its hash, and is read back
+  through the run's own `_prompts/index.json`, counted only when the id hashes to the file's name
+  (#3373). A run from before that index reports those tokens as `unattributed`, as it did.
   Usage is never estimated from counts. - **The loop tears the guards down** scoped after each batch
   and unconditionally on `complete`, so `driver loop`'s terminal status carries no `teardown` field
   once that disarm has succeeded (#3367). `driver run` and `driver setup` never disarm, and keep

@@ -249,6 +249,26 @@ class ReplayScrubTest(unittest.TestCase):
                         _replay_into(self.review_root, self.run_folder, out)
                     self.assertFalse(os.path.exists(os.path.join(self.run_folder, "usage.json")))
 
+    def test_a_replay_keeps_the_runs_usage_and_never_reattributes_it(self):
+        # #3373: attribution reads the prompt index, and a replay must not re-run it on an old run.
+        manifest = dict(MANIFEST, host="claude")
+        _write_ours(self.review_root, manifest)
+        with open(os.path.join(self.run_folder, "host-capabilities.json"), "w") as fh:
+            json.dump({"capabilities": {hosts.USAGE_LEDGER: {"state": hosts.PROVEN}}}, fh)
+        usage = os.path.join(self.run_folder, "usage.json")
+        with open(usage, "w", encoding="utf-8") as fh:
+            json.dump({"total": 7, "by_phase": {"unattributed": 7}}, fh)
+        os.makedirs(os.path.join(self.run_folder, "_prompts"), exist_ok=True)
+        with open(os.path.join(self.run_folder, "_prompts", "index.json"), "w") as fh:
+            json.dump({"review-A:B-SEC": "~" + "0" * 64 + ".txt"}, fh)
+        with open(usage, "rb") as fh:
+            before = fh.read()
+        import scripts.collect_usage as collect_usage
+        with mock.patch.object(collect_usage, "collect", side_effect=AssertionError("re-run")):
+            _replay_into(self.review_root, self.run_folder, os.path.join(self.tmp.name, "out-u"))
+        with open(usage, "rb") as fh:
+            self.assertEqual(before, fh.read())
+
 
 class ArchiveTrustTest(unittest.TestCase):
     """#3332: the scratch root is a new path, so the run's own stamp never
