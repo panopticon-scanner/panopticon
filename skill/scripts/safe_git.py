@@ -56,12 +56,13 @@ import time
 # bootstrap the try arm wins and binds the SAME module object every other
 # caller patches.
 if TYPE_CHECKING:
-    from scripts import executable
+    from scripts import executable, safe_git_shapes
 else:
     try:
-        from scripts import executable
+        from scripts import executable, safe_git_shapes
     except ModuleNotFoundError:
         import executable
+        import safe_git_shapes
 
 _MAX_REPOSITORIES = 64
 
@@ -692,61 +693,30 @@ def _guarded(root, args, runner, timeout, text, suppressed, mutating):
     return run(root, prepared, as_text=text)
 
 
-# #3256: what `probe` will run, as defense in depth. Every production caller already passes one of
-# these, read-only; a write has its own door, `mutate`. Each value says which argv shapes of that
-# subcommand are reads: None for every shape, else a predicate over the tokens after it.
-_PROBE_SHAPES = {
-    "rev-parse": None, "ls-files": None, "status": None, "check-ignore": None,
-    "merge-base": None, "rev-list": None, "diff": None, "log": None, "show": None,
-    "worktree": lambda rest: rest[:1] == ["list"],
-    "config": lambda rest: any(t in ("--list", "-l") or t.startswith("--get") for t in rest),
-    "symbolic-ref": lambda rest: (not any(t in ("-d", "--delete", "-m") for t in rest)
-                                  and len([t for t in rest if not t.startswith("-")]) <= 1),
-}
-
-
-def _probe_refusal(args):
-    """Why `probe` will not run `args`, or None. An unidentified subcommand is refused (fail closed),
-    and so is `--output`, the one option that lets a read-only diff or log write a file."""
-    index = _subcommand_index(args)
-    name = None if index is None else args[index]
-    if name not in _PROBE_SHAPES:
-        return "safe Git probe: %r is not a read-only subcommand; a write goes through mutate" % (
-            name,)
-    rest = list(args[index + 1:])
-    shape = _PROBE_SHAPES[name]
-    if (shape is not None and not shape(rest)) or any(t.startswith("--output") for t in rest):
-        return "safe Git probe: this %s is not a read; a write goes through mutate" % name
-    return None
-
-
 def probe(root, args, runner=subprocess.run, timeout=15, text=True, suppressed=None):
     """Run a captured, READ-ONLY probe with one shared `timeout`-second deadline.
 
-    `text` and `timeout` are the CALLER's contract for the command it asked
-    for; the preflight always reads text, because it parses config and index
-    records. Preflighting reads effective config and tracked submodules rather
-    than disabling content normalization or hiding submodule dirt.
+    `text` and `timeout` are the CALLER's contract for the command it asked for; the preflight
+    always reads text, because it parses config and index records. Preflighting reads effective
+    config and tracked submodules rather than disabling content normalization or hiding submodule
+    dirt.
 
-    `suppressed` (#2013) is the disclosure channel: an optional list the caller
-    passes, to which the probe appends one `(repository, key)` pair per
-    repository-configured command it emptied -- `"."` for the root, else the
-    submodule's path relative to it. A caller that passes nothing is suppressed
-    SILENTLY, because the run manifest is the disclosure of record and every
-    other caller only needs a working probe. Values are never disclosed and
-    never appear in an error: they are command lines the target authored.
+    `suppressed` (#2013) is the disclosure channel: an optional list the caller passes, to which the
+    probe appends one `(repository, key)` pair per repository-configured command it emptied -- `"."`
+    for the root, else the submodule's path relative to it. A caller that passes nothing is
+    suppressed SILENTLY, because the run manifest is the disclosure of record and every other caller
+    only needs a working probe. Values are never disclosed and never appear in an error: they are
+    command lines the target authored.
 
-    A caller that CARES what the answer means should pass the list: paths under
-    a suppressed driver compare as modified, so dirtiness for them is unknown
-    and a delta may include them (see the module docstring).
+    A caller that CARES what the answer means should pass the list: paths under a suppressed driver
+    compare as modified, so dirtiness for them is unknown and a delta may include them (see the
+    module docstring).
 
-    The preflight allowlist is the other way round: a subcommand nobody classified
-    takes the preflight. Read-only is ALSO checked on argv, as defense in depth
-    (#3256): `_PROBE_SHAPES` names the reads, anything else refuses before any launch,
+    The preflight allowlist is the other way round: a subcommand nobody classified takes the
+    preflight. Argv is checked too (#3256, `safe_git_shapes`): a non-read refuses before any launch,
     and a caller that means to WRITE must say so by calling `mutate`.
     """
-    refusal = _probe_refusal(list(args))
-    if refusal:
+    if (refusal := safe_git_shapes.refusal(list(args), _subcommand_index(list(args)))):
         raise RepositoryRefused(refusal)
     return _guarded(root, args, runner, timeout, text, suppressed, mutating=False)
 
@@ -754,24 +724,21 @@ def probe(root, args, runner=subprocess.run, timeout=15, text=True, suppressed=N
 def mutate(root, args, runner=subprocess.run, timeout=15, text=True, suppressed=None):
     """The ONLY call in this module allowed to WRITE to the target repository.
 
-    Same contract as `probe` -- fresh allowlisted environment, trusted git
-    resolved outside the checkout, `core.fsmonitor=false`, `core.hooksPath`
-    pinned to a directory this process owns and never writes to, every
-    repository-configured `filter.*`/`diff.*` command emptied and re-read to
-    prove the override took, one shared deadline -- plus one difference
-    (#2012): the preflight is never skipped.
+    Same contract as `probe` -- fresh allowlisted environment, trusted git resolved outside the
+    checkout, `core.fsmonitor=false`, `core.hooksPath` pinned to a directory this process owns and
+    never writes to, every repository-configured `filter.*`/`diff.*` command emptied and re-read to
+    prove the override took, one shared deadline -- plus one difference (#2012): the preflight is
+    never skipped.
 
-    WHY it exists rather than the caller keeping its own environment:
-    `git worktree add` CHECKS OUT the fetched tree, so on the old path the
-    target's `filter.*.smudge` command ran (against PR content, with the
-    operator's environment) and its `post-checkout` hook ran from whatever
+    WHY it exists rather than the caller keeping its own environment: `git worktree add` CHECKS OUT
+    the fetched tree, so on the old path the target's `filter.*.smudge` command ran (against PR
+    content, with the operator's environment) and its `post-checkout` hook ran from whatever
     `core.hooksPath` the repository asked for. Both measured; see
     `tests/test_diff_map.py::TestPrAcquisitionIsConfined`.
 
-    What it does NOT promise: that the write itself is safe to lose. A target
-    whose config cannot be neutralized is still REFUSED
-    (`RepositoryRefused`), which for a teardown means the caller's tolerance
-    (#1082) leaves a worktree behind -- a leaked temporary directory, traded
-    for never running target code. `release_worktree` documents that choice.
+    What it does NOT promise: that the write itself is safe to lose. A target whose config cannot be
+    neutralized is still REFUSED (`RepositoryRefused`), which for a teardown means the caller's
+    tolerance (#1082) leaves a worktree behind -- a leaked temporary directory, traded for never
+    running target code. `release_worktree` documents that choice.
     """
     return _guarded(root, args, runner, timeout, text, suppressed, mutating=True)

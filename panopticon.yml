@@ -507,6 +507,7 @@ groups:
       match:
       - skill/scripts/executable.py
       - skill/scripts/safe_git.py
+      - skill/scripts/safe_git_shapes.py
       - skill/scripts/runners/**
       - skill/scripts/kimi_toml.py
       - skill/scripts/toml_values.py

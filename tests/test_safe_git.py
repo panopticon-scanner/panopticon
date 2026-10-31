@@ -353,7 +353,7 @@ def test_probe_refuses_what_is_not_a_read_before_any_launch(tmp_path, args):
     ["check-ignore", "-v", "--", "p"], ["rev-list", "--count", "HEAD"], ["show", "HEAD"],
 ])
 def test_probe_still_runs_every_read_shape(tmp_path, args):
-    assert safe_git._probe_refusal(args) is None
+    assert safe_git.safe_git_shapes.refusal(args, safe_git._subcommand_index(args)) is None
 
 
 @pytest.mark.parametrize("args", [
