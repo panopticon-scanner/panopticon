@@ -692,6 +692,34 @@ def _guarded(root, args, runner, timeout, text, suppressed, mutating):
     return run(root, prepared, as_text=text)
 
 
+# #3256: what `probe` will run, as defense in depth. Every production caller already passes one of
+# these, read-only; a write has its own door, `mutate`. Each value says which argv shapes of that
+# subcommand are reads: None for every shape, else a predicate over the tokens after it.
+_PROBE_SHAPES = {
+    "rev-parse": None, "ls-files": None, "status": None, "check-ignore": None,
+    "merge-base": None, "rev-list": None, "diff": None, "log": None, "show": None,
+    "worktree": lambda rest: rest[:1] == ["list"],
+    "config": lambda rest: any(t in ("--list", "-l") or t.startswith("--get") for t in rest),
+    "symbolic-ref": lambda rest: (not any(t in ("-d", "--delete", "-m") for t in rest)
+                                  and len([t for t in rest if not t.startswith("-")]) <= 1),
+}
+
+
+def _probe_refusal(args):
+    """Why `probe` will not run `args`, or None. An unidentified subcommand is refused (fail closed),
+    and so is `--output`, the one option that lets a read-only diff or log write a file."""
+    index = _subcommand_index(args)
+    name = None if index is None else args[index]
+    if name not in _PROBE_SHAPES:
+        return "safe Git probe: %r is not a read-only subcommand; a write goes through mutate" % (
+            name,)
+    rest = list(args[index + 1:])
+    shape = _PROBE_SHAPES[name]
+    if (shape is not None and not shape(rest)) or any(t.startswith("--output") for t in rest):
+        return "safe Git probe: this %s is not a read; a write goes through mutate" % name
+    return None
+
+
 def probe(root, args, runner=subprocess.run, timeout=15, text=True, suppressed=None):
     """Run a captured, READ-ONLY probe with one shared `timeout`-second deadline.
 
@@ -712,10 +740,14 @@ def probe(root, args, runner=subprocess.run, timeout=15, text=True, suppressed=N
     a suppressed driver compare as modified, so dirtiness for them is unknown
     and a delta may include them (see the module docstring).
 
-    Read-only is not enforced by argv here, because the allowlist that matters
-    is the other way round: a subcommand nobody classified takes the preflight,
+    The preflight allowlist is the other way round: a subcommand nobody classified
+    takes the preflight. Read-only is ALSO checked on argv, as defense in depth
+    (#3256): `_PROBE_SHAPES` names the reads, anything else refuses before any launch,
     and a caller that means to WRITE must say so by calling `mutate`.
     """
+    refusal = _probe_refusal(list(args))
+    if refusal:
+        raise RepositoryRefused(refusal)
     return _guarded(root, args, runner, timeout, text, suppressed, mutating=False)
 
 
