@@ -7,6 +7,7 @@ import sys
 
 from scripts import hosts
 import scripts.config_schema as config_schema
+import scripts.loop_progress as loop_progress
 import scripts.run_manifest as run_manifest
 import scripts.synth.validate_schema as validate_schema_mod
 import scripts.redact as redact
@@ -406,6 +407,7 @@ def synthesize_execute(review_root, manifest):
     if not _usable_report(review_root):
         raise runio.DriverError("synthesize produced no usable report.json (rc=%s): %s"
                           % (proc.returncode, redact.redact_diagnostic(proc.stderr or proc.stdout, 400)))
+    loop_progress.relay_summary(proc.stdout)      # #3232: `loop` only; the child stdout is captured
     # §5.1: point the flat compat paths at the latest tag-named report, so every
     # existing reader of report.json / report.json.html resolves it unchanged, and
     # refresh runs/latest. The tag-named files are the durable top-level outputs;

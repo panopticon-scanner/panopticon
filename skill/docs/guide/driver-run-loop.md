@@ -443,7 +443,17 @@ on Claude hooks, and always uses the return-persist path.
   `rejected_file`, and the entry's NEXT prompt carries the reason and a `prior_rejection` stamp so
   the retry is told what to fix. The record carries the run's `run_id` and only a record with THIS
   run's id is quoted, as a JSON string (#3253): `rejected/` is in the reviewed tree, so a record
-  the target committed, or one an earlier run left, earns no note. - **The loop ledgers** every launch in
+  the target committed, or one an earlier run left, earns no note.
+- **What `driver loop` says on stderr (#3232).** The `loop` verb alone stamps every stderr line with
+  UTC time, so `grep '^driver'` no longer matches them. `driver: phase <name> started` and `finished
+  (<n> s)` mark each transition, and `driver: <phase> still running (<n> s)` beats every 60 s while
+  a phase child runs: that shows the child is alive, not that it is progressing. Four classes print
+  once when the text repeats exactly: `host capabilities` and `target ships` per phase, `semgrep:
+  partial file coverage` and `ingest: excluded` per process, so a changed line always prints, and a
+  resumed run prints each once more. On a usable report the synthesize summary follows, each line
+  prefixed `summary: ` with its control characters spelled out, because it quotes text a reviewed
+  repo can steer. Stdout's status JSON and every artifact are unchanged.
+- **The loop ledgers** every launch in
   `runs/<tag>/dispatch-ledger.jsonl` (entry id, checkpoint, mode, model, usage, cost, `denials`,
   `error`, and on a FAILED row `stderr`: the
   first 200 characters of what the CLI printed on stderr, redacted before they are cut and redacted

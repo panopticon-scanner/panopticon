@@ -28,7 +28,7 @@ import scripts.config_schema as config_schema  # noqa: E402
 import scripts.diff_map as diff_map  # noqa: E402
 import scripts.first_contact as first_contact  # noqa: E402
 import scripts.run_manifest as run_manifest  # noqa: E402
-from scripts import hosts, procgroup  # noqa: E402
+from scripts import hosts, loop_progress, procgroup  # noqa: E402
 import scripts.host_disclosure as host_disclosure  # noqa: E402
 import scripts.host_probes as host_probes  # noqa: E402
 import scripts.money as money  # noqa: E402
@@ -459,12 +459,10 @@ def _emit_posture_disclosure(envelope, since=None):
     `lines` already degrade an unreadable envelope to NO_EVIDENCE / no lines
     rather than raising, so this function does not re-validate it.
     """
-    if since:
-        sys.stderr.write("driver: host capabilities: %s\n"
-                         % host_disclosure.unchanged_headline(envelope, since))
-        return
-    sys.stderr.write("driver: host capabilities: %s\n" % host_disclosure.headline(envelope))
-    for line in host_disclosure.lines(envelope) + host_disclosure.notes(envelope):
+    sys.stderr.write("driver: host capabilities: %s\n"
+                     % (host_disclosure.unchanged_headline(envelope, since) if since
+                        else host_disclosure.headline(envelope)))
+    for line in () if since else host_disclosure.lines(envelope) + host_disclosure.notes(envelope):
         sys.stderr.write("driver:   %s\n" % line)
 
 
@@ -1200,7 +1198,7 @@ def main(argv=None):
             except ValueError as exc:
                 return engine.emit_status(runio._error_status(str(exc)))
         import scripts.orchestrate as orchestrate   # R-P6-2: lazy, no cycle
-        return orchestrate.main_verb(args)
+        return loop_progress.stamped_call(args.verb == "loop", orchestrate.main_verb, args)
     return engine.emit_status(run(args))
 
 
