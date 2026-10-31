@@ -305,6 +305,33 @@ class NamesInAnyLanguageTest(_Tree):
         self.assertEqual({"web/src/App.tsx", "web/app/User.php"}, set(extras))
 
 
+class StrictGenerationTest(_Tree):
+    """#3241 constrains a Codex tool advisor to a projection. Without the field there,
+    it could never name a file, and the lift would silently never fire on Codex."""
+
+    def _child(self):
+        return _finding(file="phases/child.py", title="Popen audit")
+
+    def test_a_lift_entry_selects_the_projection_and_it_can_name_a_file(self):
+        self._spent(1)
+        entry = self._entry(self._child(), lift=["driver/caller.py"])
+        self.assertEqual(verify_tools._tool_lift_out_file(self.root, QID), entry["out_file"])
+        path = persist.generation_schema(entry)
+        self.assertEqual("tool-advisor-generation-schema.json", os.path.basename(path))
+        with open(path, encoding="utf-8") as fh:
+            schema = json.load(fh)
+        self.assertIn("missing_evidence", schema["required"])
+
+    def test_the_empty_list_the_projection_forces_means_nothing_was_named(self):
+        self._spent(1)
+        for verdict in ("CONFIRMED", "REJECTED", "NEEDS_MORE_INFO"):
+            with self.subTest(verdict):
+                self._verdict(verdict, missing=[])
+                self.assertIsNone(verify_tools._lift_owed(self.root, QID, self._child()))
+                self.assertEqual([], evidence.scope_limited_paths(
+                    {"verdict": verdict, "missing_evidence": []}))
+
+
 class RunDiscoveredOnlyTest(_Tree):
     """F4: a `missing_evidence` name is granted only if this run discovered the file.
     F4b: `.git` and `.panopticon` are never evidence, by any path."""

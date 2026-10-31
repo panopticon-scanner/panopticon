@@ -909,7 +909,7 @@ def test_a_malformed_schema_argv_is_refused(tmp_path, schema_argv):
 ])
 def test_codex_omits_a_published_schema_that_violates_its_strict_output_contract(
         tmp_path, name):
-    """#2923 C: a toy-schema pass cannot fan out a rejected production shape."""
+    """#2923 C: broad receipt schemas stay off Codex's generation argv."""
     import scripts._version as version
 
     root, entry, env = _case(tmp_path)

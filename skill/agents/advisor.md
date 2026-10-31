@@ -65,8 +65,8 @@ and lose your verdict, so emit the object alone:
 - NEEDS_MORE_INFO: the repository alone cannot settle it. State exactly what
   information is missing in `reasoning` — it becomes the auditor's next step.
   When a FILE you could not reach is what is missing, `missing_evidence` is
-  REQUIRED and lists those files; omit `missing_evidence` on CONFIRMED and
-  REJECTED, and whenever nothing was out of reach.
+  REQUIRED and lists those files. On CONFIRMED and REJECTED, and whenever nothing
+  was out of reach, omit it, or leave it empty if your output schema requires it.
 - `explored` MUST list every file you read or grepped; it is the audit trail.
 
 ## Tool claims — a rule hit is a premise, not a proven defect

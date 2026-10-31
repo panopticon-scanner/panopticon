@@ -17,6 +17,12 @@
     verdict. A failed lift leaves the first answer standing; an interrupted one is owed again.
   - The report carries the names (`evidence.missing_evidence`), and the HTML card shows them as
     "Advisor could not see".
+- **Change: Codex production replies are now constrained at generation (#3241).** Review,
+  primary verify, backup verify and tool-advisor entries select separate strict provider schemas;
+  the largest production projection is proved once per run before any constrained cell launches.
+  A refusal falls back to fenced JSON and the unchanged broad receipt schemas. Claude continues to
+  receive its original inline schemas byte-for-byte. Because provider constraints can change model
+  output, Codex results produced before and after this release are not directly reproducible.
 - **Fix: unconfirmed HIGHs no longer reach the active report at full severity (#3231, part 1 of 2).**
   The active report now caps two kinds of claim at MEDIUM, because nothing confirms their HIGH. Both
   caps are disclosed on the finding (`severity_cap`), in `meta.severity_capped`, and in a summary line.

@@ -1,0 +1,138 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PanopticonVerifyPrimaryGeneration",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "verdicts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/verdict"
+      }
+    },
+    "_panopticon": {
+      "$ref": "#/$defs/stamp"
+    }
+  },
+  "required": [
+    "verdicts",
+    "_panopticon"
+  ],
+  "$defs": {
+    "s": {
+      "type": "string"
+    },
+    "strings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/s"
+      }
+    },
+    "verdict_value": {
+      "type": "string",
+      "enum": [
+        "CONFIRMED",
+        "REJECTED",
+        "NEEDS_MORE_INFO"
+      ]
+    },
+    "confidence": {
+      "type": "string",
+      "enum": [
+        "CERTAIN",
+        "LIKELY",
+        "POSSIBLE"
+      ]
+    },
+    "citations": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cwe": {
+          "$ref": "#/$defs/strings"
+        },
+        "owasp": {
+          "$ref": "#/$defs/strings"
+        },
+        "cve": {
+          "$ref": "#/$defs/strings"
+        }
+      },
+      "required": [
+        "cwe",
+        "owasp",
+        "cve"
+      ]
+    },
+    "stamp": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "$ref": "#/$defs/s"
+        },
+        "role": {
+          "type": "string",
+          "const": "domain_advisor"
+        },
+        "domain": {
+          "$ref": "#/$defs/s"
+        },
+        "group": {
+          "$ref": "#/$defs/s"
+        },
+        "stage": {
+          "type": "string",
+          "const": "primary"
+        }
+      },
+      "required": [
+        "run_id",
+        "role",
+        "domain",
+        "group",
+        "stage"
+      ]
+    },
+    "verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "finding_id": {
+          "$ref": "#/$defs/s"
+        },
+        "verdict": {
+          "$ref": "#/$defs/verdict_value"
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "code": {
+          "$ref": "#/$defs/s"
+        },
+        "reasoning": {
+          "$ref": "#/$defs/s"
+        },
+        "explored": {
+          "$ref": "#/$defs/strings"
+        },
+        "references": {
+          "$ref": "#/$defs/strings"
+        },
+        "citations": {
+          "$ref": "#/$defs/citations"
+        }
+      },
+      "required": [
+        "finding_id",
+        "verdict",
+        "confidence",
+        "code",
+        "reasoning",
+        "explored",
+        "references",
+        "citations"
+      ]
+    }
+  }
+}

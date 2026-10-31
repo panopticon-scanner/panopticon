@@ -296,11 +296,12 @@ recursively, every property must also be required and each object must set
 `definitions`, unsupported composition, external references, malformed or unknown keywords, and
 shapes over the documented provider limits are refused. Before building an argv, the runner checks
 the published schema named by the entry. An incompatible schema stays on the entry but is omitted
-from the Codex argv. After the controller stamps any omitted cell identity,
-`phases.persist.write_reply` validates every returned role that has a published schema against the
-unmodified Draft-7 `role_schema(entry)` before writing it. None of this build's three production
-role schemas passes the Codex provider screen, so the posture note says that the proven toy launch
-constrains no production reply; receipt validation is the production enforcement (#2923).
+from the Codex argv. Codex entries select one of four strict generation projections (review,
+primary verify, backup verify and tool-advisor); Claude keeps the original role schema byte-for-byte.
+After the controller stamps any omitted cell identity, `phases.persist.write_reply` independently
+validates every returned role against the unmodified Draft-7 `role_schema(entry)` before writing it.
+The generation projection is an optimization and the broad receipt contract remains authoritative
+(#2923, #3241).
 
 Codex's JSONL envelope reports token usage but not measured dollars or the effective model identity.
 The runner therefore returns `cost_usd: null` and `model: null`; `model_binding` and `usage_ledger`
@@ -414,7 +415,8 @@ on Claude hooks, and always uses the return-persist path.
   every host whose runner declares such a flag, claude and codex today — in the evidence artifact's
   `cli_flags` block, beside `capabilities` rather than in it, so a CLI upgraded mid-run is not
   posture drift; absent or unknown means no schema is passed, which is the fail-safe — a CLI that
-  does not know the option exits non-zero on it). The same block is carried into
+  does not know the option exits non-zero on it). Codex receives its strict generation projection;
+  Claude receives the broad receipt schema it used before #3241. The same block is carried into
   `meta.host_capabilities` and said on all four disclosure surfaces by `host_disclosure.notes`,
   which is separate from the capability lines because the fact gates nothing. `entry["delivery"] ==
   "return_json"` marks a **return-persist** entry — set on any entry whose role's template grants no
@@ -1028,11 +1030,13 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   (any extension), confined and capped by the same resolver, granted only if this run discovered
   that file (`groups.json`, stamped for this run; no listing, no grant), and only when they grant
   something new — charged to that item's own verify budget. No grant of any kind reaches a `.git`
-  or `.panopticon` path, as written or through a symlink: that is controller state, not evidence. The lift writes to `verdicts/lift/<id>.json`,
-  never over the first answer; the controller promotes it over `verdicts/<id>.json` only when it
-  is a valid verdict, so a failed lift leaves the first `NEEDS_MORE_INFO` standing, and an
+  or `.panopticon` path, as written or through a symlink: that is controller state, not evidence.
+  The lift writes to `verdicts/lift/<id>.json`, never over the first answer; the controller
+  promotes it over `verdicts/<id>.json` only when it is a valid verdict, so a failed lift leaves
+  the first `NEEDS_MORE_INFO` standing, and an
   interrupted lift is rolled back like any entry and owed again on resume. No verdict reader lists
-  the lift folder. The report carries the names in `evidence.missing_evidence`. The BACKUP round is granted a
+  the lift folder. The report carries the names in `evidence.missing_evidence`. The BACKUP round is
+  granted a
   **bounded closure**, not the whole cell and not the claim file alone (#1638 P16): each scoped
   claim's `location.file`, every in-repo path that claim's own evidence names (`description`,
   `exploit_scenario`, `remediation`, `evidence.reasoning`, `references`) — a named path is resolved

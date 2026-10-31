@@ -7,6 +7,7 @@ from unittest import mock
 import pytest
 
 from scripts import codex_host
+import scripts.phases.persist as persist
 from scripts.runners import base, codex, outage
 
 
@@ -544,14 +545,29 @@ def test_the_family_declares_the_output_schema_flag_its_argv_carries():
     assert codex.Runner.OUTPUT_SCHEMA_FLAG == ("--output-schema",)
 
 
-def test_a_review_cell_launch_hands_the_published_schema_to_the_argv_builder(tmp_path):
-    # The family half of D10 ruling 3: the Runner reads the entry's schema
-    # through the seam helper and hands the pair to `codex_host.command`, which
-    # owns the argv (and places it before the trailing stdin marker -- see
-    # tests/test_codex_host.py, where the finished argv and its validator live).
-    import scripts._version as version
-    schema = os.path.abspath(version.reference_path("findings-envelope-schema.json"))
-    cell = dict(entry(), output_schema=schema)
+@pytest.mark.parametrize(("out_file", "stage", "agent", "expected"), (
+    ("/r/.panopticon/runs/t/findings-app-COD.json", None,
+     "panopticon-domain-panel", "review-cell-generation-schema.json"),
+    ("/r/.panopticon/runs/t/verdicts/verdicts-app-COD.json", "primary",
+     "panopticon-domain-advisor", "verify-primary-generation-schema.json"),
+    ("/r/.panopticon/runs/t/verdicts/verdicts-app-COD-backup.json", "backup",
+     "panopticon-domain-advisor", "verify-backup-generation-schema.json"),
+    ("/r/.panopticon/runs/t/verdicts/q-0001.json", None,
+     "panopticon-advisor", "tool-advisor-generation-schema.json"),
+))
+def test_each_production_launch_hands_its_generation_schema_to_the_argv_builder(
+        tmp_path, out_file, stage, agent, expected):
+    # The family half of #3241: the Runner remains role-blind and hands the
+    # selected entry path to `codex_host.command`, which owns its argv.
+    selected = {"out_file": out_file}
+    if stage is not None:
+        selected["stage"] = stage
+    schema = persist.generation_schema(selected)
+    assert os.path.basename(schema) == expected
+    cell = dict(entry(), id="entry-" + expected, agent=agent, out_file=out_file,
+                output_schema=schema)
+    if stage is not None:
+        cell["stage"] = stage
 
     def fake_run(command, **kwargs):
         return SimpleNamespace(stdout=envelope(START, REPLY, DONE), stderr="", returncode=0)

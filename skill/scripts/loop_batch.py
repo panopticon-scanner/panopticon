@@ -740,7 +740,7 @@ def record_entry(entry, result, timing, run_dir, batch, ledger, req, mode, runne
 SHAPE_REFUTED_NOTICE = (
     "driver loop: host %r advertises %s but REFUSED it on one probe launch (%s) -- this "
     "run's entries launch without the flag and reply in fenced JSON, which the driver "
-    "validates against the same schema on receipt")
+    "validates against their receipt schema")
 
 
 def prove_output_schema_shape(run_dir, host, runner, pending, env_for, review_root, namespace=None):
@@ -761,16 +761,13 @@ def prove_output_schema_shape(run_dir, host, runner, pending, env_for, review_ro
     Owed only when there is something to measure AND something to measure it with: the flag is
     advertised (the `--help` read), the family declares one, no verdict is recorded yet, and this
     batch carries at least one schema-stamped `return_json` entry to clone a binding from. A
-    checkpoint of self-writing entries, or a host that stamps nothing, simply waits for one that
-    does.
-
+    checkpoint of self-writing entries, or a host that stamps nothing, simply waits for one that does.
     On `refuted` the flag comes off THIS batch's entries in memory, before they launch. The request
     FILE is left exactly as written -- its sha256 is what `load_bound_request` binds, and rewriting
     it mid-iteration would break that binding to save a stamp that the next `_run` will not
     re-apply anyway (`requests._materialize_prompts` consults the recorded shape).
-
-    Returns the verdict, or None when no launch was owed. Never raises: this
-    is one measurement, and a run must not end on it.
+    Returns the verdict, or None when no launch was owed. Never raises: this is one measurement,
+    and a run must not end on it.
     """
     path = os.path.join(run_dir, runio.HOST_CAPABILITIES)
     body = runio._load_json(path)
@@ -789,7 +786,10 @@ def prove_output_schema_shape(run_dir, host, runner, pending, env_for, review_ro
                      and e.get("output_schema")), None)
     if template is None:
         return None
-    entry = shape_probe.probe_entry(template, run_dir)
+    production_schema = persist.production_probe_schema(host)
+    entry = shape_probe.probe_entry(
+        template, run_dir, schema=production_schema,
+        prompt=(shape_probe.PRODUCTION_PROBE_PROMPT if production_schema else None))
     if entry is None:
         return None                       # the probe schema is not published
     verdict = shape_probe.prove(host, runner, entry, env_for(entry))

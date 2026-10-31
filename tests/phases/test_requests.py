@@ -620,6 +620,31 @@ class TestOutputSchemaIsStampedOnTheEntry(unittest.TestCase):
         self.assertEqual(written["output_schema"],
                          persist.role_schema({"out_file": "findings-app-SEC.json"}))
 
+    def test_codex_gets_the_generation_projection_but_claude_stays_byte_identical(self):
+        cell = {"id": "review-app-SEC", "prompt": "p", "delivery": "return_json",
+                "out_file": runio._pano(self.root, "findings-app-SEC.json")}
+        write_host_evidence(self.root, {}, host="claude", cli_flags=self.ADVERTISED)
+        claude = self._written(cell)
+        self.assertEqual(claude["output_schema"], persist.role_schema(cell))
+
+        codex_flags = {hosts.OUTPUT_SCHEMA: {
+            "flag": "--output-schema", "advertised": True, "detail": "fixture"}}
+        write_host_evidence(self.root, {}, host="codex", cli_flags=codex_flags)
+        codex = self._written(cell)
+        self.assertEqual(codex["output_schema"], persist.generation_schema(cell))
+        self.assertNotEqual(codex["output_schema"], claude["output_schema"])
+
+    def test_codex_omits_a_generation_schema_for_an_unknown_verify_stage(self):
+        codex_flags = {hosts.OUTPUT_SCHEMA: {
+            "flag": "--output-schema", "advertised": True, "detail": "fixture"}}
+        write_host_evidence(self.root, {}, host="codex", cli_flags=codex_flags)
+        written = self._written({
+            "id": "verify-app-SEC-future", "prompt": "p", "delivery": "return_json",
+            "stage": "future",
+            "out_file": runio._pano(self.root, "verdicts", "verdicts-app-SEC.json"),
+        })
+        self.assertNotIn("output_schema", written)
+
     def test_a_self_writing_entry_names_no_schema(self):
         # The schema describes what the CONTROLLER will persist from the reply.
         # A self-writing reviewer's final message is a one-line confirmation --
