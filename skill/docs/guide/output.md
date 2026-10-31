@@ -86,7 +86,7 @@ types before it reaches the report, at every boundary and for both schemas —
 `synth/validate_schema.repair_finding` (findings), `repair_verdict` (an advisor's verdict, through
 the one sanitizer `evidence._agent_verdict`), the target-carried `tools-manifest.json` blocks in
 `synth/repair` (exclusions, the SEC carve-out, Git drivers, suppression counts),
-`integrity.cross_domain_findings`, `synth/coverage_io` (`.panopticon/coverage-*.json`) and the
+`integrity.cross_domain_findings`, `synth/coverage_io` (`.panopticon/runs/<tag>/coverage-*.json`) and the
 OCRDb-domain clamp `codes`/`x0x_report` share. `groups.json` and the manifest's run-written blocks
 are read as written (#3273): first contact halts on a `.panopticon/` that is not this machine's,
 their producers bound them, and a hand-named `--groups` file of the wrong shape is ignored whole

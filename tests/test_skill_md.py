@@ -631,7 +631,7 @@ class TestSkillMd(unittest.TestCase):
         # synthesize invocation -- re-anchored from the deleted `## Pipeline`
         # to the driver run-loop section.
         loop = _section(self.text, "## Driver run-loop", "## Output")
-        self.assertIn("--tools-dir .panopticon/tools", loop)
+        self.assertIn("--tools-dir .panopticon/runs/<tag>/tools", loop)
 
     def test_documents_default_tool_path_fixture_prune(self):
         # The tool-ingest path prunes fixture-corpus findings by default (parity

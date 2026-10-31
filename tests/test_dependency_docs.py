@@ -1,5 +1,10 @@
+import os
+import re
+import subprocess
+import tempfile
 import unittest
 
+import scripts.first_contact as first_contact
 from tests.doc_helpers import (
     PLAN_LOCATION, SKILL_ROOTS, _read_doc, _read_skill_md, _section,
 )
@@ -18,6 +23,55 @@ class TestThePlanHasAHome(unittest.TestCase):
 
     def test_the_guide_says_the_same_thing_in_the_same_words(self):
         self.assertIn(PLAN_LOCATION, self._flat(_read_doc()))
+
+
+class TestWhatAnOperatorHadToDiscover(unittest.TestCase):
+    """#3233: the gaps the 5.2 redteam ledgers named, in the two documents a host reads first."""
+
+    FLAT_RUN_ARTIFACTS = re.compile(
+        r"\.panopticon/(groups\.json|verdicts|tools|diff-hunks|dispatch-request|coverage-)")
+
+    @staticmethod
+    def _flat(text):
+        return " ".join(text.split())
+
+    def test_the_quick_reference_spells_out_the_executable(self):
+        quick = _read_skill_md().split("## Quick reference", 1)[1]
+        self.assertIn("`driver` below is short for `python3 skill/scripts/driver.py`", self._flat(quick))
+
+    def test_no_document_names_a_pre_run_path_under_panopticon(self):
+        for name, text in (("SKILL.md", _read_skill_md()), ("guide", _read_doc())):
+            with self.subTest(name):
+                self.assertNotIn(".panopticon/scratch", text)
+        fallback = _read_skill_md().split("## Dependencies", 1)[1]
+        self.assertIn("`mktemp`", self._flat(fallback))
+
+    def test_the_reason_the_documents_give_stays_true(self):
+        # A pre-run file under `.panopticon/` is what the plan text warns about. If first contact
+        # ever stops halting on it, the warning is what should change.
+        with tempfile.TemporaryDirectory() as tree:
+            subprocess.run(["/usr/bin/env", "git", "init", "-q", tree], check=True)
+            os.makedirs(os.path.join(tree, ".panopticon", "scratch"))
+            with open(os.path.join(tree, ".panopticon", "scratch", "plan.md"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("the plan")
+            with self.assertRaisesRegex(first_contact.FirstContactHalt, "was not created by"):
+                first_contact.assess_artifacts(tree)
+
+    def test_both_documents_say_which_parts_of_writing_plans_apply(self):
+        for name, text in (("SKILL.md", _read_skill_md()), ("PANOPTICON.md", _read_doc())):
+            with self.subTest(name):
+                flat = self._flat(text)
+                self.assertIn("Use only its task breakdown", flat)
+                self.assertIn("must never block an autonomous run", flat)
+
+    def test_no_guide_names_a_run_artifact_outside_its_run_folder(self):
+        self.assertEqual([], self.FLAT_RUN_ARTIFACTS.findall(_read_doc()))
+
+    def test_both_documents_say_which_copy_to_drive_with(self):
+        for name, text in (("SKILL.md", _read_skill_md()), ("guide", _read_doc())):
+            with self.subTest(name):
+                self.assertIn("the copy you run decides the rules and prompts", self._flat(text))
 
 
 class TestTheDependenciesSection(unittest.TestCase):

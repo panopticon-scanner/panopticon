@@ -27,9 +27,13 @@ file stays focused on the host-facing contract.
 
 - `superpowers:writing-plans` — before repo/PR/directory reviews with >15 files
   or >10 changes.
-  Save the review plan to `.panopticon/runs/<tag>/plan.md` (or
-  `.panopticon/scratch/<run>/` before a run exists) — never to
-  `docs/superpowers/`, which is not this review's artifact space.
+  Save the review plan to `.panopticon/runs/<tag>/plan.md` once a run has a tag, which
+  `.panopticon/runs/latest` points at. Before then, keep it outside the target, in a
+  file from `mktemp`, and put nothing under `.panopticon/`: first contact halts on a
+  `.panopticon/` it did not create. Never save it to `docs/superpowers/`, which is not
+  this review's artifact space. Use only its task breakdown: what to review, and in what
+  order. Skip its TDD steps and commits, because a review changes no code, and skip its
+  handoff, which waits on a user and must never block an autonomous run.
 - `superpowers:subagent-driven-development` — for matrix-cell and advisor dispatch.
 - `superpowers:verification-before-completion` — before returning the report.
 
@@ -78,8 +82,8 @@ Where hosts typically look:
 host's plugin tree.** Proceed with the built-in default, which is what the
 driver does anyway:
 
-- `superpowers:writing-plans` → write the plan yourself to
-  `.panopticon/runs/<tag>/plan.md`.
+- `superpowers:writing-plans` → write the plan yourself to the same place: a file from
+  `mktemp` outside the target, moved to `.panopticon/runs/<tag>/plan.md` once a run has a tag.
 - `superpowers:subagent-driven-development` → dispatch per cell through the
   driver: `driver loop` in headless mode, or the printed `dispatch` batch
   through `skill/workflows/dispatch.js` in session mode.
@@ -97,7 +101,15 @@ elsewhere (e.g., `~/.<agent-config>/skills/panopticon/`). Run every command from
 **target repo root** regardless — `.panopticon/` artifacts and the write-guard
 resolve against cwd; only the script path substitutes.
 
+**When the installed skill and a `skill/` in the target are different copies** (for example,
+`~/.claude/skills/panopticon` is a symlink into another checkout), the copy you run decides the
+rules and prompts, and the target only supplies what is reviewed. Use the installed copy to review
+a project, and the target's own `skill/` to test changes to panopticon itself.
+
 ## Quick reference
+
+`driver` below is short for `python3 skill/scripts/driver.py`, so the first command is
+`python3 skill/scripts/driver.py readiness`, with `skill/` substituted as above.
 
 - `driver readiness [target] [--host NAME] [--json]` — run this FIRST. The preflight, and
   the only verb that writes nothing under the target and launches nothing (host CLIs are
