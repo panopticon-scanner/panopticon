@@ -28,8 +28,8 @@ def _frontmatter_model(path):
     """The `model:` binding inside a registered shell's frontmatter, or None.
 
     Frontmatter ONLY: the charter body is prose and may contain the word.
-    Stops at the closing fence rather than scanning the whole file, which is
-    the one way this differs from `common._frontmatter_tools`. That stop is
+    Stops at the closing fence rather than scanning the whole file, as
+    `common._frontmatter_tools` does too since #3256. That stop is
     load-bearing, not an optimisation -- the match below tests `fences >= 1`
     rather than `fences == 1`: the latter would double as its own implicit
     "still inside the frontmatter" guard (it goes false the moment the second

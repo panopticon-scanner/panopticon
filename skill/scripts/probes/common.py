@@ -78,6 +78,9 @@ def _frontmatter_tools(path):
     A line scan rather than a YAML parse: stdlib has no YAML, and a dependency
     here would break the plan's stdlib-only constraint.
 
+    Frontmatter ONLY, exactly as `claude._frontmatter_model` reads it (#3256): a `tools:` line in
+    the body is prose, and must not read as a grant once the closing fence is past.
+
     Returns None when the file cannot be read or carries no grant at all.
     `ValueError` is caught alongside `OSError` because a non-UTF-8 file raises
     UnicodeDecodeError, and a probe that raises is worse than one that guesses.
@@ -87,8 +90,14 @@ def _frontmatter_tools(path):
             lines = fh.read().splitlines()
     except (OSError, ValueError):
         return None
+    fences = 0
     for index, line in enumerate(lines):
-        if not line.startswith("tools:"):
+        if line.strip() == "---":
+            fences += 1
+            if fences == 2:
+                return None
+            continue
+        if fences < 1 or not line.startswith("tools:"):
             continue
         inline = line.split(":", 1)[1].strip()
         if inline:

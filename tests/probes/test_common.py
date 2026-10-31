@@ -128,6 +128,33 @@ class TestRegisteredShellToolsProbe(unittest.TestCase):
             state, _by, _detail = probes_common.probe_registered_shell_tools("claude", d)
             self.assertEqual(hosts.REFUTED, state)
 
+    def test_a_tools_line_in_the_body_is_not_a_grant(self):
+        # #3256: the closing fence ends the frontmatter; a body line, or one before any fence, is
+        # prose. A block list never runs past the fence either.
+        with tempfile.TemporaryDirectory() as d:
+            for body in ("---\nname: x\n---\nbody\ntools: Read, Grep, Glob\n",
+                         "tools: Read, Grep\n---\nname: x\n---\n",
+                         "---\nname: x\n---\ntools:\n  - Read\n"):
+                with self.subTest(body=body):
+                    path = os.path.join(d, "s.md")
+                    with open(path, "w", encoding="utf-8") as fh:
+                        fh.write(body)
+                    self.assertIsNone(probes_common._frontmatter_tools(path))
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("---\nname: x\ntools:\n  - Read\n---\ntools: Bash\n")
+            self.assertEqual(["Read"], probes_common._frontmatter_tools(path))
+
+    def test_a_body_grant_cannot_rescue_a_shell_whose_frontmatter_has_none(self):
+        from scripts import dispatch
+        with tempfile.TemporaryDirectory() as d:
+            self._fully_registered(d)
+            path = os.path.join(d, dispatch.registered_agent_filename(
+                "claude", dispatch.ROLE_FILES["scout"]))
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("---\nname: panopticon-scout\n---\n\ntools: Read, Grep, Glob\n")
+            state, _by, _detail = probes_common.probe_registered_shell_tools("claude", d)
+            self.assertEqual(hosts.REFUTED, state)
+
     def test_a_host_that_registers_no_shells_is_unknown_not_refuted(self):
         # gemini registers nothing. "Not applicable" is unknown; refuted would
         # claim we looked and found the control broken.
