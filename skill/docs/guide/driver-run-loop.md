@@ -8,7 +8,10 @@ the host drives it through its status protocol.
 DIRECTORY — literally `skill/` inside the panopticon repo, or the absolute path you installed it to
 elsewhere (e.g. `~/.<agent-config>/skills/panopticon/`). Run every command from the TARGET repo root
 regardless — `.panopticon/` artifacts and the write-guard resolve against cwd; only the script path
-substitutes.
+substitutes. When the installed skill and a `skill/` in the target are different copies (for
+example, `~/.claude/skills/panopticon` is a symlink into another checkout), the copy you run decides
+the rules and prompts, and the target only supplies what is reviewed: use the installed copy to review
+a project, and the target's own `skill/` to test changes to panopticon itself.
 
 The host contract (5.2, plan 6):
 
@@ -625,7 +628,7 @@ on Claude hooks, and always uses the return-persist path.
   empty it would refund every attempt the run really spent (#1809). One module owns every budget's
   arithmetic, so a VALUE that is not a count refuses the same way, naming the offending key as well
   as the file (#1767). **A dispatch entry does not get to describe itself** (#1720): the request
-  travels through `.panopticon/dispatch-request.json`, a file inside the reviewed tree, so an
+  travels through `.panopticon/runs/<tag>/dispatch-request.json`, a file inside the reviewed tree, so an
   entry's `agent` must be one of the registered panopticon shell names (`panopticon-scout`,
   `panopticon-domain-panel`, `panopticon-domain-advisor`, `panopticon-advisor`,
   `panopticon-setup-scan` — and on kimi, where the name becomes a `--agent-file=` path, that path
@@ -674,9 +677,9 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `gh attestation verify oci://<image ref> --repo panopticon-scanner/panopticon` says whether the
   bytes that arrived came out of this repository's build. That step is `continue-on-error: true`, so
   a missing attestation reads as unknown, not as tampered.
-- **`discovery`** — `discovery.py --repo-scan` writes `.panopticon/groups.json` against the
-  committed `panopticon.yml`; delta scopes (`-c`/`--pr`/`--base`) additionally write
-  `.panopticon/diff-hunks.json`. **Both halves carry this run's `run_id`** (#2107): the child
+- **`discovery`** — `discovery.py --repo-scan` writes `.panopticon/runs/<tag>/groups.json` against
+  the committed `panopticon.yml`; delta scopes (`-c`/`--pr`/`--base`) additionally write
+  `.panopticon/runs/<tag>/diff-hunks.json`. **Both halves carry this run's `run_id`** (#2107): the child
   writes the hunk map first and the inventory second, as two independent atomic writes, so the
   driver stamps the sibling with the same stamp it puts on `groups.json` — the surface the review
   covers and the diff the gate scopes to are then one generation by construction, not by the
@@ -701,7 +704,7 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
 - **`coverage`** — one batched `scout` checkpoint carrying every pending group's scout (below), then
   widens each group's floor panels by its scout's valid domains.
 - **`tools`** — deterministic, not discretionary: runs
-  `python3 skill/scripts/run_tools.py --target . --out .panopticon/tools --deps` unless `--no-tools`
+  `python3 skill/scripts/run_tools.py --target . --out .panopticon/runs/<tag>/tools --deps` unless `--no-tools`
   was passed; a skip is never silent — it's always recorded in `tools-ran.json` and surfaced in the
   phase status message, and a no-output / Docker-absent skip additionally writes LOUDLY to stderr.
   An **environmental** skip is not done (#1637 P08): the phase counts as complete only when the scan
@@ -993,7 +996,7 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   scan running beside this one. `tools-ran.json` stays the certification summary — whether the scan
   ran, and whether its captures were redacted — while the per-adapter egress postures live in
   `tools-manifest.json` and the report, beside `sanitized`, which it does not carry either. **Raw
-  captures are redacted before they are written** (#1639 P11): `.panopticon/tools/<tool>.sarif|json`
+  captures are redacted before they are written** (#1639 P11): `.panopticon/runs/<tag>/tools/<tool>.sarif|json`
   is what an operator copies into a CI artifact, and a secret scanner's output is a list of other
   people's credentials by construction, so every capture path — the buffered one, the streaming one
   and its over-cap truncation branch — passes its bytes through ONE choke point,
@@ -1117,10 +1120,11 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   files **no finding** about it — it only withholds the coverage claim it cannot support; the
   per-group states land in `meta.coverage.test_inventory` and next to the coverage line in
   `report.json.html`, and the fix is the target's `panopticon.yml`, not its test suite.
-- **`synthesize`** — runs `skill/scripts/synthesize.py --verdicts-dir .panopticon/verdicts`
-  (`--tools-dir .panopticon/tools` added when `tools` produced output; `--diff-hunks
-  .panopticon/diff-hunks.json` added when `discovery` emitted it, always beside
-  `--diff-hunks-run-id <this run's run_id>`) → `.panopticon/report.json`. A foreign or absent
+- **`synthesize`** — runs `skill/scripts/synthesize.py --verdicts-dir .panopticon/runs/<tag>/verdicts`
+  (`--tools-dir .panopticon/runs/<tag>/tools` added when `tools` produced output; `--diff-hunks
+  .panopticon/runs/<tag>/diff-hunks.json` added when `discovery` emitted it, always beside
+  `--diff-hunks-run-id <this run's run_id>`) → `.panopticon/<tag>-report.json`, with
+  `.panopticon/report.json` a symlink to the latest. A foreign or absent
   stamp is REFUSED (#2107): the pair is handed over WITH the expectation, so the child's loader
   rejects the payload, one stderr line says so, the report publishes
   `delta_artifact.payload_malformed: generation-mismatch`, and the gate degrades to whole-repo

@@ -6,8 +6,11 @@ specialized reviewers in parallel, and synthesizes a validated CodeReviewReport 
 
 ## Required sub-skills
 - `superpowers:writing-plans` — before repo/PR/directory reviews with >15 files or >10 changes. Save
-  the review plan to `.panopticon/runs/<tag>/plan.md` (or `.panopticon/scratch/<run>/` before a run
-  exists) — never to `docs/superpowers/`, which is not this review's artifact space.
+  the review plan to `.panopticon/runs/<tag>/plan.md` once a run has a tag, and to
+  `.panopticon/scratch/plan.md` before then — never to `docs/superpowers/`, which is not this
+  review's artifact space. Use only its task breakdown: what to review, and in what order. Skip its
+  TDD steps and commits, because a review changes no code, and skip its handoff, which waits on a
+  user and must never block an autonomous run.
 - `superpowers:subagent-driven-development` — for matrix-cell and advisor dispatch.
 - `superpowers:verification-before-completion` — before returning the report.
 
@@ -26,7 +29,7 @@ every mode below (`driver run [target]` is the single-step primitive it calls) �
 - `--pr <n>` — review a GitHub PR inside an isolated, disposable `git worktree` (never touches your
   checkout); the driver resolves the worktree once and runs every phase natively inside it (no
   separate staging step), releasing it on completion (`diff_map.release_worktree`) — a PR review is
-  committed-only. Both `-c` and `--pr` emit `.panopticon/diff-hunks.json`. The worktree holds
+  committed-only. Both `-c` and `--pr` emit `.panopticon/runs/<tag>/diff-hunks.json`. The worktree holds
   attacker-controlled PR content, so the review runs against **your** grouping, not the PR's: the
   operator's `panopticon.yml` overwrites whatever the PR shipped under either name — a PR-shipped
   config at `panopticon.yml` or `.panopticon.yml` (file *or* symlink) is removed with

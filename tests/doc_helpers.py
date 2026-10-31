@@ -114,10 +114,11 @@ def _registered_driver_flags():
 # which in THIS repo is a symlink to a sibling private checkout a reviewing
 # host cannot write. Run-13 improvised `.panopticon/scratch/`. The plan is a
 # review artifact, so it belongs in the review's artifact space, and the skill
-# has to say so in the same breath as it requires the sub-skill.
+# has to say so in the same breath as it requires the sub-skill. #3233: one
+# literal path before a run has a tag, because `<run>` means nothing yet.
 PLAN_LOCATION = (
-    "Save the review plan to `.panopticon/runs/<tag>/plan.md` (or "
-    "`.panopticon/scratch/<run>/` before a run exists) — never to "
+    "Save the review plan to `.panopticon/runs/<tag>/plan.md` once a run has a tag, "
+    "and to `.panopticon/scratch/plan.md` before then — never to "
     "`docs/superpowers/`, which is not this review's artifact space.")
 
 

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Docs: gaps operators hit in the 5.2 redteam runs (#3233).** SKILL.md now spells out the
+  executable, gives one literal pre-run plan path (`.panopticon/scratch/plan.md`), says which parts
+  of `superpowers:writing-plans` apply to a review, and says which copy to drive with when the
+  installed skill and the target's `skill/` differ. The guide names run artifacts under
+  `.panopticon/runs/<tag>/`, where they are.
+
 - **Change: four report fields now say what they claim (#3368).** No prompt or review schema changes.
   - `meta.models_used` and `meta.cost.dispatches[*].model` read the dispatch ledger. A role that ran
     two models has `model: null`, and `models_used` lists both. In session mode there is no ledger:
