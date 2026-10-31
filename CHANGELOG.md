@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Fix: session-mode usage puts a layered group's tokens in their phase (#3373).** An entry id
+  holding a `:`, such as every leaf of `Reporting:Core`, is stored under its hash, so its subagent's
+  tokens landed in `unattributed`. `collect_usage` now reads the run's `_prompts/index.json`, and
+  counts a row only when its id hashes to the file's name. The total is unchanged. A run from before
+  the index, and any replay, reads as it did.
+
 - **Change: `driver readiness` takes `driver loop`'s flags and says what that run would meet (#3233).**
   `driver readiness . --security redteam` used to exit 2 with `unrecognized arguments`. The new
   `run_plan` rows are informational and never move the exit code: the groups discovery will dispatch,
