@@ -3,6 +3,7 @@ import glob as _glob
 import datetime
 import json
 import os
+import stat
 import sys
 
 from scripts import hosts
@@ -18,6 +19,8 @@ from . import engine
 from . import runio
 from . import requests
 from . import verify_tools
+
+# #3367: when a run reached `complete`. Optional: older manifests have none, and nothing branches on it.
 
 
 _PENDING = "synthesize-pending.json"
@@ -66,6 +69,68 @@ def x0x_failure_disclosure(report_path):
         "message": ("X0X discarded %d locus-free catalog-gap finding(s); "
                     "failure log: %s" % (count, failure_path)),
     }
+
+
+def _regular_file(path):
+    """A host acts on what `artifacts` names, so: a regular file, never through a symlink."""
+    try:
+        return stat.S_ISREG(os.lstat(path).st_mode)
+    except (OSError, ValueError):        # ValueError: a NUL or a lone surrogate in a name
+        return False
+
+
+def _sibling(report_path, name):
+    """`name` beside the report, or None. A name out of the report's own meta that is not a bare
+    file name is left out, never resolved."""
+    if not isinstance(name, str) or not name or "/" in name or "\\" in name or os.sep in name:
+        return None
+    path = os.path.join(os.path.dirname(report_path), name)
+    return path if _regular_file(path) else None
+
+
+def completion_artifacts(report_path):
+    """What a host reading `complete` may open, without a `stat` of its own (#3367): absolute paths
+    of the files that exist. Parts and the discarded sibling are the ones the report itself names,
+    not a glob, so a file planted beside it is not named."""
+    out: dict = {}
+    report_path = os.path.abspath(report_path)
+    if not _regular_file(report_path):
+        return out
+    out["report"] = report_path
+    report = runio._load_json(report_path)
+    meta = report.get("meta") if isinstance(report, dict) else None
+    meta = meta if isinstance(meta, dict) else {}
+    named = meta.get("parts")
+    parts = [path for path in (_sibling(report_path, name)
+                               for name in (named if isinstance(named, list) else [])) if path]
+    if parts:
+        out["parts"] = parts
+    discarded = _sibling(report_path, meta.get("discarded_claims_file"))
+    if discarded:
+        out["discarded"] = discarded
+    stem = report_path[:-len(".json")] if report_path.endswith(".json") else report_path
+    for key, path in (("x0x", stem + "-x0x.json"), ("html", report_path + ".html")):
+        if _regular_file(path):
+            out[key] = path
+    return out
+
+
+def complete_status(status, review_root, manifest):
+    """The terminal `complete` status, for `driver.run` and so for the loop: what it produced, and
+    the manifest's `completed_at` for a reader who has only the manifest. It marks success alone,
+    so a run that ended `error` or `paused` still reads as unfinished there. Neither step can mask
+    the status: a name that can't be a file is left out, and a failed write goes in its message."""
+    report_path = runio._report_out(review_root)
+    status = attach_x0x_failure_status(status, report_path)
+    if status.get("status") != "complete":
+        return status
+    status = dict(status, artifacts=completion_artifacts(report_path))
+    try:
+        run_manifest.record_completed_at(review_root, manifest)
+    except (OSError, ValueError) as exc:
+        status["message"] = "%s; completed_at not recorded: %s" % (
+            status.get("message"), redact.redact_diagnostic(str(exc), 200))
+    return status
 
 
 def attach_x0x_failure_status(status, report_path):

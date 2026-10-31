@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Change: the `complete` status names what the run produced (#3367).**
+  - **One non-additive change: `driver loop`'s `complete` status no longer carries `teardown`** once
+    its disarm has succeeded, because it has already done that. `driver run` and `driver setup` keep
+    it. A script that reads `teardown` from a loop's status should stop.
+  - New on `complete`, for `driver run` and `driver loop`: `artifacts`, absolute paths of the files
+    that exist.
+  - New in `run-manifest.json`: an optional `completed_at`. A run that ended `error` or `paused` has
+    none, so it still can't be told apart from one in flight by the manifest alone.
+
 - **Change: `driver loop` says what it is doing on stderr (#3232).** Stdout's status JSON and every
   artifact are unchanged.
   - **Every stderr line now starts with a UTC timestamp, so `grep '^driver'` stops matching.** Drop

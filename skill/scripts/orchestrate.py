@@ -628,6 +628,7 @@ def _finish(status, review_root, guards, ledger, namespace, mode="headless", run
     if guards is not None:
         if status.get("status") == "complete":
             guards.disarm()                          # total (spec 5.1)
+            status.pop("teardown", None)             # #3367: just done, so not the host's to do
         elif status.get("status") in ("error", "paused") and guards.armed_entries:
             # I4: exactly what THIS invocation armed, and nothing else. In session mode
             # the grants outlive an invocation, so a total teardown here would revoke a
@@ -639,8 +640,7 @@ def _finish(status, review_root, guards, ledger, namespace, mode="headless", run
     # -- while the run's REAL figures come from the host's own transcripts via
     # collect_usage, which synthesize wires in and which deliberately never overwrites
     # an existing usage.json. Writing here would replace the real counts with zeros.
-    if (mode == "headless" and ledger is not None
-            and status.get("status") in ("complete", "error", "paused")):
+    if mode == "headless" and ledger is not None:
         try:
             loop_batch.write_usage(review_root, ledger, namespace)
         except Exception as exc:      # noqa: BLE001 -- must not mask the original status
