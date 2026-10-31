@@ -8,6 +8,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+import jsonschema
+
 import scripts.evidence as evidence
 import scripts.loop_batch as loop_batch
 import scripts.phases.persist as persist
@@ -16,6 +18,7 @@ import scripts.phases.runio as runio
 import scripts.phases.verify as verify
 import scripts.phases.verify_tools as verify_tools
 import scripts.run_manifest as run_manifest
+import scripts.runners.schema as schema_rules
 
 QID = "0123456789abcdef"
 RUN = "run-3231"
@@ -321,6 +324,47 @@ class StrictGenerationTest(_Tree):
         with open(path, encoding="utf-8") as fh:
             schema = json.load(fh)
         self.assertIn("missing_evidence", schema["required"])
+
+    def test_a_codex_shaped_reply_goes_through_the_projection_write_reply_and_the_lift(self):
+        # The whole path on the strict host: what the provider may return, what the
+        # receipt accepts after stamping, and what the round then owes.
+        finding = self._child()
+        with open(persist.launch_schema(self._entry(finding), "codex"), encoding="utf-8") as fh:
+            projection = json.load(fh)
+        self.assertEqual(persist.generation_schema(self._entry(finding)),
+                         schema_rules.strict_output_schema(
+                             persist.generation_schema(self._entry(finding))))
+
+        def reply(verdict, missing):
+            body = {"finding_id": "SG-1", "verdict": verdict, "confidence": "LIKELY",
+                    "reasoning": "r", "explored": [], "references": [],
+                    "citations": {"cwe": [], "owasp": [], "cve": []},
+                    "missing_evidence": missing}
+            jsonschema.validate(body, projection)
+            return json.dumps(body)
+
+        self._spent(1)
+        first = self._entry(finding)
+        self.assertEqual((True, ""), persist.write_reply(
+            first, reply("NEEDS_MORE_INFO", ["driver/caller.py"])))
+        self.assertEqual(["driver/caller.py"],
+                         verify_tools._lift_owed(self.root, QID, finding))
+        lift = self._entry(finding, lift=["driver/caller.py"])
+        self.assertEqual("tool-advisor-generation-schema.json",
+                         os.path.basename(persist.launch_schema(lift, "codex")))
+        self.assertEqual("advisor-verdict-schema.json",
+                         os.path.basename(persist.launch_schema(lift, "claude")))
+        self.assertEqual((True, ""), persist.write_reply(lift, reply("CONFIRMED", [])))
+        verify_tools._promote_lifts(self.root, [QID])
+        with open(verify_tools._tool_verdict_out_file(self.root, QID), encoding="utf-8") as fh:
+            landed = json.load(fh)
+        self.assertEqual(("CONFIRMED", []), (landed["verdict"], landed["missing_evidence"]))
+        jsonschema.validate(landed, self._receipt())
+
+    def _receipt(self):
+        with open(persist.role_schema({"out_file": "verdicts/" + QID + ".json"}),
+                  encoding="utf-8") as fh:
+            return json.load(fh)
 
     def test_the_empty_list_the_projection_forces_means_nothing_was_named(self):
         self._spent(1)
