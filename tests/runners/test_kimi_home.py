@@ -258,6 +258,30 @@ class TestHomeLocation(unittest.TestCase):
                 finally:
                     r.teardown("complete")
 
+    def test_an_xdg_runtime_dir_inside_the_reviewed_tree_is_not_used(self):
+        # #3256: the home holds the operator's credentials; an XDG_RUNTIME_DIR that resolves into the
+        # tree under review falls back to the temp root.
+        with tempfile.TemporaryDirectory() as d:
+            inside = os.path.join(d, "xdg")
+            os.mkdir(inside)
+            with mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": inside}):
+                r = self._prepare(d)
+            home = os.path.realpath(r.kimi_home)
+            self.assertNotEqual(os.path.realpath(inside), os.path.dirname(home))
+            self.assertFalse(home.startswith(os.path.realpath(d) + os.sep), home)
+            self.assertEqual([], os.listdir(inside))
+
+    def test_every_root_inside_the_tree_refuses(self):
+        with tempfile.TemporaryDirectory() as d:
+            inside = os.path.join(d, "xdg")
+            os.mkdir(inside)
+            with mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": inside}), \
+                    mock.patch.object(kimi_home.tempfile, "gettempdir", return_value=d), \
+                    mock.patch.object(kimi_home.tempfile, "mkdtemp",
+                                      side_effect=AssertionError("created a home")):
+                with self.assertRaisesRegex(RuntimeError, "inside the reviewed tree"):
+                    kimi_home.new_kimi_home(d)
+
     def test_the_run_dir_keeps_only_a_pointer_file(self):
         with tempfile.TemporaryDirectory() as d:
             r = self._prepare(d)
