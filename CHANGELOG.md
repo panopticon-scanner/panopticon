@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Fix: the ledger can say why a call was denied and why a launch wasted its turn (#3234).**
+  - A denial row now carries the guard hook's own `reason`. The hook leaves it in
+    `guard-denials.jsonl` in the run folder, after it has already printed its decision, so a slow
+    or full disk cannot delay or change a deny. Setup runs keep no such file.
+  - A Claude return-persist row records `reply_via`: `structured_output` or `result`.
+  - A self-writing launch that left no good artifact keeps a bounded, redacted `result_head`.
+  - The advisor and scout prompts now say up front that the grant is a list of files, and that a
+    directory search is denied. The read guard itself is unchanged.
+
 - **Fix: a tool claim's advisor can reach the evidence its claim crosses into (#3231, part 2 of 2).**
   The tool-verify advisor's read fence used to be just the group holding the cited file, so a claim
   whose behaviour crossed into another group came back `NEEDS_MORE_INFO`.

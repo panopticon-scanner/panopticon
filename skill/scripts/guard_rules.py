@@ -550,6 +550,84 @@ def _armed(settings_path, script):
     return any(_is_our_entry(entry, script) for entry in hooks)
 
 
+# --- WHERE A HOOK'S POLICY FILE IS, AND WHAT IT DENIED -----------------------
+
+def resolve_policy_path(env_name, argv_path, filename):
+    """The env override, then the path `install()` baked into the hook command, then a
+    walk up from the cwd: `_resolve_allowlist_path`'s order, whose docstring says why."""
+    env_path = os.environ.get(env_name)
+    if env_path and os.path.isfile(env_path):
+        return env_path
+    if argv_path:
+        # Returned even when absent: the guard is fail-closed, and an install that named a file which
+        # then vanished must DENY, never fall back to some other tree's policy and its grants.
+        return argv_path
+    cur = os.path.abspath(os.getcwd())
+    while True:
+        candidate = os.path.join(cur, ARTIFACT_DIR, filename)
+        if os.path.isfile(candidate):
+            return candidate
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    return os.path.join(ARTIFACT_DIR, filename)
+
+
+# #3234: a host's denial row says what was denied, never why, and only the hook knows why. So the
+# hook leaves its own reason beside the policy file, for `Ledger.record` to join by `tool_use_id`.
+# Nothing else reads this file: no done predicate, no tally. A launched agent reaches it through no
+# grant: its read scope is exact files, and its write grant is its own out_file.
+DENIALS_FILE = "guard-denials.jsonl"
+DENIALS_CAP = 4 * 1024 * 1024         # one looping agent must not fill the run folder
+DENIAL_REASON_CAP = 400
+_DENIAL_ID_CAP = 128
+_DENIAL_WAIT_SECONDS = 0.25
+
+
+def _append_denial(path, line):
+    """One `O_APPEND` write per line, so parallel launches sharing the file cannot interleave."""
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        info = os.fstat(fd)
+        if (stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600
+                and info.st_size < DENIALS_CAP):
+            os.write(fd, line)
+    finally:
+        os.close(fd)
+
+
+def _append_denial_quietly(path, line):
+    try:
+        _append_denial(path, line)
+    except OSError:
+        pass                          # the deny is already out; the record is only a record
+
+
+def record_denial(policy_path, payload, reason):
+    """Leave `reason` for the ledger, AFTER the hook has printed its deny. Never raises, and waits
+    at most `_DENIAL_WAIT_SECONDS`: the host waits for this process, so a slow or full disk must
+    not hold up a decision that is already made.
+
+    Not in the flat `.panopticon/` of a setup run: `setup-scan` alone holds a directory grant, over
+    the whole root, so that one role could read the file."""
+    try:
+        import threading              # here: an allowed call never pays for it
+        run_dir = os.path.dirname(os.path.abspath(policy_path))
+        tool_use_id = payload.get("tool_use_id")
+        if os.path.basename(run_dir) == ARTIFACT_DIR or not isinstance(tool_use_id, str):
+            return
+        line = json.dumps({"tool_use_id": tool_use_id[:_DENIAL_ID_CAP],
+                           "tool_name": str(payload.get("tool_name"))[:_DENIAL_ID_CAP],
+                           "reason": str(reason)[:DENIAL_REASON_CAP]}) + "\n"
+        writer = threading.Thread(target=_append_denial_quietly, daemon=True,
+                                  args=(os.path.join(run_dir, DENIALS_FILE), line.encode()))
+        writer.start()
+        writer.join(_DENIAL_WAIT_SECONDS)
+    except Exception:  # noqa: BLE001 -- the deny is already printed; nothing here may change it
+        pass
+
+
 # --- THE LOADER --------------------------------------------------------------
 #
 # The loader stanza is the one piece that cannot live here, because it is what

@@ -10,13 +10,16 @@ and `_rows`/`lines`/`total_cost`/`usage_document` are its readers -- the last
 two go through `scripts.money` for the exact-decimal cost arithmetic and the
 `LedgerCorrupt` fault a line that cannot be read back as money raises.
 """
+import json
 import math
 import os
 import sys
 import time
 from decimal import Decimal
 
+import scripts.guard_rules as guard_rules
 import scripts.money as money
+import scripts.phases.persist as persist
 import scripts.phases.runio as runio
 import scripts.redact as redact
 import scripts.runners.base as runners_base
@@ -49,6 +52,58 @@ def _measured_model_fields(details):
 # back through them.
 CANCELLED = "cancelled"
 ROLLED_BACK = "rolled_back"
+
+
+def _guard_reasons(path, wanted):
+    """{tool_use_id: the hook's reason} from the hooks' sidecar (#3234), for `wanted` ids only.
+
+    The join can only annotate a denial the HOST reported: a sidecar row matching none is ignored,
+    so nothing written there can add a denial or move an `ok`, a tally or a retry. Bounded by
+    `DENIALS_CAP`, and a damaged line (a full disk's short write) is skipped. A missing file is the
+    ordinary case: nothing the hook denied, or a host with no such hook."""
+    out: dict = {}
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as fh:
+            lines = fh.read(guard_rules.DENIALS_CAP + guard_rules.DENIAL_REASON_CAP).splitlines()
+    except OSError:
+        return out
+    for raw in lines:
+        try:
+            row = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        key, reason = row.get("tool_use_id"), row.get("reason")
+        if isinstance(key, str) and key in wanted and key not in out and isinstance(reason, str):
+            out[key] = reason
+    return out
+
+
+def _with_reasons(path, rows):
+    """A copy of the host's denial rows, each carrying the hook's own `reason` where it left one.
+    Redacted and bounded here, the single writer. `tool_input` beside it stays as the host wrote it.
+    `RunResult.denials` is never touched: `phases.denials` reads the host's report, not this."""
+    wanted = {row.get("tool_use_id") for row in rows if isinstance(row, dict)
+              and isinstance(row.get("tool_use_id"), str)} if isinstance(rows, list) else None
+    if not wanted:
+        return rows
+    reasons = _guard_reasons(path, wanted)
+    return [dict(row, reason=redact.redact(reasons[row["tool_use_id"]])[:guard_rules.DENIAL_REASON_CAP])
+            if isinstance(row, dict) and row.get("tool_use_id") in reasons else row for row in rows]
+
+
+def _self_write_failed(entry, result, refusal):
+    """A self-writing entry whose launch came back fine and left no good artifact. Its `result` is
+    the only sentence naming the cause. `ok` does not change: the tally and the retries read it."""
+    if (not result.ok or refusal is not None or entry.get("delivery") == "return_json"
+            or not entry.get("out_file")):
+        return False
+    try:
+        return not persist.is_done(entry)
+    except Exception:  # noqa: BLE001 -- this row is evidence of a launch already paid for
+        return False
 
 
 class Ledger:
@@ -121,7 +176,9 @@ class Ledger:
                 "usage": {k: int(result.usage.get(k, 0) or 0) for k in USAGE_FIELDS} if result.usage else {},
                 "cost_usd": result.cost_usd, "duration_ms": duration_ms,
                 "started_at": timing.get("started_at"), "finished_at": timing.get("finished_at"),
-                "session_id": result.session_id, "denials": result.denials,
+                "session_id": result.session_id,
+                "denials": _with_reasons(os.path.join(os.path.dirname(self.path),
+                                                      guard_rules.DENIALS_FILE), result.denials),
                 "rejected_file": rejected_file,
                 "error": refusal if refusal is not None else result.error}
         models = getattr(result, "models", None)
@@ -144,6 +201,12 @@ class Ledger:
         stderr = getattr(result, "stderr", None)
         if stderr and not line["ok"]:
             line["stderr"] = redact.redact(str(stderr))[:runners_base.STDERR_HEAD]
+        # #3234: written only when set, so every other row's shape is what it was. Neither is read
+        # by a done predicate: they answer an auditor's question, not the loop's.
+        if entry.get("delivery") == "return_json" and getattr(result, "reply_via", None):
+            line["reply_via"] = result.reply_via
+        if _self_write_failed(entry, result, refusal) and result.text:
+            line["result_head"] = redact.redact(str(result.text))[:runners_base.STDERR_HEAD]
         if status is not None:
             line["status"] = status
         if rolled_back:

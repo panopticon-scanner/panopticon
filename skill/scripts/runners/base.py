@@ -143,6 +143,7 @@ class RunResult:
                              # reads as a guard that never armed.
     error: object            # str | None: launch failure, non-zero exit, budget stop, timeout
     host_error: object = None      # the HOST's own error surface (#1623): str | dict | None
+    reply_via: object = None       # #3234: claude only: "structured_output" | "result"
                                    # -- the CLI's error line or the provider error object it
                                    # printed, NEVER the agent's text. `error` is the operator's
                                    # message and may quote the agent; this is what is classified.

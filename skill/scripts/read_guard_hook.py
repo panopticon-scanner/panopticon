@@ -59,7 +59,8 @@ _GUARD_RULES_USED = (
     "MARKER_PREFIX", "SCOPE_KEYS", "ENV_ENTRY_ID", "GLOB_PATTERN_DENIAL", "GIT_STORE_DENIAL",
     "_resolve_path", "_readable", "_in_dir_grant", "_glob_pattern_climbs", "_names_git_store",
     "_load_scope", "bind", "hook_command", "_trusted_hook_argv", "_is_our_entry", "_load",
-    "atomic_write_json", "_write_hook_entry", "_remove_hook_entry", "_armed")
+    "atomic_write_json", "_write_hook_entry", "_remove_hook_entry", "_armed",
+    "resolve_policy_path", "record_denial")
 
 # --- GUARD RULES LOADER (#3273 cut 11) ---
 # Byte-identical in the three guard hooks (tests/test_guard_rules.py). Run as a
@@ -431,21 +432,7 @@ def _resolve_scope_path(argv_path=None):
     """Env override, then the absolute path install() baked into the hook command
     (returned even when absent: fail-closed), then a CWD walk -- the order and
     reasons of write_guard_hook._resolve_allowlist_path."""
-    env_path = os.environ.get("PANOPTICON_READ_SCOPE")
-    if env_path and os.path.isfile(env_path):
-        return env_path
-    if argv_path:
-        return argv_path
-    cur = os.path.abspath(os.getcwd())
-    while True:
-        candidate = os.path.join(cur, ".panopticon", "read-scope.json")
-        if os.path.isfile(candidate):
-            return candidate
-        parent = os.path.dirname(cur)
-        if parent == cur:
-            break
-        cur = parent
-    return os.path.join(".panopticon", "read-scope.json")
+    return guard_rules.resolve_policy_path("PANOPTICON_READ_SCOPE", argv_path, "read-scope.json")
 
 
 def main(argv=None):
@@ -466,11 +453,13 @@ def main(argv=None):
         # deny below. #2394: the roster test sits inside too, so a bad tool_name denies, never crashes.
         if payload.get("tool_name", "") not in _READ_TOOLS:
             return 0
+        policy = None
         if guard_rules is None:            # #3273 cut 11: before the argv check, which needs it
             allow, reason = adjudicate(payload, None)
         else:
             _trusted_hook_argv()
-            allow, reason = adjudicate(payload, _resolve_scope_path(args[0] if args else None))
+            policy = _resolve_scope_path(args[0] if args else None)
+            allow, reason = adjudicate(payload, policy)
     except Exception as exc:  # noqa: BLE001 -- fail CLOSED, never crash the hook
         # A non-2 exit is NON-blocking in Claude Code (the tool proceeds), so an uncaught
         # exception here would fail OPEN despite every tolerant early return above.
@@ -478,7 +467,9 @@ def main(argv=None):
         return 0
     if allow:
         return 0
-    print(_deny_response(reason))
+    print(_deny_response(reason), flush=True)
+    if policy:
+        guard_rules.record_denial(policy, payload, reason)      # #3234: after the deny, never instead
     return 0
 
 
