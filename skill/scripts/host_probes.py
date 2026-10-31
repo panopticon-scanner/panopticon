@@ -31,8 +31,9 @@ does it inside a `tempfile.TemporaryDirectory()`.
 from typing import Any
 import os
 
-from scripts import app_trace, hosts, run_manifest
+from scripts import app_trace, hosts, probe_cache, run_manifest
 import scripts.probes.claude as claude_probes
+import scripts.probes.claude_write_canary as claude_write_canary
 import scripts.probes.codex as codex_probes
 import scripts.probes.common as probes_common
 import scripts.probes.kimi as kimi_probes
@@ -83,6 +84,24 @@ _NO_PROBE: dict[str, str] = {}
 
 def _row(state, by, detail):
     return {"state": state, "by": by, "detail": detail}
+
+
+def _cached_probe_result(value):
+    """A cached JSON row back to the probe tuple, or None on any drift."""
+    if (not isinstance(value, (list, tuple)) or len(value) != 3
+            or value[0] not in hosts.STATES
+            or value[1] is not None and not isinstance(value[1], str)
+            or not isinstance(value[2], str) or not value[2]):
+        return None
+    return value[0], value[1], value[2]
+
+
+def _conclusive_cli_flags(value):
+    """Whether every cached operational fact was actually measured."""
+    return (isinstance(value, dict)
+            and all(isinstance(row, dict)
+                    and isinstance(row.get("advertised"), bool)
+                    for row in value.values()))
 
 
 def _no_probe_reason(row, capability, host):
@@ -162,6 +181,10 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
     # capability probes, and only on a headless run.
     cli_flags = {}
     session_root = session_root or os.getcwd()
+    apps = app_trace.host_apps(host, review_root)
+    cache = probe_cache.ProbeCache(
+        host, apps, registration_dir=registration_dir,
+        session_root=session_root, settings_path=settings_path, home=home)
 
     def record(capability, result):
         findings.setdefault(capability, []).append(result)
@@ -179,12 +202,23 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
             codex_measurement.append(codex_probes._codex_surfaces(registration_dir))
         return codex_measurement[0]
 
+    # #3272 G5: the one paid Claude launch proves two independent controls.
+    # Both mapped probes receive their own verdict from this invocation-local
+    # measurement, so a cold cache still starts `claude -p` only once.
+    claude_measurement: list[dict[str, tuple[str, str]]] = []
+
+    def claude_measure():
+        if not claude_measurement:
+            claude_measurement.append(claude_write_canary.measure())
+        return claude_measurement[0]
+
     runners = {
         probes_common.REGISTERED_SHELL_TOOLS:
             lambda: probes_common.probe_registered_shell_tools(host, registration_dir),
         claude_probes.WRITE_GUARD_ARMED:
             lambda: claude_probes.probe_write_guard_armed(
-                host, session_root=session_root, settings_path=settings_path),
+                host, session_root=session_root, settings_path=settings_path,
+                canary=lambda: claude_measure()["write"]),
         claude_probes.USAGE_SOURCE:
             lambda: claude_probes.probe_usage_source(
                 host, session_root, home=home, settings_path=settings_path,
@@ -193,7 +227,8 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
             lambda: claude_probes.probe_entry_model_bound(host, registration_dir),
         claude_probes.READ_GUARD_ARMED:
             lambda: claude_probes.probe_read_guard_armed(
-                host, session_root=session_root, settings_path=settings_path),
+                host, session_root=session_root, settings_path=settings_path,
+                canary=lambda: claude_measure()["read"]),
         codex_probes.CODEX_EFFECTIVE_TOOLS:
             lambda: codex_probes.probe_codex_tool_policy(
                 host, registration_dir, settings_path, codex_measure),
@@ -229,7 +264,18 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
             record(capability, (hosts.UNKNOWN, None,
                                 "no implementation for probe %r" % probe_id))
             continue
-        record(capability, runner())
+        dynamic = probe_cache.dynamic_fingerprint(
+            host, probe_id, session_root=session_root,
+            settings_path=settings_path, home=home, run_home=run_home)
+        hit, value = cache.get(probe_id, dynamic)
+        result = _cached_probe_result(value) if hit else None
+        if result is not None and result[0] not in (hosts.PROVEN, hosts.REFUTED):
+            result = None
+        if result is None:
+            result = runner()
+            if result[0] in (hosts.PROVEN, hosts.REFUTED):
+                cache.put(probe_id, result, dynamic)
+        record(capability, result)
     # Not in any row's `probes`: it runs for any host with project scope, claim
     # or no claim, and it can only refute. Minor 4: run ONCE per invocation --
     # the caller that also needs the raw tuple passes its own result in rather
@@ -257,7 +303,15 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
     # launches none of our CLIs, so there is nothing to interrogate and
     # nothing to disclose (D10 N1).
     if settings_path is not None:
-        cli_flags.update(probes_common.probe_cli_flags(host, review_root))
+        hit, value = cache.get(probe_cache.CLI_FLAGS_ID)
+        if hit and _conclusive_cli_flags(value):
+            cli_flags.update(value)
+        else:
+            measured_flags = probes_common.probe_cli_flags(host, review_root)
+            cli_flags.update(measured_flags)
+            if _conclusive_cli_flags(measured_flags):
+                cache.put(probe_cache.CLI_FLAGS_ID, measured_flags)
+    cache.flush()
 
     capabilities = {}
     for capability in hosts.CAPABILITIES:
@@ -302,7 +356,7 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
     # version and sha256 -- the record #3272 keys its probe cache on.
     return {"schema_version": SCHEMA_VERSION, "host": host,
             "probed_at": run_manifest._now_iso(), "capabilities": capabilities,
-            hosts.CLI_FLAGS: cli_flags, "apps": app_trace.host_apps(host, review_root)}
+            hosts.CLI_FLAGS: cli_flags, "apps": apps}
 
 
 def capabilities_of(artifact):

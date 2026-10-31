@@ -288,11 +288,12 @@ def command(entry, env, review_root, run_dir, runner=None, registration_dir=None
     """Build one stdin-prompt launch from its registered, effective policy.
 
     `schema_argv` is `runners.schema.schema_argv`'s output -- `["--output-schema",
-    <published schema>]` or nothing (D10 ruling 3). Codex's stricter schema
-    subset is checked here; an incompatible published schema is omitted while
-    receipt validation independently derives `role_schema(entry)` (#2923 C).
-    The accepted pair is placed BEFORE the trailing `-`, which is not a flag
-    but the stdin marker, and `validate_command` re-checks the path it carries."""
+    <published schema>]` or nothing (D10 ruling 3). Strict-provider
+    compatibility is a CI property of the generation schemas panopticon ships
+    (#3272 cut 15); runtime keeps the containment check because this path came
+    through the target-writable dispatch request. The accepted pair is placed
+    BEFORE the trailing `-`, which is not a flag but the stdin marker, and
+    `validate_command` re-checks the path it carries."""
     runner = DEFAULT_RUNNER if runner is None else runner
     config = _shell(entry, registration_dir)
     model = entry.get("model")
@@ -314,8 +315,8 @@ def command(entry, env, review_root, run_dir, runner=None, registration_dir=None
     if schema_argv:
         if len(schema_argv) != 2 or schema_argv[0] != SCHEMA_FLAG:
             raise ValueError("invalid Codex output-schema argv")
-        strict_schema = runners_schema.strict_output_schema(schema_argv[1])
-        schema_argv = (SCHEMA_FLAG, strict_schema) if strict_schema else ()
+        published = runners_schema.published_schema(schema_argv[1])
+        schema_argv = (SCHEMA_FLAG, published) if published else ()
     if any(not isinstance(env.get(key), str) or not env[key] for key in ENV_KEYS):
         raise ValueError("missing Codex entry scope binding")
     if env[ENV_KEYS[0]] != entry.get("id"):
@@ -436,11 +437,13 @@ def validate_command(argv, env, review_root):
     # reviewed tree. Held to the schemas panopticon publishes, by the same rule
     # the runner applied when it built the pair, because this validator's whole
     # job is to re-check the FINISHED argv rather than trust how it was made.
+    # Provider compatibility of those shipped generation schemas is checked in
+    # CI, not reparsed for every launch (#3272 cut 15).
     if SCHEMA_FLAG in argv:
         index = argv.index(SCHEMA_FLAG) + 1
-        if index >= len(argv) or not runners_schema.strict_output_schema(argv[index]):
-            raise ValueError("Codex command names an output schema that is not strict-output "
-                             "compatible and published under skill/reference/")
+        if index >= len(argv) or not runners_schema.published_schema(argv[index]):
+            raise ValueError("Codex command names an output schema that is not published "
+                             "under skill/reference/")
     overrides = [argv[i + 1] for i, value in enumerate(argv[:-1]) if value == "-c"]
     config = tomllib.loads("\n".join(overrides))
     expected = safety_config()

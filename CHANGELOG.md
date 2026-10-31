@@ -54,6 +54,22 @@
   maps each entry id to its prompt file, because an id holding a `:` is stored under a hash. It is
   for an operator: no run reads it, and no agent is granted it.
 
+- **Change: host posture probes run once per unchanged assessment (#3272).** Their results are
+  cached under `$PANOPTICON_STATE_DIR` (default `~/.local/state/panopticon`), never in the reviewed
+  tree, by host, CLI `(sha256, version)`, installed measuring-code digest and the
+  registration/settings inputs each probe reads. Only conclusive `proven`/`refuted` measurements
+  are reused; `unknown` is tried again. A changed identity, source or setting, an entry older than
+  24 hours, or a future timestamp re-probes. Target-authored shadow/discovery surfaces are still
+  scanned every driver call. This removes repeated paid Claude canaries and repeated Codex runtime
+  measurements from resumable-loop iterations without preserving a transient failure.
+  - Claude's one real-CLI canary now also attempts an out-of-scope Read. `read_scope_confined`
+    proves only when the real `claude -p` denial row names that path; the same launch continues to
+    prove the own-file/peer-file Write boundary.
+  - Codex launch-time validation still confines `--output-schema` to published schemas, while the
+    200-line strict-provider compatibility walk now runs in CI over every production generation
+    projection instead of reparsing a shipped schema for every entry. Runtime disclosure is
+    unchanged.
+
 - **Docs: gaps operators hit in the 5.2 redteam runs (#3233).** SKILL.md now spells out the
   executable, says to keep a pre-run plan outside the target (first contact halts on a
   `.panopticon/` it did not create), says which parts of `superpowers:writing-plans` apply to a review, and says which copy to drive with when the

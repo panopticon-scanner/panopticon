@@ -9,6 +9,7 @@ from unittest import mock
 import scripts.runners.base as base
 import scripts.runners.schema as schema_rules
 import scripts._version as version
+import tests.strict_output_schema as strict_schema_rules
 
 
 def _published():
@@ -138,7 +139,7 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
                 with open(path, "w", encoding="utf-8") as fh:
                     json.dump(valid, fh)
                 self.assertEqual(os.path.realpath(path),
-                                 schema_rules.strict_output_schema(path))
+                                 strict_schema_rules.strict_output_schema(path))
 
                 definitions = copy.deepcopy(valid)
                 definitions["properties"]["ok"] = {"type": "string", "format": "email"}
@@ -154,7 +155,7 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
                 with open(path, "w", encoding="utf-8") as fh:
                     json.dump(definitions, fh)
                 self.assertEqual(os.path.realpath(path),
-                                 schema_rules.strict_output_schema(path))
+                                 strict_schema_rules.strict_output_schema(path))
 
                 legacy_definitions = copy.deepcopy(definitions)
                 legacy_definitions["definitions"] = legacy_definitions.pop("$defs")
@@ -162,7 +163,7 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
                     "#/definitions/detail")
                 with open(path, "w", encoding="utf-8") as fh:
                     json.dump(legacy_definitions, fh)
-                self.assertIsNone(schema_rules.strict_output_schema(path))
+                self.assertIsNone(strict_schema_rules.strict_output_schema(path))
 
                 mutations = []
                 no_dialect = copy.deepcopy(valid)
@@ -232,11 +233,11 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
                     with self.subTest(body=body):
                         with open(path, "w", encoding="utf-8") as fh:
                             json.dump(body, fh)
-                        self.assertIsNone(schema_rules.strict_output_schema(path))
+                        self.assertIsNone(strict_schema_rules.strict_output_schema(path))
 
                 with open(path, "w", encoding="utf-8") as fh:
                     fh.write("{not json")
-                self.assertIsNone(schema_rules.strict_output_schema(path))
+                self.assertIsNone(strict_schema_rules.strict_output_schema(path))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -309,12 +310,12 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
                 with open(path, "w", encoding="utf-8") as fh:
                     json.dump(control, fh)
                 self.assertEqual(os.path.realpath(path),
-                                 schema_rules.strict_output_schema(path))
+                                 strict_schema_rules.strict_output_schema(path))
                 for name, body in refused.items():
                     with self.subTest(rule=name):
                         with open(path, "w", encoding="utf-8") as fh:
                             json.dump(body, fh)
-                        self.assertIsNone(schema_rules.strict_output_schema(path))
+                        self.assertIsNone(strict_schema_rules.strict_output_schema(path))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -337,11 +338,11 @@ class TestTheOutputSchemaSeam(unittest.TestCase):
                                     ("_STRICT_MAX_TEXT", 1),
                                     ("_STRICT_MAX_ENUM_VALUES", 0)):
                     with self.subTest(limit=name), mock.patch.object(
-                            schema_rules, name, limit):
-                        self.assertIsNone(schema_rules.strict_output_schema(path))
-                with mock.patch.object(schema_rules, "_STRICT_LARGE_ENUM_COUNT", 1), \
-                        mock.patch.object(schema_rules, "_STRICT_LARGE_ENUM_TEXT", 1):
-                    self.assertIsNone(schema_rules.strict_output_schema(path))
+                            strict_schema_rules, name, limit):
+                        self.assertIsNone(strict_schema_rules.strict_output_schema(path))
+                with mock.patch.object(strict_schema_rules, "_STRICT_LARGE_ENUM_COUNT", 1), \
+                        mock.patch.object(strict_schema_rules, "_STRICT_LARGE_ENUM_TEXT", 1):
+                    self.assertIsNone(strict_schema_rules.strict_output_schema(path))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 

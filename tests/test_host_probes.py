@@ -40,6 +40,7 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
                     self.assertIn(row["state"], hosts.STATES)
                     self.assertTrue(row["detail"])
 
+
     def test_the_unprobed_capability_says_why(self):
         # Plan 5 shipped read-guard-armed for claude, so no capability is
         # probe-less by design any more (_NO_PROBE is empty); a host that
@@ -318,6 +319,208 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
             host_probes.run_probes("claude", d, session_root=d, settings_path="/run/host-settings.json",
                                    shadow=(hosts.UNKNOWN, None, "fixture"))
         self.assertEqual(u.call_args.kwargs.get("settings_path"), "/run/host-settings.json")
+
+
+class TestHostMeasurementsAreCachedOperatorSide(unittest.TestCase):
+    """#3272 cut 9: a resumable driver call must not buy the same host
+    measurement again while its CLI and settings are unchanged."""
+
+    APP = {"name": "claude", "path": "/operator/bin/claude",
+           "version": "2.1.40 (Claude Code)", "sha256": "a" * 64, "size": 17}
+
+    def _measure(self, target, registration, settings, app, result=None, flags=None):
+        if result is None:
+            result = (hosts.PROVEN, "fixture-probe", "measured once")
+        runners = {
+            "tools": mock.Mock(return_value=result),
+            "write": mock.Mock(return_value=result),
+            "usage": mock.Mock(return_value=result),
+            "model": mock.Mock(return_value=result),
+            "read": mock.Mock(return_value=result),
+            "flags": (mock.Mock(return_value={}) if flags is None
+                      else mock.Mock(side_effect=flags)),
+        }
+
+        def one_call():
+            return host_probes.run_probes(
+                "claude", target, registration_dir=registration,
+                settings_path=settings)
+
+        patches = (
+            mock.patch.object(host_probes.app_trace, "host_apps", return_value=[app]),
+            mock.patch.object(probes_common, "probe_registered_shell_tools",
+                              side_effect=runners["tools"]),
+            mock.patch.object(claude_probes, "probe_write_guard_armed",
+                              side_effect=runners["write"]),
+            mock.patch.object(claude_probes, "probe_usage_source",
+                              side_effect=runners["usage"]),
+            mock.patch.object(claude_probes, "probe_entry_model_bound",
+                              side_effect=runners["model"]),
+            mock.patch.object(claude_probes, "probe_read_guard_armed",
+                              side_effect=runners["read"]),
+            mock.patch.object(probes_common, "probe_cli_flags",
+                              side_effect=runners["flags"]),
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+            first, second = one_call(), one_call()
+        return first, second, runners
+
+    def test_an_unchanged_cli_and_settings_launch_each_host_probe_once(self):
+        with tempfile.TemporaryDirectory() as target, \
+                tempfile.TemporaryDirectory() as registration, \
+                tempfile.TemporaryDirectory() as state, \
+                mock.patch.dict(os.environ, {"PANOPTICON_STATE_DIR": state}):
+            settings = os.path.join(target, "host-settings.json")
+            first, second, runners = self._measure(
+                target, registration, settings, dict(self.APP))
+        self.assertEqual(first["capabilities"], second["capabilities"])
+        for name, runner in runners.items():
+            with self.subTest(probe=name):
+                self.assertEqual(1, runner.call_count)
+
+    def test_a_changed_cli_sha_relaunches_the_host_probes(self):
+        with tempfile.TemporaryDirectory() as target, \
+                tempfile.TemporaryDirectory() as registration, \
+                tempfile.TemporaryDirectory() as state, \
+                mock.patch.dict(os.environ, {"PANOPTICON_STATE_DIR": state}):
+            settings = os.path.join(target, "host-settings.json")
+            _first, _second, runners = self._measure(
+                target, registration, settings, dict(self.APP))
+            changed = dict(self.APP, sha256="b" * 64)
+            with mock.patch.object(host_probes.app_trace, "host_apps",
+                                   return_value=[changed]), \
+                    mock.patch.object(probes_common, "probe_registered_shell_tools",
+                                      side_effect=runners["tools"]), \
+                    mock.patch.object(claude_probes, "probe_write_guard_armed",
+                                      side_effect=runners["write"]), \
+                    mock.patch.object(claude_probes, "probe_usage_source",
+                                      side_effect=runners["usage"]), \
+                    mock.patch.object(claude_probes, "probe_entry_model_bound",
+                                      side_effect=runners["model"]), \
+                    mock.patch.object(claude_probes, "probe_read_guard_armed",
+                                      side_effect=runners["read"]), \
+                    mock.patch.object(probes_common, "probe_cli_flags",
+                                      side_effect=runners["flags"]):
+                host_probes.run_probes(
+                    "claude", target, registration_dir=registration,
+                    settings_path=settings)
+        for name, runner in runners.items():
+            with self.subTest(probe=name):
+                self.assertEqual(2, runner.call_count)
+
+    def test_a_refuted_result_is_conclusive_and_cached(self):
+        refuted = (hosts.REFUTED, "fixture-probe", "control absent")
+        with tempfile.TemporaryDirectory() as target, \
+                tempfile.TemporaryDirectory() as registration, \
+                tempfile.TemporaryDirectory() as state, \
+                mock.patch.dict(os.environ, {"PANOPTICON_STATE_DIR": state}):
+            settings = os.path.join(target, "host-settings.json")
+            first, second, runners = self._measure(
+                target, registration, settings, dict(self.APP), refuted)
+        self.assertEqual(
+            hosts.REFUTED,
+            first["capabilities"][hosts.ARTIFACT_WRITE_GUARD]["state"])
+        self.assertEqual(first["capabilities"], second["capabilities"])
+        for name, runner in runners.items():
+            with self.subTest(probe=name):
+                self.assertEqual(1, runner.call_count)
+
+    def test_unmeasured_cli_flags_are_retried(self):
+        unknown = {hosts.OUTPUT_SCHEMA: {
+            "flag": "--json-schema", "advertised": None, "detail": "timed out"}}
+        proven = {hosts.OUTPUT_SCHEMA: {
+            "flag": "--json-schema", "advertised": True, "detail": "advertised"}}
+        with tempfile.TemporaryDirectory() as target, \
+                tempfile.TemporaryDirectory() as registration, \
+                tempfile.TemporaryDirectory() as state, \
+                mock.patch.dict(os.environ, {"PANOPTICON_STATE_DIR": state}):
+            settings = os.path.join(target, "host-settings.json")
+            first, second, runners = self._measure(
+                target, registration, settings, dict(self.APP), flags=(unknown, proven))
+        self.assertIsNone(
+            first[hosts.CLI_FLAGS][hosts.OUTPUT_SCHEMA]["advertised"])
+        self.assertIs(
+            second[hosts.CLI_FLAGS][hosts.OUTPUT_SCHEMA]["advertised"], True)
+        self.assertEqual(2, runners["flags"].call_count)
+        for name, runner in runners.items():
+            if name != "flags":
+                with self.subTest(probe=name):
+                    self.assertEqual(1, runner.call_count)
+
+    def test_target_authored_surface_scans_are_never_cached(self):
+        unknown = (hosts.UNKNOWN, probes_common.SHADOW_SHELL_SCAN, "nothing found")
+        planted = (hosts.REFUTED, probes_common.SHADOW_SHELL_SCAN, "planted shell")
+        with tempfile.TemporaryDirectory() as target, \
+                tempfile.TemporaryDirectory() as registration, \
+                tempfile.TemporaryDirectory() as state, \
+                mock.patch.dict(os.environ, {"PANOPTICON_STATE_DIR": state}), \
+                mock.patch.object(probes_common, "probe_shadow_shells",
+                                  side_effect=(unknown, planted)) as scanned:
+            settings = os.path.join(target, "host-settings.json")
+            first, second, runners = self._measure(
+                target, registration, settings, dict(self.APP))
+        self.assertEqual(2, scanned.call_count)
+        self.assertNotEqual(first["capabilities"][hosts.TOOL_POLICY_ENFORCED],
+                            second["capabilities"][hosts.TOOL_POLICY_ENFORCED])
+        for runner in runners.values():
+            self.assertEqual(1, runner.call_count)
+
+    def test_an_unmeasured_canary_is_retried_and_can_prove_on_the_next_call(self):
+        import scripts.probes.claude_write_canary as canary
+
+        steady = (hosts.PROVEN, "fixture-probe", "measured once")
+        measurement = mock.Mock(side_effect=(
+            {"write": (canary.NOT_MEASURED, "not measured after a transient failure"),
+             "read": (canary.PROVEN, "read denied through the real CLI")},
+            {"write": (canary.PROVEN, "write boundary proven through the real CLI"),
+             "read": (canary.PROVEN, "read denied through the real CLI")},
+        ))
+
+        def write_probe(_host, **kwargs):
+            verdict, detail = kwargs["canary"]()
+            state = hosts.UNKNOWN if verdict == canary.NOT_MEASURED else verdict
+            return state, claude_probes.WRITE_GUARD_ARMED, detail
+
+        def read_probe(_host, **kwargs):
+            verdict, detail = kwargs["canary"]()
+            return verdict, claude_probes.READ_GUARD_ARMED, detail
+
+        with tempfile.TemporaryDirectory() as target, \
+                tempfile.TemporaryDirectory() as registration, \
+                tempfile.TemporaryDirectory() as state, \
+                mock.patch.dict(os.environ, {"PANOPTICON_STATE_DIR": state}), \
+                mock.patch.object(host_probes.app_trace, "host_apps",
+                                  return_value=[dict(self.APP)]), \
+                mock.patch.object(probes_common, "probe_registered_shell_tools",
+                                  return_value=steady), \
+                mock.patch.object(claude_probes, "probe_write_guard_armed",
+                                  side_effect=write_probe) as write, \
+                mock.patch.object(claude_probes, "probe_usage_source",
+                                  return_value=steady), \
+                mock.patch.object(claude_probes, "probe_entry_model_bound",
+                                  return_value=steady), \
+                mock.patch.object(claude_probes, "probe_read_guard_armed",
+                                  side_effect=read_probe) as read, \
+                mock.patch.object(probes_common, "probe_cli_flags",
+                                  return_value={}), \
+                mock.patch.object(host_probes.claude_write_canary, "measure",
+                                  side_effect=measurement):
+            settings = os.path.join(target, "host-settings.json")
+            first = host_probes.run_probes(
+                "claude", target, registration_dir=registration,
+                settings_path=settings)
+            second = host_probes.run_probes(
+                "claude", target, registration_dir=registration,
+                settings_path=settings)
+
+        self.assertEqual(hosts.UNKNOWN,
+                         first["capabilities"][hosts.ARTIFACT_WRITE_GUARD]["state"])
+        self.assertEqual(hosts.PROVEN,
+                         second["capabilities"][hosts.ARTIFACT_WRITE_GUARD]["state"])
+        self.assertEqual(2, write.call_count)
+        self.assertEqual(1, read.call_count,
+                         "the conclusive half of the shared launch stays cached")
+        self.assertEqual(2, measurement.call_count)
 
 
 class TestTheEvidenceLoader(unittest.TestCase):

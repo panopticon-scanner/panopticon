@@ -18,7 +18,7 @@ import scripts.phases.runio as runio
 import scripts.phases.verify as verify
 import scripts.phases.verify_tools as verify_tools
 import scripts.run_manifest as run_manifest
-import scripts.runners.schema as schema_rules
+from tests.strict_output_schema import strict_output_schema
 
 QID = "0123456789abcdef"
 RUN = "run-3231"
@@ -332,7 +332,7 @@ class StrictGenerationTest(_Tree):
         with open(persist.launch_schema(self._entry(finding), "codex"), encoding="utf-8") as fh:
             projection = json.load(fh)
         self.assertEqual(persist.generation_schema(self._entry(finding)),
-                         schema_rules.strict_output_schema(
+                         strict_output_schema(
                              persist.generation_schema(self._entry(finding))))
 
         def reply(verdict, missing):

@@ -244,8 +244,8 @@ class TestHostCapabilitiesMeta(unittest.TestCase):
         # verbatim: the REASON survives, not just the verdict -- by/detail
         # included, nothing re-keyed, nothing summarised.
         self.assertEqual(env["capabilities"], hc["capabilities"])
-        # ...and WHEN, and in which schema. 5.2 re-probes on every invocation
-        # precisely because setup-time-only evidence is unbounded in age; a
+        # ...and WHEN, and in which schema. 5.2 reassesses every invocation;
+        # unchanged identity/settings-keyed measurements may be reused, but a
         # consumer that cannot read the probe time cannot tell a posture
         # measured at this invocation from a stale one. `meta.timestamp` does
         # not answer it -- that is SYNTHESIS time, which on a resumed run is a
