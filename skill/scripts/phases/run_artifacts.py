@@ -1,16 +1,22 @@
-"""The driver plan and review-output snapshot artifacts.
+"""The driver plan, review-output snapshot and prompt index artifacts.
 
 These helpers moved whole from :mod:`scripts.phases.requests` when that module
 reached the 700-line ceiling.  ``requests`` re-exports both private names so
 the review, verify, synthesize, and test call sites keep one stable seam.
 """
+import json
 import os
+import sys
 
 import scripts.group_runner as group_runner
 import scripts.loop_batch as loop_batch
 import scripts.run_manifest as run_manifest
+import scripts.safe_write as safe_write
+import scripts.tolerant_json as tolerant_json
 from . import coverage
 from . import runio
+
+_PROMPT_INDEX_MAX = 16 * 1024 * 1024
 
 
 def _driver_plan_entries(review_root, manifest):
@@ -57,3 +63,24 @@ def _snapshot_review_out_files(review_root, manifest):
         cells=len(entries),
         stamp_fields=lambda result: {"sha256": result[1]})
     return path if written and written[0] else None
+
+
+def write_prompt_index(path, written):
+    """`_prompts/index.json`, {entry id: its prompt file's name} (#3233): an id holding a `:` is
+    stored under a hash, so nothing else finds `Orchestration:Core`'s prompt by name. For an
+    operator: no run reads it back and no agent is granted it, so a lost or planted one costs a
+    lookup. Once per pass and merged, because each checkpoint writes its own prompts."""
+    if not written:
+        return
+    try:
+        try:
+            raw = safe_write.read_regular_bytes(path, _PROMPT_INDEX_MAX)
+            found = json.loads(tolerant_json.depth_checked(raw.decode("utf-8")))
+        except (OSError, ValueError):
+            found = None             # absent, or not ours: this pass's names are still true
+        kept = ({k: v for k, v in found.items() if isinstance(v, str)}
+                if isinstance(found, dict) else {})
+        runio._write_json(path, dict(kept, **written))
+    except (OSError, ValueError) as exc:
+        print("driver: could not write the prompt index (%s); the prompts still stand" % exc,
+              file=sys.stderr, flush=True)
