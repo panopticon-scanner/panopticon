@@ -386,5 +386,20 @@ def test_write_report_replaces_destination(tmp_path):
     assert not (tmp_path / "report-strain.json.tmp").exists()
 
 
+def test_write_report_never_writes_through_a_planted_stage_link(tmp_path):
+    # #3256: `<stem>-strain.json.tmp` is predictable; a link there refuses, its target untouched.
+    victim = tmp_path / "victim"
+    victim.write_text("keep", encoding="utf-8")
+    os.symlink(victim, tmp_path / "report-strain.json.tmp")
+    try:
+        sr.write_report({"schema_version": 1}, str(tmp_path / "report.json"))
+    except (OSError, sr.safe_write.UnsafeStagingPathError):
+        pass
+    else:
+        raise AssertionError("a planted stage link was written through")
+    assert victim.read_text(encoding="utf-8") == "keep"
+    assert not (tmp_path / "report-strain.json").exists()
+
+
 if __name__ == "__main__":
     unittest.main()

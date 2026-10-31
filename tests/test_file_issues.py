@@ -752,6 +752,46 @@ def test_record_rejects_malformed_disk_without_mutating_snapshot(tmp_path, shape
     replace.assert_not_called()
 
 
+@pytest.mark.parametrize("leaf", [".tmp", ".lock"])
+def test_a_link_at_the_ledgers_stage_or_lock_is_never_written_through(tmp_path, leaf):
+    # #3256: both names are predictable; a planted symlink refuses and its target is untouched.
+    path = tmp_path / "ledger.json"
+    victim = tmp_path / "victim"
+    victim.write_text("keep", encoding="utf-8")
+    os.symlink(victim, str(path) + leaf)
+    with pytest.raises((OSError, file_issues.safe_write.UnsafeStagingPathError)):
+        file_issues.record({}, "new", "https://example.test/issues/1", str(path))
+    assert victim.read_text(encoding="utf-8") == "keep"
+    assert not path.exists()
+
+
+def test_a_pipe_at_the_ledger_lock_refuses_and_does_not_hang(tmp_path):
+    # No reader: the non-blocking open itself fails (ENXIO). With one, the regular-file check does.
+    path = tmp_path / "ledger.json"
+    os.mkfifo(str(path) + ".lock")
+    with pytest.raises(OSError):
+        file_issues.record({}, "new", "https://example.test/issues/1", str(path))
+
+
+def test_a_pipe_with_a_reader_at_the_ledger_lock_is_not_a_lock(tmp_path):
+    path = tmp_path / "ledger.json"
+    lock = str(path) + ".lock"
+    os.mkfifo(lock)
+    reader = os.open(lock, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        with pytest.raises(OSError, match="not a regular file"):
+            file_issues.record({}, "new", "https://example.test/issues/1", str(path))
+    finally:
+        os.close(reader)
+
+
+def test_a_leftover_stage_from_an_interrupted_write_is_replaced(tmp_path):
+    path = tmp_path / "ledger.json"
+    (tmp_path / "ledger.json.tmp").write_text("half", encoding="utf-8")
+    file_issues.record({}, "new", "https://example.test/issues/1", str(path))
+    assert file_issues.load_ledger(str(path)) == {"new": "https://example.test/issues/1"}
+
+
 def test_empty_legacy_and_v2_ledgers_are_valid(tmp_path):
     path = tmp_path / "ledger.json"
     for raw in ("{}", '{"schema_version": 2, "entries": {}}'):

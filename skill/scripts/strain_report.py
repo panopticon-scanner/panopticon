@@ -43,13 +43,14 @@ import os
 import sys
 
 if TYPE_CHECKING:
-    from scripts import ocrdb, report_records
+    from scripts import ocrdb, report_records, safe_write
 else:
     try:
-        from scripts import ocrdb, report_records
+        from scripts import ocrdb, report_records, safe_write
     except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
         import ocrdb
         import report_records
+        import safe_write
 
 SCHEMA_VERSION = 1
 
@@ -321,12 +322,15 @@ def build_report(findings, meta, run_id, panopticon_version=None, target=None,
 
 
 def write_report(report, out_path):
-    """Write `report` beside its review report as `<stem>-strain.json`."""
+    """Write `report` beside its review report as `<stem>-strain.json`.
+
+    The stage is created exclusively and never through a link (#3256): its name is predictable,
+    so a planted `<stem>-strain.json.tmp` symlink must refuse rather than be written through."""
     import json
     stem = out_path[:-len(".json")] if out_path.endswith(".json") else out_path
     path = stem + "-strain.json"
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
+    with safe_write.open_staging_nofollow(tmp) as fh:
         json.dump(report, fh, indent=2)
         fh.write("\n")
     os.replace(tmp, path)
