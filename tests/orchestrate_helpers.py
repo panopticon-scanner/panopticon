@@ -49,13 +49,17 @@ class FakeRunner(base.HostRunner):
         self.run_dir, self.review_root = run_dir, review_root
         self.settings_path = os.path.join(run_dir, base.SETTINGS_FILE)
 
+    def arming(self):
+        """(write guard armed, read guard armed), read from the guard files themselves."""
+        return (
+            write_guard_hook.is_armed(self.settings_path, os.path.join(self.run_dir, "write-allowlist.json"))[0],
+            read_guard_hook.is_armed(self.settings_path, os.path.join(self.run_dir, "read-scope.json"))[0])
+
     def run_entry(self, entry, env):
         eid = entry["id"]
         self.launched.append(eid)
         self.seen_env[eid] = dict(env)
-        self.armed_at_launch.append((
-            write_guard_hook.is_armed(self.settings_path, os.path.join(self.run_dir, "write-allowlist.json"))[0],
-            read_guard_hook.is_armed(self.settings_path, os.path.join(self.run_dir, "read-scope.json"))[0]))
+        self.armed_at_launch.append(self.arming())
         if eid in self.drop_once:
             self.drop_once.discard(eid)
             return base.RunResult.failed(eid, "concurrency cap")
