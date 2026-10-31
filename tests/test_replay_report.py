@@ -585,6 +585,26 @@ def test_diff_each_json_artifact_content_and_presence(tmp_path, suffix):
     assert any("present on A only" in line for line in lines)
 
 
+def test_diff_compares_every_part_either_side_wrote(tmp_path):
+    # #3256: only `_part2` was compared, so a difference in `_part3` (or a part only one side
+    # wrote) replayed as IDENTICAL.
+    a = _out_dir(tmp_path, "a", "")
+    b = _out_dir(tmp_path, "b", "")
+    for d in (a, b):
+        _write_report(d, "_part2.json", {"findings": [1]})
+    _write_report(a, "_part3.json", {"findings": [2]})
+    _write_report(b, "_part3.json", {"findings": [3]})
+    rc, lines = _diff(a, b)
+    assert rc == 1
+    assert any("_part3.json" in line and "findings[0]" in line for line in lines), lines
+    _write_report(b, "_part3.json", {"findings": [2]})
+    assert _diff(a, b)[0] == 0
+    _write_report(a, "_part11.json", {"findings": [4]})
+    rc, lines = _diff(a, b)
+    assert rc == 1
+    assert any("_part11.json: present on A only" in line for line in lines), lines
+
+
 def test_diff_masks_only_declared_json_timestamps(tmp_path):
     a = _out_dir(tmp_path, "a", "")
     b = _out_dir(tmp_path, "b", "")
