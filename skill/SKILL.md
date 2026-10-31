@@ -111,7 +111,7 @@ a project, and the target's own `skill/` to test changes to panopticon itself.
 `driver` below is short for `python3 skill/scripts/driver.py`, so the first command is
 `python3 skill/scripts/driver.py readiness`, with `skill/` substituted as above.
 
-- `driver readiness [target] [--host NAME] [--json]` — run this FIRST. The preflight, and
+- `driver readiness [target] [run flags] [--json]` — run this FIRST. The preflight, and
   the only verb that writes nothing under the target and launches nothing (host CLIs are
   looked up with `which`, never started): one compact table — or `--json` for the object —
   covering the guide's path, which required sub-skills are installed and where, the
@@ -123,7 +123,12 @@ a project, and the target's own `skill/` to test changes to panopticon itself.
   the run's manifest, else the default), so a bare invocation still checks a real host; its
   row is marked `→` and GATES when its binary is off PATH — `driver loop` would resolve that
   host to headless and have nothing to launch. `--json` says which rule picked it
-  (`selected_from`).
+  (`selected_from`). It takes the same flags as `driver loop`, so one argv serves both,
+  and reports what that run would meet, changing nothing: the groups discovery will
+  dispatch, a gate left `OFF`, stale enforcement shells, dependency auditors withheld
+  without `--online`, and which copy of the skill is running. `--reset` is reported, not
+  acted on. Whether the loop will stop for `--allow-unenforced` it cannot say: that needs
+  one launch, on the first run.
 - `driver setup [target] [--max-per-group N] [--max-groups N] [--allow-unenforced]` — one-time
   bootstrap; produces `panopticon.yml.draft` (repo root) + `.panopticon/setup-report.md` (read
   the report first). It dispatches one agent over the whole untrusted tree, so it probes this

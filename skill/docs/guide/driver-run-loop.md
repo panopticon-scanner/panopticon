@@ -116,7 +116,7 @@ The host contract (5.2, plan 6):
   The loop **refuses to advance** until the
   entries' out files exist on disk and pass the phase's own done predicate — a re-entry with nothing
   done re-emits the same set; there is no way to advance on a claim.
-- **`driver readiness [target] [--host NAME] [--json]` is the preflight, and it is not part of the
+- **`driver readiness [target] [run flags] [--json]` is the preflight, and it is not part of the
   loop.** Run it before you launch anything. It writes nothing under the target and launches nothing
   — host CLIs are located with `shutil.which` and never started, and the Docker probe is the
   readiness phase's own — and prints ONE compact document (a table, or the object under `--json`):
@@ -150,6 +150,21 @@ The host contract (5.2, plan 6):
   fails, 1 otherwise — `driver readiness && driver loop`.
   Since the guide became an index plus chapters (2026-09-24), that `guide` row's `exists` is true
   only when every chapter file is present too, and its remedy names the ones that are not.
+  **It takes `driver loop`'s flags (#3233)**, so `driver readiness . --security redteam && driver
+  loop . --security redteam` is one argv twice, and a `run_plan` object reports what that run would
+  meet. Every row is informational and none moves the exit code: `flags` (what the run would use;
+  `--reset` is reported, never acted on), `gate` (`WARN` when no `--fail-on` is given or committed,
+  because the run would end `gate: OFF`), `groups` (discovery run into a temp directory: committed
+  leaves and their chunks, plus what it derives, such as `Commons`, `Docs` and `Tests`; not counted
+  for `-c`, `--base` or `--pr`, which depend on a diff), `shells` (the registered enforcement shells
+  compared byte for byte with a fresh render into a temp directory), `enforcement`
+  (`tool_policy_enforced` from the registered shells with no launch; whether the loop will stop for
+  `--allow-unenforced` is never answered, because `artifact_write_guard` is measured by one launch on
+  the first run), `tool-findings` (how many tool findings will each get an advisor: unknown until the
+  tools phase runs, and counted on a resume whose scan already ran; the tools phase prints the same
+  count when it ends, labelled "before review merges"), `online-tools` (the adapters withheld without
+  `--online`) and `install` (which copy of the skill is running, and any other copy the target's
+  `skill/` or `~/.claude/skills/panopticon` resolves to).
 - **The loop's first step is the readiness checkpoint.** Before any paid dispatch — before the loop
   arms a guard or runs an entry — the engine runs `readiness` (below). (It is not the very first
   thing the process does: `driver run` establishes the host capability posture first, which on a

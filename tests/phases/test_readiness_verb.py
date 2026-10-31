@@ -44,6 +44,7 @@ from tests._test_helpers import REPO_ROOT, SKILL_ROOT
 import scripts.phases.runio as runio
 import scripts.driver as driver
 import scripts.phases.readiness as readiness
+import scripts.phases.readiness_plan as readiness_plan
 import scripts.phases.readiness_checks as readiness_checks
 import scripts.repo_config as repo_config
 from scripts import hosts
@@ -230,8 +231,8 @@ class TestTheUnreadyMachine(_VerbCase):
                 self.assertIn(row, text)
         self.assertIn("NOT READY", text)
         # One document, not a wall: one line per row plus a header and a
-        # verdict. #1687 adds the sidecar readiness row.
-        self.assertLessEqual(len(text.strip().splitlines()), 11)
+        # verdict. #1687 adds the sidecar readiness row, #3233 the run-plan rows.
+        self.assertLessEqual(len(text.strip().splitlines()), 11 + len(readiness_plan.ROWS))
 
 
 class TestTheDependenciesRow(_VerbCase):
@@ -944,7 +945,9 @@ class TestAHealthyCliRowReadsOk(_VerbCase):
         _code, text = self._run(d, "--host", "claude", which=READY_CLI)
         dashed = sorted(ln.split()[0] for ln in text.splitlines()
                         if ln.startswith("  ") and " -- " in ln + " ")
-        self.assertEqual(["capabilities", "egress-proxy", "existing-run", "sub-skills"], dashed)
+        # #3233: plus whichever run-plan rows have nothing to warn about here; all informational.
+        self.assertEqual(["capabilities", "egress-proxy", "existing-run", "sub-skills"],
+                         [name for name in dashed if name not in readiness_plan.ROWS])
 
 
 class TestTheCiMachine(_VerbCase):

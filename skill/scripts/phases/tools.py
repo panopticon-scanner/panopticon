@@ -226,8 +226,25 @@ def tools_execute(review_root, manifest):
                          % (proc.returncode, note))
     elif not produced:
         sys.stderr.write("driver: tool scan produced no output — %s\n" % note)
+    findings = _tool_findings_note(review_root, manifest) if produced else ""
+    if findings:
+        sys.stderr.write("driver: %s\n" % findings)
     return engine.PhaseResult(kind="advanced",
                        message="tools: %s" % (
-                           "produced output" if produced
+                           "produced output" + ("; " + findings if findings else "") if produced
                            else ("CRASHED — " + note if crashed
                                  else "SKIPPED — " + note)))
+
+
+def _tool_findings_note(review_root, manifest):
+    """#3233: how many tool findings will each get an advisor, said before any is paid for. It is
+    the count before review merges, not what the verify phase will dispatch, and it says so. ""
+    when the output cannot be counted: the scan's own outcome above still stands."""
+    try:
+        from . import verify_tools               # lazy: it imports this module
+        count = len(verify_tools._tool_verify_queue(review_root, manifest))
+    except Exception:                            # noqa: BLE001 -- target-writable input
+        return ""
+    cap = (manifest.get("flags") or {}).get("max_verify")
+    return ("%d tool finding(s) will each get an advisor, before review merges (%s)"
+            % (count, "capped at %d by --max-verify" % cap if cap else "uncapped"))

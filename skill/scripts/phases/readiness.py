@@ -53,6 +53,7 @@ import scripts.run_manifest as run_manifest
 import scripts.setup_flow as setup_flow
 from . import engine
 from . import readiness_checks
+from . import readiness_plan
 # #1727: the `existing_run` row counts pending entries out of the dispatch
 # request, so it reads it through the same bound reader the loop does.
 from . import requests
@@ -541,7 +542,7 @@ def _capabilities_row(review_root, tag):
                                 + host_disclosure.notes(envelope))}
 
 
-def preflight(target=".", host=None, online=None):
+def preflight(target=".", host=None, online=None, plan=None):
     """The whole document. Reads; never writes, never launches.
 
     `host` is the raw `--host`, which is usually absent. The host this document
@@ -596,7 +597,9 @@ def preflight(target=".", host=None, online=None):
             "cli": cli,
             "tools_image": tools_image,
             "egress_proxy": readiness_checks.egress_proxy_row(online, tools_flag),
-            "capabilities": _capabilities_row(review_root, existing["tag"])}
+            "capabilities": _capabilities_row(review_root, existing["tag"]),
+            # #3233: what this run's flags describe, every row informational.
+            "run_plan": readiness_plan.rows(review_root, host, plan, manifest)}
 
 
 def _row_lines(document):
@@ -619,7 +622,8 @@ def _row_lines(document):
              document["tools_image"]["remedy"] or ""),
             ("egress-proxy", "warn" if document["egress_proxy"]["level"] == "warn"
              else document["egress_proxy"]["ok"], document["egress_proxy"]["detail"]),
-            ("capabilities", None, document["capabilities"]["detail"]))
+            ("capabilities", None, document["capabilities"]["detail"]),
+            *((name, row["ok"], row["detail"]) for name, row in document["run_plan"].items()))
 
 
 def _cli_cell(rows):
@@ -657,12 +661,12 @@ def render(document):
     return "\n".join(lines) + "\n"
 
 
-def emit_preflight(target=".", host=None, as_json=False, stream=None, online=None):
+def emit_preflight(target=".", host=None, as_json=False, stream=None, online=None, plan=None):
     """Print the document and return the process exit code (0 ready, 1 not),
     so `driver readiness && driver loop` is a correct thing for a host to
     write. `sys.stdout` is read at CALL time, not bound at import, so a caller
     that redirects it gets the output."""
-    document = preflight(target, host, online=online)
+    document = preflight(target, host, online=online, plan=plan)
     out = stream if stream is not None else sys.stdout
     out.write(json.dumps(document, indent=2, sort_keys=True) + "\n"
               if as_json else render(document))
