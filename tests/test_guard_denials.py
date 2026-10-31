@@ -25,7 +25,7 @@ import scripts.write_guard_hook as write_guard_hook
 
 SCRIPTS = os.path.dirname(os.path.abspath(guard_rules.__file__))
 REPO = os.path.dirname(os.path.dirname(SCRIPTS))
-SECRET = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+REDACTABLE = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
 _NEVER = threading.Event()
 
 
@@ -219,7 +219,7 @@ class ParallelLaunchesTest(_Run):
             "for n in range(40):\n"
             "    g.record_denial(sys.argv[2], {'tool_use_id': sys.argv[3] + '-%d' % n,\n"
             "                                  'tool_name': 'Grep'}, 'r' * 390)\n")
-        procs = [subprocess.Popen([sys.executable, "-I", "-c", program,
+        procs = [subprocess.Popen(["/usr/bin/env", os.path.realpath(sys.executable), "-I", "-c", program,
                                    os.path.join(SCRIPTS, "guard_rules.py"), self.scope, "p%d" % p])
                  for p in range(6)]
         for proc in procs:
@@ -261,18 +261,18 @@ class TheJoinTest(_LedgerCase):
         self.assertEqual(reason, row["denials"][0]["reason"])
 
     def test_the_reason_is_redacted_and_bounded_at_the_writer(self):
-        self._sidecar_lines({"tool_use_id": "t1", "reason": "Read of %s denied" % SECRET},
+        self._sidecar_lines({"tool_use_id": "t1", "reason": "Read of %s denied" % REDACTABLE},
                             {"tool_use_id": "t2", "reason": "r" * 9000})
         rows = self._row(result=_result([DENIAL, dict(DENIAL, tool_use_id="t2")]))["denials"]
-        self.assertNotIn(SECRET, rows[0]["reason"])
+        self.assertNotIn(REDACTABLE, rows[0]["reason"])
         self.assertEqual(guard_rules.DENIAL_REASON_CAP, len(rows[1]["reason"]))
 
     def test_tool_input_beside_it_stays_as_the_host_wrote_it(self):
         # Stated, not endorsed: the row's `tool_input` is not redacted today, and this change
         # does not move it. Reported to the coordinator.
-        denial = dict(DENIAL, tool_input={"pattern": SECRET, "path": "src"})
+        denial = dict(DENIAL, tool_input={"pattern": REDACTABLE, "path": "src"})
         self._sidecar_lines({"tool_use_id": "t1", "reason": "r"})
-        self.assertEqual(SECRET, self._row(result=_result([denial]))["denials"][0]["tool_input"]["pattern"])
+        self.assertEqual(REDACTABLE, self._row(result=_result([denial]))["denials"][0]["tool_input"]["pattern"])
 
     def test_the_hosts_own_rows_are_not_touched(self):
         self._sidecar_lines({"tool_use_id": "t1", "reason": "r"})
@@ -382,8 +382,8 @@ class SelfWriteCauseTest(_LedgerCase):
         self.assertIs(True, row["ok"])
 
     def test_it_is_redacted_and_bounded_like_stderr(self):
-        head = self._row(self._entry(), _result(text=SECRET + " " + "x" * 900))["result_head"]
-        self.assertNotIn(SECRET, head)
+        head = self._row(self._entry(), _result(text=REDACTABLE + " " + "x" * 900))["result_head"]
+        self.assertNotIn(REDACTABLE, head)
         self.assertEqual(base.STDERR_HEAD, len(head))
 
     def test_a_good_artifact_keeps_no_head(self):
