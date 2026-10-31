@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Fix: with no committed matrix, groups are named after the directory, not `._N` (#3376).** The
+  name comes from the target's real path, cut to the alphabet a committed group name must use, and
+  is `root` when nothing usable is left. Fingerprints, finding ids and cross-run keys don't include
+  the group name, so they don't move. A run already past discovery keeps the names in its
+  `groups.json`.
+
 - **Fix: session-mode usage puts a layered group's tokens in their phase (#3373).** An entry id
   holding a `:`, such as every leaf of `Reporting:Core`, is stored under its hash, so its subagent's
   tokens landed in `unattributed`. `collect_usage` now reads the run's `_prompts/index.json`, and

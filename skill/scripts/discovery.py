@@ -1384,7 +1384,7 @@ def build_result(repo, mode, target, facet, impl, tests,
     Passing ``group_files`` lets a caller (e.g. --repo-scan) surface test
     sources in groups while keeping counts["implementation"] impl-only."""
     chunks = chunk_files(impl if group_files is None else group_files, max_per_group)
-    base = os.path.basename(target.rstrip("/")) or target or "root"
+    base = groups_schema.derived_group_base(os.path.join(repo, target))
     # Non-catalog path: the target itself is the review unit and every group is
     # a chunk of it, so `chunk_of` is the base name even when there is one chunk.
     groups = [_group_obj("%s_%d" % (base, i + 1), c, security_mode,

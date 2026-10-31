@@ -246,7 +246,7 @@ NOT_MEASURED = "not measured — first `driver run` probes"
 # Fix round 1, F4: `tools_image`'s remedy names `--no-tools`, and this one has
 # to name its own way out for the same reason. `-f`/`-d`/`-g`/`--pr` reviews run
 # fine with no committed matrix (`discovery._declares_groups`' adopt-all
-# fallback); only the whole-repo scope degrades to `._N` chunking. The verb
+# fallback); only the whole-repo scope degrades to `<directory>_N` chunking. The verb
 # shares no scope flag -- deliberately -- so it reports the whole-repo answer
 # and says which scopes that answer does not apply to.
 NO_GROUPS = ("no %s — run `driver setup`; a whole-repo review needs it, "
@@ -382,7 +382,7 @@ def _with_remedy(error):
 
 def _matrix_row(review_root):
     """The committed matrix and what it has to review. Gating: without a
-    committed root config every file falls back to `._N` chunks, which is a
+    committed root config every file falls back to `<directory>_N` chunks, which is a
     different review from the one the operator thinks they asked for. Names
     the resolved config path (or "none") so the operator sees WHICH of
     `repo_config.CONFIG_NAMES` -- the primary name or its dot-prefixed
