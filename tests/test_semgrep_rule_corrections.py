@@ -239,6 +239,24 @@ def test_engine_control_checker_requires_exact_results(tmp_path):
         module.check(controls_path, materialized, result_path)
 
 
+@pytest.mark.parametrize("expected", ["absent", [], {}, [{"rule_id": "example", "path": "probe.py"}],
+                                      [{"rule_id": "example", "path": "probe.py", "line": True}],
+                                      ["example"]])
+def test_engine_control_checker_refuses_controls_that_expect_nothing(tmp_path, expected):
+    # #3256: with no expected list, an empty Semgrep run compared equal and passed.
+    module = _load("verify_semgrep_controls", CORRECTIONS / "verify_controls.py")
+    controls = {"schema_version": 1, "files": {"probe.py": "value = 1\n"}}
+    if expected != "absent":
+        controls["expected"] = expected
+    controls_path = tmp_path / "controls.json"
+    controls_path.write_text(json.dumps(controls))
+    module.materialize(controls_path, tmp_path / "m")
+    result_path = tmp_path / "results.json"
+    result_path.write_text(json.dumps({"errors": [], "results": []}))
+    with pytest.raises(module.ControlError, match="no expected results|invalid expected control"):
+        module.check(controls_path, tmp_path / "m", result_path)
+
+
 def test_engine_controls_pin_required_positive_sets():
     controls = json.loads((CORRECTIONS / "controls.json").read_text())
     counts = Counter(
