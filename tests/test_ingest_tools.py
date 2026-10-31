@@ -80,6 +80,17 @@ class TestIngest(unittest.TestCase):
                 self.assertEqual("MEDIUM", first(
                     it.sarif_to_findings(sarif, "semgrep", "g1", "SG"))["severity"])
 
+    def test_a_boolean_rule_index_is_not_index_one(self):
+        sarif = self._severity_sarif(level=None)
+        rules = sarif["runs"][0]["tool"]["driver"]["rules"]
+        rules.append({"id": "second", "properties": {"security-severity": "9.8"}})
+        result = sarif["runs"][0]["results"][0]
+        del result["ruleId"]
+        result["ruleIndex"] = True
+        self.assertEqual("MEDIUM", first(it.sarif_to_findings(sarif, "semgrep", "g1", "SG"))["severity"])
+        result["ruleIndex"] = 1
+        self.assertEqual("CRITICAL", first(it.sarif_to_findings(sarif, "semgrep", "g1", "SG"))["severity"])
+
     def test_a_rule_id_wins_over_its_index_and_an_id_less_rule_is_never_borrowed(self):
         sarif = self._severity_sarif(level=None, rule_properties={"security-severity": "9.8"})
         rules = sarif["runs"][0]["tool"]["driver"]["rules"]

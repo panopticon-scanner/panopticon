@@ -603,6 +603,11 @@ def test_diff_compares_every_part_either_side_wrote(tmp_path):
     rc, lines = _diff(a, b)
     assert rc == 1
     assert any("_part11.json: present on A only" in line for line in lines), lines
+    os.unlink(os.path.join(a, f"{TAG}-report_part11.json"))
+    _write_report(b, "_part4.json", {"findings": [5]})
+    rc, lines = _diff(a, b)
+    assert rc == 1
+    assert any("_part4.json: present on B only" in line for line in lines), lines
 
 
 def test_diff_masks_only_declared_json_timestamps(tmp_path):
