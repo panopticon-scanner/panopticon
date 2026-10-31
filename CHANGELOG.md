@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Change: `driver loop` says what it is doing on stderr (#3232).** Stdout's status JSON and every
+  artifact are unchanged.
+  - **Every stderr line now starts with a UTC timestamp, so `grep '^driver'` stops matching.** Drop
+    the `^`, or match `Z driver`.
+  - New: phase start and finish lines, a 60-second heartbeat while a phase's child runs, and the
+    synthesize summary at the end, each line prefixed `summary: `.
+  - `host capabilities`, `target ships`, `semgrep: partial file coverage` and `ingest: excluded` no
+    longer repeat when their text is unchanged.
+  - The `ingest: excluded` line now says `test-fixture corpus: 28` and `exclude globs: ...`.
+
 - **Fix: the ledger can say why a call was denied and why a launch wasted its turn (#3234).**
   - A denial row now carries the guard hook's own `reason`. The hook leaves it in
     `guard-denials.jsonl` in the run folder, after it has already printed its decision, so a slow

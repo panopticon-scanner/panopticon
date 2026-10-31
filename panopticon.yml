@@ -367,7 +367,9 @@ groups:
       match:
       - skill/scripts/orchestrate.py
       - skill/scripts/scope_bindings.py
+      - skill/scripts/loop_progress.py
       tests:
+      - tests/test_loop_progress.py
       - tests/test_orchestrate.py
       - tests/test_orchestrate_batch.py
       - tests/test_orchestrate_checkpoint.py

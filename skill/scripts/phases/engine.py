@@ -3,6 +3,8 @@ import dataclasses
 import json
 import sys
 
+import scripts.loop_progress as loop_progress
+
 
 @dataclasses.dataclass(frozen=True)
 class Phase:
@@ -75,6 +77,7 @@ def run_engine(review_root, manifest, phases, max_steps=None):
         max_steps = 10000
     for _ in range(max_steps):
         phase = _first_not_done(phases, review_root, manifest)
+        loop_progress.phase(phase.name if phase is not None else None)
         if phase is None:
             return {"status": "complete", "phase": None, "checkpoint": None,
                     "group": None, "dispatch_request": None,

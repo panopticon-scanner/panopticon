@@ -59,7 +59,7 @@ PENDING: dict[str, int] = {
     "scripts/triage.py": 792,
     "skill/scripts/diff_map.py": 1215,
     "skill/scripts/discovery.py": 1926,
-    "skill/scripts/driver.py": 1208,
+    "skill/scripts/driver.py": 1206,
     "skill/scripts/evidence.py": 982,
     "skill/scripts/html_report.py": 1568,
     "skill/scripts/ingest_tools.py": 1100,

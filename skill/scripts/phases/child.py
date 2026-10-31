@@ -19,6 +19,7 @@ import time
 import scripts.executable as executable
 import scripts.phases.runio as runio
 import scripts.procgroup as procgroup
+import scripts.loop_progress as loop_progress
 
 
 def _child_env():
@@ -193,7 +194,7 @@ def _run_child(cmd, review_root, phase, timeout=None):
     try:
         for reader in readers:
             reader.start()
-        proc.wait(timeout=timeout)
+        loop_progress.wait(proc, timeout, phase)
     except subprocess.TimeoutExpired:
         procgroup.kill_group(proc)     # #1575: the whole tree, not the direct PID
         raise runio.DriverError("%s: %s timed out after %ss" % (phase, name, timeout))

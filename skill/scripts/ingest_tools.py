@@ -958,7 +958,7 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         # tally and "suppressed" alone no longer says which rule fired.
         reasons.extend(_suppression_reasons(suppressed))
         if gl_excluded:
-            reasons.append(", ".join(exclude_globs))
+            reasons.append("exclude globs: " + ", ".join(exclude_globs))
         print("ingest: excluded %d finding(s) (%s)"
               % (gl_excluded + sup_total,
                  "; ".join(reasons)), file=sys.stderr)
@@ -971,7 +971,7 @@ _SUPPRESSION_REASON = {
     "vendored": "vendored dependencies (%s)",
     "virtualenv-by-name": "virtualenvs matched by name alone (%s)",
     MARKER_VENV_SEGMENT: "virtualenvs confirmed by a pyvenv.cfg marker (%s)",
-    "fixture-corpus": "test-fixture corpus (%s)",
+    "fixture-corpus": "test-fixture corpus: %s",
 }
 
 
@@ -981,7 +981,8 @@ def _suppression_reasons(counts):
     by_class: dict[str, list[str]] = {}
     for segment in sorted(counts):
         by_class.setdefault(suppression_class(segment), []).append(
-            "%s: %d" % (segment, counts[segment]))
+            str(counts[segment]) if segment == FIXTURE_SEGMENT
+            else "%s: %d" % (segment, counts[segment]))
     return [_SUPPRESSION_REASON[cls] % ", ".join(by_class[cls])
             for cls in SUPPRESSION_CLASSES if cls in by_class]
 
