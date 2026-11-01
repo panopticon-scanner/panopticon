@@ -122,6 +122,9 @@
 #   - 2026-10-24 (#3271): `first_contact.py` (the run-start readiness halt) and `run_stamp.py`
 #     (the operator-side key that marks a `.panopticon/` as ours) are claimed beside
 #     `run_manifest.py` and `safe_write.py`, the artifact-root modules they guard.
+#   - 2026-10-31 (#3272): `probe_cache.py` is claimed by `Orchestration:Runners`
+#     beside the external-CLI launch seam whose measurements it caches. `Hosts`
+#     was already at its 48-file cap; the cache's focused test moves with it.
 #   - 2026-09-28 (#2306): a FOURTH part of that split, ruled after #2289, claims
 #     `venv_scope.py` (finding the virtualenvs under the target, deciding which
 #     of them a scanner's exclusion knob may be handed, and rendering that onto
@@ -509,12 +512,14 @@ groups:
       - skill/scripts/executable.py
       - skill/scripts/safe_git.py
       - skill/scripts/safe_git_shapes.py
+      - skill/scripts/probe_cache.py
       - skill/scripts/runners/**
       - skill/scripts/kimi_toml.py
       - skill/scripts/toml_values.py
       tests:
       - tests/runners/**
       - tests/test_executable_provenance.py
+      - tests/test_probe_cache.py
       - tests/test_safe_git.py
       - tests/test_target_git_confinement.py
       - tests/test_temp_root_guard.py
@@ -669,6 +674,7 @@ groups:
       - tests/test_verify_queue.py
       - tests/test_verify_schema_fields.py
       - tests/test_generation_schemas.py
+      - tests/strict_output_schema.py
     Outputs:
       match:
       - skill/scripts/html_report.py

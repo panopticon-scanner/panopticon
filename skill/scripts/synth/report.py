@@ -228,8 +228,8 @@ def _host_capabilities_field(host_capabilities, key):
 
     `None` -- never a default, never a raise -- on an artifact that is absent,
     not a dict, or simply missing the key. A fabricated `probed_at` would be
-    the worst possible answer here: 5.2's entire argument for re-probing on
-    every invocation is that setup-time-only evidence is unbounded in age, so
+    the worst possible answer here: 5.2's assessment is repeated on every
+    invocation (with #3272's identity/settings-keyed reuse), so
     "measured at 04:05" and "nobody wrote down when" have to stay
     distinguishable. `meta.timestamp` cannot stand in -- that is SYNTHESIS
     time, a different moment from the probe on any resumed run.

@@ -12,6 +12,7 @@ from unittest import mock
 
 from scripts import (collect_usage, driver, host_disclosure, host_probes,
                      hosts, run_manifest)
+import scripts.probes.claude as claude_probes
 import scripts.probes.common as probes_common
 from scripts.phases import runio
 
@@ -114,8 +115,8 @@ def _all_proven_artifact(host="claude"):
 
 
 class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
-    """#1344 F3a, spec 5.2: probe on every invocation and compare rather than
-    overwrite. Setup-time-only evidence is unbounded in age."""
+    """#1344 F3a/#3272: assess every invocation and compare rather than
+    overwrite; keyed host measurements may come from operator cache."""
 
     def _args(self, target=None):
         """CLI args whose `target` is a DIFFERENT directory from review_root.
@@ -330,12 +331,9 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
             self.assertTrue(runio.host_evidence(review_root))
 
     def test_a_second_invocation_with_the_same_posture_is_silent(self):
-        # Not just "the second call returns None" -- that would also be true of
-        # an `_establish_host_posture` that never compared anything. Wrap
-        # run_probes so the mock still does the real work, and require it to
-        # have been INVOKED again on the second call: a short-circuit that
-        # skips re-probing once an artifact exists would leave call_count at 1
-        # while still returning None and leaving the artifact unchanged.
+        # The suite's app trace is deliberately empty, so the operator cache
+        # is unavailable: missing CLI identity must fail closed to a fresh
+        # measurement rather than treating the target artifact as a cache.
         registration = _own_registration(self)     # #1609
         with tempfile.TemporaryDirectory() as review_root:
             manifest = self._manifest(session_dir=review_root)
@@ -349,6 +347,50 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
                     review_root, manifest, args, registration_dir=registration))
                 self.assertEqual(2, probed.call_count)
             self.assertEqual(before, runio.host_evidence(review_root))
+
+    def test_a_second_driver_call_reuses_unchanged_host_measurements(self):
+        """#3272 cut 9: exercise the cache through the real driver seam, not
+        only by calling host_probes directly."""
+        app = {"name": "claude", "path": "/operator/bin/claude",
+               "version": "2.1.40 (Claude Code)", "sha256": "a" * 64,
+               "size": 17}
+        probe_rows = (
+            ("registered", probes_common, "probe_registered_shell_tools",
+             probes_common.REGISTERED_SHELL_TOOLS),
+            ("write", claude_probes, "probe_write_guard_armed",
+             claude_probes.WRITE_GUARD_ARMED),
+            ("usage", claude_probes, "probe_usage_source",
+             claude_probes.USAGE_SOURCE),
+            ("model", claude_probes, "probe_entry_model_bound",
+             claude_probes.ENTRY_MODEL_BOUND),
+            ("read", claude_probes, "probe_read_guard_armed",
+             claude_probes.READ_GUARD_ARMED),
+        )
+        registration = _own_registration(self)
+        with tempfile.TemporaryDirectory() as review_root, \
+                tempfile.TemporaryDirectory() as state, \
+                mock.patch.dict(os.environ, {"PANOPTICON_STATE_DIR": state}), \
+                mock.patch.object(host_probes.app_trace, "host_apps",
+                                  return_value=[app]) as traced, \
+                contextlib.ExitStack() as stack:
+            measured = {
+                name: stack.enter_context(mock.patch.object(
+                    module, attribute,
+                    return_value=(hosts.PROVEN, probe_id, "measured once")))
+                for name, module, attribute, probe_id in probe_rows
+            }
+            manifest = self._manifest(session_dir=review_root)
+            args = self._args()
+            self.assertIsNone(driver._establish_host_posture(
+                review_root, manifest, args, registration_dir=registration))
+            self.assertIsNone(driver._establish_host_posture(
+                review_root, manifest, args, registration_dir=registration))
+
+        self.assertEqual(2, traced.call_count,
+                         "each call still establishes the current CLI identity")
+        for name, probe in measured.items():
+            with self.subTest(probe=name):
+                self.assertEqual(1, probe.call_count)
 
     def test_a_posture_that_moved_refuses_and_names_the_capability(self):
         # The 5.2 rule, in the degrading direction: the run's earlier entries

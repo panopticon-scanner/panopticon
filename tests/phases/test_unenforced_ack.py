@@ -581,8 +581,10 @@ class TestAnUnmeasuredCanaryAsksForARerunFirst(unittest.TestCase):
 
     def _unmeasured(self):
         import scripts.probes.claude_write_canary as canary
+        unmeasured = (canary.NOT_MEASURED, "no JSON envelope")
         with mock.patch.object(canary, "_attempt",
-                               return_value=(canary.NOT_MEASURED, "no JSON envelope")):
+                               return_value={"write": unmeasured,
+                                             "read": unmeasured}):
             verdict, detail = canary.round_trip()
         self.assertEqual(canary.NOT_MEASURED, verdict)
         return detail

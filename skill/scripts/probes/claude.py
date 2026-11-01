@@ -276,7 +276,8 @@ def _round_trip_denies_an_outside_write():
                   "refused" % (len(rows), write_guard_hook.ALLOWLIST_VERSION))
 
 
-def probe_write_guard_armed(host, session_root=None, settings_path=None):
+def probe_write_guard_armed(host, session_root=None, settings_path=None,
+                            canary=None):
     """This host CAN mediate a reviewer's Write when it fans out.
 
     COUPLING, and it is load-bearing: the subject of this probe is whatever
@@ -317,14 +318,14 @@ def probe_write_guard_armed(host, session_root=None, settings_path=None):
         # #3218: the round-trip above never meets the CLI's permission layer,
         # which denied every granted Write on a box whose user settings approve
         # none. One real launch is what can tell those apart.
-        verdict, canary = claude_write_canary.round_trip()
+        verdict, canary_detail = (canary or claude_write_canary.round_trip)()
         if verdict == claude_write_canary.REFUTED:
-            return (hosts.REFUTED, WRITE_GUARD_ARMED, canary)
+            return (hosts.REFUTED, WRITE_GUARD_ARMED, canary_detail)
         if verdict != claude_write_canary.PROVEN:   # r1: not measured is not a denial
-            return (hosts.UNKNOWN, WRITE_GUARD_ARMED, canary)
+            return (hosts.UNKNOWN, WRITE_GUARD_ARMED, canary_detail)
         return (hosts.PROVEN, WRITE_GUARD_ARMED,
                 "%s; %s; the runner will arm at %s"
-                % (detail, canary, os.path.abspath(settings_path)))
+                % (detail, canary_detail, os.path.abspath(settings_path)))
     settings_path, _allowlist_path, _defaults = write_guard_hook._resolve(
         None, None, session_root)
     settings_dir = os.path.dirname(os.path.abspath(settings_path)) or "."
@@ -365,7 +366,8 @@ def _read_round_trip():
     return (None if ok else hosts.REFUTED), detail
 
 
-def probe_read_guard_armed(host, session_root=None, settings_path=None):
+def probe_read_guard_armed(host, session_root=None, settings_path=None,
+                           canary=None):
     """This host CAN confine a dispatched subagent's reads to its entry.
 
     Same coupling as probe_write_guard_armed, for the same reason: the
@@ -399,8 +401,14 @@ def probe_read_guard_armed(host, session_root=None, settings_path=None):
         verdict, detail = _read_round_trip()
         if verdict is not None:
             return (verdict, READ_GUARD_ARMED, detail)
+        cli_verdict, cli_detail = (canary or claude_write_canary.read_round_trip)()
+        if cli_verdict == claude_write_canary.REFUTED:
+            return (hosts.REFUTED, READ_GUARD_ARMED, cli_detail)
+        if cli_verdict != claude_write_canary.PROVEN:
+            return (hosts.UNKNOWN, READ_GUARD_ARMED, cli_detail)
         return (hosts.PROVEN, READ_GUARD_ARMED,
-                "%s; the runner will arm at %s" % (detail, os.path.abspath(settings_path)))
+                "%s; %s; the runner will arm at %s"
+                % (detail, cli_detail, os.path.abspath(settings_path)))
     settings_path, _scope_path, _defaults = read_guard_hook._resolve(None, None, session_root)
     settings_dir = os.path.dirname(os.path.abspath(settings_path)) or "."
     if not os.path.isfile(settings_path):

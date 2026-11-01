@@ -8,7 +8,7 @@ from pathlib import Path
 import jsonschema
 
 import scripts.phases.persist as persist
-import scripts.runners.schema as schema_rules
+from tests.strict_output_schema import strict_output_schema
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -79,7 +79,7 @@ def test_an_unknown_verify_stage_omits_generation_constraint():
 def test_all_generation_projections_pass_the_provider_screen():
     for name in GENERATION_NAMES.values():
         path = os.path.realpath(REFERENCE / name)
-        assert schema_rules.strict_output_schema(path) == path, name
+        assert strict_output_schema(path) == path, name
 
 
 def test_the_review_projection_is_exhaustive_and_below_the_approved_budget():

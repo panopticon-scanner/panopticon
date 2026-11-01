@@ -1,6 +1,6 @@
 ## Host capabilities (5.2)
 
-Every `driver run` invocation **probes the host before anything dispatches**, writes the result to
+Every `driver run` invocation **assesses the host before anything dispatches**, writes the result to
 `runs/<tag>/host-capabilities.json`, and compares it against what the previous invocation stored — a
 posture that moved mid-run refuses to continue and names the capability that moved, in which
 direction, and `--reset` (#1344 F3a). That refusal covers the three **security** capabilities
@@ -10,11 +10,17 @@ nothing — so a move in either of those is written into the artifact, state and
 run continues (#1626). `usage_ledger` is the one capability whose subject the run itself produces
 (the dispatch ledger the loop appends to after every batch), so a CLI release that stopped reporting
 tokens used to refuse every re-invocation permanently, with `--reset` — discarding the paid-for
-batches — as the only exit. A token counter going quiet costs you a cost figure, not a run. Probing
-every invocation rather than once at setup is deliberate: setup-time evidence is unbounded in age,
-and a write-guard hook uninstalled the day after setup would read `proven` forever. The artifact is
-a record re-established each invocation, never trusted input — so a tampered or truncated one
-self-heals rather than merely being noticed.
+batches — as the only exit. A token counter going quiet costs you a cost figure, not a run. The
+assessment runs every invocation rather than only at setup, but #3272 stops rebuying an identical
+measurement: each host probe is cached under `$PANOPTICON_STATE_DIR` (default
+`~/.local/state/panopticon`), keyed by the host CLI's recorded `(sha256, version)`, the host and the
+installed measuring code and registration/settings inputs that probe reads. Only `proven` and
+`refuted` measurements are reusable: `unknown` is measured again. A CLI, source or settings change,
+an entry older than 24 hours, or a timestamp in the future re-probes; a missing CLI identity disables
+reuse. Target-tree shadow and discovery scans are never cached, so a file planted between resumptions
+is still found. The run artifact remains a record re-established each invocation, never trusted
+cache input — a tampered or truncated one self-heals rather than becoming the authority, and no cache
+file lives in the reviewed tree.
 
 The hook, frontmatter, launch-envelope and transcript-directory mechanisms in the following
 paragraph describe Claude's probes. Each family supplies evidence for the same capability names
@@ -27,12 +33,14 @@ that shadows those shells. `artifact_write_guard` — reviewer-controlled artifa
 impossible or confined to the declared `out_file`. A family can prove an absent reviewer-selectable
 write surface or a mediated self-write path; transport is a separate static registry fact. Current
 Claude/Kimi proof covers the write-tool surface. On a headless Claude run the proof includes one real
-`claude -p` canary launch (#3218, about $0.0005 on haiku): the runner's enforced argv, the write guard
-armed in a sandbox, a Write to its own `out_file` and one to a peer's. It proves only when the own
-file was written and the peer's was not, so a CLI whose permission layer denies every granted Write
-cannot prove the capability. It is REFUTED only on evidence (a denial row naming the own file, or the
-peer written); a launch that measured nothing (no envelope, an error, no Write attempted) is retried
-once and then reads UNKNOWN, which still refuses the run. That refusal asks for a re-run first
+`claude -p` canary launch (#3218/#3272, about $0.0005 on haiku): the runner's enforced argv, both
+guards armed in a sandbox, one out-of-scope Read, a Write to its own `out_file` and one to a peer's.
+The same launch supplies independent verdicts. Write proves only when the own file was written and
+the peer's was not, so a CLI whose permission layer denies every granted Write cannot prove the
+capability. Read proves only when the real CLI's `permission_denials` names the out-of-scope path;
+if its secret reaches the own file or reply, read confinement is refuted. A launch that measured
+nothing (no envelope, an error, or a requested tool not attempted) is retried once and then reads
+UNKNOWN, which still refuses the run. That refusal asks for a re-run first
 (the next run probes again) and names `--allow-unenforced` only after it (#3220).
 Bash-path writes belong to `tool_policy_enforced`.
 When that posture is REFUTED and the operator passes `--allow-unenforced`,
@@ -74,9 +82,10 @@ the orchestrator never confined, a directory-scoped entry allowed to Grep and Gl
 directory but not to Read outside it, the workflow-bound subagent allowed inside its scope and
 denied outside it, a Read under the directory grant's own `.git` store denied and one under its
 `.github/` allowed (#3271: a dirs grant never covers <root>/.git), and four headless env-binding
-payloads. Any row that disagrees refutes the capability and names the row. In headless mode the two
-guard probes prove the file the runner will arm — `runs/<tag>/host-settings.json` — rather than the
-session root's settings file, so a headless run cannot be refuted by a session root it never uses.
+payloads. Any row that disagrees refutes the capability and names the row. In headless mode that
+hook round-trip is joined by the shared real-CLI canary's explicit out-of-scope Read denial, and the
+two guard probes prove the file the runner will arm — `runs/<tag>/host-settings.json` — rather than
+the session root's settings file, so a headless run cannot be refuted by a session root it never uses.
 Each resolves to `proven`, `refuted` or `unknown`, and **`unknown` is not benign**: it means nobody
 looked, and it is treated exactly as `refuted` wherever posture is consumed. The two are kept apart
 because "we did not measure" and "we measured and it is off" have different remedies. A capability
@@ -100,10 +109,10 @@ unavailable runtime yields `unknown` with its reason, never an assumed proof. Pl
 readiness and manual/session dispatch cannot establish the headless launch controls: without that
 headless context these two probes return `unknown`, because parent runtime overrides can replace a
 child's role permissions. Use `driver loop --host codex --mode headless` for the proven path.
-Re-probing is deliberate and happens on every `driver run` — so once per `driver loop` iteration —
-and it costs one `codex debug models --bundled` dump plus one `codex exec` per role (the five
-registered roles, plus one more measuring the shell-less setup fallback, run concurrently), all
-against a localhost fixture rather than a paid endpoint; size a long run with that in mind.
+On a cold or invalidated cache this costs one `codex debug models --bundled` dump plus one `codex
+exec` per role (the five registered roles, plus one more measuring the shell-less setup fallback,
+run concurrently), all against a localhost fixture rather than a paid endpoint. An unchanged next
+`driver run` reuses those rows; a changed `(sha256, version)`, host or probe setting measures again.
 `driver setup` costs NONE of it (#1737): it takes no `--mode`, so `settings_path` is None, and all
 three Codex probes short-circuit to `unknown` before they launch anything — which is exactly why an
 unenforceable Codex setup is refused with `driver loop --setup --host codex --mode headless` as its
@@ -133,7 +142,10 @@ The projections do **not** replace `phases.persist.ROLE_SCHEMAS`. Those three br
 remain the receipt authority for legacy and optional-field compatibility, and every constrained
 reply must still pass its role schema after controller stamping. Claude also continues to receive
 those original schemas byte-for-byte on inline `--json-schema`; only Codex selects the strict
-generation projections.
+generation projections. CI applies the complete strict-provider compatibility screen to every one
+of those finite shipped projections. A Codex launch only repeats the target-writable path's
+published-schema containment check; it does not parse and walk the same shipped schema again for
+every entry (#3272 cut 15).
 
 The once-per-run output-schema proof uses the largest production projection (review), not the toy
 shape. A provider refusal records `refuted`, removes every generation schema before that batch
@@ -173,7 +185,7 @@ Four surfaces carry it, and all four are mandatory:
    `driver:   <capability> is <state> on host '<host>' -- probe <id>: <detail>. fix: <remedy>` line
    per capability that is not `proven`. Same channel and register as
    `driver: tool scan CRASHED (rc=…)`. *Once per run* is literal (#1596): `driver run` is a
-   resumable loop and the posture is re-probed on every invocation, so every later invocation whose
+   resumable loop and the posture is reassessed on every invocation, so every later invocation whose
    disclosure is **unchanged** prints a single
    `host '<host>': N of 5 capabilities proven, M not -- unchanged since <probed_at>` line instead of
    repeating a block that is byte-identical by construction (F3a refuses the run outright if a
@@ -212,8 +224,9 @@ Four surfaces carry it, and all four are mandatory:
    map VERBATIM, one `{"state", "by", "detail"}` entry per capability, so the *reason* survives and
    two runs can be diffed rather than merely compared. `probed_at` is when this posture was
    **established** — when the record was last actually written, which is when the posture last
-   *changed*, not merely when the probes last ran. (They run on every invocation; the artifact is
-   rewritten only when something an operator cares about moved.) That is the stronger reading, not a
+   *changed*, not merely when a cached probe was last launched. (The assessment runs every
+   invocation; unchanged keyed measurements are reused and the artifact is rewritten only when
+   something an operator cares about moved.) That is the stronger reading, not a
    weaker one. §5.2 refuses the run outright when a **security** capability's state drifts in either
    direction, and rewrites the record — carrying `probed_at` forward with it — when a state holds
    but its reason moves, or when one of the two operational capabilities moves at all (#1626). So

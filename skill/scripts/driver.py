@@ -519,15 +519,15 @@ def _disclose_posture(review_root, manifest, fresh, namespace=None):
 
 def _establish_host_posture(review_root, manifest, args, *, registration_dir=None,
                             namespace=None):
-    """Probe this host now; write the evidence, or refuse if it moved.
+    """Assess this host now; write the evidence, or refuse if it moved.
 
-    Spec 5.2. Runs on EVERY invocation, not once per run: `driver run` is a
-    resumable loop, and setup-time-only evidence is unbounded in age -- a
-    write-guard hook uninstalled after setup would read `proven` forever.
+    Spec 5.2. Runs on EVERY invocation, not once per run. #3272 caches each
+    host/CLI measurement by external-app identity and its settings under
+    operator state; target-tree surface scans still run here every time.
 
-    First invocation writes `runs/<tag>/host-capabilities.json`. Every later
-    one re-probes and COMPARES. Any difference refuses the run in both
-    directions: a posture that degraded is alarming, and one that improved
+    First invocation writes `runs/<tag>/host-capabilities.json`; later calls
+    reuse or refresh the keyed assessment, then COMPARE. Any difference refuses
+    the run in both directions: a posture that degraded is alarming, and one that improved
     still leaves the entries already dispatched under the weaker posture, so
     the honest answer to both is a fresh run.
 

@@ -1,6 +1,7 @@
 """Policy/transport fixtures only: never run a host binary or open a socket."""
 import copy
 import dataclasses
+import inspect
 import json
 import os
 from pathlib import Path
@@ -878,12 +879,14 @@ def test_an_output_schema_outside_the_published_reference_dir_is_refused(tmp_pat
         forged = [*argv[:-3], "--output-schema", path, "-"]
         with pytest.raises(ValueError, match="output schema"):
             codex_host.validate_command(forged, env, root)
-    incompatible = os.path.abspath(version.reference_path("advisor-verdict-schema.json"))
-    with pytest.raises(ValueError, match="strict-output compatible"):
-        codex_host.validate_command(
-            [*argv[:-3], "--output-schema", incompatible, "-"], env, root)
     with pytest.raises(ValueError, match="output schema"):
         codex_host.validate_command([*argv[:-3], "--output-schema"], env, root)
+
+
+def test_launches_do_not_recheck_shipped_schema_compatibility():
+    """#3272 cut 15: provider compatibility is a CI property of the schemas
+    we ship, not ~200 lines of validation on every Codex launch."""
+    assert "strict_output_schema" not in inspect.getsource(codex_host)
 
 
 @pytest.mark.parametrize("schema_argv", [
@@ -907,9 +910,10 @@ def test_a_malformed_schema_argv_is_refused(tmp_path, schema_argv):
     "verdict-bundle-schema.json",
     "advisor-verdict-schema.json",
 ])
-def test_codex_omits_a_published_schema_that_violates_its_strict_output_contract(
+def test_codex_runtime_does_not_reparse_a_published_schema_for_provider_compatibility(
         tmp_path, name):
-    """#2923 C: broad receipt schemas stay off Codex's generation argv."""
+    """#3272 cut 15: production selects only CI-proven generation schemas;
+    launch-time validation retains containment, not the 200-line screen."""
     import scripts._version as version
 
     root, entry, env = _case(tmp_path)
@@ -918,9 +922,7 @@ def test_codex_omits_a_published_schema_that_violates_its_strict_output_contract
     argv = codex_host.command(entry, env, root, root / "run", runner=_fake_catalog,
                               schema_argv=["--output-schema", published])
     try:
-        assert "--output-schema" not in argv
-        # Only Codex's incompatible launch flag is omitted; persist.write_reply
-        # validates the returned role against role_schema(entry) after stamping.
+        assert argv[-3:] == ["--output-schema", published, "-"]
         assert entry["output_schema"] == published
         assert codex_host.validate_command(argv, env, root)
     finally:

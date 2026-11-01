@@ -1429,14 +1429,25 @@ class TestTheWriteCanaryGoesThroughTheRealCli(unittest.TestCase):
             grant = [a for a in cmd if a.startswith("--allowedTools=Edit(/")]
             own = grant[0][len("--allowedTools=Edit(/"):-1] if grant else None
             peer = own and os.path.join(os.path.dirname(own), "findings-canary-SEC.json")
+            outside = os.path.join(cwd, canary.READ_OUTSIDE)
             denials = []
+            read_allowed = behaviour in ("wide-open", "read-open")
+            if behaviour != "no-attempt":
+                if not read_allowed:
+                    denials.append({"tool_name": "Read",
+                                    "tool_input": {"file_path": outside}})
+                own_text = canary.READ_SENTINEL if read_allowed else canary.READ_DENIED_TEXT
+            else:
+                own_text = ""
             for path, allowed in ((own, behaviour in ("granted", "wide-open")),
                                   (peer, behaviour == "wide-open")):
+                if path == own and behaviour == "read-open":
+                    allowed = True
                 if behaviour == "no-attempt":
                     continue
                 if path and allowed:
                     with open(path, "w", encoding="utf-8") as fh:
-                        fh.write("{}")
+                        fh.write(own_text if path == own else "{}")
                 elif path:
                     denials.append({"tool_name": "Write", "tool_input": {"file_path": path}})
             stdout = "" if behaviour == "no-envelope" else json.dumps(
@@ -1455,6 +1466,26 @@ class TestTheWriteCanaryGoesThroughTheRealCli(unittest.TestCase):
         (verdict, detail), seen = self.canary("granted")
         self.assertEqual(verdict, canary.PROVEN, detail)
         self.assertEqual(seen["calls"], 1)
+
+    def test_the_same_launch_proves_an_out_of_scope_read_was_denied(self):
+        import scripts.probes.claude_write_canary as canary
+        launch, seen = self.fake("granted")
+        with mock.patch.object(canary, "_launch", side_effect=launch):
+            measured = canary.measure()
+        self.assertEqual(canary.PROVEN, measured["write"][0], measured)
+        self.assertEqual(canary.PROVEN, measured["read"][0], measured)
+        self.assertIn("out-of-scope Read", measured["read"][1])
+        self.assertIn("real CLI", measured["read"][1])
+        self.assertEqual(1, seen["calls"])
+
+    def test_a_cli_that_allows_the_out_of_scope_read_is_refuted(self):
+        import scripts.probes.claude_write_canary as canary
+        launch, _seen = self.fake("read-open")
+        with mock.patch.object(canary, "_launch", side_effect=launch):
+            measured = canary.measure()
+        self.assertEqual(canary.PROVEN, measured["write"][0], measured)
+        self.assertEqual(canary.REFUTED, measured["read"][0], measured)
+        self.assertIn("sentinel", measured["read"][1])
 
     def test_an_always_deny_cli_is_refuted_on_its_denial_row(self):
         import scripts.probes.claude_write_canary as canary
@@ -1541,3 +1572,17 @@ class TestTheWriteCanaryGoesThroughTheRealCli(unittest.TestCase):
         state, _by, detail = self._probe("granted")
         self.assertEqual(state, hosts.PROVEN, detail)
         self.assertIn("through the real CLI", detail)
+
+    def test_the_read_probe_requires_an_out_of_scope_denial_through_the_real_cli(self):
+        import scripts.probes.claude_write_canary as canary
+        measured = (canary.PROVEN,
+                    "an out-of-scope Read was denied through the real CLI")
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(canary, "read_round_trip", return_value=measured,
+                                  create=True) as real_cli:
+            state, _by, detail = claude_probes.probe_read_guard_armed(
+                "claude", settings_path=os.path.join(d, "host-settings.json"))
+        self.assertEqual(state, hosts.PROVEN, detail)
+        real_cli.assert_called_once_with()
+        self.assertIn("out-of-scope Read", detail)
+        self.assertIn("real CLI", detail)

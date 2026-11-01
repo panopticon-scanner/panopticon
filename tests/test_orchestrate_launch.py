@@ -217,7 +217,7 @@ class TestTheOutputSchemaShapeProof(LoopCase):
     def _repo(self, floor=FLOOR, cli_flags=None):
         d, floor = super()._repo(floor=floor)
         # What the `--help` READ found. Driven through `run_probes` for the
-        # whole loop, because `driver.run` re-probes on every iteration and
+        # whole loop, because `driver.run` reassesses on every iteration and
         # would otherwise overwrite a seeded answer with whatever this
         # machine's PATH holds -- a different measurement, tested in
         # tests/probes/test_common.py, and not the subject here.

@@ -264,7 +264,7 @@ class TestHeadlessLoop(_HeadlessLoopCase):
 
         # R-P6 Task 5 ruling 2: drive the not-proven write-guard posture
         # through the run_probes patch, not write_host_evidence -- driver.run
-        # re-probes on every invocation via the module-patched run_probes and
+        # reassesses on every invocation via the module-patched run_probes and
         # overwrites the evidence artifact, so a write_host_evidence call here
         # would be silently undone the moment the first driver.run() executes.
         with mock.patch("scripts.host_probes.run_probes",
