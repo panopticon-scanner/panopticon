@@ -809,6 +809,24 @@ class TestEmitHostAgents(unittest.TestCase):
         registrable = {n for n, h in hosts.HOSTS.items() if h.shell_format}
         self.assertEqual(registrable, set(dispatch._RENDERERS))
 
+    def test_each_shell_keeps_its_byte_layout(self):
+        # ARC-981076646: the renderers return a file's whole text, so the
+        # separators the old write spelled inline are theirs now. A markdown
+        # shell is frontmatter, ONE blank line, then the charter; a codex shell
+        # ends on exactly one newline.
+        for host in ("claude", "kimi", "codex"):
+            with tempfile.TemporaryDirectory() as d:
+                for path in dispatch.emit_host_agents(host, d):
+                    with self.subTest(host=host, path=os.path.basename(path)), \
+                            open(path, encoding="utf-8", newline="") as fh:
+                        text = fh.read()
+                    if host == "codex":
+                        self.assertTrue(text.endswith("\n") and not text.endswith("\n\n"))
+                    else:
+                        head, sep, charter = text.partition("\n---\n\n")
+                        self.assertTrue(sep and head.startswith("---\n"), text[:80])
+                        self.assertTrue(charter.startswith("You are"), charter[:40])
+
     def test_codex_registration_has_required_transport_without_broker_path(self):
         # M-6: emission used to bake the EMITTING interpreter's sys.executable
         # and the emitting checkout's codex_read_tools.py into every shell,
