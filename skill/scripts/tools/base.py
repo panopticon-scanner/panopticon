@@ -353,7 +353,7 @@ def make_finding(adapter: Any, n: int, group: str, *, title: str, severity: str,
     finding: dict[str, Any] = {
         "id": new_finding_id(adapter.prefix, n),
         "title": inert_text(title),
-        "severity": severity,
+        "severity": normalize_severity(severity),
         "confidence": confidence,
         "panel": "security",
         # `or ""`: an absent body field is empty, never the word "None" --

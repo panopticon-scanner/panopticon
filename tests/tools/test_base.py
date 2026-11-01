@@ -301,6 +301,18 @@ class TestBase(unittest.TestCase):
         for ch in ("\x00", "\x07", "\x1b"):
             self.assertNotIn(ch, f["description"])
 
+    def test_make_finding_puts_any_severity_on_the_ladder(self):
+        # #2075: the invariant lived in every caller; the constructor holds it now.
+        import types
+        ad = types.SimpleNamespace(prefix="XX", name="demo")
+        for raw, want in (("HIGH", "HIGH"), ("critical", "CRITICAL"), ("error", "HIGH"),
+                          ("\x1b[31mPWNED\x07", "INFO"), (None, "INFO"), (7, "INFO"), ("", "INFO")):
+            with self.subTest(raw=raw):
+                f = base.make_finding(ad, 1, "g1", title="t", severity=raw, category="c",
+                                      location={"file": "a.py"}, description="d", impact="i",
+                                      remediation="r")
+                self.assertEqual(want, f["severity"])
+
     def test_make_finding_neutralizes_every_untrusted_field(self):
         # #1829 SEC-4277410777 / #2069: the run-9 fix covered title and
         # description only, so category, location.file, impact, remediation and
