@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **The NVD cache no longer publishes an unfinished or stale database (#3251).** `nvd-cache.yml` judged
+  a sync on database size alone, so a failed update over 100 MiB could be published. The step now also
+  requires dependency-check's `nvd.api.last.modified`, which is saved only when an update finishes, to
+  be present and at most 72 hours old. The workflow guard now treats `java` as an interpreter.
+
 - **Hardening batch from the 5.2 redteam triage (#3235, part B).** None is reachable by a hostile
   target under default use:
   - a redteam direct caller of `run_tools` gets no virtualenv skip by default;

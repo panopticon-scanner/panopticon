@@ -33,13 +33,18 @@ def _sync_script():
     raise AssertionError("no %r step in nvd-cache.yml" % STEP)
 
 
-def _run(curl_rc=0, sha_rc=0, sync_rc=0):
+def _run(curl_rc=0, sha_rc=0, sync_rc=0, db_row=None, java_rc=0, age_seconds=0, bad_date=False,
+         props="data.user=dc-user\\ndata.password=a=b\\n", argv_out=None):
     """(returncode, output, launched): the step run with stubbed tools.
     `launched` is True when the step reached the dependency-check launch.
 
     The stubs are shell FUNCTIONS, which bash resolves before PATH, not
     executables written to disk: a stub written and exec'd at once can fail
-    with ETXTBSY on Linux when a sibling process forks in between."""
+    with ETXTBSY on Linux when a sibling process forks in between.
+
+    `db_row` makes the sync leave a database over the size floor, whose
+    last-modified row reads as that text ("" for no row). `argv_out` is a list
+    that receives the words `java` was run with."""
     with tempfile.TemporaryDirectory() as tmp:
         marker = os.path.join(tmp, "launched")
         stubs = ("sudo() { return 0; }\n"
@@ -51,11 +56,24 @@ def _run(curl_rc=0, sha_rc=0, sync_rc=0):
                  "unzip() { return 0; }\n"
                  "timeout() { : > '%s'; return %d; }\n"
                  % (curl_rc, sha_rc, marker, sync_rc))
+        if db_row is not None:
+            now = 1800000000
+            row = "nvd.api.last.modified | %s\\n" % db_row if db_row else ""
+            stubs += ("timeout() { : > '%s'; : > odc-data/odc.mv.db; return %d; }\n"
+                      "stat() { echo 104857601; }\n"
+                      "unzip() { if [ \"$1\" = -p ]; then printf '%s'; fi; }\n"
+                      "java() { printf '%%s\\n' \"$@\" > java-argv; printf 'ID | VALUE\\n%s(1 row, 0 ms)\\n'; return %d; }\n"
+                      "date() { if [ \"$2\" = -d ]; then %s; else echo %d; fi; }\n"
+                      % (marker, sync_rc, props, row, java_rc,
+                         "return 1" if bad_date else "echo %d" % (now - age_seconds), now))
         env = {"PATH": os.environ.get("PATH", ""), "HOME": tmp,
                "DC_VERSION": "12.1.0", "DC_SHA256": "0" * 64}
         # The script goes in on stdin: a fixed argv, and the same bash parse.
         proc = subprocess.run(["bash"], input=stubs + _sync_script(), cwd=tmp, env=env,
                               capture_output=True, text=True, timeout=60)
+        if argv_out is not None and os.path.exists(os.path.join(tmp, "java-argv")):
+            with open(os.path.join(tmp, "java-argv")) as handle:
+                argv_out.extend(handle.read().splitlines())
         return proc.returncode, proc.stdout + proc.stderr, os.path.exists(marker)
 
 
@@ -85,6 +103,82 @@ class TestTheKeyedSyncVerifiesFailClosed(unittest.TestCase):
         self.assertTrue(launched, out)
         self.assertNotEqual(rc, 0)
         self.assertIn("killed by the 3000 s deadline", out)
+
+
+class TestTheStepRefusesAnUnfinishedOrStaleDatabase(unittest.TestCase):
+    """#3251: a database over the size floor was published on size alone."""
+
+    HOUR = 3600
+
+    def test_a_failed_sync_leaving_no_timestamp_is_not_published(self):
+        rc, out, _ = _run(sync_rc=1, db_row="")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("the update did not finish", out)
+
+    def test_a_failed_sync_leaving_a_stale_database_is_not_published(self):
+        rc, out, _ = _run(sync_rc=1, db_row="2026-01-01T00:00:00Z", age_seconds=73 * self.HOUR)
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("(73 h old)", out)
+        self.assertIn("over 72 h old", out)
+
+    def test_a_clean_exit_does_not_excuse_a_stale_database(self):
+        rc, out, _ = _run(sync_rc=0, db_row="2026-01-01T00:00:00Z", age_seconds=73 * self.HOUR)
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("not publishing stale data", out)
+
+    def test_a_database_at_the_limit_passes(self):
+        rc, out, _ = _run(sync_rc=0, db_row="2026-01-01T00:00:00Z", age_seconds=72 * self.HOUR)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("(72 h old)", out)
+
+    def test_a_tolerated_sync_status_with_a_fresh_database_passes(self):
+        # #2508 still holds: per-record errors don't fail a sync that finished.
+        rc, out, _ = _run(sync_rc=1, db_row="2026-01-01T00:00:00Z", age_seconds=self.HOUR)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("per-record errors are tolerated", out)
+
+    def test_a_minute_past_the_limit_is_refused(self):
+        rc, out, _ = _run(db_row="2026-01-01T00:00:00Z", age_seconds=72 * self.HOUR + 60)
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("over 72 h old", out)
+
+    def test_a_value_ahead_of_the_clock_passes_within_the_skew_and_not_past_it(self):
+        rc, out, _ = _run(db_row="2026-01-01T00:00:00Z", age_seconds=-self.HOUR)
+        self.assertEqual(rc, 0, out)
+        rc, out, _ = _run(db_row="2026-01-01T00:00:00Z", age_seconds=-self.HOUR - 60)
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("is in the future: 2026-01-01T00:00:00Z", out)
+
+    def test_an_empty_value_fails_by_name(self):
+        rc, out, _ = _run(db_row=" ")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("has an empty nvd.api.last.modified", out)
+
+    def test_a_login_missing_from_the_jar_fails_by_name(self):
+        for props in ("", "data.user=dc-user\\n", "data.password=p\\n"):
+            with self.subTest(props=props):
+                rc, out, _ = _run(db_row="2026-01-01T00:00:00Z", props=props)
+                self.assertNotEqual(rc, 0, out)
+                self.assertIn("could not read the database login", out)
+
+    def test_the_read_opens_this_database_read_only_with_the_jars_login_and_asks_for_this_row(self):
+        argv = []
+        rc, out, _ = _run(db_row="2026-01-01T00:00:00Z", argv_out=argv)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual("jdbc:h2:file:./odc-data/odc;ACCESS_MODE_DATA=r", argv[argv.index("-url") + 1])
+        self.assertEqual("dc-user", argv[argv.index("-user") + 1])
+        self.assertEqual("a=b", argv[argv.index("-password") + 1])
+        self.assertEqual("SELECT * FROM properties WHERE id='nvd.api.last.modified'", argv[argv.index("-sql") + 1])
+
+    def test_an_unreadable_database_fails_by_name(self):
+        rc, out, _ = _run(db_row="2026-01-01T00:00:00Z", java_rc=1)
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("could not read nvd.api.last.modified", out)
+
+    def test_a_value_that_is_not_a_timestamp_fails_by_name(self):
+        rc, out, _ = _run(db_row="soon", bad_date=True)
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("is not a timestamp: soon", out)
 
 
 if __name__ == "__main__":

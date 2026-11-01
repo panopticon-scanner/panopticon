@@ -16,7 +16,7 @@ from workflow_programs import _SHELL_STRING, scripts
 from workflow_values import _as_word, valued_argvs
 
 INTERPRETERS = ("sh", "bash", "dash", "zsh", "ksh", "ash", "csh", "tcsh", "fish", "mksh",
-                "python", "python3", "perl", "ruby", "node", "php", "pwsh", "eval", "source",
+                "python", "python3", "perl", "ruby", "node", "php", "pwsh", "java", "eval", "source",
                 ".")
 
 # Unpacking a downloaded archive executes its bytes too: they choose what

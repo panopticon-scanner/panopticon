@@ -124,6 +124,36 @@ jobs:
           size="$(stat -c%s odc-data/odc.mv.db)"
           echo "odc.mv.db: $((size / 1024 / 1024)) MiB"
           [ "$size" -gt 104857600 ] || { echo "::error::NVD DB only $((size / 1024 / 1024)) MiB — sync likely incomplete"; exit 1; }
+          # #3251: the size floor shows a database exists, not that this update finished.
+          # dependency-check saves nvd.api.last.modified only after a whole update is
+          # processed, so a failed sync over this empty directory leaves it unset, and an
+          # old value means the feed stopped moving. Either way, don't publish. The login
+          # is the tool's own public default, read from its jar.
+          login_error="::error::could not read the database login from dependency-check's jar"
+          props="$(unzip -p dependency-check/lib/dependency-check-core-*.jar dependencycheck.properties)" \
+            || { echo "$login_error"; exit 1; }
+          db_user="$(printf '%s\n' "$props" | grep '^data\.user=')" || { echo "$login_error"; exit 1; }
+          db_user="${db_user#data.user=}"
+          db_pass="$(printf '%s\n' "$props" | grep '^data\.password=')" || { echo "$login_error"; exit 1; }
+          db_pass="${db_pass#data.password=}"
+          row="$(java -cp "$(echo dependency-check/lib/h2-*.jar)" org.h2.tools.Shell \
+            -url "jdbc:h2:file:./odc-data/odc;ACCESS_MODE_DATA=r" -user "$db_user" -password "$db_pass" \
+            -sql "SELECT * FROM properties WHERE id='nvd.api.last.modified'")" \
+            || { echo "::error::could not read nvd.api.last.modified from the NVD database"; exit 1; }
+          case "$row" in
+            *"nvd.api.last.modified | "*) ;;
+            *) echo "::error::NVD DB has no nvd.api.last.modified — the update did not finish; not publishing"; exit 1 ;;
+          esac
+          modified="${row##*nvd.api.last.modified | }"
+          modified="${modified%%[[:space:]]*}"
+          [ -n "$modified" ] || { echo "::error::NVD DB has an empty nvd.api.last.modified — not publishing"; exit 1; }
+          modified_at="$(date -u -d "$modified" +%s)" \
+            || { echo "::error::nvd.api.last.modified is not a timestamp: $modified"; exit 1; }
+          age_seconds="$(( $(date -u +%s) - modified_at ))"
+          echo "nvd.api.last.modified: $modified ($(( age_seconds / 3600 )) h old)"
+          # An hour of clock skew is allowed; further ahead than that, the value can't be right.
+          [ "$age_seconds" -ge -3600 ] || { echo "::error::nvd.api.last.modified is in the future: $modified"; exit 1; }
+          [ "$age_seconds" -le 259200 ] || { echo "::error::NVD DB is over 72 h old — not publishing stale data"; exit 1; }
 
       - name: Set up Docker Buildx
         if: steps.decide.outputs.sync == 'true'
