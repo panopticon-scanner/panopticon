@@ -22,10 +22,11 @@ Unread = collections.namedtuple("Unread", "construct line")
 # Every command a download-reachable step in `.github/workflows/` runs: docker-build-pr.yml's hadolint steps and
 # nvd-cache.yml's sync and image steps.
 COMMANDS = frozenset({
-    "[", "apt-get", "chmod", "curl", "date", "docker", "echo", "exit", "hadolint", "mkdir", "mv", "printf", "sed",
-    "set", "sha256sum", "stat", "test", "unzip",
+    "[", "apt-get", "chmod", "curl", "date", "docker", "echo", "exit", "grep", "hadolint", "mkdir", "mv",
+    "printf", "set", "sha256sum", "stat", "test", "unzip",
     "./dependency-check/bin/dependency-check.sh",       # nvd-cache.yml runs what it unpacked from the checked dc.zip
-    "java",                                             # and reads the sync's database with that zip's H2 jar (#3251)
+    "java",     # and reads the sync's database with that zip's H2 jar (#3251); an interpreter, so a download it runs is
+                # still reported (`workflow_use_words.INTERPRETERS`)
 })
 # The keywords their syntax stands on, each the first word of a statement; any other keyword there is outside.
 SYNTAX = frozenset({"if", "then", "elif", "else", "fi", "case", "esac", "{", "}"})
