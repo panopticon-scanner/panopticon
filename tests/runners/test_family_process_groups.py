@@ -16,6 +16,7 @@ under the PATH shim and under an empty PATH.
 import json
 import os
 import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -90,9 +91,12 @@ class _FamilyCase(unittest.TestCase):
 
         def wait(capture, timeout):
             deadline = time.monotonic() + ready_within
-            while (not os.path.exists(pidfile) and capture.proc.poll() is None
-                   and time.monotonic() < deadline):
-                time.sleep(0.02)
+            while not os.path.exists(pidfile) and time.monotonic() < deadline:
+                try:                    # waits on the child itself: it returns once it exits
+                    capture.proc.wait(0.02)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
             return real(capture, timeout)
         return mock.patch.object(children._Capture, "wait", wait)
 
