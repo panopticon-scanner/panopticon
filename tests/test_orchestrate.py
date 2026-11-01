@@ -89,6 +89,20 @@ class TestHeadlessLoop(_HeadlessLoopCase):
             status = orchestrate.loop(self._args(d))
         self.assertEqual((status["status"], status["message"]), ("error", ""), status)
 
+    def test_a_hand_built_negative_or_non_finite_budget_is_refused_not_defaulted(self):
+        # #1648: the CLI refuses these first; `loop`'s own re-read is for an
+        # embedder's hand-built args, and it refuses before resolving anything.
+        d, _floor = self._repo()
+        for bad in (-0.01, float("nan"), float("inf")):
+            args = self._args(d)
+            args.max_budget_usd = bad
+            with self.subTest(bad), mock.patch("scripts.loop_batch._resolve_target") as target:
+                status = orchestrate.loop(args)
+                self.assertEqual(status["status"], "error", status)
+                self.assertIn("--max-budget-usd %r is not a finite, non-negative" % (bad,),
+                              status["message"])
+                target.assert_not_called()
+
     def test_max_turns_is_silent_on_a_runner_that_honours_it(self):
         d, floor = self._repo()
         err = io.StringIO()
