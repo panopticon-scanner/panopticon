@@ -22,6 +22,8 @@ from dataclasses import dataclass
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import scripts.evidence as evidence
+import scripts.ocrdb as ocrdb
+import scripts.reconcile_cells as reconcile_cells
 
 
 def _resolve_part_path(base_dir, part):
@@ -176,9 +178,8 @@ def load_report(path):
     which a part can only contradict; see _resolve_review_type). Both keys are
     additive -- every other reader indexes `findings` / `discarded_claims` by
     name and is unaffected. Both are the report's own CLAIM about its coverage,
-    per FILE and per RUN: what it actually completed (meta.coverage.cells) and
-    whether the finding's own panel or tool axis ran on that file are further
-    cross-checks this loader does not yet read (follow-ups #2084, #2087).
+    per FILE and per RUN. `cells` is what it says it COMPLETED, per (group,
+    domain): see reconcile_cells.stated, widened by a part the same way (#2084).
     """
     report = _document(path, "report")
     findings = _section(report.get("findings"))
@@ -191,6 +192,7 @@ def load_report(path):
     if parts is not None and not isinstance(parts, list):
         raise ValueError("meta.parts of report %s is not a list" % path)
     reviewed_files = _stated_files(report)
+    cells = reconcile_cells.stated(report)
     declared_main = _stated_review_type(report)
     declared_parts = []
     # Anchor to an absolute path before resolving parts: os.path.dirname on a
@@ -211,6 +213,7 @@ def load_report(path):
         # coverage fields (see _resolve_review_type for the same rule).
         if reviewed_files is not None:
             reviewed_files = _merge_stated(reviewed_files, _stated_files(pdata))
+        cells = reconcile_cells.merge(cells, reconcile_cells.stated(pdata))
         declared_parts += _stated_review_type(pdata)
     # #run9 ARC-D1A: a large report ALSO spills discarded_claims to a
     # `<stem>-discarded.json` sibling (write_report #15), leaving an empty inline
@@ -223,8 +226,17 @@ def load_report(path):
         sibling = _document(dpath, "discarded-claims file")
         discarded.extend(_section(sibling.get("discarded_claims")))
     return {"findings": findings, "discarded_claims": discarded,
-            "reviewed_files": reviewed_files,
+            "reviewed_files": reviewed_files, "cells": cells,
             "review_type": _resolve_review_type(declared_main, declared_parts)}
+
+
+def _domain(finding):
+    """The finding's review domain (`SEC`, `DAT` ...): its own, else its code's prefix; None if
+    neither names a real one. Coverage cells are keyed by domain, not by the legacy panel."""
+    for name in (finding.get("domain"), ocrdb.domain_of(finding.get("code"))):
+        if ocrdb.is_domain(name):
+            return name
+    return None
 
 
 def iter_records(report):
@@ -252,6 +264,8 @@ def iter_records(report):
                 "kind": kind,
                 "severity": f.get("severity"),
                 "panel": f.get("panel"),
+                "domain": _domain(f),
+                "tool": evidence.tool_name(f),
                 "category": f.get("category"),
                 "location_file": loc.get("file") or "",
                 "stored_fingerprint": f.get("fingerprint"),
@@ -387,7 +401,7 @@ def _recurring_entry(fp, recs, current):
             "kind_changed": {r["kind"] for r in recs} != {r["kind"] for r in run3_side}}
 
 
-def _close_refusal(recs, current, claimed, close_guard, guard_reason):
+def _close_refusal(recs, current, claimed, close_guard, guard_reason, cells=None):
     """Return (reason, basis), or None when all close checks pass.
 
     Safe-direction order: whole-run guard, ambiguous identity, missing file,
@@ -417,11 +431,17 @@ def _close_refusal(recs, current, claimed, close_guard, guard_reason):
                     "refusing to corroborate a close" % file_), "scope"
         return ("%s was not reviewed in run3 -- absence of findings is "
                 "not a fix" % file_), "scope"
+    # Every run2 record of the fingerprint, not the first: the fingerprint carries neither domain
+    # nor source, and the `code` panel spans seven domains. Sorted so the reason is stable.
+    for domain, tool in sorted({(r.get("domain") or "", r.get("tool") or "") for r in recs}):
+        refusal = reconcile_cells.refusal(file_, domain or None, tool or None, cells)
+        if refusal is not None:
+            return refusal
     return None
 
 
 def build_diff(run2_records, run3_records, run2_path, run3_path,
-               run3_reviewed_files=None, run3_review_type=None):
+               run3_reviewed_files=None, run3_review_type=None, *, run3_cells=None):
     """Partition cross-run identities into recurring / closed / ambiguous / new.
 
     A finding RECURS if its exact finding_fingerprint OR its coarse reconcile_key
@@ -468,6 +488,12 @@ def build_diff(run2_records, run3_records, run2_path, run3_path,
     safe-direction-first: a whole-run trust failure is reported before the
     narrower per-file one.
 
+    `run3_cells` (load_report's `cells`) is the narrowest check, last: a
+    finding whose file sits in a run3 group that lost the floor cell for the
+    finding's domain is ambiguous, basis "scope" (#2084). So is one whose cell
+    run3 measured and did not complete, and a tool finding whose tool run3 did
+    not run or does not say it ran (#2087). None refuses nothing on this axis.
+
     Same-side fingerprint collisions and finding<->rejected kind flips are
     surfaced, never silently merged. Every cohort and record list is sorted, so
     re-running on the same inputs yields a byte-identical diff.
@@ -488,14 +514,15 @@ def build_diff(run2_records, run3_records, run2_path, run3_path,
             continue
         ck = recs[0]["coarse_key"]
         entry = {"fingerprint": fp, "coarse_key": list(ck)}
-        refusal = _close_refusal(recs, current, claimed3, close_guard, guard_reason)
+        refusal = _close_refusal(recs, current, claimed3, close_guard, guard_reason, run3_cells)
         if refusal is not None:
             entry.update(reason=refusal[0], basis=refusal[1])
             entry["run2"] = _by_id(recs)
             ambiguous.append(entry)
         else:
-            entry["reason"] = "(file,panel) clear: 0 findings in %s on %s in run3" % (
-                ck[1] or "(no panel)", ck[0] or "(no file)")
+            entry["reason"] = "(file,panel) clear: 0 findings in %s on %s in run3%s" % (
+                ck[1] or "(no panel)", ck[0] or "(no file)",
+                reconcile_cells.close_note(all(r.get("tool") for r in recs), run3_cells))
             entry["run2"] = _by_id(recs)
             closed.append(entry)
 
@@ -610,7 +637,8 @@ def main(argv=None):
         r3 = iter_records(report3)
         diff = build_diff(r2, r3, a.run2_report, a.run3_report,
                           run3_reviewed_files=report3["reviewed_files"],
-                          run3_review_type=report3["review_type"])
+                          run3_review_type=report3["review_type"],
+                          run3_cells=report3["cells"])
         with open(a.out, "w", encoding="utf-8") as fh:
             json.dump(diff, fh, indent=2, sort_keys=True)
         print("wrote %s (recurring=%d closed=%d ambiguous=%d new=%d)"
