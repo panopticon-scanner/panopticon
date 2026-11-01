@@ -479,9 +479,10 @@ def run_tools(target, tools, out_dir, image="panopticon-tools",
     # can carry -- so handing it straight to the knobs reproduced the finding on
     # this module's own convenience path. `standard` is the conservative default
     # for a caller that named no mode: it skips MORE than redteam would.
+    # #3235: the mode the CALLER named, which is redteam's empty skip list when it asked for one.
     if venv_dirs is None:
         venv_dirs = venv_scope.partition_venv_dirs(
-            venv_scope.find_virtualenvs(target))[0]
+            venv_scope.find_virtualenvs(target), security_mode)[0]
     validate_output_dir(target, out_dir)
     os.makedirs(out_dir, exist_ok=True)
     tools = withhold_target_builds(filter_online(tools, online), allow_target_build)[0]  # #3265
