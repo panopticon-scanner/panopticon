@@ -36,20 +36,33 @@ def _file_groups(doc):
     return out
 
 
+def _names(value):
+    """A set of tool names from a list of strings, or None if not a list."""
+    if not isinstance(value, list):
+        return None
+    return {name for name in value if isinstance(name, str) and name}
+
+
 def stated(doc):
-    """ONE document's cell statement: {"missing_floor": pairs | None, "file_groups": map | None}."""
-    cells = doc
-    for key in ("meta", "coverage", "cells"):
-        cells = cells.get(key) if isinstance(cells.get(key), dict) else {}
-    return {"missing_floor": _pairs(cells.get("missing_floor")), "file_groups": _file_groups(doc)}
+    """ONE document's cell statement. Each key is None when the document does not state it:
+    `missing_floor` and `reviewed` ((group, domain) pairs), `file_groups` ({file: {group}}),
+    `tools_ran` ({tool})."""
+    coverage = doc
+    for key in ("meta", "coverage"):
+        coverage = coverage.get(key) if isinstance(coverage.get(key), dict) else {}
+    cells = coverage.get("cells") if isinstance(coverage.get("cells"), dict) else {}
+    return {"missing_floor": _pairs(cells.get("missing_floor")),
+            "reviewed": _pairs(cells.get("reviewed")),
+            "file_groups": _file_groups(doc), "tools_ran": _names(coverage.get("tools_ran"))}
 
 
 def merge(base, part):
     """A part WIDENS what the main document stated, never supplies what it omitted -- the same rule
     `reconcile.load_report` applies to `groups[].files`."""
     out = dict(base)
-    if base["missing_floor"] is not None and part["missing_floor"] is not None:
-        out["missing_floor"] = base["missing_floor"] | part["missing_floor"]
+    for key in ("missing_floor", "reviewed", "tools_ran"):
+        if base[key] is not None and part[key] is not None:
+            out[key] = base[key] | part[key]
     if base["file_groups"] is not None and part["file_groups"] is not None:
         merged = {k: set(v) for k, v in base["file_groups"].items()}
         for path, names in part["file_groups"].items():
@@ -62,14 +75,56 @@ LOST_FLOOR = ("run3 lost floor cell (%s, %s) for %s's group -- absence of findin
               "that never happened is not a fix")
 
 
-def refusal(file_, domain, cells):
-    """(reason, "scope") when run-3 lost the floor cell this finding's file and domain fall in,
-    else None. An absent cell statement reads as no lost cell -- every report before the 5.0 audit,
-    and today's behaviour for it."""
-    if not cells or not cells.get("missing_floor") or not cells.get("file_groups"):
+NOT_REVIEWED = ("run3 did not complete a %s review of %s's group -- absence of findings from a "
+                "review that never happened is not a fix")
+TOOLS_UNSTATED = ("run3 does not state which tools ran -- a %s finding's fix needs %s to have run "
+                  "again")
+TOOL_NOT_RUN = "run3 did not run %s -- absence of its findings is not a fix"
+UNMEASURED = "; run3 did not measure completed cells, so only lost floor cells were checked"
+
+
+def _lost(file_, domain, cells):
+    """#2084: the finding's file is in a group whose floor cell for its domain was lost."""
+    if not cells.get("missing_floor") or not cells.get("file_groups"):
         return None
     lost = sorted(g for g in cells["file_groups"].get(file_, ())
                   if (g, domain) in cells["missing_floor"])
-    if lost:
-        return LOST_FLOOR % (lost[0], domain, file_), "scope"
-    return None
+    return (LOST_FLOOR % (lost[0], domain, file_), "scope") if lost else None
+
+
+def _uncompleted(file_, domain, cells):
+    """#2087: when run-3 measured its completed cells, an agent finding's (group, domain) must be
+    among them for some group holding its file. A finding with no domain matches no cell."""
+    if cells.get("reviewed") is None:
+        return None
+    groups = (cells.get("file_groups") or {}).get(file_, ())
+    if any((g, domain) in cells["reviewed"] for g in groups):
+        return None
+    return NOT_REVIEWED % (domain or "(no domain)", file_), "scope"
+
+
+def _tool_unrun(tool, cells):
+    """#2087: a tool finding's fix is only corroborated by the same tool running again."""
+    if cells.get("tools_ran") is None:
+        return TOOLS_UNSTATED % (tool, tool), "scope"
+    return None if tool in cells["tools_ran"] else (TOOL_NOT_RUN % tool, "scope")
+
+
+def refusal(file_, domain, tool, cells):
+    """(reason, "scope") when run-3's cells cannot corroborate this finding's close, else None.
+
+    `cells` None (a caller that states nothing) refuses nothing. A tool finding (`tool` set) needs
+    its tool in `tools_ran`; an agent finding needs its cell not lost and, when run-3 measured
+    `reviewed`, completed."""
+    if cells is None:
+        return None
+    if tool:
+        return _tool_unrun(tool, cells)
+    return _lost(file_, domain, cells) or _uncompleted(file_, domain, cells)
+
+
+def close_note(tool, cells):
+    """The disclosure a close carries when run-3 never measured its completed cells."""
+    if cells is None or tool or cells.get("reviewed") is not None:
+        return ""
+    return UNMEASURED

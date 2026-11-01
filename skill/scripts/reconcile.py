@@ -265,6 +265,7 @@ def iter_records(report):
                 "severity": f.get("severity"),
                 "panel": f.get("panel"),
                 "domain": _domain(f),
+                "tool": evidence.tool_name(f),
                 "category": f.get("category"),
                 "location_file": loc.get("file") or "",
                 "stored_fingerprint": f.get("fingerprint"),
@@ -430,7 +431,7 @@ def _close_refusal(recs, current, claimed, close_guard, guard_reason, cells=None
                     "refusing to corroborate a close" % file_), "scope"
         return ("%s was not reviewed in run3 -- absence of findings is "
                 "not a fix" % file_), "scope"
-    return reconcile_cells.refusal(file_, recs[0].get("domain"), cells)
+    return reconcile_cells.refusal(file_, recs[0].get("domain"), recs[0].get("tool"), cells)
 
 
 def build_diff(run2_records, run3_records, run2_path, run3_path,
@@ -483,8 +484,9 @@ def build_diff(run2_records, run3_records, run2_path, run3_path,
 
     `run3_cells` (load_report's `cells`) is the narrowest check, last: a
     finding whose file sits in a run3 group that lost the floor cell for the
-    finding's domain is ambiguous, basis "scope" (#2084). None, or a report
-    that states no cells, refuses nothing on this axis.
+    finding's domain is ambiguous, basis "scope" (#2084). So is one whose cell
+    run3 measured and did not complete, and a tool finding whose tool run3 did
+    not run or does not say it ran (#2087). None refuses nothing on this axis.
 
     Same-side fingerprint collisions and finding<->rejected kind flips are
     surfaced, never silently merged. Every cohort and record list is sorted, so
@@ -512,8 +514,9 @@ def build_diff(run2_records, run3_records, run2_path, run3_path,
             entry["run2"] = _by_id(recs)
             ambiguous.append(entry)
         else:
-            entry["reason"] = "(file,panel) clear: 0 findings in %s on %s in run3" % (
-                ck[1] or "(no panel)", ck[0] or "(no file)")
+            entry["reason"] = "(file,panel) clear: 0 findings in %s on %s in run3%s" % (
+                ck[1] or "(no panel)", ck[0] or "(no file)",
+                reconcile_cells.close_note(recs[0].get("tool"), run3_cells))
             entry["run2"] = _by_id(recs)
             closed.append(entry)
 

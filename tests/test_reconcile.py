@@ -1110,6 +1110,106 @@ class TestRun3LostFloorCells(unittest.TestCase):
         self.assertEqual("active", ambiguous["b.py"][1])
 
 
+class TestRun3UncompletedCells(TestRun3LostFloorCells):
+    """#2087: the close gate is per file, but the silence it reads is per (group, domain) for an
+    agent finding and per tool for a tool finding. A cell run3 measured and did not complete, or
+    a tool run3 did not run, cannot corroborate a fix."""
+
+    def _run3(self, missing=None, cells=True, reviewed=None, tools=None):
+        doc = super()._run3(missing, cells)
+        if reviewed is not None:
+            doc["meta"].setdefault("coverage", {}).setdefault("cells", {})["reviewed"] = reviewed
+        if tools is not None:
+            doc["meta"].setdefault("coverage", {})["tools_ran"] = tools
+        return doc
+
+    def _tool_run2(self):
+        run2 = self._run2()
+        for f in run2["findings"][1:]:
+            f["source"] = "tool:semgrep"
+        return run2
+
+    def test_a_measured_cell_that_did_not_complete_refuses_the_close(self):
+        closed, ambiguous = self._cohorts(self._diff(self._run3(reviewed=[["app", "SEC"]])))
+        self.assertEqual({"b.py"}, closed)
+        reason, basis = ambiguous["c.py"]
+        self.assertEqual("scope", basis)
+        self.assertIn("run3 did not complete a SEC review of c.py's group", reason)
+
+    def test_a_completed_cell_closes_without_the_unmeasured_note(self):
+        diff = self._diff(self._run3(reviewed=[["app", "SEC"], ["lib", "SEC"]]))
+        closed, ambiguous = self._cohorts(diff)
+        self.assertEqual(({"b.py", "c.py"}, {}), (closed, ambiguous))
+        for entry in diff["closed"]:
+            self.assertNotIn("did not measure", entry["reason"])
+
+    def test_another_domains_completed_cell_does_not_count(self):
+        closed, _ = self._cohorts(self._diff(self._run3(reviewed=[["app", "DAT"], ["lib", "SEC"]])))
+        self.assertEqual({"c.py"}, closed)
+
+    def test_an_empty_measurement_completed_nothing(self):
+        closed, ambiguous = self._cohorts(self._diff(self._run3(reviewed=[])))
+        self.assertEqual(set(), closed)
+        self.assertEqual({"b.py", "c.py"}, set(ambiguous))
+
+    def test_a_finding_with_no_domain_matches_no_completed_cell(self):
+        diff = self._diff(self._run3(reviewed=[["app", "SEC"], ["lib", "SEC"]]),
+                          self._run2(domain=None))
+        _, ambiguous = self._cohorts(diff)
+        self.assertIn("run3 did not complete a (no domain) review", ambiguous["b.py"][0])
+
+    def test_without_a_measurement_only_lost_cells_are_checked_and_the_close_says_so(self):
+        diff = self._diff(self._run3())
+        self.assertEqual({"b.py", "c.py"}, self._cohorts(diff)[0])
+        for entry in diff["closed"]:
+            self.assertIn("run3 did not measure completed cells, so only lost floor cells were "
+                          "checked", entry["reason"])
+
+    def test_a_part_widens_the_completed_cells(self):
+        run3 = self._run3(reviewed=[["app", "SEC"]])
+        run3["meta"]["parts"] = ["run3-part1.json"]
+        part = {"meta": {"coverage": {"cells": {"reviewed": [["lib", "SEC"]]}}}}
+        closed, _ = self._cohorts(self._diff(run3, extra={"run3-part1.json": part}))
+        self.assertEqual({"b.py", "c.py"}, closed)
+
+    def test_a_tool_finding_closes_only_when_its_tool_ran_again(self):
+        for tools, closes in ((["semgrep", "bandit"], True), (["bandit"], False), ([], False)):
+            with self.subTest(tools=tools):
+                diff = self._diff(self._run3(tools=tools), self._tool_run2())
+                closed, ambiguous = self._cohorts(diff)
+                self.assertEqual({"b.py", "c.py"} if closes else set(), closed)
+                if not closes:
+                    self.assertEqual("run3 did not run semgrep -- absence of its findings is "
+                                     "not a fix", ambiguous["b.py"][0])
+                    self.assertEqual("scope", ambiguous["b.py"][1])
+
+    def test_a_run3_that_does_not_say_which_tools_ran_cannot_close_a_tool_finding(self):
+        _, ambiguous = self._cohorts(self._diff(self._run3(), self._tool_run2()))
+        self.assertEqual({"b.py", "c.py"}, set(ambiguous))
+        self.assertIn("run3 does not state which tools ran", ambiguous["b.py"][0])
+
+    def test_a_tool_finding_is_not_held_to_agent_cells(self):
+        diff = self._diff(self._run3([["app", "SEC"]], reviewed=[], tools=["semgrep"]),
+                          self._tool_run2())
+        self.assertEqual({"b.py", "c.py"}, self._cohorts(diff)[0])
+        for entry in diff["closed"]:
+            self.assertNotIn("did not measure", entry["reason"])
+
+    def test_a_tool_finding_close_carries_no_unmeasured_note(self):
+        diff = self._diff(self._run3(tools=["semgrep"]), self._tool_run2())
+        self.assertEqual({"b.py", "c.py"}, self._cohorts(diff)[0])
+        for entry in diff["closed"]:
+            self.assertNotIn("did not measure", entry["reason"])
+
+    def test_a_part_widens_the_tools_that_ran(self):
+        run3 = self._run3(tools=["bandit"])
+        run3["meta"]["parts"] = ["run3-part1.json"]
+        part = {"meta": {"coverage": {"tools_ran": ["semgrep"]}}}
+        closed, _ = self._cohorts(self._diff(run3, self._tool_run2(),
+                                             extra={"run3-part1.json": part}))
+        self.assertEqual({"b.py", "c.py"}, closed)
+
+
 class TestRenderSummary(unittest.TestCase):
     def test_summary_reports_cohort_counts_and_warns_on_collisions(self):
         diff = fixture_diff()
