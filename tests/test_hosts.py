@@ -13,7 +13,7 @@ import unittest
 from unittest import mock
 
 import scripts.driver as driver
-import scripts.orchestrate as orchestrate
+import scripts.loop_setup as loop_setup
 from scripts import host_disclosure, host_probes, hosts
 
 
@@ -466,7 +466,9 @@ class TestTheUnselectableRefusalIsOneSentence(unittest.TestCase):
     # it, each with a call name it is already known to make -- guards the
     # guard, since an AST walk returning an empty set would pass
     # `test_both_entrypoints_call_it` over nothing.
-    _CALL_SITES = ((orchestrate, "_status"), (driver, "_establish_host_posture"))
+    # ARC-4087467862: `driver loop`'s refusal is asked in `loop_setup.resolve`,
+    # the setup moved out of `orchestrate.loop`.
+    _CALL_SITES = ((loop_setup, "resolve_mode"), (driver, "_establish_host_posture"))
 
     def _calls(self, module):
         with open(module.__file__, encoding="utf-8") as fh:
