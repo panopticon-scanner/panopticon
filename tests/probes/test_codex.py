@@ -365,3 +365,80 @@ def test_claudes_read_guard_probe_stays_unknown_for_a_row_that_does_not_map_it(t
     assert hosts.spec("claude").probes[hosts.READ_SCOPE_CONFINED] == claude_probes.READ_GUARD_ARMED
     assert claude_probes.probe_read_guard_armed(
         "claude", session_root=str(tmp_path))[0] != hosts.UNKNOWN
+
+
+def test_a_role_granted_fewer_read_tools_passes_launch_and_probe_alike(tmp_path):
+    """ARC-2742938782: launch validation and the posture probe agree on a
+    narrowed role. `validate_command` takes a role's own allowlist (I-2), so
+    the probe expects that role's grant -- not the whole broker -- and both
+    still refuse a tool outside the broker surface."""
+    from tests.test_codex_host import _case, _fake_catalog
+
+    real = dispatch.load_template
+    scout_file = dispatch.ROLE_FILES["scout"]
+
+    def without_glob(role_file):
+        meta, body = real(role_file)
+        if role_file == scout_file:
+            meta = copy.deepcopy(meta)
+            meta["tool_policy"]["allowed"] = [
+                tool for tool in meta["tool_policy"]["allowed"] if tool != "Glob"]
+        return meta, body
+
+    shell_name = dispatch.registered_agent_filename("codex", scout_file)
+    settings = str(tmp_path / "settings.json")
+    probes = (codex_probes.probe_codex_tool_policy, codex_probes.probe_codex_read_scope,
+              codex_probes.probe_codex_write_surface)
+    with mock.patch.object(dispatch, "load_template", without_glob):
+        registered = tmp_path / "registered"
+        dispatch.emit_host_agents("codex", str(registered))
+        root, _entry, env = _case(tmp_path)
+        entry = {"id": "probe-scout", "model": "gpt-test", "agent": "panopticon-scout"}
+        bound = dict(env, PANOPTICON_ENTRY_ID=entry["id"])
+        argv = codex_host.command(entry, bound, root, root / "run", runner=_fake_catalog,
+                                  registration_dir=registered)
+        try:
+            launched = codex_host.validate_command(argv, bound, root)[
+                "mcp_servers"]["panopticon_scope"]["enabled_tools"]
+        finally:
+            codex_host.cleanup_command(argv)
+        assert sorted(launched) == ["read_file", "search"]
+
+        def measured(tools):
+            # Full shell paths, as `_codex_surfaces` returns them.
+            rows = [(path if path.startswith("setup-scan") else str(registered / path), surface)
+                    for path, surface in surfaces()]
+            for path, surface in rows:
+                if os.path.basename(path) == shell_name:
+                    surface["tools"] = sorted(
+                        {"list_mcp_resources", "list_mcp_resource_templates",
+                         "read_mcp_resource"} | {"mcp__panopticon_scope__" + t for t in tools})
+            return rows
+
+        # The narrowed grant, measured as launched: proven by every claim.
+        for probe in probes:
+            assert probe("codex", settings_path=settings,
+                         measure=lambda: measured(launched))[0] == hosts.PROVEN, probe
+        # Wider than the grant, or a tool outside the broker: refuted.
+        for tools in (["read_file", "search", "list_files"], [*launched, "write_file"]):
+            for probe in probes:
+                state, _by, detail = probe("codex", settings_path=settings,
+                                           measure=lambda: measured(tools))
+                assert state == hosts.REFUTED and shell_name in detail, (probe, tools)
+
+    # ...and launch validation refuses that outside tool too.
+    shell = registered / shell_name
+    text = shell.read_text(encoding="utf-8")
+    assert text.count('enabled_tools = ["read_file", "search"]') == 1
+    shell.write_text(text.replace('enabled_tools = ["read_file", "search"]',
+                                  'enabled_tools = ["read_file", "write_file"]'), encoding="utf-8")
+    try:
+        argv = codex_host.command(entry, bound, root, root / "run", runner=_fake_catalog,
+                                  registration_dir=registered)
+    except ValueError:
+        return                          # refused before any launch is built
+    try:
+        with pytest.raises(ValueError, match="scope-only"):
+            codex_host.validate_command(argv, bound, root)
+    finally:
+        codex_host.cleanup_command(argv)

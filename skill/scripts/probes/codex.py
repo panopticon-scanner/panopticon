@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 import tempfile
 
-from scripts import dispatch, hosts, model_resolver
+from scripts import codex_read_tools, dispatch, hosts, model_resolver
 
 from . import common
 
@@ -159,12 +159,33 @@ def _codex_measure(probe_id, settings_path, registration_dir, measure):
             exc, "effective Codex inspection could not run"))
 
 
-def _codex_surface_problem(surface):
+# The MCP resource tools Codex adds beside any server's own tools.
+_RESOURCE_TOOLS = frozenset(("list_mcp_resources", "list_mcp_resource_templates",
+                             "read_mcp_resource"))
+
+
+def _granted_broker_tools(shell):
+    """The broker tools the shell measured at `shell` was emitted with.
+
+    ARC-2742938782: `codex_host.validate_command` accepts a role's narrowed
+    allowlist (I-2: the emitter derives it from the template's `allowed`), so
+    the probe expects exactly what that role's own shell grants, never the
+    whole broker -- else a template that drops Glob launches fine and is
+    refuted here as unconfined. The shell-less setup pass gets the whole
+    broker surface, as before.
+    """
+    for role_file in dispatch.ROLE_FILES.values():
+        if os.path.basename(str(shell)) == dispatch.registered_agent_filename("codex", role_file):
+            meta, _body = dispatch.load_template(role_file)
+            return dispatch._codex_enabled_tools(meta["tool_policy"])
+    return [tool["name"] for tool in codex_read_tools.TOOLS]
+
+
+def _codex_surface_problem(surface, shell):
     if not isinstance(surface, dict):
         return "effective Codex surface is not an object"
-    expected = {"mcp__panopticon_scope__read_file", "mcp__panopticon_scope__search",
-                "mcp__panopticon_scope__list_files", "list_mcp_resources",
-                "list_mcp_resource_templates", "read_mcp_resource"}
+    expected = _RESOURCE_TOOLS | {"mcp__panopticon_scope__" + tool
+                                  for tool in _granted_broker_tools(shell)}
     forbidden = surface.get("forbidden") or {}
     if (set(surface.get("tools", [])) != expected
             or set(surface.get("direct_tools", [])) != {
@@ -202,11 +223,11 @@ def _empty_resource_result(result, key):
         return False
 
 
-def _codex_write_surface_problem(surface):
+def _codex_write_surface_problem(surface, shell):
     """Why this surface does not prove reviewer-selectable writes absent."""
     from scripts import codex_host
 
-    problem = _codex_surface_problem(surface)
+    problem = _codex_surface_problem(surface, shell)
     if problem:
         return problem
     if surface.get("mcp_servers") != ["panopticon_scope"]:
@@ -257,7 +278,7 @@ def probe_codex_tool_policy(host, registration_dir=None, settings_path=None, mea
     paths = []
     for path, surface in surfaces:
         paths.append(path)
-        problem = _codex_surface_problem(surface)
+        problem = _codex_surface_problem(surface, path)
         if problem:
             return (hosts.REFUTED, CODEX_EFFECTIVE_TOOLS,
                     "%s: %s: %s" % (path, problem, json.dumps(surface, sort_keys=True)))
@@ -282,7 +303,7 @@ def probe_codex_read_scope(host, registration_dir=None, settings_path=None, meas
     paths = []
     for path, surface in surfaces:
         paths.append(path)
-        problem = _codex_surface_problem(surface)
+        problem = _codex_surface_problem(surface, path)
         if problem:
             return hosts.REFUTED, CODEX_READ_SCOPE, "%s: %s" % (path, problem)
         reads = surface.get("reads")
@@ -319,7 +340,7 @@ def probe_codex_write_surface(host, registration_dir=None, settings_path=None, m
     paths = []
     for path, surface in surfaces:
         paths.append(path)
-        problem = _codex_write_surface_problem(surface)
+        problem = _codex_write_surface_problem(surface, path)
         if problem:
             return hosts.REFUTED, CODEX_WRITE_SURFACE_ABSENT, "%s: %s" % (path, problem)
     problem = _role_measurement_problem(paths)
