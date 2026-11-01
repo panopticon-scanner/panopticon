@@ -486,12 +486,18 @@ class RepositoryHooksNeverRun(unittest.TestCase):
         return repo
 
     def test_a_planted_hook_runs_under_plain_git(self):
-        # Vacuity guard for both tests below.
+        # Vacuity guard for both tests below: the planted hook is live under plain git.
+        # #2114: through `git add`, which ALWAYS rewrites the index and so always fires
+        # `post-index-change`. Plain `git status` writes the index only when its refresh lands
+        # outside git's racy-timestamp window, so under load it could skip the write and this
+        # guard reported a live fixture as inert.
         repo = self._repo()
         marker = plant_hook(repo, "post-index-change")
         with open(os.path.join(repo, "a.py"), "w", encoding="utf-8") as fh:
             fh.write("value = 2\n")
-        _plain_status(repo)
+        added = subprocess.run(["git", "-C", repo, "add", "a.py"],
+                               capture_output=True, text=True, timeout=30)
+        self.assertEqual(0, added.returncode, added.stderr)
         self.assertTrue(os.path.exists(marker),
                         "fixture is inert: git never ran the hook")
 
