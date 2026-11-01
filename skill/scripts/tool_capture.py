@@ -112,11 +112,18 @@ def _capture_run(label, tool, docker, out_path, runner, docker_context=None, sta
     return None
 
 
+def _stderr_excerpt(raw):
+    """The last 500 characters of a failed scanner's stderr, REDACTED (#3235), the way the
+    docker-kill diagnostic below already is: the redactor sees the source before the tail is cut,
+    so a credential's prefix is never discarded and its suffix published."""
+    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw or "")
+    return redact.redact_diagnostic(text, 500, tail=True).strip()
+
+
 def _write_completed(label, tool, res, out_path, stamp=None):
     """Legacy path for runner callables that return a CompletedProcess."""
     if getattr(res, "returncode", 1) not in (0, 1):
-        excerpt = (getattr(res, "stderr", b"") or b"")[-500:].decode(
-            "utf-8", errors="replace").strip()
+        excerpt = _stderr_excerpt(getattr(res, "stderr", b"") or b"")
         print("%s %s exited %s; skipping%s" % (
             label, tool, res.returncode,
             (" — " + excerpt) if excerpt else ""), file=sys.stderr)
@@ -328,7 +335,7 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
                 return None
 
             if rc not in (0, 1):
-                excerpt = (stderr or b"")[-500:].decode("utf-8", errors="replace").strip()
+                excerpt = _stderr_excerpt(stderr or b"")
                 print("%s %s exited %s; skipping%s" % (
                     label, tool, rc,
                     (" — " + excerpt) if excerpt else ""), file=sys.stderr)

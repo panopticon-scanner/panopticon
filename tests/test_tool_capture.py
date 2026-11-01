@@ -125,6 +125,11 @@ _CASES = {
         ("gosec", 0, b"x" * 400, b"", _CAP, "completed"),
     "completed-process-blank-fails-closed":
         ("gosec", 0, b"  \n", b"", None, "completed"),
+    # #3235: the failure excerpt is redacted on both paths, as the docker-kill one already was.
+    "exit-2-excerpt-is-redacted":
+        ("gosec", 2, [_sarif()], b"gosec: auth " + _TOKEN.encode() + b" refused\n", None, "stream"),
+    "completed-process-exit-2-excerpt-is-redacted":
+        ("gosec", 2, _sarif(), b"gosec: auth " + _TOKEN.encode() + b" refused\n", None, "completed"),
 }
 _WATCHDOG = "watchdog-timeout-kills-the-container"
 # The watchdog case's two handshakes, recorded for the test body to assert
@@ -291,6 +296,16 @@ GOLDEN = {
         "returned": ['gosec.sarif'],
         "written": b'{"runs": [{"results": []}]}',
         "stderr": '',
+    },
+    "exit-2-excerpt-is-redacted": {
+        "returned": [],
+        "written": None,
+        "stderr": 'tool gosec exited 2; skipping — gosec: auth [REDACTED_TOKEN] refused\n',
+    },
+    "completed-process-exit-2-excerpt-is-redacted": {
+        "returned": [],
+        "written": None,
+        "stderr": 'tool gosec exited 2; skipping — gosec: auth [REDACTED_TOKEN] refused\n',
     },
     "exit-2-is-skipped-with-the-excerpt": {
         "returned": [],
