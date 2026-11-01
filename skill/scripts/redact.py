@@ -228,6 +228,20 @@ _BARE_UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
                         r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
+# The last pattern above, the bare UUID: a KEY never gets it (#3235). Keys are paths and names,
+# and a UUID-shaped directory in a bandit metrics key is an identifier, not a leak.
+_UUID_PATTERN = _PATTERNS[-1][0]
+
+
+def _redact_key(key):
+    """A mapping key with every credential pattern masked except the bare UUID."""
+    out = key
+    for pat, repl in _PATTERNS:
+        if pat is not _UUID_PATTERN:
+            out = pat.sub(repl, out)
+    return _mask_overlong_keys(out)
+
+
 def _mask_uuid(m):
     """Mask a UUID unless it is the value of a self-declared identity key."""
     prefix = m.string[max(0, m.start() - 64):m.start()]
@@ -334,7 +348,18 @@ def redact_tree(obj, _key=None):
     if isinstance(obj, list):
         return [redact_tree(v, _key) for v in obj]
     if isinstance(obj, dict):
-        return {k: redact_tree(v, k) for k, v in obj.items()}
+        # #3235: a string KEY is redacted too. Only a key that changed is renamed, and two that
+        # redact alike are kept apart (`[REDACTED_TOKEN] (2)`) rather than one overwriting the other.
+        out = {}
+        for k, v in obj.items():
+            name = _redact_key(k) if isinstance(k, str) and k else k
+            if name != k:
+                base, n = name, 1
+                while name in out or name in obj:
+                    n += 1
+                    name = "%s (%d)" % (base, n)
+            out[name] = redact_tree(v, k)
+        return out
     return obj
 
 
