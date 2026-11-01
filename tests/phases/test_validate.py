@@ -181,6 +181,22 @@ class TestValidatePhase(unittest.TestCase):
         with self.assertRaises(runio.DriverError):
             validate_phase.validate_execute(d, m)
 
+    def test_after_completion_the_stop_does_not_blame_reviewers(self):
+        # #3235 ruling: the same stop, worded for the likelier cause once the run has completed.
+        d = self._git_repo()
+        validate_phase.capture_tree_baseline(d)
+        open(os.path.join(d, "edited.py"), "w").close()
+        for manifest, words, not_words in (
+                ({"run_id": "R", "worktree": None}, "reviewer side effects", "changed since"),
+                ({"run_id": "R", "worktree": None, "completed_at": "2026-10-31T00:00:00Z"},
+                 "the tree changed since this run validated", "reviewer")):
+            with self.subTest(completed="completed_at" in manifest):
+                with self.assertRaises(runio.DriverError) as caught:
+                    validate_phase.validate_execute(d, manifest)
+                self.assertIn(words, str(caught.exception))
+                self.assertNotIn(not_words, str(caught.exception))
+                self.assertIn("edited.py", str(caught.exception))
+
     def test_a_planted_clean_marker_over_a_dirty_tree_is_not_done(self):
         d = self._git_repo()
         validate_phase.capture_tree_baseline(d)
