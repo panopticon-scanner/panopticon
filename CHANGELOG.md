@@ -7,6 +7,12 @@
   requires dependency-check's `nvd.api.last.modified`, which is saved only when an update finishes, to
   be present and at most 72 hours old. The workflow guard now treats `java` as an interpreter.
 
+- **Fix: the JavaScript self-scan now parses both shipped Workflow-tool scripts (#3228).** Their
+  marked host dialect (exported metadata plus top-level `await`/`return`) is adapted only under
+  `skill/workflows/*.js`; unmarked or malformed JavaScript still fails closed. Security rules and
+  original line numbers survive the adaptation, and any future per-file parse failure is disclosed
+  on stderr as partial coverage.
+
 - **Hardening batch from the 5.2 redteam triage (#3235, part B).** None is reachable by a hostile
   target under default use:
   - a redteam direct caller of `run_tools` gets no virtualenv skip by default;

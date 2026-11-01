@@ -1,4 +1,6 @@
 import json
+import contextlib
+import io
 import os
 import tempfile
 import unittest
@@ -335,6 +337,31 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         self.assertIn("project: false", cfg)
         self.assertEqual(cfg.count("noInlineConfig: true"), 2)
         self.assertRegex(cfg, r'import tsParser from "/opt/panopticon-node/node_modules/@typescript-eslint/parser/dist/index.js"')
+
+    def test_flat_config_has_a_fail_closed_workflow_dialect_processor(self):
+        """#3228: only the shipped, marked Workflow dialect gets adapted."""
+        cfg = es._flat_config()
+        self.assertIn('files: ["skill/workflows/*.js"]', cfg)
+        self.assertIn("processor: workflowProcessor", cfg)
+        self.assertIn("text.startsWith(workflowMarker)", cfg)
+        self.assertIn("return [text]", cfg)
+        self.assertIn('text.replace(/^export const meta(?=\\s*=)/m, "const meta")', cfg)
+        self.assertIn("async function __panopticonWorkflow__() {", cfg)
+
+    def test_parse_errors_are_disclosed_but_ordinary_findings_are_silent(self):
+        """#3228: adapter-level coverage loss is visible during the scan."""
+        failed = [{"filePath": "/src/bad.js", "fatalErrorCount": 1,
+                   "messages": [{"ruleId": None, "fatal": True,
+                                  "message": "Parsing error: source unavailable"}]}]
+        ordinary = json.loads(ESLINT_SAMPLE)
+        for rows, expected in ((failed, "1 file(s) had parse errors"),
+                               (ordinary, "")):
+            with self.subTest(expected=expected):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    es.file_coverage(rows)
+                self.assertEqual(bool(stderr.getvalue()), bool(expected))
+                self.assertIn(expected, stderr.getvalue())
 
     def test_invoke_runs_from_the_target_and_keeps_the_config_outside_it(self):
         # #1877 round 2: eslint is the second documented cwd=target exception
