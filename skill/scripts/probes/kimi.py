@@ -153,25 +153,37 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
     # I5: the EFFECTIVE surface, when a child has already run in this run's
     # home. The table above says what the CLI ships; the snapshot says what a
     # launched child was actually given.
-    snapshot, agent, where = kimi_snapshot._kimi_wire_snapshot(run_home)
-    if snapshot is not None:
+    # #3235: EVERY child's snapshot, not only the newest -- one mismatched child is a fault.
+    # Each distinct (agent, surface) is reported once, so a run of hundreds stays one line each.
+    snapshots, why = kimi_snapshot._kimi_wire_snapshots(run_home)
+    notes: dict[tuple, str] = {}
+    matched: list[str] = []
+    for snapshot, agent, where in snapshots:
         grant = common._frontmatter_tools(os.path.join(registration_dir, "%s.md" % agent))
-        if grant is None:
-            measured = ("%s reports %s for %r, which is not a shell registered in "
-                        "%s, so the table above is what this rests on"
-                        % (where, sorted(snapshot), agent, registration_dir))
+        if grant is None and snapshot - allowed:
+            # #3235: an agent with no registered shell (an unenforced entry's default) may still
+            # carry nothing beyond what some template grants -- the accounting above says so.
+            fault = ("a child's %s for %r, which is not a registered shell, carries %s, which no "
+                     "template grants" % (kimi_snapshot._TOOLS_SNAPSHOT, agent,
+                                          sorted(snapshot - allowed)))
+            if fault not in faults:
+                faults.append(fault)
+        elif grant is None:
+            notes.setdefault((agent, tuple(sorted(snapshot))), (
+                "%s reports %s for %r, which is not a shell registered in %s, so the table "
+                "above is what this rests on" % (where, sorted(snapshot), agent, registration_dir)))
         elif set(grant) != snapshot:
-            faults.append("the last child's %s for %r carries %s, its registered "
-                          "shell grants %s" % (kimi_snapshot._TOOLS_SNAPSHOT, agent,
-                                               sorted(snapshot), sorted(grant)))
-            measured = ""
+            fault = ("a child's %s for %r carries %s, its registered shell grants %s"
+                     % (kimi_snapshot._TOOLS_SNAPSHOT, agent, sorted(snapshot), sorted(grant)))
+            if fault not in faults:
+                faults.append(fault)
         else:
-            measured = ("the last child's %s for %r carries exactly its shell's "
-                        "grant %s (%s)" % (kimi_snapshot._TOOLS_SNAPSHOT, agent,
-                                           sorted(grant), where))
-    else:
-        measured = ("%s, so the effective surface rests on the version table"
-                    % where)
+            matched.append(agent)
+    measured = (("%d of %d children's %s carry exactly their shell's grant, for %s (newest: %s)%s"
+                 % (len(matched), len(snapshots), kimi_snapshot._TOOLS_SNAPSHOT,
+                    ", ".join(sorted(set(matched))) or "no registered shell", snapshots[0][2],
+                    "".join("; " + n for n in notes.values())))
+                if snapshots else "%s, so the effective surface rests on the version table" % why)
     if faults:
         return (hosts.REFUTED, KIMI_SHELL_SURFACE, "; ".join(faults))
     return (hosts.PROVEN, KIMI_SHELL_SURFACE,

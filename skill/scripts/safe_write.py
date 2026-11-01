@@ -205,7 +205,8 @@ def open_w_nofollow(path):
     # O_NONBLOCK keeps an existing FIFO from waiting forever for a reader. The
     # descriptor check rejects every non-regular leaf that can still be opened
     # (for example a FIFO that already has a reader) before any bytes are sent.
-    flags = (os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    # #3235: no O_TRUNC -- a hard link is refused BEFORE anything is truncated.
+    flags = (os.O_WRONLY | os.O_CREAT
              | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0))
     try:
         fd = os.open(path, flags, 0o644)
@@ -215,12 +216,23 @@ def open_w_nofollow(path):
         else:
             raise
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise NonRegularFileError(errno.EINVAL, "not a regular file")
+        _refuse_unless_sole_regular(fd)
+        os.ftruncate(fd, 0)
     except Exception:
         os.close(fd)
         raise
     return os.fdopen(fd, "w", encoding="utf-8")
+
+
+def _refuse_unless_sole_regular(fd):
+    """A regular file with ONE name (#3235). A second link is another path to the same bytes,
+    and writing through it changes a file outside the artifact this call was asked for."""
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode):
+        raise NonRegularFileError(errno.EINVAL, "not a regular file")
+    if info.st_nlink != 1:
+        raise NonRegularFileError(errno.EMLINK, "refusing a file with %d hard links"
+                                  % info.st_nlink)
 
 
 def open_staging_nofollow(path):
@@ -291,6 +303,11 @@ def open_a_nofollow(path):
             fd = os.open(path, flags, 0o644)
         else:
             raise
+    try:
+        _refuse_unless_sole_regular(fd)
+    except Exception:
+        os.close(fd)
+        raise
     return os.fdopen(fd, "a", encoding="utf-8")
 
 

@@ -2213,9 +2213,9 @@ class TestTheSymlinkRefusingWritersAgreeOnTheirFlags(unittest.TestCase):
         # #2952: the truncating artifact writer must refuse a FIFO immediately
         # even when no reader has opened its other end. Keep the flag exact so
         # that bounded refusal cannot silently drift back to a blocking open.
+        # #3235: no O_TRUNC on the open -- the hard-link check runs first, then `ftruncate`.
         self.assertEqual(measured["safe_write.open_w_nofollow"],
-                         (base | os.O_TRUNC | getattr(os, "O_NONBLOCK", 0),
-                          self.ARTIFACT))
+                         (base | getattr(os, "O_NONBLOCK", 0), self.ARTIFACT))
         self.assertEqual(measured["safe_write.open_a_nofollow"],
                          (base | os.O_APPEND, self.ARTIFACT))
         for name, (flags, _mode) in sorted(measured.items()):

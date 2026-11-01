@@ -1,5 +1,6 @@
 """#run7 SEC-B2C: the single-source secret redaction shared by the driver
 (tool output) and synthesize (shareable report bodies)."""
+import json
 import os
 import subprocess
 import sys
@@ -164,6 +165,23 @@ class TestRedact(unittest.TestCase):
         self.assertEqual(f["severity"], "HIGH")
         self.assertEqual(f["line"], 5)                 # int passes through
         self.assertEqual(f["location"]["file"], "src/a.py")
+
+    def test_redact_tree_masks_a_token_shaped_key_and_keeps_its_value_apart(self):
+        # #3235: keys were copied unchanged, so a secret parked as a mapping key survived.
+        token, other = "ghp_" + "K" * 36, "ghp_" + "Q" * 36
+        out = redact.redact_tree({token: 1, other: 2, "plain": {"tool": "semgrep"}, 7: "x"})
+        self.assertNotIn(token, json.dumps(out))
+        self.assertNotIn(other, json.dumps(out))
+        self.assertEqual(sorted([1, 2]), sorted(v for k, v in out.items() if "REDACTED" in str(k)))
+        self.assertEqual({"tool": "semgrep"}, out["plain"])
+        self.assertEqual("x", out[7])
+
+    def test_redact_tree_leaves_ordinary_keys_and_order_alone(self):
+        src = {"b": 1, "a": {"semgrep": 2}, "tools_suppressed": {"vendor": 3},
+               "/src/build/3fa85f64-5717-4562-b3fc-2c963f66afa6/app.py": {"loc": 3}}
+        out = redact.redact_tree(src)
+        self.assertEqual(src, out)
+        self.assertEqual(list(src), list(out))
 
     def test_redact_tree_scalar_passthrough(self):
         self.assertEqual(redact.redact_tree(42), 42)

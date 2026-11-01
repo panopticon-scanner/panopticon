@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Hardening batch from the 5.2 redteam triage (#3235, part B).** None is reachable by a hostile
+  target under default use:
+  - a redteam direct caller of `run_tools` gets no virtualenv skip by default;
+  - pip-audit discloses an invalid or Poetry-only `pyproject.toml`, instead of auditing nothing;
+  - a failed scanner's stderr excerpt is redacted on both capture paths;
+  - artifact writers refuse a hard-linked file before truncating or appending;
+  - the kimi shell-surface probe compares every child's snapshot, and refutes an unregistered
+    agent that carries a tool no template grants;
+  - `redact_tree` masks a credential-shaped mapping key.
+
 - **Hardening: validation and tool verification bind to what they measured (#3235, part A).** A
   tool-advisor verdict counts only when it echoes the finding it was asked about, so a mislabelled
   reply is retried rather than lost. Validation re-takes the tree delta instead of trusting its

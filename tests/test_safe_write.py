@@ -58,6 +58,49 @@ class TestBoundedRegularRead(unittest.TestCase):
         self.assertIs(raised.exception, denied)
 
 
+class TestHardLinkedArtifacts(unittest.TestCase):
+    """#3235: a second name for an artifact's bytes is refused before anything is truncated or
+    appended, so a link to a file outside the tree is never written through."""
+
+    def _linked(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, d, True)
+        outside = os.path.join(d, "outside.txt")
+        with open(outside, "w", encoding="utf-8") as fh:
+            fh.write("keep me\n")
+        pano = os.path.join(d, "repo", ".panopticon")
+        os.makedirs(pano)
+        artifact = os.path.join(pano, "report.json")
+        os.link(outside, artifact)
+        return outside, artifact
+
+    def test_the_truncating_writer_refuses_and_leaves_the_other_name_whole(self):
+        outside, artifact = self._linked()
+        with self.assertRaisesRegex(OSError, "hard links"):
+            safe_write.open_w_nofollow(artifact)
+        with open(outside, encoding="utf-8") as fh:
+            self.assertEqual("keep me\n", fh.read())
+
+    def test_the_appending_writer_refuses_too(self):
+        outside, artifact = self._linked()
+        with self.assertRaisesRegex(OSError, "hard links"):
+            safe_write.open_a_nofollow(artifact)
+        with open(outside, encoding="utf-8") as fh:
+            self.assertEqual("keep me\n", fh.read())
+
+    def test_a_sole_existing_file_is_still_truncated_and_rewritten(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(__import__("shutil").rmtree, d, True)
+        path = os.path.join(d, ".panopticon", "a.json")
+        os.makedirs(os.path.dirname(path))
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("a much longer previous body\n")
+        with safe_write.open_w_nofollow(path) as fh:
+            fh.write("new\n")
+        with open(path, encoding="utf-8") as fh:
+            self.assertEqual("new\n", fh.read())
+
+
 class TestOneImplementation(unittest.TestCase):
     """runio's names ARE these functions -- not copies of them."""
 

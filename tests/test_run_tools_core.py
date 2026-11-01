@@ -703,6 +703,25 @@ class TestVirtualenvExclusion(unittest.TestCase):
         for owned in rt.BANDIT_SCANNER_EXCLUDES:
             self.assertIn(owned, entries)
 
+    def test_a_redteam_direct_caller_gets_no_venv_skip_by_default(self):
+        # #3235: with `venv_dirs=None` the default partitioned as standard whatever mode was asked.
+        calls = []
+        fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
+
+        def runner(cmd, **kw):
+            calls.append(cmd)
+            return fake
+        with tempfile.TemporaryDirectory() as d:
+            self._venv(d, ".venv")
+            rt.run_tools(d, ["semgrep", "trivy", "bandit"], os.path.join(d, "out"),
+                         runner=runner, security_mode="redteam")
+        semgrep, trivy, bandit = calls
+        self.assertNotIn("--exclude=.venv", semgrep)
+        self.assertNotIn("--skip-dirs=.venv", trivy)
+        entries = [a for a in bandit
+                   if a.startswith("--exclude=")][0][len("--exclude="):].split(",")
+        self.assertNotIn("/src/.venv", entries)
+
     def test_main_records_which_venvs_the_scan_skipped(self):
         for mode, skipped in (("standard", True), ("redteam", False)):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as d:

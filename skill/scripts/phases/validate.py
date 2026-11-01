@@ -414,8 +414,12 @@ def validate_execute(review_root, manifest, runner=subprocess.run):
                 {"schema_version": 1, "run_id": manifest["run_id"],
                  "tree_clean": not delta, "unexpected_changes": delta})
     if delta:
-        raise runio.DriverError("validate: reviewer side effects outside .panopticon/: "
-                          + "; ".join(delta[:10]))
+        # #3235 ruling: after `complete` the likelier cause is the operator, so the wording is
+        # neutral there. `completed_at` only chooses the words; the stop is the same either way.
+        cause = ("the tree changed since this run validated"
+                 if manifest.get(run_manifest.COMPLETED_AT) else
+                 "reviewer side effects outside .panopticon/")
+        raise runio.DriverError("validate: %s: " % cause + "; ".join(delta[:10]))
     return engine.PhaseResult(kind="advanced", message="validate: clean tree")
 
 # #3225: the largest report artifact `--pr` surfaces into the caller's tree --

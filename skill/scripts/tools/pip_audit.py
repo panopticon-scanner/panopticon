@@ -21,18 +21,18 @@ from .base import (cve_ids, make_finding, normalize_severity, omit_none,
 _manifest_path_cv: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "pip_audit_manifest_path", default=None)
 
-# The last resort, for a caller that hands over bytes and NO tree (#1649).
-# Every real route names one: ingest through `target_root_cv`, the in-process
-# one through `invoke`.
+# The last resort, for a caller that hands over bytes and NO tree (#1649). Every real route names
+# one: ingest through `target_root_cv`, the in-process one through `invoke`.
 DEFAULT_MANIFEST = "requirements.txt"
 
 
 class PyprojectInputError(Exception):
-    """A bounded, target-independent reason pyproject.toml cannot be audited."""
+    """A bounded, target-independent reason pyproject.toml cannot be audited. `skip` (#3235): a
+    disclosure, not a failure -- the file is fine, its dependencies are just not where we read."""
 
-    def __init__(self, reason: str, *, truncated: bool = False):
+    def __init__(self, reason: str, *, truncated: bool = False, skip: bool = False):
         super().__init__(reason)
-        self.truncated = truncated
+        self.truncated, self.skip = truncated, skip
 
 
 def _deps_from_pyproject(target: str) -> list[str] | None:
@@ -80,9 +80,13 @@ def _deps_from_pyproject(target: str) -> list[str] | None:
     except RecursionError:
         raise PyprojectInputError(
             "pyproject.toml exceeds the TOML nesting limit") from None
-    except (ValueError, OSError):
-        return None
+    except (ValueError, OSError):        # #3235: disclosed, like every other unreadable shape
+        raise PyprojectInputError("pyproject.toml is not valid TOML") from None
     project = data.get("project")
+    poetry = data["tool"].get("poetry") if isinstance(data.get("tool"), dict) else None
+    if not (project if isinstance(project, dict) else {}).get("dependencies") and isinstance(
+            poetry, dict) and poetry.get("dependencies"):
+        raise PyprojectInputError("dependencies declared outside [project]; not audited", skip=True)
     if not isinstance(project, dict):
         return None
     if "dependencies" in (project.get("dynamic") or []):
@@ -119,14 +123,13 @@ _SPEC = r"%s\s*%s" % (_OP, _VER)
 # above, which is what makes "kept" mean "names a release on an index".
 _BARE_REQ = re.compile(r"^(%s)(?:\s*%s)?\s*(?:%s(?:\s*,\s*%s)*)?\s*$"
                        % (_NAME, _EXTRAS, _SPEC, _SPEC))
-# An environment marker, conservatively: the characters PEP 508's marker grammar
-# actually uses. `@`, `/`, `\`, `:` and `#` are NOT here, so a marker can never
-# smuggle a URL or a path past the check above.
-# The marker alphabet, and NOTHING else: identifiers, quotes, the comparison
-# operators, parentheses, the `and`/`or`/`in`/`not in` keywords (letters), and
-# whitespace. Deliberately narrower than PEP 508's `python_str_c`, which admits
-# almost every printable character INSIDE a quoted string -- a marker using one
-# of those is dropped `unparseable`, which is coverage loss, not a hole.
+# An environment marker, conservatively: the characters PEP 508's marker grammar actually uses. `@`,
+# `/`, `\`, `:` and `#` are NOT here, so a marker can never smuggle a URL or a path past the check
+# above.
+# The marker alphabet, and NOTHING else: identifiers, quotes, the comparison operators, parentheses,
+# the `and`/`or`/`in`/`not in` keywords (letters), and whitespace. Deliberately narrower than PEP
+# 508's `python_str_c`, which admits almost every printable character INSIDE a quoted string -- a
+# marker using one of those is dropped `unparseable`, which is coverage loss, not a hole.
 _MARKER_CHARS = r"[\sA-Za-z0-9_.()'\"<>=!~,*+-]"
 # Charset and non-emptiness are SEPARATE tests (fix round 2, F1). M6 forced non-emptiness with
 # `^%s*\S%s*$`, which reads "the marker charset, then exactly one character that may be ANYTHING,
@@ -524,7 +527,7 @@ class PipAuditAdapter:
                 deps = _deps_from_pyproject(target)
             except PyprojectInputError as exc:
                 print("pip-audit: %s" % exc, file=sys.stderr)
-                return b"", 2
+                return (b'{"dependencies": [], "fixes": []}', 0) if exc.skip else (b"", 2)
             if not deps:
                 print("pip-audit: no static [project.dependencies] in %s; "
                       "skipping (osv-scanner covers this target)" % target,
