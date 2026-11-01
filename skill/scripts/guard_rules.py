@@ -146,6 +146,63 @@ def _glob_pattern_climbs(pattern):
     return any(part == ".." for part in pattern.replace("\\", "/").split("/"))
 
 
+# #2063: the check above is lexical, so `linkdir/*` (an in-grant symlink to outside) listed what
+# the grant never covered. A Glob's literal prefix is realpath'd per call; a WILDCARD can descend
+# a link unseen, so each dir grant's escaping links are walked once when the scope is built and a
+# wildcard with one at or under its literal prefix is denied at any depth -- coarse on purpose. A
+# capped or missing walk denies every wildcard there; a link planted later is caught only by the
+# prefix. Listing only: a Read of a listed path still folds the link and is denied.
+ESCAPES_KEY, ESCAPE_WALK_CAP, _GLOB_META = "escapes", 200000, frozenset("*?[{")
+GLOB_ESCAPE_DENIAL = "Glob pattern %r is denied: it resolves outside your directory grant"
+GLOB_LINK_DENIAL = ("Glob pattern %r is denied: a symlink under it leads outside your directory "
+                    "grant -- pass an explicit path instead of a wildcard")
+
+
+def grant_escapes(dirs, cap=ESCAPE_WALK_CAP):
+    """{grant: sorted in-grant symlinks leaving it, or None past `cap` entries}; never follows a
+    link or walks the `.git` store no grant covers."""
+    out: dict[str, list[str] | None] = {}
+    for grant in dirs:
+        found, seen = [], 0
+        for root, subdirs, files in os.walk(grant, followlinks=False):
+            subdirs[:] = [d for d in subdirs if root != grant or d.casefold() != ".git"]
+            seen += len(subdirs) + len(files)
+            if seen > cap:
+                break
+            found += [os.path.join(root, n) for n in subdirs + files
+                      if os.path.islink(os.path.join(root, n))
+                      and not _under(os.path.realpath(os.path.join(root, n)), grant)]
+        out[grant] = None if seen > cap else sorted(found)
+    return out
+
+
+def _glob_refusal(target, pattern, scope):
+    """The denial for a Glob of `pattern` under granted directory `target`, or None (#1917,
+    #3271 G-a, #2063)."""
+    if _glob_pattern_climbs(pattern):
+        return GLOB_PATTERN_DENIAL % (pattern,)
+    if _names_git_store(pattern):
+        return GIT_STORE_DENIAL % (pattern,)
+    parts = [p for p in pattern.replace("\\", "/").split("/") if p not in ("", ".")]
+    literal = []
+    for part in parts:
+        if _GLOB_META & set(part):
+            break
+        literal.append(part)
+    base = os.path.realpath(os.path.join(target, *literal))
+    grants = [d for d in scope["dirs"] if _in_dir_grant(base, d)]
+    if not grants:
+        return GLOB_ESCAPE_DENIAL % (pattern,)
+    if len(literal) == len(parts):
+        return None
+    escapes = scope.get(ESCAPES_KEY) if isinstance(scope.get(ESCAPES_KEY), dict) else {}
+    for grant in grants:
+        links = escapes.get(grant)
+        if links is None or any(_under(link, base) for link in links):
+            return GLOB_LINK_DENIAL % (pattern,)
+    return None
+
+
 def _load_scope(scope_path):
     """(scopes, error): the armed {entry id: scope} map, or (None, why)."""
     try:
@@ -159,7 +216,7 @@ def _load_scope(scope_path):
     for eid, scope in loaded.items():
         if not isinstance(eid, str) or not isinstance(scope, dict):
             return None, "read guard scope is malformed"
-        entry: dict[str, list[str]] = {}
+        entry: dict[str, object] = {}
         for k in SCOPE_KEYS:
             val = scope.get(k)
             if val is None:
@@ -168,6 +225,11 @@ def _load_scope(scope_path):
             if not isinstance(val, list):
                 return None, "read guard scope is malformed"
             entry[k] = [p for p in val if isinstance(p, str)]
+        # #2063: {grant: [link, ...] | None}; anything else reads as no walk (wildcards denied).
+        raw = scope.get(ESCAPES_KEY)
+        entry[ESCAPES_KEY] = ({g: ([p for p in v if isinstance(p, str)] if isinstance(v, list)
+                                   else None) for g, v in raw.items() if isinstance(g, str)}
+                              if isinstance(raw, dict) else {})
         out[eid] = entry
     return out, ""
 
