@@ -167,6 +167,29 @@ class TestValidatePhase(unittest.TestCase):
             validate_phase.validate_execute(d, m)
         self.assertFalse(validate_phase.validate_done(d, m))   # dirty tree != validated
 
+    def test_a_clean_marker_does_not_outlive_a_change_to_the_tree(self):
+        # #3235: `validate.json` saying clean was trusted on its own. A change after it -- or a
+        # marker written over a dirty tree -- re-runs validate, which refuses.
+        d = self._git_repo()
+        validate_phase.capture_tree_baseline(d)
+        m = {"run_id": "R", "worktree": None}
+        self.assertEqual("advanced", validate_phase.validate_execute(d, m).kind)
+        self.assertTrue(validate_phase.validate_done(d, m))
+        with open(os.path.join(d, "a.py"), "a", encoding="utf-8") as fh:
+            fh.write("# edited after validate\n")
+        self.assertFalse(validate_phase.validate_done(d, m))
+        with self.assertRaises(runio.DriverError):
+            validate_phase.validate_execute(d, m)
+
+    def test_a_planted_clean_marker_over_a_dirty_tree_is_not_done(self):
+        d = self._git_repo()
+        validate_phase.capture_tree_baseline(d)
+        open(os.path.join(d, "leaked.py"), "w").close()
+        runio._write_json(runio._pano(d, "validate.json"),
+                          {"schema_version": 1, "run_id": "R", "tree_clean": True,
+                           "unexpected_changes": []})
+        self.assertFalse(validate_phase.validate_done(d, {"run_id": "R", "worktree": None}))
+
     def test_panopticon_changes_are_ignored(self):
         d = self._git_repo()
         validate_phase.capture_tree_baseline(d)

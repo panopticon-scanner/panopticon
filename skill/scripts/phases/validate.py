@@ -397,10 +397,13 @@ def _tree_delta(review_root, runner):
                          else "CONTENT %s" % rel)
     return delta
 
-def validate_done(review_root, manifest):
+def validate_done(review_root, manifest, runner=subprocess.run):
+    """Done when this run's marker says clean AND the tree still is (#3235). The marker alone is a
+    file under `.panopticon/`, so it is a claim, not a measurement: the delta is re-taken, which is
+    cheap and deterministic, and a change since the marker was written re-runs validate."""
     data = runio._load_json(runio._pano(review_root, "validate.json"))
     return (isinstance(data, dict) and data.get("run_id") == manifest.get("run_id")
-            and data.get("tree_clean") is True)
+            and data.get("tree_clean") is True and not _tree_delta(review_root, runner))
 
 def validate_execute(review_root, manifest, runner=subprocess.run):
     delta = _tree_delta(review_root, runner)
