@@ -352,18 +352,18 @@ def make_finding(adapter: Any, n: int, group: str, *, title: str, severity: str,
         tool_evidence["rule_id"] = inert_text(tool_evidence["rule_id"])
     finding: dict[str, Any] = {
         "id": new_finding_id(adapter.prefix, n),
-        "title": inert_text(title),
+        "title": inert_text("" if title is None else title),
         "severity": normalize_severity(severity),
         "confidence": confidence,
         "panel": "security",
-        # `or ""`: an absent body field is empty, never the word "None" --
-        # `normalize_finding` has always guarded it that way.
-        "category": inert_text(category or ""),
+        # #2118: an absent field is empty, never the word "None" -- and a falsy
+        # non-string (`0`) is still its own text, not "".
+        "category": inert_text("" if category is None else category),
         "source": f"tool:{adapter.name}",
         "location": location,
-        "description": inert_text(description or "", limit=INERT_BODY_MAX, mode="body"),
-        "impact": inert_text(impact or "", limit=INERT_BODY_MAX, mode="body"),
-        "remediation": inert_text(remediation or "", limit=INERT_BODY_MAX, mode="body"),
+        "description": inert_text("" if description is None else description, limit=INERT_BODY_MAX, mode="body"),
+        "impact": inert_text("" if impact is None else impact, limit=INERT_BODY_MAX, mode="body"),
+        "remediation": inert_text("" if remediation is None else remediation, limit=INERT_BODY_MAX, mode="body"),
         "references": references or [],
         "tool_evidence": tool_evidence,
         "_group": group,
