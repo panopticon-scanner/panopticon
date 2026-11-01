@@ -146,6 +146,41 @@ def _scratch_root(tmp, review_root, manifest, tag, run_folder, bind=None):
     return root
 
 
+RECEIPT_DERIVED = ("replay: no output receipt in the archive's tools-manifest.json (#2070); derived "
+                   "`outputs` from its `produced` on the copy")
+
+
+def _derive_receipt(run_copy, tools_manifest):
+    """#3386: give the COPY's tools manifest the output receipt its `produced` implies; True if so.
+
+    Synthesis binds tool outputs only through `outputs`, and `output_receipt` accepts exactly the
+    canonical output names of `produced`, so the receipt is a function of `produced`. A run folder
+    without one replayed with no tool axis at all. Only a manifest that is an object with a
+    well-formed `produced` and NO `outputs` key is touched; a malformed receipt, a malformed
+    `produced` or an absent manifest is left for synthesis to refuse as before. The absence says
+    nothing about the folder's age -- a removed receipt looks the same -- so the disclosure doesn't
+    claim one."""
+    path = os.path.join(run_copy, "tools-manifest.json")
+    canonical = getattr(tools_manifest, "canonical_output_name", None)
+    if canonical is None or os.path.islink(path) or not os.path.isfile(path):
+        return False
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(doc, dict) or "outputs" in doc:
+        return False
+    produced = doc.get("produced")
+    if not isinstance(produced, list) or not all(isinstance(t, str) and t for t in produced):
+        return False
+    doc["outputs"] = sorted(canonical(t) for t in produced)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2)
+    print(RECEIPT_DERIVED, file=sys.stderr, flush=True)
+    return True
+
+
 def _unverified(first_contact, review_root, manifest):
     """#3332: why <review-root> is NOT a verified run of this machine's, or None.
     First contact's own read-only assessment (no key or mark is written, and a
@@ -204,6 +239,7 @@ def replay(args):
     import scripts.phases.runio as runio
     import scripts.phases.synthesize as synthesize_phase
     import scripts.run_manifest as run_manifest
+    import scripts.tools_manifest as tools_manifest
 
     review_root = os.path.abspath(args.review_root)
     run_folder = os.path.abspath(args.run_folder)
@@ -237,6 +273,8 @@ def replay(args):
     with tempfile.TemporaryDirectory(prefix="replay-") as tmp, _throwaway_state(tmp):
         root = _scratch_root(tmp, review_root, manifest, tag, run_folder,
                              bind=lambda r, m: _rebind(first_contact, r, m))
+        receipt_derived = _derive_receipt(os.path.join(root, ".panopticon", "runs", tag),
+                                          tools_manifest)
         # Match the phase's measured posture, including the deliberate absent-
         # host default. Read evidence through the scratch root so archived runs
         # use their own capability artifact, not the live checkout's latest run.
@@ -270,7 +308,8 @@ def replay(args):
     with open(os.path.join(out_dir, "replay.json"), "w", encoding="utf-8") as fh:
         json.dump({"repo": repo, "review_root": review_root, "run_folder": run_folder,
                    "argv": [a.replace(root, "<scratch>") for a in cmd],
-                   "returncode": proc.returncode}, fh, indent=2)
+                   "returncode": proc.returncode, "receipt_derived": receipt_derived},
+                  fh, indent=2)
     with open(os.path.join(out_dir, "synthesize.stderr"), "w", encoding="utf-8") as fh:
         fh.write(_scrub(proc.stderr or "", root, out_dir))
     with open(os.path.join(out_dir, "synthesize.stdout"), "w", encoding="utf-8") as fh:
