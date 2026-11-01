@@ -23,9 +23,11 @@ from scripts import read_guard_hook
 
 
 def _scope(files=(), dirs=(), reads=()):
-    return {"files": [os.path.realpath(p) for p in files],
-            "dirs": [os.path.realpath(p) for p in dirs],
-            "reads": [os.path.realpath(p) for p in reads]}
+    """A scope as `scope_from_plan` builds it, with #2063's arm-time escape walk."""
+    grants = [os.path.realpath(p) for p in dirs]
+    return {"files": [os.path.realpath(p) for p in files], "dirs": grants,
+            "reads": [os.path.realpath(p) for p in reads],
+            "escapes": rg.guard_rules.grant_escapes(grants)}
 
 
 class TestMarker(unittest.TestCase):
@@ -85,7 +87,7 @@ class TestScopeFromPlan(unittest.TestCase):
         # A well-typed-but-malformed dispatch plan must degrade to an empty
         # scope for that key, never raise.
         out = rg.scope_from_plan([{"id": "e", "scope": {"files": 5}}])
-        self.assertEqual({"files": [], "dirs": [], "reads": []}, out["e"])
+        self.assertEqual({"files": [], "dirs": [], "reads": [], "escapes": {}}, out["e"])
 
 class TestDecide(unittest.TestCase):
     def setUp(self):
@@ -787,7 +789,7 @@ class TestInstallUninstall(unittest.TestCase):
                            settings_path=self.settings, scope_path=self.scope_path)
         self.assertEqual({"e1"}, set(added))
         self.assertEqual({"e1": {"files": [os.path.realpath(self.a)], "dirs": [],
-                                 "reads": []}},
+                                 "reads": [], "escapes": {}}},
                          rg._read_scope_file(self.scope_path))
         hooks = self._settings()["hooks"]["PreToolUse"]
         self.assertEqual(1, len(hooks))
@@ -852,7 +854,7 @@ class TestInstallUninstall(unittest.TestCase):
         # what an intentionally-empty scope means (R-P5-2), not a hole.
         rg.install([_entry("e1")], settings_path=self.settings, scope_path=self.scope_path)
         self.assertEqual((True, 1), rg.is_armed(settings_path=self.settings, scope_path=self.scope_path))
-        self.assertEqual({"e1": {"files": [], "dirs": [], "reads": []}},
+        self.assertEqual({"e1": {"files": [], "dirs": [], "reads": [], "escapes": {}}},
                          rg._read_scope_file(self.scope_path))
 
     def test_install_overwrites_a_planted_row_under_a_dispatched_empty_scope_id(self):
@@ -865,7 +867,7 @@ class TestInstallUninstall(unittest.TestCase):
             json.dump({"verify-tool-X": _scope(dirs=[self.tmp.name])}, fh)
         rg.install([_entry("verify-tool-X")], settings_path=self.settings, scope_path=self.scope_path)
         on_disk = rg._read_scope_file(self.scope_path)
-        self.assertEqual({"files": [], "dirs": [], "reads": []},
+        self.assertEqual({"files": [], "dirs": [], "reads": [], "escapes": {}},
                          on_disk["verify-tool-X"])
         # ...and adjudicate() actually denies a read of a file that used to be
         # inside the planted grant, for a subagent bound to that id.
@@ -1145,3 +1147,113 @@ class TestTheHookNeverCrashesAtImport(unittest.TestCase):
                          "Never a crash, never a silent allow"):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, doc)
+
+
+class TestGlobThroughASymlink(unittest.TestCase):
+    """#2063: the #1917 pattern rule was lexical, so `linkdir/*` -- `linkdir` an in-grant
+    symlink to outside the grant -- listed what the grant never covered. The literal prefix is
+    realpath'd per call; a wildcard is denied when the arm-time walk recorded an escaping link at
+    or under that prefix, at any depth, and wherever the walk was capped or never ran."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        base = os.path.realpath(self.tmp.name)
+        self.root, self.outside = os.path.join(base, "root"), os.path.join(base, "outside")
+        for p in (os.path.join(self.root, "pkg", "a.py"), os.path.join(self.root, "clean", "c.py"),
+                  os.path.join(self.outside, "secret.txt")):
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            open(p, "w").close()
+        os.symlink(self.outside, os.path.join(self.root, "linkdir"))
+        os.symlink(self.outside, os.path.join(self.root, "pkg", "deeplink"))
+        os.symlink(os.path.join(self.root, "clean"), os.path.join(self.root, "inner"))
+        self.scan = _scope(dirs=[self.root])
+
+    def _glob(self, pattern, scope=None):
+        return rg.decide("Glob", {"pattern": pattern, "path": self.root}, scope or self.scan)
+
+    def test_the_walk_records_only_the_links_that_leave_the_grant(self):
+        os.makedirs(os.path.join(self.root, ".git"))
+        os.symlink(self.outside, os.path.join(self.root, ".git", "planted"))
+        self.assertEqual({self.root: [os.path.join(self.root, "linkdir"),
+                                      os.path.join(self.root, "pkg", "deeplink")]},
+                         rg.guard_rules.grant_escapes([self.root]))
+
+    def test_a_literal_prefix_through_an_escaping_link_is_denied(self):
+        for pattern in ("linkdir/*", "linkdir/secret.txt", "linkdir", "pkg/deeplink/*",
+                        "./linkdir/*.txt", "linkdir\\secret.txt"):
+            with self.subTest(pattern=pattern):
+                ok, reason = self._glob(pattern)
+                self.assertFalse(ok, reason)
+                self.assertIn("resolves outside your directory grant", reason)
+                self.assertIn(repr(pattern), reason)
+
+    def test_a_wildcard_with_an_escaping_link_under_its_prefix_is_denied_at_any_depth(self):
+        for pattern in ("*/secret.txt", "**/secret.txt", "**/*", "*", "pkg/*", "pkg/**/*.py",
+                        "p?g/*"):
+            with self.subTest(pattern=pattern):
+                ok, reason = self._glob(pattern)
+                self.assertFalse(ok, reason)
+                self.assertIn("a symlink under it leads outside your directory grant", reason)
+
+    def test_the_rest_of_a_grant_with_an_escape_stays_listable(self):
+        for pattern in ("clean/*.py", "clean/**", "inner/*.py", "inner/c.py", "pkg/a.py", "pkg",
+                        "clean"):
+            with self.subTest(pattern=pattern):
+                self.assertEqual((True, ""), self._glob(pattern))
+
+    def test_a_grant_with_no_escapes_allows_its_wildcards(self):
+        os.remove(os.path.join(self.root, "linkdir"))
+        os.remove(os.path.join(self.root, "pkg", "deeplink"))
+        scope = _scope(dirs=[self.root])
+        for pattern in ("*/c.py", "**/*.py", "*", "inner/*"):
+            with self.subTest(pattern=pattern):
+                self.assertEqual((True, ""), self._glob(pattern, scope))
+
+    def test_a_capped_or_missing_walk_denies_wildcards_but_not_literals(self):
+        capped = dict(self.scan, escapes=rg.guard_rules.grant_escapes([self.root], cap=1))
+        self.assertEqual({self.root: None}, capped["escapes"])
+        unwalked = {k: v for k, v in self.scan.items() if k != "escapes"}
+        for scope in (capped, unwalked, dict(self.scan, escapes="junk")):
+            with self.subTest(scope=sorted(scope)):
+                self.assertFalse(self._glob("clean/*.py", scope)[0])
+                self.assertEqual((True, ""), self._glob("clean/c.py", scope))
+
+    def test_a_malformed_walk_on_disk_reads_as_no_walk(self):
+        scope_path = os.path.join(self.tmp.name, "scope.json")
+        with open(scope_path, "w", encoding="utf-8") as fh:
+            json.dump({"scan": dict(self.scan, escapes={self.root: "junk"})}, fh)
+        payload = {"tool_name": "Glob", "tool_input": {"pattern": "clean/*.py", "path": self.root},
+                   "cwd": self.tmp.name}
+        self.assertFalse(rg.adjudicate(payload, scope_path, env={rg.ENV_ENTRY_ID: "scan"})[0])
+        payload["tool_input"]["pattern"] = "clean/c.py"
+        self.assertEqual((True, ""), rg.adjudicate(payload, scope_path,
+                                                   env={rg.ENV_ENTRY_ID: "scan"}))
+
+    def test_the_installed_hook_entry_point_refuses_the_escapes(self):
+        settings, scope_path = (os.path.join(self.tmp.name, n) for n in ("s.json", "scope.json"))
+        from scripts.probes.claude_read_guard import _fake_subagent
+        parent = os.path.join(self.tmp.name, "session.jsonl")
+        open(parent, "w").close()
+        _fake_subagent(parent, "agent-z", "scan")
+        rg.install([{"id": "scan", "scope": {"files": [], "dirs": [self.root], "reads": []}}],
+                   settings_path=settings, scope_path=scope_path)
+        with open(settings, encoding="utf-8") as fh:
+            command = json.load(fh)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        for pattern, allowed in (("linkdir/*", False), ("**/secret.txt", False),
+                                 ("clean/*.py", True)):
+            with self.subTest(pattern=pattern):
+                payload = {"tool_name": "Glob", "agent_id": "agent-z", "cwd": self.tmp.name,
+                           "transcript_path": parent, "hook_event_name": "PreToolUse",
+                           "tool_input": {"pattern": pattern, "path": self.root}}
+                # The installed command's own arguments, through its entry point (`main`).
+                out = io.StringIO()
+                with mock.patch("sys.stdin", io.StringIO(json.dumps(payload))), \
+                        contextlib.redirect_stdout(out):
+                    self.assertEqual(0, rg.main(shlex.split(command)[3:]))
+                self.assertEqual(allowed, '"deny"' not in out.getvalue(), out.getvalue())
+
+    def test_the_codex_broker_still_loads_a_scope_that_carries_escapes(self):
+        from scripts import codex_read_tools
+        reader = codex_read_tools.Reader(dict(self.scan, files=[], reads=[]), self.root)
+        self.assertEqual({self.root}, reader.scope["dirs"])

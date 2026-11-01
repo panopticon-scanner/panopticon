@@ -54,7 +54,8 @@ class TestDirectoryGrants(GuardCase):
         self.cell = os.path.dirname(self.inside)
         _write(self.scope_path,
                {"entry-1": {"files": [self.inside], "dirs": [], "reads": []},
-                "entry-dir": {"files": [], "dirs": [self.cell], "reads": []}})
+                "entry-dir": {"files": [], "dirs": [self.cell], "reads": [],
+                              "escapes": {self.cell: []}}})
 
     def scan(self, tool, **tool_input):
         return guard.adjudicate({"tool_name": tool, "tool_input": tool_input,
@@ -534,3 +535,26 @@ class TestReadMediaFileIsScopeChecked(unittest.TestCase):
         allow, reason = self._adjudicate(self.outside)
         self.assertFalse(allow)
         self.assertIn("outside your cell's scope", reason)
+
+
+class TestGlobThroughASymlink(unittest.TestCase):
+    """#2063, the Kimi copy: the same shared rule over a scope file `scope_from_plan` wrote."""
+
+    def test_a_glob_through_an_escaping_link_is_denied_and_the_rest_allowed(self):
+        import scripts.read_guard_hook as rg
+        with tempfile.TemporaryDirectory() as tmp:
+            base = os.path.realpath(tmp)
+            root, outside = os.path.join(base, "root"), os.path.join(base, "outside")
+            os.makedirs(os.path.join(root, "clean"))
+            os.makedirs(outside)
+            os.symlink(outside, os.path.join(root, "linkdir"))
+            scope_path = os.path.join(base, "read-scope.json")
+            _write(scope_path, rg.scope_from_plan(
+                [{"id": "scan", "scope": {"files": [], "dirs": [root], "reads": []}}]))
+            for pattern, allowed in (("linkdir/*", False), ("*/x", False), ("**/*", False),
+                                     ("clean/*", True), ("clean/x.py", True)):
+                with self.subTest(pattern=pattern):
+                    allow, reason = guard.adjudicate(
+                        {"tool_name": "Glob", "tool_input": {"pattern": pattern, "path": root},
+                         "cwd": base}, "read", scope_path, env={guard.ENV_ENTRY_ID: "scan"})
+                    self.assertEqual(allowed, allow, reason)

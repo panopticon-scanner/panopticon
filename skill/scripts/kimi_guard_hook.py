@@ -43,7 +43,8 @@ KIMI PAYLOAD. Kimi's PreToolUse payload names the tool in ``tool_name`` and
 carries ``tool_input`` whose path field is ``path`` for Read, Write, Edit,
 Grep and Glob alike (measured on kimi-code 0.42.0 -- NOT Claude's
 ``file_path``). Glob's SECOND argument is ASSUMED to arrive as ``pattern``
-(#1917, adjudicated by ``_glob_pattern_climbs``): UNMEASURED on kimi-code, so
+(#1917, adjudicated by ``_glob_refusal``, whose #2063 symlink refusals assume the same key):
+UNMEASURED on kimi-code, so
 the next real launch should check it -- under another name every Glob over a
 directory grant is denied as ``pattern None``, fail-closed but a functional
 break of the setup scan, and puzzling from the denial alone. The deny protocol
@@ -82,7 +83,7 @@ _GUARD_RULES_USED = (
     "ENV_ENTRY_ID", "UNBOUND_ENTRY", "SCOPE_KEYS", "GLOB_PATTERN_DENIAL", "GIT_STORE_DENIAL",
     "ARTIFACT_DIR", "SYMLINKED_COMPONENT", "UNMEASURABLE_COMPONENT", "ESCAPED_ARTIFACT_TREE",
     "PARENT_COMPONENT", "_resolve_path", "_readable", "_in_dir_grant", "_glob_pattern_climbs",
-    "_names_git_store", "_load_scope", "_load_allowlist", "_escaped_component")
+    "_names_git_store", "_load_scope", "_load_allowlist", "_escaped_component", "_glob_refusal")
 
 # --- GUARD RULES LOADER (#3273 cut 11) ---
 # Byte-identical in the three guard hooks (tests/test_guard_rules.py). Run as a
@@ -163,12 +164,10 @@ def _decide_read(tool_name, tool_input, scope, cwd):
         if any(guard_rules._in_dir_grant(target, d) for d in scope["dirs"]):
             # #1917: for Glob, the second argument -- the only one of these
             # tools whose pattern is a PATH pattern, expanded against `path`.
-            pattern = tool_input.get("pattern")
-            if tool_name == "Glob" and guard_rules._glob_pattern_climbs(pattern):
-                return False, guard_rules.GLOB_PATTERN_DENIAL % (pattern,)
-            if tool_name == "Glob" and guard_rules._names_git_store(pattern):
-                return False, guard_rules.GIT_STORE_DENIAL % (pattern,)
-            return True, ""
+            # #2063: and through no symlink out of the grant (guard_rules._glob_refusal).
+            refusal = (guard_rules._glob_refusal(target, tool_input.get("pattern"), scope)
+                       if tool_name == "Glob" else None)
+            return (False, refusal) if refusal else (True, "")
         if tool_name in ("Read", "ReadMediaFile"):
             return False, ("%s of directory %s is outside your cell's scope; the "
                            "files you may read are listed in your prompt"
