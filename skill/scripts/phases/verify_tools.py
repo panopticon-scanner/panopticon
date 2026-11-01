@@ -408,10 +408,9 @@ def _verify_tools_execute(review_root, manifest, host):
     queue = _tool_verify_queue(review_root, manifest)
     _promote_lifts(review_root, [qid for qid, _f in queue])        # #3231 A2: a landed lift
     pending = [(qid, f, lift) for qid, f in queue
-               for lift in [None if not _tool_verdict_done(review_root, qid, f)
-                            else _lift_owed(review_root, qid, f)]
-               if (lift or not _tool_verdict_done(review_root, qid, f))
-               and not _tool_exhausted(review_root, qid)]
+               for done in [_tool_verdict_done(review_root, qid, f)]
+               for lift in [_lift_owed(review_root, qid, f) if done else None]
+               if (lift or not done) and not _tool_exhausted(review_root, qid)]
     if not pending:
         return None
     entries = [_tool_verify_entry(review_root, manifest, qid, f, host, lift)
