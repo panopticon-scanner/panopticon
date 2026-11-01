@@ -301,6 +301,24 @@ class TestBase(unittest.TestCase):
         for ch in ("\x00", "\x07", "\x1b"):
             self.assertNotIn(ch, f["description"])
 
+    def test_make_finding_reads_an_absent_field_as_empty_and_keeps_a_falsy_one(self):
+        # #2118: `title=None` stored the word "None" while the body fields stored "", and `or ""`
+        # turned a falsy non-string (`category=0`) into "" rather than its own text.
+        import types
+        ad = types.SimpleNamespace(prefix="XX", name="demo")
+        absent = base.make_finding(ad, 1, "g1", title=None, severity="HIGH", category=None,
+                                   location={"file": "a.py"}, description=None, impact=None,
+                                   remediation=None)
+        for key in ("title", "category", "description", "impact", "remediation"):
+            with self.subTest(key=key):
+                self.assertEqual("", absent[key])
+        falsy = base.make_finding(ad, 1, "g1", title=0, severity="HIGH", category=0,
+                                  location={"file": "a.py"}, description=False, impact=0,
+                                  remediation=0.0)
+        self.assertEqual(("0", "0", "False", "0", "0.0"),
+                         tuple(falsy[k] for k in ("title", "category", "description", "impact",
+                                                  "remediation")))
+
     def test_make_finding_puts_any_severity_on_the_ladder(self):
         # #2075: the invariant lived in every caller; the constructor holds it now.
         import types
