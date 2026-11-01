@@ -26,7 +26,6 @@ progress_path. Close remains idempotent. This is resume support, not an exactly-
 """
 import argparse
 import contextlib
-import errno
 import fcntl
 import hashlib
 import json
@@ -40,6 +39,7 @@ import time
 from datetime import datetime, timezone
 
 import file_issues
+import pinned_dir
 import triage
 
 LEDGER = file_issues.LEDGER
@@ -219,27 +219,11 @@ def recover_linkage_from_github(label="self-scan", runner=None, *,
 
 @contextlib.contextmanager
 def _exclusive_path(path, create_directory=False):
-    """Stable sibling lock; walk pinned directories without user symlinks."""
+    """Stable sibling lock; walk pinned directories without user symlinks (pinned_dir)."""
     absolute = _validated_system_alias(path)
     directory, name = os.path.split(absolute)
-    directory_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    directory_fd = pinned_dir.open_directory(directory, create=create_directory)
     try:
-        for component in filter(None, directory.split("/")):
-            if create_directory:
-                try:
-                    os.mkdir(component, dir_fd=directory_fd)
-                except FileExistsError:
-                    pass
-            try:
-                child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                                dir_fd=directory_fd)
-            except OSError as exc:
-                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
-                    raise NotADirectoryError(errno.ENOTDIR,
-                                             "unsafe directory component: " + component) from exc
-                raise
-            os.close(directory_fd)
-            directory_fd = child
         fd = os.open(name + ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
                      0o600, dir_fd=directory_fd)
         with os.fdopen(fd, "a") as lock:

@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 import file_issues
+import pinned_dir
 import reconcile_apply
 import sanitize
 import triage
@@ -1206,6 +1207,70 @@ class TestApply(unittest.TestCase):
                                       runner=self._admin_runner(calls),
                                       sleep=lambda s: None, progress_path=path)
         self.assertEqual(calls, [])
+
+
+@unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root ignores directory modes")
+class TestSearchOnlyAncestor(unittest.TestCase):
+    """#2841: the walk opened every ancestor O_RDONLY, which needs READ, so a ledger or progress
+    path under a `--x` directory (0311: search without read) was refused although the kernel lets
+    it be traversed. Passing through is now a traversal-only open; confinement is unchanged."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.outer = os.path.join(os.path.realpath(tmp.name), "outer")
+        os.makedirs(os.path.join(self.outer, "state"))
+        os.makedirs(os.path.join(self.outer, "real"))
+        os.symlink(os.path.join(self.outer, "real"), os.path.join(self.outer, "link"))
+        os.chmod(self.outer, 0o311)
+        self.addCleanup(os.chmod, self.outer, 0o755)
+
+    def _ledger(self, *parts):
+        path = os.path.join(self.outer, *parts)
+        reconcile_apply.save_recovered_ledger({}, path)
+        os.chmod(self.outer, 0o755)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return json.load(fh)
+        finally:
+            os.chmod(self.outer, 0o311)
+
+    @unittest.skipIf(pinned_dir.TRAVERSAL_FLAG is None, "no O_PATH / O_SEARCH here")
+    def test_a_search_only_ancestor_is_traversed(self):
+        self.assertEqual({}, self._ledger("state", "ledger.json")["entries"])
+        self.assertEqual({}, self._ledger("new", "deep", "ledger.json")["entries"])
+        with reconcile_apply._exclusive_path(os.path.join(self.outer, "state", "p.json")) as (
+                fd, name):
+            self.assertEqual("p.json", name)
+            self.assertTrue(stat.S_ISREG(os.stat(name + ".lock", dir_fd=fd).st_mode))
+            # only the ancestors are traversal-only: the lock's own directory is a full,
+            # readable descriptor
+            self.assertIn("p.json.lock", os.listdir(fd))
+
+    def test_the_traversal_flag_is_o_path_else_o_search(self):
+        expected = next((getattr(os, n) for n in ("O_PATH", "O_SEARCH") if hasattr(os, n)), None)
+        self.assertEqual(expected, pinned_dir.TRAVERSAL_FLAG)
+
+    def test_without_a_traversal_flag_it_still_fails_closed(self):
+        with mock.patch.object(pinned_dir, "TRAVERSAL_FLAG", None):
+            with self.assertRaises(PermissionError):
+                reconcile_apply.save_recovered_ledger({}, os.path.join(self.outer, "state", "l.json"))
+        os.chmod(self.outer, 0o755)
+        self.assertEqual([], os.listdir(os.path.join(self.outer, "state")))
+
+    def test_a_symlinked_component_is_still_refused(self):
+        flags = [None] if pinned_dir.TRAVERSAL_FLAG is None else [
+            pinned_dir.TRAVERSAL_FLAG]
+        for flag in flags:
+            for parts in (("link", "ledger.json"), ("link", "deeper", "ledger.json")):
+                with self.subTest(parts=parts), \
+                        mock.patch.object(pinned_dir, "TRAVERSAL_FLAG", flag):
+                    os.chmod(self.outer, 0o755 if flag is None else 0o311)
+                    with self.assertRaisesRegex(NotADirectoryError,
+                                                "unsafe directory component: link"):
+                        reconcile_apply.save_recovered_ledger({}, os.path.join(self.outer, *parts))
+                    os.chmod(self.outer, 0o755)
+                    self.assertEqual([], os.listdir(os.path.join(self.outer, "real")))
 
 
 class TestCliWiring(unittest.TestCase):
