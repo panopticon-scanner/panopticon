@@ -678,6 +678,7 @@ groups:
       - scripts/file_fixmes.py
       - scripts/triage.py
       - scripts/reconcile_apply.py
+      - scripts/pinned_dir.py
       - scripts/sanitize.py
       - scripts/code_scanning_reports.py
       - scripts/reference/*.json
