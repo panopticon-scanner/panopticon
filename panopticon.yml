@@ -621,6 +621,7 @@ groups:
     Core:
       match:
       - skill/scripts/reconcile.py
+      - skill/scripts/reconcile_cells.py
       - skill/scripts/evidence.py
       - skill/scripts/tolerant_json.py
       - skill/scripts/evidence_sections.py

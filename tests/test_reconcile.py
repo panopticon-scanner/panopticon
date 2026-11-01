@@ -1003,6 +1003,113 @@ class TestRun3CoverageGuards(unittest.TestCase):
         self.assertEqual(diff["closed"], [])
 
 
+class TestRun3LostFloorCells(unittest.TestCase):
+    """#2084: `groups[].files` is what run3 PLANNED to review. A floor (group, domain) cell that
+    produced no findings file (`meta.coverage.cells.missing_floor`) is a review that never
+    happened, so a run2 finding of that domain on that group's files is ambiguous, not closed."""
+
+    def _f(self, fid, path, domain="SEC", code=None):
+        f = {"id": fid, "severity": "HIGH", "panel": "security", "category": "authz",
+             "location": {"file": path}, "title": "Missing role check"}
+        if domain:
+            f["domain"] = domain
+        if code:
+            f["code"] = code
+        return f
+
+    def _groups(self):
+        return [{"name": "app", "files": ["a.py", "b.py"]}, {"name": "lib", "files": ["c.py"]}]
+
+    def _run2(self, **kw):
+        return {"meta": {"review_type": "repo"}, "groups": self._groups(),
+                "findings": [self._f("A", "a.py"), self._f("B", "b.py", **kw),
+                             self._f("C", "c.py", **kw)]}
+
+    def _run3(self, missing=None, cells=True):
+        meta = {"review_type": "repo"}
+        if cells:
+            meta["coverage"] = {"cells": {"missing_floor": missing or []}}
+        return {"meta": meta, "groups": self._groups(), "findings": [self._f("A3", "a.py")]}
+
+    def _diff(self, run3, run2=None, extra=None):
+        with tempfile.TemporaryDirectory() as d:
+            rc, diff = stage1(d, run2 or self._run2(), run3, extra)
+        self.assertEqual(rc, 0)
+        return diff
+
+    def _cohorts(self, diff):
+        return ({e["coarse_key"][0] for e in diff["closed"]},
+                {e["coarse_key"][0]: (e["reason"], e["basis"]) for e in diff["ambiguous"]})
+
+    def test_a_lost_floor_cell_refuses_the_close_and_names_the_cell(self):
+        closed, ambiguous = self._cohorts(self._diff(self._run3([["app", "SEC"]])))
+        self.assertEqual({"c.py"}, closed)
+        self.assertEqual({"b.py"}, set(ambiguous))
+        reason, basis = ambiguous["b.py"]
+        self.assertEqual("scope", basis)
+        self.assertIn("run3 lost floor cell (app, SEC) for b.py's group", reason)
+        self.assertIn("review that never happened is not a fix", reason)
+        self.assertIsNone(self._diff(self._run3([["app", "SEC"]]))["meta"]["close_guard"])
+
+    def test_a_lost_cell_for_another_domain_or_group_leaves_the_close_alone(self):
+        for missing in ([["app", "DAT"]], [["lib", "DAT"]], [["other", "SEC"]], []):
+            with self.subTest(missing=missing):
+                closed, ambiguous = self._cohorts(self._diff(self._run3(missing)))
+                self.assertEqual({"b.py", "c.py"}, closed)
+                self.assertEqual({}, ambiguous)
+
+    def test_a_report_that_states_no_cells_closes_as_before(self):
+        closed, _ = self._cohorts(self._diff(self._run3(cells=False)))
+        self.assertEqual({"b.py", "c.py"}, closed)
+
+    def test_the_domain_comes_from_the_code_when_the_finding_states_none(self):
+        run2 = self._run2(domain=None, code="SEC-A1B")
+        closed, ambiguous = self._cohorts(self._diff(self._run3([["lib", "SEC"]]), run2))
+        self.assertEqual({"b.py"}, closed)
+        self.assertEqual({"c.py"}, set(ambiguous))
+
+    def test_a_finding_with_no_real_domain_matches_no_cell(self):
+        run2 = self._run2(domain=None, code="CWE-798")
+        closed, _ = self._cohorts(self._diff(self._run3([["app", "CWE"]]), run2))
+        self.assertEqual({"b.py", "c.py"}, closed)
+
+    def test_a_part_widens_the_lost_cells_and_the_groups(self):
+        run3 = self._run3([])
+        run3["meta"]["parts"] = ["run3-part1.json"]
+        part = {"groups": [{"name": "late", "files": ["c.py"]}],
+                "meta": {"coverage": {"cells": {"missing_floor": [["late", "SEC"]]}}}}
+        closed, ambiguous = self._cohorts(self._diff(run3, extra={"run3-part1.json": part}))
+        self.assertEqual({"b.py"}, closed)
+        self.assertIn("(late, SEC) for c.py's group", ambiguous["c.py"][0])
+
+    def test_a_part_cannot_supply_cells_the_report_omitted(self):
+        run3 = self._run3(cells=False)
+        run3["meta"]["parts"] = ["run3-part1.json"]
+        part = {"meta": {"coverage": {"cells": {"missing_floor": [["app", "SEC"]]}}}}
+        closed, _ = self._cohorts(self._diff(run3, extra={"run3-part1.json": part}))
+        self.assertEqual({"b.py", "c.py"}, closed)
+
+    def test_a_malformed_cell_statement_is_read_as_nothing(self):
+        for missing in ("app", [["app"]], [["app", 3]], [[None, "SEC"]], {"app": "SEC"}):
+            with self.subTest(missing=missing):
+                run3 = self._run3()
+                run3["meta"]["coverage"]["cells"]["missing_floor"] = missing
+                closed, _ = self._cohorts(self._diff(run3))
+                self.assertEqual({"b.py", "c.py"}, closed)
+
+    def test_a_group_file_is_matched_after_path_normalization(self):
+        run3 = self._run3([["app", "SEC"]])
+        run3["groups"][0]["files"] = ["./a.py", "./b.py"]
+        _, ambiguous = self._cohorts(self._diff(run3))
+        self.assertIn("(app, SEC) for b.py's group", ambiguous["b.py"][0])
+
+    def test_the_lost_cell_is_checked_after_activity(self):
+        run3 = self._run3([["app", "SEC"]])
+        run3["findings"].append(self._f("B3", "b.py") | {"title": "Reworded", "category": "x"})
+        _, ambiguous = self._cohorts(self._diff(run3))
+        self.assertEqual("active", ambiguous["b.py"][1])
+
+
 class TestRenderSummary(unittest.TestCase):
     def test_summary_reports_cohort_counts_and_warns_on_collisions(self):
         diff = fixture_diff()
