@@ -4,7 +4,6 @@ import json
 import os
 import re
 import shlex
-import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -1231,7 +1230,7 @@ class TestGlobThroughASymlink(unittest.TestCase):
         self.assertEqual((True, ""), rg.adjudicate(payload, scope_path,
                                                    env={rg.ENV_ENTRY_ID: "scan"}))
 
-    def test_the_installed_hook_refuses_the_escapes(self):
+    def test_the_installed_hook_entry_point_refuses_the_escapes(self):
         settings, scope_path = (os.path.join(self.tmp.name, n) for n in ("s.json", "scope.json"))
         from scripts.probes.claude_read_guard import _fake_subagent
         parent = os.path.join(self.tmp.name, "session.jsonl")
@@ -1247,9 +1246,12 @@ class TestGlobThroughASymlink(unittest.TestCase):
                 payload = {"tool_name": "Glob", "agent_id": "agent-z", "cwd": self.tmp.name,
                            "transcript_path": parent, "hook_event_name": "PreToolUse",
                            "tool_input": {"pattern": pattern, "path": self.root}}
-                proc = subprocess.run(shlex.split(command), input=json.dumps(payload),
-                                      capture_output=True, text=True, check=False)
-                self.assertEqual(allowed, '"deny"' not in proc.stdout, proc.stdout)
+                # The installed command's own arguments, through its entry point (`main`).
+                out = io.StringIO()
+                with mock.patch("sys.stdin", io.StringIO(json.dumps(payload))), \
+                        contextlib.redirect_stdout(out):
+                    self.assertEqual(0, rg.main(shlex.split(command)[3:]))
+                self.assertEqual(allowed, '"deny"' not in out.getvalue(), out.getvalue())
 
     def test_the_codex_broker_still_loads_a_scope_that_carries_escapes(self):
         from scripts import codex_read_tools
