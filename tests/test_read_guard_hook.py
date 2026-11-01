@@ -1210,6 +1210,17 @@ class TestGlobThroughASymlink(unittest.TestCase):
             with self.subTest(pattern=pattern):
                 self.assertEqual((True, ""), self._glob(pattern, scope))
 
+    def test_an_in_grant_cycle_is_not_followed(self):
+        # #3390 review: `followlinks=True` survived. A `loop -> .` link with no escape must leave
+        # the grant measured and its wildcards allowed. Followed, the walk re-enters the grant
+        # through `loop` at every level: at the production cap the OS's symlink-depth limit
+        # (ELOOP) stops it first, so the small cap is what makes the cycle observable.
+        os.remove(os.path.join(self.root, "linkdir"))
+        os.remove(os.path.join(self.root, "pkg", "deeplink"))
+        os.symlink(".", os.path.join(self.root, "loop"))
+        self.assertEqual({self.root: []}, rg.guard_rules.grant_escapes([self.root], cap=50))
+        self.assertEqual((True, ""), self._glob("clean/*.py", _scope(dirs=[self.root])))
+
     def test_a_capped_or_missing_walk_denies_wildcards_but_not_literals(self):
         capped = dict(self.scan, escapes=rg.guard_rules.grant_escapes([self.root], cap=1))
         self.assertEqual({self.root: None}, capped["escapes"])
