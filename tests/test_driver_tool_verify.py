@@ -22,6 +22,7 @@ from scripts import hosts
 import scripts.phases.runio as runio
 import scripts.phases.verify as verify
 import scripts.phases.verify_tools as verify_tools
+import scripts.phases.persist as persist
 import scripts.phases.synthesize as synthesize
 
 import scripts.evidence as evidence
@@ -443,6 +444,61 @@ class TestToolVerifyResume(_ToolVerifyBase):
                 self.assertEqual("advanced", result.kind)
                 self.assertTrue(verify.verify_done(d, m))
                 self.assertFalse(verify_tools._tool_verdict_done(d, qid))
+
+    def test_a_verdict_echoing_another_finding_is_not_done_and_is_redispatched(self):
+        # #3235: the done-check read only the verdict word, so a reply naming the wrong finding read
+        # as done, was never retried, and synthesize then refused it as unbound.
+        d = self._repo([_result("r1", "src/app.py", 1, level="note")])
+        m = self._manifest()
+        qid, finding = verify_tools._tool_verify_queue(d, m)[0]
+        os.makedirs(runio._pano(d, "verdicts"), exist_ok=True)
+        for echoed in ("someone-else", None):
+            with self.subTest(echoed=echoed):
+                with open(verify_tools._tool_verdict_out_file(d, qid), "w") as fh:
+                    json.dump({"finding_id": echoed, "verdict": "CONFIRMED"}, fh)
+                self.assertFalse(verify_tools._tool_verdict_done(d, qid, finding))
+                self.assertFalse(verify.verify_done(d, m))
+        with self._bundle():
+            result = verify.verify_execute(d, m)
+        self.assertEqual("checkpoint", result.kind)
+        entry = runio._load_json(runio._pano(d, "dispatch-request.json"))["entries"][0]
+        self.assertEqual(str(finding["id"]), entry["finding_id"])
+
+    def test_persist_refuses_a_tool_reply_for_another_finding(self):
+        d = self._repo([_result("r1", "src/app.py", 1, level="note")])
+        m = self._manifest()
+        _qid, finding = verify_tools._tool_verify_queue(d, m)[0]
+        with self._bundle():
+            verify.verify_execute(d, m)
+        entry = runio._load_json(runio._pano(d, "dispatch-request.json"))["entries"][0]
+        ok, reason = persist.accepts(entry, {"finding_id": "someone-else", "verdict": "CONFIRMED"})
+        self.assertFalse(ok)
+        self.assertIn("finding_id", reason)
+        self.assertEqual((True, ""), persist.accepts(
+            entry, {"finding_id": finding["id"], "verdict": "CONFIRMED"}))
+        legacy = {k: v for k, v in entry.items() if k != "finding_id"}
+        self.assertTrue(persist.accepts(legacy, {"finding_id": "x", "verdict": "CONFIRMED"})[0])
+
+    def test_a_mislabelled_reply_every_round_exhausts_and_stays_inconclusive(self):
+        d = self._repo([_result("r1", "src/app.py", 1, level="note")])
+        m = self._manifest()
+        qid, _f = verify_tools._tool_verify_queue(d, m)[0]
+        dispatches = 0
+        with self._bundle():
+            for _ in range(10):
+                result = verify.verify_execute(d, m)
+                if result.kind != "checkpoint":
+                    break
+                dispatches += 1
+                os.makedirs(runio._pano(d, "verdicts"), exist_ok=True)
+                with open(verify_tools._tool_verdict_out_file(d, qid), "w") as fh:
+                    json.dump({"finding_id": "someone-else", "verdict": "CONFIRMED"}, fh)
+        self.assertEqual(3, dispatches)
+        self.assertTrue(verify.verify_done(d, m))
+        synthesize.synthesize_execute(d, m)
+        report = runio._load_json(runio._pano(d, "report.json"))
+        self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
+        self.assertEqual(1, report["meta"]["coverage"]["verdicts"]["unanswered"])
 
     def test_garbled_verdict_is_not_done(self):
         d = self._repo([_result("r1", "src/app.py", 1, level="note")])
