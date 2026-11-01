@@ -334,6 +334,7 @@ _TOOL_HITS_CAP = 40
 _TOOL_HIT_TITLE_CAP = 200
 _TOOL_HIT_RULE_CAP = 120
 _TOOL_HIT_WHERE_CAP = 200
+_TOOL_HIT_LINE_CAP = 12
 
 def _hit_text(value, cap):
     """One prompt column of untrusted tool text: inert, single-line, bounded.
@@ -391,7 +392,9 @@ def _format_tool_hits(hits):
         loc = h.get("location") or {}
         f = loc.get("file") or "?"
         ln = loc.get("line_start")
-        where = _hit_text("%s:%s" % (f, ln) if ln else f, _TOOL_HIT_WHERE_CAP)
+        # #2075: cap the path, never the `:line` -- a long path used to cut it away.
+        line = (":" + _hit_text(ln, _TOOL_HIT_LINE_CAP)) if ln else ""
+        where = _hit_text(f, _TOOL_HIT_WHERE_CAP - len(line)) + line
         rule = _hit_text((h.get("tool_evidence") or {}).get("rule_id")
                          or h.get("category"), _TOOL_HIT_RULE_CAP)
         title = _hit_text(h.get("title"), _TOOL_HIT_TITLE_CAP)

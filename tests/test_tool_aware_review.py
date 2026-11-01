@@ -94,6 +94,22 @@ class TestFormatToolHits(unittest.TestCase):
         out = review._format_tool_hits([_synthetic("a/" + "p" * 5000 + ".py", line=3)])
         self.assertLess(len(self._hit_line(out)), _LINE_BOUND)
 
+    def test_a_long_path_keeps_its_line_number(self):
+        # #2075: `file:line` was capped as one string, so a path past the cap cut the line away.
+        out = review._format_tool_hits([_synthetic("a/" + "p" * 300 + ".py", line=1234)])
+        where = self._hit_line(out)[2:].split(" · ")[0]
+        self.assertTrue(where.endswith("…:1234"), where)
+        self.assertLessEqual(len(where), review._TOOL_HIT_WHERE_CAP + 1)    # + the cut mark
+        short = review._format_tool_hits([_synthetic("app/db.py", line=7)])
+        self.assertIn("- app/db.py:7 · ", short)
+
+    def test_a_hostile_line_value_is_bounded_and_inert(self):
+        out = review._format_tool_hits([_synthetic("app/db.py", line="9" * 500 + "\x1b[2J")])
+        where = self._hit_line(out)[2:].split(" · ")[0]
+        self.assertTrue(where.startswith("app/db.py:"), where)
+        self.assertNotIn("\x1b", where)
+        self.assertLessEqual(len(where), review._TOOL_HIT_WHERE_CAP + 2)
+
     def test_control_characters_never_reach_the_prompt(self):
         # The prompt boundary is where this has to hold: the generic SARIF path
         # builds its finding by hand and collapses whitespace in `title` only,
