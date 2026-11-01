@@ -83,9 +83,9 @@ def _deps_from_pyproject(target: str) -> list[str] | None:
     except (ValueError, OSError):        # #3235: disclosed, like every other unreadable shape
         raise PyprojectInputError("pyproject.toml is not valid TOML") from None
     project = data.get("project")
-    tool = data.get("tool") if isinstance(data.get("tool"), dict) else {}
+    poetry = (data.get("tool") if isinstance(data.get("tool"), dict) else {}).get("poetry")
     if not (project if isinstance(project, dict) else {}).get("dependencies") and isinstance(
-            tool.get("poetry"), dict) and tool["poetry"].get("dependencies"):
+            poetry, dict) and poetry.get("dependencies"):
         raise PyprojectInputError("dependencies declared outside [project]; not audited", skip=True)
     if not isinstance(project, dict):
         return None
