@@ -30,7 +30,7 @@ _EMIT_REMEDY = "python3 skill/scripts/dispatch.py --emit-host-agents %s"
 # invocation that takes it. `driver loop` resolves `--mode` to headless for any
 # host with a runner and writes it back onto `args` before the posture step, so
 # this is the one entry point that hands the probes a settings path (fix round
-# 2; verified against `orchestrate._resolve_mode` and
+# 2; verified against `loop_setup.resolve_mode` and
 # `driver._establish_host_posture`). `--mode headless` is spelled out even
 # though it is the default for these hosts: a remedy an operator pastes should
 # not depend on a resolution rule to be correct.

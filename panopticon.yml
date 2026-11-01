@@ -368,6 +368,7 @@ groups:
     Loop:
       match:
       - skill/scripts/orchestrate.py
+      - skill/scripts/loop_setup.py
       - skill/scripts/scope_bindings.py
       - skill/scripts/loop_progress.py
       - skill/scripts/phases/readiness_plan.py

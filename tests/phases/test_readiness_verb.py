@@ -723,7 +723,7 @@ if __name__ == "__main__":
 
 class TestTheSelectedHostsBinaryIsGating(_VerbCase):
     """Fix round 1, F2. `--host H` is a statement about how the run will be
-    driven, and `orchestrate._resolve_mode` resolves it to HEADLESS whenever
+    driven, and `loop_setup.resolve_mode` resolves it to HEADLESS whenever
     `runners/<H>.py` exists -- a fact about this repo, not about the machine.
     So `driver readiness --host claude && driver loop --host claude` on a box
     without `claude` used to greenlight a loop that resolves to headless and

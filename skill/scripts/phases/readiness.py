@@ -254,7 +254,7 @@ NO_GROUPS = ("no %s — run `driver setup`; a whole-repo review needs it, "
              "flag, so it reports the whole-repo answer)" % repo_config.CONFIG_NAMES[0])
 
 # Fix round 1, F2. `--host H` is a statement about how the run will be DRIVEN,
-# and `orchestrate._resolve_mode` resolves it to headless whenever
+# and `loop_setup.resolve_mode` resolves it to headless whenever
 # `skill/scripts/runners/<H>.py` exists -- a fact about this repo, never about
 # this machine. So `driver readiness --host claude && driver loop --host claude`
 # on a box with no `claude` used to greenlight a loop that resolves to headless

@@ -79,6 +79,16 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         self.assertIn("--max-turns has no effect on host 'codex'", err.getvalue())
         self.assertIn("--entry-timeout", err.getvalue())
 
+    def test_a_setup_refusal_with_an_empty_message_still_ends_the_loop(self):
+        # ARC-4087467862: the setup moved to `loop_setup.resolve`, which hands back
+        # (None, message). An exception whose text is empty is still a refusal --
+        # `loop` keeps returning its `error` status, never unpacking a None setup.
+        d, _floor = self._repo()
+        with mock.patch("scripts.runners.base.runner_for", side_effect=ValueError("")), \
+                contextlib.redirect_stderr(io.StringIO()):
+            status = orchestrate.loop(self._args(d))
+        self.assertEqual((status["status"], status["message"]), ("error", ""), status)
+
     def test_max_turns_is_silent_on_a_runner_that_honours_it(self):
         d, floor = self._repo()
         err = io.StringIO()
