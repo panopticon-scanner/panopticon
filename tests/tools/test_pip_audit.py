@@ -510,10 +510,10 @@ class TestStaticPyproject(unittest.TestCase):
                          ({"dependencies": [], "fixes": []}, 0))
         self.assertIn("no static [project.dependencies]", buf.getvalue())
 
-    def test_non_utf8_pyproject_returns_none(self):
-        deps = pa._deps_from_pyproject(
-            self._target(b'\xff\xfe[project]\nname = "x"\n'))
-        self.assertIsNone(deps)
+    def test_non_utf8_pyproject_is_refused_not_read_as_empty(self):
+        # #3235: it returned None, an empty audit that nothing disclosed.
+        with self.assertRaisesRegex(pa.PyprojectInputError, "not valid TOML"):
+            pa._deps_from_pyproject(self._target(b'\xff\xfe[project]\nname = "x"\n'))
 
 
 class TestPyprojectReadBoundary(unittest.TestCase):
@@ -577,6 +577,33 @@ class TestPyprojectReadBoundary(unittest.TestCase):
         with mock.patch.object(pa.tomllib, "loads") as parse:
             self._assert_refused(target, "pyproject.toml exceeds the 1 MiB read limit", True)
         parse.assert_not_called()
+
+    def test_invalid_toml_is_refused_and_disclosed(self):
+        # #3235: a decode or syntax failure returned None -- an empty audit, disclosed nowhere.
+        for body in (b"[project\ndependencies = [", b"\xff\xfe not utf-8"):
+            with self.subTest(body=body):
+                target, _ = self._target(body)
+                self._assert_refused(target, "pyproject.toml is not valid TOML", False)
+
+    def test_poetry_only_dependencies_are_disclosed_and_skipped_not_failed(self):
+        target, _ = self._target(b'[tool.poetry]\nname = "x"\n[tool.poetry.dependencies]\n'
+                                 b'requests = "^2.0"\n')
+        stderr = io.StringIO()
+        with mock.patch.object(pa, "run_tool") as launch, contextlib.redirect_stderr(stderr):
+            raw, status = pa.PipAuditAdapter().invoke(target)
+            report = pa.PipAuditAdapter().sanitization_report(target)
+        launch.assert_not_called()
+        self.assertEqual((b'{"dependencies": [], "fixes": []}', 0), (raw, status))
+        reason = "dependencies declared outside [project]; not audited"
+        self.assertIn(reason, stderr.getvalue())
+        self.assertEqual([{"line": "pyproject.toml", "reason": reason}], report["dropped"])
+
+    def test_a_pep621_project_beside_a_poetry_table_is_audited_as_before(self):
+        target, _ = self._target(b'[project]\nname = "x"\ndependencies = ["requests==2.25.1"]\n'
+                                 b'[tool.poetry.dependencies]\nrequests = "^2.0"\n')
+        self.assertEqual(["requests==2.25.1"], pa._deps_from_pyproject(target))
+        empty, _ = self._target(b'[project]\nname = "x"\n')
+        self.assertIsNone(pa.PipAuditAdapter().sanitization_report(empty))
 
     def test_giant_single_comment_line_is_refused(self):
         target, _ = self._target(PYPROJECT_STATIC + b"#" + b"x" * pa._MAX_READ_BYTES)
