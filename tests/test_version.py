@@ -15,6 +15,7 @@ import tempfile
 from unittest import mock
 
 from scripts._version import __version__  # noqa: E402
+import scripts.synth.grading as grading  # noqa: E402
 
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
 
@@ -118,6 +119,29 @@ class TestVersionSingleSourcing(unittest.TestCase):
             with open(path, encoding="utf-8") as fh:
                 payload = json.load(fh)
         self.assertEqual(payload["version"], __version__)
+
+
+# #3256: DEVELOPMENT.md states one grade contract, the one `synth/grading.py` implements.
+_DEV_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _design_decisions():
+    with open(os.path.join(_DEV_ROOT, "DEVELOPMENT.md"), encoding="utf-8") as fh:
+        text = fh.read()
+    section = text.split("## Key design decisions", 1)[1]
+    return re.split(r"\n## ", section, maxsplit=1)[0]
+
+
+class TestGradeContract(unittest.TestCase):
+    def test_the_design_decision_names_the_health_grade_and_the_gate(self):
+        bullet = next(b for b in _design_decisions().split("\n- ") if "grade" in b.split("\n", 1)[0].lower())
+        self.assertIn("health_grade", bullet)
+        self.assertIn("--fail-on", bullet)
+        self.assertNotRegex(bullet, r"do NOT replace")
+
+    def test_the_names_it_cites_exist(self):
+        self.assertTrue(callable(grading.health_grade))
+        self.assertTrue(callable(grading.grade))
 
 
 if __name__ == "__main__":

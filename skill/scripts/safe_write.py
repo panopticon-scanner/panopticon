@@ -294,6 +294,21 @@ def open_a_nofollow(path):
     return os.fdopen(fd, "a", encoding="utf-8")
 
 
+def open_lock_nofollow(path):
+    """A persistent lock file, opened for appending, never through a link and never blocked on a
+    pipe (#3256). It outlives the run, so it is not created exclusively; it must be regular."""
+    confine_artifact_path(path)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND
+                 | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0), 0o644)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("the lock is not a regular file: %s" % path)
+    except BaseException:
+        os.close(fd)
+        raise
+    return os.fdopen(fd, "a", encoding="utf-8")
+
+
 def remove_artifact(path):
     """Remove an artifact leaf without following it or an escaping parent.
 

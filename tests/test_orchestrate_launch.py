@@ -254,6 +254,7 @@ class TestTheOutputSchemaShapeProof(LoopCase):
             self.verdict = verdict
             self.seen = []
             self.bounds = []
+            self.probe_armed = []
             # The two per-launch bounds a real family carries: the loop only
             # SETS them when the operator passed a flag, so a fake that did
             # not declare them could not show that the probe's own bounds are
@@ -266,6 +267,10 @@ class TestTheOutputSchemaShapeProof(LoopCase):
             self.bounds.append((self.max_turns, self.entry_timeout))
             if entry["id"] != shape_probe.PROBE_ENTRY_ID:
                 return super().run_entry(entry, env)
+            # #3256: recorded HERE. This branch returns before `FakeRunner.run_entry`, so
+            # `armed_at_launch` never sees the probe; its first row is the first ordinary cell.
+            # A test that launches the prover directly never ran `prepare`: no guards to read.
+            self.probe_armed.append(self.arming() if hasattr(self, "settings_path") else None)
             self.runner(["claude", "-p"])           # the CLI really started
             if self.verdict == "ok":
                 return base.RunResult(entry_id=entry["id"], ok=True, text='{"ok": true}',
@@ -309,13 +314,13 @@ class TestTheOutputSchemaShapeProof(LoopCase):
         self.assertEqual(hosts.SHAPE_PROVEN, self._fact(d)[hosts.SHAPE])
 
     def test_the_probe_is_launched_under_the_armed_guards(self):
-        # The whole reason it moved here. `armed_at_launch` is written by the
-        # fake from the guard files themselves, so this is the real arming
-        # state at the moment of the probe's launch, not a claim about it.
+        # The whole reason it moved here. `probe_armed` is written by the
+        # fake from the guard files themselves, inside the probe's own branch,
+        # so this is the real arming state at the moment of the probe's launch.
         d, floor = self._repo()
         runner = self.Schemed()
         self._run(d, floor, runner)
-        self.assertEqual((True, True), runner.armed_at_launch[0])
+        self.assertEqual([(True, True)], runner.probe_armed)
         # ...and its own entry is NOT one of the armed grants, so the out_file
         # it names could not be written even if it tried
         probe = runner.probe_launches()[0]

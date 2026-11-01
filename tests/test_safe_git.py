@@ -314,18 +314,46 @@ def test_every_spelling_of_status_preflights(tmp_path, args):
 
 
 @pytest.mark.parametrize("args", [
-    ["fsck"],                                            # never enumerated
     ["diff", "--name-only", "-z", "HEAD"],               # runs diff/textconv drivers
     ["merge-base", "HEAD", "main"],
     ["ls-files", "--eol"],                               # the one filtered ls-files mode
     ["-c", "core.quotepath=false", "diff", "--name-only"],   # a global option first
-    ["--no-pager", "rev-parse", "HEAD"],                 # an option we cannot classify
 ])
 def test_unknown_and_content_reading_spellings_preflight(tmp_path, args):
     runner = _unprovable_override_runner()
     with pytest.raises(OSError, match="filter"):
         safe_git.probe(str(tmp_path), args, runner=runner)
     assert runner.call_count == 3
+
+
+@pytest.mark.parametrize("args", [
+    ["fsck"],                                            # never enumerated
+    ["--no-pager", "rev-parse", "HEAD"],                 # an option we cannot classify
+    ["update-ref", "-d", "refs/x"],
+    ["symbolic-ref", "refs/heads/x", "refs/heads/main"],
+    ["symbolic-ref", "-d", "HEAD"],
+    ["worktree", "add", "/tmp/wt", "HEAD"],
+    ["config", "user.name", "x"],
+    ["diff", "--output=/tmp/x", "HEAD"],
+    ["log", "--output", "/tmp/x"],
+    ["branch", "-D", "main"],
+    [],
+])
+def test_probe_refuses_what_is_not_a_read_before_any_launch(tmp_path, args):
+    # #3256: defense in depth. A write has its own door, `mutate`.
+    runner = mock.Mock()
+    with pytest.raises(safe_git.RepositoryRefused, match="safe Git probe"):
+        safe_git.probe(str(tmp_path), args, runner=runner)
+    runner.assert_not_called()
+
+
+@pytest.mark.parametrize("args", [
+    ["symbolic-ref", "-q", "HEAD"], ["worktree", "list", "--porcelain", "-z"],
+    ["config", "--null", "--list", "--show-scope", "--includes"], ["config", "--get", "x.y"],
+    ["check-ignore", "-v", "--", "p"], ["rev-list", "--count", "HEAD"], ["show", "HEAD"],
+])
+def test_probe_still_runs_every_read_shape(tmp_path, args):
+    assert safe_git.safe_git_shapes.refusal(args, safe_git._subcommand_index(args)) is None
 
 
 @pytest.mark.parametrize("args", [
@@ -541,11 +569,12 @@ def test_a_mutating_call_preflights_even_if_its_subcommand_is_allowlisted(tmp_pa
     with mock.patch.dict(safe_git._NO_CONFIGURED_COMMAND, {"update-ref": ()}):
         safe_git.mutate(str(tmp_path), ["update-ref", "-d", "refs/x"], runner=runner)
     assert runner.call_count == 3          # config, index, then the command
-    # The same argv through `probe` is the one-launch fast path, unchanged.
+    # The same argv through `probe` is refused outright since #3256: a write is not a probe.
     fast = mock.Mock(side_effect=[_ok()])
     with mock.patch.dict(safe_git._NO_CONFIGURED_COMMAND, {"update-ref": ()}):
-        safe_git.probe(str(tmp_path), ["update-ref", "-d", "refs/x"], runner=fast)
-    assert fast.call_count == 1
+        with pytest.raises(safe_git.RepositoryRefused):
+            safe_git.probe(str(tmp_path), ["update-ref", "-d", "refs/x"], runner=fast)
+    assert fast.call_count == 0
 
 
 def test_mutate_carries_the_hooks_pin_and_the_emptied_drivers(tmp_path):

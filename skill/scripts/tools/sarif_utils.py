@@ -214,6 +214,22 @@ def rules_index(run):
 _rules_index = rules_index
 
 
+def result_rule(run, rules, result):
+    """The rule a result's severity, CWEs and properties are read from (#3256). Its `ruleId`
+    names it when it has one, else SARIF's `ruleIndex` (or `rule.index`) points into the run's
+    rules. An index out of range, or not an integer, is no rule at all. The result's own `ruleId`
+    is never rewritten from this: a null rule id stays what the scanner said."""
+    rule_id = result.get("ruleId")
+    if rule_id is not None and rule_id in rules:
+        return rules[rule_id]
+    index = result.get("ruleIndex", _properties(result.get("rule")).get("index"))
+    listed = _properties(_properties(run.get("tool")).get("driver")).get("rules")
+    if (isinstance(index, bool) or not isinstance(index, int) or not isinstance(listed, list)
+            or not 0 <= index < len(listed)):
+        return {}
+    return _properties(listed[index])
+
+
 def _properties(value):
     """Treat malformed optional SARIF property bags as absent."""
     return value if isinstance(value, dict) else {}
@@ -395,7 +411,7 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1,
                     if suppressed_in_source is not None:
                         suppressed_in_source.append(rule_id)
                     continue
-                rule = rules.get(rule_id, {})
+                rule = result_rule(run, rules, res)
                 sev = _sarif_severity(res, rule)
                 if tool_name in SECRET_ADAPTERS and SEVERITY_RANK[sev] < SEVERITY_RANK["HIGH"]:
                     # A committed secret has a minimum HIGH grade; explicit

@@ -506,8 +506,10 @@ class RepositoryHooksNeverRun(unittest.TestCase):
     def test_an_allowlisted_symbolic_ref_write_never_runs_the_ref_hook(self):
         repo = self._repo()
         marker = plant_hook(repo, "reference-transaction")
-        proc = safe_git.probe(repo, ["symbolic-ref", "refs/heads/probe-zz",
-                                     "refs/heads/main"])
+        # A write: since #3256 `probe` refuses one, so it goes through `mutate`, which
+        # suppresses hooks on the same launch path.
+        proc = safe_git.mutate(repo, ["symbolic-ref", "refs/heads/probe-zz",
+                                      "refs/heads/main"])
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertFalse(os.path.exists(marker))
 

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Hardening batch from the 5.2 confirmation reruns (#3256).** None of these is reachable by a
+  hostile target under default use:
+  - the shell probe reads `tools:` only inside the frontmatter;
+  - a SARIF result that names its rule by `ruleIndex` keeps the rule's severity;
+  - session dispatch keeps at most 16 subagents in flight;
+  - Semgrep controls must name the results they expect;
+  - `bump_pins rustup` fails when a checksum pin is missing;
+  - the issue ledger and strain report never write through a planted link;
+  - `replay_report diff` compares every report part;
+  - `safe_git.probe` runs only read-only shapes;
+  - the kimi credential home never lands inside the reviewed tree.
+
 - **Fix: with no committed matrix, groups are named after the directory, not `._N` (#3376).** The
   name comes from the target's real path, cut to the alphabet a committed group name must use, and
   is `root` when nothing usable is left. Fingerprints, finding ids and cross-run keys don't include

@@ -471,16 +471,16 @@ class TestVerification(unittest.TestCase):
 class TestMain(unittest.TestCase):
     """The rustup family, end to end through its subcommand."""
 
-    def _run(self, tmp, latest, write=False):
+    def _run(self, tmp, latest, write=False, dockerfile=DOCKERFILE):
         p = os.path.join(tmp, "Dockerfile")
         with open(p, "w", encoding="utf-8") as fh:
-            fh.write(DOCKERFILE)
+            fh.write(dockerfile)
         requested = []
         get = _rustup_fetch(_rustup_responses(latest), requested)
         buf = io.StringIO()
         with mock.patch.object(bp, "latest_rustup_version", return_value=latest), \
              mock.patch.object(bp, "_get", get), \
-             mock.patch("sys.stdout", buf):
+             mock.patch("sys.stdout", buf), mock.patch("sys.stderr", buf):
             rc = bp.main(["rustup", "--dockerfile", p] + (["--write"] if write else []))
         with open(p, encoding="utf-8") as fh:
             return rc, buf.getvalue(), fh.read(), requested
@@ -493,6 +493,21 @@ class TestMain(unittest.TestCase):
         self.assertIn("up to date", out)
         self.assertEqual(text, DOCKERFILE, "an up-to-date pin must not be rewritten")
         self.assertEqual(requested, [])
+
+    def test_a_version_pin_missing_a_checksum_fails_even_when_up_to_date(self):
+        # #3256: the checksums were read and thrown away, so a lost SHA line still said "up to date".
+        import re
+        import tempfile
+        for arch in bp.RUSTUP_TRIPLES:
+            with self.subTest(arch=arch), tempfile.TemporaryDirectory() as d:
+                text = re.sub(r"^ARG RUSTUP_INIT_SHA256_%s=.*\n" % arch, "", DOCKERFILE, flags=re.M)
+                self.assertNotEqual(text, DOCKERFILE)
+                rc, out, after, requested = self._run(d, "1.29.1", write=True, dockerfile=text)
+                self.assertEqual(1, rc)
+                self.assertIn("RUSTUP_INIT_SHA256_%s" % arch, out)
+                self.assertNotIn("up to date", out)
+                self.assertEqual(text, after)
+                self.assertEqual([], requested)
 
     def test_report_only_by_default(self):
         import tempfile

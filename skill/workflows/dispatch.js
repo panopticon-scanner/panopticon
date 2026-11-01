@@ -104,7 +104,27 @@ phase('Dispatch')
 log('panopticon-dispatch: ' + entries.length + ' pending entr' + (entries.length === 1 ? 'y' : 'ies') +
     ' at checkpoint ' + (args.checkpoint ? shown(args.checkpoint) : '?'))
 
-const results = await parallel(entries.map(e => () => {
+// #3256: the most subagents in flight at once. Every entry is still handed to ONE parallel() call
+// and takes the next free slot the moment one frees, so a slow agent never holds a wave back. 16 is
+// twice the headless pool's ceiling (runners/base.py MAX_CONCURRENCY = 8): a session subagent costs
+// no process of its own, so a normal batch is not slowed, but a checkpoint of hundreds no longer
+// launches all at once. A slot is handed straight to the next waiter, and freed on a throw too.
+const IN_FLIGHT_MAX = 16
+let inFlight = 0
+const waiting = []
+async function inSlot(start) {
+  if (inFlight < IN_FLIGHT_MAX) inFlight += 1
+  else await new Promise(resolve => waiting.push(resolve))
+  try {
+    return await start()
+  } finally {
+    const next = waiting.shift()
+    if (next) next()
+    else inFlight -= 1
+  }
+}
+
+const results = await parallel(entries.map(e => () => inSlot(() => {
   const opts = { label: shown(e.id), phase: 'Dispatch' }
   // Unchanged by #2166: validation above refuses both mismatched shapes, so
   // this branch yields only the two dispatch shapes it was written for --
@@ -133,7 +153,7 @@ const results = await parallel(entries.map(e => () => {
     out_file: e.out_file || null,
     text,
   } : null))
-}))
+})))
 
 const replies = results.filter(Boolean)
 const done = new Set(replies.map(r => r.id))

@@ -135,8 +135,10 @@ characters, and matching consumes the whole path.
   One cell per `(domain, group)`: the domain set is the committed floor widened by the
   scout's returned `domains` (`coverage_model.effective_panels`). The scout's judgement
   can only ADD domains, never remove a floor domain — #1193.
-- **Grade = worst-severity A–F rollup** (F if any CRITICAL … A if none). Deliberate for a
-  gate; do NOT replace it. Severity + CVSS follow industry scales; the letter grade is ours.
+- **The report grade is the health index's letter** (`grading.health_grade`, #1473). It replaced
+  the worst-severity A–F rollup, which saturated (see 5.1.0 below). That rollup (`grading.grade`)
+  still grades each group and panel. The grade is not the gate: `--fail-on` is what fails a build,
+  so do NOT gate on a letter. Severity + CVSS follow industry scales; the letter grade is ours.
 - **The gate keys on evidence, not just severity.** `evidence.status`
   (`tool_reported`/`tool_confirmed`/`advisor_confirmed`/`corroborated`/
   `needs_more_info`/`unverified`/`rejected`) is derived by checking any advisor

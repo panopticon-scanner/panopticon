@@ -46,7 +46,7 @@ assesses the tree it writes into, and under the throwaway key none verifies.
 this file's own repo) -- use it to produce the base-commit replay from the
 branch checkout before the tool exists on the base.
 
-`diff` compares the parsed report, `_part2`, `-discarded`, `-x0x`, and
+`diff` compares the parsed report, every `_partN` either side wrote, `-discarded`, `-x0x`, and
 `-x0x-failures` files of two out-dirs, masking `meta.timestamp` and the x0x `generated_at`, and
 exits 1 on any difference -- including a key-order change, which the parsed
 compare alone would forgive but the written bytes do not. The `.json.html`
@@ -68,8 +68,16 @@ import tempfile
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SUFFIXES = (".json", "_part2.json", "-discarded.json", "-x0x.json",
-            "-x0x-failures.json")
+SUFFIXES = (".json", "-discarded.json", "-x0x.json", "-x0x-failures.json")
+_PART_RE = re.compile(r"_part([0-9]+)\.json\Z")
+
+
+def _suffixes(stem, *folders):
+    """SUFFIXES plus every `_partN.json` either folder holds for `stem` (#3256): the writer emits
+    `_part2` .. `_partN`, so a report that grew or lost a part is a difference, not a blind spot."""
+    parts = {int(m.group(1)) for folder in folders for name in os.listdir(folder)
+             if name.startswith(stem) and (m := _PART_RE.fullmatch(name[len(stem):]))}
+    return SUFFIXES[:1] + tuple("_part%d.json" % n for n in sorted(parts)) + SUFFIXES[1:]
 STREAMS = ("synthesize.stdout", "synthesize.stderr")
 REQUIRED = ("dispatch-plan-driver.json", "out-file-hashes.json")
 MASK = {".json": ("meta.timestamp",), "-x0x.json": ("generated_at",)}
@@ -313,7 +321,7 @@ def diff(args):
         sys.exit(f"no <tag>-report.json in {a_dir}")
     problems = []
     for stem in stems:
-        for suf in SUFFIXES:
+        for suf in _suffixes(stem, a_dir, b_dir):
             name = stem + suf
             pa, pb = os.path.join(a_dir, name), os.path.join(b_dir, name)
             if os.path.isfile(pa) != os.path.isfile(pb):

@@ -246,7 +246,7 @@ class Runner(base.HostRunner):
         scope_path = os.path.join(run_dir, base.SCOPE_FILE)
         allowlist_path = os.path.join(run_dir, base.ALLOWLIST_FILE)
         self.kimi_home = kimi_home_mod.build_kimi_home(
-            kimi_home_mod.new_kimi_home(), scope_path, allowlist_path)
+            kimi_home_mod.new_kimi_home(self.review_root), scope_path, allowlist_path)
         # KM-1 (#1657): with no `--skills-dir` the CLI auto-discovers its USER
         # and PROJECT skill roots, and the project ones are inside the tree
         # under review -- `.kimi-code/skills/*/SKILL.md`, `.agents/skills/

@@ -271,14 +271,24 @@ def is_temp_home(path):
     return any(real == root or real.startswith(root + os.sep) for root in _temp_roots())
 
 
-def new_kimi_home():
+def new_kimi_home(review_root=None):
     """A fresh per-run home under $XDG_RUNTIME_DIR (where there is one) or the
     temp root, mode 700. `mkdtemp` creates it exclusively: no window in which
-    someone else's file or link holds the name."""
-    home = tempfile.mkdtemp(prefix=HOME_PREFIX,
-                            dir=os.environ.get("XDG_RUNTIME_DIR") or None)
-    os.chmod(home, 0o700)
-    return home
+    someone else's file or link holds the name.
+
+    #3256: the home carries the operator's credentials, so a root that resolves
+    inside `review_root` is skipped -- an XDG_RUNTIME_DIR pointed into the tree
+    falls back to the temp root -- and when every root is inside, it refuses."""
+    inside = os.path.realpath(review_root) if review_root else None
+    for parent in dict.fromkeys([os.environ.get("XDG_RUNTIME_DIR") or None, None]):
+        real = os.path.realpath(parent or tempfile.gettempdir())
+        if inside and (real == inside or real.startswith(inside + os.sep)):
+            continue
+        home = tempfile.mkdtemp(prefix=HOME_PREFIX, dir=parent)
+        os.chmod(home, 0o700)
+        return home
+    raise RuntimeError("every temp root resolves inside the reviewed tree %s; refusing to put "
+                       "the kimi credential home there" % review_root)
 
 
 def build_kimi_home(home, scope_path, allowlist_path, real_home=None):

@@ -36,6 +36,20 @@ def materialize(controls_path, output_dir):
         (output_dir / name).write_text(source, encoding="utf-8")
 
 
+def _expected(controls):
+    """The control results the rules must produce (#3256). A missing or empty list would make an
+    empty Semgrep run pass, so it is refused, and so is any row that is not one exact result."""
+    expected = controls.get("expected")
+    if not isinstance(expected, list) or not expected:
+        raise ControlError("controls name no expected results")
+    for item in expected:
+        if not (isinstance(item, dict) and isinstance(item.get("rule_id"), str)
+                and isinstance(item.get("path"), str) and isinstance(item.get("line"), int)
+                and not isinstance(item.get("line"), bool)):
+            raise ControlError("invalid expected control result: %r" % (item,))
+    return Counter((item["rule_id"], item["path"], item["line"]) for item in expected)
+
+
 def _record(item, control_root):
     check_id = item.get("check_id", "")
     try:
@@ -54,10 +68,7 @@ def check(controls_path, control_root, result_path):
         raise ControlError("cannot read Semgrep results: %s" % exc) from exc
     if result.get("errors"):
         raise ControlError("Semgrep reported errors: %r" % result["errors"])
-    expected = Counter(
-        (item["rule_id"], item["path"], item["line"])
-        for item in controls.get("expected", [])
-    )
+    expected = _expected(controls)
     actual = Counter(_record(item, Path(control_root)) for item in result.get("results", []))
     if actual != expected:
         missing = list((expected - actual).elements())

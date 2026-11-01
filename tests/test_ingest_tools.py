@@ -53,6 +53,56 @@ class TestIngest(unittest.TestCase):
         self.assertEqual(finding["tool_evidence"]["rule_id"], "CVE-2026-1234")
         self.assertEqual(finding["citations"]["cve"], ["CVE-2026-1234"])
 
+    def test_a_result_naming_its_rule_by_index_keeps_the_rules_severity(self):
+        # #3256: SARIF lets a result point at its rule by `ruleIndex` alone. Its severity and CWE
+        # come from that rule; its rule id stays what the result said, which is nothing.
+        for ref in ({"ruleIndex": 1}, {"rule": {"index": 1}}):
+            with self.subTest(ref=ref):
+                sarif = self._severity_sarif(level=None)
+                rules = only(sarif["runs"], "run")["tool"]["driver"]["rules"]
+                rules.insert(0, {"id": "other", "properties": {"security-severity": "2.0"}})
+                rules[1]["properties"] = {"security-severity": "9.8", "tags": ["external/cwe/cwe-89"]}
+                result = only(only(sarif["runs"], "run")["results"], "result")
+                del result["ruleId"]
+                result.update(ref)
+                finding = first(it.sarif_to_findings(sarif, "semgrep", "g1", "SG"))
+                self.assertEqual("CRITICAL", finding["severity"])
+                self.assertIsNone(finding["tool_evidence"]["rule_id"])
+
+    def test_a_rule_index_that_names_no_rule_is_no_rule(self):
+        for index in (5, -1, True, "0", None):
+            with self.subTest(index=index):
+                sarif = self._severity_sarif(level=None,
+                                             rule_properties={"security-severity": "9.8"})
+                result = only(only(sarif["runs"], "run")["results"], "result")
+                del result["ruleId"]
+                result["ruleIndex"] = index
+                self.assertEqual("MEDIUM", first(
+                    it.sarif_to_findings(sarif, "semgrep", "g1", "SG"))["severity"])
+
+    def test_a_boolean_rule_index_is_not_index_one(self):
+        sarif = self._severity_sarif(level=None)
+        rules = only(sarif["runs"], "run")["tool"]["driver"]["rules"]
+        rules.append({"id": "second", "properties": {"security-severity": "9.8"}})
+        result = only(only(sarif["runs"], "run")["results"], "result")
+        del result["ruleId"]
+        result["ruleIndex"] = True
+        self.assertEqual("MEDIUM", first(it.sarif_to_findings(sarif, "semgrep", "g1", "SG"))["severity"])
+        result["ruleIndex"] = 1
+        self.assertEqual("CRITICAL", first(it.sarif_to_findings(sarif, "semgrep", "g1", "SG"))["severity"])
+
+    def test_a_rule_id_wins_over_its_index_and_an_id_less_rule_is_never_borrowed(self):
+        sarif = self._severity_sarif(level=None, rule_properties={"security-severity": "9.8"})
+        rules = only(sarif["runs"], "run")["tool"]["driver"]["rules"]
+        rules.append({"properties": {"security-severity": "1.0"}})
+        only(only(sarif["runs"], "run")["results"], "result")["ruleIndex"] = 1
+        self.assertEqual("CRITICAL", first(
+            it.sarif_to_findings(sarif, "semgrep", "g1", "SG"))["severity"])
+        del only(only(sarif["runs"], "run")["results"], "result")["ruleId"]
+        del only(only(sarif["runs"], "run")["results"], "result")["ruleIndex"]
+        self.assertEqual("MEDIUM", first(
+            it.sarif_to_findings(sarif, "semgrep", "g1", "SG"))["severity"])
+
     def test_sarif_result_metadata_precedes_rule_and_level(self):
         cases = [({"security-severity": "5.3"}, "MEDIUM"),
                  ({"security-severity": 9.8, "severity": "LOW"}, "CRITICAL"),

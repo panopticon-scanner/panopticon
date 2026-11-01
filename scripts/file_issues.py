@@ -37,6 +37,7 @@ _SKILL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))
 if _SKILL not in sys.path:
     sys.path.insert(0, _SKILL)
 import scripts.reconcile as _reconcile  # noqa: E402
+import scripts.safe_write as safe_write  # noqa: E402
 import scripts.evidence as evidence  # noqa: E402
 import scripts.evidence_sections as evidence_sections  # noqa: E402
 
@@ -301,7 +302,7 @@ def _ledger_lock(path):
     if fcntl is None:                      # pragma: no cover - posix in CI
         yield
         return
-    with open(path + ".lock", "a", encoding="utf-8") as handle:
+    with safe_write.open_lock_nofollow(path + ".lock") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         try:
             yield
@@ -397,9 +398,9 @@ def _digest(value):
 
 
 def _atomic_json(path, value):
-    # Every caller holds the stable ledger lock, including pending writes.
+    # Every caller holds the stable ledger lock, including pending writes. #3256: no link followed.
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as handle:
+    with safe_write.open_staging_nofollow(tmp) as handle:
         json.dump(value, handle, indent=1, sort_keys=True)
         handle.flush()
         os.fsync(handle.fileno())
