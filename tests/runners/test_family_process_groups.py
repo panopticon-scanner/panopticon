@@ -16,6 +16,7 @@ under the PATH shim and under an empty PATH.
 import json
 import os
 import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -25,6 +26,7 @@ from unittest import mock
 import pytest
 
 import scripts.runners.base as base
+import scripts.runners.children as children
 import scripts.runners.claude as claude_runner
 import scripts.runners.codex as codex_runner
 import scripts.runners.kimi as kimi_runner
@@ -36,15 +38,20 @@ pytestmark = pytest.mark.claude_runner
 
 _POSIX = os.name == "posix"
 
-# A child that forks a grandchild into its own process group, records the
-# grandchild's pid, prints on both streams, and then outsleeps every deadline
-# in this file. The shape a host CLI with workers has.
-_TREE = ("import subprocess, sys, time\n"
+# A child that forks a grandchild into its own process group, prints on both
+# streams, records the grandchild's pid, and then outsleeps every deadline in
+# this file. The shape a host CLI with workers has.
+#
+# #2901: the pid file is written LAST, and atomically, so its existence means the
+# whole tree is up and both streams are flushed. `timeout_after_ready` starts the
+# entry timeout only from that moment.
+_TREE = ("import os, subprocess, sys, time\n"
          "p = subprocess.Popen([sys.executable, '-c',"
          " 'import time; time.sleep(60)'])\n"
-         "open(%r, 'w').write(str(p.pid))\n"
          "sys.stderr.write('working\\n'); sys.stderr.flush()\n"
          "sys.stdout.write('started\\n'); sys.stdout.flush()\n"
+         "open(%r + '.tmp', 'w').write(str(p.pid))\n"
+         "os.replace(%r + '.tmp', %r)\n"
          "time.sleep(60)\n")
 
 
@@ -66,8 +73,32 @@ class _FamilyCase(unittest.TestCase):
         import shutil
         shutil.rmtree(self.root, ignore_errors=True)
 
-    def tree_argv(self, *extra):
-        return [sys.executable, "-c", _TREE % self.pidfile, *extra]
+    def tree_argv(self, *extra, slow_start=0):
+        """`slow_start` seconds before the tree starts: the loaded-box case #2901 saw."""
+        return [sys.executable, "-c",
+                "import time; time.sleep(%r)\n" % slow_start + _TREE % ((self.pidfile,) * 3),
+                *extra]
+
+    def timeout_after_ready(self, ready_within=60):
+        """#2901: the entry timeout measured from the tree being UP, not from the launch.
+
+        Under load the child could take longer than the 1-second timeout just to start, so the
+        timeout ended it before the grandchild existed. The real `_Capture.wait` -- the clock
+        `launch` kills the group on -- now starts once the tree's pid file appears, or once the
+        child has exited, or after `ready_within` seconds. The kill path is unchanged."""
+        real = children._Capture.wait
+        pidfile = self.pidfile
+
+        def wait(capture, timeout):
+            deadline = time.monotonic() + ready_within
+            while not os.path.exists(pidfile) and time.monotonic() < deadline:
+                try:                    # waits on the child itself: it returns once it exits
+                    capture.proc.wait(0.02)
+                    break
+                except subprocess.TimeoutExpired:
+                    pass
+            return real(capture, timeout)
+        return mock.patch.object(children._Capture, "wait", wait)
 
     def grandchild(self, seconds=10):
         deadline = time.monotonic() + seconds
@@ -128,7 +159,7 @@ class _FamilyCase(unittest.TestCase):
 class TestTheClaudeFamily(_FamilyCase):
 
     def test_the_entry_timeout_ends_the_whole_tree(self):
-        with self.family_default(claude_runner):
+        with self.family_default(claude_runner), self.timeout_after_ready():
             runner = claude_runner.Runner("claude")
             runner.prepare(self.root, review_root=self.root)
             runner.entry_timeout = 1
@@ -141,10 +172,25 @@ class TestTheClaudeFamily(_FamilyCase):
         self.assert_timed_out(result)
         self.assert_died(self.grandchild())
 
+    def test_a_tree_slower_to_start_than_the_timeout_still_dies_whole(self):
+        # #2901, made deterministic: the child takes twice the entry timeout to start, as it did
+        # on a loaded box. The timeout is measured from the tree being up, so the grandchild
+        # exists when it fires and the test proves the group kill rather than losing the race.
+        with self.family_default(claude_runner), self.timeout_after_ready():
+            runner = claude_runner.Runner("claude")
+            runner.prepare(self.root, review_root=self.root)
+            runner.entry_timeout = 1
+            with mock.patch.object(claude_runner.Runner, "command",
+                                   return_value=self.tree_argv(slow_start=2)), \
+                    mock.patch.object(claude_runner, "unenforced_argv_problem", return_value=None, create=True):
+                result = runner.run_entry({"id": "review-app-SEC", "prompt": "p"}, {})
+        self.assert_timed_out(result)
+        self.assert_died(self.grandchild(seconds=1))
+
     def test_the_killed_childs_streams_are_still_ledgered(self):
         # D10 ruling 5 through the new launcher: the partial stdout and the
         # stderr head survive the group kill.
-        with self.family_default(claude_runner):
+        with self.family_default(claude_runner), self.timeout_after_ready():
             runner = claude_runner.Runner("claude")
             runner.prepare(self.root, review_root=self.root)
             runner.entry_timeout = 1
@@ -206,7 +252,7 @@ class TestTheCodexFamily(_FamilyCase):
         overlay = {base.ENV_ENTRY_ID: entry["id"],
                    base.ENV_READ_SCOPE: scope_path,
                    base.ENV_WRITE_ALLOWLIST: os.path.join(self.root, "allow.json")}
-        with self.family_default(codex_runner):
+        with self.family_default(codex_runner), self.timeout_after_ready():
             runner = codex_runner.Runner()
             runner.prepare(self.root, self.root)
             runner.entry_timeout = 1
@@ -234,7 +280,7 @@ class TestTheKimiFamily(_FamilyCase):
 
     def test_the_entry_timeout_ends_the_whole_tree(self):
         with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": self._home()}), \
-                self.family_default(kimi_runner):
+                self.family_default(kimi_runner), self.timeout_after_ready():
             runner = kimi_runner.Runner("kimi")
             runner.prepare(os.path.join(self.root, "run"), review_root=self.root)
             self.addCleanup(runner.teardown, "complete")

@@ -7,6 +7,7 @@ import io
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -40,6 +41,13 @@ class _Case(unittest.TestCase):
     def setUp(self):
         self.dir = os.path.realpath(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.dir, True)
+        # These tests run from a temporary cwd (tests/synth's autouse fixture), and `file_issues`
+        # caches the repo root it detects from the cwd. Detected here, that cache told every later
+        # test in the worker the checkout was a temp dir, so it is put back after each test.
+        sanitize = sys.modules[file_issues.repo_root.__module__]
+        patch = mock.patch.object(sanitize, "_REPO_ROOT_CACHE", sanitize._REPO_ROOT_CACHE)
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def _load(self, *findings):
         """Through the real loader and its strip list, as an agent's file reaches a report."""
