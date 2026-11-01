@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import json
 import re
+import sys
 from .base import make_finding, omit_none, parse_json_bytes, run_tool, scratch_cwd
 from .sarif_utils import norm_uri
 
@@ -56,10 +57,32 @@ def _flat_config(ts_available: bool = True) -> str:
         '    linterOptions: { noInlineConfig: true },\n'
         '    plugins: { security }, rules },\n'
     ) if ts_available else ''
+    # #3228: Workflow-tool scripts are a host dialect, not standalone JS: the
+    # host removes their exported metadata and evaluates the rest as an async
+    # function body, where top-level await/return are legal. Adapt only the
+    # marked files in that shipped directory. An unmarked or malformed file is
+    # returned unchanged and keeps ESLint's parse error (fail closed). Keeping
+    # the wrapper prefix on physical line 1 preserves every source line number.
+    workflow_processor = (
+        'const workflowMarker = "// Workflow-tool script, not a standalone ES module or CommonJS script";\n'
+        'const workflowProcessor = {\n'
+        '  preprocess(text) {\n'
+        '    if (!text.startsWith(workflowMarker)\n'
+        '        || !/^export const meta(?=\\s*=)/m.test(text)) return [text];\n'
+        '    const body = text.replace(/^export const meta(?=\\s*=)/m, "const meta");\n'
+        '    return ["async function __panopticonWorkflow__() {" + body + "\\n}"];\n'
+        '  },\n'
+        '  postprocess(messageLists) { return messageLists[0] || []; },\n'
+        '};\n'
+    )
+    workflow_block = (
+        '  { files: ["skill/workflows/*.js"], processor: workflowProcessor },\n'
+    )
     # Leave sourceType unset: ESLint retains commonjs for .cjs and module
     # for .mjs, while the same security rules cover both native extensions.
     return (
         'import security from "%s";\n'
+        '%s'
         '%s'
         'const rules = {\n      %s\n};\n'
         'export default [\n'
@@ -69,7 +92,9 @@ def _flat_config(ts_available: bool = True) -> str:
         '    linterOptions: { noInlineConfig: true },\n'
         '    plugins: { security }, rules },\n'
         '%s'
-        '];\n' % (_plugin_entry(), ts_import, rules, ts_block)
+        '%s'
+        '];\n' % (_plugin_entry(), ts_import, workflow_processor, rules,
+                   workflow_block, ts_block)
     )
 
 
@@ -135,6 +160,12 @@ def file_coverage(data):
     rows, metadata = _capture(data)
     failed = [r for r in rows if r.get("fatalErrorCount", 0)
               or any(_fatal_message(m) for m in r["messages"])]
+    if failed:
+        # #3228: usable rows survive a per-file parse failure, but the operator
+        # must see the coverage loss during the scan (the same posture Semgrep
+        # takes for its per-file timeouts). Paths remain in the bounded facts.
+        print("eslint-security: partial file coverage: %d file(s) had parse "
+              "errors; usable findings retained" % len(failed), file=sys.stderr)
     unavailable = metadata["files_count"] if metadata else 0
     facts = [{"file": _safe_path(r["filePath"]), "reason": "parse_error"}
              for r in failed[:MAX_COVERAGE_FILES]]

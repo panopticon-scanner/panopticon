@@ -21,7 +21,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from tests._test_helpers import assert_adapter_finds, skip_or_fail
+from tests._test_helpers import REPO_ROOT, assert_adapter_finds, skip_or_fail
 from scripts.tools.eslint_security import EslintSecurityAdapter, _TS_PARSER_ENTRY
 from tests.tools.helpers import OK_SCAN_EXIT_CODES, in_tools_image
 
@@ -169,6 +169,46 @@ class TestEslintSecurityIntegration(unittest.TestCase):
                 self.assertEqual(facts["unparsed_files"], 0)
                 self.assertEqual(facts["unavailable_files"],
                                  int(missing_parser or not os.path.isfile(_TS_PARSER_ENTRY)))
+
+    def test_shipped_workflow_scripts_have_complete_file_coverage(self):
+        """#3228: certify the two files the self-scan actually ships."""
+        sources = {}
+        for name in ("dispatch.js", "family-pr-review.js"):
+            path = os.path.join(REPO_ROOT, "skill", "workflows", name)
+            with open(path, encoding="utf-8") as stream:
+                sources["skill/workflows/" + name] = stream.read()
+        adapter, raw, _ = self._scan(sources)
+        _findings, facts = adapter.parse_with_file_coverage(raw, "g1")
+        self.assertEqual(facts["status"], "complete")
+        self.assertEqual(facts["parsed_files"], 2)
+        self.assertEqual(facts["unparsed_files"], 0)
+        self.assertEqual(facts["files"], [])
+
+    def test_workflow_dialect_keeps_rules_and_an_unmarked_mutant_fails_closed(self):
+        """#3228: adaptation preserves scanning and is not a blanket JS repair."""
+        marker = "// Workflow-tool script, not a standalone ES module or CommonJS script"
+        body = ("export const meta = { name: 'fixture' }\n"
+                "const input = args.input\n"
+                "await Promise.resolve(input)\n"
+                "return eval(input)\n")
+        adapter, raw, _ = self._scan({
+            "skill/workflows/marked.js": marker + "\n" + body,
+            "skill/workflows/unmarked.js": body,
+        })
+        findings, facts = adapter.parse_with_file_coverage(raw, "g1")
+        self.assertEqual(facts["status"], "partial")
+        self.assertEqual(facts["parsed_files"], 1)
+        self.assertEqual(facts["unparsed_files"], 1)
+        self.assertEqual(len(facts["files"]), 1)
+        self.assertTrue(facts["files"][0]["file"].endswith(
+            "/skill/workflows/unmarked.js"), facts)
+        eval_hits = [finding for finding in findings
+                     if finding["tool_evidence"]["rule_id"] ==
+                     "security/detect-eval-with-expression"]
+        self.assertEqual(len(eval_hits), 1)
+        self.assertTrue(eval_hits[0]["location"]["file"].endswith(
+            "/skill/workflows/marked.js"), eval_hits)
+        self.assertEqual(eval_hits[0]["location"]["line_start"], 5)
 
     def test_package_only_tree_is_clean(self):
         adapter, raw, _ = self._scan({}, {"package.json": "{}"})
