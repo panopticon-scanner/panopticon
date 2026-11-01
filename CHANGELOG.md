@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Hardening: validation and tool verification bind to what they measured (#3235, part A).** A
+  tool-advisor verdict counts only when it echoes the finding it was asked about, so a mislabelled
+  reply is retried rather than lost. Validation re-takes the tree delta instead of trusting its
+  own `validate.json` marker. Neither is reachable by a hostile target under default use.
+
 - **Hardening batch from the 5.2 confirmation reruns (#3256).** None of these is reachable by a
   hostile target under default use:
   - the shell probe reads `tools:` only inside the frontmatter;
