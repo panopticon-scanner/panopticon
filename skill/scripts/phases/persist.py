@@ -450,7 +450,7 @@ def accepts(entry, data):
     if verdict not in evidence.VERDICT_VALUES:
         return False, "verdict %s is not one of %s" % (
             redact._reason_repr(raw_verdict), sorted(evidence.VERDICT_VALUES))
-    return True, ""
+    return verify.verify_tools.echo_matches(entry, data)
 
 
 # `verdicts-<group>-<domain>[-backup][-partN].json` (verify._verify_out_file):

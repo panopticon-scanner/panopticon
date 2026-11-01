@@ -174,14 +174,30 @@ def _lift_dir():
     return persist.LIFT_DIR
 
 
-def _valid_verdict_at(path):
+def _valid_verdict_at(path, finding_id=None):
     try:
         with open(path, encoding="utf-8") as fh:
             data = evidence.load_json_tolerant(fh.read())
     except (OSError, ValueError):
         return False
     return (isinstance(data, dict)
-            and str(data.get("verdict", "")).upper() in evidence.VERDICT_VALUES)
+            and str(data.get("verdict", "")).upper() in evidence.VERDICT_VALUES
+            and (finding_id is None or echo_matches({"finding_id": finding_id}, data)[0]))
+
+
+def echo_matches(entry, data):
+    """(ok, reason): does a tool-advisor reply echo the finding its entry asked about (#3235)?
+
+    Synthesize's `match_verdict` refuses a verdict that echoes another finding, so accepting one
+    here only lost the retry: it read as done, was never re-dispatched, and the finding ended
+    unanswered. An entry from a request written before the entry carried `finding_id` is not
+    checked; `match_verdict` still is."""
+    expected = entry.get("finding_id")
+    echoed = data.get("finding_id") if isinstance(data, dict) else None
+    if expected is None or (echoed is not None and str(echoed) == str(expected)):
+        return True, ""
+    return False, "verdict echoes finding_id %s, expected %s" % (
+        redact._reason_repr(echoed), redact._reason_repr(expected))
 
 
 def _promote_lifts(review_root, queue_ids):
@@ -202,13 +218,15 @@ def _unpromoted_lift(review_root, queue_id):
     return _valid_verdict_at(_tool_lift_out_file(review_root, queue_id))
 
 
-def _tool_verdict_done(review_root, queue_id):
+def _tool_verdict_done(review_root, queue_id, finding=None):
     """A tool-finding verdict is settled once verdicts/<queue_id>.json parses as
     a single-verdict file synthesize will load -- a dict carrying a valid verdict
     value. Mirrors evidence.load_verdicts_detailed's own acceptance test (tolerant
     parse, VERDICT_VALUES), so 'done' means 'synthesize will match it', and a
-    truncated/garbled return re-dispatches rather than reading as done."""
-    return _valid_verdict_at(_tool_verdict_out_file(review_root, queue_id))
+    truncated/garbled return re-dispatches rather than reading as done. With `finding`, the
+    verdict must also echo its id (#3235), exactly as `match_verdict` will require."""
+    return _valid_verdict_at(_tool_verdict_out_file(review_root, queue_id),
+                             None if finding is None else str(finding.get("id")))
 
 # The tool advisor's entry id prefix, one spelling for the entry built here and
 # for `verify._dispatch_key`, which reads its budget key back off a dispatched id.
@@ -377,7 +395,7 @@ def _tool_verify_entry(review_root, manifest, queue_id, finding, host, lift=None
             "enforced": enforced, "model": requests.bound_model(host, "advisor"),
             "prompt": requests.entry_marker(entry_id) + prefix + prompt,
             "marker": read_guard_hook.marker_line(entry_id),
-            "out_file": out_file,
+            "out_file": out_file, "finding_id": str(finding.get("id")),
             "scope": requests.scope(files=abs_files)}
     if mode:
         entry["delivery"] = mode
@@ -390,10 +408,9 @@ def _verify_tools_execute(review_root, manifest, host):
     queue = _tool_verify_queue(review_root, manifest)
     _promote_lifts(review_root, [qid for qid, _f in queue])        # #3231 A2: a landed lift
     pending = [(qid, f, lift) for qid, f in queue
-               for lift in [None if not _tool_verdict_done(review_root, qid)
-                            else _lift_owed(review_root, qid, f)]
-               if (lift or not _tool_verdict_done(review_root, qid))
-               and not _tool_exhausted(review_root, qid)]
+               for done in [_tool_verdict_done(review_root, qid, f)]
+               for lift in [_lift_owed(review_root, qid, f) if done else None]
+               if (lift or not done) and not _tool_exhausted(review_root, qid)]
     if not pending:
         return None
     entries = [_tool_verify_entry(review_root, manifest, qid, f, host, lift)
@@ -412,6 +429,6 @@ def _verify_tools_done(review_root, manifest):
     # A landed lift not yet promoted holds it open too, so `_verify_tools_execute` runs
     # and promotes it before synthesize reads `verdicts/`.
     return all(not _unpromoted_lift(review_root, qid)
-               and ((_tool_verdict_done(review_root, qid) and not _lift_owed(review_root, qid, f))
+               and ((_tool_verdict_done(review_root, qid, f) and not _lift_owed(review_root, qid, f))
                     or _tool_exhausted(review_root, qid))
                for qid, f in _tool_verify_queue(review_root, manifest))
