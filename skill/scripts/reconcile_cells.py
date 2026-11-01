@@ -123,8 +123,9 @@ def refusal(file_, domain, tool, cells):
     return _lost(file_, domain, cells) or _uncompleted(file_, domain, cells)
 
 
-def close_note(tool, cells):
-    """The disclosure a close carries when run-3 never measured its completed cells."""
-    if cells is None or tool or cells.get("reviewed") is not None:
+def close_note(all_tool, cells):
+    """The disclosure a close carries when run-3 never measured its completed cells and the
+    fingerprint holds any agent record (`all_tool` False)."""
+    if cells is None or all_tool or cells.get("reviewed") is not None:
         return ""
     return UNMEASURED

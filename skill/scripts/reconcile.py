@@ -431,7 +431,13 @@ def _close_refusal(recs, current, claimed, close_guard, guard_reason, cells=None
                     "refusing to corroborate a close" % file_), "scope"
         return ("%s was not reviewed in run3 -- absence of findings is "
                 "not a fix" % file_), "scope"
-    return reconcile_cells.refusal(file_, recs[0].get("domain"), recs[0].get("tool"), cells)
+    # Every run2 record of the fingerprint, not the first: the fingerprint carries neither domain
+    # nor source, and the `code` panel spans seven domains. Sorted so the reason is stable.
+    for domain, tool in sorted({(r.get("domain") or "", r.get("tool") or "") for r in recs}):
+        refusal = reconcile_cells.refusal(file_, domain or None, tool or None, cells)
+        if refusal is not None:
+            return refusal
+    return None
 
 
 def build_diff(run2_records, run3_records, run2_path, run3_path,
@@ -516,7 +522,7 @@ def build_diff(run2_records, run3_records, run2_path, run3_path,
         else:
             entry["reason"] = "(file,panel) clear: 0 findings in %s on %s in run3%s" % (
                 ck[1] or "(no panel)", ck[0] or "(no file)",
-                reconcile_cells.close_note(recs[0].get("tool"), run3_cells))
+                reconcile_cells.close_note(all(r.get("tool") for r in recs), run3_cells))
             entry["run2"] = _by_id(recs)
             closed.append(entry)
 

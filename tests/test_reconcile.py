@@ -1201,6 +1201,36 @@ class TestRun3UncompletedCells(TestRun3LostFloorCells):
         for entry in diff["closed"]:
             self.assertNotIn("did not measure", entry["reason"])
 
+    def _shared_fingerprint(self, second):
+        """run2 with two records of ONE fingerprint on b.py: an SEC agent finding first, then
+        `second`'s fields over a copy. The fingerprint carries neither domain nor source."""
+        run2 = self._run2()
+        first = run2["findings"][1]
+        run2["findings"].insert(2, dict(first, id="B2", **second))
+        return run2
+
+    def test_every_record_of_a_fingerprint_is_checked_not_the_first(self):
+        cases = (({"domain": "DAT"}, dict(reviewed=[["app", "SEC"], ["lib", "SEC"]]),
+                  "did not complete a DAT review of b.py's group"),
+                 ({"domain": "DAT"}, dict(missing=[["app", "DAT"]]), "lost floor cell (app, DAT)"),
+                 ({"source": "tool:semgrep"}, dict(reviewed=[["app", "SEC"], ["lib", "SEC"]],
+                                                   tools=["bandit"]), "did not run semgrep"))
+        for second, run3, reason in cases:
+            with self.subTest(second=second):
+                run2 = self._shared_fingerprint(second)
+                fps = {evidence.finding_fingerprint(f) for f in run2["findings"][1:3]}
+                self.assertEqual(1, len(fps))
+                closed, ambiguous = self._cohorts(self._diff(self._run3(**run3), run2))
+                self.assertNotIn("b.py", closed)
+                self.assertIn(reason, ambiguous["b.py"][0])
+
+    def test_a_shared_fingerprint_with_an_agent_record_carries_the_unmeasured_note(self):
+        run2 = self._shared_fingerprint({"source": "tool:semgrep"})
+        run2["findings"][1:3] = run2["findings"][2:0:-1]   # the tool record first
+        diff = self._diff(self._run3(tools=["semgrep"]), run2)
+        (entry,) = [e for e in diff["closed"] if e["coarse_key"][0] == "b.py"]
+        self.assertIn("did not measure completed cells", entry["reason"])
+
     def test_a_part_widens_the_tools_that_ran(self):
         run3 = self._run3(tools=["bandit"])
         run3["meta"]["parts"] = ["run3-part1.json"]
