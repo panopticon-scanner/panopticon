@@ -1111,6 +1111,19 @@ class TestKimiShellSurfaceReadsTheWire(unittest.TestCase):
         self.assertIn("30 of 30 children", detail)
         self.assertEqual(1, detail.count("panopticon-domain-panel"))
 
+    def test_the_same_mismatch_from_many_children_is_reported_once(self):
+        home = self._home()
+        for n in range(5):
+            self._wire(home, "s%d" % n, [json.dumps({
+                "type": "llm.tools_snapshot", "agent": "panopticon-domain-panel.md",
+                "tools": ["Read", "Grep", "Glob", "Write", "Bash"]})], mtime=100 + n)
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            state, _by, detail = kimi_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=d, version="0.42", run_home=home)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertEqual(1, detail.count("panopticon-domain-panel"))
+
     def test_an_unregistered_agent_carrying_an_ungranted_tool_refutes(self):
         # #3235: a child whose agent has no registered shell was recorded and passed, whatever it
         # carried. Within the templates' union it still passes; beyond it, it refutes.
