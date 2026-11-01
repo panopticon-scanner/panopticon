@@ -124,6 +124,25 @@ jobs:
           size="$(stat -c%s odc-data/odc.mv.db)"
           echo "odc.mv.db: $((size / 1024 / 1024)) MiB"
           [ "$size" -gt 104857600 ] || { echo "::error::NVD DB only $((size / 1024 / 1024)) MiB — sync likely incomplete"; exit 1; }
+          # #3251: the size floor shows a database exists, not that this update finished.
+          # dependency-check saves nvd.api.last.modified only after a whole update is
+          # processed, so a failed sync over this empty directory leaves it unset, and an
+          # old value means the feed stopped moving. Either way, don't publish. The login
+          # is the tool's own public default, read from its jar.
+          props="$(unzip -p dependency-check/lib/dependency-check-core-*.jar dependencycheck.properties)"
+          db_user="$(printf '%s\n' "$props" | sed -n 's/^data\.user=//p')"
+          db_pass="$(printf '%s\n' "$props" | sed -n 's/^data\.password=//p')"
+          modified="$(java -cp "$(echo dependency-check/lib/h2-*.jar)" org.h2.tools.Shell \
+            -url "jdbc:h2:file:./odc-data/odc;ACCESS_MODE_DATA=r" -user "$db_user" -password "$db_pass" \
+            -sql "SELECT * FROM properties WHERE id='nvd.api.last.modified'" \
+            | sed -n 's/^nvd\.api\.last\.modified *| *//p')" \
+            || { echo "::error::could not read nvd.api.last.modified from the NVD database"; exit 1; }
+          [ -n "$modified" ] || { echo "::error::NVD DB has no nvd.api.last.modified — the update did not finish; not publishing"; exit 1; }
+          modified_at="$(date -u -d "$modified" +%s)" \
+            || { echo "::error::nvd.api.last.modified is not a timestamp: $modified"; exit 1; }
+          age_hours="$(( ($(date -u +%s) - modified_at) / 3600 ))"
+          echo "nvd.api.last.modified: $modified (${age_hours} h old)"
+          [ "$age_hours" -le 72 ] || { echo "::error::NVD DB is ${age_hours} h old (limit 72) — not publishing stale data"; exit 1; }
 
       - name: Set up Docker Buildx
         if: steps.decide.outputs.sync == 'true'
