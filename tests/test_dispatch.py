@@ -801,6 +801,14 @@ class TestEmitHostAgents(unittest.TestCase):
         self.assertIn("newfamily", str(caught.exception))
         self.assertIn("emit branch", str(caught.exception))
 
+    def test_every_registrable_host_has_a_renderer_and_no_renderer_is_orphaned(self):
+        # ARC-981076646: `_RENDERERS` replaced the if/elif chain, keyed on the
+        # host name by design. The registry decides WHICH hosts register shells;
+        # the table must name exactly those, so a row gaining or losing a
+        # shell_format moves both in step.
+        registrable = {n for n, h in hosts.HOSTS.items() if h.shell_format}
+        self.assertEqual(registrable, set(dispatch._RENDERERS))
+
     def test_codex_registration_has_required_transport_without_broker_path(self):
         # M-6: emission used to bake the EMITTING interpreter's sys.executable
         # and the emitting checkout's codex_read_tools.py into every shell,

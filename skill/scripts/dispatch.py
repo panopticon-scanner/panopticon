@@ -244,108 +244,102 @@ def emit_host_agents(host, out_dir):
     written = []
     for role, role_file in sorted(ROLE_FILES.items()):
         meta, _body = load_template(role_file)
-        tp = meta["tool_policy"]
-        agent = registered_agent_name(role_file)
-        charter = _CHARTER % (role, ", ".join(tp["allowed"]),
-                      ", ".join(tp["forbidden"]))
-        # The guard above decides WHICH hosts may register shells and now
-        # reads hosts.py; this chain decides HOW each one renders and stays
-        # hardcoded on purpose -- rendering is host-specific work, not an
-        # identity check (#1344 F2 leaves it alone). Keep the two in step by
-        # hand: M-1, a host given a shell_format with no branch added here
-        # used to die on an UnboundLocalError for `lines`/`fm` several lines
-        # later. It now refuses by name, which is what the next family PR to
-        # add a row before its branch will read.
-        if host == "claude":
-            # #1036: model_resolver is the single owner of the role->model map
-            # for every host (kimi/codex already source from it). registration_
-            # model is override-free (profiles + hardcoded fallback only, never
-            # PANOPTICON_MODEL_*), so emission stays deterministic policy — env
-            # overrides shape a run's dispatch plan, never a persisted shell.
-            model = model_resolver.registration_model("claude", role)
-            fm = ["---", "name: %s" % agent,
-                  "description: %s" % meta["description"],
-                  "tools: %s" % ", ".join(tp["allowed"])]
-            if model:
-                fm.append("model: %s" % model)
-            fm.append("---")
-        elif host == "kimi":
-            # Override-free by design (registration_model, like the claude
-            # branch): the tier comes from model-profiles.yml so it cannot drift
-            # from what resolve_model returns at dispatch time.
-            # #1737: `or "primary"` was a silent SECOND policy -- a role whose
-            # resolved registration model is None ("inherit the session's
-            # model", R-F4-2 for setup_scan) came out bound to the primary
-            # tier, which is the drift this branch's own comment forbids.
-            # An unbound role emits NO `model_preference` key instead, which
-            # is how a kimi agent file says "whatever the session is on".
-            preference = model_resolver.registration_model("kimi", role)
-            fm = (["---", "name: %s" % agent,
-                   "description: %s" % meta["description"],
-                   "whenToUse: %s" % meta["description"],
-                   "override: false"]
-                  + (["model_preference: %s" % preference] if preference else [])
-                  + ["tools:"]
-                  + ["  - %s" % t for t in tp["allowed"]]
-                  + ["disallowedTools:"]
-                  + ["  - %s" % t for t in tp["forbidden"]]
-                  + ["---"])
-        elif host == "codex":
-            from scripts import codex_host
-            cfg = model_resolver.registration_config("codex", role)
-            policy = codex_host.safety_config()
-            policy.update(name=agent, description=meta["description"],
-                          sandbox_mode="read-only", developer_instructions=_codex_charter(role))
-            policy.update({key: cfg[key] for key in ("model", "model_reasoning_effort") if cfg.get(key)})
-            # M-6: `enabled_tools` is the ONLY field of this block command()
-            # reads -- it rebuilds the broker's command/args from the RUNNING
-            # safety_config(). Emitting them here baked this interpreter and
-            # this checkout's codex_read_tools.py into a file that outlives
-            # both, advertising a broker path that never launches.
-            # Codex also parses these files during native role discovery, so
-            # an allowlist without a transport is rejected as invalid transport.
-            # Use a required, failing placeholder: direct launches must refuse
-            # until command() binds the real broker and this entry's read scope.
-            policy["mcp_servers"] = {"panopticon_scope": {
-                "command": "/usr/bin/false", "required": True,
-                "enabled_tools": _codex_enabled_tools(tp)}}
-            lines = ["# Launch through Panopticon: its runner replaces the required MCP placeholder",
-                     "# with a broker bound to this review entry's read scope."]
-
-            # ARC-981076646 (#1763): keys and values go out through
-            # `toml_values`, the encoder codex_host and kimi_toml already share,
-            # never a bare `json.dumps` plus a second copy of the bare-key
-            # regex. json.dumps defaults to ASCII mode, which spells a non-BMP
-            # character as a surrogate pair -- invalid in TOML, so one emoji in
-            # a template description used to register a shell codex cannot
-            # parse. Only the encoding moved: nested tables still flatten to
-            # dotted keys, and every ASCII policy emits the same bytes; a shape
-            # the encoder refuses (`None`, a non-string key) now fails loud
-            # instead of writing TOML codex cannot parse.
-            def emit_values(values, prefix=()):
-                for name, item in values.items():
-                    dotted = prefix + (name,)
-                    if isinstance(item, dict):
-                        emit_values(item, dotted)
-                    else:
-                        lines.append("%s = %s"
-                                     % (".".join(toml_values.key(part) for part in dotted),
-                                        toml_values.value(item, name)))
-
-            emit_values(policy)
-        else:
+        # The guard above decides WHICH hosts may register shells and reads
+        # hosts.py; `_RENDERERS` decides HOW each one renders and stays keyed on
+        # the host name on purpose -- rendering is host-specific work, not an
+        # identity check (#1344 F2). M-1: a host given a shell_format with no
+        # renderer refuses by name, which is what the next family PR to add a
+        # row before its renderer will read.
+        render = _RENDERERS.get(host)
+        if render is None:
             raise ValueError("emit-host-agents: no emit branch for host %r "
                              "(it declares shell_format %r but nothing here "
                              "renders it)" % (host, row.shell_format))
+        # Rendered BEFORE the file opens: a value the encoder refuses leaves nothing on disk.
+        text = render(role, registered_agent_name(role_file), meta, meta["tool_policy"])
         path = os.path.join(out_dir, registered_agent_filename(host, role_file))
         with open(path, "w", encoding="utf-8") as fh:
-            if host == "codex":
-                fh.write("\n".join(lines) + "\n")
-            else:
-                fh.write("\n".join(fm) + "\n\n" + charter)
+            fh.write(text)
         written.append(path)
     _prune_retired_shells(host, out_dir, written)
     return written
+
+
+def _render_claude(role, agent, meta, tp):
+    # #1036: model_resolver is the single owner of the role->model map for
+    # every host. registration_model is override-free (profiles + hardcoded
+    # fallback only, never PANOPTICON_MODEL_*), so emission stays deterministic
+    # policy -- env overrides shape a run's dispatch plan, never a persisted shell.
+    model = model_resolver.registration_model("claude", role)
+    fm = ["---", "name: %s" % agent, "description: %s" % meta["description"],
+          "tools: %s" % ", ".join(tp["allowed"])]
+    if model:
+        fm.append("model: %s" % model)
+    fm.append("---")
+    return "\n".join(fm) + "\n\n" + _role_charter(role, tp)
+
+
+def _render_kimi(role, agent, meta, tp):
+    # Override-free by design, like claude: the tier comes from
+    # model-profiles.yml so it cannot drift from what resolve_model returns at
+    # dispatch time. #1737: a role whose registration model is None ("inherit
+    # the session's model", R-F4-2 for setup_scan) emits NO `model_preference`
+    # key, which is how a kimi agent file says "whatever the session is on";
+    # `or "primary"` was a silent second policy.
+    preference = model_resolver.registration_model("kimi", role)
+    fm = (["---", "name: %s" % agent, "description: %s" % meta["description"],
+           "whenToUse: %s" % meta["description"], "override: false"]
+          + (["model_preference: %s" % preference] if preference else [])
+          + ["tools:"] + ["  - %s" % t for t in tp["allowed"]]
+          + ["disallowedTools:"] + ["  - %s" % t for t in tp["forbidden"]] + ["---"])
+    return "\n".join(fm) + "\n\n" + _role_charter(role, tp)
+
+
+def _role_charter(role, tp):
+    return _CHARTER % (role, ", ".join(tp["allowed"]), ", ".join(tp["forbidden"]))
+
+
+def _render_codex(role, agent, meta, tp):
+    from scripts import codex_host
+    cfg = model_resolver.registration_config("codex", role)
+    policy = codex_host.safety_config()
+    policy.update(name=agent, description=meta["description"],
+                  sandbox_mode="read-only", developer_instructions=_codex_charter(role))
+    policy.update({key: cfg[key] for key in ("model", "model_reasoning_effort") if cfg.get(key)})
+    # M-6: `enabled_tools` is the ONLY field of this block command() reads --
+    # it rebuilds the broker's command/args from the RUNNING safety_config().
+    # Emitting them here baked this interpreter and checkout into a file that
+    # outlives both. Codex also parses these files during native role
+    # discovery, so an allowlist without a transport is rejected: a required,
+    # failing placeholder makes direct launches refuse until command() binds
+    # the real broker and this entry's read scope.
+    policy["mcp_servers"] = {"panopticon_scope": {
+        "command": "/usr/bin/false", "required": True,
+        "enabled_tools": _codex_enabled_tools(tp)}}
+    lines = ["# Launch through Panopticon: its runner replaces the required MCP placeholder",
+             "# with a broker bound to this review entry's read scope."]
+
+    # ARC-981076646 (#1763): keys and values go out through `toml_values`, the
+    # encoder codex_host and kimi_toml share. json.dumps' ASCII mode spelled a
+    # non-BMP character as a surrogate pair, invalid in TOML. Nested tables
+    # flatten to dotted keys; a shape the encoder refuses (`None`, a non-string
+    # key) fails loud instead of writing TOML codex cannot parse.
+    def emit_values(values, prefix=()):
+        for name, item in values.items():
+            dotted = prefix + (name,)
+            if isinstance(item, dict):
+                emit_values(item, dotted)
+            else:
+                lines.append("%s = %s" % (".".join(toml_values.key(part) for part in dotted),
+                                          toml_values.value(item, name)))
+
+    emit_values(policy)
+    return "\n".join(lines) + "\n"
+
+
+# How each registrable host renders one role's shell (ARC-981076646): the file's
+# whole text, from the role, its agent name, template meta and tool policy.
+_RENDERERS = {"claude": _render_claude, "kimi": _render_kimi, "codex": _render_codex}
 
 
 def _prune_retired_shells(host, out_dir, written):
