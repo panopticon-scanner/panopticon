@@ -1077,6 +1077,40 @@ class TestKimiShellSurfaceReadsTheWire(unittest.TestCase):
         self.assertIn("Bash", detail)
         self.assertIn("panopticon-domain-panel", detail)
 
+    def test_an_older_mismatched_child_refutes_even_when_the_newest_matches(self):
+        # #3235: only the newest snapshot was compared, so an earlier child that ran with a wider
+        # surface than its shell grants went unseen.
+        home = self._home()
+        grant = ["Read", "Grep", "Glob", "Write"]
+        self._wire(home, "older", [json.dumps({
+            "type": "llm.tools_snapshot", "agent": "panopticon-domain-panel.md",
+            "tools": grant + ["Bash"]})], mtime=100)
+        self._wire(home, "newer", [json.dumps({
+            "type": "llm.tools_snapshot", "agent": "panopticon-domain-panel.md",
+            "tools": grant})], mtime=200)
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            state, _by, detail = kimi_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=d, version="0.42", run_home=home)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("Bash", detail)
+        found, _why = kimi_snapshot._kimi_wire_snapshots(home)
+        self.assertEqual(2, len(found))
+
+    def test_many_matching_children_are_one_line_not_one_each(self):
+        home = self._home()
+        for n in range(30):
+            self._wire(home, "s%d" % n, [json.dumps({
+                "type": "llm.tools_snapshot", "agent": "panopticon-domain-panel.md",
+                "tools": ["Read", "Grep", "Glob", "Write"]})], mtime=100 + n)
+        with tempfile.TemporaryDirectory() as d:
+            _kimi_fully_registered(d)
+            state, _by, detail = kimi_probes.probe_kimi_shell_surface(
+                "kimi", registration_dir=d, version="0.42", run_home=home)
+        self.assertEqual(hosts.PROVEN, state)
+        self.assertIn("30 of 30 children", detail)
+        self.assertEqual(1, detail.count("panopticon-domain-panel"))
+
     def test_no_wire_file_yet_falls_back_to_the_table_and_says_so(self):
         with tempfile.TemporaryDirectory() as d:
             _kimi_fully_registered(d)

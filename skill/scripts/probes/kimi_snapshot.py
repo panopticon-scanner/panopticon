@@ -32,8 +32,16 @@ from . import common
 _TOOLS_SNAPSHOT = "llm.tools_snapshot"
 
 def _kimi_wire_snapshot(run_home):
-    """(tools, agent, wire) from the most recent child's `llm.tools_snapshot`
-    under THIS run's per-run home, or (None, None, why).
+    """The newest child's snapshot only, as `_kimi_wire_snapshots` orders them: (tools, agent,
+    wire), or (None, None, why)."""
+    found, why = _kimi_wire_snapshots(run_home)
+    return found[0] if found else (None, None, why)
+
+
+def _kimi_wire_snapshots(run_home):
+    """([(tools, agent, wire), ...] newest first, why) from EVERY child's `llm.tools_snapshot`
+    under THIS run's per-run home (#3235: one mismatched child is a fault, whichever ran last);
+    `why` says why the list is empty.
 
     I5: the effective tool surface of a child that really ran, which is the
     only thing that answers "did the shell restrict it". `run_home` is handed
@@ -50,12 +58,13 @@ def _kimi_wire_snapshot(run_home):
     """
     home = run_home
     if not home or not os.path.isdir(home):
-        return None, None, "this run has no per-run kimi home yet"
+        return [], "this run has no per-run kimi home yet"
     pattern = os.path.join(glob.escape(home), "sessions", "*", "*", "agents", "*", "wire.jsonl")
     try:
         wires = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
     except OSError as exc:        # a file that vanished between glob and stat
-        return None, None, "the per-run home's wire files could not be listed: %s" % exc
+        return [], "the per-run home's wire files could not be listed: %s" % exc
+    found = []
     for wire in wires:
         tools, agent = None, None
         try:
@@ -82,9 +91,9 @@ def _kimi_wire_snapshot(run_home):
         except OSError:
             continue
         if tools is not None and agent:
-            return tools, agent, wire
-    return None, None, ("no child wire file under %s carries an %s record yet"
-                        % (home, _TOOLS_SNAPSHOT))
+            found.append((tools, agent, wire))
+    return found, ("" if found else "no child wire file under %s carries an %s record yet"
+                   % (home, _TOOLS_SNAPSHOT))
 
 def _kimi_armed_home(sandbox):
     """Build the per-run home the RUNNER builds, inside `sandbox`, from a
