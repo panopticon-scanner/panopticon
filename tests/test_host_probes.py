@@ -7,6 +7,7 @@ from unittest import mock
 from scripts import host_probes, hosts
 from scripts.app_trace import host_apps as REAL_HOST_APPS
 import scripts.probes.claude as claude_probes
+import scripts.probes.claude_write_canary as canary
 import scripts.probes.common as probes_common
 from tests.probes.helpers import _shell
 
@@ -15,6 +16,18 @@ from tests.probes.helpers import _shell
 # fixed sentence -- so on a build without it the test fails on what happened.
 HALTS = (r"inside the target; remove it \(deactivate the target's virtualenv or direnv\) "
          r"and re-run$")
+
+
+def _transient_canary_write_probe(_host, **kwargs):
+    verdict, detail = kwargs["canary"]()
+    state = (hosts.UNKNOWN
+             if verdict == canary.NOT_MEASURED else verdict)
+    return state, claude_probes.WRITE_GUARD_ARMED, detail
+
+
+def _transient_canary_read_probe(_host, **kwargs):
+    verdict, detail = kwargs["canary"]()
+    return verdict, claude_probes.READ_GUARD_ARMED, detail
 
 
 class TestRunProbesBuildsTheArtifact(unittest.TestCase):
@@ -466,8 +479,6 @@ class TestHostMeasurementsAreCachedOperatorSide(unittest.TestCase):
             self.assertEqual(1, runner.call_count)
 
     def test_an_unmeasured_canary_is_retried_and_can_prove_on_the_next_call(self):
-        import scripts.probes.claude_write_canary as canary
-
         steady = (hosts.PROVEN, "fixture-probe", "measured once")
         measurement = mock.Mock(side_effect=(
             {"write": (canary.NOT_MEASURED, "not measured after a transient failure"),
@@ -475,15 +486,6 @@ class TestHostMeasurementsAreCachedOperatorSide(unittest.TestCase):
             {"write": (canary.PROVEN, "write boundary proven through the real CLI"),
              "read": (canary.PROVEN, "read denied through the real CLI")},
         ))
-
-        def write_probe(_host, **kwargs):
-            verdict, detail = kwargs["canary"]()
-            state = hosts.UNKNOWN if verdict == canary.NOT_MEASURED else verdict
-            return state, claude_probes.WRITE_GUARD_ARMED, detail
-
-        def read_probe(_host, **kwargs):
-            verdict, detail = kwargs["canary"]()
-            return verdict, claude_probes.READ_GUARD_ARMED, detail
 
         with tempfile.TemporaryDirectory() as target, \
                 tempfile.TemporaryDirectory() as registration, \
@@ -494,13 +496,13 @@ class TestHostMeasurementsAreCachedOperatorSide(unittest.TestCase):
                 mock.patch.object(probes_common, "probe_registered_shell_tools",
                                   return_value=steady), \
                 mock.patch.object(claude_probes, "probe_write_guard_armed",
-                                  side_effect=write_probe) as write, \
+                                  side_effect=_transient_canary_write_probe) as write, \
                 mock.patch.object(claude_probes, "probe_usage_source",
                                   return_value=steady), \
                 mock.patch.object(claude_probes, "probe_entry_model_bound",
                                   return_value=steady), \
                 mock.patch.object(claude_probes, "probe_read_guard_armed",
-                                  side_effect=read_probe) as read, \
+                                  side_effect=_transient_canary_read_probe) as read, \
                 mock.patch.object(probes_common, "probe_cli_flags",
                                   return_value={}), \
                 mock.patch.object(host_probes.claude_write_canary, "measure",
