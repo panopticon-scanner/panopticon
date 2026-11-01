@@ -1111,6 +1111,24 @@ class TestKimiShellSurfaceReadsTheWire(unittest.TestCase):
         self.assertIn("30 of 30 children", detail)
         self.assertEqual(1, detail.count("panopticon-domain-panel"))
 
+    def test_an_unregistered_agent_carrying_an_ungranted_tool_refutes(self):
+        # #3235: a child whose agent has no registered shell was recorded and passed, whatever it
+        # carried. Within the templates' union it still passes; beyond it, it refutes.
+        for tools, want in ((["Read", "Grep"], hosts.PROVEN), (["Read", "Bash"], hosts.REFUTED)):
+            with self.subTest(tools=tools):
+                home = self._home()
+                self._wire(home, "s", [json.dumps({
+                    "type": "llm.tools_snapshot", "agent": "default-agent.md", "tools": tools})],
+                    mtime=100)
+                with tempfile.TemporaryDirectory() as d:
+                    _kimi_fully_registered(d)
+                    state, _by, detail = kimi_probes.probe_kimi_shell_surface(
+                        "kimi", registration_dir=d, version="0.42", run_home=home)
+                self.assertEqual(want, state, detail)
+                if want == hosts.REFUTED:
+                    self.assertIn("Bash", detail)
+                    self.assertIn("default-agent", detail)
+
     def test_no_wire_file_yet_falls_back_to_the_table_and_says_so(self):
         with tempfile.TemporaryDirectory() as d:
             _kimi_fully_registered(d)

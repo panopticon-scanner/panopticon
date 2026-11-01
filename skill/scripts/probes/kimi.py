@@ -160,7 +160,15 @@ def probe_kimi_shell_surface(host, registration_dir=None, version=None, runner=N
     matched: list[str] = []
     for snapshot, agent, where in snapshots:
         grant = common._frontmatter_tools(os.path.join(registration_dir, "%s.md" % agent))
-        if grant is None:
+        if grant is None and snapshot - allowed:
+            # #3235: an agent with no registered shell (an unenforced entry's default) may still
+            # carry nothing beyond what some template grants -- the accounting above says so.
+            fault = ("a child's %s for %r, which is not a registered shell, carries %s, which no "
+                     "template grants" % (kimi_snapshot._TOOLS_SNAPSHOT, agent,
+                                          sorted(snapshot - allowed)))
+            if fault not in faults:
+                faults.append(fault)
+        elif grant is None:
             notes.setdefault((agent, tuple(sorted(snapshot))), (
                 "%s reports %s for %r, which is not a shell registered in %s, so the table "
                 "above is what this rests on" % (where, sorted(snapshot), agent, registration_dir)))
