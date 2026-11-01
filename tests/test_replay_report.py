@@ -668,3 +668,110 @@ def test_diff_html_timestamp_content_and_presence(tmp_path):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _binding_child(cmd, cwd, capture_output, text, env):
+    """The synthesize child's tool binding, for real (#3386): synthesis's own manifest read, its
+    receipt check and ingest, over the scratch copy -- `tools_ran` is what the report publishes."""
+    import scripts.ingest_tools as ingest_tools
+    import scripts.synth.tool_axis as tool_axis
+    run_dir = os.path.join(cwd, ".panopticon", "runs", TAG)
+    args = argparse.Namespace(run_id=MANIFEST["run_id"], tools_dir=os.path.join(run_dir, "tools"),
+                              tools_skipped=False)
+    with contextlib.redirect_stderr(io.StringIO()):
+        _, _, allowed = tool_axis.ToolAxis.manifest_state(args, run_dir)
+        findings, dispositions = ingest_tools.ingest_dir_detailed(
+            args.tools_dir, None, allowed_outputs=allowed, unbound_out=[])
+    out_path = cmd[cmd.index("--out") + 1]
+    with open(out_path, "w", encoding="utf-8") as fh:
+        json.dump({"meta": {"coverage": {"tools_ran": sorted(
+            tool_axis.tools_ran_from_dispositions(dispositions))}}}, fh)
+    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+
+class ArchivedToolReceiptTest(unittest.TestCase):
+    """#3386: a run folder whose tools manifest has no output receipt (#2070) replayed with no tool
+    axis -- synthesis binds tool outputs only through `outputs`. The receipt is a function of
+    `produced`, so replay derives it on the COPY, and says so."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = tmp.name
+        self.review_root = os.path.join(self.base, "review")
+        os.makedirs(self.review_root)
+        _write_ours(self.review_root, MANIFEST)
+        self.run_folder = _run_folder(self.base)
+        os.makedirs(os.path.join(self.run_folder, "tools"))
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "fixtures", "semgrep.sarif"), encoding="utf-8") as src, \
+                open(os.path.join(self.run_folder, "tools", "semgrep.sarif"), "w",
+                     encoding="utf-8") as dst:
+            dst.write(src.read())
+        self.tm = os.path.join(self.run_folder, "tools-manifest.json")
+
+    def _manifest(self, **fields):
+        doc = {"schema_version": 1, "run_id": MANIFEST["run_id"], "selected": ["semgrep"],
+               "produced": ["semgrep"]}
+        doc.update(fields)
+        with open(self.tm, "w", encoding="utf-8") as fh:
+            json.dump({k: v for k, v in doc.items() if v is not _DROP}, fh)
+
+    def _replay(self, trust=False):
+        out = os.path.join(self.base, "out")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            _replay_into(self.review_root, self.run_folder, out, trust=trust,
+                         child=_binding_child)
+        with open(os.path.join(out, f"{TAG}-report.json"), encoding="utf-8") as fh:
+            report = json.load(fh)
+        with open(os.path.join(out, "replay.json"), encoding="utf-8") as fh:
+            record = json.load(fh)
+        return report["meta"]["coverage"]["tools_ran"], record["receipt_derived"], err.getvalue()
+
+    def test_a_manifest_without_a_receipt_replays_its_tools(self):
+        self._manifest()
+        with open(self.tm, "rb") as fh:
+            reference = fh.read()
+        for trust in (False, True):
+            with self.subTest(trust=trust):
+                tools_ran, derived, err = self._replay(trust)
+                self.assertEqual(["semgrep"], tools_ran)
+                self.assertTrue(derived)
+                self.assertIn("no output receipt in the archive's tools-manifest.json (#2070)", err)
+                self.assertNotIn("predates", err)
+                with open(self.tm, "rb") as fh:
+                    self.assertEqual(reference, fh.read())
+
+    def test_a_manifest_with_a_receipt_is_not_touched(self):
+        for outputs, ran in ((["semgrep.sarif"], ["semgrep"]), ("semgrep.sarif", []),
+                             (["other.sarif"], []), ([], [])):
+            with self.subTest(outputs=outputs):
+                self._manifest(outputs=outputs)
+                tools_ran, derived, err = self._replay()
+                self.assertEqual(ran, tools_ran)
+                self.assertFalse(derived)
+                self.assertNotIn("derived `outputs`", err)
+
+    def test_a_malformed_produced_is_not_touched(self):
+        for produced in ("semgrep", [""], [3], None, _DROP):
+            with self.subTest(produced=produced):
+                self._manifest(produced=produced)
+                tools_ran, derived, _ = self._replay()
+                self.assertEqual([], tools_ran)
+                self.assertFalse(derived)
+
+    def test_no_manifest_or_one_that_is_not_an_object_is_not_touched(self):
+        for body in (None, "[]", "{not json"):
+            with self.subTest(body=body):
+                if os.path.exists(self.tm):
+                    os.remove(self.tm)
+                if body is not None:
+                    with open(self.tm, "w", encoding="utf-8") as fh:
+                        fh.write(body)
+                tools_ran, derived, _ = self._replay()
+                self.assertEqual([], tools_ran)
+                self.assertFalse(derived)
+
+
+_DROP = object()
