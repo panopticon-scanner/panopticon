@@ -11,6 +11,7 @@ import contextlib
 import os
 import sys
 
+import scripts.batch_settlement as batch_settlement
 import scripts.driver as driver
 import scripts.ledger as ledger_mod
 import scripts.loop_batch as loop_batch
@@ -253,7 +254,10 @@ def loop(args):
             # first submit; #3227: and before `arm`, as the batch's LOCK -- `Batch.before_launch` says why.
             ledger.mark_batch()       # #3349: what an interrupt keeps is what lands after THIS
             try:
-                opened = batch_mod.Batch(run_dir, iterations, req.get("checkpoint"), pending).open()
+                opened = batch_mod.Batch(
+                    run_dir, iterations, req.get("checkpoint"), pending,
+                    settlement_context=batch_settlement.context(
+                        review_root, namespace, req, runner.request_sha256)).open()
             except FileExistsError:       # the race the check above cannot close
                 return _finish(_status("error", loop_batch.BATCH_IN_USE % batch_mod.manifest_path(
                     run_dir, iterations)), review_root, guards, ledger, namespace, mode, runner)

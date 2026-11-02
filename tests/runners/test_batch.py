@@ -359,5 +359,50 @@ class TestTheWindowBeforeTheFirstLaunch(unittest.TestCase):
         self.assertTrue(os.path.exists(batch.path))
 
 
+class TestSettlementInTheBatchRecord(unittest.TestCase):
+    """#3351: an optional receipt is added atomically after a real row."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="batch-settlement-")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.out = os.path.join(self.root, "a.json")
+        self.batch = batch_mod.Batch(
+            self.root, 3, "review", [{"id": "a", "out_file": self.out}]).open()
+        self.context = {"run_id": "run-1", "review_root": "/tmp/review",
+                        "namespace": "", "request_sha256": "a" * 64}
+        self.ledger = {"version": 1, "start": 0, "end": 9,
+                       "sha256": "b" * 64}
+
+    def test_open_stamps_a_fresh_nonce_and_settle_publishes_one_receipt(self):
+        before = batch_mod.guard_rules.atomic_write_json
+        writes = []
+        with mock.patch.object(batch_mod.settlement_mod, "issue",
+                               return_value={"version": 1, "signed": True}) as issue, \
+             mock.patch.object(batch_mod.guard_rules, "atomic_write_json",
+                               side_effect=lambda *a, **k: (writes.append(a[1]),
+                                                            before(*a, **k))[1]):
+            self.batch.settle("a", context=self.context, ledger=self.ledger,
+                              artifacts=[], refund_attempt=False)
+        self.assertRegex(self.batch.nonce, r"^[0-9a-f]{32}$")
+        issue.assert_called_once_with(
+            context=self.context, batch=3, nonce=self.batch.nonce,
+            checkpoint="review", entry_id="a", ledger=self.ledger,
+            artifacts=[], refund_attempt=False)
+        self.assertEqual(1, len(writes))
+        self.assertEqual({"version": 1, "signed": True},
+                         writes[0]["entries"][0]["settlement"])
+        self.assertEqual(self.batch.nonce, writes[0]["nonce"])
+
+    def test_a_failed_atomic_rewrite_does_not_leave_an_in_memory_receipt(self):
+        with mock.patch.object(batch_mod.settlement_mod, "issue",
+                               return_value={"version": 1, "signed": True}), \
+             mock.patch.object(batch_mod.guard_rules, "atomic_write_json",
+                               side_effect=OSError("full")), \
+             self.assertRaisesRegex(OSError, "full"):
+            self.batch.settle("a", context=self.context, ledger=self.ledger,
+                              artifacts=[], refund_attempt=False)
+        self.assertNotIn("settlement", self.batch.entries[0])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -10,10 +10,13 @@ and `_rows`/`lines`/`total_cost`/`usage_document` are its readers -- the last
 two go through `scripts.money` for the exact-decimal cost arithmetic and the
 `LedgerCorrupt` fault a line that cannot be read back as money raises.
 """
+import hashlib
 import json
 import math
 import os
+import stat
 import sys
+import threading
 import time
 from decimal import Decimal
 
@@ -111,6 +114,10 @@ class Ledger:
 
     def __init__(self, run_dir):
         self.path = os.path.join(run_dir, runners_base.LEDGER_FILE)
+        # #3351: the durable settlement receipt names the exact bytes THIS
+        # append wrote. Host completions may arrive concurrently, so selecting
+        # the end offset and writing the line are one critical section.
+        self._write_lock = threading.Lock()
         # #3349: entry id -> `(result, refusal)` for every REAL row this process appended since
         # `mark_batch`, or None outside a batch. The graceful interrupt's settlement authority:
         # held in memory, so nothing the reviewed tree can edit decides what an interrupt keeps.
@@ -222,12 +229,21 @@ class Ledger:
         # #1095, plan 6 review round 1: the ledger path is a `.panopticon`
         # artifact like any other; a plain `open(path, "a")` bypasses the
         # symlink confinement every other run-folder write goes through.
-        with runio._open_a_nofollow(self.path) as fh:
-            fh.write(text + "\n")
-        # AFTER the append, never before: an entry is settled once its real row is on disk, and
-        # an interrupt's own rows (`status`) settle nothing.
-        if status is None and self.settled is not None:
-            self.settled[line["entry_id"]] = (result, refusal)
+        rendered = text + "\n"
+        encoded = rendered.encode("utf-8")
+        with self._write_lock:
+            with runio._open_a_nofollow(self.path) as fh:
+                fh.seek(0, os.SEEK_END)
+                start = fh.tell()
+                fh.write(rendered)
+                fh.flush()
+                end = fh.tell()
+            # AFTER the append, never before: an entry is settled once its real row is on disk,
+            # and an interrupt's own rows (`status`) settle nothing.
+            if status is None and self.settled is not None:
+                self.settled[line["entry_id"]] = (result, refusal)
+        return {"version": 1, "start": start, "end": end,
+                "sha256": hashlib.sha256(encoded).hexdigest()}
 
     def rollback_rows(self, entries, completed, checkpoint, mode, host, reason="Ctrl-C"):
         """Write the interrupt's rows for one rolled-back batch (#1662): one
@@ -262,6 +278,44 @@ class Ledger:
                             else ("rolled back (%s): this entry's artifacts were removed" % reason)),
                         mode, host,
                         status=CANCELLED if cut else ROLLED_BACK, rolled_back=True)
+
+    def matches_settlement(self, receipt, entry_id, checkpoint):
+        """Whether a signed locator still names one exact real JSONL row."""
+        if (not isinstance(receipt, dict) or receipt.get("version") != 1
+                or type(receipt.get("start")) is not int or receipt["start"] < 0
+                or type(receipt.get("end")) is not int
+                or not receipt["start"] < receipt["end"]
+                or receipt["end"] - receipt["start"] > 2 * 1024 * 1024
+                or not isinstance(receipt.get("sha256"), str)):
+            return False
+        fd = -1
+        try:
+            flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                     | getattr(os, "O_NONBLOCK", 0))
+            fd = os.open(self.path, flags)
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or info.st_size < receipt["end"]):
+                return False
+            if receipt["start"] and os.pread(fd, 1, receipt["start"] - 1) != b"\n":
+                return False
+            raw = os.pread(fd, receipt["end"] - receipt["start"], receipt["start"])
+        except OSError:
+            return False
+        finally:
+            if fd >= 0:
+                os.close(fd)
+        if (len(raw) != receipt["end"] - receipt["start"]
+                or not raw.endswith(b"\n") or raw.count(b"\n") != 1
+                or hashlib.sha256(raw).hexdigest() != receipt["sha256"]):
+            return False
+        try:
+            row = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return False
+        return (isinstance(row, dict) and row.get("entry_id") == entry_id
+                and row.get("checkpoint") == checkpoint and "status" not in row
+                and not row.get("rolled_back"))
 
     def _rows(self):
         """`(line_no, row, reason)` per ledger line (money.read_rows).

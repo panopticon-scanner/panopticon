@@ -15,6 +15,7 @@ import os
 import re
 import sys
 
+import scripts.batch_settlement as batch_settlement
 import scripts.dispatch as dispatch
 import scripts.hosts as hosts
 import scripts.ledger as ledger_mod
@@ -172,9 +173,10 @@ def recover_stale(review_root, request, host, mode, namespace=None, discard=None
     output paths and checkpoint must agree. `loop`'s first contact vetted both (#3271).
 
     Two records reach here and they owe different things (#1698). An
-    UNFLAGGED one is a crash nobody has accounted for: its artifacts go, its
-    entries are ledgered as cancelled or rolled back, and the attempt each
-    one charged at dispatch is given back. A record already carrying
+    UNFLAGGED one is a crash nobody has accounted for: #3351 keeps entries only
+    when a machine-keyed receipt proves the exact row and schema-valid bytes.
+    Every unproved entry is rolled back and refunded; a proved host failure is
+    kept and refunded. A record already carrying
     `recovering` was flagged by whoever wrote those rows -- `rolled_back` on
     the interrupt path, or a previous recovery here -- and all this one owes
     it is finishing the file removals. Ledgering it again is a second
@@ -209,6 +211,7 @@ def recover_stale(review_root, request, host, mode, namespace=None, discard=None
     if not os.path.isdir(root):
         return
     batches, claimed = [], set()
+    receipt_context = batch_settlement.recovery_context(review_root, namespace, request)
     declared = {e["id"]: e for e in request.get("entries", [])
                 if isinstance(e, dict) and isinstance(e.get("id"), str)}
     for name in sorted(os.listdir(root)):
@@ -231,7 +234,8 @@ def recover_stale(review_root, request, host, mode, namespace=None, discard=None
             raise ValueError(owned)
         if (doc.get("batch") != int(match[1])
                 or doc.get("checkpoint") != request.get("checkpoint")
-                or not isinstance(doc.get("entries"), list) or not doc["entries"]):
+                or not isinstance(doc.get("entries"), list)
+                or (not doc["entries"] and not doc.get("recovering"))):
             raise ValueError(refusal + "invalid manifest or unbound checkpoint")
         pending, seen = [], set()
         for row in doc["entries"]:
@@ -263,6 +267,7 @@ def recover_stale(review_root, request, host, mode, namespace=None, discard=None
             pending.append(entry)
         batch = batch_mod.Batch(root, doc["batch"], doc["checkpoint"], pending)
         batch.opened_at = doc.get("opened_at")
+        batch.nonce = doc.get("nonce")
         batch.entries = doc["entries"]
         # #1698: a record that is ALREADY flagged was ledgered by whoever
         # flagged it. All this recovery owes it is the file removals.
@@ -278,21 +283,17 @@ def recover_stale(review_root, request, host, mode, namespace=None, discard=None
             batch_mod.record_discard(root, batch.number, stamp)
             run_manifest.record_discarded_batch(review_root, manifest, batch.number,
                                                 namespace=namespace)
-        # Unconditional, flagged or not: the write re-stamps the record with
-        # THIS pid, so a loop arriving mid-recovery asks about the process
-        # that is doing the work rather than the one it is finishing for.
-        batch.begin_recovery()
+        unfinished, settled, reason_counts, proved_rows = batch_settlement.partition_recovery(
+            batch, pending, receipt_context, ledger, request.get("run_id"), ledgered)
         # BEFORE the removals: `rollback_rows` needs to know which entries had
         # actually landed, and three lines down there is nothing left to ask.
-        completed = {row["id"] for row in batch.entries
-                     if any(os.path.lexists(p) for p in row["artifacts"])}
+        completed = batch_settlement.completed_entry_ids(batch, proved_rows)
         removed, problems = batch.roll_back(close=False)
         if problems:
             raise OSError("stale batch rollback incomplete: " + "; ".join(problems))
         if not ledgered:
-            ledger.rollback_rows(pending, completed, batch.checkpoint, mode, host,
-                                 reason="previous process stopped")
-            persist.rollback_markers(review_root, batch.checkpoint, pending)
+            batch_settlement.account_rollback(
+                review_root, batch, pending, unfinished, settled, completed, ledger, mode, host)
         problems = batch.close()
         if problems:
             raise OSError("stale batch rollback incomplete: " + "; ".join(problems))
@@ -303,10 +304,7 @@ def recover_stale(review_root, request, host, mode, namespace=None, discard=None
             print(DISCARD_ACCEPTED % (batch.number, batch_mod.owner_phrase(stamp), stamp["state"],
                                       batch_mod.discarded_path(root)),
                   file=sys.stderr, flush=True)
-        print("driver loop: %s; removed %d artifact(s); retrying %s"
-              % (("finished the interrupted recovery of stale batch %s" % batch.number)
-                 if ledgered else "recovered stale batch %s" % batch.number,
-                 len(removed), batch.checkpoint), file=sys.stderr, flush=True)
+        batch_settlement.report_recovery(batch, ledgered, settled, unfinished, reason_counts, removed)
 
 
 def rolled_back(review_root, batch, pending, req, ledger, mode, runner, guards):
@@ -729,8 +727,10 @@ def record_entry(entry, result, timing, run_dir, batch, ledger, req, mode, runne
         # the record only once it has written it), and it is
         # this batch's output like any other.
         batch.add_artifact(eid, rejected)
-    ledger.record(entry, req.get("checkpoint"), result, mode, runner.host,
-                  refusal=refusal, timing=timing, rejected_file=rejected)
+    ledger_span = ledger.record(entry, req.get("checkpoint"), result, mode, runner.host,
+                                refusal=refusal, timing=timing, rejected_file=rejected)
+    # #3351: best-effort crash proof, published only after the real row exists.
+    batch_settlement.publish(entry, result, refusal, batch, ledger_span, req)
     return refusal
 
 

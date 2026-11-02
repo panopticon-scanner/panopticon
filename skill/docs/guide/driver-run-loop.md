@@ -518,15 +518,21 @@ on Claude hooks, and always uses the return-persist path.
   it. - **The loop rolls a crashed batch back before it resumes**
   — a `batch-<n>.json` still on disk means a run that reached no teardown at all (`SIGKILL`, an OOM
   kill, a power loss), and the next `driver loop` takes that batch back BEFORE the engine can read a
-  half-written artifact as a finished cell (#1698). It is a rollback and not a cleanup: the
-  artifacts the record lists are deleted, every entry of the batch gets a `cancelled` row, or a
-  `rolled_back` marker beside its real row if it had completed (with `previous process stopped` as
-  the reason), and the interrupted checkpoint's per-cell attempt marker is given back. That is the
-  WHOLE batch, settled entries included: unlike a Ctrl-C (#3349), a crash leaves no controller that
-  remembers which rows it appended, and nothing on disk is trusted to say so in its place (#3351
-  tracks keeping them). The leftover used to be simply OVERWRITTEN by the next batch that happened
+  half-written artifact as a finished cell (#1698). Since #3351, after each real row the loop
+  best-effort records a machine-keyed settlement receipt bound to this run's dispatch request, the
+  exact ledger bytes and every artifact byte. Recovery keeps an entry only when that receipt verifies
+  with the operator-side run-stamp key, its artifacts still pass the phase's own done predicate, and every digest still
+  matches. A missing, changed or incomplete receipt proves nothing: that entry is rolled back,
+  gets a `cancelled` row or a `rolled_back` marker beside its proved real row, with `previous process
+  stopped` as the reason, and its review/verify dispatch charge is given back. A proved host-class
+  failure is kept but refunded, as on a clean close or graceful interrupt. Recovery prints
+  kept/rolled-back totals plus counts for no receipt, ledger mismatch and artifact mismatch; it never
+  prints a path from the record. The
+  operator-side key has the same boundary as #3271: another process running as that user can read it
+  and forge either stamp. The leftover used to be simply OVERWRITTEN by the next batch that happened
   to carry the same iteration number, so a reply the killed run had half-written stayed on disk and
-  the phase read it as done. Nothing is deleted on the record's own say-so — it lives inside the reviewed tree — so
+  the phase read it as done. Nothing is deleted or kept on the record's own unsigned say-so — it
+  lives inside the reviewed tree — so
   every entry id, `out_file` and checkpoint in it must match the dispatch request this run is
   hash-bound to, and a record naming anything else is refused with nothing deleted. Under `--reset`
   no recovery is attempted at all: that flag discards the whole run instead. - **The record names

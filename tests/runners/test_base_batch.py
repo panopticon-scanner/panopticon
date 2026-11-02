@@ -133,7 +133,8 @@ class TestIterBatch(unittest.TestCase):
         # enrolled by existing rather than by being listed here.
         #
         # `base.py` is the seam itself, `batch.py` (#1662) the loop's
-        # rollback manifest, `children.py` (#1575) the seam's own launcher and
+        # rollback manifest, `settlement.py` (#3351) its receipt signer,
+        # `children.py` (#1575) the seam's own launcher and
         # child registry mixed into HostRunner, `outage.py` (#1623) its
         # host-outage verdict, `schema.py` (#1732) the output-schema argv
         # rules split out of `base.py`, `resume.py` (#1732) the resume command
@@ -149,7 +150,7 @@ class TestIterBatch(unittest.TestCase):
                        if f.endswith(".py")
                        and f not in ("__init__.py", "base.py", "batch.py",
                                      "children.py", "outage.py", "resume.py",
-                                     "schema.py", "kimi_home.py"))
+                                     "schema.py", "settlement.py", "kimi_home.py"))
         self.assertIn("claude", names)                  # the directory really was read
         for name in names:
             mod = importlib.import_module("scripts.runners.%s" % name)
@@ -512,7 +513,7 @@ class TestTheOneConcurrencyCeiling(unittest.TestCase):
                        if f.endswith(".py")
                        and f not in ("__init__.py", "base.py", "batch.py",
                                      "children.py", "outage.py", "resume.py",
-                                     "schema.py", "kimi_home.py"))
+                                     "schema.py", "settlement.py", "kimi_home.py"))
         for name in names:
             mod = importlib.import_module("scripts.runners.%s" % name)
             runner = getattr(mod, "Runner", None) or getattr(mod, "SessionRunner")

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Fix: crash recovery keeps entries that had durably settled (#3351).** After a completed
+  batch entry's row, the loop best-effort records a machine-keyed receipt for that exact row and artifact bytes.
+  A restart keeps only receipts that still match the bound request, ledger, and schema-valid
+  artifacts; missing or changed evidence rolls back conservatively and is counted on stderr.
+
 - **The NVD cache no longer publishes an unfinished or stale database (#3251).** `nvd-cache.yml` judged
   a sync on database size alone, so a failed update over 100 MiB could be published. The step now also
   requires dependency-check's `nvd.api.last.modified`, which is saved only when an update finishes, to
@@ -194,8 +199,8 @@
   and never-launched entries are cancelled, removed and refunded. The batch record is
   narrowed to them and flagged in one write, so a second interrupt during cleanup is
   finished by the next loop without double rows or refunds. The `interrupted:` message
-  now says how many entries were kept and how many were rolled back. A crash (SIGKILL or
-  power loss) still rolls back the whole batch; #3351 tracks that.
+  now says how many entries were kept and how many were rolled back. At that release a crash
+  (SIGKILL or power loss) still rolled back the whole batch; #3351 above adds durable proof.
 - **Fix: malformed legacy finding lines no longer invalidate synthesis, and exact
   locus-free duplicates collapse (#2992).** Legacy `location.line` now crosses
   the schema repair boundary as `line_start`: numeric spellings are coerced,
