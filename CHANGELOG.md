@@ -11,7 +11,7 @@
   marked host dialect (exported metadata plus top-level `await`/`return`) is adapted only under
   `skill/workflows/*.js`; unmarked or malformed JavaScript still fails closed. Security rules and
   original line numbers survive the adaptation, and any future per-file parse failure is disclosed
-  on stderr as partial coverage.
+  on stderr once per driver-loop run as partial coverage.
 
 - **Hardening batch from the 5.2 redteam triage (#3235, part B).** None is reachable by a hostile
   target under default use:

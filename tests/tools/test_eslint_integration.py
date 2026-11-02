@@ -194,14 +194,17 @@ class TestEslintSecurityIntegration(unittest.TestCase):
         adapter, raw, _ = self._scan({
             "skill/workflows/marked.js": marker + "\n" + body,
             "skill/workflows/unmarked.js": body,
+            "src/marked.js": marker + "\n" + body,
         })
         findings, facts = adapter.parse_with_file_coverage(raw, "g1")
         self.assertEqual(facts["status"], "partial")
         self.assertEqual(facts["parsed_files"], 1)
-        self.assertEqual(facts["unparsed_files"], 1)
-        self.assertEqual(len(facts["files"]), 1)
-        self.assertTrue(facts["files"][0]["file"].endswith(
-            "/skill/workflows/unmarked.js"), facts)
+        self.assertEqual(facts["unparsed_files"], 2)
+        self.assertEqual(len(facts["files"]), 2)
+        for suffix in ("/skill/workflows/unmarked.js", "/src/marked.js"):
+            self.assertTrue(any(row["file"].endswith(suffix)
+                                and row["reason"] == "parse_error"
+                                for row in facts["files"]), facts)
         eval_hits = [finding for finding in findings
                      if finding["tool_evidence"]["rule_id"] ==
                      "security/detect-eval-with-expression"]
