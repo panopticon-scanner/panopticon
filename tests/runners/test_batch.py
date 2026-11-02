@@ -393,6 +393,13 @@ class TestSettlementInTheBatchRecord(unittest.TestCase):
                          writes[0]["entries"][0]["settlement"])
         self.assertEqual(self.batch.nonce, writes[0]["nonce"])
 
+    def test_each_opened_batch_gets_a_fresh_nonce(self):
+        other_out = os.path.join(self.root, "b.json")
+        other = batch_mod.Batch(
+            self.root, 4, "review", [{"id": "b", "out_file": other_out}]).open()
+        self.assertRegex(other.nonce, r"^[0-9a-f]{32}$")
+        self.assertNotEqual(self.batch.nonce, other.nonce)
+
     def test_a_failed_atomic_rewrite_does_not_leave_an_in_memory_receipt(self):
         with mock.patch.object(batch_mod.settlement_mod, "issue",
                                return_value={"version": 1, "signed": True}), \

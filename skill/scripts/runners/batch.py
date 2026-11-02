@@ -40,8 +40,12 @@ what the rollback ACTS on: every artifact path is re-derived from the bound
 request before a single file is deleted (`loop_batch.recover_stale`). #3351
 deliberately does not complete that TODO: only a per-entry settlement receipt
 is HMAC-authenticated with the operator-side run-stamp key, and recovery
-rechecks its exact ledger span, artifact digests and artifact shape. Editing
-or removing any one of those facts makes the entry unproved and rolled back.
+rechecks its exact ledger span, artifact digests and artifact shape. When a row
+reaches receipt verification, changing any signed fact makes that proof fail.
+The receipt does not bind the record as a whole: deleting the record, pruning
+or empty-flagging its entries, or replaying a saved record and artifact can
+bypass recovery accounting or keep an unproved artifact. That remains the
+existing #1698 gap.
 
 It lives in `runners/` rather than in `phases/` because `tests/test_layout.py`
 forbids `runners/* -> phases` imports and the loop is what calls both halves

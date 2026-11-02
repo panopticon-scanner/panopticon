@@ -6,6 +6,7 @@ import io
 import json
 import os
 import signal
+import threading
 import time
 from unittest import mock
 
@@ -19,6 +20,7 @@ import scripts.runners.batch as batch_mod
 import scripts.phases.runio as runio
 import scripts.runners.base as base
 import scripts.runners.outage as outage
+import scripts.runners.settlement as settlement_mod
 import scripts.run_manifest as run_manifest
 import scripts.write_guard_hook as write_guard_hook
 from tests._test_helpers import (all_proven_artifact as _all_proven_artifact, dead_pid,
@@ -62,7 +64,7 @@ class TestHeadlessLoop(_HeadlessLoopCase):
             def one_finishes_one_waits(entry, env):
                 if entry["id"] == "review-app-ACC":
                     while True:
-                        time.sleep(1)
+                        threading.Event().wait(1)
                 return inner(entry, env)
 
             runner.run_entry = one_finishes_one_waits
@@ -99,7 +101,7 @@ class TestHeadlessLoop(_HeadlessLoopCase):
                         and any(row.get("id") == "review-app-SEC" and row.get("settlement")
                                 for row in doc.get("entries") or [])):
                     break
-            time.sleep(0.02)
+            threading.Event().wait(0.02)
         else:
             self.fail("real loop did not publish a settlement receipt before SIGKILL")
         os.kill(pid, signal.SIGKILL)
@@ -143,7 +145,7 @@ class TestHeadlessLoop(_HeadlessLoopCase):
                 with open(marker, "w", encoding="utf-8") as fh:
                     fh.write("ready")
                 while True:
-                    time.sleep(1)
+                    threading.Event().wait(1)
 
             with mock.patch.object(batch_mod.Batch, "close", block_at_close):
                 loop_batch.recover_stale(d, req, "claude", "headless")
@@ -151,7 +153,7 @@ class TestHeadlessLoop(_HeadlessLoopCase):
 
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline and not os.path.isfile(marker):
-            time.sleep(0.02)
+            threading.Event().wait(0.02)
         if not os.path.isfile(marker):
             os.kill(pid, signal.SIGKILL)
             os.waitpid(pid, 0)
@@ -183,7 +185,7 @@ class TestHeadlessLoop(_HeadlessLoopCase):
                 with open(marker, "w", encoding="utf-8") as fh:
                     fh.write("ready")
                 while True:
-                    time.sleep(1)
+                    threading.Event().wait(1)
 
             with mock.patch.object(batch_mod.Batch, "settle", block_receipt):
                 self._return_persist(d, floor, FakeRunner())
@@ -194,7 +196,7 @@ class TestHeadlessLoop(_HeadlessLoopCase):
             manifest = run_manifest.load_manifest(d)
             if manifest:
                 run_dir = orchestrate.persist.run_dir(d)
-            time.sleep(0.02)
+            threading.Event().wait(0.02)
         if not os.path.isfile(marker):
             os.kill(pid, signal.SIGKILL)
             os.waitpid(pid, 0)
@@ -218,8 +220,7 @@ class TestHeadlessLoop(_HeadlessLoopCase):
                             and row.get("status") == ledger_mod.ROLLED_BACK
                             for row in ledger_mod.Ledger(run_dir).lines()))
 
-    def test_an_all_settled_crash_record_closes_without_rollback_rows(self):
-        d, floor = self._repo(floor=("SEC",))
+    def _sigkill_real_loop_after_all_settled(self, d, floor):
         marker = os.path.join(d, "all-settled-before-close")
         pid = os.fork()
         if pid == 0:  # pragma: no branch - killed at the clean-close seam
@@ -227,22 +228,44 @@ class TestHeadlessLoop(_HeadlessLoopCase):
                 with open(marker, "w", encoding="utf-8") as fh:
                     fh.write("ready")
                 while True:
-                    time.sleep(1)
+                    threading.Event().wait(1)
 
             with mock.patch.object(batch_mod.Batch, "close", block_close):
                 self._return_persist(d, floor, FakeRunner())
             os._exit(0)
-        deadline, run_dir = time.monotonic() + 10, None
+        reaped = False
+
+        def reap():
+            nonlocal reaped
+            if reaped:
+                return
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+            reaped = True
+
+        self.addCleanup(reap)
+        deadline = time.monotonic() + 10
         while time.monotonic() < deadline and not os.path.isfile(marker):
-            if run_manifest.load_manifest(d):
-                run_dir = orchestrate.persist.run_dir(d)
-            time.sleep(0.02)
+            threading.Event().wait(0.02)
         if not os.path.isfile(marker):
-            os.kill(pid, signal.SIGKILL)
-            os.waitpid(pid, 0)
+            reap()
             self.fail("all-settled loop did not reach close")
         os.kill(pid, signal.SIGKILL)
-        os.waitpid(pid, 0)
+        waited, status = os.waitpid(pid, 0)
+        reaped = True
+        self.assertEqual(pid, waited)
+        self.assertEqual(signal.SIGKILL, os.WTERMSIG(status))
+        return orchestrate.persist.run_dir(d)
+
+    def test_an_all_settled_crash_record_closes_without_rollback_rows(self):
+        d, floor = self._repo(floor=("SEC",))
+        run_dir = self._sigkill_real_loop_after_all_settled(d, floor)
         req = orchestrate.requests.previous_request(d)
         out_file = req["entries"][0]["out_file"]
         before = ledger_mod.Ledger(run_dir).lines()
@@ -253,6 +276,32 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         self.assertTrue(os.path.isfile(out_file))
         self.assertEqual(before, ledger_mod.Ledger(run_dir).lines())
         self.assertEqual([], self._manifests(run_dir))
+
+    def test_an_empty_flagged_all_settled_record_finishes_on_the_next_recovery(self):
+        d, floor = self._repo(floor=("SEC",))
+        run_dir = self._sigkill_real_loop_after_all_settled(d, floor)
+        req = orchestrate.requests.previous_request(d)
+        out_file = req["entries"][0]["out_file"]
+        before = ledger_mod.Ledger(run_dir).lines()
+
+        with mock.patch.object(batch_mod.Batch, "roll_back",
+                               side_effect=KeyboardInterrupt("second crash")), \
+             self.assertRaisesRegex(KeyboardInterrupt, "second crash"):
+            loop_batch.recover_stale(d, req, "claude", "headless")
+        record = self._crash_record(run_dir)
+        self.assertIs(True, record.get("recovering"))
+        self.assertEqual([], record["entries"])
+        self.assertTrue(os.path.isfile(out_file))
+        self.assertEqual(before, ledger_mod.Ledger(run_dir).lines())
+
+        # The prior recovery owned the atomic narrow write. Model its process
+        # loss before asking a new recovery to finish the flagged empty record.
+        self._stamp_crash_owner(run_dir, pid=dead_pid())
+        with contextlib.redirect_stderr(io.StringIO()):
+            loop_batch.recover_stale(d, req, "claude", "headless")
+        self.assertEqual([], self._manifests(run_dir))
+        self.assertTrue(os.path.isfile(out_file))
+        self.assertEqual(before, ledger_mod.Ledger(run_dir).lines())
 
     def test_a_crashed_record_carries_a_signed_row_and_artifact_receipt(self):
         """#3351 RED: the settled peer is recoverable after process loss."""
@@ -416,7 +465,8 @@ class TestHeadlessLoop(_HeadlessLoopCase):
             def stable(value):
                 if isinstance(value, dict):
                     return {key: stable(item) for key, item in value.items()
-                            if key not in ("run_id", "ts", "started_at", "finished_at")}
+                            if key not in ("run_id", "ts", "started_at", "finished_at",
+                                           "duration_ms")}
                 if isinstance(value, list):
                     return [stable(item) for item in value]
                 return value
@@ -433,7 +483,8 @@ class TestHeadlessLoop(_HeadlessLoopCase):
                 "launched": runner.launched,
                 "outputs": outputs,
                 "ledger": stable(ledger_mod.Ledger(runner.run_dir).lines()),
-                "usage": runio._load_json(os.path.join(runner.run_dir, "usage.json")),
+                "usage": stable(runio._load_json(
+                    os.path.join(runner.run_dir, "usage.json"))),
                 "attempts": review._cell_attempts(d),
             })
         self.assertEqual(snapshots[0], snapshots[1])
@@ -451,7 +502,7 @@ class TestHeadlessLoop(_HeadlessLoopCase):
                     if any(row.get("entry_id") == "review-app-SEC"
                            for row in ledger_mod.Ledger(runner.run_dir).lines()):
                         raise KeyboardInterrupt
-                    time.sleep(0.01)
+                    threading.Event().wait(0.01)
                 raise AssertionError("host-failure row did not land")
             result = inner(entry, env)
             result.failure_class = outage.HOST_FAILURE
@@ -492,7 +543,7 @@ class TestHeadlessLoop(_HeadlessLoopCase):
                 if any(row.get("entry_id") == "review-app-SEC"
                        for row in ledger_mod.Ledger(runner.run_dir).lines()):
                     raise KeyboardInterrupt
-                time.sleep(0.01)
+                threading.Event().wait(0.01)
             return inner(entry, env)
 
         runner.run_entry = refusal_then_crash
@@ -533,6 +584,7 @@ class TestHeadlessLoop(_HeadlessLoopCase):
 
         mutations = (
             lambda row: row.pop("reply"),
+            lambda row: row.update(entry_id="review-app-ACC"),
             lambda row: row.update(reason=[]),
             lambda row: row.update(truncated="yes"),
             lambda row: row.update(attacker_field=True),
@@ -544,6 +596,54 @@ class TestHeadlessLoop(_HeadlessLoopCase):
                 runio._write_json(retained, changed)
                 self.assertIsNone(batch_settlement.artifact_proofs(
                     entry, batch, "run-1"))
+
+    def test_a_signed_matching_digest_does_not_bypass_artifact_shape(self):
+        d, _floor = self._repo(floor=("SEC",))
+        run_dir = os.path.join(d, ".panopticon", "runs", "receipt-shape")
+        primary = os.path.join(run_dir, "findings-app-SEC.json")
+        os.makedirs(run_dir, exist_ok=True)
+        with open(primary, "wb") as fh:
+            fh.write(b'{"findings": [')
+        with open(primary, "rb") as fh:
+            digest = hashlib.sha256(fh.read()).hexdigest()
+        entry = {"id": "review-app-SEC", "out_file": primary,
+                 "group": "app", "domain": "SEC"}
+        self.assertFalse(batch_settlement.persist.is_done(entry))
+        batch = mock.Mock()
+        batch.entry_artifacts.return_value = [primary]
+        with mock.patch.object(settlement_mod.run_stamp, "key", return_value=b"k" * 32):
+            receipt = settlement_mod.issue(
+                context={"run_id": "run-1", "review_root": os.path.abspath(d),
+                         "namespace": "", "request_sha256": "a" * 64},
+                batch=1, nonce="b" * 32, checkpoint="review",
+                entry_id=entry["id"],
+                ledger={"version": 1, "start": 0, "end": 1,
+                        "sha256": "c" * 64},
+                artifacts=[{"path": primary, "sha256": digest}],
+                refund_attempt=False)
+        self.assertFalse(batch_settlement._receipt_artifacts_match(
+            entry, batch, receipt, "run-1"))
+
+    def test_artifact_digest_refuses_nonregular_symlink_and_hard_links(self):
+        d, _floor = self._repo(floor=("SEC",))
+        root = os.path.join(d, ".panopticon", "runs", "receipt-links")
+        os.makedirs(root, exist_ok=True)
+        regular = os.path.join(root, "regular.json")
+        with open(regular, "wb") as fh:
+            fh.write(b"proof")
+        self.assertEqual(hashlib.sha256(b"proof").hexdigest(),
+                         batch_settlement._regular_sha256(regular))
+
+        symlink = os.path.join(root, "symlink.json")
+        os.symlink(regular, symlink)
+        fifo = os.path.join(root, "fifo")
+        os.mkfifo(fifo)
+        hard_link = os.path.join(root, "hard-link.json")
+        os.link(regular, hard_link)
+        for kind, path in (("symlink", symlink), ("nonregular", fifo),
+                           ("hard-link", hard_link)):
+            with self.subTest(kind=kind), self.assertRaises(OSError):
+                batch_settlement._regular_sha256(path)
 
     def test_an_interrupt_keeps_the_settled_entry_and_rolls_back_the_rest(self):
         # One entry done, one still running when the Ctrl-C lands. The finished

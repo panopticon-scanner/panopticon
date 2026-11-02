@@ -71,6 +71,43 @@ class TestLedgerSettlementSpan(LoopCase):
         self.assertEqual((0, len(raw)), (min(a for a, _b in spans),
                                         max(b for _a, b in spans)))
 
+    def test_settlement_matching_binds_entry_and_checkpoint_at_the_ledger_layer(self):
+        run_dir, _floor = self._repo()
+        ledger = ledger_mod.Ledger(run_dir)
+        span = ledger.record({"id": "entry-a"}, "review", self._result("entry-a"),
+                             "headless", "claude")
+        self.assertTrue(ledger.matches_settlement(span, "entry-a", "review"))
+        for entry_id, checkpoint in (("entry-b", "review"),
+                                     ("entry-a", "verify"),
+                                     ("entry-b", "verify")):
+            with self.subTest(entry_id=entry_id, checkpoint=checkpoint):
+                self.assertFalse(ledger.matches_settlement(span, entry_id, checkpoint))
+
+    def test_interrupt_rows_cannot_be_used_as_settlement_rows(self):
+        run_dir, _floor = self._repo()
+        ledger = ledger_mod.Ledger(run_dir)
+        status_span = ledger.record(
+            {"id": "status-row"}, "review", self._result("status-row"),
+            "headless", "claude", status=ledger_mod.CANCELLED)
+        rollback_span = ledger.record(
+            {"id": "rollback-row"}, "review", self._result("rollback-row"),
+            "headless", "claude", rolled_back=True)
+        self.assertFalse(ledger.matches_settlement(status_span, "status-row", "review"))
+        self.assertFalse(ledger.matches_settlement(rollback_span, "rollback-row", "review"))
+
+    def test_settlement_span_must_contain_exactly_one_jsonl_line(self):
+        run_dir, _floor = self._repo()
+        ledger = ledger_mod.Ledger(run_dir)
+        span = ledger.record({"id": "entry-a"}, "review", self._result("entry-a"),
+                             "headless", "claude")
+        with open(ledger.path, "ab") as fh:
+            fh.write(b"\n")
+        with open(ledger.path, "rb") as fh:
+            raw = fh.read(span["end"] + 1)
+        widened = dict(span, end=span["end"] + 1,
+                       sha256=hashlib.sha256(raw).hexdigest())
+        self.assertFalse(ledger.matches_settlement(widened, "entry-a", "review"))
+
 
 class TestLedgerMoney(LoopCase):
     """#1648: the ledger is the budget gate's only evidence, so it stores
