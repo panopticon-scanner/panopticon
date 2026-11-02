@@ -24,7 +24,10 @@ SUMMARY_PREFIX = "summary: "
 # The ONLY lines ever dropped, and only when the WHOLE text repeats, so a changed line always
 # prints. Anything else passes every time, which is why no error or refusal may be listed here.
 _ONCE_PER_PHASE = re.compile(r"driver: (?:host capabilities: |target ships )")
-_ONCE_PER_RUN = re.compile(r"(?:semgrep: partial file coverage|ingest: excluded )")
+# #3228: scanner coverage facts are derived at several ingest sites in one run;
+# changed counts still print, but an identical diagnostic should appear once.
+_ONCE_PER_RUN = re.compile(
+    r"(?:(?:semgrep|eslint-security): partial file coverage|ingest: excluded )")
 
 
 def _stamp():

@@ -112,9 +112,12 @@ class PrintOnceNeverSwallowsSomethingNewTest(unittest.TestCase):
         return re.sub(r"(?m)^" + STAMP, "", real.getvalue()).splitlines()
 
     def test_each_listed_class_prints_a_repeat_once(self):
+        # #3228: eslint coverage is read by several ingest sites in one run.
         for line in ("driver: host capabilities: 5 of 5 proven, unchanged since T",
                      "driver: target ships .claude/skills/x; closed by y (z)",
                      "semgrep: partial file coverage: 1 rule timeout(s) on 2 file(s)",
+                     "eslint-security: partial file coverage: 1 file(s) had parse errors; "
+                     "usable findings retained",
                      "ingest: excluded 3 finding(s) (test-fixture corpus: 3)"):
             with self.subTest(line):
                 stream, real = _stream()
