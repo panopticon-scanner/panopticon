@@ -148,6 +148,9 @@ def _scratch_root(tmp, review_root, manifest, tag, run_folder, bind=None):
 
 RECEIPT_DERIVED = ("replay: no output receipt in the archive's tools-manifest.json (#2070); derived "
                    "`outputs` from its `produced` on the copy")
+TARGET_EXCLUDE_UNAVAILABLE = (
+    "replay: target exclude policy unavailable; archived tool findings are not ingested, "
+    "so they are not reattributed to fixture-corpus")
 
 
 def _derive_receipt(run_copy, tools_manifest):
@@ -178,6 +181,59 @@ def _derive_receipt(run_copy, tools_manifest):
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(doc, fh, indent=2)
     print(RECEIPT_DERIVED, file=sys.stderr, flush=True)
+    return True
+
+
+def _archived_exclude_globs(run_copy, run_id, artifacts_mod):
+    """#3388: The exact target exclusion policy recorded by this run, or ``None``.
+
+    ``run_tools`` has written ``exclude_globs`` on every tools manifest since the policy first
+    reached the tool axis (#1740), including ``[]`` when it measured no policy.  Missing and
+    malformed are therefore different from an empty list.  Bind the value to this run and use the
+    synthesis boundary's capped, no-symlink artifact reader: a partial repair would silently widen
+    the policy, which is the unsafe answer for replay.
+    """
+    path = os.path.join(run_copy, "tools-manifest.json")
+    try:
+        doc = artifacts_mod.read_json(path)
+    except (OSError, ValueError):
+        return None
+    if (not isinstance(doc, dict) or doc.get("run_id") != run_id
+            or "exclude_globs" not in doc):
+        return None
+    globs = doc.get("exclude_globs")
+    if (not isinstance(globs, list)
+            or any(not isinstance(glob, str) or not glob.strip() for glob in globs)):
+        return None
+    return list(globs)
+
+
+def _without_option_value(argv, option):
+    """Copy ``argv`` without one repeatable ``--option VALUE``/``--option=VALUE``."""
+    out = []
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg == option:
+            index += 2
+            continue
+        if isinstance(arg, str) and arg.startswith(option + "="):
+            index += 1
+            continue
+        out.append(arg)
+        index += 1
+    return out
+
+
+def _apply_archived_exclude_policy(cmd, globs):
+    """#3388: Make recorded policy authoritative; without it, omit tool ingest entirely."""
+    cmd[:] = _without_option_value(cmd, "--tools-exclude")
+    if globs is None:
+        cmd[:] = _without_option_value(cmd, "--tools-dir")
+        print(TARGET_EXCLUDE_UNAVAILABLE, file=sys.stderr, flush=True)
+        return False
+    policy_args = [arg for glob in globs for arg in ("--tools-exclude", glob)]
+    cmd[2:2] = policy_args
     return True
 
 
@@ -239,6 +295,7 @@ def replay(args):
     import scripts.phases.runio as runio
     import scripts.phases.synthesize as synthesize_phase
     import scripts.run_manifest as run_manifest
+    import scripts.synth.artifacts as artifacts_mod
     import scripts.tools_manifest as tools_manifest
 
     review_root = os.path.abspath(args.review_root)
@@ -273,8 +330,9 @@ def replay(args):
     with tempfile.TemporaryDirectory(prefix="replay-") as tmp, _throwaway_state(tmp):
         root = _scratch_root(tmp, review_root, manifest, tag, run_folder,
                              bind=lambda r, m: _rebind(first_contact, r, m))
-        receipt_derived = _derive_receipt(os.path.join(root, ".panopticon", "runs", tag),
-                                          tools_manifest)
+        run_copy = os.path.join(root, ".panopticon", "runs", tag)
+        receipt_derived = _derive_receipt(run_copy, tools_manifest)
+        exclude_globs = _archived_exclude_globs(run_copy, manifest.get("run_id"), artifacts_mod)
         # Match the phase's measured posture, including the deliberate absent-
         # host default. Read evidence through the scratch root so archived runs
         # use their own capability artifact, not the live checkout's latest run.
@@ -295,6 +353,7 @@ def replay(args):
         if not recorded or "synthesize.py" not in os.path.basename(recorded[-1][1]):
             sys.exit(f"driver did not build a synthesize command: {recorded}")
         cmd = recorded[-1]
+        exclude_policy_available = _apply_archived_exclude_policy(cmd, exclude_globs)
         out_path = os.path.join(out_dir, f"{tag}-report.json")
         cmd[cmd.index("--out") + 1] = out_path
         proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True,  # nosec B603
@@ -308,7 +367,9 @@ def replay(args):
     with open(os.path.join(out_dir, "replay.json"), "w", encoding="utf-8") as fh:
         json.dump({"repo": repo, "review_root": review_root, "run_folder": run_folder,
                    "argv": [a.replace(root, "<scratch>") for a in cmd],
-                   "returncode": proc.returncode, "receipt_derived": receipt_derived},
+                   "returncode": proc.returncode, "receipt_derived": receipt_derived,
+                   "target_exclude_policy_available": exclude_policy_available,
+                   "target_exclude_globs": exclude_globs},
                   fh, indent=2)
     with open(os.path.join(out_dir, "synthesize.stderr"), "w", encoding="utf-8") as fh:
         fh.write(_scrub(proc.stderr or "", root, out_dir))

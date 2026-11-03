@@ -78,7 +78,9 @@ def _fake_synthesize_execute(root, manifest):
     """Stand-in driver phase: asks `_run_child` for the synthesize argv exactly
     once, the way the real phase does, then reports the child wrote nothing."""
     child_mod._run_child(["python3", "/repo/skill/scripts/synthesize.py", "--out",
-                          os.path.join(root, ".panopticon", "orig-report.json")],
+                          os.path.join(root, ".panopticon", "orig-report.json"),
+                          "--tools-dir",
+                          os.path.join(root, ".panopticon", "runs", TAG, "tools")],
                          root, "synthesize")
     raise runio.DriverError("no report")
 
@@ -671,21 +673,31 @@ if __name__ == "__main__":
 
 
 def _binding_child(cmd, cwd, capture_output, text, env):
-    """The synthesize child's tool binding, for real (#3386): synthesis's own manifest read, its
-    receipt check and ingest, over the scratch copy -- `tools_ran` is what the report publishes."""
+    """Real tool binding over the scratch copy, including exclusion/suppression disposition."""
     import scripts.ingest_tools as ingest_tools
     import scripts.synth.tool_axis as tool_axis
     run_dir = os.path.join(cwd, ".panopticon", "runs", TAG)
-    args = argparse.Namespace(run_id=MANIFEST["run_id"], tools_dir=os.path.join(run_dir, "tools"),
+    tools_dir = (cmd[cmd.index("--tools-dir") + 1] if "--tools-dir" in cmd else None)
+    globs = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "--tools-exclude"]
+    args = argparse.Namespace(run_id=MANIFEST["run_id"], tools_dir=tools_dir,
                               tools_skipped=False)
+    suppressed = []
+    excluded = []
     with contextlib.redirect_stderr(io.StringIO()):
-        _, _, allowed = tool_axis.ToolAxis.manifest_state(args, run_dir)
-        findings, dispositions = ingest_tools.ingest_dir_detailed(
-            args.tools_dir, None, allowed_outputs=allowed, unbound_out=[])
+        if tools_dir:
+            _, _, allowed = tool_axis.ToolAxis.manifest_state(args, run_dir)
+            _findings, dispositions = ingest_tools.ingest_dir_detailed(
+                tools_dir, None, exclude_globs=globs, allowed_outputs=allowed,
+                suppressed_out=suppressed, excluded_out=excluded, unbound_out=[])
+        else:
+            dispositions = {}
     out_path = cmd[cmd.index("--out") + 1]
     with open(out_path, "w", encoding="utf-8") as fh:
-        json.dump({"meta": {"coverage": {"tools_ran": sorted(
-            tool_axis.tools_ran_from_dispositions(dispositions))}}}, fh)
+        json.dump({"meta": {"coverage": {
+            "tools_ran": sorted(tool_axis.tools_ran_from_dispositions(dispositions)),
+            "tools_excluded": {"globs": globs, "count": len(excluded)},
+            "tools_suppressed": ingest_tools.suppressed_counts(suppressed),
+        }}}, fh)
     return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
 
@@ -704,20 +716,23 @@ class ArchivedToolReceiptTest(unittest.TestCase):
         self.run_folder = _run_folder(self.base)
         os.makedirs(os.path.join(self.run_folder, "tools"))
         here = os.path.dirname(os.path.abspath(__file__))
-        with open(os.path.join(here, "fixtures", "semgrep.sarif"), encoding="utf-8") as src, \
-                open(os.path.join(self.run_folder, "tools", "semgrep.sarif"), "w",
-                     encoding="utf-8") as dst:
-            dst.write(src.read())
+        with open(os.path.join(here, "fixtures", "semgrep.sarif"), encoding="utf-8") as src:
+            sarif = json.load(src)
+        sarif["runs"][0]["results"][0]["locations"][0]["physicalLocation"][
+            "artifactLocation"]["uri"] = "tests/fixtures/vulnerable.py"
+        with open(os.path.join(self.run_folder, "tools", "semgrep.sarif"), "w",
+                  encoding="utf-8") as dst:
+            json.dump(sarif, dst)
         self.tm = os.path.join(self.run_folder, "tools-manifest.json")
 
     def _manifest(self, **fields):
         doc = {"schema_version": 1, "run_id": MANIFEST["run_id"], "selected": ["semgrep"],
-               "produced": ["semgrep"]}
+               "produced": ["semgrep"], "exclude_globs": []}
         doc.update(fields)
         with open(self.tm, "w", encoding="utf-8") as fh:
             json.dump({k: v for k, v in doc.items() if v is not _DROP}, fh)
 
-    def _replay(self, trust=False):
+    def _replay_artifacts(self, trust=False):
         out = os.path.join(self.base, "out")
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
@@ -727,7 +742,99 @@ class ArchivedToolReceiptTest(unittest.TestCase):
             report = json.load(fh)
         with open(os.path.join(out, "replay.json"), encoding="utf-8") as fh:
             record = json.load(fh)
-        return report["meta"]["coverage"]["tools_ran"], record["receipt_derived"], err.getvalue()
+        return report, record, err.getvalue()
+
+    def _replay(self, trust=False):
+        report, record, err = self._replay_artifacts(trust)
+        return report["meta"]["coverage"]["tools_ran"], record["receipt_derived"], err
+
+    def test_replay_uses_the_archived_exclude_policy_before_fixture_suppression(self):
+        # #3388: an archive carries only `.panopticon/`; the scratch root has no target config.
+        # The effective policy is nevertheless recorded beside the captures, and must keep this
+        # finding an operator exclusion instead of reattributing it to `fixture-corpus`.
+        self._manifest(outputs=["semgrep.sarif"],
+                       exclude_globs=["tests/fixtures/**", "vendor/**"])
+
+        report, record, err = self._replay_artifacts()
+
+        coverage = report["meta"]["coverage"]
+        self.assertEqual(coverage["tools_excluded"], {
+            "globs": ["tests/fixtures/**", "vendor/**"], "count": 1})
+        self.assertEqual(coverage["tools_suppressed"], {})
+        self.assertTrue(record["target_exclude_policy_available"])
+        self.assertNotIn("target exclude policy unavailable", err)
+
+    def test_an_archive_without_the_policy_discloses_and_does_not_reattribute(self):
+        self._manifest(outputs=["semgrep.sarif"], exclude_globs=_DROP)
+
+        report, record, err = self._replay_artifacts()
+
+        coverage = report["meta"]["coverage"]
+        self.assertEqual(coverage["tools_ran"], [])
+        self.assertEqual(coverage["tools_suppressed"], {})
+        self.assertFalse(record["target_exclude_policy_available"])
+        self.assertIsNone(record["target_exclude_globs"])
+        self.assertNotIn("--tools-dir", record["argv"])
+        self.assertIn("target exclude policy unavailable", err)
+
+    def test_an_explicit_empty_policy_is_available_and_keeps_the_tool_axis(self):
+        self._manifest(outputs=["semgrep.sarif"], exclude_globs=[])
+
+        report, record, err = self._replay_artifacts()
+
+        coverage = report["meta"]["coverage"]
+        self.assertEqual(coverage["tools_ran"], ["semgrep"])
+        self.assertEqual(coverage["tools_excluded"], {"globs": [], "count": 0})
+        self.assertEqual(coverage["tools_suppressed"], {"fixture-corpus": 1})
+        self.assertTrue(record["target_exclude_policy_available"])
+        self.assertEqual(record["target_exclude_globs"], [])
+        self.assertIn("--tools-dir", record["argv"])
+        self.assertNotIn("target exclude policy unavailable", err)
+
+    def test_malformed_archived_policies_all_fail_closed(self):
+        for policy in ("tests/fixtures/**", [3], [""], None):
+            with self.subTest(policy=policy):
+                self._manifest(outputs=["semgrep.sarif"], exclude_globs=policy)
+
+                report, record, err = self._replay_artifacts()
+
+                coverage = report["meta"]["coverage"]
+                self.assertEqual(coverage["tools_ran"], [])
+                self.assertEqual(coverage["tools_suppressed"], {})
+                self.assertFalse(record["target_exclude_policy_available"])
+                self.assertIsNone(record["target_exclude_globs"])
+                self.assertNotIn("--tools-dir", record["argv"])
+                self.assertIn("target exclude policy unavailable", err)
+
+    def test_a_policy_bound_to_a_different_run_id_fails_closed(self):
+        # #3388 review: valid policy syntax is still untrusted when its run binding is stale.
+        self._manifest(outputs=["semgrep.sarif"], exclude_globs=["tests/fixtures/**"],
+                       run_id="different-run-id")
+
+        report, record, err = self._replay_artifacts()
+
+        coverage = report["meta"]["coverage"]
+        self.assertEqual(coverage["tools_ran"], [])
+        self.assertEqual(coverage["tools_suppressed"], {})
+        self.assertFalse(record["target_exclude_policy_available"])
+        self.assertIsNone(record["target_exclude_globs"])
+        self.assertNotIn("--tools-dir", record["argv"])
+        self.assertIn("target exclude policy unavailable", err)
+
+    def test_the_archived_policy_replaces_scratch_config_flags(self):
+        cmd = ["python3", "synthesize.py", "--tools-exclude", "stale/**",
+               "--tools-exclude=also-stale/**", "--tools-dir", "/run/tools"]
+
+        available = replay_report._apply_archived_exclude_policy(
+            cmd, ["tests/fixtures/**", "vendor/**"])
+
+        self.assertTrue(available)
+        self.assertEqual([cmd[i + 1] for i, arg in enumerate(cmd)
+                          if arg == "--tools-exclude"],
+                         ["tests/fixtures/**", "vendor/**"])
+        self.assertFalse(any(arg.startswith("--tools-exclude=") for arg in cmd))
+        self.assertNotIn("stale/**", cmd)
+        self.assertIn("--tools-dir", cmd)
 
     def test_a_manifest_without_a_receipt_replays_its_tools(self):
         self._manifest()
