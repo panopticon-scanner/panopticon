@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Fix: dispatch-ledger denial inputs are redacted and bounded (#3366).** Denied
+  tool inputs now have secret-shaped string leaves masked and capped in the
+  persisted ledger copy, while the host's original denial rows remain intact for
+  write-denial classification.
+
 - **Fix: Trivy secret findings retain their secret class (#3361).** The SARIF adapter
   carries Trivy's scanner-owned `secret` rule tag as per-finding evidence, so an
   unverified credential keeps its scanner severity and policy C still gates it under

@@ -84,17 +84,40 @@ def _guard_reasons(path, wanted):
     return out
 
 
+def _bounded_string_values(value):
+    """A JSON-ish value whose string leaves fit beside a denial reason."""
+    if isinstance(value, str):
+        return value[:guard_rules.DENIAL_REASON_CAP]
+    if isinstance(value, list):
+        return [_bounded_string_values(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _bounded_string_values(item) for key, item in value.items()}
+    return value
+
+
 def _with_reasons(path, rows):
     """A copy of the host's denial rows, each carrying the hook's own `reason` where it left one.
-    Redacted and bounded here, the single writer. `tool_input` beside it stays as the host wrote it.
-    `RunResult.denials` is never touched: `phases.denials` reads the host's report, not this."""
-    wanted = {row.get("tool_use_id") for row in rows if isinstance(row, dict)
-              and isinstance(row.get("tool_use_id"), str)} if isinstance(rows, list) else None
-    if not wanted:
+    Reasons and `tool_input` are redacted and bounded here, the single writer. `RunResult.denials`
+    is never touched: `phases.denials` reads the host's report, not this persisted copy."""
+    if not isinstance(rows, list):
         return rows
-    reasons = _guard_reasons(path, wanted)
-    return [dict(row, reason=redact.redact(reasons[row["tool_use_id"]])[:guard_rules.DENIAL_REASON_CAP])
-            if isinstance(row, dict) and row.get("tool_use_id") in reasons else row for row in rows]
+    wanted = {row.get("tool_use_id") for row in rows if isinstance(row, dict)
+              and isinstance(row.get("tool_use_id"), str)}
+    reasons = _guard_reasons(path, wanted) if wanted else {}
+    copied = []
+    for row in rows:
+        if not isinstance(row, dict):
+            copied.append(row)
+            continue
+        item = dict(row)
+        if "tool_input" in item:
+            item["tool_input"] = _bounded_string_values(
+                redact.redact_tree(item["tool_input"]))
+        if row.get("tool_use_id") in reasons:
+            item["reason"] = redact.redact(
+                reasons[row["tool_use_id"]])[:guard_rules.DENIAL_REASON_CAP]
+        copied.append(item)
+    return copied
 
 
 def _self_write_failed(entry, result, refusal):
