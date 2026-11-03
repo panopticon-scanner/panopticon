@@ -92,12 +92,12 @@ def test_the_review_projection_is_exhaustive_and_below_the_approved_budget():
     assert path.stat().st_size <= 64 * 1024
 
 
-def test_the_codex_probe_schema_is_the_measured_largest_projection():
+def test_each_probe_schema_matches_its_hosts_production_review_schema():
     paths = [REFERENCE / name for name in GENERATION_NAMES.values()]
     largest = max(paths, key=lambda path: path.stat().st_size)
     assert largest.name == GENERATION_NAMES["review"]
     assert persist.production_probe_schema("codex") == os.path.realpath(largest)
-    assert persist.production_probe_schema("claude") is None
+    assert persist.production_probe_schema("claude") == persist.role_schema(_entry("review"))
 
 
 def test_projection_fields_are_the_fields_the_three_prompts_request():

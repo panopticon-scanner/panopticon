@@ -9,6 +9,12 @@
   `rejected/pruned.jsonl` first, so a ledger row's `rejected_file` either exists or reads as
   pruned.
 
+- **Fix: Claude proves the production output-schema shape (#3394).** Its
+  once-per-run proof now launches the same published review-cell role schema
+  that returning production cells send inline, including the real finding
+  combinator. A CLI that refutes that shape has the schema flag removed from
+  every remaining entry in the current batch.
+
 - **Drain-and-pause for a headless loop (#3350).** `SIGUSR1` makes `driver loop` stop
   launching, let the running entries finish and be recorded as usual, give back the attempts
   of entries it never launched and exit `paused`, resumable without `--reset`. The launch gate
