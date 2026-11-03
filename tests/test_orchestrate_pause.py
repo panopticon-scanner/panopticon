@@ -50,7 +50,7 @@ class PausesDuringFirstReview(FakeRunner):
         return super().run_entry(entry, env)
 
 
-class TestDrainAndPause(LoopCase):
+class _PauseLoop(LoopCase):
 
     def _loop(self, d, floor, runner, pause, *extra, seed=True):
         args = self._args(d, "--concurrency", "1", *extra)
@@ -67,6 +67,10 @@ class TestDrainAndPause(LoopCase):
 
     def _run_dir(self, d):
         return glob.glob(os.path.join(d, ".panopticon", "runs", "*-*"))[0]
+
+
+
+class TestDrainAndPause(_PauseLoop):
 
     def test_a_pause_mid_batch_finishes_the_running_entry_and_launches_no_more(self):
         d, floor = self._repo(floor=FLOOR)
@@ -146,6 +150,45 @@ class TestDrainAndPause(LoopCase):
             self._loop(d, floor, FakeRunner(), pause, "--mode", "session",
                        "--session-dir", self._session_root(d))
         install.assert_not_called()
+
+
+class SendsARealSigusr1(FakeRunner):
+    """Delivers a REAL SIGUSR1 to this process while the first review entry runs. The default
+    action of SIGUSR1 is to end the process, so this only passes when the loop installed its
+    handler. It then waits for the handler (it runs on the main thread) before returning, so
+    the worker's next dequeue sees the request -- the property the gate is for."""
+
+    def __init__(self, pause):
+        super().__init__()
+        self.pause = pause
+
+    def run_entry(self, entry, env):
+        if entry["id"].startswith("review-") and not self.pause.is_set():
+            os.kill(os.getpid(), signal.SIGUSR1)
+            if not self.pause.event.wait(10):
+                raise AssertionError("SIGUSR1 delivered but the loop's handler never ran")
+        return super().run_entry(entry, env)
+
+
+@unittest.skipUnless(hasattr(signal, "SIGUSR1"), "no SIGUSR1 on this platform")
+class TestARealSignalEndToEnd(_PauseLoop):
+    """Review round 1: the install itself is under test. An uninstalled handler is not a
+    weaker pause -- SIGUSR1's default action kills the driver with no rollback."""
+
+    def test_a_real_sigusr1_drains_and_pauses_a_headless_loop(self):
+        self.assertIs(signal.SIG_DFL, signal.getsignal(signal.SIGUSR1))
+        self.addCleanup(signal.signal, signal.SIGUSR1, signal.SIG_DFL)
+        d, floor = self._repo(floor=FLOOR)
+        pause = loop_setup.PauseRequest()
+        runner = SendsARealSigusr1(pause)
+        status, err = self._loop(d, floor, runner, pause)
+        self.assertEqual("paused", status["status"], status)
+        self.assertIn("pause requested; finishing the running entries", err)
+        reviews = [e for e in runner.launched if e.startswith("review-")]
+        self.assertEqual(1, len(reviews), runner.launched)       # the queued ones never launched
+        run_dir = self._run_dir(d)
+        self.assertEqual(1, len(glob.glob(os.path.join(run_dir, "findings-*.json"))))  # kept
+        self.assertIs(signal.SIG_DFL, signal.getsignal(signal.SIGUSR1))                # restored
 
 
 @unittest.skipUnless(hasattr(signal, "SIGUSR1"), "no SIGUSR1 on this platform")
