@@ -113,6 +113,14 @@ class TestOnlyThisRunsRecords(_Folder):
         with mock.patch.object(retention, "RUN_CEILING", mine):
             self.assertEqual([], self.prune())
 
+    def test_an_oversized_record_is_not_read_counted_or_evicted(self):
+        # Bigger than any record this build writes, so it is the target's however well-formed.
+        big = self.record("big", 1, reply="x" * retention.RECORD_MAX)
+        self.record("big", 2)
+        with mock.patch.object(retention, "RUN_CEILING", 1):
+            self.assertEqual([], self.prune())
+        self.assertTrue(os.path.exists(big))
+
     def test_no_run_id_prunes_nothing(self):
         for attempt in range(1, 6):
             self.record("e", attempt, run_id=None)
