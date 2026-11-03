@@ -121,10 +121,10 @@ def launch_schema(entry, host):
 
 
 def production_probe_schema(host):
-    """Largest strict projection whose real acceptance protects a run."""
-    if host not in STRICT_GENERATION_HOSTS:
-        return None
-    return generation_schema({"out_file": "findings-probe-COD.json"})
+    """#3394: Schema a returning production review cell hands this host.
+
+    Keep the proof on ``launch_schema``, the selection seam used by every entry."""
+    return launch_schema({"out_file": "findings-probe-COD.json"}, host)
 
 
 # D10 ruling 2: what the retry is told to return, one line per role. The

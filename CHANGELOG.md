@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Fix: Claude proves the production output-schema shape (#3394).** Its
+  once-per-run proof now launches the same published review-cell role schema
+  that returning production cells send inline, including the real finding
+  combinator. A CLI that refutes that shape has the schema flag removed from
+  every remaining entry in the current batch.
+
 - **Fix: replay preserves the target's tool-exclusion policy (#3388).** Replay now
   takes the effective exclude globs recorded in the archived tools manifest instead
   of re-reading a target config absent from archive-only roots. If that policy is

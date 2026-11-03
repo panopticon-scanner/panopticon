@@ -17,8 +17,9 @@ entry -- AFTER `Guards.arm`, so the launch is confined by this run's real read
 scope and write allowlist exactly as a cell is, and the settings file the
 family's argv names has been written. Establishing it at posture time instead
 would mean one unconfined turn in the reviewed tree per run, before anything
-is armed. It is one bounded turn: Codex carries the largest production
-projection (#3241), while other families retain the trivial three-key shape.
+is armed. It is one bounded turn with the schema a production review cell
+hands that family: Codex's largest strict projection (#3241), or Claude's
+published role schema (#3394).
 
 NOT a capability probe, and deliberately not in `host_probes.PROBE_IDS`: it
 returns no `(state, by, detail)` triple, maps to no capability and gates
@@ -55,11 +56,11 @@ PROBE_ENTRY_ID = "probe-output-schema"
 # exactly as it applies to a real one.
 PROBE_SCHEMA = "probe-output-schema.json"
 PROBE_PROMPT = 'Reply with the JSON object {"ok": true} and nothing else.'
-# #3241: Codex's once-per-run launch proves the largest PRODUCTION projection,
-# not only the toy schema that established whether the flag takes a path. The
-# exact empty-findings answer is valid under the review projection and costs no
-# finding tokens; what is being measured is provider acceptance of its 64
-# strict variants.
+# #3241/#3394: the once-per-run launch proves the review schema PRODUCTION
+# hands this family, not only the toy schema that established whether the flag
+# takes a path. The exact empty-findings answer is valid under both the strict
+# Codex projection and Claude's broad role schema and costs no finding tokens;
+# what is being measured is provider acceptance of their real combinators.
 PRODUCTION_PROBE_PROMPT = (
     'Reply with exactly this JSON object and nothing else: '
     '{"schema_version":1,"findings":[],"_panopticon":'
