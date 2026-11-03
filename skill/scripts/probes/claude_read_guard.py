@@ -87,6 +87,10 @@ def _round_trip_confines_reads():
                 ("bound Grep of an in-scope file", call("Grep", "agent-x", pattern="x", path=inside), True),
                 ("bound Grep over a directory", call("Grep", "agent-x", pattern="x", path=cell_dir), False),
                 ("bound Glob", call("Glob", "agent-x", pattern="*.py", path=cell_dir), False),
+                # T4 (#3411): a Glob whose `path` is a granted FILE is still no listing.
+                ("bound Glob of an in-scope file", call("Glob", "agent-x", pattern="*", path=inside), False),
+                ("directory-scoped Glob of a file inside its dir",
+                 call("Glob", "agent-z", pattern="*", path=os.path.join(root, "c.py")), False),
                 ("unbound subagent Read", call("Read", "agent-y", file_path=inside), False),
                 ("orchestrator Read outside any scope", call("Read", None, file_path=outside), True),
                 ("directory-scoped Grep inside its dir", call("Grep", "agent-z", pattern="x", path=root), True),
@@ -182,6 +186,9 @@ def _measure_installed_hook(settings, scope_file, parent, inside, outside, sandb
     if entries != [expected]:
         return False, "installed read-guard command differs from the driver's emitted command"
     argv = shlex.split(expected["hooks"][0]["command"])
+    # M6 (#3411): the scope file is baked in, so the hook never infers it from its CWD.
+    if argv != list(read_guard_hook._trusted_hook_argv()) + [os.path.abspath(scope_file)]:
+        return False, "installed read-guard command is not the trusted argv plus the probe's scope file"
     process = _ReadHookProcess(scope_file, sandbox)
     payload = {"tool_name": "Read", "agent_id": "agent-x",
                "transcript_path": parent, "cwd": sandbox,

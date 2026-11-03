@@ -104,6 +104,16 @@ class TestCoveragePhase(unittest.TestCase):
         self.assertEqual([stray], coverage.group_files_containing(self.root, "nowhere.py"))
         self.assertEqual([], coverage.group_files_containing(self.root, None))
 
+    def test_group_files_containing_with_no_groups_profile_confines_to_the_file(self):
+        # T3 (#3411): before discovery has written groups.json -- or with none at all -- a
+        # file is its own cell, and no location still confines to nothing.
+        self.assertFalse(os.path.exists(runio._pano(self.root, "groups.json")))
+        a = os.path.abspath(os.path.join(self.root, "a.py"))
+        self.assertEqual([a], coverage.group_files_containing(self.root, "a.py"))
+        self.assertEqual([], coverage.group_files_containing(self.root, ""))
+        self._groups_json([])
+        self.assertEqual([a], coverage.group_files_containing(self.root, "a.py"))
+
     def test_scout_entry_binds_the_resolved_model(self):
         # #1344 F4 (b). Sentinel, not a literal: a builder that hard-coded the
         # profile's value would pass a literal and still not be bound.

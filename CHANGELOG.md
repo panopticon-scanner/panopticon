@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Read-guard hygiene (#3411).** The read guard now refuses a scope file holding a path
+  `install()` never writes (relative, or not normalised) as malformed, which denies, instead of
+  keeping it as a grant that matches nothing. `marker_line` refuses an entry id with outer
+  whitespace, which `marker_of` would strip and so bind to nothing. The Claude read-guard probe
+  also checks that the installed command bakes in its scope file, and that a Glob of a granted
+  file is denied.
+
 - **Retention for `rejected/` records (#1664).** The loop, after each batch, and `driver
   persist` keep each entry's last 3 refused or failed replies and cap a run's records at 32 MiB,
   evicting the oldest first. An entry's newest record, any record a batch manifest still lists,

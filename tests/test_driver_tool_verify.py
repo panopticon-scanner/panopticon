@@ -294,6 +294,8 @@ class TestToolVerifyDispatch(_ToolVerifyBase):
         located = os.path.abspath(os.path.join(self.root, self.tool_finding_file))
         self.assertIn(located, e["scope"]["files"])
         self.assertEqual([], e["scope"]["dirs"])
+        # M5 (#3411): the builder grants no extra read; the one the dispatch adds is its own prompt.
+        self.assertEqual([e["prompt_file"]], e["scope"]["reads"])
 
     def test_generic_host_unenforced_entry(self):
         d = self._repo([_result("r1", "src/app.py", 1, level="note")])

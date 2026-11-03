@@ -43,7 +43,8 @@ class TestMarker(unittest.TestCase):
         self.assertIsNone(guard_rules.marker_of("panopticon-entry:   \nx"))
 
     def test_marker_line_refuses_an_id_that_cannot_be_one_line(self):
-        for bad in ("", "a\nb", "a\rb"):
+        # T1 (#3411): `marker_of` strips, so an id with outer whitespace would bind to nothing.
+        for bad in ("", "a\nb", "a\rb", " a", "a ", "\ta", "a\t"):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 rg.marker_line(bad)
 

@@ -115,11 +115,14 @@ def marker_line(entry_id):
     Permissive BY DESIGN, enforcing no grammar: driver-generated ids already
     match `^[A-Za-z0-9._:-]+$` in practice (design spec 4.4; groups_schema's
     `_GROUP_NAME_RE` forbids spaces and colons in a group name), but any
-    single-line id round-trips here and only an id that cannot be one line is
-    refused -- so a future id shape needs no change."""
+    single-line id round-trips here and only an id that cannot round-trip
+    through `marker_of` -- several lines, or outer whitespace it would strip --
+    is refused, so a future id shape needs no change."""
     entry_id = "" if entry_id is None else str(entry_id)
-    if not entry_id or "\n" in entry_id or "\r" in entry_id:
-        raise ValueError("entry id must be a non-empty single line: %r" % entry_id)
+    # T1 (#3411): `marker_of` strips, so an id with outer whitespace would bind to nothing.
+    if not entry_id or "\n" in entry_id or "\r" in entry_id or entry_id != entry_id.strip():
+        raise ValueError("entry id must be a non-empty single line without outer "
+                         "whitespace: %r" % entry_id)
     return guard_rules.MARKER_PREFIX + entry_id
 
 

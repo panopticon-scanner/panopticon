@@ -135,7 +135,7 @@ class TestTheWordingRule(unittest.TestCase):
     def test_the_read_scope_remedy_names_the_real_fix(self):
         # Until plan 5 the remedy honestly said "nothing to do: no host
         # implements a read-confinement control yet". claude ships one now.
-        remedy = host_disclosure._REMEDY[hosts.READ_SCOPE_CONFINED] % {"host": "claude"}
+        remedy = host_disclosure.remedy(hosts.READ_SCOPE_CONFINED, "claude")
         self.assertNotIn("nothing to do", remedy)
         self.assertIn("settings.local.json", remedy)
         self.assertIn("transcript", remedy)
