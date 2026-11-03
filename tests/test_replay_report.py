@@ -684,8 +684,8 @@ def _binding_child(cmd, cwd, capture_output, text, env):
     suppressed = []
     excluded = []
     with contextlib.redirect_stderr(io.StringIO()):
-        _, _, allowed = tool_axis.ToolAxis.manifest_state(args, run_dir)
         if tools_dir:
+            _, _, allowed = tool_axis.ToolAxis.manifest_state(args, run_dir)
             _findings, dispositions = ingest_tools.ingest_dir_detailed(
                 tools_dir, None, exclude_globs=globs, allowed_outputs=allowed,
                 suppressed_out=suppressed, excluded_out=excluded, unbound_out=[])
@@ -805,6 +805,21 @@ class ArchivedToolReceiptTest(unittest.TestCase):
                 self.assertIsNone(record["target_exclude_globs"])
                 self.assertNotIn("--tools-dir", record["argv"])
                 self.assertIn("target exclude policy unavailable", err)
+
+    def test_a_policy_bound_to_a_different_run_id_fails_closed(self):
+        # #3388 review: valid policy syntax is still untrusted when its run binding is stale.
+        self._manifest(outputs=["semgrep.sarif"], exclude_globs=["tests/fixtures/**"],
+                       run_id="different-run-id")
+
+        report, record, err = self._replay_artifacts()
+
+        coverage = report["meta"]["coverage"]
+        self.assertEqual(coverage["tools_ran"], [])
+        self.assertEqual(coverage["tools_suppressed"], {})
+        self.assertFalse(record["target_exclude_policy_available"])
+        self.assertIsNone(record["target_exclude_globs"])
+        self.assertNotIn("--tools-dir", record["argv"])
+        self.assertIn("target exclude policy unavailable", err)
 
     def test_the_archived_policy_replaces_scratch_config_flags(self):
         cmd = ["python3", "synthesize.py", "--tools-exclude", "stale/**",
