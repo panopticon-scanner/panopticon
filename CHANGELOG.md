@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Read-guard hygiene (#3411).** The read guard now refuses a scope file holding a path
+  `install()` never writes (relative, or not normalised) as malformed, which denies, instead of
+  keeping it as a grant that matches nothing. `marker_line` refuses an entry id with outer
+  whitespace, which `marker_of` would strip and so bind to nothing. The Claude read-guard probe
+  also checks that the installed command bakes in its scope file, and that a Glob of a granted
+  file is denied.
+
 - **Fix: Claude proves the production output-schema shape (#3394).** Its
   once-per-run proof now launches the same published review-cell role schema
   that returning production cells send inline, including the real finding
