@@ -856,6 +856,15 @@ class TestStampedRows(unittest.TestCase):
                        scope_path=self.scope_path)
         self.assertEqual({"e1"}, set(rg._read_scope_file(self.scope_path)))
 
+    def test_a_headless_entry_binding_is_stamped_as_install_writes_it(self):
+        # The headless runner binds each child to a one-row file of its own (scope_bindings).
+        import scripts.scope_bindings as scope_bindings
+        bindings = scope_bindings.EntryScopes(self.scope_path)
+        self.addCleanup(bindings.clear)
+        path = bindings.ensure({"id": "probe-1", "scope": {"files": [self.a], "dirs": [], "reads": []}})
+        self.assertEqual((True, ""), self._read("probe-1", self.a, path))
+        self.assertFalse(self._read("probe-1", self.b, path)[0])
+
     def test_the_hook_process_checks_the_stamp(self):
         # Run as the hosts run it: `<python> -I <hook> <scope>`, which loads run_stamp by path.
         rg.install([_entry("e1", files=[self.a])], settings_path=self.settings,

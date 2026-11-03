@@ -463,9 +463,7 @@ def install(plan, settings_path=None, scope_path=None, *, session_root=None):
             "carried a `scope` dict. Use uninstall() to tear the guard down.")
     _trusted_hook_argv()  # refuse before writing either private artifact
     key = _stamp_key(create=True)
-    if key is None:
-        raise ValueError("refusing to arm the read-guard: the run-stamp key is unavailable (#3436)")
-    added = stamp_rows(added, key)
+    added = stamp_rows(added, key)              # #3436: no key raises here, before any write
     # #3436 (R-P5-5): a row survives the union only with a valid stamp -- a concurrent fan-out's
     # does, a planted id's never does.
     merged = {eid: row for eid, row in _read_scope_file(scope_path).items()
