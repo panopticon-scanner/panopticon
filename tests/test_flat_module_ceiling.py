@@ -56,7 +56,6 @@ SURFACES = ("skill/scripts", "scripts", "skill/scripts/tools")
 PENDING: dict[str, int] = {
     "scripts/bump_pins.py": 871,
     "scripts/reconcile_apply.py": 813,
-    "scripts/triage.py": 792,
     "skill/scripts/diff_map.py": 1215,
     "skill/scripts/discovery.py": 1926,
     "skill/scripts/driver.py": 1200,

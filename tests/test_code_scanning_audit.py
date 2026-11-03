@@ -556,7 +556,7 @@ def test_response_urls_are_never_used_as_api_endpoints():
 def test_main_builds_only_the_hardened_default_runner(monkeypatch):
     marker = object()
     seen = []
-    monkeypatch.setattr(audit.triage, "default_gh_runner", lambda: marker)
+    monkeypatch.setattr(audit.gh_transport, "default_gh_runner", lambda: marker)
 
     class StubAudit:
         def __init__(self, audit_target, runner):

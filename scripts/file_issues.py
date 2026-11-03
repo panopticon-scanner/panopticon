@@ -27,7 +27,7 @@ try:
 except ImportError:            # pragma: no cover - not reachable on posix CI
     fcntl = None
 
-import triage
+import gh_transport
 from sanitize import repo_root, repo_relative, scrub, defang
 
 # skill/scripts/reconcile.py owns the part-path confinement; this filer's own copy never got the
@@ -371,13 +371,13 @@ GH_CREATE_TIMEOUT = 60
 
 
 def _gh_bin():
-    """The same trusted resolution `scripts/triage.py` uses (#1650 R1).
+    """The same trusted resolution `scripts/gh_transport.py` gives triage (#1650 R1).
 
     This module CREATES public issues as the automation account, so resolving its `gh` off the
     ambient PATH was the same CWE-427 shape triage was hardened against -- and it left the odd
     halfway state of a built env beside an unhardened argv[0] in the same `subprocess.run`.
     """
-    return triage.gh_bin()
+    return gh_transport.gh_bin()
 
 
 def validate_repo(repo):
@@ -584,7 +584,7 @@ def create(title, body, labels, dry, throttle=0.0, env=None, repo=REPO_SLUG,
                 _save_pending(pending_path, pending)
             return ledger[key]
     if env is None:
-        env = triage.gh_env()
+        env = gh_transport.gh_env()
     runner = functools.partial(subprocess.run, env=env, timeout=GH_CREATE_TIMEOUT)
     _preflight(repo, runner)
     with _ledger_lock(path):
@@ -679,7 +679,7 @@ def main():
         "; %d already filed, skipping" % skipped if skipped else ""))
 
     created = 0
-    env = None if a.dry_run else triage.gh_env()  # read once per run, not per issue
+    env = None if a.dry_run else gh_transport.gh_env()  # read once per run, not per issue
     for (f, rej), issue_labels in zip(todo, labels):
         body = body_for(f, rej, report=a.report, report_url=a.report_url,
                         run_label=a.run_label, run_date=a.run_date,

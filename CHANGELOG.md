@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **The filing tools' gh transport moved to `scripts/gh_transport.py` (#3404).** `triage.py`'s
+  trusted `gh` resolution, account environment and retry ladder now live in their own module, which
+  `file_issues`, `file_fixmes`, `code_scanning_audit` and `reconcile_apply` import directly.
+  Behaviour is unchanged. `triage` re-exports the names for one release; code that patches one must
+  patch `gh_transport`.
+
 - **Read-guard scope rows are stamped (#3436).** `install` signs each read-scope row with this
   machine's run-stamp key, and the hook denies an agent bound to a row without a valid stamp.
   On arming, `install` keeps an on-disk row only if its stamp verifies, so an id planted in the

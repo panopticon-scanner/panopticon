@@ -3,7 +3,7 @@
 skill/scripts/reconcile.py against the run-2 fingerprint-to-issue linkage.
 
 Dry-run by default, always. Mirrors scripts/triage.py's conventions: injectable runner/sleep
-for testability, throttle+backoff on gh calls (from triage.gh), validate-before-mutate.
+for testability, throttle+backoff on gh calls (from gh_transport.gh), validate-before-mutate.
 
 Usage:
   python3 scripts/reconcile_apply.py recover-linkage --report report.json --out linkage.json
@@ -40,7 +40,7 @@ from datetime import datetime, timezone
 
 import file_issues
 import pinned_dir
-import triage
+import gh_transport
 
 LEDGER = file_issues.LEDGER
 PROGRESS_VERSION = 2
@@ -182,7 +182,7 @@ def recover_linkage_from_github(label="self-scan", runner=None, *,
                                 repo=file_issues.REPO_SLUG, reports=(), source_roots=()):
     """Recover only from matching source reports; an empty query needs none."""
     repo = _repo_slug(repo)
-    runner = runner or triage.default_gh_runner()
+    runner = runner or gh_transport.default_gh_runner()
     try:
         sources = _source_records(reports, source_roots)
         result = runner(["gh", "issue", "list", "--repo", repo, "--label", label,
@@ -398,7 +398,7 @@ def _owner_repo(url):
 
 
 def preflight_authorized(owner, repo, runner=None):
-    runner = runner or triage.default_gh_runner()
+    runner = runner or gh_transport.default_gh_runner()
     """Owner/admin gate for the mutating apply. Uses the AUTHENTICATED gh token
     (`gh api repos/{o}/{r} --jq .permissions`), so it reflects whichever GH_CONFIG_DIR/account
     is active — the loud catch for a wrong-account run. (True, "") iff .permissions.admin is
@@ -633,7 +633,7 @@ def _apply_locked(actions, dry=True, confirm_close=False, throttle=1.5,
         print("DRY reset-progress: previewing replay; receipt unchanged")
     if not dry and actions and progress_path is None:
         raise ValueError("live comments require progress_path for durable intent and recovery")
-    runner = runner or triage.default_gh_runner()
+    runner = runner or gh_transport.default_gh_runner()
     commented = closed = 0
     repo_slug = None
     progress = root = None
@@ -718,7 +718,7 @@ def _apply_locked(actions, dry=True, confirm_close=False, throttle=1.5,
                 sleep(throttle)
                 commented += 1
         if a["close"] and confirm_close and (receipt is None or not receipt["closed"]):
-            triage.gh(["gh", "issue", "close", n, "--repo", repo_slug, "--reason", "not planned"],
+            gh_transport.gh(["gh", "issue", "close", n, "--repo", repo_slug, "--reason", "not planned"],
                       runner=runner, sleep=sleep)
             if receipt is not None:
                 receipt["closed"] = True

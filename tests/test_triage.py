@@ -7,6 +7,7 @@ from unittest import mock
 import pytest
 
 import sanitize
+import gh_transport
 import triage
 
 
@@ -350,14 +351,14 @@ class TestGhRealBoundary(unittest.TestCase):
     def test_default_runner_invokes_real_gh_process(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             self._make_fake_gh(tmpdir, 'echo "{\\"login\\":\\"fake-user\\"}"')
-            with mock.patch.object(triage, "TRUSTED_PATH", tmpdir):
+            with mock.patch.object(gh_transport, "TRUSTED_PATH", tmpdir):
                 result = triage.gh(["gh", "api", "user"])
             self.assertIn("fake-user", result)
 
     def test_default_runner_surfaces_nonzero_exit(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             self._make_fake_gh(tmpdir, 'echo "not found" >&2; exit 1')
-            with mock.patch.object(triage, "TRUSTED_PATH", tmpdir):
+            with mock.patch.object(gh_transport, "TRUSTED_PATH", tmpdir):
                 with self.assertRaises(RuntimeError) as ctx:
                     triage.gh(["gh", "issue", "view", "123"])
             self.assertIn("not found", str(ctx.exception))
@@ -375,7 +376,7 @@ class TestGhRealBoundary(unittest.TestCase):
             self._make_fake_gh(hostile, 'echo launched >> "%s"; echo "{}"' % log)
             self._make_fake_gh(trusted, 'echo "{\\"login\\":\\"trusted\\"}"')
             ambient = hostile + os.pathsep + os.environ.get("PATH", "")
-            with mock.patch.object(triage, "TRUSTED_PATH", trusted), \
+            with mock.patch.object(gh_transport, "TRUSTED_PATH", trusted), \
                     mock.patch.dict(os.environ, {"PATH": ambient}):
                 result = triage.gh(["gh", "api", "user"])
             self.assertIn("trusted", result)
@@ -385,7 +386,7 @@ class TestGhRealBoundary(unittest.TestCase):
     def test_the_resolved_gh_is_launched_by_absolute_path(self):
         with tempfile.TemporaryDirectory() as trusted:
             stub = self._make_fake_gh(trusted, 'echo ok')
-            with mock.patch.object(triage, "TRUSTED_PATH", trusted), \
+            with mock.patch.object(gh_transport, "TRUSTED_PATH", trusted), \
                     mock.patch.object(triage.subprocess, "run") as m:
                 m.return_value = mock.Mock(returncode=0, stdout="ok", stderr="")
                 triage.gh(["gh", "api", "x"])
@@ -393,7 +394,7 @@ class TestGhRealBoundary(unittest.TestCase):
 
     def test_a_gh_absent_from_the_trusted_path_refuses_with_a_clear_message(self):
         with tempfile.TemporaryDirectory() as empty:
-            with mock.patch.object(triage, "TRUSTED_PATH", empty):
+            with mock.patch.object(gh_transport, "TRUSTED_PATH", empty):
                 with self.assertRaises(RuntimeError) as ctx:
                     triage.gh(["gh", "api", "user"])
         self.assertIn("gh", str(ctx.exception))
@@ -409,8 +410,8 @@ class TestGhRealBoundary(unittest.TestCase):
             cfg = os.path.join(d, "config.json")
             with open(cfg, "w", encoding="utf-8") as fh:
                 json.dump({"gh_config_dir": d}, fh)
-            with mock.patch.object(triage, "TRUSTED_PATH", trusted), \
-                    mock.patch.object(triage, "CONFIG_PATH", cfg), \
+            with mock.patch.object(gh_transport, "TRUSTED_PATH", trusted), \
+                    mock.patch.object(gh_transport, "CONFIG_PATH", cfg), \
                     mock.patch.dict(os.environ, {"GH_TOKEN": "ambient-token",
                                                  "AWS_SECRET_ACCESS_KEY": "nope"}), \
                     mock.patch.object(triage.subprocess, "run") as m:
@@ -463,7 +464,7 @@ class TestGhRealBoundary(unittest.TestCase):
             os.makedirs(local_bin)
             self._make_fake_gh(local_bin, 'echo ok')
             with mock.patch.dict(os.environ, {"HOME": home}), \
-                    mock.patch.object(triage, "TRUSTED_PATH", empty):
+                    mock.patch.object(gh_transport, "TRUSTED_PATH", empty):
                 self.assertEqual(os.path.join(local_bin, "gh"), triage.gh_bin())
 
     def test_the_operators_bin_dir_is_searched_after_the_system_ones(self):
@@ -472,7 +473,7 @@ class TestGhRealBoundary(unittest.TestCase):
             os.makedirs(local_bin)
             self._make_fake_gh(local_bin, 'echo local')
             self._make_fake_gh(system, 'echo system')
-            with mock.patch.object(triage, "TRUSTED_PATH", system):
+            with mock.patch.object(gh_transport, "TRUSTED_PATH", system):
                 self.assertEqual(os.path.join(system, "gh"), triage.gh_bin(home))
 
     def test_a_gh_only_on_the_ambient_path_is_still_not_resolved(self):
@@ -485,7 +486,7 @@ class TestGhRealBoundary(unittest.TestCase):
             with mock.patch.dict(os.environ, {"HOME": home,
                                               "PATH": hostile + os.pathsep
                                               + os.environ.get("PATH", "")}), \
-                    mock.patch.object(triage, "TRUSTED_PATH", empty):
+                    mock.patch.object(gh_transport, "TRUSTED_PATH", empty):
                 with self.assertRaises(RuntimeError):
                     triage.gh_bin()
 
@@ -563,8 +564,8 @@ class TestGhEnv(unittest.TestCase):
             cfg = os.path.join(d, "config.json")
             with open(cfg, "w") as fh:
                 json.dump({"gh_config_dir": d}, fh)
-            with mock.patch.object(triage, "TRUSTED_PATH", trusted), \
-                    mock.patch.object(triage, "CONFIG_PATH", cfg), \
+            with mock.patch.object(gh_transport, "TRUSTED_PATH", trusted), \
+                    mock.patch.object(gh_transport, "CONFIG_PATH", cfg), \
                     mock.patch.object(triage.subprocess, "run") as m:
                 m.return_value = mock.Mock(returncode=0, stdout="ok", stderr="")
                 triage.gh(["gh", "api", "x"])
@@ -1274,3 +1275,67 @@ class TestStandaloneImports(unittest.TestCase):
 
     def test_config_path_preserves_the_legacy_value(self):
         self.assertEqual(triage.CONFIG_PATH, os.path.join(".panopticon", "config.json"))
+
+
+# #3404: the gh transport moved to gh_transport.py; triage re-exports it for one release.
+_MOVED = ("RATE_HINTS", "CONFIG_PATH", "TRUSTED_PATH", "trusted_path", "gh_bin",
+          "declared_gh_config_dir", "_GH_AUTH_PASSTHROUGH", "gh_env", "GH_TIMEOUT", "_run_gh",
+          "default_gh_runner", "GH_ATTEMPTS", "backoff_seconds", "_backoff", "attempt_gh", "gh")
+
+
+def test_triage_re_exports_the_moved_transport_as_the_same_objects():
+    for name in _MOVED:
+        assert getattr(triage, name) is getattr(gh_transport, name), name
+
+
+def _patched_through_triage(tree):
+    """(line, name) for each patch of a moved name that goes through `triage`."""
+    import ast
+
+    def via_triage(node):
+        return ((isinstance(node, ast.Name) and node.id == "triage")
+                or (isinstance(node, ast.Attribute) and node.attr == "triage"))
+
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        callee = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+        args = node.args
+        if (callee in ("object", "setattr", "delattr") and len(args) >= 2 and via_triage(args[0])
+                and isinstance(args[1], ast.Constant) and args[1].value in _MOVED):
+            found.append((node.lineno, args[1].value))
+        if (callee in ("patch", "setattr") and args and isinstance(args[0], ast.Constant)
+                and isinstance(args[0].value, str)
+                and args[0].value.rsplit(".", 2)[-2:-1] == ["triage"]
+                and args[0].value.rsplit(".", 1)[-1] in _MOVED):
+            found.append((node.lineno, args[0].value))
+    return found
+
+
+def test_no_test_patches_a_moved_name_through_triage():
+    # A patch on `triage.gh_env` replaces the alias, not the name gh_transport's own code reads:
+    # it would pass silently and test nothing. Patch `gh_transport.<name>` instead.
+    import ast
+    tests = Path(__file__).resolve().parent
+    stale = {}
+    for path in sorted(tests.rglob("*.py")):
+        hits = _patched_through_triage(ast.parse(path.read_text(encoding="utf-8")))
+        if hits:
+            stale[str(path.relative_to(tests))] = hits
+    assert stale == {}
+
+
+def test_the_stale_patch_scan_sees_every_spelling():
+    import ast
+    source = '''
+mock.patch.object(triage, "gh_env")
+mock.patch.object(file_issues.triage, "TRUSTED_PATH")
+monkeypatch.setattr(triage, "gh_bin", None)
+monkeypatch.setattr("triage.CONFIG_PATH", "x")
+mock.patch("triage.default_gh_runner")
+mock.patch.object(triage, "PROGRESS")
+mock.patch.object(gh_transport, "gh_env")
+'''
+    assert [name for _, name in _patched_through_triage(ast.parse(source))] == [
+        "gh_env", "TRUSTED_PATH", "gh_bin", "triage.CONFIG_PATH", "triage.default_gh_runner"]

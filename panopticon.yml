@@ -688,6 +688,7 @@ groups:
       - scripts/file_issues.py
       - scripts/file_fixmes.py
       - scripts/triage.py
+      - scripts/gh_transport.py
       - scripts/reconcile_apply.py
       - scripts/pinned_dir.py
       - scripts/sanitize.py
