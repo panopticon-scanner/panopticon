@@ -67,8 +67,9 @@ modules because until #1761/#1762/#1763 the largest modules in the tree were the
 `run_tools.py` grew by 80% in the six days after run-14 ARC-2609514778 was written, and nothing
 pushed back.
 
-The repo-root filing tools (`triage.py`, `file_issues.py`, `file_fixmes.py`, `code_scanning_audit.py`,
-`reconcile_apply.py`) launch `gh` through one module, `scripts/gh_transport.py` (#3404): the trusted
-binary resolution, the declared-account environment and the single retry ladder. `triage.py`
-re-exports those names for one release. A test that patches one patches `gh_transport`, where the
-code reads it, and `tests/test_triage.py` fails on a patch that still goes through `triage`.
+The repo-root filing tools (`triage.py`, `file_issues.py`, `file_fixmes.py`,
+`code_scanning_audit.py`, `reconcile_apply.py`) launch `gh` through one module beside them,
+`gh_transport.py` (#3404): the trusted binary resolution, the declared-account environment and the
+single retry ladder. `triage.py` re-exports those names for one release. A test that patches one
+patches `gh_transport`, where the code reads it, and `tests/test_triage.py` fails on a patch that
+still goes through `triage`.
