@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Update the tools-image Python dependency closure (#3416).** The privileged
+  requirements now pin certifi 2026.10.23, sse-starlette 3.6.0 and starlette
+  1.10.0. Their allowed hashes were re-resolved through `bump_pins.py`, which
+  downloaded and verified the installable wheel bytes rather than admitting the
+  releases' source distributions.
+
 - **Fix: the tools image overrides vulnerable minimatch copies (#3419).** The
   reviewed Node closure now resolves every minimatch copy to fixed 11.0.1. The
   security adapter and the bundled ESLint 8 SARIF formatter continue to parse
