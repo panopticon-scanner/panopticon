@@ -696,6 +696,35 @@ class TestSemgrepTimeoutsAreDisclosed(unittest.TestCase):
         self.assertEqual((row["rules"], row["rule_scope"]), ([], "all_applicable"))
         self.assertNotIn(private, diagnostic + json.dumps(disposition))
 
+    def test_a_rule_phrase_inside_the_path_is_not_a_rule_identity(self):
+        path = "dir/ When parsing a snippet as Ruby for metavariable-pattern in rule 'spoof'/a.py"
+        notes = [{"descriptor": {"id": "Other syntax error"},
+                  "message": {"text": "Other syntax error at line /src/%s:1:\n parser failed"
+                              % path}}]
+        _, disposition, _ = self._ingest(_semgrep_capture(notes))
+        row = only(disposition["file_coverage"]["files"])
+        self.assertEqual((row["file"], row["rules"], row["rule_scope"]),
+                         (path, [], "all_applicable"))
+
+    def test_a_syntax_failed_result_is_not_counted_as_parsed(self):
+        notes = [{"descriptor": {"id": "Other syntax error"},
+                  "message": {"text":
+                              "Other syntax error at line /src/small.py:1:\n parser failed"}}]
+        _, disposition, _ = self._ingest(_semgrep_capture(notes))
+        facts = disposition["file_coverage"]
+        self.assertEqual((facts["parsed_files"], facts["unparsed_files"]), (0, 1))
+
+    def test_one_file_with_timeout_and_size_gaps_is_counted_once(self):
+        payload = _semgrep_capture([
+            _timeout_note("Timeout when running r on /src/a.py:\n ")], paths=("a.py",))
+        stamp = first(payload["runs"])["properties"]["panopticon_size_skipped"]
+        stamp.update({"count": 1, "files": ["a.py"]})
+        _, disposition, _ = self._ingest(payload)
+        facts = disposition["file_coverage"]
+        row = only(facts["files"])
+        self.assertEqual((row["reason"], row["size_skipped"], facts["unparsed_files"]),
+                         ("multiple_gaps", True, 1))
+
     def test_missing_plugin_notes_alone_stay_complete(self):
         findings, disposition, diagnostic = self._ingest(_semgrep_capture([_MISSING_PLUGIN]))
         self.assertNotIn("file_coverage", disposition)

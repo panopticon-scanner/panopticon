@@ -917,7 +917,10 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `file_coverage` as `rule_timeout` or `timeout_abandoned`, with its count, and so lands in
   `meta.coverage.tools_file_partial`. `summary.coverage_certified` is then false. A timeout whose
   file cannot be read off the message is counted as unlocated and is still partial. Semgrep's
-  other notifications, such as `Missing plugin`, are not coverage gaps here.
+  `Syntax error` and `Other syntax error` notifications are likewise partial coverage of the named
+  file (#3229), either for the named rule or for all applicable rules when the file parser failed;
+  any target with such an unparseable file is not coverage-certified. Semgrep's other
+  notifications, such as `Missing plugin`, are not coverage gaps here.
   **Files over Semgrep's size limit are listed by the host (#3193).** The argv also passes
   `--max-target-bytes=1000000`, Semgrep's own default. Semgrep skips every regular file larger than
   that, of any kind, binary included, and its SARIF says nothing about it. So when the capture lands,
