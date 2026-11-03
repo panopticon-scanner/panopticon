@@ -260,7 +260,20 @@ class TestDockerfilePhase1(unittest.TestCase):
             item = locked["node_modules/" + package]
             self.assertEqual(item["version"], version)
             self.assertTrue(item["integrity"].startswith("sha512-"))
-        self.assertEqual(len(locked), 153)
+        self.assertEqual(len(locked), 141)
+
+    def test_node_closure_overrides_every_minimatch_to_the_fixed_release(self):
+        """#3419: neither vulnerable dependency range admits fixed 11.0.1."""
+        node_root = os.path.join(ROOT, "tools-image", "node")
+        with open(os.path.join(node_root, "package.json"), encoding="utf-8") as fh:
+            declared = json.load(fh)
+        with open(os.path.join(node_root, "package-lock.json"), encoding="utf-8") as fh:
+            locked = json.load(fh)["packages"]
+        self.assertEqual(declared.get("overrides"), {"minimatch": "11.0.1"})
+        minimatches = {path: item.get("version") for path, item in locked.items()
+                       if path.endswith("/minimatch")}
+        self.assertTrue(minimatches)
+        self.assertEqual({"11.0.1"}, set(minimatches.values()), minimatches)
 
 
 class TestFindSecBugsIntegrity(unittest.TestCase):

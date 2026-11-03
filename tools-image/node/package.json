@@ -10,5 +10,8 @@
     "eslint": "10.9.0",
     "eslint-plugin-security": "4.0.1",
     "typescript": "6.0.3"
+  },
+  "overrides": {
+    "minimatch": "11.0.1"
   }
 }

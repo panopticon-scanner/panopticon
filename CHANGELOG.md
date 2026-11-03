@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Fix: the tools image overrides vulnerable minimatch copies (#3419).** The
+  reviewed Node closure now resolves every ESLint consumer to fixed minimatch
+  11.0.1; both the security adapter and the bundled ESLint 8 SARIF formatter
+  continue to parse and report findings.
+
 - **Fix: dispatch-ledger denial inputs are redacted and bounded (#3366).** Denied
   tool inputs now have secret-shaped string leaves masked and capped in the
   persisted ledger copy, while the host's original denial rows remain intact for
