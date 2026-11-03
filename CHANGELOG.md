@@ -8,6 +8,12 @@
   sits in the worker before `run_entry`, so not even a freed worker's next entry starts.
   Ctrl-C and SIGTERM are unchanged.
 
+- **Fix: replay preserves the target's tool-exclusion policy (#3388).** Replay now
+  takes the effective exclude globs recorded in the archived tools manifest instead
+  of re-reading a target config absent from archive-only roots. If that policy is
+  unavailable, replay discloses it and omits archived tool ingestion rather than
+  reattributing excluded findings to the `fixture-corpus` suppression.
+
 - **Update the tools-image Python dependency closure (#3416).** The privileged
   requirements now pin certifi 2026.10.23, sse-starlette 3.6.0 and starlette
   1.10.0. Their allowed hashes were re-resolved through `bump_pins.py`, which
