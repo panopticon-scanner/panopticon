@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Refactor: isolate the driver's host-posture subsystem (#3402).** Host
+  capability assessment, drift/refusal decisions and disclosure now live in
+  `host_posture.py`; the driver keeps its existing compatibility names and
+  behavior while dropping below its flat-module size pin.
+
 - **Fix: Claude proves the production output-schema shape (#3394).** Its
   once-per-run proof now launches the same published review-cell role schema
   that returning production cells send inline, including the real finding

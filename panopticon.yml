@@ -468,6 +468,7 @@ groups:
       match:
       - skill/scripts/hosts.py
       - skill/scripts/host_probes.py
+      - skill/scripts/host_posture.py
       - skill/scripts/app_trace.py
       - skill/scripts/host_disclosure.py
       - skill/scripts/codex_host.py
