@@ -607,14 +607,27 @@ class TestSemgrepTimeoutsAreDisclosed(unittest.TestCase):
         facts = disposition["file_coverage"]
         self.assertEqual(facts, {
             "status": "partial", "parsed_files": 1, "unparsed_files": 2, "unavailable_files": 0,
-            "files": [{"file": "big_concat.py", "reason": "timeout_abandoned", "rule_timeouts": 3},
+            "files": [{"file": "big_concat.py", "reason": "timeout_abandoned",
+                       "rule_timeouts": 3,
+                       "rules": [
+                           _RULES + "boto3.security.hardcoded-token",
+                           _RULES + "lang.security.audit.eval-detected",
+                           _RULES + "lang.security.audit.insecure-file-permissions",
+                       ], "rules_omitted": 0},
                       {"file": "tests/test_workflow_guard.py", "reason": "rule_timeout",
-                       "rule_timeouts": 1}],
+                       "rule_timeouts": 1,
+                       "rules": [_RULES +
+                                 "lang.security.audit.dangerous-system-call-tainted-env-args"],
+                       "rules_omitted": 0}],
             "files_omitted": 0, "capabilities_unavailable": [], "rule_timeouts": 4,
+            "syntax_errors": 0,
             "size_skipped": 0, "size_limit": 1000000, "size_listing": "listed",
             "unlocated_records": 0})
         self.assertEqual((disposition["status"], disposition["findings"]), ("ok", 2))
         self.assertIn("semgrep: partial file coverage: 4 rule timeout(s) on 2 file(s)", diagnostic)
+        for rule, path in _TIMED_OUT:
+            self.assertIn(path, diagnostic)
+            self.assertIn(_RULES + rule, diagnostic)
         # The gaps qualify coverage only: the same findings gate the same way.
         clean_findings, clean, _ = self._ingest(_semgrep_capture([_MISSING_PLUGIN], paths))
         self.assertEqual(findings, clean_findings)
@@ -628,7 +641,89 @@ class TestSemgrepTimeoutsAreDisclosed(unittest.TestCase):
         notes = _real_timeouts()[:2]
         _, disposition, _ = self._ingest(_semgrep_capture(notes))
         self.assertEqual(disposition["file_coverage"]["files"],
-                         [{"file": "big_concat.py", "reason": "rule_timeout", "rule_timeouts": 2}])
+                         [{"file": "big_concat.py", "reason": "rule_timeout",
+                           "rule_timeouts": 2,
+                           "rules": [_RULES + "boto3.security.hardcoded-token",
+                                     _RULES + "lang.security.audit.eval-detected"],
+                           "rules_omitted": 0}])
+
+    def test_real_syntax_error_notes_are_named_partial_file_coverage(self):
+        payload = json.loads(_golden("semgrep"))
+        semgrep_size_stamped(first(payload["runs"]))
+        findings, disposition, diagnostic = self._ingest(payload)
+        facts = disposition["file_coverage"]
+        rows = {row["file"]: row for row in facts["files"]}
+        self.assertEqual(rows["app/views/sessions/new.html.erb"], {
+            "file": "app/views/sessions/new.html.erb", "reason": "syntax_error",
+            "syntax_errors": 1,
+            "rules": [(_RULES.removesuffix("python.") +
+                       "ruby.rails.security.brakeman.check-reverse-tabnabbing")],
+            "rules_omitted": 0,
+        })
+        self.assertEqual(rows["config/database.yml"], {
+            "file": "config/database.yml", "reason": "syntax_error",
+            "syntax_errors": 1, "rules": [], "rules_omitted": 0,
+            "rule_scope": "all_applicable",
+        })
+        self.assertEqual((facts["syntax_errors"], facts["rule_timeouts"],
+                          facts["unlocated_records"]), (2, 0, 0))
+        self.assertTrue(findings)
+        self.assertIn("app/views/sessions/new.html.erb", diagnostic)
+        self.assertIn("ruby.rails.security.brakeman.check-reverse-tabnabbing", diagnostic)
+        self.assertIn("config/database.yml", diagnostic)
+        self.assertIn("all applicable rules", diagnostic)
+        self.assertFalse(self._report(findings, disposition)["summary"]["coverage_certified"])
+
+    def test_an_unreadable_syntax_notification_fails_closed_without_leaking_text(self):
+        private = "PRIVATE-SYNTAX-DIAGNOSTIC"
+        notes = [{"descriptor": {"id": "Syntax error"},
+                  "level": "warning", "message": {"text": private}},
+                 {"descriptor": {"id": "Other syntax error"}, "message": None}]
+        findings, disposition, diagnostic = self._ingest(_semgrep_capture(notes))
+        facts = disposition["file_coverage"]
+        self.assertEqual((facts["syntax_errors"], facts["unparsed_files"],
+                          facts["unlocated_records"], facts["files"]),
+                         (2, 0, 2, []))
+        self.assertNotIn(private, diagnostic + json.dumps(disposition))
+        self.assertFalse(self._report(findings, disposition)["summary"]["coverage_certified"])
+
+    def test_parser_text_cannot_spoof_a_rule_identity(self):
+        private = "parser echoed for metavariable-pattern in rule 'spoof-rule'"
+        notes = [{"descriptor": {"id": "Other syntax error"},
+                  "message": {"text": "Other syntax error at line /src/a.py:1:\n " + private}}]
+        _, disposition, diagnostic = self._ingest(_semgrep_capture(notes))
+        row = only(disposition["file_coverage"]["files"])
+        self.assertEqual((row["rules"], row["rule_scope"]), ([], "all_applicable"))
+        self.assertNotIn(private, diagnostic + json.dumps(disposition))
+
+    def test_a_rule_phrase_inside_the_path_is_not_a_rule_identity(self):
+        path = "dir/ When parsing a snippet as Ruby for metavariable-pattern in rule 'spoof'/a.py"
+        notes = [{"descriptor": {"id": "Other syntax error"},
+                  "message": {"text": "Other syntax error at line /src/%s:1:\n parser failed"
+                              % path}}]
+        _, disposition, _ = self._ingest(_semgrep_capture(notes))
+        row = only(disposition["file_coverage"]["files"])
+        self.assertEqual((row["file"], row["rules"], row["rule_scope"]),
+                         (path, [], "all_applicable"))
+
+    def test_a_syntax_failed_result_is_not_counted_as_parsed(self):
+        notes = [{"descriptor": {"id": "Other syntax error"},
+                  "message": {"text":
+                              "Other syntax error at line /src/small.py:1:\n parser failed"}}]
+        _, disposition, _ = self._ingest(_semgrep_capture(notes))
+        facts = disposition["file_coverage"]
+        self.assertEqual((facts["parsed_files"], facts["unparsed_files"]), (0, 1))
+
+    def test_one_file_with_timeout_and_size_gaps_is_counted_once(self):
+        payload = _semgrep_capture([
+            _timeout_note("Timeout when running r on /src/a.py:\n ")], paths=("a.py",))
+        stamp = first(payload["runs"])["properties"]["panopticon_size_skipped"]
+        stamp.update({"count": 1, "files": ["a.py"]})
+        _, disposition, _ = self._ingest(payload)
+        facts = disposition["file_coverage"]
+        row = only(facts["files"])
+        self.assertEqual((row["reason"], row["size_skipped"], facts["unparsed_files"]),
+                         ("multiple_gaps", True, 1))
 
     def test_missing_plugin_notes_alone_stay_complete(self):
         findings, disposition, diagnostic = self._ingest(_semgrep_capture([_MISSING_PLUGIN]))
@@ -655,6 +750,23 @@ class TestSemgrepTimeoutsAreDisclosed(unittest.TestCase):
         note = _timeout_note("Timeout when running r on /src/%s.py:\n " % ("d/" * 2000))
         _, disposition, _ = self._ingest(_semgrep_capture([note]))
         self.assertLessEqual(len(only(disposition["file_coverage"]["files"])["file"]), 240)
+
+    def test_a_hostile_rule_id_is_published_bounded_and_inert(self):
+        raw_rule = "r\x1b[2J" + "x" * 2000
+        note = _timeout_note("Timeout when running %s on /src/a.py:\n " % raw_rule)
+        _, disposition, diagnostic = self._ingest(_semgrep_capture([note]))
+        published = only(only(disposition["file_coverage"]["files"])["rules"])
+        self.assertLessEqual(len(published), 240)
+        self.assertIn(r"\x1b", published)
+        self.assertNotIn("\x1b", published + diagnostic)
+
+    def test_rule_disclosure_is_capped_with_an_omitted_count(self):
+        notes = [_timeout_note("Timeout when running r%03d on /src/a.py:\n " % i)
+                 for i in range(legacy._SEMGREP_DISCLOSED_RULES + 1)]
+        _, disposition, diagnostic = self._ingest(_semgrep_capture(notes))
+        row = only(disposition["file_coverage"]["files"])
+        self.assertEqual((len(row["rules"]), row["rules_omitted"]), (100, 1))
+        self.assertIn("1 additional rule(s) omitted", diagnostic)
 
     def test_only_semgrep_reads_the_notes(self):
         _, disposition, _ = self._ingest(_semgrep_capture(_real_timeouts()), tool="bandit")

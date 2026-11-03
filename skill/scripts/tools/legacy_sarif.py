@@ -115,10 +115,19 @@ TOOL_CMD = {
 # Max seconds to let a single tool invocation run before it's killed.
 TOOL_TIMEOUT = 300
 
-# Semgrep 1.179.0 names the file of a rule timeout ONLY in this prose; the
-# notification carries no `locations`. `.` stops at a newline, so a path that
-# holds one does not match and is counted unlocated rather than misread.
-_SEMGREP_TIMEOUT_TEXT = re.compile(r"\ATimeout when running \S+ on (.+):\n ?\Z")
+# Semgrep 1.179.0 names the file and rule of a timeout ONLY in this prose; the
+# notification carries no `locations`. Its syntax-error notes likewise put the
+# path (and sometimes the rule) only in prose. `.` stops at a newline, so a path
+# that holds one does not match and is counted unlocated rather than misread.
+_SEMGREP_TIMEOUT_TEXT = re.compile(r"\ATimeout when running (\S+) on (.+):\n ?\Z")
+_SEMGREP_SYNTAX_TEXT = re.compile(
+    r"\A(?:Syntax|Other syntax) error at line (.+):[0-9]+:\n")
+_SEMGREP_SYNTAX_RULE = re.compile(
+    r"\n When parsing a snippet [^\r\n]* for metavariable-pattern in rule "
+    r"['`]([^'`\r\n]+)['`]")
+_SEMGREP_SYNTAX_IDS = frozenset({"Syntax error", "Other syntax error"})
+_SEMGREP_DISCLOSED_FILES = 100
+_SEMGREP_DISCLOSED_RULES = 100
 
 
 def _sarif_path(path):
@@ -127,43 +136,124 @@ def _sarif_path(path):
     return path.removeprefix("file://").removeprefix(su._TARGET_PREFIX).lstrip("/")
 
 
-def _timeouts(sarif):
-    """#2957: ({file: rule timeouts}, unlocated timeouts, result paths).
+def _notifications(sarif):
+    """Yield Semgrep execution notes, tolerating every malformed container."""
+    runs = sarif.get("runs") if isinstance(sarif, dict) else None
+    for run in runs if isinstance(runs, list) else []:
+        invocations = run.get("invocations") if isinstance(run, dict) else None
+        for invocation in invocations if isinstance(invocations, list) else []:
+            notes = (invocation.get("toolExecutionNotifications")
+                     if isinstance(invocation, dict) else None)
+            yield from (notes if isinstance(notes, list) else [])
 
-    Only `toolExecutionNotifications` whose descriptor id is `Timeout` count;
-    the `Missing plugin` notes every run carries are not coverage gaps here. A
-    timeout whose file cannot be read off the message is counted unlocated, and
-    its text is never published."""
-    per_file: dict[str, int] = {}
-    unlocated = 0
+
+def _result_paths(sarif):
+    """Paths that still produced at least one result in this capture."""
     located: set[str] = set()
     runs = sarif.get("runs") if isinstance(sarif, dict) else None
     for run in runs if isinstance(runs, list) else []:
-        run = run if isinstance(run, dict) else {}
-        results = run.get("results")
+        results = run.get("results") if isinstance(run, dict) else None
         for result in results if isinstance(results, list) else []:
             try:
                 located.add(_sarif_path(result["locations"][0]["physicalLocation"]
                                         ["artifactLocation"]["uri"]))
             except (KeyError, IndexError, TypeError, AttributeError):
                 pass
-        invocations = run.get("invocations")
-        for invocation in invocations if isinstance(invocations, list) else []:
-            notes = (invocation.get("toolExecutionNotifications")
-                     if isinstance(invocation, dict) else None)
-            for note in notes if isinstance(notes, list) else []:
-                descriptor = note.get("descriptor") if isinstance(note, dict) else None
-                if not isinstance(descriptor, dict) or descriptor.get("id") != "Timeout":
-                    continue
-                message = note.get("message")
-                text = message.get("text") if isinstance(message, dict) else None
-                match = _SEMGREP_TIMEOUT_TEXT.match(text) if isinstance(text, str) else None
-                path = _sarif_path(match.group(1)) if match else ""
-                if path:
-                    per_file[path] = per_file.get(path, 0) + 1
-                else:
-                    unlocated += 1
-    return per_file, unlocated, located
+    return located
+
+
+def _timeouts(sarif):
+    """#2957: (per-file counts, per-file rules, unlocated, result paths).
+
+    Only `toolExecutionNotifications` whose descriptor id is `Timeout` count;
+    the `Missing plugin` notes every run carries are not coverage gaps here. A
+    timeout whose file cannot be read off the message is counted unlocated, and
+    its text is never published."""
+    per_file: dict[str, int] = {}
+    per_file_rules: dict[str, set[str]] = {}
+    unlocated = 0
+    for note in _notifications(sarif):
+        descriptor = note.get("descriptor") if isinstance(note, dict) else None
+        if not isinstance(descriptor, dict) or descriptor.get("id") != "Timeout":
+            continue
+        message = note.get("message")
+        text = message.get("text") if isinstance(message, dict) else None
+        match = _SEMGREP_TIMEOUT_TEXT.match(text) if isinstance(text, str) else None
+        rule = match.group(1) if match else ""
+        path = _sarif_path(match.group(2)) if match else ""
+        if path:
+            per_file[path] = per_file.get(path, 0) + 1
+            per_file_rules.setdefault(path, set()).add(rule)
+        else:
+            unlocated += 1
+    return per_file, per_file_rules, unlocated, _result_paths(sarif)
+
+
+def _syntax_errors(sarif):
+    """#3229: (per-file counts/rules, all-rule files, unlocated errors).
+
+    `Syntax error` and `Other syntax error` both mean Semgrep could not apply
+    its ordinary coverage to the named bytes. Some notes identify one
+    metavariable-pattern rule; a note with no rule is a file-parser failure and
+    therefore applies to every applicable rule. No diagnostic prose is ever
+    published."""
+    per_file: dict[str, int] = {}
+    per_file_rules: dict[str, set[str]] = {}
+    all_applicable: set[str] = set()
+    unlocated = 0
+    for note in _notifications(sarif):
+        descriptor = note.get("descriptor") if isinstance(note, dict) else None
+        if (not isinstance(descriptor, dict)
+                or descriptor.get("id") not in _SEMGREP_SYNTAX_IDS):
+            continue
+        message = note.get("message")
+        text = message.get("text") if isinstance(message, dict) else None
+        if not isinstance(text, str):
+            unlocated += 1
+            continue
+        match = _SEMGREP_SYNTAX_TEXT.match(text)
+        path = _sarif_path(match.group(1)) if match else ""
+        if not path:
+            unlocated += 1
+            continue
+        per_file[path] = per_file.get(path, 0) + 1
+        rule = _SEMGREP_SYNTAX_RULE.search(text)
+        if rule:
+            per_file_rules.setdefault(path, set()).add(rule.group(1))
+        else:
+            all_applicable.add(path)
+    return per_file, per_file_rules, all_applicable, unlocated
+
+
+def _published_rules(rules):
+    """A bounded, inert rule-id list plus the count that did not fit."""
+    ordered = sorted(rules)
+    published = [inert_text(rule, limit=239) for rule in
+                 ordered[:_SEMGREP_DISCLOSED_RULES]]
+    return published, max(0, len(ordered) - len(published))
+
+
+def _disclose_semgrep_rows(rows, omitted):
+    """Name each bounded file/rule gap without printing scanner prose."""
+    for row in rows:
+        detail = []
+        if row.get("rule_timeouts"):
+            detail.append("%d rule timeout(s)" % row["rule_timeouts"])
+        if row.get("syntax_errors"):
+            detail.append("%d syntax error(s)" % row["syntax_errors"])
+        if row.get("reason") == "size_skipped" or row.get("size_skipped"):
+            detail.append("over the size limit")
+        if row.get("rules"):
+            detail.append("rules: %s" % ", ".join(row["rules"]))
+        if row.get("rule_scope") == "all_applicable":
+            detail.append("all applicable rules")
+        if row.get("rules_omitted"):
+            detail.append("%d additional rule(s) omitted" % row["rules_omitted"])
+        print("semgrep: partial file coverage: %s: %s"
+              % (row["file"], "; ".join(detail)), file=sys.stderr)
+    if omitted:
+        print("semgrep: partial file coverage: %d additional file(s) omitted"
+              % omitted, file=sys.stderr)
 
 
 def _size_listing(sarif):
@@ -191,37 +281,69 @@ def semgrep_file_coverage(sarif):
 
     #2957: a file with SEMGREP_TIMEOUT_THRESHOLD or more rule timeouts was
     abandoned (no rule's findings from it survive); fewer means those rules'
-    findings are missing. #3193: a file over the size limit was never read.
-    A size listing that is absent, malformed or cut short is one unlocated gap."""
-    per_file, timeouts_unlocated, located = _timeouts(sarif)
+    findings are missing. #3229: either syntax-error descriptor means the
+    named file/rule was not fully parsed. #3193: a file over the size limit was
+    never read. A size listing that is absent, malformed or cut short is one
+    unlocated gap."""
+    per_file, timeout_rules, timeouts_unlocated, located = _timeouts(sarif)
+    syntax, syntax_rules, syntax_all, syntax_unlocated = _syntax_errors(sarif)
     sized, size_count, limit, state = _size_listing(sarif)
-    unlocated = timeouts_unlocated + (state != "listed")
-    if not per_file and not unlocated and not size_count:
+    unlocated = timeouts_unlocated + syntax_unlocated + (state != "listed")
+    if not per_file and not syntax and not unlocated and not size_count:
         return None
     timeouts = sum(per_file.values()) + timeouts_unlocated
+    syntax_count = sum(syntax.values()) + syntax_unlocated
     if timeouts:
         print("semgrep: partial file coverage: %d rule timeout(s) on %d file(s), %d "
               "without an identifiable file; usable findings retained"
               % (timeouts, len(per_file), timeouts_unlocated), file=sys.stderr)
+    if syntax_count:
+        print("semgrep: partial file coverage: %d syntax error(s) on %d file(s), %d "
+              "without an identifiable file; usable findings retained"
+              % (syntax_count, len(syntax), syntax_unlocated), file=sys.stderr)
     if size_count or state != "listed":
         print("semgrep: partial file coverage: %d file(s) over the size limit not "
               "scanned (listing %s)" % (size_count, state), file=sys.stderr)
-    rows = [(path, {"reason": ("timeout_abandoned"
-                               if per_file[path] >= SEMGREP_TIMEOUT_THRESHOLD
-                               else "rule_timeout"),
-                    "rule_timeouts": per_file[path]}) for path in per_file]
-    rows += [(path, {"reason": "size_skipped"}) for path in sized]
-    rows.sort(key=lambda row: row[0])
-    unparsed = len(per_file) + size_count
+    facts_by_path: dict[str, dict[str, object]] = {}
+    for path in set(per_file) | set(syntax):
+        timed_out, failed_parse = per_file.get(path, 0), syntax.get(path, 0)
+        reason = ("rule_timeout_and_syntax_error" if timed_out and failed_parse
+                  else "syntax_error" if failed_parse
+                  else "timeout_abandoned" if timed_out >= SEMGREP_TIMEOUT_THRESHOLD
+                  else "rule_timeout")
+        facts: dict[str, object] = {"reason": reason}
+        if timed_out:
+            facts["rule_timeouts"] = timed_out
+        if failed_parse:
+            facts["syntax_errors"] = failed_parse
+        rules, rules_omitted = _published_rules(
+            timeout_rules.get(path, set()) | syntax_rules.get(path, set()))
+        facts.update({"rules": rules, "rules_omitted": rules_omitted})
+        if path in syntax_all:
+            facts["rule_scope"] = "all_applicable"
+        facts_by_path[path] = facts
+    for path in sized:
+        if path in facts_by_path:
+            facts_by_path[path]["reason"] = "multiple_gaps"
+            facts_by_path[path]["size_skipped"] = True
+        else:
+            facts_by_path[path] = {"reason": "size_skipped"}
+    rows = [(path, facts_by_path[path]) for path in sorted(facts_by_path)]
+    known_size_files = len(set(sized))
+    unparsed = len(facts_by_path) + max(0, size_count - known_size_files)
+    published_rows = [dict(file=inert_text(path, limit=239, mode="path"), **facts)
+                      for path, facts in rows[:_SEMGREP_DISCLOSED_FILES]]
+    files_omitted = max(0, unparsed - len(published_rows))
+    _disclose_semgrep_rows(published_rows, files_omitted)
     return {
         "status": "partial",
-        "parsed_files": len(located - set(per_file)),
+        "parsed_files": len(located - set(facts_by_path)),
         "unparsed_files": unparsed, "unavailable_files": 0,
-        "files": [dict(file=inert_text(path, limit=239, mode="path"), **facts)
-                  for path, facts in rows[:100]],
-        "files_omitted": max(0, unparsed - min(len(rows), 100)),
+        "files": published_rows,
+        "files_omitted": files_omitted,
         "capabilities_unavailable": [],
-        "rule_timeouts": timeouts, "size_skipped": size_count, "size_limit": limit,
+        "rule_timeouts": timeouts, "syntax_errors": syntax_count,
+        "size_skipped": size_count, "size_limit": limit,
         "size_listing": state, "unlocated_records": unlocated,
     }
 
@@ -294,7 +416,7 @@ class LegacySarifAdapter:
 
     def parse_with_file_coverage(self, raw: bytes, group: str) -> tuple[list[dict], dict | None]:
         """The findings, plus Semgrep's file gaps (#2957 timeouts, #3193 size
-        skips); None for the other tools here and for a Semgrep run with none."""
+        skips, #3229 syntax errors); None for other tools and gapless Semgrep."""
         sarif = surrogate_free(json.loads(depth_checked(raw)))    # #2951, #2959: as `parse_json_bytes`
         # #1839: the INGEST decides whether an inline suppression comment in
         # the scanned tree's own source stands, because the pinned scanners
