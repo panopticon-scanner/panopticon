@@ -372,6 +372,72 @@ class TestTheOutputSchemaShapeProof(LoopCase):
         )
         self.assertIn('"findings"', probe["prompt"])
 
+    def test_claude_proves_the_published_review_schema_not_the_toy_schema(self):
+        # #3394: Claude production entries carry the broad receipt schema inline. Proving the
+        # toy {ok} schema says nothing about whether a CLI still accepts the finding `oneOf` that
+        # every returning review cell will put on its real argv.
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        run_manifest.write_manifest(
+            d, {"run_id": "r" * 8, "host": "claude", "created": "2026-11-03"})
+        run_dir = os.path.join(d, ".panopticon", "runs", "t")
+        os.makedirs(run_dir)
+        flags = {hosts.OUTPUT_SCHEMA: {
+            "flag": "--json-schema", "advertised": True, "detail": "fixture"}}
+        runio._write_json(os.path.join(run_dir, runio.HOST_CAPABILITIES),
+                          {hosts.CLI_FLAGS: flags})
+        cell = {
+            "id": "review-app-COD", "delivery": "return_json",
+            "agent": "panopticon-domain-panel", "model": "claude-sonnet-5",
+            "enforced": True, "scope": {"files": [], "dirs": [], "reads": []},
+            "prompt": "p", "out_file": os.path.join(run_dir, "findings-app-COD.json"),
+        }
+        cell["output_schema"] = persist.role_schema(cell)
+        runner = self.Schemed(host="claude")
+
+        verdict = orchestrate.loop_batch.prove_output_schema_shape(
+            run_dir, "claude", runner, [cell], lambda entry: {}, d)
+
+        self.assertEqual(hosts.SHAPE_PROVEN, verdict[hosts.SHAPE])
+        probe = runner.probe_launches()[0]
+        self.assertEqual(cell["output_schema"], probe["output_schema"])
+        with open(probe["output_schema"], encoding="utf-8") as stream:
+            schema = json.load(stream)
+        self.assertIn("oneOf", schema["properties"]["findings"]["items"])
+        self.assertIn('"findings"', probe["prompt"])
+
+    def test_claude_production_schema_refusal_strips_every_entry_in_this_batch(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        run_manifest.write_manifest(
+            d, {"run_id": "r" * 8, "host": "claude", "created": "2026-11-03"})
+        run_dir = os.path.join(d, ".panopticon", "runs", "t")
+        os.makedirs(run_dir)
+        flags = {hosts.OUTPUT_SCHEMA: {
+            "flag": "--json-schema", "advertised": True, "detail": "fixture"}}
+        runio._write_json(os.path.join(run_dir, runio.HOST_CAPABILITIES),
+                          {hosts.CLI_FLAGS: flags})
+        cells = []
+        for domain in ("COD", "SEC"):
+            cell = {
+                "id": "review-app-%s" % domain, "delivery": "return_json",
+                "agent": "panopticon-domain-panel", "model": "claude-sonnet-5",
+                "enforced": True, "scope": {"files": [], "dirs": [], "reads": []},
+                "prompt": "p",
+                "out_file": os.path.join(run_dir, "findings-app-%s.json" % domain),
+            }
+            cell["output_schema"] = persist.role_schema(cell)
+            cells.append(cell)
+        production_schema = cells[0]["output_schema"]
+        runner = self.Schemed(verdict="refuse", host="claude")
+
+        verdict = orchestrate.loop_batch.prove_output_schema_shape(
+            run_dir, "claude", runner, cells, lambda entry: {}, d)
+
+        self.assertEqual(hosts.SHAPE_REFUTED, verdict[hosts.SHAPE])
+        self.assertEqual(production_schema, runner.probe_launches()[0]["output_schema"])
+        self.assertTrue(all("output_schema" not in cell for cell in cells))
+
     def test_codex_production_projection_refusal_strips_this_batch(self):
         d = os.path.realpath(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
