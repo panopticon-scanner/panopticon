@@ -267,12 +267,24 @@ class TheJoinTest(_LedgerCase):
         self.assertNotIn(REDACTABLE, rows[0]["reason"])
         self.assertEqual(guard_rules.DENIAL_REASON_CAP, len(rows[1]["reason"]))
 
-    def test_tool_input_beside_it_stays_as_the_host_wrote_it(self):
-        # Stated, not endorsed: the row's `tool_input` is not redacted today, and this change
-        # does not move it. Reported to the coordinator.
-        denial = dict(DENIAL, tool_input={"pattern": REDACTABLE, "path": "src"})
-        self._sidecar_lines({"tool_use_id": "t1", "reason": "r"})
-        self.assertEqual(REDACTABLE, self._row(result=_result([denial]))["denials"][0]["tool_input"]["pattern"])
+    def test_a_denied_write_input_is_redacted_only_in_the_ledger_copy(self):
+        entry = {"id": "e1", "out_file": self.out_file, "delivery": "self_write"}
+        denial = {"tool_name": "Write", "tool_use_id": "t1",
+                  "tool_input": {"file_path": self.out_file,
+                                 "content": "token = %s" % REDACTABLE}}
+        original = json.loads(json.dumps(denial))
+        result = _result([denial])
+        row = self._row(entry, result)
+        stored = row["denials"][0]["tool_input"]
+        self.assertNotIn(REDACTABLE, stored["content"])
+        self.assertEqual([original], result.denials)
+        self.assertIn("DENIED", denials.every_own_write_denied([(entry, result)]))
+
+    def test_denial_tool_input_string_values_are_bounded(self):
+        denial = dict(DENIAL, tool_input={"pattern": "x" * 9000, "path": "src"})
+        stored = self._row(result=_result([denial]))["denials"][0]["tool_input"]
+        self.assertLessEqual(len(stored["pattern"]), guard_rules.DENIAL_REASON_CAP)
+        self.assertEqual("x" * 9000, denial["tool_input"]["pattern"])
 
     def test_the_hosts_own_rows_are_not_touched(self):
         self._sidecar_lines({"tool_use_id": "t1", "reason": "r"})
