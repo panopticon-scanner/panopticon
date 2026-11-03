@@ -585,6 +585,8 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         mutations = (
             lambda row: row.pop("reply"),
             lambda row: row.update(entry_id="review-app-ACC"),
+            # #3421: a retained refusal is bound to its originating run.
+            lambda row: row.update(run_id="run-2"),
             lambda row: row.update(reason=[]),
             lambda row: row.update(truncated="yes"),
             lambda row: row.update(attacker_field=True),
