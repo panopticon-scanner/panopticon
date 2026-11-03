@@ -23,6 +23,7 @@ import scripts.phases.requests as requests
 import scripts.phases.runio as runio
 import scripts.phases.setup_readiness as setup_readiness
 import scripts.read_guard_hook as read_guard_hook
+import scripts.rejected_retention as rejected_retention
 import scripts.repo_config as repo_config
 import scripts.runners.base as runners_base
 import scripts.runners.batch as batch_mod
@@ -364,6 +365,7 @@ def _loop(args, pause):
                 print("driver loop: batch manifest not removed: %s" % note,
                       file=sys.stderr, flush=True)
             batch = None
+            rejected_retention.prune(run_dir, req.get("run_id"))   # #1664: only once no batch is open
             # #1623: the batch is charged HERE, not as each entry landed, because a
             # host-wide outage (auth, quota, rate limit) is not the entries' failure --
             # and three iterations of one used to spend every pending cell's attempt
@@ -547,8 +549,10 @@ def persist_cli(args):
         # D10 ruling 1, session half: the operator is holding the only copy of this reply,
         # so the mode a human drives keeps it exactly as the loop does -- same folder, shape
         # and attempt numbering -- and (F10) says where, since the refusal line is all they see.
-        kept = persist.retain_rejected(persist.run_dir(review_root, "setup" if args.setup else None),
-                                       entry, text, reason, kind=persist.REFUSAL, run_id=run_id)
+        folder = persist.run_dir(review_root, "setup" if args.setup else None)
+        kept = persist.retain_rejected(folder, entry, text, reason, kind=persist.REFUSAL, run_id=run_id)
+        if kept:                                  # #1664: the loop's rule and manifest guard
+            rejected_retention.prune(folder, run_id)
         print("driver persist: %s%s" % (reason, " (reply kept at %s)" % kept if kept else ""), file=sys.stderr)
         return 1
     print(os.path.abspath(entry["out_file"]))

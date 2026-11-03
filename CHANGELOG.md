@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Retention for `rejected/` records (#1664).** The loop, after each batch, and `driver
+  persist` keep each entry's last 3 refused or failed replies and cap a run's records at 32 MiB,
+  evicting the oldest first. An entry's newest record, any record a batch manifest still lists,
+  and files that are not this run's own records are never removed. Each removal is logged to
+  `rejected/pruned.jsonl` first, so a ledger row's `rejected_file` either exists or reads as
+  pruned.
+
 - **Fix: Claude proves the production output-schema shape (#3394).** Its
   once-per-run proof now launches the same published review-cell role schema
   that returning production cells send inline, including the real finding

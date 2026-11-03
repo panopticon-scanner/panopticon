@@ -372,6 +372,7 @@ groups:
       match:
       - skill/scripts/orchestrate.py
       - skill/scripts/batch_settlement.py
+      - skill/scripts/rejected_retention.py
       - skill/scripts/loop_setup.py
       - skill/scripts/scope_bindings.py
       - skill/scripts/loop_progress.py
@@ -388,6 +389,7 @@ groups:
       - tests/test_guard_denials.py
       - tests/test_orchestrate_outage.py
       - tests/test_orchestrate_pause.py
+      - tests/test_rejected_retention.py
       - tests/test_orchestrate_recovery.py
       - tests/test_orchestrate_session.py
       - tests/test_orchestrate_session_edges.py
