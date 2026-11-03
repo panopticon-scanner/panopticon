@@ -275,6 +275,21 @@ class TestDockerfilePhase1(unittest.TestCase):
         self.assertTrue(minimatches)
         self.assertEqual({"11.0.1"}, set(minimatches.values()), minimatches)
 
+    def test_minimatch_11_glob_7_limit_stays_in_the_formatter_cache_path(self):
+        """#3419: glob 7 magic patterns are incompatible with minimatch 11."""
+        lock_path = os.path.join(ROOT, "tools-image", "node", "package-lock.json")
+        with open(lock_path, encoding="utf-8") as fh:
+            locked = json.load(fh)["packages"]
+
+        def dependents(package):
+            return {path for path, item in locked.items()
+                    if package in item.get("dependencies", {})}
+
+        self.assertEqual({"node_modules/rimraf"}, dependents("glob"))
+        self.assertEqual({
+            "node_modules/@microsoft/eslint-formatter-sarif/node_modules/flat-cache",
+        }, dependents("rimraf"))
+
 
 class TestFindSecBugsIntegrity(unittest.TestCase):
     """#539: the FindSecBugs plugin jar is loaded as unsandboxed analyzer

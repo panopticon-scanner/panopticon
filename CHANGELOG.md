@@ -3,9 +3,11 @@
 ## Unreleased
 
 - **Fix: the tools image overrides vulnerable minimatch copies (#3419).** The
-  reviewed Node closure now resolves every ESLint consumer to fixed minimatch
-  11.0.1; both the security adapter and the bundled ESLint 8 SARIF formatter
-  continue to parse and report findings.
+  reviewed Node closure now resolves every minimatch copy to fixed 11.0.1. The
+  security adapter and the bundled ESLint 8 SARIF formatter continue to parse
+  and report findings. `glob` 7, reached only through the formatter's
+  `flat-cache` -> `rimraf` cache-deletion path, throws on wildcard patterns with
+  minimatch 11; panopticon never lints with ESLint 8 and does not reach that path.
 
 - **Fix: dispatch-ledger denial inputs are redacted and bounded (#3366).** Denied
   tool inputs now have secret-shaped string leaves masked and capped in the
