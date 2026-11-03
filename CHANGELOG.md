@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Read-guard scope rows are stamped (#3436).** `install` signs each read-scope row with this
+  machine's run-stamp key, and the hook denies an agent bound to a row without a valid stamp.
+  On arming, `install` keeps an on-disk row only if its stamp verifies, so an id planted in the
+  scope file no longer survives the union, while a concurrent fan-out's rows still do. A missing
+  key refuses to arm and denies bound reads.
+
 - **Read-guard hygiene (#3411).** The read guard now refuses a scope file holding a path
   `install()` never writes (relative, or not normalised) as malformed, which denies, instead of
   keeping it as a grant that matches nothing. `marker_line` refuses an entry id with outer

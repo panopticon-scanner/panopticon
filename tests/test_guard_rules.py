@@ -170,7 +170,7 @@ class _HookLaunch(unittest.TestCase):
                 fh.write("x")
         self.scope = os.path.join(self.root, "read-scope.json")
         with open(self.scope, "w", encoding="utf-8") as fh:
-            json.dump({"e1": {"files": [self.inside], "dirs": [], "reads": []}}, fh)
+            json.dump(rg.stamp_rows({"e1": {"files": [self.inside], "dirs": [], "reads": []}}), fh)
         self.allowlist = os.path.join(self.root, "write-allowlist.json")
         with open(self.allowlist, "w", encoding="utf-8") as fh:
             json.dump({"version": 2, "entries": {"e1": [self.inside]}, "paths": [self.inside]}, fh)
@@ -187,7 +187,9 @@ class _HookLaunch(unittest.TestCase):
         )
 
     def _launch(self, python, hook_path, argv, payload, cwd, extra_env=None):
-        env = {"PATH": os.environ.get("PATH", ""), "PANOPTICON_ENTRY_ID": "e1"}
+        env = {"PATH": os.environ.get("PATH", ""), "PANOPTICON_ENTRY_ID": "e1",
+               # #3436: the read hook checks its row's stamp under the driver's key.
+               "PANOPTICON_STATE_DIR": os.environ["PANOPTICON_STATE_DIR"]}
         env.update(extra_env or {})
         # `env` with an ABSOLUTE interpreter executes exactly that file (no PATH
         # search): the process is `<python> -I <hook>`, under a literal launcher.
