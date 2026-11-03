@@ -54,7 +54,11 @@ def _regular_sha256(path):
 
 
 def _retained_artifact_valid(path, entry_id, run_id):
-    record = persist._read_rejection(path)
+    return retained_record_valid(persist._read_rejection(path), entry_id, run_id)
+
+
+def retained_record_valid(record, entry_id, run_id):
+    """One parsed `rejected/` record is schema-valid and bound to this entry and run (#3421)."""
     required = {"schema_version", "entry_id", "attempt", "kind", "run_id",
                 "reason", "recorded_at", "reply"}
     return (isinstance(record, dict)

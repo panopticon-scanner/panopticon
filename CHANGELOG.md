@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Retention for `rejected/` records (#1664).** The loop, after each batch, and `driver
+  persist` keep each entry's last 3 refused or failed replies and cap a run's records at 32 MiB,
+  evicting the oldest first. An entry's newest record, any record a batch manifest still lists,
+  and files that are not this run's own records are never removed. Each removal is logged to
+  `rejected/pruned.jsonl` first, so a ledger row's `rejected_file` either exists or reads as
+  pruned.
+
 - **Drain-and-pause for a headless loop (#3350).** `SIGUSR1` makes `driver loop` stop
   launching, let the running entries finish and be recorded as usual, give back the attempts
   of entries it never launched and exit `paused`, resumable without `--reset`. The launch gate
