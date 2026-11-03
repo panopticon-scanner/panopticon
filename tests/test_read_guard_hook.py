@@ -830,6 +830,33 @@ class TestStampedRows(unittest.TestCase):
                     json.dump({eid: row}, fh)
                 self.assertFalse(self._read(eid, self.a)[0])
 
+    def test_editing_one_field_of_an_installed_row_voids_its_stamp(self):
+        # #3437 round 1: the stamp covers every grant, the escape walk included -- emptying a
+        # grant's link list would let a wildcard Glob walk a symlink out of it.
+        root = os.path.join(self.tmp.name, "root")
+        os.makedirs(root)
+        os.symlink(self.b, os.path.join(root, "out.py"))
+        rg.install([_entry("scan", dirs=[root])], settings_path=self.settings,
+                   scope_path=self.scope_path)
+        row = rg._read_scope_file(self.scope_path)["scan"]
+        grant = os.path.realpath(root)
+        self.assertEqual([os.path.join(grant, "out.py")], row["escapes"][grant])
+        for label, change in (("escapes", {"escapes": {grant: []}}),
+                              ("files", {"files": [self.b]}),
+                              ("dirs", {"dirs": [grant, os.path.realpath(self.tmp.name)]}),
+                              ("reads", {"reads": [self.b]})):
+            with self.subTest(field=label):
+                with open(self.scope_path, "w", encoding="utf-8") as fh:
+                    json.dump({"scan": dict(row, **change)}, fh)
+                ok, reason = rg.adjudicate(
+                    {"tool_name": "Glob", "tool_input": {"pattern": "*.py", "path": root}},
+                    self.scope_path, env={rg.ENV_ENTRY_ID: "scan"})
+                self.assertFalse(ok)
+                self.assertIn("driver stamp", reason)
+                rg.install([_entry("other", files=[self.a])], settings_path=self.settings,
+                           scope_path=self.scope_path)
+                self.assertEqual({"other"}, set(rg._read_scope_file(self.scope_path)))
+
     def test_a_concurrent_fan_outs_stamped_rows_survive_a_second_install(self):
         rg.install([_entry("fan-1", files=[self.a])], settings_path=self.settings,
                    scope_path=self.scope_path)
