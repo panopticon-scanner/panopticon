@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Drain-and-pause for a headless loop (#3350).** `SIGUSR1` makes `driver loop` stop
+  launching, let the running entries finish and be recorded as usual, give back the attempts
+  of entries it never launched and exit `paused`, resumable without `--reset`. The launch gate
+  sits in the worker before `run_entry`, so not even a freed worker's next entry starts.
+  Ctrl-C and SIGTERM are unchanged.
+
 - **Fix: replay preserves the target's tool-exclusion policy (#3388).** Replay now
   takes the effective exclude globs recorded in the archived tools manifest instead
   of re-reading a target config absent from archive-only roots. If that policy is

@@ -635,7 +635,17 @@ on Claude hooks, and always uses the return-persist path.
   entry-class failures, and the cap above is unchanged for them. A **second** stop rule — the
   `--max-budget-usd` cap described with the flags above — stops launching the same way without
   charging anyone, and the loop's own "stopped launching after …" line names which of the two
-  fired, so a budget stop does not read as a host outage. A **review cell** is bounded separately, by its
+  fired, so a budget stop does not read as a host outage. A **third** rule is yours: a
+  **drain-and-pause** (#3350). A headless loop prints `driver loop: pid N; kill -USR1 N drains and
+  pauses` when it starts; send it `SIGUSR1` and it launches nothing more — not even the next queued
+  entry a freed worker would pick up — lets the running entries finish within `--entry-timeout`,
+  persists and ledgers them as usual, gives back the attempts of every entry it never launched and
+  exits `paused`, so re-running the same command without `--reset` resumes where it stopped.
+  Between batches it exits before arming the next one. The request only sets a flag: Ctrl-C and
+  SIGTERM still stop the loop immediately, before or after it, and a second `SIGUSR1` is ignored. If
+  the run reaches `complete` first, it completes. A platform without `SIGUSR1`, or a process whose
+  `SIGUSR1` already has a handler, says `pause unavailable` in that line instead.
+  A **review cell** is bounded separately, by its
   own three-dispatch retry budget: once a cell has spent it the phase advances rather than wedging
   on a cell that cannot be recovered, so the run reaches `complete` having lost it. That is not a
   clean run and the terminal status says so — `cells_exhausted: <n>`, with the same count and each
