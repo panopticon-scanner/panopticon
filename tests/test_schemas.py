@@ -303,6 +303,12 @@ class TestToolEvidenceSchema(unittest.TestCase):
         }
         self.assertTrue(expected.issubset(set(evidence_props.keys())))
 
+    def test_tool_evidence_kind_names_only_the_mixed_adapter_secret_class(self):
+        schema = _load("report-schema.json")
+        evidence_props = schema["properties"]["findings"]["items"]["properties"]["tool_evidence"]["properties"]
+        self.assertEqual(evidence_props["kind"]["type"], "string")
+        self.assertEqual(evidence_props["kind"]["enum"], ["secret"])
+
 
 class TestAdapterFindingsValidateAgainstSchema(unittest.TestCase):
     def _finding_schema(self):

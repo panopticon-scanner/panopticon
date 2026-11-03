@@ -72,7 +72,7 @@ ONLINE_ONLY = frozenset({"pip-audit", "npm-audit"})
 # and version matched against an advisory database. That match is a database
 # fact rather than a pattern heuristic, so `synth/severity_cap` never caps an
 # unverified one; a CRITICAL advisory capped to MEDIUM because no advisor read it
-# would under-report. Mixed adapters (trivy scans vuln + secret) are classed per
-# finding instead, by the CVE it cites.
+# would under-report. The mixed Trivy adapter is classed per finding instead:
+# vulnerabilities by their CVE, credentials by #3361's scanner-owned secret kind.
 ADVISORY_ADAPTERS = frozenset({"pip-audit", "npm-audit", "osv-scanner", "bundler-audit",
                                "cargo-audit", "dependency-check"})

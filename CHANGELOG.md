@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Fix: Trivy secret findings retain their secret class (#3361).** The SARIF adapter
+  carries Trivy's scanner-owned `secret` rule tag as per-finding evidence, so an
+  unverified credential keeps its scanner severity and policy C still gates it under
+  a suppressed path. Trivy vulnerability findings remain advisory-class and unchanged.
+
 - **Fix: Semgrep partial coverage names the affected files and rules (#3229).** Rule
   timeouts and both pinned syntax-error notifications now publish bounded file/rule
   identities in the coverage facts and on stderr. A parser failure with no named rule

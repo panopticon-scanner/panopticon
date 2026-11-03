@@ -1704,6 +1704,13 @@
               "rule_id": {
                 "type": "string"
               },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "secret"
+                ],
+                "description": "The scanner-owned finding class for a mixed adapter. Present as `secret` only when a Trivy result's resolved rule carries Trivy's exact `secret` tag; vulnerability results omit it."
+              },
               "advisory_url": {
                 "type": "string"
               },

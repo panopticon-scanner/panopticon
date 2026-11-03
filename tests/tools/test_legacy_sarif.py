@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -16,6 +17,7 @@ from tests.tools.helpers import assert_scratch_cwd, scratch_cwd_recorder
 import scripts.ingest_tools as ingest
 import scripts.security_gate as gate
 from scripts.synth import findings as findings_mod, plan, report, tool_axis
+from scripts.synth import severity_cap
 
 
 SARIF = {
@@ -314,6 +316,52 @@ class TestSecretAdapterSeverityIsNormalized(unittest.TestCase):
         self.assertTrue(findings)
         self.assertTrue({f["severity"] for f in findings} - {"HIGH"},
                         "bandit's own grades were flattened too")
+
+
+class TestTrivySecretClass(unittest.TestCase):
+    """#3361: Trivy is mixed: CVEs are advisories and secret-rule hits are
+    credentials. Its captured rule tag is the discriminator between them."""
+
+    @staticmethod
+    def _finding_for(rule_id):
+        sarif = json.loads(_golden("trivy"))
+        run = only(sarif["runs"], "captured Trivy run")
+        indexed = only([(index, rule) for index, rule in
+                        enumerate(run["tool"]["driver"]["rules"])
+                        if rule.get("id") == rule_id], "captured Trivy rule")
+        index, rule = indexed
+        # The golden trim kept its first three vulnerability results but ten
+        # rules, including Trivy's real secret rules. Compose only captured
+        # nodes: its result envelope/location plus the selected rule and help.
+        result = dict(first(run["results"], "captured Trivy result envelope"))
+        result.update({"ruleId": rule_id, "ruleIndex": index,
+                       "message": rule["help"]})
+        run["results"] = [result]
+        finding = only(ADAPTERS["trivy"].parse(json.dumps(sarif).encode(), "g1"),
+                       "normalized Trivy finding")
+        return finding, rule
+
+    def test_the_captured_secret_rule_tag_reaches_the_finding(self):
+        finding, rule = self._finding_for("private-key")
+        self.assertEqual(rule["properties"]["tags"], ["secret", "security", "HIGH"])
+        self.assertEqual(finding["tool_evidence"],
+                         {"rule_id": "private-key", "kind": "secret"})
+
+    def test_the_shared_secret_predicate_drives_both_policies(self):
+        finding, _ = self._finding_for("private-key")
+        self.assertTrue(ingest.secret_class(finding))
+        self.assertTrue(ingest.gates_when_suppressed(finding))
+        finding["evidence"] = {"status": "tool_reported"}
+        severity_cap.apply(
+            [finding], SimpleNamespace(gate_unverified=False, root=None, target="t"), [])
+        self.assertEqual((finding["severity"], finding.get("severity_cap")), ("HIGH", None))
+
+    def test_a_captured_trivy_vulnerability_is_unchanged(self):
+        finding = first(ADAPTERS["trivy"].parse(_golden("trivy"), "g1"),
+                        "captured Trivy vulnerability")
+        self.assertEqual(finding["tool_evidence"], {"rule_id": "CVE-2021-23337"})
+        self.assertEqual(finding["citations"]["cve"], ["CVE-2021-23337"])
+        self.assertFalse(ingest.secret_class(finding))
 
 
 class TestCweFromSarifRelationships(unittest.TestCase):

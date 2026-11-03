@@ -10,9 +10,10 @@ the 5.2 reports at HIGH with nothing behind that HIGH:
   evidence is `tool_reported` or `needs_more_info` is therefore capped at MEDIUM
   here. An advisor `CONFIRMED` (`tool_confirmed`) keeps the scanner's severity.
   Three classes are never capped, because their severity is not a pattern
-  heuristic: a secret (`ingest_tools.secret_class`: the secret adapters, or a
-  credential CWE), and a dependency advisory (`tools.ADVISORY_ADAPTERS`, or any
-  finding that cites a CVE). Not under `--gate-unverified`, either. That flag is
+  heuristic: a secret (`ingest_tools.secret_class`: a secret adapter, a mixed
+  adapter's per-finding secret kind, or a credential CWE), and a dependency
+  advisory (`tools.ADVISORY_ADAPTERS`, or any finding that cites a CVE). Not
+  under `--gate-unverified`, either. That flag is
   the operator asking for the stricter policy, and a cap there would lower what
   gates, so under it the active severity simply stays the scanner's.
 * **A coverage-absence claim nothing confirms.** An OCRDb `TST-A1*`

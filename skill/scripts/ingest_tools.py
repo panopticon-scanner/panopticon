@@ -21,6 +21,7 @@ from scripts.tools.sarif_utils import (
     NOISE_RULES,
     PREFIX,
     SECRET_ADAPTERS,
+    SECRET_KIND,
     is_fixture_path,
     is_test_path,
     norm_uri,
@@ -450,14 +451,11 @@ def suppression_class(segment):
     return "vendored"
 
 
-# #1578 (SEC-G2B), owner ruling 2026-09-22 -- policy C. The other half of
-# "secret-class" lives in `sarif_utils.SECRET_ADAPTERS` (imported above): the
-# adapters whose output is credentials by construction, which that module also
-# grades HIGH at the parse. It is defined there because this module imports it
-# and not the other way round, and one list beats two that drift. This half is
-# provenance-free: the CWEs that make ANY adapter's finding secret-class --
-# CWE-798 hardcoded credentials, CWE-259 hardcoded password, CWE-321 hardcoded
-# cryptographic key, CWE-522 insufficiently protected credentials.
+# #1578 (SEC-G2B), owner ruling 2026-09-22 -- policy C. Both scanner-owned forms
+# live in `sarif_utils`: SECRET_ADAPTERS for all-secret adapters (parse floor HIGH)
+# and #3361's SECRET_KIND for credential results from mixed adapters such as Trivy.
+# This module imports that owner. CWE fallbacks are provenance-free: CWE-798,
+# CWE-259, CWE-321, and CWE-522.
 SECRET_CWES = frozenset({"CWE-798", "CWE-259", "CWE-321", "CWE-522"})
 
 
@@ -501,9 +499,11 @@ def _cwe_tags(finding):
 
 
 def secret_class(finding):
-    """A secret adapter's finding, or any carrying a credential CWE: policy C's class,
-    and (#3231) the one `synth/severity_cap` never caps."""
+    """A secret adapter/kind or credential CWE: policy C and the cap exemption."""
+    tool_evidence = finding.get("tool_evidence")
+    kind = tool_evidence.get("kind") if isinstance(tool_evidence, dict) else None
     return (evidence_mod.tool_name(finding) in SECRET_ADAPTERS
+            or kind == SECRET_KIND
             or any(tag in SECRET_CWES for tag in _cwe_tags(finding)))
 
 
@@ -522,9 +522,9 @@ def gates_when_suppressed(finding):
     B) hard-FAILed a vendor-heavy tree on unverified scanner output. A planted
     payload or a committed secret under `vendor/` still must gate, which is the
     defect #1578 is about. So: a CRITICAL of any provenance, or a secret-class
-    finding -- from a secret adapter (`SECRET_ADAPTERS`) or carrying a
-    credential CWE (`SECRET_CWES`) -- and nothing else. Option A (send the
-    suppressed set through tool-verify) was rejected on dispatch cost.
+    finding -- from an all-secret adapter (`SECRET_ADAPTERS`), a mixed adapter's
+    per-finding `SECRET_KIND`, or a credential CWE (`SECRET_CWES`) -- and nothing
+    else. Option A (send the suppressed set through tool-verify) was rejected.
 
     #3269 G4's two disclosure-only reasons are the exception: `.panopticon` is
     prior output (#3271 halts on planted/tracked output); `.git` and `.worktrees`
