@@ -254,9 +254,15 @@ def adjudicate(payload, scope_path, env=None):
     if entry_id is None:
         return decide(tool_name, tool_input, None)
     scope = scopes.get(entry_id)
-    if scope is None:
+    key = _stamp_key() if scope is not None else None
+    if scope is not None and key is None:
+        return False, ("%s is denied: the run-stamp key that vouches for entry %r's read scope "
+                       "cannot be read here (is PANOPTICON_STATE_DIR the driver's?)"
+                       % (tool_name, entry_id))
+    if scope is None or not _row_verifies(key, entry_id, scope):
+        # #3436: an unstamped or mis-stamped row is no row: install() never wrote it.
         return False, ("%s is denied: this agent is bound to entry %r, which the "
-                       "armed read scope does not name" % (tool_name, entry_id))
+                       "armed read scope does not name with a driver stamp" % (tool_name, entry_id))
     allow, reason = decide(tool_name, tool_input, scope)
     if not allow and reason:
         # decide() is entry-agnostic (plan 5, unchanged); name the bound
@@ -361,6 +367,73 @@ def _resolve(settings_path, scope_path, session_root):
             scope_path or DEFAULT_SCOPE_PATH, not explicit)
 
 
+# #3436 (R-P5-5): every row install() writes carries an HMAC under the machine's run-stamp key
+# (operator-side, outside any reviewed tree), so a row nobody stamped is no row.
+STAMP_KEY = "_by"
+
+
+def _run_stamp():
+    """`run_stamp`, as the sibling module under our package or by PATH as a hook -- the
+    guard-rules loader's reasoning: never `import scripts.*` in the hook process."""
+    spec = globals().get("__spec__")
+    if spec is not None and spec.parent:
+        from . import run_stamp as module
+        return module
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "run_stamp.py")
+    found = importlib.util.spec_from_file_location("panopticon_run_stamp", path)
+    if found is None or found.loader is None:
+        raise ImportError("no loader for %s" % path)
+    module = importlib.util.module_from_spec(found)
+    found.loader.exec_module(module)
+    return module
+
+
+def _stamp_key(create=False):
+    """The run-stamp key, or None when it cannot be read: the hook then denies every bound
+    read. Only install() may create one; the hook reads an existing key only."""
+    try:
+        return _run_stamp().key(create=create)
+    except Exception:  # noqa: BLE001 -- a key we cannot trust is no key
+        return None
+
+
+def _row_stamp(key, entry_id, row):
+    import hashlib            # here, not at import: an unbound call never pays for OpenSSL
+    import hmac
+    # Over the shape `_load_scope` hands back, so a stamp made at install verifies at load.
+    body: dict[str, object] = {k: [p for p in (row.get(k) or []) if isinstance(p, str)]
+                               for k in guard_rules.SCOPE_KEYS}
+    escapes = row.get(guard_rules.ESCAPES_KEY)
+    body[guard_rules.ESCAPES_KEY] = (
+        {g: [p for p in v if isinstance(p, str)] if isinstance(v, list) else None
+         for g, v in escapes.items() if isinstance(g, str)} if isinstance(escapes, dict) else {})
+    message = "read-scope\0%s\0%s" % (entry_id, json.dumps(body, sort_keys=True,
+                                                            separators=(",", ":")))
+    return hmac.new(key, message.encode("utf-8", "surrogateescape"), hashlib.sha256).hexdigest()
+
+
+def _row_verifies(key, entry_id, row):
+    """Whether `row` carries this machine's stamp for `entry_id`; False for any bad shape."""
+    stamp = row.get(STAMP_KEY) if isinstance(row, dict) else None
+    if key is None or not isinstance(stamp, str) or not isinstance(entry_id, str):
+        return False
+    import hmac
+    try:
+        return hmac.compare_digest(stamp.encode("ascii"),
+                                   _row_stamp(key, entry_id, row).encode("ascii"))
+    except (TypeError, ValueError):
+        return False
+
+
+def stamp_rows(scopes, key=None):
+    """`scopes` with each row stamped; raises ValueError when there is no key to stamp with."""
+    key = _stamp_key(create=True) if key is None else key
+    if key is None:
+        raise ValueError("the run-stamp key is unavailable, so no read scope can be stamped")
+    return {eid: dict(row, **{STAMP_KEY: _row_stamp(key, eid, row)}) for eid, row in scopes.items()}
+
+
 def install(plan, settings_path=None, scope_path=None, *, session_root=None):
     """Arm the read guard for `plan`'s entries. UNIONS by entry id with any
     scope already on disk (#11: a concurrent fan-out's grants survive), ours
@@ -390,7 +463,12 @@ def install(plan, settings_path=None, scope_path=None, *, session_root=None):
             "refusing to install a read-guard that confines nothing: no entry "
             "carried a `scope` dict. Use uninstall() to tear the guard down.")
     _trusted_hook_argv()  # refuse before writing either private artifact
-    merged = dict(_read_scope_file(scope_path))
+    key = _stamp_key(create=True)
+    added = stamp_rows(added, key)              # #3436: no key raises here, before any write
+    # #3436 (R-P5-5): a row survives the union only with a valid stamp -- a concurrent fan-out's
+    # does, a planted id's never does.
+    merged = {eid: row for eid, row in _read_scope_file(scope_path).items()
+              if _row_verifies(key, eid, row)}
     merged.update(added)
     guard_rules.atomic_write_json(scope_path, merged)
     guard_rules._write_hook_entry(settings_path, __file__, _hook_entry(scope_path))

@@ -417,7 +417,12 @@ on Claude hooks, and always uses the return-persist path.
   prints `dispatch`, drops the finished entries' grants on the next re-entry, and disarms everything
   on `complete`. Both guards are **fail-closed while registered**: an absent, unreadable, or
   malformed allowlist/scope file denies guarded access with a loud reason instead of silently
-  allowing it. - **The loop dispatches one agent per entry** through the runner: `enforced` →
+  allowing it. Each read-scope row also carries an HMAC (`_by`) under this machine's run-stamp key
+  (`$PANOPTICON_STATE_DIR`, outside any reviewed tree) over its entry id and grants (#3436): a row
+  without a valid one denies the agent bound to it, and `install` drops it rather than merging it,
+  so a planted id cannot survive arming while a concurrent fan-out's rows do. The hook reads the
+  key and never creates it, so a hook run with a different `PANOPTICON_STATE_DIR` from the driver
+  denies every bound read and says so. - **The loop dispatches one agent per entry** through the runner: `enforced` →
   `--agent entry["agent"]` (a registered `panopticon-*` shell, tools+model host-enforced) plus one
   `--allowedTools=Edit(//<absolute out_file>)` token, the Write permission for that entry's own file
   (#3218: `claude -p` auto-denies an unapproved Write, and `Edit` is the rule a create needs; an
