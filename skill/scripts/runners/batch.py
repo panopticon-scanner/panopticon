@@ -1,10 +1,10 @@
 """The batch manifest (#1662): what one checkpoint's batch is about to write,
 so a Ctrl-C can take it back as a unit.
 
-The owner's ruling on an interrupted `driver loop` is complete stoppage,
-cancellation and ROLLBACK to the last checkpoint: the interrupted phase is
-re-run from scratch on the next invocation rather than recovered from disk
-(whole-run rollback stays `--reset`). Rolling a phase back means deleting
+The owner's ruling on an interrupted `driver loop` is complete stoppage. Work
+that did not settle is cancelled and rolled back to the checkpoint; work with
+a controller-proved real row and artifact is kept (#3349 live, #3351 after a
+crash). Whole-run rollback stays `--reset`. Rolling an entry back means deleting
 exactly the per-entry artifacts THIS batch was responsible for -- and
 "exactly" is the whole of it. A glob over the run folder would sweep up a
 prior phase's outputs, which the ruling leaves untouched, and on a redteam
@@ -21,7 +21,7 @@ A later loop validates a leftover against the bound dispatch request and
 rolls it back BEFORE a phase can read a partial artifact as complete. Opening
 an existing manifest is refused, so the recovery record cannot be overwritten.
 
-TODO (#1698, follow-up): this document is NOT hash-bound to the run the way
+TODO (#1698, follow-up): this document as a WHOLE is NOT hash-bound to the run the way
 `dispatch-request.json` has been since #1727 -- serialise, hash, write, and
 record the sha256 in the run manifest, so every reader can ask whether the
 file it just read is the one the driver wrote. It lives inside the reviewed
@@ -33,11 +33,19 @@ may not import `scripts.phases.*` (tests/test_layout.py rule 3), so it cannot
 reach `requests.record_request_hash` -- and that helper is where the two
 namespaces are told apart (`--setup` anchors in its own manifest, #1507), so
 the recorder would have to be threaded in from `loop_batch`. And the record
-is rewritten three times, not once (`open`, `add_artifact` per retained
-reply, `begin_recovery`), so each rewrite owes the manifest a new hash and
+is rewritten many times, not once (`open`, `add_artifact` per retained reply,
+the #3351 settlement receipt, and `begin_recovery`), so each rewrite owes the manifest a new hash and
 each one opens a window where the two disagree. What is defended today is
 what the rollback ACTS on: every artifact path is re-derived from the bound
-request before a single file is deleted (`loop_batch.recover_stale`).
+request before a single file is deleted (`loop_batch.recover_stale`). #3351
+deliberately does not complete that TODO: only a per-entry settlement receipt
+is HMAC-authenticated with the operator-side run-stamp key, and recovery
+rechecks its exact ledger span, artifact digests and artifact shape. When a row
+reaches receipt verification, changing any signed fact makes that proof fail.
+The receipt does not bind the record as a whole: deleting the record, pruning
+or empty-flagging its entries, or replaying a saved record and artifact can
+bypass recovery accounting or keep an unproved artifact. That remains the
+existing #1698 gap.
 
 It lives in `runners/` rather than in `phases/` because `tests/test_layout.py`
 forbids `runners/* -> phases` imports and the loop is what calls both halves
@@ -48,14 +56,16 @@ import contextlib
 import json
 import os
 import re
+import secrets
 import socket
 import stat
 import sys
 import time
 import uuid
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 import scripts.guard_rules as guard_rules
+import scripts.runners.settlement as settlement_mod
 
 # The manifest's file name. One owner: the loop writes these, the operator
 # greps for them, the `--setup --reset` sweep deletes them and the suite
@@ -125,6 +135,7 @@ def record_discard(run_dir, number, owner, at=None):
 class BatchEntry(TypedDict):
     id: str | None
     artifacts: list[str]
+    settlement: NotRequired[dict]
 
 
 def host_id():
@@ -313,7 +324,7 @@ class Batch:
     are what a rollback has to take back.
     """
 
-    def __init__(self, run_dir, number, checkpoint, entries):
+    def __init__(self, run_dir, number, checkpoint, entries, *, settlement_context=None):
         if not isinstance(run_dir, str) or not run_dir or "\0" in run_dir:
             raise ValueError("invalid batch run folder")
         self.run_dir = os.path.abspath(run_dir)
@@ -329,7 +340,9 @@ class Batch:
         self.path = manifest_path(self.run_dir, number)
         self.number = int(number)
         self.checkpoint = checkpoint
+        self.settlement_context = settlement_context
         self.opened_at = None
+        self.nonce = None
         self.recovering = False
         self.entries: list[BatchEntry] = []
         for entry in entries or []:
@@ -418,6 +431,7 @@ class Batch:
                 "pid": os.getpid(), "host": host_id(),
                 **({"machine": machine} if machine else {}),
                 **({"pidns": pidns} if pidns else {}),
+                **({"nonce": self.nonce} if self.nonce else {}),
                 "entries": self.entries,
                 **({"recovering": True} if self.recovering else {})}
 
@@ -462,6 +476,7 @@ class Batch:
         fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         os.close(fd)
         self.opened_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        self.nonce = secrets.token_hex(16)
         self._write()
         return self
 
@@ -490,8 +505,44 @@ class Batch:
                 self._write()
                 return
 
+    def settle(self, entry_id, *, context, ledger, artifacts, refund_attempt):
+        """Atomically add the machine-keyed receipt written after a real row.
+
+        Keep the in-memory record identical to the last published document if
+        the whole-file rewrite fails.  The loop treats that failure as
+        best-effort: after a crash an absent receipt means ordinary rollback.
+        """
+        if not self.nonce:
+            raise ValueError("batch has no settlement nonce")
+        for row in self.entries:
+            if row["id"] != entry_id:
+                continue
+            receipt = settlement_mod.issue(
+                context=context, batch=self.number, nonce=self.nonce,
+                checkpoint=self.checkpoint, entry_id=entry_id, ledger=ledger,
+                artifacts=artifacts, refund_attempt=refund_attempt)
+            prior = row.get("settlement")
+            row["settlement"] = receipt
+            try:
+                self._write()
+            except BaseException:
+                if prior is None:
+                    row.pop("settlement", None)
+                else:
+                    row["settlement"] = prior
+                raise
+            return receipt
+        raise ValueError("not this batch's entry: %s" % entry_id)
+
     def entry_ids(self):
         return [row["id"] for row in self.entries]
+
+    def entry_artifacts(self, entry_id):
+        """The confined artifact list for one entry, in manifest order."""
+        for row in self.entries:
+            if row["id"] == entry_id:
+                return [self._confine(path) for path in row["artifacts"]]
+        raise ValueError("not this batch's entry: %s" % entry_id)
 
     def artifacts(self):
         return [path for row in self.entries for path in row["artifacts"]]

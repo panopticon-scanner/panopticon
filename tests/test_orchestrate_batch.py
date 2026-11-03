@@ -66,17 +66,19 @@ class TestHeadlessLoop(_HeadlessLoopCase):
                                                  "--discard-batch", "1"))
         self.assertEqual(status["status"], "complete", status)
         self.assertIn("discarded batch 1", err.getvalue())
-        # the record and its artifacts are gone, the entries were ledgered as
-        # rolled back, and their attempts were given back -- the same rollback
-        # a dead owner gets, no more and no less
+        # #3351: discard overrides liveness only. The valid SEC receipt is
+        # still kept; only unproved ACC is cancelled/refunded.
         self.assertEqual([], self._manifests(run_dir))
         after = ledger_mod.Ledger(run_dir).lines()
         self.assertEqual(after[:len(before)], before)
-        self.assertTrue(any(r.get("status") == ledger_mod.ROLLED_BACK for r in after))
+        self.assertFalse(any(r.get("entry_id") == "review-app-SEC" and r.get("status")
+                             for r in after))
+        self.assertTrue(any(r.get("entry_id") == "review-app-ACC"
+                            and r.get("status") == ledger_mod.CANCELLED for r in after))
         self.assertEqual(runio._load_json(runio._pano(d, review._ATTEMPTS_FILE)),
                          attempts)
         # ...and the run went on to finish, which is the whole point
-        self.assertIn("review-app-SEC", resumed.launched)
+        self.assertNotIn("review-app-SEC", resumed.launched)
         self.assertIn("review-app-ACC", resumed.launched)
 
     def test_the_discarded_records_artifacts_are_deleted(self):
@@ -94,7 +96,9 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             loop_batch.recover_stale(d, req, "claude", "headless", discard=1)
-        self.assertEqual([], [p for p in landed if os.path.exists(p)])
+        # The one landed artifact has a valid receipt and survives; discard is
+        # not an instruction to ignore settlement proof (#3351).
+        self.assertEqual(landed, [p for p in landed if os.path.exists(p)])
         self.assertEqual([], self._manifests(crashed.run_dir))
         self.assertIn("discarded batch 1", err.getvalue())
         self.assertEqual([1], [row["batch"]
@@ -248,7 +252,8 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         self.assertIn("its owner (no usable owner stamp, verdict unstamped)", err.getvalue())
         self.assertNotIn("pid None", err.getvalue())
         self.assertEqual([1], [row["batch"] for row in self._accepted(crashed.run_dir)])
-        self.assertIn("review-app-SEC", resumed.launched)
+        self.assertNotIn("review-app-SEC", resumed.launched)
+        self.assertIn("review-app-ACC", resumed.launched)
 
     def test_a_pid_from_another_namespace_is_never_read_as_a_crash(self):
         # #2065, the destructive case: same host, same MAC (`--network host`),

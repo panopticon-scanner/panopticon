@@ -9,9 +9,12 @@ tests that merely READ a ledger row to check what a run wrote stay in
 tests/test_orchestrate.py, now through `ledger_mod.Ledger` too.
 """
 import contextlib
+import concurrent.futures
+import hashlib
 import io
 import json
 import os
+import threading
 import time
 from unittest import mock
 
@@ -21,6 +24,89 @@ import scripts.runners.base as base
 import scripts.runners.claude as claude_runner
 import scripts.synth.cost as cost_mod
 from tests.orchestrate_helpers import LoopCase
+
+
+class TestLedgerSettlementSpan(LoopCase):
+    """#3351: a durable receipt identifies the exact real row this append wrote.
+
+    The host workers finish concurrently even though the loop normally consumes
+    their results serially.  Keep the primitive honest under direct contention:
+    no two callers may receive the same span, and every returned digest must name
+    exactly one complete JSONL row on disk.
+    """
+
+    def _result(self, entry_id):
+        return base.RunResult(entry_id=entry_id, ok=True, text="", usage={},
+                              cost_usd=0.01, model="m", session_id="s-" + entry_id,
+                              denials=[], error=None)
+
+    def test_concurrent_appends_return_exact_non_overlapping_byte_spans(self):
+        run_dir, _floor = self._repo()
+        ledger = ledger_mod.Ledger(run_dir)
+        barrier = threading.Barrier(12)
+
+        def append(index):
+            entry_id = "entry-%02d-λ" % index
+            barrier.wait()
+            return entry_id, ledger.record(
+                {"id": entry_id}, "review", self._result(entry_id),
+                "headless", "claude")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as pool:
+            receipts = list(pool.map(append, range(12)))
+        with open(ledger.path, "rb") as fh:
+            raw = fh.read()
+
+        spans = []
+        for entry_id, receipt in receipts:
+            self.assertEqual(1, receipt["version"])
+            start, end = receipt["start"], receipt["end"]
+            line = raw[start:end]
+            self.assertTrue(line.endswith(b"\n"))
+            self.assertEqual(receipt["sha256"], hashlib.sha256(line).hexdigest())
+            self.assertEqual(entry_id, json.loads(line)["entry_id"])
+            spans.append((start, end))
+        self.assertEqual([(a, b) for (_pa, a), (b, _nb) in zip(
+            sorted(spans), sorted(spans)[1:]) if a != b], [])
+        self.assertEqual((0, len(raw)), (min(a for a, _b in spans),
+                                        max(b for _a, b in spans)))
+
+    def test_settlement_matching_binds_entry_and_checkpoint_at_the_ledger_layer(self):
+        run_dir, _floor = self._repo()
+        ledger = ledger_mod.Ledger(run_dir)
+        span = ledger.record({"id": "entry-a"}, "review", self._result("entry-a"),
+                             "headless", "claude")
+        self.assertTrue(ledger.matches_settlement(span, "entry-a", "review"))
+        for entry_id, checkpoint in (("entry-b", "review"),
+                                     ("entry-a", "verify"),
+                                     ("entry-b", "verify")):
+            with self.subTest(entry_id=entry_id, checkpoint=checkpoint):
+                self.assertFalse(ledger.matches_settlement(span, entry_id, checkpoint))
+
+    def test_interrupt_rows_cannot_be_used_as_settlement_rows(self):
+        run_dir, _floor = self._repo()
+        ledger = ledger_mod.Ledger(run_dir)
+        status_span = ledger.record(
+            {"id": "status-row"}, "review", self._result("status-row"),
+            "headless", "claude", status=ledger_mod.CANCELLED)
+        rollback_span = ledger.record(
+            {"id": "rollback-row"}, "review", self._result("rollback-row"),
+            "headless", "claude", rolled_back=True)
+        self.assertFalse(ledger.matches_settlement(status_span, "status-row", "review"))
+        self.assertFalse(ledger.matches_settlement(rollback_span, "rollback-row", "review"))
+
+    def test_settlement_span_must_contain_exactly_one_jsonl_line(self):
+        run_dir, _floor = self._repo()
+        ledger = ledger_mod.Ledger(run_dir)
+        span = ledger.record({"id": "entry-a"}, "review", self._result("entry-a"),
+                             "headless", "claude")
+        with open(ledger.path, "ab") as fh:
+            fh.write(b"\n")
+        with open(ledger.path, "rb") as fh:
+            raw = fh.read(span["end"] + 1)
+        widened = dict(span, end=span["end"] + 1,
+                       sha256=hashlib.sha256(raw).hexdigest())
+        self.assertFalse(ledger.matches_settlement(widened, "entry-a", "review"))
 
 
 class TestLedgerMoney(LoopCase):
