@@ -1260,18 +1260,24 @@ def test_valid_remote_freshness_compares_instants(tmp_path, timestamp, expected)
 
 class TestStandaloneImports(unittest.TestCase):
     def test_help_without_site_packages_from_unrelated_cwd(self):
-        script = Path(triage.__file__).resolve()
-        with tempfile.TemporaryDirectory() as directory:
-            env = dict(os.environ)
-            env.pop("PYTHONPATH", None)
-            result = subprocess.run(
-                [sys.executable, "-S", str(script), "--help"],
-                cwd=directory, env=env, capture_output=True, text=True, timeout=15,
-                check=False)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("usage:", result.stdout)
-            self.assertIn("apply", result.stdout)
-            self.assertEqual(list(Path(directory).iterdir()), [])
+        # #3404: triage and the four tools that now import gh_transport directly, each launched
+        # by path the way the SOP runs them -- gh_transport's own bootstrap must carry them.
+        scripts = Path(triage.__file__).resolve().parent
+        for name, word in (("triage.py", "apply"), ("file_issues.py", "--dry-run"),
+                           ("file_fixmes.py", "--dry-run"),
+                           ("code_scanning_audit.py", "--repository"),
+                           ("reconcile_apply.py", "recover-linkage")):
+            with self.subTest(script=name), tempfile.TemporaryDirectory() as directory:
+                env = dict(os.environ)
+                env.pop("PYTHONPATH", None)
+                result = subprocess.run(
+                    [sys.executable, "-S", str(scripts / name), "--help"],
+                    cwd=directory, env=env, capture_output=True, text=True, timeout=15,
+                    check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("usage:", result.stdout)
+                self.assertIn(word, result.stdout)
+                self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_config_path_preserves_the_legacy_value(self):
         self.assertEqual(triage.CONFIG_PATH, os.path.join(".panopticon", "config.json"))

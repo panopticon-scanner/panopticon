@@ -3,7 +3,7 @@
 skill/scripts/reconcile.py against the run-2 fingerprint-to-issue linkage.
 
 Dry-run by default, always. Mirrors scripts/triage.py's conventions: injectable runner/sleep
-for testability, throttle+backoff on gh calls (from gh_transport.gh), validate-before-mutate.
+for testability, throttle+backoff on gh calls (from triage.gh), validate-before-mutate.
 
 Usage:
   python3 scripts/reconcile_apply.py recover-linkage --report report.json --out linkage.json
