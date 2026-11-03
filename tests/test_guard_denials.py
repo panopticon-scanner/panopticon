@@ -286,6 +286,27 @@ class TheJoinTest(_LedgerCase):
         self.assertLessEqual(len(stored["pattern"]), guard_rules.DENIAL_REASON_CAP)
         self.assertEqual("x" * 9000, denial["tool_input"]["pattern"])
 
+    def test_redaction_precedes_the_string_bound(self):
+        exposed = REDACTABLE[:12]
+        content = "x" * (guard_rules.DENIAL_REASON_CAP - len(exposed)) + REDACTABLE
+        denial = dict(DENIAL, tool_input={"content": content})
+        stored = self._row(result=_result([denial]))["denials"][0]["tool_input"]["content"]
+        self.assertNotIn(exposed, stored)
+        self.assertLessEqual(len(stored), guard_rules.DENIAL_REASON_CAP)
+
+    def test_list_entries_are_redacted_and_bounded(self):
+        edits = [{"old_string": REDACTABLE, "new_string": "x" * 9000}]
+        denial = {"tool_name": "MultiEdit", "tool_use_id": "t1",
+                  "tool_input": {"file_path": self.out_file, "edits": edits}}
+        stored = self._row(result=_result([denial]))["denials"][0]["tool_input"]["edits"]
+        self.assertNotIn(REDACTABLE, json.dumps(stored))
+        self.assertLessEqual(len(stored[0]["new_string"]), guard_rules.DENIAL_REASON_CAP)
+
+    def test_a_row_without_a_tool_use_id_is_still_redacted(self):
+        denial = {"tool_name": "Grep", "tool_input": {"pattern": REDACTABLE}}
+        stored = self._row(result=_result([denial]))["denials"][0]["tool_input"]
+        self.assertNotIn(REDACTABLE, stored["pattern"])
+
     def test_the_hosts_own_rows_are_not_touched(self):
         self._sidecar_lines({"tool_use_id": "t1", "reason": "r"})
         result = _result([dict(DENIAL)])      # its own dict: a shared one would compare to itself
