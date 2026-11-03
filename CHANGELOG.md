@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Fix: Semgrep partial coverage names the affected files and rules (#3229).** Rule
+  timeouts and both pinned syntax-error notifications now publish bounded file/rule
+  identities in the coverage facts and on stderr. A parser failure with no named rule
+  explicitly applies to all applicable rules; malformed notifications remain private,
+  unlocated gaps and still withhold coverage certification.
+
 - **Fix: crash recovery keeps entries that had durably settled (#3351).** After a completed
   batch entry's row, the loop best-effort records a machine-keyed receipt for that exact row and artifact bytes.
   A restart keeps only receipts that still match the bound request, ledger, and schema-valid
