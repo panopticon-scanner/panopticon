@@ -746,6 +746,33 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         self.assertEqual("driver loop: RuntimeError: boom", status["message"])
         self.assertEqual(["error"], runner.torn_down)
 
+    def test_the_loop_prunes_rejected_only_after_its_batch_closes(self):
+        # #1664: retention runs once no batch manifest is on disk, with the
+        # run's own id, so no open batch's receipt can lose an artifact.
+        d, floor = self._repo()
+        runner = FakeRunner()
+        runner.fail_once.add("review-app-SEC")
+        inner, calls = runner.run_entry, []
+
+        def with_output(entry, env):
+            result = inner(entry, env)
+            if not result.ok:
+                result.text = "half a reply"
+            return result
+
+        def watched(run_folder, run_id):
+            calls.append((self._manifests(run_folder), run_id))
+            return real(run_folder, run_id)
+
+        runner.run_entry = with_output
+        real = orchestrate.rejected_retention.prune
+        with mock.patch.object(orchestrate.rejected_retention, "prune", side_effect=watched):
+            self._return_persist(d, floor, runner)
+        self.assertIn("review-app-SEC-1.json", self._rejected(runner))
+        self.assertTrue(calls)
+        run_id = driver.run_manifest.load_manifest(d)["run_id"]
+        self.assertEqual([([], run_id)] * len(calls), calls)
+
     def test_a_settled_failures_retained_reply_survives_the_interrupt(self):
         # D10 ruling 5 keeps what a failed launch printed, and ruling 2 reads
         # it back into the next attempt's prompt. The batch gains it mid-flight
