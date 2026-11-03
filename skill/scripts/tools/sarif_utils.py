@@ -38,6 +38,10 @@ _TARGET_PREFIX = TARGET_MOUNT.rstrip("/") + "/"
 # Defined here, not beside that predicate, because this module exists to break
 # the cycle back to `ingest_tools` -- and two copies of the list would drift.
 SECRET_ADAPTERS = frozenset({"gitleaks"})
+# #3361: mixed adapters cannot join SECRET_ADAPTERS. Trivy reports both
+# vulnerabilities and credentials; only a result whose resolved rule carries
+# Trivy's scanner-owned `secret` tag gets this per-finding kind.
+SECRET_KIND = "secret"
 # The SARIF toolComponent name a CWE taxonomy uses. gosec names its taxonomy
 # "CWE" and puts a BARE number under it, which is why `CWE_TAG` cannot see it.
 CWE_TAXONOMY = "CWE"
@@ -436,6 +440,10 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1,
                 result_props = _properties(res.get("properties"))
                 rule_tags = rule_props.get("tags")
                 tags = " ".join(str(t) for t in rule_tags) if isinstance(rule_tags, list) else ""
+                finding_kind = (SECRET_KIND if tool_name == "trivy"
+                                and isinstance(rule_tags, list)
+                                and any(tag == SECRET_KIND for tag in rule_tags)
+                                else None)
                 blob = " ".join([res.get("ruleId", ""), tags,
                                  json.dumps(result_props, default=str)])
                 # #1578 I1: the tag scrape, UNION the rule's CWE taxonomy
@@ -456,6 +464,9 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1,
                 # so a "None" string here would forge a rule id, and with it the
                 # finding's fingerprint.
                 inert_rule_id = inert_text(rule_id) if isinstance(rule_id, str) else rule_id
+                tool_evidence = {"rule_id": inert_rule_id}
+                if finding_kind is not None:
+                    tool_evidence["kind"] = finding_kind
                 finding = {
                     "id": new_finding_id(prefix, n),
                     # The message is target-derived text on its way to an
@@ -478,7 +489,7 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1,
                     # the dependency adapters. provenance.confirmation_reasoning
                     # keeps carrying it too (back-compat: evidence.tool_rule_id
                     # falls back there for pre-#467 artifacts).
-                    "tool_evidence": {"rule_id": inert_rule_id},
+                    "tool_evidence": tool_evidence,
                 }
                 finding["provenance"] = tool_provenance(tool_name, reasoning=inert_rule_id)
                 if cites:
