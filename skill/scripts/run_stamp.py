@@ -27,7 +27,6 @@ import errno
 import hashlib
 import hmac
 import os
-import secrets
 import stat
 
 KEY_NAME = "run-stamp.key"
@@ -79,6 +78,7 @@ def _read(path):
 def _create(directory, path):
     """Write a fresh key under a private name, then link it into place: the link
     is exclusive, so the first run wins and every other reads the winner's."""
+    import secrets            # here, not at import: the read guard's hook loads this module per call
     tmp = os.path.join(directory, ".%s.%s.tmp" % (KEY_NAME, secrets.token_hex(8)))
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:

@@ -45,8 +45,6 @@ sys.path (plan 5, R-P5-5), the rules this hook shares with the other two are
 loaded BY PATH from `guard_rules.py` beside it, where they used to be copied
 (#3273 cut 11; the loader stanza below).
 """
-import hashlib
-import hmac
 import json
 import os
 import sys
@@ -401,6 +399,8 @@ def _stamp_key(create=False):
 
 
 def _row_stamp(key, entry_id, row):
+    import hashlib            # here, not at import: an unbound call never pays for OpenSSL
+    import hmac
     # Over the shape `_load_scope` hands back, so a stamp made at install verifies at load.
     body: dict[str, object] = {k: [p for p in (row.get(k) or []) if isinstance(p, str)]
                                for k in guard_rules.SCOPE_KEYS}
@@ -418,6 +418,7 @@ def _row_verifies(key, entry_id, row):
     stamp = row.get(STAMP_KEY) if isinstance(row, dict) else None
     if key is None or not isinstance(stamp, str) or not isinstance(entry_id, str):
         return False
+    import hmac
     try:
         return hmac.compare_digest(stamp.encode("ascii"),
                                    _row_stamp(key, entry_id, row).encode("ascii"))
