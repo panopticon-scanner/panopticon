@@ -118,8 +118,23 @@ def _status(kind, message, **extra):
     return st
 
 
-def loop(args):
-    """spec 4.3. Returns the final status dict; never exits (the CLI owns exit)."""
+def loop(args, pause=None):
+    """spec 4.3. Returns the final status dict; never exits (the CLI owns exit).
+
+    `pause` (#3350): the drain-and-pause request -- built and installed here for a headless
+    run unless the caller hands one in, and restored whatever happens."""
+    pause = pause or loop_setup.PauseRequest()
+    try:
+        status = _loop(args, pause)
+    finally:
+        pause.restore()
+    if pause.is_set() and status.get("status") == "complete":
+        print("driver loop: a pause was requested, but the run completed first",
+              file=sys.stderr, flush=True)
+    return status
+
+
+def _loop(args, pause):
     max_iterations = getattr(args, "max_iterations", None) or DEFAULT_MAX_ITERATIONS
     setup, error = loop_setup.resolve(args)
     if setup is None:              # keyed on the setup, not the text: an empty message still ends it
@@ -127,6 +142,8 @@ def loop(args):
     (budget, namespace, resolved, review_root, host, mode, runner, session_root,
      prev_req) = setup
     guards = ledger = None
+    if mode == "headless":
+        pause.install()
     if mode == "session":
         # Guards constructed HERE, before `_first_run`, and unconditionally -- not only once this
         # invocation reaches a fresh checkpoint. Session mode is the only mode whose guards can
@@ -250,6 +267,11 @@ def loop(args):
                 guards.arm(pending)
                 runner.run_batch(pending, getattr(args, "concurrency", None), guards.env_for)
                 return _dispatch_exit(review_root, req, pending, namespace, runner.request_sha256)
+            if pause.is_set():          # #3350: between batches -- nothing armed, no record opened
+                # The dispatch charged each pending cell's attempt; nothing launched, so give it back.
+                persist.rollback_markers(review_root, req.get("checkpoint"), pending)
+                return _finish(_status("paused", loop_setup.PAUSED_ON_REQUEST % (0, "ies", "were", len(pending))),
+                               review_root, guards, ledger, namespace, mode, runner)
             # #1662: the list the rollback deletes (never a glob over the run folder), written BEFORE the
             # first submit; #3227: and before `arm`, as the batch's LOCK -- `Batch.before_launch` says why.
             ledger.mark_batch()       # #3349: what an interrupt keeps is what lands after THIS
@@ -290,7 +312,8 @@ def loop(args):
             over_budget = loop_setup.BudgetStop(ledger, budget)
             with contextlib.closing(runner.iter_batch(
                     pending, getattr(args, "concurrency", None), guards.env_for,
-                    stop=lambda: tally.outage(width) or over_budget())) as stream:
+                    stop=lambda: tally.outage(width) or over_budget(),
+                    hold=pause.event)) as stream:
                 for entry, result, timing in stream:
                     eid = entry.get("id")
                     refusal = loop_batch.record_entry(
@@ -327,7 +350,9 @@ def loop(args):
                 # reported as "N host-class failure(s)", would render that N as zero. Exclusive by
                 # construction: the `stop` above is `outage or over_budget`, so its short-circuit
                 # means the rule that answered True is the only one that recorded anything.
-                if over_budget.stopped:
+                if pause.is_set():
+                    rule = "a pause request"
+                elif over_budget.stopped:
                     rule = over_budget.stopped
                 else:
                     rule = "%d host-class failure(s)" % (tally.stopped_at or 0)
@@ -361,6 +386,10 @@ def loop(args):
             if paused:
                 return _finish(_status("paused", paused), review_root, guards, ledger,
                                namespace, mode, runner)
+            if pause.is_set():
+                return _finish(_status("paused", loop_setup.PAUSED_ON_REQUEST % (
+                    done, "y" if done == 1 else "ies", "was" if done == 1 else "were",
+                    len(unlaunched))), review_root, guards, ledger, namespace, mode, runner)
             if (denied := denials.every_own_write_denied(landed)):      # #3220
                 return _finish(_status("error", denied), review_root, guards, ledger,
                                namespace, mode, runner)
