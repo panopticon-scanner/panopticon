@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Drain-and-pause for a headless loop (#3350).** `SIGUSR1` makes `driver loop` stop
+  launching, let the running entries finish and be recorded as usual, give back the attempts
+  of entries it never launched and exit `paused`, resumable without `--reset`. The launch gate
+  sits in the worker before `run_entry`, so not even a freed worker's next entry starts.
+  Ctrl-C and SIGTERM are unchanged.
+
 - **Update the tools-image Python dependency closure (#3416).** The privileged
   requirements now pin certifi 2026.10.23, sse-starlette 3.6.0 and starlette
   1.10.0. Their allowed hashes were re-resolved through `bump_pins.py`, which

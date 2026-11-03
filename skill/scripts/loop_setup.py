@@ -8,7 +8,9 @@ batch is armed: the iteration cap, the budget, an entry out of attempts, a batch
 the loop itself (arm, launch, record, settle) stays in `orchestrate`.
 """
 import os
+import signal
 import sys
+import threading
 
 import scripts.first_contact as first_contact
 import scripts.hosts as hosts
@@ -233,3 +235,61 @@ class BudgetStop:
         if over and not self.stopped:
             self.stopped = "the --max-budget-usd cap"
         return over
+
+
+# #3350: the drain-and-pause terminal message, and its between-batches form.
+PAUSED_ON_REQUEST = ("paused on request (SIGUSR1): %d running entr%s finished and %s kept; %d "
+                     "never launched and their attempts were given back. Re-run the same command "
+                     "with the same flags to resume -- the bounds included (`--max-budget-usd`, "
+                     "`--max-iterations`, `--concurrency`, `--entry-timeout`, `--max-turns`), "
+                     "since a re-run without them runs unbounded; no `--reset`")
+
+
+class PauseRequest:
+    """#3350: SIGUSR1 asks a headless `driver loop` to drain and pause.
+
+    The handler only SETS an event -- it never raises -- so Ctrl-C and SIGTERM keep their
+    immediate rollback path, before and after a request. The loop stops launching
+    (`iter_batch`'s `hold` and its `stop`), lets the running entries finish within
+    `--entry-timeout`, records them as usual and exits `paused`; between batches it exits before
+    arming the next. Installed only over the default disposition (the `sigterm_as_interrupt`
+    rule: a handler already there is somebody else's), only from the main thread, and restored
+    on the way out. A platform without SIGUSR1 says so in the pid line and never pauses.
+    """
+
+    def __init__(self):
+        self.event = threading.Event()
+        self._signal, self._previous = getattr(signal, "SIGUSR1", None), None
+
+    def is_set(self):
+        return self.event.is_set()
+
+    def install(self, stream=None):
+        stream = stream or sys.stderr
+        pid, sig = os.getpid(), self._signal
+        if sig is None:
+            reason = "this platform has no SIGUSR1"
+        elif threading.current_thread() is not threading.main_thread():
+            reason = "not on the main thread"
+        elif signal.getsignal(sig) is not signal.SIG_DFL:
+            reason = "SIGUSR1 already has a handler"
+        else:
+            self._previous = signal.signal(sig, self._handle)
+            print("driver loop: pid %d; `kill -USR1 %d` drains and pauses" % (pid, pid),
+                  file=stream, flush=True)
+            return True
+        print("driver loop: pid %d; pause unavailable (%s)" % (pid, reason), file=stream, flush=True)
+        return False
+
+    def _handle(self, signum, frame):
+        if self.event.is_set():
+            print("driver loop: already draining; Ctrl-C stops now", file=sys.stderr, flush=True)
+            return
+        self.event.set()
+        print("driver loop: pause requested; finishing the running entries, launching no more",
+              file=sys.stderr, flush=True)
+
+    def restore(self):
+        if self._previous is not None and self._signal is not None:
+            signal.signal(self._signal, self._previous)
+            self._previous = None

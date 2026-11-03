@@ -366,24 +366,20 @@ class HostRunner(children.ChildProcesses):
                   % (requested, MAX_CONCURRENCY), file=sys.stderr)
         return max(1, min(requested, MAX_CONCURRENCY))
 
-    def iter_batch(self, entries, concurrency, env_for, stop=None):
-        """Run every entry through run_entry on a thread pool, yielding
-        `(entry, result, timing)` in COMPLETION order; an exception becomes
-        RunResult.failed. `timing` is
-        `{"started_at", "finished_at", "duration_ms"}`, measured around
-        run_entry INSIDE the worker -- the only place that knows when this
-        entry really ran -- and `duration_ms` is what the loop's ledger row
-        records.
+    def iter_batch(self, entries, concurrency, env_for, stop=None, hold=None):
+        """Run every entry through run_entry on a thread pool, yielding `(entry, result, timing)` in
+        COMPLETION order; an exception becomes RunResult.failed. `timing` is `{"started_at",
+        "finished_at", "duration_ms"}`, measured around run_entry INSIDE the worker -- the only
+        place that knows when this entry really ran -- and `duration_ms` is what the loop's ledger
+        row records.
 
-        A family implements `run_entry` and inherits this; nothing here is
-        host-specific, and no family overrides it (only the session runner
-        overrides `run_batch`, below). P07 (#1636): the loop persists and
-        ledgers each entry AS IT ARRIVES, so a batch that is interrupted keeps
+        A family implements `run_entry` and inherits this; nothing here is host-specific, and no
+        family overrides it (only the session runner overrides `run_batch`, below). P07 (#1636): the
+        loop persists and ledgers each entry AS IT ARRIVES, so a batch that is interrupted keeps
         everything already yielded.
 
-        #1662 -- Ctrl-C means complete stoppage. An interrupt (or a close:
-        both arrive here as a BaseException at the yield) does three things,
-        in this order:
+        #1662 -- Ctrl-C means complete stoppage. An interrupt (or a close: both arrive here as a
+        BaseException at the yield) does three things, in this order:
 
         1. `shutdown(cancel_futures=True)`, so every work item still QUEUED is
            dropped and never launches. It used to be the opposite:
@@ -402,34 +398,33 @@ class HostRunner(children.ChildProcesses):
            (`INTERRUPT_GRACE`), instead of the unbounded join the `with`
            block used to perform.
 
-        Up to `width` entries can still LAUNCH between the last yield and the
-        cancel: every worker that finishes an entry takes the next queued item
-        immediately, and nothing the consumer does can beat it, so a batch of
-        twenty at width four can start eight before the cancel lands. That is
-        the bound -- the pool, not a single slot, and never the whole batch.
+        Up to `width` entries can still LAUNCH between the last yield and the cancel: every worker
+        that finishes an entry takes the next queued item immediately, and nothing the consumer does
+        can beat it, so a batch of twenty at width four can start eight before the cancel lands.
+        That is the bound -- the pool, not a single slot, and never the whole batch.
 
-        Callers that may abandon the generator mid-batch should close it
-        deterministically (`contextlib.closing`) rather than leave the
-        cancellation to garbage collection.
+        Callers that may abandon the generator mid-batch should close it deterministically
+        (`contextlib.closing`) rather than leave the cancellation to garbage collection.
 
-        #1721 -- `stop` is the COOPERATIVE version of that cancel, for the one
-        thing the consumer knows and this seam cannot: the host has gone down,
-        so launching the rest of the batch is 78 more launches at ~3 s each,
-        each of them charged, before anyone can ask the question. It is
-        evaluated once after each yield returns -- never before the first
-        result -- and when it is true every work item still QUEUED is
-        cancelled, exactly as the interrupt cancels it. Then the difference:
-        the entries already IN FLIGHT are drained, yielded and persisted as
-        usual, and NO child is terminated. An outage is not an interrupt; a
-        launch in flight during one fails fast on its own, and killing it
-        would throw away a reply that may still land.
+        #1721 -- `stop` is the COOPERATIVE version of that cancel, for the one thing the consumer
+        knows and this seam cannot: the host has gone down, so launching the rest of the batch is 78
+        more launches at ~3 s each, each of them charged, before anyone can ask the question. It is
+        evaluated once after each yield returns -- never before the first result -- and when it is
+        true every work item still QUEUED is cancelled, exactly as the interrupt cancels it. Then
+        the difference: the entries already IN FLIGHT are drained, yielded and persisted as usual,
+        and NO child is terminated. An outage is not an interrupt; a launch in flight during one
+        fails fast on its own, and killing it would throw away a reply that may still land.
 
-        The bound on launches after `stop` says yes is the same pool width as
-        above: up to `width` entries were already running when the answer came
-        back, and those are the ones drained. Cancelled futures are skipped,
-        never `.result()`-ed. A `stop` that RAISES is read as "carry on" and
-        named once: it is the consumer's own predicate, not an interrupt, and
-        letting it reach the arm below would terminate this batch's children.
+        The bound on launches after `stop` says yes is the same pool width as above: up to `width`
+        entries were already running when the answer came back, and those are the ones drained.
+        Cancelled futures are skipped, never `.result()`-ed. A `stop` that RAISES is read as "carry
+        on" and named once: it is the consumer's own predicate, not an interrupt, and letting it
+        reach the arm below would terminate this batch's children.
+
+        #3350 -- `hold` (anything with `is_set()`) is the STRICT form, for a drain-and-pause: each
+        worker asks it after dequeuing and before `run_entry`, so once it is set nothing more
+        launches -- the turnover above included. A held entry is neither run nor yielded; the
+        consumer reads what never came back as never launched.
         """
         entries = list(entries)
         if not entries:
@@ -437,6 +432,8 @@ class HostRunner(children.ChildProcesses):
         width = self.batch_width(concurrency)
 
         def one(entry):
+            if hold is not None and hold.is_set():
+                return None                   # #3350: held -- never launched, never yielded
             started, clock = time.time(), time.monotonic()
             try:
                 result = self.run_entry(entry, env_for(entry))
@@ -458,6 +455,8 @@ class HostRunner(children.ChildProcesses):
             for f in concurrent.futures.as_completed(futures):
                 yielded.add(f)
                 completed = f.result()
+                if completed is None:
+                    continue
                 yield completed
                 try:
                     asked = stop is not None and bool(stop())
@@ -493,7 +492,8 @@ class HostRunner(children.ChildProcesses):
                 pool.shutdown(wait=False, cancel_futures=True)
                 for f in concurrent.futures.as_completed(
                         [x for x in futures if x not in yielded and not x.cancelled()]):
-                    yield f.result()
+                    if (drained := f.result()) is not None:
+                        yield drained
         except BaseException:      # noqa: BLE001 -- KeyboardInterrupt and GeneratorExit both
             stopped = True
             pool.shutdown(wait=False, cancel_futures=True)
