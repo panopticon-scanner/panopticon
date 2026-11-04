@@ -55,6 +55,7 @@ import hashlib
 import os
 import re
 
+import scripts.plan_contract as plan_contract
 import scripts.py_imports as py_imports
 import scripts.run_manifest as run_manifest
 import scripts.safe_write as safe_write
@@ -144,7 +145,7 @@ def _norm(path):
 # them (#3231 F4b). A claim's text, or an advisor's `missing_evidence`, is
 # steerable by the reviewed repo, and `.panopticon/host-settings.json` or
 # `.git/config` would otherwise pass as a confined file that exists.
-_NEVER_EVIDENCE = frozenset({".git", ".panopticon"})
+_NEVER_EVIDENCE = frozenset({".git", plan_contract.ARTIFACT_DIR})
 
 
 def _controller_state(review_root, path):

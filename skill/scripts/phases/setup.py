@@ -10,6 +10,7 @@ from scripts import hosts
 import scripts.loop_batch as loop_batch
 from scripts import read_guard_hook
 import scripts.host_disclosure as host_disclosure
+import scripts.plan_contract as plan_contract
 import scripts.repo_config as repo_config
 import scripts.run_manifest as run_manifest
 import scripts.setup_flow as setup_flow
@@ -616,12 +617,12 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
     if result.get("status") == "complete":
         if os.path.isfile(repo_config.draft_path(review_root)):
             result["message"] = (
-                "setup complete -- read .panopticon/setup-report.md, then DIFF "
+                "setup complete -- read %s/setup-report.md, then DIFF "
                 "%s against %s before moving it over: the draft rebuilds "
                 "`groups:`, carries a committed `exclude_paths:` and "
                 "`settings:` across and records the sizes you passed, but any "
                 "other hand-kept top-level key is yours to re-apply"
-                % (repo_config.DRAFT_NAME, repo_config.CONFIG_NAMES[0]))
+                % (plan_contract.ARTIFACT_DIR, repo_config.DRAFT_NAME, repo_config.CONFIG_NAMES[0]))
             # #1603: surface 4 on the line the operator actually reads.
             # `ingest_execute`'s own message is discarded by the engine and
             # replaced here, exactly as the fallback's is, so a disclosure

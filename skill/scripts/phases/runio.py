@@ -15,6 +15,7 @@ import scripts.groups_schema as groups_schema
 import scripts.hosts as hosts
 from scripts.inert import INERT_ESCAPE_CODE_POINTS, spelled
 import scripts.ocrdb as ocrdb
+import scripts.plan_contract as plan_contract
 import scripts.redact as redact
 import scripts.repo_config as repo_config
 import scripts.run_manifest as run_manifest
@@ -78,7 +79,7 @@ def _pano(review_root, *parts):
     (`_TOP_LEVEL`), else per-run under `.panopticon/runs/<tag>/`. The manifest anchors
     the tag, so every done-predicate (which stats a `_pano` path) resolves the same
     folder on every resume."""
-    base = os.path.join(review_root, ".panopticon")
+    base = os.path.join(review_root, plan_contract.ARTIFACT_DIR)
     if parts and parts[0] not in _TOP_LEVEL:
         tag = _run_tag(review_root)
         if tag is not None:
@@ -91,7 +92,7 @@ def _report_out(review_root):
     tag-named. Falls back to flat `report.json` when there is no manifest."""
     tag = _run_tag(review_root)
     name = f"{tag}-report.json" if tag else "report.json"
-    return os.path.join(review_root, ".panopticon", name)
+    return os.path.join(review_root, plan_contract.ARTIFACT_DIR, name)
 
 def _confine_link_parent(link_path):
     """The real directory `_relink` may write into, or a DriverError naming the
@@ -117,7 +118,7 @@ def _confine_link_parent(link_path):
     review_root = claim_scope.review_root_of_artifact_path(parent)
     if review_root is None:
         return parent
-    base = os.path.join(review_root, ".panopticon")
+    base = os.path.join(review_root, plan_contract.ARTIFACT_DIR)
     if os.path.islink(base):
         raise DriverError(
             "refusing to relink through a symlinked artifact directory: %s" % base)
@@ -163,7 +164,7 @@ def _ensure_run_symlinks(review_root):
     if not tag:
         return
     try:
-        _relink(os.path.join(review_root, ".panopticon", "runs", "latest"), tag)
+        _relink(os.path.join(review_root, plan_contract.ARTIFACT_DIR, "runs", "latest"), tag)
     except OSError:
         pass
 

@@ -10,12 +10,17 @@ else:
     except ModuleNotFoundError:  # imported flat, with skill/scripts on sys.path
         import groups_schema
 
+# The artifact directory's name, spelled once (#3409). `artifact_root` below
+# is the vetted path to it; code that needs only the NAME (a dir_fd-relative
+# open, a prefix check, an operator message) reads this.
+ARTIFACT_DIR = ".panopticon"
+
 
 def artifact_root(root):
     """Return a safe in-repo ``.panopticon`` path or fail closed."""
     logical_root = os.path.abspath(root)
     physical_root = os.path.realpath(logical_root)
-    path = os.path.join(logical_root, ".panopticon")
+    path = os.path.join(logical_root, ARTIFACT_DIR)
     if os.path.islink(path):
         raise ValueError(".panopticon must be a real directory, not a symlink")
     if os.path.lexists(path) and not os.path.isdir(path):

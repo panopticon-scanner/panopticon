@@ -117,8 +117,8 @@ def start_write_failure(review_root, baseline, exc):
                   "or fix the filesystem and rerun; the rerun captures the baseline again")
     else:
         what = "creating the run links"
-        path = os.path.join(review_root, ".panopticon", "runs", "latest")
-        remedy = "free the space or fix the filesystem under .panopticon/runs and rerun"
+        path = os.path.join(review_root, plan_contract.ARTIFACT_DIR, "runs", "latest")
+        remedy = "free the space or fix the filesystem under %s/runs and rerun" % plan_contract.ARTIFACT_DIR
     where = exc.filename if exc.filename is not None else path
     return "driver: %s failed at %s: %s; %s" % (what, where, exc.strerror or exc, remedy)
 
@@ -298,7 +298,7 @@ def _porcelain_z_records(output):
 def _outside_panopticon(path):
     """First path component is not `.panopticon` (a real boundary check:
     '.panopticon-evil.py' is NOT under .panopticon/)."""
-    return path.split("/", 1)[0] != ".panopticon"
+    return path.split("/", 1)[0] != plan_contract.ARTIFACT_DIR
 
 def _tree_delta(review_root, runner):
     """NEW porcelain records (vs. baseline) that touch a path outside
@@ -418,7 +418,7 @@ def validate_execute(review_root, manifest, runner=subprocess.run):
         # neutral there. `completed_at` only chooses the words; the stop is the same either way.
         cause = ("the tree changed since this run validated"
                  if manifest.get(run_manifest.COMPLETED_AT) else
-                 "reviewer side effects outside .panopticon/")
+                 "reviewer side effects outside %s/" % plan_contract.ARTIFACT_DIR)
         raise runio.DriverError("validate: %s: " % cause + "; ".join(delta[:10]))
     return engine.PhaseResult(kind="advanced", message="validate: clean tree")
 
@@ -451,10 +451,10 @@ def _open_caller_artifact_dir(target):
     tfd = os.open(target, os.O_RDONLY | os.O_DIRECTORY)
     try:
         try:
-            os.mkdir(".panopticon", 0o755, dir_fd=tfd)
+            os.mkdir(plan_contract.ARTIFACT_DIR, 0o755, dir_fd=tfd)
         except FileExistsError:
             pass
-        return os.open(".panopticon", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        return os.open(plan_contract.ARTIFACT_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                        dir_fd=tfd)
     finally:
         os.close(tfd)
@@ -523,8 +523,8 @@ def _finalize_worktree(review_root, manifest):
         return
     target = manifest.get("target") or review_root
     tag = run_manifest.run_tag(manifest)
-    src_dir = os.path.join(review_root, ".panopticon")
-    dst_dir = os.path.join(target, ".panopticon")
+    src_dir = os.path.join(review_root, plan_contract.ARTIFACT_DIR)
+    dst_dir = os.path.join(target, plan_contract.ARTIFACT_DIR)
     # §5.1: surface the durable, top-level, tag-named outputs (report + optional
     # split part + html) so the caller's report is complete and self-consistent even
     # when split, then re-link report.json there. Falls back to a flat report.json
@@ -546,7 +546,7 @@ def _finalize_worktree(review_root, manifest):
     try:
         dfd = _open_caller_artifact_dir(target)
     except (OSError, ValueError) as e:
-        failed.append((".panopticon", e))
+        failed.append((plan_contract.ARTIFACT_DIR, e))
     else:
         try:
             failed = _surface_into(dfd, src_dir, names)
