@@ -186,7 +186,8 @@ def test_a_surface_timeout_is_unknown_and_names_the_180_second_boundary(tmp_path
 
 
 def test_missing_shell_is_refuted_without_invoking_runtime(tmp_path):
-    with mock.patch("scripts.codex_host.inspect_surface", side_effect=AssertionError("no launch")) as inspector:
+    with mock.patch("scripts.probes.codex_surface.inspect_surface",
+                    side_effect=AssertionError("no launch")) as inspector:
         state, _by, detail = codex_probes.probe_codex_tool_policy(
             "codex", registration_dir=str(tmp_path), settings_path=str(tmp_path / "settings.json"))
     assert state == hosts.REFUTED
@@ -211,7 +212,8 @@ def test_a_relative_codex_home_is_reported_instead_of_measured(probe, probe_id, 
     monkeypatch.setitem(hosts.HOSTS, "codex", dataclasses.replace(
         hosts.HOSTS["codex"], registration_dir=os.path.join(".", "agents"),
         registration_refusal=refusal))
-    with mock.patch("scripts.codex_host.inspect_surface", side_effect=AssertionError("no launch")) as inspector:
+    with mock.patch("scripts.probes.codex_surface.inspect_surface",
+                    side_effect=AssertionError("no launch")) as inspector:
         state, by, detail = probe("codex", settings_path=str(tmp_path / "settings.json"))
     assert (state, by) == (hosts.UNKNOWN, probe_id)
     assert refusal in detail

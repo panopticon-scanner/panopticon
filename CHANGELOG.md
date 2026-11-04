@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **The Codex surface probe has its own module (#3403).** The localhost Responses fixture,
+  inspection script and effective-surface parser moved unchanged from `codex_host.py` to
+  `probes/codex_surface.py`. Callers and patches now name that owner; `codex_host` does not
+  re-export the six moved names.
+
 - **Tool execution has its own module (#3406).** `run_tool`, `_OutputSizeWatcher`,
   `drain_stderr_async` and `read_capped_report` moved unchanged from `tools/base.py` to
   `tools/exec.py`. Callers and patches now name the module that owns them; `tools.base` does not

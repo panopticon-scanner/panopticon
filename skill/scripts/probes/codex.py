@@ -71,7 +71,8 @@ def _codex_surfaces(registration_dir=None, inspector=None, runner=None):
     mutation could hide behind.
     """
     from scripts import codex_host
-    inspector = inspector or codex_host.inspect_surface
+    from scripts.probes import codex_surface
+    inspector = inspector or codex_surface.inspect_surface
     row = hosts.spec("codex")
     if not registration_dir and row.registration_refusal:
         # COD-1638371699: a relative CODEX_HOME names no directory to measure

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 import scripts.codex_host as host
+import scripts.probes.codex_surface as codex_surface
 
 
 def _request(port, method, path, body=None, length=None):
@@ -114,9 +115,9 @@ def test_live_capture_protocol_and_shutdown(tmp_path, fail):
     try:
         if fail:
             with pytest.raises(RuntimeError, match="inert runner failure"):
-                host._capture_requests(argv, {}, runner, script)
+                codex_surface._capture_requests(argv, {}, runner, script)
         else:
-            assert host._capture_requests(argv, {}, runner, script) == [
+            assert codex_surface._capture_requests(argv, {}, runner, script) == [
                 {"model": "first", "input": [{"type": "message"}]},
                 {"model": "second", "input": [{"type": "custom_tool_call_output"}]}]
         with pytest.raises((ConnectionRefusedError, OSError, socket.timeout)):

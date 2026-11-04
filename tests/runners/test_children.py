@@ -405,7 +405,7 @@ class TestANonTimeoutFailureStillEndsTheTree(GrandchildCase):
     and ran the child inside `with Popen(...)`, so ANY exception out of
     `communicate` -- a Ctrl-C on one of the main-thread launches
     (`loop_batch.prove_output_schema_shape`, `probes/common._cli_help`,
-    `codex_host._dump_catalog`, `codex_host._capture_requests`), a
+    `codex_host._dump_catalog`, `probes/codex_surface._capture_requests`), a
     `MemoryError`, a bug in this method -- ended the child and closed the
     pipes. Handling only `TimeoutExpired` left a host CLI and its whole worker
     tree running, unregistered, with nobody holding a handle to it.
