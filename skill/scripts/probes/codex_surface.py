@@ -11,6 +11,7 @@ import json
 import re
 import threading
 
+from scripts import codex_read_tools
 from scripts.codex_host import (
     DEFAULT_RUNNER,
     MAX_BYTES,
@@ -37,6 +38,8 @@ def _probe_script(probe_paths, probe_module="file:///panopticon-probe.mjs"):
     probe_module = probe_module or "file:///panopticon-probe.mjs"
     if not isinstance(probe_module, str) or not probe_module.startswith("file:"):
         raise ValueError("probe_module must be a file URL")
+    server_key = codex_read_tools.MCP_SERVER_KEY
+    read_tool = "mcp__%s__read_file" % server_key
     imports = (*WRITE_SURFACE_IMPORTS, probe_module)
     return ("const attempt = async call => { try { return {ok: true, value: await call()}; } "
             "catch (error) { return {ok: false, error: String(error)}; } }; "
@@ -54,9 +57,9 @@ def _probe_script(probe_paths, probe_module="file:///panopticon-probe.mjs"):
             "result.resources.templates = await attempt(async () => "
             "await tools.list_mcp_resource_templates({})); "
             "result.resources.read = await attempt(async () => await tools.read_mcp_resource("
-            "{server: 'panopticon_scope', uri: 'panopticon://write-surface-probe'})); "
+            "{server: '" + server_key + "', uri: 'panopticon://write-surface-probe'})); "
             "for (const path of " + json.dumps(paths) + ") { "
-            "try { result.reads.push(await tools.mcp__panopticon_scope__read_file({path})); } "
+            "try { result.reads.push(await tools." + read_tool + "({path})); } "
             "catch (error) { result.reads.push({isError: true, error: String(error)}); } } "
             "text({panopticon_surface: result});")
 

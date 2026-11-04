@@ -7,6 +7,10 @@
   `synth/plan.load_host_capabilities(run_dir)`. `main` is 291 lines, down from 326. `--help`, exit
   codes, stderr and every written file are byte-identical on the run and `--compare` paths.
 
+- **One owner for the Codex read-broker key (#3408).** `codex_read_tools.MCP_SERVER_KEY`
+  now supplies the MCP config key, derived tool namespace, prompt prose and live surface probe;
+  launch policy, shell emission and probe validation no longer spell independent copies.
+
 - **The Codex surface probe has its own module (#3403).** The localhost Responses fixture,
   inspection script and effective-surface parser moved unchanged from `codex_host.py` to
   `probes/codex_surface.py`. Callers and patches now name that owner; `codex_host` does not
