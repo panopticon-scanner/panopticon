@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`synthesize.main` is split along two seams (#3398).** `--compare` moved unchanged into its own
+  `_compare(args)`, and the inline host-capabilities loader moved unchanged into
+  `synth/plan.load_host_capabilities(run_dir)`. `main` is 291 lines, down from 326. `--help`, exit
+  codes, stderr and every written file are byte-identical on the run and `--compare` paths.
+
 - **`tool_capture._stream_and_write` is split along two seams (#3397).** The watchdog and container
   kill moved unchanged into `_start_watchdog`, and the capped stdout spool into `_spool_under_cap`;
   classification and persistence stay in `_stream_and_write`. Behaviour is unchanged.

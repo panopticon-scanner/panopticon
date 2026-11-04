@@ -1577,3 +1577,38 @@ class TestTheReportsToolIngestCarriesTheMode(unittest.TestCase):
 
     def test_redteam_reports_the_suppressed_finding(self):
         self.assertEqual(["nosemd", "plain"], self._categories("redteam"))
+
+
+class TestLoadHostCapabilities(unittest.TestCase):
+    """#3398: the loader moved out of synthesize.main. Only a JSON object in
+    THIS run folder is a posture; anything else is "nobody looked"."""
+
+    def _load(self, body=None):
+        with tempfile.TemporaryDirectory() as d:
+            run_dir = os.path.join(d, "run")
+            os.makedirs(run_dir)
+            with open(os.path.join(d, "host-capabilities.json"), "w") as fh:
+                json.dump({"host": "the-parent-dir"}, fh)    # never this one
+            if body is not None:
+                with open(os.path.join(run_dir, "host-capabilities.json"), "w") as fh:
+                    fh.write(body)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                return plan_mod.load_host_capabilities(run_dir), err.getvalue()
+
+    def test_a_json_object_is_returned_as_written(self):
+        self.assertEqual(self._load('{"host": "claude", "capabilities": {}}'),
+                         ({"host": "claude", "capabilities": {}}, ""))
+
+    def test_an_absent_file_is_empty(self):
+        self.assertEqual(self._load(), ({}, ""))
+
+    def test_a_corrupt_file_is_empty_and_announced(self):
+        caps, err = self._load("{not json")
+        self.assertEqual(caps, {})
+        self.assertIn("host-capabilities.json' could not be read", err)
+
+    def test_json_that_is_not_an_object_is_empty(self):
+        for body in ("[1, 2]", '"claude"', "7", "null"):
+            with self.subTest(body=body):
+                self.assertEqual(self._load(body), ({}, ""))
