@@ -22,6 +22,14 @@
   `synth/integrity` and `synth/plan` that spelled the artifact directory now read
   `plan_contract.ARTIFACT_DIR`; their values are unchanged and the three pins leave the ratchet.
 
+- **The `.panopticon` sweep, setup side (#3409).** The 22 sites in `setup_config` (the `.gitignore`
+  patterns and the two blanket regexes, built from `re.escape(ARTIFACT_DIR)` with the same pattern
+  text), `setup_flow`, `setup_spine`, `first_contact` (whose `PANO` is now an alias of the constant,
+  with its operator messages %-built and unchanged) and `probes/common` read
+  `plan_contract.ARTIFACT_DIR`. The ratchet now also lists, apart from the debt, the hook-process
+  literals that stay by design and the two constants that only contain the string, and pins that
+  the standalone ones agree with `ARTIFACT_DIR`.
+
 - **One home for the repo slug and the image names (#3407).** The GitHub repository is
   `gh_transport.REPO_SLUG`, read by `triage`, `file_issues`, `file_fixmes` and `reconcile_apply`
   (the report and doc URLs are built from it); `triage.REPO_SLUG` and `file_issues.REPO_SLUG` are

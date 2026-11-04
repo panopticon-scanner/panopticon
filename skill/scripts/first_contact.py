@@ -42,18 +42,20 @@ import sys
 import time
 
 import scripts.build_disclosure as build_disclosure
+import scripts.plan_contract as plan_contract
 import scripts.run_stamp as run_stamp
 import scripts.safe_git as safe_git
 import scripts.safe_write as safe_write
 
-PANO = ".panopticon"
-H1 = (".panopticon/ is tracked in the target's git index; panopticon never commits its "
-      "artifact directory -- remove it from the index (git rm -r --cached .panopticon) or "
-      "review a clean clone")
-H2 = (".panopticon/ was not created by a panopticon run on this machine (its run stamp does "
-      "not verify); move it aside (mv .panopticon .panopticon.old) or pass --reset, and re-run")
-H3 = (".panopticon/%s is a symlink, and the artifact directory holds none but the run's own "
-      "links; remove it and re-run")
+PANO = plan_contract.ARTIFACT_DIR
+H1 = ("%s/ is tracked in the target's git index; panopticon never commits its "
+      "artifact directory -- remove it from the index (git rm -r --cached %s) or "
+      "review a clean clone" % (PANO, PANO))
+H2 = ("%s/ was not created by a panopticon run on this machine (its run stamp does "
+      "not verify); move it aside (mv %s %s.old) or pass --reset, and re-run"
+      % (PANO, PANO, PANO))
+H3 = ("%s/%%s is a symlink, and the artifact directory holds none but the run's own "
+      "links; remove it and re-run" % PANO)
 H4 = ("%s is hard-linked outside the target (st_nlink=%d, %d in-tree names); review a copy "
       "without hard links (a plain cp)")
 H5 = "the target cannot be assessed at first contact: %s: %s"
@@ -169,8 +171,8 @@ def _halt(rows, template):
 def _move_aside(pano):
     aside = "%s.unverified-%s" % (pano, time.strftime("%Y%m%dT%H%M%S", time.gmtime()))
     os.rename(pano, aside)
-    print("driver: moved the unverified .panopticon/ aside to %s (--reset)"
-          % os.path.basename(aside), file=sys.stderr, flush=True)
+    print("driver: moved the unverified %s/ aside to %s (--reset)"
+          % (PANO, os.path.basename(aside)), file=sys.stderr, flush=True)
 
 
 def _write_owner(pano, review_root):

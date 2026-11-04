@@ -25,6 +25,7 @@ from scripts import discovery  # noqa: E402  (P6.5 Slice A: discovery primitives
 from scripts import grouping_engine  # noqa: E402  (5.2: stage-3 size policy + setup report)
 from scripts import repo_config  # noqa: E402  (#1681: the one place the config names live)
 from scripts import tolerant_json  # noqa: E402  (#2959: the JSON depth bound)
+from scripts import plan_contract  # noqa: E402  (#3409: the artifact directory's name)
 from scripts import setup_config  # noqa: E402  (#3405: refusal, overrides, draft settings)
 from scripts import setup_spine  # noqa: E402  (#3405: the bundled vocabulary paths)
 # #1577 (SEC-D1C): the artifact writes below go through the driver's own
@@ -78,7 +79,7 @@ def record_readiness(repo, readiness, section=None):
     artifact (#1577), so a symlink planted at either name refuses rather than
     writing through.
     """
-    root = os.path.join(os.path.abspath(repo), ".panopticon")     # first contact vetted it
+    root = os.path.join(os.path.abspath(repo), plan_contract.ARTIFACT_DIR)     # first contact vetted it
     json_path = os.path.join(root, "setup-report.json")
     document = runio._load_json(json_path)
     if not isinstance(document, dict):
@@ -161,7 +162,7 @@ def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups
     if verr or aerr or lerr:
         return {"ok": False, "errors": ["data error: %s" % e for e in verr + aerr + lerr]}
     proposal_path = proposal_path or os.path.join(
-        os.path.abspath(repo), ".panopticon", "setup-proposal.json")
+        os.path.abspath(repo), plan_contract.ARTIFACT_DIR, "setup-proposal.json")
     try:
         # #run10 COD-F1B: the cap used to be os.path.getsize() and then a separate unbounded
         # open()+json.load() -- a stat-then-open pair. The bytes actually read were never
@@ -206,7 +207,7 @@ def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups
     report_text = grouping_engine.format_report(report, disclosure)
     report_json = json.dumps({"schema_version": 1, "report": report, "disclosure": disclosure,
                               "diff": diff}, indent=1, sort_keys=True) + "\n"
-    root = os.path.join(os.path.abspath(repo), ".panopticon")     # first contact vetted it
+    root = os.path.join(os.path.abspath(repo), plan_contract.ARTIFACT_DIR)     # first contact vetted it
     draft = repo_config.draft_path(repo)
     report_path = os.path.join(root, "setup-report.md")
     for path, text in ((draft, draft_text), (report_path, report_text),

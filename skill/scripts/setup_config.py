@@ -22,6 +22,7 @@ from scripts import repo_config  # #1681: the one place the config names live
 from scripts import config_schema  # #1681 Plan 2: the settings trust classes
 from scripts import groups_schema  # #2229: the committed-config schema owner
 from scripts import safe_git  # #2006: the target-facing git probe
+from scripts import plan_contract  # #3409: the artifact directory's name
 from scripts.phases import runio
 
 
@@ -38,7 +39,7 @@ from scripts.phases import runio
 # directory of run artifacts to the next `git add .`. The DRAFT is at the root
 # too, and it is derived, so it joins the always-ignore list below.
 _PANOPTICON_ARTIFACT_ENTRIES = [
-    ".panopticon/*",
+    plan_contract.ARTIFACT_DIR + "/*",
 ]
 _DRAFT_IGNORE_ENTRY = repo_config.DRAFT_NAME
 _ALWAYS_IGNORE_ENTRIES = [".claude/settings.local.json", _DRAFT_IGNORE_ENTRY]
@@ -48,12 +49,13 @@ _ALWAYS_IGNORE_ENTRIES = [".claude/settings.local.json", _DRAFT_IGNORE_ENTRY]
 # `.panopticon/*` form is NOT here -- it is negation-compatible, so a missing
 # negation is simply appended.
 _PANOPTICON_DIR_BLANKET = {
-    ".panopticon", ".panopticon/", "/.panopticon", "/.panopticon/",
+    plan_contract.ARTIFACT_DIR, plan_contract.ARTIFACT_DIR + "/",
+    "/" + plan_contract.ARTIFACT_DIR, "/" + plan_contract.ARTIFACT_DIR + "/",
     # #run7 ARC-A2B: a `**/`-prefixed blanket also excludes the directory, so
     # git cannot re-include anything out of it -- treat it as un-negatable too
     # (else provision() would append an artifact block that can't take effect
     # and spuriously rewrites .gitignore).
-    "**/.panopticon", "**/.panopticon/",
+    "**/" + plan_contract.ARTIFACT_DIR, "**/" + plan_contract.ARTIFACT_DIR + "/",
 }
 
 # #1509: the set above enumerates SPELLINGS, and it missed the glob form
@@ -66,18 +68,20 @@ _PANOPTICON_DIR_BLANKET = {
 # Enumerating one more spelling would just move the goalposts. `git check-ignore`
 # is authoritative and understands every form, so it decides whenever the target
 # is a checkout; this pattern is the fallback for targets that are not.
-_PANOPTICON_BLANKET_RE = re.compile(r"^/?(\*\*/)?\.panopticon\*?/?$")
+_PANOPTICON_BLANKET_RE = re.compile(
+    r"^/?(\*\*/)?" + re.escape(plan_contract.ARTIFACT_DIR) + r"\*?/?$")
 
 
 # The forms that ignore only the directory's CONTENTS. A negation can still
 # re-include a file under these, so they are committable-compatible.
-_CONTENTS_FORM_RE = re.compile(r"^/?(\*\*/)?\.panopticon/\*{1,2}$")
+_CONTENTS_FORM_RE = re.compile(
+    r"^/?(\*\*/)?" + re.escape(plan_contract.ARTIFACT_DIR) + r"/\*{1,2}$")
 
 _CHECK_IGNORE_LINE = re.compile(r"^(.*):(\d+):(.*)$")
 
 # The file `_git_blanket_pattern` asks git about: a real setup artifact INSIDE
 # `.panopticon/`, which is what makes the answer meaningful (see its docstring).
-_BLANKET_PROBE_PATH = os.path.join(".panopticon", "setup-report.md")
+_BLANKET_PROBE_PATH = os.path.join(plan_contract.ARTIFACT_DIR, "setup-report.md")
 
 
 def _git_blanket_pattern(repo, runner=subprocess.run):

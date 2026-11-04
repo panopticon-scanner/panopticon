@@ -14,6 +14,7 @@ from scripts import grouping_engine  # 5.2: stage-3 size policy + setup report
 from scripts import coverage_model  # 5.2: the surfaces enum for the brief
 from scripts import repo_config  # #1681: the one place the config names live
 from scripts import setup_config  # #3405: the committed size overrides
+from scripts import plan_contract  # #3409: the artifact directory's name
 from scripts.phases import runio  # #1577: the confined no-follow writers
 
 
@@ -289,7 +290,7 @@ def format_budget(spine):
 
 
 def write_spine(repo, spine):
-    path = os.path.join(os.path.abspath(repo), ".panopticon", _SPINE_FILE)
+    path = os.path.join(os.path.abspath(repo), plan_contract.ARTIFACT_DIR, _SPINE_FILE)
     with runio._open_w_nofollow(path) as fh:   # #1577
         json.dump(spine, fh, indent=1, sort_keys=True)
         fh.write("\n")
@@ -298,7 +299,7 @@ def write_spine(repo, spine):
 
 def read_spine(repo):
     """The persisted spine, or None when absent/unreadable/not a v1 mapping."""
-    path = os.path.join(os.path.abspath(repo), ".panopticon", _SPINE_FILE)
+    path = os.path.join(os.path.abspath(repo), plan_contract.ARTIFACT_DIR, _SPINE_FILE)
     try:
         with open(path, encoding="utf-8") as fh:
             doc = json.load(fh)
@@ -403,7 +404,7 @@ def render_scan_brief(repo, vocabulary, layers=None, spine=None, host=None):
         "layer_catalog": render_layer_catalog(layers),
         "surfaces": ", ".join(sorted(coverage_model.SURFACES)),
     }, host=host)
-    path = os.path.join(os.path.abspath(repo), ".panopticon", "setup-scan-brief.md")
+    path = os.path.join(os.path.abspath(repo), plan_contract.ARTIFACT_DIR, "setup-scan-brief.md")
     with runio._open_w_nofollow(path) as fh:   # #1577
         fh.write(brief)
     return path
