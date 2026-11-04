@@ -7,11 +7,11 @@ on PATH -- and returns a row. Deciding what a row means, assembling the
 artifact and rendering it stay in `readiness.py`, which is the only caller.
 
 It LAUNCHES NOTHING of its own: `shutil.which` looks at the host CLIs, and the
-docker probe goes through `setup_flow._check_docker`.
+docker probe goes through `setup_preflight._check_docker`.
 
 `DOCKER_RUNNER` below is a TEST-ONLY injection point and moved here with the
 check that reads it. Its production value is `None` -- meaning "use
-`setup_flow.DEFAULT_RUNNER`" -- and no module outside `tests/` may assign it: a
+`setup_preflight.DEFAULT_RUNNER`" -- and no module outside `tests/` may assign it: a
 non-`None` value left in shipped code makes this checkpoint answer "ok" off a
 fake without probing Docker at all, which is the one check gating every paid
 dispatch. See DEVELOPMENT.md, "Test-only injection seams";
@@ -23,7 +23,7 @@ import shutil
 import subprocess
 
 import scripts.hosts as hosts
-import scripts.setup_flow as setup_flow
+import scripts.setup_preflight as setup_preflight
 from scripts.tools import egress
 
 
@@ -67,7 +67,7 @@ def egress_proxy_row(online, tools_flag=None):
     """A missing optional sidecar is a warning before any paid dispatch."""
     if not online or tools_flag is False:
         return {"ok": None, "level": "skip", "detail": "not requested (--online with tools)"}
-    runner = DOCKER_RUNNER if DOCKER_RUNNER is not None else setup_flow.DEFAULT_RUNNER
+    runner = DOCKER_RUNNER if DOCKER_RUNNER is not None else setup_preflight.DEFAULT_RUNNER
     try:
         proc = runner(["docker", "image", "inspect", egress.PROXY_IMAGE],
                       capture_output=True, text=True, timeout=15)
@@ -92,9 +92,9 @@ def _docker_checks(tools_flag):
     if tools_flag is False:
         return [("docker", None, _NOT_APPLICABLE),
                 ("tools-image", None, _NOT_APPLICABLE)]
-    runner = DOCKER_RUNNER if DOCKER_RUNNER is not None else setup_flow.DEFAULT_RUNNER
+    runner = DOCKER_RUNNER if DOCKER_RUNNER is not None else setup_preflight.DEFAULT_RUNNER
     rows = []
-    for name, ok, detail in setup_flow._check_docker(runner):
+    for name, ok, detail in setup_preflight._check_docker(runner):
         if name == "tools-image" and ok is False:
             detail = IMAGE_REMEDY
         rows.append((name, ok, detail))

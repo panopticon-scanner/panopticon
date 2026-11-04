@@ -278,7 +278,7 @@ class TestReadinessIsWiredAsThePhase(_ReadinessCase):
     def test_the_phase_cannot_reach_a_runner_or_a_host_probe(self):
         """Ruling 2: readiness establishes NOTHING about the host -- the
         posture is already established by `driver._establish_host_posture` on
-        every invocation, and `setup_flow._check_host_shells` launches a CLI.
+        every invocation, and `setup_preflight._check_host_shells` launches a CLI.
         Asserted on the module's own import graph, because the day someone
         reaches for `run_probes` here is the day readiness starts costing a
         host launch. BOTH halves of the phase: item 25e moved the environment

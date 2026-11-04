@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`setup_flow.py` split along its three seams (#3405).** The readiness checks moved to
+  `setup_preflight.py`, the `.gitignore` block, manifest seed, `provision`, `migrate_config` and
+  committed `settings:` reads to `setup_config.py`, and the spine, bundled vocabularies and scan
+  brief to `setup_spine.py`; `setup_flow.py` keeps the proposal ingest. Behaviour is unchanged.
+  Nothing is re-exported: code that called or patched a moved name through `setup_flow` must use
+  its new module, and `tests/test_setup_split.py` fails on a reference that still goes through
+  `setup_flow`.
+
 - **The filing tools' gh transport moved to `scripts/gh_transport.py` (#3404).** `triage.py`'s
   trusted `gh` resolution, account environment and retry ladder now live in their own module, which
   `file_issues`, `file_fixmes`, `code_scanning_audit` and `reconcile_apply` import directly.

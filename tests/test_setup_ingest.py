@@ -11,6 +11,8 @@ from unittest import mock
 import yaml
 
 import scripts.setup_flow as setup_flow
+import scripts.setup_config as setup_config
+import scripts.setup_spine as setup_spine
 
 
 from tests.setup_helpers import (
@@ -205,7 +207,7 @@ class TestSetupFlow(SetupFixtureBase):
         with open(pp, "w") as fh:
             json.dump({"groups": [{"capability": "Checkout",
                                    "match": ["src/**"]}]}, fh)
-        with mock.patch.object(setup_flow, "_VOCAB_PATH", "/nonexistent/vocab.yml"):
+        with mock.patch.object(setup_spine, "_VOCAB_PATH", "/nonexistent/vocab.yml"):
             res = setup_flow.ingest_proposal(d, pp)
         self.assertFalse(res["ok"])
         self.assertTrue(any("missing" in e for e in res["errors"]))
@@ -223,7 +225,7 @@ class TestSetupFlow(SetupFixtureBase):
         with open(pp, "w") as fh:
             json.dump({"groups": [{"capability": "Checkout",
                                    "match": ["src/**"]}]}, fh)
-        with mock.patch.object(setup_flow, "_VOCAB_PATH", bad):
+        with mock.patch.object(setup_spine, "_VOCAB_PATH", bad):
             res = setup_flow.ingest_proposal(d, pp)
         self.assertFalse(res["ok"])
         self.assertTrue(any("data error" in e for e in res["errors"]))
@@ -232,23 +234,23 @@ class TestSetupFlow(SetupFixtureBase):
 
     def test_config_overrides_honour_positive_ints_only(self):
         d = _repo(self)
-        self.assertEqual(setup_flow.config_overrides(d),
+        self.assertEqual(setup_config.config_overrides(d),
                          {"max_per_group": None, "max_groups": None})
         self._root_settings(d, "settings:\n  max_per_group: 32\n  max_groups: '8'\n")
-        self.assertEqual(setup_flow.config_overrides(d),
+        self.assertEqual(setup_config.config_overrides(d),
                          {"max_per_group": 32, "max_groups": None})
         self._root_settings(d, "settings:\n  max_per_group: true\n  max_groups: 0\n")
-        self.assertEqual(setup_flow.config_overrides(d),
+        self.assertEqual(setup_config.config_overrides(d),
                          {"max_per_group": None, "max_groups": None})
         self._root_settings(d, "settings: not-a-mapping\n")
-        self.assertEqual(setup_flow.config_overrides(d),
+        self.assertEqual(setup_config.config_overrides(d),
                          {"max_per_group": None, "max_groups": None})
 
     def test_config_overrides_read_settings_from_the_root_file(self):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
                 fh.write("version: 1\ngroups: {}\nsettings:\n  max_per_group: 12\n  max_groups: 0\n")
-            self.assertEqual(setup_flow.config_overrides(d),
+            self.assertEqual(setup_config.config_overrides(d),
                              {"max_per_group": 12, "max_groups": None})
 
     def test_config_overrides_ignore_a_stale_config_json(self):
@@ -256,21 +258,21 @@ class TestSetupFlow(SetupFixtureBase):
             os.makedirs(os.path.join(d, ".panopticon"))
             with open(os.path.join(d, ".panopticon", "config.json"), "w") as fh:
                 fh.write('{"max_per_group": 5}')
-            self.assertEqual(setup_flow.config_overrides(d), {"max_per_group": None, "max_groups": None})
+            self.assertEqual(setup_config.config_overrides(d), {"max_per_group": None, "max_groups": None})
 
     def test_config_overrides_are_clamped_to_the_band(self):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
                 fh.write("version: 1\ngroups: {}\nsettings:\n  max_per_group: 5000\n"
                          "  max_groups: 1\n")
-            self.assertEqual(setup_flow.config_overrides(d),
+            self.assertEqual(setup_config.config_overrides(d),
                              {"max_per_group": 48, "max_groups": 4})
 
     def test_config_overrides_ignore_a_gate_key(self):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
                 fh.write("version: 1\ngroups: {}\nsettings:\n  security: redteam\n")
-            self.assertEqual(setup_flow.config_overrides(d),
+            self.assertEqual(setup_config.config_overrides(d),
                              {"max_per_group": None, "max_groups": None})
 
     def test_the_draft_carries_grain_keys_only(self):
@@ -279,7 +281,7 @@ class TestSetupFlow(SetupFixtureBase):
                 fh.write("version: 1\ngroups: {}\nsettings:\n  max_per_group: 20\n"
                          "  max_verify: 9\n  security: redteam\n"
                          "  allow_unenforced: true\n")
-            settings = setup_flow._draft_settings(d, None, None)
+            settings = setup_config._draft_settings(d, None, None)
         self.assertEqual(settings, {"max_per_group": 20})
 
     def test_the_draft_keeps_a_committed_include_fixtures(self):
@@ -294,13 +296,13 @@ class TestSetupFlow(SetupFixtureBase):
                 fh.write("version: 1\ngroups: {}\nsettings:\n  max_per_group: 20\n"
                          "  include_fixtures: true\n  security: redteam\n"
                          "  allow_unenforced: true\n")
-            settings = setup_flow._draft_settings(d, None, None)
+            settings = setup_config._draft_settings(d, None, None)
         self.assertEqual(settings, {"max_per_group": 20, "include_fixtures": True})
 
     def test_an_out_of_band_setup_flag_is_written_but_warned_about(self):
         with tempfile.TemporaryDirectory() as d:
             with contextlib.redirect_stderr(io.StringIO()) as err:
-                settings = setup_flow._draft_settings(d, 5000, None)
+                settings = setup_config._draft_settings(d, 5000, None)
             self.assertEqual(settings["max_per_group"], 5000)
             self.assertIn("a run will clamp it to 48", err.getvalue())
 
@@ -356,7 +358,7 @@ class TestSetupFlow(SetupFixtureBase):
         d = _repo(self)
         pp = self._write_proposal(d, {"groups": [{"capability": "Checkout",
                                                   "match": ["src/checkout/**"], "tests": []}]})
-        with mock.patch.object(setup_flow, "_LAYERS_PATH", os.path.join(d, "nope.yml")):
+        with mock.patch.object(setup_spine, "_LAYERS_PATH", os.path.join(d, "nope.yml")):
             res = setup_flow.ingest_proposal(d, pp)
         self.assertFalse(res["ok"])
         self.assertIn("layer data is missing", res["errors"][0])

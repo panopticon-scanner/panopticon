@@ -35,7 +35,7 @@ built out of them, stay here.
 
 NO host binary and NO paid dispatch runs here (ruling 2). The capability
 posture is already established by `driver._establish_host_posture` on every
-invocation, so `setup_flow._check_host_shells` -- which starts a host CLI -- is
+invocation, so `setup_preflight._check_host_shells` -- which starts a host CLI -- is
 deliberately not among the checks reused below; the artifact it writes is
 recorded here as one INFORMATIONAL row and nothing more.
 """
@@ -50,7 +50,7 @@ import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
 import scripts.repo_config as repo_config
 import scripts.run_manifest as run_manifest
-import scripts.setup_flow as setup_flow
+import scripts.setup_preflight as setup_preflight
 from . import engine
 from . import readiness_checks
 from . import readiness_plan
@@ -69,7 +69,7 @@ def _host_row(review_root):
 
     Readiness does not probe: `driver._establish_host_posture` has already run
     by the time the engine reaches this phase, and re-deriving a posture here
-    would either duplicate that work or -- via `setup_flow._check_host_shells`
+    would either duplicate that work or -- via `setup_preflight._check_host_shells`
     -- launch a host CLI, which ruling 2 forbids. So this reads the artifact
     back and says what it says.
 
@@ -89,7 +89,7 @@ def _host_row(review_root):
 
 
 def _git_root_row(review_root):
-    """`setup_flow._check_git_root`, recorded but NOT gating.
+    """`setup_preflight._check_git_root`, recorded but NOT gating.
 
     `runio.resolve_review_root` supports a non-git target BY DESIGN -- it falls
     back to reviewing the directory itself, and what degrades is delta scoping
@@ -99,7 +99,7 @@ def _git_root_row(review_root):
     setup`'s own readiness keeps it gating, and should: setup is where an
     operator is still choosing the root.
     """
-    name, ok, detail = setup_flow._check_git_root(review_root)
+    name, ok, detail = setup_preflight._check_git_root(review_root)
     if ok:
         return (name, True, detail)
     return (name, None,
@@ -116,7 +116,7 @@ def _checks(review_root, manifest):
         checks.append(("egress-proxy", "warn" if proxy["level"] == "warn" else proxy["ok"],
                        proxy["detail"]))
     checks.append(_git_root_row(review_root))
-    checks.append(setup_flow._check_groups_manifest(review_root))
+    checks.append(setup_preflight._check_groups_manifest(review_root))
     checks.append(_host_row(review_root))
     # #1639 P15 fix round 2, F7. GATING, and here rather than only in the
     # `preflight` verb: this phase is the pre-spend checkpoint `driver loop`
@@ -354,7 +354,7 @@ def _with_remedy(error):
     (`pip install pyyaml`, #2384) and a legacy-only config tree
     (`migrate-config`, #2453).
 
-    `driver setup` is where a config problem is addressed: `setup_flow.provision`
+    `driver setup` is where a config problem is addressed: `setup_config.provision`
     refuses a config it cannot read -- with its own "fix it or delete it;
     nothing was written" -- and seeds a fresh one once it is gone, so the tail
     "fix it or re-run `driver setup`" is the right pointer for those refusals.

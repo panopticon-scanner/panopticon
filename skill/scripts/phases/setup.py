@@ -13,6 +13,9 @@ import scripts.host_disclosure as host_disclosure
 import scripts.repo_config as repo_config
 import scripts.run_manifest as run_manifest
 import scripts.setup_flow as setup_flow
+import scripts.setup_config as setup_config
+import scripts.setup_preflight as setup_preflight
+import scripts.setup_spine as setup_spine
 import scripts.runners.base as runners_base
 import scripts.runners.batch as batch
 from . import engine
@@ -268,21 +271,21 @@ def scan_execute(review_root, manifest):
     """Provision + render the scan brief -> setup-scan checkpoint (vocab present);
     or flat-seed + readiness + a fallback-complete marker (vocab absent, Task 3)."""
     host = manifest.get("host", "claude")
-    prov = setup_flow.provision(review_root)
+    prov = setup_config.provision(review_root)
     if prov["stale_config_json"]:
         # #1681: the retired JSON config is never read again. Say so once, here,
         # rather than leaving an operator editing a file nothing consults.
         print("driver setup: " + prov["stale_config_json"], file=sys.stderr, flush=True)
-    vocab, present = setup_flow.load_bundled_vocabulary(manifest.get("vocabulary_path"))
+    vocab, present = setup_spine.load_bundled_vocabulary(manifest.get("vocabulary_path"))
     if not present:
         return _scan_fallback(review_root, manifest, host)   # Task 3
     # 5.2 stage 1: the spine is computed once, with the sizes the manifest
     # pinned, persisted for the record and rendered into the brief.
-    spine = setup_flow.build_spine(review_root, max_per_group=manifest.get("max_per_group"),
+    spine = setup_spine.build_spine(review_root, max_per_group=manifest.get("max_per_group"),
                                    max_groups=manifest.get("max_groups"))
-    setup_flow.write_spine(review_root, spine)
-    layers, _ = setup_flow.load_bundled_layers()
-    brief_path = setup_flow.render_scan_brief(review_root, vocab, layers=layers,
+    setup_spine.write_spine(review_root, spine)
+    layers, _ = setup_spine.load_bundled_layers()
+    brief_path = setup_spine.render_scan_brief(review_root, vocab, layers=layers,
                                               spine=spine, host=host)
     entry = _setup_scan_entry(review_root, _read_text(brief_path), host)
     # Before the entry is written, let alone dispatched: an unenforced
@@ -353,7 +356,7 @@ def _take_readiness(review_root, host):
     """This setup's readiness record -- or the one row that says it could not
     be taken. NEVER raises (fix round 1, I2).
 
-    `setup_flow.readiness` is mostly non-raising, but not by construction:
+    `setup_preflight.readiness` is mostly non-raising, but not by construction:
     `_check_host_shells` runs `import dispatch`, `hosts.spec` and the
     registration lookups outside its own try, and a row of the wrong width
     raises in `_readiness_record`. Both escaped `run_setup_flow` -- which
@@ -374,7 +377,7 @@ def _take_readiness(review_root, host):
     """
     at = run_manifest._now_iso()
     try:
-        return setup_readiness._readiness_record(setup_flow.readiness(
+        return setup_readiness._readiness_record(setup_preflight.readiness(
             review_root, host=host,
             envelope=loop_batch.envelope_for(review_root, loop_batch.SETUP_NAMESPACE)),
             probed_at=at)
@@ -476,7 +479,7 @@ def _scan_fallback(review_root, manifest, host):
     + readiness gate, then a fallback-complete marker so both setup phases'
     done-predicates are satisfied -> run_engine completes without a checkpoint
     and without entering ingest."""
-    path, created, names = setup_flow.seed_flat_manifest(review_root)
+    path, created, names = setup_config.seed_flat_manifest(review_root)
     # The seed first, then the measurement -- this path's own order, which
     # `ingest_execute` now mirrors. Same helpers as the normal path (#1603):
     # what this records and what it prints are what they were.
@@ -502,7 +505,7 @@ def _drop_stale_fallback_marker(review_root):
     marker = runio._load_json(runio._pano(review_root, "setup-complete.json"))
     if not (isinstance(marker, dict) and marker.get("mode") == "fallback"):
         return
-    _vocab, present = setup_flow.load_bundled_vocabulary(None)
+    _vocab, present = setup_spine.load_bundled_vocabulary(None)
     if present:
         try:
             os.remove(runio._pano(review_root, "setup-complete.json"))
@@ -554,7 +557,7 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
         # the ingest's layers agree (anti-drift, like the run manifest's
         # max_per_group). CLI > `settings:`, resolved HERE so a config edit
         # between scan and ingest cannot move the numbers; None = default.
-        overrides = setup_flow.config_overrides(review_root)
+        overrides = setup_config.config_overrides(review_root)
         manifest = {"schema_version": 1, "run_id": run_manifest.new_run_id(),
                     "review_root": os.path.abspath(review_root),
                     "target": os.path.abspath(args.target),

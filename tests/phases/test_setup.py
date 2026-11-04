@@ -27,6 +27,8 @@ import scripts.host_disclosure as host_disclosure
 import scripts.host_probes as host_probes
 import scripts.hosts as hosts
 import scripts.setup_flow as setup_flow
+import scripts.setup_preflight as setup_preflight
+import scripts.setup_spine as setup_spine
 import scripts.model_resolver as model_resolver
 import scripts.probes.codex as codex_probes
 import scripts.repo_config as repo_config
@@ -394,7 +396,7 @@ class TestDriverSetup(unittest.TestCase):
         # boundary to exercise the fallback path deterministically.
         d = self._registered_repo()
         args = driver.build_parser().parse_args(["setup", d])
-        with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
+        with mock.patch("scripts.setup_spine.load_bundled_vocabulary",
                         return_value=({"names": []}, False)):
             status = setup.run_setup_flow(args)
         self.assertEqual(status["status"], "complete")
@@ -409,7 +411,7 @@ class TestDriverSetup(unittest.TestCase):
         # without a checkpoint.
         d = self._registered_repo()
         args = driver.build_parser().parse_args(["setup", d])
-        with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
+        with mock.patch("scripts.setup_spine.load_bundled_vocabulary",
                         return_value=({"names": []}, False)):
             status1 = setup.run_setup_flow(args)
         self.assertEqual(status1["status"], "complete")
@@ -431,7 +433,7 @@ class TestDriverSetup(unittest.TestCase):
         # must not send the owner looking for a draft that was never written.
         d1 = self._registered_repo()
         args1 = driver.build_parser().parse_args(["setup", d1])
-        with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
+        with mock.patch("scripts.setup_spine.load_bundled_vocabulary",
                         return_value=({"names": []}, False)):
             status1 = setup.run_setup_flow(args1)
         self.assertEqual(status1["status"], "complete")
@@ -460,9 +462,9 @@ class TestDriverSetup(unittest.TestCase):
         args = driver.build_parser().parse_args(["setup", d])
         fake_checks = [("docker", False,
                         "docker unavailable -- install/start Docker or run with --no-tools")]
-        with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
+        with mock.patch("scripts.setup_spine.load_bundled_vocabulary",
                         return_value=({"names": []}, False)), \
-             mock.patch("scripts.setup_flow.readiness", return_value=fake_checks):
+             mock.patch("scripts.setup_preflight.readiness", return_value=fake_checks):
             status = setup.run_setup_flow(args)
         self.assertEqual(status["status"], "complete")
         self.assertIn("readiness gaps", status["message"])
@@ -772,7 +774,7 @@ class TestDriverSetup(unittest.TestCase):
         spine = runio._load_json(runio._pano(d, "setup-spine.json"))
         self.assertEqual((spine["cap"], spine["ceiling"], spine["ceiling_source"]),
                          (3, 5, "cli"))
-        self.assertEqual(setup_flow.read_spine(d), spine)
+        self.assertEqual(setup_spine.read_spine(d), spine)
         with open(runio._pano(d, "setup-scan-brief.md"), encoding="utf-8") as fh:
             brief = fh.read()
         self.assertIn("## Size arithmetic", brief)
@@ -1319,7 +1321,7 @@ class TestSetupScanExecuteUsesTheNamespace(unittest.TestCase):
         # #1737: a registered machine, so the scan dispatches enforced rather
         # than being refused for want of the operator's acknowledgement.
         write_host_evidence(d, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
-        _vocabulary, present = setup_flow.load_bundled_vocabulary()
+        _vocabulary, present = setup_spine.load_bundled_vocabulary()
         self.assertTrue(present, "the bundled vocabulary is required for this checkpoint")
         result = setup.scan_execute(d, {"run_id": "RID", "host": "claude"})
         self.assertEqual("checkpoint", result.kind)
@@ -1358,9 +1360,9 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
         d = self._repo()
         argv = ["setup", d] + (["--host", host] if host else [])
         args = driver.build_parser().parse_args(argv)
-        with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
+        with mock.patch("scripts.setup_spine.load_bundled_vocabulary",
                         return_value=({"names": []}, False)), \
-             mock.patch("scripts.setup_flow.readiness", return_value=checks):
+             mock.patch("scripts.setup_preflight.readiness", return_value=checks):
             status = setup.run_setup_flow(args)
         self.assertEqual("complete", status["status"])
         marker = runio._load_json(runio._pano(d, "setup-complete.json"))
@@ -1395,7 +1397,7 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
     def GEMINI_CHECKS(self):
         with mock.patch.object(host_probes, "run_probes",
                                return_value=self.GEMINI_POSTURE):
-            return setup_flow._check_host_shells("gemini", None, ".")
+            return setup_preflight._check_host_shells("gemini", None, ".")
 
     def test_the_gemini_limitation_reaches_the_operator(self):
         rows = {c[0]: c for c in self.GEMINI_CHECKS}
@@ -1475,7 +1477,7 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
 class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
     """#1603, owner ruling 2026-09-22: **widen the caller**.
 
-    `setup_flow.readiness` had exactly one production caller and it sat inside
+    `setup_preflight.readiness` had exactly one production caller and it sat inside
     `scan_execute`'s vocab-absent fallback. On the COMMON path -- a repo whose
     capability vocabulary is present -- readiness never ran, so the operator
     never met the host-capability disclosure §5.1 makes mandatory, and 5.2
@@ -1530,7 +1532,7 @@ class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
                 json.dump(self.PROPOSAL, fh)
             answer = ({"side_effect": side_effect} if side_effect is not None
                       else {"return_value": checks})
-            with mock.patch("scripts.setup_flow.readiness", **answer) as ready:
+            with mock.patch("scripts.setup_preflight.readiness", **answer) as ready:
                 status = setup.run_setup_flow(args)
         self.assertEqual("complete", status["status"], status)
         with open(runio._pano(d, "setup-report.md"), encoding="utf-8") as fh:
@@ -1648,13 +1650,13 @@ class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
         # the one `_check_host_shells` re-raises it by name to avoid.
         #
         # Reached for real: `--host codex` probes `codex --version` through
-        # `setup_flow.DEFAULT_RUNNER`, which the autouse guard has replaced
+        # `setup_preflight.DEFAULT_RUNNER`, which the autouse guard has replaced
         # with the refusal, and `_probe` catches only TimeoutExpired/OSError.
         d = make_git_repo(test_case=self, files={"src/a.py": "x = 1\n"},
                           branch="main", user_email="t@t", user_name="t")
-        self.assertIs(setup_flow.DEFAULT_RUNNER,
-                      getattr(setup_flow.DEFAULT_RUNNER, "__wrapped__",
-                              setup_flow.DEFAULT_RUNNER),
+        self.assertIs(setup_preflight.DEFAULT_RUNNER,
+                      getattr(setup_preflight.DEFAULT_RUNNER, "__wrapped__",
+                              setup_preflight.DEFAULT_RUNNER),
                       "the guard's seam is what this test rides on")
         with self.assertRaises(runners_base.LaunchRefused):
             setup._take_readiness(d, "codex")

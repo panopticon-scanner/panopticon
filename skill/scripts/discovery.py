@@ -1459,7 +1459,7 @@ def _committed_matrix(repo):
     `[]` rather than the six one-character globs `list("src/**")` yielded
     (#2189), a name it rejects never comes back, and `panels:`/`exclude:` are
     the parsed domain SETS: sorted, not authored order. It feeds an ADDITIVE
-    merge, so `setup_flow.config_refusal` refuses what it cannot round trip."""
+    merge, so `setup_config.config_refusal` refuses what it cannot round trip."""
     return groups_schema.committed_bodies(_matrix_catalog(repo))
 
 def _matrix_catalog(repo, committed=None):
@@ -1475,7 +1475,7 @@ def _matrix_catalog(repo, committed=None):
     among good ones degrades to its own empty match while the rest of the
     matrix holds, and `_declares_groups` makes an all-invalid catalog loud
     (#run8 COD-B1A). Setup refuses them outright instead
-    (`setup_flow.config_refusal`): it is about to write a draft."""
+    (`setup_config.config_refusal`): it is about to write a draft."""
     doc, raw, errors = committed if committed is not None else _committed_groups(repo)
     if doc.doc is None:
         return {}

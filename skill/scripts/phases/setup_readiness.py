@@ -1,6 +1,6 @@
 """What `driver setup` DOES with a readiness answer: record it, render it.
 
-`setup_flow.readiness` takes the measurement. This module owns what either
+`setup_preflight.readiness` takes the measurement. This module owns what either
 setup path then does with the rows it returns -- the keys the setup artifacts
 carry, the verdict line the operator reads, and the clause that declares the
 checks which gate nothing.

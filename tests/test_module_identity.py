@@ -83,19 +83,19 @@ _CENSUS_PROGRAM = (_CENSUS_PREAMBLE + "import scripts.driver\n"
 # to measure the lazy class the program above cannot see (#2256, #2413, #1516).
 # Five of the seven sites that reach `setup_proposal` from a FUNCTION body run
 # here: `load_bundled_layers`, `load_bundled_vocabulary` and `build_spine` in
-# `setup_flow`, `migrate_config` (whose import runs before it refuses a tree with
-# nothing to migrate), and `discovery._capability_aliases`. The two left out --
+# `setup_spine`, `setup_config.migrate_config` (whose import runs before it
+# refuses a tree with nothing to migrate), and `discovery._capability_aliases`. The two left out --
 # `_seed_groups_manifest` and `ingest_proposal` -- WRITE config artifacts, which
 # a census has no business doing; they import the package the same way as these.
 # The cwd is a fresh empty directory, so `build_spine` sees an empty repo and
 # `migrate_config` raises after its import rather than touching anything.
 _CALL_TIME_PROGRAM = (_CENSUS_PREAMBLE + "import scripts.driver\n"
                       "import scripts.setup_flow\nimport scripts.dispatch\n"
-                      "scripts.setup_flow.load_bundled_layers()\n"
-                      "scripts.setup_flow.load_bundled_vocabulary()\n"
-                      "scripts.setup_flow.build_spine('.')\n"
+                      "scripts.setup_spine.load_bundled_layers()\n"
+                      "scripts.setup_spine.load_bundled_vocabulary()\n"
+                      "scripts.setup_spine.build_spine('.')\n"
                       "try:\n"
-                      "    scripts.setup_flow.migrate_config('.')\n"
+                      "    scripts.setup_config.migrate_config('.')\n"
                       "except ValueError:\n"
                       "    pass\n"
                       "scripts.discovery._capability_aliases()\n" + _CENSUS_TAIL)
@@ -127,9 +127,10 @@ _PLANTED_PROGRAM = (_CENSUS_PREAMBLE + "import scripts.plan_contract\n"
 # function is first called. #2256 measured that -- qualifying `grouping_engine`'s
 # `import setup_proposal` took the call-time census from 3 to 4, because the six
 # lazy sites in `setup_flow` and `discovery._capability_aliases`'s one reached it
-# flat. #2413 pointed all seven at the package, still lazy: the `setup_flow` six
-# import it plainly, because that module binds every sibling package-first and so
-# has no flat mode of its own, while `discovery`'s keeps the guarded fallback its
+# flat. #2413 pointed all seven at the package, still lazy: setup's six (since
+# #3405 three in `setup_spine`, two in `setup_config`, one in `setup_flow`)
+# import it plainly, because those modules bind every sibling package-first and
+# so have no flat mode of their own, while `discovery`'s keeps the guarded fallback its
 # own flat mode needs. The test below CALLS five of them, so the class is
 # measured here rather than only described (#1516).
 #

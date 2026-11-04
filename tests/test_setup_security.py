@@ -13,6 +13,8 @@ import scripts.driver as driver
 import scripts.first_contact as first_contact
 import scripts.phases.setup as setup
 import scripts.setup_flow as setup_flow
+import scripts.setup_config as setup_config
+import scripts.setup_spine as setup_spine
 import shutil
 
 
@@ -59,7 +61,7 @@ class TestSetupArtifactWritesDoNotFollowSymlinks(unittest.TestCase):
         victim = self._victim(d)
         gi = os.path.join(d, ".gitignore")
         os.symlink(victim, gi)
-        setup_flow._ensure_gitignore(d)
+        setup_config._ensure_gitignore(d)
         self._assert_untouched(victim)
         self.assertFalse(os.path.islink(gi), "the link survived the write")
         with open(gi, encoding="utf-8") as fh:
@@ -70,16 +72,16 @@ class TestSetupArtifactWritesDoNotFollowSymlinks(unittest.TestCase):
         victim = self._victim(d)
         os.symlink(victim, os.path.join(d, ".panopticon", "setup-spine.json"))
         with self.assertRaises(ValueError):
-            setup_flow.write_spine(d, setup_flow.build_spine(d))
+            setup_spine.write_spine(d, setup_spine.build_spine(d))
         self._assert_untouched(victim)
 
     def test_render_scan_brief_does_not_write_through_a_planted_link(self):
         d = _repo(self)
         victim = self._victim(d)
         os.symlink(victim, os.path.join(d, ".panopticon", "setup-scan-brief.md"))
-        vocab, _present = setup_flow.load_bundled_vocabulary()
+        vocab, _present = setup_spine.load_bundled_vocabulary()
         with self.assertRaises(ValueError):
-            setup_flow.render_scan_brief(d, vocab)
+            setup_spine.render_scan_brief(d, vocab)
         self._assert_untouched(victim)
 
     def test_ingest_proposal_does_not_write_through_planted_links(self):
@@ -118,10 +120,10 @@ class TestSetupArtifactWritesDoNotFollowSymlinks(unittest.TestCase):
                   encoding="utf-8") as fh:
             json.dump({"groups": [{"capability": "Checkout",
                                    "match": ["src/checkout/**"], "tests": []}]}, fh)
-        setup_flow._ensure_gitignore(d)
-        setup_flow.write_spine(d, setup_flow.build_spine(d))
-        vocab, _present = setup_flow.load_bundled_vocabulary()
-        setup_flow.render_scan_brief(d, vocab)
+        setup_config._ensure_gitignore(d)
+        setup_spine.write_spine(d, setup_spine.build_spine(d))
+        vocab, _present = setup_spine.load_bundled_vocabulary()
+        setup_spine.render_scan_brief(d, vocab)
         self.assertTrue(setup_flow.ingest_proposal(d)["ok"])
         for rel in (".gitignore", setup_flow.repo_config.DRAFT_NAME,
                     ".panopticon/setup-spine.json", ".panopticon/setup-scan-brief.md",

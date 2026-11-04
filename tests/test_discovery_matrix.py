@@ -12,6 +12,8 @@ from tests.discovery_test_helpers import (
 
 import scripts.discovery as discovery  # noqa: E402
 import scripts.groups_schema as groups_schema  # noqa: E402
+import scripts.setup_config as setup_config  # noqa: E402
+import scripts.setup_preflight as setup_preflight  # noqa: E402
 orchestrator = discovery   # #run7 COD-X0X: one module identity
 
 
@@ -355,7 +357,7 @@ def test_setup_readiness_scalar_match_only_reports_gap_not_ok(tmp_path):
     # read as a non-empty `match` and falsely report "OK -- 1 group(s)".
     # setup_readiness itself lives in setup_flow.py (orchestrator only ever
     # re-exported it); the SEC-3 regression it guards is discovery-side
-    # (setup_flow.setup_readiness calls discovery._matrix_catalog directly),
+    # (setup_preflight.setup_readiness calls discovery._matrix_catalog directly),
     # so this stays a discovery-side regression test.
     os.makedirs(str(tmp_path / ".git"))
     (tmp_path / "panopticon.yml").write_text(
@@ -364,7 +366,7 @@ def test_setup_readiness_scalar_match_only_reports_gap_not_ok(tmp_path):
         class R: returncode = 0; stdout = ""; stderr = ""
         return R()
 
-    checks = setup_flow.setup_readiness(str(tmp_path), host="claude",
+    checks = setup_preflight.setup_readiness(str(tmp_path), host="claude",
                                         runner=ok_runner,
                                         environ={"NVD_API_KEY": "k"})
     by = {c[0]: c for c in checks}
@@ -640,7 +642,7 @@ class TestOneOwnerForTheCommittedConfig:
         (legacy_repo / ".panopticon").mkdir(parents=True)
         (legacy_repo / ".panopticon" / "groups.yml").write_text(
             "groups:\n  - name: Auth\n    match: ['src/auth/**']\n", encoding="utf-8")
-        setup_flow.migrate_config(str(legacy_repo))
+        setup_config.migrate_config(str(legacy_repo))
         assert LEGACY_NOTICE in capsys.readouterr().err
 
     def test_repo_scan_emits_a_document_disclosure_once(self, tmp_path, capsys):
@@ -741,7 +743,7 @@ class TestOneOwnerForTheCommittedConfig:
             # document into the loud COD-B1A refusal on a run.
             assert discovery._declares_groups(repo) is True, body
             capsys.readouterr()
-            reasons = setup_flow.config_refusal(repo)
+            reasons = setup_config.config_refusal(repo)
             assert any(message in reason for reason in reasons), body
 
     NOT_REFUSED = (
@@ -756,7 +758,7 @@ class TestOneOwnerForTheCommittedConfig:
         # refusal that fires on a good config costs the operator the verb.
         for index, text in enumerate(self.NOT_REFUSED):
             repo = _case_repo(tmp_path, "accepted%d" % index, text)
-            assert setup_flow.config_refusal(repo) == [], text
+            assert setup_config.config_refusal(repo) == [], text
             capsys.readouterr()
 
     NOT_ROUND_TRIPPED = (
@@ -780,7 +782,7 @@ class TestOneOwnerForTheCommittedConfig:
                               "version: 1\ngroups:\n" + block)
             authored = discovery.repo_config.read_document(repo).doc["groups"]
             assert discovery._committed_matrix(repo).get(lost) != authored.get(lost), block
-            assert setup_flow.config_refusal(repo), block
+            assert setup_config.config_refusal(repo), block
             capsys.readouterr()
 
     DECLARED = (

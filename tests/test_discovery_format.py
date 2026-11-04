@@ -4,7 +4,8 @@ import tempfile
 import textwrap
 import unittest
 
-from tests.discovery_test_helpers import orchestrator, setup_flow
+from tests.discovery_test_helpers import orchestrator
+import scripts.setup_config as setup_config
 
 
 class TestGroupsFormatReconciliation(unittest.TestCase):
@@ -26,7 +27,7 @@ class TestGroupsFormatReconciliation(unittest.TestCase):
             os.makedirs(os.path.join(d, sub))
             with open(os.path.join(d, sub, "a.py"), "w", encoding="utf-8") as fh:
                 pass
-        path, created, names = setup_flow._seed_groups_manifest(d)
+        path, created, names = setup_config._seed_groups_manifest(d)
         self.assertTrue(created)
         with open(path, encoding="utf-8") as fh:
             text = fh.read()

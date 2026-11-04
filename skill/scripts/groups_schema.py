@@ -522,7 +522,7 @@ def committed_bodies(groups):
     (#1305), in the order the ids arrived.
 
     The one un-flattener (#2229): `discovery._committed_matrix` and
-    `setup_flow.migrate_config` each had their own, and both re-read the
+    `setup_config.migrate_config` each had their own, and both re-read the
     AUTHORED bodies after validating them -- which is how a scalar `match:`
     reached a catalog character-split and a name the schema had just rejected
     came back anyway (#2189). Built from the VALIDATED leaves instead, so

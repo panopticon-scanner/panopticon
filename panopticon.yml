@@ -581,6 +581,9 @@ groups:
       - skill/scripts/repo_config.py
       - skill/scripts/config_schema.py
       - skill/scripts/setup_flow.py
+      - skill/scripts/setup_preflight.py
+      - skill/scripts/setup_config.py
+      - skill/scripts/setup_spine.py
       - skill/scripts/setup_proposal.py
       - skill/data/**
       - skill/reference/scope-profile-schema.json
@@ -598,6 +601,7 @@ groups:
       - tests/test_setup_proposal.py
       - tests/test_setup_readiness.py
       - tests/test_setup_security.py
+      - tests/test_setup_split.py
       - tests/test_catalog_data.py
       panels:
       - ARC

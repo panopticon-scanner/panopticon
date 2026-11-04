@@ -13,7 +13,7 @@ import scripts.driver as driver
 import scripts.host_probes as host_probes
 import scripts.html_report as html_report
 import scripts.probes.codex as codex_probes
-import scripts.setup_flow as setup_flow
+import scripts.setup_preflight as setup_preflight
 import scripts.synth.findings as findings_mod
 import scripts.synth.render as render_mod
 import scripts.synth.report as report_mod
@@ -446,7 +446,7 @@ class TestReadinessConsumesTheSelectionLinesMakes(unittest.TestCase):
 
     def _readiness(self, envelope_):
         with mock.patch.object(host_probes, "run_probes", return_value=envelope_):
-            return setup_flow._check_host_shells("claude", _runner_ok, ".")
+            return setup_preflight._check_host_shells("claude", _runner_ok, ".")
 
     def test_moving_the_selection_moves_readiness_with_it(self):
         # The drift the old comment admitted, made concrete: a selection that
@@ -512,7 +512,7 @@ class TestReadinessConsumesTheSelectionLinesMakes(unittest.TestCase):
             with mock.patch.object(host_probes, "run_probes",
                                    return_value=MIXED):
                 with self.assertRaises(ValueError):
-                    setup_flow._check_host_shells("claude", _runner_ok, ".")
+                    setup_preflight._check_host_shells("claude", _runner_ok, ".")
 
     def test_readiness_no_longer_writes_the_posture_chain_itself(self):
         # The structural half (memory: a text guard must read the AST). The
@@ -520,7 +520,7 @@ class TestReadinessConsumesTheSelectionLinesMakes(unittest.TestCase):
         # may not call `hosts.unproven` or `hosts.posture` at all.
         import ast
         import inspect
-        tree = ast.parse(inspect.getsource(setup_flow._check_host_shells))
+        tree = ast.parse(inspect.getsource(setup_preflight._check_host_shells))
         called = {ast.unparse(node.func) for node in ast.walk(tree)
                   if isinstance(node, ast.Call)}
         self.assertNotIn("hosts.unproven", called)
@@ -553,7 +553,7 @@ class TestTheFourSurfacesSayTheSameThing(unittest.TestCase):
                 host_capabilities=envelope),
             findings=findings_mod.FindingSet(findings=[])))
         with mock.patch.object(host_probes, "run_probes", return_value=envelope):
-            rows = setup_flow._check_host_shells("claude", _runner_ok, ".")
+            rows = setup_preflight._check_host_shells("claude", _runner_ok, ".")
         return {"stderr": err.getvalue(),
                 "body": render_mod.render_summary(report),
                 # The body surface again, in the artifact an operator actually
