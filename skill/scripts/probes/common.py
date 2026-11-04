@@ -18,7 +18,7 @@ import re
 import stat
 from collections import namedtuple
 
-from scripts import dispatch, executable, hosts
+from scripts import dispatch, executable, hosts, plan_contract
 from scripts.tools import base as tool_base
 
 from . import surface
@@ -179,7 +179,7 @@ def headless_settings_path(review_root, namespace=None):
     import scripts.phases.runio as runio
     import scripts.runners.base as runners_base
     if namespace == "setup":
-        return os.path.abspath(os.path.join(review_root, ".panopticon", runners_base.SETTINGS_FILE))
+        return os.path.abspath(os.path.join(review_root, plan_contract.ARTIFACT_DIR, runners_base.SETTINGS_FILE))
     return os.path.abspath(runio._pano(review_root, runners_base.SETTINGS_FILE))
 
 
