@@ -198,7 +198,7 @@ def resource_limit_flags():
 
 def validate_output_dir(target, out_dir):
     """Reject default artifact output through a target-controlled symlink."""
-    logical_root = os.path.join(os.path.abspath(target), ".panopticon")
+    logical_root = os.path.join(os.path.abspath(target), plan_contract.ARTIFACT_DIR)
     candidate = os.path.abspath(out_dir)
     try:
         under_artifacts = os.path.commonpath([logical_root, candidate]) == logical_root
@@ -681,7 +681,7 @@ def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description="panopticon tool runner")
     ap.add_argument("--target", default=".")
-    ap.add_argument("--out", default=os.path.join(".panopticon", "tools"))
+    ap.add_argument("--out", default=os.path.join(plan_contract.ARTIFACT_DIR, "tools"))
     ap.add_argument("--tools", nargs="*", default=None)
     ap.add_argument("--languages", nargs="*", default=None)
     ap.add_argument("--deps", action="store_true")

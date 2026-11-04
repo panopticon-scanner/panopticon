@@ -70,7 +70,7 @@ def build_parser():
                     help="directory holding THIS run's artifacts (tools-manifest, "
                          "scout-*, coverage-*, dispatch plans, verify-queue, "
                          "unenforced-ack). Defaults to dirname(--groups); flat "
-                         ".panopticon only for legacy non-run-folder invocations.")
+                         "%s only for legacy non-run-folder invocations." % plan_contract.ARTIFACT_DIR)
     ap.add_argument("--html-out", metavar="PATH", default=None,
                     help="Write HTML report to PATH")
     ap.add_argument("--compare", metavar="JSON", nargs=2, default=None,
@@ -92,7 +92,7 @@ def build_parser():
                          "review prune (#434); pass this for redteam self-scans.")
     ap.add_argument("--prior-run", default=None, metavar="HOST:RUN_ID",
                     help="this run started over an earlier run of another host "
-                         "in .panopticon/ (#3271); disclosed as meta.prior_run")
+                         "in %s/ (#3271); disclosed as meta.prior_run" % plan_contract.ARTIFACT_DIR)
     ap.add_argument("--tools-skipped", action="store_true",
                     help="no scanner ran this run (--no-tools), so no output in "
                          "--tools-dir is bound to it: none is ingested, every one "
@@ -123,8 +123,8 @@ def build_parser():
                          "driver commands this scan ran with emptied (#2013); "
                          "disclosed as meta.coverage.git_drivers_suppressed")
     ap.add_argument("--emit-verify-queue", action="store_true",
-                    help="Pass 1: write .panopticon/verify-queue.json and skip the "
-                         "report when agentic findings need verification")
+                    help="Pass 1: write %s/verify-queue.json and skip the "
+                         "report when agentic findings need verification" % plan_contract.ARTIFACT_DIR)
     ap.add_argument("--verdicts-dir", metavar="DIR", default=None,
                     help="Pass 2: ingest advisor verdict files from DIR")
     ap.add_argument("--gate-unverified", action="store_true",
@@ -254,7 +254,7 @@ def main(argv=None):
     # orchestrator's synthesize call omitted the flag.
     groups_path = args.groups
     if groups_path is None:
-        default_groups = os.path.join(".panopticon", "groups.json")
+        default_groups = os.path.join(plan_contract.ARTIFACT_DIR, "groups.json")
         if os.path.isfile(default_groups):
             groups_path = default_groups
     # #3273 P1: run artifacts are trusted only from a `.panopticon/` first
@@ -264,9 +264,9 @@ def main(argv=None):
     # absent or empty is marked ours, so the next pass trusts it (R1). Pass 1
     # writes the report only when it queues nothing: its tree is assessed now
     # and marked then.
-    report_writes = [args.out or os.path.join(".panopticon", "report.json"), args.html_out]
+    report_writes = [args.out or os.path.join(plan_contract.ARTIFACT_DIR, "report.json"), args.html_out]
     writes = ([args.run_dir or (os.path.dirname(groups_path) if groups_path else "")
-               or ".panopticon"] if args.emit_verify_queue else report_writes)
+               or plan_contract.ARTIFACT_DIR] if args.emit_verify_queue else report_writes)
     reads = (groups_path, args.run_dir, args.tools_dir, args.verdicts_dir, args.diff_hunks)
     if _first_contact(args, reads + (tuple(report_writes) if args.emit_verify_queue else ()),
                       writes):
@@ -285,21 +285,22 @@ def main(argv=None):
     # flat certified tool coverage against a PREVIOUS run's manifest (#17) and
     # zeroed the scout coverage (#16). Resolve every run artifact under run_dir.
     run_dir = args.run_dir or (os.path.dirname(groups_path) if groups_path else "") \
-        or ".panopticon"
-    if args.run_id and run_dir == ".panopticon":
+        or plan_contract.ARTIFACT_DIR
+    if args.run_id and run_dir == plan_contract.ARTIFACT_DIR:
         # #17 fail-open guard: a 5.1 run (--run-id set) that fell back to flat
         # .panopticon has no run folder, so it would read a PRIOR run's stale
         # artifacts. Make the drift LOUD — never silent. (The schema_version
         # assertion at the manifest read still FATALs on a stale pre-5.1 manifest,
         # so certification cannot silently certify against one either.)
         print("WARNING (#17): --run-id set but no run directory resolved "
-              "(--run-dir/--groups); falling back to flat .panopticon, which under "
-              "5.1 holds no run artifacts. Pass --groups <run-folder>/groups.json.",
+              "(--run-dir/--groups); falling back to flat %s, which under "
+              "5.1 holds no run artifacts. Pass --groups <run-folder>/groups.json."
+              % plan_contract.ARTIFACT_DIR,
               file=sys.stderr)
 
     from datetime import datetime, timezone
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    out = args.out or os.path.join(".panopticon", "report-%s.json" % ts.replace(":", ""))
+    out = args.out or os.path.join(plan_contract.ARTIFACT_DIR, "report-%s.json" % ts.replace(":", ""))
 
     # WS-0 S3: each ReportInputs struct loads itself from the run folder; main()
     # only threads the three reads two loaders share -- the dispatch plans

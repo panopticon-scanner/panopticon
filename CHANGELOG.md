@@ -30,6 +30,13 @@
   literals that stay by design and the two constants that only contain the string, and pins that
   the standalone ones agree with `ARTIFACT_DIR`.
 
+- **The `.panopticon` sweep, run side (#3409).** 27 sites in `discovery`, `dispatch`, `driver`,
+  `group_runner`, `ingest_tools` (whose `_ARTIFACT_DIR` is now an alias), `language_detection`
+  (package-first, with the flat fallback its standalone `html_report` path needs), `run_manifest`,
+  `run_tools`, `safe_write` and `synthesize` read `plan_contract.ARTIFACT_DIR`, with their messages
+  and `--help` text unchanged. `build_disclosure` (import-free by design) and `claim_scope` (a
+  stdlib-only leaf) keep their literal under `STANDALONE`, pinned to agree with the constant.
+
 - **One home for the repo slug and the image names (#3407).** The GitHub repository is
   `gh_transport.REPO_SLUG`, read by `triage`, `file_issues`, `file_fixmes` and `reconcile_apply`
   (the report and doc URLs are built from it); `triage.REPO_SLUG` and `file_issues.REPO_SLUG` are

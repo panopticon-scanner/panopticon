@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(                    # skill
 # `scripts` to resolve, and the bootstrap above guarantees it.
 from scripts import model_resolver
 
-from scripts import claim_scope, codex_read_tools, hosts, toml_values
+from scripts import claim_scope, codex_read_tools, hosts, plan_contract, toml_values
 
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -561,9 +561,9 @@ def render_advisor_prompts(queue_path, out_dir, host=None, review_root=None):
         if review_root is None:
             raise ValueError(
                 "cannot resolve the review root from verify queue %s: a queue is a "
-                "`.panopticon` artifact, and the review root is the directory above "
+                "`%s` artifact, and the review root is the directory above "
                 "that segment. Pass the root explicitly (--review-root PATH)."
-                % queue_path)
+                % (queue_path, plan_contract.ARTIFACT_DIR))
     elif not os.path.isdir(review_root):
         # A named root is NOT cross-checked against the queue's own segment --
         # rendering a queue copied out of its run folder is what the override is
@@ -642,7 +642,7 @@ def main(argv=None):
                     help="Render advisor prompts from a verify-queue JSON into --out DIR")
     ap.add_argument("--review-root", metavar="PATH", default=None,
                     help="Tree the rendered claims resolve against (default: the "
-                         "directory above the queue's .panopticon segment)")
+                         "directory above the queue's %s segment)" % plan_contract.ARTIFACT_DIR)
     _REGISTRABLE = sorted(n for n, h in hosts.HOSTS.items() if h.shell_format)
     ap.add_argument("--emit-host-agents", metavar="HOST",
                     choices=_REGISTRABLE, default=None)
