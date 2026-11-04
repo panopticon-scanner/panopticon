@@ -5,13 +5,15 @@ seeding, `setup_spine` the spine and brief, and `setup_flow` keeps the ingest.
 A moved name lives in exactly one module and is reached there; nothing is
 re-exported through `setup_flow`. These tests pin that, so a stale reference
 fails loudly rather than patching an attribute nobody reads.
+
+The standalone start is pinned where it already was:
+`tests/test_driver_entry.py::TestDriverEntrypoint` launches `driver.py` as a
+fresh process with PYTHONPATH stripped, and importing the driver loads all four
+modules, so a cycle among them fails that launch. A second launch here would
+only add a subprocess site for the security gate to re-review.
 """
 import ast
-import os
 import re
-import subprocess
-import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -21,7 +23,6 @@ import scripts.setup_preflight as setup_preflight
 import scripts.setup_spine as setup_spine
 
 REPO = Path(__file__).resolve().parent.parent
-SCRIPTS = REPO / "skill" / "scripts"
 
 OWNED = {
     "setup_preflight": (
@@ -171,24 +172,6 @@ setup_preflight.readiness(".")
             "readiness", "_check_docker", "build_spine", "provision", "_VOCAB_PATH",
             "setup_flow.load_bundled_vocabulary", "setup_flow.migrate_config",
             "config_overrides", "render_scan_brief"])
-
-
-class TestEntryPoint(unittest.TestCase):
-    def test_driver_help_starts_without_site_packages_from_an_unrelated_cwd(self):
-        # driver.py imports setup_config, and phases/setup.py all four modules:
-        # a cycle among them, or a sibling that needs setup_flow loaded first,
-        # fails this launch rather than the first setup an operator runs.
-        with tempfile.TemporaryDirectory() as directory:
-            env = dict(os.environ)
-            env.pop("PYTHONPATH", None)
-            result = subprocess.run(
-                [sys.executable, "-S", str(SCRIPTS / "driver.py"), "--help"],
-                cwd=directory, env=env, capture_output=True, text=True, timeout=30,
-                check=False)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("usage: driver", result.stdout)
-            self.assertIn("migrate-config", result.stdout)
-            self.assertEqual(list(Path(directory).iterdir()), [])
 
 
 if __name__ == "__main__":
