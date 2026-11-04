@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **One home for the repo slug and the image names (#3407).** The GitHub repository is
+  `gh_transport.REPO_SLUG`, read by `triage`, `file_issues`, `file_fixmes` and `reconcile_apply`
+  (the report and doc URLs are built from it); `triage.REPO_SLUG` and `file_issues.REPO_SLUG` are
+  gone. The local tools image, its registry ref, and the fixtures image and root are
+  `tools_image.LOCAL_NAME`, `REGISTRY_IMAGE`, `FIXTURES_IMAGE` and `FIXTURES_ROOT`. Every value is
+  unchanged, and `tests/test_project_names.py` fails on a new hard-coded spelling.
+
 - **`setup_flow.py` split along its three seams (#3405).** The readiness checks moved to
   `setup_preflight.py`, the `.gitignore` block, manifest seed, `provision`, `migrate_config` and
   committed `settings:` reads to `setup_config.py`, and the spine, bundled vocabularies and scan

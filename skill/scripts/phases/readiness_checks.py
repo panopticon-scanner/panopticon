@@ -24,6 +24,7 @@ import subprocess
 
 import scripts.hosts as hosts
 import scripts.setup_preflight as setup_preflight
+import scripts.tools_image as tools_image
 from scripts.tools import egress
 
 
@@ -35,21 +36,21 @@ from scripts.tools import egress
 _SKILL_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _REPO_ROOT = os.path.dirname(_SKILL_DIR)
 
-TOOLS_IMAGE = "ghcr.io/panopticon-scanner/panopticon-tools:latest"
-
 # Exact and paste-able, all three ways out in one line. `setup_flow`'s own
 # tools-image detail points at DEVELOPMENT.md, which is the right register for
 # a preflight report an operator reads at leisure and the wrong one for a
 # refusal that just stopped a run: the remedy has to be runnable from the line
 # it is printed on.
 IMAGE_REMEDY = (
-    "the panopticon-tools image is absent, so every scanner would produce "
+    "the %s image is absent, so every scanner would produce "
     "nothing and every review panel would run without scanner evidence. "
-    "Pull it: `docker pull %s && docker tag %s panopticon-tools:latest` -- "
-    "or build it: `docker build -t panopticon-tools %s` -- or re-run with "
+    "Pull it: `docker pull %s && docker tag %s %s:latest` -- "
+    "or build it: `docker build -t %s %s` -- or re-run with "
     "--no-tools to review without scanner evidence, which is disclosed in the "
     "report (meta.tools.panels_with_scanner_context and the tool coverage "
-    "line)." % (TOOLS_IMAGE, TOOLS_IMAGE, _REPO_ROOT))
+    "line)." % (tools_image.LOCAL_NAME, tools_image.REGISTRY_IMAGE,
+                tools_image.REGISTRY_IMAGE, tools_image.LOCAL_NAME,
+                tools_image.LOCAL_NAME, _REPO_ROOT))
 
 _NOT_APPLICABLE = "not applicable (--no-tools)"
 

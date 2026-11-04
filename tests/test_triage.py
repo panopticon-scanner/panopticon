@@ -104,14 +104,14 @@ class TestMutations(unittest.TestCase):
         cmds = triage.plan_mutations(row)
         self.assertIn("triage:duplicate", cmds[1])
         self.assertEqual(cmds[-1], ["gh", "issue", "close", "443",
-                                    "--reason", "not planned", "--repo", triage.REPO_SLUG])
+                                    "--reason", "not planned", "--repo", gh_transport.REPO_SLUG])
 
     def test_already_fixed_closes_completed(self):
         row = fix_row(verdict="already-fixed", rank=None,
                       fixed_by="PR #447", spot_check="advisor: fixed")
         self.assertEqual(triage.plan_mutations(row)[-1],
                          ["gh", "issue", "close", "443",
-                          "--reason", "completed", "--repo", triage.REPO_SLUG])
+                          "--reason", "completed", "--repo", gh_transport.REPO_SLUG])
 
     def test_reject_closes_not_planned_and_defer_stays_open(self):
         rej = fix_row(verdict="reject", rank=None, spot_check="stands")
@@ -180,8 +180,8 @@ class FakeRunner:
                 R.stdout = json.dumps(state)
             except ValueError:
                 R.stdout = self.view_json
-        elif argv[1:3] == ["api", "repos/" + triage.REPO_SLUG]:
-            R.stdout = json.dumps({'full_name': triage.REPO_SLUG, 'permissions': {'admin': True}})
+        elif argv[1:3] == ["api", "repos/" + gh_transport.REPO_SLUG]:
+            R.stdout = json.dumps({'full_name': gh_transport.REPO_SLUG, 'permissions': {'admin': True}})
         elif argv[1] == 'api' and '/comments' in argv[2]:
             R.stdout = json.dumps([self.comments])
         else:

@@ -18,6 +18,7 @@ from scripts import codex_host  # #1344: the suite's launch guard type
 from scripts import host_probes  # #1344 F3b: readiness probes live posture
 import scripts.probes.common as probes_common  # #1627: the shared probe helpers
 from scripts import host_disclosure  # #1344 F3b: one voice for the posture
+from scripts import tools_image  # #3407: the local image name
 
 
 # The roles the DRIVER dispatches and therefore needs registered shells for.
@@ -59,12 +60,12 @@ def _check_docker(runner):
                    "ok" if docker_ok else
                    "docker unavailable -- install/start Docker or run with --no-tools"))
     if docker_ok:
-        r2 = _probe(runner, ["docker", "image", "inspect", "panopticon-tools"])
+        r2 = _probe(runner, ["docker", "image", "inspect", tools_image.LOCAL_NAME])
         img_ok = getattr(r2, "returncode", 1) == 0
         checks.append(("tools-image", img_ok,
                        "ok" if img_ok else
-                       "panopticon-tools image absent for this arch -- build/pull "
-                       "it (see DEVELOPMENT.md; multi-arch: #461)"))
+                       "%s image absent for this arch -- build/pull "
+                       "it (see DEVELOPMENT.md; multi-arch: #461)" % tools_image.LOCAL_NAME))
     return checks
 
 

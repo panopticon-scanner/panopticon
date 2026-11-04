@@ -24,11 +24,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts import run_tools            # noqa: E402  (needs the path above)
 from scripts import scanner_config       # noqa: E402  (needs the path above)
+from scripts import tools_image          # noqa: E402  (needs the path above)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DOCKERFILE = REPO_ROOT / "Dockerfile.fixtures"
 MANIFEST = REPO_ROOT / "tests" / "fixtures" / "manifest.json"
-DEFAULT_IMAGE = "panopticon-fixtures:latest"
+DEFAULT_IMAGE = tools_image.FIXTURES_IMAGE
 
 # Hard bounds so a wedged docker daemon, a stalled image build (e.g. a network
 # fetch stuck inside Dockerfile.fixtures), or a hung scanner cannot block the
@@ -87,7 +88,7 @@ def _container_name() -> str:
     name we chose is enough here: nothing reads the container's output after
     the timeout, so `docker rm -f <name>` is the whole cleanup.
     """
-    return "panopticon-fixtures-%d-%s" % (os.getpid(), secrets.token_hex(4))
+    return "%s-%d-%s" % (tools_image.FIXTURES_NAME, os.getpid(), secrets.token_hex(4))
 
 
 def _remove_container(name: str) -> None:
@@ -275,7 +276,7 @@ def run_tests(tag: str, test: str | None = None) -> int:
         # fixture. Measured: with this flag, 254 pass and precisely the two
         # genuinely-broken Java scanners fail.
         "--network", "none",
-        "-e", "FIXTURE_ROOT=/opt/panopticon-fixtures",
+        "-e", "FIXTURE_ROOT=" + tools_image.FIXTURES_ROOT,
         "-v", f"{repo}/skill:/opt/panopticon/skill:ro",
         # ...AND over the image's baked-in copy. The image does
         # `COPY skill/scripts /opt/panopticon/scripts`, so `scripts.tools`

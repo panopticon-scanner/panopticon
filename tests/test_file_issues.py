@@ -1039,13 +1039,13 @@ def test_pending_probe_refuses_replay(tmp_path, monkeypatch, probe):
     creates = []
     def run(cmd, **kwargs):
         if cmd[1] == "api" and cmd[2].startswith("repos/"):
-            return _completed(stdout=json.dumps({"full_name": file_issues.REPO_SLUG,
+            return _completed(stdout=json.dumps({"full_name": gh_transport.REPO_SLUG,
                                                 "permissions": {"admin": True}}))
         if cmd[2] == "create":
             creates.append(cmd[cmd.index("--body") + 1])
             raise file_issues.subprocess.TimeoutExpired(cmd, 60)
         row = {"title": "same title", "body": creates[0],
-               "html_url": "https://github.com/" + file_issues.REPO_SLUG + "/issues/1"}
+               "html_url": "https://github.com/" + gh_transport.REPO_SLUG + "/issues/1"}
         if probe == "failed":
             return _completed(1)
         if probe == "invalid":
@@ -1077,7 +1077,7 @@ def test_create_requires_authenticated_admin(tmp_path, monkeypatch, permissions)
     calls = []
     def run(cmd, **kwargs):
         calls.append(cmd)
-        return _completed(stdout=json.dumps({"full_name": file_issues.REPO_SLUG,
+        return _completed(stdout=json.dumps({"full_name": gh_transport.REPO_SLUG,
                                             "permissions": permissions}))
     monkeypatch.setattr(file_issues.subprocess, "run", run)
     with pytest.raises(RuntimeError, match="admin preflight"):
@@ -1127,17 +1127,17 @@ def test_completed_key_cannot_be_adopted_in_another_repository(tmp_path, monkeyp
     with pytest.raises(RuntimeError, match="different repository"):
         file_issues.create("t", "b", [], False, env={}, operation_id="key", ledger_path=path)
     with pytest.raises(RuntimeError, match="selected repository"):
-        file_issues.load_filing_ledger(path, file_issues.REPO_SLUG)
+        file_issues.load_filing_ledger(path, gh_transport.REPO_SLUG)
     run.assert_not_called()
 
 
 def test_crash_after_acceptance_recovers_without_second_create(tmp_path, monkeypatch):
     path = str(tmp_path / "l")
-    url = "https://github.com/" + file_issues.REPO_SLUG + "/issues/1"
+    url = "https://github.com/" + gh_transport.REPO_SLUG + "/issues/1"
     posted = []
     def run(cmd, **kwargs):
         if cmd[1] == "api" and cmd[2].startswith("repos/"):
-            return _completed(stdout=json.dumps({"full_name": file_issues.REPO_SLUG,
+            return _completed(stdout=json.dumps({"full_name": gh_transport.REPO_SLUG,
                                                 "permissions": {"admin": True}}))
         if cmd[2] == "create":
             posted.append(cmd[cmd.index("--body") + 1])
@@ -1155,13 +1155,13 @@ def test_crash_after_acceptance_recovers_without_second_create(tmp_path, monkeyp
 
 def test_crash_after_primary_write_completes_without_network(tmp_path, monkeypatch):
     path = str(tmp_path / "l")
-    url = "https://github.com/" + file_issues.REPO_SLUG + "/issues/1"
-    identity, intent = file_issues._intent(file_issues.REPO_SLUG, "finding", "key", "t", "b", [])
+    url = "https://github.com/" + gh_transport.REPO_SLUG + "/issues/1"
+    identity, intent = file_issues._intent(gh_transport.REPO_SLUG, "finding", "key", "t", "b", [])
     (tmp_path / "l.pending.json").write_text(json.dumps({"schema_version": 1, "entries": {identity: intent}}))
     file_issues.record({}, "key", url, path)
     run = mock.Mock(side_effect=AssertionError("no network"))
     monkeypatch.setattr(file_issues.subprocess, "run", run)
-    assert file_issues.load_filing_ledger(path, file_issues.REPO_SLUG) == {"key": url}
+    assert file_issues.load_filing_ledger(path, gh_transport.REPO_SLUG) == {"key": url}
     assert json.loads((tmp_path / "l.pending.json").read_text())["entries"][identity]["state"] == "complete"
     run.assert_not_called()
 
@@ -1172,10 +1172,10 @@ def test_concurrent_observer_cannot_create_inflight_intent(tmp_path, monkeypatch
     path = str(tmp_path / "l")
     creates = []
     args = dict(env={}, operation_id="key", ledger_path=path)
-    url = "https://github.com/" + file_issues.REPO_SLUG + "/issues/1"
+    url = "https://github.com/" + gh_transport.REPO_SLUG + "/issues/1"
     def run(cmd, **kwargs):
         if cmd[1] == "api" and cmd[2].startswith("repos/"):
-            return _completed(stdout=json.dumps({"full_name": file_issues.REPO_SLUG,
+            return _completed(stdout=json.dumps({"full_name": gh_transport.REPO_SLUG,
                                                 "permissions": {"admin": True}}))
         if cmd[2] == "create":
             creates.append(cmd)
@@ -1190,9 +1190,9 @@ def test_concurrent_observer_cannot_create_inflight_intent(tmp_path, monkeypatch
 
 def test_pending_content_change_refuses_mutation(tmp_path, monkeypatch):
     path = str(tmp_path / "l")
-    identity, intent = file_issues._intent(file_issues.REPO_SLUG, "finding", "key", "t", "old", [])
+    identity, intent = file_issues._intent(gh_transport.REPO_SLUG, "finding", "key", "t", "old", [])
     (tmp_path / "l.pending.json").write_text(json.dumps({"schema_version": 1, "entries": {identity: intent}}))
-    run = mock.Mock(return_value=_completed(stdout=json.dumps({"full_name": file_issues.REPO_SLUG,
+    run = mock.Mock(return_value=_completed(stdout=json.dumps({"full_name": gh_transport.REPO_SLUG,
                                                               "permissions": {"admin": True}})))
     monkeypatch.setattr(file_issues.subprocess, "run", run)
     with pytest.raises(RuntimeError, match="content changed"):
@@ -1213,10 +1213,10 @@ def test_same_title_distinct_keys_create_distinct_operations(tmp_path, monkeypat
     posted = []
     def run(cmd, **kwargs):
         if cmd[1] == "api":
-            return _completed(stdout=json.dumps({"full_name": file_issues.REPO_SLUG,
+            return _completed(stdout=json.dumps({"full_name": gh_transport.REPO_SLUG,
                                                 "permissions": {"admin": True}}))
         posted.append(cmd[cmd.index("--body") + 1])
-        return _completed(stdout="https://github.com/" + file_issues.REPO_SLUG + "/issues/%d" % len(posted))
+        return _completed(stdout="https://github.com/" + gh_transport.REPO_SLUG + "/issues/%d" % len(posted))
     monkeypatch.setattr(file_issues.subprocess, "run", run)
     path = str(tmp_path / "l")
     for key in ("fp1|id|a.py|finding", "fp2|id|b.py|finding"):

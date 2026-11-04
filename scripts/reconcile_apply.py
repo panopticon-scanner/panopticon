@@ -67,7 +67,7 @@ def legacy_ledger_key(record):
                             record.get("kind") or "")
 
 
-ISSUE_REPO_URL = f"https://github.com/{file_issues.REPO_SLUG}/issues/%s"
+ISSUE_REPO_URL = f"https://github.com/{gh_transport.REPO_SLUG}/issues/%s"
 
 FP_RE = re.compile(r"\*\*Fingerprint:\*\* `([0-9a-f]+)`")
 ID_RE = re.compile(r"\*\*Finding id in report:\*\* `([^`]+)`")
@@ -179,7 +179,7 @@ def _recovered_key(body, rejected, sources, url):
 
 
 def recover_linkage_from_github(label="self-scan", runner=None, *,
-                                repo=file_issues.REPO_SLUG, reports=(), source_roots=()):
+                                repo=gh_transport.REPO_SLUG, reports=(), source_roots=()):
     """Recover only from matching source reports; an empty query needs none."""
     repo = _repo_slug(repo)
     runner = runner or gh_transport.default_gh_runner()
@@ -735,7 +735,7 @@ def main(argv=None):
     p_rec = sub.add_parser("recover-linkage")
     p_rec.add_argument("--out", required=True)
     p_rec.add_argument("--label", default="self-scan")
-    p_rec.add_argument("--repo", type=_repo_slug, default=file_issues.REPO_SLUG)
+    p_rec.add_argument("--repo", type=_repo_slug, default=gh_transport.REPO_SLUG)
     p_rec.add_argument("--report", action="append", default=[], metavar="[ARTIFACT=]PATH",
                        help="required for every recovered issue; bind a relocated authoritative "
                             "report with ARTIFACT=PATH (empty results need no report)")
