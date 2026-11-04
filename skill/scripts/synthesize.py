@@ -24,7 +24,6 @@ import scripts.plan_contract as plan_contract
 import scripts.redact as redact
 import scripts.safe_write as safe_write
 import scripts.x0x_report as x0x_report
-import scripts.synth.artifacts as artifacts_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.delta as delta_mod
 import scripts.synth.plan as plan_mod
@@ -218,28 +217,33 @@ def _first_contact(args, read_paths, write_paths):
     return False
 
 
+def _compare(args):
+    """`--compare A B`: render B's HTML with A as the baseline (#3398: out of main)."""
+    a_path, b_path = args.compare
+    report_a = render_mod._read_json_report(a_path)
+    if report_a is None:
+        return 2
+    report_b = render_mod._read_json_report(b_path)
+    if report_b is None:
+        return 2
+    html_out = args.html_out or (render_mod._derive_html_path(args.out) if args.out else None)
+    if not html_out:
+        print("ERROR: --compare requires --html-out or --out", file=sys.stderr)
+        return 2
+    try:
+        html_report.write_html(report_b, html_out, compare_report=report_a)
+    except (safe_write.ArtifactPathError, ValueError) as exc:
+        return _artifact_path_refused(exc)
+    print("Compare HTML: %s" % html_out)
+    return 0
+
+
 def main(argv=None):
     """Main entry point: load findings, enrich citations, build and validate report."""
     args = build_parser().parse_args(argv)
 
     if args.compare:
-        a_path, b_path = args.compare
-        report_a = render_mod._read_json_report(a_path)
-        if report_a is None:
-            return 2
-        report_b = render_mod._read_json_report(b_path)
-        if report_b is None:
-            return 2
-        html_out = args.html_out or (render_mod._derive_html_path(args.out) if args.out else None)
-        if not html_out:
-            print("ERROR: --compare requires --html-out or --out", file=sys.stderr)
-            return 2
-        try:
-            html_report.write_html(report_b, html_out, compare_report=report_a)
-        except (safe_write.ArtifactPathError, ValueError) as exc:
-            return _artifact_path_refused(exc)
-        print("Compare HTML: %s" % html_out)
-        return 0
+        return _compare(args)
 
     try:
         plan_contract.artifact_root(os.getcwd())
@@ -314,26 +318,7 @@ def main(argv=None):
     # loading verdicts before that branch runs would let stale state leak into
     # verdict_run_id, resume and invalid_verify_queue on the "nothing to queue
     # this run" path.
-    # 5.1 surface 2. host-capabilities.json is a RUN artifact: F3a writes it
-    # into the run folder, so it resolves under `run_dir` exactly like the
-    # dispatch plans, the verify queue, the tools manifest and groups.json
-    # itself -- one resolution for every run-scoped artifact, settled above.
-    # It must NOT be re-derived from `args.groups`: that ignores both
-    # `--run-dir` and the AUTO-DISCOVERED groups path, and with `--groups`
-    # omitted `dirname(abspath("."))` names the PARENT of the cwd -- which for
-    # the synthesize child (`cwd=review_root`) is the directory above the
-    # reviewed tree, where anyone's host-capabilities.json would have been read
-    # as this run's posture. The artifact is a file on disk and therefore
-    # untrusted: absent, truncated or corrupt JSON all fall back to {} --
-    # "nobody looked" -- rather than raising a traceback mid-synthesis or
-    # fabricating a posture.
-    _hc_path = os.path.join(run_dir, "host-capabilities.json")
-    try:
-        host_capabilities = artifacts_mod.read_json(_hc_path, announce=True)
-    except (OSError, ValueError):
-        host_capabilities = {}          # absent or corrupt -> "nobody looked"
-    if not isinstance(host_capabilities, dict):
-        host_capabilities = {}
+    host_capabilities = plan_mod.load_host_capabilities(run_dir)
 
     # #1637 P08 ruling 5: resolved under `run_dir` like every other run
     # artifact, and fail-closed to two zeroes when it is absent -- a direct

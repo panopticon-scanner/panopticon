@@ -363,6 +363,32 @@ def _groups_shape_fault(gj):
 PANEL_TOOLS_CONTEXT = "panel-tools-context.json"
 
 
+def load_host_capabilities(run_dir):
+    """`<run_dir>/host-capabilities.json` as a dict, `{}` when absent or not one (#3398:
+    moved out of synthesize.main unchanged)."""
+    # 5.1 surface 2. host-capabilities.json is a RUN artifact: F3a writes it
+    # into the run folder, so it resolves under `run_dir` exactly like the
+    # dispatch plans, the verify queue, the tools manifest and groups.json
+    # itself -- one resolution for every run-scoped artifact, settled above.
+    # It must NOT be re-derived from `args.groups`: that ignores both
+    # `--run-dir` and the AUTO-DISCOVERED groups path, and with `--groups`
+    # omitted `dirname(abspath("."))` names the PARENT of the cwd -- which for
+    # the synthesize child (`cwd=review_root`) is the directory above the
+    # reviewed tree, where anyone's host-capabilities.json would have been read
+    # as this run's posture. The artifact is a file on disk and therefore
+    # untrusted: absent, truncated or corrupt JSON all fall back to {} --
+    # "nobody looked" -- rather than raising a traceback mid-synthesis or
+    # fabricating a posture.
+    _hc_path = os.path.join(run_dir, "host-capabilities.json")
+    try:
+        host_capabilities = artifacts_mod.read_json(_hc_path, announce=True)
+    except (OSError, ValueError):
+        host_capabilities = {}          # absent or corrupt -> "nobody looked"
+    if not isinstance(host_capabilities, dict):
+        host_capabilities = {}
+    return host_capabilities
+
+
 def load_panel_tools_context(run_dir):
     """`{"with": n, "without": m}` over <run_dir>/panel-tools-context.json.
 
