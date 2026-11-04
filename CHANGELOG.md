@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **`discovery._repo_scan` is split along its seams (#3395).** The parser and argument checks moved
+  unchanged into `_repo_scan_args`, the five `--scope-*` resolvers into one dispatcher
+  `_resolve_scope`, the catalog grouping into `_group_by_catalog` and the JSON emit into
+  `_write_result`; `_repo_scan` is 132 lines, down from 319. `--help`, exit codes and stderr are
+  unchanged. The flat-module pin for `discovery.py` rises once, 1926 -> 1956, for the four new
+  definitions and their calls (coordinator ruling).
+
 - **One owner for the Codex read-broker key (#3408).** `codex_read_tools.MCP_SERVER_KEY`
   now supplies the MCP config key, derived tool namespace, prompt prose and live surface probe;
   launch policy, shell emission and probe validation no longer spell independent copies.
