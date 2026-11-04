@@ -36,6 +36,7 @@ from sanitize import defang, scrub
 # #3404: the gh transport lives in gh_transport.py now (which also puts skill/scripts on
 # sys.path, as this module's own bootstrap used to). Re-exported for one release; a patch
 # on one of these names must target gh_transport, where the code reads it.
+import gh_transport
 from gh_transport import (  # noqa: F401
     RATE_HINTS, CONFIG_PATH, TRUSTED_PATH, trusted_path, gh_bin, declared_gh_config_dir,
     _GH_AUTH_PASSTHROUGH, gh_env, GH_TIMEOUT, _run_gh, default_gh_runner, GH_ATTEMPTS,
@@ -65,7 +66,6 @@ SCHEMA_VERSION = 1
 
 
 MAX_STATE_BYTES = 8 * 1024 * 1024
-REPO_SLUG = "panopticon-scanner/panopticon"
 PROGRESS = ".panopticon/triage-progress.json"
 
 
@@ -228,7 +228,7 @@ def comment_for(row):
     return "\n".join(lines)
 
 
-def plan_mutations(row, repo=REPO_SLUG):
+def plan_mutations(row, repo=gh_transport.REPO_SLUG):
     repo = validate_repo(repo)
     n = str(row["issue"])
     cmds = [["gh", "issue", "comment", n, "--body", comment_for(row)]]
@@ -427,7 +427,7 @@ def _mutate_once(command, runner):
 
 
 def apply(rows, dry=False, throttle=1.5, runner=None, sleep=time.sleep,
-          repo=REPO_SLUG, ledger_path=None, progress_path=None):
+          repo=gh_transport.REPO_SLUG, ledger_path=None, progress_path=None):
     repo = validate_repo(repo)
     _row_map(rows)
     approved = [row for row in rows if row.get("status") == "approved"]
@@ -508,7 +508,7 @@ def apply(rows, dry=False, throttle=1.5, runner=None, sleep=time.sleep,
     return applied, stale
 
 
-def setup(runner=None, repo=REPO_SLUG):
+def setup(runner=None, repo=gh_transport.REPO_SLUG):
     repo = validate_repo(repo)
     runner = runner or default_gh_runner()
     preflight(repo, runner)
@@ -534,9 +534,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
     p_setup = sub.add_parser("setup")
-    p_setup.add_argument("--repo", default=REPO_SLUG, type=validate_repo)
+    p_setup.add_argument("--repo", default=gh_transport.REPO_SLUG, type=validate_repo)
     p_apply = sub.add_parser("apply")
-    p_apply.add_argument("--repo", default=REPO_SLUG, type=validate_repo)
+    p_apply.add_argument("--repo", default=gh_transport.REPO_SLUG, type=validate_repo)
     p_apply.add_argument("--dry-run", action="store_true")
     p_apply.add_argument("--throttle", type=float, default=1.5)
     a = ap.parse_args()

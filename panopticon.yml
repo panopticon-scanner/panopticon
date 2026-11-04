@@ -707,6 +707,7 @@ groups:
       - tests/test_file_issues.py
       - tests/test_file_fixmes.py
       - tests/test_triage.py
+      - tests/test_project_names.py
       - tests/test_reconcile_apply.py
       - tests/test_sanitize.py
       - tests/test_code_scanning_reports.py

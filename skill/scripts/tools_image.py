@@ -32,6 +32,17 @@ import sys
 
 import scripts.executable as executable
 
+# The image and mount names, spelled once (#3407). `LOCAL_NAME` is the tag
+# every scan dispatches by; `REGISTRY_IMAGE` is where CI publishes it (the
+# org also lives in `scripts/gh_transport.REPO_SLUG`, which skill/ cannot
+# import -- a test pins the two agree). The fixtures image and the root it
+# bakes its targets under are the adapter-vetting rig's.
+LOCAL_NAME = "panopticon-tools"
+REGISTRY_IMAGE = "ghcr.io/panopticon-scanner/" + LOCAL_NAME + ":latest"
+FIXTURES_NAME = "panopticon-fixtures"
+FIXTURES_IMAGE = FIXTURES_NAME + ":latest"
+FIXTURES_ROOT = "/opt/" + FIXTURES_NAME
+
 # `run_tools` exits with this when it halts on the image, and the tools phase
 # turns it back into a halt of the run rather than a best-effort crash.
 HALT_EXIT = 3

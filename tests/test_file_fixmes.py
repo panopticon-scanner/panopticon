@@ -249,10 +249,10 @@ def test_delegated_create_keeps_finding_and_fixme_intents_separate(tmp_path, mon
     def run(cmd, **kwargs):
         if cmd[1] == "api":
             return mock.Mock(returncode=0, stdout=json.dumps({
-                "full_name": module.REPO_SLUG, "permissions": {"admin": True}}))
+                "full_name": file_fixmes.gh_transport.REPO_SLUG, "permissions": {"admin": True}}))
         assert cmd[2] == "create"
         posted.append(cmd[cmd.index("--body") + 1])
-        return mock.Mock(returncode=0, stdout="https://github.com/" + module.REPO_SLUG + "/issues/%d" % len(posted))
+        return mock.Mock(returncode=0, stdout="https://github.com/" + file_fixmes.gh_transport.REPO_SLUG + "/issues/%d" % len(posted))
     monkeypatch.setattr(module, "_gh_bin", lambda: "/fake/gh")
     monkeypatch.setattr(module.subprocess, "run", run)
     # Even equal caller keys/content get distinct operation markers by kind.

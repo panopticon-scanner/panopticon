@@ -25,6 +25,11 @@ if str(_SKILL_SCRIPTS) not in sys.path:
 from repo_config import LEGACY_CONFIG_JSON  # noqa: E402
 
 
+# The repository the filing tools file against and link into (#3407): one
+# spelling, here because every tool that files already imports this module
+# and it imports none of them back.
+REPO_SLUG = "panopticon-scanner/panopticon"
+
 RATE_HINTS = ("rate limit", "secondary rate", "abuse detection",
               "was submitted too quickly")
 

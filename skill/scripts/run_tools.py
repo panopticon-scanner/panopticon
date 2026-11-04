@@ -212,7 +212,7 @@ def validate_output_dir(target, out_dir):
     return out_dir
 
 
-def docker_available(image="panopticon-tools", runner=None, target=None):
+def docker_available(image=tools_image.LOCAL_NAME, runner=None, target=None):
     """The image's identity (`tools_image.identity`, plus docker's own `apps`
     record) when it is available, else False. #3270: an unreadable id halts."""
     runner = runner or subprocess.run
@@ -434,7 +434,7 @@ class _DockerContext:
         self.env = env
 
 
-def run_tools(target, tools, out_dir, image="panopticon-tools",
+def run_tools(target, tools, out_dir, image=tools_image.LOCAL_NAME,
               runner=None, online=False, progress=None, venv_dirs=None,
               run_id=None, security_mode="standard", exclude_globs=(), allow_target_build=False):
     """Run selected security tools and adapters in Docker against target.
@@ -750,7 +750,7 @@ def main(argv=None):
         venv_scope.find_virtualenvs(a.target), a.security_mode)
     found = docker_available(target=a.target)
     if not found:
-        print("panopticon-tools image not available; skipping tool scan", file=sys.stderr)
+        print("%s image not available; skipping tool scan" % tools_image.LOCAL_NAME, file=sys.stderr)
         # Still disclose the skip through the coverage manifest. Without this,
         # a caller who passed --manifest as its coverage-gating signal cannot
         # tell 'docker absent, whole scan skipped' from '--manifest never
@@ -767,7 +767,7 @@ def main(argv=None):
                 sanitized=sanitized, exclude_globs=a.exclude, cleanup_failures={},
                 language_detection_skips=language_detection_skips,
                 dependency_applicable=tools_manifest.dependency_audit_applicable(a.target),
-                image={"ref": "panopticon-tools", "id": None})
+                image={"ref": tools_image.LOCAL_NAME, "id": None})
         return 0
     image = dict(found, adapter_code=tools_image.adapter_code(os.path.dirname(os.path.abspath(__file__))))
     apps = image.pop("apps", [])

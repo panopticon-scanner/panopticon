@@ -58,8 +58,7 @@ def _list(v):
 # and --run-state-doc, so no code edit is needed to file a new run. Defaults are kept only for
 # backward-compatibility and to keep body_for() callable with a bare finding in tests.
 REPORT = "docs/superpowers/2026-08-04-self-scan-report.json"
-REPORT_URL = ("https://github.com/panopticon-scanner/panopticon/blob/main/"
-              "docs/superpowers/2026-08-04-self-scan-report.json")
+REPORT_URL = f"https://github.com/{gh_transport.REPO_SLUG}/blob/main/{REPORT}"
 RUN_LABEL = "run 2"
 RUN_DATE = "2026-08-04"
 RUN_STATE_DOC = "docs/superpowers/2026-08-04-self-scan-run-state.md"
@@ -199,8 +198,6 @@ def body_for(f, rejected=False, report=REPORT, report_url=REPORT_URL,
              "this run is stated in `%s`.*" % run_state_doc)
     return "\n".join(L)
 
-
-REPO_SLUG = "panopticon-scanner/panopticon"
 
 
 LEDGER = ".panopticon/filed-issues.json"
@@ -497,7 +494,7 @@ def _preflight(repo, runner):
         raise RuntimeError("authenticated admin preflight failed for " + repo) from exc
 
 
-def find_existing_issue(title, runner, repo=REPO_SLUG, *, intent=None):
+def find_existing_issue(title, runner, repo=gh_transport.REPO_SLUG, *, intent=None):
     """Adopt one exact operation marker only from a complete bounded response.
 
     Legacy title-only calls retain their positional/keyword interface and return None without
@@ -542,7 +539,7 @@ def find_existing_issue(title, runner, repo=REPO_SLUG, *, intent=None):
     raise RuntimeError("pending create unresolved; rerun to reconcile its marker; do not delete intent")
 
 
-def create(title, body, labels, dry, throttle=0.0, env=None, repo=REPO_SLUG,
+def create(title, body, labels, dry, throttle=0.0, env=None, repo=gh_transport.REPO_SLUG,
            operation_id=None, ledger_path=None, kind="finding"):
     """One durable create attempt; subsequent calls can only adopt its marker.
 
@@ -630,7 +627,7 @@ def create(title, body, labels, dry, throttle=0.0, env=None, repo=REPO_SLUG,
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--repo", type=validate_repo, default=REPO_SLUG)
+    ap.add_argument("--repo", type=validate_repo, default=gh_transport.REPO_SLUG)
     ap.add_argument("--limit", type=int)
     ap.add_argument("--only", choices=["findings", "rejected"])
     ap.add_argument("--throttle", type=float, default=1.5,

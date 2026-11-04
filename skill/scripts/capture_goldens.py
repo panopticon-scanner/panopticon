@@ -16,13 +16,14 @@ from defusedxml.common import DefusedXmlException
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from scripts.tool_capture import _redact_capture  # noqa: E402
 from scripts.tools import ADAPTERS  # noqa: E402
+from scripts import tools_image  # noqa: E402
 
 # The image layout as configuration (#1654): a hardcoded /opt/panopticon
 # import root above and a fixed TARGETS table below meant that moving a mount
 # or a fixture root required editing this file in lockstep with the
 # Dockerfiles. Each root is an environment variable, today's value as the
 # default, overridable per-run by a CLI flag (see _build_parser/main).
-DEFAULT_FIXTURES_ROOT = "/opt/panopticon-fixtures"
+DEFAULT_FIXTURES_ROOT = tools_image.FIXTURES_ROOT
 DEFAULT_SRC_ROOT = "/src"
 DEFAULT_PROBES_ROOT = "/mnt"
 ENV_FIXTURES_ROOT = "PANOPTICON_FIXTURES_ROOT"

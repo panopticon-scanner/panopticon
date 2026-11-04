@@ -25,8 +25,7 @@ import gh_transport
 # code edit (#606) — same convention as file_issues.py. Kept only for
 # backward-compat and to keep body_for() callable bare in tests.
 DOC = "docs/superpowers/2026-08-04-run2-fixmes.md"
-DOC_URL = ("https://github.com/panopticon-scanner/panopticon/blob/main/"
-           "docs/superpowers/2026-08-04-run2-fixmes.md")
+DOC_URL = f"https://github.com/{gh_transport.REPO_SLUG}/blob/main/{DOC}"
 RUN_LABEL = "run-2"
 RUN_DATE = "2026-08-04"
 LEDGER = ".panopticon/filed-fixmes.json"
@@ -154,7 +153,7 @@ def key_for(run_label, section_id):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--repo", type=file_issues.validate_repo, default=file_issues.REPO_SLUG)
+    ap.add_argument("--repo", type=file_issues.validate_repo, default=gh_transport.REPO_SLUG)
     ap.add_argument("--limit", type=int)
     ap.add_argument("--throttle", type=float, default=8.0)
     ap.add_argument("--doc", default=DOC, help="path to the run's FIXME doc")
