@@ -40,8 +40,9 @@ _TARGET_PREFIX = TARGET_MOUNT.rstrip("/") + "/"
 SECRET_ADAPTERS = frozenset({"gitleaks"})
 # #3361: mixed adapters cannot join SECRET_ADAPTERS. Trivy reports both
 # vulnerabilities and credentials; only a result whose resolved rule carries
-# Trivy's scanner-owned `secret` tag gets this per-finding kind.
-SECRET_KIND = "secret"
+# Trivy's scanner-owned `secret` tag gets this per-finding kind. The value is a
+# finding-kind tag, not a credential, so Bandit's B105 is a false positive.
+SECRET_KIND = "secret"  # nosec B105
 # The SARIF toolComponent name a CWE taxonomy uses. gosec names its taxonomy
 # "CWE" and puts a BARE number under it, which is why `CWE_TAG` cannot see it.
 CWE_TAXONOMY = "CWE"
