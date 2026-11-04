@@ -313,7 +313,7 @@ def _render_codex(role, agent, meta, tp):
     # discovery, so an allowlist without a transport is rejected: a required,
     # failing placeholder makes direct launches refuse until command() binds
     # the real broker and this entry's read scope.
-    policy["mcp_servers"] = {"panopticon_scope": {
+    policy["mcp_servers"] = {codex_read_tools.MCP_SERVER_KEY: {
         "command": "/usr/bin/false", "required": True,
         "enabled_tools": _codex_enabled_tools(tp)}}
     lines = ["# Launch through Panopticon: its runner replaces the required MCP placeholder",
@@ -417,7 +417,7 @@ def _tool_policy_line(meta, host=None):
         # P14 (run-13): this paragraph promised "shell commands only to read or
         # search files" to a launch that has no shell at all -- codex_host.
         # safety_config() disables shell_tool/unified_exec, and the only
-        # callable tools are the scoped `panopticon_scope` MCP ones whose
+        # callable tools are the scoped `codex_read_tools.MCP_SERVER_KEY` MCP ones whose
         # allowlist IS the list rendered here. The runtime always enforced the
         # narrower surface, so the cost was a reviewer told to use tools it did
         # not have, in the one document it is supposed to trust. Render the
@@ -436,8 +436,9 @@ def _tool_policy_line(meta, host=None):
         granted = set(_codex_enabled_tools(tp))
         tools = [t for t in codex_read_tools.TOOLS if t["name"] in granted]
         if tools:
-            opening = ("Your only tools are the `panopticon_scope` MCP tools %s."
-                       % ", ".join(_codex_tool_gloss(t) for t in tools))
+            opening = ("Your only tools are the `%s` MCP tools %s."
+                       % (codex_read_tools.MCP_SERVER_KEY,
+                          ", ".join(_codex_tool_gloss(t) for t in tools)))
         else:
             # R1 minor (iii): narrowing by role introduced an empty case. No
             # shipped role reaches it -- and such a role's `enabled_tools`
@@ -445,7 +446,7 @@ def _tool_policy_line(meta, host=None):
             # -- but a rendered prompt must never carry "MCP tools ." with the
             # list missing. Say the thing the empty set means.
             opening = ("You have no tools: this role is granted none of the "
-                       "`panopticon_scope` MCP tools.")
+                       "`%s` MCP tools." % codex_read_tools.MCP_SERVER_KEY)
         return ("\n## Tool policy\n\n%s There is no shell. Never execute target "
                 "code, run builds or tests, access the network, spawn agents, or "
                 "attempt any filesystem mutation. The runner captures your "

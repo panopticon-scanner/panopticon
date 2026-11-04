@@ -185,7 +185,8 @@ def _granted_broker_tools(shell):
 def _codex_surface_problem(surface, shell):
     if not isinstance(surface, dict):
         return "effective Codex surface is not an object"
-    expected = _RESOURCE_TOOLS | {"mcp__panopticon_scope__" + tool
+    tool_prefix = "mcp__%s__" % codex_read_tools.MCP_SERVER_KEY
+    expected = _RESOURCE_TOOLS | {tool_prefix + tool
                                   for tool in _granted_broker_tools(shell)}
     forbidden = surface.get("forbidden") or {}
     if (set(surface.get("tools", [])) != expected
@@ -231,8 +232,9 @@ def _codex_write_surface_problem(surface, shell):
     problem = _codex_surface_problem(surface, shell)
     if problem:
         return problem
-    if surface.get("mcp_servers") != ["panopticon_scope"]:
-        return "effective MCP server set is not exactly the controller-bound panopticon_scope"
+    if surface.get("mcp_servers") != [codex_read_tools.MCP_SERVER_KEY]:
+        return ("effective MCP server set is not exactly the controller-bound %s"
+                % codex_read_tools.MCP_SERVER_KEY)
 
     globals_ = surface.get("globals")
     if (not isinstance(globals_, list)

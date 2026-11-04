@@ -105,7 +105,7 @@ def safety_config():
         # run-owned directory -- `--cd` AND the process cwd, see `launch_cwd`.
         "features": {**dict.fromkeys(_POLICY_FEATURES, False),
                      "skip_host_skill_discovery": True, "code_mode_host": True},
-        "mcp_servers": {"panopticon_scope": {
+        "mcp_servers": {codex_read_tools.MCP_SERVER_KEY: {
             "command": sys.executable,
             "args": ["-I", str(Path(codex_read_tools.__file__).resolve())],
             "required": True,
@@ -323,15 +323,16 @@ def command(entry, env, review_root, run_dir, runner=None, registration_dir=None
     if str(run_path.resolve()) != str(run_path):
         raise ValueError("Codex runtime directory must not traverse symlinks")
     run_path.mkdir(parents=True, exist_ok=True)
-    server = config.get("mcp_servers", {}).get("panopticon_scope", {})
+    server_key = codex_read_tools.MCP_SERVER_KEY
+    server = config.get("mcp_servers", {}).get(server_key, {})
     enabled = server.get("enabled_tools")
     if not isinstance(enabled, list) or any(not isinstance(name, str) for name in enabled):
         raise ValueError("Codex shell lacks its native MCP tool allowlist")
-    broker = safety_config()["mcp_servers"]["panopticon_scope"]
+    broker = safety_config()["mcp_servers"][server_key]
     broker["enabled_tools"] = enabled
     broker["env"] = {**{key: env[key] for key in ENV_KEYS},
                      "PANOPTICON_REVIEW_ROOT": str(Path(review_root).resolve())}
-    config["mcp_servers"] = {"panopticon_scope": broker}
+    config["mcp_servers"] = {server_key: broker}
     directory = Path(tempfile.mkdtemp(prefix="codex-entry-", dir=run_path))
     # N-M4: from here to the registry write, NOTHING may leave the runtime
     # directory behind. It exists before _catalog() runs, and _catalog() is
@@ -451,13 +452,14 @@ def validate_command(argv, env, review_root):
     for key, value in expected.items():
         if key != "mcp_servers" and config.get(key) != value:
             raise ValueError("Codex registered policy changed or lacks required control: " + key)
-    broker = expected["mcp_servers"]["panopticon_scope"]
+    server_key = codex_read_tools.MCP_SERVER_KEY
+    broker = expected["mcp_servers"][server_key]
     broker["env"] = {**{key: env[key] for key in ENV_KEYS},
                      "PANOPTICON_REVIEW_ROOT": str(Path(review_root).resolve())}
     surface = set(broker.pop("enabled_tools"))
     servers = config.get("mcp_servers")
-    launched = servers.get("panopticon_scope") if isinstance(servers, dict) else None
-    if (not isinstance(servers, dict) or set(servers) != {"panopticon_scope"}
+    launched = servers.get(server_key) if isinstance(servers, dict) else None
+    if (not isinstance(servers, dict) or set(servers) != {server_key}
             or not isinstance(launched, dict)
             or {key: value for key, value in launched.items() if key != "enabled_tools"} != broker):
         raise ValueError("Codex command does not bind exactly the scope-only read broker")
