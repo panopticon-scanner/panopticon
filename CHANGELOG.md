@@ -10,6 +10,11 @@
   its new module, and `tests/test_setup_split.py` fails on a reference that still goes through
   `setup_flow`.
 
+- **Refactor: isolate the driver's host-posture subsystem (#3402).** Host
+  capability assessment, drift/refusal decisions and disclosure now live in
+  `host_posture.py`; the driver keeps its existing compatibility names and
+  behavior while dropping below its flat-module size pin.
+
 - **The filing tools' gh transport moved to `scripts/gh_transport.py` (#3404).** `triage.py`'s
   trusted `gh` resolution, account environment and retry ladder now live in their own module, which
   `file_issues`, `file_fixmes`, `code_scanning_audit` and `reconcile_apply` import directly.

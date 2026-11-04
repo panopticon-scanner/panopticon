@@ -18,7 +18,10 @@ re-exported; `synth/*` never imports the driver. Tests mirror the package:
 rules and the line ratchet.
 
 `skill/scripts/driver.py` is a thin entry script too: the CLI, the `PHASES` table, `run()` and
-`main()`. Its phases live in `skill/scripts/phases/` — `runio` (run-folder paths, artifact reads and
+`main()`. The pre-phase host assessment, drift/refusal decisions and disclosure live in the flat
+`skill/scripts/host_posture.py` module; `driver.py` retains their private names as compatibility
+imports for existing callers. Its phases live in `skill/scripts/phases/` — `runio` (run-folder
+paths, artifact reads and
 writes, child processes, `DriverError`, review-root resolution), `engine` (`Phase`, `PhaseResult`,
 `run_engine`, `emit_status`), then one module per phase: `readiness` (the pre-dispatch
 scanner/environment checkpoint) with `readiness_checks` (the checks themselves: docker and the tools

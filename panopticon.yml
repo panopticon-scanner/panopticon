@@ -355,6 +355,7 @@ groups:
     Driver:
       match:
       - skill/scripts/driver.py
+      - skill/scripts/host_posture.py
       tests:
       - tests/test_driver.py
       - tests/test_driver_cli.py
