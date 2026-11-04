@@ -21,6 +21,9 @@ MAX_FILES = 4096
 MAX_DIRECTORIES = 512
 MAX_ENTRIES = 20000
 MAX_SEARCH_BYTES = 8 * MAX_FILE_BYTES
+# The Codex config key becomes the namespace prefix for every broker tool.
+# Launch policy, shell emission and live probes all consume this one value.
+MCP_SERVER_KEY = "panopticon_scope"
 SCOPE_KEYS = ("files", "dirs", "reads")
 # Directory NAMES and basename GLOBS the walk skips at every depth. A directory
 # grant is the whole repository for the setup scan, and a checkout's VCS store

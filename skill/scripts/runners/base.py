@@ -130,7 +130,7 @@ class RunResult:
                              # "none reported", never as "none happened". claude puts the
                              # envelope's `permission_denials` here verbatim; codex puts the
                              # failed `mcp_tool_call` items of panopticon's OWN
-                             # `panopticon_scope` read broker (`codex_host.safety_config`
+                             # `codex_read_tools.MCP_SERVER_KEY` broker (`codex_host.safety_config`
                              # declares that one server; `codex_host.validate_command`
                              # refuses a launch binding any other), so read-scope refusals
                              # plus any other error the broker returns -- a SUPERSET of

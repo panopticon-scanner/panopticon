@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests._test_helpers import REPO_ROOT
+import scripts.codex_read_tools as codex_read_tools
 import scripts.codex_host as codex_host
 import scripts.probes.codex_surface as codex_surface
 
@@ -81,6 +82,66 @@ class TestCodexSurfaceOwnership:
             "scripts.probes.codex_surface, the module that owns them:\n"
             + "\n".join(rendered)
         )
+
+
+def _hard_coded_scope_server(tree, relative):
+    """(line, value) for each non-docstring spelling outside its owner."""
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.body and isinstance(node.body[0], ast.Expr):
+                docstrings.add(id(node.body[0].value))
+    homed = set()
+    if relative == "skill/scripts/codex_read_tools.py":
+        for node in tree.body:
+            if (isinstance(node, ast.Assign)
+                    and any(isinstance(target, ast.Name) and target.id == "MCP_SERVER_KEY"
+                            for target in node.targets)):
+                homed.update(id(child) for child in ast.walk(node.value))
+    return sorted(
+        (node.lineno, node.value) for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        and id(node) not in docstrings and id(node) not in homed
+        and "panopticon_scope" in node.value
+    )
+
+
+class TestCodexScopeServerKey:
+    """#3408: one owner for the broker key and its derived tool namespace."""
+
+    def test_read_broker_owns_the_pinned_key(self):
+        assert codex_read_tools.MCP_SERVER_KEY == "panopticon_scope"
+
+    def test_runtime_has_no_second_spelling(self):
+        root = Path(REPO_ROOT)
+        found = {}
+        for top in ("skill/scripts", "scripts"):
+            for path in sorted((root / top).rglob("*.py")):
+                relative = path.relative_to(root).as_posix()
+                hits = _hard_coded_scope_server(
+                    ast.parse(path.read_text(encoding="utf-8"), filename=str(path)),
+                    relative,
+                )
+                if hits:
+                    found[relative] = hits
+        assert found == {}, "use codex_read_tools.MCP_SERVER_KEY: %r" % found
+
+    def test_guard_distinguishes_prose_and_the_owner(self):
+        source = '''
+"""A docstring naming panopticon_scope is prose."""
+KEY = "panopticon_scope"
+TOOL = "mcp__panopticon_scope__read_file"
+MCP_SERVER_KEY = "panopticon_scope"
+'''
+        assert _hard_coded_scope_server(ast.parse(source), "elsewhere.py") == [
+            (3, "panopticon_scope"),
+            (4, "mcp__panopticon_scope__read_file"),
+            (5, "panopticon_scope"),
+        ]
+        assert _hard_coded_scope_server(
+            ast.parse('MCP_SERVER_KEY = "panopticon_scope"\n'),
+            "skill/scripts/codex_read_tools.py",
+        ) == []
 
 
 @pytest.fixture(autouse=True)
