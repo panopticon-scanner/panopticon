@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **`tool_capture._stream_and_write` is split along two seams (#3397).** The watchdog and container
+  kill moved unchanged into `_start_watchdog`, and the capped stdout spool into `_spool_under_cap`;
+  classification and persistence stay in `_stream_and_write`. Behaviour is unchanged.
+
 - **The Codex surface probe has its own module (#3403).** The localhost Responses fixture,
   inspection script and effective-surface parser moved unchanged from `codex_host.py` to
   `probes/codex_surface.py`. Callers and patches now name that owner; `codex_host` does not

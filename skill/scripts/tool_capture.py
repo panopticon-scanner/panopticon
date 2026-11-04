@@ -201,22 +201,14 @@ def _annotate_from_stderr(tool, payload, stderr):
 def _drain(stream):
     """Read and discard the rest of a stream past the byte cap so the child is
     never left blocked on a full pipe. #run7 QAL-D1A: shared by both truncation
-    branches in _stream_and_write (previously an inline duplicate)."""
+    branches in _spool_under_cap (previously an inline duplicate)."""
     while stream.read(64 * 1024):
         pass
 
 
-def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
-                      docker_bin=None, cidfile=None, docker_env=None, stamp=None):
-    """Stream stdout from a Popen-like object with an explicit byte cap AND a
-    wall-clock deadline.
-
-    The byte cap keeps a large/adversarial target's output from accumulating in
-    memory (#1111). The deadline is enforced by a watchdog that kills the child
-    at `timeout`: a Popen has no ``timeout=`` of its own, so without it a hung or
-    trickle-slow tool would block the streaming ``read()`` (or the post-cap
-    ``_drain`` of an infinite producer) forever -- restoring the bound that the
-    old buffered ``subprocess.run(timeout=...)`` path provided (#run7 COD-A2A)."""
+def _start_watchdog(label, tool, proc, timeout, docker_bin, cidfile, docker_env):
+    """Arm the wall-clock deadline for `proc`: (timer, timed_out, _kill_container) (#3397:
+    moved out of _stream_and_write unchanged)."""
     timed_out = {"hit": False}
 
     def _cleanup_diagnostic(kind, reason):
@@ -282,6 +274,44 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
     timer = threading.Timer(timeout, _watchdog)
     timer.daemon = True
     timer.start()
+    return timer, timed_out, _kill_container
+
+
+def _spool_under_cap(proc, spool):
+    """Copy `proc.stdout` into `spool` up to MAX_TOOL_OUTPUT_BYTES, draining the rest; True
+    when it was cut (#3397: moved out of _stream_and_write unchanged)."""
+    truncated = False
+    while True:
+        chunk = proc.stdout.read(64 * 1024)
+        if not chunk:
+            break
+        room = MAX_TOOL_OUTPUT_BYTES - spool.tell()
+        if room <= 0:
+            truncated = True
+            _drain(proc.stdout)   # discard remaining stdout, unstored
+            break
+        if len(chunk) > room:
+            spool.write(chunk[:room])
+            truncated = True
+            _drain(proc.stdout)
+            break
+        spool.write(chunk)
+    return truncated
+
+
+def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
+                      docker_bin=None, cidfile=None, docker_env=None, stamp=None):
+    """Stream stdout from a Popen-like object with an explicit byte cap AND a
+    wall-clock deadline.
+
+    The byte cap keeps a large/adversarial target's output from accumulating in
+    memory (#1111). The deadline is enforced by a watchdog that kills the child
+    at `timeout`: a Popen has no ``timeout=`` of its own, so without it a hung or
+    trickle-slow tool would block the streaming ``read()`` (or the post-cap
+    ``_drain`` of an infinite producer) forever -- restoring the bound that the
+    old buffered ``subprocess.run(timeout=...)`` path provided (#run7 COD-A2A)."""
+    timer, timed_out, _kill_container = _start_watchdog(
+        label, tool, proc, timeout, docker_bin, cidfile, docker_env)
     # #1510: drain stderr concurrently from the start. Reading stdout to EOF
     # first deadlocks against any scanner that fills its 64KB stderr pipe before
     # emitting stdout -- the parent waits on stdout the blocked child cannot
@@ -290,23 +320,8 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
     join_stderr = drain_stderr_async(proc)
     try:
         with tempfile.SpooledTemporaryFile(max_size=1024 * 1024) as spool:
-            truncated = False
             try:
-                while True:
-                    chunk = proc.stdout.read(64 * 1024)
-                    if not chunk:
-                        break
-                    room = MAX_TOOL_OUTPUT_BYTES - spool.tell()
-                    if room <= 0:
-                        truncated = True
-                        _drain(proc.stdout)   # discard remaining stdout, unstored
-                        break
-                    if len(chunk) > room:
-                        spool.write(chunk[:room])
-                        truncated = True
-                        _drain(proc.stdout)
-                        break
-                    spool.write(chunk)
+                truncated = _spool_under_cap(proc, spool)
                 # The watchdog guarantees the child terminates, so wait() is bounded.
                 rc = proc.wait()
                 stderr = join_stderr()
