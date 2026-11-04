@@ -1067,3 +1067,34 @@ class TestTruncationDoesNotHalfKeepASecret(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSpoolUnderCap(unittest.TestCase):
+    """#3397: the capped spool, out of _stream_and_write. Whatever it keeps, it
+    reads the child's stdout to EOF -- a stream left unread past the cap is a
+    child blocked on a full pipe until the watchdog kills it."""
+
+    class _Proc:
+        def __init__(self, data):
+            self.stdout = io.BytesIO(data)
+
+    def _spool(self, data, cap):
+        proc = self._Proc(data)
+        with mock.patch.object(tc, "MAX_TOOL_OUTPUT_BYTES", cap), \
+                tempfile.SpooledTemporaryFile() as spool:
+            truncated = tc._spool_under_cap(proc, spool)
+            spool.seek(0)
+            kept = spool.read()
+        return truncated, kept, proc.stdout.read()
+
+    def test_output_under_the_cap_is_kept_whole(self):
+        self.assertEqual(self._spool(b"abc", 10), (False, b"abc", b""))
+
+    def test_a_chunk_past_the_cap_is_cut_and_the_rest_drained(self):
+        # One 64KB read crosses the cap mid-chunk: the second branch.
+        self.assertEqual(self._spool(b"x" * 200_000, 10), (True, b"x" * 10, b""))
+
+    def test_a_cap_reached_on_a_chunk_boundary_drains_the_rest(self):
+        # The cap lands exactly on the first read: the next one finds no room.
+        data = b"y" * (64 * 1024) + b"z" * 200_000
+        self.assertEqual(self._spool(data, 64 * 1024), (True, b"y" * (64 * 1024), b""))
