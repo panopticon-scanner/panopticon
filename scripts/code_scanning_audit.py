@@ -18,7 +18,7 @@ from typing import Callable
 from urllib.parse import urlsplit
 import uuid
 
-import triage
+import gh_transport
 
 
 MAIN_REF = "refs/heads/main"
@@ -448,7 +448,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         target = validate_target(args.repository, args.server_url, args.ref,
                                  args.sha, args.sarif_id)
-        MainAudit(target, triage.default_gh_runner()).run()
+        MainAudit(target, gh_transport.default_gh_runner()).run()
     except AuditError as exc:
         print("Code-scanning audit failed: %s" % exc, file=sys.stderr)
         return 1

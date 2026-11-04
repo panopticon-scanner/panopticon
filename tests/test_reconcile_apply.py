@@ -13,7 +13,7 @@ import file_issues
 import pinned_dir
 import reconcile_apply
 import sanitize
-import triage
+import gh_transport
 
 
 @contextlib.contextmanager
@@ -1283,7 +1283,7 @@ class TestCliWiring(unittest.TestCase):
             errors = io.StringIO()
             def runner(*args, **kwargs):
                 return FakeCompleted("[]")
-            with mock.patch.object(triage, "default_gh_runner", return_value=runner), \
+            with mock.patch.object(gh_transport, "default_gh_runner", return_value=runner), \
                     contextlib.redirect_stderr(errors):
                 result = reconcile_apply.main(["recover-linkage", "--repo", "o/r",
                                                "--out", str(alias / "ledger.json")])
@@ -1305,7 +1305,7 @@ class TestCliWiring(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             output = Path(d) / "ledger.json"
             errors = io.StringIO()
-            with mock.patch.object(triage, "default_gh_runner", return_value=lambda *a, **k:
+            with mock.patch.object(gh_transport, "default_gh_runner", return_value=lambda *a, **k:
                     FakeCompleted(json.dumps(issues))), contextlib.redirect_stderr(errors):
                 result = reconcile_apply.main(["recover-linkage", "--repo",
                     "panopticon-scanner/panopticon", "--out", str(output)])
@@ -1347,7 +1347,7 @@ class TestCliWiring(unittest.TestCase):
                 path = Path(d) / "actions.json"
                 path.write_text(case if isinstance(case, str) else json.dumps(case))
                 err = io.StringIO()
-                with mock.patch.object(triage, "default_gh_runner", side_effect=AssertionError("gh")), \
+                with mock.patch.object(gh_transport, "default_gh_runner", side_effect=AssertionError("gh")), \
                      contextlib.redirect_stderr(err):
                     self.assertEqual(reconcile_apply.main(["apply", str(path), "--no-dry-run"]), 1)
                 self.assertIn("refusing:", err.getvalue())
@@ -1358,7 +1358,7 @@ class TestCliWiring(unittest.TestCase):
             receipt = Path(str(path) + ".progress.json")
             receipt.write_text("{corrupt")
             calls = []
-            with mock.patch.object(triage, "default_gh_runner", return_value=TestApply()._admin_runner(calls)):
+            with mock.patch.object(gh_transport, "default_gh_runner", return_value=TestApply()._admin_runner(calls)):
                 for reset in ([], ["--reset-progress"]):
                     err = io.StringIO()
                     with contextlib.redirect_stderr(err):
@@ -1400,7 +1400,7 @@ class TestCliWiring(unittest.TestCase):
                     args = ["apply", str(path), "--no-dry-run"]
                     if reset:
                         args.append("--reset-progress")
-                    with mock.patch.object(triage, "default_gh_runner", return_value=runner), \
+                    with mock.patch.object(gh_transport, "default_gh_runner", return_value=runner), \
                          contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                         rc = reconcile_apply.main(args)
                     self.assertNotEqual(rc, 0)
@@ -1424,7 +1424,7 @@ class TestCliWiring(unittest.TestCase):
                 path.write_text(json.dumps([] if empty else actions))
                 calls = []
                 out, err = io.StringIO(), io.StringIO()
-                with mock.patch.object(triage, "default_gh_runner",
+                with mock.patch.object(gh_transport, "default_gh_runner",
                                        return_value=TestApply()._admin_runner(calls)), \
                      contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                     rc = reconcile_apply.main(["apply", str(path), "--no-dry-run"])
@@ -1444,7 +1444,7 @@ class TestCliWiring(unittest.TestCase):
                     return FakeCompleted('{"admin": true}')
                 return FakeCompleted("", returncode=1, stderr="mutation failed")
             out, err = io.StringIO(), io.StringIO()
-            with mock.patch.object(triage, "default_gh_runner", return_value=runner), \
+            with mock.patch.object(gh_transport, "default_gh_runner", return_value=runner), \
                  contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 self.assertEqual(reconcile_apply.main(["apply", str(path), "--no-dry-run"]), 1)
             self.assertIn("mutation failed", err.getvalue())
@@ -1548,7 +1548,7 @@ class TestSafeRecovery(unittest.TestCase):
             output = Path(d) / "ledger.json"
             before = b'unchanged original ledger bytes\n'
             output.write_bytes(before)
-            with mock.patch.object(triage, "default_gh_runner", return_value=lambda *a, **k:
+            with mock.patch.object(gh_transport, "default_gh_runner", return_value=lambda *a, **k:
                     FakeCompleted(json.dumps([issue]))):
                 self.assertEqual(reconcile_apply.main(["recover-linkage", "--repo", "o/r",
                     "--out", str(output), "--replace-ledger"]), 1)
@@ -1559,7 +1559,7 @@ class TestSafeRecovery(unittest.TestCase):
         self.assertEqual(self.recover([]), {})
         with tempfile.TemporaryDirectory() as d:
             output = Path(d) / "ledger.json"
-            with mock.patch.object(triage, "default_gh_runner", return_value=lambda *a, **k:
+            with mock.patch.object(gh_transport, "default_gh_runner", return_value=lambda *a, **k:
                     FakeCompleted("[]")):
                 self.assertEqual(reconcile_apply.main(["recover-linkage", "--repo", "o/r",
                     "--out", str(output)]), 0)
@@ -1581,7 +1581,7 @@ class TestSafeRecovery(unittest.TestCase):
                 self.recover([], reports={"source.json": source})
             output = Path(d) / "ledger.json"
             err = io.StringIO()
-            with mock.patch.object(triage, "default_gh_runner", return_value=lambda *a, **k:
+            with mock.patch.object(gh_transport, "default_gh_runner", return_value=lambda *a, **k:
                     FakeCompleted("[]")), contextlib.redirect_stderr(err):
                 rc = reconcile_apply.main(["recover-linkage", "--repo", "o/r",
                     "--out", str(output), "--report", "source.json=" + str(source)])
@@ -1669,7 +1669,7 @@ class TestSafeRecovery(unittest.TestCase):
                 output.write_bytes(original)
                 report = Path(d) / "source.json"
                 report.write_text(json.dumps({"findings": [self.finding("a.py")]}))
-                with mock.patch.object(triage, "default_gh_runner", return_value=lambda *a, **k:
+                with mock.patch.object(gh_transport, "default_gh_runner", return_value=lambda *a, **k:
                         FakeCompleted(json.dumps(payload))):
                     self.assertEqual(reconcile_apply.main(["recover-linkage", "--repo", "o/r",
                         "--out", str(output), "--replace-ledger",
@@ -1719,7 +1719,7 @@ class TestSafeRecovery(unittest.TestCase):
             output.write_bytes(b'old bytes\n')
             args = ["recover-linkage", "--repo", "o/r", "--out", str(output),
                     "--report", "reports/run.json=" + str(source), "--replace-ledger"]
-            with mock.patch.object(triage, "default_gh_runner", return_value=lambda *a, **k:
+            with mock.patch.object(gh_transport, "default_gh_runner", return_value=lambda *a, **k:
                     FakeCompleted(json.dumps([issue]))):
                 self.assertEqual(reconcile_apply.main(args), 1)
                 self.assertEqual(output.read_bytes(), b'old bytes\n')
@@ -1803,7 +1803,7 @@ class TestSafeRecovery(unittest.TestCase):
                     if isinstance(response, Exception):
                         raise response
                     return response
-                with mock.patch.object(triage, "default_gh_runner", return_value=runner):
+                with mock.patch.object(gh_transport, "default_gh_runner", return_value=runner):
                     self.assertEqual(reconcile_apply.main(["recover-linkage", "--repo", "o/r",
                         "--out", str(output), "--replace-ledger"]), 1)
                 self.assertEqual(output.read_bytes(), b'original')
@@ -1816,7 +1816,7 @@ class TestSafeRecovery(unittest.TestCase):
             report = Path(d) / "source.json"
             report.write_text(json.dumps({"findings": [finding]}))
             runner = mock.Mock(return_value=FakeCompleted(json.dumps([self.issue(finding)])))
-            with mock.patch.object(triage, "default_gh_runner", return_value=runner):
+            with mock.patch.object(gh_transport, "default_gh_runner", return_value=runner):
                 args = ["recover-linkage", "--repo", "o/r", "--out", str(output),
                         "--report", "source.json=" + str(report)]
                 self.assertEqual(reconcile_apply.main(args), 0)
@@ -1969,7 +1969,7 @@ class TestPendingComment(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             plan = Path(d) / "plan.json"
             plan.write_text(json.dumps([action]))
-            with mock.patch.object(triage, "default_gh_runner", return_value=runner):
+            with mock.patch.object(gh_transport, "default_gh_runner", return_value=runner):
                 args = ["apply", str(plan), "--no-dry-run", "--throttle", "0"]
                 self.assertEqual(reconcile_apply.main(args), 1)
                 self.assertEqual(reconcile_apply.main(args), 1)

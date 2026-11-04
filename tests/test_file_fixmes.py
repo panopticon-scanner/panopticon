@@ -166,7 +166,7 @@ def test_main_rejects_malformed_ledger_before_github_calls(tmp_path):
     with mock.patch.object(file_fixmes, "LEDGER", str(ledger)), \
             mock.patch.object(file_fixmes.file_issues.sys, "argv",
                               ["file_fixmes.py", "--doc", str(doc)]), \
-            mock.patch.object(file_fixmes.triage, "gh_env") as gh_env, \
+            mock.patch.object(file_fixmes.gh_transport, "gh_env") as gh_env, \
             mock.patch.object(file_fixmes, "create", return_value="url") as create:
         with pytest.raises(RuntimeError):
             file_fixmes.main()
@@ -184,7 +184,7 @@ def test_main_refuses_an_unparseable_doc_before_github_calls(tmp_path):
     with mock.patch.object(file_fixmes, "LEDGER", str(ledger)), \
             mock.patch.object(file_fixmes.file_issues.sys, "argv",
                               ["file_fixmes.py", "--doc", str(doc)]), \
-            mock.patch.object(file_fixmes.triage, "gh_env") as gh_env, \
+            mock.patch.object(file_fixmes.gh_transport, "gh_env") as gh_env, \
             mock.patch.object(file_fixmes, "create", return_value="url") as create:
         with pytest.raises(ValueError):
             file_fixmes.main()
@@ -207,7 +207,7 @@ def test_run_scoped_keys_resume_and_preserve_legacy_default(tmp_path):
         with mock.patch.object(file_fixmes, "LEDGER", str(ledger)), \
                 mock.patch.object(file_fixmes.file_issues.sys, "argv",
                                   ["file_fixmes.py", "--doc", str(doc), *flags]), \
-                mock.patch.object(file_fixmes.triage, "gh_env", return_value={}), \
+                mock.patch.object(file_fixmes.gh_transport, "gh_env", return_value={}), \
                 mock.patch.object(file_fixmes, "create", side_effect=file_once):
             file_fixmes.main()
 
@@ -226,7 +226,7 @@ def test_run_scoped_keys_resume_and_preserve_legacy_default(tmp_path):
     with mock.patch.object(file_fixmes, "LEDGER", str(ledger)), \
             mock.patch.object(file_fixmes, "DOC", str(doc)), \
             mock.patch.object(file_fixmes.file_issues.sys, "argv", ["file_fixmes.py"]), \
-            mock.patch.object(file_fixmes.triage, "gh_env", return_value={}), \
+            mock.patch.object(file_fixmes.gh_transport, "gh_env", return_value={}), \
             mock.patch.object(file_fixmes, "create", side_effect=file_once):
         file_fixmes.main()
     assert len(created) == 1

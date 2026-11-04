@@ -18,7 +18,7 @@ import re
 from typing import Any
 
 import file_issues
-import triage
+import gh_transport
 
 # Defaults describe run 2's FIXME doc. A later run passes its own --doc,
 # --doc-url, --run-label, and --run-date, so filing a new run's FIXMEs needs no
@@ -181,7 +181,7 @@ def main():
         "; %d already filed" % skipped if skipped and not a.dry_run else ""))
 
     created = 0
-    env = None if a.dry_run else triage.gh_env()  # read once per run, not per issue
+    env = None if a.dry_run else gh_transport.gh_env()  # read once per run, not per issue
     for f in todo:
         title = file_issues.defang("%s — %s" % (f["id"], f["title"]))
         body = body_for(f, doc=a.doc, doc_url=a.doc_url,

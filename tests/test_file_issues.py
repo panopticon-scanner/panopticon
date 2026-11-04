@@ -13,6 +13,7 @@ from unittest import mock
 import pytest
 
 import file_issues
+import gh_transport
 import triage
 
 
@@ -32,7 +33,7 @@ def _resolvable_gh():
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("#!/bin/sh\nexit 97\n")       # resolved, never run
     os.chmod(path, 0o755)
-    with mock.patch.object(triage, "TRUSTED_PATH", directory):
+    with mock.patch.object(gh_transport, "TRUSTED_PATH", directory):
         yield path
     shutil.rmtree(directory, ignore_errors=True)
 
@@ -128,7 +129,7 @@ def test_main_refuses_an_off_taxonomy_finding_before_filing_anything(
     monkeypatch.setattr(file_issues, "create",
                         lambda *a, **k: created.append(a) or "https://e.test/1")
     monkeypatch.setattr(file_issues, "record", lambda *a, **k: None)
-    monkeypatch.setattr(file_issues.triage, "gh_env", lambda *a, **k: {})
+    monkeypatch.setattr(file_issues.gh_transport, "gh_env", lambda *a, **k: {})
     monkeypatch.setattr(file_issues.sys, "argv", [
         "file_issues.py", "--report", str(report), "--throttle", "0"])
     with pytest.raises(ValueError, match="not_a_status"):
@@ -182,7 +183,7 @@ def _run_split_main(monkeypatch, report, *options, ledger=None):
             mock.patch.object(file_issues, "create", side_effect=lambda *args, **kwargs:
                               None if args[3] else "https://example.test/issue/1") as create, \
             mock.patch.object(file_issues, "record") as record, \
-            mock.patch.object(file_issues.triage, "gh_env", return_value={}) as gh_env:
+            mock.patch.object(file_issues.gh_transport, "gh_env", return_value={}) as gh_env:
         rc = file_issues.main()
     # `rc` is the process exit code (#2373): None on the success path, 2 when the
     # shared loader refuses the stored report's shape.
@@ -415,7 +416,7 @@ def test_main_validates_all_continuations_before_side_effects(
     with mock.patch.object(file_issues, "load_ledger") as load, \
             mock.patch.object(file_issues, "create") as create, \
             mock.patch.object(file_issues, "record") as record, \
-            mock.patch.object(file_issues.triage, "gh_env") as gh_env:
+            mock.patch.object(file_issues.gh_transport, "gh_env") as gh_env:
         # #2373: a continuation the loader refuses -- unconfined, or holding
         # something that is not a JSON object -- is now one printed reason and
         # exit 2 rather than a traceback. A pointer to a file that is not there
@@ -449,7 +450,7 @@ class TestGhBinIsTriagesResolution(unittest.TestCase):
             with open(fake, "w", encoding="utf-8") as fh:
                 fh.write("#!/bin/sh\nexit 98\n")
             os.chmod(fake, 0o755)
-            with mock.patch.object(triage, "TRUSTED_PATH", empty), \
+            with mock.patch.object(gh_transport, "TRUSTED_PATH", empty), \
                     mock.patch.dict(os.environ, {"PATH": ambient, "HOME": home}):
                 with self.assertRaises(RuntimeError):
                     file_issues._gh_bin()
@@ -825,7 +826,7 @@ def test_main_rejects_malformed_ledger_before_github_calls(tmp_path, monkeypatch
     ledger.write_text("[]", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     with mock.patch.object(file_issues.sys, "argv", ["file_issues.py", "--report", str(report)]), \
-            mock.patch.object(file_issues.triage, "gh_env") as gh_env, \
+            mock.patch.object(file_issues.gh_transport, "gh_env") as gh_env, \
             mock.patch.object(file_issues, "create", return_value="url") as create:
         with pytest.raises(RuntimeError):
             file_issues.main()
