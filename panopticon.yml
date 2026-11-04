@@ -565,6 +565,7 @@ groups:
       - tests/test_diff_map_fail_closed.py
       - tests/test_pr_worktree_integration.py
       - tests/test_plan_contract.py
+      - tests/test_panopticon_literal_ratchet.py
       - tests/test_tracked_paths.py
       - tests/test_matrix_coverage.py
       panels:
