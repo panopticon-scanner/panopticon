@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **A ratchet on the `.panopticon` literal (#3409).** `tests/test_panopticon_literal_ratchet.py`
+  pins, per `skill/scripts` file, how many string constants spell `.panopticon` (90 in 35 files on
+  main 72b0083f). A count may only go down, and a new file starts at 0. The sweep onto
+  `plan_contract.artifact_root` follows, directory by directory, lowering the pins as it goes.
+
 - **One home for the repo slug and the image names (#3407).** The GitHub repository is
   `gh_transport.REPO_SLUG`, read by `triage`, `file_issues`, `file_fixmes` and `reconcile_apply`
   (the report and doc URLs are built from it); `triage.REPO_SLUG` and `file_issues.REPO_SLUG` are
