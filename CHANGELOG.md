@@ -9,6 +9,10 @@
   unchanged. The flat-module pin for `discovery.py` rises once, 1926 -> 1956, for the four new
   definitions and their calls (coordinator ruling).
 
+- **`tool_capture._stream_and_write` is split along two seams (#3397).** The watchdog and container
+  kill moved unchanged into `_start_watchdog`, and the capped stdout spool into `_spool_under_cap`;
+  classification and persistence stay in `_stream_and_write`. Behaviour is unchanged.
+
 - **One owner for the Codex read-broker key (#3408).** `codex_read_tools.MCP_SERVER_KEY`
   now supplies the MCP config key, derived tool namespace, prompt prose and live surface probe;
   launch policy, shell emission and probe validation no longer spell independent copies.
