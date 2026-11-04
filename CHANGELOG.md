@@ -13,6 +13,10 @@
   operator messages, whose text is unchanged. The six `phases/` pins leave the ratchet. Behaviour
   is unchanged: no site gained `artifact_root`'s refusals.
 
+- **The `.panopticon` sweep, `synth/` (#3409).** The six default arguments in `synth/coverage_io`,
+  `synth/integrity` and `synth/plan` that spelled the artifact directory now read
+  `plan_contract.ARTIFACT_DIR`; their values are unchanged and the three pins leave the ratchet.
+
 - **One home for the repo slug and the image names (#3407).** The GitHub repository is
   `gh_transport.REPO_SLUG`, read by `triage`, `file_issues`, `file_fixmes` and `reconcile_apply`
   (the report and doc URLs are built from it); `triage.REPO_SLUG` and `file_issues.REPO_SLUG` are

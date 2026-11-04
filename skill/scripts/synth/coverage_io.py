@@ -24,6 +24,7 @@ import sys
 
 import scripts.coverage_model as coverage_model
 import scripts.findings_contract as findings_contract
+import scripts.plan_contract as plan_contract
 from . import artifacts as artifacts_mod
 from . import validate_schema as schema_mod
 
@@ -109,7 +110,7 @@ def normalized_cell(cell, path=None, warn=None):
     return out
 
 
-def load_coverage_files(panopticon_dir=".panopticon", *, skipped=None):
+def load_coverage_files(panopticon_dir=plan_contract.ARTIFACT_DIR, *, skipped=None):
     """Load every .panopticon/coverage-<group>.json cell-coverage artifact
     (phases.coverage.coverage_execute's output) for audit_floor_cells. Tolerant:
     unreadable/malformed/non-dict/group-less files are skipped, never raise -- these are
