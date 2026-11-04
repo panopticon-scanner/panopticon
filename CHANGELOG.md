@@ -42,6 +42,10 @@
   and `--help` text unchanged. `build_disclosure` (import-free by design) and `claim_scope` (a
   stdlib-only leaf) keep their literal under `STANDALONE`, pinned to agree with the constant.
 
+- **The `.panopticon` sweep, `tools/`, and its end (#3409).** `tools/dependency_check`'s walk-skip set
+  and `tools/legacy_sarif`'s semgrep exclude read `plan_contract.ARTIFACT_DIR`, with the same
+  values. The ratchet's `PENDING` map is now empty; `plan_contract`'s own four sit under `HOME`.
+
 - **One home for the repo slug and the image names (#3407).** The GitHub repository is
   `gh_transport.REPO_SLUG`, read by `triage`, `file_issues`, `file_fixmes` and `reconcile_apply`
   (the report and doc URLs are built from it); `triage.REPO_SLUG` and `file_issues.REPO_SLUG` are
