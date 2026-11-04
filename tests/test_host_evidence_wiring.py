@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from scripts import (collect_usage, driver, host_disclosure, host_probes,
+from scripts import (collect_usage, driver, host_disclosure, host_posture, host_probes,
                      hosts, run_manifest)
 import scripts.probes.claude as claude_probes
 import scripts.probes.common as probes_common
@@ -1688,7 +1688,7 @@ class TestTheOutputSchemaShapeSurvivesEveryReProbe(unittest.TestCase):
         self._record(d, hosts.SHAPE_REFUTED, "failed in 120 ms")
         seen = {}
         with mock.patch("scripts.host_probes.run_probes", return_value=self._artifact()), \
-                mock.patch.object(driver, "_disclose_posture",
+                mock.patch.object(host_posture, "_disclose_posture",
                                   side_effect=lambda rr, m, fresh, ns: seen.update(
                                       fresh[hosts.CLI_FLAGS][hosts.OUTPUT_SCHEMA])), \
                 contextlib.redirect_stderr(io.StringIO()):

@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import scripts.driver as driver
+import scripts.host_posture as host_posture
 import scripts.loop_setup as loop_setup
 from scripts import host_disclosure, host_probes, hosts
 
@@ -468,7 +468,8 @@ class TestTheUnselectableRefusalIsOneSentence(unittest.TestCase):
     # `test_both_entrypoints_call_it` over nothing.
     # ARC-4087467862: `driver loop`'s refusal is asked in `loop_setup.resolve`,
     # the setup moved out of `orchestrate.loop`.
-    _CALL_SITES = ((loop_setup, "resolve_mode"), (driver, "_establish_host_posture"))
+    _CALL_SITES = ((loop_setup, "resolve_mode"),
+                   (host_posture, "run_probes"))
 
     def _calls(self, module):
         with open(module.__file__, encoding="utf-8") as fh:
@@ -522,9 +523,7 @@ class TestTheUnselectableRefusalIsOneSentence(unittest.TestCase):
                 self.assertIn("unselectable_host_message", calls)
 
     def test_neither_entrypoint_still_spells_the_sentence_itself(self):
-        # The anti-drift half. `driver.py` legitimately carries the PARSER's
-        # different sentence ("registered but not driver-selectable"), so pin
-        # the clause only this one has.
+        # The anti-drift half: pin the clause only this refusal has.
         for module, _ in self._CALL_SITES:
             with self.subTest(module=module.__name__):
                 offenders = [s for s in self._string_constants(module)
