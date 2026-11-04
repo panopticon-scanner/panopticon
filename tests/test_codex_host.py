@@ -1,4 +1,5 @@
 """Policy/transport fixtures only: never run a host binary or open a socket."""
+import ast
 import copy
 import dataclasses
 import inspect
@@ -12,12 +13,74 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests._test_helpers import REPO_ROOT
 import scripts.codex_host as codex_host
+import scripts.probes.codex_surface as codex_surface
 
 
 MODEL = {"slug": "gpt-test", "base_instructions": "same model instructions",
          "apply_patch_tool_type": "freeform", "multi_agent_version": "v1",
          "tool_mode": "code_mode_only", "context_window": 123456}
+
+_MOVED_TO_CODEX_SURFACE = (
+    "_probe_script", "_events", "_launch_error", "_capture_requests",
+    "_surface_result", "inspect_surface",
+)
+
+
+class TestCodexSurfaceOwnership:
+    """#3403: the surface harness has one owner and no host shadow."""
+
+    def test_codex_host_does_not_reexport_a_moved_name(self):
+        assert not [name for name in _MOVED_TO_CODEX_SURFACE
+                    if hasattr(codex_host, name)]
+
+    def test_no_source_reaches_a_moved_name_through_codex_host(self):
+        root = Path(REPO_ROOT)
+        offenders = []
+        for surface in (root / "skill" / "scripts", root / "scripts", root / "tests"):
+            for path in sorted(surface.rglob("*.py")):
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+                aliases = {"scripts.codex_host"}
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        aliases.update(alias.asname or alias.name for alias in node.names
+                                       if alias.name == "scripts.codex_host")
+                    elif isinstance(node, ast.ImportFrom) and node.module == "scripts":
+                        aliases.update(alias.asname or alias.name for alias in node.names
+                                       if alias.name == "codex_host")
+
+                def through_host(node):
+                    return ast.unparse(node) in aliases
+
+                for node in ast.walk(tree):
+                    if (isinstance(node, ast.ImportFrom)
+                            and node.module == "scripts.codex_host"):
+                        for imported in node.names:
+                            if imported.name in _MOVED_TO_CODEX_SURFACE:
+                                offenders.append((path, node.lineno, imported.name))
+                    elif (isinstance(node, ast.Attribute)
+                          and node.attr in _MOVED_TO_CODEX_SURFACE
+                          and through_host(node.value)):
+                        offenders.append((path, node.lineno, ast.unparse(node)))
+                    elif (isinstance(node, ast.Call) and node.args
+                          and through_host(node.args[0])
+                          and any(isinstance(arg, ast.Constant)
+                                  and arg.value in _MOVED_TO_CODEX_SURFACE
+                                  for arg in node.args[1:])):
+                        offenders.append((path, node.lineno, ast.unparse(node)))
+                    elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                        for name in _MOVED_TO_CODEX_SURFACE:
+                            if ("scripts.codex_host.%s" % name in node.value
+                                    or "codex_host.%s" % name in node.value):
+                                offenders.append((path, node.lineno, node.value))
+        rendered = ["%s:%d: %s" % (path.relative_to(root), line, name)
+                    for path, line, name in offenders]
+        assert not rendered, (
+            "moved surface names must be imported/read/patched through "
+            "scripts.probes.codex_surface, the module that owns them:\n"
+            + "\n".join(rendered)
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -443,7 +506,7 @@ def _requests(extra_tool=None):
 
 
 def test_effective_surface_includes_deferred_and_direct_tools_and_preserves_mutation():
-    result = codex_host._surface_result(_requests("exec_command"))
+    result = codex_surface._surface_result(_requests("exec_command"))
     assert result["model"] == "gpt-test"
     assert "exec_command" in result["tools"]  # do not filter a refuting observation
     assert result["direct_tools"] == ["functions.exec", "functions.wait", "functions.request_user_input"]
@@ -453,19 +516,19 @@ def test_effective_surface_includes_deferred_and_direct_tools_and_preserves_muta
 def test_top_level_responses_tools_cannot_hide_from_effective_probe():
     requests = _requests()
     requests[0]["tools"] = [{"type": "web_search"}]
-    result = codex_host._surface_result(requests)
+    result = codex_surface._surface_result(requests)
     assert "unproven Responses top-level tool surface" in result["direct_tools"]
 
 
 @pytest.mark.parametrize("requests", [[], [{}], [{}, {}], [{}, {"input": []}]])
 def test_missing_effective_observation_is_not_inferred_from_config(requests):
     with pytest.raises(ValueError, match="effective"):
-        codex_host._surface_result(requests)
+        codex_surface._surface_result(requests)
 
 
 def test_probe_script_quotes_paths_as_data_and_rejects_an_incomplete_set():
     paths = ['inside"; text("not code")', "outside\\path\nline"]
-    script = codex_host._probe_script(paths, "file:///probe.mjs")
+    script = codex_surface._probe_script(paths, "file:///probe.mjs")
     assert json.dumps(paths) in script
     assert "ALL_TOOLS.map" in script
     # #1622: an omission proof has to inventory every host primitive, not
@@ -484,7 +547,7 @@ def test_probe_script_quotes_paths_as_data_and_rejects_an_incomplete_set():
     # out-of-scope refusal row unmeasured (#3271: a pair, no hard link).
     for incomplete in (["only-one"], [*paths, "a third"]):
         with pytest.raises(ValueError, match="pair"):
-            codex_host._probe_script(incomplete)
+            codex_surface._probe_script(incomplete)
 
 
 def test_inspection_uses_same_command_and_injected_transport_without_network(tmp_path, monkeypatch):
@@ -495,9 +558,9 @@ def test_inspection_uses_same_command_and_injected_transport_without_network(tmp
         captured.update(argv=argv, env=child_env, runner=runner, script=script)
         return copy.deepcopy(_requests())
 
-    monkeypatch.setattr(codex_host, "_capture_requests", fake_transport)
-    result = codex_host.inspect_surface(entry, env, root, root / "run", runner=_fake_catalog,
-                                         probe_paths=("inside", "outside"))
+    monkeypatch.setattr(codex_surface, "_capture_requests", fake_transport)
+    result = codex_surface.inspect_surface(entry, env, root, root / "run", runner=_fake_catalog,
+                                            probe_paths=("inside", "outside"))
     assert result["model"] == "gpt-test"
     assert captured["runner"] is _fake_catalog
     assert captured["env"] == env
@@ -537,9 +600,9 @@ def test_transport_is_local_only_and_closes_on_failure(tmp_path, monkeypatch):
         assert kwargs["timeout"] == codex_host.PROBE_TIMEOUT
         raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
 
-    monkeypatch.setattr(codex_host.http.server, "ThreadingHTTPServer", FakeServer)
+    monkeypatch.setattr(codex_surface.http.server, "ThreadingHTTPServer", FakeServer)
     with pytest.raises(subprocess.TimeoutExpired):
-        codex_host._capture_requests(argv, {}, fake, "safe script")
+        codex_surface._capture_requests(argv, {}, fake, "safe script")
     assert captured == {"shutdown": True, "closed": True}
 
 
@@ -577,9 +640,9 @@ def test_the_probe_launch_also_runs_in_the_registered_scratch(tmp_path, monkeypa
         seen.update(kwargs)
         raise subprocess.TimeoutExpired(launched, kwargs["timeout"])
 
-    monkeypatch.setattr(codex_host.http.server, "ThreadingHTTPServer", FakeServer)
+    monkeypatch.setattr(codex_surface.http.server, "ThreadingHTTPServer", FakeServer)
     with pytest.raises(subprocess.TimeoutExpired):
-        codex_host._capture_requests(argv, {}, fake, "safe script")
+        codex_surface._capture_requests(argv, {}, fake, "safe script")
     assert seen["cwd"] == argv[argv.index("--cd") + 1]
     assert not Path(seen["cwd"]).is_relative_to(root)
 
@@ -587,7 +650,7 @@ def test_the_probe_launch_also_runs_in_the_registered_scratch(tmp_path, monkeypa
 def test_launch_diagnostic_is_bounded_and_redacts_credentials():
     proc = SimpleNamespace(returncode=2, stderr="Unknown configuration key\nAuthorization: Bearer private-secret\n"
                            "api_key = 'private-secret'\nsk-123456789secret\n" + "x" * 4000)
-    detail = codex_host._launch_error(proc)
+    detail = codex_surface._launch_error(proc)
     assert "Unknown configuration key" in detail
     assert "exit 2" in detail
     assert "private-secret" not in detail

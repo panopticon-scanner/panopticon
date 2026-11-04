@@ -365,6 +365,10 @@ groups:
       - tests/test_driver_matrix.py
       - tests/test_driver_verify.py
       - tests/test_driver_tool_verify.py
+      # #3403: this cross-wiring test imports driver and host_posture; moving
+      # it from Hosts keeps the surface harness beside its direct tests while
+      # both leaves stay below the cap.
+      - tests/test_host_evidence_wiring.py
       - tests/driver_helpers.py
       panels:
       - ARC
@@ -496,7 +500,6 @@ groups:
       - tests/test_host_disclosure.py
       - tests/test_host_launch_guard.py
       - tests/test_host_posture_wiring.py
-      - tests/test_host_evidence_wiring.py
       - tests/test_codex_host.py
       - tests/test_codex_capture_protocol.py
       - tests/test_codex_read_tools.py
