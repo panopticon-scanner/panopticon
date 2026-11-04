@@ -7,6 +7,12 @@
   main 72b0083f). A count may only go down, and a new file starts at 0. The sweep onto
   `plan_contract.artifact_root` follows, directory by directory, lowering the pins as it goes.
 
+- **The `.panopticon` sweep, `phases/` (#3409).** The artifact directory's name is now
+  `plan_contract.ARTIFACT_DIR`, which `artifact_root` builds on. All 19 sites in `skill/scripts/phases/`
+  read it: the joins, the dir_fd-relative opens, the never-evidence set, the prefix check and four
+  operator messages, whose text is unchanged. The six `phases/` pins leave the ratchet. Behaviour
+  is unchanged: no site gained `artifact_root`'s refusals.
+
 - **One home for the repo slug and the image names (#3407).** The GitHub repository is
   `gh_transport.REPO_SLUG`, read by `triage`, `file_issues`, `file_fixmes` and `reconcile_apply`
   (the report and doc URLs are built from it); `triage.REPO_SLUG` and `file_issues.REPO_SLUG` are

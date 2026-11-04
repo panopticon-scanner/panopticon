@@ -48,6 +48,7 @@ import scripts.discovery as discovery
 import scripts.grouping_engine as grouping_engine
 import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
+import scripts.plan_contract as plan_contract
 import scripts.repo_config as repo_config
 import scripts.run_manifest as run_manifest
 import scripts.setup_preflight as setup_preflight
@@ -468,7 +469,7 @@ def _existing_run_row(review_root):
     matches the hash the run recorded, so the count could not be established.
     `detail` carries the refusal.
     """
-    runs = os.path.join(review_root, ".panopticon", "runs")
+    runs = os.path.join(review_root, plan_contract.ARTIFACT_DIR, "runs")
     try:
         tag = os.path.basename(os.readlink(os.path.join(runs, "latest")))
     except OSError:
@@ -479,7 +480,7 @@ def _existing_run_row(review_root):
         return {"tag": None, "status": "none", "pending": 0,
                 "detail": "none -- no previous run in this tree"}
     folder = os.path.join(runs, tag)
-    report = os.path.join(review_root, ".panopticon", "%s-report.json" % tag)
+    report = os.path.join(review_root, plan_contract.ARTIFACT_DIR, "%s-report.json" % tag)
     if os.path.isfile(report):
         return {"tag": tag, "status": "complete", "pending": 0,
                 "detail": "complete: %s (`--reset` starts a new run)" % report}
@@ -529,7 +530,7 @@ def _capabilities_row(review_root, tag):
     envelope = None
     if tag:
         envelope = runio._load_json(os.path.join(
-            review_root, ".panopticon", "runs", tag, runio.HOST_CAPABILITIES))
+            review_root, plan_contract.ARTIFACT_DIR, "runs", tag, runio.HOST_CAPABILITIES))
     caps = envelope.get("capabilities") if isinstance(envelope, dict) else None
     who = host_disclosure.host_of(envelope)      # str or None, as headline() reads it
     if not isinstance(caps, dict) or not who:

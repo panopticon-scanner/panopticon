@@ -20,6 +20,7 @@ import hashlib
 import json
 
 import scripts.grouping_engine as grouping_engine
+import scripts.plan_contract as plan_contract
 import scripts.run_manifest as run_manifest
 import scripts.safe_write as safe_write
 import scripts.tolerant_json as tolerant_json
@@ -109,8 +110,8 @@ def _limitations_clause(limitations, artifact=_FALLBACK_ARTIFACT):
     out = ["limitations:"]
     out.extend(_limitation_line(name, detail) for name, detail in shown)
     if len(rows) > len(shown):
-        out.append("  - and %d more -- full text in .panopticon/%s `limitations`"
-                   % (len(rows) - len(shown), artifact))
+        out.append("  - and %d more -- full text in %s/%s `limitations`"
+                   % (len(rows) - len(shown), plan_contract.ARTIFACT_DIR, artifact))
     return "\n".join(out)
 
 

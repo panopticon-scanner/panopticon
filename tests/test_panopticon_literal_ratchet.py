@@ -11,6 +11,8 @@ The sweep onto `artifact_root` lands directory by directory, each PR lowering
 the numbers below.
 """
 import ast
+import os
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -29,12 +31,6 @@ PENDING: dict[str, int] = {
     "guard_rules.py": 1,
     "ingest_tools.py": 2,
     "language_detection.py": 1,
-    "phases/evidence_scope.py": 1,
-    "phases/readiness.py": 3,
-    "phases/runio.py": 4,
-    "phases/setup.py": 1,
-    "phases/setup_readiness.py": 1,
-    "phases/validate.py": 9,
     "plan_contract.py": 4,
     "probes/common.py": 1,
     "read_guard_hook.py": 1,
@@ -80,6 +76,15 @@ def _census():
 
 
 class PanopticonLiteralRatchetTest(unittest.TestCase):
+    def test_the_artifact_dir_name_is_pinned(self):
+        # The sweep's sites read this instead of spelling it (#3409): its
+        # value is the one every swept path, name and message still has.
+        import scripts.plan_contract as plan_contract
+        self.assertEqual(plan_contract.ARTIFACT_DIR, ".panopticon")
+        with tempfile.TemporaryDirectory() as root:
+            self.assertEqual(plan_contract.artifact_root(root),
+                             os.path.join(os.path.abspath(root), ".panopticon"))
+
     def test_no_file_spells_the_literal_more_than_its_pin(self):
         grown = ["%s: %d (pinned at %d)" % (rel, n, PENDING.get(rel, 0))
                  for rel, n in sorted(_census().items()) if n > PENDING.get(rel, 0)]
