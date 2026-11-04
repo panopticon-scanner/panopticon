@@ -27,6 +27,7 @@ import scripts.synth.verdicts as verdicts_mod
 import scripts.synth.render as render_mod
 import scripts.synth.report as report_mod
 import scripts.evidence as evidence_mod
+import scripts.html_report as html_report_mod
 
 import pytest
 
@@ -534,6 +535,43 @@ class TestHtmlOut(unittest.TestCase):
                 rc = syn.main(["--compare", invalid, valid, "--html-out", out])
             self.assertNotEqual(rc, 0)
             self.assertIn("invalid JSON", captured.getvalue())
+
+    # #3398: `--compare` left main for `_compare`; these pin the two lines of
+    # it no other test reads -- the refusal without an output path, and B is
+    # rendered AGAINST A rather than alone.
+    def _compare_reports(self, d):
+        paths = []
+        for name, grade in (("a.json", "A"), ("b.json", "B")):
+            path = os.path.join(d, name)
+            with open(path, "w") as fh:
+                json.dump({"meta": {"target": name}, "summary": {"overall_grade": grade},
+                           "groups": [], "findings": []}, fh)
+            paths.append(path)
+        return paths
+
+    def test_compare_without_an_output_path_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            a, b = self._compare_reports(d)
+            with mock.patch("sys.stderr", new_callable=io.StringIO) as captured, \
+                    mock.patch.object(html_report_mod, "write_html") as write:
+                rc = syn.main(["--compare", a, b])
+            self.assertEqual(rc, 2)
+            self.assertEqual(captured.getvalue(),
+                             "ERROR: --compare requires --html-out or --out\n")
+            write.assert_not_called()
+
+    def test_compare_renders_b_with_a_as_the_baseline(self):
+        with tempfile.TemporaryDirectory() as d:
+            a, b = self._compare_reports(d)
+            out = os.path.join(d, "compare.html")
+            with mock.patch.object(html_report_mod, "write_html") as write, \
+                    contextlib.redirect_stdout(io.StringIO()) as printed:
+                rc = syn.main(["--compare", a, b, "--html-out", out])
+            self.assertEqual(rc, 0)
+            (report, path), kwargs = write.call_args
+            self.assertEqual((report["meta"]["target"], path), ("b.json", out))
+            self.assertEqual(kwargs["compare_report"]["meta"]["target"], "a.json")
+            self.assertEqual(printed.getvalue(), "Compare HTML: %s\n" % out)
 
     def test_derive_html_path_is_case_insensitive(self):
         self.assertEqual(render_mod._derive_html_path("report.json"), "report.json.html")
