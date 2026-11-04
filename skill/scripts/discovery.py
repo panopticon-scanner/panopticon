@@ -1601,9 +1601,8 @@ def main(argv=None):
         return 2
 
 
-def _repo_scan(argv=None):
-    """Resolve --repo-scan discovery/matrix targets to grouped file lists and
-    emit as JSON. The sole mode the 5.0 driver invokes."""
+def _repo_scan_args(argv):
+    """--repo-scan's parser and argument checks: (args, repo), or the exit code (#3395)."""
     ap = argparse.ArgumentParser(description="panopticon repo-scan discovery/matrix resolver",
                                  allow_abbrev=False)
     ap.add_argument("target", nargs="?", default=None,
@@ -1652,67 +1651,12 @@ def _repo_scan(argv=None):
         except ValueError as exc:
             print("panopticon: %s" % exc, file=sys.stderr)
             return 2
+    return args, repo
 
-    pruned_fixtures: list[str] = []
-    info: dict[str, Any] = {}
-    allf = discover_repo_files(repo,
-                               include_fixtures=(args.security == "redteam"),
-                               pruned_fixtures=pruned_fixtures,
-                               info=info)
-    # Task 4 (#1136): committed top-level `exclude_paths:` globs prune matching files
-    # BEFORE any grouping (build_result's default chunking, --scope-* narrowing, and
-    # catalog_groups/assign_by_catalog all consume `allf` from here on): a pruned file
-    # reaches NO group and no leftover; #1757/#3338 carve code-shaped files back for SEC.
-    try:
-        committed_doc = _committed_document(repo)
-        exclude_globs = _committed_exclude_paths(repo, committed_doc)
-    except ValueError as exc:
-        # The matrix read's refusal below, and this reader runs first: since
-        # #2229 a document nothing could read -- or a pruning policy the schema
-        # rejects -- is an error on EVERY reader, so the scan exits here.
-        print("panopticon: %s" % exc, file=sys.stderr)
-        return 1
-    _exclude_re = [_glob_to_re(g) for g in exclude_globs]
 
-    def _apply_exclude(fs):
-        """Split ``fs`` into (kept, pruned, carved) by the committed
-        `exclude_paths:` globs -- `exclude_carve_out.split` owns the policy,
-        including the #1757 SEC carve-out; identity when none are committed."""
-        return exclude_carve_out.split(fs, _exclude_re)
-
-    allf, excluded_files, carved_files = _apply_exclude(allf)
-    impl, tests = partition_test_files(allf)
-    # Group impl AND real test sources so tests aren't silently dropped (only
-    # their __pycache__ artifacts used to reach a group); counts stay impl-only.
-    result = build_result(repo, "repo", ".", None, impl, tests, args.max_per_group,
-                          group_files=impl + tests, security_mode=args.security)
-    result["discovery"] = _discovery_block(info)
-    try:
-        committed_groups = _committed_groups(repo, committed_doc)
-        catalog = _matrix_catalog(repo, committed_groups)  # SEC-3: validated matrix read
-        # Same #2229 guard: a reader that rejects this document must stop the scan.
-        declares = _declares_groups(repo, committed_groups)
-    except ValueError as exc:
-        print("panopticon: %s" % exc, file=sys.stderr)
-        return 1
-    # #run8 COD-B1A: a committed root config that DECLARES groups but whose entries
-    # all fail schema validation leaves `catalog` with no match-bearing group, and the
-    # guard below (`if any(g.get("match") ...)`) would then silently fall back to
-    # whole-repo default chunking -- corrupt and absent configs treated alike. Fail
-    # loud instead: an authored-but-unusable catalog is an error, not a request for the
-    # default. (One bad group among good ones still degrades gracefully -- its files
-    # fall to ._N, disclosed via ungrouped_files -- because a match-bearing one lives.)
-    if declares and not any(g.get("match") for g in catalog.values()):
-        print("panopticon: %s declares groups but none survived schema validation "
-              "(see the 'committed %s:' errors above); refusing to silently fall "
-              "back to whole-repo default chunking. Fix the entries or remove the "
-              "file." % (repo_config.CONFIG_NAMES[0], repo_config.CONFIG_NAMES[0]),
-              file=sys.stderr)
-        return 1
-    # P6.2: --scope-file/--scope-dir/--scope-group narrow the discovered
-    # universe to a target BEFORE the same matrix assignment below runs --
-    # a scope filter, not a new mode. No scope arg -> scoped stays None ->
-    # allf/impl/tests/result are untouched (byte-identical no-scope path).
+def _resolve_scope(args, repo, allf, catalog, info, pruned_fixtures, excluded_files,
+                   carved_files, _apply_exclude):
+    """The five --scope-* resolvers: (scoped, excluded, carved, delta), or the exit code (#3395)."""
     scoped = None
     _delta = None
     if args.scope_group:
@@ -1814,6 +1758,139 @@ def _repo_scan(argv=None):
             if res is None:
                 return 2
             _delta = res
+    return scoped, excluded_files, carved_files, _delta
+
+
+def _group_by_catalog(result, allf, catalog, args, carved_files):
+    """The committed matrix's groups, then the #1757 SEC carve-out, into `result` (#3395)."""
+    if any(g.get("match") for g in catalog.values()):
+        scoped_warnings: list[str] = []
+        groups, leftovers = catalog_groups(allf, catalog, args.max_per_group,
+                                           args.security, warnings=scoped_warnings)
+        if scoped_warnings:
+            # stderr is captured by the driver's child runner; the resolved
+            # output is what it reads, so the "your tests: glob credited
+            # nothing" signal travels there too.
+            result["scoped_tests_warnings"] = scoped_warnings
+        result["groups"] = groups
+        result["counts"]["groups"] = len(groups)
+        result["counts"]["ungrouped"] = len(leftovers)
+        result["ungrouped_files"] = leftovers
+        if leftovers:
+            print("catalog coverage: %d file(s) matched no group's `match` "
+                  "patterns and fell back to %s_N chunks — see "
+                  "ungrouped_files; extend %s to cover them: %s"
+                  % (len(leftovers), UNGROUPED_SINK, repo_config.CONFIG_NAMES[0],
+                     ", ".join(leftovers[:10])
+                     + (" …" if len(leftovers) > 10 else "")),
+                  file=sys.stderr)
+    # #1757 (AGT-1355709320), owner ruling 2026-09-25: a target's `exclude_paths:`
+    # may not take code-shaped files out of the SEC domain, so the carved files
+    # get one SEC-only group here instead of reaching no reviewer at all (#3338).
+    # After BOTH grouping paths, and never back into `allf`: the other domains
+    # keep honouring the exclusion. The sink name is reserved (`groups_schema`),
+    # so a committed group cannot already own it -- the matrix read refused above.
+    # `carved_files` is whatever the run's own scope left: the two delta flags
+    # re-derive it with the exclusion, and each narrowing flag narrows it above.
+    exclude_carve_out.install(result, carved_files, args.max_per_group, chunk_files)
+
+
+def _write_result(result, args):
+    """`result` as JSON to --out (atomically) or stdout (#3395)."""
+    if "schema_version" not in result:
+        result["schema_version"] = 1
+
+    if args.out:
+        out_dir = os.path.dirname(os.path.abspath(args.out)) or "."
+        os.makedirs(out_dir, exist_ok=True)
+        tmp = os.path.join(out_dir, ".discovery-%s.tmp" % uuid.uuid4().hex)
+        try:
+            with safe_write.open_w_nofollow(tmp) as fh:   # #1735, as above
+                emit(result, fh)
+            os.replace(tmp, args.out)
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+    else:
+        emit(result)
+
+
+def _repo_scan(argv=None):
+    """Resolve --repo-scan discovery/matrix targets to grouped file lists and
+    emit as JSON. The sole mode the 5.0 driver invokes."""
+    parsed = _repo_scan_args(argv)
+    if isinstance(parsed, int):
+        return parsed
+    args, repo = parsed
+
+    pruned_fixtures: list[str] = []
+    info: dict[str, Any] = {}
+    allf = discover_repo_files(repo,
+                               include_fixtures=(args.security == "redteam"),
+                               pruned_fixtures=pruned_fixtures,
+                               info=info)
+    # Task 4 (#1136): committed top-level `exclude_paths:` globs prune matching files
+    # BEFORE any grouping (build_result's default chunking, --scope-* narrowing, and
+    # catalog_groups/assign_by_catalog all consume `allf` from here on): a pruned file
+    # reaches NO group and no leftover; #1757/#3338 carve code-shaped files back for SEC.
+    try:
+        committed_doc = _committed_document(repo)
+        exclude_globs = _committed_exclude_paths(repo, committed_doc)
+    except ValueError as exc:
+        # The matrix read's refusal below, and this reader runs first: since
+        # #2229 a document nothing could read -- or a pruning policy the schema
+        # rejects -- is an error on EVERY reader, so the scan exits here.
+        print("panopticon: %s" % exc, file=sys.stderr)
+        return 1
+    _exclude_re = [_glob_to_re(g) for g in exclude_globs]
+
+    def _apply_exclude(fs):
+        """Split ``fs`` into (kept, pruned, carved) by the committed
+        `exclude_paths:` globs -- `exclude_carve_out.split` owns the policy,
+        including the #1757 SEC carve-out; identity when none are committed."""
+        return exclude_carve_out.split(fs, _exclude_re)
+
+    allf, excluded_files, carved_files = _apply_exclude(allf)
+    impl, tests = partition_test_files(allf)
+    # Group impl AND real test sources so tests aren't silently dropped (only
+    # their __pycache__ artifacts used to reach a group); counts stay impl-only.
+    result = build_result(repo, "repo", ".", None, impl, tests, args.max_per_group,
+                          group_files=impl + tests, security_mode=args.security)
+    result["discovery"] = _discovery_block(info)
+    try:
+        committed_groups = _committed_groups(repo, committed_doc)
+        catalog = _matrix_catalog(repo, committed_groups)  # SEC-3: validated matrix read
+        # Same #2229 guard: a reader that rejects this document must stop the scan.
+        declares = _declares_groups(repo, committed_groups)
+    except ValueError as exc:
+        print("panopticon: %s" % exc, file=sys.stderr)
+        return 1
+    # #run8 COD-B1A: a committed root config that DECLARES groups but whose entries
+    # all fail schema validation leaves `catalog` with no match-bearing group, and the
+    # guard below (`if any(g.get("match") ...)`) would then silently fall back to
+    # whole-repo default chunking -- corrupt and absent configs treated alike. Fail
+    # loud instead: an authored-but-unusable catalog is an error, not a request for the
+    # default. (One bad group among good ones still degrades gracefully -- its files
+    # fall to ._N, disclosed via ungrouped_files -- because a match-bearing one lives.)
+    if declares and not any(g.get("match") for g in catalog.values()):
+        print("panopticon: %s declares groups but none survived schema validation "
+              "(see the 'committed %s:' errors above); refusing to silently fall "
+              "back to whole-repo default chunking. Fix the entries or remove the "
+              "file." % (repo_config.CONFIG_NAMES[0], repo_config.CONFIG_NAMES[0]),
+              file=sys.stderr)
+        return 1
+    # P6.2: --scope-file/--scope-dir/--scope-group narrow the discovered
+    # universe to a target BEFORE the same matrix assignment below runs --
+    # a scope filter, not a new mode. No scope arg -> scoped stays None ->
+    # allf/impl/tests/result are untouched (byte-identical no-scope path).
+    resolved = _resolve_scope(args, repo, allf, catalog, info, pruned_fixtures,
+                              excluded_files, carved_files, _apply_exclude)
+    if isinstance(resolved, int):
+        return resolved
+    scoped, excluded_files, carved_files, _delta = resolved
     if scoped is not None:
         allf = scoped
         impl, tests = partition_test_files(allf)
@@ -1848,36 +1925,7 @@ def _repo_scan(argv=None):
         _stale_hunks = _hunks_path_for(args.out, repo)
         if os.path.isfile(_stale_hunks):
             os.remove(_stale_hunks)
-    if any(g.get("match") for g in catalog.values()):
-        scoped_warnings: list[str] = []
-        groups, leftovers = catalog_groups(allf, catalog, args.max_per_group,
-                                           args.security, warnings=scoped_warnings)
-        if scoped_warnings:
-            # stderr is captured by the driver's child runner; the resolved
-            # output is what it reads, so the "your tests: glob credited
-            # nothing" signal travels there too.
-            result["scoped_tests_warnings"] = scoped_warnings
-        result["groups"] = groups
-        result["counts"]["groups"] = len(groups)
-        result["counts"]["ungrouped"] = len(leftovers)
-        result["ungrouped_files"] = leftovers
-        if leftovers:
-            print("catalog coverage: %d file(s) matched no group's `match` "
-                  "patterns and fell back to %s_N chunks — see "
-                  "ungrouped_files; extend %s to cover them: %s"
-                  % (len(leftovers), UNGROUPED_SINK, repo_config.CONFIG_NAMES[0],
-                     ", ".join(leftovers[:10])
-                     + (" …" if len(leftovers) > 10 else "")),
-                  file=sys.stderr)
-    # #1757 (AGT-1355709320), owner ruling 2026-09-25: a target's `exclude_paths:`
-    # may not take code-shaped files out of the SEC domain, so the carved files
-    # get one SEC-only group here instead of reaching no reviewer at all (#3338).
-    # After BOTH grouping paths, and never back into `allf`: the other domains
-    # keep honouring the exclusion. The sink name is reserved (`groups_schema`),
-    # so a committed group cannot already own it -- the matrix read refused above.
-    # `carved_files` is whatever the run's own scope left: the two delta flags
-    # re-derive it with the exclusion, and each narrowing flag narrows it above.
-    exclude_carve_out.install(result, carved_files, args.max_per_group, chunk_files)
+    _group_by_catalog(result, allf, catalog, args, carved_files)
     if pruned_fixtures:
         result["excluded"] = {"fixture_dirs": sorted(pruned_fixtures)}
         print("fixture exclusion (%s mode): pruned %d fixture corpus dir(s): %s "
@@ -1900,25 +1948,7 @@ def _repo_scan(argv=None):
               % (len(excluded_files), ", ".join(exclude_globs), len(carved_files)),
               file=sys.stderr)
 
-    if "schema_version" not in result:
-        result["schema_version"] = 1
-
-    if args.out:
-        out_dir = os.path.dirname(os.path.abspath(args.out)) or "."
-        os.makedirs(out_dir, exist_ok=True)
-        tmp = os.path.join(out_dir, ".discovery-%s.tmp" % uuid.uuid4().hex)
-        try:
-            with safe_write.open_w_nofollow(tmp) as fh:   # #1735, as above
-                emit(result, fh)
-            os.replace(tmp, args.out)
-        finally:
-            if os.path.exists(tmp):
-                try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
-    else:
-        emit(result)
+    _write_result(result, args)
     return 0
 
 

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **`discovery._repo_scan` is split along its seams (#3395).** The parser and argument checks moved
+  unchanged into `_repo_scan_args`, the five `--scope-*` resolvers into one dispatcher
+  `_resolve_scope`, the catalog grouping into `_group_by_catalog` and the JSON emit into
+  `_write_result`; `_repo_scan` is 132 lines, down from 319. `--help`, exit codes and stderr are
+  unchanged. The flat-module pin for `discovery.py` rises once, 1926 -> 1956, for the four new
+  definitions and their calls (coordinator ruling).
+
 - **`synthesize.main` is split along two seams (#3398).** `--compare` moved unchanged into its own
   `_compare(args)`, and the inline host-capabilities loader moved unchanged into
   `synth/plan.load_host_capabilities(run_dir)`. `main` is 291 lines, down from 326. `--help`, exit
