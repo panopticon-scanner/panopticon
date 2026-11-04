@@ -130,7 +130,7 @@ class TestBundlerAuditAdapter(unittest.TestCase):
             )
             return fake_run
 
-        with mock.patch("scripts.tools.base.subprocess.Popen",
+        with mock.patch("scripts.tools.exec.subprocess.Popen",
                         side_effect=record_and_return) as popen_mock:
             stdout, rc = ba.BundlerAuditAdapter().invoke("/tmp/fake")
         self.assertEqual(rc, 0)

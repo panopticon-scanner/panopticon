@@ -246,7 +246,7 @@ class TestBrakemanAdapter(unittest.TestCase):
                               "yaml": yaml, "policy": policy})
                 return FakePopen(stdout=b"{}", stderr=b"", returncode=0)
 
-            with mock.patch("scripts.tools.base.subprocess.Popen", side_effect=record):
+            with mock.patch("scripts.tools.exec.subprocess.Popen", side_effect=record):
                 stdout, rc = adapter.invoke(target)
         self.assertEqual(rc, 0)
         self.assertEqual(stdout, b"{}")
@@ -276,7 +276,7 @@ class TestBrakemanAdapter(unittest.TestCase):
             observed["entries"] = sorted(os.listdir(kwargs["cwd"]))
             raise OSError("cannot launch")
 
-        with mock.patch("scripts.tools.base.subprocess.Popen", side_effect=fail):
+        with mock.patch("scripts.tools.exec.subprocess.Popen", side_effect=fail):
             with self.assertRaisesRegex(OSError, "cannot launch"):
                 br.BrakemanAdapter().invoke("/tmp/fake")
         self.assertEqual(observed["entries"], ["brakeman.ignore", "brakeman.yml"])
@@ -286,14 +286,14 @@ class TestBrakemanAdapter(unittest.TestCase):
         adapter = br.BrakemanAdapter()
         for rc_in in (2, 3):
             fake_run = FakePopen(stdout=b"{}", stderr=b"", returncode=rc_in)
-            with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake_run):
+            with mock.patch("scripts.tools.exec.subprocess.Popen", return_value=fake_run):
                 stdout, rc = adapter.invoke("/tmp/fake")
             self.assertEqual(rc, 0, f"rc={rc_in} should be remapped to 0")
 
     def test_invoke_leaves_rc_4_as_failure(self):
         adapter = br.BrakemanAdapter()
         fake_run = FakePopen(stdout=b"{}", stderr=b"", returncode=4)
-        with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake_run):
+        with mock.patch("scripts.tools.exec.subprocess.Popen", return_value=fake_run):
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(rc, 4)
 

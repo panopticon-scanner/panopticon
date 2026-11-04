@@ -47,7 +47,7 @@ import threading
 from scripts import redact
 from scripts import safe_write
 from scripts.tolerant_json import depth_checked
-from scripts.tools.base import drain_stderr_async
+from scripts.tools.exec import drain_stderr_async
 
 # Max seconds to let a single docker-run tool invocation run before it's killed;
 # prevents a hung tool from blocking the whole batch (CD-007).
@@ -286,7 +286,7 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
     # first deadlocks against any scanner that fills its 64KB stderr pipe before
     # emitting stdout -- the parent waits on stdout the blocked child cannot
     # write, and only the watchdog breaks it, costing the whole scan timeout and
-    # that tool's coverage. Shared with tools/base.run_tool, which already had it.
+    # that tool's coverage. Shared with tools/exec.run_tool, which already had it.
     join_stderr = drain_stderr_async(proc)
     try:
         with tempfile.SpooledTemporaryFile(max_size=1024 * 1024) as spool:

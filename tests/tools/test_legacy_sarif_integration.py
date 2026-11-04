@@ -153,7 +153,7 @@ class TestSemgrepScannedFilesFromTheRealArgv(_LiveTool):
     binary = "semgrep"
 
     def _annotated(self, files):
-        from scripts.tools.base import run_tool
+        from scripts.tools.exec import run_tool
         from scripts.tools.legacy_sarif import TOOL_CMD, TOOL_TIMEOUT
         from scripts import tool_capture
         with tempfile.TemporaryDirectory() as root:

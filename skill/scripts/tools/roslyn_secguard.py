@@ -8,7 +8,8 @@ import stat
 import sys
 import tempfile
 from .base import (OutputCapExceeded, as_list, make_finding, omit_none,
-                   parse_json_bytes, read_capped_report, run_tool, scratch_cwd)
+                   parse_json_bytes, scratch_cwd)
+from .exec import read_capped_report, run_tool
 from .sarif_utils import CaptureCoverage, LEVEL_TO_SEV
 
 

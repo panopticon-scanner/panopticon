@@ -9,6 +9,7 @@ from unittest import mock
 
 from tests._test_helpers import REPO_ROOT, FakePopen, first, only
 import scripts.tools.base as tools_base
+import scripts.tools.exec as tools_exec
 import scripts.tools.roslyn_secguard as rs
 
 # Re-keyed from SCS0026 to SCS0029 (#2325, COD-1750030735): SCS0026 is LDAP
@@ -308,7 +309,7 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
             return FakePopen(stdout=b"", stderr=b"", returncode=0)
 
         with mock.patch.object(rs, "_safe_copytree", side_effect=fake_safe_copytree), \
-             mock.patch.object(tools_base.subprocess, "Popen", side_effect=fake_popen):
+             mock.patch.object(tools_exec.subprocess, "Popen", side_effect=fake_popen):
             with tempfile.TemporaryDirectory() as d:
                 open(os.path.join(d, "x.csproj"), "w").close()
                 raw, rc = adapter.invoke(d)
@@ -335,7 +336,7 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
             return FakePopen(stdout=b"", stderr=b"", returncode=0)
 
         with mock.patch.object(rs, "_safe_copytree", return_value=0), \
-             mock.patch.object(tools_base.subprocess, "Popen", side_effect=fake_popen), \
+             mock.patch.object(tools_exec.subprocess, "Popen", side_effect=fake_popen), \
              mock.patch("scripts.tools.roslyn_secguard.os.path.exists", return_value=True), \
              mock.patch("scripts.tools.roslyn_secguard.read_capped_report", return_value=None), \
              contextlib.redirect_stderr(io.StringIO()):
@@ -355,7 +356,7 @@ class TestRoslynSecGuardAdapter(unittest.TestCase):
             return FakePopen(stdout=b"", stderr=b"", returncode=0)   # ok rc, no sarif
 
         with mock.patch.object(rs, "_safe_copytree", return_value=0), \
-             mock.patch.object(tools_base.subprocess, "Popen", side_effect=fake_popen), \
+             mock.patch.object(tools_exec.subprocess, "Popen", side_effect=fake_popen), \
              contextlib.redirect_stderr(io.StringIO()):
             with tempfile.TemporaryDirectory() as d:
                 open(os.path.join(d, "x.csproj"), "w").close()

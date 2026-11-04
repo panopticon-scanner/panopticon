@@ -9,8 +9,8 @@ from scripts import semgrep_targets
 from scripts.inert import surrogate_free
 from scripts.tolerant_json import depth_checked
 from . import sarif_utils as su
-from .base import (REDTEAM, STANDARD, inert_text, ingest_policy_cv, run_tool,
-                   scratch_cwd)
+from .base import REDTEAM, STANDARD, inert_text, ingest_policy_cv, scratch_cwd
+from .exec import run_tool
 
 
 # Tools that produce SARIF output and are dispatched through this adapter.

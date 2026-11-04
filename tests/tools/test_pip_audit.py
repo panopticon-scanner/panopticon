@@ -402,7 +402,7 @@ class TestPipAuditAdapter(unittest.TestCase):
         with open(os.path.join(target, "requirements.txt"), "w", encoding="utf-8") as fh:
             fh.write("ok==1\n")
         fake_run = FakePopen(stdout=b"[]", stderr=b"", returncode=0)
-        with mock.patch("scripts.tools.base.subprocess.Popen",
+        with mock.patch("scripts.tools.exec.subprocess.Popen",
                         return_value=fake_run) as popen_mock:
             stdout, rc = pa.PipAuditAdapter().invoke(target)
         self.assertEqual(stdout, b"[]")
@@ -416,7 +416,7 @@ class TestPipAuditAdapter(unittest.TestCase):
     def test_invoke_falls_back_to_pyproject_toml(self):
         adapter = pa.PipAuditAdapter()
         fake_run = FakePopen(stdout=b"[]", stderr=b"", returncode=0)
-        with mock.patch("scripts.tools.base.subprocess.Popen",
+        with mock.patch("scripts.tools.exec.subprocess.Popen",
                         return_value=fake_run) as popen_mock:
             with mock.patch("scripts.tools.pip_audit.glob.glob", return_value=[]):
                 with mock.patch("scripts.tools.pip_audit._deps_from_pyproject",
@@ -491,7 +491,7 @@ class TestStaticPyproject(unittest.TestCase):
         fake_run = FakePopen(stdout=b"audit output", stderr=b"pip-audit failed",
                              returncode=2)
         buf = io.StringIO()
-        with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake_run), \
+        with mock.patch("scripts.tools.exec.subprocess.Popen", return_value=fake_run), \
              contextlib.redirect_stderr(buf):
             stdout, rc = adapter.invoke(target)
         self.assertEqual(stdout, b"audit output")

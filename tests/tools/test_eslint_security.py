@@ -287,7 +287,7 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         # #run7: eslint 10 loads plugins via a flat config, not `--plugin`.
         adapter = es.EslintSecurityAdapter()
         fake_run = FakePopen(stdout=b"[]", stderr=b"", returncode=0)
-        with mock.patch("scripts.tools.base.subprocess.Popen",
+        with mock.patch("scripts.tools.exec.subprocess.Popen",
                         return_value=fake_run) as popen_mock, \
              mock.patch.object(es.EslintSecurityAdapter, "_lintable_sources",
                                return_value=["x.js"]):
@@ -309,7 +309,7 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         fake_run = FakePopen(stdout=b"[]", stderr=b"eslint config error",
                              returncode=2)
         buf = io.StringIO()
-        with mock.patch("scripts.tools.base.subprocess.Popen",
+        with mock.patch("scripts.tools.exec.subprocess.Popen",
                         return_value=fake_run), \
              mock.patch.object(es.EslintSecurityAdapter, "_lintable_sources",
                                return_value=["x.js"]), \
@@ -381,7 +381,7 @@ class TestEslintSecurityAdapter(unittest.TestCase):
             seen["cfg"] = cmd[cmd.index("--config") + 1]
             return FakePopen(stdout=b"[]", stderr=b"", returncode=0)
 
-        with mock.patch("scripts.tools.base.subprocess.Popen", side_effect=_record), \
+        with mock.patch("scripts.tools.exec.subprocess.Popen", side_effect=_record), \
              mock.patch.object(es.EslintSecurityAdapter, "_lintable_sources",
                                return_value=["x.js"]):
             adapter.invoke("relative/target")
@@ -453,7 +453,7 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         # is the target itself (#1877 round 2).
         adapter = es.EslintSecurityAdapter()
         fake_run = FakePopen(stdout=b"[]", stderr=b"", returncode=0)
-        with mock.patch("scripts.tools.base.subprocess.Popen",
+        with mock.patch("scripts.tools.exec.subprocess.Popen",
                         return_value=fake_run) as popen_mock, \
              mock.patch.object(es.EslintSecurityAdapter, "_lintable_sources",
                                return_value=["x.js"]):
@@ -467,7 +467,7 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             open(os.path.join(d, "package.json"), "w").close()
             fake_run = mock.Mock()
-            with mock.patch("scripts.tools.base.subprocess.Popen", fake_run):
+            with mock.patch("scripts.tools.exec.subprocess.Popen", fake_run):
                 stdout, rc = es.EslintSecurityAdapter().invoke(d)
         self.assertEqual((stdout, rc), (b"[]", 0))
         fake_run.assert_not_called()   # eslint never invoked -> ran-clean empty
@@ -479,7 +479,7 @@ class TestEslintSecurityAdapter(unittest.TestCase):
             open(os.path.join(nm, "index.js"), "w").close()
             open(os.path.join(d, "package.json"), "w").close()
             fake_run = mock.Mock()
-            with mock.patch("scripts.tools.base.subprocess.Popen", fake_run):
+            with mock.patch("scripts.tools.exec.subprocess.Popen", fake_run):
                 stdout, rc = es.EslintSecurityAdapter().invoke(d)
         self.assertEqual((stdout, rc), (b"[]", 0))
         fake_run.assert_not_called()
@@ -488,7 +488,7 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             open(os.path.join(d, "app.js"), "w").close()
             fake_run = FakePopen(stdout=b"[]", stderr=b"", returncode=0)
-            with mock.patch("scripts.tools.base.subprocess.Popen",
+            with mock.patch("scripts.tools.exec.subprocess.Popen",
                             return_value=fake_run) as popen_mock:
                 es.EslintSecurityAdapter().invoke(d)
         popen_mock.assert_called_once()   # source present -> eslint really runs

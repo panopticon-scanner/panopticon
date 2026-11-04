@@ -3,8 +3,9 @@ from __future__ import annotations
 import math
 import os
 from .base import (cve_ids, cvss_bucket, has_any_file, make_finding,
-                   omit_none, parse_json_bytes, run_tool, scratch_cwd,
+                   omit_none, parse_json_bytes, scratch_cwd,
                    _cvss_v3_score)
+from .exec import run_tool
 from .sarif_utils import CaptureCoverage, _norm_uri
 
 

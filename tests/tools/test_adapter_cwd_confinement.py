@@ -40,7 +40,7 @@ moment of launch.
 No adapter here bypasses `run_tool` for its scanner subprocess (verified by
 inspection: the only other `subprocess.*` use under skill/scripts/tools/ is
 egress.py's proxy sidecar, which is not part of any adapter's `invoke`), so
-patching `scripts.tools.base.subprocess.Popen` -- `run_tool`'s one call site
+patching `scripts.tools.exec.subprocess.Popen` -- `run_tool`'s one call site
 -- is sufficient to observe every adapter's launch.
 """
 import json
@@ -199,7 +199,7 @@ def _record_popen_calls(name, adapter, target):
     stdout = (json.dumps([{"filePath": os.path.join(target, "index.js"),
                           "messages": []}]).encode()
               if name == "eslint-security" else b"")
-    with mock.patch("scripts.tools.base.subprocess.Popen",
+    with mock.patch("scripts.tools.exec.subprocess.Popen",
                     side_effect=scratch_cwd_recorder(calls, stdout=stdout)):
         adapter.invoke(target)
     return calls

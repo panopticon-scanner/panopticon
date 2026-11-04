@@ -232,6 +232,7 @@ groups:
       match:
       - skill/scripts/inert.py
       - skill/scripts/tools/base.py
+      - skill/scripts/tools/exec.py
       - skill/scripts/tools/sarif_utils.py
       - skill/scripts/tools/legacy_sarif.py
       - skill/scripts/tools/egress.py

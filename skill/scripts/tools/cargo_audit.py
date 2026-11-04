@@ -2,8 +2,9 @@
 from __future__ import annotations
 import os
 from .base import (as_list, cve_ids, cvss_bucket, make_finding, normalize_severity,
-                   omit_none, parse_json_bytes, run_tool, scratch_cwd,
+                   omit_none, parse_json_bytes, scratch_cwd,
                    _cvss_v3_score)
+from .exec import run_tool
 
 
 class CargoAuditAdapter:

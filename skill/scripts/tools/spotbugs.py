@@ -5,8 +5,9 @@ import sys
 
 from scripts.claim_scope import confined_to_root
 
-from .base import (as_list, make_finding, omit_none, run_tool, scratch_cwd,
+from .base import (as_list, make_finding, omit_none, scratch_cwd,
                    target_root_cv)
+from .exec import run_tool
 
 # The two vendor versions `_SPOTBUGS_CWE` below was generated from -- a
 # version bump that regenerates the table without updating these, or updates

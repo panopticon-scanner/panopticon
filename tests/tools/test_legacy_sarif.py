@@ -60,7 +60,7 @@ class TestLegacySarifAdapter(unittest.TestCase):
         adapter = legacy.LegacySarifAdapter("bandit")
         mock_stdout = json.dumps(SARIF).encode("utf-8")
         calls = []
-        with mock.patch("scripts.tools.base.subprocess.Popen",
+        with mock.patch("scripts.tools.exec.subprocess.Popen",
                         side_effect=scratch_cwd_recorder(
                             calls, stdout=mock_stdout, returncode=1)):
             stdout, rc = adapter.invoke("/some/target")
@@ -75,7 +75,7 @@ class TestLegacySarifAdapter(unittest.TestCase):
 
     def test_invoke_runs_gosec_in_target_directory(self):
         adapter = legacy.LegacySarifAdapter("gosec")
-        with mock.patch("scripts.tools.base.subprocess.Popen") as popen_mock:
+        with mock.patch("scripts.tools.exec.subprocess.Popen") as popen_mock:
             popen_mock.return_value = FakePopen(
                 stdout=b"{}", stderr=b"", returncode=0)
             adapter.invoke("/go/project")
@@ -219,7 +219,7 @@ class TestGitleaksSuppressionPosture(unittest.TestCase):
 
     def _launch(self, **kwargs):
         calls = []
-        with mock.patch("scripts.tools.base.subprocess.Popen",
+        with mock.patch("scripts.tools.exec.subprocess.Popen",
                         side_effect=scratch_cwd_recorder(calls)):
             legacy.LegacySarifAdapter("gitleaks").invoke("/some/target", **kwargs)
         return only(calls, "gitleaks launch")
@@ -258,7 +258,7 @@ class TestGitleaksSuppressionPosture(unittest.TestCase):
         for tool in ("semgrep", "bandit", "trivy"):
             with self.subTest(tool=tool):
                 calls = []
-                with mock.patch("scripts.tools.base.subprocess.Popen",
+                with mock.patch("scripts.tools.exec.subprocess.Popen",
                                 side_effect=scratch_cwd_recorder(calls)):
                     legacy.LegacySarifAdapter(tool).invoke(
                         "/some/target", security_mode="redteam")

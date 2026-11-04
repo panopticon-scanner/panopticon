@@ -1,3 +1,4 @@
+import ast
 import contextlib
 import errno
 import io
@@ -14,8 +15,71 @@ from unittest import mock
 
 import pytest
 
-from tests._test_helpers import FakePopen, FakeStream, hard_link_or_skip
+from tests._test_helpers import REPO_ROOT, FakePopen, FakeStream, hard_link_or_skip
 import scripts.tools.base as base
+import scripts.tools.exec as tools_exec
+
+
+_MOVED_TO_EXEC = ("run_tool", "_OutputSizeWatcher", "drain_stderr_async",
+                  "read_capped_report")
+
+
+class TestExecOwnership(unittest.TestCase):
+    """#3406: the move has one owner and no compatibility shadow in base."""
+
+    def test_base_does_not_reexport_a_moved_name(self):
+        self.assertEqual([], [name for name in _MOVED_TO_EXEC if hasattr(base, name)])
+
+    def test_no_source_reaches_a_moved_name_through_base(self):
+        root = Path(REPO_ROOT)
+        offenders = []
+        for surface in (root / "skill" / "scripts", root / "scripts", root / "tests"):
+            for path in sorted(surface.rglob("*.py")):
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+                aliases = {"scripts.tools.base"}
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        aliases.update(alias.asname or alias.name for alias in node.names
+                                       if alias.name == "scripts.tools.base")
+                    elif (isinstance(node, ast.ImportFrom)
+                          and node.module == "scripts.tools"):
+                        aliases.update(alias.asname or alias.name for alias in node.names
+                                       if alias.name == "base")
+
+                def through_base(node):
+                    return ast.unparse(node) in aliases
+
+                for node in ast.walk(tree):
+                    relative_base = (isinstance(node, ast.ImportFrom)
+                                     and node.level == 1 and node.module == "base"
+                                     and path.parent == root / "skill" / "scripts" / "tools")
+                    absolute_base = (isinstance(node, ast.ImportFrom)
+                                     and node.module == "scripts.tools.base")
+                    if relative_base or absolute_base:
+                        for imported in node.names:
+                            if imported.name in _MOVED_TO_EXEC:
+                                offenders.append((path, node.lineno, imported.name))
+                    elif (isinstance(node, ast.Attribute)
+                          and node.attr in _MOVED_TO_EXEC
+                          and through_base(node.value)):
+                        offenders.append((path, node.lineno, ast.unparse(node)))
+                    elif (isinstance(node, ast.Call) and node.args
+                          and through_base(node.args[0])
+                          and any(isinstance(arg, ast.Constant)
+                                  and arg.value in _MOVED_TO_EXEC
+                                  for arg in node.args[1:])):
+                        offenders.append((path, node.lineno, ast.unparse(node)))
+                    elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                        for name in _MOVED_TO_EXEC:
+                            if ("scripts.tools.base.%s" % name in node.value
+                                    or "tools.base.%s" % name in node.value):
+                                offenders.append((path, node.lineno, node.value))
+        rendered = ["%s:%d: %s" % (path.relative_to(root), line, name)
+                    for path, line, name in offenders]
+        self.assertEqual(
+            [], rendered,
+            "moved execution names must be imported/read/patched through "
+            "scripts.tools.exec, the module that owns them:\n" + "\n".join(rendered))
 
 
 class _ImmediateTimer:
@@ -196,8 +260,8 @@ class TestBase(unittest.TestCase):
     def test_run_tool_passes_literal_arguments_without_a_shell(self):
         argv = ["tool", ";", "$(printf inert)", "`printf inert`", "a b", "*.py", "$HOME"]
         fake = FakePopen(stdout=b"literal arguments", returncode=0)
-        with mock.patch.object(base.subprocess, "Popen", return_value=fake) as launch:
-            self.assertEqual(base.run_tool(argv, timeout=5, env={"FIXTURE": "literal"}),
+        with mock.patch.object(tools_exec.subprocess, "Popen", return_value=fake) as launch:
+            self.assertEqual(tools_exec.run_tool(argv, timeout=5, env={"FIXTURE": "literal"}),
                              (b"literal arguments", 0))
         launch.assert_called_once()
         args, kwargs = launch.call_args
@@ -519,16 +583,16 @@ class TestRunTool(unittest.TestCase):
 
     def test_returns_stdout_and_rc(self):
         fake = FakePopen(stdout=b"{}", stderr=b"", returncode=0)
-        with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake):
-            out, rc = base.run_tool(["tool", "--x"], timeout=5)
+        with mock.patch("scripts.tools.exec.subprocess.Popen", return_value=fake):
+            out, rc = tools_exec.run_tool(["tool", "--x"], timeout=5)
         self.assertEqual((out, rc), (b"{}", 0))
 
     def test_error_exit_logs_stderr_excerpt(self):
         err = io.StringIO()
         fake = FakePopen(stdout=b"", stderr=b"boom: bad flag", returncode=2)
-        with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake), \
+        with mock.patch("scripts.tools.exec.subprocess.Popen", return_value=fake), \
              contextlib.redirect_stderr(err):
-            out, rc = base.run_tool(["tool"], timeout=5)
+            out, rc = tools_exec.run_tool(["tool"], timeout=5)
         self.assertEqual(rc, 2)
         self.assertIn("boom: bad flag", err.getvalue())
         self.assertIn("tool", err.getvalue())
@@ -536,9 +600,9 @@ class TestRunTool(unittest.TestCase):
     def test_stderr_excerpt_is_capped(self):
         err = io.StringIO()
         fake = FakePopen(stdout=b"", stderr=b"x" * 5000, returncode=3)
-        with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake), \
+        with mock.patch("scripts.tools.exec.subprocess.Popen", return_value=fake), \
              contextlib.redirect_stderr(err):
-            base.run_tool(["tool"], timeout=5)
+            tools_exec.run_tool(["tool"], timeout=5)
         self.assertLess(len(err.getvalue()), 1500)
 
     def test_stderr_capture_buffer_is_bounded(self):
@@ -548,8 +612,8 @@ class TestRunTool(unittest.TestCase):
         chunk = b"e" * (64 * 1024)
         n = (base.MAX_TOOL_STDERR_BYTES // len(chunk)) + 40
         fake = FakePopen(stdout=b"{}", stderr=[chunk] * n, returncode=0)
-        with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake):
-            out, err, rc = base.run_tool(["tool"], timeout=5, capture_stderr=True)
+        with mock.patch("scripts.tools.exec.subprocess.Popen", return_value=fake):
+            out, err, rc = tools_exec.run_tool(["tool"], timeout=5, capture_stderr=True)
         self.assertEqual((out, rc), (b"{}", 0))
         self.assertLessEqual(len(err), base.MAX_TOOL_STDERR_BYTES + len(chunk))
         self.assertLess(len(err), n * len(chunk))
@@ -577,7 +641,7 @@ class TestRunTool(unittest.TestCase):
 
         stream = _Stream(head + tail)
         proc = mock.Mock(stderr=stream)
-        retained = base.drain_stderr_async(proc, cap=cap)()
+        retained = tools_exec.drain_stderr_async(proc, cap=cap)()
 
         self.assertTrue(retained.endswith(tail), "retention dropped the tail")
         self.assertLessEqual(len(retained), cap + 64 * 1024)
@@ -587,26 +651,26 @@ class TestRunTool(unittest.TestCase):
     def test_findings_exit_one_does_not_log(self):
         err = io.StringIO()
         fake = FakePopen(stdout=b"[]", stderr=b"warnings", returncode=1)
-        with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake), \
+        with mock.patch("scripts.tools.exec.subprocess.Popen", return_value=fake), \
              contextlib.redirect_stderr(err):
-            out, rc = base.run_tool(["tool"], timeout=5)
+            out, rc = tools_exec.run_tool(["tool"], timeout=5)
         self.assertEqual(rc, 1)
         self.assertEqual(err.getvalue(), "")
 
     def test_passes_through_cwd_and_env(self):
         rec = mock.Mock(side_effect=lambda *a, **kw: FakePopen(*a, **kw))
-        with mock.patch("scripts.tools.base.subprocess.Popen", rec):
-            base.run_tool(["t"], timeout=7, cwd="/x", env={"A": "1"})
-        rec.assert_called_once_with(["t"], stdout=base.subprocess.PIPE,
-                                    stderr=base.subprocess.PIPE,
+        with mock.patch("scripts.tools.exec.subprocess.Popen", rec):
+            tools_exec.run_tool(["t"], timeout=7, cwd="/x", env={"A": "1"})
+        rec.assert_called_once_with(["t"], stdout=tools_exec.subprocess.PIPE,
+                                    stderr=tools_exec.subprocess.PIPE,
                                     cwd="/x", env={"A": "1"})
 
     def test_timeout_expired_propagates(self):
         fake = FakePopen(["t"], stdout=b"x", stderr=b"", pending=True)
-        with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake), \
-             mock.patch("scripts.tools.base.threading.Timer", _ImmediateTimer):
-            with self.assertRaises(base.subprocess.TimeoutExpired):
-                base.run_tool(["t"], timeout=5)
+        with mock.patch("scripts.tools.exec.subprocess.Popen", return_value=fake), \
+             mock.patch("scripts.tools.exec.threading.Timer", _ImmediateTimer):
+            with self.assertRaises(tools_exec.subprocess.TimeoutExpired):
+                tools_exec.run_tool(["t"], timeout=5)
         self.assertEqual(fake.returncode, -9)
         self.assertTrue(fake.stdout.closed)
         self.assertTrue(fake.stderr.closed)
@@ -654,9 +718,9 @@ class TestRunTool(unittest.TestCase):
 
         fake = _Watched(["t"], stderr=b"", pending=True)
         fake.stdout = _InterruptedStdout([b"partial", b"rest"])
-        with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake):
+        with mock.patch("scripts.tools.exec.subprocess.Popen", return_value=fake):
             with self.assertRaises(KeyboardInterrupt):
-                base.run_tool(["t"], timeout=30)
+                tools_exec.run_tool(["t"], timeout=30)
         self.assertIn("kill", events)
         self.assertEqual(1, events.count("kill"), "the tree was ended more than once")
         self.assertLess(events.index("kill"), events.index("close"),
@@ -676,19 +740,19 @@ class TestRunTool(unittest.TestCase):
                 super().kill()
 
         fake = _Watched(["t"], stdout=[b"{", b"}"], stderr=b"", returncode=0)
-        with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake):
-            out, rc = base.run_tool(["t"], timeout=30)
+        with mock.patch("scripts.tools.exec.subprocess.Popen", return_value=fake):
+            out, rc = tools_exec.run_tool(["t"], timeout=30)
         self.assertEqual((out, rc), (b"{}", 0))
         self.assertEqual([], events)
 
     def test_output_exceeds_cap_truncates_with_marker_and_nonzero_rc(self):
         err = io.StringIO()
-        with mock.patch.object(base, "MAX_TOOL_OUTPUT_BYTES", 1024):
+        with mock.patch.object(tools_exec, "MAX_TOOL_OUTPUT_BYTES", 1024):
             chunks = [b"x" * 512, b"x" * 512, b"x" * 512]
             fake = FakePopen(stdout=chunks, stderr=b"", pending=True)
-            with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake), \
+            with mock.patch("scripts.tools.exec.subprocess.Popen", return_value=fake), \
                  contextlib.redirect_stderr(err):
-                out, rc = base.run_tool(["tool"], timeout=5)
+                out, rc = tools_exec.run_tool(["tool"], timeout=5)
         marker = (
             b"\n\n[TRUNCATED by panopticon: output exceeded 1024 byte limit; "
             b"only the first 1024 bytes were retained]\n"
@@ -702,10 +766,10 @@ class TestRunTool(unittest.TestCase):
     def test_single_large_read_is_capped_and_late_kill_keeps_exit_status(self):
         fake = FakePopen(stdout=b"z" * 200_000, returncode=4)
         self.assertEqual(fake.poll(), 4)
-        with mock.patch.object(base, "MAX_TOOL_OUTPUT_BYTES", 1024), \
-             mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake), \
+        with mock.patch.object(tools_exec, "MAX_TOOL_OUTPUT_BYTES", 1024), \
+             mock.patch("scripts.tools.exec.subprocess.Popen", return_value=fake), \
              contextlib.redirect_stderr(io.StringIO()):
-            out, rc = base.run_tool(["tool"], timeout=5)
+            out, rc = tools_exec.run_tool(["tool"], timeout=5)
         self.assertEqual(out[:1024], b"z" * 1024)
         self.assertIn(b"[TRUNCATED by panopticon", out)
         self.assertEqual(rc, 4)
@@ -726,7 +790,7 @@ class TestRunTool(unittest.TestCase):
             fh.write(script)
             path = fh.name
         try:
-            out, rc = base.run_tool([sys.executable, path], timeout=10)
+            out, rc = tools_exec.run_tool([sys.executable, path], timeout=10)
             self.assertEqual(rc, 0)
             self.assertIn(b"done", out)
         finally:
@@ -768,30 +832,30 @@ class TestReadCappedReport(unittest.TestCase):
 
     def test_reads_report_within_cap(self):
         path = self._write(b'{"ok": true}')
-        self.assertEqual(base.read_capped_report(path, cap=1024), b'{"ok": true}')
+        self.assertEqual(tools_exec.read_capped_report(path, cap=1024), b'{"ok": true}')
 
     def test_reads_report_exactly_at_cap(self):
         path = self._write(b"x" * 10)
-        self.assertEqual(base.read_capped_report(path, cap=10), b"x" * 10)
+        self.assertEqual(tools_exec.read_capped_report(path, cap=10), b"x" * 10)
 
     def test_oversize_report_fails_closed(self):
         path = self._write(b"x" * 11)
         with contextlib.redirect_stderr(io.StringIO()) as err:
-            self.assertIsNone(base.read_capped_report(path, cap=10))
+            self.assertIsNone(tools_exec.read_capped_report(path, cap=10))
         self.assertIn("exceeds", err.getvalue())
 
     def test_does_not_slurp_more_than_cap_into_memory(self):
         # The read is bounded to cap+1 bytes regardless of the file's true size,
         # so a pathologically large report can't blow up memory before the check.
         m = mock.mock_open(read_data=b"y" * 5000)
-        with mock.patch.object(base, "open", m), \
+        with mock.patch.object(tools_exec, "open", m), \
              contextlib.redirect_stderr(io.StringIO()):
-            self.assertIsNone(base.read_capped_report("big.json", cap=10))
+            self.assertIsNone(tools_exec.read_capped_report("big.json", cap=10))
         m().read.assert_called_once_with(11)   # cap + 1, never the full file
 
     def test_missing_report_returns_none(self):
         with contextlib.redirect_stderr(io.StringIO()) as err:
-            self.assertIsNone(base.read_capped_report("/no/such/report.json"))
+            self.assertIsNone(tools_exec.read_capped_report("/no/such/report.json"))
         self.assertIn("cannot read report", err.getvalue())
 
 
@@ -823,10 +887,10 @@ class TestWriteTimeOutputCap(unittest.TestCase):
             out = os.path.join(d, "report")
             os.makedirs(out)
             err = io.StringIO()
-            with mock.patch.object(base, "OUTPUT_WATCH_INTERVAL", 0.05), \
+            with mock.patch.object(tools_exec, "OUTPUT_WATCH_INTERVAL", 0.05), \
                     contextlib.redirect_stderr(err):
                 with self.assertRaises(base.OutputCapExceeded):
-                    base.run_tool(self._writer(out), timeout=60,
+                    tools_exec.run_tool(self._writer(out), timeout=60,
                                   watch_path=out, watch_cap=256 * 1024,
                                   start_new_session=True)
             written = base._output_size(out)
@@ -839,8 +903,8 @@ class TestWriteTimeOutputCap(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "report")
             os.makedirs(out)
-            with mock.patch.object(base, "OUTPUT_WATCH_INTERVAL", 0.05):
-                stdout, rc = base.run_tool(
+            with mock.patch.object(tools_exec, "OUTPUT_WATCH_INTERVAL", 0.05):
+                stdout, rc = tools_exec.run_tool(
                     self._writer(out, chunks=2, size=1024, pause=0),
                     timeout=60, watch_path=out, watch_cap=1024 * 1024)
         self.assertEqual(rc, 0)
@@ -866,7 +930,7 @@ class TestWriteTimeOutputCap(unittest.TestCase):
         # Two bounds on the same report: a report the reader would refuse is
         # not worth letting the scanner finish writing.
         import inspect
-        sig = inspect.signature(base.run_tool)
+        sig = inspect.signature(tools_exec.run_tool)
         self.assertEqual(sig.parameters["watch_cap"].default,
                          base.MAX_TOOL_OUTPUT_BYTES)
 
@@ -904,11 +968,11 @@ class TestBothCapsBinding(unittest.TestCase):
         flood = [sys.executable, "-c",
                  "import sys; sys.stdout.buffer.write(b'x' * 200000)"]
         with tempfile.TemporaryDirectory() as d:
-            with mock.patch.object(base, "_OutputSizeWatcher", _AlreadyExceeded), \
-                    mock.patch.object(base, "MAX_TOOL_OUTPUT_BYTES", 1024), \
+            with mock.patch.object(tools_exec, "_OutputSizeWatcher", _AlreadyExceeded), \
+                    mock.patch.object(tools_exec, "MAX_TOOL_OUTPUT_BYTES", 1024), \
                     contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(base.OutputCapExceeded):
-                    base.run_tool(flood, timeout=30, watch_path=d,
+                    tools_exec.run_tool(flood, timeout=30, watch_path=d,
                                   watch_cap=64)
 
     def test_truncation_alone_still_returns_its_partial_output(self):
@@ -916,9 +980,9 @@ class TestBothCapsBinding(unittest.TestCase):
         # no watcher, same marker contract as before.
         flood = [sys.executable, "-c",
                  "import sys; sys.stdout.buffer.write(b'x' * 200000)"]
-        with mock.patch.object(base, "MAX_TOOL_OUTPUT_BYTES", 1024), \
+        with mock.patch.object(tools_exec, "MAX_TOOL_OUTPUT_BYTES", 1024), \
                 contextlib.redirect_stderr(io.StringIO()):
-            stdout, _rc = base.run_tool(flood, timeout=30)
+            stdout, _rc = tools_exec.run_tool(flood, timeout=30)
         self.assertIn(b"[TRUNCATED by panopticon", stdout)
 
 
@@ -965,7 +1029,7 @@ class TestTimeoutKillReachesTheWholeGroup(unittest.TestCase):
             started = time.time()
             with contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(subprocess.TimeoutExpired):
-                    base.run_tool(cmd, timeout=1, start_new_session=True)
+                    tools_exec.run_tool(cmd, timeout=1, start_new_session=True)
             elapsed = time.time() - started
             pid = self._grandchild_pid(pidfile, deadline=0.5)
         # Without the group kill the orphan holds the pipe for its full 15s.

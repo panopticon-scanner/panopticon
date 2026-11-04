@@ -7,8 +7,8 @@ import sys
 import tempfile
 from .base import (INERT_CUT, OutputCapExceeded, has_any_file, inert_text,
                    make_finding, normalize_severity, omit_none,
-                   parse_json_bytes, read_capped_report, run_tool, scratch_cwd,
-                   target_root_cv)
+                   parse_json_bytes, scratch_cwd, target_root_cv)
+from .exec import read_capped_report, run_tool
 
 
 # #1576 (run-13 OPS-3272189615): rc returned when the scanner was killed for

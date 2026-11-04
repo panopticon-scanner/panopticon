@@ -6,8 +6,9 @@ import stat
 import sys
 
 from .base import (as_list, cve_ids, has_any_file, make_finding, normalize_severity,
-                   omit_none, parse_json_bytes, run_tool, scratch_cwd,
+                   omit_none, parse_json_bytes, scratch_cwd,
                    target_root_cv)
+from .exec import run_tool
 
 # The manifest THIS invocation audited, target-relative (#1649). A ContextVar
 # for the reason pip_audit carries one: ADAPTERS holds a single shared adapter
