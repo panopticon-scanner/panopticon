@@ -226,7 +226,7 @@ def out_of_scope_findings(findings_paths, plan):
                     examples.append({"group": cell[0], "file": fpath})
     return {"checked": checked, "count": count, "examples": examples}
 
-def load_dispatch_plans_detailed(panopticon_dir=".panopticon"):
+def load_dispatch_plans_detailed(panopticon_dir=plan_contract.ARTIFACT_DIR):
     """Return (valid plans, files seen, invalid plan diagnostics).
 
     #run10: dropped `groups_path`/`root`. Both existed only to feed the 4.x
@@ -265,7 +265,7 @@ def load_dispatch_plans_detailed(panopticon_dir=".panopticon"):
         plans.append(plan)
     return plans, len(paths), invalid
 
-def load_dispatch_plans(panopticon_dir=".panopticon"):
+def load_dispatch_plans(panopticon_dir=plan_contract.ARTIFACT_DIR):
     """Load every per-group dispatch plan file as a list of per-file plan
     lists. Tolerant: unreadable/malformed plan files are skipped."""
     plans = []
@@ -278,7 +278,7 @@ def load_dispatch_plans(panopticon_dir=".panopticon"):
             plans.append(plan)
     return plans
 
-def derive_tool_policy_mode(panopticon_dir=".panopticon", plans=None):
+def derive_tool_policy_mode(panopticon_dir=plan_contract.ARTIFACT_DIR, plans=None):
     """Derive the run's tool-policy posture from dispatch plan files.
 
     unknown: no usable plan file was found — posture undetermined (distinct
@@ -517,7 +517,7 @@ def ingest_tool_findings(args, allowed_outputs=None, unbound_out=None):
                                               unbound_out=unbound_out)
         return [], {}, None, None, [], excluded_block(args, 0)
     if not args.tools_dir:
-        default_tools = os.path.join(".panopticon", "tools")
+        default_tools = os.path.join(plan_contract.ARTIFACT_DIR, "tools")
         if os.path.isdir(default_tools) and os.listdir(default_tools):
             print("synthesize: %s appears un-ingested — pass --tools-dir %s to "
                   "include tool findings in this report"
