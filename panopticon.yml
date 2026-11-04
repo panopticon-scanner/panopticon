@@ -355,6 +355,7 @@ groups:
     Driver:
       match:
       - skill/scripts/driver.py
+      - skill/scripts/host_posture.py
       tests:
       - tests/test_driver.py
       - tests/test_driver_cli.py
@@ -372,6 +373,7 @@ groups:
       match:
       - skill/scripts/orchestrate.py
       - skill/scripts/batch_settlement.py
+      - skill/scripts/rejected_retention.py
       - skill/scripts/loop_setup.py
       - skill/scripts/scope_bindings.py
       - skill/scripts/loop_progress.py
@@ -388,6 +390,7 @@ groups:
       - tests/test_guard_denials.py
       - tests/test_orchestrate_outage.py
       - tests/test_orchestrate_pause.py
+      - tests/test_rejected_retention.py
       - tests/test_orchestrate_recovery.py
       - tests/test_orchestrate_session.py
       - tests/test_orchestrate_session_edges.py
@@ -468,7 +471,6 @@ groups:
       match:
       - skill/scripts/hosts.py
       - skill/scripts/host_probes.py
-      - skill/scripts/host_posture.py
       - skill/scripts/app_trace.py
       - skill/scripts/host_disclosure.py
       - skill/scripts/codex_host.py
@@ -687,6 +689,7 @@ groups:
       - scripts/file_issues.py
       - scripts/file_fixmes.py
       - scripts/triage.py
+      - scripts/gh_transport.py
       - scripts/reconcile_apply.py
       - scripts/pinned_dir.py
       - scripts/sanitize.py

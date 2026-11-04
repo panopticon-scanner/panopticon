@@ -417,7 +417,12 @@ on Claude hooks, and always uses the return-persist path.
   prints `dispatch`, drops the finished entries' grants on the next re-entry, and disarms everything
   on `complete`. Both guards are **fail-closed while registered**: an absent, unreadable, or
   malformed allowlist/scope file denies guarded access with a loud reason instead of silently
-  allowing it. - **The loop dispatches one agent per entry** through the runner: `enforced` →
+  allowing it. Each read-scope row also carries an HMAC (`_by`) under this machine's run-stamp key
+  (`$PANOPTICON_STATE_DIR`, outside any reviewed tree) over its entry id and grants (#3436): a row
+  without a valid one denies the agent bound to it, and `install` drops it rather than merging it,
+  so a planted id cannot survive arming while a concurrent fan-out's rows do. The hook reads the
+  key and never creates it, so a hook run with a different `PANOPTICON_STATE_DIR` from the driver
+  denies every bound read and says so. - **The loop dispatches one agent per entry** through the runner: `enforced` →
   `--agent entry["agent"]` (a registered `panopticon-*` shell, tools+model host-enforced) plus one
   `--allowedTools=Edit(//<absolute out_file>)` token, the Write permission for that entry's own file
   (#3218: `claude -p` auto-denies an unapproved Write, and `Edit` is the rule a create needs; an
@@ -462,6 +467,20 @@ on Claude hooks, and always uses the return-persist path.
   the retry is told what to fix. The record carries the run's `run_id` and only a record with THIS
   run's id is quoted, as a JSON string (#3253): `rejected/` is in the reviewed tree, so a record
   the target committed, or one an earlier run left, earns no note.
+- **How long `rejected/` records stay (#1664).** The loop, after each batch closes, and `driver
+  persist`, after it keeps a record, apply one rule. Each entry keeps its last 3 records, and an
+  entry's newest is never removed: attempt numbers are read back from the folder, and the newest
+  is the one the retry quotes. Past 32 MiB per run the oldest records go first, still never an
+  entry's newest, so the folder can exceed 32 MiB by at most one record per entry. Only this run's
+  own records are counted or removed: a file that does not parse as a record with this run's
+  `run_id` and its own name is the target's, so it neither counts toward the 32 MiB nor is ever
+  evicted, and a planted 1 GiB file cannot push real evidence out. A record any batch manifest on
+  disk still lists is never removed, because that batch's settlement receipt proves its artifacts
+  by path and digest, and an unreadable manifest stops pruning altogether. Each removal first
+  appends a row to `rejected/pruned.jsonl` carrying the run's id, the path, the attempt, the digest
+  and the rule. A ledger row's `rejected_file` therefore names a file that exists, or one a
+  `pruned.jsonl` row of THIS run names exactly; anything else reads as missing, since the tombstone
+  sits in the reviewed tree too.
 - **What `complete` tells a reader (#3367).** The status's `artifacts` gives absolute paths for the
   files that exist: `report`, and `parts`, `discarded`, `x0x` and `html` when there are any. Each is
   a regular file, not a symlink, and `parts` and `discarded` come from the report's own meta. The

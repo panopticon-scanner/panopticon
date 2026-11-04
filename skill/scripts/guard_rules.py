@@ -218,11 +218,10 @@ def _load_scope(scope_path):
             return None, "read guard scope is malformed"
         entry: dict[str, object] = {}
         for k in SCOPE_KEYS:
-            val = scope.get(k)
-            if val is None:
-                entry[k] = []
-                continue
-            if not isinstance(val, list):
+            val = [] if scope.get(k) is None else scope.get(k)
+            # M1 (#3411): install() writes only absolute, normalised paths; any other was planted.
+            if not isinstance(val, list) or any(isinstance(p, str) and not (
+                    os.path.isabs(p) and os.path.normpath(p) == p) for p in val):
                 return None, "read guard scope is malformed"
             entry[k] = [p for p in val if isinstance(p, str)]
         # #2063: {grant: [link, ...] | None}; anything else reads as no walk (wildcards denied).
@@ -230,7 +229,7 @@ def _load_scope(scope_path):
         entry[ESCAPES_KEY] = ({g: ([p for p in v if isinstance(p, str)] if isinstance(v, list)
                                    else None) for g, v in raw.items() if isinstance(g, str)}
                               if isinstance(raw, dict) else {})
-        out[eid] = entry
+        out[eid] = dict(entry, _by=scope.get("_by"))  # #3436: the row stamp the read hook checks
     return out, ""
 
 

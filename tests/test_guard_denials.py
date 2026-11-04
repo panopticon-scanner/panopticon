@@ -45,7 +45,8 @@ class _Run(unittest.TestCase):
             fh.write("x = 1\n")
         self.scope = os.path.join(self.run_dir, "read-scope.json")
         self.allowlist = os.path.join(self.run_dir, "write-allowlist.json")
-        self._write(self.scope, {"e1": {"files": [self.inside], "dirs": [], "reads": []}})
+        self._write(self.scope, read_guard_hook.stamp_rows(          # #3436: as install() writes it
+            {"e1": {"files": [self.inside], "dirs": [], "reads": []}}))
         self._write(self.allowlist, {"version": guard_rules.ALLOWLIST_VERSION,
                                      "entries": {"e1": [self.out_file]},
                                      "paths": [self.out_file]})
@@ -56,7 +57,8 @@ class _Run(unittest.TestCase):
             json.dump(body, fh)
 
     def _hook(self, name, policy, payload, timeout=60):
-        env = {"PATH": os.environ.get("PATH", ""), guard_rules.ENV_ENTRY_ID: "e1"}
+        env = {"PATH": os.environ.get("PATH", ""), guard_rules.ENV_ENTRY_ID: "e1",
+               "PANOPTICON_STATE_DIR": os.environ["PANOPTICON_STATE_DIR"]}      # #3436: the key
         return subprocess.run(["/usr/bin/env", os.path.realpath(sys.executable), "-I",
                                os.path.join(SCRIPTS, name), policy],
                               input=json.dumps(payload), capture_output=True, text=True,

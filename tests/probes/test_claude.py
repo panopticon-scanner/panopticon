@@ -1081,7 +1081,7 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             self.assertIn(session_root, detail)
             # #1917 added the seventeenth row (a clean subdirectory of a grant
             # that recorded a link elsewhere) beside the planted-link check.
-            self.assertIn("18 rows", detail)
+            self.assertIn("20 rows", detail)
 
     def test_it_does_not_require_the_guard_to_be_armed_right_now(self):
         from scripts import read_guard_hook
@@ -1212,6 +1212,28 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             ok, detail = claude_probes._round_trip_confines_reads()
         self.assertFalse(ok, detail)
         self.assertIn("trusted", detail)
+        # M6 (#3411): a command with no scope file baked in would infer it from its CWD.
+        with mock.patch.object(read_guard_hook, "_hook_entry",
+                               side_effect=lambda scope: original(None)):
+            ok, detail = claude_probes._round_trip_confines_reads()
+        self.assertFalse(ok, detail)
+        self.assertIn("plus the probe's scope file", detail)
+
+    def test_the_round_trip_refuses_a_glob_of_a_granted_file(self):
+        # T4 (#3411): a Glob whose `path` is a file lists nothing, granted or not.
+        from scripts import read_guard_hook
+        real = read_guard_hook.decide
+
+        def globs_files(tool_name, tool_input, scope):
+            if (tool_name == "Glob" and scope and isinstance(tool_input, dict)
+                    and os.path.isfile(str(tool_input.get("path")))):
+                return True, ""
+            return real(tool_name, tool_input, scope)
+
+        with mock.patch.object(read_guard_hook, "decide", globs_files):
+            ok, detail = claude_probes._round_trip_confines_reads()
+        self.assertFalse(ok)
+        self.assertIn("Glob of", detail)
 
     def test_private_launch_boundary_rejects_untrusted_operands_before_launch(self):
         from scripts.probes import claude_read_guard

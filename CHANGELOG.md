@@ -7,6 +7,32 @@
   `host_posture.py`; the driver keeps its existing compatibility names and
   behavior while dropping below its flat-module size pin.
 
+- **The filing tools' gh transport moved to `scripts/gh_transport.py` (#3404).** `triage.py`'s
+  trusted `gh` resolution, account environment and retry ladder now live in their own module, which
+  `file_issues`, `file_fixmes`, `code_scanning_audit` and `reconcile_apply` import directly.
+  Behaviour is unchanged. `triage` re-exports the names for one release; code that patches one must
+  patch `gh_transport`.
+
+- **Read-guard scope rows are stamped (#3436).** `install` signs each read-scope row with this
+  machine's run-stamp key, and the hook denies an agent bound to a row without a valid stamp.
+  On arming, `install` keeps an on-disk row only if its stamp verifies, so an id planted in the
+  scope file no longer survives the union, while a concurrent fan-out's rows still do. A missing
+  key refuses to arm and denies bound reads.
+
+- **Read-guard hygiene (#3411).** The read guard now refuses a scope file holding a path
+  `install()` never writes (relative, or not normalised) as malformed, which denies, instead of
+  keeping it as a grant that matches nothing. `marker_line` refuses an entry id with outer
+  whitespace, which `marker_of` would strip and so bind to nothing. The Claude read-guard probe
+  also checks that the installed command bakes in its scope file, and that a Glob of a granted
+  file is denied.
+
+- **Retention for `rejected/` records (#1664).** The loop, after each batch, and `driver
+  persist` keep each entry's last 3 refused or failed replies and cap a run's records at 32 MiB,
+  evicting the oldest first. An entry's newest record, any record a batch manifest still lists,
+  and files that are not this run's own records are never removed. Each removal is logged to
+  `rejected/pruned.jsonl` first, so a ledger row's `rejected_file` either exists or reads as
+  pruned.
+
 - **Fix: Claude proves the production output-schema shape (#3394).** Its
   once-per-run proof now launches the same published review-cell role schema
   that returning production cells send inline, including the real finding

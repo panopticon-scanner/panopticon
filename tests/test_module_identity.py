@@ -162,10 +162,10 @@ _UNRECOGNISED = "unrecognised root"
 PERMITTED_BOOTSTRAPS = {
     "scripts/code_scanning_reports.py": 1,
     "scripts/file_issues.py": 1,
+    "scripts/gh_transport.py": 1,      # moved from triage.py (#3404)
     "scripts/open_pin_pr.py": 1,
     "scripts/replay_report.py": 1,
     "scripts/sanitize.py": 1,
-    "scripts/triage.py": 1,
     "skill/scripts/_run_adapter.py": 1,
     "skill/scripts/capture_goldens.py": 1,
     "skill/scripts/discovery.py": 2,

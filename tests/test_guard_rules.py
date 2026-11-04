@@ -85,6 +85,27 @@ class TestTheSharedRules(unittest.TestCase):
                 self.assertTrue(under("/repo/x", "/repo"))
                 self.assertFalse(under("/repo-other/x", "/repo"))
 
+    def test_a_scope_path_install_would_never_write_refuses_the_scope(self):
+        # M1 (#3411): install() writes absolute, normalised paths only. Anything else on disk was
+        # written by someone else, and is refused at load rather than kept as a dead grant.
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = os.path.join(d, "scope.json")
+        good = os.path.join(d, "a.py")
+        for key in guard_rules.SCOPE_KEYS:
+            for bad in ("a.py", "./a.py", d + "/x/../a.py", d + "//a.py", d + "/./a.py", d + "/"):
+                with self.subTest(key=key, path=bad):
+                    with open(path, "w", encoding="utf-8") as fh:
+                        json.dump({"e": {key: [good, bad]}}, fh)
+                    self.assertEqual((None, "read guard scope is malformed"),
+                                     guard_rules._load_scope(path))
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"e": {"files": [good, 7], "dirs": None}}, fh)
+        scopes, error = guard_rules._load_scope(path)
+        self.assertEqual("", error)
+        self.assertEqual([good], scopes["e"]["files"])
+        self.assertEqual([], scopes["e"]["dirs"])
+
     def test_every_component_refusal_names_what_it_refuses(self):
         # Fix round 2 (N1): all four carry a `%s`. `allowlist_from_plan`
         # re-raises these with no context of its own, so the constant is the
@@ -149,7 +170,7 @@ class _HookLaunch(unittest.TestCase):
                 fh.write("x")
         self.scope = os.path.join(self.root, "read-scope.json")
         with open(self.scope, "w", encoding="utf-8") as fh:
-            json.dump({"e1": {"files": [self.inside], "dirs": [], "reads": []}}, fh)
+            json.dump(rg.stamp_rows({"e1": {"files": [self.inside], "dirs": [], "reads": []}}), fh)
         self.allowlist = os.path.join(self.root, "write-allowlist.json")
         with open(self.allowlist, "w", encoding="utf-8") as fh:
             json.dump({"version": 2, "entries": {"e1": [self.inside]}, "paths": [self.inside]}, fh)
@@ -166,7 +187,9 @@ class _HookLaunch(unittest.TestCase):
         )
 
     def _launch(self, python, hook_path, argv, payload, cwd, extra_env=None):
-        env = {"PATH": os.environ.get("PATH", ""), "PANOPTICON_ENTRY_ID": "e1"}
+        env = {"PATH": os.environ.get("PATH", ""), "PANOPTICON_ENTRY_ID": "e1",
+               # #3436: the read hook checks its row's stamp under the driver's key.
+               "PANOPTICON_STATE_DIR": os.environ["PANOPTICON_STATE_DIR"]}
         env.update(extra_env or {})
         # `env` with an ABSOLUTE interpreter executes exactly that file (no PATH
         # search): the process is `<python> -I <hook>`, under a literal launcher.
