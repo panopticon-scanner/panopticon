@@ -35,7 +35,7 @@ import scripts.phases.runio as runio
 import scripts.phases.validate as validate_phase
 import scripts.run_manifest as run_manifest
 import scripts.safe_git as safe_git
-import scripts.setup_flow as setup_flow
+import scripts.setup_config as setup_config
 import scripts.synth.findings as findings_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.report as report_mod
@@ -582,7 +582,7 @@ class SubmoduleDirtStaysVisibleWithAPathspec(unittest.TestCase):
 class SetupAndRunioAreConfined(unittest.TestCase):
     """#2006 fix round 2, I2: the two callers "every target-facing git call" missed.
 
-    `setup_flow._git_blanket_pattern` ran bare `["git", "-C", repo,
+    `setup_config._git_blanket_pattern` ran bare `["git", "-C", repo,
     "check-ignore", ...]` with NO `env=` at all -- the same shape this PR calls
     a defect in `run_manifest` -- against the reviewed repo during setup.
     `runio._foreign_manifest` resolved a trusted git but launched it without the
@@ -598,7 +598,7 @@ class SetupAndRunioAreConfined(unittest.TestCase):
     def test_the_blanket_pattern_probe_never_runs_the_targets_fsmonitor(self):
         repo = self._repo()
         marker = plant_fsmonitor_command(repo)
-        self.assertEqual(setup_flow._git_blanket_pattern(repo), ".panopticon/")
+        self.assertEqual(setup_config._git_blanket_pattern(repo), ".panopticon/")
         self.assertFalse(os.path.exists(marker))
 
     def test_an_inherited_git_environment_cannot_redirect_the_blanket_probe(self):
@@ -609,8 +609,8 @@ class SetupAndRunioAreConfined(unittest.TestCase):
         other = self._repo()                                      # ignores .panopticon/
         with mock.patch.dict(os.environ, {"GIT_DIR": os.path.join(other, ".git"),
                                           "GIT_WORK_TREE": other}):
-            self.assertEqual(setup_flow._git_blanket_pattern(asked), "")
-        self.assertEqual(setup_flow._git_blanket_pattern(other), ".panopticon/")
+            self.assertEqual(setup_config._git_blanket_pattern(asked), "")
+        self.assertEqual(setup_config._git_blanket_pattern(other), ".panopticon/")
 
     def test_the_foreign_manifest_check_never_runs_the_targets_fsmonitor(self):
         repo = self._repo()

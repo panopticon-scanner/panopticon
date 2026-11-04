@@ -3,7 +3,7 @@
 The guardrails' rule is "no test launches `codex` or `claude`". I-5 made that
 true for the two Codex launch seams by moving their launcher to a module
 attribute the autouse fixture in tests/conftest.py can swap. N-M3 then found a
-THIRD door by accident -- `setup_flow.readiness()` probes `codex --version`
+THIRD door by accident -- `setup_preflight.readiness()` probes `codex --version`
 through a runner bound as a DEFAULT ARGUMENT, which no monkeypatch can reach --
 and a fourth is `runners/claude.py`, which binds its launcher the same way.
 The Kimi family PR arrived with a fifth and a sixth: `runners/kimi.py`, and
@@ -148,7 +148,7 @@ def _spawns_a_host_cli(tree, host_names):
     """Why this module is a launch seam, or [] if it is not one.
 
     Two shapes, because the families write the launch differently:
-    codex_host/setup_flow build the argv as a list (or tuple) literal whose
+    codex_host/setup_preflight build the argv as a list (or tuple) literal whose
     head is the binary, and the runners keep the binary in a class-level `CLI`
     constant that `command()` reads. Either head may be the binary spelled
     literally or a MODULE-LEVEL string constant of this same module, resolved
@@ -221,7 +221,7 @@ class TestEverySeamThatCanStartAHostCliIsCovered(unittest.TestCase):
         """A guard that silently found nothing would pass forever, and one
         that found everything would demand a launcher from data modules."""
         found = sorted(relative for _, relative, _ in _seams())
-        self.assertEqual(found, sorted(["codex_host.py", "setup_flow.py",
+        self.assertEqual(found, sorted(["codex_host.py", "setup_preflight.py",
                                         os.path.join("probes", "kimi.py"),
                                         os.path.join("runners", "claude.py"),
                                         os.path.join("runners", "codex.py"),

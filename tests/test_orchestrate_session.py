@@ -693,7 +693,7 @@ class TestSetupOnRails(LoopCase):
                   ("nvd-api-key", None, "absent -- dependency-check will be skipped")]
         args = driver.build_parser().parse_args(["loop", d, "--setup"])
         with mock.patch("scripts.runners.base.runner_for", return_value=SetupRunner()), \
-             mock.patch("scripts.setup_flow.readiness", return_value=checks), \
+             mock.patch("scripts.setup_preflight.readiness", return_value=checks), \
              contextlib.redirect_stdout(io.StringIO()):
             status = orchestrate.loop(args)
         self.assertEqual(status["status"], "complete", status)
@@ -713,7 +713,7 @@ class TestSetupOnRails(LoopCase):
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(forged, fh)
         with mock.patch("scripts.runners.base.runner_for", return_value=SetupRunner()), \
-             mock.patch("scripts.setup_flow.readiness", return_value=checks), \
+             mock.patch("scripts.setup_preflight.readiness", return_value=checks), \
              contextlib.redirect_stdout(io.StringIO()):
             again = orchestrate.loop(args)
         self.assertEqual(again["status"], "complete", again)
@@ -732,7 +732,7 @@ class TestSetupOnRails(LoopCase):
         # completes without a checkpoint today, so no entry is launched -- but
         # unpatched, this is the one `orchestrate.loop` call in the suite
         # standing between a refactor and a real `claude -p` subprocess.
-        with mock.patch("scripts.setup_flow.load_bundled_vocabulary",
+        with mock.patch("scripts.setup_spine.load_bundled_vocabulary",
                         return_value=({"names": []}, False)), \
              mock.patch("scripts.runners.base.runner_for", return_value=FakeRunner()), \
              contextlib.redirect_stdout(io.StringIO()):

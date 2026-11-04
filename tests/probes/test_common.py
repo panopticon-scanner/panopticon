@@ -174,8 +174,8 @@ class TestRegisteredShellToolsProbe(unittest.TestCase):
                          hosts.spec("claude").probes[hosts.TOOL_POLICY_ENFORCED])
 
     def test_the_driver_roles_match_setup_flows(self):
-        from scripts import setup_flow
-        self.assertEqual(tuple(setup_flow._driver_roles),
+        from scripts import setup_preflight
+        self.assertEqual(tuple(setup_preflight._driver_roles),
                          tuple(probes_common.DRIVER_ROLES))
 
     def test_a_block_list_tools_frontmatter_is_proven(self):

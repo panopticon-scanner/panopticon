@@ -76,3 +76,13 @@ The repo-root filing tools (`triage.py`, `file_issues.py`, `file_fixmes.py`,
 single retry ladder. `triage.py` re-exports those names for one release. A test that patches one
 patches `gh_transport`, where the code reads it, and `tests/test_triage.py` fails on a patch that
 still goes through `triage`.
+
+`driver setup` runs through four flat modules (#3405, along the #1589 seams): `setup_preflight`
+(the readiness checks, as `(name, ok, detail)` rows, and the `DEFAULT_RUNNER` launch seam its
+probes go through), `setup_config` (the `.gitignore` block, the manifest seed, `config_refusal`,
+`provision`, `migrate_config` and the committed `settings:` reads), `setup_spine` (the spine, the
+bundled vocabularies and catalogs, and the scan brief) and `setup_flow` (the proposal ingest and
+the readiness record added to its report). `setup_preflight` and `setup_config` import neither
+sibling, `setup_spine` imports only `setup_config`, and `setup_flow` imports those two. A name
+lives in one of them and is reached by module attribute; `setup_flow` re-exports nothing, and
+`tests/test_setup_split.py` fails on a reference to a moved name that still goes through it.

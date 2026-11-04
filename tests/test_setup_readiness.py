@@ -10,7 +10,7 @@ import scripts.host_disclosure as host_disclosure
 import scripts.host_probes as host_probes
 import scripts.hosts as hosts
 import scripts.probes.common as probes_common
-import scripts.setup_flow as setup_flow
+import scripts.setup_preflight as setup_preflight
 
 
 from tests.setup_helpers import (
@@ -29,7 +29,7 @@ class TestSetupFlow(SetupFixtureBase):
     def test_readiness_returns_checks(self):
         d = _repo(self)
         os.makedirs(os.path.join(d, ".git"))
-        checks = setup_flow.readiness(d, host="claude",
+        checks = setup_preflight.readiness(d, host="claude",
                                       runner=lambda *a, **k: type("R", (), {"returncode": 1})())
         check_dict = {c[0]: (c[1], c[2]) for c in checks}
         self.assertIn("target-root", check_dict)
@@ -42,7 +42,7 @@ class TestSetupFlow(SetupFixtureBase):
         fixture_value = "fixture-only-value"
 
         def row(env):
-            return setup_flow._check_nvd_key(d, env)
+            return setup_preflight._check_nvd_key(d, env)
 
         absent = row({})
         self.assertEqual(absent[0:2], ("nvd-api-key", None))
@@ -77,14 +77,14 @@ class TestSetupFlow(SetupFixtureBase):
         # domain_advisor shells, NOT the retired panel_review/lens_sweep.
         #
         # #1766: the PACKAGE identity here and at the three sibling sites below.
-        # `setup_flow._check_host_shells` used to `import dispatch` flat, so a
+        # `setup_preflight._check_host_shells` used to `import dispatch` flat, so a
         # flat `mock.patch.object(dispatch, ...)` reached it; now it imports the
         # package and only the package-qualified patch does. Both spellings
         # resolve under pytest, and the flat one silently patched a copy.
         import scripts.dispatch as dispatch
         d = _repo(self)
         with mock.patch.object(dispatch, "_is_registered", return_value=False):
-            checks = setup_flow.readiness(
+            checks = setup_preflight.readiness(
                 d, host="claude",
                 runner=lambda *a, **k: type("R", (), {"returncode": 0})())
         es = next(c for c in checks if c[0] == "enforced-shells")
@@ -97,7 +97,7 @@ class TestSetupFlow(SetupFixtureBase):
     def test_readiness_generic_host_enforced_shells_informational(self):
         # #5.0-15: the generic host runs unenforced -> informational (None), not FAIL.
         d = _repo(self)
-        checks = setup_flow.readiness(
+        checks = setup_preflight.readiness(
             d, host="generic",
             runner=lambda *a, **k: type("R", (), {"returncode": 0})())
         es = next(c for c in checks if c[0] == "enforced-shells")
@@ -111,9 +111,9 @@ class TestSetupFlow(SetupFixtureBase):
         def runner(cmd, **kw):
             seen.append(kw.get("timeout"))
             return type("R", (), {"returncode": 0})()
-        setup_flow.readiness(d, host="codex", runner=runner)  # docker + codex probes
+        setup_preflight.readiness(d, host="codex", runner=runner)  # docker + codex probes
         self.assertTrue(seen)
-        self.assertTrue(all(t == setup_flow._PROBE_TIMEOUT for t in seen), seen)
+        self.assertTrue(all(t == setup_preflight._PROBE_TIMEOUT for t in seen), seen)
 
     def test_readiness_hung_probe_is_failed_check_not_crash(self):
         # A probe that times out (or a missing binary) becomes a failed check,
@@ -121,8 +121,8 @@ class TestSetupFlow(SetupFixtureBase):
         d = _repo(self)
         os.makedirs(os.path.join(d, ".git"))
         def runner(cmd, **kw):
-            raise setup_flow.subprocess.TimeoutExpired(cmd, kw.get("timeout"))
-        checks = {c[0]: c[1] for c in setup_flow.readiness(
+            raise setup_preflight.subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+        checks = {c[0]: c[1] for c in setup_preflight.readiness(
             d, host="claude", runner=runner)}
         self.assertFalse(checks["docker"])
 
@@ -135,7 +135,7 @@ class TestSetupFlow(SetupFixtureBase):
         def runner(cmd, **kw):
             rc = 1 if cmd[:3] == ["docker", "image", "inspect"] else 0
             return type("R", (), {"returncode": rc})()
-        checks = {c[0]: (c[1], c[2]) for c in setup_flow.readiness(
+        checks = {c[0]: (c[1], c[2]) for c in setup_preflight.readiness(
             d, host="generic", runner=runner)}
         self.assertTrue(checks["docker"][0])
         self.assertFalse(checks["tools-image"][0])
@@ -149,8 +149,8 @@ class TestSetupFlow(SetupFixtureBase):
         # so a future "local copy" cannot quietly reintroduce the gap that
         # left `advisor` unchecked.
         import scripts.dispatch as dispatch
-        self.assertIs(probes_common.DRIVER_ROLES, setup_flow._driver_roles)
-        self.assertEqual(tuple(sorted(dispatch.ROLE_FILES)), setup_flow._driver_roles)
+        self.assertIs(probes_common.DRIVER_ROLES, setup_preflight._driver_roles)
+        self.assertEqual(tuple(sorted(dispatch.ROLE_FILES)), setup_preflight._driver_roles)
 
 class TestReadinessCannotAssertWhatItDidNotCheck(unittest.TestCase):
     """#1344 F2: P2/P3 cease to be expressible."""
@@ -168,7 +168,7 @@ class TestReadinessCannotAssertWhatItDidNotCheck(unittest.TestCase):
                                return_value=_shell_less_artifact(host)):
             return dict((name, (ok, detail))
                         for name, ok, detail in
-                        setup_flow._check_host_shells(host, lambda *a, **k: None,
+                        setup_preflight._check_host_shells(host, lambda *a, **k: None,
                                                       "."))
 
     def test_codex_no_longer_claims_enforcement_it_never_verified(self):
@@ -229,7 +229,7 @@ class TestReadinessCannotAssertWhatItDidNotCheck(unittest.TestCase):
         with mock.patch.object(host_probes, "run_probes",
                                return_value=_shell_less_artifact("codex")):
             result = dict((name, (ok, detail)) for name, ok, detail
-                          in setup_flow._check_host_shells("codex", runner, "."))
+                          in setup_preflight._check_host_shells("codex", runner, "."))
         self.assertIn(["codex", "--version"], calls,
                       "readiness stopped probing for the Codex CLI")
         ok, detail = result["codex-cli"]
@@ -247,7 +247,7 @@ class TestReadinessProbesThePostureAndNamesTheFix(unittest.TestCase):
     def test_readiness_reports_every_unproven_capability_with_its_remedy(self):
         with mock.patch.object(host_probes, "run_probes",
                                return_value=_mixed_artifact("claude")):
-            checks = setup_flow._check_host_shells("claude", _runner_ok, ".")
+            checks = setup_preflight._check_host_shells("claude", _runner_ok, ".")
         named = {c[0]: c for c in checks}
         refuted = named["host-capability:" + hosts.TOOL_POLICY_ENFORCED]
         self.assertIs(False, refuted[1])
@@ -259,7 +259,7 @@ class TestReadinessProbesThePostureAndNamesTheFix(unittest.TestCase):
     def test_a_proven_capability_gets_no_readiness_row(self):
         with mock.patch.object(host_probes, "run_probes",
                                return_value=_mixed_artifact("claude")):
-            checks = setup_flow._check_host_shells("claude", _runner_ok, ".")
+            checks = setup_preflight._check_host_shells("claude", _runner_ok, ".")
         self.assertNotIn("host-capability:" + hosts.ARTIFACT_WRITE_GUARD,
                          [c[0] for c in checks])
 
@@ -276,7 +276,7 @@ class TestReadinessProbesThePostureAndNamesTheFix(unittest.TestCase):
         # HostSpec with no shell_format would return from the enforced-shells
         # branch before ever getting there, proving nothing about this
         # surface.
-        assert setup_flow.hosts is hosts, (
+        assert setup_preflight.hosts is hosts, (
             "setup_flow's hosts import has drifted from the canonical "
             "scripts.hosts module -- patching hosts.HOSTS below would be a "
             "silent no-op")
@@ -285,7 +285,7 @@ class TestReadinessProbesThePostureAndNamesTheFix(unittest.TestCase):
         with mock.patch.dict(hosts.HOSTS, {"claude": claiming}), \
                 mock.patch.object(host_probes, "run_probes",
                                   return_value=_all_proven_artifact("claude")):
-            checks = setup_flow._check_host_shells("claude", _runner_ok, ".")
+            checks = setup_preflight._check_host_shells("claude", _runner_ok, ".")
         row = {c[0]: c for c in checks}["host-capabilities"]
         self.assertIs(True, row[1])
         self.assertEqual(host_disclosure.ALL_PROVEN, row[2])
@@ -303,7 +303,7 @@ class TestReadinessProbesThePostureAndNamesTheFix(unittest.TestCase):
                                        claims=frozenset(hosts.CAPABILITIES))
         with mock.patch.dict(hosts.HOSTS, {"claude": claiming}), \
                 mock.patch.object(host_probes, "run_probes", return_value=artifact):
-            checks = setup_flow._check_host_shells("claude", _runner_ok, ".")
+            checks = setup_preflight._check_host_shells("claude", _runner_ok, ".")
         row = {c[0]: c for c in checks}["host-capabilities"]
         self.assertIs(True, row[1])
         self.assertEqual(host_disclosure.ALL_PROVEN, row[2])
@@ -313,7 +313,7 @@ class TestReadinessProbesThePostureAndNamesTheFix(unittest.TestCase):
         # tracebacks tells the operator nothing about what to fix.
         with mock.patch.object(host_probes, "run_probes",
                                side_effect=OSError("boom")):
-            checks = setup_flow._check_host_shells("claude", _runner_ok, ".")
+            checks = setup_preflight._check_host_shells("claude", _runner_ok, ".")
         row = {c[0]: c for c in checks}["host-capabilities"]
         self.assertIsNone(row[1])
         self.assertIn("could not be probed", row[2])
@@ -347,7 +347,7 @@ class TestReadinessNeverReadsAnUnreadableEnvelopeAsProof(unittest.TestCase):
             with self.subTest(envelope=name):
                 with mock.patch.object(host_probes, "run_probes",
                                        return_value=bad):
-                    checks = setup_flow._check_host_shells("claude", _runner_ok, ".")
+                    checks = setup_preflight._check_host_shells("claude", _runner_ok, ".")
                 row = {c[0]: c for c in checks}["host-capabilities"]
                 # By EQUALITY against the module's own constants: "1 of 5 NOT
                 # PROVEN" contains "PROVEN", so no substring test here can tell
@@ -360,7 +360,7 @@ class TestReadinessNeverReadsAnUnreadableEnvelopeAsProof(unittest.TestCase):
         # report. Five rows whose detail is a bare capability name would be
         # "unenforced alone" -- a mood, not a disclosure (5.1).
         with mock.patch.object(host_probes, "run_probes", return_value={}):
-            checks = setup_flow._check_host_shells("claude", _runner_ok, ".")
+            checks = setup_preflight._check_host_shells("claude", _runner_ok, ".")
         self.assertEqual([], [c for c in checks
                               if c[0].startswith("host-capability:")])
 
@@ -381,7 +381,7 @@ class TestShellLessHostsGetTheWholeDisclosure(unittest.TestCase):
         with mock.patch.object(host_probes, "run_probes",
                                return_value=_shell_less_artifact(host)):
             return dict((c[0], c) for c in
-                        setup_flow._check_host_shells(host, _runner_ok, "."))
+                        setup_preflight._check_host_shells(host, _runner_ok, "."))
 
     def test_the_enforced_shells_row_it_already_had_survives(self):
         for host in ("gemini", "generic"):
@@ -437,7 +437,7 @@ class TestReadinessDoesNotSwallowTheLaunchGuard(unittest.TestCase):
         from scripts import codex_host
         d = _repo(self)
         with self.assertRaises(codex_host.LaunchRefused):
-            setup_flow.readiness(d, host="codex")
+            setup_preflight.readiness(d, host="codex")
 
     def test_a_refused_live_launch_escapes_readiness(self):
         from scripts import codex_host
@@ -446,13 +446,13 @@ class TestReadinessDoesNotSwallowTheLaunchGuard(unittest.TestCase):
                 host_probes, "run_probes",
                 side_effect=codex_host.LaunchRefused("test tried to launch the real codex CLI")):
             with self.assertRaises(codex_host.LaunchRefused):
-                setup_flow.readiness(d, host="codex", runner=self._runner)
+                setup_preflight.readiness(d, host="codex", runner=self._runner)
 
     def test_every_other_probe_failure_is_still_a_readiness_row(self):
         d = _repo(self)
         with mock.patch.object(host_probes, "run_probes",
                                side_effect=RuntimeError("probe exploded")):
-            rows = setup_flow.readiness(d, host="codex", runner=self._runner)
+            rows = setup_preflight.readiness(d, host="codex", runner=self._runner)
         posture = dict((name, detail) for name, _ok, detail in rows)
         self.assertIn("host-capabilities", posture)
         self.assertIn("probe exploded", posture["host-capabilities"])
@@ -480,7 +480,7 @@ class TestReadinessWithoutATreeSaysWhatIsMissing(unittest.TestCase):
             host_probes, "run_probes",
             side_effect=AssertionError("readiness probed with no tree to probe"))
         with probe as spy:
-            checks = setup_flow._check_host_shells(host, _runner_ok)  # repo-root-exempt: the subject
+            checks = setup_preflight._check_host_shells(host, _runner_ok)  # repo-root-exempt: the subject
         return spy, {c[0]: c for c in checks}
 
     def test_the_row_names_the_missing_argument_not_a_typeerror(self):

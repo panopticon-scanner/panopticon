@@ -121,7 +121,7 @@ import scripts.runners.base as _runners_base  # noqa: E402
 import scripts.runners.claude as _claude_runner  # noqa: E402
 import scripts.runners.codex as _codex_runner  # noqa: E402
 import scripts.runners.kimi as _kimi_runner  # noqa: E402
-import scripts.setup_flow as _setup_flow  # noqa: E402
+import scripts.setup_preflight as _setup_preflight  # noqa: E402
 import scripts.scanner_config as _scanner_config  # noqa: E402
 import scripts.tool_capture as _tool_capture  # noqa: E402
 import scripts.tools_manifest as _tools_manifest  # noqa: E402
@@ -143,14 +143,14 @@ def _refuse_docker(image="panopticon-tools", runner=None, target=None):
     return False
 
 
-# A SECOND door, found by the shim proof rather than by reading: setup_flow's
-# preflight probes `docker version` (and then the tools image) through
+# A SECOND door, found by the shim proof rather than by reading: setup's
+# preflight (`setup_preflight`, #3405) probes `docker version` (and then the tools image) through
 # `setup_readiness(..., runner=subprocess.run)`. Tests that inject a runner are
 # testing the check and never touch the daemon; tests that leave the default in
 # place were probing the real one, so the preflight reported "ok" on a
 # workstation and "unavailable" in CI -- machine-dependent again, in the one
 # phase whose whole job is to report what is installed.
-REAL_CHECK_DOCKER = _setup_flow._check_docker
+REAL_CHECK_DOCKER = _setup_preflight._check_docker
 
 
 class _RefusedProbe:
@@ -161,7 +161,7 @@ def _refuse_setup_docker(runner):
     """Swap ONLY the un-injected default; an explicit runner is the caller's.
 
     `setup_readiness` now resolves its un-injected default from
-    `setup_flow.DEFAULT_RUNNER`, which the launch guard below has already
+    `setup_preflight.DEFAULT_RUNNER`, which the launch guard below has already
     replaced with the refusal -- so "un-injected" is either of those two, and
     reading only the first would hand the docker probe a launcher that raises.
     """
@@ -175,7 +175,7 @@ def _no_live_scanner_containers(request, monkeypatch):
     if "docker" in request.keywords:
         return                      # opted in with @pytest.mark.docker
     monkeypatch.setattr(_run_tools, "docker_available", _refuse_docker)
-    monkeypatch.setattr(_setup_flow, "_check_docker", _refuse_setup_docker)
+    monkeypatch.setattr(_setup_preflight, "_check_docker", _refuse_setup_docker)
 
 
 # --- #1344: no live host-CLI launches from the unit suite --------------------
@@ -184,7 +184,7 @@ def _no_live_scanner_containers(request, monkeypatch):
 # subprocess.run bound as a DEFAULT ARGUMENT, unreachable by a patch, and
 # probes.codex._codex_measure mapped any exception to UNKNOWN -- so a test that
 # did reach a live CLI and failed would still have passed. Discipline then
-# failed twice more: `setup_flow.readiness` probes `codex --version` through
+# failed twice more: setup's `readiness` (now `setup_preflight`) probes `codex --version` through
 # the same unreachable default (N-M3), and `runners/claude.py` binds its
 # launcher the same way.
 #
@@ -227,7 +227,7 @@ def _no_live_scanner_containers(request, monkeypatch):
 # second class of the same name, and a refusal that two `except` clauses
 # disagree about is not a guarantee. `codex_host.LaunchRefused` still names
 # it, so every call site that already caught it is unchanged.
-LAUNCH_SEAMS = (_codex_host, _codex_runner, _claude_runner, _setup_flow,
+LAUNCH_SEAMS = (_codex_host, _codex_runner, _claude_runner, _setup_preflight,
                 _kimi_probes, _kimi_runner, _app_trace)
 
 # #3270: `run_probes` names the host CLI it probed through -- path, version and

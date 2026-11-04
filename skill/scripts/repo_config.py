@@ -11,7 +11,7 @@ MAX_CONFIG_BYTES (read-then-check, never partially parsed), a symlink at
 either name is refused rather than followed, `version: 1` is required, and
 unknown top-level keys are disclosed and ignored. `.panopticon/groups.yml`
 is never read here: a tree that still carries one and no root file gets
-`legacy_message`, and `setup_flow.migrate_config` is the only reader of it.
+`legacy_message`, and `setup_config.migrate_config` is the only reader of it.
 
 Importing names needs only the stdlib; read_document loads yaml when parsing --
 and REFUSES the document if the package is absent, rather than raising, because
@@ -174,7 +174,7 @@ def read_document(review_root):
                         ["%s exceeds %d bytes; refused" % (res.path, MAX_CONFIG_BYTES)],
                         disclosures)
     # A refusal, not a traceback: `phases/readiness._matrix_row` and
-    # `setup_flow._check_groups_manifest` are both documented NEVER to raise, and
+    # `setup_preflight._check_groups_manifest` are both documented NEVER to raise, and
     # an install without pyyaml reached them before the readiness `dependencies`
     # row could name the package (#2369). The row still fails and still prints
     # the `pip install`; this is the same refusal currency as a capped, symlinked

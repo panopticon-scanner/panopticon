@@ -35,7 +35,7 @@ from scripts.host_posture import (  # noqa: E402,F401 -- compatibility names for
 )
 import scripts.money as money  # noqa: E402
 import scripts.model_resolver as model_resolver  # noqa: E402
-import scripts.setup_flow as setup_flow  # noqa: E402
+import scripts.setup_config as setup_config  # noqa: E402
 import scripts.phases.engine as engine
 import scripts.phases.runio as runio
 import scripts.phases.coverage as coverage
@@ -720,7 +720,7 @@ def main(argv=None):
         # Its own exit code, like `readiness`: this verb writes one file and
         # says what it wrote, it is not a review and speaks no status protocol.
         try:
-            _path, message = setup_flow.migrate_config(os.path.abspath(args.target))
+            _path, message = setup_config.migrate_config(os.path.abspath(args.target))
         except ValueError as exc:
             print("driver migrate-config: %s" % exc, file=sys.stderr)
             return 1

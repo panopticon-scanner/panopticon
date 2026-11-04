@@ -9,6 +9,8 @@ from unittest import mock
 import yaml
 
 import scripts.setup_flow as setup_flow
+import scripts.setup_config as setup_config
+import scripts.setup_preflight as setup_preflight
 import shutil
 
 
@@ -21,7 +23,7 @@ from tests.setup_helpers import (
 
 def test_check_groups_manifest_reports_an_unreadable_root_config(tmp_path):
     (tmp_path / "panopticon.yml").write_text("not: [valid yaml: [")
-    name, ok, detail = setup_flow._check_groups_manifest(str(tmp_path))
+    name, ok, detail = setup_preflight._check_groups_manifest(str(tmp_path))
     assert name == "groups-manifest"
     assert ok is False
     assert "unreadable" in detail.lower()
@@ -33,7 +35,7 @@ def test_check_groups_manifest_reports_a_refused_symlink_not_absence(tmp_path):
     # a refusal, and a silent fall back to whole-repo chunking.
     (tmp_path / "elsewhere.yml").write_text("version: 1\ngroups: {}\n")
     (tmp_path / "panopticon.yml").symlink_to(tmp_path / "elsewhere.yml")
-    name, ok, detail = setup_flow._check_groups_manifest(str(tmp_path))
+    name, ok, detail = setup_preflight._check_groups_manifest(str(tmp_path))
     assert name == "groups-manifest"
     assert ok is False
     assert "symlink" in detail
@@ -44,7 +46,7 @@ def test_check_groups_manifest_does_not_gate_on_a_stale_config_json(tmp_path):
     # un-set-up tree's row into a readiness failure. Only a refusal does that.
     (tmp_path / ".panopticon").mkdir()
     (tmp_path / ".panopticon" / "config.json").write_text('{"max_per_group": 5}')
-    name, ok, detail = setup_flow._check_groups_manifest(str(tmp_path))
+    name, ok, detail = setup_preflight._check_groups_manifest(str(tmp_path))
     assert name == "groups-manifest"
     assert ok is None
     assert "no committable config yet" in detail
@@ -63,7 +65,7 @@ def test_check_groups_manifest_never_raises_on_a_legacy_tree(tmp_path):
     def ok_runner(argv, capture_output, text, timeout=None):
         return _Ok()
 
-    checks = setup_flow.setup_readiness(str(tmp_path), host="claude",
+    checks = setup_preflight.setup_readiness(str(tmp_path), host="claude",
                                         runner=ok_runner,
                                         environ={"NVD_API_KEY": "k"})
     row = {c[0]: c for c in checks}["groups-manifest"]
@@ -82,14 +84,14 @@ def test_readiness_names_a_refused_codex_home_not_the_emit_remedy(tmp_path, monk
     import scripts.dispatch as dispatch  # the package module `_check_host_shells` imports
     dispatch.emit_host_agents("codex", str(tmp_path / "agents"))
     monkeypatch.chdir(tmp_path)
-    hosts = setup_flow.hosts
+    hosts = setup_preflight.hosts
     _home, refusal = hosts.codex_home(".")
     monkeypatch.setitem(hosts.HOSTS, "codex", dataclasses.replace(
         hosts.HOSTS["codex"], registration_dir=os.path.join(".", "agents"),
         registration_refusal=refusal))
-    with mock.patch.object(setup_flow.host_probes, "run_probes", return_value={}):
+    with mock.patch.object(setup_preflight.host_probes, "run_probes", return_value={}):
         rows = {name: (ok, detail) for name, ok, detail in
-                setup_flow._check_host_shells("codex", lambda *a, **k: None, str(tmp_path))}
+                setup_preflight._check_host_shells("codex", lambda *a, **k: None, str(tmp_path))}
     assert rows["enforced-shells"] == (False, refusal)
 
 class TestSetupFlow(SetupFixtureBase):
@@ -97,7 +99,7 @@ class TestSetupFlow(SetupFixtureBase):
 
     def test_provision_ignores_the_draft_and_never_writes_config_json(self):
         with tempfile.TemporaryDirectory() as d:
-            summary = setup_flow.provision(d)
+            summary = setup_config.provision(d)
             with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
                 gi = fh.read()
             self.assertIn("panopticon.yml.draft", gi)
@@ -112,7 +114,7 @@ class TestSetupFlow(SetupFixtureBase):
         d = _repo(self)
         with open(os.path.join(d, ".panopticon", "config.json"), "w") as fh:
             json.dump({"max_per_group": 5}, fh)
-        summary = setup_flow.provision(d)
+        summary = setup_config.provision(d)
         self.assertIn("settings:", summary["stale_config_json"])
 
     def test_provision_leaves_blanket_panopticon_ignore_untouched(self):
@@ -122,7 +124,7 @@ class TestSetupFlow(SetupFixtureBase):
         d = _repo(self)
         with open(os.path.join(d, ".gitignore"), "w") as fh:
             fh.write("node_modules/\n.panopticon/\n")
-        setup_flow.provision(d)
+        setup_config.provision(d)
         gi = self._gitignore(d)
         self.assertIn(".panopticon/", gi)
         self.assertNotIn(".panopticon/*", gi)   # not migrated
@@ -137,14 +139,14 @@ class TestSetupFlow(SetupFixtureBase):
         # so the negation buys a target nothing and re-exposes a directory of
         # run artifacts to the next `git add .`.
         d = _repo(self)
-        setup_flow.provision(d)
+        setup_config.provision(d)
         gi = self._gitignore(d)
         self.assertIn(".panopticon/*", gi)       # run artifacts still ignored
         self.assertNotIn("!", gi)                # and nothing re-included
 
     def test_provision_fresh_repo_adds_the_artifact_block(self):
         d = _repo(self)  # no .gitignore
-        setup_flow.provision(d)
+        setup_config.provision(d)
         gi = self._gitignore(d)
         self.assertIn(".panopticon/*", gi)
         # M5: no negation of any kind -- neither the per-file one the legacy
@@ -159,7 +161,7 @@ class TestSetupFlow(SetupFixtureBase):
         d = _repo(self)
         with open(os.path.join(d, ".gitignore"), "w") as fh:
             fh.write(".panopticon/*\n")
-        setup_flow.provision(d)
+        setup_config.provision(d)
         gi = self._gitignore(d)
         self.assertEqual(gi.count(".panopticon/*"), 1)   # not duplicated
         self.assertNotIn("!.panopticon/", gi)
@@ -169,7 +171,7 @@ class TestSetupFlow(SetupFixtureBase):
         with tempfile.TemporaryDirectory() as d:
             os.makedirs(os.path.join(d, "src"))
             open(os.path.join(d, "src", "a.py"), "w").close()
-            path, created, names = setup_flow.seed_flat_manifest(d)
+            path, created, names = setup_config.seed_flat_manifest(d)
             self.assertEqual(path, os.path.join(d, "panopticon.yml"))
             self.assertTrue(created)
             with open(path, encoding="utf-8") as fh:
@@ -181,7 +183,7 @@ class TestSetupFlow(SetupFixtureBase):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
                 fh.write("version: 1\ngroups:\n  Kept:\n    match: ['k/**']\n")
-            path, created, names = setup_flow.seed_flat_manifest(d)
+            path, created, names = setup_config.seed_flat_manifest(d)
             self.assertFalse(created)
             self.assertEqual(names, ["Kept"])
 
@@ -193,7 +195,7 @@ class TestSetupFlow(SetupFixtureBase):
         with tempfile.TemporaryDirectory() as d:
             outside = os.path.join(d, "not-yet-there.yml")
             os.symlink(outside, os.path.join(d, "panopticon.yml"))
-            _path, created, _names = setup_flow.seed_flat_manifest(d)
+            _path, created, _names = setup_config.seed_flat_manifest(d)
             self.assertFalse(created)
             self.assertFalse(os.path.exists(outside), "the link's target was created")
 
@@ -203,7 +205,7 @@ class TestSetupFlow(SetupFixtureBase):
             with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
                 fh.write("groups: {}\n")
             with self.assertRaisesRegex(ValueError, "migrate-config"):
-                setup_flow.provision(d)
+                setup_config.provision(d)
 
     def test_migrate_config_round_trips_the_legacy_groups(self):
         with tempfile.TemporaryDirectory() as d:
@@ -213,7 +215,7 @@ class TestSetupFlow(SetupFixtureBase):
                       "exclude_paths: ['vendor/**']\n")
             with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
                 fh.write(legacy)
-            path, message = setup_flow.migrate_config(d)
+            path, message = setup_config.migrate_config(d)
             self.assertEqual(path, os.path.join(d, "panopticon.yml"))
             self.assertTrue(os.path.isfile(os.path.join(d, ".panopticon", "groups.yml")))  # left for the operator
             self.assertIn("delete", message)
@@ -230,7 +232,7 @@ class TestSetupFlow(SetupFixtureBase):
             with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
                 fh.write("groups:\n  - name: App\n    match: ['app/**']\n"
                          "  - name: Web\n    match: ['web/**']\n")
-            path, _message = setup_flow.migrate_config(d)
+            path, _message = setup_config.migrate_config(d)
             with open(path, encoding="utf-8") as fh:
                 doc = yaml.safe_load(fh)
             self.assertEqual(list(doc["groups"]), ["App", "Web"])
@@ -243,16 +245,16 @@ class TestSetupFlow(SetupFixtureBase):
         with tempfile.TemporaryDirectory() as d:
             self._legacy(d, "groups: [valid yaml: [")
             with self.assertRaisesRegex(ValueError, "unreadable"):
-                setup_flow.migrate_config(d)
+                setup_config.migrate_config(d)
         with tempfile.TemporaryDirectory() as d:
             self._legacy(d, "- just\n- a list\n")
             with self.assertRaisesRegex(ValueError, "must be a mapping"):
-                setup_flow.migrate_config(d)
+                setup_config.migrate_config(d)
         cap = setup_flow.repo_config.MAX_CONFIG_BYTES
         with tempfile.TemporaryDirectory() as d:
             self._legacy(d, "groups:\n  App:\n    match: ['a/**']\n#" + "x" * cap)
             with self.assertRaisesRegex(ValueError, "exceeds %d bytes" % cap):
-                setup_flow.migrate_config(d)
+                setup_config.migrate_config(d)
 
     def test_migrate_config_refuses_a_symlinked_legacy_file(self):
         # A target repo can commit `.panopticon/groups.yml` as a link to any
@@ -265,20 +267,20 @@ class TestSetupFlow(SetupFixtureBase):
             os.symlink(os.path.join(d, "elsewhere.yml"),
                        os.path.join(d, ".panopticon", "groups.yml"))
             with self.assertRaisesRegex(ValueError, "to migrate"):
-                setup_flow.migrate_config(d)
+                setup_config.migrate_config(d)
             self.assertIsNone(setup_flow.repo_config.resolve(d).path)
 
     def test_migrate_config_refuses_when_a_root_file_exists_or_no_legacy(self):
         with tempfile.TemporaryDirectory() as d:
             with self.assertRaisesRegex(ValueError, "no `.panopticon/groups.yml`"):
-                setup_flow.migrate_config(d)
+                setup_config.migrate_config(d)
             os.makedirs(os.path.join(d, ".panopticon"))
             with open(os.path.join(d, ".panopticon", "groups.yml"), "w") as fh:
                 fh.write("groups: {}\n")
             with open(os.path.join(d, "panopticon.yml"), "w") as fh:
                 fh.write("version: 1\ngroups: {}\n")
             with self.assertRaisesRegex(ValueError, "already exists"):
-                setup_flow.migrate_config(d)
+                setup_config.migrate_config(d)
 
     def test_migrate_config_refuses_a_symlinked_root_config(self):
         # A REFUSED symlink at either config name resolves to `path is None`
@@ -295,7 +297,7 @@ class TestSetupFlow(SetupFixtureBase):
             link = os.path.join(d, "panopticon.yml")
             os.symlink(outside, link)
             with self.assertRaisesRegex(ValueError, "symlink"):
-                setup_flow.migrate_config(d)
+                setup_config.migrate_config(d)
             self.assertTrue(os.path.islink(link), "the operator's symlink was replaced")
             with open(outside, encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), outside_text)   # never written through
@@ -304,9 +306,9 @@ class TestSetupFlow(SetupFixtureBase):
 
     def test_provision_gitignore_idempotent_second_run_noop(self):
         d = _repo(self)
-        setup_flow.provision(d)
+        setup_config.provision(d)
         after_first = self._gitignore(d)
-        res2 = setup_flow.provision(d)
+        res2 = setup_config.provision(d)
         self.assertEqual(res2["gitignore_added"], [])
         self.assertEqual(self._gitignore(d), after_first)   # byte-identical
 
@@ -318,7 +320,7 @@ class TestSetupFlow(SetupFixtureBase):
             with open(os.path.join(d, "panopticon.yml"), "w") as fh:
                 fh.write("groups: {}\n")                        # no `version: 1`
             with self.assertRaisesRegex(ValueError, "version: 1"):
-                setup_flow.provision(d)
+                setup_config.provision(d)
 
     def test_provision_refuses_a_symlinked_root_config(self):
         with tempfile.TemporaryDirectory() as d:
@@ -327,7 +329,7 @@ class TestSetupFlow(SetupFixtureBase):
             link = os.path.join(d, "panopticon.yml")
             os.symlink(os.path.join(d, "elsewhere.yml"), link)
             with self.assertRaisesRegex(ValueError, "symlink"):
-                setup_flow.provision(d)
+                setup_config.provision(d)
             self.assertTrue(os.path.islink(link))
 
     def test_provision_still_scaffolds_a_tree_with_no_config(self):
@@ -338,7 +340,7 @@ class TestSetupFlow(SetupFixtureBase):
             os.makedirs(os.path.join(d, ".panopticon"))
             with open(os.path.join(d, ".panopticon", "config.json"), "w") as fh:
                 fh.write('{"max_per_group": 5}')
-            summary = setup_flow.provision(d)
+            summary = setup_config.provision(d)
             self.assertIn(".panopticon/*", self._gitignore(d))
             self.assertIn("no longer read", summary["stale_config_json"])
 
@@ -350,7 +352,7 @@ class TestSetupFlow(SetupFixtureBase):
         d = _repo(self)
         with open(os.path.join(d, ".gitignore"), "w") as fh:
             fh.write("node_modules/\n**/.panopticon/\n")
-        setup_flow.provision(d)
+        setup_config.provision(d)
         gi = self._gitignore(d)
         self.assertNotIn(".panopticon/*", gi)   # not migrated
         self.assertNotIn("!.panopticon/", gi)   # dir not re-exposed
@@ -372,7 +374,7 @@ class TestSeedGroupsManifestInjection(unittest.TestCase):
             os.makedirs(os.path.join(d, sub))
             with open(os.path.join(d, sub, fname), "w") as fh:
                 fh.write("x = 1\n")
-        path, created, names = setup_flow._seed_groups_manifest(d)
+        path, created, names = setup_config._seed_groups_manifest(d)
         self.assertTrue(created)
         with open(path, encoding="utf-8") as fh:
             doc = yaml.safe_load(fh.read())          # parses cleanly -> no injection
@@ -397,7 +399,7 @@ class TestSeedGroupsManifestInjection(unittest.TestCase):
             fh.write("version: 1\ngroups:\n  Winner:\n    match: ['src/**']\n")
         absent = setup_flow.repo_config.Resolution(None, [])
         with mock.patch.object(setup_flow.repo_config, "resolve", return_value=absent):
-            _p, created, _names = setup_flow._seed_groups_manifest(d)
+            _p, created, _names = setup_config._seed_groups_manifest(d)
         self.assertFalse(created)
         with open(path, encoding="utf-8") as fh:
             self.assertIn("Winner", fh.read())   # existing config not clobbered
@@ -414,7 +416,7 @@ class TestSeedGroupsManifestInjection(unittest.TestCase):
             os.makedirs(os.path.join(d, sub))
             with open(os.path.join(d, sub, "mod.py"), "w") as fh:
                 fh.write("x = 1\n")
-        path, created, names = setup_flow._seed_groups_manifest(d)
+        path, created, names = setup_config._seed_groups_manifest(d)
         self.assertTrue(created)
         self.assertEqual(names, ["lib", "src"])          # src_1, Ungrouped dropped
         with open(path, encoding="utf-8") as fh:
@@ -436,7 +438,7 @@ class TestSeedGroupsManifestInjection(unittest.TestCase):
             fh.write("# x\n")
         with mock.patch.object(setup_flow.discovery, "discover_repo_files",
                                 return_value=["Docs/a.md", "docs/b.md"]):
-            path, created, names = setup_flow._seed_groups_manifest(d)
+            path, created, names = setup_config._seed_groups_manifest(d)
         self.assertTrue(created)
         # _reserved_name_errors names the LATER id in sorted order ('docs'
         # sorts after 'Docs') as the collision, so 'docs' is the one dropped.
@@ -460,7 +462,7 @@ class TestGlobFormBlanketIgnore(unittest.TestCase):
 
     def test_glob_form_blanket_is_left_untouched(self):
         d = _git_repo(self, "node_modules/\n.panopticon*/\n")
-        setup_flow.provision(d)
+        setup_config.provision(d)
         with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
             gi = fh.read()
         self.assertNotIn(".panopticon/*", gi)      # no committable block
@@ -474,13 +476,13 @@ class TestGlobFormBlanketIgnore(unittest.TestCase):
         d = _git_repo(self, "node_modules/\n.panopticon*/\n"
                             ".claude/settings.local.json\n"
                             + setup_flow.repo_config.DRAFT_NAME + "\n")
-        setup_flow.provision(d)
+        setup_config.provision(d)
         self.assertEqual(_status(d), "")
 
     def test_the_literal_form_still_behaves_as_before(self):
         d = _git_repo(self, ".panopticon/\n.claude/settings.local.json\n"
                             + setup_flow.repo_config.DRAFT_NAME + "\n")
-        setup_flow.provision(d)
+        setup_config.provision(d)
         self.assertEqual(_status(d), "")
 
     def test_a_contents_form_repo_gets_no_negation(self):
@@ -488,7 +490,7 @@ class TestGlobFormBlanketIgnore(unittest.TestCase):
         # directory is visible without being re-included -- and since M5
         # nothing under it is committable, so nothing re-includes it.
         d = _git_repo(self, ".panopticon/*\n")
-        setup_flow.provision(d)
+        setup_config.provision(d)
         with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
             gi = fh.read()
         self.assertNotIn("!.panopticon/", gi)
@@ -496,7 +498,7 @@ class TestGlobFormBlanketIgnore(unittest.TestCase):
 
     def test_a_fresh_git_repo_still_gets_the_full_block(self):
         d = _git_repo(self, "node_modules/\n")
-        setup_flow.provision(d)
+        setup_config.provision(d)
         with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
             gi = fh.read()
         self.assertIn(".panopticon/*", gi)
@@ -508,7 +510,7 @@ class TestGlobFormBlanketIgnore(unittest.TestCase):
         d = _repo(self)
         with open(os.path.join(d, ".gitignore"), "w") as fh:
             fh.write(".panopticon*/\n")
-        setup_flow.provision(d)
+        setup_config.provision(d)
         with open(os.path.join(d, ".gitignore"), encoding="utf-8") as fh:
             gi = fh.read()
         self.assertNotIn("!.panopticon/", gi)

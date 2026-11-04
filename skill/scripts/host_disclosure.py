@@ -223,7 +223,7 @@ def unproven_rows(envelope):
 
     Pure, and the ONLY place the `hosts.posture()` -> `hosts.unproven()` chain
     is written for disclosure (#1600). `lines()` renders it and
-    `setup_flow._check_host_shells` (5.1 surface 4) consumes it; before this
+    `setup_preflight._check_host_shells` (5.1 surface 4) consumes it; before this
     existed, readiness wrote the same chain itself and then pulled each row's
     TEXT out of `lines()` by prefix match. Two derivations of one fact, and
     only one of them observable from the other: mutating `lines()` to emit a

@@ -140,7 +140,7 @@ class TestReadDocument(unittest.TestCase):
 
     def test_an_unusable_pyyaml_is_a_refusal_not_a_traceback(self):
         # #2369: `phases/readiness._matrix_row` and
-        # `setup_flow._check_groups_manifest` are both documented NEVER to
+        # `setup_preflight._check_groups_manifest` are both documented NEVER to
         # raise, and `driver readiness`'s `dependencies` row is where a missing
         # runtime package gets named with its `pip install`. A ModuleNotFoundError
         # out of here reached both before that row could print. A `None` entry in
