@@ -5,6 +5,7 @@ import re
 import sys
 from pathlib import Path
 
+from scripts import plan_contract
 from scripts import semgrep_targets
 from scripts.inert import surrogate_free
 from scripts.tolerant_json import depth_checked
@@ -28,7 +29,7 @@ LEGACY_SARIF_TOOLS = {"semgrep", "bandit", "trivy", "gitleaks", "gosec"}
 SEMGREP_SCANNER_EXCLUDES = (
     ".git", ".svn", "_darcs", "build/", "vendor/", "dist/", "*.min.js",
     ".env/", ".tox/", "node_modules/", ".npm/", ".yarn/", ".venv/",
-    "_opam/", "_build/", "_cargo/", ".panopticon/", ".worktrees/",
+    "_opam/", "_build/", "_cargo/", plan_contract.ARTIFACT_DIR + "/", ".worktrees/",
     ".superpowers/", "__pycache__/", ".ruff_cache/",
     ".pytest_cache/", ".mypy_cache/", "*.egg-info/", ".DS_Store",
 )

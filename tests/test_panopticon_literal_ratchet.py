@@ -1,14 +1,15 @@
 """#3409: a shrink-only ratchet on the `.panopticon` literal under skill/scripts.
 
-The artifact root has one owner, `plan_contract.artifact_root`, but the name
-is still spelled across the tree. This counts, per file, the string constants
+The artifact directory's name has one owner, `plan_contract.ARTIFACT_DIR`
+(`artifact_root` builds on it). This counts, per file, the string constants
 that contain `.panopticon` (read from the AST: docstrings and comments are not
-counted, an f-string piece or an implicitly concatenated literal is), and pins
-each file at the count it had on main 72b0083f. A count may only go down, and
-the change that lowers it lowers its pin too, so the map stays the list of
-sites still owed; a file not listed is pinned at 0, so a new file starts clean.
-The sweep onto `artifact_root` lands directory by directory, each PR lowering
-the numbers below.
+counted, an f-string piece or an implicitly concatenated literal is) and pins
+each file's count. A count may only go down, and the change that lowers it
+lowers its pin too; a file not listed is pinned at 0, so a new file starts clean.
+The #3409 sweep moved every owed site onto the constant, so `PENDING` is empty.
+What remains is the owner (`HOME`), the literals that stay by design
+(`STANDALONE`, pinned to agree with the constant) and two constants that only
+contain the string (`NOT_THE_DIRECTORY`).
 """
 import ast
 import os
@@ -19,10 +20,11 @@ from pathlib import Path
 SCRIPTS = Path(__file__).resolve().parent.parent / "skill" / "scripts"
 LITERAL = ".panopticon"
 
-PENDING: dict[str, int] = {
+PENDING: dict[str, int] = {}   # the sweep is done (#3409): nothing is owed
+
+# The owner itself: `ARTIFACT_DIR` and `artifact_root`'s three refusal messages.
+HOME: dict[str, int] = {
     "plan_contract.py": 4,
-    "tools/dependency_check.py": 1,
-    "tools/legacy_sarif.py": 1,
 }
 
 # Sites that keep their literal on purpose, pinned like the rest (shrink-only)
@@ -51,7 +53,8 @@ NOT_THE_DIRECTORY: dict[str, int] = {
 
 
 def _pinned(rel):
-    return PENDING.get(rel, 0) + STANDALONE.get(rel, 0) + NOT_THE_DIRECTORY.get(rel, 0)
+    return (PENDING.get(rel, 0) + HOME.get(rel, 0) + STANDALONE.get(rel, 0)
+            + NOT_THE_DIRECTORY.get(rel, 0))
 
 
 def literal_count(tree):
@@ -96,7 +99,7 @@ class PanopticonLiteralRatchetTest(unittest.TestCase):
 
     def test_a_shrink_lowers_its_pin(self):
         counts = _census()
-        files = set(PENDING) | set(STANDALONE) | set(NOT_THE_DIRECTORY)
+        files = set(PENDING) | set(HOME) | set(STANDALONE) | set(NOT_THE_DIRECTORY)
         loose = ["%s: %d (pinned at %d)" % (rel, counts.get(rel, 0), _pinned(rel))
                  for rel in sorted(files) if counts.get(rel, 0) < _pinned(rel)]
         self.assertEqual(loose, [], "lower these pins to the new count (drop the entry "

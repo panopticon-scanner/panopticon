@@ -5,6 +5,7 @@ import os
 import shutil
 import sys
 import tempfile
+from scripts import plan_contract
 from .base import (INERT_CUT, OutputCapExceeded, has_any_file, inert_text,
                    make_finding, normalize_severity, omit_none,
                    parse_json_bytes, scratch_cwd, target_root_cv)
@@ -150,7 +151,7 @@ class DependencyCheckAdapter:
         output directory or a vendored lib/ tree.
         """
         wrappers = {"gradle-wrapper.jar", "maven-wrapper.jar"}
-        skip = {".git", ".panopticon", ".worktrees", "node_modules"}
+        skip = {".git", plan_contract.ARTIFACT_DIR, ".worktrees", "node_modules"}
         for root, dirs, files in os.walk(target):
             dirs[:] = [d for d in dirs if d not in skip]
             for name in files:
