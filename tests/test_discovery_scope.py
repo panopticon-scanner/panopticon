@@ -1247,3 +1247,48 @@ def test_the_pruned_disclosure_is_one_line_per_run(tmp_path, capsys):
     assert orchestrator.main(["--repo-scan", str(clean), "--out",
                               str(clean / ".panopticon" / "g.json")]) == 0
     assert "discovery pruned" not in capsys.readouterr().err
+
+
+# #3395: the four refusals the _repo_scan split moved that no test pinned by
+# exact code -- each exits 2 with its own sentence and writes no artifact.
+def test_repo_scan_refuses_a_panopticon_that_is_not_a_directory(tmp_path, capsys):
+    repo = repo_with_matrix(tmp_path)
+    shutil.rmtree(repo / ".panopticon", ignore_errors=True)
+    (repo / ".panopticon").write_text("not a dir\n")
+    assert orchestrator.main(["--repo-scan", str(repo)]) == 2
+    assert capsys.readouterr().err == "panopticon: .panopticon exists but is not a directory\n"
+
+
+def test_repo_scan_refuses_an_out_that_escapes_the_artifact_directory(tmp_path, capsys):
+    repo = repo_with_matrix(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (repo / ".panopticon").mkdir(exist_ok=True)
+    (repo / ".panopticon" / "link").symlink_to(elsewhere)
+    out = repo / ".panopticon" / "link" / "groups.json"
+    assert orchestrator.main(["--repo-scan", str(repo), "--out", str(out)]) == 2
+    assert capsys.readouterr().err == \
+        "panopticon: artifact output escapes the target .panopticon directory\n"
+    assert not (elsewhere / "groups.json").exists()
+
+
+def test_repo_scan_scope_changed_without_a_changed_file_list_exits_2(tmp_path, capsys):
+    repo = repo_with_matrix(tmp_path)
+    out = repo / ".panopticon" / "groups.json"
+    with mock.patch.object(orchestrator, "collect_changed_files", return_value=None):
+        rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD",
+                                str(repo), "--out", str(out)])
+    assert rc == 2
+    assert capsys.readouterr().err.endswith(
+        "could not determine changed files; is %s a git repo?\n" % repo)
+    assert not out.exists()
+
+
+def test_repo_scan_scope_files_with_a_bad_base_exits_2_no_artifact(tmp_path):
+    repo = repo_with_matrix(tmp_path)
+    out = repo / ".panopticon" / "groups.json"
+    rc = orchestrator.main(["--repo", str(repo), "--repo-scan", "--scope-files",
+                            "src/checkout/pay.py", "--base", "nope", "--out", str(out)])
+    assert rc == 2
+    assert not out.exists()
+    assert not (repo / ".panopticon" / "diff-hunks.json").exists()
