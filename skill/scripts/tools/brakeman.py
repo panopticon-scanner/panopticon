@@ -4,7 +4,8 @@ import os
 import re
 import sys
 from .base import (as_list, make_finding, omit_none, parse_json_bytes,
-                   run_tool, scratch_cwd)
+                   scratch_cwd)
+from .exec import run_tool
 
 
 _CONFIDENCE_MAP = {

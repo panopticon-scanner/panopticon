@@ -35,6 +35,7 @@ import time
 import scripts.executable as executable
 import scripts.procgroup as procgroup
 import scripts.tools.base as tools_base
+import scripts.tools.exec as tools_exec
 
 # How long a timed-out launch's group is given to drain its pipes once it has
 # been killed, before the launcher gives up and reports what it has.
@@ -87,7 +88,7 @@ def _feed(stream, data):
 
 class _Capture:
     """`communicate`, bounded (#3246): stdin fed on a thread, stderr drained to
-    a tail on a thread (`tools_base.drain_stderr_async`), stdout read up to the
+    a tail on a thread (`tools_exec.drain_stderr_async`), stdout read up to the
     cap on a thread (`tools_base.read_capped`) -- and the WAIT stays on the
     caller's thread with a deadline, as `communicate`'s did, so no timer exists
     that could fire late at a recycled group."""
@@ -98,7 +99,7 @@ class _Capture:
         if proc.stdin is not None:
             self.feeder = threading.Thread(target=_feed, args=(proc.stdin, data), daemon=True)
             self.feeder.start()
-        self.join_stderr = tools_base.drain_stderr_async(proc, cap=STDERR_CAP)
+        self.join_stderr = tools_exec.drain_stderr_async(proc, cap=STDERR_CAP)
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
 

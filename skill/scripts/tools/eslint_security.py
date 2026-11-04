@@ -4,7 +4,8 @@ import os
 import json
 import re
 import sys
-from .base import make_finding, omit_none, parse_json_bytes, run_tool, scratch_cwd
+from .base import make_finding, omit_none, parse_json_bytes, scratch_cwd
+from .exec import run_tool
 from .sarif_utils import norm_uri
 
 # node_modules locations in the tools image, in priority order. The first is

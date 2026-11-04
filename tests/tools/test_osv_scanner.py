@@ -243,7 +243,7 @@ class TestOsvScannerAdapter(unittest.TestCase):
     def test_invoke_runs_osv_scanner_json(self):
         adapter = osv.OsvScannerAdapter()
         calls = []
-        with mock.patch("scripts.tools.base.subprocess.Popen",
+        with mock.patch("scripts.tools.exec.subprocess.Popen",
                         side_effect=scratch_cwd_recorder(calls)):
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(stdout, b"{}")
@@ -269,7 +269,7 @@ class TestOsvScannerAdapter(unittest.TestCase):
         # out of the scan. The flag stands once, before the scan root.
         adapter = osv.OsvScannerAdapter()
         calls = []
-        with mock.patch("scripts.tools.base.subprocess.Popen",
+        with mock.patch("scripts.tools.exec.subprocess.Popen",
                         side_effect=scratch_cwd_recorder(calls)):
             adapter.invoke("/tmp/fake")
         argv = only(calls, "osv-scanner launch")["argv"]
@@ -286,7 +286,7 @@ class TestOsvScannerAdapter(unittest.TestCase):
         # the fourth (`bundler_audit.py`'s shape).
         adapter = osv.OsvScannerAdapter()
         calls = []
-        with mock.patch("scripts.tools.base.subprocess.Popen",
+        with mock.patch("scripts.tools.exec.subprocess.Popen",
                         side_effect=scratch_cwd_recorder(calls)):
             adapter.invoke("/tmp/fake")
         launch = only(calls, "osv-scanner launch")
@@ -325,7 +325,7 @@ class TestOsvScannerAdapter(unittest.TestCase):
         fake_run = FakePopen(stdout=b"scan output", stderr=b"no lockfiles found",
                              returncode=2)
         buf = io.StringIO()
-        with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake_run), \
+        with mock.patch("scripts.tools.exec.subprocess.Popen", return_value=fake_run), \
              contextlib.redirect_stderr(buf):
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(stdout, b"scan output")

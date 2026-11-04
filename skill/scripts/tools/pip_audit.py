@@ -12,8 +12,8 @@ import tomllib
 
 from scripts.claim_scope import confined_to_root
 import scripts.redact as redact
-from .base import (cve_ids, make_finding, normalize_severity, omit_none,
-                   parse_json_bytes, run_tool, scratch_cwd, target_root_cv)
+from .base import (cve_ids, make_finding, normalize_severity, omit_none, parse_json_bytes, scratch_cwd, target_root_cv)
+from .exec import run_tool
 
 # The manifest THIS invocation audited, TARGET-RELATIVE (ARC-2852754506, and
 # npm_audit's shape already): `location.file`'s shape everywhere downstream, and

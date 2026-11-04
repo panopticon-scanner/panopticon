@@ -53,7 +53,7 @@ SURFACES = ("skill/scripts", "scripts", "skill/scripts/tools")
 # the #1589 seams by #3405 and off the list),
 # `orchestrate.py`
 # (ARC-4087467862), `driver.py` (ARC-3080609219) and `tools/base.py`
-# (ARC-2990316730).
+# (ARC-2990316730; execution moved out in #3406 and it is off the list).
 PENDING: dict[str, int] = {
     "scripts/bump_pins.py": 871,
     "scripts/reconcile_apply.py": 813,
@@ -67,7 +67,6 @@ PENDING: dict[str, int] = {
     "skill/scripts/run_tools.py": 790,
     "skill/scripts/safe_git.py": 745,
     "skill/scripts/setup_proposal.py": 741,
-    "skill/scripts/tools/base.py": 798,
     "skill/scripts/write_guard_hook.py": 864,
 }
 

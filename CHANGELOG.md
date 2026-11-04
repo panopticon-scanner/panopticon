@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Tool execution has its own module (#3406).** `run_tool`, `_OutputSizeWatcher`,
+  `drain_stderr_async` and `read_capped_report` moved unchanged from `tools/base.py` to
+  `tools/exec.py`. Callers and patches now name the module that owns them; `tools.base` does not
+  re-export the moved names, and the shared base module is back under the flat-module ceiling.
+
 - **A ratchet on the `.panopticon` literal (#3409).** `tests/test_panopticon_literal_ratchet.py`
   pins, per `skill/scripts` file, how many string constants spell `.panopticon` (90 in 35 files on
   main 72b0083f). A count may only go down, and a new file starts at 0. The sweep onto

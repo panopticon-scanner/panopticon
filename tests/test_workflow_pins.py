@@ -1341,7 +1341,7 @@ class TestNoThirdPartyImportAtModuleLevelOnTheDriverPath(unittest.TestCase):
 
     def test_a_relative_import_is_local_by_construction(self):
         self.assertEqual([], module_level_third_party("from . import base\n"))
-        self.assertEqual([], module_level_third_party("from .base import run_tool\n"))
+        self.assertEqual([], module_level_third_party("from .exec import run_tool\n"))
 
 
 # --- #1652: the scheduled adapter job's test selector ------------------------

@@ -119,7 +119,7 @@ class TestNpmAuditAdapter(unittest.TestCase):
     def test_invoke_runs_npm_audit_json(self):
         adapter = na.NpmAuditAdapter()
         calls = []
-        with mock.patch("scripts.tools.base.subprocess.Popen",
+        with mock.patch("scripts.tools.exec.subprocess.Popen",
                         side_effect=scratch_cwd_recorder(calls)):
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(stdout, b"{}")
@@ -155,7 +155,7 @@ class TestNpmAuditAdapter(unittest.TestCase):
                                                          for name in os.listdir(prefix)}))
                 return FakePopen(stdout=b"{}")
 
-            with mock.patch("scripts.tools.base.subprocess.Popen", side_effect=launch):
+            with mock.patch("scripts.tools.exec.subprocess.Popen", side_effect=launch):
                 na.NpmAuditAdapter().invoke(target)
         outside, staged = only(seen, "npm audit launch")
         self.assertTrue(outside, "npm audit's --prefix is the target or inside it")
@@ -169,7 +169,7 @@ class TestNpmAuditAdapter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as outside, tempfile.TemporaryDirectory() as target:
             Path(target, "package.json").write_bytes(b'{"name": "t"}\n')
             make(Path(target, "package-lock.json"), Path(outside))
-            patches = [mock.patch("scripts.tools.base.subprocess.Popen",
+            patches = [mock.patch("scripts.tools.exec.subprocess.Popen",
                                   side_effect=lambda *a, **k: launched.append(a) or FakePopen(stdout=b"{}"))]
             if limit is not None:
                 patches.append(mock.patch.object(na, "MAX_STAGED_BYTES", limit))
@@ -223,7 +223,7 @@ class TestNpmAuditAdapter(unittest.TestCase):
         fake_run = FakePopen(stdout=b"audit output", stderr=b"npm audit failed",
                              returncode=2)
         buf = io.StringIO()
-        with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake_run), \
+        with mock.patch("scripts.tools.exec.subprocess.Popen", return_value=fake_run), \
              contextlib.redirect_stderr(buf):
             stdout, rc = adapter.invoke("/tmp/fake")
         self.assertEqual(stdout, b"audit output")

@@ -134,7 +134,7 @@ class TestCargoAuditAdapter(unittest.TestCase):
             )
             return fake_run
 
-        with mock.patch("scripts.tools.base.subprocess.Popen",
+        with mock.patch("scripts.tools.exec.subprocess.Popen",
                         side_effect=record_and_return) as popen_mock:
             stdout, rc = ca.CargoAuditAdapter().invoke("/tmp/fake")
         self.assertEqual(rc, 0)
@@ -167,7 +167,7 @@ class TestCargoAuditAdapter(unittest.TestCase):
         fake_run = FakePopen(stdout=b"audit error output",
                              stderr=b"cargo audit failed", returncode=2)
         buf = io.StringIO()
-        with mock.patch("scripts.tools.base.subprocess.Popen", return_value=fake_run), \
+        with mock.patch("scripts.tools.exec.subprocess.Popen", return_value=fake_run), \
              contextlib.redirect_stderr(buf):
             stdout, rc = ca.CargoAuditAdapter().invoke("/tmp/fake")
         self.assertEqual(rc, 2)

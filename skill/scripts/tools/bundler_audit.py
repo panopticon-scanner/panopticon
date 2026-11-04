@@ -4,7 +4,8 @@ import os
 import re
 import sys
 from .base import (cve_ids, make_finding, normalize_severity, omit_none,
-                   parse_json_bytes, run_tool, scratch_cwd)
+                   parse_json_bytes, scratch_cwd)
+from .exec import run_tool
 
 _BLOCK_RE = re.compile(
     r"Name:\s*(?P<name>[^\n]+)\n"
