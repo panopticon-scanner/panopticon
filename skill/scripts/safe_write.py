@@ -44,9 +44,10 @@ from typing import TYPE_CHECKING
 import json
 
 if TYPE_CHECKING or __package__:
-    from scripts import claim_scope, tolerant_json
+    from scripts import claim_scope, plan_contract, tolerant_json
 else:  # flat consumers put skill/scripts itself on sys.path
     import claim_scope
+    import plan_contract
     import tolerant_json
 
 # #3271 F0: the most a run or setup manifest (or `owner.json`) may weigh. ONE
@@ -163,12 +164,12 @@ def confine_artifact_path(path):
     review_root = claim_scope.review_root_of_artifact_path(apath)
     if review_root is None:
         return
-    root = os.path.join(review_root, ".panopticon")
+    root = os.path.join(review_root, plan_contract.ARTIFACT_DIR)
     real_root = os.path.realpath(root)
     real = os.path.realpath(apath)
     if not (real == real_root or real.startswith(real_root + os.sep)):
         raise ValueError(
-            "artifact path escapes .panopticon via a symlinked component: %r" % path)
+            "artifact path escapes %s via a symlinked component: %r" % (plan_contract.ARTIFACT_DIR, path))
 
 
 def _replace_nonartifact_symlink(path):

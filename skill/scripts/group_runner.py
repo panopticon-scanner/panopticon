@@ -11,6 +11,7 @@ import os
 
 import scripts.evidence as evidence
 import scripts.findings_contract as findings_contract
+import scripts.plan_contract as plan_contract
 import scripts.safe_write as safe_write
 import scripts.synth.artifacts as artifacts_mod
 
@@ -243,7 +244,7 @@ def snapshot_out_files(plan, out_path=None):
         digest = _sha256_file(path)
         hashes[os.path.realpath(path)] = digest
     if out_path is None:
-        out_path = os.path.join(".panopticon", "out-file-hashes.json")
+        out_path = os.path.join(plan_contract.ARTIFACT_DIR, "out-file-hashes.json")
     snapshot_sha256 = None
     if hashes:
         # #1735: the snapshot lands in the reviewed tree's `.panopticon` and is
@@ -283,7 +284,7 @@ def verify_out_file_hashes(ingested_paths, hashes_path=None):
         ordinary non-fan-out run.
     """
     if hashes_path is None:
-        hashes_path = os.path.join(".panopticon", "out-file-hashes.json")
+        hashes_path = os.path.join(plan_contract.ARTIFACT_DIR, "out-file-hashes.json")
     if not os.path.isfile(hashes_path):
         return None, [], False, None          # genuinely absent -> no snapshot
     try:

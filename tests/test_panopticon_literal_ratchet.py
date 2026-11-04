@@ -20,19 +20,7 @@ SCRIPTS = Path(__file__).resolve().parent.parent / "skill" / "scripts"
 LITERAL = ".panopticon"
 
 PENDING: dict[str, int] = {
-    "build_disclosure.py": 1,
-    "claim_scope.py": 1,
-    "discovery.py": 4,
-    "dispatch.py": 2,
-    "driver.py": 1,
-    "group_runner.py": 2,
-    "ingest_tools.py": 2,
-    "language_detection.py": 1,
     "plan_contract.py": 4,
-    "run_manifest.py": 1,
-    "run_tools.py": 2,
-    "safe_write.py": 2,
-    "synthesize.py": 10,
     "tools/dependency_check.py": 1,
     "tools/legacy_sarif.py": 1,
 }
@@ -41,9 +29,14 @@ PENDING: dict[str, int] = {
 # but not owed. The hooks run as their own `-I` interpreter with no package on
 # sys.path, so they cannot import plan_contract, and a bootstrap would be worse
 # than the literal; repo_config is also imported flat (`gh_transport`), and its
-# two are the retired files' fixed locations. `test_the_standalone_literals_agree`
+# two are the retired files' fixed locations; build_disclosure stays import-free
+# by design, so html_report's flat import branch can load it; claim_scope is a
+# stdlib-only leaf, which tests/test_claim_scope.py pins (it sits under dispatch
+# and so under every runner). `test_the_standalone_literals_agree`
 # keeps each from drifting off `plan_contract.ARTIFACT_DIR`.
 STANDALONE: dict[str, int] = {
+    "build_disclosure.py": 1,    # PRIOR_RUN; import-free so html_report's flat branch loads it
+    "claim_scope.py": 1,         # _ARTIFACT_DIR; a stdlib-only leaf (tests/test_claim_scope.py)
     "codex_read_tools.py": 1,    # EXCLUDED_DIRECTORIES member (runs under -I)
     "guard_rules.py": 1,         # ARTIFACT_DIR, shared by the hook processes
     "read_guard_hook.py": 1,     # DEFAULT_SCOPE_PATH (hook process)
@@ -120,6 +113,11 @@ class PanopticonLiteralRatchetTest(unittest.TestCase):
         name = plan_contract.ARTIFACT_DIR
         self.assertEqual(guard_rules.ARTIFACT_DIR, name)
         self.assertIn(name, codex_read_tools.EXCLUDED_DIRECTORIES)
+        import scripts.claim_scope as claim_scope
+        self.assertEqual(claim_scope._ARTIFACT_DIR, name)
+        import scripts.build_disclosure as build_disclosure
+        self.assertTrue(build_disclosure.PRIOR_RUN.endswith(" in %s/" % name),
+                        build_disclosure.PRIOR_RUN)
         for path in (read_guard_hook.DEFAULT_SCOPE_PATH, write_guard_hook.DEFAULT_ALLOWLIST_PATH,
                      repo_config.LEGACY_GROUPS_PATH, repo_config.LEGACY_CONFIG_JSON):
             with self.subTest(path=path):

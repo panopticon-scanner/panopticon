@@ -28,7 +28,7 @@ import scripts.config_schema as config_schema  # noqa: E402
 import scripts.diff_map as diff_map  # noqa: E402
 import scripts.first_contact as first_contact  # noqa: E402
 import scripts.run_manifest as run_manifest  # noqa: E402
-from scripts import hosts, loop_progress, procgroup  # noqa: E402
+from scripts import hosts, loop_progress, plan_contract, procgroup  # noqa: E402
 from scripts.host_posture import (  # noqa: E402,F401 -- compatibility names for #3402
     _carry_output_schema_shape, _disclose_posture, _emit_posture_disclosure,
     _establish_host_posture, _gating_states, _posture_drift, _surface_refusal,
@@ -192,7 +192,7 @@ def _clear_run_artifacts(review_root):
     resolves; with no/corrupt manifest it degrades to the legacy flat sweep.
     Both callers run after first contact (#3271), which vetted `.panopticon/`
     and every manifest in it."""
-    base = os.path.join(os.path.abspath(review_root), ".panopticon")
+    base = os.path.join(os.path.abspath(review_root), plan_contract.ARTIFACT_DIR)
     manifest = run_manifest.load_manifest(review_root)
     tag = run_manifest.run_tag(manifest) if manifest else None
     # Defense at the deletion boundary, independent of the tag producer.

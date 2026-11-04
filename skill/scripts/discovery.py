@@ -307,7 +307,7 @@ def _worktree_dirty(repo, exclude=()):
             i += 1
         # #3273 P1: the run's own artifact directory (untracked; a tracked one
         # halts at first contact, H1) is never the author's uncommitted work.
-        if any(path not in names and path.split("/")[0] != ".panopticon" for path in paths):
+        if any(path not in names and path.split("/")[0] != plan_contract.ARTIFACT_DIR for path in paths):
             return True
     if records[-1]:
         return True  # incomplete NUL record must not look clean
@@ -814,12 +814,12 @@ def _hunks_path_for(out, repo):
 
     Shared by every mode that emits or removes the artifact."""
     return (os.path.join(os.path.dirname(os.path.abspath(out)), "diff-hunks.json")
-            if out else os.path.join(repo, ".panopticon", "diff-hunks.json"))
+            if out else os.path.join(repo, plan_contract.ARTIFACT_DIR, "diff-hunks.json"))
 
 def _validate_artifact_output(repo, path):
     """Reject writes through a target-controlled ``.panopticon`` symlink."""
     candidate = os.path.abspath(path)
-    logical_artifacts = os.path.join(os.path.abspath(repo), ".panopticon")
+    logical_artifacts = os.path.join(os.path.abspath(repo), plan_contract.ARTIFACT_DIR)
     try:
         under_artifacts = os.path.commonpath([logical_artifacts, candidate]) \
             == logical_artifacts
@@ -829,7 +829,7 @@ def _validate_artifact_output(repo, path):
         safe_root = plan_contract.artifact_root(repo)
         if os.path.commonpath([os.path.realpath(safe_root), os.path.realpath(candidate)]) \
                 != os.path.realpath(safe_root):
-            raise ValueError("artifact output escapes the target .panopticon directory")
+            raise ValueError("artifact output escapes the target %s directory" % plan_contract.ARTIFACT_DIR)
     return path
 
 def _first_contact(write_paths):

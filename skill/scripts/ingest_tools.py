@@ -11,7 +11,7 @@ import os
 import sys
 
 from scripts import evidence as evidence_mod
-from scripts import groups_schema
+from scripts import groups_schema, plan_contract
 from scripts.tools import ADAPTERS
 from scripts.tools.base import ingest_policy_cv, strip_ansi, target_root_cv
 from scripts.tools.sarif_utils import (
@@ -131,7 +131,7 @@ def _capped_output_files(tools_dir, cap=None, allowed_outputs=None,
     return kept[:cap], seen
 # Top-level dirs that are never project source: a nested checkout, the git dir,
 # and panopticon's OWN artifact tree.
-_RUN_ARTIFACT_DIRS = {".worktrees", ".git", ".panopticon"}
+_RUN_ARTIFACT_DIRS = {".worktrees", ".git", plan_contract.ARTIFACT_DIR}
 # Dirs that are generated build output at ANY depth, plus their file extensions.
 _GENERATED_DIRS = {"__pycache__"}
 _GENERATED_SUFFIXES = (".pyc", ".pyo")
@@ -215,7 +215,7 @@ SUPPRESSION_CLASSES = (RUN_ARTIFACT_SEGMENT, GENERATED_BYTECODE_SEGMENT,
                        "fixture-corpus")
 # Where a tools directory sits inside the scanned repo, used to derive the
 # target root when no caller passes one.
-_ARTIFACT_DIR = ".panopticon"
+_ARTIFACT_DIR = plan_contract.ARTIFACT_DIR
 # The venv cache's slot for the RESOLVED root. A tuple, so it can never collide
 # with the relative-directory strings that are the cache's other keys.
 _REAL_ROOT_KEY = ("__realpath__",)

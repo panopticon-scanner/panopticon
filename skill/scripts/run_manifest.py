@@ -31,6 +31,7 @@ import sys
 import uuid
 
 from scripts import hosts
+from scripts import plan_contract
 # #1735: the no-follow artifact open. It lives in a leaf module rather than in
 # `phases/runio`, where it was written, precisely so THIS module can reach it:
 # `phases/*` imports `run_manifest`, and layout rule 3 keeps that arrow
@@ -111,7 +112,7 @@ def manifest_path(review_root, namespace=None):
     if namespace not in (None, "setup"):
         raise ValueError("unknown manifest namespace: %r" % namespace)
     name = SETUP_MANIFEST_NAME if namespace == "setup" else MANIFEST_NAME
-    return os.path.join(review_root, ".panopticon", name)
+    return os.path.join(review_root, plan_contract.ARTIFACT_DIR, name)
 
 
 def new_run_id():
