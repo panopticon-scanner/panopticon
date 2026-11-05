@@ -1,4 +1,5 @@
 """Run-artifact reads are bounded before parsing and retain caller policies."""
+import ast
 import json
 import os
 from pathlib import Path
@@ -8,8 +9,10 @@ from types import SimpleNamespace
 
 import pytest
 
+import scripts.group_runner as group_runner
 import scripts.safe_write as safe_write
 from scripts.synth import artifacts, cost, coverage_io, delta, integrity, plan, tool_axis
+from tests._test_helpers import REPO_ROOT
 
 
 def _load_manifest(root):
@@ -220,3 +223,56 @@ def test_descriptor_closes_when_inspection_or_wrapping_fails(tmp_path, monkeypat
 def test_device_is_refused_without_reading_bytes():
     with pytest.raises(safe_write.NonRegularFileError, match="regular file"):
         artifacts.read_json(os.devnull)
+
+
+# #3465: the run-artifact readers and the snapshot writer take their path from
+# the caller -- there is no cwd-relative `.panopticon/...` default left to fall
+# back on, so a caller that forgets it fails at the call instead of reading or
+# writing whatever `.panopticon/` the process happens to run beside.
+
+_REQUIRED = {
+    "snapshot_out_files": (lambda: group_runner.snapshot_out_files([]), "out_path", 1),
+    "verify_out_file_hashes": (lambda: group_runner.verify_out_file_hashes([]), "hashes_path", 1),
+    "read_unenforced_ack": (lambda: integrity.read_unenforced_ack(), "path", 0),
+    "load_dispatch_plans_detailed": (lambda: plan.load_dispatch_plans_detailed(),
+                                     "panopticon_dir", 0),
+    "load_dispatch_plans": (lambda: plan.load_dispatch_plans(), "panopticon_dir", 0),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_REQUIRED))
+def test_the_artifact_path_is_a_required_argument(name):
+    call, param, _pos = _REQUIRED[name]
+    with pytest.raises(TypeError, match="missing 1 required positional argument: '%s'" % param):
+        call()
+
+
+def test_the_tool_policy_mode_needs_a_directory_or_the_plans(tmp_path):
+    # The one site that stays optional: `plans` keeps its default after it, and
+    # tool_axis passes `plans=` alone. Neither given is refused, not guessed.
+    with pytest.raises(ValueError, match="needs panopticon_dir or plans"):
+        plan.derive_tool_policy_mode()
+    assert plan.derive_tool_policy_mode(plans=[]) == "unknown"
+    assert plan.derive_tool_policy_mode(str(tmp_path)) == "unknown"
+
+
+def test_no_production_caller_omits_the_artifact_path():
+    sites = dict(_REQUIRED, derive_tool_policy_mode=(None, "panopticon_dir", 0))
+    omitted = []
+    for root in ("skill/scripts", "scripts"):
+        for path in sorted(Path(REPO_ROOT, root).rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+                if name not in sites:
+                    continue
+                _call, param, pos = sites[name]
+                keywords = {k.arg for k in node.keywords}
+                if len(node.args) > pos or param in keywords or None in keywords:
+                    continue
+                if name == "derive_tool_policy_mode" and "plans" in keywords:
+                    continue                  # the plans it would have read are passed in
+                omitted.append("%s:%d %s" % (path.relative_to(REPO_ROOT), node.lineno, name))
+    assert omitted == []

@@ -11,7 +11,6 @@ import os
 
 import scripts.evidence as evidence
 import scripts.findings_contract as findings_contract
-import scripts.plan_contract as plan_contract
 import scripts.safe_write as safe_write
 import scripts.synth.artifacts as artifacts_mod
 
@@ -221,7 +220,7 @@ def _sha256_file(path):
     return digest.hexdigest()
 
 
-def snapshot_out_files(plan, out_path=None):
+def snapshot_out_files(plan, out_path):
     """#493 R4: record a sha256 per existing plan out_file at fan-out end.
 
     The write-guard PREVENTS out-of-scope writes on enforced hosts; this is
@@ -230,7 +229,7 @@ def snapshot_out_files(plan, out_path=None):
     The orchestrator calls this right after fan-out completes; synthesize
     verifies the ingested bytes still match. Returns the {realpath: sha256}
     mapping and the sha256 of the exact serialized snapshot bytes it wrote
-    (#2115); writes them to out_path (default .panopticon/out-file-hashes.json)
+    (#2115); writes them to out_path -- required (#3465): no cwd-relative default --
     when given a plan with any existing out_file. The snapshot digest is None
     when there were no hashes and therefore no snapshot bytes.
     """
@@ -243,8 +242,6 @@ def snapshot_out_files(plan, out_path=None):
             continue
         digest = _sha256_file(path)
         hashes[os.path.realpath(path)] = digest
-    if out_path is None:
-        out_path = os.path.join(plan_contract.ARTIFACT_DIR, "out-file-hashes.json")
     snapshot_sha256 = None
     if hashes:
         # #1735: the snapshot lands in the reviewed tree's `.panopticon` and is
@@ -262,7 +259,7 @@ def snapshot_out_files(plan, out_path=None):
     return hashes, snapshot_sha256
 
 
-def verify_out_file_hashes(ingested_paths, hashes_path=None):
+def verify_out_file_hashes(ingested_paths, hashes_path):
     """Compare ingested findings files against the fan-out-time snapshot.
 
     Returns ``(checked, mismatched, snapshot_unreadable, snapshot_sha256)``;
@@ -283,8 +280,6 @@ def verify_out_file_hashes(ingested_paths, hashes_path=None):
       - ``(None, [], False, None)`` when the file is genuinely ABSENT -- an
         ordinary non-fan-out run.
     """
-    if hashes_path is None:
-        hashes_path = os.path.join(plan_contract.ARTIFACT_DIR, "out-file-hashes.json")
     if not os.path.isfile(hashes_path):
         return None, [], False, None          # genuinely absent -> no snapshot
     try:

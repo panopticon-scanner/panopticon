@@ -10,7 +10,6 @@ import sys
 import scripts.group_runner as group_runner
 import scripts.findings_contract as findings_contract
 import scripts.integrity_messages as integrity_messages
-import scripts.plan_contract as plan_contract
 import scripts.tools.base as tool_base
 
 # Module-attribute access only (spec §3 rule 1): the package's cycle through
@@ -241,7 +240,7 @@ def _plan_hash(plan):
         json.dumps(plan, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
 
-def read_unenforced_ack(path=os.path.join(plan_contract.ARTIFACT_DIR, "unenforced-ack.json")):
+def read_unenforced_ack(path):
     """Return the full ack dict when dispatch recorded --allow-unenforced, {} otherwise.
 
     The return value is truthy when acknowledged and falsy (empty dict) when not.
