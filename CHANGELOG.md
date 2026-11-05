@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Docs: the guide no longer lists a global `--full` flag (#3486).** No parser has ever defined
+  it, and nothing replaced it. `tests/test_skill_md.py` now asserts its absence instead of its
+  presence.
 - **Discovery's and coverage's file signals have a written, tested contract (#2099).** No routing
   changes.
   - Only `coverage_model` decides a group's objective floor. Discovery's groups.json `panels`
