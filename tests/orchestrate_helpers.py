@@ -362,6 +362,10 @@ class _HeadlessLoopCase(LoopCase):
         folder = os.path.join(runner.run_dir, orchestrate.persist.REJECTED_DIR)
         return sorted(os.listdir(folder)) if os.path.isdir(folder) else []
 
+    def _settled_rejected(self, runner):
+        """`_rejected` without the atomic writer's `.tmp` stage (#3458)."""
+        return [n for n in self._rejected(runner) if not n.endswith(".tmp")]
+
     def _guards_armed(self, runner):
         settings = os.path.join(runner.run_dir, base.SETTINGS_FILE)
         return (write_guard_hook.is_armed(

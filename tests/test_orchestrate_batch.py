@@ -4,6 +4,7 @@ import io
 import os
 import shutil
 import tempfile
+import threading
 import time
 from unittest import mock
 
@@ -780,6 +781,35 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         # the failed launch SETTLED -- its row is on disk -- so the interrupt
         # keeps its evidence, its row and its charge exactly as a clean close
         # does, and the retry it is owed reads that evidence back.
+        self._a_settled_failures_reply_survives_the_interrupt()
+
+    def test_the_mid_flight_snapshot_waits_for_the_published_reply(self):
+        # #3458: `_write_json` stages `<name>.tmp` and then `os.replace`s it, so
+        # a poll can land between the two. Hold that replace until the poll has
+        # SEEN the staged name twice -- the window the flake hit, made certain
+        # -- and the snapshot must still be the published file, not the stage.
+        seen, release = {"tmp": 0}, threading.Event()
+        real_replace, raw = os.replace, self._rejected
+
+        def held(src, dst, *rest, **kw):
+            if os.path.basename(os.path.dirname(src)) == orchestrate.persist.REJECTED_DIR:
+                release.wait(10)
+            return real_replace(src, dst, *rest, **kw)
+
+        def watching(runner):
+            names = raw(runner)
+            if any(n.endswith(".tmp") for n in names):
+                seen["tmp"] += 1
+                if seen["tmp"] >= 2:
+                    release.set()
+            return names
+
+        with mock.patch.object(runio.os, "replace", side_effect=held), \
+                mock.patch.object(self, "_rejected", side_effect=watching):
+            self._a_settled_failures_reply_survives_the_interrupt()
+        self.assertGreaterEqual(seen["tmp"], 2)       # the window was really open
+
+    def _a_settled_failures_reply_survives_the_interrupt(self):
         d, floor = self._repo(floor=("SEC", "ACC"))
         runner = FakeRunner()
         runner.fail_once.add("review-app-SEC")     # a launch failure, with output
@@ -792,9 +822,11 @@ class TestHeadlessLoop(_HeadlessLoopCase):
                 return result
             if entry["id"] == "review-app-ACC" and not during:
                 deadline = time.monotonic() + 10
-                while not self._rejected(runner) and time.monotonic() < deadline:
+                # Only a published reply counts: `.tmp` is the atomic writer's
+                # stage, which a poll can catch mid-write (#3458).
+                while not self._settled_rejected(runner) and time.monotonic() < deadline:
                     time.sleep(0.02)
-                during["kept"] = self._rejected(runner)
+                during["kept"] = self._settled_rejected(runner)
                 raise KeyboardInterrupt
             return inner(entry, env)
 
