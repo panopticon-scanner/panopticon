@@ -60,7 +60,10 @@ KNOWN_READERS = {
     "scripts.evidence::load_verdict_bundles",
     "scripts.evidence::load_verdicts_detailed",
     "scripts.phases.persist::_verify_accepts",
+    # #2104: each reads the declared format versions, through the sanitizer.
+    "scripts.phases.persist::_version_defect",
     "scripts.phases.verify::_cell_verdicts",
+    "scripts.phases.verify::_verify_bundle_labeled",
 }
 
 

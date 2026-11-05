@@ -119,9 +119,9 @@ def production_probe_schema(host):
 ENVELOPE_SHAPES = {
     "scout": '{"domains": [...], "files": [...], "tools": [...]}',
     "setup-scan": "a single JSON object (the setup proposal)",
-    "review-cell": '{"findings": [ ... ], "_panopticon": {"run_id": "...", "group": "...", "domain": "..."}}',
-    "verify-cell": '{"verdicts": [ ... ], "_panopticon": {"run_id": "...", "group": "...", "domain": "...", "stage": "..."}}',
-    "tool-advisor": '{"finding_id": "...", "verdict": "CONFIRMED|REJECTED|NEEDS_MORE_INFO", "confidence": "...", "reasoning": "...", "explored": [...], "references": [...], "citations": {...}}',
+    "review-cell": '{"schema_version": 1, "findings": [ ... ], "_panopticon": {"run_id": "...", "group": "...", "domain": "..."}}',
+    "verify-cell": '{"schema_version": 1, "verdicts": [ ... ], "_panopticon": {"run_id": "...", "group": "...", "domain": "...", "stage": "..."}}',
+    "tool-advisor": '{"schema_version": 1, "finding_id": "...", "verdict": "CONFIRMED|REJECTED|NEEDS_MORE_INFO", "confidence": "...", "reasoning": "...", "explored": [...], "references": [...], "citations": {...}}',
 }
 
 
@@ -209,6 +209,21 @@ def _controller_stamp(entry, data):
     return dict(data, _panopticon={**meta, **missing, "stamped_by": "controller"})
 
 
+def _version_defect(entry, data):
+    """#2104: the reply's declared format version, or None. Its own check,
+    beside the identity stamp and never folded into it, so each refusal says
+    which one failed. A verdict BUNDLE is refused whole for any unknown version
+    in it, so the retry runs (`findings_contract.bundle_version_defect`)."""
+    role = role_of(entry)
+    if role == "verify-cell":
+        verdicts = data.get("verdicts") if isinstance(data, dict) else None
+        return findings_contract.bundle_version_defect(data, [
+            evidence._agent_verdict(v) for v in verdicts or () if isinstance(v, dict)])
+    if role in ("review-cell", "tool-advisor"):
+        return findings_contract.schema_version_defect(data)
+    return None
+
+
 def accepts(entry, data):
     """(ok, reason): would the phase's own done predicate accept this data at
     the entry's out_file? Mirrors coverage (scout shape), review (findings
@@ -222,6 +237,9 @@ def accepts(entry, data):
         return (not errs), ("; ".join(errs) if errs else "")
     if role == "setup-scan":
         return isinstance(data, dict), "a setup proposal must be a JSON object"
+    version = _version_defect(entry, data)
+    if version:
+        return False, version
     if role == "review-cell":
         if not findings_contract.is_acceptable(data):
             return False, "not an acceptable findings file (a `findings` list of objects)"
@@ -440,6 +458,10 @@ def write_reply(entry, text):
     # file nobody checked on the way in.
     if isinstance(data, dict) and role_of(entry) in _CONTROLLER_STAMP_ROLES:
         data = _controller_stamp(entry, data)
+    # #2104, BEFORE the schema: its error text would echo the declared value.
+    version = _version_defect(entry, data)
+    if version:
+        return False, "reply for %r rejected: %s" % (entry.get("id"), version)
     # Provider-side constraints are only an optimization: validate every
     # returned role with a published contract at receipt, after the controller
     # has supplied the identity fields that contract requires.

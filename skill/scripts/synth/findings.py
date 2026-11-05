@@ -393,6 +393,8 @@ def load_findings_detailed(paths):
                          else "the payload", path, d["reason"]), file=sys.stderr)
             diagnostics.append({"file": str(path), "cell": cell,
                                 "defects": defects})
+        if any(d["index"] is None for d in defects):
+            continue   # the payload itself is refused (#2104: an unknown version too)
         if not isinstance(data, dict):
             continue
         findings = data.get("findings", [])

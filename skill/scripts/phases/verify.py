@@ -11,6 +11,7 @@ import sys
 import scripts.claim_scope as claim_scope
 import scripts.dispatch as dispatch
 import scripts.evidence as evidence
+import scripts.findings_contract as findings_contract
 import scripts.score_gate as score_gate
 # #1720: ONE owner for the enforcement posture -- the loop re-derives it
 # to CHECK the dispatch request this module writes, so both sides must
@@ -82,8 +83,10 @@ def _cell_verdicts(review_root, group, domain, stage, parts=1):
             # emptied its cell's backup scope and no adversarial round was
             # dispatched at all. One sanitizer, every read path
             # (tests/test_agent_verdict_guard.py).
-            merged.extend(evidence._agent_verdict(v) for v in data["verdicts"]
-                          if isinstance(v, dict))
+            mine = [evidence._agent_verdict(v) for v in data["verdicts"]
+                    if isinstance(v, dict)]
+            if not findings_contract.bundle_version_defect(data, mine):   # #2104
+                merged.extend(mine)
     return merged
 
 
@@ -199,6 +202,9 @@ def _verify_bundle_labeled(review_root, manifest, group, domain, stage, part=0):
     data = runio._load_json(
         _verify_out_file(review_root, group, domain, stage, part))
     if not (isinstance(data, dict) and isinstance(data.get("verdicts"), list)):
+        return False
+    if findings_contract.bundle_version_defect(data, [   # #2104: refused whole, as at receipt
+            evidence._agent_verdict(v) for v in data["verdicts"] if isinstance(v, dict)]):
         return False
     meta = data.get("_panopticon") or {}
     return (meta.get("run_id") == manifest.get("run_id")

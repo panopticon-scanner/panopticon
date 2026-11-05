@@ -17,14 +17,14 @@ import uuid
 from types import ModuleType
 
 if TYPE_CHECKING:
-    from scripts import inert, safe_write, tolerant_json
+    from scripts import findings_contract, inert, safe_write, tolerant_json
     from scripts._version import __version__
 else:
     try:
-        from scripts import inert, safe_write, tolerant_json
+        from scripts import findings_contract, inert, safe_write, tolerant_json
         from scripts._version import __version__
     except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
-        import inert, safe_write, tolerant_json
+        import findings_contract, inert, safe_write, tolerant_json
         from _version import __version__
 
 # #1639 P15 F3: the pinned types live in ONE module (it both enforces them on
@@ -599,6 +599,10 @@ def load_verdicts_detailed(verdicts_dir):
                   file=sys.stderr)
             unloadable.append({"file": name, "reason": "missing/empty finding_id echo"})
             continue
+        if findings_contract.schema_version_defect(data):   # #2104
+            print("evidence: skipping verdict %s: unsupported schema_version" % name, file=sys.stderr)
+            unloadable.append({"file": name, "reason": findings_contract.UNSUPPORTED_SCHEMA_VERSION})
+            continue
         # F1: the same trust boundary as the bundle loader -- a single-verdict
         # file is agent-written too, and `match_verdict` feeds it to the same
         # `derive_evidence`. The stage this path has is PATH-derived (fix round
@@ -673,7 +677,7 @@ def _bundle_entry_defect(raw):
         return "verdict not one of %s" % ", ".join(sorted(VERDICT_VALUES))
     if not raw.get("finding_id"):
         return "missing/empty finding_id echo"
-    return None
+    return findings_contract.schema_version_defect(raw)   # #2104: this entry only
 
 
 def load_verdict_bundles(verdicts_dir):
@@ -704,6 +708,9 @@ def load_verdict_bundles(verdicts_dir):
             continue
         if not isinstance(data, dict) or not isinstance(data.get("verdicts"), list):
             continue   # not a bundle
+        if findings_contract.schema_version_defect(data):   # #2104: the bundle's own
+            unloadable.append({"file": name, "reason": findings_contract.UNSUPPORTED_SCHEMA_VERSION})
+            continue
         pano = data.get("_panopticon")
         if not isinstance(pano, dict):
             pano = {}

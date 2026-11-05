@@ -324,6 +324,33 @@ validates every returned role against the unmodified Draft-7 `role_schema(entry)
 The generation projection is an optimization and the broad receipt contract remains authoritative
 (#2923, #3241).
 
+**Format versions of agent records (#2104).** A findings envelope, a verdict bundle (and each
+verdict in it) and a tool verdict may declare `schema_version`. One rule,
+`findings_contract.schema_version_defect`, decides it everywhere such a record is admitted or read:
+
+- **Absent** reads as version 1. Verify and tool replies carry none today: their prompts ask for
+  none, and Codex's generation schemas leave no room for one. Old run folders are versionless too.
+  This window stays open through 5.x and has no date. Closing it is a separate ruling (#3482),
+  after the prompts and the Codex schemas emit the version and a forge-kit run shows every host
+  does.
+- **Exactly the int `1`** is supported. `true`, `1.0` and `"1"` are not versions, the same rule as
+  the diff-hunks loader (#2382).
+- **Anything else is refused, fail-closed,** with the fixed reason `unsupported schema_version`,
+  never the value.
+  - At receipt, `write_reply` refuses before the schema check (whose message would echo the
+    value), and the retry runs.
+  - In the done predicates, the cell is not done and is re-dispatched under its budget.
+  - A verdict bundle with one unknown verdict version is refused whole at both of those points.
+  - At synthesis, a findings file lands in `malformed_findings_files`, which sinks certification.
+    A bundle's own unknown version makes the file unloadable. A single verdict's makes only that
+    entry unloadable, so its finding stays unverified.
+
+The version is the writer's claim about its format, so the controller never fills it. It is
+checked beside the run/cell identity stamp, never inside it: a reply wrong on both is refused, and
+each check names its own reason. The receipt schemas pin `"enum": [1]`. Claude receives those
+files verbatim as `--json-schema`, so its generation is constrained the same way, and a reply with
+no version or with `1` still validates.
+
 Codex's JSONL envelope reports token usage but not measured dollars or the effective model identity.
 The runner therefore returns `cost_usd: null` and `model: null`; `model_binding` and `usage_ledger`
 remain unclaimed and `unknown`. Cached input is a subset of input: it is subtracted from

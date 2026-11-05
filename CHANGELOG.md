@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Agent findings and verdict records have a format-version policy (#2104).** A findings
+  envelope, a verdict bundle (and each verdict in it) or a tool verdict that declares a
+  `schema_version` other than the int `1` is refused, fail-closed:
+  - at receipt, and the retry runs;
+  - in the done predicates, and the cell is re-dispatched;
+  - at synthesis, where a findings file is malformed and the run isn't certified, and a verdict is
+    unloadable.
+  Before this, `2` and `1.0` were accepted everywhere, and on the self-write path any value was.
+  A record with **no** version still reads as version 1, a window open through 5.x (#3482 holds
+  closing it). The receipt schemas now say `"enum": [1]`. Claude receives them verbatim as
+  `--json-schema`, so **Claude's generation constraint changes**, though a reply with no version or
+  with `1` still validates. Retry prompts show `"schema_version": 1` in each role's shape.
 - **Trivy 0.76.2, Rust 1.99.1 and rustup 1.29.3 (#3420).** The pin-freshness workflow could not
   open its PRs, so these were bumped by hand with `scripts/bump_pins.py <family> --write`, and
   every checksum was verified against the downloaded artifacts. On the repo's vulnerable-python,
