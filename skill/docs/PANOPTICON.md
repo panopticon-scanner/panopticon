@@ -62,8 +62,8 @@ every mode below (`driver run [target]` is the single-step primitive it calls) â
   (5.2) below.
 
 ## Global flags
-`--full` (force all panels), `--security {standard,redteam}` (default standard),
-`--fail-on {critical,high,medium,low}`, `--severity {all,medium,high,critical}` (report only
+`--security {standard,redteam}` (default standard), `--fail-on {critical,high,medium,low}`,
+`--severity {all,medium,high,critical}` (report only
 findings at or above the threshold), `--out PATH`, `--tools` (require tool scan), `--no-tools` (skip
 tool scan), `--reset` (discard the current run's working artifacts and start a NEW run â€” keeps every
 durable tag-named report on disk, only reclaims `.panopticon/runs/<tag>/` and the run-manifest, so
