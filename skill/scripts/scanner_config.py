@@ -138,14 +138,15 @@ BANDIT_INI_TEXT = ("[bandit]\nexclude = %s\n"
 #
 # BELT, and this comment is the only honest word for it (fix round 1 §B):
 # measured in the real-image round, trivy 0.74.0 resolves the default
-# `.trivyignore` against the WORKING DIRECTORY, which has been a per-launch
+# `.trivyignore` against the WORKING DIRECTORY (and 0.76.2 does the same,
+# re-measured for the #3420 bump), which has been a per-launch
 # scratch since #1877 -- a `.trivyignore` at the scan root was already not read,
 # on main as well as here. So this flag closes nothing that was open; it pins
 # the posture explicitly against a version that reads the scan root, and it
 # keeps the answer independent of whichever directory trivy resolves from. A
 # CONSTANT that declares nothing, so the ignore list is the scanner's; `#` is a
-# comment line in trivy's format (trivy 0.74.0, `Dockerfile ARG
-# TRIVY_VERSION=0.74.0`).
+# comment line in trivy's format (trivy 0.74.0, and 0.76.2 since #3420:
+# `Dockerfile ARG TRIVY_VERSION`).
 TRIVY_IGNOREFILE_TEXT = (
     "# panopticon: the scan's ignore list is the scanner's, not the reviewed\n"
     "# repository's (#1839). Deliberately empty -- it names no advisory.\n")
