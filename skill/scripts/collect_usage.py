@@ -51,12 +51,14 @@ import re
 import sys
 
 if TYPE_CHECKING:                          # #1735: the no-follow artifact open
-    from scripts import safe_write
+    from scripts import claim_scope, plan_contract, safe_write
 else:
     try:
-        from scripts import safe_write
+        from scripts import claim_scope, plan_contract, safe_write
     except ModuleNotFoundError:            # fallback: imported with only
-        import safe_write                  # skill/scripts on sys.path
+        import claim_scope                 # skill/scripts on sys.path
+        import plan_contract
+        import safe_write
 
 USAGE_FIELDS = ("input_tokens", "output_tokens",
                 "cache_creation_input_tokens", "cache_read_input_tokens")
@@ -593,6 +595,16 @@ def main(argv=None):
                     help="print the document instead of writing it")
     args = ap.parse_args(argv)
 
+    # #3452: a direct run makes no first contact, and `safe_write` follows a symlinked
+    # `.panopticon/` -- so the tree that owns `--run-dir` is vetted here, before any read
+    # or write under it. A run dir with no `.panopticon` segment is the operator's own path.
+    owner = claim_scope.review_root_of_artifact_path(args.run_dir)
+    if owner is not None:
+        try:
+            plan_contract.artifact_root(owner)
+        except ValueError as exc:
+            print("collect-usage: %s" % exc, file=sys.stderr)
+            return 2
     if not os.path.isdir(args.run_dir):
         print("collect-usage: no such run dir: %s" % args.run_dir, file=sys.stderr)
         return 2
