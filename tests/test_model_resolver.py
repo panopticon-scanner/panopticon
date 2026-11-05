@@ -1,6 +1,7 @@
 import builtins
 import contextlib
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -159,6 +160,24 @@ class TestModelResolver(unittest.TestCase):
                 self.assertIn(key, str(caught.exception))
                 self.assertNotIn(value, str(caught.exception))
                 self.assertNotIn("secret-sentinel", str(caught.exception))
+
+    def test_an_override_effort_that_is_not_a_word_is_refused_before_host_work(self):
+        # #2879: named, never echoed, on the malformed-object channel.
+        key = "PANOPTICON_MODEL_DOMAIN_PANEL"
+        for effort in ("secret-sentinel", "HIGH", "", 7, None, ["low"], "low\n"):
+            value = json.dumps({"model": "gpt-6-sol", "model_reasoning_effort": effort})
+            with self.subTest(effort=effort), mock.patch.dict(os.environ, {key: value}):
+                with self.assertRaises(ValueError) as caught:
+                    mr.validate_env_overrides()
+                self.assertIn(key, str(caught.exception))
+                self.assertNotIn("secret-sentinel", str(caught.exception))
+
+    def test_an_override_effort_that_is_a_word_passes(self):
+        for effort in ("low", "xhigh", "ultra"):
+            value = json.dumps({"model": "gpt-6-sol", "model_reasoning_effort": effort})
+            with self.subTest(effort=effort), \
+                    mock.patch.dict(os.environ, {"PANOPTICON_MODEL_SCOUT": value}):
+                mr.validate_env_overrides()
 
     def test_plain_ids_and_valid_objects_allow_surrounding_whitespace(self):
         key = "PANOPTICON_MODEL_ADVISOR"

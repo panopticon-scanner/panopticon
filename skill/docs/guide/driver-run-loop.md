@@ -297,6 +297,9 @@ spells the tier differently, set `PANOPTICON_MODEL_<ROLE>` — e.g. `PANOPTICON_
 to a slug it lists, which is what the refusal itself names.
 Each override accepts either a plain model ID or a JSON object such as
 `{"model":"gpt-6-sol","model_reasoning_effort":"high"}`. Surrounding whitespace is allowed.
+On Codex the effort binds beside the model (#2879): it must be a lowercase word, and a launch
+refuses an effort the model's catalog row does not list in `supported_reasoning_levels`, naming
+the model and the levels it does list.
 An override beginning with `{` must be valid JSON; a malformed object stops `driver run` or
 `driver loop` before host work and the error names the environment key without printing its value.
 
