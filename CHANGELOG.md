@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Reviewer prompts' integrity instructions have a tested contract (#2098).** No prompt text
+  changes. `tests/test_prompt_integrity_contract.py` pins:
+  - the three sentences all five role templates share word for word;
+  - each role's own clauses;
+  - for every production builder on every host (claude, codex, kimi, gemini, generic), that the
+    prompt a host is handed carries its role's untrusted-content section whole, before any
+    untrusted payload, including with a retry note and a hostile payload that spells the heading.
+
+  Four wording gaps are pinned as they stand and wait on #3488.
 - **Discovery's and coverage's file signals have a written, tested contract (#2099).** No routing
   changes.
   - Only `coverage_model` decides a group's objective floor. Discovery's groups.json `panels`
