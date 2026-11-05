@@ -13,7 +13,7 @@ import os
 # dependency of this module rather than a second, drifting derivation of "is
 # this a test file". No module-level import runs the other way: `discovery`
 # does not import this module, and the one edge back in its closure is lazy --
-# `discovery._capability_aliases` imports `setup_proposal` (which imports this
+# `discovery_catalog._capability_aliases` imports `setup_proposal` (which imports this
 # module) at CALL time, and it must stay lazy. This module, in turn, binds the
 # `discovery` module object here and reads `discovery.is_test_file` only at
 # call time, so neither order can see a half-initialised module. Same fallback

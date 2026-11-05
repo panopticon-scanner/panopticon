@@ -39,6 +39,7 @@ import unittest
 from tests._test_helpers import REPO_ROOT
 import scripts.coverage_model as coverage_model
 import scripts.discovery as discovery
+import scripts.discovery_catalog as discovery_catalog
 
 # The surfaces a reviewer is expected to see with its architecture context.
 # `skill/scripts/**/*.py` is the package; `skill/workflows/**` the dispatch
@@ -104,7 +105,7 @@ _CLAIM_ADVICE = ("add it to panopticon.yml — a file no group claims is "
 
 def _surface(files, globs):
     """The repo files on one surface, gitignore-style (discovery's matcher)."""
-    return [f for f in files if discovery.match_patterns(f, globs)]
+    return [f for f in files if discovery_catalog.match_patterns(f, globs)]
 
 
 def _tagged(body):
@@ -125,7 +126,7 @@ class TestMatrixCoverage(unittest.TestCase):
                        if f not in ALLOWLIST]
         cls.tests = [f for f in _surface(cls.files, TEST_SURFACE)
                      if f not in ALLOWLIST]
-        cls.assigned, cls.leftovers, _warnings = discovery.assign_scoped(
+        cls.assigned, cls.leftovers, _warnings = discovery_catalog.assign_scoped(
             cls.runtime + cls.tests, cls.catalog)
 
     def _unclaimed(self, surface):
@@ -169,7 +170,7 @@ class TestMatrixCoverage(unittest.TestCase):
                      "skill/agents/sub/role.md"):
             with self.subTest(path=path):
                 self.assertTrue(
-                    discovery.match_patterns(path, RUNTIME_SURFACE),
+                    discovery_catalog.match_patterns(path, RUNTIME_SURFACE),
                     "%s is off the runtime surface: the guard would never see "
                     "it drift into Ungrouped" % path)
 
@@ -195,7 +196,7 @@ class TestMatrixCoverage(unittest.TestCase):
             for path in claimed:
                 if path not in on_tests:
                     continue
-                _matched, tag, glob = discovery._decide(path, tagged)
+                _matched, tag, glob = discovery_catalog._decide(path, tagged)
                 if tag != "tests":
                     wrong.append("%s (claimed by %s's match: %r)"
                                  % (path, group, glob))
@@ -211,7 +212,7 @@ class TestMatrixCoverage(unittest.TestCase):
         cap = discovery.DEFAULT_MAX_PER_GROUP
         # Count over the WHOLE reviewable tree, not just the two surfaces
         # above: run-time chunking counts every file a leaf claims.
-        assigned, _left, _w = discovery.assign_scoped(self.files, self.catalog)
+        assigned, _left, _w = discovery_catalog.assign_scoped(self.files, self.catalog)
         over = ["%s: %d files" % (name, len(files))
                 for name, files in sorted(assigned.items()) if len(files) > cap]
         self.assertEqual(
@@ -302,7 +303,7 @@ class TestMatrixCoverage(unittest.TestCase):
         # contributor choosing a matrix home, and the group reached all 48
         # files when `scripts/shell_heredoc.py` joined its lexer surface.
         headroom = 40
-        assigned, _left, _w = discovery.assign_scoped(self.files, self.catalog)
+        assigned, _left, _w = discovery_catalog.assign_scoped(self.files, self.catalog)
         for group in GUARDED_BY_HEADROOM:
             with self.subTest(group=group):
                 tight = ["%s: %d files" % (name, len(files))

@@ -94,7 +94,8 @@ class TestGlobPrefixes(unittest.TestCase):
         self.assertFalse(ta.is_literal_glob("**/*_test.go"))
         self.assertFalse(ta.is_literal_glob("tests/test_?.py"))
         self.assertTrue(ta.is_literal_glob("tests/[ab].py"),
-                        "discovery._glob_to_re has no character classes: `[ab]` is literal")
+                        "discovery_catalog._glob_to_re has no character classes: "
+                        "`[ab]` is literal")
         self.assertFalse(ta.is_literal_glob("conftest.py"),
                          "a slash-less basename matches at every depth")
 

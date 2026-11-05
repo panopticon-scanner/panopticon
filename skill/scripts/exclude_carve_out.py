@@ -26,7 +26,7 @@ place than spread across three call sites. Stdlib-only. `coverage_model` is
 imported inside `sec_surface` rather than at module scope on purpose:
 `coverage_model` imports `discovery` and `discovery` imports THIS module, so a
 module-level edge here would close that cycle. It is the same lazy shape
-`discovery._capability_aliases` keeps for `setup_proposal`, and for the same
+`discovery_catalog._capability_aliases` keeps for `setup_proposal`, and for the same
 reason -- see `coverage_model`'s own docstring, which promises that no
 module-level import runs back the other way.
 """

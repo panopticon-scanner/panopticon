@@ -638,7 +638,7 @@ def test_surfaces_enum_is_the_scouts_thirteen():
 # and that arm is load-bearing -- `setup_proposal` imports this module with only
 # `skill/scripts` on sys.path (`setup_flow` and `grouping_engine` did too, until
 # #1766 moved them to the package),
-# and `discovery._capability_aliases` swallows an ImportError on that path and
+# and `discovery_catalog._capability_aliases` swallows an ImportError on that path and
 # returns `{}`, so a dropped arm would cost the standalone `--repo-scan` path
 # all of its capability aliases with a green suite. `tests/test_layout.py`'s
 # `FLAT_MODULES` does not list this module, so the pin lives here, in the same
@@ -649,8 +649,8 @@ def test_coverage_model_imports_flat_with_only_skill_scripts_on_the_path():
     env["PYTHONPATH"] = scripts
     proc = subprocess.run(
         [sys.executable, "-c",
-         "import coverage_model, discovery; "
-         "print(len(discovery._capability_aliases()))"],
+         "import coverage_model, discovery_catalog; "
+         "print(len(discovery_catalog._capability_aliases()))"],
         cwd=scripts, env=env, capture_output=True, text=True, check=False)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() != "0", "flat import lost the capability aliases"

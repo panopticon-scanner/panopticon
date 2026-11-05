@@ -1,4 +1,5 @@
 """Catalog, glob semantics, group objects, and assign-by-catalog tests."""
+import ast
 import contextlib
 import io
 import os
@@ -13,11 +14,42 @@ import pytest
 import yaml
 
 import scripts.coverage_model as coverage_model
+import scripts.discovery_catalog as discovery_catalog
 import scripts.dot_paths as dot_paths
 import scripts.groups_schema as groups_schema
 
 from tests.discovery_test_helpers import (orchestrator, touch, run_scan_with_err,
                                     run_scan_helper, git_cmd, init_repo)
+
+
+_CATALOG_OWNER_NAMES = {
+    "_glob_to_re",
+    "match_patterns",
+    "_decide",
+    "_VOCAB_PATH",
+    "_capability_aliases",
+    "assign_scoped",
+    "assign_by_catalog",
+}
+
+
+def _top_level_names(module):
+    with open(module.__file__, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), module.__file__)
+    names = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names.update(target.id for target in targets if isinstance(target, ast.Name))
+    return names
+
+
+def test_catalog_family_has_one_owner():
+    """#3457: the extracted catalog family has one source owner, not aliases."""
+    assert _CATALOG_OWNER_NAMES.isdisjoint(_top_level_names(orchestrator))
+    assert _CATALOG_OWNER_NAMES <= _top_level_names(discovery_catalog)
 
 
 class TestGlobSemantics(unittest.TestCase):
@@ -26,7 +58,7 @@ class TestGlobSemantics(unittest.TestCase):
     at any depth, and '!' re-excludes with last-match-wins."""
 
     def _m(self, path, patterns):
-        return orchestrator.match_patterns(path, patterns)
+        return discovery_catalog.match_patterns(path, patterns)
 
     def test_star_does_not_cross_slash(self):
         self.assertTrue(self._m("skill/scripts/run.py", ["skill/scripts/*.py"]))
@@ -41,14 +73,14 @@ class TestGlobSemantics(unittest.TestCase):
         # segments used to compile to sequential `(?:[^/]+/)*` quantifiers --
         # the catastrophic-backtracking ReDoS shape that could hang discovery.
         # Adjacent runs now fold to one; matching stays correct.
-        rx = orchestrator._glob_to_re("**/" * 25 + "x")
+        rx = discovery_catalog._glob_to_re("**/" * 25 + "x")
         self.assertLessEqual(rx.pattern.count("(?:[^/]+/)*"), 1)
         self.assertTrue(rx.match("a/b/c/x"))
         self.assertFalse(rx.match("a/b/c/y"))
         self.assertTrue(self._m("a/b/x", ["**/" * 25 + "x"]))
 
     def test_single_star_chain_no_redos(self):
-        rx = orchestrator._glob_to_re("*/" * 20 + "file.py")
+        rx = discovery_catalog._glob_to_re("*/" * 20 + "file.py")
         path = "a/" * 20 + "file.py"
         self.assertTrue(rx.match(path))
         self.assertFalse(rx.match("a/" * 19 + "file.py"))
@@ -61,13 +93,13 @@ class TestGlobSemantics(unittest.TestCase):
         # (from an untrusted target's root config) is rejected to a never-matching
         # regex instead of hanging discovery before any dispatch.
         import time
-        rx = orchestrator._glob_to_re("a*" * 30 + "Z")
+        rx = discovery_catalog._glob_to_re("a*" * 30 + "Z")
         start = time.monotonic()
         self.assertIsNone(rx.match("a" * 40))            # never-match, no hang
         self.assertLess(time.monotonic() - start, 1.0)   # would be >5s unbounded
         # a normal glob with a handful of wildcards is unaffected
         self.assertTrue(
-            orchestrator._glob_to_re("tests/fixtures/**").match("tests/fixtures/x.py"))
+            discovery_catalog._glob_to_re("tests/fixtures/**").match("tests/fixtures/x.py"))
 
     @pytest.mark.serial
     def test_accepted_twenty_star_pattern_finishes_in_subprocess(self):
@@ -76,17 +108,19 @@ class TestGlobSemantics(unittest.TestCase):
         script = """
 import sys
 sys.path.insert(0, sys.argv[1])
-from scripts import discovery, groups_schema
+# Production loads the catalog through discovery, which establishes the flat
+# sibling identity used by tests_axis before importing its catalog owner.
+from scripts import discovery, discovery_catalog, groups_schema
 assert groups_schema.glob_to_re('a*' * 20 + 'b').match('a' * 2000 + 'c') is None
 assert groups_schema.glob_to_re('a*' * 20 + 'b').match('a' * 2000 + 'b')
 pattern = "a*" * 20 + "Z"
-matcher = discovery._glob_to_re(pattern)
+matcher = discovery_catalog._glob_to_re(pattern)
 assert matcher.match("a" * 200 + "Y") is None
 assert matcher.match("a" * 200 + "Z")
-assert not discovery.match_patterns("a" * 200 + "Y", [pattern])
+assert not discovery_catalog.match_patterns("a" * 200 + "Y", [pattern])
 assert groups_schema.matched_glob("a" * 200 + "Z", [pattern]) == pattern
 # Deep paths must not encounter a recursive matching limit either.
-assert discovery._glob_to_re("root/**/end").match("root/" + "dir/" * 2000 + "end")
+assert discovery_catalog._glob_to_re("root/**/end").match("root/" + "dir/" * 2000 + "end")
 """
         skill_root = os.path.dirname(os.path.dirname(groups_schema.__file__))
         result = subprocess.run(
@@ -660,7 +694,7 @@ class TestAssignByCatalog(unittest.TestCase):
                 ]
             }
         }
-        assigned, leftovers = orchestrator.assign_by_catalog(
+        assigned, leftovers = discovery_catalog.assign_by_catalog(
             ["skill/scripts/run.py", "skill/scripts/tools/pip.py",
              "skill/scripts/tools/other.py"], catalog)
         self.assertEqual(assigned, {"Scripts": [
@@ -674,13 +708,13 @@ class TestAssignByCatalog(unittest.TestCase):
             "First": {"match": ["src/**"]},
             "Second": {"match": ["src/app.py"]},
         }
-        assigned, leftovers = orchestrator.assign_by_catalog(["src/app.py"], catalog)
+        assigned, leftovers = discovery_catalog.assign_by_catalog(["src/app.py"], catalog)
         self.assertEqual(assigned, {"First": ["src/app.py"]})
         self.assertEqual(leftovers, [])
 
     def test_tests_patterns_are_evaluated_with_match_patterns(self):
         catalog = {"Core": {"match": ["src/core/**"], "tests": ["!src/core/old/**"]}}
-        assigned, leftovers = orchestrator.assign_by_catalog(
+        assigned, leftovers = discovery_catalog.assign_by_catalog(
             ["src/core/new.py", "src/core/old/legacy.py"], catalog)
         self.assertEqual(assigned, {"Core": ["src/core/new.py"]})
         self.assertEqual(leftovers, ["src/core/old/legacy.py"])
@@ -695,13 +729,14 @@ class TestScopedTests(unittest.TestCase):
     def test_decide_reports_the_deciding_pattern(self):
         tagged = [("src/core/**", "match"), ("!src/core/old/**", "tests"),
                   ("**/*_test.go", "tests")]
-        self.assertEqual(orchestrator._decide("src/core/new.py", tagged),
+        self.assertEqual(discovery_catalog._decide("src/core/new.py", tagged),
                          (True, "match", "src/core/**"))
-        self.assertEqual(orchestrator._decide("src/core/old/x.py", tagged),
+        self.assertEqual(discovery_catalog._decide("src/core/old/x.py", tagged),
                          (False, "tests", "!src/core/old/**"))
-        self.assertEqual(orchestrator._decide("pkg/a_test.go", tagged),
+        self.assertEqual(discovery_catalog._decide("pkg/a_test.go", tagged),
                          (True, "tests", "**/*_test.go"))
-        self.assertEqual(orchestrator._decide("README.md", tagged), (False, None, None))
+        self.assertEqual(discovery_catalog._decide("README.md", tagged),
+                         (False, None, None))
 
     def test_wildcard_tests_glob_routes_by_path_not_by_catalog_order(self):
         catalog = {
@@ -711,7 +746,8 @@ class TestScopedTests(unittest.TestCase):
         files = ["internal/auth/login.go", "internal/auth/login_test.go",
                  "internal/api/server_test.go", "tests/api/smoke_test.go",
                  "tests/misc_test.go"]
-        assigned, leftovers, warnings = orchestrator.assign_scoped(files, catalog, aliases={})
+        assigned, leftovers, warnings = discovery_catalog.assign_scoped(
+            files, catalog, aliases={})
         self.assertEqual(assigned, {
             "Auth": ["internal/auth/login.go", "internal/auth/login_test.go"],
             "API": ["internal/api/server_test.go", "tests/api/smoke_test.go"],
@@ -722,12 +758,13 @@ class TestScopedTests(unittest.TestCase):
     def test_literal_tests_path_always_credits(self):
         catalog = {"Driver": {"match": ["skill/scripts/driver.py"],
                               "tests": ["tests/test_run_loop.py"]}}
-        assigned, _, _ = orchestrator.assign_scoped(["tests/test_run_loop.py"], catalog, aliases={})
+        assigned, _, _ = discovery_catalog.assign_scoped(
+            ["tests/test_run_loop.py"], catalog, aliases={})
         self.assertEqual(assigned, {"Driver": ["tests/test_run_loop.py"]})
 
     def test_alias_carries_the_name(self):
         catalog = {"Auth": {"match": ["src/auth/**"], "tests": ["tests/**"]}}
-        assigned, leftovers, _ = orchestrator.assign_scoped(
+        assigned, leftovers, _ = discovery_catalog.assign_scoped(
             ["tests/login/test_flow.py", "tests/test_sso.py", "tests/test_cart.py"],
             catalog, aliases={"Auth": ["Login", "SSO"]})
         self.assertEqual(assigned, {"Auth": ["tests/login/test_flow.py", "tests/test_sso.py"]})
@@ -736,14 +773,15 @@ class TestScopedTests(unittest.TestCase):
     def test_shipped_aliases_are_used_by_default(self):
         # `Authentication` is a shipped alias of `Auth` (capability_vocabulary.yml v2).
         catalog = {"Auth": {"match": ["src/auth/**"], "tests": ["tests/**"]}}
-        assigned, _, _ = orchestrator.assign_scoped(["tests/authentication/test_x.py"], catalog)
+        assigned, _, _ = discovery_catalog.assign_scoped(
+            ["tests/authentication/test_x.py"], catalog)
         self.assertEqual(assigned, {"Auth": ["tests/authentication/test_x.py"]})
 
     def test_segment_prefix_credits_multi_token_name(self):
         # The self-scan's ToolAdapters entry: `tests/tools/**` must keep crediting.
         catalog = {"ToolAdapters": {"match": ["skill/scripts/tools/**"],
                                     "tests": ["tests/tools/**", "tests/fixtures/**"]}}
-        assigned, leftovers, warnings = orchestrator.assign_scoped(
+        assigned, leftovers, warnings = discovery_catalog.assign_scoped(
             ["tests/tools/test_gosec.py", "tests/fixtures/sarif/x.json"], catalog, aliases={})
         self.assertEqual(assigned, {"ToolAdapters": ["tests/tools/test_gosec.py"]})
         self.assertEqual(leftovers, ["tests/fixtures/sarif/x.json"])
@@ -756,14 +794,14 @@ class TestScopedTests(unittest.TestCase):
             "Auth": {"match": ["src/auth/**"], "tests": ["tests/**"]},
             "Tests": {"match": ["tests/**"]},
         }
-        assigned, leftovers, _ = orchestrator.assign_scoped(
+        assigned, leftovers, _ = discovery_catalog.assign_scoped(
             ["tests/test_auth.py", "tests/test_cart.py"], catalog, aliases={})
         self.assertEqual(assigned, {"Auth": ["tests/test_auth.py"], "Tests": ["tests/test_cart.py"]})
         self.assertEqual(leftovers, [])
 
     def test_negation_from_tests_axis_still_negates(self):
         catalog = {"Core": {"match": ["src/core/**"], "tests": ["!src/core/old/**"]}}
-        assigned, leftovers = orchestrator.assign_by_catalog(
+        assigned, leftovers = discovery_catalog.assign_by_catalog(
             ["src/core/new.py", "src/core/old/legacy.py"], catalog)
         self.assertEqual(assigned, {"Core": ["src/core/new.py"]})
         self.assertEqual(leftovers, ["src/core/old/legacy.py"])
@@ -773,7 +811,7 @@ class TestScopedTests(unittest.TestCase):
             "UI:Admin": {"match": ["web/admin/**"], "parent": "UI", "tests": ["**/*.spec.ts"]},
             "UI:Shop": {"match": ["web/shop/**"], "parent": "UI", "tests": ["**/*.spec.ts"]},
         }
-        assigned, leftovers, _ = orchestrator.assign_scoped(
+        assigned, leftovers, _ = discovery_catalog.assign_scoped(
             ["web/admin/a.spec.ts", "e2e/shop.spec.ts", "e2e/ui.spec.ts"], catalog, aliases={})
         self.assertEqual(assigned, {"UI:Admin": ["e2e/ui.spec.ts", "web/admin/a.spec.ts"],
                                     "UI:Shop": ["e2e/shop.spec.ts"]},
@@ -786,7 +824,7 @@ class TestScopedTests(unittest.TestCase):
         full = {"Auth": {"match": ["shared/**"], "tests": ["**/*_test.go"]},
                 "API": {"match": ["shared/**"]}}
         prefixes = orchestrator.tests_axis.distinguishing_prefixes(full)
-        assigned, leftovers, _ = orchestrator.assign_scoped(
+        assigned, leftovers, _ = discovery_catalog.assign_scoped(
             ["shared/x_test.go"], {"Auth": full["Auth"]}, aliases={}, prefixes=prefixes)
         self.assertEqual(assigned, {})
         self.assertEqual(leftovers, ["shared/x_test.go"])
@@ -803,7 +841,8 @@ class TestScopedTests(unittest.TestCase):
         }
         files = ["internal/auth/http/x_test.go", "internal/auth/y_test.go",
                  "tests/auth_flow_test.go"]
-        assigned, leftovers, warnings = orchestrator.assign_scoped(files, catalog, aliases={})
+        assigned, leftovers, warnings = discovery_catalog.assign_scoped(
+            files, catalog, aliases={})
         self.assertEqual(assigned, {
             "Auth:Core": ["internal/auth/y_test.go", "tests/auth_flow_test.go"],
             "Auth:API": ["internal/auth/http/x_test.go"],
@@ -819,7 +858,7 @@ class TestScopedTests(unittest.TestCase):
                           "tests": ["**/*_test.go"]},
             "Auth:API": {"match": ["internal/auth/http/*.go"], "parent": "Auth"},
         }
-        assigned, leftovers, _ = orchestrator.assign_scoped(
+        assigned, leftovers, _ = discovery_catalog.assign_scoped(
             ["internal/auth/http/deep/x_test.go"], catalog, aliases={})
         self.assertEqual(assigned, {"Auth:Core": ["internal/auth/http/deep/x_test.go"]})
         self.assertEqual(leftovers, [])
@@ -833,12 +872,12 @@ class TestScopedTests(unittest.TestCase):
                         return_value=({"entries": {"Auth": {"aliases": "Login"},
                                                    "API": {"aliases": ["Http", 3]},
                                                    "UI": {}}}, ["err"])):
-            orchestrator._capability_aliases.cache_clear()
+            discovery_catalog._capability_aliases.cache_clear()
             try:
-                self.assertEqual(orchestrator._capability_aliases(),
+                self.assertEqual(discovery_catalog._capability_aliases(),
                                  {"Auth": [], "API": ["Http"], "UI": []})
             finally:
-                orchestrator._capability_aliases.cache_clear()
+                discovery_catalog._capability_aliases.cache_clear()
 
 
 class TestTestsSweep(unittest.TestCase):
@@ -1006,7 +1045,7 @@ class TestGitignoreDivergences(unittest.TestCase):
     """
 
     def _m(self, path, patterns):
-        return orchestrator.match_patterns(path, patterns)
+        return discovery_catalog.match_patterns(path, patterns)
 
     def test_trailing_slash_claims_the_directory_tree(self):
         self.assertTrue(self._m("docs/guide.md", ["docs/"]))
@@ -1099,7 +1138,7 @@ class TestGithubTopLevelFilesAreClaimed(unittest.TestCase):
 
     def _cat(self, path):
         for name, body in orchestrator.commons_catalog().items():
-            if orchestrator.match_patterns(path, body.get("match") or []):
+            if discovery_catalog.match_patterns(path, body.get("match") or []):
                 return name
         return None
 
@@ -1143,7 +1182,7 @@ def _sample_for(pattern):
 
     `**` becomes one ordinary segment (plus a leaf when the pattern ends there,
     since `**` crosses segments), `*` and `?` become literals. Every sample is
-    asserted against `discovery._glob_to_re` before it is used, so a synthesizer
+    asserted against `discovery_catalog._glob_to_re` before it is used, so a synthesizer
     that stopped matching cannot quietly weaken the guard below.
     """
     parts = ["deep" if segment == "**" else
@@ -1240,7 +1279,8 @@ class TestDotPathPolicyCoversTheShippedClaims(unittest.TestCase):
                 unjustified.append("DIRS %s" % entry)
         for entry in sorted(dot_paths.FILES):
             if (entry not in self.FLOOR_ONLY_FILES
-                    and not any(orchestrator._glob_to_re(c).match(entry) for c in globs)):
+                    and not any(discovery_catalog._glob_to_re(c).match(entry)
+                                for c in globs)):
                 unjustified.append("FILES %s" % entry)
         for entry in dot_paths.FILE_STEMS:
             if (entry not in self.FLOOR_ONLY_STEMS
@@ -1260,7 +1300,7 @@ class TestDotPathPolicyCoversTheShippedClaims(unittest.TestCase):
         samples = {}
         for pattern in patterns:
             sample = _sample_for(pattern)
-            self.assertTrue(orchestrator._glob_to_re(pattern).match(sample),
+            self.assertTrue(discovery_catalog._glob_to_re(pattern).match(sample),
                             "%r is not a sample of %r" % (sample, pattern))
             samples[pattern] = sample
         walked, listed = _kept_by_both(set(samples.values()))

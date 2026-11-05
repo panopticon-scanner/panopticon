@@ -556,6 +556,7 @@ groups:
       # module they came out of, which is also their only runtime caller.
       match:
       - skill/scripts/discovery.py
+      - skill/scripts/discovery_catalog.py
       - skill/scripts/dot_paths.py
       - skill/scripts/exclude_carve_out.py
       - skill/scripts/groups_schema.py

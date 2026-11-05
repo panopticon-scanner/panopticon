@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Discovery catalog matching has one owner (#3457).** `_glob_to_re`, `match_patterns`,
+  `_decide`, `_VOCAB_PATH`, `_capability_aliases`, `assign_scoped` and `assign_by_catalog`
+  moved byte-identically to `discovery_catalog.py`; discovery, grouping, setup and tests now
+  call that owner, with no compatibility aliases. The `discovery.py` flat-module pin falls from
+  1956 to 1803 lines.
+
 - **`synthesize --compare` reads a report on disk through the lone-surrogate pass (#2960).** A report
   written before #2951 can hold a lone surrogate's JSON escape; `--compare` handed it to the page
   writer, which could not encode it (exit 4, "artifact path refused", no page). The reader now runs
