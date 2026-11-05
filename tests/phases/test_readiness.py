@@ -18,6 +18,8 @@ a module-level seam the tests swap for a fake -- `tests/conftest.py`'s autouse
 refuses only the un-injected default, so a test that wants "image present"
 states it and one that states nothing reaches nothing.
 """
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -25,6 +27,8 @@ import unittest
 from unittest import mock
 
 from tests._test_helpers import all_proven_artifact as _all_proven_artifact
+from tests._test_helpers import (PLANTED_ARTIFACT_DIRS, PLANTED_REFUSALS, plant_artifact_dir,
+                                 plant_latest_link)
 import scripts.driver as driver
 import scripts.phases.readiness as readiness
 import scripts.phases.runio as runio
@@ -464,3 +468,32 @@ class TestTheExistingRunRowReadsTheRequestBound(unittest.TestCase):
             fh.write(b" ")
         row = readiness._existing_run_row(self.root)
         self.assertEqual(("checkpoint", 1), (row["status"], row["pending"]))
+
+
+class TestReadinessRefusesAPlantedArtifactDir(unittest.TestCase):
+    """#3452: `driver readiness` runs no first contact, so `emit_preflight`
+    vets `.panopticon/` itself before `preflight` reads anything through it."""
+
+    def _emit(self, root):
+        err, out = io.StringIO(), io.StringIO()
+        with mock.patch.object(readiness, "preflight", return_value={"ready": True}) as pre, \
+                contextlib.redirect_stderr(err):
+            rc = readiness.emit_preflight(root, as_json=True, stream=out)
+        return rc, err.getvalue(), pre
+
+    def test_each_planted_artifact_dir_is_refused_before_any_read(self):
+        for kind in PLANTED_ARTIFACT_DIRS:
+            with self.subTest(kind), tempfile.TemporaryDirectory() as d, \
+                    tempfile.TemporaryDirectory() as elsewhere:
+                plant_artifact_dir(d, kind, elsewhere)
+                rc, err, pre = self._emit(d)
+                self.assertEqual(1, rc)
+                self.assertEqual("driver readiness: %s\n" % PLANTED_REFUSALS[kind], err)
+                pre.assert_not_called()
+
+    def test_a_real_artifact_dir_with_its_latest_link_still_reads(self):
+        with tempfile.TemporaryDirectory() as d:
+            plant_latest_link(d)
+            rc, err, pre = self._emit(d)
+        self.assertEqual((0, ""), (rc, err))
+        pre.assert_called_once()

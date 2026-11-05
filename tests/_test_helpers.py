@@ -20,6 +20,50 @@ FIXTURE_ROOT = os.environ.get("FIXTURE_ROOT", os.path.join(_TESTS, "fixtures"))
 # reports UNKNOWN and every one of those sites goes the other way. This is the
 # one place that writes it, so every phase test states the same fixture the
 # same way rather than five near-identical inline JSON blobs.
+# #3452: the three ways a hostile tree plants its `.panopticon/` that
+# `plan_contract.artifact_root` refuses -- a symlink (to a directory inside the
+# tree, and one outside it: the realpath escape) and a non-directory. Each entry
+# point that reads or writes there without first contact is tested against all.
+PLANTED_ARTIFACT_DIRS = ("symlink-inside", "symlink-outside", "not-a-directory")
+PLANTED_REFUSALS = {
+    "symlink-inside": ".panopticon must be a real directory, not a symlink",
+    "symlink-outside": ".panopticon must be a real directory, not a symlink",
+    "not-a-directory": ".panopticon exists but is not a directory",
+}
+
+
+def plant_artifact_dir(root, kind, elsewhere):
+    """Replace `root/.panopticon` with the planted `kind`; `elsewhere` is a
+    directory outside `root` the outside link points at. Returns the path."""
+    import shutil
+    pano = os.path.join(root, ".panopticon")
+    if os.path.islink(pano) or os.path.isfile(pano):
+        os.remove(pano)
+    elif os.path.isdir(pano):
+        shutil.rmtree(pano)
+    if kind == "symlink-inside":
+        inside = os.path.join(root, "not-the-artifacts")
+        os.makedirs(inside, exist_ok=True)
+        os.symlink(inside, pano)
+    elif kind == "symlink-outside":
+        os.symlink(elsewhere, pano)
+    elif kind == "not-a-directory":
+        with open(pano, "w", encoding="utf-8") as fh:
+            fh.write("planted\n")
+    else:
+        raise ValueError(kind)
+    return pano
+
+
+def plant_latest_link(root):
+    """The legitimate shape: a real `.panopticon/` whose `runs/latest` points at
+    a run folder inside it. No refusal may fire on this."""
+    run = os.path.join(root, ".panopticon", "runs", "claude-standard-repo-20261105-00000000")
+    os.makedirs(run, exist_ok=True)
+    os.symlink(os.path.basename(run), os.path.join(root, ".panopticon", "runs", "latest"))
+    return run
+
+
 def adopt_panopticon(review_root):
     """#3271: make a fixture's `.panopticon/` OURS -- the stamped `owner.json`
     first contact writes into every directory a run of ours starts -- so the
