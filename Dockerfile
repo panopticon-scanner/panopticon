@@ -328,9 +328,9 @@ ENV PATH="/usr/local/cargo/bin:${PATH}"
 # mismatch now means the artifact changed, which is what a checksum is FOR.
 # Bumping means changing RUSTUP_VERSION and both SHAs together; read them from
 # `rustup/archive/<version>/<triple>/rustup-init.sha256` -- do not guess.
-ARG RUSTUP_VERSION=1.29.1
-ARG RUSTUP_INIT_SHA256_AMD64=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71
-ARG RUSTUP_INIT_SHA256_ARM64=15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433
+ARG RUSTUP_VERSION=1.29.3
+ARG RUSTUP_INIT_SHA256_AMD64=b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55
+ARG RUSTUP_INIT_SHA256_ARM64=9f608c142e0e38a78957d0661ba1dfaf0b6fb37184cfaa4b9a0aa57af6184282
 # The bootstrapper and compiler have separate release cycles; pin each explicitly.
 ARG RUST_TOOLCHAIN_VERSION=1.99.1
 RUN arch="$(dpkg --print-architecture)" \
