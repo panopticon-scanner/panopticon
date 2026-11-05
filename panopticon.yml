@@ -396,6 +396,7 @@ groups:
       - tests/test_orchestrate_outage.py
       - tests/test_orchestrate_pause.py
       - tests/test_rejected_retention.py
+      - tests/test_persist_first_contact.py
       - tests/test_orchestrate_recovery.py
       - tests/test_orchestrate_session.py
       - tests/test_orchestrate_session_edges.py
