@@ -20,7 +20,7 @@ from scripts import read_guard_hook
 # D10 ruling 2: the retry prompt carries the last refusal, and `persist` owns
 # both the records and the run-folder resolver. A mutual pair like
 # coverage<->requests: read by module attribute, at call time only.
-from . import persist
+from . import persist, rejected_replies
 from . import runio
 from . import run_artifacts
 
@@ -231,7 +231,7 @@ def _materialize_prompts(review_root, entries, namespace=None, *, run_id):
         if isinstance(prompt, str) and prompt and eid:
             # BEFORE the file is written, so `prompt` and `prompt_file` agree:
             # a host that dispatches from either one hears about the refusal.
-            block, prior = persist.retry_block(run_folder, entry, run_id)
+            block, prior = rejected_replies.retry_block(run_folder, entry, run_id)
             if block:
                 prompt = entry["prompt"] = prompt + block
                 entry["prior_rejection"] = prior

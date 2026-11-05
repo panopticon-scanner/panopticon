@@ -16,6 +16,7 @@ import stat
 import sys
 
 import scripts.phases.persist as persist
+import scripts.phases.rejected_replies as rejected_replies
 import scripts.phases.requests as requests
 import scripts.runners.outage as outage
 import scripts.runners.settlement as settlement_mod
@@ -54,7 +55,7 @@ def _regular_sha256(path):
 
 
 def _retained_artifact_valid(path, entry_id, run_id):
-    return retained_record_valid(persist._read_rejection(path), entry_id, run_id)
+    return retained_record_valid(rejected_replies._read_rejection(path), entry_id, run_id)
 
 
 def retained_record_valid(record, entry_id, run_id):
@@ -66,7 +67,7 @@ def retained_record_valid(record, entry_id, run_id):
             and record.get("schema_version") == 1
             and record.get("entry_id") == entry_id and record.get("run_id") == run_id
             and type(record.get("attempt")) is int and record["attempt"] >= 1
-            and record.get("kind") in (persist.REFUSAL, persist.LAUNCH_FAILURE)
+            and record.get("kind") in (rejected_replies.REFUSAL, rejected_replies.LAUNCH_FAILURE)
             and isinstance(record.get("reason"), str)
             and isinstance(record.get("recorded_at"), str)
             and isinstance(record.get("reply"), str)

@@ -13,6 +13,7 @@ import scripts.ledger as ledger_mod
 import scripts.loop_batch as loop_batch
 import scripts.orchestrate as orchestrate
 import scripts.phases.persist as persist
+import scripts.phases.rejected_replies as rejected_replies
 import scripts.phases.runio as runio
 import scripts.run_manifest as run_manifest
 import scripts.runners.base as base
@@ -177,7 +178,7 @@ class TestRefusedRepliesAreRetained(LoopCase):
         with open(row["rejected_file"], encoding="utf-8") as fh:
             record = json.load(fh)
         self.assertEqual("RID", record["run_id"])   # #3253: the loop stamps its request's id
-        retry, _prior = persist.retry_block(run_dir, entry, "RID")
+        retry, _prior = rejected_replies.retry_block(run_dir, entry, "RID")
         self.assertFalse(os.path.exists(entry["out_file"]))
         return _mask_temp_root({
             "refusal": refusal,
@@ -352,7 +353,7 @@ class TestRefusedRepliesAreRetained(LoopCase):
         with open(row["rejected_file"], encoding="utf-8") as fh:
             record = json.load(fh)
         self.assertEqual("RID", record["run_id"])   # #3253: the loop stamps its request's id
-        retry, _prior = persist.retry_block(run_dir, entry, "RID")
+        retry, _prior = rejected_replies.retry_block(run_dir, entry, "RID")
         surfaces = _mask_temp_root({
             "refusal": refusal,
             "record": json.dumps(record),

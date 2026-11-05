@@ -65,7 +65,7 @@ class TestTheBatchManifest(unittest.TestCase):
         self.assertEqual(([], []), batch.roll_back())
 
     def test_a_record_the_batch_wrote_later_is_rolled_back_too(self):
-        # `persist.retain_rejected` names the file only once it has written
+        # `rejected_replies.retain_rejected` names the file only once it has written
         # it, so the manifest gains it mid-batch rather than at open.
         batch, entries = self._batch("review-app-SEC")
         kept = self._artifact("rejected-review-app-SEC-1.json")

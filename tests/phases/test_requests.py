@@ -16,6 +16,7 @@ from scripts import hosts
 from tests._test_helpers import write_host_evidence
 import scripts.phases.runio as runio
 import scripts.phases.persist as persist
+import scripts.phases.rejected_replies as rejected_replies
 import scripts.phases.requests as requests
 import scripts.phases.run_artifacts as run_artifacts
 import scripts.phases.coverage as coverage
@@ -508,8 +509,8 @@ class TestTheRetryPromptCarriesTheRefusal(unittest.TestCase):
             return json.load(fh)["entries"][0]
 
     def _refuse(self, reason):
-        return persist.retain_rejected(persist.run_dir(self.root), self.entry,
-                                       '{"findings": []}', reason, kind=persist.REFUSAL, run_id="RID")
+        return rejected_replies.retain_rejected(persist.run_dir(self.root), self.entry,
+                                       '{"findings": []}', reason, kind=rejected_replies.REFUSAL, run_id="RID")
 
     def test_an_entry_with_no_record_is_what_it_has_always_been(self):
         written = self._write(self.entry)
@@ -539,12 +540,12 @@ class TestTheRetryPromptCarriesTheRefusal(unittest.TestCase):
         ids = ("review-Auth:Core-COD", "review-Auth_Core-COD", "review-Auth Core-COD")
         entries = [dict(self.entry, id=eid, prompt="prompt " + eid) for eid in ids]
         run_folder = persist.run_dir(self.root)
-        persist.retain_rejected(run_folder, entries[0], "first", "colon first",
-                                kind=persist.REFUSAL, run_id="RID")
-        persist.retain_rejected(run_folder, entries[0], "second", "colon second",
-                                kind=persist.REFUSAL, run_id="RID")
-        persist.retain_rejected(run_folder, entries[1], "neighbor", "underscore only",
-                                kind=persist.REFUSAL, run_id="RID")
+        rejected_replies.retain_rejected(run_folder, entries[0], "first", "colon first",
+                                kind=rejected_replies.REFUSAL, run_id="RID")
+        rejected_replies.retain_rejected(run_folder, entries[0], "second", "colon second",
+                                kind=rejected_replies.REFUSAL, run_id="RID")
+        rejected_replies.retain_rejected(run_folder, entries[1], "neighbor", "underscore only",
+                                kind=rejected_replies.REFUSAL, run_id="RID")
         written = requests._materialize_prompts(self.root, entries, run_id="RID")
         self.assertEqual(3, len({e["prompt_file"] for e in written}))
         for entry in written:
@@ -559,8 +560,8 @@ class TestTheRetryPromptCarriesTheRefusal(unittest.TestCase):
     def test_a_record_another_run_wrote_earns_no_note(self):
         # #3253: `rejected/` survives a fresh run and sits in the reviewed
         # tree, so a record is only this run's when it carries this run's id.
-        persist.retain_rejected(persist.run_dir(self.root), self.entry, '{"findings": []}',
-                                "an earlier run's reason", kind=persist.REFUSAL, run_id="EARLIER")
+        rejected_replies.retain_rejected(persist.run_dir(self.root), self.entry, '{"findings": []}',
+                                "an earlier run's reason", kind=rejected_replies.REFUSAL, run_id="EARLIER")
         written = self._write(self.entry)
         self.assertEqual("review the app cell", written["prompt"])
         self.assertNotIn("prior_rejection", written)
@@ -568,12 +569,12 @@ class TestTheRetryPromptCarriesTheRefusal(unittest.TestCase):
     def test_no_run_id_binds_nothing_not_even_an_unstamped_record(self):
         # A record stamped None and a caller with no id must not match each
         # other: "both absent" is not "the same run".
-        persist.retain_rejected(persist.run_dir(self.root), self.entry, '{"findings": []}',
-                                "unbound reason", kind=persist.REFUSAL, run_id=None)
+        rejected_replies.retain_rejected(persist.run_dir(self.root), self.entry, '{"findings": []}',
+                                "unbound reason", kind=rejected_replies.REFUSAL, run_id=None)
         for run_id in (None, ""):
             with self.subTest(run_id=run_id):
                 self.assertEqual((None, None),
-                                 persist.retry_block(persist.run_dir(self.root), self.entry, run_id))
+                                 rejected_replies.retry_block(persist.run_dir(self.root), self.entry, run_id))
 
     def test_the_reason_is_quoted_as_one_json_string(self):
         # #3253 S3: the reason can echo a hostile reply even when the record is
