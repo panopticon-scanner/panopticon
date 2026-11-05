@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The four entrypoints that skipped first contact now vet `.panopticon` (#3452).** `driver
+  readiness` (exit 1), `driver persist` (exit 2; full read-only first contact, so an unstamped
+  manifest halts on H2), a direct `collect_usage.py` and a standalone `run_tools.py` (exit 2)
+  refuse a symlinked, non-directory or escaping artifact directory in one stderr line before
+  reading or writing through it. `run_tools` now vets the tree that owns `--out`, which for the
+  default is the cwd. Every other `.panopticon` join was audited as already covered.
+
 - **`driver.run` is split along its two seams (#3396).** The manifest lifecycle and drift policy moved
   into `_manifest_for_run`, which returns `(manifest, None)` or `(None, status)`, and the terminal
   `complete` message into `_complete_message`; `run` is 107 lines, down from 227. Status JSON, exit
