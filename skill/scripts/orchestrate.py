@@ -23,6 +23,7 @@ import scripts.phases.persist as persist
 import scripts.phases.requests as requests
 import scripts.phases.runio as runio
 import scripts.phases.setup_readiness as setup_readiness
+import scripts.plan_contract as plan_contract
 import scripts.read_guard_hook as read_guard_hook
 import scripts.rejected_retention as rejected_retention
 import scripts.repo_config as repo_config
@@ -518,6 +519,14 @@ def _finish(status, review_root, guards, ledger, namespace, mode="headless", run
     return status
 
 
+def _inside_artifact_dir(review_root, path):
+    """Whether `path` resolves strictly inside `review_root`'s own `.panopticon/` (#3464)."""
+    if not isinstance(path, str) or not path:
+        return False
+    root = os.path.realpath(plan_contract.artifact_root(review_root))
+    return os.path.realpath(os.path.join(review_root, path)).startswith(root + os.sep)
+
+
 def persist_cli(args):
     """`driver persist ENTRY_ID [--file PATH] [--setup] [--pr N] [--base REF] [target]` ->
     exit code.
@@ -548,6 +557,15 @@ def persist_cli(args):
     if entry is None:
         print("driver persist: no entry %r in the current dispatch request"
               % args.entry_id, file=sys.stderr)
+        return 1
+    # #3464: the reply goes where the request names, and the run stamp does not sign the hash
+    # that binds that request -- so the destination must resolve inside THIS tree's own
+    # `.panopticon/`, measured from the root resolved above and never from the path (a foreign
+    # tree's segment, a `..`). Before `write_reply`, whose `is_done` would already stat it.
+    if not _inside_artifact_dir(review_root, entry.get("out_file")):
+        print("driver persist: entry %r names an out_file outside %s: %r"
+              % (args.entry_id, plan_contract.ARTIFACT_DIR,
+                 str(entry.get("out_file"))[:200]), file=sys.stderr)
         return 1
     if args.file:
         with open(args.file, encoding="utf-8") as fh:
