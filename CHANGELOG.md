@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`driver persist` writes a reply only inside the tree's own `.panopticon/` (#3464).** The
+  request's `out_file` must resolve inside the review root's artifact directory, measured from the
+  resolved root, never from the path. An out-of-tree path, another tree's `.panopticon/` or a `..`
+  escape is refused with one line and exit 1, and nothing is written.
+
 - **The four entrypoints that skipped first contact now vet `.panopticon` (#3452).** `driver
   readiness` (exit 1), `driver persist` (exit 2; full read-only first contact, so an unstamped
   manifest halts on H2), a direct `collect_usage.py` and a standalone `run_tools.py` (exit 2)

@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from unittest import mock
@@ -94,3 +95,110 @@ class TestPersistMakesFirstContact(unittest.TestCase):
         # Past first contact: the answer is find_entry's, not a halt.
         self.assertEqual((1, "driver persist: no entry 'review-app-SEC' in the current "
                              "dispatch request\n"), (rc, err))
+
+
+def _tree_state(*roots):
+    """Every path under `roots` with its bytes (links as their target), for a
+    "nothing was written anywhere" comparison."""
+    state = {}
+    for root in roots:
+        for top, dirs, names in os.walk(root):
+            for name in dirs + names:
+                p = os.path.join(top, name)
+                if os.path.islink(p):
+                    state[p] = ("link", os.readlink(p))
+                elif os.path.isfile(p):
+                    with open(p, "rb") as fh:
+                        state[p] = ("file", fh.read())
+                else:
+                    state[p] = ("dir",)
+    return state
+
+
+class TestPersistConfinesTheOutFile(unittest.TestCase):
+    """#3464: on a STAMPED tree, a request whose record and file were edited
+    together still names its own `out_file`, and the stamp does not sign that
+    record -- so persist confines the destination to this tree's `.panopticon/`."""
+
+    def _stamped(self):
+        from tests._test_helpers import our_manifest
+        import scripts.run_manifest as run_manifest
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        run_manifest.write_manifest(d, our_manifest(d, {
+            "schema_version": 1, "run_id": "0123456789abcdef", "host": "claude",
+            "security_mode": "standard", "created": "2026-09-20T00:00:00Z",
+            "review_root": d, "target": d}))
+        return d
+
+    def _dir(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        return d
+
+    def _request(self, d, out_file):
+        requests.write_dispatch_request(d, "RID", "scout", None, [
+            {"id": "scout-app", "out_file": out_file, "delivery": "return_json"}])
+
+    def _persist(self, d):
+        reply = os.path.join(self._dir(), "reply.txt")
+        with open(reply, "w", encoding="utf-8") as fh:
+            fh.write('{"domains": [], "files": [], "tools": []}')
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = driver.main(["persist", "scout-app", "--file", reply, d])
+        return rc, err.getvalue()
+
+    def _refused(self, d, out_file, *watched, rc=1):
+        self._request(d, out_file)
+        before = _tree_state(d, *watched)
+        got, err = self._persist(d)
+        self.assertEqual(rc, got, err)
+        self.assertEqual(1, err.count("\n"), err)
+        self.assertEqual(before, _tree_state(d, *watched))     # nothing written anywhere
+        return err
+
+    def test_an_out_file_outside_the_tree_is_refused(self):
+        d, elsewhere = self._stamped(), self._dir()
+        err = self._refused(d, os.path.join(elsewhere, "scout-app.json"), elsewhere)
+        self.assertIn("names an out_file outside .panopticon", err)
+
+    def test_an_out_file_under_another_trees_artifact_dir_is_refused(self):
+        d, other = self._stamped(), self._stamped()
+        target = os.path.join(other, ".panopticon", "runs", "t", "scout-app.json")
+        err = self._refused(d, target, other)
+        self.assertIn("names an out_file outside .panopticon", err)
+
+    def test_a_dotdot_out_of_the_artifact_dir_is_refused(self):
+        d = self._stamped()
+        err = self._refused(d, os.path.join(d, ".panopticon", "runs", "..", "..", "scout-app.json"))
+        self.assertIn("names an out_file outside .panopticon", err)
+
+    def test_a_relative_out_file_is_measured_where_it_would_be_written(self):
+        # Review round 1: the writer resolves a relative out_file against the
+        # process cwd, not the review root -- so run from elsewhere, a forged
+        # `.panopticon/...` would pass a root-joined check and land in the cwd.
+        d, cwd = self._stamped(), self._dir()
+        with contextlib.chdir(cwd):
+            err = self._refused(d, os.path.join(".panopticon", "runs", "t", "scout-app.json"), cwd)
+        self.assertIn("names an out_file outside .panopticon", err)
+
+    def test_a_symlinked_intermediate_halts_at_first_contact(self):
+        # A planted `runs/evil -> elsewhere` is a stray link, so first contact's
+        # H3 halts before the confinement is even reached (exit 2).
+        d, elsewhere = self._stamped(), self._dir()
+        os.makedirs(os.path.join(d, ".panopticon", "runs"), exist_ok=True)
+        os.symlink(elsewhere, os.path.join(d, ".panopticon", "runs", "evil"))
+        self._refused(d, os.path.join(d, ".panopticon", "runs", "evil", "scout-app.json"),
+                      elsewhere, rc=2)
+
+    def test_a_run_folder_out_file_still_persists(self):
+        d = self._stamped()
+        run = os.path.join(d, ".panopticon", "runs", "t")
+        os.makedirs(run, exist_ok=True)
+        os.symlink("t", os.path.join(d, ".panopticon", "runs", "latest"))
+        out = os.path.join(run, "scout-app.json")
+        self._request(d, out)
+        rc, err = self._persist(d)
+        self.assertEqual((0, ""), (rc, err))
+        self.assertTrue(os.path.isfile(out))
