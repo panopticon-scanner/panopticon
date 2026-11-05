@@ -606,6 +606,7 @@ groups:
       tests:
       - tests/test_grouping_engine.py
       - tests/test_coverage_model.py
+      - tests/test_surface_signal_contract.py
       - tests/test_repo_config.py
       - tests/test_repo_config_literals.py
       - tests/test_config_schema.py

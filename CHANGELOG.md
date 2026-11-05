@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Discovery's and coverage's file signals have a written, tested contract (#2099).** No routing
+  changes.
+  - Only `coverage_model` decides a group's objective floor. Discovery's groups.json `panels`
+    schedule is read by nothing, and a test now proves deleting it or listing every domain in it
+    routes identically.
+  - `discovery.is_test_file` is the one shared predicate.
+  - Every other difference is pinned as required or accidental. The accidental ones that route are
+    `db/migrate/` getting no DAT, plus the bare `entity`, `seed`, `schema`, `test_` and `.spec.`
+    substrings. They wait on #3484.
 - **Agent findings and verdict records have a format-version policy (#2104).** A findings
   envelope, a verdict bundle (and each verdict in it) or a tool verdict that declares a
   `schema_version` other than the int `1` is refused, fail-closed:
