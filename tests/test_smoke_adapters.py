@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -513,3 +514,96 @@ class TestProbeOutputIsBounded(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _FlushRecorder(io.StringIO):
+    """stderr that remembers what had been FLUSHED, so a check can see its start line was."""
+
+    def __init__(self):
+        super().__init__()
+        self.flushed = ""
+
+    def flush(self):
+        super().flush()
+        self.flushed = self.getvalue()
+
+
+class TestMainProgress(unittest.TestCase):
+    """#1993: a flushed stderr line as each check starts and finishes; stdout and the failure
+    block are what main printed before, byte for byte."""
+
+    SUMMARY = "smoke-adapters: %d tools + %d writable paths + semgrep/Bandit SARIF scans OK as uid %d\n"
+
+    def run_main(self, fail=False):
+        """(status, stdout, stderr lines, stderr text) for a five-check run; `fail` fails two."""
+        stderr = _FlushRecorder()
+        seen = []
+
+        def probe(name, ok, msg=""):
+            def check(*_args):
+                seen.append(stderr.flushed.splitlines()[-1])     # the start line, already flushed
+                return ok, msg
+            return check
+
+        with tempfile.TemporaryDirectory() as d:
+            missing = os.path.join(d, "absent")
+            writable = {d: "a writable fixture"}
+            if fail:
+                writable[missing] = "the reason it must exist"
+            ticks = iter(x * 0.5 for x in range(100))
+            with mock.patch.dict(sa.REQUIRED_WRITABLE, writable, clear=True), \
+                    mock.patch.dict(sa.PROBES, {"alpha": probe("alpha", True),
+                                                "beta": ["beta-bin", "--secret-flag"]}, clear=True), \
+                    mock.patch.object(sa, "run_probe",
+                                      side_effect=probe("beta", not fail, "beta said SECRET-OUTPUT")), \
+                    mock.patch.object(sa, "check_semgrep_scan", side_effect=probe("semgrep", True)), \
+                    mock.patch.object(sa, "check_bandit_sarif", side_effect=probe("bandit", True)), \
+                    mock.patch.object(sa.time, "monotonic", side_effect=lambda: next(ticks)), \
+                    contextlib.redirect_stdout(io.StringIO()) as stdout, \
+                    contextlib.redirect_stderr(stderr):
+                status = sa.main()
+            text = stderr.getvalue().replace(d, "<d>")
+        self.assertEqual([line.replace(d, "<d>") for line in seen],
+                         [line for line in text.splitlines()
+                          if line.endswith(" ...") and " writable " not in line],
+                         "a check ran before its start line was flushed")
+        return status, stdout.getvalue(), text.splitlines(), text
+
+    def test_a_passing_run_prints_main_s_stdout_and_a_start_before_each_finish(self):
+        status, stdout, lines, _text = self.run_main()
+        self.assertEqual(0, status)
+        self.assertEqual(self.SUMMARY % (2, 1, os.getuid()), stdout)      # main's line, unchanged
+        self.assertEqual([
+            "smoke-adapters: [1/5] writable <d> ...", "smoke-adapters: [1/5] writable <d> ok (0.5s)",
+            "smoke-adapters: [2/5] alpha ...", "smoke-adapters: [2/5] alpha ok (0.5s)",
+            "smoke-adapters: [3/5] beta ...", "smoke-adapters: [3/5] beta ok (0.5s)",
+            "smoke-adapters: [4/5] semgrep SARIF scan ...", "smoke-adapters: [4/5] semgrep SARIF scan ok (0.5s)",
+            "smoke-adapters: [5/5] bandit SARIF scan ...", "smoke-adapters: [5/5] bandit SARIF scan ok (0.5s)",
+        ], lines)
+
+    def test_a_failing_run_keeps_stdout_empty_and_the_failure_block_unchanged(self):
+        status, stdout, lines, text = self.run_main(fail=True)
+        self.assertEqual(1, status)
+        self.assertEqual("", stdout)
+        block = ("smoke-adapters: 2 check(s) FAILED as uid %d\n\n"
+                 "  - <d>/absent is missing — the reason it must exist\n"
+                 "  - beta said SECRET-OUTPUT\n"
+                 "\nThe image assembled but cannot run these tools. Publishing it "
+                 "would ship adapters that silently produce nothing.\n") % os.getuid()
+        self.assertTrue(text.endswith(block), ascii(text))
+        progress = text[:-len(block)].splitlines()
+        self.assertEqual(12, len(progress))                                  # 6 checks, 2 lines each
+        self.assertIn("smoke-adapters: [1/6] writable <d> ok (0.5s)", progress)
+        self.assertIn("smoke-adapters: [2/6] writable <d>/absent FAILED (0.5s)", progress)
+        self.assertIn("smoke-adapters: [4/6] beta FAILED (0.5s)", progress)
+        # The name only: neither the argv nor what the probe printed reaches a progress line.
+        self.assertFalse([line for line in progress if "SECRET" in line or "--secret-flag" in line])
+
+    def test_the_counter_pads_to_the_total_s_width(self):
+        self.assertEqual("smoke-adapters: [ 2/17] semgrep ...",
+                         self._first_line(sa._step, 2, 17, "semgrep"))
+
+    def _first_line(self, step, index, total, label):
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            step(index, total, label, lambda: (True, ""))
+        return err.getvalue().splitlines()[0]
