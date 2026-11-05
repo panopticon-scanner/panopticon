@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **`driver.run` is split along its two seams (#3396).** The manifest lifecycle and drift policy moved
+  into `_manifest_for_run`, which returns `(manifest, None)` or `(None, status)`, and the terminal
+  `complete` message into `_complete_message`; `run` is 107 lines, down from 227. Status JSON, exit
+  codes, stderr and written files are byte-identical on a before/after kit. The flat-module pin for
+  `driver.py` rises once, 741 -> 760, for the two new definitions and their calls (coordinator
+  ruling).
+
 - **`host_probes.run_probes` walks a module-level runner registry (#3399).** The 13 probe runners
   now receive a fresh invocation context from `_PROBE_RUNNERS`; Codex and Claude's shared
   measurements remain local to that context. Probe order, arguments, cache policy and artifact

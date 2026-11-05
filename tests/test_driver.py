@@ -137,6 +137,25 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         self.assertNotEqual(status["status"], "error", status.get("message"))
         self.assertIsNotNone(run_manifest.load_manifest(d))   # fresh manifest written
 
+    # #3396: the two `_manifest_for_run` refusals no test held to their status.
+    def test_an_unsafe_fresh_manifest_cleanup_is_an_error_status(self):
+        d = self._repo()
+        with mock.patch.object(driver, "_clear_run_artifacts", side_effect=OSError("planted")):
+            status = driver.run(self._args(d))
+        self.assertEqual(("error", "unsafe fresh-manifest cleanup: planted"),
+                         (status["status"], status["message"]))
+        self.assertIsNone(run_manifest.load_manifest(d))
+
+    def test_a_refused_tools_downgrade_is_an_error_status(self):
+        d = self._repo()
+        driver.run(self._args(d))
+        before = run_manifest.load_manifest(d)
+        with mock.patch.object(run_manifest, "record_tools_downgrade",
+                               side_effect=ValueError("downgrade refused")):
+            status = driver.run(self._args(d, "--no-tools"))
+        self.assertEqual(("error", "downgrade refused"), (status["status"], status["message"]))
+        self.assertEqual(before["flags"], run_manifest.load_manifest(d)["flags"])
+
     def test_resolve_review_root_failure_is_status_error(self):
         # #5.0-14: a --pr acquisition failure (gh/network/bad PR) is reported via
         # the status protocol, not a raw RuntimeError escaping run().
