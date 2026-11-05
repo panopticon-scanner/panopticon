@@ -20,9 +20,9 @@ one read as a file in `docs/`, and the doc policy took a HIGH on it down to INFO
 inert code points keep their backslash; what `norm_path` makes of those is #2988.
 
 Named limits. The child pins plant U+D800 alone: that every code point of the block is spelled, and nothing beside
-the block moves, is pinned on the helper (`TestTheSpelling`). `--compare` reads reports already on disk and is not
-covered. Nor is a nesting deeper than the stack, which ends the run in `redact.redact_tree` with or without a
-surrogate; `inert.surrogate_free` is only pinned not to be the walk that raises.
+the block moves, is pinned on the helper (`TestTheSpelling`). `--compare` reads reports already on disk, through
+the same pass since #2960 (`TestTheComparison`). Not covered: a nesting deeper than the stack, which ends the run in
+`redact.redact_tree` with or without a surrogate; `inert.surrogate_free` is only pinned not to be the walk that raises.
 """
 import ast
 import contextlib
@@ -797,6 +797,70 @@ class TestTheRealChild(unittest.TestCase):
         self.assertTrue(parts)
         split = report["findings"] + [found for name in parts for found in json.loads(run[2][name])["findings"]]
         self.assertEqual(12, len(split))
+
+
+class TestTheComparison(unittest.TestCase):
+    """#2960: `synthesize.py --compare A B` as a child, on two reports already on disk. One written before #2951
+    can hold the escape; the comparison reads it through the same pass as a new report, so the page it writes
+    is the one its spelled twin writes."""
+
+    @staticmethod
+    def a_report(findings):
+        return {"meta": {"target": "t", "review_type": "repo", "timestamp": "2026-08-01", "version": "4.0.0",
+                         "security_mode": "standard"},
+                "summary": {"overall_grade": "A", "risk_level": "LOW", "top_issues": [], "gate": "PASS",
+                            "gate_policy": "confirmed_only", "evidence_stats": {},
+                            "stats": {"critical": 0, "high": 0, "medium": len(findings), "low": 0, "info": 0}},
+                "groups": [], "findings": findings, "cross_panel": {"integration_findings": []}}
+
+    def compare(self, baseline, shown, shown_part=None, target="t"):
+        """(status, stderr, the page's bytes) for `--compare baseline shown`, each a findings list. `shown_part`
+        is a continuation file of the shown report's (`meta.parts`), which the reader merges in."""
+        with tempfile.TemporaryDirectory() as d:
+            paths = []
+            for name, findings in (("a.json", baseline), ("b.json", shown)):
+                paths.append(os.path.join(d, name))
+                report = self.a_report(findings)
+                if name == "b.json":
+                    report["meta"]["target"] = target
+                if name == "b.json" and shown_part is not None:
+                    report["meta"]["parts"] = ["b_part2.json"]
+                    with open(os.path.join(d, "b_part2.json"), "w") as fh:
+                        json.dump({"findings": shown_part}, fh)
+                with open(paths[-1], "w") as fh:
+                    json.dump(report, fh)                       # ensure_ascii: the file holds `\ud800`
+            page = os.path.join(d, "compare.html")
+            done = run_script("synthesize.py", "--compare", *paths, "--html-out", page, cwd=d)
+            written = Path(page).read_bytes() if os.path.exists(page) else None
+        return done.returncode, done.stderr, written
+
+    def test_each_report_position_of_the_issue(self):
+        spelled = inert.escape_surrogates(LONE)
+        for position in ("the baseline", "the one shown", "a continuation part of the one shown"):
+            for place in ("title", "description"):
+                with self.subTest(position=position, place=place):
+                    lone, twin = a_finding(1, **{place: "smell " + LONE}), a_finding(1, **{place: "smell " + spelled})
+                    old = [a_finding(2)]
+                    if position == "the baseline":
+                        run, control = self.compare(old + [lone], old), self.compare(old + [twin], old)
+                    elif position == "the one shown":
+                        run, control = self.compare(old, old + [lone]), self.compare(old, old + [twin])
+                    else:
+                        run, control = self.compare(old, old, [lone]), self.compare(old, old, [twin])
+                    status, stderr, page = run
+                    self.assertNotIn("Traceback", stderr)
+                    self.assertEqual(0, status, plain(stderr))
+                    self.assertTrue(page, "the page was left empty")
+                    page.decode("utf-8")                        # strict: a page that is not UTF-8 raises here
+                    self.assertEqual(0, control[0], plain(control[1]))
+                    self.assertTrue(page == control[2], "the page differs from the spelled twin's")
+
+    def test_a_string_outside_the_findings(self):
+        # The pass is the whole document's: the shown report's target is on the page too.
+        run, control = self.compare([], [], target="t" + LONE), self.compare([], [], target="t" + inert.escape_surrogates(LONE))
+        self.assertNotIn("Traceback", run[1])
+        self.assertEqual((0, 0), (run[0], control[0]), plain(run[1]))
+        self.assertTrue(run[2] and run[2] == control[2], "the page differs from the spelled twin's")
 
 
 if __name__ == "__main__":

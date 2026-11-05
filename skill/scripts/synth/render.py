@@ -6,6 +6,7 @@ import uuid
 
 import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
+import scripts.inert as inert
 import scripts.redact as redact
 import scripts.safe_write as safe_write
 import scripts.build_disclosure as build_disclosure
@@ -647,7 +648,7 @@ def _read_json_report(path):
     parts' findings + discarded_claims (reusing reconcile's #1122 path
     confinement) while KEEPING the main report's meta/summary for the compare
     view. A referenced part that can't be read fails LOUD (None), never a silent
-    partial compare. None (with a printed error) on any failure."""
+    partial compare. No lone surrogate (#2960). None (printed error) on any failure."""
     import scripts.reconcile as reconcile
     try:
         with open(path, encoding="utf-8") as fh:
@@ -695,4 +696,4 @@ def _read_json_report(path):
             discarded.extend(ddata.get("discarded_claims") or [])
         report["findings"] = findings
         report["discarded_claims"] = discarded
-    return report
+    return inert.surrogate_free(report)
