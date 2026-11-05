@@ -520,11 +520,13 @@ def _finish(status, review_root, guards, ledger, namespace, mode="headless", run
 
 
 def _inside_artifact_dir(review_root, path):
-    """Whether `path` resolves strictly inside `review_root`'s own `.panopticon/` (#3464)."""
+    """Whether `path` resolves strictly inside `review_root`'s own `.panopticon/` (#3464).
+    Measured exactly as `write_reply` will write it -- a relative path against the process
+    cwd, not joined to the root -- so the check and the write cannot disagree."""
     if not isinstance(path, str) or not path:
         return False
     root = os.path.realpath(plan_contract.artifact_root(review_root))
-    return os.path.realpath(os.path.join(review_root, path)).startswith(root + os.sep)
+    return os.path.realpath(path).startswith(root + os.sep)
 
 
 def persist_cli(args):
@@ -561,7 +563,8 @@ def persist_cli(args):
     # #3464: the reply goes where the request names, and the run stamp does not sign the hash
     # that binds that request -- so the destination must resolve inside THIS tree's own
     # `.panopticon/`, measured from the root resolved above and never from the path (a foreign
-    # tree's segment, a `..`). Before `write_reply`, whose `is_done` would already stat it.
+    # tree's segment, a `..`, a relative path the cwd would resolve elsewhere). Before
+    # `write_reply`, whose `is_done` would already stat it.
     if not _inside_artifact_dir(review_root, entry.get("out_file")):
         print("driver persist: entry %r names an out_file outside %s: %r"
               % (args.entry_id, plan_contract.ARTIFACT_DIR,

@@ -174,6 +174,15 @@ class TestPersistConfinesTheOutFile(unittest.TestCase):
         err = self._refused(d, os.path.join(d, ".panopticon", "runs", "..", "..", "scout-app.json"))
         self.assertIn("names an out_file outside .panopticon", err)
 
+    def test_a_relative_out_file_is_measured_where_it_would_be_written(self):
+        # Review round 1: the writer resolves a relative out_file against the
+        # process cwd, not the review root -- so run from elsewhere, a forged
+        # `.panopticon/...` would pass a root-joined check and land in the cwd.
+        d, cwd = self._stamped(), self._dir()
+        with contextlib.chdir(cwd):
+            err = self._refused(d, os.path.join(".panopticon", "runs", "t", "scout-app.json"), cwd)
+        self.assertIn("names an out_file outside .panopticon", err)
+
     def test_a_symlinked_intermediate_halts_at_first_contact(self):
         # A planted `runs/evil -> elsewhere` is a stray link, so first contact's
         # H3 halts before the confinement is even reached (exit 2).
