@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`synthesize --compare` reads a report on disk through the lone-surrogate pass (#2960).** A report
+  written before #2951 can hold a lone surrogate's JSON escape; `--compare` handed it to the page
+  writer, which could not encode it (exit 4, "artifact path refused", no page). The reader now runs
+  the merged report, continuation parts included, through `inert.surrogate_free`, as every other
+  report reader does, so the comparison completes and the page matches its spelled twin's.
+
 - **driver.py and run_tools.py pay back their pins (#3460).** Two pure moves: the `--reset` sweep
   (`_RESET_GLOBS`, `_clear_run_artifacts`) goes whole to `phases/run_artifacts.py`, and
   `collect_sanitization` goes whole to `tools_manifest.py`, beside the `sanitized` field it fills.
