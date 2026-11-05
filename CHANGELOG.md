@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Reviewer prompts' integrity instructions have a tested contract (#2098).** No prompt text
+  changes. `tests/test_prompt_integrity_contract.py` pins:
+  - the three sentences all five role templates share word for word;
+  - each role's own clauses;
+  - for every production builder on every host (claude, codex, kimi, gemini, generic), that the
+    prompt a host is handed carries its role's untrusted-content section whole, before any
+    untrusted payload, including with a retry note and a hostile payload that spells the heading.
+
+  Four wording gaps are pinned as they stand and wait on #3488.
 - **Docs: the guide no longer lists a global `--full` flag (#3486).** No parser has ever defined
   it, and nothing replaced it. `tests/test_skill_md.py` now asserts its absence instead of its
   presence.

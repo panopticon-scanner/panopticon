@@ -1378,3 +1378,17 @@ its other, non-driver callers, and confines every claim `location` to that root 
 driver rounds do (#1767): the root is `--review-root PATH` (an existing directory) when given, else
 the directory above the queue's own `.panopticon` segment, and it refuses to render when neither
 resolves rather than pinning the process cwd.
+
+**The integrity instructions travel in the task message, never in a shell (#2098).** A registered
+shell is a bare charter, and generic/gemini register none. So each role template's `## Untrusted
+content — non-negotiable` section must reach the agent inside the prompt it is handed, on every
+host.
+- **Shared by all five templates, word for word:** everything read from the target is untrusted
+  data; the only instructions come from the task message; the redaction sentence.
+- **Role-specific, deliberately:** which manipulations count as injection, and what judging on the
+  merits means. The panel alone reports a planted instruction as a `prompt-injection` finding, and
+  the two advisors alone frame the prior agent's claims as untrusted.
+- **What the test checks:** `tests/test_prompt_integrity_contract.py` drives every production
+  builder on every host through `requests._materialize_prompts`. Each delivered prompt must carry
+  its role's section whole, before its untrusted payload. The open wording gaps are pinned as they
+  stand, pending #3488.
