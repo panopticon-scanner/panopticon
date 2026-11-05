@@ -75,8 +75,11 @@ def run_engine(review_root, manifest, phases, max_steps=None):
     # above any real (phase-count + group-count) unit total.
     if max_steps is None:
         max_steps = 10000
-    for _ in range(max_steps):
+    for step in range(max_steps):
         phase = _first_not_done(phases, review_root, manifest)
+        if step == 0:   # #2108: what this pass found done before it did anything
+            loop_progress.first_pass([p.name for p in phases[:list(phases).index(phase)]]
+                                     if phase is not None else [p.name for p in phases])
         loop_progress.phase(phase.name if phase is not None else None)
         if phase is None:
             return {"status": "complete", "phase": None, "checkpoint": None,
@@ -95,7 +98,9 @@ def run_engine(review_root, manifest, phases, max_steps=None):
                     # the status the host already parses.
                     "teardown": TEARDOWN_DIRECTIVE}
         result = phase.execute(review_root, manifest)
+        loop_progress.unit(phase.name)
         if result.kind == "checkpoint":
+            loop_progress.checkpoint(phase.name, result.checkpoint, result.dispatch_request)
             return {"status": "checkpoint", "phase": phase.name,
                     "checkpoint": result.checkpoint, "group": result.group,
                     "dispatch_request": result.dispatch_request,
@@ -121,6 +126,7 @@ def emit_status(status, stream=None):
     review cell spent its retry budget and none answered. It is still
     `complete` (the report is written), but it is that same empty axis.
     """
+    loop_progress.terminal(status.get("status"))
     (stream or sys.stdout).write(json.dumps(status) + "\n")
     return (1 if status.get("status") in ("error", "paused")
             or status.get("review_axis_empty") is True else 0)
