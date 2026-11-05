@@ -428,6 +428,143 @@ def _positive_int(text):
     return value
 
 
+def _manifest_for_run(args, review_root, worktree, base, scope, pr_base, first, phases):
+    """The run manifest: reset, fresh build, or resume with the drift policy -- `(manifest, None)`,
+    or `(None, status)` when the run must stop (#3396: moved out of run unchanged)."""
+    if args.reset:
+        try:
+            _clear_run_artifacts(review_root)  # resolve the tag before the manifest goes
+        except (runio.DriverError, OSError) as exc:
+            return None, runio._error_status("unsafe reset cleanup: %s" % exc)
+        run_manifest.reset_run(review_root)
+    # #1681 Plan 2: ONE resolution per invocation -- both branches below read
+    # it, so the disclosures print once and the manifest records exactly what
+    # the flags were composed from.
+    resolution = _resolve_config(args, review_root)
+    # #1093's foreign manifest (a target-committed or another tree's) halts at first
+    # contact above (#3271), so what loads here is this machine's, for this tree.
+    manifest = run_manifest.load_manifest(review_root)
+    if manifest is None:
+        # I1: no manifest means no prior run should count — clear any stale
+        # derived artifacts so done()-predicates never resume on another run's
+        # data (a lost/corrupt manifest, a partially-failed reset, or a
+        # pre-existing 4.x groups.json).
+        # #5.0-13: load_manifest also returns None for a CORRUPT (present-but-
+        # unparseable) manifest — remove it first so write_manifest (write-once)
+        # can't raise an uncaught FileExistsError and wedge the run.
+        try:
+            _clear_run_artifacts(review_root)
+        except (runio.DriverError, OSError) as exc:
+            return None, runio._error_status("unsafe fresh-manifest cleanup: %s" % exc)
+        run_manifest.reset_run(review_root)
+        manifest = run_manifest.build_manifest(
+            target=args.target, review_root=review_root,
+            host=args.host or runio._DEFAULTS["host"],
+            security_mode=(args.security or resolution.effective.get("security")
+                           or runio._DEFAULTS["security"]),
+            base=base, flags=_cli_flags(args, review_root=review_root,
+                                        resolution=resolution),
+            config=resolution,
+            worktree=worktree,
+            scope=scope, pr=args.pr, pr_base=pr_base)
+        manifest["first_contact"] = first or {}
+        run_manifest.write_manifest(review_root, first_contact.bind(review_root, manifest))
+    else:
+        cli_flags = _cli_flags(args, review_root=review_root, resolution=resolution)
+        conflicts = run_manifest.conflicting_flags(
+            manifest, host=args.host,
+            # The RESOLVED opinion, not the raw flag: a config that changed
+            # `security:` mid-run is drift exactly as `--security` would be.
+            # Still None when neither the CLI nor the file has an opinion --
+            # `conflicting_flags` reads None as "no opinion", which is what
+            # keeps a bare `driver run` resume from conflicting with itself.
+            security_mode=args.security or resolution.effective.get("security"),
+            base=base, flags=cli_flags, scope=scope, pr=args.pr)
+        if conflicts:
+            return None, runio._error_status("flag drift (use --reset to start over): "
+                                       + "; ".join(conflicts))
+        # #1: a bare re-invocation of an ALREADY-complete run matches every
+        # manifest field (conflicting_flags treats a None incoming value as
+        # no-conflict), so it would advance straight to "complete" and hand
+        # back a possibly-stale report as though it were a fresh scan -- the
+        # worst failure mode for a review tool. Refuse loudly and name --reset
+        # instead; the durable report stays on disk.
+        #
+        # #1637 P08 F3: decided on the TERMINAL phase's artifact, not on "every
+        # predicate says done". The two agreed until an environmental tool skip
+        # became legitimately not-done (F1): a finished run then re-entered,
+        # re-ran the scan, found every later phase done, and handed back the
+        # PREVIOUS report as though it were fresh -- with the new tool findings
+        # never ingested. A run whose last phase has its artifact is complete,
+        # whatever an earlier phase would like to retry.
+        #
+        # Fix round 2 N1: this now stands AHEAD of the downgrade below, and inside the branch that
+        # has a manifest at all. It used to follow it, so a `--no-tools` aimed at a FINISHED run
+        # flipped `flags.tools` and appended a `flag_changes` entry before refusing -- a durable
+        # record of a rescue that never happened, on a run with nothing left to rescue. Lose the
+        # terminal artifacts and resume, and the regenerated report says `disabled_mid_run: true`
+        # beside panels that all saw scanner evidence: the run record and the report contradicting
+        # each other on the very surface this work added. A --reset run never reaches here -- it has
+        # no manifest to load -- so the old `not args.reset` clause is now structural.
+        if phases and phases[-1].done(review_root, manifest):
+            report = runio._pano(review_root, "report.json")
+            loc = report if os.path.exists(report) else review_root
+            return None, runio._error_status(
+                "run already complete (report at %s) -- use `--reset` to start "
+                "a new run" % loc)
+        # #1637 P08 F2: `--no-tools` on an IN-FLIGHT run is the non-destructive
+        # rescue from a scanner environment that moved after the scouts were
+        # paid for -- the alternative was `--reset`, which throws that work
+        # away. Recorded in the manifest (flags + flag_changes), so readiness
+        # re-evaluates on its own (its done predicate keys on flags.tools), the
+        # tools phase rewrites its marker as the operator's own skip, and
+        # synthesis discloses it as meta.tools.disabled_mid_run.
+        if run_manifest.is_tools_downgrade(manifest, cli_flags):
+            try:
+                manifest = run_manifest.record_tools_downgrade(review_root, manifest)
+            except ValueError as exc:     # #1735: the same refusal, the same protocol
+                return None, runio._error_status(str(exc))
+    return manifest, None
+
+
+def _complete_message(result, review_root, manifest):
+    """A `complete` result with the worktree finalized and any exhausted cells named, or the error
+    status a refusal there becomes (#3396: moved out of run unchanged)."""
+    # #1809: both calls below READ the run's own artifacts -- the worktree state, and
+    # `exhausted_cells` -> `cell-attempts.json` -- and this block sat outside every `try` above,
+    # so a refusal here escaped `main()` as a traceback and a host parsing stdout got no status
+    # JSON at all: the exact failure `engine.EngineStalled`'s conversion exists to prevent.
+    try:
+        validate._finalize_worktree(review_root, manifest)
+        # #1616 item 2: `review_done` counts an exhausted cell as done -- which is what stops
+        # one unrecoverable cell wedging the run -- so a run that lost cells to their retry
+        # budget completes with the same status and the same message as one where every cell
+        # answered. Name them, here rather than in `orchestrate._finish`, because `driver run`
+        # reaches `complete` on its own too and the loop's terminal `complete` IS this status:
+        # one place, both entrypoints. Added ONLY when there are any, so a clean run's status
+        # stays byte-for-byte what every host parses today.
+        exhausted = review.exhausted_cells(review_root, manifest)
+        empty = len(exhausted) == review.cell_count(review_root)  # #3220: none answered
+    except (runio.DriverError, ValueError) as exc:
+        return runio._error_status(str(exc))
+    if exhausted:
+        # The COUNT is exact; the NAMED list is bounded (fix round 1, N2). A run that loses 100
+        # cells would otherwise put 100 `group/domain` pairs into one status line that hosts and
+        # CI parse, and the per-cell detail is on disk either way (`cell-attempts.json`, and the
+        # report's missing floor cells).
+        named, more = exhausted[:_EXHAUSTED_NAMED], len(exhausted) - _EXHAUSTED_NAMED
+        result = dict(result, cells_exhausted=len(exhausted), message=(
+            "%s; cells_exhausted: %d (%s%s) -- these review cells spent their "
+            "retry budget without returning an acceptable findings file, so "
+            "the run completed with them missing from the review axis"
+            % (result.get("message"), len(exhausted), ", ".join(named),
+               " and %d more" % more if more > 0 else "")))
+        if empty:
+            result = dict(result, review_axis_empty=True,
+                          message=result["message"] + review.AXIS_EMPTY_CLAUSE)
+    return result
+
+
 def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
     try:
         model_resolver.validate_env_overrides()
@@ -470,99 +607,10 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
         if worktree:
             diff_map.release_worktree(worktree, repo=args.target)
         return runio._error_status(str(exc))
-    if args.reset:
-        try:
-            _clear_run_artifacts(review_root)  # resolve the tag before the manifest goes
-        except (runio.DriverError, OSError) as exc:
-            return runio._error_status("unsafe reset cleanup: %s" % exc)
-        run_manifest.reset_run(review_root)
-    # #1681 Plan 2: ONE resolution per invocation -- both branches below read
-    # it, so the disclosures print once and the manifest records exactly what
-    # the flags were composed from.
-    resolution = _resolve_config(args, review_root)
-    # #1093's foreign manifest (a target-committed or another tree's) halts at first
-    # contact above (#3271), so what loads here is this machine's, for this tree.
-    manifest = run_manifest.load_manifest(review_root)
-    if manifest is None:
-        # I1: no manifest means no prior run should count — clear any stale
-        # derived artifacts so done()-predicates never resume on another run's
-        # data (a lost/corrupt manifest, a partially-failed reset, or a
-        # pre-existing 4.x groups.json).
-        # #5.0-13: load_manifest also returns None for a CORRUPT (present-but-
-        # unparseable) manifest — remove it first so write_manifest (write-once)
-        # can't raise an uncaught FileExistsError and wedge the run.
-        try:
-            _clear_run_artifacts(review_root)
-        except (runio.DriverError, OSError) as exc:
-            return runio._error_status("unsafe fresh-manifest cleanup: %s" % exc)
-        run_manifest.reset_run(review_root)
-        manifest = run_manifest.build_manifest(
-            target=args.target, review_root=review_root,
-            host=args.host or runio._DEFAULTS["host"],
-            security_mode=(args.security or resolution.effective.get("security")
-                           or runio._DEFAULTS["security"]),
-            base=base, flags=_cli_flags(args, review_root=review_root,
-                                        resolution=resolution),
-            config=resolution,
-            worktree=worktree,
-            scope=scope, pr=args.pr, pr_base=pr_base)
-        manifest["first_contact"] = first or {}
-        run_manifest.write_manifest(review_root, first_contact.bind(review_root, manifest))
-    else:
-        cli_flags = _cli_flags(args, review_root=review_root, resolution=resolution)
-        conflicts = run_manifest.conflicting_flags(
-            manifest, host=args.host,
-            # The RESOLVED opinion, not the raw flag: a config that changed
-            # `security:` mid-run is drift exactly as `--security` would be.
-            # Still None when neither the CLI nor the file has an opinion --
-            # `conflicting_flags` reads None as "no opinion", which is what
-            # keeps a bare `driver run` resume from conflicting with itself.
-            security_mode=args.security or resolution.effective.get("security"),
-            base=base, flags=cli_flags, scope=scope, pr=args.pr)
-        if conflicts:
-            return runio._error_status("flag drift (use --reset to start over): "
-                                 + "; ".join(conflicts))
-        # #1: a bare re-invocation of an ALREADY-complete run matches every
-        # manifest field (conflicting_flags treats a None incoming value as
-        # no-conflict), so it would advance straight to "complete" and hand
-        # back a possibly-stale report as though it were a fresh scan -- the
-        # worst failure mode for a review tool. Refuse loudly and name --reset
-        # instead; the durable report stays on disk.
-        #
-        # #1637 P08 F3: decided on the TERMINAL phase's artifact, not on "every
-        # predicate says done". The two agreed until an environmental tool skip
-        # became legitimately not-done (F1): a finished run then re-entered,
-        # re-ran the scan, found every later phase done, and handed back the
-        # PREVIOUS report as though it were fresh -- with the new tool findings
-        # never ingested. A run whose last phase has its artifact is complete,
-        # whatever an earlier phase would like to retry.
-        #
-        # Fix round 2 N1: this now stands AHEAD of the downgrade below, and inside the branch that
-        # has a manifest at all. It used to follow it, so a `--no-tools` aimed at a FINISHED run
-        # flipped `flags.tools` and appended a `flag_changes` entry before refusing -- a durable
-        # record of a rescue that never happened, on a run with nothing left to rescue. Lose the
-        # terminal artifacts and resume, and the regenerated report says `disabled_mid_run: true`
-        # beside panels that all saw scanner evidence: the run record and the report contradicting
-        # each other on the very surface this work added. A --reset run never reaches here -- it has
-        # no manifest to load -- so the old `not args.reset` clause is now structural.
-        if phases and phases[-1].done(review_root, manifest):
-            report = runio._pano(review_root, "report.json")
-            loc = report if os.path.exists(report) else review_root
-            return runio._error_status(
-                "run already complete (report at %s) -- use `--reset` to start "
-                "a new run" % loc)
-        # #1637 P08 F2: `--no-tools` on an IN-FLIGHT run is the non-destructive
-        # rescue from a scanner environment that moved after the scouts were
-        # paid for -- the alternative was `--reset`, which throws that work
-        # away. Recorded in the manifest (flags + flag_changes), so readiness
-        # re-evaluates on its own (its done predicate keys on flags.tools), the
-        # tools phase rewrites its marker as the operator's own skip, and
-        # synthesis discloses it as meta.tools.disabled_mid_run.
-        if run_manifest.is_tools_downgrade(manifest, cli_flags):
-            try:
-                manifest = run_manifest.record_tools_downgrade(review_root, manifest)
-            except ValueError as exc:     # #1735: the same refusal, the same protocol
-                return runio._error_status(str(exc))
+    manifest, refused = _manifest_for_run(args, review_root, worktree, base, scope, pr_base,
+                                          first, phases)
+    if refused is not None:
+        return refused
     # In-memory only, and deliberately NOT a manifest field: it names where the HOST SESSION runs,
     # a property of this invocation rather than of the run, and feeds only the cost-ledger
     # transcript lookup. Not persisted, so not an anti-drift key: resuming from another session is
@@ -620,38 +668,9 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
         # still named.
         return runio._error_status(str(exc))
     if result.get("status") == "complete":
-        # #1809: both calls below READ the run's own artifacts -- the worktree state, and
-        # `exhausted_cells` -> `cell-attempts.json` -- and this block sat outside every `try` above,
-        # so a refusal here escaped `main()` as a traceback and a host parsing stdout got no status
-        # JSON at all: the exact failure `engine.EngineStalled`'s conversion exists to prevent.
-        try:
-            validate._finalize_worktree(review_root, manifest)
-            # #1616 item 2: `review_done` counts an exhausted cell as done -- which is what stops
-            # one unrecoverable cell wedging the run -- so a run that lost cells to their retry
-            # budget completes with the same status and the same message as one where every cell
-            # answered. Name them, here rather than in `orchestrate._finish`, because `driver run`
-            # reaches `complete` on its own too and the loop's terminal `complete` IS this status:
-            # one place, both entrypoints. Added ONLY when there are any, so a clean run's status
-            # stays byte-for-byte what every host parses today.
-            exhausted = review.exhausted_cells(review_root, manifest)
-            empty = len(exhausted) == review.cell_count(review_root)  # #3220: none answered
-        except (runio.DriverError, ValueError) as exc:
-            return runio._error_status(str(exc))
-        if exhausted:
-            # The COUNT is exact; the NAMED list is bounded (fix round 1, N2). A run that loses 100
-            # cells would otherwise put 100 `group/domain` pairs into one status line that hosts and
-            # CI parse, and the per-cell detail is on disk either way (`cell-attempts.json`, and the
-            # report's missing floor cells).
-            named, more = exhausted[:_EXHAUSTED_NAMED], len(exhausted) - _EXHAUSTED_NAMED
-            result = dict(result, cells_exhausted=len(exhausted), message=(
-                "%s; cells_exhausted: %d (%s%s) -- these review cells spent their "
-                "retry budget without returning an acceptable findings file, so "
-                "the run completed with them missing from the review axis"
-                % (result.get("message"), len(exhausted), ", ".join(named),
-                   " and %d more" % more if more > 0 else "")))
-            if empty:
-                result = dict(result, review_axis_empty=True,
-                              message=result["message"] + review.AXIS_EMPTY_CLAUSE)
+        result = _complete_message(result, review_root, manifest)
+        if result.get("status") == "error":
+            return result
     return synthesize.complete_status(result, review_root, manifest)
 
 

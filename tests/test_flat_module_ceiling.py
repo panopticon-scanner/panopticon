@@ -60,7 +60,8 @@ PENDING: dict[str, int] = {
     "skill/scripts/diff_map.py": 1215,
     # #3395: one-time raise for the _repo_scan split (4 helpers, +30 def/call lines); ruled by coordinator 2026-11-04
     "skill/scripts/discovery.py": 1956,
-    "skill/scripts/driver.py": 741,
+    # #3396: one-time raise for the driver.run split; ruled by coordinator 2026-11-04
+    "skill/scripts/driver.py": 760,
     "skill/scripts/evidence.py": 982,
     "skill/scripts/html_report.py": 1568,
     "skill/scripts/ingest_tools.py": 1100,
