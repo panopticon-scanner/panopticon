@@ -15,6 +15,7 @@ import scripts.phases.requests as requests
 
 import scripts.driver as driver
 import scripts.run_manifest as run_manifest
+from tests._test_helpers import our_manifest
 from scripts import hosts
 
 from tests.tools.git_repo import make_git_repo
@@ -408,10 +409,11 @@ class TestDriverPersistCLI(unittest.TestCase):
         # #1727: `driver persist` reads the dispatch request out of the
         # reviewed tree and now checks it against the hash the run recorded,
         # so the fixture needs the run this request belongs to.
-        driver.run_manifest.write_manifest(d, {
+        # #3452: persist makes first contact, so the run is OURS -- stamped.
+        driver.run_manifest.write_manifest(d, our_manifest(d, {
             "schema_version": 1, "run_id": "0123456789abcdef", "host": "claude",
             "security_mode": "standard", "created": "2026-09-20T00:00:00Z",
-            "review_root": d, "target": d})
+            "review_root": d, "target": d}))
         return d
 
     def _request(self, d, entries):
