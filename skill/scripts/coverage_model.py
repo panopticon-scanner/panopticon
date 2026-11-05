@@ -2,6 +2,27 @@
 (loudly), the scout widens the undeclared middle. Pure (no I/O, no state);
 importing it pulls in `discovery` for the TST naming rule (#1770), which touches
 `sys.path` as it always has. See spec §5.
+
+**The file-signal contract with discovery (#2099).** This module owns every
+OBJECTIVE routing signal: the gated global floor and the SEC floor below, which
+`phases.coverage` composes with committed `panels:`, scout widening and
+`exclude`.
+- **Discovery's schedule routes nothing.** `discovery.compute_group_panels`
+  writes groups.json `panels` from its own test/database/architecture patterns,
+  and no phase reads it.
+- **One predicate is shared:** `discovery.is_test_file`, which the TST signal
+  unions in.
+- **Required divergences:**
+  - ARC here is structural (>= 2 directories), not a file kind;
+  - COD and SEC skip assets and documentation (#1489, #3338) where the schedule
+    is unconditional;
+  - the TST surface hints (conftest, /tests/, .feature) stay OUT of the naming
+    rule, because that rule also moves files between groups
+    (`discovery.partition_test_files`).
+- **Accidental divergences** are pinned at today's behaviour in
+  tests/test_surface_signal_contract.py. The routing ones (the `migrate/` miss,
+  the bare `entity`/`seed`/`schema`/`test_`/`.spec.` substrings) wait on #3484.
+  The schedule's own, which routes nothing, wait on #3485.
 """
 
 from typing import TYPE_CHECKING

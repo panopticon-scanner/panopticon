@@ -803,6 +803,14 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   recompute.
 - **`coverage`** — one batched `scout` checkpoint carrying every pending group's scout (below), then
   widens each group's floor panels by its scout's valid domains.
+  - **What decides the objective floor (#2099):** only `coverage_model`'s file signals (the gated
+    COD/DAT/TST/ARC floor and the SEC floor), with the one predicate it shares with discovery,
+    `discovery.is_test_file`.
+  - **What doesn't:** the `panels` list discovery writes into each `groups.json` entry is a
+    schedule no phase reads. Deleting it, or listing every domain in it, routes exactly the same,
+    and `tests/test_surface_signal_contract.py` pins that.
+  - **Where the two differ:** that test also lists every difference, labelled required or
+    accidental.
 - **`tools`** — deterministic, not discretionary: runs
   `python3 skill/scripts/run_tools.py --target . --out .panopticon/runs/<tag>/tools --deps` unless `--no-tools`
   was passed; a skip is never silent — it's always recorded in `tools-ran.json` and surfaced in the
