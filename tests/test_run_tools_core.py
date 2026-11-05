@@ -603,6 +603,11 @@ class TestVirtualenvExclusion(unittest.TestCase):
                 self.assertEqual(json.load(fh)["exclude_globs"],
                                  ["tests/fixtures/**"])
 
+    def test_collect_sanitization_has_one_owner(self):
+        # #3460: moved whole to tools_manifest; run_tools does not re-bind it.
+        self.assertFalse(hasattr(rt, "collect_sanitization"))
+        self.assertTrue(callable(tm.collect_sanitization))
+
     def test_collect_sanitization_asks_only_the_adapters_that_answer(self):
         class _Quiet:
             pass
@@ -614,7 +619,7 @@ class TestVirtualenvExclusion(unittest.TestCase):
         class _Absent:
             def sanitization_report(self, target):
                 return None
-        got = rt.collect_sanitization(
+        got = tm.collect_sanitization(
             {"semgrep": _Quiet(), "pip-audit": _Loud(), "npm-audit": _Absent()},
             "/repo")
         self.assertEqual(got, {"pip-audit": {"source": "requirements.txt",
@@ -626,7 +631,7 @@ class TestVirtualenvExclusion(unittest.TestCase):
                 raise OSError("unreadable")
         buf = io.StringIO()
         with contextlib.redirect_stderr(buf):
-            self.assertEqual(rt.collect_sanitization({"pip-audit": _Boom()}, "/repo"), {})
+            self.assertEqual(tm.collect_sanitization({"pip-audit": _Boom()}, "/repo"), {})
         self.assertIn("pip-audit", buf.getvalue())
 
     def test_main_records_the_sanitizer_disclosure_in_the_manifest(self):

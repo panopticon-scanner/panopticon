@@ -7,10 +7,7 @@ every invocation, so a crash/compaction/interrupt resumes identically. See
 docs/superpowers/specs/2026-08-15-panopticon-5.0-driver-skeleton-design.md.
 """
 import argparse
-import glob as _glob
 import os
-import re
-import shutil
 import subprocess
 import sys
 
@@ -28,7 +25,7 @@ import scripts.config_schema as config_schema  # noqa: E402
 import scripts.diff_map as diff_map  # noqa: E402
 import scripts.first_contact as first_contact  # noqa: E402
 import scripts.run_manifest as run_manifest  # noqa: E402
-from scripts import hosts, loop_progress, plan_contract, procgroup  # noqa: E402
+from scripts import hosts, loop_progress, procgroup  # noqa: E402
 from scripts.host_posture import (  # noqa: E402,F401 -- compatibility names for #3402
     _carry_output_schema_shape, _disclose_posture, _emit_posture_disclosure,
     _establish_host_posture, _gating_states, _posture_drift, _surface_refusal,
@@ -38,6 +35,7 @@ import scripts.model_resolver as model_resolver  # noqa: E402
 import scripts.setup_config as setup_config  # noqa: E402
 import scripts.phases.engine as engine
 import scripts.phases.runio as runio
+import scripts.phases.run_artifacts as run_artifacts
 import scripts.phases.coverage as coverage
 import scripts.phases.discovery as discovery
 import scripts.phases.readiness as readiness
@@ -47,37 +45,6 @@ import scripts.phases.verify as verify
 import scripts.phases.setup as setup
 import scripts.phases.synthesize as synthesize
 import scripts.phases.validate as validate
-
-
-_RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.json",
-                "validate.json",
-                "report.json", "dispatch-request.json",
-                # #1809: the trailing `*` sweeps a `tree-baseline.txt.tmp` orphaned by a SIGKILL
-                # between the staging open and the replace -- --reset is the corrupt-baseline remedy.
-                "tree-baseline.txt*",
-                "verify-queue.json", "findings-*.json",
-                # #5.0-07: stale delta artifacts must not survive a --reset and silently delta-scope
-                # (or content-check) the next run. #5.0-16: the driver's own dispatch plan clears
-                # too, so a --reset run re-declares cells from fresh coverage.
-                "diff-hunks.json", "out-file-hashes.json",
-                "dispatch-plan-driver.json",
-                # #1637 P08: the readiness verdict and the per-cell
-                # scanner-context tally are both run-scoped facts -- a --reset
-                # must not resume on the previous run's answer to either.
-                "readiness.json", "panel-tools-context.json",
-                # #1638 P13: the per-group test-inventory verdict is derived
-                # from THIS run's assignment, so a --reset that re-discovers
-                # must not resume on the previous run's answer either.
-                "panel-test-inventory.json",
-                # #1513: the per-cell retry budget is run-scoped -- a --reset
-                # must not start with a cell already exhausted.
-                # #1809: its three siblings are run-scoped for the same
-                # reason, and an unreadable one now names --reset as the
-                # remedy, so the legacy flat sweep has to actually clear them
-                # (`scout-*.json` already covers the scout counter, and
-                # discovery-attempts.json's own docstring already claimed it).
-                "cell-attempts.json", "verify-attempts.json",
-                "discovery-attempts.json")
 
 
 # How many exhausted cells the terminal `complete` message names before it
@@ -180,63 +147,6 @@ def _scope_from_args(args):
     if getattr(args, "scope_files", None):
         return {"mode": "files", "target": list(args.scope_files)}
     return None
-
-
-def _clear_run_artifacts(review_root):
-    """--reset: clear the current run's working folder (findings / verdicts /
-    coverage / scouts / dispatch / ...) so a fresh run starts, while KEEPING the
-    durable top-level tag-named report — reset reclaims the scratch, not the
-    deliverable (§5.1). NEVER touches the committed root config — since #1681
-    the matrix lives outside `.panopticon/` entirely — or another run's
-    folder/report. MUST run BEFORE the manifest is removed, so the tag still
-    resolves; with no/corrupt manifest it degrades to the legacy flat sweep.
-    Both callers run after first contact (#3271), which vetted `.panopticon/`
-    and every manifest in it."""
-    base = os.path.join(os.path.abspath(review_root), plan_contract.ARTIFACT_DIR)
-    manifest = run_manifest.load_manifest(review_root)
-    tag = run_manifest.run_tag(manifest) if manifest else None
-    # Defense at the deletion boundary, independent of the tag producer.
-    if tag is not None and (not isinstance(tag, str) or
-                            re.fullmatch(r"[A-Za-z0-9-]{1,220}", tag) is None):
-        raise runio.DriverError("refusing cleanup with unsafe run tag")
-
-    # Collect and vet EVERY destination before the first removal. A linked
-    # `runs` parent must never redirect the active folder or `latest` unlink.
-    run_dir = os.path.join(base, "runs", tag) if tag else None
-    latest = os.path.join(base, "runs", "latest")
-    paths = []
-    # Migration safety: sweep any legacy FLAT run artifacts a pre-5.1 run may have left at top-level.
-    # The report.json SYMLINK points at the durable tag-named report and is kept; only a STALE FLAT
-    # report.json (a real file -- pre-5.1 or a corrupt/orphaned state) is swept, preserving the I1
-    # no-resume-on-stale-data invariant. The tag-named reports themselves are never in _RESET_GLOBS.
-    for pat in _RESET_GLOBS:
-        for path in _glob.glob(os.path.join(base, pat)):
-            if os.path.basename(path) == "report.json" and os.path.islink(path):
-                continue
-            paths.append(path)
-    dirs = [os.path.join(base, sub) for sub in ("tools", "verdicts")]
-    candidates = [run_dir, latest] + paths + dirs if run_dir else paths + dirs
-    for path in candidates:
-        runio._confine_link_parent(path)
-
-    def remove_dir(path):
-        if os.path.islink(path):
-            os.unlink(path)  # remove only the final link, never its referent
-        elif os.path.isdir(path):
-            shutil.rmtree(path)
-
-    if run_dir:
-        remove_dir(run_dir)
-        if os.path.lexists(latest):
-            os.unlink(latest)
-    for path in paths:
-        if os.path.isdir(path) and not os.path.islink(path):   # #2095: the tree's, never ours
-            print("driver: --reset left %s alone: a directory is never a run artifact of ours"
-                  % path, file=sys.stderr, flush=True)
-            continue
-        os.remove(path)
-    for path in dirs:
-        remove_dir(path)
 
 
 def hosts_runner_modes():
@@ -433,7 +343,7 @@ def _manifest_for_run(args, review_root, worktree, base, scope, pr_base, first, 
     or `(None, status)` when the run must stop (#3396: moved out of run unchanged)."""
     if args.reset:
         try:
-            _clear_run_artifacts(review_root)  # resolve the tag before the manifest goes
+            run_artifacts._clear_run_artifacts(review_root)  # resolve the tag before the manifest goes
         except (runio.DriverError, OSError) as exc:
             return None, runio._error_status("unsafe reset cleanup: %s" % exc)
         run_manifest.reset_run(review_root)
@@ -453,7 +363,7 @@ def _manifest_for_run(args, review_root, worktree, base, scope, pr_base, first, 
         # unparseable) manifest — remove it first so write_manifest (write-once)
         # can't raise an uncaught FileExistsError and wedge the run.
         try:
-            _clear_run_artifacts(review_root)
+            run_artifacts._clear_run_artifacts(review_root)
         except (runio.DriverError, OSError) as exc:
             return None, runio._error_status("unsafe fresh-manifest cleanup: %s" % exc)
         run_manifest.reset_run(review_root)

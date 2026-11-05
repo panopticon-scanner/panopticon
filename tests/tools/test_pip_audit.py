@@ -18,7 +18,7 @@ import tests._test_helpers as helpers
 from tests._test_helpers import FakePopen, fake_aws_key, first, only
 import scripts.claim_scope as claim_scope
 import scripts.ingest_tools as ingest_tools
-import scripts.run_tools as run_tools
+import scripts.tools_manifest as tools_manifest
 import scripts.tools.pip_audit as pa
 
 try:
@@ -545,7 +545,7 @@ class TestPyprojectReadBoundary(unittest.TestCase):
         self.assertEqual(report["truncated"], truncated)
         self.assertEqual(report["dropped_truncated"], 0)
         self.assertLess(len(json.dumps(report)), 1000)
-        self.assertEqual(run_tools.collect_sanitization(
+        self.assertEqual(tools_manifest.collect_sanitization(
             {"pip-audit": pa.PipAuditAdapter()}, target), {"pip-audit": report})
 
     def test_exact_read_limit_keeps_static_dependencies(self):
