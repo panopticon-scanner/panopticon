@@ -11,6 +11,7 @@ from unittest import mock
 import scripts.batch_settlement as batch_settlement
 import scripts.driver as driver
 import scripts.phases.persist as persist
+import scripts.phases.rejected_replies as rejected_replies
 import scripts.phases.requests as requests
 import scripts.phases.runio as runio
 import scripts.rejected_retention as retention
@@ -33,7 +34,7 @@ class _Folder(unittest.TestCase):
             requests.entry_file_component(entry_id), attempt))
         runio._write_json(path, {
             "schema_version": 1, "entry_id": entry_id, "attempt": attempt,
-            "kind": persist.REFUSAL, "run_id": run_id, "reason": "bad envelope",
+            "kind": rejected_replies.REFUSAL, "run_id": run_id, "reason": "bad envelope",
             "recorded_at": at, "reply": reply})
         return path
 
@@ -65,7 +66,7 @@ class TestTheRule(_Folder):
         self.assertEqual([(1, "per_entry"), (2, "per_entry")],
                          sorted((row["attempt"], row["rule"]) for row in rows))
         self.assertTrue(all(row["run_id"] == RUN for row in rows))
-        self.assertEqual(6, persist._next_attempt(self.rejected, "review-app-SEC"))
+        self.assertEqual(6, rejected_replies._next_attempt(self.rejected, "review-app-SEC"))
 
     def test_the_ceiling_evicts_oldest_first_but_never_an_entrys_newest(self):
         self.record("a", 1, at="2026-11-03T00:00:01Z")

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **The retained-rejected-reply family moved to `phases/rejected_replies.py` (#3467).** A pure
+  move out of `phases/persist.py` (700 to 485 lines): the D10 refusal constants, the retry block
+  and `retain_rejected` with its readers, byte-identical apart from four `persist.` prefixes on the
+  names that stay behind. persist never imports the new module. No behaviour change.
+
 - **No cwd-relative `.panopticon` defaults left on the artifact readers (#3465).**
   `group_runner.snapshot_out_files` / `verify_out_file_hashes`, `synth/integrity.read_unenforced_ack`
   and `synth/plan.load_dispatch_plans[_detailed]` now require their path; `derive_tool_policy_mode`

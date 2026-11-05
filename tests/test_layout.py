@@ -255,11 +255,13 @@ class LayoutTest(unittest.TestCase):
         env["PYTHONPATH"] = os.pathsep.join(
             [SKILL_ROOT, SCRIPTS] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
         failures = []
+        launched = set()
         for pkg, d in _package_dirs():
             for f in sorted(os.listdir(d)):
                 if not f.endswith(".py") or f == "__init__.py":
                     continue
                 mod = "scripts.%s.%s" % (pkg, f[:-3])
+                launched.add(mod)
                 command = [sys.executable, "-c", "import " + mod]
                 try:
                     r = subprocess.run(  # nosec B603
@@ -269,6 +271,10 @@ class LayoutTest(unittest.TestCase):
                     self.fail("module=%s command=%r timed out: %s" % (mod, command, exc))
                 if r.returncode != 0:
                     failures.append("%s: %s" % (mod, (r.stderr.strip().splitlines() or [""])[-1]))
+        # #3467: requests, persist and rejected_replies import one another;
+        # each must be among the modules launched first in a fresh interpreter.
+        trio = {"scripts.phases." + m for m in ("requests", "persist", "rejected_replies")}
+        self.assertEqual(trio - launched, set())
         self.assertEqual(failures, [], "module does not import on its own (a `from .x "
                          "import Y` in an import cycle is the usual cause):\n"
                          + "\n".join(failures))

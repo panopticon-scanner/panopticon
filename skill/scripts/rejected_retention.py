@@ -1,6 +1,6 @@
 """Retention for `<run_dir>/rejected/` (#1664).
 
-`persist.retain_rejected` keeps every refused or failed reply, capped per
+`rejected_replies.retain_rejected` keeps every refused or failed reply, capped per
 attempt, and before this nothing ever removed one: the per-run total was
 attempts x entries x 256 KiB. The rule, decided once and applied by both
 writers (the loop after each batch closes, `driver persist` after its own
@@ -37,6 +37,7 @@ import time
 
 import scripts.batch_settlement as batch_settlement
 import scripts.phases.persist as persist
+import scripts.phases.rejected_replies as rejected_replies
 import scripts.phases.requests as requests
 import scripts.runners.batch as batch_mod
 import scripts.safe_write as safe_write
@@ -46,7 +47,7 @@ RUN_CEILING = 32 * 1024 * 1024
 TOMBSTONE = "pruned.jsonl"
 # A record's reply is capped at REJECTED_CAP before JSON escaping, which can
 # grow it up to 6x (`\u0000`). Anything larger was not written by this build.
-RECORD_MAX = 8 * persist.REJECTED_CAP
+RECORD_MAX = 8 * rejected_replies.REJECTED_CAP
 TOMBSTONE_MAX = 16 * 1024 * 1024
 PER_ENTRY = "per_entry"
 CEILING = "ceiling"

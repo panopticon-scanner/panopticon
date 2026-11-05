@@ -571,7 +571,7 @@ class TestHeadlessLoop(_HeadlessLoopCase):
                                 "review-app-SEC-1.json")
         primary = os.path.join(run_dir, "findings-app-SEC.json")
         record = {"schema_version": 1, "entry_id": "review-app-SEC",
-                  "attempt": 1, "kind": orchestrate.persist.REFUSAL,
+                  "attempt": 1, "kind": orchestrate.rejected_replies.REFUSAL,
                   "run_id": "run-1", "reason": "invalid envelope",
                   "recorded_at": "2026-11-02T00:00:00Z", "reply": "not JSON"}
         runio._write_json(retained, record)

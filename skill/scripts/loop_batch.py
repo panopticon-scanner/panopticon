@@ -19,7 +19,7 @@ import scripts.batch_settlement as batch_settlement
 import scripts.dispatch as dispatch
 import scripts.hosts as hosts
 import scripts.ledger as ledger_mod
-import scripts.phases.persist as persist
+from scripts.phases import persist, rejected_replies
 import scripts.phases.requests as requests
 import scripts.phases.runio as runio
 import scripts.phases.setup as setup
@@ -262,7 +262,7 @@ def recover_stale(review_root, request, host, mode, namespace=None, discard=None
                           or not re.fullmatch(re.escape(safe_id) + r"-[0-9]+\.json",
                                               os.path.basename(artifact))
                           or (os.path.lexists(artifact) and
-                              (persist._read_rejection(artifact) or {}).get("entry_id") != eid)):
+                              (rejected_replies._read_rejection(artifact) or {}).get("entry_id") != eid)):
                     raise ValueError(refusal + "unexpected retained-reply artifact")
             pending.append(entry)
         batch = batch_mod.Batch(root, doc["batch"], doc["checkpoint"], pending)
@@ -709,8 +709,8 @@ def record_entry(entry, result, timing, run_dir, batch, ledger, req, mode, runne
             # D10 ruling 1: the reply is kept, redacted, instead of
             # being dropped on the floor -- `_materialize_prompts`
             # reads it back into the retry prompt (ruling 2).
-            rejected = persist.retain_rejected(run_dir, entry, result.text, reason,
-                                              kind=persist.REFUSAL, run_id=req.get("run_id"))
+            rejected = rejected_replies.retain_rejected(run_dir, entry, result.text, reason,
+                                              kind=rejected_replies.REFUSAL, run_id=req.get("run_id"))
             print("driver loop: %s" % reason, file=sys.stderr, flush=True)
     elif not result.ok:
         # D10 ruling 5: a failed launch that PRINTED something keeps it
@@ -718,8 +718,8 @@ def record_entry(entry, result, timing, run_dir, batch, ledger, req, mode, runne
         # is the entry that was most expensive to lose. `retain_rejected`
         # writes nothing for a failure with no output, so an ordinary
         # launch failure is exactly what it was.
-        rejected = persist.retain_rejected(run_dir, entry, result.text, result.error,
-                                          kind=persist.LAUNCH_FAILURE, run_id=req.get("run_id"))
+        rejected = rejected_replies.retain_rejected(run_dir, entry, result.text, result.error,
+                                          kind=rejected_replies.LAUNCH_FAILURE, run_id=req.get("run_id"))
         print("driver loop: entry %s failed: %s" % (eid, result.error),
               file=sys.stderr, flush=True)
     if rejected:

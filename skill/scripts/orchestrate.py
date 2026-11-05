@@ -20,6 +20,7 @@ import scripts.loop_setup as loop_setup
 import scripts.phases.denials as denials
 import scripts.phases.engine as engine
 import scripts.phases.persist as persist
+import scripts.phases.rejected_replies as rejected_replies
 import scripts.phases.requests as requests
 import scripts.phases.runio as runio
 import scripts.phases.setup_readiness as setup_readiness
@@ -581,7 +582,7 @@ def persist_cli(args):
         # so the mode a human drives keeps it exactly as the loop does -- same folder, shape
         # and attempt numbering -- and (F10) says where, since the refusal line is all they see.
         folder = persist.run_dir(review_root, "setup" if args.setup else None)
-        kept = persist.retain_rejected(folder, entry, text, reason, kind=persist.REFUSAL, run_id=run_id)
+        kept = rejected_replies.retain_rejected(folder, entry, text, reason, kind=rejected_replies.REFUSAL, run_id=run_id)
         if kept:                                  # #1664: the loop's rule and manifest guard
             rejected_retention.prune(folder, run_id)
         print("driver persist: %s%s" % (reason, " (reply kept at %s)" % kept if kept else ""), file=sys.stderr)

@@ -491,7 +491,7 @@ class Batch:
 
     def add_artifact(self, entry_id, path):
         """Record a file the batch wrote that `open` could not have known
-        about -- `persist.retain_rejected` names the record only once it has
+        about -- `rejected_replies.retain_rejected` names the record only once it has
         written it. Kept in the manifest so the rollback stays a LIST and
         never becomes a glob over the rejected folder."""
         if path is None or path == "":
