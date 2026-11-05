@@ -19,6 +19,7 @@ import unittest
 from unittest import mock
 
 import scripts.driver as driver
+import scripts.phases.run_artifacts as run_artifacts
 import scripts.phases.validate as validate_phase
 import scripts.phases.runio as runio
 import scripts.run_manifest as run_manifest
@@ -514,7 +515,7 @@ class TornBaselineTest(unittest.TestCase):
         leftover = path + ".tmp"
         with open(leftover, "w", encoding="utf-8") as fh:
             fh.write('{"entries"')
-        driver._clear_run_artifacts(repo)
+        run_artifacts._clear_run_artifacts(repo)
         self.assertFalse(os.path.exists(path))
         self.assertFalse(os.path.exists(leftover),
                          "--reset left the staging file behind")

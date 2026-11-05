@@ -81,7 +81,7 @@ def groups_artifact_errors(doc, manifest=None):
 def _bump_discovery_attempts(review_root):
     """Persisted malformed-round counter bounding the re-run above. Lives in the
     run folder beside groups.json, so `--reset` clears it with them (it is in
-    `driver._RESET_GLOBS` for the legacy flat sweep too). PRESENT but
+    `run_artifacts._RESET_GLOBS` for the legacy flat sweep too). PRESENT but
     unreadable refuses rather than reading as empty (#1809): refunding the
     malformed round is what lets a deterministically-broken child re-run
     without bound, which is the one thing this counter exists to stop. #1767

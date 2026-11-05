@@ -17,6 +17,7 @@ import scripts.phases.tools as tools_phase
 import scripts.phases.validate as validate_phase
 
 import scripts.driver as driver
+import scripts.phases.run_artifacts as run_artifacts
 import scripts.plan_contract as plan_contract
 import scripts.run_manifest as run_manifest
 import scripts.safe_write as safe_write
@@ -81,16 +82,23 @@ class TestDriverEntrypoint(unittest.TestCase):
 
 
 class TestResetGlobs(unittest.TestCase):
+    def test_the_reset_family_has_one_owner(self):
+        # #3460: moved whole to phases/run_artifacts; driver binds neither
+        # name, so a patch on driver can't silently miss the real one.
+        for name in ("_RESET_GLOBS", "_clear_run_artifacts"):
+            self.assertFalse(hasattr(driver, name), name)
+            self.assertTrue(hasattr(run_artifacts, name), name)
+
     def test_reset_clears_stale_delta_artifacts(self):
         # #5.0-07: --reset must clear stale delta artifacts so they can't
         # silently re-scope (diff-hunks) or content-check (out-file-hashes) a run.
-        self.assertIn("diff-hunks.json", driver._RESET_GLOBS)
-        self.assertIn("out-file-hashes.json", driver._RESET_GLOBS)
+        self.assertIn("diff-hunks.json", run_artifacts._RESET_GLOBS)
+        self.assertIn("out-file-hashes.json", run_artifacts._RESET_GLOBS)
 
     def test_reset_clears_driver_dispatch_plan(self):
         # #5.0-16: --reset must clear the driver's own dispatch plan so a
         # --reset run re-declares its cells from fresh coverage.
-        self.assertIn("dispatch-plan-driver.json", driver._RESET_GLOBS)
+        self.assertIn("dispatch-plan-driver.json", run_artifacts._RESET_GLOBS)
 
     def test_reset_removes_stale_run_files_and_preserves_durable_artifact(self):
         # The suite's external TMPDIR supplies a newly allocated review root
@@ -106,7 +114,7 @@ class TestResetGlobs(unittest.TestCase):
             durable = os.path.join(artifacts, "report-run-1.json")
             with open(durable, "w", encoding="utf-8") as fh:
                 fh.write("keep")
-            driver._clear_run_artifacts(root)
+            run_artifacts._clear_run_artifacts(root)
             for name in stale:
                 self.assertFalse(os.path.exists(os.path.join(artifacts, name)), name)
             with open(durable, encoding="utf-8") as fh:

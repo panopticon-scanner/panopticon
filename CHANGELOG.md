@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **driver.py and run_tools.py pay back their pins (#3460).** Two pure moves: the `--reset` sweep
+  (`_RESET_GLOBS`, `_clear_run_artifacts`) goes whole to `phases/run_artifacts.py`, and
+  `collect_sanitization` goes whole to `tools_manifest.py`, beside the `sanitized` field it fills.
+  `driver.py` drops 760 to 670 and leaves the flat-module PENDING list; `run_tools.py` drops 792 to
+  757 and its pin follows. No behaviour change.
+
 - **The retained-rejected-reply family moved to `phases/rejected_replies.py` (#3467).** A pure
   move out of `phases/persist.py` (700 to 485 lines): the D10 refusal constants, the retry block
   and `retain_rejected` with its readers, byte-identical apart from four `persist.` prefixes on the

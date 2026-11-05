@@ -22,6 +22,7 @@ import scripts.phases.coverage as coverage
 import scripts.phases.review as review
 
 import scripts.driver as driver
+import scripts.phases.run_artifacts as run_artifacts
 import scripts.first_contact as first_contact
 import scripts.run_manifest as run_manifest
 import scripts.safe_git as safe_git
@@ -731,7 +732,7 @@ class TestPerRunFolders(unittest.TestCase):
         runio._write_json(runio._pano(d, "findings-G-SEC.json"), {"x": 1})
         runio._write_json(runio._report_out(d), {"summary": {"gate": "PASS"}})
         runio._relink(runio._pano(d, "report.json"), f"{tag}-report.json")
-        driver._clear_run_artifacts(d)   # --reset clears BEFORE the manifest goes
+        run_artifacts._clear_run_artifacts(d)   # --reset clears BEFORE the manifest goes
         self.assertFalse(os.path.isdir(os.path.join(d, ".panopticon", "runs", tag)))
         self.assertTrue(os.path.isfile(
             os.path.join(d, ".panopticon", f"{tag}-report.json")))
@@ -986,7 +987,7 @@ def test_linked_runs_parent_refuses_before_any_delete(tmp_path, neighbor):
     (pano / "runs").symlink_to(destination, target_is_directory=True)
     (pano / "groups.json").write_text("keep legacy")
     with pytest.raises(runio.DriverError, match="symlink"):
-        driver._clear_run_artifacts(str(root))
+        run_artifacts._clear_run_artifacts(str(root))
     assert (active / "sentinel").read_text() == "keep"
     assert (destination / "latest").read_text() == "keep latest"
     assert (pano / "groups.json").read_text() == "keep legacy"
@@ -1027,7 +1028,7 @@ def test_linked_artifact_root_refuses_without_delete(tmp_path):
     pano.rename(root / "old-pano")
     (root / ".panopticon").symlink_to(outside, target_is_directory=True)
     with pytest.raises((ValueError, runio.DriverError), match="symlink"):
-        driver._clear_run_artifacts(str(root))
+        run_artifacts._clear_run_artifacts(str(root))
     assert (outside / "sentinel").read_text() == "keep"
 
 
@@ -1131,7 +1132,7 @@ def test_fresh_manifest_path_cleans_legacy_artifacts(tmp_path, monkeypatch):
     adopt_panopticon(str(root))      # #3271: legacy artifacts of OUR earlier run
     (pano / "groups.json").write_text("stale")
     (root / "panopticon.yaml").write_text("keep")
-    real_clear = driver._clear_run_artifacts
+    real_clear = run_artifacts._clear_run_artifacts
 
     class CleanupReached(Exception):
         pass
@@ -1140,7 +1141,7 @@ def test_fresh_manifest_path_cleans_legacy_artifacts(tmp_path, monkeypatch):
         real_clear(review_root)
         raise CleanupReached
 
-    monkeypatch.setattr(driver, "_clear_run_artifacts", clear_then_stop)
+    monkeypatch.setattr(run_artifacts, "_clear_run_artifacts", clear_then_stop)
     args = driver.build_parser().parse_args(["run", str(root)])
     with pytest.raises(CleanupReached):
         driver.run(args, phases=())
@@ -1161,7 +1162,7 @@ def test_normal_cleanup_preserves_unrelated_run_report_and_config(tmp_path):
     (pano / "groups.json").write_text("remove")
     (pano / f"{tag}-report.json").write_text("keep report")
     (root / "panopticon.yaml").write_text("keep config")
-    driver._clear_run_artifacts(str(root))
+    run_artifacts._clear_run_artifacts(str(root))
     assert not active.exists()
     assert not (pano / "tools").exists()
     assert not (pano / "groups.json").exists()

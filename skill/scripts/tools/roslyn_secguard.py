@@ -344,7 +344,7 @@ class RoslynSecGuardAdapter:
         """The projects this run's ONE build does not reach (#3248), for the
         coverage manifest; None when there is nothing to build.
 
-        Called ON THE HOST, in process, by run_tools.collect_sanitization -- and
+        Called ON THE HOST, in process, by tools_manifest.collect_sanitization -- and
         only for an EFFECTIVE adapter, so only on the --allow-target-build path
         (#3265). It launches nothing. Every path it publishes comes from the
         filesystem walk; the solution's own text only decides which of those

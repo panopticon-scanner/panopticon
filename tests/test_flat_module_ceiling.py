@@ -52,7 +52,8 @@ SURFACES = ("skill/scripts", "scripts", "skill/scripts/tools")
 # the docker argv and the CLI), `setup_flow.py` (ARC-1181155147; split along
 # the #1589 seams by #3405 and off the list),
 # `orchestrate.py`
-# (ARC-4087467862), `driver.py` (ARC-3080609219) and `tools/base.py`
+# (ARC-4087467862), `driver.py` (ARC-3080609219; its --reset sweep moved out in
+# #3460 and it is off the list) and `tools/base.py`
 # (ARC-2990316730; execution moved out in #3406 and it is off the list).
 PENDING: dict[str, int] = {
     "scripts/bump_pins.py": 871,
@@ -60,14 +61,11 @@ PENDING: dict[str, int] = {
     "skill/scripts/diff_map.py": 1215,
     # #3395: one-time raise for the _repo_scan split (4 helpers, +30 def/call lines); ruled by coordinator 2026-11-04
     "skill/scripts/discovery.py": 1956,
-    # #3396: one-time raise for the driver.run split; ruled by coordinator 2026-11-04
-    "skill/scripts/driver.py": 760,
     "skill/scripts/evidence.py": 982,
     "skill/scripts/html_report.py": 1568,
     "skill/scripts/ingest_tools.py": 1100,
     "skill/scripts/loop_batch.py": 820,
-    # #3452: one-time raise for the run_tools entrypoint refusal; ruled by coordinator 2026-11-05
-    "skill/scripts/run_tools.py": 792,
+    "skill/scripts/run_tools.py": 757,
     "skill/scripts/safe_git.py": 745,
     "skill/scripts/setup_proposal.py": 741,
     "skill/scripts/write_guard_hook.py": 864,

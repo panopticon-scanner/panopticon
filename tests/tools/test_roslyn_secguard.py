@@ -914,10 +914,10 @@ class TestUnreachedProjectsAreDisclosed(unittest.TestCase):
         # The runner's own collector, the one that fills the manifest's
         # `sanitized` for every EFFECTIVE adapter (so only on the opt-in path).
         import scripts.html_report as html_report
-        import scripts.run_tools as rt
+        import scripts.tools_manifest as tools_manifest
         from scripts.tools import ADAPTERS
         self._repro()
-        sanitized = rt.collect_sanitization(
+        sanitized = tools_manifest.collect_sanitization(
             {"roslyn-secguard": ADAPTERS["roslyn-secguard"]}, self.root)
         self.assertIn("roslyn-secguard", sanitized, "nothing reached the manifest")
         self.assertEqual(["Vuln/Vuln.csproj"], self._lines(sanitized["roslyn-secguard"]))

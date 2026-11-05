@@ -361,7 +361,7 @@ class TestManifestRejectsAnUnknownHost(unittest.TestCase):
 
     def test_an_unknown_host_in_a_stored_manifest_does_not_crash_path_resolution(self):
         # run_tag is called on every artifact path resolution, including the
-        # --reset recovery path (driver._clear_run_artifacts -> runio._run_tag).
+        # --reset recovery path (run_artifacts._clear_run_artifacts -> runio._run_tag).
         # It must never raise: a function that computes a path is on every code
         # path, recovery included.
         m = {"host": "evilhost", "run_id": "r1", "created": "2026-09-10"}

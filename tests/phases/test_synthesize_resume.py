@@ -10,6 +10,7 @@ from unittest import mock
 import pytest
 
 import scripts.driver as driver
+import scripts.phases.run_artifacts as run_artifacts
 import scripts.run_manifest as run_manifest
 import scripts.safe_write as safe_write
 import scripts.synthesize as synthesize_cli
@@ -191,7 +192,7 @@ def test_reset_removes_pending_but_preserves_durable_report(review):
     _write(_report(root), valid_report)
     _write(_pending(root), {"run_id": manifest["run_id"]})
     pending, report = _pending(root), _report(root)
-    driver._clear_run_artifacts(root)
+    run_artifacts._clear_run_artifacts(root)
     run_manifest.reset_run(root)
     fresh = _manifest(root)
     assert not pending.exists()

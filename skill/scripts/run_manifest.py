@@ -79,7 +79,7 @@ def run_tag(manifest):
 
     PURE SLUGGING -- this never raises, and must not. `phases/runio._run_tag`
     calls it on EVERY artifact path resolution (`_pano`, `_report_out`,
-    `_ensure_run_symlinks`), including `driver._clear_run_artifacts`, which is
+    `_ensure_run_symlinks`), including `run_artifacts._clear_run_artifacts`, which is
     the --reset RECOVERY path. A host check here turned a poisoned
     `run-manifest.json` on disk into an uncaught ValueError in the middle of
     path computation that --reset could not clear. The registry check lives on

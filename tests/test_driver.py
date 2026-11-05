@@ -20,6 +20,7 @@ import scripts.phases.coverage as coverage
 from tests._test_helpers import all_proven_artifact as _all_proven_artifact
 from tests._test_helpers import adopt_panopticon, docker_probe_runner, only, our_manifest
 import scripts.driver as driver
+import scripts.phases.run_artifacts as run_artifacts
 import scripts.first_contact as first_contact
 import scripts.inert as inert
 import scripts.host_disclosure as host_disclosure
@@ -140,7 +141,7 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
     # #3396: the two `_manifest_for_run` refusals no test held to their status.
     def test_an_unsafe_fresh_manifest_cleanup_is_an_error_status(self):
         d = self._repo()
-        with mock.patch.object(driver, "_clear_run_artifacts", side_effect=OSError("planted")):
+        with mock.patch.object(run_artifacts, "_clear_run_artifacts", side_effect=OSError("planted")):
             status = driver.run(self._args(d))
         self.assertEqual(("error", "unsafe fresh-manifest cleanup: planted"),
                          (status["status"], status["message"]))
@@ -721,7 +722,7 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         # #2095: every `_RESET_GLOBS` name is a FILE this driver writes, so a
         # directory there is the tree's. `os.remove` raised on it and `--reset`
         # -- the remedy the #1809 baseline diagnoses name -- refused to run.
-        for pattern in driver._RESET_GLOBS:
+        for pattern in run_artifacts._RESET_GLOBS:
             name = pattern.replace("*", "x")
             with self.subTest(name=name):
                 d = self._repo()
@@ -757,7 +758,7 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         os.symlink(outside, link)
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            driver._clear_run_artifacts(d)
+            run_artifacts._clear_run_artifacts(d)
         self.assertFalse(os.path.lexists(link))
         self.assertTrue(os.path.isfile(os.path.join(outside, "keep.txt")))
         self.assertNotIn("left", err.getvalue())

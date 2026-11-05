@@ -310,41 +310,6 @@ def partition_by_exclusion(adapters, target, exclude_globs):
     return required, excluded_scope
 
 
-def collect_sanitization(adapters, target):
-    """`{adapter: report}` for every adapter that discloses what it did NOT scan.
-
-    The sibling of `partition_by_exclusion` and the same shape of channel: the
-    runner asks the adapter a question ON THE HOST, in process, and hands the
-    answer to `write_manifest`. An adapter answers by exposing
-    `sanitization_report(target)`; today only pip-audit does (#1646), where the
-    answer is "these requirement lines were not audited, because auditing them
-    would have run the target's build backend".
-
-    A parallel field, never an overload of `excluded_scope`: that one names
-    adapters whose whole surface fell outside the gate's scope, and folding a
-    PARTIAL audit into it would read as "this adapter was not required".
-
-    Tolerant: the method reads target-controlled files, so a crash inside it
-    must cost the disclosure, never the scan. The failure is announced --
-    silently dropping the disclosure is the same species of hole the field
-    exists to close.
-    """
-    out = {}
-    for name, adapter in sorted(adapters.items()):
-        reporter = getattr(adapter, "sanitization_report", None)
-        if not callable(reporter):
-            continue
-        try:
-            report = reporter(target)
-        except Exception as exc:   # noqa: BLE001 -- disclosure must not sink the scan
-            print("adapter %s could not report what it sanitized: %s" % (name, exc),
-                  file=sys.stderr)
-            continue
-        if isinstance(report, dict):
-            out[name] = report
-    return out
-
-
 def filter_online(chosen, online):
     """Drop ONLINE_ONLY adapters unless --online was given, with a notice."""
     if online:
@@ -744,7 +709,7 @@ def main(argv=None):
     # EFFECTIVE set (an adapter filtered out offline audited nothing, so it has
     # nothing to disclose) and before the docker check, because the answer is a
     # filesystem read that holds on the skip path too.
-    sanitized = collect_sanitization(
+    sanitized = tools_manifest.collect_sanitization(
         {t: ADAPTERS[t] for t in effective if t in ADAPTERS}, a.target)
     # #1638 P09: one walk, two consumers. #1740: and one mode decides which of
     # the detected directories the scanners are actually told to skip.

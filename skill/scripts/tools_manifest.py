@@ -45,6 +45,7 @@ imports it from here. Stdlib-only.
 import glob
 import json
 import os
+import sys
 
 from scripts import safe_write
 from scripts import language_detection
@@ -444,3 +445,38 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
         json.dump(payload, fh, indent=2)
         fh.write("\n")
     return payload
+
+
+def collect_sanitization(adapters, target):
+    """`{adapter: report}` for every adapter that discloses what it did NOT scan.
+
+    The sibling of `partition_by_exclusion` and the same shape of channel: the
+    runner asks the adapter a question ON THE HOST, in process, and hands the
+    answer to `write_manifest`. An adapter answers by exposing
+    `sanitization_report(target)`; today only pip-audit does (#1646), where the
+    answer is "these requirement lines were not audited, because auditing them
+    would have run the target's build backend".
+
+    A parallel field, never an overload of `excluded_scope`: that one names
+    adapters whose whole surface fell outside the gate's scope, and folding a
+    PARTIAL audit into it would read as "this adapter was not required".
+
+    Tolerant: the method reads target-controlled files, so a crash inside it
+    must cost the disclosure, never the scan. The failure is announced --
+    silently dropping the disclosure is the same species of hole the field
+    exists to close.
+    """
+    out = {}
+    for name, adapter in sorted(adapters.items()):
+        reporter = getattr(adapter, "sanitization_report", None)
+        if not callable(reporter):
+            continue
+        try:
+            report = reporter(target)
+        except Exception as exc:   # noqa: BLE001 -- disclosure must not sink the scan
+            print("adapter %s could not report what it sanitized: %s" % (name, exc),
+                  file=sys.stderr)
+            continue
+        if isinstance(report, dict):
+            out[name] = report
+    return out
