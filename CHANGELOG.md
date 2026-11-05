@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Codex honours the reasoning effort of a `PANOPTICON_MODEL_<ROLE>` JSON override (#2879).** The
+  effort now binds from the entry beside its model (`requests.bound_policy`), as the model already
+  did; the registered shell's effort is the fallback for an entry without one. Whichever binds must
+  be a lowercase word (checked at launch, since the request file is target-writable, and at
+  `validate_env_overrides` for an override), and a launch refuses an effort the model's catalog row
+  does not list in `supported_reasoning_levels`. Emission and every other host are unchanged.
+
 - **synthesize names a writer's encoding failure for what it is (#3472).** The four writer sites
   caught `ValueError` for a raw confinement refusal, and a `UnicodeError` (also a `ValueError`) was
   reported as "artifact path refused". It now reads "artifact not written: its text cannot be

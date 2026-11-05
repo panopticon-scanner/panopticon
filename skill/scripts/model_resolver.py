@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING, Any
 import json
 import os
+import re
 import sys
 
 # This repo has two directories named `scripts` with no __init__.py. When imported flat
@@ -153,12 +154,25 @@ def _env_override(role):
     return {"model": env_value}
 
 
+def is_effort_word(value):
+    """#2879: a reasoning effort is a short lowercase word (`low`, `xhigh`), or not one.
+
+    The one shape check, for an override here and for whatever effort a Codex
+    launch binds (codex_host.command), which also reads target-writable entries."""
+    return isinstance(value, str) and re.fullmatch(r"[a-z]{1,32}", value) is not None
+
+
 def validate_env_overrides():
     """Check every live role before a driver run can probe or dispatch."""
     # The fallback table is pinned to dispatch.ROLE_FILES by the resolver tests.
     # It also includes setup_scan, used by `driver loop --setup`.
     for role in _CLAUDE_FALLBACK:
-        _env_override(role)
+        override = _env_override(role)
+        if (isinstance(override, dict) and "model_reasoning_effort" in override
+                and not is_effort_word(override["model_reasoning_effort"])):
+            # Named, never echoed, like the malformed-object refusal above.
+            raise ValueError("PANOPTICON_MODEL_%s: model_reasoning_effort must be a "
+                             "lowercase word" % role.upper())
 
 
 _KIMI_TIERS = ("primary", "secondary")
@@ -239,6 +253,17 @@ def resolve_model(host, role, cli_overrides=None):
     if host == "kimi":
         return _normalize_kimi_model(cfg, role)
     return cfg
+
+
+def entry_policy(host, role):
+    """#2879: the resolved fields a dispatch entry carries (phases/requests.bound_policy).
+
+    The model on every host; on Codex the reasoning effort beside it, which
+    codex_host binds at launch (M-7). The host name is decided here, in the
+    resolver that owns the per-host tables, never in a phase."""
+    cfg = resolve_model(host, role)
+    extra = ("model_reasoning_effort",) if host == "codex" else ()
+    return {"model": cfg.get("model"), **{key: cfg[key] for key in extra if cfg.get(key)}}
 
 
 def _as_model_dict(v):

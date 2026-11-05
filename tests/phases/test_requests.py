@@ -132,16 +132,17 @@ class TestReviewerFileListsAreAbsolute(unittest.TestCase):
 class TestBoundModel(unittest.TestCase):
     """#1344 F4 (b): the entry's model comes from model_resolver, not a literal.
 
-    One helper so five builders cannot resolve five ways. The value is the
+    One helper so five builders cannot resolve five ways. The model is the
     STRING model id, not resolve_model's whole config dict: docs/PANOPTICON.md
     defines entry["model"] as "the model named by entry['model'] (omit when
     null)". Kimi's max_context_size/alias extras are that family's PR to carry.
+    #2879: on Codex the reasoning effort rides beside it, and only there.
     """
 
     def test_returns_the_resolved_model_string(self):
         with mock.patch.object(model_resolver, "resolve_model",
                                return_value={"model": "SENTINEL", "alias": "x"}) as rm:
-            self.assertEqual("SENTINEL", requests.bound_model("claude", "domain_panel"))
+            self.assertEqual({"model": "SENTINEL"}, requests.bound_policy("claude", "domain_panel"))
         rm.assert_called_once_with("claude", "domain_panel")
 
     def test_a_host_with_no_model_policy_binds_none(self):
@@ -150,14 +151,46 @@ class TestBoundModel(unittest.TestCase):
         # dispatch with today -- unchanged by this plan (R-F4-1).
         for host in ("gemini", "generic"):
             with self.subTest(host=host):
-                self.assertIsNone(requests.bound_model(host, "domain_panel"))
+                self.assertEqual({"model": None}, requests.bound_policy(host, "domain_panel"))
 
     def test_claude_binds_the_profile_model_not_the_session_default(self):
         # Oracle is resolve_model itself, not a literal: model-profiles.yml is
         # the owner of the value and this test must not become a second copy.
         expected = model_resolver.resolve_model("claude", "domain_panel")["model"]
         self.assertIsNotNone(expected, "fixture precondition: claude has a profile")
-        self.assertEqual(expected, requests.bound_model("claude", "domain_panel"))
+        self.assertEqual({"model": expected}, requests.bound_policy("claude", "domain_panel"))
+
+    def test_codex_binds_the_effort_beside_the_model_and_no_other_host_does(self):
+        # #2879. An effort in another host's resolved config never reaches its entry.
+        cfg = {"model": "M", "model_reasoning_effort": "low", "alias": "x"}
+        for host, expected in (("codex", {"model": "M", "model_reasoning_effort": "low"}),
+                               ("claude", {"model": "M"}), ("kimi", {"model": "M"})):
+            with self.subTest(host=host), \
+                    mock.patch.object(model_resolver, "resolve_model", return_value=cfg):
+                self.assertEqual(expected, requests.bound_policy(host, "scout"))
+
+    def test_every_builder_spreads_the_whole_policy_into_its_entry(self):
+        # #2879: a builder that took `["model"]` alone would drop the effort silently.
+        import ast
+        spread = {}
+        for name in ("coverage", "review", "verify", "verify_tools"):
+            path = os.path.join(os.path.dirname(requests.__file__), name + ".py")
+            with open(path, encoding="utf-8") as fh:
+                tree = ast.parse(fh.read())
+            calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                     and ast.unparse(node.func) == "requests.bound_policy"]
+            spreads = [value for node in ast.walk(tree) if isinstance(node, ast.Dict)
+                       for key, value in zip(node.keys, node.values) if key is None and value in calls]
+            spread[name] = (len(calls), len(spreads))
+        self.assertEqual({name: (1, 1) for name in spread}, spread)
+
+    def test_a_codex_override_s_effort_reaches_the_entry_for_every_role(self):
+        for role in ("scout", "advisor", "domain_panel", "domain_advisor"):
+            override = '{"model": "gpt-6-sol", "model_reasoning_effort": "low"}'
+            with self.subTest(role=role), \
+                    mock.patch.dict(os.environ, {"PANOPTICON_MODEL_%s" % role.upper(): override}):
+                self.assertEqual({"model": "gpt-6-sol", "model_reasoning_effort": "low"},
+                                 requests.bound_policy("codex", role))
 
 
 class TestDelivery(unittest.TestCase):

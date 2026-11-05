@@ -19,6 +19,7 @@ import tomllib
 
 import scripts.codex_read_tools as codex_read_tools
 import scripts.hosts as hosts
+import scripts.model_resolver as model_resolver
 import scripts.runners.base as runners_base
 import scripts.runners.children as children
 import scripts.runners.schema as runners_schema
@@ -162,16 +163,16 @@ def _shell(entry, registration_dir):
     # Never load arbitrary provider, notification or hook commands from a
     # registration file. The effective probe still sees changes to its policy.
     #
-    # M-7: `model` is deliberately NOT in this set while `model_reasoning_
-    # effort` is, so the two halves of one decision come from two places. The
-    # entry's model wins because it is override-aware (`resolve_model` honours
+    # M-7: `model` is deliberately NOT in this set; `model_reasoning_effort`
+    # is, but only as the fallback for an entry that carries none (setup-scan,
+    # a request written before #2879). Both halves of the decision bind from
+    # the ENTRY, because it is override-aware (`resolve_model` honours
     # PANOPTICON_MODEL_<ROLE>; a persisted shell must not, or an ambient
     # override would outlive the run that set it) and because `command()`
-    # fails closed on a slug the installed catalog does not list -- which the
-    # entry's value can be corrected for and a file on disk cannot. Reasoning
-    # effort has no such override and no catalog to disagree with, so it stays
-    # where emission put it. The emitted TOML therefore advertises a `model`
-    # that never binds; `model_binding` is unclaimed precisely because of this.
+    # fails closed on what the installed catalog does not list -- the slug,
+    # and (#2879) an effort outside that row's `supported_reasoning_levels`.
+    # The emitted TOML's `model` and effort are what a native Codex role uses;
+    # `model_binding` stays unclaimed.
     permitted = set(safety_config()) | {"developer_instructions", "model_reasoning_effort"}
     return {key: value for key, value in config.items() if key in permitted}
 
@@ -255,7 +256,7 @@ def catalog_loader(runner=None, env=None):
     return load
 
 
-def _catalog(model, directory, runner, env, models=None):
+def _catalog(model, directory, runner, env, models=None, effort=None):
     models = _dump_catalog(runner, env) if models is None else models
     selected = [copy.deepcopy(row) for row in models
                 if isinstance(row, dict) and (model is None or row.get("slug") == model)]
@@ -265,6 +266,16 @@ def _catalog(model, directory, runner, env, models=None):
             "build spells the tier differently, set PANOPTICON_MODEL_<ROLE> (e.g. "
             "PANOPTICON_MODEL_DOMAIN_PANEL) to a slug `codex debug models --bundled` lists"
             % model)
+    # #2879: `effort` passed command()'s word check, so it may be printed. A row
+    # without the field (an older CLI) leaves the value to --strict-config.
+    levels = selected[0].get("supported_reasoning_levels") if model is not None else None
+    if effort is not None and isinstance(levels, list):
+        supported = [level.get("effort") for level in levels if isinstance(level, dict)]
+        if effort not in supported:
+            raise ValueError(
+                "entry reasoning effort %r is not supported by model %r in Codex bundled "
+                "catalog (supports: %s); set PANOPTICON_MODEL_<ROLE> to an effort it lists"
+                % (effort, model, ", ".join(str(level) for level in supported)))
     # Feature flags alone do not remove these metadata-forced tools. Keep the
     # requested model, reasoning, prompt and every other catalog field intact.
     for row in selected:
@@ -309,6 +320,15 @@ def command(entry, env, review_root, run_dir, runner=None, registration_dir=None
                               and entry.get("agent") == _MODEL_NEUTRAL_SETUP_AGENT)
     if model is None and not native_setup and not registered_setup_probe:
         raise ValueError("Codex reviewer requires an explicit entry model")
+    # #2879: the entry's effort binds beside its model; the shell's is the
+    # fallback. The entry came through the target-writable request, so the
+    # shape is checked HERE, whichever binds, and its value is never echoed.
+    effort = (entry["model_reasoning_effort"] if "model_reasoning_effort" in entry
+              else config.get("model_reasoning_effort"))
+    if "model_reasoning_effort" in entry or effort is not None:
+        if not model_resolver.is_effort_word(effort):
+            raise ValueError("Codex entry reasoning effort must be a lowercase word")
+        config["model_reasoning_effort"] = effort
     schema_argv = tuple(schema_argv or ())
     if schema_argv:
         if len(schema_argv) != 2 or schema_argv[0] != SCHEMA_FLAG:
@@ -342,7 +362,8 @@ def command(entry, env, review_root, run_dir, runner=None, registration_dir=None
     # could never find it afterwards.
     try:
         config.update({"model_catalog_json": _catalog(model, directory, runner, env,
-                                                      catalog() if catalog is not None else None),
+                                                      catalog() if catalog is not None else None,
+                                                      effort=effort),
                        "log_dir": str(directory / "logs"), "sqlite_home": str(directory / "sqlite")})
         overrides = list(_overrides(config))
         # A fresh cwd UNDER the target would still discover its ancestor .codex

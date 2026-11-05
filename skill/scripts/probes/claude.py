@@ -87,7 +87,7 @@ def probe_entry_model_bound(host, registration_dir=None):
     that model binding specifically is broken, which is not what was found.
 
     Compares SOURCES rather than dispatch entries because this runs pre-phase
-    (spec 5.2), before any entry exists. requests.bound_model is what makes
+    (spec 5.2), before any entry exists. requests.bound_policy is what makes
     the two equivalent, and its tests pin that every builder calls it.
     """
     row = hosts.spec(host)

@@ -50,24 +50,23 @@ def entry_file_component(entry_id):
         return original
     return "~" + hashlib.sha256(original.encode("utf-8")).hexdigest()
 
-def bound_model(host, role):
-    """The model this entry REQUESTS, as a string, from the one resolver.
+def bound_policy(host, role):
+    """The model policy this entry REQUESTS, from the one resolver, to spread in.
 
     #1344 F4 (b). Every builder used to write the literal `"model": None`, which
-    docs/guide/host-capabilities.md defines as "inherit the session's model" --
-    so the
+    docs/guide/host-capabilities.md defines as "inherit the session's model" -- so the
     session's model, not the role's policy, was what an UNENFORCED dispatch
     ran on, and the registry's `model_binding` capability had nothing on the
     entry to be a claim about. `resolve_model` honours PANOPTICON_MODEL_*
     overrides; the registered shell (registration_model) does not, and that
     gap is exactly what probes.claude.probe_entry_model_bound measures.
 
-    The string, not the whole config dict: a family that needs more than a
-    model id on the entry (kimi's tier aliases and context sizes) adds it in
-    its own PR. A host with no model policy resolves to None -- gemini and
-    generic today -- which is the value they already dispatch with.
+    `{"model": <string>}`, plus on Codex the `model_reasoning_effort` beside it
+    (#2879: one decision, bound at one moment; codex_host M-7). Kimi's tier
+    aliases and context sizes stay off the entry. A host with no model policy
+    binds None -- gemini and generic today -- the value they already dispatch with.
     """
-    return model_resolver.resolve_model(host, role).get("model")
+    return model_resolver.entry_policy(host, role)
 
 
 def entry_marker(entry_id):
