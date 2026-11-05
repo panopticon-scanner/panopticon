@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **synthesize names a writer's encoding failure for what it is (#3472).** The four writer sites
+  caught `ValueError` for a raw confinement refusal, and a `UnicodeError` (also a `ValueError`) was
+  reported as "artifact path refused". It now reads "artifact not written: its text cannot be
+  encoded"; the exit stays 4 (`ARTIFACT_INVALID`), and path refusals are unchanged in message and code.
+
 - **synthesize finishes a run whose `--out` name is not UTF-8 (#2961).** Under a strict UTF-8 stdout
   (`en_US.UTF-8`), printing the X0X path raised after the report was written, so the run ended with
   the gate's FAIL status and no page. The stdout lines that name a written path now go through one

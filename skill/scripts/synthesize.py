@@ -216,6 +216,19 @@ def _artifact_path_refused(exc):
     return validate_schema_mod.ARTIFACT_INVALID
 
 
+def _artifact_write_failed(exc):
+    """#3472: the one answer to a writer's failure, exit 4 either way. A
+    `UnicodeError` is a `ValueError` too, but it is the TEXT that could not be
+    written, not the path: name it so. Everything else (`ArtifactPathError`, a
+    raw confinement `ValueError`) is the path refusal, as before."""
+    if isinstance(exc, UnicodeError):
+        detail = redact.redact_diagnostic(str(exc), 400)
+        print("synthesize: artifact not written: its text cannot be encoded: %s" % detail,
+              file=sys.stderr)
+        return validate_schema_mod.ARTIFACT_INVALID
+    return _artifact_path_refused(exc)
+
+
 def _first_contact(args, read_paths, write_paths):
     """#3273 P1: first contact's `.panopticon/` half (`assess_standalone`).
     True when it halted, with its one line printed."""
@@ -244,7 +257,7 @@ def _compare(args):
     try:
         html_report.write_html(report_b, html_out, compare_report=report_a)
     except (safe_write.ArtifactPathError, ValueError) as exc:
-        return _artifact_path_refused(exc)
+        return _artifact_write_failed(exc)
     _say("Compare HTML: %s" % html_out)
     return 0
 
@@ -464,7 +477,7 @@ def main(argv=None):
     try:
         paths = render_mod.write_report(report, out)
     except (safe_write.ArtifactPathError, ValueError) as exc:
-        return _artifact_path_refused(exc)
+        return _artifact_write_failed(exc)
     # §5.1: emit the X0X catalog-gap report — the <DOM>-X0X / ZZZ-X0X findings as
     # candidate records for OCRDb's new-code adjudication pool (ingested
     # downstream), a sibling of the JSON report. Empty candidates are an honest
@@ -490,7 +503,7 @@ def main(argv=None):
                  json.dumps(failure_log, indent=2, sort_keys=True)))
         safe_write.publish_texts(targets)
     except (safe_write.ArtifactPathError, ValueError) as exc:
-        return _artifact_path_refused(exc)
+        return _artifact_write_failed(exc)
     _say("X0X artifact: %s (%d candidates)"
          % (x0x_path, len(x0x["candidates"])))
     if failure_log is not None:
@@ -505,7 +518,7 @@ def main(argv=None):
         try:
             html_report.write_html(report, html_out)
         except (safe_write.ArtifactPathError, ValueError) as exc:
-            return _artifact_path_refused(exc)
+            return _artifact_write_failed(exc)
         _say("HTML artifact: %s" % html_out)
     print(render_mod.render_summary(report))
     _say("\nJSON artifact: %s" % ", ".join(paths))
