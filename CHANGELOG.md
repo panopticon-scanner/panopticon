@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`host_probes.run_probes` walks a module-level runner registry (#3399).** The 13 probe runners
+  now receive a fresh invocation context from `_PROBE_RUNNERS`; Codex and Claude's shared
+  measurements remain local to that context. Probe order, arguments, cache policy and artifact
+  shape are unchanged, while `run_probes` is 180 lines, down from 237.
+
 - **`discovery._repo_scan` is split along its seams (#3395).** The parser and argument checks moved
   unchanged into `_repo_scan_args`, the five `--scope-*` resolvers into one dispatcher
   `_resolve_scope`, the catalog grouping into `_group_by_catalog` and the JSON emit into
