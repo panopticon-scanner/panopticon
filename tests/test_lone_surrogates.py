@@ -587,7 +587,8 @@ class TestTheRealChild(unittest.TestCase):
             fh.write("x = 1\n" * 100)
         return made
 
-    def child(self, *flags, findings=None, verdicts=None, scans=None, groups=None, beside=None, tree=None):
+    def child(self, *flags, findings=None, verdicts=None, scans=None, groups=None, beside=None, tree=None,
+              out="report.json"):
         """One run, laid out as tests/test_e2e.py lays it out: (status, stderr, {artifact name: bytes}). The child
         is started by the suite's own `run_script`, which holds the one `subprocess.run` these tests need.
         `beside` is more of the run directory's own files, by name (the tools manifest, a hunk map); `tree` is
@@ -628,7 +629,7 @@ class TestTheRealChild(unittest.TestCase):
             write(os.path.join(repo, name), document)
         if scans:
             argv += ["--tools-dir", os.path.join(pano, "tools")]
-        argv += ["--out", os.path.join(pano, "report.json")]
+        argv += ["--out", os.path.join(pano, out)]
         if findings is not None:
             argv.append(write(os.path.join(pano, "findings-%s-COD.json" % self.group), {"findings": findings}))
         done = run_script("synthesize.py", *argv, cwd=repo)
@@ -861,6 +862,82 @@ class TestTheComparison(unittest.TestCase):
         self.assertNotIn("Traceback", run[1])
         self.assertEqual((0, 0), (run[0], control[0]), plain(run[1]))
         self.assertTrue(run[2] and run[2] == control[2], "the page differs from the spelled twin's")
+
+
+class TestTheOutPath(unittest.TestCase):
+    """#2961: an `--out` name holding a byte that is not UTF-8 (Linux allows one) reaches the child as a lone
+    surrogate. Under a strict UTF-8 stdout the child printed it raw, raised after the report was written, and ended
+    with the gate's FAIL status and no page. The run must end as its gate decides, with the page written."""
+
+    UNDECODABLE = "report-\udcff.json"          # what argv decoding makes of the byte 0xFF
+    repo = classmethod(TestTheRealChild.repo.__func__)         # the same run, borrowed: not its tests
+    child = TestTheRealChild.child
+
+    @classmethod
+    def setUpClass(cls):
+        TestTheRealChild.setUpClass.__func__(cls)
+        try:                                      # macOS refuses the name outright: nothing to test there
+            with open(os.path.join(cls.base.name, cls.UNDECODABLE), "w"):
+                pass
+        except (OSError, UnicodeError) as exc:
+            raise unittest.SkipTest("this filesystem refuses a name that is not UTF-8: %s" % type(exc).__name__)
+
+    @staticmethod
+    def has_locale(name):
+        import locale
+        old = locale.setlocale(locale.LC_CTYPE)
+        try:
+            locale.setlocale(locale.LC_CTYPE, name)
+        except locale.Error:
+            return False
+        finally:
+            locale.setlocale(locale.LC_CTYPE, old)
+        return True
+
+    def test_a_strict_stdout(self):
+        strict = {"the issue's en_US.UTF-8": {"LC_ALL": "en_US.UTF-8", "PYTHONUTF8": "0"},
+                  "PYTHONIOENCODING=utf-8:strict": {"PYTHONIOENCODING": "utf-8:strict"}}
+        for how, env in strict.items():
+            with self.subTest(how=how):
+                if "LC_ALL" in env and not self.has_locale("en_US.UTF-8"):
+                    self.skipTest("en_US.UTF-8 is not installed here")
+                with mock.patch.dict(os.environ, env):
+                    if "PYTHONIOENCODING" not in env:
+                        os.environ.pop("PYTHONIOENCODING", None)
+                    status, stderr, artifacts = self.child(findings=[a_finding(1)], out=self.UNDECODABLE)
+                self.assertNotIn("Traceback", stderr)
+                self.assertEqual(0, status, plain(stderr))
+                names = {plain(name) for name in artifacts}
+                self.assertLessEqual({plain(self.UNDECODABLE), plain("report-\udcff-x0x.json"),
+                                      plain(self.UNDECODABLE + ".html")}, names, plain(stderr))
+                self.assertTrue(all(artifacts.values()), "an artifact was left empty")
+
+
+class TestTheStdoutLine(unittest.TestCase):
+    """#2961, in process and on every platform: the one door synthesize's stdout lines take."""
+
+    def said(self, text):
+        out = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="strict")
+        with contextlib.redirect_stdout(out):
+            syn._say(text)
+        out.flush()
+        return out.buffer.getvalue()
+
+    def test_a_line_a_strict_stdout_cannot_encode_is_spelled_not_raised(self):
+        self.assertEqual(b"HTML artifact: r-\\udcff.html\n", self.said("HTML artifact: r-\udcff.html"))
+
+    def test_any_other_line_is_printed_as_it_is(self):
+        self.assertEqual("Compare HTML: caf\u00e9.html\n".encode(), self.said("Compare HTML: caf\u00e9.html"))
+
+    def test_no_other_stdout_print_in_synthesize(self):
+        # Every bare `print` is `_say`'s own, or the summary, whose text is the report's and already spelled.
+        with open(syn.__file__, encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+        bare = sorted(ast.unparse(node.args[0]) for node in ast.walk(tree)
+                      if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "print"
+                      and not any(keyword.arg == "file" for keyword in node.keywords))
+        self.assertEqual(["render_mod.render_summary(report)", "text",
+                          "text.encode(encoding, 'backslashreplace').decode(encoding)"], bare)
 
 
 if __name__ == "__main__":

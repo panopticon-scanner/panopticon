@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **synthesize finishes a run whose `--out` name is not UTF-8 (#2961).** Under a strict UTF-8 stdout
+  (`en_US.UTF-8`), printing the X0X path raised after the report was written, so the run ended with
+  the gate's FAIL status and no page. The stdout lines that name a written path now go through one
+  helper that spells an unencodable character as stderr does (`backslashreplace`), so the page is
+  written and the run ends as its gate decides.
+
 - **`synthesize --compare` reads a report on disk through the lone-surrogate pass (#2960).** A report
   written before #2951 can hold a lone surrogate's JSON escape; `--compare` handed it to the page
   writer, which could not encode it (exit 4, "artifact path refused", no page). The reader now runs
