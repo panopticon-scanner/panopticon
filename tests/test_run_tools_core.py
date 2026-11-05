@@ -1253,3 +1253,52 @@ class TestRoslynIsOptIn(unittest.TestCase):
         data, _err = self._manifest("--tools", "semgrep", "roslyn-secguard")
         self.assertEqual(["semgrep"], data["selected"])
         self.assertEqual(["roslyn-secguard"], data.get("withheld"))
+
+
+class TestTheCliVetsTheTreeThatOwnsItsOutput(unittest.TestCase):
+    """#3452: standalone `run_tools.py` makes no first contact, and the default
+    `--out` (`.panopticon/tools`) is cwd-relative -- so the tree it vets is the
+    one that OWNS `--out`, which is not always `--target`. A refusal is one
+    line and exit 2, never a traceback."""
+
+    def _main(self, cwd, *argv):
+        err = io.StringIO()
+        with contextlib.chdir(cwd), contextlib.redirect_stderr(err), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(rt, "docker_available", return_value=False) as docker:
+            rc = rt.main(["--tools", "semgrep", *argv])
+        return rc, err.getvalue(), docker
+
+    def test_a_planted_cwd_artifact_dir_is_refused_whatever_the_target(self):
+        from tests._test_helpers import PLANTED_ARTIFACT_DIRS, PLANTED_REFUSALS, plant_artifact_dir
+        for kind in PLANTED_ARTIFACT_DIRS:
+            for other_target in (False, True):
+                with self.subTest(kind, other_target=other_target), \
+                        tempfile.TemporaryDirectory() as cwd, \
+                        tempfile.TemporaryDirectory() as target, \
+                        tempfile.TemporaryDirectory() as elsewhere:
+                    plant_artifact_dir(cwd, kind, elsewhere)
+                    argv = ("--target", target) if other_target else ()
+                    rc, err, docker = self._main(cwd, *argv)
+                    self.assertEqual((2, "run_tools: %s\n" % PLANTED_REFUSALS[kind]), (rc, err))
+                    docker.assert_not_called()
+                    self.assertEqual([], os.listdir(elsewhere))
+
+    def test_a_real_artifact_dir_with_its_latest_link_still_runs(self):
+        from tests._test_helpers import plant_latest_link
+        with tempfile.TemporaryDirectory() as cwd:
+            plant_latest_link(cwd)
+            rc, err, docker = self._main(cwd)
+        self.assertEqual(0, rc)
+        self.assertNotIn("run_tools:", err)
+        docker.assert_called_once()
+
+    def test_an_out_under_no_artifact_dir_is_unaffected(self):
+        from tests._test_helpers import plant_artifact_dir
+        with tempfile.TemporaryDirectory() as cwd, tempfile.TemporaryDirectory() as plain, \
+                tempfile.TemporaryDirectory() as elsewhere:
+            plant_artifact_dir(cwd, "symlink-outside", elsewhere)   # never consulted
+            rc, err, docker = self._main(cwd, "--out", os.path.join(plain, "scans"))
+        self.assertEqual(0, rc)
+        self.assertNotIn("run_tools:", err)
+        docker.assert_called_once()

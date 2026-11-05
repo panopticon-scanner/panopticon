@@ -66,7 +66,8 @@ PENDING: dict[str, int] = {
     "skill/scripts/html_report.py": 1568,
     "skill/scripts/ingest_tools.py": 1100,
     "skill/scripts/loop_batch.py": 820,
-    "skill/scripts/run_tools.py": 790,
+    # #3452: one-time raise for the run_tools entrypoint refusal; ruled by coordinator 2026-11-05
+    "skill/scripts/run_tools.py": 792,
     "skill/scripts/safe_git.py": 745,
     "skill/scripts/setup_proposal.py": 741,
     "skill/scripts/write_guard_hook.py": 864,
