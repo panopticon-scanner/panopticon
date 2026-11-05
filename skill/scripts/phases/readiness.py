@@ -667,6 +667,14 @@ def emit_preflight(target=".", host=None, as_json=False, stream=None, online=Non
     so `driver readiness && driver loop` is a correct thing for a host to
     write. `sys.stdout` is read at CALL time, not bound at import, so a caller
     that redirects it gets the output."""
+    # #3452: the one verb that reads `.panopticon/` with no first contact, so a
+    # planted one (a symlink, a non-directory, an escape) is refused here, before
+    # `preflight` reads -- and prints -- anything through it. Not ready: 1.
+    try:
+        plan_contract.artifact_root(runio.resolve_review_root(target)[0])
+    except ValueError as exc:
+        print("driver readiness: %s" % exc, file=sys.stderr)
+        return 1
     document = preflight(target, host, online=online, plan=plan)
     out = stream if stream is not None else sys.stdout
     out.write(json.dumps(document, indent=2, sort_keys=True) + "\n"

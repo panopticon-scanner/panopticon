@@ -883,3 +883,35 @@ class TestHashedPromptNames(unittest.TestCase):
         self.assertEqual("unattributed", cu.classify_transcript(p))
         self.assertEqual("review", cu.classify_transcript(
             p, {self._name("review-A:B-SEC")[:-4]: "review-A:B-SEC"}))
+
+
+class TestADirectRunVetsTheArtifactDir(unittest.TestCase):
+    """#3452: `collect_usage.py` run directly makes no first contact, and its
+    no-follow writer follows a symlinked `.panopticon/` -- so `main` vets the
+    tree that owns `--run-dir` before reading or writing under it."""
+
+    def _main(self, run_dir, d):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = cu.main(["--run-dir", run_dir, "--project-dir", d,
+                          "--since", "2026-08-30T00:00:00Z", "--tasks-dir", os.path.join(d, "none")])
+        return rc, err.getvalue()
+
+    def test_each_planted_artifact_dir_is_refused_and_nothing_is_written(self):
+        from tests._test_helpers import PLANTED_ARTIFACT_DIRS, PLANTED_REFUSALS, plant_artifact_dir
+        for kind in PLANTED_ARTIFACT_DIRS:
+            with self.subTest(kind), tempfile.TemporaryDirectory() as d, \
+                    tempfile.TemporaryDirectory() as elsewhere:
+                os.makedirs(os.path.join(elsewhere, "runs", "t"))
+                plant_artifact_dir(d, kind, elsewhere)
+                rc, err = self._main(os.path.join(d, ".panopticon", "runs", "t"), d)
+                self.assertEqual((2, "collect-usage: %s\n" % PLANTED_REFUSALS[kind]), (rc, err))
+                self.assertEqual([], os.listdir(os.path.join(elsewhere, "runs", "t")))
+
+    def test_a_real_artifact_dir_through_its_latest_link_is_collected(self):
+        from tests._test_helpers import plant_latest_link
+        with tempfile.TemporaryDirectory() as d:
+            plant_latest_link(d)
+            rc, err = self._main(os.path.join(d, ".panopticon", "runs", "latest"), d)
+        self.assertEqual(1, rc)                  # past the vetting: the no-transcript answer
+        self.assertNotIn(".panopticon must", err)

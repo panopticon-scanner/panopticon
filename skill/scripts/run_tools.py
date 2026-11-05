@@ -16,7 +16,7 @@ from scripts import language_detection
 from scripts.tools import ADAPTERS, ONLINE_ONLY, withhold_target_builds
 from scripts.tools import egress
 from scripts.tools.base import SECURITY_FLAG
-from scripts import plan_contract
+from scripts import claim_scope, plan_contract
 from scripts import procgroup
 from scripts import scanner_config, semgrep_targets
 from scripts import tool_capture
@@ -197,16 +197,13 @@ def resource_limit_flags():
 
 
 def validate_output_dir(target, out_dir):
-    """Reject default artifact output through a target-controlled symlink."""
-    logical_root = os.path.join(os.path.abspath(target), plan_contract.ARTIFACT_DIR)
-    candidate = os.path.abspath(out_dir)
-    try:
-        under_artifacts = os.path.commonpath([logical_root, candidate]) == logical_root
-    except ValueError:
-        under_artifacts = False
-    if under_artifacts:
-        safe_root = plan_contract.artifact_root(target)
-        if os.path.commonpath([os.path.realpath(safe_root), os.path.realpath(candidate)]) \
+    """Reject output through a planted `.panopticon` -- symlinked, a non-directory, an escape
+    -- of the tree that OWNS `out_dir` (#3452): the cwd for the default `--out`, which is not
+    always `target`. An `out_dir` under no `.panopticon` is the operator's own and left be."""
+    owner = claim_scope.review_root_of_artifact_path(out_dir)
+    if owner is not None:
+        safe_root = plan_contract.artifact_root(owner)
+        if os.path.commonpath([os.path.realpath(safe_root), os.path.realpath(out_dir)]) \
                 != os.path.realpath(safe_root):
             raise ValueError("scanner output escapes the target artifact directory")
     return out_dir
@@ -711,6 +708,11 @@ def main(argv=None):
                     help="redteam: scan virtualenvs detected by NAME alone "
                          "(no pyvenv.cfg), so the gate has findings to re-admit")
     a = ap.parse_args(argv)
+    try:                                   # #3452: one line and exit 2, never a traceback
+        validate_output_dir(a.target, a.out)
+    except ValueError as exc:
+        print("run_tools: %s" % exc, file=sys.stderr)
+        return 2
     excluded_scope = []
     language_detection_skips: list[dict[str, str]] | None = None
     if a.tools is not None:

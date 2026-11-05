@@ -434,8 +434,9 @@ _DIR_FD_CALLS = (os.open, os.mkdir, os.symlink, os.rename, os.unlink)
 def _open_caller_artifact_dir(target):
     """`<target>/.panopticon` as a HELD directory fd, or raise (#3225).
 
-    A hostile default branch can commit `.panopticon` as a symlink, and the
-    caller checkout is never first-contact vetted (only the worktree is).
+    A hostile default branch can commit `.panopticon` as a symlink. First
+    contact vets the caller checkout too under --pr (`driver.run` passes it
+    as `other_roots`; `assess_loop` does the same), but once, at the start.
     `plan_contract.artifact_root` gives the readable refusal, but it is a
     check on a path, and a path can be swapped after it passes:
     `safe_write.confine_artifact_path` would not notice, since it anchors on

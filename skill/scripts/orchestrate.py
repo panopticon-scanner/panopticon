@@ -13,6 +13,7 @@ import sys
 
 import scripts.batch_settlement as batch_settlement
 import scripts.driver as driver
+import scripts.first_contact as first_contact
 import scripts.ledger as ledger_mod
 import scripts.loop_batch as loop_batch
 import scripts.loop_setup as loop_setup
@@ -529,6 +530,15 @@ def persist_cli(args):
     """
     review_root, _wt, _pr = runio.resolve_review_root(
         args.target, base=getattr(args, "base", None), pr=getattr(args, "pr", None))
+    # #3452: a separate process, so it makes first contact itself -- read-only, before the
+    # manifest and request are read. A symlinked or non-directory `.panopticon/` halts, and
+    # so does an unstamped one (H2): persist is only meaningful on a tree `driver run`
+    # stamped, and an unstamped manifest vouches for its own request and `out_file`.
+    try:
+        first_contact.assess_artifacts(review_root, read_only=True)
+    except first_contact.FirstContactHalt as exc:
+        print("driver persist: %s" % exc, file=sys.stderr)
+        return 2
     entry, refusal, run_id = persist.find_entry(review_root, args.entry_id,
                                                 namespace="setup" if args.setup else None)
     if refusal:

@@ -15,6 +15,7 @@ import scripts.phases.requests as requests
 import scripts.phases.runio as runio
 import scripts.rejected_retention as retention
 import scripts.runners.batch as batch_mod
+from tests._test_helpers import our_manifest
 
 RUN = "run-1"
 
@@ -182,10 +183,11 @@ class TestDriverPersistApplies(unittest.TestCase):
         d = os.path.realpath(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d, True)
         os.makedirs(os.path.join(d, ".panopticon", "runs", "t"))
-        driver.run_manifest.write_manifest(d, {
+        # #3452: persist makes first contact, so the run is OURS -- stamped.
+        driver.run_manifest.write_manifest(d, our_manifest(d, {
             "schema_version": 1, "run_id": "0123456789abcdef", "host": "claude",
             "security_mode": "standard", "created": "2026-09-20T00:00:00Z",
-            "review_root": d, "target": d})
+            "review_root": d, "target": d}))
         out = os.path.join(d, ".panopticon", "runs", "t", "scout-app.json")
         requests.write_dispatch_request(
             d, "RID", "scout", None, [{"id": "scout-app", "out_file": out, "delivery": "return_json"}])
