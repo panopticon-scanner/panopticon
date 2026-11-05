@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **No cwd-relative `.panopticon` defaults left on the artifact readers (#3465).**
+  `group_runner.snapshot_out_files` / `verify_out_file_hashes`, `synth/integrity.read_unenforced_ack`
+  and `synth/plan.load_dispatch_plans[_detailed]` now require their path; `derive_tool_policy_mode`
+  needs a directory or the plans. Every caller already passed one, so behaviour is unchanged; a
+  future caller that forgets fails at the call instead of reading the cwd's `.panopticon/`.
+
 - **`driver persist` writes a reply only inside the tree's own `.panopticon/` (#3464).** The
   request's `out_file` must resolve inside the review root's artifact directory, measured from the
   resolved root, never from the path. An out-of-tree path, another tree's `.panopticon/` or a `..`

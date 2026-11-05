@@ -226,7 +226,7 @@ def out_of_scope_findings(findings_paths, plan):
                     examples.append({"group": cell[0], "file": fpath})
     return {"checked": checked, "count": count, "examples": examples}
 
-def load_dispatch_plans_detailed(panopticon_dir=plan_contract.ARTIFACT_DIR):
+def load_dispatch_plans_detailed(panopticon_dir):
     """Return (valid plans, files seen, invalid plan diagnostics).
 
     #run10: dropped `groups_path`/`root`. Both existed only to feed the 4.x
@@ -265,7 +265,7 @@ def load_dispatch_plans_detailed(panopticon_dir=plan_contract.ARTIFACT_DIR):
         plans.append(plan)
     return plans, len(paths), invalid
 
-def load_dispatch_plans(panopticon_dir=plan_contract.ARTIFACT_DIR):
+def load_dispatch_plans(panopticon_dir):
     """Load every per-group dispatch plan file as a list of per-file plan
     lists. Tolerant: unreadable/malformed plan files are skipped."""
     plans = []
@@ -278,7 +278,7 @@ def load_dispatch_plans(panopticon_dir=plan_contract.ARTIFACT_DIR):
             plans.append(plan)
     return plans
 
-def derive_tool_policy_mode(panopticon_dir=plan_contract.ARTIFACT_DIR, plans=None):
+def derive_tool_policy_mode(panopticon_dir=None, plans=None):
     """Derive the run's tool-policy posture from dispatch plan files.
 
     unknown: no usable plan file was found — posture undetermined (distinct
@@ -286,9 +286,11 @@ def derive_tool_policy_mode(panopticon_dir=plan_contract.ARTIFACT_DIR, plans=Non
     enforced: every entry across every plan is enforced; mixed: some are;
     advisory: a plan exists but none are. Pass `plans` (per-file plan lists,
     as returned by load_dispatch_plans) to skip re-reading the files a caller
-    already loaded.
+    already loaded. One of the two is required (#3465): no cwd-relative default.
     """
     if plans is None:
+        if panopticon_dir is None:
+            raise ValueError("derive_tool_policy_mode needs panopticon_dir or plans")
         plans = load_dispatch_plans(panopticon_dir)
     if not plans:
         return "unknown"
