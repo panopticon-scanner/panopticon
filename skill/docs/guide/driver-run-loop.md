@@ -871,7 +871,8 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   naming no advisory, staged the way bandit's ini is — one read-only FILE mount per launch, the
   scratch holding it left at its own 0700 because the container reads the bind target. That flag is
   **belt only**, in those words: the real-image round measured trivy 0.74.0 resolving the default
-  `.trivyignore` against the WORKING DIRECTORY, a per-launch scratch since #1877, so a
+  `.trivyignore` against the WORKING DIRECTORY (0.76.2 the same, re-measured for #3420), a
+  per-launch scratch since #1877, so a
   `.trivyignore` committed at the scan root was already not read on main either. The flag closes
   nothing that was open; it pins the posture explicitly against a version that reads the scan root.
   **osv-scanner** runs with

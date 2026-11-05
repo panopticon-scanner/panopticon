@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Trivy 0.76.2, Rust 1.99.1 and rustup 1.29.3 (#3420).** The pin-freshness workflow could not
+  open its PRs, so these were bumped by hand with `scripts/bump_pins.py <family> --write`, and
+  every checksum was verified against the downloaded artifacts. On the repo's vulnerable-python,
+  -node and -rust fixtures, with the same day's DB and the adapter's argv, Trivy 0.74.0 and 0.76.2
+  give the same 11 results, and the SARIF differs only in its version string. 0.76.2 still reads
+  the default `.trivyignore` from the working directory, and the scanner-owned `--ignorefile`
+  still replaces it.
 - **`driver run --progress` and `driver loop --progress` report phases and entries as they go
   (#2108).** Off by default, with each verb's output unchanged without it. The flag adds
   `driver: progress: ` lines on stderr:
