@@ -291,6 +291,34 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
             tpe = art["capabilities"][hosts.TOOL_POLICY_ENFORCED]
             self.assertNotEqual(probes_common.REGISTERED_SHELL_TOOLS, tpe["by"])
 
+    def test_the_module_level_runner_registry_drives_dispatch(self):
+        # #3399: the probe-id -> runner registry is a module seam, not 60
+        # lines rebuilt inside every run_probes call. Replacing one entry here
+        # proves the module-level table is also the table dispatch walks.
+        synthetic = "module-level-runner-registry"
+        row = hosts.HostSpec(
+            name=synthetic, claims=frozenset({hosts.USAGE_LEDGER}),
+            probes={hosts.USAGE_LEDGER: probes_common.REGISTERED_SHELL_TOOLS})
+        called = []
+
+        def runner(_context):
+            called.append(True)
+            return hosts.PROVEN, probes_common.REGISTERED_SHELL_TOOLS, "module runner"
+
+        with mock.patch.dict(hosts.HOSTS, {synthetic: row}), \
+                mock.patch.dict(host_probes._PROBE_RUNNERS, {
+                    probes_common.REGISTERED_SHELL_TOOLS: runner}), \
+                tempfile.TemporaryDirectory() as target:
+            art = host_probes.run_probes(
+                synthetic, target,
+                shadow=(hosts.UNKNOWN, probes_common.SHADOW_SHELL_SCAN, "fixture"))
+
+        self.assertEqual([True], called)
+        self.assertEqual(
+            {"state": hosts.PROVEN, "by": probes_common.REGISTERED_SHELL_TOOLS,
+             "detail": "module runner"},
+            art["capabilities"][hosts.USAGE_LEDGER])
+
     def test_an_unrecognised_probe_id_resolves_to_unknown_with_a_reason(self):
         from unittest import mock
         ghost = "probe-ghost"

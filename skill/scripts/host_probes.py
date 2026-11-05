@@ -28,8 +28,9 @@ Confusing the two is the failure this whole spec exists to prevent.
 No probe may touch live state. Anything that needs to arm, install or write
 does it inside a `tempfile.TemporaryDirectory()`.
 """
-from typing import Any
+from dataclasses import dataclass, field
 import os
+from typing import Any, Callable
 
 from scripts import app_trace, hosts, probe_cache, run_manifest
 import scripts.probes.claude as claude_probes
@@ -71,6 +72,93 @@ PROBE_CAPABILITY = {probes_common.REGISTERED_SHELL_TOOLS: hosts.TOOL_POLICY_ENFO
                     kimi_probes.KIMI_WRITE_GUARD: hosts.ARTIFACT_WRITE_GUARD,
                     kimi_probes.KIMI_MODEL_ALIAS: hosts.MODEL_BINDING,
                     kimi_probes.KIMI_USAGE_WIRE: hosts.USAGE_LEDGER}
+
+
+_ProbeResult = tuple[str, str | None, str]
+
+
+@dataclass
+class _ProbeContext:
+    """Invocation-local inputs and shared measurements for one registry walk."""
+
+    host: str
+    review_root: str
+    session_root: str
+    registration_dir: str | None
+    home: str | None
+    settings_path: str | None
+    run_home: str | None
+    codex_measurement: list[Any] = field(default_factory=list)
+    claude_measurement: list[Any] = field(default_factory=list)
+
+    def codex_measure(self) -> Any:
+        if not self.codex_measurement:
+            self.codex_measurement.append(
+                codex_probes._codex_surfaces(self.registration_dir))
+        return self.codex_measurement[0]
+
+    def claude_measure(self) -> Any:
+        # #3272 G5: the one paid Claude launch proves two independent
+        # controls. Both mapped probes receive their own verdict from this
+        # invocation-local measurement, so a cold cache starts `claude -p`
+        # only once.
+        if not self.claude_measurement:
+            self.claude_measurement.append(claude_write_canary.measure())
+        return self.claude_measurement[0]
+
+
+# #3399: one module-level probe-id -> runner registry. Each runner receives a
+# fresh context, so the table owns dispatch while measurements remain scoped to
+# one run_probes invocation. Module attribute lookups stay late for mock.patch.
+_PROBE_RUNNERS: dict[str, Callable[[_ProbeContext], _ProbeResult]] = {
+    probes_common.REGISTERED_SHELL_TOOLS:
+        lambda context: probes_common.probe_registered_shell_tools(
+            context.host, context.registration_dir),
+    claude_probes.WRITE_GUARD_ARMED:
+        lambda context: claude_probes.probe_write_guard_armed(
+            context.host, session_root=context.session_root,
+            settings_path=context.settings_path,
+            canary=lambda: context.claude_measure()["write"]),
+    claude_probes.USAGE_SOURCE:
+        lambda context: claude_probes.probe_usage_source(
+            context.host, context.session_root, home=context.home,
+            settings_path=context.settings_path, review_root=context.review_root),
+    claude_probes.ENTRY_MODEL_BOUND:
+        lambda context: claude_probes.probe_entry_model_bound(
+            context.host, context.registration_dir),
+    claude_probes.READ_GUARD_ARMED:
+        lambda context: claude_probes.probe_read_guard_armed(
+            context.host, session_root=context.session_root,
+            settings_path=context.settings_path,
+            canary=lambda: context.claude_measure()["read"]),
+    codex_probes.CODEX_EFFECTIVE_TOOLS:
+        lambda context: codex_probes.probe_codex_tool_policy(
+            context.host, context.registration_dir, context.settings_path,
+            context.codex_measure),
+    codex_probes.CODEX_READ_SCOPE:
+        lambda context: codex_probes.probe_codex_read_scope(
+            context.host, context.registration_dir, context.settings_path,
+            context.codex_measure),
+    codex_probes.CODEX_WRITE_SURFACE_ABSENT:
+        lambda context: codex_probes.probe_codex_write_surface(
+            context.host, context.registration_dir, context.settings_path,
+            context.codex_measure),
+    kimi_probes.KIMI_SHELL_SURFACE:
+        # `run_home` is the live runner's scratch home, handed down by the
+        # loop (N2) -- never a path read out of the reviewed tree. None before
+        # the first `prepare`, in session mode and under plain `driver run`,
+        # where I5 falls back to the version table and says so in its detail.
+        lambda context: kimi_probes.probe_kimi_shell_surface(
+            context.host, context.registration_dir, run_home=context.run_home),
+    kimi_probes.KIMI_READ_GUARD:
+        lambda context: kimi_probes.probe_kimi_read_guard(context.host),
+    kimi_probes.KIMI_WRITE_GUARD:
+        lambda context: kimi_probes.probe_kimi_write_guard(context.host),
+    kimi_probes.KIMI_MODEL_ALIAS:
+        lambda context: kimi_probes.probe_kimi_model_alias(context.host),
+    kimi_probes.KIMI_USAGE_WIRE:
+        lambda context: kimi_probes.probe_kimi_usage_wire(context.host),
+}
 
 
 SCHEMA_VERSION = 1
@@ -195,71 +283,14 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
     # A row that maps a probe to a different capability must record it there;
     # otherwise `HostSpec.probes` is decorative and a mis-mapped row fails
     # silently -- the defect this epic exists to remove.
-    codex_measurement: list[dict[str, Any]] = []
-
-    def codex_measure():
-        if not codex_measurement:
-            codex_measurement.append(codex_probes._codex_surfaces(registration_dir))
-        return codex_measurement[0]
-
-    # #3272 G5: the one paid Claude launch proves two independent controls.
-    # Both mapped probes receive their own verdict from this invocation-local
-    # measurement, so a cold cache still starts `claude -p` only once.
-    claude_measurement: list[dict[str, tuple[str, str]]] = []
-
-    def claude_measure():
-        if not claude_measurement:
-            claude_measurement.append(claude_write_canary.measure())
-        return claude_measurement[0]
-
-    runners = {
-        probes_common.REGISTERED_SHELL_TOOLS:
-            lambda: probes_common.probe_registered_shell_tools(host, registration_dir),
-        claude_probes.WRITE_GUARD_ARMED:
-            lambda: claude_probes.probe_write_guard_armed(
-                host, session_root=session_root, settings_path=settings_path,
-                canary=lambda: claude_measure()["write"]),
-        claude_probes.USAGE_SOURCE:
-            lambda: claude_probes.probe_usage_source(
-                host, session_root, home=home, settings_path=settings_path,
-                review_root=review_root),
-        claude_probes.ENTRY_MODEL_BOUND:
-            lambda: claude_probes.probe_entry_model_bound(host, registration_dir),
-        claude_probes.READ_GUARD_ARMED:
-            lambda: claude_probes.probe_read_guard_armed(
-                host, session_root=session_root, settings_path=settings_path,
-                canary=lambda: claude_measure()["read"]),
-        codex_probes.CODEX_EFFECTIVE_TOOLS:
-            lambda: codex_probes.probe_codex_tool_policy(
-                host, registration_dir, settings_path, codex_measure),
-        codex_probes.CODEX_READ_SCOPE:
-            lambda: codex_probes.probe_codex_read_scope(
-                host, registration_dir, settings_path, codex_measure),
-        codex_probes.CODEX_WRITE_SURFACE_ABSENT:
-            lambda: codex_probes.probe_codex_write_surface(
-                host, registration_dir, settings_path, codex_measure),
-        kimi_probes.KIMI_SHELL_SURFACE:
-            # `run_home` is the live runner's scratch home, handed down by the
-            # loop (N2) -- never a path read out of the reviewed tree. None
-            # before the first `prepare`, in session mode and under plain
-            # `driver run`, where I5 falls back to the version table and says
-            # so in its detail.
-            lambda: kimi_probes.probe_kimi_shell_surface(
-                host, registration_dir, run_home=run_home),
-        kimi_probes.KIMI_READ_GUARD:
-            lambda: kimi_probes.probe_kimi_read_guard(host),
-        kimi_probes.KIMI_WRITE_GUARD:
-            lambda: kimi_probes.probe_kimi_write_guard(host),
-        kimi_probes.KIMI_MODEL_ALIAS:
-            lambda: kimi_probes.probe_kimi_model_alias(host),
-        kimi_probes.KIMI_USAGE_WIRE:
-            lambda: kimi_probes.probe_kimi_usage_wire(host),
-    }
-    if set(runners) != set(PROBE_IDS):
+    context = _ProbeContext(
+        host, review_root, session_root, registration_dir, home, settings_path,
+        run_home)
+    if set(_PROBE_RUNNERS) != set(PROBE_IDS):
         raise RuntimeError("host_probes.PROBE_IDS is out of step with run_probes' runner "
-                           "table: %s" % sorted(set(runners) ^ set(PROBE_IDS)))
+                           "table: %s" % sorted(set(_PROBE_RUNNERS) ^ set(PROBE_IDS)))
     for capability, probe_id in ((row.probes if row else None) or {}).items():
-        runner = runners.get(probe_id)
+        runner = _PROBE_RUNNERS.get(probe_id)
         if runner is None:
             record(capability, (hosts.UNKNOWN, None,
                                 "no implementation for probe %r" % probe_id))
@@ -272,7 +303,7 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
         if result is not None and result[0] not in (hosts.PROVEN, hosts.REFUTED):
             result = None
         if result is None:
-            result = runner()
+            result = runner(context)
             if result[0] in (hosts.PROVEN, hosts.REFUTED):
                 cache.put(probe_id, result, dynamic)
         record(capability, result)
