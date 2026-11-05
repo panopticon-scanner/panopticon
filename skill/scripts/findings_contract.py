@@ -20,6 +20,12 @@ The module owns a second contract, for the same reason: `cell_of` is the one
 parse of the `findings-<group>-<domain>.json` NAME (ARC-3899903550, #1765). Four
 readers each had their own and disagreed, so a file's cell identity -- not its
 payload shape -- is settled here too.
+
+A third, for the same reason (#2104): `schema_version_defect` is the one rule
+for the format version an agent-authored findings envelope, verdict bundle or
+tool verdict declares. Every admission boundary and every synthesis reader of
+those records calls it. It sits BESIDE the run/cell identity checks, never
+inside them.
 """
 from typing import TYPE_CHECKING
 import os
@@ -38,6 +44,41 @@ else:
         import groups_schema
 
 
+# #2104: the one format version agent records are written in. ABSENT reads as
+# this version: verify and tool replies carry none today (their prompts ask for
+# none, and Codex's generation schemas leave no room for one), and old run folders
+# are versionless too. That window stays open through 5.x and closes only by
+# ruling (#3482). A PRESENT version must be exactly this int, by type as well as
+# by value (`synth/delta.py`'s #2382 rule): `True` and `1.0` compare equal to it
+# and are not versions. The reason is fixed text and never echoes the value.
+SCHEMA_VERSION = 1
+UNSUPPORTED_SCHEMA_VERSION = "unsupported schema_version"
+
+
+def schema_version_defect(record):
+    """None when `record` declares no `schema_version` or exactly SCHEMA_VERSION;
+    otherwise UNSUPPORTED_SCHEMA_VERSION. A non-object declares nothing."""
+    if not isinstance(record, dict) or "schema_version" not in record:
+        return None
+    version = record["schema_version"]
+    if type(version) is int and version == SCHEMA_VERSION:
+        return None
+    return UNSUPPORTED_SCHEMA_VERSION
+
+
+def bundle_version_defect(bundle, verdicts):
+    """The bundle's own version, then each of `verdicts`: what ADMISSION refuses whole.
+
+    `verdicts` is the bundle's list as the caller already read it through
+    `evidence._agent_verdict`, the one door for agent verdicts
+    (tests/test_agent_verdict_guard.py). At receipt and in the done predicates,
+    one unknown verdict version refuses the whole reply, so the retry runs. Only
+    synthesis (`evidence.load_verdict_bundles`) confines a per-verdict one to
+    that entry. That is deliberate: don't make one match the other."""
+    return schema_version_defect(bundle) or next(
+        (UNSUPPORTED_SCHEMA_VERSION for v in verdicts if schema_version_defect(v)), None)
+
+
 def payload_defects(data):
     """Contract violations in a parsed findings payload; [] means acceptable.
 
@@ -50,6 +91,8 @@ def payload_defects(data):
     if not isinstance(data, dict):
         return [{"index": None,
                  "reason": "payload is %s, not a JSON object" % type(data).__name__}]
+    if schema_version_defect(data):
+        return [{"index": None, "reason": UNSUPPORTED_SCHEMA_VERSION}]
     findings = data.get("findings")
     if not isinstance(findings, list):
         return [{"index": None,

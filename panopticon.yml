@@ -684,6 +684,7 @@ groups:
       - tests/test_score_gate.py
       - tests/test_redact.py
       - tests/test_findings_contract.py
+      - tests/test_artifact_schema_version.py
       - tests/test_reconcile.py
       - tests/test_label_catalog_parity.py
       - tests/test_schema.py

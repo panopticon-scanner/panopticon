@@ -27,7 +27,8 @@
     },
     "schema_version": {
       "type": "integer",
-      "description": "Format/schema version of the findings envelope (P1 contract)."
+      "enum": [1],
+      "description": "Format/schema version of the findings envelope (P1 contract). Exactly 1; absent reads as 1 (#2104)."
     }
   },
   "definitions": {

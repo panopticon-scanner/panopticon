@@ -32,6 +32,7 @@ import os
 import scripts.claim_scope as claim_scope
 import scripts.dispatch as dispatch
 import scripts.evidence as evidence
+import scripts.findings_contract as findings_contract
 import scripts.ingest_tools as ingest_tools
 import scripts.redact as redact
 # #1720: ONE owner for the enforcement posture -- the loop re-derives it
@@ -182,6 +183,7 @@ def _valid_verdict_at(path, finding_id=None):
         return False
     return (isinstance(data, dict)
             and str(data.get("verdict", "")).upper() in evidence.VERDICT_VALUES
+            and not findings_contract.schema_version_defect(data)   # #2104
             and (finding_id is None or echo_matches({"finding_id": finding_id}, data)[0]))
 
 

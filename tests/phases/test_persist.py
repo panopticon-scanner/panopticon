@@ -796,8 +796,11 @@ class TestTheRecordIsSafeToKeepAndToQuote(unittest.TestCase):
                                 "_panopticon.group is '%s%s'" % (secret, "!" * 200000),
                                 kind=rejected_replies.REFUSAL, run_id="RID")
         block, prior = rejected_replies.retry_block(self.run_dir, self.entry, "RID")
+        # Bounded by its parts: the capped reason, the role's envelope shape (which
+        # #2104 lengthened by its `"schema_version": 1, `) and the fixed wording.
+        bound = persist.REASON_CAP + len(persist.envelope_shape(self.entry)) + 300
         for text in (block, prior["reason"]):
-            self.assertLess(len(text), 600)
+            self.assertLess(len(text), bound)
             self.assertNotIn(secret, text)
         self.assertIn("[REDACTED_TOKEN]", prior["reason"])
 
