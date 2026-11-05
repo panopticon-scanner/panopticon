@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The tools-image smoke gate reports each check as it runs (#1993).** `smoke_adapters.py`, the
+  Dockerfile's last build gate, printed nothing until the end, so a hanging probe sat silent under its
+  timeout. It now prints a flushed stderr line as each check starts and finishes, with its elapsed
+  time (`smoke-adapters: [ 2/19] semgrep ...`, then `... ok (1.8s)`), for the writable paths, every
+  probe and both SARIF scans. Lines carry the check's name only. The stdout summary and the failure
+  block are unchanged.
+
 - **Codex honours the reasoning effort of a `PANOPTICON_MODEL_<ROLE>` JSON override (#2879).** The
   effort now binds from the entry beside its model (`requests.bound_policy`), as the model already
   did; the registered shell's effort is the fallback for an entry without one. Whichever binds must
