@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **`driver run --progress` and `driver loop --progress` report phases and entries as they go
+  (#2108).** Off by default, with each verb's output unchanged without it. The flag adds
+  `driver: progress: ` lines on stderr:
+  - phases a resumed run finds already complete;
+  - each checkpoint's size, and how many entries an earlier run settled;
+  - each settled entry's ok/failed count;
+  - a heartbeat at most every 60 s while a batch waits;
+  - per-phase and terminal totals.
+
+  Counts and static names only. Under `run` the flag also installs the `loop` verb's stamped
+  stderr wrapper (#3232).
+
 - **The tools-image smoke gate reports each check as it runs (#1993).** `smoke_adapters.py`, the
   Dockerfile's last build gate, printed nothing until the end, so a hanging probe sat silent under its
   timeout. It now prints a flushed stderr line as each check starts and finishes, with its elapsed

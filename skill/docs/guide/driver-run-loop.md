@@ -498,6 +498,23 @@ on Claude hooks, and always uses the return-persist path.
   resumed run prints each once more. On a usable report the synthesize summary follows, each line
   prefixed `summary: ` with its control characters spelled out, because it quotes text a reviewed
   repo can steer. Stdout's status JSON and every artifact are unchanged.
+- **`--progress` (#2108), on `driver run` and `driver loop`, off by default.** It adds stderr lines
+  that each begin `driver: progress: `, a prefix no other diagnostic uses:
+  - `phase <P> already complete`, for each phase this process's first pass found done;
+  - `phase <P> checkpoint <K>: <n> to dispatch, <m> already settled earlier`;
+  - `batch <k>/<n> settled: <ok> ok, <f> failed`, once per entry. An entry is ok when it returned
+    and its reply persisted;
+  - `batch <k>/<n> settled, <r> still to settle, <s> s since the last`, at most once every 60 s,
+    and only while nothing settles;
+  - `phase <P> complete: <u> unit(s), no entries`, or with `<e> entries (<ok> ok, <f> failed)`;
+  - `run <status>: <e> entries this process (<ok> ok, <f> failed)`.
+
+  The lines carry phase names, checkpoint kinds, status words and counts only, never an entry id,
+  a path or a message. **Under `driver run`, the flag also installs the `loop` verb's stderr
+  wrapper above,** so every stderr line of that run is UTC-stamped, gets the phase and heartbeat
+  lines, and has the once-per-phase repeats dropped. Without the flag, `driver run` is unchanged.
+  No child is told about the flag, and a child's captured stderr is what it was. `driver readiness`
+  accepts the flag, so one argv still serves both verbs, and ignores it.
 - **The loop ledgers** every launch in
   `runs/<tag>/dispatch-ledger.jsonl` (entry id, checkpoint, mode, model, usage, cost, `denials`,
   `error`, and on a FAILED row `stderr`: the

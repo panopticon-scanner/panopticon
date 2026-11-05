@@ -16,6 +16,7 @@ import scripts.driver as driver
 import scripts.first_contact as first_contact
 import scripts.ledger as ledger_mod
 import scripts.loop_batch as loop_batch
+import scripts.loop_progress as loop_progress
 import scripts.loop_setup as loop_setup
 import scripts.phases.denials as denials
 import scripts.phases.engine as engine
@@ -317,7 +318,7 @@ def _loop(args, pause):
             with contextlib.closing(runner.iter_batch(
                     pending, getattr(args, "concurrency", None), guards.env_for,
                     stop=lambda: tally.outage(width) or over_budget(),
-                    hold=pause.event)) as stream:
+                    hold=pause.event)) as stream, loop_progress.batch(len(pending)) as watch:
                 for entry, result, timing in stream:
                     eid = entry.get("id")
                     refusal = loop_batch.record_entry(
@@ -341,6 +342,7 @@ def _loop(args, pause):
                     print("driver loop: %s done (%s ms, %d/%d)"
                           % (eid, timing.get("duration_ms"), done, total),
                           file=sys.stderr, flush=True)
+                    watch.settled(bool(getattr(result, "ok", False)) and refusal is None)  # #2108
             # #1721: what the short-circuit stopped. Never-launched entries wrote nothing and are
             # charged nothing, so `batch.close()` and `disarm` below are unchanged -- there is
             # nothing of theirs to take back.

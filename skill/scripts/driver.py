@@ -195,6 +195,8 @@ def build_parser():
     for verb in ("run", "loop", "readiness"):
         p = sub.add_parser(verb)
         p.add_argument("target", nargs="?", default=".")
+        # #2108: `driver: progress:` lines on stderr; off by default. `readiness` accepts and ignores it.
+        p.add_argument("--progress", action="store_true")
         p.add_argument("--host", default=None, type=_host_choice,
                        choices=list(hosts.driver_hosts()))
         p.add_argument("--security", default=None, choices=["standard", "redteam"])
@@ -662,8 +664,10 @@ def main(argv=None):
             except ValueError as exc:
                 return engine.emit_status(runio._error_status(str(exc)))
         import scripts.orchestrate as orchestrate   # R-P6-2: lazy, no cycle
-        return loop_progress.stamped_call(args.verb == "loop", orchestrate.main_verb, args)
-    return engine.emit_status(run(args))
+        return loop_progress.stamped_call(args.verb == "loop", orchestrate.main_verb, args,
+                                          progress=getattr(args, "progress", False) is True)
+    return loop_progress.stamped_call(getattr(args, "progress", False) is True,
+                                      lambda: engine.emit_status(run(args)), progress=True)
 
 
 if __name__ == "__main__":
