@@ -198,11 +198,35 @@ def validate_artifacts(report_path, x0x_path=None, x0x_failure_path=None):
     return errors
 
 
+def _say(text):
+    """Print `text` to stdout. #2961: a path the run wrote can hold a byte that is
+    not UTF-8 (a lone surrogate here), which a strict stdout cannot encode; spell
+    it as stderr does (`backslashreplace`) rather than raise after the writes."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        print(text.encode(encoding, "backslashreplace").decode(encoding))
+
+
 def _artifact_path_refused(exc):
     """Report an artifact-path refusal without aliasing it to gate FAIL."""
     detail = redact.redact_diagnostic(str(exc), 400)
     print("synthesize: artifact path refused: %s" % detail, file=sys.stderr)
     return validate_schema_mod.ARTIFACT_INVALID
+
+
+def _artifact_write_failed(exc):
+    """#3472: the one answer to a writer's failure, exit 4 either way. A
+    `UnicodeError` is a `ValueError` too, but it is the TEXT that could not be
+    written, not the path: name it so. Everything else (`ArtifactPathError`, a
+    raw confinement `ValueError`) is the path refusal, as before."""
+    if isinstance(exc, UnicodeError):
+        detail = redact.redact_diagnostic(str(exc), 400)
+        print("synthesize: artifact not written: its text cannot be encoded: %s" % detail,
+              file=sys.stderr)
+        return validate_schema_mod.ARTIFACT_INVALID
+    return _artifact_path_refused(exc)
 
 
 def _first_contact(args, read_paths, write_paths):
@@ -233,8 +257,8 @@ def _compare(args):
     try:
         html_report.write_html(report_b, html_out, compare_report=report_a)
     except (safe_write.ArtifactPathError, ValueError) as exc:
-        return _artifact_path_refused(exc)
-    print("Compare HTML: %s" % html_out)
+        return _artifact_write_failed(exc)
+    _say("Compare HTML: %s" % html_out)
     return 0
 
 
@@ -453,7 +477,7 @@ def main(argv=None):
     try:
         paths = render_mod.write_report(report, out)
     except (safe_write.ArtifactPathError, ValueError) as exc:
-        return _artifact_path_refused(exc)
+        return _artifact_write_failed(exc)
     # §5.1: emit the X0X catalog-gap report — the <DOM>-X0X / ZZZ-X0X findings as
     # candidate records for OCRDb's new-code adjudication pool (ingested
     # downstream), a sibling of the JSON report. Empty candidates are an honest
@@ -479,9 +503,9 @@ def main(argv=None):
                  json.dumps(failure_log, indent=2, sort_keys=True)))
         safe_write.publish_texts(targets)
     except (safe_write.ArtifactPathError, ValueError) as exc:
-        return _artifact_path_refused(exc)
-    print("X0X artifact: %s (%d candidates)"
-          % (x0x_path, len(x0x["candidates"])))
+        return _artifact_write_failed(exc)
+    _say("X0X artifact: %s (%d candidates)"
+         % (x0x_path, len(x0x["candidates"])))
     if failure_log is not None:
         discarded = len(failure_log["discarded_findings"])
         print("synthesize: warning: discarded %d locus-free catalog-gap "
@@ -494,10 +518,10 @@ def main(argv=None):
         try:
             html_report.write_html(report, html_out)
         except (safe_write.ArtifactPathError, ValueError) as exc:
-            return _artifact_path_refused(exc)
-        print("HTML artifact: %s" % html_out)
+            return _artifact_write_failed(exc)
+        _say("HTML artifact: %s" % html_out)
     print(render_mod.render_summary(report))
-    print("\nJSON artifact: %s" % ", ".join(paths))
+    _say("\nJSON artifact: %s" % ", ".join(paths))
     # #1639 P15: terminal completion, artifact validity and coverage
     # certification are three different facts, so they get three different
     # channels. The gate's verdicts (1/2) are VALID reports about a coverage

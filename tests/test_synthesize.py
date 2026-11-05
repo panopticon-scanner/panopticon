@@ -2192,6 +2192,66 @@ def test_no_run_artifact_a_target_can_write_ends_the_run(tmp_path, name, body):
     json.loads(out.read_text(encoding="utf-8"))
 
 
+class TestAWriterFailureIsNamedForWhatFailed(unittest.TestCase):
+    """#3472: every writer site answers exit 4, but text that could not be encoded is not a refused PATH.
+    `UnicodeError` is a `ValueError`, which the sites also catch for a raw confinement refusal."""
+
+    _fixture = TestTheCompletionPathValidatesWhatItWrote._fixture
+    _run = TestTheCompletionPathValidatesWhatItWrote._run
+    ENCODE = UnicodeEncodeError("utf-8", "\ud800", 0, 1, "surrogates not allowed")
+    ESCAPE = ValueError("artifact path escapes .panopticon via a symlinked component: 'x'")
+
+    def site(self, which, error):
+        """(status, stderr) of a run whose writer at `which` raises `error`."""
+        import scripts.safe_write as safe_write
+        real_publish = safe_write.publish_texts
+
+        def publish(targets):
+            targets = list(targets)                     # the report's writer hands a generator
+            if targets[0][0].endswith("-x0x.json"):
+                raise error
+            return real_publish(targets)
+
+        planted = {"report": mock.patch.object(render_mod, "write_report", side_effect=error),
+                   "x0x": mock.patch.object(safe_write, "publish_texts", side_effect=publish),
+                   "page": mock.patch.object(html_report_mod, "write_html", side_effect=error),
+                   "compare": mock.patch.object(html_report_mod, "write_html", side_effect=error)}[which]
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp, out = self._fixture(d)
+            if which == "compare":
+                self.assertEqual(0, self._run(["--target", "src", "--out", out, fp])[0])
+                argv = ["--compare", out, out, "--html-out", os.path.join(d, "compare.html")]
+            else:
+                argv = ["--target", "src", "--out", out, "--html-out", os.path.join(d, "report.html"), fp]
+            with planted:
+                rc, _stdout, stderr = self._run(argv) if which != "compare" else self._compare(argv)
+        return rc, stderr
+
+    def _compare(self, argv):
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = syn.main(argv)
+        return rc, "", err.getvalue()
+
+    def test_text_that_cannot_be_encoded_is_named_at_every_site(self):
+        for which in ("report", "x0x", "page", "compare"):
+            with self.subTest(site=which):
+                rc, stderr = self.site(which, self.ENCODE)
+                self.assertEqual(4, rc, stderr)
+                self.assertIn("synthesize: artifact not written: its text cannot be encoded:", stderr)
+                self.assertNotIn("artifact path refused", stderr)
+                self.assertNotIn("Traceback", stderr)
+
+    def test_a_raw_confinement_refusal_is_still_the_path_refusal(self):
+        # The two sites whose writers (`publish_texts`, `remove_artifact`) let confinement's ValueError out raw.
+        for which in ("report", "x0x"):
+            with self.subTest(site=which):
+                rc, stderr = self.site(which, self.ESCAPE)
+                self.assertEqual(4, rc, stderr)
+                self.assertIn("synthesize: artifact path refused: artifact path escapes .panopticon", stderr)
+                self.assertNotIn("cannot be encoded", stderr)
+
+
 class TestACorruptToolsManifestCannotCertify(unittest.TestCase):
     """#1644: corruption was treated as absence, and absence chose the
     permissive path.
