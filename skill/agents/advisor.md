@@ -46,6 +46,7 @@ and lose your verdict, so emit the object alone:
 
 ```json
 {
+  "schema_version": 1,
   "finding_id": "<the id field from the claim, echoed verbatim>",
   "verdict": "CONFIRMED|REJECTED|NEEDS_MORE_INFO",
   "confidence": "CERTAIN|LIKELY|POSSIBLE",
