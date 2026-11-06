@@ -337,9 +337,26 @@ def _render_codex(role, agent, meta, tp):
     return "\n".join(lines) + "\n"
 
 
+AGY_TOOL_FOR = {"Read": "read_file", "Grep": "grep_search",
+                "Glob": "find_by_name", "Write": "write_file"}
+
+
+def _agy_tools(tp):
+    reads = [AGY_TOOL_FOR[t] for t in tp["allowed"] if t in AGY_TOOL_FOR and t != "Write"]
+    return reads + (["list_dir"] if reads else []) + (["write_file"] if "Write" in tp["allowed"] else []) + ["finish"]
+
+
+def _render_agy(role, agent, meta, tp):
+    tier = model_resolver.registration_config("agy", role).get("tier")
+    fm = (["---", "name: %s" % agent, "description: %s" % meta["description"]]
+          + (["model: %s" % tier] if tier else [])
+          + ["tools:"] + ["  - %s" % t for t in _agy_tools(tp)] + ["---"])
+    return "\n".join(fm) + "\n\n" + _role_charter(role, tp)
+
+
 # How each registrable host renders one role's shell (ARC-981076646): the file's
 # whole text, from the role, its agent name, template meta and tool policy.
-_RENDERERS = {"claude": _render_claude, "kimi": _render_kimi, "codex": _render_codex}
+_RENDERERS = {"claude": _render_claude, "kimi": _render_kimi, "codex": _render_codex, "agy": _render_agy}
 
 
 def _prune_retired_shells(host, out_dir, written):
@@ -494,7 +511,7 @@ def _detect_host():
     """
     warning = ("WARNING: host detected from environment; pass --host "
                "explicitly for stable behavior")
-    for name in ("codex", "kimi", "claude"):
+    for name in ("codex", "kimi", "claude", "agy"):
         row = hosts.spec(name)
         if any(os.environ.get(var) for var in row.detect_env):
             print(warning, file=sys.stderr)

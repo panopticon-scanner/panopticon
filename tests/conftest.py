@@ -116,7 +116,9 @@ import subprocess  # noqa: E402
 import scripts.app_trace as _app_trace  # noqa: E402
 import scripts.codex_host as _codex_host  # noqa: E402
 import scripts.run_tools as _run_tools  # noqa: E402
+import scripts.probes.agy as _agy_probes  # noqa: E402
 import scripts.probes.kimi as _kimi_probes  # noqa: E402
+import scripts.runners.agy as _agy_runner  # noqa: E402
 import scripts.runners.base as _runners_base  # noqa: E402
 import scripts.runners.claude as _claude_runner  # noqa: E402
 import scripts.runners.codex as _codex_runner  # noqa: E402
@@ -228,7 +230,7 @@ def _no_live_scanner_containers(request, monkeypatch):
 # disagree about is not a guarantee. `codex_host.LaunchRefused` still names
 # it, so every call site that already caught it is unchanged.
 LAUNCH_SEAMS = (_codex_host, _codex_runner, _claude_runner, _setup_preflight,
-                _kimi_probes, _kimi_runner, _app_trace)
+                _kimi_probes, _kimi_runner, _agy_probes, _agy_runner, _app_trace)
 
 # #3270: `run_probes` names the host CLI it probed through -- path, version and
 # a sha256 of the binary. The version read is a launch (refused above, through

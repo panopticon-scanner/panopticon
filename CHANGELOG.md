@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Google Antigravity CLI (`agy`) is a 5/5 first-class host (#3493).** `HOSTS["agy"]` is
+  driver-selectable with `self_write_delivery = True`, backed by `skill/scripts/runners/agy.py`,
+  `skill/scripts/runners/agy_home.py`, `skill/scripts/agy_guard_hook.py` and five capability probes
+  in `skill/scripts/probes/agy.py` (`agy-shell-surface`, `agy-read-guard-armed`,
+  `agy-write-guard-armed`, `agy-model-bound`, `agy-usage-envelope`). Each headless run builds an
+  isolated per-run home that links only `~/.gemini/antigravity-cli/antigravity-oauth-token` and the
+  registered shells at `~/.gemini/config/agents`, seeds a minimal Git ceiling at
+  `<run_home>/workspace/.git` (`cwd` on every launch and effective-loader probe), and arms a single
+  wildcard `PreToolUse` hook (`"matcher": "*"`) enforcing a strict tool-name allowlist,
+  `PANOPTICON_ENTRY_ID` binding, per-entry read scope and v2 write allowlist grants.
 - **Discovery surface filtering and scope resolution have one owner (#3457).** The
   exclusion/fixture policy, target-Git delta collection, related-test expansion, base
   resolution, reviewable-file filtering, scope-path confinement and five scope resolvers

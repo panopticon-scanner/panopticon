@@ -16,6 +16,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import scripts.agy_guard_hook as ag
 import scripts.codex_read_tools as codex_read_tools
 import scripts.guard_rules as guard_rules
 import scripts.kimi_guard_hook as kg
@@ -23,7 +24,8 @@ import scripts.read_guard_hook as rg
 import scripts.write_guard_hook as wg
 
 SCRIPTS = os.path.dirname(os.path.realpath(guard_rules.__file__))
-HOOKS = ("read_guard_hook.py", "write_guard_hook.py", "kimi_guard_hook.py")
+HOOKS = ("read_guard_hook.py", "write_guard_hook.py", "kimi_guard_hook.py",
+         "agy_guard_hook.py")
 
 
 def _source(name):
@@ -120,7 +122,7 @@ class TestTheSharedRules(unittest.TestCase):
         # SIBLING module, so a patch on `scripts.guard_rules` is the one the hook
         # calls through. A second, path-loaded copy here would make every such
         # patch vacuous.
-        for hook in (rg, wg, kg):
+        for hook in (rg, wg, kg, ag):
             with self.subTest(hook=hook.__name__):
                 self.assertIs(hook.guard_rules, guard_rules)
                 self.assertEqual(hook._GUARD_RULES_FAULT, "")
@@ -131,7 +133,8 @@ class TestTheSharedRules(unittest.TestCase):
     def test_the_hooks_re_export_the_shared_constants(self):
         for hook, names in ((rg, ("ENV_ENTRY_ID", "MARKER_PREFIX", "SCOPE_KEYS")),
                             (wg, ("ENV_ENTRY_ID", "UNBOUND_ENTRY", "ALLOWLIST_VERSION")),
-                            (kg, ("ENV_ENTRY_ID", "UNBOUND_ENTRY", "SCOPE_KEYS"))):
+                            (kg, ("ENV_ENTRY_ID", "UNBOUND_ENTRY", "SCOPE_KEYS")),
+                            (ag, ("ENV_ENTRY_ID", "UNBOUND_ENTRY", "SCOPE_KEYS"))):
             for name in names:
                 with self.subTest(hook=hook.__name__, name=name):
                     self.assertIs(getattr(hook, name), getattr(guard_rules, name))
@@ -144,6 +147,7 @@ class TestAnUnloadedRuleSetDeniesInProcess(unittest.TestCase):
         (rg, lambda: rg.adjudicate({"tool_name": "Read", "tool_input": {}}, "/nowhere")),
         (wg, lambda: wg.adjudicate({"tool_name": "Write", "tool_input": {}}, "/nowhere")),
         (kg, lambda: kg.adjudicate({"tool_name": "Read", "tool_input": {}}, "read", "/nowhere")),
+        (ag, lambda: ag.adjudicate({"toolCall": {"name": "read_file", "arguments": {}}}, "/nowhere", "/nowhere")),
     )
 
     def test_every_adjudication_denies_and_names_the_fault(self):
@@ -184,10 +188,15 @@ class _HookLaunch(unittest.TestCase):
              {"tool_name": "Write", "tool_input": {"file_path": self.outside}}),
             ("kimi_guard_hook.py", ["read", self.scope],
              {"tool_name": "Read", "tool_input": {"path": self.outside}}),
+            ("agy_guard_hook.py", [],
+             {"hook": "PreToolUse", "lastUserInput": "<!-- panopticon-entry: e1 -->",
+              "toolCall": {"name": "read_file", "arguments": {"Path": self.outside}}}),
         )
 
     def _launch(self, python, hook_path, argv, payload, cwd, extra_env=None):
         env = {"PATH": os.environ.get("PATH", ""), "PANOPTICON_ENTRY_ID": "e1",
+               "PANOPTICON_READ_SCOPE": self.scope,
+               "PANOPTICON_WRITE_ALLOWLIST": self.allowlist,
                # #3436: the read hook checks its row's stamp under the driver's key.
                "PANOPTICON_STATE_DIR": os.environ["PANOPTICON_STATE_DIR"]}
         env.update(extra_env or {})
@@ -200,11 +209,17 @@ class _HookLaunch(unittest.TestCase):
 
     def _assert_denied(self, proc, fragment=None):
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        body = json.loads(proc.stdout)["hookSpecificOutput"]
-        self.assertEqual(body["permissionDecision"], "deny")
+        parsed = json.loads(proc.stdout)
+        if "hookSpecificOutput" in parsed:
+            body = parsed["hookSpecificOutput"]
+            self.assertEqual(body["permissionDecision"], "deny")
+            reason = body["permissionDecisionReason"]
+        else:
+            self.assertEqual(parsed["decision"], "deny")
+            reason = parsed["reason"]
         if fragment:
-            self.assertIn(fragment, body["permissionDecisionReason"])
-        return body["permissionDecisionReason"]
+            self.assertIn(fragment, reason)
+        return reason
 
 
 class TestABrokenRuleSetDeniesAtLaunch(_HookLaunch):
@@ -247,7 +262,11 @@ class TestABrokenRuleSetDeniesAtLaunch(_HookLaunch):
             with self.subTest(hook=hook):
                 proc = self._launch(python, os.path.join(SCRIPTS, hook), argv, granted,
                                     cwd=self.root)
-                self.assertEqual((proc.returncode, proc.stdout), (0, ""), proc.stderr)
+                if hook == "agy_guard_hook.py":
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    self.assertEqual({"decision": "allow"}, json.loads(proc.stdout))
+                else:
+                    self.assertEqual((proc.returncode, proc.stdout), (0, ""), proc.stderr)
 
 
 class TestADecoyNeverAnswersForOurRules(_HookLaunch):

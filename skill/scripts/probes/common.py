@@ -415,8 +415,11 @@ def probe_shadow_shells(host, review_root):
         return (hosts.UNKNOWN, SHADOW_SHELL_SCAN,
                 "host %r discovers no project-scoped agents" % host)
     hits, unreadable = [], []
-    for relative in row.project_scope_dirs:
-        directory = os.path.join(review_root, relative)
+    dirs = [(rel, os.path.join(review_root, rel)) for rel in row.project_scope_dirs]
+    if host == "agy":
+        dirs.append(("~/.gemini/agents",
+                     os.path.join(os.path.expanduser("~"), ".gemini", "agents")))
+    for relative, directory in dirs:
         try:
             names = sorted(os.listdir(directory))
         except (FileNotFoundError, NotADirectoryError):
@@ -507,6 +510,13 @@ CONTROLS = {
         "claude", ("--disallowedTools=",),
         "`--disallowedTools=<UNENFORCED_DENIED_TOOLS>` (#1753), belt and braces "
         "behind the allow-list"),
+    "agy:cwd-outside-target": Control(
+        "agy", (),
+        "`runners.agy.Runner.run_entry` runs the child in `<agy_home>/workspace` "
+        "(pinned with a `.git` ceiling), outside the review root"),
+    "agy:disable-slash-commands": Control(
+        "agy", ("--disable-slash-commands",),
+        "`--disable-slash-commands` disables workspace skills and workflows"),
 }
 
 

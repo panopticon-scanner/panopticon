@@ -553,14 +553,14 @@ class TestItLaunchesNothingAndWritesNothing(_VerbCase):
                          "driver readiness launched a binary: %s"
                          % (open(log).read() if os.path.exists(log) else ""))
         rows = {r["host"]: r for r in body["cli"]}
-        self.assertEqual(sorted(rows), ["claude", "codex", "kimi"])
+        self.assertEqual(sorted(rows), ["agy", "claude", "codex", "kimi"])
         for host, row in rows.items():
             with self.subTest(host=host):
                 self.assertIs(True, row["on_path"])
                 self.assertEqual(os.path.join(bin_dir, host), row["path"])
 
     def test_every_cli_is_reported_absent_and_only_the_selected_one_gates(self):
-        """A real `shutil.which` against an empty PATH. All three rows report
+        """A real `shutil.which` against an empty PATH. All four rows report
         `on_path: false`; only the host this invocation resolved to carries a
         remedy, and only it moves the exit code (fix round 2 -- a bare
         invocation resolves one, so this case exits 1 now where round 1
@@ -568,7 +568,7 @@ class TestItLaunchesNothingAndWritesNothing(_VerbCase):
         d = self._repo(groups_yml=GROUPS_YML)
         code, body = self._json(d, stub_which=False)
         self.assertEqual(1, code)
-        self.assertEqual([False, False, False],
+        self.assertEqual([False, False, False, False],
                          [r["on_path"] for r in body["cli"]])
         self.assertEqual(["claude"],
                          [r["host"] for r in body["cli"] if r["remedy"]])
@@ -774,10 +774,10 @@ class TestTheSelectedHostsBinaryIsGating(_VerbCase):
 
     def test_an_unselected_hosts_missing_binary_is_still_informational(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        # codex and kimi absent
+        # codex, kimi and agy absent
         code, body = self._json(d, "--host", "claude", which=READY_CLI)
         self.assertEqual(0, code)
-        self.assertEqual([False, False],
+        self.assertEqual([False, False, False],
                          [r["on_path"] for r in body["cli"] if not r["selected"]])
 
     def test_a_selected_host_with_no_cli_of_ours_still_gets_a_row(self):

@@ -166,7 +166,19 @@ entry tier resolves to an alias in the installed config's `[models]` table), and
 (`wire_path` + `parse_wire` end to end on a synthetic session written at the per-run home's own
 layout — the channel the runner reads, not the operator's `~/.kimi-code/sessions`).
 
-`self_write_delivery` is true only for Claude and Kimi. A write-template role self-writes only when
+Agy claims all five (#3493), measured under an isolated per-run home (`runners/agy_home.py`) with
+`cwd` pinned at `<run_home>/workspace`: `agy-shell-surface` (the registered shells in
+`~/.gemini/config/agents` verified against the installed CLI's versioned tool vocabulary and loaded
+cleanly via `agy agents` with no `[project]` shadow), `agy-read-guard-armed` and
+`agy-write-guard-armed` (`agy -p "/hooks" --output-format json` confirms the single `"matcher": "*"`
+`PreToolUse` hook invoking `skill/scripts/agy_guard_hook.py`, plus 0-quota hook subprocess
+round-trips and a live `agy` unknown-tool + out-of-scope read canary), `agy-model-bound` (every
+role's shell frontmatter tier matches its profile and `agy --agent <shell> --model <slug>
+--output-format json -p "/model"` reports the resolved runtime model), and `agy-usage-envelope`
+(`agy --help` advertises `-p` and `--output-format`, `parse_envelope` maps token usage, and any
+existing `dispatch-ledger.jsonl` carries token counts on every `ok` row).
+
+`self_write_delivery` is true only for Claude, Kimi and Agy. A write-template role self-writes only when
 that static mechanism fact and a proven `artifact_write_guard` both hold; Codex, generic and Gemini
 remain return-persist. Delivery is never evidence for the gate, so generic still refuses without
 `--allow-unenforced`. Codex's proof by omission covers the complete reviewer write surface, so it
