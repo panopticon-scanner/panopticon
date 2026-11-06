@@ -197,6 +197,22 @@ class AtReceiptTest(_Tree):
             bundle, schema_path=persist.launch_schema(bundle_entry, "claude")))
 
 
+class TheVersionlessWindowStaysOpenTest(_Tree):
+    """#3482 asks the advisors, and requires Codex's projections, to emit
+    `schema_version: 1`. It does NOT close #2104's window: admission still reads a
+    reply that omits the version as v1, for both roles #3482 touches. Closing the
+    window is a separate coordinator ruling."""
+
+    def test_a_versionless_verify_bundle_and_tool_verdict_are_still_admitted(self):
+        env = persist_tests._verify_cell(self.d)
+        bundle = self._bundle(env)
+        self.assertNotIn("schema_version", bundle)
+        self.assertEqual((True, ""), persist.write_reply(env["entry"], json.dumps(bundle)))
+        verdict = _verdict()
+        self.assertNotIn("schema_version", verdict)
+        self.assertEqual((True, ""), persist.write_reply(self._tool_entry(), json.dumps(verdict)))
+
+
 class InTheDonePredicatesTest(_Tree):
     """The self-write path: the agent wrote the file, so nothing checked it on
     the way in. An unknown version is not done, and the cell is re-dispatched."""
