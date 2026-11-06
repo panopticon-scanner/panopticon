@@ -20,8 +20,9 @@ OBJECTIVE routing signal: the gated global floor and the SEC floor below, which
     rule, because that rule also moves files between groups
     (`discovery.partition_test_files`).
 - **Accidental divergences** are pinned at today's behaviour in
-  tests/test_surface_signal_contract.py. The routing ones (the `migrate/` miss,
-  the bare `entity`/`seed`/`schema`/`test_`/`.spec.` substrings) wait on #3484.
+  tests/test_surface_signal_contract.py. The routing ones (the bare
+  `entity`/`seed`/`schema`/`test_`/`.spec.` substrings) wait on #3484. Its R1,
+  the `migrate/` miss, is fixed: `/migrate/` is a DAT segment hint.
   The schedule's own, which routes nothing, wait on #3485.
 """
 
@@ -75,9 +76,14 @@ NON_EXCLUDABLE = frozenset({"SEC"})
 # intentionally NOT consulted here (#1193). A scout that wants a domain it did
 # not objectively surface still gets it via scout_added in effective_panels, so
 # coverage can widen but never narrow below observable signals.
-_DB_FILE_HINTS = ("schema.prisma", ".prisma", ".sql", "migration", "/models/",
-                  "/model/", "schema", "entity", "entities", ".orm", "seed",
-                  "repository", "database", "/db.")
+# `/migrate/` (#3484 R1, owner-approved) is a directory SEGMENT, slashes on both
+# sides: Rails' `db/migrate/` holds migrations whose names carry no `migration`,
+# so the `migration` hint missed them, while `immigrate.py`, `migrated_users.py` and a
+# file named `migrate.rb` stay unmatched. `_any_hint` adds the leading slash for
+# a top-level `migrate/`.
+_DB_FILE_HINTS = ("schema.prisma", ".prisma", ".sql", "migration", "/migrate/",
+                  "/models/", "/model/", "schema", "entity", "entities", ".orm",
+                  "seed", "repository", "database", "/db.")
 # These are HALF of the TST signal; `_has_test_surface` unions them with
 # discovery's naming rule. Do not add a naming convention here that belongs in
 # `discovery.TEST_PATTERNS` -- the union already picks that one up everywhere.

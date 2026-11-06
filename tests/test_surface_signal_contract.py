@@ -53,8 +53,18 @@ SIGNALS = [
     ("src/AppTest.java", (True, False, False), ["COD", "SEC", "TST"], SHARED,
      "discovery.is_test_file, which coverage's TST signal unions in (#1770)"),
     ("app/models/user.py", (False, True, False), ["COD", "DAT", "SEC"], AGREE, ""),
-    ("db/migrate/001_init.rb", (False, True, False), ["COD", "SEC"], ROUTING,
-     "R1: coverage's hint is `migration`, so Rails' migrate/ draws no DAT floor"),
+    ("db/migrate/001_init.rb", (False, True, False), ["COD", "DAT", "SEC"], REQUIRED,
+     "#3484 R1: a `migrate/` directory segment is a DB surface (Rails' db/migrate)"),
+    ("migrate/002_users.rb", (False, True, False), ["COD", "DAT", "SEC"], REQUIRED,
+     "#3484 R1: a top-level migrate/ segment too"),
+    ("src/immigrate.py", (False, False, False), ["COD", "SEC"], REQUIRED,
+     "#3484 R1: a segment, not a substring"),
+    ("src/migrated_users.py", (False, False, False), ["COD", "SEC"], REQUIRED,
+     "#3484 R1: a segment, not a substring"),
+    ("bin/migrate.rb", (False, False, False), ["COD", "SEC"], REQUIRED,
+     "#3484 R1: a FILE named migrate is not the segment"),
+    ("lib/immigrate/rules.rb", (False, False, False), ["COD", "SEC"], REQUIRED,
+     "#3484 R1: a directory ending in `migrate` is not the segment"),
     ("src/identity.py", (False, False, False), ["COD", "DAT", "SEC"], ROUTING,
      "R2: the bare substring `entity` matches inside `identity`"),
     ("src/random_seed.py", (False, False, False), ["COD", "DAT", "SEC"], ROUTING,
@@ -188,7 +198,7 @@ class RoutingThroughTheEffectiveMatrixTest(_Phase):
         "Assets": ([], [], [], [], None),
         "Docs": (["ARC", "COD"], [], [], ["ARC", "COD"], None),        # two directories
         "DbQuery": (["COD", "DAT", "SEC"], [], [], ["COD", "DAT", "SEC"], None),
-        "Rails": (["COD", "SEC"], [], [], ["COD", "SEC"], None),        # R1, #3484
+        "Rails": (["COD", "DAT", "SEC"], [], [], ["COD", "DAT", "SEC"], None),  # #3484 R1
         "Conftest": (["COD", "SEC", "TST"], [], [], ["COD", "SEC", "TST"], None),
         "Ident": (["COD", "DAT", "SEC"], [], [], ["COD", "DAT", "SEC"], None),  # R2, #3484
         "Committed": (["COD", "DAT", "SEC"], [], [], ["COD", "DAT", "SEC"], None),
