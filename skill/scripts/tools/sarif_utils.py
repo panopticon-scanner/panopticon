@@ -86,7 +86,7 @@ def _is_fixture_path(path):
     """True if a repo-relative file path lives under a test-fixture corpus dir
     (e.g. ``tests/fixtures/...``, ``testdata/...``, ``__fixtures__/...``).
 
-    Mirrors ``orchestrator._is_fixture_dir`` so the tool-ingest path prunes the
+    Mirrors ``discovery_scope._is_fixture_dir`` so the tool-ingest path prunes the
     same intentionally-vulnerable fixtures the agentic review path already
     prunes in standard mode (#434). The agentic path drops fixture FILES before
     review; the tool scanners (osv-scanner, trivy) still walk the whole repo and

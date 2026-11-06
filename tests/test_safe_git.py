@@ -533,7 +533,7 @@ def test_a_target_path_that_spells_a_global_option_is_only_a_path(tmp_path):
 
 def test_a_failed_root_preflight_names_the_command_the_caller_asked_for(tmp_path):
     # #2006 fix round 2, M5: the failure was returned as the caller's own
-    # result, so `discovery._git` raised CalledProcessError naming
+    # result, so `discovery_scope._git` raised CalledProcessError naming
     # `config --null --list --includes` and the operator read
     # "git diff failed: ... config ...".
     failure = subprocess.CompletedProcess(

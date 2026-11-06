@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Discovery surface filtering and scope resolution have one owner (#3457).** The
+  exclusion/fixture policy, target-Git delta collection, related-test expansion, base
+  resolution, reviewable-file filtering, scope-path confinement and five scope resolvers
+  moved to `discovery_scope.py`. Discovery and tests call that owner directly, every patch
+  target follows the runtime lookup, and there are no compatibility aliases. The
+  `discovery.py` flat-module pin falls from 1803 to 1273 lines.
 - **Discovery catalog matching has one owner (#3457).** `_glob_to_re`, `match_patterns`,
   `_decide`, `_VOCAB_PATH`, `_capability_aliases`, `assign_scoped` and `assign_by_catalog`
   moved byte-identically to `discovery_catalog.py`; discovery, grouping, setup and tests now

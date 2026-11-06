@@ -375,7 +375,7 @@ def hunk_map(repo, base, exclude=()):
     if mb.returncode != 0 or not mb.stdout.strip():
         # #1256 (COD-B2C): this used to return {} on the documented assumption
         # that "an upstream loud-fail already guards this". That guard is
-        # discovery.resolve_base_or_die, and it verifies the base ref RESOLVES
+        # discovery_scope.resolve_base_or_die, and it verifies the base ref RESOLVES
         # TO A COMMIT -- a different question from whether HEAD and that commit
         # share an ancestor. merge-base also fails, with a perfectly valid base,
         # when they do not; the everyday way to reach that is a SHALLOW CLONE,
@@ -416,7 +416,7 @@ def hunk_map(repo, base, exclude=()):
     result = parse_unified_diff(diff_text)
     # `git diff` omits untracked files; add them as whole-file ranges.
     try:
-        # Include new untracked files, matching discovery.collect_changed_files.
+        # Include new untracked files, matching discovery_scope.collect_changed_files.
         # -z + text=False (#1739): without -z git C-quotes any name carrying a
         # byte >= 0x80 (default core.quotepath) or a quote, backslash, tab or
         # newline, and the quoted spelling then failed open() with an OSError
