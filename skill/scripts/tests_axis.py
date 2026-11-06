@@ -19,7 +19,7 @@ import os
 import re
 
 TEST_TOKENS = frozenset({"test", "tests", "spec", "specs"})
-# What discovery._glob_to_re treats as a wildcard: `*`, `**` and `?`. It has
+# What discovery_catalog._glob_to_re treats as a wildcard: `*`, `**` and `?`. It has
 # no character classes, so `[ab]` is a literal there and must be one here --
 # the two matchers have to agree on what "literal" means (#1501).
 _WILDCARD = re.compile(r"[*?]")

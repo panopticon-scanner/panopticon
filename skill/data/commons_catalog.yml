@@ -24,7 +24,7 @@
 #       to Ungrouped, whose yield is a catalog-COVERAGE signal we surface.
 #   R2  drop single-repo artifacts that cleared the >=4-seat filter by chance.
 #   R3  drop a literal when a sibling wildcard in the same category already
-#       claims it under discovery.match_patterns (44 collapsed). Verified
+#       claims it under discovery_catalog.match_patterns (44 collapsed). Verified
 #       with the real matcher, not fnmatch: a no-slash pattern matches the
 #       BASENAME at any depth, so `*.md` really does subsume
 #       `.github/CONTRIBUTING.md`.

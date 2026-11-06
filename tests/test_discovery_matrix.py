@@ -11,6 +11,7 @@ from tests.discovery_test_helpers import (
 )
 
 import scripts.discovery as discovery  # noqa: E402
+import scripts.discovery_catalog as discovery_catalog  # noqa: E402
 import scripts.groups_schema as groups_schema  # noqa: E402
 import scripts.setup_config as setup_config  # noqa: E402
 import scripts.setup_preflight as setup_preflight  # noqa: E402
@@ -28,7 +29,7 @@ def test_repo_scan_reads_matrix_via_parse_groups(tmp_path, monkeypatch):
     cat = orchestrator._committed_matrix(str(repo))
     assert cat["Core"]["match"] == ["src/**"]
     # assign_by_catalog uses only `match` -> Core claims src/a.py
-    assigned, leftovers = orchestrator.assign_by_catalog(["src/a.py"], cat)
+    assigned, leftovers = discovery_catalog.assign_by_catalog(["src/a.py"], cat)
     assert assigned == {"Core": ["src/a.py"]} and leftovers == []
 
 

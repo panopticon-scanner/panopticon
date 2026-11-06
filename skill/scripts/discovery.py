@@ -64,6 +64,15 @@ import exclude_carve_out  # noqa: E402
 import plan_contract  # noqa: E402
 import repo_config  # noqa: E402
 import tests_axis  # noqa: E402
+# #3457: catalog matching and scoped assignment have one source owner. Keep
+# the guarded arm because this file is also invoked as a standalone script.
+if TYPE_CHECKING:
+    from scripts import discovery_catalog
+else:
+    try:
+        from scripts import discovery_catalog
+    except ModuleNotFoundError:
+        import discovery_catalog           # noqa: E402
 # #1735: the no-follow artifact open. Fallback arm: imported with only skill/scripts on sys.path.
 if TYPE_CHECKING:
     from scripts import safe_write
@@ -486,170 +495,6 @@ def chunk_files(files, max_per=DEFAULT_MAX_PER_GROUP):
     # first path: the numbering then tracks the tree rather than the size slot
     # a chunk happened to land in.
     return sorted((sorted(c) for c in chunks), key=lambda c: c[0])
-
-def _glob_to_re(pat):
-    """Compile one gitignore-flavored glob to a regex over repo-relative paths.
-
-    The compiler itself is `groups_schema.glob_to_re` (#1740 fix round 2): the
-    tool side matches the SAME committed `exclude_paths:` lines and must read
-    them the same way, so the translator lives beside `glob_defect` in the
-    module that owns the glob vocabulary. This wrapper is discovery's own name
-    for it, and pins the label its disclosures carry.
-    """
-    return groups_schema.glob_to_re(pat, "discovery")
-
-
-def match_patterns(path, patterns):
-    """gitignore-style decision for one path against an ordered pattern list.
-
-    Later patterns override earlier ones (last match wins); a ``!`` prefix
-    negates, so ``["skill/scripts/**", "!skill/scripts/tools/**"]`` claims
-    the scripts tree except the tools subtree.
-    """
-    matched = False
-    for pat in patterns:
-        negate = pat.startswith("!")
-        if negate:
-            pat = pat[1:]
-        if _glob_to_re(pat).match(path):
-            matched = not negate
-    return matched
-
-def _decide(path, tagged):
-    """gitignore-style decision over a TAGGED pattern list ``[(glob, tag)]``
-    (tag is ``"match"`` or ``"tests"``). Last match wins, ``!`` negates.
-    Returns ``(matched, tag, glob)`` for the deciding pattern so the caller
-    can tell whether a positive claim came from the scoped ``tests:`` axis."""
-    matched, tag, glob = False, None, None
-    for pat, src in tagged:
-        negate = pat.startswith("!")
-        if _glob_to_re(pat[1:] if negate else pat).match(path):
-            matched, tag, glob = (not negate), src, pat
-    return matched, tag, glob
-
-
-_VOCAB_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "data", "capability_vocabulary.yml")
-
-
-@functools.lru_cache(maxsize=1)
-def _capability_aliases():
-    """``{canonical name: [alias labels]}`` from the shipped capability
-    vocabulary, so a committed `Auth` group's `tests:` globs also credit
-    `tests/authentication/`. Empty when the file is unreadable: aliases only
-    ever ADD credit, so running without them is safe."""
-    import yaml
-    try:
-        try:
-            from scripts import setup_proposal
-        except ModuleNotFoundError:     # flat: only skill/scripts on sys.path
-            import setup_proposal  # type: ignore[no-redef]
-        vocab, _ = setup_proposal.load_vocabulary(_VOCAB_PATH)
-    except (OSError, ValueError, ImportError, yaml.YAMLError):
-        return {}
-    # The loader keeps the raw entry; re-check the shape so a scalar `aliases`
-    # (a loader ERROR, not a crash) cannot explode into per-character labels.
-    return {name: [a for a in (entry.get("aliases") or []) if isinstance(a, str)]
-            if isinstance(entry.get("aliases"), list) else []
-            for name, entry in vocab.get("entries", {}).items()}
-
-
-def assign_scoped(files, catalog, aliases=None, prefixes=None):
-    """Assign files to catalog groups (#499) with SCOPED `tests:` globs (5.2 §4.2).
-
-    Groups claim files in catalog order, first match wins, each file lands in
-    at most one group. Inside a group, ``match`` + ``tests`` form ONE
-    gitignore-style last-match-wins list. The one 5.2 addition: when the
-    deciding positive pattern is a WILDCARD ``tests:`` glob, the file credits
-    the group only if it lies under one of the group's distinguishing literal
-    ``match:`` prefixes or its path carries the group's name or an alias
-    (``tests_axis.scope_ok``). Otherwise the file falls through to the next
-    group. Literal ``tests:`` paths always credit.
-
-    Sibling subgroups share their parent's distinguishing prefixes, so a
-    wildcard ``tests:`` glob on ``Auth:Core`` would otherwise credit a test
-    that sits under ``Auth:API``'s own ``match:`` directory just because
-    ``Auth:Core`` is listed first. When the deciding pattern is a wildcard
-    ``tests:`` glob on a subgroup and a SIBLING that also matches the file
-    owns a deeper literal prefix over it, the file is left for that sibling.
-
-    ``aliases`` is ``{canonical name: [labels]}`` (default: the shipped
-    vocabulary); ``prefixes`` is ``tests_axis.distinguishing_prefixes`` of the
-    catalog (pass the FULL catalog's when assigning a partial one).
-
-    Returns ``(assigned, leftovers, warnings)``: ``assigned`` maps group ->
-    sorted files (empty groups omitted), ``leftovers`` are files no group
-    credited, ``warnings`` name every wildcard ``tests:`` glob that matched
-    files but credited none -- the "your glob is too broad" signal."""
-    if aliases is None:
-        aliases = _capability_aliases()
-    if prefixes is None:
-        prefixes = tests_axis.distinguishing_prefixes(catalog)
-    matchable = []
-    tagged_of, own_prefixes, parent_of = {}, {}, {}
-    for name, g in catalog.items():
-        tagged = ([(p, "match") for p in (g.get("match") or [])]
-                  + [(p, "tests") for p in (g.get("tests") or [])])
-        if not tagged:
-            continue
-        labels = tests_axis.group_labels(name) or [str(name)]
-        extra = labels[1:] + [a for lab in labels for a in aliases.get(lab, [])]
-        keys = tests_axis.name_keys(labels[0], extra)
-        matchable.append((name, tagged, keys, prefixes.get(labels[0], [])))
-        tagged_of[name] = tagged
-        if len(labels) > 1:
-            parent_of[name] = labels[0]
-            own_prefixes[name] = sorted({tests_axis.literal_prefix(p)
-                                         for p in (g.get("match") or [])
-                                         if isinstance(p, str) and not p.startswith("!")
-                                         and tests_axis.literal_prefix(p)})
-
-    def own_depth(name, f):
-        return max([len(p) for p in own_prefixes.get(name, []) if tests_axis._under(f, p)]
-                   or [0])
-
-    def deeper_sibling_claims(name, f):
-        mine = own_depth(name, f)
-        return any(own_depth(sib, f) > mine and _decide(f, tagged_of[sib])[0]
-                   for sib, parent in parent_of.items()
-                   if sib != name and parent == parent_of[name])
-
-    assigned: dict[str, list[str]] = {name: [] for name, *_ in matchable}
-    seen: dict[tuple[str, str], list[int]] = {}                       # (group, glob) -> [matched, credited]
-    leftovers = []
-    for f in files:
-        for name, tagged, keys, pfx in matchable:
-            matched, tag, glob = _decide(f, tagged)
-            if not matched:
-                continue
-            if tag == "tests" and not tests_axis.is_literal_glob(glob):
-                tally = seen.setdefault((name, glob), [0, 0])
-                tally[0] += 1
-                if not tests_axis.scope_ok(f, keys, pfx):
-                    continue        # a later group may still claim it
-                if name in parent_of and deeper_sibling_claims(name, f):
-                    continue        # the sibling whose directory it is takes it
-                tally[1] += 1
-            assigned[name].append(f)
-            break
-        else:
-            leftovers.append(f)
-    warnings = [
-        ("%s: tests glob %r matched %d file(s) but credited none (a wildcard "
-         + "tests: glob is scoped to the group's match: prefixes and name/aliases; "
-         + "move it to match: to claim unconditionally)") % (name, glob, hit)
-        for (name, glob), (hit, credited) in sorted(seen.items())
-        if hit and not credited]
-    return ({n: sorted(fs) for n, fs in assigned.items() if fs},
-            sorted(leftovers), warnings)
-
-
-def assign_by_catalog(files, catalog):
-    """``assign_scoped`` for callers that want the 5.0 two-tuple. Warnings are
-    dropped here; ``catalog_groups`` (the scan path) reports them."""
-    assigned, leftovers, _ = assign_scoped(files, catalog)
-    return assigned, leftovers
 
 def load_catalog(repo):
     """Load the file group catalog from the root config (#1681).
@@ -1106,7 +951,8 @@ def commons_catalog():
     """The curated Commons vocabulary (5.1 starter, #499): near-universal
     Docs/CI/Build/Config/Deps file groups loaded once from
     ``skill/data/commons_catalog.yml`` as a plain ``{name: {"match": [...]}}``
-    mapping -- fed straight to ``assign_by_catalog`` exactly like a committed
+    mapping -- fed straight to ``discovery_catalog.assign_by_catalog`` exactly
+    like a committed
     catalog. NOT routed through ``groups_schema.parse_groups``: this is
     shipped, tested data, not committed user input, so it needs only
     each entry's `match`."""
@@ -1223,8 +1069,9 @@ def negated_by_own_match(path, body):
     """True when the group's own ``match:`` list REJECTS ``path`` -- the
     deciding (last matching) glob is a negation. Path affinity must not
     re-attach a test file the vertical explicitly excluded (5.2 §4.5)."""
-    _matched, _tag, glob = _decide(path, [(p, "match") for p in (body.get("match") or [])
-                                          if isinstance(p, str)])
+    _matched, _tag, glob = discovery_catalog._decide(
+        path, [(p, "match") for p in (body.get("match") or [])
+               if isinstance(p, str)])
     return bool(glob) and glob.startswith("!")
 
 
@@ -1263,7 +1110,7 @@ def sweep_tests(leftovers, homes, catalog=None):
     Returns ``(tests, attached, remaining)``: the ``Tests`` file list (may be
     empty), ``{group: [files]}`` to extend, and the untouched leftovers."""
     seeds = (tests_catalog().get(TESTS_GROUP) or {}).get("match") or []
-    swept = sorted(f for f in leftovers if match_patterns(f, seeds))
+    swept = sorted(f for f in leftovers if discovery_catalog.match_patterns(f, seeds))
     remaining = sorted(f for f in leftovers if f not in set(swept))
     if len(swept) >= TESTS_MIN_FILES:
         return swept, {}, remaining
@@ -1283,12 +1130,12 @@ def sweep_tests(leftovers, homes, catalog=None):
 def catalog_groups(files, catalog, max_per_group, security_mode, warnings=None):
     """Build stable, catalog-named groups for --repo-scan (#499).
 
-    Files are assigned by ``assign_scoped``; a matched group larger than
+    Files are assigned by ``discovery_catalog.assign_scoped``; a matched group larger than
     ``max_per_group`` splits into ``<name>_<i>`` chunks. Between the committed
     catalog and Commons the Tests sweep (``sweep_tests``, 5.2 §4.3) forms the
     ``Tests`` universal vertical from leftover test-tree files. Remaining
     leftovers then fall through the curated Commons vocabulary (5.1, #499:
-    Docs/CI/Build/Config/Deps) via the SAME ``assign_scoped`` -- committed
+    Docs/CI/Build/Config/Deps) via the SAME ``discovery_catalog.assign_scoped`` -- committed
     groups always win, Commons only ever sees leftovers. Only the true
     residual keeps the legacy ``._N`` chunk naming. Returns
     ``(groups, residual)``; callers must surface ``residual`` (the coverage
@@ -1309,7 +1156,7 @@ def catalog_groups(files, catalog, max_per_group, security_mode, warnings=None):
     Committed groups always win, so any Commons category the committed catalog
     already defines (e.g. an authored ``Docs`` group) is dropped before Commons
     ever runs."""
-    named, leftovers, scoped_warnings = assign_scoped(files, catalog)
+    named, leftovers, scoped_warnings = discovery_catalog.assign_scoped(files, catalog)
     for w in scoped_warnings:
         print("%s: %s" % (repo_config.CONFIG_NAMES[0], w), file=sys.stderr)
     if warnings is not None:
@@ -1336,7 +1183,7 @@ def catalog_groups(files, catalog, max_per_group, security_mode, warnings=None):
             for n in catalog if tests_axis.group_labels(n)}
     commons = {n: g for n, g in commons_catalog().items()
                if n.casefold() not in tops}
-    commons_named, residual = assign_by_catalog(leftovers, commons)
+    commons_named, residual = discovery_catalog.assign_by_catalog(leftovers, commons)
     commons_named = fold_tiny_commons(commons_named, catalog)
     groups.extend(_emit_named_groups(commons_named, max_per_group, security_mode))
     # run-9 A5: the sink used to be named `._N`; a leading dot made every derived
@@ -1664,7 +1511,7 @@ def _resolve_scope(args, repo, allf, catalog, info, pruned_fixtures, excluded_fi
             print("unknown group %r for --scope-group" % args.scope_group,
                   file=sys.stderr)
             return 2
-        assigned, _, _ = assign_scoped(
+        assigned, _, _ = discovery_catalog.assign_scoped(
             allf, catalog,
             prefixes=tests_axis.distinguishing_prefixes(catalog))
         scoped = assigned.get(args.scope_group, [])
@@ -1834,7 +1681,7 @@ def _repo_scan(argv=None):
                                info=info)
     # Task 4 (#1136): committed top-level `exclude_paths:` globs prune matching files
     # BEFORE any grouping (build_result's default chunking, --scope-* narrowing, and
-    # catalog_groups/assign_by_catalog all consume `allf` from here on): a pruned file
+    # catalog_groups/discovery_catalog.assign_by_catalog all consume `allf` from here on): a pruned file
     # reaches NO group and no leftover; #1757/#3338 carve code-shaped files back for SEC.
     try:
         committed_doc = _committed_document(repo)
@@ -1845,7 +1692,7 @@ def _repo_scan(argv=None):
         # rejects -- is an error on EVERY reader, so the scan exits here.
         print("panopticon: %s" % exc, file=sys.stderr)
         return 1
-    _exclude_re = [_glob_to_re(g) for g in exclude_globs]
+    _exclude_re = [discovery_catalog._glob_to_re(g) for g in exclude_globs]
 
     def _apply_exclude(fs):
         """Split ``fs`` into (kept, pruned, carved) by the committed

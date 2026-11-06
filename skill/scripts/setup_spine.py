@@ -10,6 +10,7 @@ import os
 import re
 
 from scripts import discovery
+from scripts import discovery_catalog
 from scripts import grouping_engine  # 5.2: stage-3 size policy + setup report
 from scripts import coverage_model  # 5.2: the surfaces enum for the brief
 from scripts import repo_config  # #1681: the one place the config names live
@@ -194,7 +195,7 @@ def build_spine(repo, max_per_group=None, max_groups=None, files=None):
     committed_view = {n: {"match": list(b.get("match") or []),
                           "tests": list(b.get("tests") or [])}
                       for n, b in sp.flatten_groups(committed).items()}
-    assigned, leftovers = discovery.assign_by_catalog(files, committed_view)
+    assigned, leftovers = discovery_catalog.assign_by_catalog(files, committed_view)
     commons_counts: dict[str, int] = {}
     test_dirs: dict[str, int] = {}
     for f in leftovers:

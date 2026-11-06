@@ -129,7 +129,7 @@ def foreign_tests(unit, stems, units, stems_of):
 
     Read off the run's own assignment (`groups.json`), which is the matrix's
     `tests:`/`match:` axes already resolved against the real tree by
-    `discovery.assign_scoped` -- so this answers "who was actually handed
+    `discovery_catalog.assign_scoped` -- so this answers "who was actually handed
     this test file", not "whose glob might have matched it". That is the
     question the reviewer needs: a test in another unit's file list is a test
     THIS reviewer will never be shown.

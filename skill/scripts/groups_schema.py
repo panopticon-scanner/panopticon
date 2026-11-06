@@ -74,7 +74,7 @@ _CHUNK_SUFFIX_RE = re.compile(r"(?P<base>.+)_\d+\Z")
 
 
 # #1501: the committed config and the Commons catalog are documented as taking
-# "gitignore-flavored globs", but `discovery._glob_to_re` is a hand-rolled
+# "gitignore-flavored globs", but `discovery_catalog._glob_to_re` is a hand-rolled
 # translator, and a glob it cannot translate does not error -- it renders an
 # EMPTY group and inflates `Ungrouped`, the signal we read as catalog
 # coverage. So the compiler now handles gitignore's trailing-slash directory
@@ -303,7 +303,7 @@ def matched_glob(path, patterns, label="config"):
     """The committed glob that EXCLUDES `path`, or None (#1740 fix round 2).
 
     gitignore's last-match-wins over an ordered list, with `!` negating, which
-    is what `discovery.match_patterns` does for `match:`/`tests:` -- the same
+    is what `discovery_catalog.match_patterns` does for `match:`/`tests:` -- the same
     rule, returning the pattern instead of a bool because the tool side has to
     disclose WHICH glob dropped a finding (`security_gate`'s verdict line, the
     ingest's `excluded_out` rows).
